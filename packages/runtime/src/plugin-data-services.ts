@@ -65,6 +65,13 @@ export interface PluginDataRuntime {
     domain: 'settings' | 'storage',
     listener: (keys: readonly string[]) => void,
   ): () => void;
+  /** Stable, namespaced scratch cwd, leased through callback completion and cleanup. */
+  withScratchDirectory?<T>(
+    namespace: PluginDataNamespace,
+    key: string,
+    signal: AbortSignal,
+    use: (directory: string) => Promise<T>,
+  ): Promise<T>;
   hasCredential(namespace: PluginDataNamespace, slot: string): Promise<boolean>;
   useCredential<T>(
     namespace: PluginDataNamespace,
@@ -234,6 +241,17 @@ export class PluginStorageService extends PluginNamespacedDataService {
   ): Promise<PluginDataSnapshot<T>> {
     const result = await this.mutateValues([{ key, value, ...options }]);
     return result[key] as PluginDataSnapshot<T>;
+  }
+  /** The callback must drain any process using the directory before settling. */
+  withScratchDirectory<T>(
+    key: string,
+    signal: AbortSignal,
+    use: (directory: string) => Promise<T>,
+  ): Promise<T> {
+    const runtime = this.runtime();
+    if (!runtime.withScratchDirectory)
+      throw new Error('Plugin scratch directories are unavailable');
+    return runtime.withScratchDirectory(this.namespace(), validKey(key), signal, use);
   }
   async delete(
     key: string,

@@ -79,6 +79,13 @@ export interface WorkbarReviewService {
     sessionId: string,
     handler: (event: SessionEvent) => void,
   ): WorkbarUnsubscribe;
+  /**
+   * Catalog-level changes, e.g. a workspace relocation — the read re-resolves
+   * the Session's actual workspace afterwards.
+   */
+  subscribeSessionChanges(
+    handler: (event: SessionChangedEvent) => void,
+  ): WorkbarUnsubscribe;
 }
 
 export interface WorkbarTerminalService {

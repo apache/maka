@@ -17,8 +17,8 @@
  * under the License.
  */
 
-import { createElement, useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
-import { useToast, useUiLocale, type ComposerHandle, type TransientUserMessageProjection } from '@maka/ui';
+import { createElement, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useToast, useUiLocale, type TransientUserMessageProjection } from '@maka/ui';
 import { ICON_SIZE, Undo2, X } from '@maka/ui/icons';
 import type { SessionTurnAccessRequest } from '@maka/runtime-host/protocol';
 import { getSessionCollaborationCopy } from '../../../locales/session-collaboration-copy.js';
@@ -55,7 +55,8 @@ const REFRESH_INTERVAL_MS = 2_000;
 
 export function useGuestTurnRequests(
   sessionId: string | undefined,
-  composerRef: RefObject<ComposerHandle | null>,
+  /** Takes a settled request's text out of the Composer's draft for that Session. */
+  discardDraft: (draftKey: string) => void,
 ): GuestComposerProjection | undefined {
   const services = useSessionCollaborationServices();
   const copy = getSessionCollaborationCopy(useUiLocale());
@@ -97,7 +98,7 @@ export function useGuestTurnRequests(
         // A request whose response was lost can surface here later; its text
         // leaves the draft only if the user has not changed it since.
         const settled = apply(result);
-        if (settled) composerRef.current?.clearDraft(sessionId);
+        if (settled) discardDraft(sessionId);
       } catch {
         if (!disposed) markUnavailable(sessionId);
       } finally {
@@ -109,7 +110,7 @@ export function useGuestTurnRequests(
       disposed = true;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [sessionId, services, apply, markUnavailable, composerRef]);
+  }, [sessionId, services, apply, markUnavailable, discardDraft]);
 
   const submit = useCallback(async (text: string): Promise<boolean> => {
     const content = text.trim();

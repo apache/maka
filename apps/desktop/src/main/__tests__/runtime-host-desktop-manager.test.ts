@@ -1756,6 +1756,131 @@ test('cancelling a live handoff does not authorize any replacement', async () =>
   await owner.close();
 });
 
+test('close waits for an installed candidate to finish cleanup', { timeout: 5_000 }, async () => {
+  const host = candidateHarness();
+  const cleanup = deferred<void>();
+  const closeCandidate = host.candidate.close.bind(host.candidate);
+  let cleanupStarted = false;
+  host.candidate.close = async () => {
+    cleanupStarted = true;
+    await cleanup.promise;
+    await closeCandidate();
+  };
+  const manager = createRuntimeHostDesktopManager(LOCAL_INPUT, {
+    startCandidate: async () => ready(host.candidate),
+  });
+  let closing: Promise<void> | undefined;
+  try {
+    await manager.start();
+    let closeSettled = false;
+    closing = manager.close().then(() => { closeSettled = true; });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(cleanupStarted, true);
+    assert.equal(closeSettled, false);
+    assert.equal(host.closeCalls, 0);
+
+    cleanup.resolve();
+    await closing;
+    assert.equal(host.closeCalls, 1);
+    assert.deepEqual(manager.entries(), []);
+  } finally {
+    cleanup.resolve();
+    await Promise.allSettled([closing ?? manager.close()]);
+  }
+});
+
+test('close waits for a late initial candidate and its cleanup without publishing a failure', { timeout: 5_000 }, async () => {
+  const host = candidateHarness();
+  const connected = deferred<DesktopRuntimeHostCandidateStartResult>();
+  const cleanup = deferred<void>();
+  const closeCandidate = host.candidate.close.bind(host.candidate);
+  let cleanupStarted = false;
+  host.candidate.close = async () => {
+    cleanupStarted = true;
+    await cleanup.promise;
+    await closeCandidate();
+  };
+  const readiness: string[] = [];
+  const failures: Error[] = [];
+  const manager = createRuntimeHostDesktopManager(LOCAL_INPUT, {
+    startCandidate: () => connected.promise,
+    onTargetStateChanged: (state) => readiness.push(state.readiness),
+    onFatalError: (error) => failures.push(error),
+  });
+  const starting = manager.start();
+  let closeSettled = false;
+  const closing = manager.close().then(() => { closeSettled = true; });
+  try {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(closeSettled, false);
+
+    connected.resolve(ready(host.candidate));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(cleanupStarted, true);
+    assert.equal(closeSettled, false);
+    assert.equal(host.closeCalls, 0);
+
+    cleanup.resolve();
+    await Promise.all([starting, closing]);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(host.closeCalls, 1);
+    assert.deepEqual(manager.entries(), []);
+    assert.deepEqual(failures, []);
+    assert.deepEqual(readiness, ['connecting']);
+  } finally {
+    connected.resolve(ready(host.candidate));
+    cleanup.resolve();
+    await Promise.allSettled([starting, closing]);
+    // A regression may drop the late candidate before any owner can close it.
+    if (host.closeCalls === 0) await closeCandidate();
+  }
+});
+
+test('close waits for an aborted initial factory to finish cleanup without publishing a failure', { timeout: 5_000 }, async () => {
+  const host = candidateHarness();
+  const cleanup = deferred<void>();
+  let cleanupStarted = false;
+  const readiness: string[] = [];
+  const failures: Error[] = [];
+  const manager = createRuntimeHostDesktopManager(LOCAL_INPUT, {
+    startCandidate: async (input) => {
+      const signal = input.signal!;
+      if (!signal.aborted) {
+        await new Promise<void>((resolve) => {
+          signal.addEventListener('abort', () => resolve(), { once: true });
+        });
+      }
+      cleanupStarted = true;
+      await cleanup.promise;
+      await host.candidate.close();
+      throw signal.reason;
+    },
+    onTargetStateChanged: (state) => readiness.push(state.readiness),
+    onFatalError: (error) => failures.push(error),
+  });
+  const starting = manager.start();
+  let closeSettled = false;
+  const closing = manager.close().then(() => { closeSettled = true; });
+  try {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(cleanupStarted, true);
+    assert.equal(closeSettled, false);
+    assert.equal(host.closeCalls, 0);
+
+    cleanup.resolve();
+    await Promise.all([starting, closing]);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(host.closeCalls, 1);
+    assert.deepEqual(manager.entries(), []);
+    assert.deepEqual(failures, []);
+    assert.deepEqual(readiness, ['connecting']);
+  } finally {
+    cleanup.resolve();
+    await Promise.allSettled([starting, closing]);
+    if (host.closeCalls === 0) await host.candidate.close();
+  }
+});
+
 test('a scope published before the first connection waits for that connection', async () => {
   const host = candidateHarness();
   const connected = deferred<DesktopRuntimeHostCandidateStartResult>();
@@ -1832,6 +1957,72 @@ test('recovers a degraded Local start through a fresh target generation', async 
   assert.equal(epochs.size, 2, 'the retry runs on a fresh epoch');
   assert.deepEqual(readiness, ['connecting', 'unavailable', 'connecting', 'ready']);
   await owner.close();
+});
+
+test('a replaced Local generation does not publish its late failure over the retry', { timeout: 5_000 }, async () => {
+  const recovered = candidateHarness();
+  const unobserveStarted = deferred<void>();
+  const unobserved = deferred<void>();
+  let starts = 0;
+  const epochActive: Array<() => boolean> = [];
+  const published: Array<{ readiness: string; epoch: string }> = [];
+  const failures: Error[] = [];
+  const manager = createRuntimeHostDesktopManager(LOCAL_INPUT, {
+    startCandidate: async (input, observations) => {
+      starts += 1;
+      epochActive.push(input.isTargetActive!);
+      if (starts > 1) return ready(recovered.candidate);
+      // Hold the failed generation's observation teardown open, so its
+      // failure publication is still pending when the retry replaces it.
+      await observations.attach({
+        observe: async () => undefined,
+        unobserve: () => {
+          unobserveStarted.resolve();
+          return unobserved.promise;
+        },
+      });
+      await observations.observe('session-1', 'observer-1', {
+        id: 1, send() {}, once() {}, off() {},
+      });
+      throw new Error('connect failed');
+    },
+    onFatalError: (error) => failures.push(error),
+    onTargetStateChanged: (state) => {
+      published.push({ readiness: state.readiness, epoch: state.epoch });
+    },
+  });
+  const failedEpoch = manager.entries()[0]!.epoch;
+  const starting = manager.start();
+  try {
+    // The initial start is not a serialized target mutation; once it marks
+    // its generation invalid, a retry may replace that generation.
+    await unobserveStarted.promise;
+    await manager.retryLocalStart();
+    const replacement = manager.current();
+    assert.equal(replacement?.readiness, 'ready');
+    assert.notEqual(replacement?.epoch, failedEpoch);
+
+    unobserved.resolve();
+    await starting;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(published, [
+      { readiness: 'connecting', epoch: failedEpoch },
+      { readiness: 'connecting', epoch: replacement!.epoch },
+      { readiness: 'ready', epoch: replacement!.epoch },
+    ]);
+    assert.deepEqual(
+      manager.entries().map((entry) => [entry.readiness, entry.epoch]),
+      [['ready', replacement!.epoch]],
+    );
+    assert.deepEqual(epochActive.map((isActive) => isActive()), [false, true]);
+    assert.equal(manager.ownsScope({ hostId: 'test-host', targetEpoch: failedEpoch }), false);
+    assert.equal(manager.ownsScope({ hostId: 'test-host', targetEpoch: replacement!.epoch }), true);
+    assert.deepEqual(failures.map((error) => error.message), ['connect failed']);
+  } finally {
+    unobserved.resolve();
+    await Promise.allSettled([starting]);
+    await manager.close();
+  }
 });
 
 test('keeps a known repair actionable when its first authority inspection fails', async () => {

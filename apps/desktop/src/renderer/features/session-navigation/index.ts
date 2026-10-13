@@ -19,7 +19,6 @@
 
 export { SessionNavigationServicesProvider } from './services-context.js';
 export { SessionNavigationProvider } from './ui/session-navigation-provider.js';
-export { SessionHistoryNavigation } from './ui/session-history-navigation.js';
 export {
   ArchivedTaskScope,
   type ArchivedTaskScopeView,

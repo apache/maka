@@ -40,11 +40,13 @@ export function ModelPickerPanel(props: {
   value?: string;
   disabled?: boolean;
   disabledReason?: string;
+  searchPlaceholder?: string;
   onSelect(value: string): void | Promise<void>;
   renderOption?(option: ModelPickerPanelOption): ReactNode;
 }) {
   const locale = useUiLocale();
   const copy = getSharedUiCopy(locale).modelPicker;
+  const searchPlaceholder = props.searchPlaceholder ?? copy.searchPlaceholder;
   const [query, setQuery] = useState('');
   const normalized = query.trim().toLocaleLowerCase(locale);
   const options = props.options.filter((option) => !normalized || (
@@ -65,15 +67,15 @@ export function ModelPickerPanel(props: {
     <>
       <TextInput
         className="maka-executor-picker-search"
-        label={copy.searchPlaceholder}
+        label={searchPlaceholder}
         isLabelHidden
         size="sm"
         width="100%"
         value={query}
-        placeholder={copy.searchPlaceholder}
+        placeholder={searchPlaceholder}
         onChange={setQuery}
       />
-      <div className="maka-executor-picker-model-list" role="listbox" aria-label={copy.searchPlaceholder} onKeyDown={navigate}>
+      <div className="maka-executor-picker-model-list" role="listbox" aria-label={searchPlaceholder} onKeyDown={navigate}>
         {options.map((option, index) => (
           <div key={option.value} className="maka-executor-picker-option">
             {option.group && option.group !== options[index - 1]?.group ? (

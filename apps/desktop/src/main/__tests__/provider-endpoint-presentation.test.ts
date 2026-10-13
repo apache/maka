@@ -25,7 +25,7 @@ import {
   providerEndpointPresentation,
 } from '../../renderer/settings/provider-endpoint-presentation.js';
 
-import { providerRequestUrlPreview } from '../../renderer/features/connection-settings/index.js';
+import { providerRequestUrlPreview } from '../../renderer/features/connection-settings/testing.js';
 
 // A 40-char hex-shaped run, built rather than written: long enough to trip
 // the display redactor's long-opaque-token rule wherever it is left alone.

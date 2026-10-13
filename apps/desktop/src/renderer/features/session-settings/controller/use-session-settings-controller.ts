@@ -17,12 +17,13 @@
  * under the License.
  */
 
-import { useRef } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { PermissionMode } from '@maka/core/permission';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import {
   isChatDefaultPermissionMode,
+  type ChatDefaultPermissionMode,
 } from '@maka/core/settings';
 import {
   useSessionSettingIntent as useSharedSessionSettingIntent,
@@ -35,8 +36,10 @@ import {
   type SessionModelTarget,
 } from '../session-model-configuration-intent.js';
 import { useSessionSettingsServices } from '../services-context.js';
+import { useNewTaskChoice } from '../../../application/contracts/use-new-task-choice.js';
 
 import type {
+  NewTaskSettings,
   SessionSettingValues,
   SessionSettingsController,
   SessionSettingsInput,
@@ -47,6 +50,16 @@ export function useSessionSettingsController<Owner extends { sessionId?: string 
   input: SessionSettingsInput<Owner>,
 ): SessionSettingsController {
   const services = useSessionSettingsServices();
+  const [permissionChoice, setPermissionChoice, clearPermissionChoice] =
+    useNewTaskChoice<ChatDefaultPermissionMode>(input.newTaskChoiceKey);
+  // A new task starts out of Plan, in whatever orchestration the last one used.
+  const [newTaskPlanMode, setNewTaskPlanMode] = useState(false);
+  const [newTaskOrchestrationMode, setNewTaskOrchestrationMode] = useState<OrchestrationMode>('default');
+  const newTask = useMemo<NewTaskSettings>(() => ({
+    ...(permissionChoice ? { permissionChoice } : {}),
+    planMode: newTaskPlanMode,
+    orchestrationMode: newTaskOrchestrationMode,
+  }), [permissionChoice, newTaskPlanMode, newTaskOrchestrationMode]);
   const reportWriteError = (
     sessionId: string,
     error: unknown,
@@ -123,6 +136,7 @@ export function useSessionSettingsController<Owner extends { sessionId?: string 
   return {
     clear: intent.clear,
     overlays: intent.overlayByChannel,
+    newTask,
     setSessionModel: (sessionId: string, modelTarget: SessionModelTarget) =>
       intent.request('modelConfiguration', sessionId, modelConfigurationIntentForModel(modelTarget)),
     setSessionThinkingLevel: (sessionId: string, thinkingLevel: ThinkingLevel | null) => {
@@ -173,12 +187,15 @@ export function useSessionSettingsController<Owner extends { sessionId?: string 
       if (mode === 'bypass' && !(await input.confirmBypass())) return false;
       if (!input.isOwnerActive(owner)) return false;
       if (sessionId) return intent.request('permissionMode', sessionId, mode);
-      input.setNewTaskPermissionMode(mode);
+      setPermissionChoice(mode);
       return true;
     },
     setPlanMode: (sessionId: string, active: boolean) =>
       intent.request('planMode', sessionId, active),
     setOrchestrationMode: (sessionId: string, mode: OrchestrationMode) =>
       intent.request('orchestrationMode', sessionId, mode),
+    setNewTaskPlanMode,
+    setNewTaskOrchestrationMode,
+    clearNewTaskPermissionChoice: clearPermissionChoice,
   };
 }

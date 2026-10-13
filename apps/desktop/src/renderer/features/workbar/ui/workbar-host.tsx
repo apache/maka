@@ -142,7 +142,7 @@ export function WorkbarHost({ togglePosition }: { togglePosition?: WorkbarToggle
 }
 
 /** Environment-free view seam for Storybook, which supplies its own model. */
-export function WorkbarHostView({ model: props, togglePosition = 'edge' }: { model: WorkbarHostModel; togglePosition?: WorkbarTogglePosition }) {
+export function WorkbarHostView({ model: props, togglePosition = 'titlebar' }: { model: WorkbarHostModel; togglePosition?: WorkbarTogglePosition }) {
   const locale = useUiLocale();
   const toast = useToast();
   const copy = getShellCopy(locale).app;

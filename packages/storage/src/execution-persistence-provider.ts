@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { EventWaitAuthorityRepository } from './event-wait-authority.js';
 import type { AgentGraphScheduleControlStore } from '@maka/core/agent-graph-schedule';
 import type { AgentGraphEpochStore } from '@maka/core/agent-graph-epoch';
 import type { AgentGraphSupervisorWakeStore } from '@maka/core/agent-graph-supervisor-wake';
@@ -56,6 +57,7 @@ export interface ExecutionPersistence {
   readonly runtimeEventStore: ExecutionRuntimeEventWriter;
   readonly interactionStore: InteractionStoreWriter & { close(): void };
   readonly graphControlStore: ExecutionGraphStore;
+  readonly eventWaitStore: EventWaitAuthorityRepository;
   readonly goalStore: GoalAuthorityRepository;
   purgeConversationOperationalState(sessionId: string): Promise<void>;
   /** Closes every owned handle; idempotent, including after a partial open. */

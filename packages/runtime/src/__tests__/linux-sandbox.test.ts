@@ -278,7 +278,7 @@ describe('buildBubblewrapArgv', () => {
     const request = workspaceRequest(profile);
     const pathContext: SandboxPathContext = {
       ...request.command.pathContext,
-      runtimeReadableRoots: ['/runtime/filesystem-worker.js'],
+      runtimeReadableRoots: ['/runtime/filesystem-worker.mjs'],
       executableRoots: ['/opt/node/bin/node', '/opt/rg/bin/rg'],
       runtimeWritableRoots: ['/outside'],
     };
@@ -294,8 +294,8 @@ describe('buildBubblewrapArgv', () => {
       hasTriple(
         argv,
         '--ro-bind',
-        '/runtime/filesystem-worker.js',
-        '/runtime/filesystem-worker.js',
+        '/runtime/filesystem-worker.mjs',
+        '/runtime/filesystem-worker.mjs',
       ),
     );
     assert.ok(hasTriple(argv, '--ro-bind', '/opt/node/bin/node', '/opt/node/bin/node'));

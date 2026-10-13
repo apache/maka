@@ -26,7 +26,7 @@ import {
   contextCompactionNotice,
   createContextCompactionPresentation,
   presentContextCompactionResult,
-} from '../../renderer/app-shell-context-compaction.js';
+} from '../../renderer/features/conversation/testing.js';
 
 test('targets manual diagnostics to the current task or new-task Host profile', () => {
   assert.deepEqual(

@@ -23,13 +23,21 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
+import { eventWaitDeliveryKey, type EventWaitRecord } from '@maka/core/event-wait';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
+import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
 import {
   OPERATIONAL_STATE_DATABASE_NAME,
   OPERATIONAL_STATE_SCHEMA_VERSION,
 } from '@maka/storage/operational-state-store';
 import { createSessionBundleFileService } from '@maka/storage/session-bundle-file-service';
 import type { SessionBundleHydration } from '@maka/storage/session-bundle-contract';
+import {
+  resolveRootControlNamespace,
+  resolveRootOwnershipNamespace,
+  resolveStorageRoot,
+  tryAcquireInteractiveRootOwner,
+} from '@maka/storage/root-authority';
 import {
   createSqliteRuntimeStore,
   SQLITE_RUNTIME_SCHEMA_VERSION,
@@ -355,6 +363,138 @@ test(
       assert.equal(Number(row.count), 1);
     } finally {
       exported.close();
+    }
+  }),
+);
+
+test(
+  'portable bundles omit waiting and resolved subscriptions throughout the included subtree',
+  withRoot('maka-session-export-event-waits', async (root, workspaceRoot) => {
+    const parentId = await createSession(workspaceRoot);
+    const sessions = createSessionStore(workspaceRoot);
+    let childId: string;
+    let grandchildId: string;
+    try {
+      childId = await createSubagentSession(sessions, workspaceRoot, parentId, 'child-call');
+      grandchildId = await createSubagentSession(
+        sessions,
+        workspaceRoot,
+        childId,
+        'grandchild-call',
+      );
+    } finally {
+      await sessions.close?.();
+    }
+
+    const capability = await resolveStorageRoot({ path: workspaceRoot, kind: 'interactive' });
+    const owner = await tryAcquireInteractiveRootOwner(capability);
+    assert.ok(owner);
+    let stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>> | undefined;
+    try {
+      stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      const waits = stores.eventWaitStore;
+      const sessionIds = [parentId, childId, grandchildId];
+      const snapshots = await Promise.all(
+        sessionIds.map(async (sessionId, index) => {
+          const waitId = `export-wait-${index}`;
+          const record: Extract<EventWaitRecord, { status: 'waiting' }> = {
+            schemaVersion: 1,
+            waitId,
+            sessionId,
+            goalControlLease: { goalId: 'goal-1', generation: 0 },
+            sourceTurnId: 'turn-1',
+            sourceToolCallId: 'call-1',
+            resource: {
+              providerId: 'test',
+              connectionId: null,
+              resourceType: 'task',
+              resourceId: 'opaque/task',
+            },
+            condition: { typeId: 'terminal', version: 1, parameters: { nested: [true] } },
+            deliveryKey: eventWaitDeliveryKey(waitId),
+            createdAt: 10,
+            updatedAt: 10,
+            deadlineAt: 100,
+            status: 'waiting',
+          };
+          let committed = await waits.commit({
+            sessionId,
+            waitId,
+            expectedAuthorityRevision: null,
+            record,
+          });
+          assert.equal(committed.kind, 'committed');
+          if (index === 1) {
+            committed = await waits.commit({
+              sessionId,
+              waitId,
+              expectedAuthorityRevision: 0,
+              record: {
+                ...record,
+                status: 'resolved',
+                updatedAt: 30,
+                resolvedAt: 30,
+                resolution: {
+                  outcome: 'satisfied',
+                  receiptKey: 'receipt-1',
+                  observedAt: 25,
+                  evidenceRefs: ['evidence:export-wait'],
+                },
+              },
+            });
+          }
+          if (committed.kind !== 'committed') assert.fail('Expected stored event wait');
+          return committed.snapshot;
+        }),
+      );
+      assert.deepEqual(
+        snapshots.map(({ record }) => record.status),
+        ['waiting', 'resolved', 'waiting'],
+      );
+
+      const destination = join(root, 'bundle.maka-session');
+      const result = await exportSessionBundle({
+        workspaceRoot,
+        sessionId: parentId,
+        destination,
+        lease: owner.lease,
+      });
+      if (!result.ok) assert.fail(`Expected portable export: ${JSON.stringify(result.reason)}`);
+      assert.deepEqual([...result.export.sessionIds].sort(), [...sessionIds].sort());
+      const hydration = await hydrateExport(destination, parentId, join(root, 'hydrated'));
+      const exported = openExported(hydration);
+      try {
+        assert.deepEqual(exported.prepare('SELECT * FROM workflow_event_waits').all(), []);
+        assert.deepEqual(
+          exported
+            .prepare('SELECT session_id FROM session_metadata ORDER BY session_id')
+            .all()
+            .map((row) => row.session_id),
+          [...sessionIds].sort(),
+        );
+      } finally {
+        exported.close();
+      }
+      // Omitting subscriptions from the portable copy must not revoke or
+      // consume the source waits, including the result already recorded there.
+      for (const snapshot of snapshots) {
+        const { sessionId, waitId } = snapshot.record;
+        assert.deepEqual(await waits.read({ sessionId, waitId }), snapshot);
+      }
+      assert.deepEqual((await waits.listPending({ limit: 200 })).items, snapshots);
+    } finally {
+      try {
+        await stores?.sessionStore.close?.();
+      } finally {
+        await owner.close();
+        await Promise.all([
+          rm(join(resolveRootControlNamespace(), capability.rootId), {
+            recursive: true,
+            force: true,
+          }),
+          rm(join(resolveRootOwnershipNamespace(), `${capability.rootId}.lock`), { force: true }),
+        ]);
+      }
     }
   }),
 );

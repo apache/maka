@@ -17,13 +17,14 @@
  * under the License.
  */
 
-import { useComposerAttachments } from '../../renderer/features/conversation/testing.js';
+import { stubConversationServices, useComposerAttachments } from '../../renderer/features/conversation/testing.js';
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { act, createElement } from 'react';
 import { LocaleProvider } from '@maka/ui';
 import { normalizeSessionSendCommand } from '../permission-response-guard.js';
 import {
+  ConversationServicesProvider,
   type ComposerAttachmentService,
 } from '../../renderer/features/conversation/index.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
@@ -34,6 +35,22 @@ type Picker = NonNullable<ComposerAttachmentService['pickDirectory']>;
 type Options = { draftKey: string; hostId?: string; pick: Picker };
 type State = ReturnType<typeof useComposerAttachments>;
 const reference = { hostId: 'host-a', path: '/workspace/source' };
+const services = stubConversationServices({
+  listMessages: async () => [],
+  readFailedMessage: async () => { throw new Error('unused'); },
+  releaseRecoveryAttachments: async () => {},
+  cancelMessage: async () => {}, reconcileMessage: async () => {}, subscribeChanges: () => () => {},
+  sessions: {
+    readSnapshot: async () => { throw new Error('unused'); },
+    readExecutionBoundary: async () => { throw new Error('unused'); },
+  },
+  runtimeHosts: { subscribeChanges: () => () => {} },
+  skills: { listInvocable: async () => [] },
+  workspace: { searchFiles: async () => ({ ok: false, reason: 'no_project' }) },
+  newTasks: { subscribeChanges: () => () => {}, listInvocableSkills: async () => [],
+    searchFiles: async () => ({ ok: false, reason: 'no_project' }) },
+  mcp: { subscribeChanges: () => () => {} },
+});
 
 async function mount(initial: Partial<Options> = {}) {
   const { root } = installReactRenderer();
@@ -60,7 +77,9 @@ async function mount(initial: Partial<Options> = {}) {
   }
   const render = async (patch: Partial<Options> = {}) => {
     options = { ...options, ...patch };
-    await act(() => root.render(createElement(LocaleProvider, { locale: 'en', children: createElement(Probe) })));
+    await act(() => root.render(createElement(LocaleProvider, { locale: 'en',
+      children: createElement(ConversationServicesProvider, { services, children: createElement(Probe) }),
+    })));
   };
   await render();
   return { state: () => state, render, errors };
@@ -124,6 +143,26 @@ test('caps concurrent picker results and clearing a submitted draft keeps newer 
   assert.equal(probe.state().pendingDirectories.length, 1, 'must not clear a different draft');
   await probe.render({ draftKey: 'draft-a' });
   assert.equal(probe.state().pendingDirectories.length, 1, 'must not clear a reference added after send');
+});
+
+test('live directory context is Host-scoped and submitted cleanup preserves newer references', async () => {
+  const probe = await mount();
+  await act(() => probe.state().directoryComposerProps.onPickDirectory!());
+  const submitted = probe.state();
+  assert.equal(submitted.hasPendingContextNow(), true);
+  await probe.render({ hostId: 'host-b' });
+  assert.equal(probe.state().hasPendingContextNow(), false);
+  await probe.render({ hostId: 'host-a', pick: async () => ({
+    ok: true, reference: { ...reference, path: '/workspace/new' },
+  }) });
+  await act(async () => {
+    await probe.state().directoryComposerProps.onPickDirectory!();
+    submitted.clearSubmittedContext();
+    assert.equal(probe.state().hasPendingContextNow(), true);
+    probe.state().directoryComposerProps.onRemoveDirectory(0);
+    assert.equal(probe.state().hasPendingContextNow(), false);
+  });
+  assert.deepEqual(probe.state().pendingDirectories, []);
 });
 
 test('IPC validates directory references without turning them into attachments or permissions', () => {

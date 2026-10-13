@@ -1040,6 +1040,7 @@ test("submits an ordinary composer message once under its stable message identit
 test('returns Host-owned cancellation proof to the renderer', async () => {
   const ipc = ipcHarness();
   const queriedMessageIds: string[][] = [];
+  const retired: unknown[] = [];
   registerExecutionIpc(
     {
       client: executionClient({
@@ -1052,6 +1053,7 @@ test('returns Host-owned cancellation proof to the renderer', async () => {
           };
         },
       }),
+      retireCancelledMessages(sessionId, messageIds) { retired.push({ sessionId, messageIds }); },
     },
     ipc,
   );
@@ -1064,6 +1066,7 @@ test('returns Host-owned cancellation proof to the renderer', async () => {
     { cancelledMessageIds: ['message-cancelled'] },
   );
   assert.deepEqual(queriedMessageIds, [['message-accepted', 'message-cancelled']]);
+  assert.deepEqual(retired, [{ sessionId: 'session-1', messageIds: ['message-cancelled'] }]);
 });
 
 test('batches cancellation proof queries at the Runtime Host protocol boundary', async () => {
@@ -1880,6 +1883,7 @@ test('keeps an unknown Desktop follow-up admission available for reconciliation'
 });
 
 test("binds steer and stop to Host-owned queue and active Turn identities", async () => {
+  const retired: unknown[] = [];
   const submits: unknown[] = [];
   const interrupts: unknown[] = [];
   const retractions: unknown[] = [];
@@ -1969,6 +1973,7 @@ test("binds steer and stop to Host-owned queue and active Turn identities", asyn
       beforeStop() {
         stopLifecycle.push("teardown");
       },
+      retireCancelledMessages(sessionId, messageIds) { retired.push({ sessionId, messageIds }); },
       newId: () => `id-${++sequence}`,
     },
     ipc,
@@ -2035,6 +2040,10 @@ test("binds steer and stop to Host-owned queue and active Turn identities", asyn
   assert.deepEqual(stopLifecycle, [
     'teardown',
     'interrupt',
+  ]);
+  assert.deepEqual(retired, [
+    { sessionId: 'session-1', messageIds: ['steer-ticket-1'] },
+    { sessionId: 'session-1', messageIds: ['message-followup'] },
   ]);
 
   assert.deepEqual(submits, [
@@ -2205,6 +2214,51 @@ test('Session snapshot IPC rejects invalid budgets and unavailable sources befor
   await assert.rejects(ipc.invoke('sessions:readSnapshot', 'session-1'), /not found/);
   source = { ...session(), isArchived: true };
   await assert.rejects(ipc.invoke('sessions:readSnapshot', 'session-1'), /archived/);
+});
+
+test("sessions:queryResumeLatest previews the plan without starting a resume", async () => {
+  const queries: unknown[] = [];
+  const readyPlan = {
+    sessionId: "session-1",
+    disposition: "ready" as const,
+    sourceRunId: "run-1",
+    sourceTurnId: "turn-1",
+    sourceRuntimeEventHighWater: 42,
+  };
+  const ipc = ipcHarness();
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        queryTurnResume: async (input) => {
+          queries.push(input);
+          return readyPlan;
+        },
+      }),
+    },
+    ipc,
+  );
+
+  assert.deepEqual(await ipc.invoke("sessions:queryResumeLatest", "session-1"), readyPlan);
+  assert.deepEqual(queries, [{ sessionId: "session-1" }]);
+});
+
+test("sessions:queryResumeLatest passes a parked plan through untouched", async () => {
+  const parkedPlan = {
+    sessionId: "session-1",
+    disposition: "parked" as const,
+    reason: "session_busy" as const,
+  };
+  const ipc = ipcHarness();
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        queryTurnResume: async () => parkedPlan,
+      }),
+    },
+    ipc,
+  );
+
+  assert.deepEqual(await ipc.invoke("sessions:queryResumeLatest", "session-1"), parkedPlan);
 });
 
 type ExecutionClient = RuntimeHostSessionExecutionIpcDeps["client"];

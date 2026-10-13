@@ -156,6 +156,7 @@ test('MCP tools stay bound to the connection generation that advertised them', a
         },
       ),
       {
+        outcome: 'success',
         content: [{ type: 'text', text: 'annotated:desktop-capability' }],
       },
     );
@@ -185,6 +186,7 @@ test('MCP tools stay bound to the connection generation that advertised them', a
         },
       ),
       {
+        outcome: 'success',
         content: [
           { type: 'text', text: 'desktop-capability' },
           { type: 'text', text: '{"structuredContent":{"echoed":"desktop-capability"}}' },

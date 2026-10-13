@@ -48,49 +48,66 @@ test('explains why folder-reference messages cannot be edited and resent', () =>
 test('context usage explains missing data without exposing provider internals', () => {
   assert.equal(
     getConversationCopy('zh-CN').messages.systemNotes.contextUsageUnavailable,
-    '暂无用量数据',
+    '暂无上下文用量数据',
+  );
+  assert.equal(
+    getConversationCopy('zh-TW').messages.systemNotes.contextUsageUnavailable,
+    '暫無上下文用量資料',
   );
   assert.equal(
     getConversationCopy('en').messages.systemNotes.contextUsageUnavailable,
-    'No usage data is available for this request.',
+    'No context usage data',
   );
 });
 
-test('context usage tooltip leads with the measured share', () => {
+test('context usage tooltip keeps the percentage and compact counts across locales', () => {
+  assert.equal(
+    getConversationCopy('zh-CN').messages.systemNotes.contextUsageShare(37_200, 272_000),
+    '上下文：14%（37.2K / 272K token）',
+  );
+  assert.equal(
+    getConversationCopy('zh-TW').messages.systemNotes.contextUsageShare(37_200, 272_000),
+    '上下文：14%（37.2K / 272K token）',
+  );
+  assert.equal(
+    getConversationCopy('en').messages.systemNotes.contextUsageShare(37_200, 272_000),
+    'Context: 14% (37.2K / 272K tokens)',
+  );
   assert.equal(
     getConversationCopy('zh-CN').messages.systemNotes.contextUsageShare(12_345, 128_000),
-    '上下文窗口：已用 10%（12.3K / 128K token）',
+    '上下文：10%（12.3K / 128K token）',
   );
   assert.equal(
     getConversationCopy('en').messages.systemNotes.contextUsageShare(12_345, 128_000),
-    'Context window: 10% used (12.3K / 128K tokens).',
+    'Context: 10% (12.3K / 128K tokens)',
   );
-  // Million-scale windows collapse to the M tier, mirroring the "1M context" marketing term.
   assert.equal(
     getConversationCopy('zh-CN').messages.systemNotes.contextUsageShare(44_060, 1_048_576),
-    '上下文窗口：已用 4%（44.1K / 1M token）',
+    '上下文：4%（44.1K / 1M token）',
   );
   assert.equal(
     getConversationCopy('en').messages.systemNotes.contextUsageShare(44_060, 1_048_576),
-    'Context window: 4% used (44.1K / 1M tokens).',
+    'Context: 4% (44.1K / 1M tokens)',
   );
-  // Compact counts are lossy: near-full usage can render identical numerator
-  // and denominator while the percentage still differs. Pinned on purpose —
-  // the percentage is the authoritative figure, the counts are for scale.
+  // Rounded counts can match even when usage is below 100%; retain the percentage.
   assert.equal(
     getConversationCopy('zh-CN').messages.systemNotes.contextUsageShare(1_000_000, 1_048_576),
-    '上下文窗口：已用 95%（1M / 1M token）',
+    '上下文：95%（1M / 1M token）',
   );
 });
 
 test('context usage tooltip keeps measured usage when the limit is unknown', () => {
   assert.equal(
     getConversationCopy('zh-CN').messages.systemNotes.contextUsageNoWindow(12_345),
-    '已用 12.3K token；上下文窗口上限未知',
+    '上下文：12.3K token',
+  );
+  assert.equal(
+    getConversationCopy('zh-TW').messages.systemNotes.contextUsageNoWindow(12_345),
+    '上下文：12.3K token',
   );
   assert.equal(
     getConversationCopy('en').messages.systemNotes.contextUsageNoWindow(12_345),
-    'This request used 12.3K tokens; no context limit is available for this model.',
+    'Context: 12.3K tokens',
   );
 });
 

@@ -21,7 +21,7 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import type { InteractionQueues } from '@maka/ui';
 import { dequeueInteractionByRequestId } from '@maka/ui';
-import { createAppShellChatActions } from '../../renderer/app-shell-chat-actions.js';
+import { createChatActions } from '../../renderer/features/conversation/testing.js';
 import { createActionsDeps } from './app-shell-chat-actions-fixture.js';
 
 function pendingForm(): InteractionQueues {
@@ -46,7 +46,7 @@ describe('AppShell form interaction response', () => {
     deps.activeIdRef.current = 'session-1';
     let interactions = pendingForm();
     let submitted: unknown;
-    const actions = createAppShellChatActions({
+    const actions = createChatActions({
       ...deps,
       respondToUserForm: async (sessionId, response) => {
         submitted = { sessionId, response };
@@ -68,7 +68,7 @@ describe('AppShell form interaction response', () => {
     deps.activeIdRef.current = 'session-1';
     let interactions = pendingForm();
     let errors = 0;
-    const actions = createAppShellChatActions({
+    const actions = createChatActions({
       ...deps,
       respondToUserForm: async () => {
         throw new Error('Host unavailable');
@@ -83,5 +83,25 @@ describe('AppShell form interaction response', () => {
 
     assert.equal(interactions['session-1']?.[0]?.requestId, 'form-1');
     assert.equal(errors, 1);
+  });
+
+  it('propagates a late user-question failure after switching sessions', async () => {
+    const deps = createActionsDeps();
+    deps.activeIdRef.current = 'session-1';
+    const actions = createChatActions({
+      ...deps,
+      services: {
+        ...deps.services,
+        respondToUserQuestion: async () => {
+          deps.activeIdRef.current = 'session-2';
+          throw new Error('Host unavailable');
+        },
+      },
+    });
+
+    await assert.rejects(
+      actions.respondToUserQuestion({ requestId: 'question-1' } as never),
+      /Host unavailable/,
+    );
   });
 });

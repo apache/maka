@@ -25,6 +25,7 @@ export function executorComposerProps(
   input: {
     activeId: string | undefined;
     turnActive: boolean;
+    sendPending?: boolean;
     taskSubmissionHardBlocked: boolean;
     connectionCount: number;
     onSetup(): void;
@@ -39,13 +40,13 @@ export function executorComposerProps(
             catalog: executor.catalog,
             selection: executor.selection,
             fixed,
-            disabled: executor.changing || (fixed && input.turnActive),
+            disabled: executor.changing || !!input.sendPending || (fixed && input.turnActive),
             loading: executor.loading,
             error: executor.error,
             onSelect: (selection) => executor.select(selection),
             onRestore: () => executor.restore(),
             onRetry: () => {
-              void executor.refresh();
+              void executor.refresh(true);
             },
             onSetup: input.onSetup,
             onNewTask: input.onNewTask,
@@ -54,6 +55,7 @@ export function executorComposerProps(
     noModelConnection: !executor.selection && !fixed && input.connectionCount === 0,
     sendBlocked:
       input.taskSubmissionHardBlocked ||
+      !!input.sendPending ||
       !!(
         executor.selection &&
         (executor.entry?.readiness !== 'ready' || (fixed && input.turnActive))

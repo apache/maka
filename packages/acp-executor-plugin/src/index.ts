@@ -19,10 +19,12 @@
 
 import { createHash } from 'node:crypto';
 import { constants, createReadStream } from 'node:fs';
-import { access, mkdtemp, rm, realpath, stat } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, realpath, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { AdmissionLimiter } from '@maka/runtime/admission-limiter';
+import { AcpCatalog } from './acp-catalog.js';
 import type { ExecutorCatalogEntry, ExecutorConfiguration } from '@maka/core/executor-catalog';
-import { dirname, isAbsolute, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import {
   methods,
   type ClientApp,
@@ -34,6 +36,7 @@ import {
   type ToolCallContent,
   type ToolCallUpdate,
 } from '@agentclientprotocol/sdk';
+import { pluginIdentity } from '@maka/runtime/plugin-runtime';
 import type { PluginStorageService } from '@maka/runtime/plugin-data-services';
 import type {
   PluginExecutorContext,
@@ -120,6 +123,7 @@ export interface AcpContinuityRecord {
   readonly sessionId?: string;
   readonly pendingTurnId?: string;
   readonly confirmedModel?: string;
+  readonly confirmedMode?: string;
   readonly gapEvidence?: {
     readonly replayedUpdates: number;
     readonly replayedUserChunks: number;
@@ -151,6 +155,7 @@ interface RetainedSession {
   readonly conversationKey: string;
   readonly configuration?: ExecutorConfiguration;
   readonly cwd: string;
+  restoredFromState?: boolean;
   owner?: AcpConnectionOwner;
   connection?: ClientConnection;
   acpSessionId?: string;
@@ -169,6 +174,11 @@ interface RetainedSession {
   loss?: Promise<void>;
 }
 
+type CatalogDirectory = <T>(
+  signal: AbortSignal,
+  use: (directory: string) => Promise<T>,
+) => Promise<T>;
+
 export class AcpExecutor implements PluginExecutorProvider {
   readonly id: string;
   readonly displayName: string;
@@ -179,8 +189,9 @@ export class AcpExecutor implements PluginExecutorProvider {
   readonly #state?: AcpConversationStateStore;
   readonly #sessions = new Map<string, RetainedSession>();
   #disposed = false;
-  #catalog?: ExecutorCatalogEntry;
-  #discovery?: Promise<ExecutorCatalogEntry>;
+  readonly #catalog: AcpCatalog;
+  readonly #withCatalogDirectory: CatalogDirectory;
+  #temporaryDirectory?: Promise<string>;
 
   constructor(
     adapter: AcpAgentAdapter,
@@ -188,6 +199,8 @@ export class AcpExecutor implements PluginExecutorProvider {
     options: {
       readonly createConnection?: AcpConnectionFactory;
       readonly state?: AcpConversationStateStore;
+      readonly catalogAdmission?: AdmissionLimiter;
+      readonly withCatalogDirectory?: CatalogDirectory;
     } = {},
   ) {
     this.#adapter = validateAdapter(adapter);
@@ -196,41 +209,68 @@ export class AcpExecutor implements PluginExecutorProvider {
     this.#configured = validateConfiguredAgent(adapter.configure(config));
     this.#createConnection = options.createConnection ?? createAcpConnection;
     this.#state = options.state;
+    this.#withCatalogDirectory =
+      options.withCatalogDirectory ??
+      (async (signal, use) => {
+        // Standalone embeddings have no Host storage; keep their cwd stable for
+        // this executor's lifetime. Registered adapters use durable scratch paths.
+        signal.throwIfAborted();
+        this.#temporaryDirectory ??= mkdtemp(join(tmpdir(), 'maka-acp-catalog-'));
+        const directory = await this.#temporaryDirectory;
+        await mkdir(directory, { recursive: true, mode: 0o700 });
+        try {
+          return await use(await realpath(directory));
+        } finally {
+          await rm(directory, { recursive: true, force: true });
+        }
+      });
+    this.#catalog = new AcpCatalog(
+      options.catalogAdmission ?? new AdmissionLimiter(1),
+      (signal) => this.#probeCatalog(signal),
+      () => this.#catalogEntry('unavailable'),
+    );
   }
 
-  async discover(input: { cwd: string; signal: AbortSignal }): Promise<ExecutorCatalogEntry> {
-    if (this.#disposed) return this.#catalogEntry('unavailable');
-    if (this.#catalog) return this.#catalog;
-    if (this.#discovery) return this.#discovery;
-    const probe = async () => {
-      // A bounded disposable ACP probe never creates a Maka task or joins the retained-session map.
-      const cwd = await mkdtemp(resolve(tmpdir(), 'maka-acp-catalog-'));
-      const session: RetainedSession = {
+  async discover(input: {
+    cwd: string;
+    signal: AbortSignal;
+    refresh?: boolean;
+  }): Promise<ExecutorCatalogEntry> {
+    // The generic Host query still supplies its target cwd. ACP draft candidates
+    // belong to this configured executor, and never initialize the user's workspace.
+    return await this.#catalog.get(input.signal, input.refresh);
+  }
+
+  async #probeCatalog(signal: AbortSignal): Promise<ExecutorCatalogEntry> {
+    return await this.#withCatalogDirectory(signal, (directory) =>
+      this.#readCatalog(directory, signal),
+    );
+  }
+
+  async #readCatalog(directory: string, signal: AbortSignal): Promise<ExecutorCatalogEntry> {
+    let session: RetainedSession | undefined;
+    try {
+      signal.throwIfAborted();
+      session = {
         conversationKey: 'catalog-probe',
-        cwd,
+        cwd: await realpath(directory),
         configOptions: [],
         lost: false,
       };
-      try {
-        await this.#initialize(session, input.signal, true);
-        const result = this.#catalogEntry('ready', session.configOptions);
-        this.#catalog = result;
-        return result;
-      } catch (error) {
-        return this.#catalogEntry(
-          (error as { code?: unknown })?.code === -32000
-            ? 'authentication_required'
-            : 'unavailable',
-        );
-      } finally {
-        await this.#disposeSession(session);
-        await rm(cwd, { recursive: true, force: true });
-      }
-    };
-    this.#discovery = probe().finally(() => {
-      this.#discovery = undefined;
-    });
-    return this.#discovery;
+      await this.#initialize(session, signal, true);
+      return this.#catalogEntry('ready', session.configOptions);
+    } catch (error) {
+      return this.#catalogEntry(
+        isAuthenticationFailure(error) ? 'authentication_required' : 'unavailable',
+      );
+    } finally {
+      // The directory lease outlives process cleanup, including failure cleanup.
+      if (session) await (session.loss ?? this.#disposeSession(session));
+    }
+  }
+
+  invalidateCatalog(): void {
+    this.#catalog.invalidate();
   }
 
   async inspectConversation(input: {
@@ -241,53 +281,72 @@ export class AcpExecutor implements PluginExecutorProvider {
     const session = this.#sessions.get(input.conversationKey);
     if (this.#disposed) return this.#catalogEntry('unavailable');
     if (session && session.cwd !== resolve(input.cwd))
-      return this.#catalogEntry('history_only', [], input.configuration?.model);
+      return this.#catalogEntry('history_only', [], input.configuration);
     if (session?.restoring)
-      return this.#catalogEntry('restoring', session.configOptions, input.configuration?.model);
+      return this.#catalogEntry('restoring', session.configOptions, input.configuration);
     if (session?.restoreFailed)
-      return this.#catalogEntry(
-        'restore_failed',
-        session.configOptions,
-        input.configuration?.model,
-      );
+      return this.#catalogEntry('restore_failed', session.configOptions, input.configuration);
     if (session?.historyGap)
-      return this.#catalogEntry('history_gap', session.configOptions, input.configuration?.model);
+      return this.#catalogEntry('history_gap', session.configOptions, input.configuration);
     if (session && !session.lost)
-      return this.#catalogEntry('ready', session.configOptions, input.configuration?.model);
+      return this.#catalogEntry('ready', session.configOptions, input.configuration);
     if (session?.lost && !session.record)
-      return this.#catalogEntry('history_only', session.configOptions, input.configuration?.model);
+      return this.#catalogEntry('history_only', session.configOptions, input.configuration);
     const stored = this.#state?.read
       ? decodeContinuity(await this.#state.read(input.conversationKey))
       : (await this.#state?.has(input.conversationKey, input.cwd))
         ? 'legacy'
         : undefined;
-    if (!stored) return this.#catalogEntry('ready', [], input.configuration?.model);
+    if (!stored) return this.#catalogEntry('ready', [], input.configuration);
     if (stored === 'invalid' || stored === 'legacy' || stored.cwd !== resolve(input.cwd))
-      return this.#catalogEntry('history_only', [], input.configuration?.model);
+      return this.#catalogEntry('history_only', [], input.configuration);
     if (stored.phase === 'reserved')
-      return this.#catalogEntry('history_only', [], input.configuration?.model);
+      return this.#catalogEntry('history_only', [], input.configuration);
     return this.#catalogEntry(
       stored.phase === 'prompt_pending' || stored.phase === 'history_gap'
         ? 'history_gap'
         : 'restorable',
       [],
-      input.configuration?.model ?? stored.confirmedModel,
+      {
+        model: input.configuration?.model ?? stored.confirmedModel,
+        mode: input.configuration?.mode ?? stored.confirmedMode,
+      },
     );
   }
 
   async configureConversation(
     input: { conversationKey: string; cwd: string; configuration?: ExecutorConfiguration },
     signal: AbortSignal,
-  ): Promise<void> {
-    if (!input.configuration?.model) throw new Error('ACP model change is unavailable');
+  ): Promise<ExecutorConfiguration> {
+    if (!input.configuration?.model && !input.configuration?.mode)
+      throw new Error('ACP configuration change is unavailable');
     const session = await this.#session(input);
-    if (session.active || session.configuring) throw new Error('ACP model change is unavailable');
+    if (session.active || session.configuring || session.restoring || session.awaitingAck)
+      throw new Error('ACP configuration change is unavailable while the Session is busy');
     session.configuring = true;
     const wasConnected = !!session.connection;
     try {
-      await this.#ensureInitialized(session, signal);
-      await this.#applyInitialConfig(session, { model: input.configuration.model }, signal, true);
+      // A fresh Session must select the requested model before checking which
+      // modes that model exposes. Do not apply the launch defaults separately.
+      await this.#ensureInitialized(session, signal, true);
+      await this.#applyInitialConfig(
+        session,
+        !wasConnected && !session.restoredFromState
+          ? { ...this.#configured.launch.initialConfig, ...input.configuration }
+          : input.configuration,
+        signal,
+        true,
+      );
+      return {
+        ...(currentAcpModel(session.configOptions)
+          ? { model: currentAcpModel(session.configOptions) }
+          : {}),
+        ...(acpOption(session.configOptions, 'mode')?.currentValue
+          ? { mode: acpOption(session.configOptions, 'mode')!.currentValue }
+          : {}),
+      };
     } catch (error) {
+      if (isAuthenticationFailure(error)) this.invalidateCatalog();
       if (!wasConnected || session.lost) {
         await this.#lose(session);
         if (session.record?.sessionId && !session.historyGap) session.restoreFailed = true;
@@ -304,7 +363,7 @@ export class AcpExecutor implements PluginExecutorProvider {
   #catalogEntry(
     readiness: ExecutorCatalogEntry['readiness'],
     options: readonly SessionConfigOption[] = [],
-    selected?: string,
+    selected?: ExecutorConfiguration,
   ): ExecutorCatalogEntry {
     const model = options.find(
       (option) =>
@@ -315,7 +374,20 @@ export class AcpExecutor implements PluginExecutorProvider {
         ? model.options
             .flatMap((entry) => ('options' in entry ? entry.options : [entry]))
             .map((entry) => ({ id: entry.value, name: entry.name }))
-        : (this.#catalog?.models ?? []);
+        : selected?.model
+          ? [{ id: selected.model, name: selected.model }]
+          : [];
+    const mode = options.find(
+      (option) => option.type === 'select' && (option.category === 'mode' || option.id === 'mode'),
+    );
+    const modes =
+      mode?.type === 'select'
+        ? mode.options
+            .flatMap((entry) => ('options' in entry ? entry.options : [entry]))
+            .map((entry) => ({ id: entry.value, name: entry.name }))
+        : selected?.mode
+          ? [{ id: selected.mode, name: selected.mode }]
+          : [];
     return {
       id: this.id,
       displayName: this.displayName,
@@ -324,13 +396,19 @@ export class AcpExecutor implements PluginExecutorProvider {
         ? (this.#adapter.describeModels?.(models) ?? { models })
         : {
             models,
-            ...(this.#catalog?.modelGroups ? { modelGroups: this.#catalog.modelGroups } : {}),
           }),
       ...(model?.type === 'select'
         ? { currentModel: model.currentValue }
-        : selected
-          ? { currentModel: selected }
+        : selected?.model
+          ? { currentModel: selected.model }
           : {}),
+      ...(mode?.type === 'select'
+        ? { modes, currentMode: mode.currentValue, supportsModeChange: true }
+        : {
+            modes,
+            ...(selected?.mode ? { currentMode: selected.mode } : {}),
+            supportsModeChange: false,
+          }),
       supportsAttachments: false,
       supportsModelChange: model?.type === 'select',
     };
@@ -356,7 +434,7 @@ export class AcpExecutor implements PluginExecutorProvider {
       return failure('Conflicting executor models', 'acp_config_invalid');
     const model =
       request.configuration?.model ?? (request.model === this.id ? undefined : request.model);
-    if (model) request = { ...request, configuration: { model } };
+    if (model) request = { ...request, configuration: { ...request.configuration, model } };
     let session: RetainedSession;
     try {
       session = await this.#session(request);
@@ -370,12 +448,8 @@ export class AcpExecutor implements PluginExecutorProvider {
     try {
       await this.#ensureInitialized(session, context.signal);
       context.signal.throwIfAborted();
-      if (request.configuration?.model)
-        await this.#applyInitialConfig(
-          session,
-          { model: request.configuration.model },
-          context.signal,
-        );
+      if (request.configuration?.model || request.configuration?.mode)
+        await this.#applyInitialConfig(session, request.configuration, context.signal);
       await this.#beginPrompt(session, request.turnId);
       const prompt = session.connection!.agent.request(methods.agent.session.prompt, {
         sessionId: session.acpSessionId!,
@@ -401,6 +475,7 @@ export class AcpExecutor implements PluginExecutorProvider {
       }
       return { status: 'completed', text: active.text };
     } catch (error) {
+      if (isAuthenticationFailure(error)) this.invalidateCatalog();
       if (errorCode(error) === 'acp_history_gap') session.historyGap = true;
       await this.#lose(session);
       if (session.record?.sessionId && !session.historyGap) session.restoreFailed = true;
@@ -435,6 +510,7 @@ export class AcpExecutor implements PluginExecutorProvider {
   async dispose(): Promise<void> {
     if (this.#disposed) return;
     this.#disposed = true;
+    await this.#catalog.dispose();
     const sessions = [...this.#sessions.values()];
     this.#sessions.clear();
     const settlements = await Promise.allSettled(
@@ -479,9 +555,13 @@ export class AcpExecutor implements PluginExecutorProvider {
     return created;
   }
 
-  async #ensureInitialized(session: RetainedSession, signal: AbortSignal): Promise<void> {
+  async #ensureInitialized(
+    session: RetainedSession,
+    signal: AbortSignal,
+    deferSelectedConfig = false,
+  ): Promise<void> {
     if (session.initialization) return await session.initialization;
-    const initialization = this.#initialize(session, signal);
+    const initialization = this.#initialize(session, signal, false, deferSelectedConfig);
     session.initialization = initialization;
     try {
       await initialization;
@@ -493,7 +573,12 @@ export class AcpExecutor implements PluginExecutorProvider {
     }
   }
 
-  async #initialize(session: RetainedSession, signal: AbortSignal, probe = false): Promise<void> {
+  async #initialize(
+    session: RetainedSession,
+    signal: AbortSignal,
+    probe = false,
+    deferSelectedConfig = false,
+  ): Promise<void> {
     const timeout = AbortSignal.timeout(INITIALIZE_TIMEOUT_MS);
     const startupSignal = AbortSignal.any([signal, timeout]);
     startupSignal.throwIfAborted();
@@ -524,6 +609,7 @@ export class AcpExecutor implements PluginExecutorProvider {
         'External Session history cannot be aligned with saved conversation events',
         'acp_history_gap',
       );
+    session.restoredFromState = !!stored;
     if (stored) {
       session.record = stored;
       session.acpSessionId = stored.sessionId;
@@ -585,7 +671,34 @@ export class AcpExecutor implements PluginExecutorProvider {
       ]);
       session.configOptions = restored.configOptions ?? [];
       const restoredModel = currentAcpModel(session.configOptions);
-      if (restoredModel) await this.#persistConfirmedModel(session, restoredModel);
+      const restoredMode = acpOption(session.configOptions, 'mode')?.currentValue;
+      if (
+        (stored.confirmedModel && restoredModel !== stored.confirmedModel) ||
+        (stored.confirmedMode && restoredMode !== stored.confirmedMode)
+      ) {
+        const confirmed = await this.#applyInitialConfig(
+          session,
+          {
+            ...(stored.confirmedModel ? { model: stored.confirmedModel } : {}),
+            ...(stored.confirmedMode ? { mode: stored.confirmedMode } : {}),
+          },
+          startupSignal,
+          false,
+          // Only an explicit model-only configuration can recover a removed
+          // saved mode. Ordinary execution still requires the exact saved pair.
+          deferSelectedConfig && !!session.configuration?.model && !session.configuration.mode,
+        );
+        if (
+          (confirmed.model && currentAcpModel(session.configOptions) !== confirmed.model) ||
+          (confirmed.mode &&
+            acpOption(session.configOptions, 'mode')?.currentValue !== confirmed.mode)
+        )
+          throw new AcpRuntimeError(
+            'Restored Agent configuration differs from the saved task',
+            'acp_config_unconfirmed',
+          );
+      }
+      await this.#persistConfirmedConfig(session);
       session.restoring = false;
       if (pending) {
         // The Agent may have progressed beyond Maka's last durable event. Replay
@@ -648,14 +761,13 @@ export class AcpExecutor implements PluginExecutorProvider {
       };
       await this.#state?.write?.(session.conversationKey, established);
       session.record = established;
-      const createdModel = currentAcpModel(session.configOptions);
-      if (createdModel) await this.#persistConfirmedModel(session, createdModel);
+      await this.#persistConfirmedConfig(session);
     }
-    if (!probe) {
+    if (!probe && !deferSelectedConfig) {
       await this.#applyInitialConfig(
         session,
-        session.configuration?.model
-          ? { model: session.configuration.model }
+        session.configuration?.model || session.configuration?.mode
+          ? { ...launch.initialConfig, ...session.configuration }
           : (launch.initialConfig ?? {}),
         startupSignal,
       );
@@ -726,83 +838,135 @@ export class AcpExecutor implements PluginExecutorProvider {
 
   async #applyInitialConfig(
     session: RetainedSession,
-    values: Readonly<Record<string, string>>,
+    values: ExecutorConfiguration | Readonly<Record<string, string>>,
     signal: AbortSignal,
     restoreOnFailure = false,
-  ): Promise<void> {
-    for (const [key, value] of Object.entries(values)) {
-      const option = session.configOptions.find(
-        (candidate) =>
-          candidate.type === 'select' && (candidate.id === key || candidate.category === key),
-      );
-      if (!option || option.type !== 'select')
+    omitUnavailableMode = false,
+  ): Promise<Readonly<Record<string, string>>> {
+    let target = Object.entries(values).filter(
+      (entry): entry is [string, string] => entry[1] !== undefined,
+    );
+    const before = session.configOptions;
+    const selectedModel = target.find(([key]) => key === 'model')?.[1];
+    const changingModel =
+      selectedModel !== undefined && acpOption(before, 'model')?.currentValue !== selectedModel;
+    const validate = (options: readonly SessionConfigOption[], key: string, value: string) => {
+      const option = acpOption(options, key);
+      if (!option)
         throw new AcpRuntimeError(
           `ACP configuration is unavailable: ${key}`,
           'acp_config_unavailable',
         );
-      const options = option.options.flatMap((entry) =>
+      const candidates = option.options.flatMap((entry) =>
         'options' in entry ? entry.options : [entry],
       );
-      if (!options.some((entry) => entry.value === value))
+      if (!candidates.some((entry) => entry.value === value))
         throw new AcpRuntimeError(
           `ACP configuration value is unavailable: ${key}`,
           'acp_config_invalid',
         );
-      if (option.currentValue === value) {
-        if (key === 'model') await this.#persistConfirmedModel(session, value);
-        continue;
-      }
-      signal.throwIfAborted();
-      try {
+    };
+    // A model change can add, remove or replace the mode option. Validate that
+    // dependent option against the Agent's post-model response instead.
+    for (const [key, value] of target) {
+      if (omitUnavailableMode && key === 'mode') continue;
+      if (!changingModel || key === 'model') validate(before, key, value);
+    }
+    const ordered = [
+      ...target.filter(([key]) => key === 'model'),
+      ...target.filter(([key]) => key !== 'model'),
+    ];
+    let mutationAttempted = false;
+    try {
+      for (const [key, value] of ordered) {
+        const option = acpOption(session.configOptions, key);
+        if (
+          omitUnavailableMode &&
+          key === 'mode' &&
+          !option?.options
+            .flatMap((entry) => ('options' in entry ? entry.options : [entry]))
+            .some((entry) => entry.value === value)
+        ) {
+          target = target.filter(([candidate]) => candidate !== 'mode');
+          continue;
+        }
+        // Every remaining value requires confirmation. Outside explicit recovery,
+        // a model change cannot waive a requested or saved mode.
+        validate(session.configOptions, key, value);
+        if (!option) throw new Error('Validated ACP option disappeared');
+        if (option.currentValue === value) continue;
+        signal.throwIfAborted();
+        mutationAttempted = true;
         const updated = await session.connection!.agent.request(
           methods.agent.session.setConfigOption,
           { sessionId: session.acpSessionId!, configId: option.id, value },
           { cancellationSignal: signal },
         );
-        const confirmed = updated.configOptions.find((candidate) => candidate.id === option.id);
-        if (confirmed?.type !== 'select' || confirmed.currentValue !== value)
+        session.configOptions = updated.configOptions;
+        if (acpOption(updated.configOptions, key)?.currentValue !== value)
           throw new AcpRuntimeError(
             'Agent did not confirm the selected configuration',
             'acp_config_unconfirmed',
           );
-        session.configOptions = updated.configOptions;
-        if (key === 'model') await this.#persistConfirmedModel(session, value);
-      } catch (error) {
-        // A rejected/unconfirmed mutation can have reached the Agent. Restore the
-        // previous real ID and require an acknowledgement before permitting retry.
-        let restored = false;
-        if (restoreOnFailure && !session.lost && !signal.aborted) {
-          try {
+      }
+      if (
+        target.some(([key, value]) => acpOption(session.configOptions, key)?.currentValue !== value)
+      )
+        throw new AcpRuntimeError(
+          'Agent changed another selected configuration',
+          'acp_config_unconfirmed',
+        );
+      await this.#persistConfirmedConfig(session);
+      return Object.fromEntries(target);
+    } catch (error) {
+      let restored = false;
+      if (restoreOnFailure && !session.lost && !signal.aborted) {
+        try {
+          // A rejected response can still have changed the Agent. Restore the
+          // model before its dependent mode, then verify the original snapshot.
+          for (const key of ['model', 'mode']) {
+            const original = acpOption(before, key);
+            const current = acpOption(session.configOptions, key);
+            if (
+              !original ||
+              !current ||
+              (!mutationAttempted && current.currentValue === original.currentValue)
+            )
+              continue;
             const rollback = await session.connection!.agent.request(
               methods.agent.session.setConfigOption,
-              { sessionId: session.acpSessionId!, configId: option.id, value: option.currentValue },
+              {
+                sessionId: session.acpSessionId!,
+                configId: current.id,
+                value: original.currentValue,
+              },
               { cancellationSignal: AbortSignal.timeout(5_000) },
             );
-            const confirmed = rollback.configOptions.find(
-              (candidate) => candidate.id === option.id,
-            );
-            if (
-              confirmed?.type === 'select' &&
-              confirmed.currentValue === option.currentValue &&
-              !session.lost
-            ) {
-              session.configOptions = rollback.configOptions;
-              if (key === 'model') await this.#persistConfirmedModel(session, option.currentValue);
-              restored = true;
-            }
-          } catch {
-            /* Uncertain configuration remains history-only. */
+            session.configOptions = rollback.configOptions;
           }
+          restored = ['model', 'mode'].every((key) => {
+            const original = acpOption(before, key);
+            return (
+              !original ||
+              acpOption(session.configOptions, key)?.currentValue === original.currentValue
+            );
+          });
+        } catch {
+          /* Uncertain configuration remains unavailable. */
         }
-        if (!restored) await this.#lose(session);
-        throw error;
       }
+      if (!restored) await this.#lose(session);
+      throw error;
     }
   }
 
-  async #persistConfirmedModel(session: RetainedSession, model: string): Promise<void> {
-    if (!session.record || session.record.confirmedModel === model) return;
-    const record = { ...session.record, confirmedModel: model };
+  async #persistConfirmedConfig(
+    session: RetainedSession,
+    configOptions: readonly SessionConfigOption[] = session.configOptions,
+  ): Promise<void> {
+    if (!session.record) return;
+    const record = withConfirmedConfiguration(session.record, configOptions);
+    if (record === session.record) return;
     await this.#state?.write?.(session.conversationKey, record);
     session.record = record;
   }
@@ -854,7 +1018,11 @@ export class AcpExecutor implements PluginExecutorProvider {
     if (session.historyGap || session.lost) return;
     if (update.sessionUpdate === 'config_option_update') {
       // During our mutation, its response (or rollback response) is authoritative.
-      if (!session.configuring && !session.lost) session.configOptions = update.configOptions;
+      if (!session.configuring && !session.lost) {
+        session.configOptions = update.configOptions;
+        // Agent notifications report observed state. Only a confirmed response
+        // to our own configuration request may change the durable selection.
+      }
       return;
     }
     const active = session.active;
@@ -995,11 +1163,40 @@ export class AcpExecutor implements PluginExecutorProvider {
 }
 
 function currentAcpModel(options: readonly SessionConfigOption[]): string | undefined {
-  const option = options.find(
-    (candidate) =>
-      candidate.type === 'select' && (candidate.id === 'model' || candidate.category === 'model'),
+  return acpOption(options, 'model')?.currentValue;
+}
+
+function withConfirmedConfiguration(
+  record: AcpContinuityRecord,
+  options: readonly SessionConfigOption[],
+): AcpContinuityRecord {
+  const model = currentAcpModel(options);
+  const mode = acpOption(options, 'mode')?.currentValue;
+  const { confirmedModel, confirmedMode, ...base } = record;
+  if (confirmedModel === model && confirmedMode === mode) return record;
+  return {
+    ...base,
+    ...(model ? { confirmedModel: model } : {}),
+    ...(mode ? { confirmedMode: mode } : {}),
+  };
+}
+
+function isAuthenticationFailure(error: unknown): boolean {
+  return (
+    (error as { code?: unknown })?.code === -32000 ||
+    (error instanceof Error &&
+      /authentication required|unauthorized/u.test(error.message.toLowerCase()))
   );
-  return option?.type === 'select' ? option.currentValue : undefined;
+}
+
+function acpOption(
+  options: readonly SessionConfigOption[],
+  key: string,
+): Extract<SessionConfigOption, { type: 'select' }> | undefined {
+  return options.find(
+    (candidate): candidate is Extract<SessionConfigOption, { type: 'select' }> =>
+      candidate.type === 'select' && (candidate.id === key || candidate.category === key),
+  );
 }
 
 function toolTextContent(content: readonly ToolCallContent[]): string {
@@ -1020,6 +1217,9 @@ function toolTextContent(content: readonly ToolCallContent[]): string {
  * immutable package generation.
  */
 export class AcpRuntimeService {
+  // Shared by every adapter below this ACP runtime Entry, including queued probes.
+  readonly #catalogAdmission = new AdmissionLimiter(2);
+
   constructor(ctx: Context) {
     ctx.provide('acp', this);
   }
@@ -1031,8 +1231,12 @@ export class AcpRuntimeService {
   ): Disposable<Promise<void>> {
     const storage = consumer.get<PluginStorageService>('storage');
     if (!storage) throw new Error('ACP continuity storage is unavailable');
+    const directoryKey = `acp-catalog/${adapter.id}/${createHash('sha256').update(pluginIdentity(consumer).entryId).digest('hex')}`;
     const provider = new AcpExecutor(adapter as AcpAgentAdapter, config, {
       state: pluginStateStore(storage, adapter.id),
+      catalogAdmission: this.#catalogAdmission,
+      withCatalogDirectory: (signal, use) =>
+        storage.withScratchDirectory(directoryKey, signal, use),
     });
     consumer.effect(() => () => provider.dispose(), `acp.dispose(${JSON.stringify(adapter.id)})`);
     return consumer.executors.register(provider);
@@ -1087,6 +1291,8 @@ function decodeContinuity(value: unknown): StoredContinuity {
       (typeof record.pendingTurnId !== 'string' || !record.pendingTurnId)) ||
     (record.confirmedModel !== undefined &&
       (typeof record.confirmedModel !== 'string' || !record.confirmedModel)) ||
+    (record.confirmedMode !== undefined &&
+      (typeof record.confirmedMode !== 'string' || !record.confirmedMode)) ||
     (record.phase === 'reserved' && record.sessionId !== undefined) ||
     (record.phase !== 'reserved' && !record.sessionId) ||
     (record.phase === 'prompt_pending' && !record.pendingTurnId) ||

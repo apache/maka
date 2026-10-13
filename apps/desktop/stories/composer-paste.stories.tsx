@@ -37,7 +37,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, fn, userEvent, waitFor, within } from 'storybook/test';
 import { slashCommandsForSurface } from '@maka/core/slash-command-catalog';
 import { Composer } from '@maka/ui';
-import { desktopSlashCommandAvailability } from '../src/renderer/desktop-slash-command';
+import { desktopSlashCommandAvailability } from '../src/renderer/application/contracts/desktop-slash-command';
 import { getShellCopy } from '../src/renderer/locales/shell-copy';
 
 const COMPOSER_INPUT = '.maka-composer-editor [contenteditable="true"]';

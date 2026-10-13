@@ -431,6 +431,40 @@ describe('ShellRunProcessManager', () => {
     });
   }
 
+  test('records the pipe command PID, not the supervisor that owns its process group', async () => {
+    const cwd = await workspace();
+    const rootPidPath = join(cwd, 'root.pid');
+    const manager = await createTestManager();
+    try {
+      const initial = await manager.runBackgroundBash(
+        shellInput({
+          cwd,
+          command: 'report the command process id',
+          argv: [
+            process.execPath,
+            '-e',
+            `require('node:fs').writeFileSync(${JSON.stringify(rootPidPath)}, String(process.pid));
+            setInterval(() => {}, 1000);`,
+          ],
+          timeoutMs: 30_000,
+        }),
+      );
+      assertShellRun(initial);
+      await waitUntil(async () => {
+        try {
+          return (await readFile(rootPidPath, 'utf8')).length > 0;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+          throw error;
+        }
+      });
+      // A model can act on this PID directly, e.g. `kill <pid>`.
+      assert.equal(initial.pid, Number.parseInt(await readFile(rootPidPath, 'utf8'), 10));
+    } finally {
+      await manager.terminateAll().catch(() => undefined);
+    }
+  });
+
   test('hands off a long pipe command without output and publishes monotonic revisions', async () => {
     const updates: ShellRunUpdate[] = [];
     const store = sqliteShellRunStore(await workspace());

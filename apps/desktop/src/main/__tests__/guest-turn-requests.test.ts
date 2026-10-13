@@ -164,7 +164,7 @@ async function mountShell(services: SessionCollaborationServices) {
               services,
               children: createElement(GuestTurnRequests, {
                 sessionId: shared ? sessionId : undefined,
-                composerRef: composer,
+                discardDraft: (draftKey: string) => composer.current?.clearDraft(draftKey),
                 children: (guest) => createElement(ChatComposerRegion, {
                   composerRef: composer,
                   guest,

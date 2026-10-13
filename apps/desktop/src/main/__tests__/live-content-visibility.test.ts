@@ -27,7 +27,7 @@ import {
   reconcileObservationAuthority,
   revealLiveContentSeed,
   visibleLiveContentGeneration,
-} from '../../renderer/features/conversation/index.js';
+} from '../../renderer/features/conversation/testing.js';
 
 test('observation generations change only when the owning source changes', () => {
   const selected = reconcileObservationAuthority(

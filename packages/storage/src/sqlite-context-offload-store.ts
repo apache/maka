@@ -507,6 +507,44 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
     });
   }
 
+  /**
+   * Returns up to `maxPages` free pages to the filesystem with one bounded
+   * `incremental_vacuum`. The schema guarantees `auto_vacuum = INCREMENTAL`.
+   */
+  async reclaimFreePages(input: {
+    readonly maxPages: number;
+  }): Promise<{ readonly reclaimedPages: number; readonly hasMore: boolean }> {
+    assertPositiveSafeInteger(input.maxPages, 'Context page reclamation limit');
+    this.#assertOpen();
+    // Probe under a read transaction so an idle tick never takes the write lock.
+    if (this.#readTransaction(() => this.#freelistPages()) === 0) {
+      return { reclaimedPages: 0, hasMore: false };
+    }
+    const result = this.#writeTransaction(() => {
+      const before = this.#freelistPages();
+      // incremental_vacuum(0) would free every page, so an emptied list stops here.
+      if (before === 0) return { reclaimedPages: 0, hasMore: false };
+      this.#database.exec(`PRAGMA incremental_vacuum(${Math.min(input.maxPages, before)})`);
+      const after = this.#freelistPages();
+      // A batch that frees nothing reports no more work instead of spinning the lane.
+      return { reclaimedPages: before - after, hasMore: after > 0 && after < before };
+    });
+    // PASSIVE never waits on readers; it moves the shrink into the main file.
+    if (result.reclaimedPages > 0) this.#database.exec('PRAGMA wal_checkpoint(PASSIVE)');
+    return result;
+  }
+
+  #freelistPages(): number {
+    const row = this.#database.prepare('PRAGMA freelist_count').get() as
+      | { freelist_count?: unknown }
+      | undefined;
+    const pages = row?.freelist_count;
+    if (typeof pages !== 'number' || !Number.isSafeInteger(pages) || pages < 0) {
+      throw new Error('Invalid SQLite freelist_count');
+    }
+    return pages;
+  }
+
   async usage(sessionId?: string): Promise<ContextOffloadUsage> {
     if (sessionId !== undefined) assertBoundedIdentity(sessionId, 'Session id');
     this.#assertOpen();

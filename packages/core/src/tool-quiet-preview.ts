@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { defineShippedUiMessageCatalog, resolveUiMessageCatalog } from './ui-locale.js';
+
 /**
  * Quiet-panel formatting for tool args + generic JSON results.
  *
@@ -52,41 +54,43 @@ interface QuietPreviewStrings {
   unanswered: string;
 }
 
-const STRINGS_BY_LOCALE: Record<UiLocale, QuietPreviewStrings> = {
-  'zh-CN': {
-    backgroundTerminal: '后台终端交互',
-    empty: '（空）',
-    done: '已完成',
-    notDone: '未完成',
-    replacements: (n) => `${n} 处`,
-    written: '已写入',
-    bytes: (n) => `共 ${n} 字节`,
-    moreQuestions: (total) => (total > 1 ? ` 等 ${total} 问` : ''),
-    unanswered: '未回答',
-  },
-  'zh-TW': {
-    backgroundTerminal: '後臺終端互動',
-    empty: '（空）',
-    done: '已完成',
-    notDone: '未完成',
-    replacements: (n) => `${n} 處`,
-    written: '已寫入',
-    bytes: (n) => `共 ${n} 位元組`,
-    moreQuestions: (total) => (total > 1 ? ` 等 ${total} 問` : ''),
-    unanswered: '未回答',
-  },
-  en: {
-    backgroundTerminal: 'Background terminal interaction',
-    empty: '(empty)',
-    done: 'done',
-    notDone: 'not done',
-    replacements: (n) => (n === 1 ? '1 replacement' : `${n} replacements`),
-    written: 'written',
-    bytes: (n) => `${n} bytes`,
-    moreQuestions: (total) => (total > 1 ? ` +${total - 1} more` : ''),
-    unanswered: 'Not answered',
-  },
-};
+const STRINGS_BY_LOCALE: Record<UiLocale, QuietPreviewStrings> = resolveUiMessageCatalog(
+  defineShippedUiMessageCatalog<QuietPreviewStrings>()({
+    'zh-CN': {
+      backgroundTerminal: '后台终端交互',
+      empty: '（空）',
+      done: '已完成',
+      notDone: '未完成',
+      replacements: (n) => `${n} 处`,
+      written: '已写入',
+      bytes: (n) => `共 ${n} 字节`,
+      moreQuestions: (total) => (total > 1 ? ` 等 ${total} 问` : ''),
+      unanswered: '未回答',
+    },
+    'zh-TW': {
+      backgroundTerminal: '後臺終端互動',
+      empty: '（空）',
+      done: '已完成',
+      notDone: '未完成',
+      replacements: (n) => `${n} 處`,
+      written: '已寫入',
+      bytes: (n) => `共 ${n} 位元組`,
+      moreQuestions: (total) => (total > 1 ? ` 等 ${total} 問` : ''),
+      unanswered: '未回答',
+    },
+    en: {
+      backgroundTerminal: 'Background terminal interaction',
+      empty: '(empty)',
+      done: 'done',
+      notDone: 'not done',
+      replacements: (n) => (n === 1 ? '1 replacement' : `${n} replacements`),
+      written: 'written',
+      bytes: (n) => `${n} bytes`,
+      moreQuestions: (total) => (total > 1 ? ` +${total - 1} more` : ''),
+      unanswered: 'Not answered',
+    },
+  }),
+);
 
 function strings(locale: UiLocale): QuietPreviewStrings {
   return STRINGS_BY_LOCALE[locale] ?? STRINGS_BY_LOCALE['zh-CN'];

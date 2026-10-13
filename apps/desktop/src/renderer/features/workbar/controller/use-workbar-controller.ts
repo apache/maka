@@ -33,14 +33,15 @@ import type { QuoteRef } from '@maka/core/events';
 import type { InteractionFormResponse } from '@maka/core/interaction';
 import type { SessionSummary } from '@maka/core/session';
 import type { WorkBoardItem, WorkBoardLinkedSession } from '@maka/core/work-board';
-import { useUiLocale, type ComposerHandle, type ToastApi } from '@maka/ui';
+import { useUiLocale, type ToastApi } from '@maka/ui';
 import type { ChatModelChoice } from '@maka/ui';
 import { safeLocalStorageGet, safeLocalStorageSet } from '../../../browser-storage.js';
 import { getDesktopConversationCopy } from '../../../application/contracts/conversation-copy.js';
 import { getShellCopy, localizedShellErrorMessage } from '../../../locales/shell-copy.js';
-import { sideChatTitleFromPrompt } from '../../../side-chat-command.js';
+import { sideChatTitleFromPrompt } from '../../../application/contracts/side-chat-command.js';
 import { desktopSessionKey, parseDesktopSessionKey } from '../../../../shared/runtime-host-identity.js';
 import { useWorkHubWorkspace } from '../../../application/contracts/workhub-workspace/use-workhub-workspace.js';
+import { useWorkHubEnabled } from '../../../application/contracts/workhub-workspace/workhub-enablement.js';
 import { useWorkbarServices } from '../services-context.js';
 import type { WorkbarHostModel } from '../ui/workbar-host.js';
 import { SKIP_SIDE_CHAT_CLOSE_CONFIRMATION_KEY } from '../ui/side-chat-close-confirmation.js';
@@ -110,7 +111,7 @@ export interface WorkbarControllerSelectors {
 }
 
 export interface UseWorkbarControllerInput {
-  workHub?: { enabled: boolean; active: boolean };
+  workHub?: { active: boolean };
   /** Whether the Session workspace (rather than a module page) owns the shell. */
   available: boolean;
   /** Local selection owns layout even while Host creation is pending. */
@@ -124,7 +125,8 @@ export interface UseWorkbarControllerInput {
   modelChoices: readonly ChatModelChoice[];
   /** Toast surface owned by the shell composition zone. */
   toastApi: ToastApi;
-  composerRef?: { current: Pick<ComposerHandle, 'focus' | 'setDraft'> | null };
+  /** The main Composer's Work Board edits: write a new-task draft, then focus it. */
+  composerDraft?: { seedDraft(draftKey: string, text: string): void; focus(): void };
   openNewTaskSurface?(): number;
   openSessionInChat?(sessionId: string, turnId?: string): void;
   resolveWorkBoardTarget?(item: WorkBoardItem):
@@ -169,7 +171,7 @@ function nextOrdinal(
 export function useWorkbarController(
   requested: UseWorkbarControllerInput,
 ): WorkbarController {
-  const coordination = useWorkHubWorkspace(requested.workHub?.enabled ?? false, requested.authoritativeSessionIds);
+  const coordination = useWorkHubWorkspace(useWorkHubEnabled(), requested.authoritativeSessionIds);
   const workspace = requested.workHub?.active ? 'workhub' : 'session';
   const activeSessionId = requested.workHub?.active ? coordination.sessionId : requested.activeSession?.id;
   const input: UseWorkbarControllerInput = requested.workHub?.active ? {
@@ -345,8 +347,8 @@ export function useWorkbarController(
         draftKey,
       };
       globalThis.requestAnimationFrame(() => {
-        input.composerRef?.current?.setDraft(draftKey, draft);
-        input.composerRef?.current?.focus();
+        input.composerDraft?.seedDraft(draftKey, draft);
+        input.composerDraft?.focus();
       });
     },
     [input, locale, settlePendingWorkBoardLink],

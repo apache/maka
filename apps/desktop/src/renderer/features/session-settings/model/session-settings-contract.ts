@@ -35,9 +35,23 @@ export type SessionSettingsOverlays = {
   readonly [Key in keyof SessionSettingValues]: Readonly<Record<string, SessionSettingValues[Key]>>;
 };
 
+/**
+ * What the next new task starts with. The permission choice is keyed by the
+ * new-task target and absent until the user makes one, so creation can omit it
+ * and let the Host apply its own default.
+ */
+export interface NewTaskSettings {
+  readonly permissionChoice?: ChatDefaultPermissionMode;
+  readonly planMode: boolean;
+  readonly orchestrationMode: OrchestrationMode;
+}
+
 export interface SessionSettingsInput<Owner extends { sessionId?: string }> {
   catalog: SessionCatalogController;
   isActiveSession(sessionId: string): boolean;
+  /** The new-task target the permission choice belongs to. */
+  newTaskChoiceKey: string;
+  /** The choice, or the Host default when none was made. */
   newSessionPermissionMode: ChatDefaultPermissionMode;
   refreshCatalog(): Promise<unknown>;
   saveComposerDefaults(model: SessionModelTarget): void;
@@ -52,7 +66,6 @@ export interface SessionSettingsInput<Owner extends { sessionId?: string }> {
   };
   captureOwner(): Owner;
   isOwnerActive(owner: Owner): boolean;
-  setNewTaskPermissionMode(mode: ChatDefaultPermissionMode): void;
   confirmBypass(): Promise<boolean>;
 }
 
@@ -67,8 +80,13 @@ export interface SessionSettingsCommands {
   setPermissionMode(mode: PermissionMode): Promise<boolean>;
   setPlanMode(sessionId: string, active: boolean): Promise<boolean>;
   setOrchestrationMode(sessionId: string, mode: OrchestrationMode): Promise<boolean>;
+  setNewTaskPlanMode(active: boolean): void;
+  setNewTaskOrchestrationMode(mode: OrchestrationMode): void;
+  /** Drops a permission choice once a created Session has consumed it. */
+  clearNewTaskPermissionChoice(): void;
 }
 
 export interface SessionSettingsController extends SessionSettingsCommands {
   readonly overlays: SessionSettingsOverlays;
+  readonly newTask: NewTaskSettings;
 }

@@ -63,9 +63,59 @@ test('reports a partial stdin delivery failure before the child exit', async () 
     const exit = await exited;
     assert.equal(exit.exitCode, 0);
     assert.equal(failures.length, 1);
-    assert.match(String((failures[0] as NodeJS.ErrnoException).code), /EPIPE|ERR_STREAM_DESTROYED/);
+    // Windows reports a pipe whose last reader exited as EOF.
+    assert.match(
+      String((failures[0] as NodeJS.ErrnoException).code),
+      /EPIPE|EOF|ERR_STREAM_DESTROYED/,
+    );
     assert.deepEqual(events, ['failure', 'exit']);
   } finally {
+    driver.dispose();
+  }
+});
+
+test('reports the command PID apart from its supervisor and lets a signal to it end the command', async () => {
+  let resolveExit!: (exit: PipeProcessExit) => void;
+  const exited = new Promise<PipeProcessExit>((resolve) => {
+    resolveExit = resolve;
+  });
+  let resolveReported!: (pid: number) => void;
+  const reported = new Promise<number>((resolve) => {
+    resolveReported = resolve;
+  });
+  let stdout = '';
+  const driver = new PipeProcessDriver({
+    plan: {
+      file: process.execPath,
+      args: ['-e', "process.stdout.write(process.pid + '\\n'); setInterval(() => {}, 1000);"],
+      useShellOption: false,
+    },
+    cwd: process.cwd(),
+    outputDrainMs: 1_000,
+    onData(stream, data) {
+      if (stream !== 'stdout') return;
+      stdout += data;
+      if (stdout.endsWith('\n')) resolveReported(Number.parseInt(stdout, 10));
+    },
+    onRootExit() {},
+    onFailure(error) {
+      throw error;
+    },
+    onExit: resolveExit,
+  });
+
+  try {
+    driver.writeInputs();
+    await driver.ready;
+    const commandPid = await reported;
+    assert.equal(driver.commandPid, commandPid);
+    assert.notEqual(driver.commandPid, driver.pid);
+    // Signalling only the reported PID, as `kill <pid>` would, reaches the command.
+    process.kill(commandPid, 'SIGTERM');
+    const exit = await exited;
+    if (process.platform !== 'win32') assert.equal(exit.signal, 'SIGTERM');
+  } finally {
+    driver.kill('SIGKILL');
     driver.dispose();
   }
 });

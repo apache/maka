@@ -166,6 +166,7 @@ async function submitMessageWithReconnect(
 }
 
 export interface RuntimeHostSessionExecutionIpcDeps {
+  retireCancelledMessages?: (sessionId: string, messageIds: readonly string[]) => void;
   client: RuntimeHostSessionExecutionClient;
   observer: RuntimeHostSessionObserver;
   attachmentApprovals: AttachmentApprovalRegistry;
@@ -366,6 +367,7 @@ export function registerRuntimeHostSessionExecutionIpc(
       if (new Set(cancelledMessageIds).size !== cancelledMessageIds.length) {
         throw new Error('Duplicate cancelled Message identities');
       }
+      deps.retireCancelledMessages?.(normalizedSessionId, cancelledMessageIds);
       return { cancelledMessageIds };
     },
   );
@@ -756,6 +758,12 @@ export function registerRuntimeHostSessionExecutionIpc(
     deps.emitSessionsChanged("status-change", sessionId, { turnId });
     return result;
   });
+  // Read-only preview behind the composer's Resume offer (#5903): the plan is
+  // the authority — the renderer never decides resumability from local turn
+  // state, and clicking still re-validates everything inside startTurnResume.
+  ipcMain.handle("sessions:queryResumeLatest", async (_event, sessionId: string) => {
+    return deps.client.queryTurnResume({ sessionId });
+  });
   ipcMain.handle("sessions:resumeLatest", async (_event, sessionId: string) => {
     const plan = await deps.client.queryTurnResume({ sessionId });
     if (plan.disposition === "parked") {
@@ -910,7 +918,7 @@ function retainedAttachmentsForSession(
 function createRuntimeHostSessionStop(
   deps: Pick<
     RuntimeHostSessionExecutionIpcDeps,
-    "beforeStop" | "client" | "observer" | "emitSessionsChanged"
+    "beforeStop" | "client" | "observer" | "emitSessionsChanged" | "retireCancelledMessages"
   >,
   newId: () => string = randomUUID,
 ): (
@@ -936,6 +944,7 @@ function createRuntimeHostSessionStop(
             }),
           () => deps.client.getSession(sessionId),
         );
+        deps.retireCancelledMessages?.(sessionId, [entry.messageId]);
         deps.emitSessionsChanged('status-change', sessionId);
         return { kind: 'retracted', messageId: entry.messageId };
       }
@@ -977,6 +986,7 @@ function createRuntimeHostSessionStop(
       turnId: turn.turnId,
       runId: turn.runId,
     });
+    deps.retireCancelledMessages?.(sessionId, interrupted.retracted.map((message) => message.messageId));
     deps.emitSessionsChanged("turn-status-change", sessionId, {
       turnId: turn.turnId,
     });

@@ -117,6 +117,8 @@ export function createDesktopWorkbarServices(
       read: (input) => bridge.gitReview.read(input),
       subscribeSessionEvents: (sessionId, handler) =>
         bridge.sessions.subscribeEvents(sessionId, handler),
+      subscribeSessionChanges: (handler) =>
+        bridge.sessions.subscribeChanges(handler),
     },
     terminal: {
       start: (sessionId) => bridge.shellRuns.start(sessionId),

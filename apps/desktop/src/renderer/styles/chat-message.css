@@ -72,6 +72,15 @@
   }
 }
 
+/* Local rows use the same reading column as canonical Turns, including
+   before admission when no Turn exists to provide the width constraint. */
+.maka-transient-message {
+  width: 100%;
+  max-width: var(--maka-reading-measure);
+  margin-inline: auto;
+  box-sizing: border-box;
+}
+
 /* Native anchoring handles ordinary content growth. The scroll authority
    disables it during following and atomic range replacement, when it owns
    the position write itself. */
@@ -291,20 +300,27 @@
    12px time beside them — so it reads tighter against the bubble than its
    4px top margin suggests. Astryx's default is nudged one step to 6px to give
    the row back some air without opening a visible gap. Flex direction and
-   centering are the primitive's own; what stays here is only that nudge. */
+   centering are the primitive's own; what stays here is only that nudge.
+
+   `--focus-outline-offset` pulls each action's ring inside its border box:
+   the chat layout's scrollport clips an outward ring on the first visible
+   row. Same retune as `.maka-turn-footer` (#5793 P3.1). */
 .maka-message-meta {
+  --focus-outline-offset: calc(-1 * var(--focus-outline-width));
   gap: var(--space-1-5);
   margin-top: var(--space-1-5);
 }
 
 /* Times and actions answer a reader already pointing at the message, so they
-   stay hidden until then. A delivery status stays visible.
+   stay hidden until then. A delivery or Work status is news and stays visible.
+   Check the owning message: delivery feedback may sit beside the bubble
+   instead of inside its metadata so long feedback and actions can wrap.
    Rows keep their space so the transcript does not move, and only opacity
    hides them: the buttons must stay focusable for :focus-within to reveal
    them. A tap must not land on a control it cannot see, and without hover
    nothing would ever reveal them, so this is for hover pointers only. */
 @media (hover: hover) {
-  .maka-user-message .maka-message-meta:not(:has(.maka-message-delivery)),
+  .maka-user-message:not(:has(.maka-message-delivery, .maka-message-status-time)) .maka-message-meta,
   .maka-assistant-answer .maka-turn-footer {
     opacity: 0;
     pointer-events: none;

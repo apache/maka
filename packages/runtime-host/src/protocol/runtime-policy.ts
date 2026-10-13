@@ -231,6 +231,7 @@ export type SetDefaultConnectionTargetResult =
 export type ConnectionCatalogCreateInput = CreateCatalogConnectionInput;
 export type ConnectionCatalogUpdateInput = UpdateCatalogConnectionInput;
 export type ConnectionCatalogRemoveInput = RemoveCatalogConnectionInput;
+/** Optional enableModel atomically enables a catalog model before selecting it. */
 export type ConnectionCatalogSetDefaultTargetInput = SetDefaultConnectionTargetInput;
 
 interface CatalogCommitted {

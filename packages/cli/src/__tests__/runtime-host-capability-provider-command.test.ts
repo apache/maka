@@ -159,7 +159,10 @@ test('MCP capability publication freezes an accepted callable tool snapshot', as
       requestInteraction: async () => assert.fail('Unexpected provider interaction'),
     },
   );
-  assert.deepEqual(result, { content: [{ type: 'text', text: '{"path":"README.md"}' }] });
+  assert.deepEqual(result, {
+    outcome: 'success',
+    content: [{ type: 'text', text: '{"path":"README.md"}' }],
+  });
 });
 
 test('MCP capability publication forwards admitted tool progress', async () => {
@@ -225,7 +228,10 @@ test('MCP capability publication forwards admitted tool progress', async () => {
     [1, 3],
     [3, 3],
   ]);
-  assert.deepEqual(result, { content: [{ type: 'text', text: 'done' }] });
+  assert.deepEqual(result, {
+    outcome: 'success',
+    content: [{ type: 'text', text: 'done' }],
+  });
 });
 
 test('MCP capability publication packs tools across server boundaries', () => {

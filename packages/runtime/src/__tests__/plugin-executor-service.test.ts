@@ -23,6 +23,58 @@ import { Context } from '../plugin-kernel.js';
 import { PluginExecutorService } from '../plugin-executor-service.js';
 import { MakaPluginTransactionBuffer } from '../plugin-runtime.js';
 
+test('catalog discovery forwards only an explicitly requested refresh to the provider', async () => {
+  const root = new Context();
+  const service = new PluginExecutorService(root);
+  const refreshes: Array<boolean | undefined> = [];
+  plugin(root, 'profile', 'provider', 1).executors.register({
+    id: 'remote',
+    execute: async () => ({ status: 'completed', text: '' }),
+    discover: async (input) => {
+      refreshes.push(input.refresh);
+      return {
+        id: 'remote',
+        displayName: 'Remote',
+        readiness: 'ready',
+        models: [],
+        supportsAttachments: false,
+        supportsModelChange: false,
+      };
+    },
+  });
+  try {
+    await service.catalog({ cwd: '/workspace' });
+    await service.catalog({ cwd: '/workspace', refresh: false });
+    await service.catalog({ cwd: '/workspace', refresh: true });
+    assert.deepEqual(refreshes, [undefined, undefined, true]);
+  } finally {
+    await root.fiber.dispose();
+  }
+});
+
+for (const mode of ['auto', undefined]) {
+  test(`configuration returns the complete provider snapshot with mode ${mode ?? '(removed)'}`, async () => {
+    const root = new Context();
+    const service = new PluginExecutorService(root);
+    const confirmed = { model: 'after', ...(mode ? { mode } : {}) };
+    plugin(root, 'profile', 'provider', 1).executors.register({
+      id: 'remote',
+      execute: async () => ({ status: 'completed', text: '' }),
+      configureConversation: async () => confirmed,
+    });
+    try {
+      const result = await service.configureConversation('session-a', 'remote', {
+        conversationKey: 'session-a',
+        cwd: '/workspace',
+        configuration: { model: 'after', mode: 'ask' },
+      });
+      assert.deepEqual(result, confirmed);
+    } finally {
+      await root.fiber.dispose();
+    }
+  });
+}
+
 test('executors are scoped and pass black-box output without an Agent invocation', async () => {
   const root = new Context();
   const service = new PluginExecutorService(root);
@@ -337,6 +389,7 @@ test('catalog inspection stays process-free and model configuration is isolated 
   let discoveries = 0,
     inspections = 0,
     configured = 0,
+    invalidations = 0,
     retired = '';
   let release!: () => void;
   const catalog = {
@@ -352,6 +405,9 @@ test('catalog inspection stays process-free and model configuration is isolated 
     discover: async () => {
       discoveries++;
       return catalog;
+    },
+    invalidateCatalog: () => {
+      invalidations++;
     },
     inspectConversation: async () => {
       inspections++;
@@ -379,6 +435,8 @@ test('catalog inspection stays process-free and model configuration is isolated 
   assert.equal(state?.readiness, 'history_only');
   assert.equal(discoveries, 1);
   assert.equal(inspections, 1);
+  service.invalidateCatalog();
+  assert.equal(invalidations, 1);
   const execution = service.execute('remote', request('session-a'));
   await service.configureConversation('session-b', 'remote', {
     conversationKey: 'session-b',

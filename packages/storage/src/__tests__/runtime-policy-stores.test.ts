@@ -1996,6 +1996,35 @@ describe('runtime policy stores', () => {
     });
   });
 
+  test('enables a chosen model and switches the default in one catalog commit', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const a = await createConnection(stores, 0, connectionDraft('relay-a', 'custom', 'Relay A'));
+      await stores.connectionCatalog.setDefaultTarget({
+        expectedCatalogRevision: 1,
+        target: { connectionId: a.connectionId, modelId: 'gpt-5' },
+      });
+      const b = await createConnection(stores, 2, {
+        ...connectionDraft('relay-b', 'custom', 'Relay B'),
+        enabledModelIds: [],
+        modelOverrides: { 'relay-model': { contextWindow: 128000 } },
+      });
+      const before = await stores.connectionCatalog.getSnapshot();
+      const input = {
+        expectedCatalogRevision: before.revision,
+        target: { connectionId: b.connectionId, modelId: 'relay-model' },
+        enableModel: true,
+      };
+      const committed = await stores.connectionCatalog.setDefaultTarget(input);
+      assert.equal(committed.kind, 'committed');
+      const after = await stores.connectionCatalog.getSnapshot();
+      assert.equal(after.revision, before.revision + 1);
+      assert.deepEqual(after.defaultTarget, input.target);
+      assert.deepEqual(after.connections[1]?.enabledModelIds, ['relay-model']);
+      assert.equal(after.connections[1]?.revision, b.revision + 1);
+      assert.deepEqual(after.connections[0], before.connections[0]);
+    });
+  });
+
   test('rejects a stated default target that names an unselected model', async () => {
     await withInteractiveOwner(async ({ stores }) => {
       const connection = await createConnection(
@@ -2012,6 +2041,34 @@ describe('runtime policy stores', () => {
       const unchanged = await stores.connectionCatalog.getSnapshot();
       assert.equal(unchanged.defaultTarget, null);
       assert.equal(unchanged.revision, catalog.revision);
+    });
+  });
+
+  test('keeps both the selection and old default on a stale or invalid enable-and-default request', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const a = await createConnection(stores, 0, connectionDraft('default-a', 'custom', 'A'));
+      await stores.connectionCatalog.setDefaultTarget({
+        expectedCatalogRevision: 1,
+        target: { connectionId: a.connectionId, modelId: 'gpt-5' },
+      });
+      const b = await createConnection(stores, 2, {
+        ...connectionDraft('default-b', 'custom', 'B'),
+        enabledModelIds: [],
+        modelOverrides: { known: {} },
+      });
+      const before = await stores.connectionCatalog.getSnapshot();
+      for (const [revision, modelId, kind] of [
+        [before.revision - 1, 'known', 'revision_conflict'],
+        [before.revision, 'unknown', 'invalid_default_target'],
+      ] as const) {
+        const result = await stores.connectionCatalog.setDefaultTarget({
+          expectedCatalogRevision: revision,
+          target: { connectionId: b.connectionId, modelId },
+          enableModel: true,
+        });
+        assert.equal(result.kind, kind);
+        assert.deepEqual(await stores.connectionCatalog.getSnapshot(), before);
+      }
     });
   });
 

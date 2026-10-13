@@ -204,14 +204,18 @@ body:has(.workHubLive[data-placement='floating'][data-progress='true'])::after {
 }
 
 
-/* The button owns the rounded stripe; transparent message borders reserve its
-   gutter. Hover expands only the paint, so the conversation never shifts. */
-.workhub-surface .maka-transcript-turn[data-turn-accent='true'] > .maka-turn > :is(.maka-user-message, .maka-assistant-answer) { position: relative; }
-.workhub-surface .workhub-message-rail { --button-icon-only-aspect: auto; position: absolute; inset-block: 0; width: 16px; min-width: 0; min-height: 0; height: auto; border: 0; border-radius: 5px; padding: 0; background: transparent; cursor: pointer; z-index: 1; }
+/* Anchor the rail to the message bubble, excluding headings, process rows and
+   metadata. Extend it 4px at each end; empty messages keep a 24px marker.
+   Each message scopes its anchor so adjacent turns cannot borrow a bubble. */
+.workhub-surface .maka-transcript-turn[data-turn-accent='true'] > .maka-turn > :is(.maka-user-message, .maka-assistant-answer) { position: relative; anchor-scope: --workhub-message-bubble; }
+.workhub-surface .maka-chat-message-bubble-user,
+.workhub-surface .maka-assistant-answer-content > .maka-chat-message-bubble-assistant { anchor-name: --workhub-message-bubble; }
+.workhub-surface .workhub-message-rails { position: absolute; position-anchor: --workhub-message-bubble; top: calc(anchor(top, 4px) - 4px); height: max(24px, calc(anchor-size(height, 16px) + 8px)); width: 16px; pointer-events: none; z-index: 1; }
+.workhub-surface .workhub-message-rail { --button-icon-only-aspect: auto; position: absolute; inset-block: 0; width: 16px; min-width: 0; min-height: 0; height: auto; border: 0; border-radius: 5px; padding: 0; background: transparent; cursor: pointer; pointer-events: auto; z-index: 1; }
 .workhub-message-rail::before { content: ''; position: absolute; inset-block: 0; inset-inline-start: 0; width: 4px; border-radius: 999px; background: var(--maka-turn-accent); transform-origin: left center; transition: transform 150ms ease-out, background-color 150ms ease-out; pointer-events: none; }
-.maka-user-message .workhub-message-rail { inset-inline-end: -4px; }
+.maka-user-message .workhub-message-rails { inset-inline-end: -4px; }
 .maka-user-message .workhub-message-rail::before { inset-inline-start: auto; inset-inline-end: 0; transform-origin: right center; }
-.maka-assistant-answer .workhub-message-rail { inset-inline-start: -4px; }
+.maka-assistant-answer .workhub-message-rails { inset-inline-start: -4px; }
 .workhub-message-rail:is(:hover, :focus-visible, [data-work-highlighted='true'])::before { transform: scaleX(1.5); }
 .workhub-message-rail:focus-visible { outline: 2px solid var(--maka-turn-accent); outline-offset: 2px; }
 @media (prefers-reduced-motion: reduce) {
@@ -219,3 +223,10 @@ body:has(.workHubLive[data-placement='floating'][data-progress='true'])::after {
 }
 .workhub-conversation-filter { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 8px 16px; }
 .workhub-conversation-filter > span { overflow-wrap: anywhere; }
+
+/* Durable answers remain visible outside tool activity. */
+.workhub-turn-context { display: grid; gap: var(--space-2); min-width: 0; margin-block: 0; font-size: 12px; line-height: 1.6667; color: var(--foreground); overflow-wrap: anywhere; }
+.workhub-clarification-summary dl { display: grid; gap: var(--space-1); margin: var(--space-1) 0 0; }
+.workhub-clarification-summary dl > div { display: flex; flex-wrap: wrap; column-gap: var(--space-2); }
+.workhub-clarification-summary dt { color: var(--muted-foreground); }
+.workhub-clarification-summary dd { margin: 0; white-space: pre-wrap; }

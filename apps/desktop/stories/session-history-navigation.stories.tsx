@@ -22,7 +22,7 @@ import { expect, userEvent, waitFor, within } from 'storybook/test';
 import { useState, useSyncExternalStore } from 'react';
 import { ChatSurfaceLayout, MarkdownBody } from '@maka/ui';
 import { createSessionCatalogController } from '../src/renderer/application/contracts/session-catalog/session-catalog-state.js';
-import { SessionHistoryNavigation, createSessionOpenCommand } from '../src/renderer/features/session-navigation/index.js';
+import { SessionHistoryNavigation, createSessionOpenCommand } from '../src/renderer/features/session-navigation/testing.js';
 import type { DesktopSessionSummary } from '../src/shared/desktop-session-projection.js';
 
 const meta = { title: 'Primitives/Session History Navigation' } satisfies Meta;

@@ -412,7 +412,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     <HStack gap={1.5} vAlign="center" wrap="wrap">
       {issue ? <Token size="sm" color="red" label={statusLabel} /> : <span>{statusLabel}</span>}
       {statusDetail && <span>· {statusDetail}</span>}
-      {Number.isFinite(lastTestAtMs) && <span>· <RelativeTime ts={lastTestAtMs} /></span>}
+      {Number.isFinite(lastTestAtMs) && <span>· <RelativeTime ts={lastTestAtMs} className="settingsInlineTime" /></span>}
     </HStack>
   );
 

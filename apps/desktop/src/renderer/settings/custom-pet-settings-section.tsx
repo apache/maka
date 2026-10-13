@@ -186,7 +186,6 @@ export function CustomPetSettingsSection() {
       action={(
         <Button
           variant="secondary"
-          size="sm"
           isDisabled={actionDisabled}
           onClick={() => void importPet()}
           label={mutation === 'import' ? copy.importing : copy.import}
@@ -203,7 +202,6 @@ export function CustomPetSettingsSection() {
         end={!loading && selectedPet ? (
           <Button
             variant="secondary"
-            size="sm"
             isDisabled={actionDisabled}
             onClick={() => void selectPet(null)}
             label={mutation === 'disable' ? copy.disabling : copy.disable}
@@ -235,7 +233,6 @@ export function CustomPetSettingsSection() {
                 {isSelected ? null : (
                   <Button
                     variant="secondary"
-                    size="sm"
                     isDisabled={actionDisabled}
                     onClick={() => void selectPet(pet.id)}
                     label={isSelecting ? copy.selecting : copy.select}

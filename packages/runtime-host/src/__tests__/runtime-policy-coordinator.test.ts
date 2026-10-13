@@ -60,6 +60,19 @@ const context: ConnectionContext = {
   acquireResidency: () => ({ release: () => undefined }),
 };
 
+test('default-target protocol keeps legacy requests unchanged and requires explicit enable consent', () => {
+  const decode =
+    RUNTIME_POLICY_OPERATION_SPECS['connection.catalog.set-default-target'].decodeInput;
+  const legacy = {
+    expectedCatalogRevision: 7,
+    target: { connectionId: randomUUID(), modelId: 'chosen' },
+  };
+  assert.deepEqual(decode(legacy), legacy);
+  assert.deepEqual(decode({ ...legacy, enableModel: true }), { ...legacy, enableModel: true });
+  assert.throws(() => decode({ ...legacy, enableModel: 'true' }));
+  assert.throws(() => decode({ ...legacy, target: null, enableModel: true }));
+});
+
 test('model settings tool confirms and atomically updates canonical Runtime Policy', async () => {
   await withCoordinator(async ({ coordinator, stores }) => {
     const tool = coordinator.modelTools.find(({ name }) => name === 'MakaSettingsUpdate');

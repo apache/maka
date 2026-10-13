@@ -54,7 +54,7 @@ Agent harness 的本职就是把任务做完。衡量它的标准只有一条：
 
 ## 获取 Maka
 
-**Apache Releases**：Maka 尚未发布过 Apache release。发布之后，带签名的源码包才是正式 release，其他渠道分发的包属于便利构建。候选版本的准入标准、签名路径与验包步骤见[下载页面](https://maka.apache.org/zh-CN/downloads/)与 [`.github/ASF_SOURCE_RELEASE.md`](./.github/ASF_SOURCE_RELEASE.md)。
+**Apache Releases**：最新的 Apache release 是 0.2.0（孵化中）。带签名的源码包才是正式 release，其他渠道分发的包属于便利构建。候选版本的准入标准、签名路径与验包步骤见[下载页面](https://maka.apache.org/zh-CN/downloads/)与 [`.github/ASF_SOURCE_RELEASE.md`](./.github/ASF_SOURCE_RELEASE.md)。
 
 **开发测试**：如果希望贡献代码或协助测试尚未发布的改动，请阅读[贡献指南](./CONTRIBUTING.zh-CN.md)并关注[开发邮件列表](https://lists.apache.org/list.html?dev@maka.apache.org)。开发构建不是获批的 Apache 正式版本。
 
@@ -64,7 +64,7 @@ Agent harness 的本职就是把任务做完。衡量它的标准只有一条：
 
 ### 环境要求
 
-- Node.js 22.19 或更高（CI 使用 Node.js 24）；
+- Node.js 22.19 或更高的 22.x 版本，或 Node.js 24 及以上（CI 使用 Node.js 24；不支持 Node.js 23）；
 - npm（仓库 lockfile 和 scripts 以 npm 为准，`packageManager` 当前为 npm 11）；
 - Git；
 - `ripgrep`，供 Runtime 的 `Grep` 工具使用。
@@ -170,7 +170,7 @@ packages/eval/         Experiment cell、attempt、result 与 executor/subject a
 packages/computer-use/ Computer Use 后端选择、Host 生命周期和协议适配
 packages/cli/          TUI 和非交互 CLI
 packages/ui/           共享对话、Markdown、Artifact 与 UI primitives
-native/                Rust：Runtime Host 的 direct-peer addon 与 gitoxide helper
+native/                Rust：Runtime Host 的 direct-peer addon 与 Windows task launcher，以及 gitoxide helper
 website/               maka.apache.org 的 Astro 源码
 
 docs/                  架构、产品、安全、隐私和测试契约
