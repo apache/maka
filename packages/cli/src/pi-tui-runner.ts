@@ -1564,7 +1564,15 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // review). Stage what fits; the remainder goes back as quoted text in the
   // restored draft so every excerpt stays visible and editable.
   const formatQuoteOverflow = (quotes: MakaRetractedMessages['quotes']): string =>
-    quotes.map((quote) => `> ${quote.label ? `[${quote.label}] ` : ''}${quote.text}`).join('\n');
+    quotes
+      .map((quote) => {
+        const excerpt = `> ${quote.label ? `[${quote.label}] ` : ''}${quote.text}`;
+        // The comment is the user's own model-facing intent for quoting this;
+        // reducing the structured staging to text must not drop it (#5265
+        // review).
+        return quote.comment ? `${excerpt}\n> comment: ${quote.comment}` : excerpt;
+      })
+      .join('\n');
 
   const acceptRetraction = (retracted: MakaRetractedMessages) => {
     for (const messageId of retracted.messageIds) removeTransientUserMessage(messageId);

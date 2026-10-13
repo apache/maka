@@ -8972,7 +8972,14 @@ Slug openai-work<cursor>
   test('caps staged quotes at the per-message admission limit when several quoted entries retract', async () => {
     const terminal = new FakeTerminal();
     const driver = new RetractingQuotesDriver([]);
-    const quote = (n: number) => ({ text: `recovered excerpt ${n}`, label: `q${n}` });
+    const quote = (n: number) => ({
+      text: `recovered excerpt ${n}`,
+      label: `q${n}`,
+      // The overflow excerpt carries the user's model-facing intent; converting
+      // it to plaintext must not drop the annotation (Astro-Han review of
+      // b7c01c7a).
+      ...(n >= 17 ? { comment: `why I quoted ${n}` } : {}),
+    });
     // Two independently valid queue entries: 9 + 9 quotes retract to a combined
     // 18, past the Host's 16-per-message admission cap (me2seeks review of
     // b8b41ee8b) — the old behavior staged all 18 and every resubmit was
@@ -9009,6 +9016,9 @@ Slug openai-work<cursor>
     );
     await waitFor(() =>
       plainTerminalOutput(terminal.screenOutput()).includes('recovered excerpt 18'),
+    );
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('why I quoted 18'),
     );
 
     // The restored draft resubmits within admission: 16 staged quotes ride it
