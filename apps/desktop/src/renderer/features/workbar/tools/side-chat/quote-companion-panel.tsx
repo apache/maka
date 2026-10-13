@@ -273,6 +273,7 @@ export function QuoteCompanionPanel(props: {
                 )}
                 {companion.activeQuestion && (
                   <UserQuestionPrompt
+                    key={companion.activeQuestion.requestId}
                     request={companion.activeQuestion}
                     onRespond={companion.respondToUserQuestion}
                     onStop={() => void companion.stop()}

@@ -33,6 +33,7 @@ function createBridgeRecorder(answerOverrides: Record<string, unknown> = {}): {
   const calls: RecordedCall[] = [];
   const syncMethods = new Set([
     'sessions.subscribeEvents',
+    'sessions.subscribeChanges',
     'shellRuns.subscribePtyData',
     'shellRuns.subscribeResync',
     'browser.setActiveSession',
@@ -213,6 +214,7 @@ describe('createDesktopWorkbarServices', () => {
 
     await services.review.read({ sessionId: 's', source: 'unstaged' });
     services.review.subscribeSessionEvents('s', eventHandler)();
+    services.review.subscribeSessionChanges(eventHandler)();
 
     await services.terminal.start('s');
     await services.terminal.stop({ sessionId: 's', ref: 'term' });
@@ -297,6 +299,7 @@ describe('createDesktopWorkbarServices', () => {
       [
         'gitReview.read',
         'sessions.subscribeEvents',
+        'sessions.subscribeChanges',
         'shellRuns.start',
         'shellRuns.stop',
         'shellRuns.attach',

@@ -6,7 +6,7 @@ Generated against `@astryxdesign/core@0.6.3` (195 component exports).
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 330 files — blocker 0, reimplementation 0, polish 4, aligned 326.
+**Totals:** 335 files — blocker 0, reimplementation 0, polish 4, aligned 331.
 
 ## Exclusions (explicit)
 
@@ -75,6 +75,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/features/conversation/ui/plan-provider.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/conversation/ui/plan-surfaces.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/conversation/ui/staged-composer.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `apps/desktop/src/renderer/features/conversation/ui/staged-local-messages.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/conversation/ui/staged-quote-chat-view.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/conversation/ui/task-readiness-provider.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/diagnostics/services-context.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
@@ -125,9 +126,12 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/features/session-settings/services-context.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/session-settings/ui/session-settings-provider.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/storage-usage/services-context.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `apps/desktop/src/renderer/features/storage-usage/ui/archive-retention-notices.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `apps/desktop/src/renderer/features/storage-usage/ui/archive-retention-section.tsx` | other | Banner, Selector, Switch, Text | aligned — uses Astryx (Banner, Selector, Switch, Text) | aligned |
 | `apps/desktop/src/renderer/features/storage-usage/ui/storage-usage-section.tsx` | other | Banner, Button | aligned — uses Astryx (Banner, Button) | aligned |
 | `apps/desktop/src/renderer/features/storage-usage/ui/task-storage-size.tsx` | other | Text | aligned — uses Astryx (Text) | aligned |
 | `apps/desktop/src/renderer/features/task-entry/services-context.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `apps/desktop/src/renderer/features/task-entry/ui/project-registration-boundary.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/task-entry/ui/task-entry-host.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/task-entry/ui/task-entry-provider.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/usage/services-context.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
@@ -168,7 +172,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/settings/about-settings-page.tsx` | settings-page | Banner, Button, Link, Text, VStack | aligned — uses Astryx (Banner, Button, Link, Text, VStack) | aligned |
 | `apps/desktop/src/renderer/settings/appearance-settings-page.tsx` | settings-page | Button, Grid, HStack, NumberInput, SegmentedControl, SegmentedControlItem, SelectableCard, Switch, Text, VStack | aligned — uses Astryx (Button, Grid, HStack, NumberInput, SegmentedControl, SegmentedControlItem, SelectableCard, Switch) | aligned |
 | `apps/desktop/src/renderer/settings/bot-chat-detail.tsx` | settings-module | Banner, Button, Card, FormLayout, MetadataList, MetadataListItem, SegmentedControl, SegmentedControlItem, Selector, StatusDot, Switch, Text, TextArea, TextInput, VStack | aligned — uses Astryx (Banner, Button, Card, FormLayout, MetadataList, MetadataListItem, SegmentedControl, SegmentedControlItem) | aligned |
-| `apps/desktop/src/renderer/settings/bot-chat-overview.tsx` | settings-module | Banner, Button, EmptyState, StatusDot | aligned — uses Astryx (Banner, Button, EmptyState, StatusDot) | aligned |
+| `apps/desktop/src/renderer/settings/bot-chat-overview.tsx` | settings-module | Banner, Button, EmptyState, Selector, StatusDot | aligned — uses Astryx (Banner, Button, EmptyState, Selector, StatusDot) | aligned |
 | `apps/desktop/src/renderer/settings/bot-chat-settings-page.tsx` | settings-page | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/settings/bot-chat-shared.tsx` | settings-module | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/settings/bot-onboarding-modal.tsx` | settings-page | Button, Dialog, DialogHeader, Layout, LayoutContent, Spinner | aligned — uses Astryx (Button, Dialog, DialogHeader, Layout, LayoutContent, Spinner) | aligned |
@@ -354,6 +358,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `packages/ui/src/tool-activity/diff-code-preview.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/tool-activity/tool-code-block.tsx` | ui-composition | CodeBlock | aligned — uses Astryx (CodeBlock) | aligned |
 | `packages/ui/src/tool-activity/tool-result-preview.tsx` | ui-composition | Button, Link | aligned — uses Astryx (Button, Link) | aligned |
+| `packages/ui/src/transcript-disclosure.tsx` | ui-composition | Icon | aligned — uses Astryx (Icon) | aligned |
 | `packages/ui/src/transcript-scroll-authority.tsx` | ui-composition | ChatLayoutScrollButton | aligned — uses Astryx (ChatLayoutScrollButton) | aligned |
 | `packages/ui/src/ui.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/user-question-prompt.tsx` | ui-composition | Button, ChatComposer, ChatComposerInput | aligned — uses Astryx (Button, ChatComposer, ChatComposerInput) | aligned |

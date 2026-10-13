@@ -971,8 +971,9 @@ export class ShellRunProcessManager
         onProtocolReply: (data) => {
           if (!live || !driver)
             throw new Error('PTY protocol reply arrived before driver admission');
-          if (live.driverExit || live.termination || live.integrityFailure || live.privateTerminal)
-            return;
+          // The public parser only receives pre-handoff bytes. Reply to queries
+          // already queued there even after the private collector takes over.
+          if (live.driverExit || live.termination || live.integrityFailure) return;
           try {
             driver.write(data);
           } catch (error) {
@@ -1130,7 +1131,8 @@ export class ShellRunProcessManager
   }
 
   private processPidPatch(live: LiveShellRun): Pick<ShellRunPatch, 'pid'> {
-    const pid = live.driver.pid;
+    // A pipe command runs under an owning supervisor; report the command itself.
+    const pid = live.mode === 'pipes' ? live.driver.commandPid : live.driver.pid;
     return pid !== undefined && Number.isSafeInteger(pid) && pid > 0 ? { pid } : {};
   }
 

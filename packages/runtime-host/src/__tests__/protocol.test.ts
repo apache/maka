@@ -134,6 +134,10 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 22);
   });
 
+  test('publishes a new compatibility epoch for Artifact invalidation frames', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 196);
+  });
+
   test('publishes a new compatibility epoch for durable external turn origins', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 189);
   });
@@ -586,6 +590,35 @@ describe('Runtime Host bootstrap protocol', () => {
         }),
       isInvalidSessionStatus,
     );
+  });
+
+  test('roundtrips live compaction boundaries with a closed event shape', () => {
+    const frame = {
+      kind: 'subscription.session_event' as const,
+      hostEpoch: 'epoch-1',
+      subscriptionId: 'subscription-1',
+      sequence: 2,
+      sessionId: 'session-1',
+      runId: 'run-1',
+      event: {
+        type: 'context_compaction_applied' as const,
+        id: 'compaction-1',
+        turnId: 'turn-1',
+        ts: 123456789,
+      },
+    };
+    const encoded = encodeProtocolMessage(frame);
+    assert.deepEqual(decodeHostFrame(JSON.parse(encoded.toString('utf8'))), frame);
+    for (const event of [
+      { ...frame.event, toolUseId: 'tool-1' },
+      { ...frame.event, ts: -1 },
+      { ...frame.event, ts: '123456789' },
+      { ...frame.event, id: '' },
+      { ...frame.event, turnId: '' },
+      { type: frame.event.type, id: frame.event.id, turnId: frame.event.turnId },
+    ]) {
+      assert.throws(() => decodeHostFrame({ ...frame, event }), isInvalidFrame);
+    }
   });
 
   test('preserves opaque nested call and step identities in subscription tool events', () => {

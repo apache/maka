@@ -20,6 +20,7 @@
 import { Fragment, memo, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
 import { ICON_SIZE, GitBranch, Pencil, RefreshCcw, Timer } from './icons.js';
 import { useClipboardCopyFeedback } from './clipboard-feedback.js';
+import { TranscriptDisclosure } from './transcript-disclosure.js';
 import { Markdown } from './markdown.js';
 import { formatTurnDuration } from './chat-display-helpers.js';
 import { formatAbsoluteTimestamp } from '@maka/core/relative-time';
@@ -212,7 +213,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
             dataMessageId={props.messageId}
           />
           {props.delivery?.deliveryActions?.map((action) => (
-            <UiIconButton key={action.label} label={action.label} tooltip={action.label} variant="ghost" size="sm" icon={action.icon} onClick={action.onClick} />
+            <UiIconButton key={action.label} label={action.label} tooltip={action.label} variant="ghost" size="sm" icon={action.icon} isDisabled={action.disabled} clickAction={action.onClick} />
           ))}
           {timeOrDelivery}
         </>
@@ -284,7 +285,7 @@ export function TransientUserMessage(props: {
     <LocalizedChatMessage
       accessibleLabel={copy.userAriaLabel}
       sender="user"
-      className="maka-chat-message maka-user-message"
+      className="maka-chat-message maka-user-message maka-transient-message"
       data-transient-message-id={message.id}
     >
       <UserMessageBody
@@ -295,8 +296,25 @@ export function TransientUserMessage(props: {
         quotes={message.quotes}
         directoryReferences={message.directoryReferences}
         inlineReferences={message.inlineReferences}
-        delivery={message}
+        delivery={message.deliveryStatus ? undefined : message}
       />
+      {message.deliveryStatus && (
+        <div className="maka-message-delivery" data-tone={message.deliveryTone ?? 'neutral'}>
+          <div role="status" aria-atomic="true">
+            <span className="maka-message-delivery-status">{message.deliveryStatus}</span>
+            {message.deliveryDetail && <p className="maka-message-delivery-detail">{message.deliveryDetail}</p>}
+          </div>
+          {!!message.deliveryActions?.length && <div className="maka-message-delivery-actions">
+            {message.deliveryActions.map((action) => (
+              <UiButton key={action.label} label={action.label} isDisabled={action.disabled} variant="ghost" size="sm" onClick={action.onClick} />
+            ))}
+          </div>}
+          {message.deliveryDiagnostic && <details className="maka-message-delivery-diagnostic">
+            <summary>{message.deliveryDiagnosticLabel}</summary>
+            <p>{message.deliveryDiagnostic}</p>
+          </details>}
+        </div>
+      )}
     </LocalizedChatMessage>
   );
 }
@@ -398,6 +416,8 @@ export const TurnView = memo(function TurnView(props: {
   turn: TurnViewModel;
   /** Optional identity shown once above the turn's root prompt. */
   messageHeader?: ReactNode;
+  /** Durable clarification and handoff context after the root prompt. */
+  turnContext?: ReactNode;
   /** Optional accessible action on each message edge. */
   messageRail?: ReactNode;
   /** Host-owned status of the root prompt, displayed before its timestamp. */
@@ -623,33 +643,29 @@ export const TurnView = memo(function TurnView(props: {
                 ? () => props.onEditUserMessage?.(turn.turnId)
                 : undefined
             }
-            // A revision restages neither attachments, directory references,
-            // nor quotes, so a turn carrying any of them can't be edited
-            // without silently dropping context the answer was grounded in.
+            // Quotes and the selected message's own attachments restage into
+            // the surface's staged-context plates (#5109); directory
+            // references have no client-side restage path, so a turn carrying
+            // them still can't be edited without silently dropping context.
             editDisabled={
-              (turn.user.attachments?.length ?? 0) > 0 ||
               (turn.user.directoryReferences?.length ?? 0) > 0 ||
-              (turn.user.quotes?.length ?? 0) > 0 ||
               props.editUserMessageTransformed === true ||
               props.editUserMessageDisabled === true ||
               turn.status === 'running' ||
               !!props.liveStreaming
             }
             editDisabledReason={
-              (turn.user.attachments?.length ?? 0) > 0
-                ? copy.editMessageDisabledAttachments
-                : (turn.user.directoryReferences?.length ?? 0) > 0
-                  ? copy.editMessageDisabledDirectoryReferences
-                  : (turn.user.quotes?.length ?? 0) > 0
-                    ? copy.editMessageDisabledQuotes
-                    : props.editUserMessageTransformed
-                      ? copy.editMessageDisabledTransformedText
-                      : copy.editMessageDisabledRunning
+              (turn.user.directoryReferences?.length ?? 0) > 0
+                ? copy.editMessageDisabledDirectoryReferences
+                : props.editUserMessageTransformed
+                  ? copy.editMessageDisabledTransformedText
+                  : copy.editMessageDisabledRunning
             }
           />
 
         </LocalizedChatMessage>
       )}
+      {props.turnContext}
       {turn.notes.map((note) => (
         <ChatSystemMessage
           key={note.id}
@@ -784,7 +800,6 @@ export const TurnView = memo(function TurnView(props: {
               {ownsTurnChrome && turn.status === 'failed' && props.failedReasonLabel && (
                 <Banner
                   status={props.failedSeverity ?? 'error'}
-                  container="section"
                   className="maka-turn-failed-banner"
                   title={props.failedReasonLabel}
                   description={
@@ -1460,43 +1475,10 @@ const ProcessingBlock = memo(function ProcessingBlock(props: {
   initialLiveContent?: ReadonlyMap<string, string>;
 }) {
   const copy = getConversationCopy(useUiLocale()).messages;
-  // null follows the lifecycle: open while running, collapsed on completion.
-  // Settled reader choices survive appended events. Live work stays expanded.
-  // A failed tool is an ordinary row: no label and no reveal of its own.
-  const [manualOpen, setManualOpen] = useState<boolean | null>(null);
-  const open = props.running || manualOpen === true;
-  const chevron = props.running ? null : (
-    <Icon icon="chevronRight" size="xsm" color="inherit" className="maka-processing-chevron" />
-  );
   return (
-    <details
-      className="maka-processing-sequence"
-      data-maka-transcript-boundary=""
-      open={open}
-    >
-      <summary
-        className="maka-processing-summary"
-        aria-expanded={open}
-        aria-disabled={props.running || undefined}
-        tabIndex={props.running ? -1 : 0}
-        onClick={(event) => {
-          event.preventDefault();
-          if (!props.running) setManualOpen(!open);
-        }}
-      >
-        {props.statusRow ? (
-          <span className="maka-turn-statusbar" data-turn-status={props.statusRow.status}>
-            <TurnStatusRow {...props.statusRow} />
-            {chevron}
-          </span>
-        ) : (
-          <>
-            <span>{copy.processDetails}</span>
-            {chevron}
-          </>
-        )}
-      </summary>
-      <div className="maka-processing-body">
+    <TranscriptDisclosure running={props.running} statusBar={Boolean(props.statusRow)} status={props.statusRow?.status}
+      label={props.statusRow ? <TurnStatusRow {...props.statusRow} /> : copy.processDetails}>
+      {(open) => <>
         {props.entries.map((entry, index) => (
           <TurnTimelineEntry
             key={timelineEntryKey(entry, index)}
@@ -1507,8 +1489,8 @@ const ProcessingBlock = memo(function ProcessingBlock(props: {
             initialLiveContent={props.initialLiveContent}
           />
         ))}
-      </div>
-    </details>
+      </>}
+    </TranscriptDisclosure>
   );
 });
 

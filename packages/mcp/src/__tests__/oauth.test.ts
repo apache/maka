@@ -139,7 +139,11 @@ describe('McpClientManager OAuth E2E', () => {
     const storage = createMemoryMcpOAuthStorage();
     await storage.set('remote', {
       serverUrl: fixture.mcpUrl,
-      tokens: { access_token: fixture.accessToken, token_type: 'Bearer' },
+      tokens: {
+        issuer: new URL(fixture.mcpUrl).origin,
+        access_token: fixture.accessToken,
+        token_type: 'Bearer',
+      },
     });
     const manager = new McpClientManager({ oauthStorage: storage });
     managers.push(manager);
@@ -155,8 +159,9 @@ describe('McpClientManager OAuth E2E', () => {
     const storage = createMemoryMcpOAuthStorage();
     await storage.set('remote', {
       serverUrl: fixture.mcpUrl,
-      clientInformation: { client_id: 'stored-client' },
+      clientInformation: { issuer: new URL(fixture.mcpUrl).origin, client_id: 'stored-client' },
       tokens: {
+        issuer: new URL(fixture.mcpUrl).origin,
         access_token: 'stale-token',
         token_type: 'Bearer',
         refresh_token: fixture.refreshToken,
@@ -177,7 +182,11 @@ describe('McpClientManager OAuth E2E', () => {
     const storage = createMemoryMcpOAuthStorage();
     await storage.set('remote', {
       serverUrl: fixture.mcpUrl,
-      tokens: { access_token: fixture.accessToken, token_type: 'Bearer' },
+      tokens: {
+        issuer: new URL(fixture.mcpUrl).origin,
+        access_token: fixture.accessToken,
+        token_type: 'Bearer',
+      },
     });
     const manager = new McpClientManager({ oauthStorage: storage });
     managers.push(manager);
@@ -199,7 +208,11 @@ describe('McpClientManager OAuth E2E', () => {
     // the old config, so only the record's own binding can stop the replay.
     await storage.set('remote', {
       serverUrl: 'https://old.example/mcp',
-      tokens: { access_token: fixture.accessToken, token_type: 'Bearer' },
+      tokens: {
+        issuer: new URL(fixture.mcpUrl).origin,
+        access_token: fixture.accessToken,
+        token_type: 'Bearer',
+      },
     });
     const manager = new McpClientManager({ oauthStorage: storage });
     managers.push(manager);
@@ -288,7 +301,11 @@ describe('McpClientManager OAuth E2E', () => {
       const storage = createMemoryMcpOAuthStorage();
       await storage.set('remote', {
         serverUrl: fixture.mcpUrl,
-        tokens: { access_token: fixture.accessToken, token_type: 'Bearer' },
+        tokens: {
+          issuer: new URL(fixture.mcpUrl).origin,
+          access_token: fixture.accessToken,
+          token_type: 'Bearer',
+        },
       });
       const manager = new McpClientManager({ oauthStorage: storage });
       managers.push(manager);
@@ -321,7 +338,11 @@ describe('McpClientManager OAuth E2E', () => {
     const storage = createMemoryMcpOAuthStorage();
     await storage.set('remote', {
       serverUrl: fixture.mcpUrl,
-      tokens: { access_token: fixture.accessToken, token_type: 'Bearer' },
+      tokens: {
+        issuer: new URL(fixture.mcpUrl).origin,
+        access_token: fixture.accessToken,
+        token_type: 'Bearer',
+      },
     });
     const manager = new McpClientManager({ oauthStorage: storage });
     managers.push(manager);
@@ -374,7 +395,12 @@ describe('McpClientManager OAuth E2E', () => {
     const storage = createMemoryMcpOAuthStorage();
     await storage.set('remote', {
       serverUrl: fixture.mcpUrl,
-      tokens: { access_token: fixture.accessToken, token_type: 'Bearer', id_token: idToken },
+      tokens: {
+        issuer: new URL(fixture.mcpUrl).origin,
+        access_token: fixture.accessToken,
+        token_type: 'Bearer',
+        id_token: idToken,
+      },
     });
     const manager = new McpClientManager({ oauthStorage: storage });
     managers.push(manager);
@@ -431,8 +457,9 @@ describe('McpClientManager OAuth E2E', () => {
     const storage = createMemoryMcpOAuthStorage();
     await storage.set('remote', {
       serverUrl: fixture.mcpUrl,
-      clientInformation: { client_id: 'stored-client' },
+      clientInformation: { issuer: new URL(fixture.mcpUrl).origin, client_id: 'stored-client' },
       tokens: {
+        issuer: new URL(fixture.mcpUrl).origin,
         access_token: 'stale-token',
         token_type: 'Bearer',
         refresh_token: fixture.refreshToken,
@@ -492,7 +519,11 @@ describe('McpClientManager OAuth E2E', () => {
     const storage = createMemoryMcpOAuthStorage();
     await storage.set('remote', {
       serverUrl: fixture.mcpUrl,
-      tokens: { access_token: fixture.accessToken, token_type: 'Bearer' },
+      tokens: {
+        issuer: new URL(fixture.mcpUrl).origin,
+        access_token: fixture.accessToken,
+        token_type: 'Bearer',
+      },
     });
     const manager = new McpClientManager({ oauthStorage: storage });
     managers.push(manager);
@@ -582,8 +613,9 @@ describe('McpClientManager OAuth E2E', () => {
     };
     await memory.set('remote', {
       serverUrl: fixture.mcpUrl,
-      clientInformation: { client_id: 'stored-client' },
+      clientInformation: { issuer: new URL(fixture.mcpUrl).origin, client_id: 'stored-client' },
       tokens: {
+        issuer: new URL(fixture.mcpUrl).origin,
         access_token: 'stale-token',
         token_type: 'Bearer',
         refresh_token: fixture.refreshToken,
@@ -615,7 +647,11 @@ describe('McpClientManager OAuth E2E', () => {
     const storage = createMemoryMcpOAuthStorage();
     await storage.set('remote', {
       serverUrl: fixture.mcpUrl,
-      tokens: { access_token: fixture.accessToken, token_type: 'Bearer' },
+      tokens: {
+        issuer: new URL(fixture.mcpUrl).origin,
+        access_token: fixture.accessToken,
+        token_type: 'Bearer',
+      },
     });
     const manager = new McpClientManager({ oauthStorage: storage });
     managers.push(manager);
@@ -669,7 +705,11 @@ describe('McpClientManager OAuth E2E', () => {
     const storage = createMemoryMcpOAuthStorage();
     await storage.set('remote', {
       serverUrl: fixture.mcpUrl,
-      tokens: { access_token: fixture.accessToken, token_type: 'Bearer' },
+      tokens: {
+        issuer: new URL(fixture.mcpUrl).origin,
+        access_token: fixture.accessToken,
+        token_type: 'Bearer',
+      },
     });
     const manager = new McpClientManager({ oauthStorage: storage });
     managers.push(manager);
@@ -875,7 +915,11 @@ describe('McpClientManager OAuth E2E', () => {
     const storage = createMemoryMcpOAuthStorage();
     await storage.set('remote', {
       serverUrl: fixture.mcpUrl,
-      tokens: { access_token: fixture.accessToken, token_type: 'Bearer' },
+      tokens: {
+        issuer: new URL(fixture.mcpUrl).origin,
+        access_token: fixture.accessToken,
+        token_type: 'Bearer',
+      },
     });
     const manager = new McpClientManager({ oauthStorage: storage });
     managers.push(manager);
@@ -905,7 +949,11 @@ describe('McpClientManager OAuth E2E', () => {
     await storage.set('remote', {
       serverUrl: fixture.mcpUrl,
       generation: 1,
-      tokens: { access_token: fixture.accessToken, token_type: 'Bearer' },
+      tokens: {
+        issuer: new URL(fixture.mcpUrl).origin,
+        access_token: fixture.accessToken,
+        token_type: 'Bearer',
+      },
     });
     await manager.sync({ version: MCP_CONFIG_VERSION, mcpServers: {} });
     const afterRemoval = await storage.get('remote');
@@ -926,7 +974,11 @@ describe('McpClientManager OAuth E2E', () => {
     await storage.set('remote', {
       serverUrl: fixture.mcpUrl,
       generation: 1,
-      tokens: { access_token: fixture.accessToken, token_type: 'Bearer' },
+      tokens: {
+        issuer: new URL(fixture.mcpUrl).origin,
+        access_token: fixture.accessToken,
+        token_type: 'Bearer',
+      },
     });
     await late.sync(config(fixture.mcpUrl));
 
@@ -939,7 +991,11 @@ describe('McpClientManager OAuth E2E', () => {
     const memory = createMemoryMcpOAuthStorage();
     await memory.set('remote', {
       serverUrl: fixture.mcpUrl,
-      tokens: { access_token: fixture.accessToken, token_type: 'Bearer' },
+      tokens: {
+        issuer: new URL(fixture.mcpUrl).origin,
+        access_token: fixture.accessToken,
+        token_type: 'Bearer',
+      },
     });
     let storageDown = false;
     const flaky: McpOAuthStorage = {
@@ -1064,8 +1120,9 @@ describe('McpClientManager OAuth E2E', () => {
     const storage = createMemoryMcpOAuthStorage();
     await storage.set('remote', {
       serverUrl: fixture.mcpUrl,
-      clientInformation: { client_id: 'stored-client' },
+      clientInformation: { issuer: new URL(fixture.mcpUrl).origin, client_id: 'stored-client' },
       tokens: {
+        issuer: new URL(fixture.mcpUrl).origin,
         access_token: 'stale-token',
         token_type: 'Bearer',
         refresh_token: fixture.refreshToken,
@@ -1099,8 +1156,12 @@ describe('McpClientManager OAuth E2E', () => {
     const storage = createMemoryMcpOAuthStorage();
     // Legacy/hand-written record: credential material, no serverUrl.
     await storage.set('remote', {
-      tokens: { access_token: fixture.accessToken, token_type: 'Bearer' },
-      clientInformation: { client_id: 'stored-client' },
+      tokens: {
+        issuer: new URL(fixture.mcpUrl).origin,
+        access_token: fixture.accessToken,
+        token_type: 'Bearer',
+      },
+      clientInformation: { issuer: new URL(fixture.mcpUrl).origin, client_id: 'stored-client' },
     });
     const manager = new McpClientManager({ oauthStorage: storage });
     managers.push(manager);
@@ -1182,6 +1243,38 @@ describe('McpClientManager OAuth E2E', () => {
     }
   });
 
+  test('legacy credentials without issuer binding require a fresh sign-in', async () => {
+    for (const missing of ['tokens', 'clientInformation'] as const) {
+      const storage = createMemoryMcpOAuthStorage();
+      const issuer = 'https://as.example';
+      await storage.set('remote', {
+        serverUrl: 'https://mcp.example/mcp',
+        tokens: {
+          ...(missing === 'tokens' ? {} : { issuer }),
+          access_token: 'old-token',
+          refresh_token: 'old-refresh',
+          token_type: 'Bearer',
+        },
+        clientInformation: {
+          ...(missing === 'clientInformation' ? {} : { issuer }),
+          client_id: 'old-client',
+          client_secret: 'old-secret',
+        },
+      });
+      const provider = new McpOAuthProvider({
+        serverId: 'remote',
+        serverUrl: 'https://mcp.example/mcp',
+        storage,
+        clientName: 'maka',
+        clientVersion: '0.0.0',
+      });
+      assert.equal(await provider.tokens(), undefined);
+      await assert.rejects(provider.clientInformation(), McpAuthRequiredError);
+      assert.equal((await storage.get('remote'))?.tokens, undefined);
+      assert.equal((await storage.get('remote'))?.clientInformation, undefined);
+    }
+  });
+
   test('static credentials survive restart only with the same configured registration', async () => {
     const config = { issuer: 'https://as.example', clientId: 'client-a', clientSecret: 'secret-a' };
     for (const changed of [
@@ -1226,8 +1319,12 @@ describe('McpClientManager OAuth E2E', () => {
     const storage = createMemoryMcpOAuthStorage();
     await storage.set('remote', {
       serverUrl: 'https://mcp.example/mcp',
-      clientInformation: { client_id: 'as-a-client', client_secret: 'as-a-secret' },
-      tokens: { access_token: 'as-a-token', token_type: 'Bearer' },
+      clientInformation: {
+        issuer: 'https://as-a.example',
+        client_id: 'as-a-client',
+        client_secret: 'as-a-secret',
+      },
+      tokens: { issuer: 'https://as-a.example', access_token: 'as-a-token', token_type: 'Bearer' },
       discovery: { authorizationServerUrl: 'https://as-a.example' } as never,
     });
     const provider = new McpOAuthProvider({
@@ -1255,8 +1352,12 @@ describe('McpClientManager OAuth E2E', () => {
     const storage = createMemoryMcpOAuthStorage();
     await storage.set('remote', {
       serverUrl: 'https://old.example/mcp',
-      clientInformation: { client_id: 'old-client', client_secret: 'old-secret' },
-      tokens: { access_token: 'old-token', token_type: 'Bearer' },
+      clientInformation: {
+        issuer: 'https://as.example',
+        client_id: 'old-client',
+        client_secret: 'old-secret',
+      },
+      tokens: { issuer: 'https://as.example', access_token: 'old-token', token_type: 'Bearer' },
       discovery: { authorizationServerUrl: 'https://as.example' } as never,
       generation: 3,
       version: 7,
@@ -1406,7 +1507,11 @@ describe('McpClientManager OAuth E2E', () => {
     const memory = createMemoryMcpOAuthStorage();
     await memory.set('remote', {
       serverUrl: fixture.mcpUrl,
-      tokens: { access_token: fixture.accessToken, token_type: 'Bearer' },
+      tokens: {
+        issuer: new URL(fixture.mcpUrl).origin,
+        access_token: fixture.accessToken,
+        token_type: 'Bearer',
+      },
     });
     let storageDown = false;
     const flaky: McpOAuthStorage = {

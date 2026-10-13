@@ -17,6 +17,10 @@
  * under the License.
  */
 
+import {
+  openArchiveRetentionStore,
+  type InteractiveArchiveRetentionStore,
+} from './archive-retention-store.js';
 import { openInteractiveArtifactStoreForWrite } from './artifact-stores.js';
 import type { ContextOffloadLimits } from '@maka/core/context-offload';
 import { openInteractiveContextOffloadStoreForWrite } from './context-offload-store.js';
@@ -80,6 +84,8 @@ export interface StorageWriterComposition {
   readonly usage: Awaited<ReturnType<typeof openInteractiveUsageStoresForWrite>>;
   readonly shellRuns: Awaited<ReturnType<typeof openInteractiveShellRunStoreForWrite>>;
   readonly footprint: InteractiveStorageFootprintReader;
+  /** The archived-task retention document, bound to the composition's write lease. */
+  readonly archiveRetention: InteractiveArchiveRetentionStore;
   close(): Promise<void>;
 }
 
@@ -233,6 +239,7 @@ async function createComposition(
     usage,
     shellRuns,
     footprint,
+    archiveRetention: openArchiveRetentionStore(lease),
     close,
   });
 }

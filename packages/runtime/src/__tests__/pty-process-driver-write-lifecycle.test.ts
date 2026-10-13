@@ -103,7 +103,8 @@ const CHILD_SOURCE = String.raw`
     while (!output.includes('B-READY')) await new Promise(resolve => setTimeout(resolve, 5));
     fs.writeSync = originalWriteSync;
     syncBuiltinESMExports();
-    if (process.env.FIRST_WRITE === '1') {
+    if (process.env.FIRST_WRITE === '1' || process.env.FIRST_WRITE === 'pending') {
+      // A pending retry must not turn a newly admitted write into a false receipt.
       assert.throws(() => driver.write('FIRST-SECRET\r'), /input is closed/);
     } else {
       retry();
@@ -126,7 +127,7 @@ const CHILD_SOURCE = String.raw`
 test('closed PTY input cannot reach a replacement PTY (same fd on Linux) before child exit', {
   skip: process.platform === 'win32' ? 'Unix PTY file-descriptor lifecycle only' : false,
 }, () => {
-  for (const firstWrite of ['0', '1']) {
+  for (const firstWrite of ['0', '1', 'pending']) {
     const result = spawnSync(process.execPath, ['--input-type=module', '--eval', CHILD_SOURCE], {
       cwd: process.cwd(),
       encoding: 'utf8',

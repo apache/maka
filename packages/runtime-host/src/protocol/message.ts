@@ -21,6 +21,7 @@ import { invalidProtocolFrame } from './errors.js';
 import {
   assertExactKeys,
   requireCount,
+  requireEncodedByteLimit,
   requireEntityId,
   requireExactRecord,
   requireId,
@@ -573,17 +574,5 @@ function assertUniqueQueueEntries(
     }
     entryIds.add(entry.entryId);
     messageIds.add(entry.messageId);
-  }
-}
-
-function requireEncodedByteLimit(value: unknown, label: string, maxBytes: number): void {
-  let encoded: string | undefined;
-  try {
-    encoded = JSON.stringify(value);
-  } catch {
-    throw invalidProtocolFrame(`Invalid ${label}`);
-  }
-  if (encoded === undefined || Buffer.byteLength(encoded, 'utf8') > maxBytes) {
-    throw invalidProtocolFrame(`Invalid ${label}`);
   }
 }

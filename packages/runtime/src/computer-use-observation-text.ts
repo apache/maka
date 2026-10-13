@@ -481,7 +481,28 @@ function header(
       'truncated=true(the tree was cut short; an element you expect may exist but not be listed)',
     );
   }
+  const selectedText = selectedTextCaption(observation);
+  if (selectedText) parts.push(selectedText);
   return parts.join(' ');
+}
+
+/**
+ * Window selection is application text. A password field that currently holds
+ * keys must not leak that text through this caption; otherwise truncate like
+ * `value` and keep the executor's own truncated flag.
+ */
+function selectedTextCaption(observation: CuObservation): string | undefined {
+  const selected = observation.selectedText;
+  if (!selected) return undefined;
+  const focused = observation.elements.find((element) => element.focused === true);
+  const role = `${focused?.role ?? ''} ${focused?.subrole ?? ''}`;
+  if (/secure/i.test(role)) {
+    return 'selected_text=withheld(secure_field)';
+  }
+  const shown = truncate(selected.text);
+  return selected.truncated === true
+    ? `selected_text=${quote(shown)}(truncated=true)`
+    : `selected_text=${quote(shown)}`;
 }
 
 /**

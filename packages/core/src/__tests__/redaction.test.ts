@@ -65,6 +65,7 @@ describe('redactSecrets', () => {
       'token sk-ant-abc12345 done',
       'token AIza0123456789_ABCdefGHIjkl done',
       'token ghp_0123456789abcdefghij done',
+      'token github_pat_11ABCDEFG0abcdefghijklmnop_qrstuvwxyz0123456789ABCD done',
       'token xoxb-0123456789abcdef done',
       'token 0123456789abcdef0123456789abcdef01234567 done',
     ];

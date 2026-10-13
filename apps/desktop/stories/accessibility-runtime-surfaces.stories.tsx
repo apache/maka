@@ -32,6 +32,8 @@ import {
   type WorkbarServices,
 } from '../src/renderer/features/workbar/testing';
 import { WorkbarSurface } from '../src/renderer/features/workbar/stories';
+import { TaskEntryServicesProvider } from '../src/renderer/features/task-entry';
+import { createFakeTaskEntryServices } from '../src/renderer/features/task-entry/testing';
 import { RemoteProjectDirectoryDialog } from '../src/renderer/remote-project-directory-dialog';
 import { RuntimeHostSshTerminalDialog } from '../src/renderer/settings/runtime-host-ssh-terminal-dialog';
 import { withScopedMakaBridge } from './maka-bridge';
@@ -250,11 +252,14 @@ const htmlArtifact: ArtifactDescriptor = {
   source: 'subagent_writeback',
 };
 
+const taskEntryServices = createFakeTaskEntryServices();
+
 function RemoteProjectDirectoryStory() {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   return (
-    <>
+    <ToastProvider>
+      <TaskEntryServicesProvider services={taskEntryServices}>
       <button ref={triggerRef} type="button" onClick={() => setOpen(true)}>
         选择远程项目目录
       </button>
@@ -266,7 +271,8 @@ function RemoteProjectDirectoryStory() {
         onClose={() => setOpen(false)}
         onRegistered={() => setOpen(false)}
       />
-    </>
+      </TaskEntryServicesProvider>
+    </ToastProvider>
   );
 }
 
@@ -356,6 +362,7 @@ export const BackgroundArtifactCount: Story = {
   },
 };
 
+// Real path: Project Settings → choose a remote Host directory → register and reopen.
 export const RemoteProjectDirectory: Story = {
   decorators: [
     withScopedMakaBridge({

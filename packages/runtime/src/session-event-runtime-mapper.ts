@@ -367,6 +367,7 @@ function mapBackendSessionEvent(
         name,
         result: event.content,
         ...(event.isError ? { isError: true as const } : {}),
+        ...(event.outcome ? { outcome: event.outcome } : {}),
         ...(event.providerExecuted !== undefined
           ? { providerExecuted: event.providerExecuted }
           : {}),
@@ -490,6 +491,15 @@ function mapBackendSessionEvent(
         author: 'user',
         actions: { formAnswerAccepted: { requestId: event.requestId } },
         refs: { toolCallId: event.toolUseId },
+      };
+
+    case 'context_compaction_applied':
+      return {
+        ...base,
+        role: 'system',
+        author: 'system',
+        modelVisibility: 'hidden',
+        content: { kind: 'system_note', note: event.type },
       };
 
     // ── Steering: a user message injected mid-turn at a step boundary ─────

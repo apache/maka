@@ -174,6 +174,10 @@ class WslProcessByteStream implements RuntimeHostByteStream, RuntimeHostConnecti
 
   onError(listener: (error: Error) => void): void {
     this.child.once('error', listener);
+    // Pipe errors are emitted independently of the write callback and the
+    // ChildProcess error event. Route them through the transport failure fence.
+    this.child.stdin.on('error', listener);
+    this.child.stdout.on('error', listener);
   }
 
   write(chunk: Buffer): Promise<void> {

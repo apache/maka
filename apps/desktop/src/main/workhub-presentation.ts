@@ -581,6 +581,16 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     return !!view && !view.webContents.isDestroyed() && view.webContents === contents;
   }
 
+  function captureBackdrop(): Promise<string | undefined> | undefined {
+    const main = deps.mainWindow();
+    if (placement !== 'docked' || !host.visible || !view || !container?.getVisible() ||
+      !rendererReady || !main?.isVisible() || main.isMinimized()) return;
+    return view.webContents.capturePage().then((image) => image.toDataURL()).catch((error: unknown) => {
+      if (!(error instanceof Error && error.message === 'UnknownVizError')) reportError(error);
+      return undefined;
+    });
+  }
+
   function registerIpc(): void {
     if (ipcRegistered) return;
     ipcMain.handle(COMMAND, async (event, command: unknown, payload: unknown) => {
@@ -606,6 +616,10 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
         if (changesPresentation && revision !== presentationRevision) return;
         switch (command) {
           case 'snapshot': return getSnapshot();
+          case 'capture-backdrop':
+            if (!isMain) throw new Error('Only the main window can capture the WorkHub backdrop');
+            backdrop = captureBackdrop();
+            return;
           case 'ready':
             if (!isMain) { rendererReady = true; if (focusPending) { focusComposer(); changed(); } }
             else {
@@ -629,14 +643,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
             const workbarChanged = host.workbar?.collapsed !== value.workbar?.collapsed || host.workbar?.placement !== value.workbar?.placement || host.workbar?.togglePosition !== value.workbar?.togglePosition;
             // Native child views sit above the main renderer's top layer. Keep
             // a still frame behind its menus/dialogs while yielding native input.
-            if (placement === 'docked' && value.visible && value.occluded && !host.occluded && view && container?.getVisible() &&
-              rendererReady && main?.isVisible() && !main.isMinimized()) {
-              backdrop = view.webContents.capturePage().then((image) => image.toDataURL()).catch((error: unknown) => {
-                // Capture is optional; native input yields without awaiting it.
-                if (!(error instanceof Error && error.message === 'UnknownVizError')) reportError(error);
-                return undefined;
-              });
-            }
+            if (value.visible && value.occluded && !host.occluded) backdrop = captureBackdrop();
             if (disposed) return;
             // Layout cannot reopen a disabled dock.
             host = value.visible && !host.visible && !deps.isEnabled() ? { ...value, visible: false } : value;

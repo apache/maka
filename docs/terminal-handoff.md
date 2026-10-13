@@ -121,7 +121,8 @@ own write-stream/socket close fence. Runtime never retains a raw fd for writes:
 Linux PTY masters can share the same `fstat` identity even after fd reuse.
 Expected input closure drops pending bytes without reporting an integrity fault.
 The first write that discovers closure fails synchronously instead of returning a
-queued receipt; later writes and protocol replies preserve that classification.
+queued receipt, including when an earlier backpressured write has a retry pending;
+later writes and protocol replies preserve that classification.
 Resize uses the same owned socket/write-stream close fence, so a reused PTY fd
 cannot receive a resize from the retired terminal.
 
@@ -180,7 +181,9 @@ the PTY, so interactive programs still work after Resume; replies and screen
 contents are not published to the model. Historical replay is admitted with
 protocol replies disabled, and it cannot coalesce with fresh output. This keeps
 old cursor/status queries from injecting a second reply into the current private
-prompt while allowing newly arriving queries to be answered.
+prompt while allowing newly arriving queries to be answered. Queries already queued
+in the public parser before handoff still receive their original reply: that
+parser never receives private bytes, so a handoff cannot strand a startup probe.
 
 Private buffers stay in the live process and visible renderer. Drafts clear on
 submit, hide, refresh and completion. Desktop computer-use calls are fenced

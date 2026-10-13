@@ -47,7 +47,7 @@ import {
 import { defaultShellPlan, type ShellPlan } from '../shell-detect.js';
 import { PtyInputClosedError, PtyProcessDriver as NativePtyDriver } from '../pty-process-driver.js';
 import xtermHeadless from '@xterm/headless';
-import { PTY_PROTOCOL_REPLY_MAX_BYTES } from '../pty-screen-collector.js';
+import { PTY_PROTOCOL_REPLY_MAX_BYTES, PtyScreenCollector } from '../pty-screen-collector.js';
 import { waitFor } from '@maka/core/test-only/async-primitives';
 
 const NO_ABORT = new AbortController().signal;
@@ -95,6 +95,80 @@ describe('ShellRunProcessManager', () => {
       assert.equal(snapshot.status, 'running');
       assert.equal(snapshot.failureMessage, undefined);
     } finally {
+      t.mock.restoreAll();
+      await manager.terminateAll();
+    }
+  });
+
+  test('handoff answers a query still queued in the public parser exactly once', {
+    skip: process.platform === 'win32',
+  }, async (t) => {
+    const cwd = await workspace();
+    const manager = createManager(sqliteShellRunStore(cwd));
+    const queryQueued = deferred();
+    const privateInstalled = deferred();
+    const parseGate = deferred();
+    const accept = PtyScreenCollector.prototype.accept;
+    const write = NativePtyDriver.prototype.write;
+    let replies = 0;
+    t.mock.method(
+      NativePtyDriver.prototype,
+      'write',
+      function (this: NativePtyDriver, data: string) {
+        if (data === '\x1b[0n') replies += 1;
+        return write.call(this, data);
+      },
+    );
+    t.mock.method(
+      PtyScreenCollector.prototype,
+      'accept',
+      function (this: PtyScreenCollector, data: string, replyToQueries = true) {
+        if (replyToQueries && data.includes('\x1b[5n')) {
+          void this.mutateAtCut(() => parseGate.promise);
+          queryQueued.resolve();
+        }
+        accept.call(this, data, replyToQueries);
+        if (data.includes('Terminal output is private')) privateInstalled.resolve();
+      },
+    );
+    const initial = await manager.runBackgroundBash(
+      shellInput({
+        cwd,
+        pty: true,
+        command: nodeCommand(`
+          process.stdin.setRawMode(true);
+          process.stdin.once('data', () => {
+            process.stdin.on('data', data => process.stdout.write('REPLY:' + data.toString('hex')));
+            process.stdout.write('\\u001b[5n');
+          });
+          process.stdout.write('READY');
+        `),
+      }),
+    );
+    try {
+      await waitForPtyText(manager, initial.ref, /READY/);
+      await manager.writeStdin({ sessionId: 'session-1', ref: initial.ref, input: 'query' });
+      await queryQueued.promise;
+      const handoff = manager.preparePtyHandoff(
+        'session-1',
+        initial.ref,
+        AbortSignal.timeout(5_000),
+      );
+      await privateInstalled.promise;
+      parseGate.resolve();
+      await handoff;
+      await waitUntil(async () =>
+        (await manager.readPrivatePtySnapshot('session-1', initial.ref)).text.includes(
+          'REPLY:1b5b306e',
+        ),
+      );
+      assert.equal(replies, 1, 'the public query must be answered once, with replay suppressed');
+      assert.doesNotMatch(
+        JSON.stringify(await manager.inspectResource('session-1', initial.ref)),
+        /REPLY:/,
+      );
+    } finally {
+      parseGate.resolve();
       t.mock.restoreAll();
       await manager.terminateAll();
     }
@@ -611,6 +685,40 @@ describe('ShellRunProcessManager', () => {
       }
     });
   }
+
+  test('records the pipe command PID, not the supervisor that owns its process group', async () => {
+    const cwd = await workspace();
+    const rootPidPath = join(cwd, 'root.pid');
+    const manager = await createTestManager();
+    try {
+      const initial = await manager.runBackgroundBash(
+        shellInput({
+          cwd,
+          command: 'report the command process id',
+          argv: [
+            process.execPath,
+            '-e',
+            `require('node:fs').writeFileSync(${JSON.stringify(rootPidPath)}, String(process.pid));
+            setInterval(() => {}, 1000);`,
+          ],
+          timeoutMs: 30_000,
+        }),
+      );
+      assertShellRun(initial);
+      await waitUntil(async () => {
+        try {
+          return (await readFile(rootPidPath, 'utf8')).length > 0;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+          throw error;
+        }
+      });
+      // A model can act on this PID directly, e.g. `kill <pid>`.
+      assert.equal(initial.pid, Number.parseInt(await readFile(rootPidPath, 'utf8'), 10));
+    } finally {
+      await manager.terminateAll().catch(() => undefined);
+    }
+  });
 
   test('hands off a long pipe command without output and publishes monotonic revisions', async () => {
     const updates: ShellRunUpdate[] = [];

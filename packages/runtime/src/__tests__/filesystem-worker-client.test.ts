@@ -669,9 +669,9 @@ function fakeClient(
         ok: true,
         spec: {
           program: '/usr/bin/node',
-          args: ['/runtime/filesystem-worker.js', '--grep-executable', '/usr/bin/rg'],
+          args: ['/runtime/filesystem-worker.mjs', '--grep-executable', '/usr/bin/rg'],
           env: {},
-          runtimeReadableRoots: ['/runtime/filesystem-worker.js'],
+          runtimeReadableRoots: ['/runtime/filesystem-worker.mjs'],
           executableRoots: ['/usr/bin/node', '/usr/bin/rg'],
         },
       };
@@ -787,9 +787,9 @@ describe('filesystem worker client dispatch classification', () => {
         ok: true,
         spec: {
           program: '/usr/bin/node',
-          args: ['/runtime/filesystem-worker.js', '--grep-executable', '/usr/bin/rg'],
+          args: ['/runtime/filesystem-worker.mjs', '--grep-executable', '/usr/bin/rg'],
           env: {},
-          runtimeReadableRoots: ['/runtime/filesystem-worker.js'],
+          runtimeReadableRoots: ['/runtime/filesystem-worker.mjs'],
           executableRoots: ['/usr/bin/node', '/usr/bin/rg'],
         },
       }),
@@ -882,9 +882,9 @@ describe('filesystem worker client dispatch classification', () => {
         ok: true,
         spec: {
           program: '/usr/bin/node',
-          args: ['/runtime/filesystem-worker.js', '--grep-executable', '/usr/bin/rg'],
+          args: ['/runtime/filesystem-worker.mjs', '--grep-executable', '/usr/bin/rg'],
           env: {},
-          runtimeReadableRoots: ['/runtime/filesystem-worker.js'],
+          runtimeReadableRoots: ['/runtime/filesystem-worker.mjs'],
           executableRoots: ['/usr/bin/node', '/usr/bin/rg'],
         },
       }),
@@ -940,9 +940,9 @@ describe('filesystem worker client dispatch classification', () => {
         ok: true,
         spec: {
           program: '/usr/bin/node',
-          args: ['/runtime/filesystem-worker.js', '--grep-executable', '/usr/bin/rg'],
+          args: ['/runtime/filesystem-worker.mjs', '--grep-executable', '/usr/bin/rg'],
           env: {},
-          runtimeReadableRoots: ['/runtime/filesystem-worker.js'],
+          runtimeReadableRoots: ['/runtime/filesystem-worker.mjs'],
           executableRoots: ['/usr/bin/node', '/usr/bin/rg'],
         },
       }),

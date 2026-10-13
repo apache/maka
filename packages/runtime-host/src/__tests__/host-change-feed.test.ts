@@ -56,7 +56,9 @@ test('routes each change kind only to subscribed connections', () => {
   );
   feed.attachConnection(
     'other-guest',
-    { sessionCatalog: { sessionId: 'session-1', principalId: 'guest-2' } },
+    {
+      sessionCatalog: { sessionId: 'session-1', principalId: 'guest-2' },
+    },
     { send: async (frame) => void otherGuest.push(frame) },
   );
 
@@ -94,6 +96,26 @@ test('routes each change kind only to subscribed connections', () => {
     { kind: 'session.catalog.changed', revision: 3, sessionId: 'session-1' },
   ]);
   assert.equal(otherGuest.length, 3);
+});
+
+test('routes Artifact invalidations only to owner subscriptions', () => {
+  const feed = new HostChangeFeed();
+  const all: unknown[] = [];
+  const guest: unknown[] = [];
+  feed.attachConnection(
+    'all-artifacts',
+    { artifact: true },
+    {
+      send: async (frame) => void all.push(frame),
+    },
+  );
+  feed.attachConnection('guest', {}, { send: async (frame) => void guest.push(frame) });
+
+  feed.publishArtifactDeleted('session-1', 'artifact-1');
+  feed.publishArtifactSessionPurged('session-2');
+
+  assert.equal(all.length, 2);
+  assert.deepEqual(guest, []);
 });
 
 test('keeps catalog revisions independent and removes failed subscriptions', async () => {

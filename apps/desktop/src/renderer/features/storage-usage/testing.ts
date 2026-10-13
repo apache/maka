@@ -27,3 +27,6 @@ export {
   SESSION_STORAGE_FAILURE_COOLDOWN_MS,
   SESSION_STORAGE_RESULT_TTL_MS,
 } from './model/session-storage-loader.js';
+export { applyArchiveRetentionChange, archiveRetentionConfirm } from './model/archive-retention.js';
+export { getArchiveRetentionCopy } from './locales/archive-retention-copy.js';
+export { acknowledgeRetentionResults, observeRetentionNotices, decodeRetentionNoticeState, RETENTION_NOTICE_POLL_MS, RETENTION_NOTICE_COOLDOWN_MS } from './model/retention-notices.js';

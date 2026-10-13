@@ -138,6 +138,10 @@ export class PtyProcessDriver {
     }
     this.writes.push({ buffer, offset: 0 });
     this.queuedBytes += buffer.length;
+    // Recheck the owned writer on each admission, even while a backpressure
+    // retry is pending: the PTY may have closed before its exit event arrives.
+    if (this.writeTimer) clearTimeout(this.writeTimer);
+    this.writeTimer = undefined;
     this.flushWrites();
     if (this.writeFailure) throw this.writeFailure;
   }
