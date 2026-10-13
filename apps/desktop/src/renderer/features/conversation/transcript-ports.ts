@@ -38,6 +38,7 @@ export interface ConversationTranscriptController {
   showLatest(): Promise<void>;
   readComplete(): Promise<readonly StoredMessage[]>;
   reload(): Promise<void>;
+  holdsCachedTranscript(): boolean;
   observationChanged(phase: 'pending' | 'ready'): void;
   close(): Promise<void>;
 }

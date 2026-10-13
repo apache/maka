@@ -21,7 +21,6 @@ import type { BackendSendInput } from '@maka/core/backend-types';
 import type { SessionEvent } from '@maka/core/events';
 import { FakeBackend, FAKE_HOLD_OPEN_PROMPT } from '@maka/runtime/test-only/fake-backend';
 import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
-import type { WorkHubRoutingDecision } from '@maka/core/workhub-routing';
 import { SqliteSessionMetadataStore } from '@maka/storage/sqlite-session-metadata-store';
 import { createMemoryExecutionPersistenceProvider } from '@maka/storage/test-only/memory-execution-persistence';
 import { startExecutionRuntimeHostCandidate } from '../../server/execution-candidate.js';
@@ -89,7 +88,6 @@ class ObservedBackend extends FakeBackend {
   }
 }
 
-const routingDecisions = new Map<string, WorkHubRoutingDecision>();
 const candidate = await startExecutionRuntimeHostCandidate(
   { rootPath, expectedRootId, idleGraceMs: 60_000 },
   {
@@ -104,31 +102,13 @@ const candidate = await startExecutionRuntimeHostCandidate(
             }
           : {}),
         primaryBackendFactory: (context) => new ObservedBackend(context),
-        workHubRoutingModel: {
-          decide: async ({ turnId }) => {
-            const decision = routingDecisions.get(turnId);
-            if (!decision) throw new Error(`Missing fake WorkHub routing decision for ${turnId}`);
-            return decision;
-          },
-        },
       }),
   },
 );
 if (candidate.kind === 'loser') throw new Error('Fixture failed to acquire Host ownership');
-process.on(
-  'message',
-  (
-    message:
-      | { type: 'shutdown' }
-      | { type: 'routing_decision'; turnId: string; decision: WorkHubRoutingDecision },
-  ) => {
-    if (message.type === 'shutdown') void candidate.host.close();
-    else if (message.type === 'routing_decision') {
-      routingDecisions.set(message.turnId, message.decision);
-      process.send?.({ type: 'routing_decision_ready', turnId: message.turnId });
-    }
-  },
-);
+process.on('message', (message: { type: 'shutdown' }) => {
+  if (message.type === 'shutdown') void candidate.host.close();
+});
 try {
   await runRuntimeHostProcessLifecycle(candidate.host, {
     closeOnDisconnect: true,

@@ -130,7 +130,7 @@ Before upgrading Zod, re-verify allocation handoff, reentrant parsing, and cycle
 identity against the new memoizer and container implementations.
 The Runtime `zod-recursive-contract.test.ts` suite covers both shipped entry points.
 
-## `@modelcontextprotocol/client@2.1.0`
+## `@modelcontextprotocol/client@2.2.0`
 
 Pending transport sends retain settled request arguments and results through
 error observers, even after response, abort, timeout, or connection close.

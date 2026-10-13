@@ -1015,7 +1015,8 @@ export class ShellRunProcessManager
   }
 
   private processPidPatch(live: LiveShellRun): Pick<ShellRunPatch, 'pid'> {
-    const pid = live.driver.pid;
+    // A pipe command runs under an owning supervisor; report the command itself.
+    const pid = live.mode === 'pipes' ? live.driver.commandPid : live.driver.pid;
     return pid !== undefined && Number.isSafeInteger(pid) && pid > 0 ? { pid } : {};
   }
 

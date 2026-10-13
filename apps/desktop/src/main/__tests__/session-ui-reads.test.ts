@@ -36,6 +36,7 @@ import {
   useSessionUiRead,
 } from '../../renderer/features/conversation/testing.js';
 import { createSessionCatalogController, SessionCatalogContext } from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
+import { useExternalStoreSelector } from '../../renderer/application/contracts/session-catalog/use-external-store-selector.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 
 function interaction(requestId: string): SandboxBoundaryRequestEvent {
@@ -265,6 +266,47 @@ describe('production Session UI consumers', () => {
       assert.equal(value.activeInteraction, undefined);
       assert.equal(value.activeMessageQueue, undefined);
       assert.equal(value.stopPending, false);
+    } finally {
+      cleanupFakeDom();
+    }
+  });
+
+  it('holds covered token and shell-run readings through parent renders, then reads the latest owner state', async () => {
+    const { root } = installReactRenderer();
+    const c = createController();
+    start(c, 'A');
+    let renders = 0;
+    let value!: {
+      turns: ReturnType<ReturnType<typeof c.reads.liveTurns>['getSnapshot']>;
+      runs: ReturnType<ReturnType<typeof c.reads.shellRuns>['getSnapshot']>;
+    };
+    function Transcript({ visible }: { visible: boolean }) {
+      renders += 1;
+      value = {
+        turns: useExternalStoreSelector(c.reads.liveTurns, 'A', visible),
+        runs: useExternalStoreSelector(c.reads.shellRuns, 'A', visible),
+      };
+      return null;
+    }
+    try {
+      await act(async () => root.render(createElement(Transcript, { visible: true })));
+      await act(async () => root.render(createElement(Transcript, { visible: false })));
+      const held = value;
+      const before = renders;
+      await act(async () => {
+        c.setLiveTurnBySession((s) => ({ ...s, A: live('hidden tokens') }));
+        c.setShellRunUpdatesBySession((s) => ({ ...s, A: { run: {
+          sessionId: 'A', ownership: { kind: 'local' }, sourceTurnId: 'turn', sourceToolCallId: 'tool',
+          result: { kind: 'shell_run', ref: 'run', status: 'running', cwd: '/tmp', cmd: 'echo', startedAt: 1, updatedAt: 2, revision: 1, mode: 'pipes' },
+        } } }));
+      });
+      assert.equal(renders, before, 'covered readers do not render owner publications');
+      await act(async () => root.render(createElement(Transcript, { visible: false })));
+      assert.equal(value.turns, held.turns, 'an unrelated parent render cannot pull hidden tokens');
+      assert.equal(value.runs, held.runs);
+      await act(async () => root.render(createElement(Transcript, { visible: true })));
+      assert.equal(value.turns?.[0]?.steps[0]?.text?.text, 'hidden tokens');
+      assert.equal(value.runs?.run?.result.updatedAt, 2);
     } finally {
       cleanupFakeDom();
     }

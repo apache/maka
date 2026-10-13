@@ -111,7 +111,7 @@ export function ConversationLifecycle(props: {
       ? props.searchTarget?.turnId
       : requestedId ? ui.transcriptReadingAnchorBySessionRef.current[requestedId]?.turnId : undefined,
     observationAuthorityRevision: authority.current.generation,
-    activeIdRef, transcriptRangeRef,
+    activeIdRef, transcriptRangeRef, observationRef: workspace.observationRef,
     handleEvent: handlers.handleEvent,
     publishTranscript: workspace.publishTranscript,
     commitTranscript: workspace.commitTranscript,

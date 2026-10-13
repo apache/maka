@@ -151,7 +151,7 @@ describe('Conversation owner context compaction', () => {
         hasDurableMessage: () => false,
       },
       ready: async () => {}, waitForDurableMessage: async () => true,
-      reload: async () => {}, loadEarlier: async () => {}, observationChanged: () => {},
+      reload: async () => {}, holdsCachedTranscript: () => false, loadEarlier: async () => {}, observationChanged: () => {},
       loadNewer: async () => {}, seek: async () => {}, showLatest: async () => {}, readComplete: async () => [],
       close: async () => {},
     });

@@ -42,7 +42,7 @@ export interface TranscriptTurnIndex {
 
 export interface TranscriptReadingPositionCommands {
   prepareSend(sessionId: string): boolean;
-  captureAnchor(turnId?: string): void;
+  captureAnchor(sessionId: string, turnId?: string): void;
   loadEarlier(throughSequence?: number): Promise<void>;
   loadNewer(): Promise<void>;
   showLatest(): Promise<void>;
@@ -89,9 +89,8 @@ export function TranscriptReadingPositionController(props: {
         },
       });
     },
-    captureAnchor(turnId) {
-      const { sessionId } = props;
-      if (!sessionId || props.currentSessionId.current !== sessionId) return;
+    captureAnchor(sessionId, turnId) {
+      if (props.sessionId !== sessionId || props.currentSessionId.current !== sessionId) return;
       props.sessionUi.setTranscriptRestoreUnavailable(sessionId, undefined);
       props.sessionUi.setTranscriptReadingAnchor(sessionId, turnId ? { turnId } : undefined);
     },

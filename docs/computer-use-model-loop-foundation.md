@@ -6,7 +6,7 @@ source_language: en
 implementation_status: current
 document_status: current
 translation_status: source-only
-last_verified: 2026-09-11
+last_verified: 2026-09-30
 owners:
   - maka-backend
 ---
@@ -61,8 +61,11 @@ Maka keeps the same separation:
 
 - `maka_computer` is the primary model-facing path;
 - semantic element actions and verified AX/CDP value updates are retained;
-- coordinate click, scroll, drag, key input, and pixel fallback are described
-  as disabled and fail closed;
+- coordinate click, scroll, drag, and pixel fallback remain disabled and fail
+  closed; keyboard is capability-dependent: `press_key` is a semantic action,
+  and `type`/`key` are implemented in `maka-cu-backend.run`, where §6.4
+  requires each dispatch to bind to the observed target or a verified focus
+  owner (a bare `type` with no focused element refuses);
 - provider adapters use the same `maka_computer` contract rather than a
   separate native Computer Use loop.
 

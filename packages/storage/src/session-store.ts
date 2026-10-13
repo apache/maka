@@ -51,6 +51,9 @@ import {
   type CoordinationTranscriptIndexRecord,
   type CoordinationTranscriptIndexState,
   type SessionAuthorityStore,
+  type ArchiveRetentionCandidateCount,
+  type ArchiveRetentionCandidateQuery,
+  type ArchiveRetentionCandidateRow,
 } from './session-store-contract.js';
 export {
   isSafeSessionId,
@@ -903,6 +906,32 @@ class SqliteSessionStore implements SessionAuthorityStore {
   async completeSessionRetirementCleanup(sessionId: string): Promise<void> {
     await this.ensureReady();
     await this.metadata.completeSessionRetirementCleanup(sessionId);
+  }
+
+  async listArchiveRetentionCandidates(
+    query: ArchiveRetentionCandidateQuery,
+  ): Promise<ArchiveRetentionCandidateRow[]> {
+    await this.ensureReady();
+    return (await this.metadata.listArchiveRetentionCandidates(query)).map((record) =>
+      'undecodable' in record
+        ? record
+        : {
+            ...projectHeaderSnapshot(record),
+            ...(record.archivedAt === undefined ? {} : { archivedAt: record.archivedAt }),
+          },
+    );
+  }
+
+  async countArchiveRetentionCandidates(
+    enabledAt: number,
+  ): Promise<ArchiveRetentionCandidateCount> {
+    await this.ensureReady();
+    return this.metadata.countArchiveRetentionCandidates(enabledAt);
+  }
+
+  async readLatestSessionMetadataTime(): Promise<number | undefined> {
+    await this.ensureReady();
+    return this.metadata.readLatestSessionMetadataTime();
   }
 
   async setFlagged(sessionId: string, isFlagged: boolean): Promise<void> {

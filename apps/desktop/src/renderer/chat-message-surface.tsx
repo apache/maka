@@ -68,9 +68,17 @@ interface ChatMessageSurfaceProps extends Omit<
   sessionUiReads: Pick<SessionUiReads, 'liveTurns' | 'shellRuns'>;
   /** The shell's selected session. Not derived from `activeSession`, which the shell substitutes for an unsaved chat. */
   activeSessionId: string | undefined;
+  visible?: boolean;
   /** Identifies the active session observation whose seed is visible. */
   liveContentSeedGeneration: number;
   sessionHealthNotice?: SessionHealthNoticeView;
+  /** Repair prompt for a task bound to an unsafe inherited directory. */
+  taskDirectoryNotice?: {
+    title: string;
+    description: string;
+    actionLabel: string;
+    onAction: () => void;
+  };
   sessionHealthModelPickerAvailable: boolean;
   workspaceReadinessRecovery?: WorkspaceReadinessRecovery;
   showOnboardingHero: boolean;
@@ -97,9 +105,11 @@ function captureLiveContent(liveTurn: LiveTurnProjection | undefined) {
 
 export function ChatMessageSurface({
   sessionUiReads,
+  visible = true,
   activeSessionId,
   liveContentSeedGeneration,
   sessionHealthNotice,
+  taskDirectoryNotice,
   sessionHealthModelPickerAvailable,
   workspaceReadinessRecovery,
   showOnboardingHero,
@@ -133,7 +143,7 @@ export function ChatMessageSurface({
         return;
     }
   };
-  const liveTurns = useExternalStoreSelector(sessionUiReads.liveTurns, activeSessionId);
+  const liveTurns = useExternalStoreSelector(sessionUiReads.liveTurns, activeSessionId, visible);
   const liveTurn = liveTurns?.find((turn) => turn.turnId === chatViewRest.activeTurn?.turnId) ?? liveTurns?.at(-1);
   const seededLiveTurns = liveContentSeedGeneration > 0 ? liveTurns : undefined;
   const [activation, setActivation] = useState(() => ({
@@ -166,10 +176,7 @@ export function ChatMessageSurface({
   // change to any OTHER map cannot rebuild the array. Deriving it in the
   // selector would need a comparator to say the same thing, and would still
   // recompute once per store change.
-  const shellRunUpdateRecord = useExternalStoreSelector(
-    sessionUiReads.shellRuns,
-    activeSessionId,
-  );
+  const shellRunUpdateRecord = useExternalStoreSelector(sessionUiReads.shellRuns, activeSessionId, visible);
   const shellRunUpdates = useMemo(
     () => Object.values(shellRunUpdateRecord ?? {}),
     [shellRunUpdateRecord],
@@ -208,6 +215,15 @@ export function ChatMessageSurface({
         )}
       </ChatViewGoalProjectionConsumer>
       <TaskReadinessNoticeConsumer surface={ChatRecoveryNotice} />
+      {taskDirectoryNotice && (
+        <ChatRecoveryNotice
+          status="warning"
+          title={taskDirectoryNotice.title}
+          description={taskDirectoryNotice.description}
+          actionLabel={taskDirectoryNotice.actionLabel}
+          onAction={taskDirectoryNotice.onAction}
+        />
+      )}
       {workspaceReadinessRecovery && (
         <ChatRecoveryNotice
           status={workspaceReadinessRecovery.tone === 'destructive' ? 'error' : 'warning'}

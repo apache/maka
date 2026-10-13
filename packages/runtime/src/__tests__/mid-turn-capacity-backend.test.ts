@@ -29,6 +29,7 @@ import type { SessionHeader } from '@maka/core/session';
 import type { SessionEvent } from '@maka/core/events';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { z } from 'zod';
+import { deferred } from '@maka/core/test-only/async-primitives';
 import { AiSdkBackend } from '../ai-sdk-backend.js';
 import { buildDefaultContextBudgetPolicy } from '../context-budget-policy.js';
 import {
@@ -102,6 +103,8 @@ interface MidTurnFixture {
 }
 
 interface MidTurnFixtureOptions {
+  /** Hold a provider request open to inspect live events before settlement. */
+  beforeRequest?: (call: number) => Promise<void>;
   contextWindow?: number;
   /** Omit the model's context window entirely (unknown model metadata). */
   withoutContextWindow?: boolean;
@@ -308,6 +311,7 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
         throw Object.assign(new Error('aborted'), { name: 'AbortError' });
       }
       const call = model.doStreamCalls.length;
+      await options.beforeRequest?.(call);
       if (options.firstRequestContextOverflow && call === 1) {
         throw Object.assign(new Error('prompt is too long: 213462 tokens > 200000 maximum'), {
           name: 'AI_APICallError',
@@ -765,6 +769,47 @@ function compactionDecisions(
 }
 
 function defineMidTurnSuite(consumer: ConsumerMode): void {
+  test('publishes the applied boundary while the post-compaction request is still running', {
+    timeout: 5_000,
+  }, async () => {
+    const requestStarted = deferred();
+    const requestHeld = deferred();
+    const fixture = buildFixture({
+      beforeRequest: async (call) => {
+        if (call !== 3) return;
+        requestStarted.resolve();
+        await requestHeld.promise;
+      },
+    });
+    const turn = runFixtureTurn(fixture, consumer);
+    try {
+      await requestStarted.promise;
+      assert.equal(fixture.recorded.length, 1, 'the checkpoint has been persisted');
+      assert.equal(
+        fixture.events.some((event) => event.type === 'complete'),
+        false,
+      );
+      assert.equal(
+        fixture.events.filter((event) => event.type === 'context_compaction_applied').length,
+        1,
+        'the live boundary must arrive before the next request settles',
+      );
+      const boundaries = fixture.ledger.filter(
+        (event) =>
+          event.content?.kind === 'system_note' &&
+          event.content.note === 'context_compaction_applied',
+      );
+      assert.equal(boundaries.length, 1, 'the stream persists exactly one canonical boundary');
+      const applied = fixture.events.find((event) => event.type === 'context_compaction_applied');
+      assert.equal(boundaries[0]?.id, applied?.id);
+      assert.equal(boundaries[0]?.ts, applied?.ts);
+      assert.equal(boundaries[0]?.modelVisibility, 'hidden');
+    } finally {
+      requestHeld.resolve();
+      await turn;
+    }
+  });
+
   test('keeps user_stop when stopping while a usage-triggered fold is summarizing', async () => {
     // The fold now starts from the provider's real usage instead of a local
     // estimate, but a user stop during its summarizer call must still end the
@@ -1035,6 +1080,10 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
       (decision) => decision.phase === 'mid_turn' && decision.decision === 'failedOpen',
     );
     assert.equal(failedOpen?.failOpenReason, 'write_failed');
+    assert.equal(
+      fixture.events.some((event) => event.type === 'context_compaction_applied'),
+      false,
+    );
   });
 
   test('a malformed summarizer completion fails open end-to-end with its granular reason', async () => {
@@ -1216,6 +1265,9 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
 
     assert.equal(fixture.summarizerCalls, 2);
     assert.equal(fixture.recorded.length, 2);
+    const applied = fixture.events.filter((event) => event.type === 'context_compaction_applied');
+    assert.equal(applied.length, 2, 'each applied fold publishes its own boundary');
+    assert.notEqual(applied[0]?.id, applied[1]?.id);
     // The second fold covers the step the first one left out.
     assert.equal(
       fixture.recorded[1]!.coverage.eventCount > fixture.recorded[0]!.coverage.eventCount,
@@ -1722,6 +1774,7 @@ describe('the shipped runtime default drives the proactive long-turn journey (is
     const fixture = buildFixture({
       contextWindow: 1_000_000,
       finalAtSecondCall: true,
+      meteredSummarizer: true,
     });
     await runFixtureTurn(fixture);
 
@@ -1737,10 +1790,12 @@ describe('the shipped runtime default drives the proactive long-turn journey (is
     // Two steps: 100 + 120 reported input, and the send sum is both.
     assert.equal(usage?.input, 220);
     const anchor = usage?.lastRequestAnchor as
-      | { inputTokens: number; outputTokens?: number }
+      | { inputTokens: number; outputTokens?: number; completedAt?: number }
       | undefined;
     assert.equal(anchor?.inputTokens, 120);
     assert.equal(anchor?.outputTokens, 10);
+    const lastMainAttempt = fixture.modelCalls.filter((call) => call.callKind === 'main').at(-1);
+    assert.equal(anchor?.completedAt, lastMainAttempt?.completedAt);
   });
 
   test('an anchor is discarded unless its invocation proves it came from this model', async () => {
@@ -1809,6 +1864,139 @@ describe('the shipped runtime default drives the proactive long-turn journey (is
       (decision) => decision.stage === 'activeStep' && decision.decision === 'replaced',
     );
     assert.equal(fold?.phase, 'pre_turn');
+  });
+
+  test('a compaction boundary supersedes an anchor whose request predates the compaction (#5547)', async () => {
+    // The failed-send ledger shape: the settlement usage row lands after the
+    // apply row, but its anchor still describes the pre-compaction request — the
+    // retry never completed. Such an anchor must not seed the next send's
+    // baseline: it measures context the compaction already replaced.
+    for (const [boundaryTs, anchorCompletedAt, folds] of [
+      [1_800_000_001_000, 1_800_000_000_500, false],
+      [1_800_000_000_100, 1_800_000_000_500, true],
+    ] as const) {
+      const fixture = buildFixture({
+        priorChars: 2_000,
+        contextWindow: 20_000,
+        finalAtSecondCall: true,
+        extraPriorEvents: [
+          {
+            ...runtimeTextEvent(`prior-applied-${boundaryTs}`, 'turn-0', 'model', ''),
+            runId: 'run-0',
+            invocationId: 'run-0',
+            role: 'system' as const,
+            author: 'system' as const,
+            ts: boundaryTs,
+            content: {
+              kind: 'system_note' as const,
+              note: 'context_compaction_applied',
+            },
+          },
+          priorUsageEvent({
+            inputTokens: 30_000,
+            outputTokens: 10,
+            completedAt: anchorCompletedAt,
+          }),
+        ],
+        priorInvocations: [priorRunInvocation()],
+      });
+      await runFixtureTurn(fixture);
+
+      assert.equal(fixture.recorded.length, folds ? 1 : 0);
+    }
+  });
+
+  test('a settlement compaction note delegates its boundary to the apply row', async () => {
+    // The display note is written when the turn settles — after every
+    // request of its turn — so ordering an anchor against the note's own
+    // row time discards every post-compaction measurement. The apply row carries
+    // the real boundary: an anchor completed after the compaction still seeds
+    // the next send's baseline, and one completed before it does not.
+    for (const [appliedTs, anchorCompletedAt, folds] of [
+      // Post-compaction anchor: applied at T2, anchor completed at T4, note
+      // settled at T5 — the anchor survives and the over-window seed
+      // compacts step 0.
+      [1_800_000_001_000, 1_800_000_004_000, true],
+      // Stale anchor: applied at T2 but the anchor completed at T1 — the
+      // retry never finished, so nothing post-compaction is measured.
+      [1_800_000_001_000, 1_800_000_000_500, false],
+    ] as const) {
+      const fixture = buildFixture({
+        priorChars: 2_000,
+        contextWindow: 20_000,
+        finalAtSecondCall: true,
+        extraPriorEvents: [
+          {
+            ...runtimeTextEvent(`prior-applied-${appliedTs}`, 'turn-0', 'model', ''),
+            runId: 'run-0',
+            invocationId: 'run-0',
+            role: 'system' as const,
+            author: 'system' as const,
+            ts: appliedTs,
+            content: {
+              kind: 'system_note' as const,
+              note: 'context_compaction_applied',
+            },
+          },
+          {
+            ...runtimeTextEvent(`prior-note-${appliedTs}`, 'turn-0', 'model', ''),
+            runId: 'run-0',
+            invocationId: 'run-0',
+            role: 'system' as const,
+            author: 'system' as const,
+            ts: 1_800_000_005_000,
+            content: {
+              kind: 'system_note' as const,
+              note: 'context_compacted',
+            },
+          },
+          priorUsageEvent({
+            inputTokens: 30_000,
+            outputTokens: 10,
+            completedAt: anchorCompletedAt,
+          }),
+        ],
+        priorInvocations: [priorRunInvocation()],
+      });
+      await runFixtureTurn(fixture);
+
+      assert.equal(fixture.recorded.length, folds ? 1 : 0);
+    }
+  });
+
+  test('a settlement note without an apply row is itself the boundary', async () => {
+    // Ledgers written before `context_compaction_applied` existed — or a
+    // failed apply-row write — leave the settlement note as the only
+    // boundary. Its time postdates every request of its turn, so no anchor
+    // can be shown to postdate the compaction and the conservative seed is none.
+    const fixture = buildFixture({
+      priorChars: 2_000,
+      contextWindow: 20_000,
+      finalAtSecondCall: true,
+      extraPriorEvents: [
+        {
+          ...runtimeTextEvent('prior-note-legacy', 'turn-0', 'model', ''),
+          runId: 'run-0',
+          invocationId: 'run-0',
+          role: 'system' as const,
+          author: 'system' as const,
+          ts: 1_800_000_005_000,
+          content: {
+            kind: 'system_note' as const,
+            note: 'context_compacted',
+          },
+        },
+        priorUsageEvent({
+          inputTokens: 30_000,
+          outputTokens: 10,
+          completedAt: 1_800_000_004_000,
+        }),
+      ],
+      priorInvocations: [priorRunInvocation()],
+    });
+    await runFixtureTurn(fixture);
+
+    assert.equal(fixture.recorded.length, 0);
   });
 
   test('the reserve is twice the last real reply, bounded, not the model output limit', async () => {
@@ -1887,6 +2075,7 @@ describe('the shipped runtime default drives the proactive long-turn journey (is
 function priorUsageEvent(lastRequestAnchor: {
   inputTokens: number;
   outputTokens?: number;
+  completedAt?: number;
 }): RuntimeEvent {
   return {
     ...runtimeTextEvent('prior-usage', 'turn-0', 'model', ''),

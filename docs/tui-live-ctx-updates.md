@@ -19,7 +19,7 @@
 
 # TUI live ctx updates (#4545)
 
-Status: design. Issue: https://github.com/apache/maka/issues/4545
+Status: implemented in [#4550](https://github.com/apache/maka/pull/4550) (`packages/cli/src/tui-context-refresh.ts`). Issue: https://github.com/apache/maka/issues/4545
 
 ## Problem
 
@@ -50,7 +50,7 @@ Every claim below was verified against `main` (`6c632b1339`).
 | 6 | The Host commits a latest-context snapshot at **every provider request settlement** (each LLM step), carrying `inputTokens` and `contextWindow` | `packages/runtime/src/provider-request-telemetry.ts` `finalize` → `emitModelCallAttempt` → `accounting.record({ attempt, latestContext })` (~L469–640); `packages/runtime/src/latest-context-snapshot.ts` |
 | 7 | The commit is awaited **before** the `finish` part is enqueued to the consumer, so any UI event that follows the step (e.g. `tool_start`) observes the snapshot already durable — no read race | `packages/runtime/src/provider-request-telemetry.ts` stream `pull` handler ~L368–390 |
 | 8 | `context.diagnostics.query` is a plain read: header snapshot + run-store projection read; no execution authority, no busy gate | `packages/runtime-host/src/server/context-coordinator.ts` `#queryDiagnostics`; spec `mode: 'query'` in `packages/runtime-host/src/protocol/context.ts` L107–117 |
-| 9 | The desktop inspector subscribes to the live session event stream and re-reads the diagnostics on trace-relevant events (`tool_start`, `tool_result`, `token_usage`, `provider_retry`, `error`, `complete`, `abort`), coalesced at 400 ms; a failed re-read leaves the last value standing | `apps/desktop/src/renderer/session-trace-refresh.ts` L21–37; `apps/desktop/src/renderer/features/workbar/tools/inspector/use-session-trace.ts` L59 (`TRACE_REFRESH_DEBOUNCE_MS = 400`), L255–274 |
+| 9 | The desktop inspector subscribes to the live session event stream and re-reads the diagnostics on trace-relevant events (`tool_start`, `tool_result`, `token_usage`, `provider_retry`, `error`, `complete`, `abort`), coalesced at 400 ms; a failed re-read leaves the last value standing | `apps/desktop/src/renderer/features/workbar/tools/inspector/session-trace-refresh.ts` L21–37; `apps/desktop/src/renderer/features/workbar/tools/inspector/use-session-trace.ts` L59 (`TRACE_REFRESH_DEBOUNCE_MS = 400`), L255–274 |
 | 10 | Desktop derives the bar as `used = inputTokens`, `ratio = used / contextWindow`, from the snapshot alone | `session-inspector-overview-model.ts` `contextBudget()` ~L210–241 |
 | 11 | The TUI driver already exposes the same query; the TUI always talks to the Host | `packages/cli/src/runtime-host-session-driver.ts` L1117 (`getContextDiagnostics`); interface `packages/cli/src/session-driver.ts` L230 (optional) |
 | 12 | The TUI runner's `onEvent` sees every live event mid-turn | `packages/cli/src/pi-tui-runner.ts` L1455–1483 |

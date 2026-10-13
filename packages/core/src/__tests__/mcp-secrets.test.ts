@@ -20,12 +20,20 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
+  isPatternSecret,
   MCP_SECRET_WITHHELD_MESSAGE,
   mcpSecretInventory,
   scrubKnownMcpSecrets,
 } from '../mcp-secrets.js';
 
 describe('MCP secret inventory and scrubbing', () => {
+  it('sees a fine-grained GitHub PAT as credential material in free-form positions', () => {
+    assert.equal(
+      isPatternSecret('github_pat_11ABCDEFG0abcdefghijklmnop_qrstuvwxyz0123456789ABCD'),
+      true,
+    );
+  });
+
   it('substitutes longer secrets before their prefixes', () => {
     // With both configured, replacing `abcd` first would shred `abcdEFGH`
     // into `[redacted]EFGH` and leave its tail exposed.

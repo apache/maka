@@ -1043,6 +1043,7 @@ function SettingsSurfaceContent(
                           ? `${selectedRuntimeHost.profileId}:${selectedRuntimeHost.hostId}`
                           : 'client'}
                         host={selectedRuntimeHost}
+                        label={selectedRuntimeHostEntry?.profile.name}
                         generation={selectedProfileId
                           ? runtimeHostLifecycleByProfile.get(selectedProfileId)?.epoch
                           : undefined}

@@ -117,9 +117,6 @@ export function createDesktopWorkHubServices(
     updateQueueEntry: (sessionId, entryId, revision, text) => bridge.sessions.updateQueueEntry(sessionId, entryId, revision, text),
     reorderQueueEntries: (sessionId, entryIds, revision) => bridge.sessions.reorderQueueEntries(sessionId, entryIds, revision),
     configureModel: (sessionId, input) => bridge.workHub.configureModel(sessionId, input),
-    getNewWorkDefaults: (sessionId) => bridge.workHub.getNewWorkDefaults(sessionId),
-    setNewWorkDefaults: (sessionId, defaults) =>
-      bridge.workHub.setNewWorkDefaults(sessionId, defaults),
     observe: (sessionId, handler, onError, onPhase, onExecution) =>
       bridge.sessions.subscribeEvents(sessionId, handler, onPhase, onError, onExecution),
     stop: async (sessionId, turnId) => {

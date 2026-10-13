@@ -18,18 +18,61 @@
  */
 
 import type { MakaBridge } from '../../../preload/bridge-contract.js';
-import type { StorageUsageServices } from '../../features/storage-usage';
+import { decodeRetentionNoticeState, type StorageUsageServices } from '../../features/storage-usage/index.js';
+import { safeLocalStorageGet, safeLocalStorageSet } from './browser-storage.js';
 
-export type DesktopStorageUsageBridge = Pick<MakaBridge, 'storage'>;
+export type DesktopStorageUsageBridge = Pick<MakaBridge, 'storage'> & {
+  readonly runtimeHostProfiles: Pick<MakaBridge['runtimeHostProfiles'], 'getSnapshot' | 'subscribeChanges'>;
+};
 
 /** Binds the storage usage feature to the Desktop bridge. */
 export function createDesktopStorageUsageServices(
   bridge: DesktopStorageUsageBridge = window.maka,
 ): StorageUsageServices {
+  const changeListeners = new Set<() => void>();
+  const seenKey = (hostId: string) => `maka-retention-notices-v1:${encodeURIComponent(hostId)}`;
+  const readSeen = (hostId: string): unknown => {
+    try {
+      return JSON.parse(safeLocalStorageGet(seenKey(hostId)) ?? 'null');
+    } catch {
+      return undefined;
+    }
+  };
   return {
+    notices: {
+      async loadHosts() {
+        const snapshot = await bridge.runtimeHostProfiles.getSnapshot();
+        return snapshot.entries.flatMap((entry) => entry.enabled && entry.readiness === 'ready' && entry.hostId
+          ? [{ profileId: entry.profile.id, hostId: entry.hostId, name: entry.profile.name }]
+          : []);
+      },
+      subscribeChanges(handler) {
+        changeListeners.add(handler);
+        const unsubscribe = bridge.runtimeHostProfiles.subscribeChanges(handler);
+        document.addEventListener('visibilitychange', handler);
+        window.addEventListener('focus', handler);
+        return () => {
+          changeListeners.delete(handler);
+          unsubscribe();
+          document.removeEventListener('visibilitychange', handler);
+          window.removeEventListener('focus', handler);
+        };
+      },
+      isVisible: () => document.visibilityState !== 'hidden' && document.hasFocus(),
+      readSeen,
+      writeSeen(hostId, state) {
+        const previous = decodeRetentionNoticeState(readSeen(hostId));
+        safeLocalStorageSet(seenKey(hostId), JSON.stringify(state));
+        if (state.acknowledgedWarning && state.acknowledgedWarning !== previous.acknowledgedWarning) {
+          for (const listener of changeListeners) listener();
+        }
+      },
+    },
     loadUsage: (host) => bridge.storage.usage(host),
     // No host argument: each task is measured by the Host that holds it, and
     // the bridge routes by the projected id for exactly that reason.
     loadSessionUsage: (sessionIds) => bridge.storage.sessionUsage(sessionIds),
+    loadRetention: (host) => bridge.storage.retention(host),
+    setRetention: (host, input) => bridge.storage.setRetention(input, host),
   };
 }

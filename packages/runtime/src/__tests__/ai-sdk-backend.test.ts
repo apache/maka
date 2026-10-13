@@ -29,7 +29,11 @@ import { join, resolve } from 'node:path';
 import { describe, test } from 'node:test';
 import type { ModelMessage, ModelStreamResult } from '../model-protocol.js';
 import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
-import { APICallError, type LanguageModelV4StreamPart } from '@ai-sdk/provider';
+import {
+  APICallError,
+  type LanguageModelV4StreamPart,
+  type LanguageModelV4Usage,
+} from '@ai-sdk/provider';
 import type { RuntimeInvocationRootAuthority } from '@maka/core/runtime-event';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import type { AttachmentByteReader } from '@maka/core/attachments';
@@ -5355,6 +5359,129 @@ describe('AiSdkBackend model history', () => {
     assert.equal(recorded.length, 1);
   });
 
+  test('manual compactHistory survives its own tool-result archive projection (#6048)', async () => {
+    // /compact summarizes an oversized tool result no transition has archived
+    // yet, so the checkpoint's pinned effective digest describes the full
+    // body. The next send's prune archives that body BEFORE it validates the
+    // checkpoint, the digest drifts, and the just-written summary is silently
+    // discarded while the raw history replays (#6048). The fold must commit
+    // the same archives first, so the summary and its digest are built on the
+    // effective view the validator will fold.
+    const transitions: ModelProjectionTransition[] = [];
+    const recorded: HistoryCompactCheckpoint[] = [];
+    const summarizerInputs: string[] = [];
+    const bigBody = 'ARCHIVED_6048_TOOL_BODY_'.repeat(400) + 'TAIL_BEYOND_ARCHIVE_PAGE_6048';
+    const priorEvents = [
+      runtimeTextEvent({
+        id: 'manual-6048-user',
+        turnId: 'turn-old',
+        role: 'user',
+        author: 'user',
+        text: 'manual 6048 old user text',
+      }),
+      runtimeEvent({
+        id: 'manual-6048-call',
+        turnId: 'turn-old',
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'function_call',
+          id: 'tool-6048',
+          name: 'Read',
+          args: { path: 'big.ts' },
+        },
+      }),
+      runtimeEvent({
+        id: 'manual-6048-result',
+        turnId: 'turn-old',
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id: 'tool-6048',
+          name: 'Read',
+          result: { body: bigBody },
+          isError: false,
+        },
+      }),
+      runtimeTextEvent({
+        id: 'manual-6048-model',
+        turnId: 'turn-old',
+        role: 'model',
+        author: 'agent',
+        text: 'manual 6048 old model text',
+      }),
+    ];
+    const model = completionModel();
+    const backend = createBackend({
+      connection: connection(),
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      contextBudget: {
+        name: 'manual-prune-order-test',
+        charsPerToken: 1,
+        historyCompact: { enabled: true },
+        toolResultPrune: { enabled: true },
+      },
+      summarizeHistoryCompact: async (input) => {
+        summarizerInputs.push(
+          input.source.foldedRuntimeEvents.map((event) => JSON.stringify(event.content)).join(' '),
+        );
+        return structuredSummary('MANUAL_PRUNE_ORDER_SUMMARY');
+      },
+      recordHistoryCompactCheckpoint: (checkpoint) => {
+        recorded.push(checkpoint);
+      },
+      loadHistoryCompactCheckpoint: () => recorded.at(-1),
+      toolResultArchive: testToolResultArchive({
+        archiveToolResult: async (event) => ({ artifactId: `artifact-${event.runtimeEventId}` }),
+      }),
+      loadModelProjectionTransitions: async () => ({
+        transitions: [...transitions],
+        unreadableTargets: new Set<string>(),
+        unscopedUnreadable: 0,
+      }),
+      recordModelProjectionTransition: async (transition) => {
+        transitions.push(transition);
+      },
+    });
+
+    const compact = await backend.compactHistory({
+      turnId: 'turn-compact',
+      runId: 'run-compact',
+      runtimeContext: structuredClone(priorEvents),
+    });
+    assert.equal(compact.outcome.kind, 'compacted');
+    assert.equal(recorded.length, 1);
+    // The archive the next send's prune would commit is committed here, so
+    // the pinned digest describes the post-archive effective view.
+    assert.equal(transitions.length, 1);
+    assert.equal(transitions[0]?.target.runtimeEventId, 'manual-6048-result');
+    // The summarizer read the archived placeholder — a bounded page of the
+    // body, never its unarchived tail — the same effective-view policy every
+    // send applies.
+    assert.ok(summarizerInputs[0]);
+    assert.match(summarizerInputs[0], /maka\.archived_tool_result/);
+    assert.doesNotMatch(summarizerInputs[0], /TAIL_BEYOND_ARCHIVE_PAGE_6048/);
+
+    // The next send re-prunes (nothing new to archive) and validates the
+    // checkpoint: the compact block replays and the covered span stays folded.
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: 'continue',
+        context: [],
+        runtimeContext: structuredClone(priorEvents),
+      }),
+    );
+    const prompt = JSON.stringify(compactPrompt(model));
+    assert.match(prompt, /MANUAL_PRUNE_ORDER_SUMMARY/);
+    assert.equal(prompt.includes('manual 6048 old user text'), false);
+    assert.equal(prompt.includes(bigBody), false);
+    assert.equal(summarizerInputs.length, 1);
+  });
+
   test('manual compactHistory reports output-length exhaustion instead of empty_summary', async () => {
     const backend = createBackend({
       connection: connection(),
@@ -9439,25 +9566,20 @@ describe('AiSdkBackend usage telemetry', () => {
     );
   });
 
-  test('does not record fabricated zero telemetry when provider usage is unavailable', async () => {
+  test('does not record fabricated zero telemetry when completed response usage is unavailable', async () => {
     const events: SessionEvent[] = [];
     const model = new MockLanguageModelV4({
       doStream: {
         stream: simulateReadableStream({
           chunks: [
             { type: 'stream-start', warnings: [] },
+            { type: 'text-start', id: 'text-1' },
+            { type: 'text-delta', id: 'text-1', delta: 'Done.' },
+            { type: 'text-end', id: 'text-1' },
             {
               type: 'finish',
               finishReason: { unified: 'stop', raw: 'stop' },
-              usage: {
-                inputTokens: {
-                  total: undefined,
-                  noCache: undefined,
-                  cacheRead: undefined,
-                  cacheWrite: undefined,
-                },
-                outputTokens: { total: undefined, text: undefined, reasoning: undefined },
-              } as never,
+              usage: unavailableUsage(),
             },
           ],
           initialDelayInMs: null,
@@ -10243,6 +10365,138 @@ describe('AiSdkBackend tool availability diagnostics', () => {
     assert.ok(nextTurnRequest.length > toolCallPrefix.length);
     assert.deepEqual(nextTurnRequest.slice(0, firstRequest.length), firstRequest);
     assert.deepEqual(nextTurnRequest.slice(0, toolCallPrefix.length), toolCallPrefix);
+  });
+});
+
+describe('AiSdkBackend Anthropic prompt caching', () => {
+  type AnthropicBlock = Record<string, unknown> & { cache_control?: unknown };
+  type AnthropicBody = {
+    cache_control?: unknown;
+    messages: Array<{ role: string; content: AnthropicBlock[] }>;
+  };
+  const sse = (events: ReadonlyArray<readonly [string, Record<string, unknown>]>) =>
+    events.map(([type, data]) => `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
+  const responseEvents = (step: number) =>
+    sse([
+      [
+        'message_start',
+        {
+          message: {
+            id: `msg-${step}`,
+            type: 'message',
+            role: 'assistant',
+            model: 'claude-sonnet-4-5-20250929',
+            content: [],
+            stop_reason: null,
+            usage: { input_tokens: 1, output_tokens: 0 },
+          },
+        },
+      ],
+      ...(step === 1
+        ? ([
+            [
+              'content_block_start',
+              {
+                index: 0,
+                content_block: { type: 'tool_use', id: 'read-1', name: 'Read', input: {} },
+              },
+            ],
+            [
+              'content_block_delta',
+              {
+                index: 0,
+                delta: { type: 'input_json_delta', partial_json: '{"path":"notes.md"}' },
+              },
+            ],
+          ] as const)
+        : ([
+            ['content_block_start', { index: 0, content_block: { type: 'text', text: '' } }],
+            ['content_block_delta', { index: 0, delta: { type: 'text_delta', text: 'done' } }],
+          ] as const)),
+      ['content_block_stop', { index: 0 }],
+      [
+        'message_delta',
+        {
+          delta: { stop_reason: step === 1 ? 'tool_use' : 'end_turn', stop_sequence: null },
+          usage: { output_tokens: 1 },
+        },
+      ],
+      ['message_stop', {}],
+    ]);
+  const runToolTurn = async (target: LlmConnection): Promise<AnthropicBody[]> => {
+    const durable = durableTurnHarness('turn-cache', 'inspect notes');
+    const bodies: AnthropicBody[] = [];
+    const fetch = (async (_url: unknown, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)) as AnthropicBody);
+      return new Response(responseEvents(bodies.length).join(''), {
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    }) as typeof globalThis.fetch;
+    const backend = createBackend({
+      connection: target,
+      modelId: target.defaultModel,
+      modelFactory: (input) => getAIModel({ ...input, fetch }),
+      tools: [testTool('Read', z.object({ path: z.string() }))],
+      systemPrompt: () => ({
+        contexts: [{ name: 'test.request-context', text: 'REQUEST_ONLY_CONTEXT' }],
+        sourceRevisions: [],
+      }),
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+    });
+    await drainDurably(backend.send(durable.input()), durable);
+    assert.equal(bodies.length, 2);
+    return bodies;
+  };
+  const blocks = (body: AnthropicBody) =>
+    body.messages.flatMap(({ role, content }) => content.map((block) => ({ role, block })));
+  const withoutCacheControl = ({ role, block }: { role: string; block: AnthropicBlock }) => {
+    const { cache_control: _cacheControl, ...rest } = block;
+    return { role, block: rest };
+  };
+
+  test('keeps the cache breakpoint on durable history before request-only context', async () => {
+    const bodies = await runToolTurn(connection());
+
+    const breakpoints = bodies.map((body) => {
+      const flat = blocks(body);
+      const marked = flat.flatMap(({ block }, index) =>
+        block.cache_control !== undefined ? [index] : [],
+      );
+      assert.equal(marked.length, 1, JSON.stringify(body.messages));
+      const breakpoint = marked[0]!;
+      assert.deepEqual(flat[breakpoint]!.block.cache_control, body.cache_control);
+      assert.deepEqual(
+        flat.slice(breakpoint + 1).map(({ block }) => block.text),
+        ['REQUEST_ONLY_CONTEXT'],
+      );
+      return breakpoint;
+    });
+    const cachedPrefix = blocks(bodies[0]!)
+      .slice(0, breakpoints[0]! + 1)
+      .map(withoutCacheControl);
+    assert.deepEqual(
+      blocks(bodies[1]!).slice(0, cachedPrefix.length).map(withoutCacheControl),
+      cachedPrefix,
+    );
+  });
+
+  test('adds no cache breakpoint on Anthropic-protocol connections without automatic caching', async () => {
+    const bodies = await runToolTurn({
+      ...connection(),
+      slug: 'anthropic-relay',
+      name: 'Anthropic Relay',
+      providerType: 'custom',
+      defaultApiProtocol: 'anthropic-messages',
+      baseUrl: 'https://anthropic-relay.invalid',
+    });
+
+    for (const body of bodies) {
+      assert.equal(body.cache_control, undefined);
+      assert.equal(
+        blocks(body).some(({ block }) => block.cache_control !== undefined),
+        false,
+      );
+    }
   });
 });
 
@@ -15456,6 +15710,7 @@ describe('AiSdkBackend thinking persistence', () => {
           retryable: false,
         },
         continuation: 'none',
+        hasResponseEvidence: true,
       }),
     });
 
@@ -15727,6 +15982,7 @@ describe('AiSdkBackend steering durability and identity', () => {
         | 'loadTurnRuntimeEvents'
         | 'loadHistoryCompactCheckpoint'
         | 'contextBudget'
+        | 'systemPrompt'
       >
     > = {},
   ): AiSdkBackend =>
@@ -15765,6 +16021,47 @@ describe('AiSdkBackend steering durability and identity', () => {
       if (event.type === 'steering_message') return event;
     }
   };
+
+  test('a missing Host prerequisite retries locally and cannot silently complete', async () => {
+    const model = textCompletionModel('draft without attribution');
+    const durable = durableTurnHarness('turn-1', '讲义原文现在取到了吗？');
+    const backend = steeringBackend(model, {
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      systemPrompt: () => ({
+        requireToolCall: true,
+        sourceRevisions: [],
+        contexts: [{ name: 'topic', text: 'Record topic first' }],
+      }),
+    });
+    const events = await drainDurably(backend.send(durable.input()), durable);
+    assert.equal(model.doStreamCalls.length, 3);
+    assert.equal(
+      events.some((event) => event.type === 'complete' && event.stopReason === 'end_turn'),
+      false,
+    );
+    assert.equal(
+      events.some((event) => event.type === 'complete' && event.stopReason === 'error'),
+      true,
+    );
+    assert.match(JSON.stringify(model.doStreamCalls[1]?.prompt), /draft without attribution/);
+    assert.notEqual(model.doStreamCalls[0]?.toolChoice?.type, 'required');
+  });
+
+  test('a settled Host prerequisite permits the next step to complete', async () => {
+    const model = textCompletionModel('answer');
+    const durable = durableTurnHarness('turn-1', 'follow-up');
+    let resolutions = 0;
+    const backend = steeringBackend(model, {
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      systemPrompt: () => ({ requireToolCall: ++resolutions === 1, sourceRevisions: [] }),
+    });
+    const events = await drainDurably(backend.send(durable.input()), durable);
+    assert.equal(model.doStreamCalls.length, 2);
+    assert.equal(
+      events.some((event) => event.type === 'complete' && event.stopReason === 'end_turn'),
+      true,
+    );
+  });
 
   test('the final provider boundary waits for an asynchronous steering lease and asks the model again', async () => {
     // A tool-free turn runs exactly one provider step, and the top-of-loop
@@ -17599,6 +17896,18 @@ function emptyUsage() {
   };
 }
 
+function unavailableUsage(): LanguageModelV4Usage {
+  return {
+    inputTokens: {
+      total: undefined,
+      noCache: undefined,
+      cacheRead: undefined,
+      cacheWrite: undefined,
+    },
+    outputTokens: { total: undefined, text: undefined, reasoning: undefined },
+  };
+}
+
 function imageReplayBackend(
   model: MockLanguageModelV4,
   options: { supportsVision: boolean; readAttachmentBytes: AttachmentByteReader },
@@ -18335,3 +18644,729 @@ function runtimeExecute(
       })
     ).result;
 }
+
+describe('AiSdkBackend provider finish recovery', () => {
+  test('retries an empty stop after a settled tool without replaying the tool or spending its step budget', async () => {
+    const durable = durableTurnHarness('turn-empty-stop-after-tool', 'read notes.md');
+    const appended: StoredMessage[] = [];
+    const usageCheckpoints: Array<{ inputTokens: number; outputTokens: number }> = [];
+    let calls = 0;
+    let executions = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        const chunks: LanguageModelV4StreamPart[] =
+          calls === 1
+            ? [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'tool-1',
+                  toolName: 'Read',
+                  input: JSON.stringify({ path: 'notes.md' }),
+                },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                  usage: {
+                    inputTokens: { total: 3, noCache: 3, cacheRead: 0, cacheWrite: 0 },
+                    outputTokens: { total: 1, text: 0, reasoning: 1 },
+                  },
+                },
+              ]
+            : calls === 2
+              ? [
+                  { type: 'stream-start', warnings: [] },
+                  {
+                    type: 'finish',
+                    finishReason: { unified: 'stop', raw: 'stop' },
+                    usage: unavailableUsage(),
+                  },
+                ]
+              : [
+                  { type: 'stream-start', warnings: [] },
+                  { type: 'text-start', id: 'text-final' },
+                  { type: 'text-delta', id: 'text-final', delta: 'Recovered' },
+                  { type: 'text-end', id: 'text-final' },
+                  {
+                    type: 'finish',
+                    finishReason: { unified: 'stop', raw: 'stop' },
+                    usage: {
+                      inputTokens: { total: 5, noCache: 5, cacheRead: 0, cacheWrite: 0 },
+                      outputTokens: { total: 2, text: 2, reasoning: 0 },
+                    },
+                  },
+                ];
+        return {
+          stream: simulateReadableStream({
+            chunks,
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async (message) => {
+        appended.push(message);
+      },
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [
+        {
+          ...testTool('Read', z.object({ path: z.string() })),
+          impl: async () => {
+            executions += 1;
+            return { ok: true };
+          },
+        },
+      ],
+      maxSteps: 2,
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      recordUsageCheckpoint: async (usage) => {
+        usageCheckpoints.push(usage);
+      },
+      newId: idGenerator(),
+      now: monotonicClock(),
+      providerRetrySleep: async () => {},
+    });
+
+    const events = await drainDurably(backend.send(durable.input()), durable);
+
+    assert.equal(calls, 3);
+    assert.equal(executions, 1);
+    assert.deepEqual(
+      appended
+        .filter((message): message is AssistantMessage => message.type === 'assistant')
+        .map((message) => message.text),
+      ['Recovered'],
+    );
+    assert.deepEqual(model.doStreamCalls[2]?.prompt, model.doStreamCalls[1]?.prompt);
+    assert.match(JSON.stringify(model.doStreamCalls[2]?.prompt), /"ok":true/);
+    assert.deepEqual(
+      events
+        .filter((event) => event.type === 'provider_retry')
+        .map(({ phase, attempt, maxAttempts, reason }) => ({
+          phase,
+          attempt,
+          maxAttempts,
+          reason,
+        })),
+      [
+        { phase: 'scheduled', attempt: 2, maxAttempts: 10, reason: 'stream_truncated' },
+        { phase: 'started', attempt: 2, maxAttempts: 10, reason: 'stream_truncated' },
+      ],
+    );
+    assert.deepEqual(
+      usageCheckpoints.map(({ inputTokens, outputTokens }) => ({ inputTokens, outputTokens })),
+      [
+        { inputTokens: 3, outputTokens: 1 },
+        { inputTokens: 8, outputTokens: 3 },
+      ],
+    );
+    assert.equal(
+      events.some((event) => event.type === 'error'),
+      false,
+    );
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+  });
+
+  test('fails metering closed when an after-step stop overtakes an empty-stop retry', async () => {
+    const durable = durableTurnHarness('turn-empty-stop-after-step-stop', 'read notes.md');
+    let backend!: AiSdkBackend;
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        if (calls === 2) await backend.stop('user_stop', 'after_step');
+        const chunks: LanguageModelV4StreamPart[] =
+          calls === 1
+            ? [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'tool-1',
+                  toolName: 'Read',
+                  input: JSON.stringify({ path: 'notes.md' }),
+                },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                  usage: {
+                    inputTokens: { total: 3, noCache: 3, cacheRead: 0, cacheWrite: 0 },
+                    outputTokens: { total: 1, text: 0, reasoning: 1 },
+                  },
+                },
+              ]
+            : [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'stop', raw: 'stop' },
+                  usage: unavailableUsage(),
+                },
+              ];
+        return {
+          stream: simulateReadableStream({
+            chunks,
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [testTool('Read', z.object({ path: z.string() }))],
+      maxSteps: 2,
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+      providerRetrySleep: async () => {},
+    });
+
+    const events = await drainDurably(backend.send(durable.input()), durable);
+
+    assert.equal(calls, 2);
+    assert.equal(
+      events.some((event) => event.type === 'provider_retry'),
+      false,
+    );
+    assert.equal(
+      events.some((event) => event.type === 'token_usage'),
+      false,
+      'the metered tool step is only a partial total after the unmetered empty stop',
+    );
+    assert.equal(events.find((event) => event.type === 'error')?.reason, 'stream_truncated');
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+  });
+
+  for (const finishReasons of [
+    ['stop', 'stop'],
+    ['other', 'stop'],
+    ['stop', 'other'],
+  ] as const) {
+    test(`shares bounded recovery for ${finishReasons.join(' then ')} finishes`, async () => {
+      const durable = durableTurnHarness('turn-empty-stop-exhausted', 'continue');
+      let calls = 0;
+      const model = new MockLanguageModelV4({
+        doStream: async () => {
+          calls += 1;
+          const finishReason = finishReasons[Math.min(calls - 1, 1)];
+          return {
+            stream: simulateReadableStream({
+              chunks: [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'finish',
+                  finishReason: {
+                    unified: finishReason,
+                    raw: finishReason === 'stop' ? 'stop' : undefined,
+                  },
+                  usage: unavailableUsage(),
+                },
+              ],
+              initialDelayInMs: null,
+              chunkDelayInMs: null,
+            }),
+          };
+        },
+      });
+      const backend = createTestAiSdkBackend({
+        sessionId: 'session-1',
+        header: header(),
+        appendMessage: async () => {},
+        connection: connection(),
+        apiKey: 'sk-test',
+        modelId: 'mock-model-id',
+        modelFactory: () => model,
+        tools: [],
+        maxSteps: 1,
+        loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+        newId: idGenerator(),
+        now: monotonicClock(),
+        providerRetrySleep: async () => {},
+      });
+
+      const events = await drainDurably(backend.send(durable.input()), durable);
+      const error = events.find(
+        (event): event is Extract<SessionEvent, { type: 'error' }> => event.type === 'error',
+      );
+
+      assert.equal(calls, 10);
+      assert.equal(error?.reason, 'stream_truncated');
+      assert.deepEqual(error?.retry, { decision: 'exhausted', attempts: 10 });
+      assert.equal(
+        error?.message,
+        finishReasons[1] === 'stop'
+          ? 'Provider returned an empty stop without output or usable usage'
+          : 'Provider stream ended without finishing (other)',
+      );
+      assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+    });
+  }
+
+  test('routes an output-free network_error finish through the network retry path', async () => {
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        const chunks: LanguageModelV4StreamPart[] =
+          calls === 1
+            ? [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'other', raw: 'network_error' },
+                  usage: unavailableUsage(),
+                },
+              ]
+            : [
+                { type: 'stream-start', warnings: [] },
+                { type: 'text-start', id: 'text-1' },
+                { type: 'text-delta', id: 'text-1', delta: 'Recovered' },
+                { type: 'text-end', id: 'text-1' },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'stop', raw: 'stop' },
+                  usage: emptyUsage(),
+                },
+              ];
+        return {
+          stream: simulateReadableStream({
+            chunks,
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      maxSteps: 1,
+      newId: idGenerator(),
+      now: monotonicClock(),
+      providerRetrySleep: async () => {},
+    });
+
+    const events: SessionEvent[] = [];
+    for await (const event of backend.send({ turnId: 'turn-1', text: 'hi', context: [] })) {
+      events.push(event);
+    }
+
+    assert.equal(calls, 2);
+    assert.deepEqual(
+      events
+        .filter((event) => event.type === 'provider_retry')
+        .map(({ phase, attempt, maxAttempts, reason }) => ({
+          phase,
+          attempt,
+          maxAttempts,
+          reason,
+        })),
+      [
+        { phase: 'scheduled', attempt: 2, maxAttempts: 10, reason: 'network' },
+        { phase: 'started', attempt: 2, maxAttempts: 10, reason: 'network' },
+      ],
+    );
+    assert.equal(
+      events.some((event) => event.type === 'error'),
+      false,
+    );
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+  });
+
+  test('preserves valid usage from a retried network_error finish', async () => {
+    const usageCheckpoints: Array<{ inputTokens: number; outputTokens: number }> = [];
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        const chunks: LanguageModelV4StreamPart[] =
+          calls === 1
+            ? [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'other', raw: 'network_error' },
+                  usage: {
+                    inputTokens: { total: 4, noCache: 4, cacheRead: 0, cacheWrite: 0 },
+                    outputTokens: { total: 1, text: 1, reasoning: 0 },
+                  },
+                },
+              ]
+            : [
+                { type: 'stream-start', warnings: [] },
+                { type: 'text-start', id: 'text-1' },
+                { type: 'text-delta', id: 'text-1', delta: 'Recovered' },
+                { type: 'text-end', id: 'text-1' },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'stop', raw: 'stop' },
+                  usage: {
+                    inputTokens: { total: 5, noCache: 5, cacheRead: 0, cacheWrite: 0 },
+                    outputTokens: { total: 2, text: 2, reasoning: 0 },
+                  },
+                },
+              ];
+        return {
+          stream: simulateReadableStream({
+            chunks,
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      maxSteps: 1,
+      recordUsageCheckpoint: async (usage) => {
+        usageCheckpoints.push(usage);
+      },
+      newId: idGenerator(),
+      now: monotonicClock(),
+      providerRetrySleep: async () => {},
+    });
+
+    const events: SessionEvent[] = [];
+    for await (const event of backend.send({ turnId: 'turn-1', text: 'hi', context: [] })) {
+      events.push(event);
+    }
+    const usage = events.find(
+      (event): event is Extract<SessionEvent, { type: 'token_usage' }> =>
+        event.type === 'token_usage',
+    );
+
+    assert.equal(calls, 2);
+    assert.deepEqual(
+      usageCheckpoints.map(({ inputTokens, outputTokens }) => ({ inputTokens, outputTokens })),
+      [
+        { inputTokens: 4, outputTokens: 1 },
+        { inputTokens: 9, outputTokens: 3 },
+      ],
+    );
+    assert.equal(usage?.input, 9);
+    assert.equal(usage?.output, 3);
+    assert.equal(usage?.runtimeSteps, 1);
+    assert.equal(
+      events.some((event) => event.type === 'error'),
+      false,
+    );
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+  });
+
+  test('bounds network_error retries after sealing partial output', async () => {
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: 'stream-start', warnings: [] },
+              { type: 'text-start', id: 'text-1' },
+              { type: 'text-delta', id: 'text-1', delta: 'Partial' },
+              {
+                type: 'finish',
+                finishReason: { unified: 'other', raw: 'network_error' },
+                usage: unavailableUsage(),
+              },
+            ],
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      providerRetrySleep: async () => {},
+    });
+
+    const events: SessionEvent[] = [];
+    for await (const event of backend.send({ turnId: 'turn-1', text: 'hi', context: [] })) {
+      events.push(event);
+    }
+
+    assert.equal(calls, 10);
+    assert.equal(
+      events.some((event) => event.type === 'provider_retry'),
+      true,
+    );
+    assert.equal(
+      events.filter((event) => event.type === 'text_complete' && event.interrupted).length,
+      10,
+    );
+    assert.deepEqual(events.find((event) => event.type === 'error')?.retry, {
+      decision: 'exhausted',
+      attempts: 10,
+    });
+    assert.equal(events.find((event) => event.type === 'error')?.reason, 'network');
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+  });
+
+  test('fails metering closed when a partial network_error follows a metered tool step', async () => {
+    const durable = durableTurnHarness('turn-partial-network-after-tool', 'read notes.md');
+    const usageCheckpoints: Array<{ inputTokens: number; outputTokens: number }> = [];
+    let calls = 0;
+    let executions = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        const chunks: LanguageModelV4StreamPart[] =
+          calls === 1
+            ? [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'tool-1',
+                  toolName: 'Read',
+                  input: JSON.stringify({ path: 'notes.md' }),
+                },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                  usage: {
+                    inputTokens: { total: 3, noCache: 3, cacheRead: 0, cacheWrite: 0 },
+                    outputTokens: { total: 1, text: 0, reasoning: 1 },
+                  },
+                },
+              ]
+            : [
+                { type: 'stream-start', warnings: [] },
+                { type: 'text-start', id: 'text-1' },
+                { type: 'text-delta', id: 'text-1', delta: 'Partial' },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'other', raw: 'network_error' },
+                  usage: unavailableUsage(),
+                },
+              ];
+        return {
+          stream: simulateReadableStream({
+            chunks,
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [
+        {
+          ...testTool('Read', z.object({ path: z.string() })),
+          impl: async () => {
+            executions += 1;
+            return { ok: true };
+          },
+        },
+      ],
+      maxSteps: 2,
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      recordUsageCheckpoint: async (usage) => {
+        usageCheckpoints.push(usage);
+      },
+      newId: idGenerator(),
+      now: monotonicClock(),
+      providerRetrySleep: async () => {},
+    });
+
+    const events = await drainDurably(backend.send(durable.input()), durable);
+
+    assert.equal(calls, 11);
+    assert.equal(executions, 1);
+    assert.deepEqual(
+      usageCheckpoints.map(({ inputTokens, outputTokens }) => ({ inputTokens, outputTokens })),
+      [{ inputTokens: 3, outputTokens: 1 }],
+    );
+    assert.equal(
+      events.some((event) => event.type === 'provider_retry'),
+      true,
+    );
+    assert.equal(
+      events.some((event) => event.type === 'token_usage'),
+      false,
+    );
+    assert.equal(events.find((event) => event.type === 'error')?.reason, 'network');
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+  });
+
+  test('fails metering closed when the exhausted network_error retry loses usage', async () => {
+    const usageCheckpoints: Array<{ inputTokens: number; outputTokens: number }> = [];
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: 'stream-start', warnings: [] },
+              {
+                type: 'finish',
+                finishReason: { unified: 'other', raw: 'network_error' },
+                usage:
+                  calls < 10
+                    ? {
+                        inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                        outputTokens: { total: 1, text: 1, reasoning: 0 },
+                      }
+                    : unavailableUsage(),
+              },
+            ],
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      maxSteps: 1,
+      recordUsageCheckpoint: async (usage) => {
+        usageCheckpoints.push(usage);
+      },
+      newId: idGenerator(),
+      now: monotonicClock(),
+      providerRetrySleep: async () => {},
+    });
+
+    const events: SessionEvent[] = [];
+    for await (const event of backend.send({ turnId: 'turn-1', text: 'hi', context: [] })) {
+      events.push(event);
+    }
+
+    assert.equal(calls, 10);
+    assert.equal(usageCheckpoints.length, 9);
+    assert.deepEqual(
+      usageCheckpoints.at(-1)
+        ? {
+            inputTokens: usageCheckpoints.at(-1)!.inputTokens,
+            outputTokens: usageCheckpoints.at(-1)!.outputTokens,
+          }
+        : undefined,
+      { inputTokens: 9, outputTokens: 9 },
+    );
+    assert.equal(
+      events.some((event) => event.type === 'token_usage'),
+      false,
+    );
+    assert.equal(events.find((event) => event.type === 'error')?.reason, 'network');
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+  });
+
+  for (const evidence of ['text-end', 'redacted-thinking'] as const) {
+    test(`does not retry a network_error finish after ${evidence} response evidence`, async () => {
+      let calls = 0;
+      const model = new MockLanguageModelV4({
+        doStream: async () => {
+          calls += 1;
+          return {
+            stream: simulateReadableStream<LanguageModelV4StreamPart>({
+              chunks: [
+                { type: 'stream-start', warnings: [] },
+                ...(evidence === 'text-end'
+                  ? [
+                      { type: 'text-start' as const, id: 'text-1' },
+                      {
+                        type: 'text-end' as const,
+                        id: 'text-1',
+                        providerMetadata: { openai: { itemId: 'message-1' } },
+                      },
+                    ]
+                  : [
+                      {
+                        type: 'reasoning-start' as const,
+                        id: 'redacted-1',
+                        providerMetadata: { anthropic: { redactedData: 'opaque-reasoning' } },
+                      },
+                      { type: 'reasoning-end' as const, id: 'redacted-1' },
+                    ]),
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'other', raw: 'network_error' },
+                  usage: unavailableUsage(),
+                },
+              ],
+              initialDelayInMs: null,
+              chunkDelayInMs: null,
+            }),
+          };
+        },
+      });
+      const backend = createTestAiSdkBackend({
+        sessionId: 'session-1',
+        header: header(),
+        appendMessage: async () => {},
+        connection: connection(),
+        apiKey: 'sk-test',
+        modelId: 'mock-model-id',
+        modelFactory: () => model,
+        tools: [],
+        newId: idGenerator(),
+        now: monotonicClock(),
+        providerRetrySleep: async () => {},
+      });
+
+      const events: SessionEvent[] = [];
+      for await (const event of backend.send({ turnId: 'turn-1', text: 'hi', context: [] })) {
+        events.push(event);
+      }
+
+      assert.equal(calls, 1);
+      assert.equal(
+        events.some((event) => event.type === 'provider_retry'),
+        false,
+      );
+      assert.equal(events.find((event) => event.type === 'error')?.reason, 'network');
+      assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+    });
+  }
+});

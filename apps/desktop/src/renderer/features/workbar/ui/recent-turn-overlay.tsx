@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { defineShippedUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
+
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight, FolderOpen, MessageSquare, Minus, Terminal } from '@maka/ui/icons';
 import { Button, MarkdownBody, ProgressCard, progressStatusCopy, applyLiveTurnBufferEvent, type LiveTurnBuffer, type LiveTurnProjection, useUiLocale } from '@maka/ui';
@@ -37,7 +39,17 @@ const COPY: Record<UiLocale, {
   minimize: string;
   restore: string;
   partial: string;
-}> = {
+}> = resolveUiMessageCatalog(defineShippedUiMessageCatalog<{
+  processingFor: (elapsed: number) => string;
+  noReply: string;
+  runningTool: string;
+  finishedTool: string;
+  waiting: string;
+  readFailed: string;
+  minimize: string;
+  restore: string;
+  partial: string;
+}>()({
   'zh-CN': {
     processingFor: (elapsed) => elapsed < 60
       ? `已处理 ${elapsed} 秒` : `已处理 ${Math.floor(elapsed / 60)} 分钟 ${elapsed % 60} 秒`,
@@ -59,7 +71,7 @@ const COPY: Record<UiLocale, {
     minimize: 'Minimize composer', restore: 'Continue typing',
     partial: 'Only part of this reply is shown. Open the conversation for the full content.',
   },
-};
+}));
 
 const MAX_VISIBLE_TEXT = 16_000;
 

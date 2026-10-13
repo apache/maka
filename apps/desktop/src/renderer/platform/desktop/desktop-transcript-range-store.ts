@@ -45,6 +45,8 @@ export interface DesktopTranscriptRangeController {
   showLatest(): Promise<void>;
   readComplete(): Promise<readonly StoredMessage[]>;
   reload(): Promise<void>;
+  /** Whether the range holds the cached transcript, over which a failed reload is not reported. */
+  holdsCachedTranscript(): boolean;
   observationChanged(phase: 'pending' | 'ready'): void;
   close(): Promise<void>;
 }
@@ -357,6 +359,7 @@ export function createDesktopTranscriptRangeController(
       return result.messages;
     },
     reload,
+    holdsCachedTranscript: cached,
     observationChanged: recovery.observationChanged,
     async close() {
       if (closed) return;

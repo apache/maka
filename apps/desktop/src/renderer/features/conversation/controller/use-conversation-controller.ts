@@ -68,10 +68,7 @@ export function useConversationController() {
       },
       settleAssistantStreaming: async (sessionId: string, messageId?: string) => events.current?.settleAssistantStreaming(sessionId, messageId),
       prepareSend: (sessionId: string) => readingCommands.current?.prepareSend(sessionId) ?? true,
-      /**
-       * Copy and Save's export of the published range, rendered as Markdown at
-       * invocation. Callers get the export, not the published messages.
-       */
+      /** Copy and Save's complete history export, read without replacing the displayed window. */
       renderCompleteConversation: async (sessionId: string, sessionName: string, locale: UiLocale) =>
         renderConversationMarkdown(sessionName, await workspace.commands.readCompleteTranscript(sessionId), locale),
     };

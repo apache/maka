@@ -22,6 +22,15 @@ import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 import { migrateSqliteUsageDatabase } from '../sqlite-usage-schema.js';
 import {
+  assertCurrentOperationalTargetSchema,
+  ensureOperationalSchemaRegistry,
+} from '../operational-target-schema.js';
+import { migrateSqliteArtifactDatabase } from '../sqlite-artifact-schema.js';
+import { migrateSqliteCoreExecutionDatabase } from '../sqlite-core-execution-schema.js';
+import { migrateSqliteRuntimeDatabase } from '../sqlite-runtime-schema.js';
+import { migrateSqliteSessionMetadataDatabase } from '../sqlite-session-metadata-schema.js';
+import { migrateSqliteWorkflowDatabase } from '../sqlite-workflow-schema.js';
+import {
   MODEL_CALL_NOW as NOW,
   modelCallAttempt as attempt,
   wideModelCallAttempt as wideAttempt,
@@ -327,6 +336,41 @@ test('Usage title revision ignores unrelated metadata and covers every activity 
     assert.notEqual(deleted, withCanonical);
     database.exec("INSERT INTO session_metadata VALUES ('session', 'Restored', 0)");
     assert.notEqual(revision(), deleted);
+  } finally {
+    database.close();
+  }
+});
+
+test('a schema-9 usage database upgrades to the target shape and stays idempotent', () => {
+  const database = new DatabaseSync(':memory:');
+  try {
+    // Build the full operational target, then regress usage to its schema-9
+    // shape. The #5890 target adds `no_run` as the usage delta, so a real
+    // schema-9 database is exactly this table minus that column.
+    migrateSqliteRuntimeDatabase(database);
+    migrateSqliteSessionMetadataDatabase(database);
+    migrateSqliteCoreExecutionDatabase(database);
+    migrateSqliteWorkflowDatabase(database);
+    migrateSqliteUsageDatabase(database);
+    migrateSqliteArtifactDatabase(database);
+    ensureOperationalSchemaRegistry(database);
+    database.exec('ALTER TABLE usage_model_call_attempts DROP COLUMN no_run');
+
+    migrateSqliteUsageDatabase(database);
+
+    // The upgrade restores the recorder-owned default in place — the DDL
+    // signature matches a fresh create only because ADD COLUMN appends the
+    // column the same way — and a rerun changes nothing.
+    assertCurrentOperationalTargetSchema(database);
+    const restored = database
+      .prepare(
+        "SELECT \"notnull\" AS not_null, dflt_value FROM pragma_table_info('usage_model_call_attempts') WHERE name = 'no_run'",
+      )
+      .get() as { not_null: number; dflt_value: string };
+    assert.equal(restored.not_null, 1);
+    assert.equal(restored.dflt_value, '0');
+    migrateSqliteUsageDatabase(database);
+    assertCurrentOperationalTargetSchema(database);
   } finally {
     database.close();
   }

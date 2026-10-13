@@ -78,6 +78,18 @@ test('discards a pending Project projection after the default Host changes', asy
   function Probe() {
     const context = projectContext.useAppShellProjectContext({
       rendererMountedRef: { current: true },
+      titlebar: {
+        sharedSessionActive: false,
+        activeSession: undefined,
+        sharedSessionDialog: {
+          shareActionLabel: 'Share',
+          openSession: () => {},
+        } as never,
+        moveToDedicatedDirectory: async () => undefined,
+        openProjectFolder: () => {},
+        copy: {} as never,
+        toastApi: { toast: () => '' } as never,
+      },
     });
     projectInfo = context.projectInfo;
     currentProjectId = context.currentProjectId;
@@ -124,7 +136,7 @@ async function importProjectContext(): Promise<typeof ProjectContext> {
     platform: 'node',
     format: 'esm',
     target: 'node20',
-    external: ['react'],
+    packages: 'external',
     logLevel: 'silent',
   });
   return (await import(`${pathToFileURL(outfile).href}?t=${Date.now()}`)) as typeof ProjectContext;

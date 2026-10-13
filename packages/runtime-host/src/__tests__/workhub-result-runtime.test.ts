@@ -19,7 +19,6 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { deferred, withTimeout } from '@maka/core/test-only/async-primitives';
 import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
 import type { MakaToolContext } from '@maka/runtime/tool-runtime';
 import { createWorkHubResultRuntime } from '../server/workhub-result-runtime.js';
@@ -36,8 +35,6 @@ function fixture() {
   let status = 'waiting_for_user';
   let disposition: 'owned_root' | 'cancelled' = 'owned_root';
   let resultReads = 0;
-  let rejectRelay: ((reason: Error) => void) | undefined;
-  const closedRelays: unknown[] = [];
   const assignment = {
     actionId: 'action',
     delegationId: 'delegation',
@@ -60,7 +57,6 @@ function fixture() {
     createdAt: 1,
   };
   const admission = new SessionAdmissionGate();
-  const forwarded: unknown[] = [];
   const startWorkHubResult: Options['executions']['startWorkHubResult'] = async (
     _origin,
     prepare,
@@ -98,18 +94,6 @@ function fixture() {
           ? { kind: 'cancelled' }
           : { kind: 'owned_root', turnId: 'target-turn', runId: 'target-run' },
     } as unknown as Options['messages'],
-    interactions: {
-      closeRelayedQuestion: async (turnId, toolCallId) => {
-        closedRelays.push({ turnId, toolCallId });
-        rejectRelay?.(new Error('Relay closed after original question settled'));
-        return true;
-      },
-      answerDelegatedQuestion: async (input, lease) =>
-        admission.runAdmitted('target', lease, async () => {
-          forwarded.push(input);
-          return { ok: true, result: { status: 'answered' } };
-        }),
-    } as Options['interactions'],
     readTurnResult: async (sessionId, turnId) => {
       assert.equal(sessionId, 'target');
       assert.equal(turnId, 'target-turn');
@@ -137,14 +121,9 @@ function fixture() {
     call,
     context,
     questions,
-    forwarded,
-    closedRelays,
     resultReads: () => resultReads,
     notify: runtime.notify,
     reconcile: () => runtime.coordinator.reconcile(),
-    setRelayReject: (reject: (reason: Error) => void) => {
-      rejectRelay = reject;
-    },
     setOriginalAnswered: () => {
       requests = false;
       status = 'completed';
@@ -172,69 +151,20 @@ function fixture() {
   };
 }
 
-test('WorkHubResult presents the exact question and forwards only the actual collected answer', async () => {
-  const f = fixture();
-  let shown: unknown;
-  const result = await f.call(
-    { actionId: 'action', operation: 'ask_question', interactionId: 'question' },
-    {
-      ...f.context,
-      askUserQuestion: async (questions) => {
-        shown = questions;
-        return { answers: [{ question: questions[0]!.question, answer: 'Monday' }] };
-      },
-    },
-  );
-  assert.deepEqual(shown, f.questions);
-  assert.deepEqual(f.forwarded, [
-    {
-      sessionId: 'target',
-      interactionId: 'question',
-      answer: { kind: 'question', answers: ['Monday'] },
-    },
-  ]);
-  assert.deepEqual(result, { status: 'answered', targetSessionId: 'target' });
-});
-
-test('WorkHubResult refuses model-supplied answers and access from other Sessions', async () => {
+test('WorkHubResult rejects the removed relay operation and cross-Session access', async () => {
   const f = fixture();
   await assert.rejects(
     Promise.resolve().then(() =>
-      f.call({
-        actionId: 'action',
-        operation: 'ask_question',
-        interactionId: 'question',
-        answers: ['Friday'],
-      }),
+      f.call({ actionId: 'action', operation: 'ask_question', interactionId: 'question' }),
     ),
   );
   await assert.rejects(
     Promise.resolve().then(() =>
       f.call({ actionId: 'action' }, { ...f.context, sessionId: 'another-session' }),
     ),
-    /coordination Session/u,
+    /coordination Session/,
   );
-  assert.equal(f.forwarded.length, 0);
 });
-
-for (const retire of ['replace', 'stop'] as const) {
-  test(`a ${retire} while the human answers prevents relaying to the old task`, async () => {
-    const f = fixture();
-    const result = await f.call(
-      { actionId: 'action', operation: 'ask_question', interactionId: 'question' },
-      {
-        ...f.context,
-        askUserQuestion: async () => {
-          if (retire === 'replace') f.setActive(false);
-          else f.setStopped();
-          return { answers: [{ question: 'When?', answer: 'Friday' }] };
-        },
-      },
-    );
-    assert.deepEqual(result, { status: 'obsolete' });
-    assert.equal(f.forwarded.length, 0);
-  });
-}
 
 test('WorkHubResult reads complete results in Unicode-safe pages', async () => {
   const f = fixture();
@@ -248,48 +178,6 @@ test('WorkHubResult reads complete results in Unicode-safe pages', async () => {
   assert.equal(first.nextOffset, 16000);
   assert.equal(last.result, '😀');
   assert.equal(last.nextOffset, null);
-});
-
-test('WorkHubResult cannot relay a permission decision', async () => {
-  const f = fixture();
-  f.record.request.kind = 'permission';
-  await assert.rejects(
-    Promise.resolve().then(() =>
-      f.call(
-        { actionId: 'action', operation: 'ask_question', interactionId: 'question' },
-        {
-          ...f.context,
-          askUserQuestion: async () => {
-            throw new Error('Must not ask for permission through this tool');
-          },
-        },
-      ),
-    ),
-    /Only pending user questions/u,
-  );
-  assert.equal(f.forwarded.length, 0);
-});
-
-test('a stopped WorkHub turn cannot forward an answer after cancellation', async () => {
-  const f = fixture();
-  const abort = new AbortController();
-  await assert.rejects(
-    Promise.resolve().then(() =>
-      f.call(
-        { actionId: 'action', operation: 'ask_question', interactionId: 'question' },
-        {
-          ...f.context,
-          abortSignal: abort.signal,
-          askUserQuestion: async () => {
-            abort.abort();
-            return { answers: [{ question: 'When?', answer: 'Friday' }] };
-          },
-        },
-      ),
-    ),
-    /abort/u,
-  );
-  assert.equal(f.forwarded.length, 0);
 });
 
 for (const status of ['completed', 'failed', 'cancelled']) {
@@ -329,31 +217,4 @@ test('delivered terminal events do not reread the target transcript on reconcili
   await f.reconcile();
   await f.reconcile();
   assert.equal(f.resultReads(), 1);
-});
-
-test('answering the original task closes the copied WorkHub question', async () => {
-  const f = fixture();
-  const presented = deferred();
-  const relayed = f.call(
-    { actionId: 'action', operation: 'ask_question', interactionId: 'question' },
-    {
-      ...f.context,
-      askUserQuestion: async () =>
-        new Promise((_, reject) => {
-          f.setRelayReject(reject);
-          presented.resolve();
-        }),
-    },
-  );
-  await withTimeout(presented.promise, 1000, 'Question was not presented');
-  f.setOriginalAnswered();
-  f.notify('target');
-  assert.deepEqual(await withTimeout(Promise.resolve(relayed), 1000, 'Relay remained blocked'), {
-    status: 'question_settled_in_target',
-    targetSessionId: 'target',
-    message:
-      'The original task question has settled. Wait for the automatic task result; do not ask again.',
-  });
-  assert.deepEqual(f.closedRelays, [{ turnId: 'feedback-turn', toolCallId: 'relay' }]);
-  assert.equal(f.forwarded.length, 0);
 });

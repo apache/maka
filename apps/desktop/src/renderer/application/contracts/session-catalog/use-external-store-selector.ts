@@ -17,8 +17,8 @@
  * under the License.
  */
 
-import { useMemo, useSyncExternalStore } from 'react';
-import type { SnapshotReader } from '../snapshot-reader.js';
+import { useMemo } from 'react';
+import { useSnapshotReader, type SnapshotReader } from '../snapshot-reader.js';
 
 /** The reading half of a selector-based store, such as Session Catalog. */
 export interface ExternalStore<S> {
@@ -49,7 +49,7 @@ export interface ExternalStore<S> {
  * fewer-renders optimization: it carries a value's identity ACROSS a state the
  * selection did not actually change.
  */
-export function useExternalStoreSelector<T, A>(reader: (arg: A) => SnapshotReader<T>, arg: A): T;
+export function useExternalStoreSelector<T, A>(reader: (arg: A) => SnapshotReader<T>, arg: A, active?: boolean): T;
 export function useExternalStoreSelector<S, T, A = undefined>(
   store: ExternalStore<S>,
   select: (state: S, arg: A) => T,
@@ -59,7 +59,7 @@ export function useExternalStoreSelector<S, T, A = undefined>(
 export function useExternalStoreSelector<S, T, A>(
   store: ExternalStore<S> | ((arg: A) => SnapshotReader<T>),
   selectOrArg: ((state: S, arg: A) => T) | A,
-  arg?: A,
+  arg?: A | boolean,
   isEqual?: (a: T, b: T) => boolean,
 ): T {
   const reader = useMemo(() => {
@@ -79,5 +79,5 @@ export function useExternalStoreSelector<S, T, A>(
     return { subscribe: store.subscribe, getSnapshot };
   }, [store, selectOrArg, arg, isEqual]);
 
-  return useSyncExternalStore(reader.subscribe, reader.getSnapshot, reader.getSnapshot);
+  return useSnapshotReader(reader, typeof store === 'function' ? arg as boolean | undefined : undefined);
 }

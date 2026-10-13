@@ -954,6 +954,25 @@ export function configureSqliteRuntimeDatabase(db: DatabaseSync): void {
   db.exec('PRAGMA foreign_keys = ON');
 }
 
+/** Set the reclamation mode before schema creation on a newly created file only. */
+export function configureSqliteRuntimeAutoVacuumForNewDatabase(
+  db: DatabaseSync,
+  databaseExisted: boolean,
+): void {
+  if (databaseExisted) return;
+  const existingSchema = db
+    .prepare("SELECT 1 AS present FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' LIMIT 1")
+    .get() as { present?: unknown } | undefined;
+  if (existingSchema?.present === 1) return;
+  db.exec('PRAGMA auto_vacuum = INCREMENTAL');
+  const configured = db.prepare('PRAGMA auto_vacuum').get() as
+    | { auto_vacuum?: unknown }
+    | undefined;
+  if (configured?.auto_vacuum !== 2) {
+    throw new Error('New SQLite runtime database did not enable incremental auto-vacuum');
+  }
+}
+
 /** Configure connection-local lock waiting without changing persistent database state. */
 export function configureSqliteRuntimeLockWait(db: DatabaseSync): void {
   db.exec(`PRAGMA busy_timeout = ${SQLITE_INITIALIZATION_BUSY_TIMEOUT_MS}`);
