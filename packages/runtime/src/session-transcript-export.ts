@@ -40,6 +40,7 @@
  * already on disk.
  */
 
+import { openSync, writeSync, closeSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
 import type { StoredMessage } from '@maka/core/session';
@@ -108,6 +109,131 @@ export async function exportSessionTranscriptMarkdown(
     });
     return { ok: true, markdown, messageCount: messages.length };
   } finally {
+    await store.close?.();
+  }
+}
+
+export interface ExportSessionTranscriptMarkdownToFileInput
+  extends ExportSessionTranscriptMarkdownInput {
+  outPath: string;
+}
+
+export type ExportSessionTranscriptMarkdownToFileResult =
+  | {
+      ok: true;
+      outPath: string;
+      messageCount: number;
+      bytes: number;
+      subagentSessions: number;
+    }
+  | {
+      ok: false;
+      outPath: string;
+      reason:
+        | { kind: 'workspace_not_found'; workspaceRoot: string }
+        | { kind: 'session_not_found' }
+        | { kind: 'schema_unsupported' };
+    };
+
+/**
+ * Stream the same transcript to a file handle instead of a string: the core
+ * renderer emits one chunk per turn and each chunk is written as it lands, so
+ * peak memory stays bounded by the largest turn rather than the whole
+ * document (#6036 review). Sessions the main one spawned as subagents render
+ * after it under their own title, so a debugging export carries the whole
+ * story.
+ */
+export async function exportSessionTranscriptMarkdownToFile(
+  input: ExportSessionTranscriptMarkdownToFileInput,
+): Promise<ExportSessionTranscriptMarkdownToFileResult> {
+  if (!(await isDirectory(input.workspaceRoot))) {
+    return {
+      ok: false,
+      outPath: input.outPath,
+      reason: { kind: 'workspace_not_found', workspaceRoot: input.workspaceRoot },
+    };
+  }
+
+  let store: SessionAuthorityStore;
+  try {
+    store = createSessionStore(input.workspaceRoot, { schemaMigration: 'require_current' });
+  } catch (error) {
+    if (error instanceof OperationalStateMigrationBlockedError) {
+      return { ok: false, outPath: input.outPath, reason: { kind: 'schema_unsupported' } };
+    }
+    throw error;
+  }
+
+  const handle = openSync(input.outPath, 'w');
+  try {
+    let sessionName: string;
+    try {
+      sessionName = (await store.readHeaderSnapshot(input.sessionId)).name;
+    } catch {
+      return { ok: false, outPath: input.outPath, reason: { kind: 'session_not_found' } };
+    }
+
+    let bytes = 0;
+    const emit = (chunk: string): void => {
+      bytes += writeSync(handle, chunk);
+    };
+    const renderOptions = {
+      includeThinking: input.includeThinking,
+      includeToolResults: true,
+      includeToolArguments: true,
+      now: input.now,
+      emit,
+    };
+
+    const mainMessages = await readSessionMessages(input.workspaceRoot, input.sessionId, () =>
+      store.readMessagesSnapshot(input.sessionId),
+    );
+    renderConversationMarkdown(sessionName, mainMessages, {
+      copy: {
+        you: 'You',
+        assistant: 'Maka',
+        toolCalls: 'Tool calls',
+        thinking: 'Thinking',
+        intentSeparator: ' — ',
+      },
+      ...renderOptions,
+    });
+
+    let subagentSessions = 0;
+    for (const header of await store.listHeaders()) {
+      if (header.subagentParent?.parentSessionId !== input.sessionId) continue;
+      subagentSessions += 1;
+      emit(`\n\n# ${header.name}\n\n`);
+      try {
+        const childMessages = await readSessionMessages(input.workspaceRoot, header.id, () =>
+          store.readMessagesSnapshot(header.id),
+        );
+        renderConversationMarkdown(header.name, childMessages, {
+          copy: {
+            you: 'You',
+            assistant: 'Maka',
+            toolCalls: 'Tool calls',
+            thinking: 'Thinking',
+            intentSeparator: ' — ',
+          },
+          ...renderOptions,
+        });
+      } catch {
+        // A child that no longer projects (deleted mid-export, unreadable
+        // ledger) must not lose the rest of the document.
+        emit(`[subagent session ${header.id} could not be rendered]\n\n`);
+      }
+    }
+
+    return {
+      ok: true,
+      outPath: input.outPath,
+      messageCount: mainMessages.length,
+      bytes,
+      subagentSessions,
+    };
+  } finally {
+    closeSync(handle);
     await store.close?.();
   }
 }

@@ -18,7 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdir, rm, stat } from 'node:fs/promises';
+import { mkdir, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -34,6 +34,7 @@ import { seedInvocation } from './invocation-fixture.js';
 import type { StoredMessage } from '@maka/core/session';
 import {
   exportSessionTranscriptMarkdown,
+  exportSessionTranscriptMarkdownToFile,
   renderSessionTranscriptMarkdown,
 } from '../session-transcript-export.js';
 
@@ -654,4 +655,142 @@ test('emits rows in stored order — steering after a tool call prints after it'
     [...order].sort((a, b) => a - b),
     'rows must stay in stored order',
   );
+});
+
+test('file export streams the string form and appends subagent sessions', async () => {
+  await withWorkspace('transcript-export-file', async (workspaceRoot) => {
+    const store = createSessionStore(workspaceRoot);
+    const parent = await store.create({
+      cwd: workspaceRoot,
+      llmConnectionSlug: CONNECTION_SLUG,
+      model: MODEL,
+      permissionMode: 'ask',
+      name: 'Main',
+    });
+    await writeMessages(workspaceRoot, parent.id, [
+      userMessage('u1', 'turn-1', 1, 'fan out'),
+      assistantMessage({ id: 'a1', turnId: 'turn-1', ts: 2, text: 'Delegated.' }),
+    ]);
+    const child = await store.createSubagent({
+      cwd: workspaceRoot,
+      llmConnectionSlug: CONNECTION_SLUG,
+      model: MODEL,
+      permissionMode: 'ask',
+      name: 'Scout',
+      subagentParent: {
+        kind: 'subagent',
+        parentSessionId: parent.id,
+        spawnedBy: { parentRunId: 'run-1', parentTurnId: 'turn-1', toolCallId: 'tc-1' },
+        lifecycle: 'foreground',
+      },
+      subagentRuntime: {
+        schemaVersion: 1,
+        definitionVersion: 1,
+        agentId: 'local-read',
+        agentName: 'Local Read',
+        profile: 'local_read',
+        systemPrompt: 'Read the assigned workspace task.',
+        toolNames: ['Read'],
+        categoryPolicy: { read: 'allow' },
+      },
+      subagentSpawn: {
+        schemaVersion: 1,
+        requestFingerprint: 'a'.repeat(64),
+        initialTurnId: 'sub-turn-1',
+        initialRunId: 'sub-run-1',
+      },
+    } as Parameters<typeof store.createSubagent>[0]);
+    await writeMessages(workspaceRoot, child.header.id, [
+      userMessage('su1', 'sub-turn-1', 3, 'scout the repo'),
+      assistantMessage({ id: 'sa1', turnId: 'sub-turn-1', ts: 4, text: 'Scouted.' }),
+    ]);
+    await store.close?.();
+
+    const outPath = join(workspaceRoot, 'transcript.md');
+    const result = await exportSessionTranscriptMarkdownToFile({
+      workspaceRoot,
+      sessionId: parent.id,
+      outPath,
+      now: () => 0,
+    });
+    assert.ok(result.ok, JSON.stringify(result));
+    assert.equal(result.subagentSessions, 1);
+    const file = await readFile(outPath, 'utf8');
+
+    const stringForm = await exportSessionTranscriptMarkdown({
+      workspaceRoot,
+      sessionId: parent.id,
+      now: () => 0,
+    });
+    assert.ok(stringForm.ok, JSON.stringify(stringForm));
+    // The streamed file carries everything the string form has, then the
+    // subagent story under its own title.
+    assert.ok(file.includes(stringForm.ok ? stringForm.markdown : ''));
+    assert.ok(file.includes('# Scout'));
+    assert.ok(file.includes('scout the repo'));
+  });
+});
+
+test('file export memory stays bounded on a 1,000-turn session', { timeout: 180_000 }, async () => {
+  await withWorkspace('transcript-export-scale', async (workspaceRoot) => {
+    const sessionId = await createSession(workspaceRoot, 'Scale');
+    const store = createSessionStore(workspaceRoot);
+    const bigResult = 'x'.repeat(50_000);
+    const rows: StoredMessage[] = [];
+    for (let turn = 0; turn < 1000; turn += 1) {
+      const ts = turn * 4;
+      rows.push(userMessage(`u${turn}`, `t${turn}`, ts, `turn ${turn} ask`));
+      rows.push(
+        toolCallMessage({ id: `c${turn}`, turnId: `t${turn}`, ts: ts + 1, toolName: 'read_file' }),
+      );
+      rows.push(
+        toolResultMessage({
+          id: `r${turn}`,
+          toolUseId: `c${turn}`,
+          turnId: `t${turn}`,
+          ts: ts + 2,
+          text: bigResult,
+        }),
+      );
+      rows.push(
+        assistantMessage({
+          id: `a${turn}`,
+          turnId: `t${turn}`,
+          ts: ts + 3,
+          text: `turn ${turn} done`,
+        }),
+      );
+      if (rows.length >= 400) {
+        await store.appendMessages(sessionId, [...rows]);
+        rows.length = 0;
+      }
+    }
+    if (rows.length > 0) await store.appendMessages(sessionId, [...rows]);
+    await store.close?.();
+
+    const outPath = join(workspaceRoot, 'scale.md');
+    const before = process.memoryUsage.rss();
+    const startedAt = Date.now();
+    const result = await exportSessionTranscriptMarkdownToFile({
+      workspaceRoot,
+      sessionId,
+      outPath,
+      now: () => 0,
+    });
+    const seconds = (Date.now() - startedAt) / 1000;
+    const rssDeltaMb = (process.memoryUsage.rss() - before) / 1e6;
+    // The numbers the PR owes #5958: ~50 MB of tool-result content streamed to
+    // disk without materializing the document.
+    console.log(
+      `[scale] turns=1000 content≈48MB bytes=${result.ok ? result.bytes : '?'} ` +
+        `rssDelta=${rssDeltaMb.toFixed(0)}MB time=${seconds.toFixed(1)}s`,
+    );
+    assert.ok(result.ok, JSON.stringify(result));
+    assert.ok(result.ok && result.bytes > 50_000_000, 'the whole transcript reached the file');
+    assert.ok(
+      rssDeltaMb < 200,
+      `streaming export must not balloon RSS: +${rssDeltaMb.toFixed(0)}MB`,
+    );
+    assert.ok(seconds < 120, `export took ${seconds.toFixed(1)}s`);
+  });
 });
