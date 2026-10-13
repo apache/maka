@@ -306,6 +306,24 @@ test('operational rows never reach the export', async () => {
     assert.equal(result.markdown.includes('token_usage'), false);
     assert.equal(result.markdown.includes('turn_state'), false);
     assert.ok(result.markdown.includes('Hi.'));
+
+    // The substring assertions above are vacuous on their own — a renderer
+    // that grew a fallback for unknown row types would leak `token_usage`
+    // rows without ever printing that literal. Pin the whole document: the
+    // export of the polluted session must be byte-identical to the export of
+    // a clean session with the same spoken rows.
+    const cleanSessionId = await createSession(workspaceRoot, 'Operational');
+    await writeMessages(workspaceRoot, cleanSessionId, [
+      userMessage('u1', 'turn-1', 1, 'hello'),
+      assistantMessage({ id: 'a1', turnId: 'turn-1', ts: 4, text: 'Hi.' }),
+    ]);
+    const clean = await exportSessionTranscriptMarkdown({
+      workspaceRoot,
+      sessionId: cleanSessionId,
+      now: () => 0,
+    });
+    assert.ok(clean.ok, JSON.stringify(clean));
+    assert.equal(result.ok ? result.markdown : '', clean.ok ? clean.markdown : '');
   });
 });
 
@@ -380,9 +398,7 @@ test('never migrates the operational database: an older schema fails instead of 
     });
     try {
       const row = reader
-        .prepare(
-          "SELECT version FROM operational_schema_migrations WHERE scope = 'core_execution'",
-        )
+        .prepare("SELECT version FROM operational_schema_migrations WHERE scope = 'core_execution'")
         .get() as { version: number };
       assert.equal(row.version, 6);
     } finally {
@@ -597,4 +613,45 @@ test('renders every user message in a turn, steering included', () => {
   assert.ok(markdown.includes('list the files'));
   assert.ok(markdown.includes('include the hidden ones'));
   assert.ok(markdown.includes('Here are all of them.'));
+});
+
+test('emits rows in stored order — steering after a tool call prints after it', () => {
+  // The mis-ordering liugddx flagged: a steering "STOP" the user sent after a
+  // tool call ran must not print ahead of that call (#6036 review).
+  const markdown = renderSessionTranscriptMarkdown(
+    'Order',
+    [
+      userMessage('u1', 'turn-1', 1, 'start the long job'),
+      toolCallMessage({ id: 'c1', turnId: 'turn-1', ts: 2, toolName: 'long_job' }),
+      toolResultMessage({
+        id: 'r1',
+        toolUseId: 'c1',
+        turnId: 'turn-1',
+        ts: 3,
+        text: 'still running',
+      }),
+      {
+        type: 'user',
+        id: 'u2',
+        turnId: 'turn-1',
+        ts: 4,
+        text: 'STOP',
+        steeringEventId: 'e-steer',
+      },
+      assistantMessage({ id: 'a1', turnId: 'turn-1', ts: 5, text: 'stopped.' }),
+    ] as StoredMessage[],
+    { now: () => 0 },
+  );
+  const order = ['start the long job', '`long_job`', 'still running', 'STOP', 'stopped.'].map(
+    (fragment) => markdown.indexOf(fragment),
+  );
+  assert.ok(
+    order.every((index) => index >= 0),
+    'every row renders',
+  );
+  assert.deepEqual(
+    order,
+    [...order].sort((a, b) => a - b),
+    'rows must stay in stored order',
+  );
 });
