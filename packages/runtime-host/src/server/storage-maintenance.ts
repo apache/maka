@@ -53,6 +53,11 @@ export class HostStorageMaintenance {
     contextOffload?: Pick<InteractiveContextOffloadWriter, 'collectGarbage' | 'reclaimFreePages'>;
     /** The opt-in archived-task retention sweep; true while candidates remain. */
     retention?: { sweep(): Promise<boolean> };
+    /**
+     * Conversation-copy discards that recovery deferred out of the ready
+     * path; true while queued copies remain.
+     */
+    sessionDiscards?: { sweep(): Promise<boolean> };
     onError: (name: string, error: unknown) => void;
   }) {
     this.#onError = input.onError;
@@ -79,6 +84,15 @@ export class HostStorageMaintenance {
         },
       },
     ];
+    const sessionDiscards = input.sessionDiscards;
+    if (sessionDiscards)
+      this.#lanes.push({
+        name: 'deferred session discard',
+        failures: 0,
+        activeDelay: ACTIVE_DELAY_MS,
+        idleDelay: IDLE_DELAY_MS,
+        run: () => sessionDiscards.sweep(),
+      });
     const context = input.contextOffload;
     if (context) {
       this.#lanes.push({

@@ -227,6 +227,46 @@ test('the retention lane sweeps a second apart while work remains and every quar
   await maintenance.close();
 });
 
+test('the deferred session discard lane drains recovery-deferred copies, then idles', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const queue = [true, true, false];
+  let sweeps = 0;
+  const maintenance = new HostStorageMaintenance({
+    artifacts: {
+      reclaimUpgradeResidue: async () => ({
+        nextAfter: null,
+        processedPaths: 0,
+        failedPaths: 0,
+      }),
+    },
+    sessionDiscards: {
+      sweep: async () => {
+        sweeps += 1;
+        return queue.shift() ?? false;
+      },
+    },
+    onError: assert.fail,
+  });
+  maintenance.start();
+  t.mock.timers.tick(99);
+  await settle();
+  assert.equal(sweeps, 0);
+  t.mock.timers.tick(1);
+  await settle();
+  assert.equal(sweeps, 1);
+  t.mock.timers.tick(100);
+  await settle();
+  assert.equal(sweeps, 2);
+  t.mock.timers.tick(100);
+  await settle();
+  assert.equal(sweeps, 3);
+  // Queue drained: the lane idles on a minute instead of polling every 100 ms.
+  t.mock.timers.tick(100);
+  await settle();
+  assert.equal(sweeps, 3);
+  await maintenance.close();
+});
+
 test('context-offload page reclamation lane runs with bounded batches', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   let reclaimCalls = 0;

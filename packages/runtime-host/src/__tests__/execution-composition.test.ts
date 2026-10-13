@@ -945,10 +945,27 @@ test('production composition reaches Ready when the optional context Store canno
         true,
       );
       await composition.recover();
+      // Recovery defers the physical purge out of the ready path (issue #4027):
+      // nothing discards the copy before Ready, so no cleanup diagnostic runs.
       assert.equal(
         diagnostics.some((message) =>
           message.includes('conversation copy cleanup deferred during recovery'),
         ),
+        false,
+      );
+      // The maintenance lane takes the queued discard after Ready. This
+      // environment cannot complete the purge (the optional context store is
+      // closed), so the lane reports the retry and leaves the copy untouched.
+      composition.startMaintenance!();
+      const retryDeadline = Date.now() + 5_000;
+      while (
+        Date.now() < retryDeadline &&
+        !diagnostics.some((message) => message.includes('deferred session discard will retry'))
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      assert.equal(
+        diagnostics.some((message) => message.includes('deferred session discard will retry')),
         true,
       );
     } finally {
@@ -963,6 +980,59 @@ test('production composition reaches Ready when the optional context Store canno
         (await reopened.readHeaderSnapshot(preparingSessionId)).conversationCopy?.state,
         'preparing',
       );
+    } finally {
+      await reopened.close?.();
+    }
+  });
+});
+
+test('deferred conversation-copy discards drain through post-ready maintenance', async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const requestFingerprint = `sha256:${'b'.repeat(64)}` as const;
+    const preparingSessionId = 'preparing-branch-copy';
+    const sessionStore = createSessionStore(root);
+    await sessionStore.createStableSession({
+      sessionId: preparingSessionId,
+      requestFingerprint,
+      input: {
+        cwd: root,
+        llmConnectionId: FAKE_CONNECTION_ID,
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'ask',
+        name: 'Preparing branch copy',
+        labels: [],
+        parentSessionId: 'source-session',
+        branchOfTurnId: 'source-turn',
+        conversationCopy: {
+          kind: 'branch',
+          sourceSessionId: 'source-session',
+          sourceTurnId: 'source-turn',
+          requestFingerprint,
+          state: 'preparing',
+        },
+      },
+    });
+    await sessionStore.close?.();
+    const composition = await createExecutionRuntimeHostComposition(compositionContext(owner));
+    try {
+      await composition.recover();
+      composition.startMaintenance!();
+      // The first lane tick runs ~100 ms after Ready; give it time to land.
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    } finally {
+      await composition.close();
+    }
+    const reopened = createSessionStore(root);
+    try {
+      let discarded = false;
+      try {
+        await reopened.readHeaderSnapshot(preparingSessionId);
+      } catch {
+        // The deferred discard removed the Session after Ready.
+        discarded = true;
+      }
+      assert.equal(discarded, true);
     } finally {
       await reopened.close?.();
     }
