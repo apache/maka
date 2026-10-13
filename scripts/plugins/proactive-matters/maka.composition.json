@@ -1,0 +1,18 @@
+[
+  {
+    "type": "insert",
+    "rootId": "profile",
+    "entry": {
+      "id": "proactive-matters-host",
+      "packageId": "dev.maka.proactive-matters"
+    }
+  },
+  {
+    "type": "insert",
+    "rootId": "desktop-ui",
+    "entry": {
+      "id": "proactive-matters-ui",
+      "packageId": "dev.maka.proactive-matters"
+    }
+  }
+]

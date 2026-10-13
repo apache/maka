@@ -1,0 +1,41 @@
+{
+  "name": "@maka/proactive-matters",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --import tsx --test test/*.test.ts",
+    "pack:extension": "node scripts/pack.mjs",
+    "typecheck": "tsc --noEmit",
+    "prepare:test": "node scripts/prepare-test-metadata.mjs && node scripts/main-api.mjs && node scripts/extra-api.mjs ui && node scripts/extra-api.mjs live",
+    "verify": "npm run build && npm run prepare:test && npm run pack:extension && npm test && npm run typecheck"
+  },
+  "dependencies": {
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@ai-sdk/anthropic": "^4.0.53",
+    "@ai-sdk/code-mode": "^1.0.56",
+    "@ai-sdk/cohere": "^4.0.41",
+    "@ai-sdk/google": "^4.0.69",
+    "@ai-sdk/open-responses": "^2.0.44",
+    "@ai-sdk/openai": "^4.0.66",
+    "@ai-sdk/openai-compatible": "^3.0.48",
+    "@ai-sdk/provider": "^4.0.14",
+    "@types/node": "^24.0.0",
+    "ai": "^7.0.99",
+    "esbuild": "^0.25.0",
+    "linkedom": "^0.18.13",
+    "minisearch": "^7.2.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0",
+    "yaml": "^2.9.1"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}
