@@ -23,6 +23,8 @@ import {
   MODEL_API_PROTOCOLS,
   PROVIDER_REGISTRY,
   providerAuthSupportsApiKey,
+  providerSupportsApiProtocolSelection,
+  providerSupportsDefaultApiProtocol,
 } from '@maka/core/llm-connections';
 import type { ConnectionOnboardingTarget } from '@maka/core/runtime-policy';
 import type { OnboardableProvider } from './pi-tui-contracts.js';
@@ -47,8 +49,10 @@ export function listApiKeyOnboardableProviders(): OnboardableProvider[] {
       requiresBaseUrl: !definition.baseUrl,
       setupMethod: 'api_key' as const,
     };
-    if (providerType !== 'custom') return [entry];
-    return MODEL_API_PROTOCOLS.map((defaultApiProtocol) => ({
+    if (!providerSupportsApiProtocolSelection(providerType)) return [entry];
+    return MODEL_API_PROTOCOLS.filter((protocol) =>
+      providerSupportsDefaultApiProtocol(providerType, protocol),
+    ).map((defaultApiProtocol) => ({
       ...entry,
       defaultApiProtocol,
       label: `${definition.label} (${MODEL_API_PROTOCOL_LABELS[defaultApiProtocol]})`,

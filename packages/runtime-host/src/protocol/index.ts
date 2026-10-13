@@ -104,7 +104,10 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 217 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 218 as const;
+// 218: Connection catalog pages can include azure-foundry and
+// amazon-bedrock-api-key. Epoch-217 clients reject these providerType values
+// with their closed provider registry, so they must not share a Host.
 // 217: token_usage.lastRequestAnchor may carry completedAt, the provider
 // request settlement time; transcripts may carry context_compaction_applied
 // system notes; and session subscriptions forward the same boundary during

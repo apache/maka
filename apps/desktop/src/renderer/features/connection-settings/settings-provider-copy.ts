@@ -273,6 +273,10 @@ const zhCopy = {
   },
   shared: {
     requestUrlLabel: '请求地址：',
+    azureFoundryEndpointHelp: '使用以 /openai/v1 结尾的已部署模型终结点。模型 ID 请填写部署名称；模型列表可能只包含基础模型。',
+    azureFoundryAnthropicEndpointHelp: 'Anthropic Messages 请使用 https://<resource-name>.services.ai.azure.com/anthropic。模型 ID 请填写部署名称。',
+    bedrockOpenAiEndpointHelp: 'Chat Completions 或 Responses 请使用 https://bedrock-runtime.{region}.amazonaws.com/openai/v1。若未列出，请手动输入 Bedrock 模型 ID。',
+    bedrockAnthropicEndpointHelp: 'Anthropic Messages 请使用 https://bedrock-runtime.{region}.amazonaws.com/anthropic。若未列出，请手动输入 Bedrock 模型 ID。',
     connectionStale: '连接状态已更新，请刷新列表后再删除。',
     actionFallback: '模型连接服务暂时不可用，请稍后重试。', rateLimit: '当前账号或模型服务触发速率限制，请稍后重试。',
     timeout: '请求超时，请检查网络或代理后重试。', unavailable: '模型服务暂时不可用，请稍后重试。',
@@ -486,6 +490,10 @@ const zhTwCopy = {
   },
   shared: {
     requestUrlLabel: '請求地址：',
+    azureFoundryEndpointHelp: '請使用以 /openai/v1 結尾的已部署模型端點。模型 ID 請填寫部署名稱；模型清單可能只包含基礎模型。',
+    azureFoundryAnthropicEndpointHelp: 'Anthropic Messages 請使用 https://<resource-name>.services.ai.azure.com/anthropic。模型 ID 請填寫部署名稱。',
+    bedrockOpenAiEndpointHelp: 'Chat Completions 或 Responses 請使用 https://bedrock-runtime.{region}.amazonaws.com/openai/v1。若未列出，請手動輸入 Bedrock 模型 ID。',
+    bedrockAnthropicEndpointHelp: 'Anthropic Messages 請使用 https://bedrock-runtime.{region}.amazonaws.com/anthropic。若未列出，請手動輸入 Bedrock 模型 ID。',
     connectionStale: '連線狀態已更新，請重新整理清單後再刪除。',
     actionFallback: '模型連線服務暫時不可用，請稍後重試。', rateLimit: '目前帳號或模型服務觸發速率限制，請稍後重試。',
     timeout: '請求超時，請檢查網路或代理後重試。', unavailable: '模型服務暫時不可用，請稍後重試。',
@@ -698,6 +706,10 @@ const enCopy: ProviderSettingsCopy = {
   },
   shared: {
     requestUrlLabel: 'Request URL:',
+    azureFoundryEndpointHelp: 'Use the deployed model endpoint ending in /openai/v1. Enter the deployment name as the model ID; the models list may only contain base models.',
+    azureFoundryAnthropicEndpointHelp: 'For Anthropic Messages, use https://<resource-name>.services.ai.azure.com/anthropic. Enter the deployment name as the model ID.',
+    bedrockOpenAiEndpointHelp: 'For Chat Completions or Responses, use https://bedrock-runtime.{region}.amazonaws.com/openai/v1. Enter the Bedrock model ID manually if it is not listed.',
+    bedrockAnthropicEndpointHelp: 'For Anthropic Messages, use https://bedrock-runtime.{region}.amazonaws.com/anthropic. Enter the Bedrock model ID manually if it is not listed.',
     connectionStale: 'The connection changed while deleting. Refresh the list and try again.',
     actionFallback: 'The model connection service is temporarily unavailable. Try again later.', rateLimit: 'This account or model service is rate-limited. Try again later.',
     timeout: 'The request timed out. Check the network or proxy and try again.', unavailable: 'The model service is temporarily unavailable. Try again later.',

@@ -25,7 +25,10 @@ import {
   providerEndpointPresentation,
 } from '../../renderer/settings/provider-endpoint-presentation.js';
 
-import { providerRequestUrlPreview } from '../../renderer/features/connection-settings/testing.js';
+import {
+  providerEndpointHelpKey,
+  providerRequestUrlPreview,
+} from '../../renderer/features/connection-settings/testing.js';
 
 // A 40-char hex-shaped run, built rather than written: long enough to trip
 // the display redactor's long-opaque-token rule wherever it is left alone.
@@ -215,6 +218,26 @@ test('draft request previews follow the relay protocol, custom prefixes and endp
     'https://relay.example/proxy/responses');
   assert.equal(providerRequestUrlPreview('custom', 'https://relay.example/', 'openai-responses'),
     'https://relay.example/responses');
+  assert.equal(providerRequestUrlPreview('azure-foundry', 'https://tenant.example/openai/v1'),
+    'https://tenant.example/openai/v1/chat/completions');
+  assert.equal(providerRequestUrlPreview('amazon-bedrock-api-key', 'https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1', 'openai-responses'),
+    'https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1/responses');
+});
+
+test('provider endpoint help follows the selected Azure and Bedrock API protocol', () => {
+  assert.equal(providerEndpointHelpKey('azure-foundry', 'openai-chat'), 'azureFoundryEndpointHelp');
+  assert.equal(
+    providerEndpointHelpKey('azure-foundry', 'anthropic-messages'),
+    'azureFoundryAnthropicEndpointHelp',
+  );
+  assert.equal(
+    providerEndpointHelpKey('amazon-bedrock-api-key', 'anthropic-messages'),
+    'bedrockAnthropicEndpointHelp',
+  );
+  assert.equal(
+    providerEndpointHelpKey('amazon-bedrock-api-key', 'openai-responses'),
+    'bedrockOpenAiEndpointHelp',
+  );
 });
 
 test('switching a custom connection protocol replaces the full OpenAI endpoint', () => {
@@ -238,5 +261,6 @@ test('empty, incomplete, unsaveable and unsupported protocol drafts have no requ
     assert.equal(providerRequestUrlPreview('custom', draft), null, draft);
   }
   assert.equal(providerRequestUrlPreview('openai', 'https://relay.example/v1'), null);
+  assert.equal(providerRequestUrlPreview('amazon-bedrock-api-key', 'https://bedrock-runtime.us-east-1.amazonaws.com/anthropic', 'anthropic-messages'), null);
   assert.equal(providerRequestUrlPreview('custom', 'https://relay.example/v1', 'anthropic-messages'), null);
 });

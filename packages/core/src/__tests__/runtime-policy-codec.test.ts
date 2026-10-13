@@ -439,7 +439,8 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
     null,
   );
 
-  // A custom connection needs a default wire; no other provider may carry one.
+  // Custom endpoints and the new protocol-flexible catalog entries can store
+  // a chosen default wire; other providers still cannot claim unsupported wires.
   const custom = {
     slug: 'relay',
     name: 'Relay',
@@ -454,14 +455,36 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
     [withoutProtocol, /default API protocol is invalid/],
     [{ ...custom, defaultApiProtocol: 'google-generate' }, /default API protocol is invalid/],
     [
-      { ...custom, providerType: 'openai', baseUrl: undefined },
-      /only a custom connection has a default API protocol/,
+      { ...custom, providerType: 'anthropic', baseUrl: undefined },
+      /provider does not support this default API protocol/,
     ],
   ] as const) {
     assert.throws(
       () => normalizeCreateCatalogConnectionInput({ expectedCatalogRevision: 0, connection }),
       message,
     );
+  }
+  for (const providerType of ['azure-foundry', 'amazon-bedrock-api-key'] as const) {
+    for (const defaultApiProtocol of [
+      'openai-chat',
+      'openai-responses',
+      'anthropic-messages',
+    ] as const) {
+      assert.doesNotThrow(() =>
+        normalizeCreateCatalogConnectionInput({
+          expectedCatalogRevision: 0,
+          connection: {
+            slug: providerType,
+            name: providerType,
+            providerType,
+            baseUrl: 'https://provider.example/openai/v1',
+            defaultApiProtocol,
+            enabled: true,
+            enabledModelIds: [],
+          },
+        }),
+      );
+    }
   }
   assert.deepEqual(
     normalizeConnectionCatalogEntryUpdate({

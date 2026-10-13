@@ -3147,7 +3147,11 @@ describe('non-serving Runtime Host kernel', () => {
     });
   });
 
-  test('rejects a previous-epoch Client before admitting catalog commands', async () => {
+  test('rejects an epoch-217 Client before a catalog page can carry API-key provider types', async () => {
+    // Epoch-217 clients have a closed provider registry without azure-foundry
+    // and amazon-bedrock-api-key. They must never decode pages from this Host.
+    const preApiKeyProviderEpoch = 217;
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > preApiKeyProviderEpoch);
     await withHostPaths(async (paths) => {
       const candidate = await startTestRuntimeHostCandidate(paths, {
         rootPath: paths.root,
@@ -3163,7 +3167,7 @@ describe('non-serving Runtime Host kernel', () => {
           clientInstanceId: 'previous-epoch-client',
           protocolMin: CURRENT_PROTOCOL.min,
           protocolMax: CURRENT_PROTOCOL.max,
-          compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH - 1,
+          compatibilityEpoch: preApiKeyProviderEpoch,
           compositionId: 'maka.interactive',
         });
         const response = decodeHostFrame(await transport.read(2_000));
