@@ -22,3 +22,5 @@ export { AppUpdateProvider } from './ui/app-update-provider.js';
 export { AppUpdateAboutProjectionConsumer } from './ui/app-update-projection-context.js';
 export type { AppUpdateServices } from './ports.js';
 export type { AppUpdateAboutProjection } from './ui/app-update-projection-context.js';
+
+export { appUpdateErrorMessage } from './locales/app-update-copy.js';
