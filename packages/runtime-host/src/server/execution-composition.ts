@@ -177,7 +177,8 @@ import { HostExternalSessionCoordinator } from './external-session-coordinator.j
 import { boundedFailureDiagnostic } from './failure-diagnostic.js';
 import { HostSessionBundleCoordinator } from './session-bundle-coordinator.js';
 import { HostGoalCoordinator } from './goal-coordinator.js';
-import { readGoalFormEvidence } from './goal-form-evidence.js';
+import { readGoalFormEvidence, unreadGoalFormToolResponses } from './goal-form-evidence.js';
+import { recentGoalToolReferences } from './goal-evaluation-context.js';
 import { HostGoalExecutionCoordinator } from './goal-execution-coordinator.js';
 import { HostHostedExecutionCoordinator } from './hosted-execution-coordinator.js';
 import { HostHostedExecutionRunner } from './hosted-execution-runner.js';
@@ -2171,10 +2172,17 @@ export async function createExecutionRuntimeHostComposition(
       readSessionContext: async (sessionId) => {
         const { messages, events } =
           await requireSessionManager(manager).readConversationCopySnapshot(sessionId);
+        const formAnswers = await readGoalFormEvidence(sessionId, events, (requestId) =>
+          stores.interactionStore.readInteraction(requestId),
+        );
         return {
           messages,
-          formAnswers: await readGoalFormEvidence(sessionId, events, (requestId) =>
-            stores.interactionStore.readInteraction(requestId),
+          formAnswers,
+          unreadFormTools: unreadGoalFormToolResponses(
+            sessionId,
+            events,
+            formAnswers,
+            recentGoalToolReferences(messages),
           ),
         };
       },

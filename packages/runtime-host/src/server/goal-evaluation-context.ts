@@ -28,7 +28,7 @@ import {
 } from '@maka/core/session';
 import { projectToolArgsPreview } from '@maka/core/tool-quiet-preview';
 import { isGoalTextWithinLimit, truncateGoalText } from '@maka/runtime/goal-state';
-import type { GoalFormAnswer } from './goal-form-evidence.js';
+import type { GoalFormAnswer, GoalFormToolReference } from './goal-form-evidence.js';
 
 const PROSE_COUNT = 6;
 const TOOL_COUNT = 6;
@@ -65,6 +65,7 @@ interface ToolEvidence {
 export function buildGoalEvaluationContext(
   messages: readonly StoredMessage[],
   formAnswers: readonly GoalFormAnswer[] = [],
+  unreadFormTools: readonly GoalFormToolReference[] = [],
 ): string {
   const proseMessages = messages
     .flatMap((message) => {
@@ -77,33 +78,27 @@ export function buildGoalEvaluationContext(
     ({ type, text }) => `[${type}]: ${safeTextExcerpt(text, GOAL_REASON_TEXT_LIMIT, ' … ')}`,
   );
 
-  // A call ID is scoped to its Turn. Updating insertion order at each result
-  // keeps parallel calls in the order their evidence actually arrived.
-  const tools = new Map<string, ToolEvidence>();
-  for (const message of messages) {
-    if (message.type !== 'tool_call' && message.type !== 'tool_result') continue;
-    const key = JSON.stringify([
-      message.turnId,
-      message.type === 'tool_call' ? message.id : message.toolUseId,
-    ]);
-    const evidence =
-      message.type === 'tool_call' ? { call: message } : { ...tools.get(key), result: message };
-    tools.delete(key);
-    tools.set(key, evidence);
-  }
+  const tools = indexToolEvidence(messages);
   const recentTools = [...tools.values()].slice(-TOOL_COUNT);
   const recentTurns = new Set(proseMessages.map(({ turnId }) => turnId));
   for (const { call, result } of recentTools) recentTurns.add((call ?? result)!.turnId);
   const recentForms = formAnswers.filter(({ turnId }) => recentTurns.has(turnId));
-  const evidenceRows = recentTools.map(formatToolEvidence);
+  // A tool may echo an accepted form in JSON, text or another result shape.
+  // Keep its status, but omit that body when its matched form is sensitive or
+  // uninspected. Build this guard before display quotas discard form evidence.
+  const withheldResults = new Set(unreadFormTools.map(formToolKey));
+  for (const answer of formAnswers) {
+    if (answer.action === 'unavailable' || sensitiveFormFields(answer).size > 0) {
+      withheldResults.add(formToolKey(answer));
+    }
+  }
+  const evidenceRows = recentTools.map((evidence) =>
+    formatToolEvidence(evidence, withheldResults.has(formToolKey(toolReference(evidence)))),
+  );
   if (tools.size > TOOL_COUNT)
     evidenceRows.unshift(`[tools omitted]: ${tools.size - TOOL_COUNT} earlier calls`);
   for (const answer of recentForms.slice(-FORM_COUNT)) {
-    const sensitiveFields = new Set(
-      answer.fields
-        .filter(({ name, label }) => isSensitiveKey(name) || isCredentialLabel(label))
-        .map(({ name }) => name),
-    );
+    const sensitiveFields = sensitiveFormFields(answer);
     const values =
       answer.values &&
       Object.fromEntries(
@@ -134,7 +129,48 @@ export function buildGoalEvaluationContext(
   ].join('\n');
 }
 
-function formatToolEvidence({ call, result }: ToolEvidence): string {
+/** The same bounded selection used to scope unread form acknowledgements. */
+export function recentGoalToolReferences(
+  messages: readonly StoredMessage[],
+): readonly GoalFormToolReference[] {
+  return [...indexToolEvidence(messages).values()].slice(-TOOL_COUNT).map(toolReference);
+}
+
+function indexToolEvidence(messages: readonly StoredMessage[]): Map<string, ToolEvidence> {
+  // A call ID is scoped to its Turn. Updating insertion order at each result
+  // keeps parallel calls in the order their evidence actually arrived.
+  const tools = new Map<string, ToolEvidence>();
+  for (const message of messages) {
+    if (message.type !== 'tool_call' && message.type !== 'tool_result') continue;
+    const key = formToolKey({
+      turnId: message.turnId,
+      toolUseId: message.type === 'tool_call' ? message.id : message.toolUseId,
+    });
+    const evidence =
+      message.type === 'tool_call' ? { call: message } : { ...tools.get(key), result: message };
+    tools.delete(key);
+    tools.set(key, evidence);
+  }
+  return tools;
+}
+
+function toolReference({ call, result }: ToolEvidence): GoalFormToolReference {
+  return { turnId: (call ?? result)!.turnId, toolUseId: call?.id ?? result!.toolUseId };
+}
+
+function formToolKey({ turnId, toolUseId }: GoalFormToolReference): string {
+  return JSON.stringify([turnId, toolUseId]);
+}
+
+function sensitiveFormFields(answer: GoalFormAnswer): ReadonlySet<string> {
+  return new Set(
+    answer.fields
+      .filter(({ name, label }) => isSensitiveKey(name) || isCredentialLabel(label))
+      .map(({ name }) => name),
+  );
+}
+
+function formatToolEvidence({ call, result }: ToolEvidence, withholdResult: boolean): string {
   const identity = safeJsonExcerpt(
     {
       isError: result?.isError,
@@ -155,7 +191,9 @@ function formatToolEvidence({ call, result }: ToolEvidence): string {
         ARGS_LIMIT,
       );
     if (result)
-      output = safeJsonExcerpt(projectResult(result.content, call?.toolName), RESULT_LIMIT);
+      output = withholdResult
+        ? '[omitted: form response body]'
+        : safeJsonExcerpt(projectResult(result.content, call?.toolName), RESULT_LIMIT);
   } catch {
     // A malformed projection never reopens the raw arguments/results path.
   }

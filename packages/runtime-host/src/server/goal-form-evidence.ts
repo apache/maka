@@ -34,7 +34,47 @@ export interface GoalFormAnswer {
   >;
 }
 
+export interface GoalFormToolReference {
+  readonly turnId: string;
+  readonly toolUseId: string;
+}
+
 const RECENT_FORM_ANSWER_LIMIT = 6;
+
+/**
+ * A Tool may request several forms before returning. An acknowledgement beyond
+ * the answer-read quota still means its result could echo an unchecked answer.
+ * Record only selected Tool identities so this guard stays bounded without
+ * reading older Interaction values or adding synthetic display answers.
+ */
+export function unreadGoalFormToolResponses(
+  sessionId: string,
+  events: readonly RuntimeEvent[],
+  answers: readonly GoalFormAnswer[],
+  relevantTools: readonly GoalFormToolReference[],
+): readonly GoalFormToolReference[] {
+  const inspected = new Set(
+    answers.map(({ turnId, toolUseId, requestId }) =>
+      JSON.stringify([turnId, toolUseId, requestId]),
+    ),
+  );
+  const relevant = new Map(
+    relevantTools.map(({ turnId, toolUseId }) => [
+      JSON.stringify([turnId, toolUseId]),
+      { turnId, toolUseId },
+    ]),
+  );
+  const unread = new Set<string>();
+  for (const event of events) {
+    const requestId = event.actions?.formAnswerAccepted?.requestId;
+    const toolUseId = event.refs?.toolCallId;
+    if (event.sessionId !== sessionId || event.partial || !requestId || !toolUseId) continue;
+    const key = JSON.stringify([event.turnId, toolUseId]);
+    if (relevant.has(key) && !inspected.has(JSON.stringify([event.turnId, toolUseId, requestId])))
+      unread.add(key);
+  }
+  return [...relevant].flatMap(([key, reference]) => (unread.has(key) ? [reference] : []));
+}
 
 /**
  * A form acknowledgement carries identity, not the human's answer. Read that

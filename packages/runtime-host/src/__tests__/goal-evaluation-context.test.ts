@@ -372,6 +372,151 @@ test('decorated credential labels redact values and their duplicate selected-opt
   assert.doesNotMatch(context, /Saved password|Saved key/);
 });
 
+test('credential form metadata prevents the matching tool result from echoing its answer', async (t) => {
+  const secret = 'short-unpatterned-secret';
+  const answer: GoalFormAnswer = {
+    ...formAnswer(0),
+    fields: [{ name: 'value', label: 'Password (required)' }],
+    values: { value: secret },
+  };
+  const outputs: ToolResultContent[] = [
+    {
+      kind: 'json',
+      value: { action: 'accept', values: { value: secret }, confirmation: `Received ${secret}` },
+    },
+    { kind: 'text', text: `Received the submitted value: ${secret}` },
+  ];
+  for (const content of outputs) {
+    await t.test(content.kind, () => {
+      const context = buildGoalEvaluationContext(
+        [call(answer.toolUseId), result(answer.toolUseId, content)],
+        [answer],
+      );
+      assert.match(context, /\[tool\]:/);
+      assert.match(context, /\[form answer\]:/);
+      assert.match(context, /"outcome":"success"/);
+      assert.match(context, /run form-0/);
+      assert.match(toolRows(context)[0]!, /\[omitted|\[unavailable/);
+      assert.match(context, /Password \(required\)/);
+      assert.match(context, /\[redacted\]/);
+      assert.doesNotMatch(context, new RegExp(secret));
+    });
+  }
+});
+
+test('ordinary form answers keep their matching tool result visible', () => {
+  const value = 'ordinary-deployment-target';
+  const answer = { ...formAnswer(0), values: { target: value } };
+  const context = buildGoalEvaluationContext(
+    [
+      call(answer.toolUseId),
+      result(answer.toolUseId, {
+        kind: 'json',
+        value: { action: 'accept', values: { target: value } },
+      }),
+    ],
+    [answer],
+  );
+  assert.match(toolRows(context)[0]!, new RegExp(value));
+  assert.match(
+    context.split('\n').find((row) => row.startsWith('[form answer]:'))!,
+    new RegExp(value),
+  );
+});
+
+test('credential forms only suppress the result for the same call and Turn', () => {
+  const answer: GoalFormAnswer = {
+    ...formAnswer(0),
+    fields: [{ name: 'value', label: 'Password (required)' }],
+    values: { value: 'unrelated-private-answer' },
+  };
+  const context = buildGoalEvaluationContext(
+    [
+      call('other-call'),
+      result('other-call', { kind: 'text', text: 'Same Turn ordinary output' }),
+      call(answer.toolUseId, 'other-turn'),
+      result(answer.toolUseId, { kind: 'text', text: 'Other Turn ordinary output' }, 'other-turn'),
+    ],
+    [answer],
+  );
+  assert.match(context, /Same Turn ordinary output/);
+  assert.match(context, /Other Turn ordinary output/);
+  assert.doesNotMatch(context, /unrelated-private-answer/);
+});
+
+test('unavailable form metadata does not reopen the matching raw tool output', () => {
+  const answer: GoalFormAnswer = {
+    ...formAnswer(0),
+    action: 'unavailable',
+    fields: [],
+    values: undefined,
+  };
+  const context = buildGoalEvaluationContext(
+    [
+      call(answer.toolUseId),
+      result(answer.toolUseId, { kind: 'text', text: 'Raw answer without its credential label' }),
+    ],
+    [answer],
+  );
+  assert.match(context, /"action":"unavailable"/);
+  assert.match(toolRows(context)[0]!, /\[omitted|\[unavailable/);
+  assert.doesNotMatch(context, /Raw answer without its credential label/);
+});
+
+test('a credential form outside the answer display quota still protects its tool result', () => {
+  const secret = 'private-answer-outside-display-quota';
+  const answers = [
+    {
+      ...formAnswer(0),
+      fields: [{ name: 'value', label: 'Password (required)' }],
+      values: { value: secret },
+    },
+    formAnswer(1),
+    formAnswer(2),
+    formAnswer(3),
+  ];
+  const context = buildGoalEvaluationContext(
+    [call('form-0'), result('form-0', { kind: 'json', value: { values: { value: secret } } })],
+    answers,
+  );
+  assert.equal(context.split('\n').filter((row) => row.startsWith('[form answer]:')).length, 3);
+  assert.match(context, /\[forms omitted\]: 1/);
+  assert.match(toolRows(context)[0]!, /\[omitted|\[unavailable/);
+  assert.doesNotMatch(context, /Password \(required\)/);
+  assert.doesNotMatch(context, new RegExp(secret));
+});
+
+test('an unread older form protects its tool output without changing displayed ordinary answers', () => {
+  const secret = 'older-unread-credential-answer';
+  const messages = [
+    call('multi-form-tool'),
+    result('multi-form-tool', { kind: 'text', text: `Earlier submitted value: ${secret}` }),
+  ];
+  // One tool can show several forms. The six recent ordinary answers do not
+  // establish that an older, unread request from that same call was ordinary.
+  const answers = Array.from({ length: 6 }, (_, index) => ({
+    ...formAnswer(index),
+    toolUseId: 'multi-form-tool',
+  }));
+  const unprotected = buildGoalEvaluationContext(messages, answers);
+  const protectedContext = buildGoalEvaluationContext(messages, answers, [
+    { turnId: 'turn', toolUseId: 'multi-form-tool' },
+  ]);
+  assert.match(toolRows(unprotected)[0]!, new RegExp(secret));
+  assert.match(toolRows(protectedContext)[0]!, /\[omitted|\[unavailable/);
+  assert.doesNotMatch(protectedContext, new RegExp(secret));
+  assert.deepEqual(
+    protectedContext.split('\n').filter((row) => row.startsWith('[form answer]:')),
+    unprotected.split('\n').filter((row) => row.startsWith('[form answer]:')),
+    'an unread request does not create or evict a displayed canonical answer',
+  );
+  assert.equal(
+    protectedContext.split('\n').filter((row) => row.startsWith('[form answer]:')).length,
+    3,
+  );
+  assert.match(protectedContext, /\[forms omitted\]: 3/);
+});
+
 test('AskUserQuestion credential answers are redacted while an ordinary chosen answer stays visible', () => {
   const context = buildGoalEvaluationContext([
     {

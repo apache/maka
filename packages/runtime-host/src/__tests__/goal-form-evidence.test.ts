@@ -27,7 +27,7 @@ import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
 import type { InteractionRecord } from '@maka/storage/interaction-store';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
-import { readGoalFormEvidence } from '../server/goal-form-evidence.js';
+import { readGoalFormEvidence, unreadGoalFormToolResponses } from '../server/goal-form-evidence.js';
 
 const IDENTITY = { sessionId: 'form-session', turnId: 'form-turn', runId: 'form-run' };
 
@@ -210,6 +210,103 @@ test('Goal form evidence reads canonical answers independently of the eventual t
       evidence.map(({ requestId }) => requestId),
       reads,
     );
+    assert.deepEqual(
+      unreadGoalFormToolResponses(IDENTITY.sessionId, events, evidence, [
+        { turnId: IDENTITY.turnId, toolUseId: 'tool-recent-0' },
+        { turnId: IDENTITY.turnId, toolUseId: 'tool-recent-2' },
+      ]),
+      [{ turnId: IDENTITY.turnId, toolUseId: 'tool-recent-0' }],
+    );
+  });
+
+  await t.test(
+    'an unread credential form still guards a Tool with newer ordinary answers',
+    async () => {
+      const toolUseId = 'multi-form-tool';
+      const events: RuntimeEvent[] = [];
+      for (let index = 0; index < 8; index += 1) {
+        const requestId = `multi-form-${index}`;
+        await stores.interactionStore.establishRequest({
+          ...IDENTITY,
+          requestId,
+          createdAt: index,
+          request: {
+            kind: 'form',
+            toolUseId,
+            message: 'Provide settings',
+            requester: { name: 'deployment', source: 'private-provider-metadata' },
+            fields: [
+              {
+                kind: 'string',
+                name: 'value',
+                label: index === 0 ? 'Password' : 'Deployment target',
+                required: true,
+                maxLength: 64,
+              },
+            ],
+          },
+        });
+        await stores.interactionStore.commitOutcome(requestId, {
+          kind: 'form_answer',
+          action: 'accept',
+          values: { value: index === 0 ? 'credential-value' : `ordinary-${index}` },
+          committedAt: index + 1,
+        });
+        events.push({ ...ack(requestId), refs: { toolCallId: toolUseId } });
+      }
+      events.push(events[7]!);
+      const reads: string[] = [];
+      const answers = await readGoalFormEvidence(IDENTITY.sessionId, events, (requestId) => {
+        reads.push(requestId);
+        return read(requestId);
+      });
+      // Replayed acknowledgements remain distinct by request identity, and the
+      // reader retains its existing six-authority-read contract.
+      assert.equal(reads.length, 6);
+      assert.deepEqual(reads, [
+        'multi-form-2',
+        'multi-form-3',
+        'multi-form-4',
+        'multi-form-5',
+        'multi-form-6',
+        'multi-form-7',
+      ]);
+      assert.doesNotMatch(JSON.stringify(answers), /credential-value|Password/);
+      const references = [
+        { turnId: IDENTITY.turnId, toolUseId },
+        { turnId: IDENTITY.turnId, toolUseId },
+      ];
+      const unread = unreadGoalFormToolResponses(IDENTITY.sessionId, events, answers, references);
+      assert.deepEqual(unread, [references[0]]);
+      assert.doesNotMatch(JSON.stringify(unread), /credential-value|private-|requestId/);
+      assert.deepEqual(
+        unreadGoalFormToolResponses(IDENTITY.sessionId, events, answers, [
+          { turnId: 'other-turn', toolUseId },
+          { turnId: IDENTITY.turnId, toolUseId: 'other-tool' },
+        ]),
+        [],
+      );
+    },
+  );
+
+  await t.test('unread-response guards ignore foreign and partial acknowledgements', () => {
+    const reference = { turnId: IDENTITY.turnId, toolUseId: 'tool-unread' };
+    assert.deepEqual(
+      unreadGoalFormToolResponses(
+        IDENTITY.sessionId,
+        [
+          { ...ack('unread'), sessionId: 'other-session' },
+          { ...ack('unread'), partial: true },
+          { ...ack('unread'), turnId: 'other-turn' },
+          { ...ack('unread'), refs: {} },
+          { ...ack('unread'), actions: {} },
+        ],
+        [],
+        [reference],
+      ),
+      [],
+    );
+    assert.deepEqual(unreadGoalFormToolResponses(IDENTITY.sessionId, [ack('unread')], [], []), []);
   });
 
   await t.test('foreign Session and partial acknowledgements do not read authority', async () => {

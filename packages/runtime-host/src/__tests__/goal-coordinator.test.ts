@@ -31,7 +31,7 @@ import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-
 import { openInteractiveGoalAuthorityForWrite } from '@maka/storage/goal-authority';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import { HostGoalCoordinator } from '../server/goal-coordinator.js';
-import type { GoalFormAnswer } from '../server/goal-form-evidence.js';
+import { readGoalFormEvidence, type GoalFormAnswer } from '../server/goal-form-evidence.js';
 import { HostedExecutionProjectionReader } from '../server/hosted-execution-projection.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 import { deferred, waitFor as pollFor, withTimeout } from '@maka/core/test-only/async-primitives';
@@ -620,7 +620,68 @@ test('the Host Goal evaluator receives tool results and human card answers from 
     const append = (message: StoredMessage) =>
       stores.sessionStore.appendMessage(session.id, message);
     const turnId = 'goal-tool-context-turn';
-    if (formAnswer) formAnswers.set(session.id, [formAnswer]);
+    if (formAnswer) {
+      const runId = `form-run-${session.id}`;
+      const requestId = `${formAnswer.requestId}-${session.id}`;
+      const established = await stores.interactionStore.establishRequest({
+        sessionId: session.id,
+        turnId: formAnswer.turnId,
+        runId,
+        requestId,
+        createdAt: 1,
+        request: {
+          kind: 'form',
+          toolUseId: formAnswer.toolUseId,
+          message: formAnswer.message,
+          requester: { name: toolName },
+          fields: formAnswer.fields.map(({ name, label }) => ({
+            kind: 'string',
+            name,
+            label,
+            required: true,
+            maxLength: 64,
+          })),
+        },
+      });
+      assert.equal(established.status, 'stable');
+      assert.notEqual(formAnswer.action, 'unavailable');
+      const action = formAnswer.action;
+      if (action === 'unavailable') assert.fail('This fixture must have a canonical form answer');
+      const values = Object.fromEntries(
+        Object.entries(formAnswer.values ?? {}).map(([name, value]) => {
+          assert.ok(typeof value === 'string', 'This fixture uses string form fields');
+          return [name, value];
+        }),
+      );
+      const committed = await stores.interactionStore.commitOutcome(requestId, {
+        kind: 'form_answer',
+        ...(action === 'accept' ? { action, values } : { action }),
+        committedAt: 2,
+      });
+      assert.equal(committed.status, 'stable');
+      formAnswers.set(
+        session.id,
+        await readGoalFormEvidence(
+          session.id,
+          [
+            {
+              sessionId: session.id,
+              turnId: formAnswer.turnId,
+              runId,
+              invocationId: runId,
+              id: `ack-${requestId}`,
+              ts: 3,
+              partial: false,
+              role: 'system',
+              author: 'user',
+              actions: { formAnswerAccepted: { requestId } },
+              refs: { toolCallId: formAnswer.toolUseId },
+            },
+          ],
+          (id) => stores.interactionStore.readInteraction(id),
+        ),
+      );
+    }
     await append({
       type: 'user',
       id: 'ask',
@@ -782,6 +843,68 @@ test('the Host Goal evaluator receives tool results and human card answers from 
       assert.doesNotMatch(declined, /staging/);
     },
   );
+
+  await t.test(
+    'canonical credential labels protect the final judge prompt from a generic tool echo',
+    async () => {
+      const secret = 'short-unpatterned-secret';
+      const answer: GoalFormAnswer = {
+        turnId: 'goal-tool-context-turn',
+        toolUseId: 'call',
+        requestId: 'credential-form-request',
+        action: 'accept',
+        message: 'Enter the account credential',
+        fields: [{ name: 'value', label: 'Password (required)' }],
+        values: { value: secret },
+      };
+      const echo = await evaluate(
+        'SyntheticForm',
+        { operation: 'authenticate' },
+        result({ kind: 'json', value: { action: 'accept', values: { value: secret } } }),
+        answer,
+      );
+      assert.match(echo, /\[tool\]:/);
+      assert.match(echo, /\[form answer\]:/);
+      assert.match(echo, /"outcome":"success"/);
+      assert.match(echo, /Password \(required\)/);
+      assert.match(echo, /\[redacted\]/);
+      assert.doesNotMatch(echo, new RegExp(secret));
+
+      const noEcho = await evaluate(
+        'SyntheticForm',
+        {},
+        result({ kind: 'text', text: 'Authentication finished' }),
+        answer,
+      );
+      assert.match(noEcho, /\[form answer\]:/);
+      assert.match(noEcho, /Password \(required\)/);
+      assert.match(noEcho, /\[redacted\]/);
+      assert.doesNotMatch(noEcho, new RegExp(secret));
+    },
+  );
+
+  await t.test('canonical ordinary form values remain visible in both evidence rows', async () => {
+    const value = 'ordinary-human-choice';
+    const context = await evaluate(
+      'SyntheticForm',
+      {},
+      result({ kind: 'json', value: { action: 'accept', values: { value } } }),
+      {
+        turnId: 'goal-tool-context-turn',
+        toolUseId: 'call',
+        requestId: 'ordinary-form-request',
+        action: 'accept',
+        message: 'Choose the deployment target',
+        fields: [{ name: 'value', label: 'Deployment target' }],
+        values: { value },
+      },
+    );
+    for (const prefix of ['[tool]:', '[form answer]:']) {
+      const row = context.split('\n').find((entry) => entry.startsWith(prefix));
+      assert.ok(row, `${prefix} evidence reaches the final judge prompt`);
+      assert.match(row, new RegExp(value));
+    }
+  });
 });
 
 test('restart settles the durable current Goal execution through Hosted Execution authority', async () => {

@@ -70,7 +70,7 @@ import { waitForHostedExecutionTerminal } from './hosted-execution-wait.js';
 import { SessionAdmissionGate } from './session-admission-gate.js';
 import { goalTurnOutcomeFromHostedExecution } from './goal-execution-coordinator.js';
 import { buildGoalEvaluationContext } from './goal-evaluation-context.js';
-import type { GoalFormAnswer } from './goal-form-evidence.js';
+import type { GoalFormAnswer, GoalFormToolReference } from './goal-form-evidence.js';
 
 type GoalStores = Pick<ExecutionStoresWriter<'interactive'>, 'sessionStore' | 'agentRunStore'>;
 
@@ -81,6 +81,7 @@ export interface HostGoalCoordinatorOptions {
   readonly readSessionContext: (sessionId: string) => Promise<{
     readonly messages: readonly StoredMessage[];
     readonly formAnswers?: readonly GoalFormAnswer[];
+    readonly unreadFormTools?: readonly GoalFormToolReference[];
   }>;
   readonly sessionAdmission: SessionAdmissionGate;
   readonly evaluator: GoalEvaluatorResource;
@@ -174,11 +175,12 @@ export class HostGoalCoordinator {
       evaluator: options.evaluator,
       getRecentContext: async (sessionId) => {
         const controlLease = this.manager.getControlLease(sessionId);
-        const { messages, formAnswers } = await options.readSessionContext(sessionId);
+        const { messages, formAnswers, unreadFormTools } =
+          await options.readSessionContext(sessionId);
         if (controlLease && this.manager.matchesControlLease(sessionId, controlLease)) {
           tokenCache.set(sessionId, tokenCount(messages));
         }
-        return buildGoalEvaluationContext(messages, formAnswers);
+        return buildGoalEvaluationContext(messages, formAnswers, unreadFormTools);
       },
       getTokenCount: (sessionId) => tokenCache.get(sessionId) ?? 0,
       admitTurn: options.admitTurn,
