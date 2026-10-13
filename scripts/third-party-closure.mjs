@@ -175,9 +175,10 @@ export function collectProductionClosure(workspaceName) {
  * it: a nested `node_modules` copy is its own entry, so a second copy or a
  * version replacement shows up even when the name was already shipping.
  *
- * Workspace packages are included under their real directory — they ship in
- * `app.asar` too. An entry with no `path` was not installed (an optional peer
- * nothing provided) and so ships nothing.
+ * Workspace packages are included at their `node_modules` link, where npm
+ * reports them; their own nested dependencies stay under `packages/<name>/`.
+ * They ship in `app.asar` too. An entry with no `path` was not installed (an
+ * optional peer nothing provided) and so ships nothing.
  */
 export function installedInstances(dependencies, root = repoRoot) {
   const instances = new Set();

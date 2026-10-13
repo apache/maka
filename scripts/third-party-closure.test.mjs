@@ -129,11 +129,11 @@ describe('installedInstances', () => {
     assert.deepEqual(installedInstances(tree, root), ['node_modules/ws@8.0.0']);
   });
 
-  test('a workspace package is recorded under its real directory', () => {
+  test('a workspace package is recorded at its node_modules link', () => {
     const tree = {
       '@maka/runtime': {
         version: '0.1.0',
-        path: at('packages', 'runtime'),
+        path: at('node_modules', '@maka', 'runtime'),
         dependencies: {
           undici: { version: '8.0.0', path: at('packages', 'runtime', 'node_modules', 'undici') },
         },
@@ -141,8 +141,8 @@ describe('installedInstances', () => {
     };
 
     assert.deepEqual(installedInstances(tree, root), [
+      'node_modules/@maka/runtime@0.1.0',
       'packages/runtime/node_modules/undici@8.0.0',
-      'packages/runtime@0.1.0',
     ]);
   });
 });
