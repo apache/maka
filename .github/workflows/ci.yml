@@ -236,7 +236,8 @@ jobs:
       # closure whether or not anything loads it, and a packaging job runs only
       # at release -- which is how 183 MB of renderer sources shipped for weeks
       # with nothing reporting the step change (#3146). The closure is read
-      # from installed node_modules, so this runs after `npm ci`.
+      # from installed node_modules, so this runs after `npm ci`, and the
+      # ledger is the Linux install this runner makes.
       - name: Check packaged artifact budget
         if: steps.plan.outputs.code == 'true'
         run: npm run check:artifact-budget

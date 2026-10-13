@@ -17,143 +17,85 @@
  * under the License.
  */
 
-import { equal, deepEqual, match } from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { deepEqual, equal, match } from 'node:assert/strict';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import {
-  collectClosure,
-  compare,
-  formatFailure,
-  resolvePackageDirectory,
-} from './check-artifact-budget.mjs';
+import { compare, formatFailure, main } from './check-artifact-budget.mjs';
 
-function makeTree() {
-  const root = mkdtempSync(join(tmpdir(), 'artifact-budget-'));
-  const writePackage = (directory, manifest) => {
-    mkdirSync(directory, { recursive: true });
-    writeFileSync(join(directory, 'package.json'), JSON.stringify(manifest));
-  };
-  return { root, writePackage };
+// Which instances the closure holds is tested with the closure itself, in
+// scripts/third-party-closure.test.mjs. These tests cover the gate around it.
+
+function ledgerFile(t, packages) {
+  const directory = mkdtempSync(join(tmpdir(), 'artifact-budget-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const path = join(directory, 'artifact-budget.json');
+  writeFileSync(path, `${JSON.stringify({ packages }, null, 2)}\n`);
+  return path;
 }
 
-test('walks the production dependency graph', (t) => {
-  const { root, writePackage } = makeTree();
-  t.after(() => rmSync(root, { recursive: true, force: true }));
-
-  writePackage(root, { name: 'app', dependencies: { alpha: '1.0.0' } });
-  writePackage(join(root, 'node_modules/alpha'), {
-    name: 'alpha',
-    version: '1.0.0',
-    dependencies: { beta: '1.0.0' },
+function captureExitCode(t) {
+  const previous = process.exitCode;
+  t.after(() => {
+    process.exitCode = previous;
   });
-  writePackage(join(root, 'node_modules/beta'), { name: 'beta', version: '1.0.0' });
+  process.exitCode = undefined;
+}
 
-  deepEqual(collectClosure(root), ['node_modules/alpha@1.0.0', 'node_modules/beta@1.0.0']);
+test('main fails the run when the closure no longer matches the ledger', (t) => {
+  captureExitCode(t);
+  const errors = t.mock.method(console, 'error', () => {});
+  const ledgerPath = ledgerFile(t, ['node_modules/alpha@1.0.0']);
+
+  main({
+    argv: [],
+    ledgerPath,
+    collect: () => ['node_modules/alpha@1.0.0', 'node_modules/mermaid@11.0.0'],
+  });
+
+  equal(process.exitCode, 1);
+  equal(errors.mock.callCount(), 1);
+  match(errors.mock.calls[0].arguments[0], /\+ node_modules\/mermaid@11\.0\.0/u);
 });
 
-test('devDependencies never ship', (t) => {
-  const { root, writePackage } = makeTree();
-  t.after(() => rmSync(root, { recursive: true, force: true }));
+test('main fails the run when a shipped instance changes version', (t) => {
+  captureExitCode(t);
+  t.mock.method(console, 'error', () => {});
+  const ledgerPath = ledgerFile(t, ['node_modules/alpha@1.0.0']);
 
-  writePackage(root, {
-    name: 'app',
-    dependencies: { alpha: '1.0.0' },
-    devDependencies: { renderer_only: '1.0.0' },
-  });
-  writePackage(join(root, 'node_modules/alpha'), { name: 'alpha', version: '1.0.0' });
-  writePackage(join(root, 'node_modules/renderer_only'), { name: 'renderer_only' });
+  main({ argv: [], ledgerPath, collect: () => ['node_modules/alpha@2.0.0'] });
 
-  deepEqual(collectClosure(root), ['node_modules/alpha@1.0.0']);
+  equal(process.exitCode, 1);
 });
 
-test('optional dependencies ship when they install', (t) => {
-  const { root, writePackage } = makeTree();
-  t.after(() => rmSync(root, { recursive: true, force: true }));
+test('main passes when the closure matches the ledger', (t) => {
+  captureExitCode(t);
+  const logs = t.mock.method(console, 'log', () => {});
+  const ledgerPath = ledgerFile(t, ['node_modules/alpha@1.0.0', 'node_modules/beta@1.0.0']);
 
-  writePackage(root, { name: 'app', dependencies: { alpha: '1.0.0' } });
-  writePackage(join(root, 'node_modules/alpha'), {
-    name: 'alpha',
-    version: '1.0.0',
-    optionalDependencies: { gamma: '1.0.0' },
+  main({
+    argv: [],
+    ledgerPath,
+    collect: () => ['node_modules/alpha@1.0.0', 'node_modules/beta@1.0.0'],
   });
-  writePackage(join(root, 'node_modules/gamma'), { name: 'gamma', version: '1.0.0' });
 
-  deepEqual(collectClosure(root), ['node_modules/alpha@1.0.0', 'node_modules/gamma@1.0.0']);
+  equal(process.exitCode, undefined);
+  match(logs.mock.calls[0].arguments[0], /2 package instances/u);
 });
 
-test('follows a nested node_modules copy with different dependencies', (t) => {
-  // Regression: keying visited packages by name lets the hoisted copy win, so
-  // the nested copy's subtree is never walked. That is how
-  // `proxy-agent-negotiate` -- reachable only through
-  // `packages/runtime/node_modules/https-proxy-agent` -- went missing while
-  // electron-builder shipped it.
-  const { root, writePackage } = makeTree();
-  t.after(() => rmSync(root, { recursive: true, force: true }));
+test('main --write records the current closure as the ledger', (t) => {
+  captureExitCode(t);
+  t.mock.method(console, 'log', () => {});
+  const ledgerPath = ledgerFile(t, ['node_modules/alpha@1.0.0']);
 
-  writePackage(root, { name: 'app', dependencies: { alpha: '1.0.0', shared: '1.0.0' } });
-  writePackage(join(root, 'node_modules/shared'), { name: 'shared', version: '1.0.0' });
-  writePackage(join(root, 'node_modules/alpha'), {
-    name: 'alpha',
-    version: '1.0.0',
-    dependencies: { shared: '2.0.0' },
+  main({ argv: ['--write'], ledgerPath, collect: () => ['node_modules/alpha@2.0.0'] });
+
+  equal(process.exitCode, undefined);
+  deepEqual(JSON.parse(readFileSync(ledgerPath, 'utf8')), {
+    packages: ['node_modules/alpha@2.0.0'],
   });
-  writePackage(join(root, 'node_modules/alpha/node_modules/shared'), {
-    name: 'shared',
-    version: '2.0.0',
-    dependencies: { only_via_nested: '1.0.0' },
-  });
-  writePackage(join(root, 'node_modules/only_via_nested'), {
-    name: 'only_via_nested',
-    version: '1.0.0',
-  });
-
-  // Both `shared` instances are listed, so the duplicate is reviewable.
-  deepEqual(collectClosure(root), [
-    'node_modules/alpha/node_modules/shared@2.0.0',
-    'node_modules/alpha@1.0.0',
-    'node_modules/only_via_nested@1.0.0',
-    'node_modules/shared@1.0.0',
-  ]);
-});
-
-test('a same-name version replacement changes the closure', (t) => {
-  const { root, writePackage } = makeTree();
-  t.after(() => rmSync(root, { recursive: true, force: true }));
-
-  writePackage(root, { name: 'app', dependencies: { alpha: '1.0.0' } });
-  writePackage(join(root, 'node_modules/alpha'), { name: 'alpha', version: '1.0.0' });
-  const before = collectClosure(root);
-
-  writePackage(join(root, 'node_modules/alpha'), { name: 'alpha', version: '2.0.0' });
-  const after = collectClosure(root);
-
-  deepEqual(compare(before, after), {
-    added: ['node_modules/alpha@2.0.0'],
-    removed: ['node_modules/alpha@1.0.0'],
-  });
-});
-
-test('a missing package is skipped rather than throwing', (t) => {
-  const { root, writePackage } = makeTree();
-  t.after(() => rmSync(root, { recursive: true, force: true }));
-
-  writePackage(root, { name: 'app', dependencies: { absent: '1.0.0' } });
-  deepEqual(collectClosure(root), []);
-});
-
-test('resolution walks up to a parent node_modules', (t) => {
-  const { root, writePackage } = makeTree();
-  t.after(() => rmSync(root, { recursive: true, force: true }));
-
-  writePackage(join(root, 'node_modules/hoisted'), { name: 'hoisted' });
-  const nested = join(root, 'node_modules/alpha');
-  writePackage(nested, { name: 'alpha' });
-
-  equal(resolvePackageDirectory('hoisted', nested), join(root, 'node_modules/hoisted'));
-  equal(resolvePackageDirectory('absent', nested), null);
 });
 
 test('compare reports both directions', () => {
@@ -168,5 +110,6 @@ test('the failure names the packages and how to resolve it', () => {
   const message = formatFailure({ added: ['mermaid'], removed: [] });
   match(message, /\+ mermaid/u);
   match(message, /--write/u);
+  match(message, /Linux/u);
   match(message, /devDependencies/u);
 });

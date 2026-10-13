@@ -25,73 +25,35 @@
 // own slice and nothing reported the step change.
 //
 // This check makes the closure a reviewed list. `artifact-budget.json` records
-// exactly which packages ship; adding a production dependency changes that
-// file, so the cost lands in the diff of the pull request that causes it.
+// exactly which package instances ship; adding a production dependency changes
+// that file, so the cost lands in the diff of the pull request that causes it.
 //
-// It tracks the set of package instances rather than bytes on purpose. The bytes that reach
-// `app.asar` are what survives the `files` globs -- on this checkout the
-// closure is 241 MiB on disk and 142 MiB in the archive -- and reproducing
-// those globs here would be the same hand-written exclude list that
-// `electron-builder.config.mjs` already records as unable to hold. The set is
-// exact, and it is the thing that regressed.
+// It tracks the set of package instances rather than bytes on purpose. The
+// bytes that reach `app.asar` are what survives the `files` globs -- on this
+// checkout the closure is 241 MiB on disk and 142 MiB in the archive -- and
+// reproducing those globs here would be the same hand-written exclude list
+// that `electron-builder.config.mjs` already records as unable to hold.
+//
+// The closure is read from `scripts/third-party-closure.mjs`, the definition
+// the security audit and the packaged-app verifier already use, so this
+// pull-request gate and those release checks cannot measure different sets.
+//
+// The ledger is the Linux x64 install, because that is where CI runs it.
+// npm installs OS-gated optional dependencies only on their own platform, so a
+// ledger refreshed on macOS or Windows would differ from what CI sees, and a
+// package that ships only on those platforms never reaches this ledger at all.
+// Refresh it on Linux.
 
-import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { dirname, join, relative, resolve, sep } from 'node:path';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { collectProductionInstances } from '../../../scripts/third-party-closure.mjs';
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const DESKTOP_ROOT = resolve(dirname(SCRIPT_PATH), '..');
 const LEDGER_PATH = join(DESKTOP_ROOT, 'artifact-budget.json');
-
-function readPackageJson(directory) {
-  try {
-    return JSON.parse(readFileSync(join(directory, 'package.json'), 'utf8'));
-  } catch {
-    return null;
-  }
-}
-
-// Node's own resolution: walk up `node_modules` directories from the dependent.
-export function resolvePackageDirectory(name, fromDirectory) {
-  let directory = fromDirectory;
-  for (;;) {
-    const candidate = join(directory, 'node_modules', name);
-    if (existsSync(join(candidate, 'package.json'))) return candidate;
-    const parent = resolve(directory, '..');
-    if (parent === directory) return null;
-    directory = parent;
-  }
-}
-
-// Visited is keyed by resolved directory, not by package name. A nested
-// `node_modules` copy is a different package with different dependencies, and
-// keying by name lets the hoisted copy win and hides the nested subtree --
-// which is how `proxy-agent-negotiate` (reached only through
-// `packages/runtime/node_modules/https-proxy-agent`) goes missing.
-//
-// The result lists resolved instances, `<path relative to root>@<version>`,
-// not names: a version replacement or a second copy of the same name changes
-// what electron-builder ships and must change the ledger too.
-export function collectClosure(rootDirectory = DESKTOP_ROOT) {
-  const manifest = readPackageJson(rootDirectory);
-  if (!manifest) throw new Error(`no package.json at ${rootDirectory}`);
-
-  const visited = new Map();
-  const walk = (name, fromDirectory) => {
-    const directory = resolvePackageDirectory(name, fromDirectory);
-    if (!directory || visited.has(directory)) return;
-    const pkg = readPackageJson(directory);
-    const path = relative(rootDirectory, directory).split(sep).join('/');
-    visited.set(directory, `${path}@${pkg?.version ?? 'unknown'}`);
-    if (!pkg) return;
-    // Optional dependencies ship when they install, so they count.
-    for (const dependency of Object.keys(pkg.dependencies ?? {})) walk(dependency, directory);
-    for (const dependency of Object.keys(pkg.optionalDependencies ?? {})) walk(dependency, directory);
-  };
-
-  for (const dependency of Object.keys(manifest.dependencies ?? {})) walk(dependency, rootDirectory);
-  return [...visited.values()].sort();
-}
+const WORKSPACE = '@maka/desktop';
 
 export function readLedger(path = LEDGER_PATH) {
   return JSON.parse(readFileSync(path, 'utf8'));
@@ -119,7 +81,8 @@ export function formatFailure({ added, removed }) {
   lines.push(
     '',
     'Every package here is copied into app.asar whether or not anything loads it.',
-    'If the change is intended, refresh the ledger so the cost is reviewable:',
+    'If the change is intended, refresh the ledger so the cost is reviewable',
+    '(on Linux, which is the install CI checks):',
     '',
     '  npm --workspace @maka/desktop run check:artifact-budget -- --write',
     '',
@@ -129,23 +92,26 @@ export function formatFailure({ added, removed }) {
   return lines.join('\n');
 }
 
-function main() {
-  const write = process.argv.includes('--write');
-  const actual = collectClosure();
+export function main({
+  argv = process.argv,
+  ledgerPath = LEDGER_PATH,
+  collect = () => collectProductionInstances(WORKSPACE),
+} = {}) {
+  const actual = collect();
 
-  if (write) {
-    writeFileSync(LEDGER_PATH, `${JSON.stringify({ packages: actual }, null, 2)}\n`);
+  if (argv.includes('--write')) {
+    writeFileSync(ledgerPath, `${JSON.stringify({ packages: actual }, null, 2)}\n`);
     console.log(`Wrote ${actual.length} package instances to artifact-budget.json`);
     return;
   }
 
-  const difference = compare(readLedger().packages, actual);
+  const difference = compare(readLedger(ledgerPath).packages, actual);
   if (difference.added.length || difference.removed.length) {
     console.error(formatFailure(difference));
     process.exitCode = 1;
     return;
   }
-  console.log(`Artifact budget OK — ${actual.length} packages ship in app.asar.`);
+  console.log(`Artifact budget OK — ${actual.length} package instances ship in app.asar.`);
 }
 
 if (process.argv[1] === SCRIPT_PATH) main();
