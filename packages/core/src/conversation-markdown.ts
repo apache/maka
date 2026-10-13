@@ -111,12 +111,6 @@ export function renderConversationMarkdown(
     byTurn.get(turnId)!.push(message);
   }
 
-  // Results pair with their call by id wherever the rows sit in the turn.
-  const pendingResults = new Map<string, ToolResultMessage>();
-  for (const message of messages) {
-    if (message.type === 'tool_result') pendingResults.set(message.toolUseId, message);
-  }
-
   for (const turnId of turnOrder) {
     const turnMessages = byTurn.get(turnId) ?? [];
     emit('---\n\n');
@@ -162,15 +156,6 @@ export function renderConversationMarkdown(
           if (args.length > 0) row += `${options.copy.intentSeparator}args: ${args}`;
         }
         emit(`${row}\n`);
-        if (options.includeToolResults) {
-          const result = pendingResults.get(message.id);
-          if (result)
-            emit(
-              renderToolResult(result, redact)
-                .map((line) => `${line}\n`)
-                .join(''),
-            );
-        }
         continue;
       }
       if (message.type === 'assistant') {
@@ -178,9 +163,27 @@ export function renderConversationMarkdown(
         if (message.thinking?.text) assistantThinkings.push(message.thinking.text);
         continue;
       }
-      // tool_result rows render at their call site; operational rows
-      // (token usage, turn state, permission decisions, system notes) are not
-      // something anyone said and stay out.
+      if (message.type === 'tool_result') {
+        // Results render at their own stored position: looking them up at the
+        // call site would move them ahead of intervening messages, and
+        // provider tool-call ids are not session-unique, so a session-wide
+        // id map binds results to the wrong turn (#6036 review).
+        if (options.includeToolResults) {
+          flushAssistant();
+          if (!inToolRun) {
+            emit(`### ${options.copy.toolCalls}\n\n`);
+            inToolRun = true;
+          }
+          emit(
+            renderToolResult(message, redact)
+              .map((line) => `${line}\n`)
+              .join(''),
+          );
+        }
+        continue;
+      }
+      // Operational rows (token usage, turn state, permission decisions,
+      // system notes) are not something anyone said and stay out.
     }
     flushAssistant();
   }

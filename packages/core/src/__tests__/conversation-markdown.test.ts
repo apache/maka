@@ -106,17 +106,18 @@ function render(
 }
 
 test('emits rows in stored order inside a turn — steering lands where it was sent', () => {
+  // The tool RESULT sits after the steering message in storage: rendering it
+  // at the call site would move it ahead of the steering (#6036 review).
   const markdown = render([
     userMessage('u1', 't1', 1, 'open the file'),
-    assistantMessage({ id: 'a1', turnId: 't1', ts: 2, text: 'working' }),
+    toolCallMessage({ id: 'c1', turnId: 't1', ts: 2, toolName: 'read_file' }),
     userMessage('u2', 't1', 3, 'STOP'),
-    toolCallMessage({ id: 'c1', turnId: 't1', ts: 4, toolName: 'read_file' }),
     toolResultMessage({ id: 'r1', toolUseId: 'c1', turnId: 't1', ts: 5, text: 'file body' }),
     assistantMessage({ id: 'a2', turnId: 't1', ts: 6, text: 'done' }),
   ]);
 
-  const order = ['open the file', 'working', 'STOP', '`read_file`', 'file body', 'done'].map(
-    (fragment) => markdown.indexOf(fragment),
+  const order = ['open the file', '`read_file`', 'STOP', 'file body', 'done'].map((fragment) =>
+    markdown.indexOf(fragment),
   );
   assert.deepEqual(
     order,
@@ -127,6 +128,33 @@ test('emits rows in stored order inside a turn — steering lands where it was s
     order.every((index) => index >= 0),
     'every row renders',
   );
+});
+
+test('reused provider tool-call ids bind each result to its own turn', () => {
+  const markdown = render([
+    toolCallMessage({ id: 'c-shared', turnId: 't1', ts: 1, toolName: 'run' }),
+    toolResultMessage({
+      id: 'r1',
+      toolUseId: 'c-shared',
+      turnId: 't1',
+      ts: 2,
+      text: 'first outcome',
+    }),
+    userMessage('u1', 't2', 3, 'again'),
+    toolCallMessage({ id: 'c-shared', turnId: 't2', ts: 4, toolName: 'run' }),
+    toolResultMessage({
+      id: 'r2',
+      toolUseId: 'c-shared',
+      turnId: 't2',
+      ts: 5,
+      text: 'second outcome',
+    }),
+  ]);
+  const first = markdown.indexOf('first outcome');
+  const again = markdown.indexOf('again');
+  const second = markdown.indexOf('second outcome');
+  assert.ok(first >= 0 && second >= 0);
+  assert.ok(first < again && again < second, 'each result stays inside its own turn');
 });
 
 test('sizes the result fence past any backtick run in the body', () => {

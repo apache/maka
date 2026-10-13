@@ -408,6 +408,33 @@ test('never migrates the operational database: an older schema fails instead of 
   });
 });
 
+test('read-only export leaves the writer journal mode untouched', async () => {
+  await withWorkspace('transcript-export-readonly-journal', async (workspaceRoot) => {
+    acquireOperationalStateDatabase(workspaceRoot).close();
+    const db = new DatabaseSync(join(workspaceRoot, OPERATIONAL_STATE_DATABASE_NAME));
+    db.exec('PRAGMA journal_mode = DELETE');
+    db.close();
+
+    // The journal flip happened at open time in the flagged behavior — even a
+    // failing export (missing session here) must not touch it (#6036 review).
+    const result = await exportSessionTranscriptMarkdown({
+      workspaceRoot,
+      sessionId: 'does-not-exist',
+    });
+    assert.ok(!result.ok);
+
+    const reader = new DatabaseSync(join(workspaceRoot, OPERATIONAL_STATE_DATABASE_NAME), {
+      readOnly: true,
+    });
+    try {
+      const mode = reader.prepare('PRAGMA journal_mode').get() as { journal_mode: string };
+      assert.equal(mode.journal_mode, 'delete');
+    } finally {
+      reader.close();
+    }
+  });
+});
+
 test('renderer stays a pure function over stored messages', () => {
   const markdown = renderSessionTranscriptMarkdown(
     'Pure',

@@ -86,7 +86,10 @@ export async function exportSessionTranscriptMarkdown(
   // schema this build does not understand (#6036 review).
   let store: SessionAuthorityStore;
   try {
-    store = createSessionStore(input.workspaceRoot, { schemaMigration: 'require_current' });
+    store = createSessionStore(input.workspaceRoot, {
+      schemaMigration: 'require_current',
+      access: 'read',
+    });
   } catch (error) {
     if (error instanceof OperationalStateMigrationBlockedError) {
       return { ok: false, reason: { kind: 'schema_unsupported' } };
@@ -157,7 +160,10 @@ export async function exportSessionTranscriptMarkdownToFile(
 
   let store: SessionAuthorityStore;
   try {
-    store = createSessionStore(input.workspaceRoot, { schemaMigration: 'require_current' });
+    store = createSessionStore(input.workspaceRoot, {
+      schemaMigration: 'require_current',
+      access: 'read',
+    });
   } catch (error) {
     if (error instanceof OperationalStateMigrationBlockedError) {
       return { ok: false, outPath: input.outPath, reason: { kind: 'schema_unsupported' } };
@@ -195,7 +201,15 @@ export async function exportSessionTranscriptMarkdownToFile(
     let bytes = 0;
     const openHandle = handle;
     const emit = (chunk: string): void => {
-      bytes += writeSync(openHandle, chunk);
+      const buffer = Buffer.from(chunk, 'utf8');
+      // writeSync may accept fewer bytes than asked (short write); looping
+      // until the buffer is drained is the contract, and a partial write
+      // must never be reported as a successful export (#6036 review).
+      let written = 0;
+      while (written < buffer.length) {
+        written += writeSync(openHandle, buffer, written);
+      }
+      bytes += buffer.length;
     };
     const renderOptions = {
       includeThinking: input.includeThinking,
