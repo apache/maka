@@ -1645,10 +1645,15 @@ export class ToolRuntime {
               queue,
             ),
         };
-        const invokeTool = () =>
-          preparedExecution
-            ? preparedExecution.execute(toolContext)
-            : tool.impl(structuredClone(executionArgs) as never, toolContext);
+        const invokeTool = () => {
+          if (!preparedExecution)
+            return tool.impl(structuredClone(executionArgs) as never, toolContext);
+          // Execution takes ownership of cleanup, including when it throws.
+          // Only a preparation that never starts may be cancelled below.
+          const execution = preparedExecution;
+          preparedExecution = undefined;
+          return execution.execute(toolContext);
+        };
         const prepareOperationValue = async () => {
           const result = await invokeTool();
           if (
