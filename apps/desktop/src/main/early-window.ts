@@ -30,7 +30,6 @@ import {
   ipcMain,
   type MessageBoxOptions,
   type MessageBoxReturnValue,
-  nativeTheme,
   Notification,
 } from "electron";
 import { resolveSystemUiLocale } from "@maka/core/ui-locale";
@@ -38,9 +37,9 @@ import { resolveStorageRoot } from "@maka/storage/root-authority";
 import { createSettingsStore } from "@maka/storage/settings-store";
 import { createAppQuitCoordinator } from "./app-quit-coordinator.js";
 import { bootContext } from "./boot-context.js";
-import { showBrowserMessageBox, type BrowserMessageBoxTheme } from "./browser-message-box.js";
 import { resolveBuildInfo } from "./build-info.js";
 import { createDesktopLocaleAuthority } from "./desktop-locale-authority.js";
+import { bringDecisionForward, presentMessageBox } from "./desktop-message-box.js";
 import { resolveE2eFixture, seedE2eFixture } from "./e2e-fixture.js";
 import {
   captureDesktopDiagnosticEnvironment,
@@ -63,7 +62,6 @@ import { createSettingsRecoveryReporter } from "./settings-recovery.js";
 import { isIsolatedE2e, revealMode } from "./startup-context.js";
 import { resolveDesktopStorageRoot } from "./storage-root-startup.js";
 import { startupStep } from "./startup-step.js";
-import { isDarkAppearance } from "./theme-source.js";
 import { desktopDiagnosticUpdateChannel } from "./app-update-attestation.js";
 
 // The login-shell PATH probe spawns the user's interactive shell — a hundred
@@ -116,25 +114,14 @@ export const desktopDiagnostics: DesktopDiagnosticsDeps = {
   writeClipboard: (report) => clipboard.writeText(report),
 };
 
-// The storage-root repair dialog can fire before settingsStore/desktopLocale
-// exist, so both resolvers start at safe defaults and are rebound below once
-// the settings-backed versions can actually run.
-let resolveBrowserDialogParent = (): BrowserWindow | undefined => undefined;
-let resolveBrowserDialogAppearance = async (): Promise<BrowserMessageBoxTheme> => ({
-  locale: resolveSystemUiLocale(app.getPreferredSystemLanguages()),
-  palette: "default",
-});
+// The storage-root repair dialog can fire before the main window controller
+// exists; the resolver is rebound below once it does.
+let resolveDialogParent = (): BrowserWindow | undefined => undefined;
 
-export async function showDesktopMessageBox(
+export function showDesktopMessageBox(
   options: MessageBoxOptions,
-  override?: Partial<BrowserMessageBoxTheme>,
 ): Promise<MessageBoxReturnValue> {
-  const appearance = {
-    ...(await resolveBrowserDialogAppearance()),
-    ...override,
-    revealMode,
-  };
-  return showBrowserMessageBox(options, resolveBrowserDialogParent(), appearance);
+  return presentMessageBox(options, resolveDialogParent());
 }
 
 export function showStartupDiagnosticDialog(
@@ -144,7 +131,7 @@ export function showStartupDiagnosticDialog(
 ): Promise<MessageBoxReturnValue> {
   return showMessageBoxWithDiagnostics(options, {
     locale,
-    showMessageBox: (nextOptions) => showDesktopMessageBox(nextOptions, { locale }),
+    showMessageBox: showDesktopMessageBox,
     copyDiagnostics: () =>
       copyDesktopDiagnosticReport(
         desktopDiagnostics,
@@ -212,22 +199,6 @@ export const desktopLocale = createDesktopLocaleAuthority({
   readSettings: () => settingsStore.get(),
   preferredSystemLanguages: () => app.getPreferredSystemLanguages(),
 });
-resolveBrowserDialogAppearance = async () => {
-  try {
-    const settings = await settingsStore.get();
-    return {
-      locale: desktopLocale.observe(settings),
-      palette: settings.appearance.palette,
-      dark: isDarkAppearance(
-        e2eFixture?.theme ?? settings.appearance.theme,
-        nativeTheme.shouldUseDarkColors,
-      ),
-    };
-  } catch {
-    return { locale: desktopLocale.current(), palette: "default" };
-  }
-};
-
 // Resolves on the first window's painted frame — main.ts holds the heavy
 // Runtime Host module graph until then so its evaluation cannot starve the
 // window's prelude or first paint. The launch-settle promise is the fallback
@@ -269,9 +240,7 @@ export const mainWindowController = createMainWindowController({
         locale,
         copyDiagnostics: () =>
           copyDesktopDiagnosticReport(desktopDiagnostics, diagnosticInput),
-        // showBrowserMessageBox attaches only to a visible, non-minimized
-        // parent. A pre-first-paint crash therefore gets a standalone window.
-        showMessageBox: (options) => showDesktopMessageBox(options, { locale }),
+        showMessageBox: showDesktopMessageBox,
       });
       if (decision !== "recover") break;
       if (await mainWindowController.reloadMainRenderer()) return;
@@ -280,9 +249,10 @@ export const mainWindowController = createMainWindowController({
     app.quit();
   },
 });
-resolveBrowserDialogParent = () => {
+resolveDialogParent = () => {
   const main = mainWindowController.browserWindow();
-  return main?.isVisible() ? main : undefined;
+  // A sheet on a minimized window is not visible.
+  return main?.isVisible() && !main.isMinimized() ? main : undefined;
 };
 
 export const quitCoordinator = createAppQuitCoordinator({
@@ -308,6 +278,7 @@ export const quitCoordinator = createAppQuitCoordinator({
     settingsRecovery.onWindowReady();
   },
   resumeQuit: () => app.quit(),
+  revealPendingQuit: bringDecisionForward,
 });
 app.on("before-quit", quitCoordinator.handleBeforeQuit);
 // Renderer-ready is a window-lifecycle signal, not a Runtime Host scope: it

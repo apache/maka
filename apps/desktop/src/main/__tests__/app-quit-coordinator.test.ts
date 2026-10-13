@@ -35,6 +35,7 @@ describe('app quit coordinator', () => {
       resumeQuit: () => {
         resumeQuitCount += 1;
       },
+      revealPendingQuit: () => {},
     });
 
     const event = {
@@ -78,6 +79,7 @@ describe('app quit coordinator', () => {
       resumeQuit: () => {
         resumeQuitCount += 1;
       },
+      revealPendingQuit: () => {},
     });
     let preventedCount = 0;
     const event = {
@@ -109,6 +111,37 @@ describe('app quit coordinator', () => {
     assert.equal(resumeQuitCount, 1);
   });
 
+  it('shows the pending quit decision again when quit is requested while it waits', async () => {
+    let decide: (decision: 'ready' | 'cancelled') => void = () => {};
+    let revealCount = 0;
+    const coordinator = createAppQuitCoordinator({
+      prepareToQuit: () => new Promise((resolve) => {
+        decide = resolve;
+      }),
+      cleanup: () => new Promise<void>(() => {}),
+      focusOrCreateWindow: () => {},
+      onPreparationError: () => {},
+      onCleanupError: () => {},
+      onWindowCreationError: () => {},
+      resumeQuit: () => {},
+      revealPendingQuit: () => {
+        revealCount += 1;
+      },
+    });
+
+    coordinator.handleBeforeQuit({ preventDefault: () => {} });
+    await flushQuitCoordinator();
+    assert.equal(revealCount, 0);
+
+    coordinator.handleBeforeQuit({ preventDefault: () => {} });
+    assert.equal(revealCount, 1);
+
+    decide('ready');
+    await flushQuitCoordinator();
+    coordinator.handleBeforeQuit({ preventDefault: () => {} });
+    assert.equal(revealCount, 1);
+  });
+
   it('does not reopen the main window after quit cleanup starts', () => {
     let focusOrCreateCount = 0;
     let windowCreationSignal: AbortSignal | undefined;
@@ -123,6 +156,7 @@ describe('app quit coordinator', () => {
       onCleanupError: () => {},
       onWindowCreationError: () => {},
       resumeQuit: () => {},
+      revealPendingQuit: () => {},
     });
 
     coordinator.focusOrCreateWindow();
@@ -151,6 +185,7 @@ describe('app quit coordinator', () => {
       resumeQuit: () => {
         resumeQuitCount += 1;
       },
+      revealPendingQuit: () => {},
     });
 
     coordinator.handleBeforeQuit({ preventDefault: () => {} });
@@ -174,6 +209,7 @@ describe('app quit coordinator', () => {
       onCleanupError: () => {},
       onWindowCreationError: (error) => reportedErrors.push(error),
       resumeQuit: () => {},
+      revealPendingQuit: () => {},
     });
 
     coordinator.focusOrCreateWindow();
@@ -208,6 +244,7 @@ describe('app quit coordinator', () => {
       resumeQuit: () => {
         resumeQuitCount += 1;
       },
+      revealPendingQuit: () => {},
     });
 
     coordinator.handleBeforeQuit({ preventDefault: () => {} });
@@ -247,6 +284,7 @@ describe('app quit coordinator', () => {
       resumeQuit: () => {
         resumeQuitCount += 1;
       },
+      revealPendingQuit: () => {},
     };
     const coordinator = createAppQuitCoordinator(deps);
 
