@@ -1035,8 +1035,7 @@
         "actionFactories": [],
         "dependencyPaths": {
           "./locales/shell-remaining-copy.js": 1,
-          "@maka/core/session": 1,
-          "@maka/ui": 1
+          "@maka/core/conversation-markdown": 1
         }
       },
       "src/renderer/custom-pet-companion-model.ts": {
