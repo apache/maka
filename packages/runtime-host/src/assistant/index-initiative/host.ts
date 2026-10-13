@@ -22,7 +22,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { InitiativeStore } from './store.js';
 import { InitiativeController } from './controller.js';
-import { ASSISTANT_ROLE, PROACTIVE_TASK } from './prompt.js';
+import { ASSISTANT_ROLE } from './prompt.js';
 import { registerAssistant } from './assistant.js';
 export async function initializeInitiative(
   ctx: AssistantModuleServices,
@@ -62,7 +62,6 @@ export async function initializeInitiative(
     'InitiativeEnable',
     'Enable host-scheduled heartbeats in THIS ordinary chat Session on explicit user request. User messages and heartbeats share normal history. No separate worker, notebook or exit checkpoint. Set cadence only as requested by the user.',
     z.object({
-      instructions: z.string().trim().min(1).max(8000).default(PROACTIVE_TASK),
       intervalMinutes: z.number().int().min(1).max(10080).default(30),
     }),
     (input: any, call: any) => controller.enable(input, call),

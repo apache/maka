@@ -106,7 +106,9 @@ test('legacy data path and assistant conversation are adopted in place and persi
   const original = join(f.root, '原有 数据 #');
   const old = new InitiativeStore(original, 'old-owner');
   old.lease();
-  old.bind({ sessionId: 'existing-chat', cwd: f.root }, 'preserve these instructions');
+  old.bind({ sessionId: 'existing-chat', cwd: f.root });
+  old.save({ ...old.get(), instructions: 'obsolete saved instructions' });
+  old.release(); // The successor can acquire ownership and clean obsolete configuration.
   old.close();
   await f.legacy.mutate(
     { extensionId: 'dev.maka.index-initiative', scopeId: 'profile' },
@@ -120,7 +122,7 @@ test('legacy data path and assistant conversation are adopted in place and persi
   assert.equal(binding.state.enabled, false);
   const settings = JSON.parse(await readFile(join(f.directory, 'assistant.json'), 'utf8'));
   assert.equal(settings['index-initiative'].directory, original);
-  assert.equal(binding.state.instructions, 'preserve these instructions');
+  assert.equal(Object.hasOwn(binding.state, 'instructions'), false);
   await f.service.close();
   // Once adopted, unrelated edits to obsolete plugin storage must not replace the native authority.
   await f.legacy.mutate(
@@ -220,7 +222,7 @@ test('adopting all three stores preserves coverage, references, unfinished group
   tasks.close();
   const initiative = new InitiativeStore(directories['index-initiative'], 'old-owner');
   initiative.lease();
-  initiative.bind({ sessionId: 'old-assistant', cwd: f.root }, '原有推荐要求');
+  initiative.bind({ sessionId: 'old-assistant', cwd: f.root });
   const savedBinding = initiative.get();
   initiative.close();
 

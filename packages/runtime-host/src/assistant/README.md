@@ -41,7 +41,7 @@ Index reads expose shared usage guidance. `MemoryIndexContent` defaults to direc
 
 ## Proactive instructions
 
-New assistant bindings and `InitiativeEnable` without an `instructions` argument use `PROACTIVE_TASK`. Heartbeats use the binding's persisted instructions. Existing bindings, including earlier defaults and custom text, keep that text through restart and UI enable/resume; there is no automatic prompt migration. To explicitly adopt the current default, invoke `InitiativeEnable` in the bound conversation, omitting `instructions` and passing the desired `intervalMinutes` (otherwise it defaults to 30). This enables future heartbeats; it does not immediately run a check. Pass `instructions` explicitly to retain or replace custom text. The ordinary chat role and heartbeat scheduler are unchanged.
+Heartbeats always use `PROACTIVE_TASK` from code. `InitiativeEnable` configures cadence only; there is no custom prompt setting. New bindings do not save instructions, and recovery removes the obsolete `state.instructions` field while preserving the conversation and scheduling state. After updating and restarting the Host, existing bindings use the current product prompt automatically. The ordinary chat role and heartbeat scheduler are unchanged.
 
 ## Verification
 

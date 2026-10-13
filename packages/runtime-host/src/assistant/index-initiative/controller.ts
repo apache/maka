@@ -143,7 +143,6 @@ export class InitiativeController {
         throw Error('Only the assistant conversation may configure heartbeats');
       const s = this.store.configure(
         { sessionId: call.sessionId, cwd: call.cwd },
-        input.instructions,
         input.intervalMinutes * 60000,
       );
       void this.tick();

@@ -19,7 +19,6 @@
 
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
-import { PROACTIVE_TASK } from './prompt.js';
 import type { InitiativeStore } from './store.js';
 import type { InitiativeController } from './controller.js';
 
@@ -212,7 +211,7 @@ export function registerAssistant(
       () => ctx.sessionQuery.read(sessionId),
     );
     if (!snapshot?.session?.cwd) throw Error('无法读取助手会话，请确认对应 Host 在线后重试。');
-    return store.bind({ sessionId, cwd: snapshot.session.cwd }, PROACTIVE_TASK);
+    return store.bind({ sessionId, cwd: snapshot.session.cwd });
   });
   ctx.api.register('assistant.control', async (input: any) => {
     const args = z
@@ -226,7 +225,6 @@ export function registerAssistant(
     if (args.action === 'enable') {
       await controller.enable(
         {
-          instructions: state.instructions,
           intervalMinutes: args.intervalMinutes ?? state.intervalMs / 60000,
         },
         state,

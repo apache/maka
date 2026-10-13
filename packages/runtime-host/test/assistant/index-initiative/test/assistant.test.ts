@@ -19,6 +19,8 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { DatabaseSync } from 'node:sqlite';
+import { join } from 'node:path';
 import { fixture, until } from './fixture.js';
 import { PROACTIVE_TASK } from '../../../../src/assistant/index-initiative/prompt.js';
 
@@ -191,25 +193,45 @@ test('original reader preserves cited evidence and rechecks external permissions
   }
 });
 
-test('existing instructions survive rebinding and UI enabling; explicit configuration adopts the default', async () => {
+test('actual heartbeat ignores obsolete saved instructions and the configuration tool no longer offers them', async () => {
   const f = await fixture();
-  const custom = '只关注我自己指定的内容';
+  const obsolete = 'obsolete saved prompt must never reach the heartbeat';
   const prompts: string[] = [];
   f.setRunner(async ({ prompt }: any) => {
     prompts.push(prompt);
   });
   try {
-    await f.invoke('InitiativeEnable', { instructions: custom, intervalMinutes: 60 });
-    await f.remote('assistant.bind', { sessionId: 'owner' });
-    await f.remote('assistant.control', { action: 'enable', intervalMinutes: 60 });
-    await until(async () => prompts.length === 1 && !(await f.invoke('InitiativeStatus')).active);
-    assert.ok(prompts[0].includes(custom));
-    assert.ok(!prompts[0].includes(PROACTIVE_TASK));
-    await f.invoke('InitiativeEnable', { intervalMinutes: 60 });
+    const bound = await f.remote('assistant.bind', { sessionId: 'owner' });
+    assert.equal(Object.hasOwn(bound, 'instructions'), false);
+    const enable = f.tools
+      .resolve('owner', [])
+      .tools.find((tool: any) => tool.name === 'InitiativeEnable');
+    assert.ok(enable);
+    assert.equal(Object.hasOwn(enable.parameters.shape, 'instructions'), false);
+    // Simulate a previously saved configuration; even before recovery it cannot override code.
+    const db = new DatabaseSync(join(f.root, 'dev.maka.index-initiative', 'initiative.sqlite'));
+    try {
+      db.prepare('UPDATE state SET payload=? WHERE id=1').run(
+        JSON.stringify({ ...bound, instructions: obsolete }),
+      );
+    } finally {
+      db.close();
+    }
     await f.invoke('InitiativeControl', { action: 'check' });
+    await until(async () => prompts.length === 1 && !(await f.invoke('InitiativeStatus')).active);
+    assert.ok(prompts[0].includes(PROACTIVE_TASK));
+    assert.ok(!prompts[0].includes(obsolete));
+    // Old callers' extra arguments are stripped; enable only configures cadence.
+    const configured = await f.invoke('InitiativeEnable', {
+      instructions: obsolete,
+      intervalMinutes: 60,
+    });
+    assert.equal(Object.hasOwn(configured, 'instructions'), false);
+    assert.equal(configured.intervalMs, 3600000);
+    await f.remote('assistant.control', { action: 'enable', intervalMinutes: 60 });
     await until(async () => prompts.length === 2 && !(await f.invoke('InitiativeStatus')).active);
     assert.ok(prompts[1].includes(PROACTIVE_TASK));
-    assert.ok(!prompts[1].includes(custom));
+    assert.ok(!prompts[1].includes(obsolete));
   } finally {
     await f.close();
   }

@@ -90,7 +90,7 @@ export class InitiativeStore {
       return s;
     });
   }
-  configure(binding: { sessionId: string; cwd: string }, instructions: string, intervalMs: number) {
+  configure(binding: { sessionId: string; cwd: string }, intervalMs: number) {
     return this.transaction(() => {
       this.fence();
       const old = this.get();
@@ -100,7 +100,6 @@ export class InitiativeStore {
       const s = {
         version: 2,
         ...binding,
-        instructions,
         intervalMs,
         enabled: true,
         revision: (old?.revision ?? 0) + 1,
@@ -114,7 +113,7 @@ export class InitiativeStore {
       return s;
     });
   }
-  bind(binding: { sessionId: string; cwd: string }, instructions: string) {
+  bind(binding: { sessionId: string; cwd: string }) {
     return this.transaction(() => {
       this.fence();
       const old = this.get();
@@ -122,7 +121,6 @@ export class InitiativeStore {
       const s = {
         version: 2,
         ...binding,
-        instructions,
         intervalMs: 1800000,
         enabled: false,
         revision: 1,
@@ -146,7 +144,6 @@ export class InitiativeStore {
           version: 2,
           sessionId: s.ownerSession,
           cwd: s.cwd,
-          instructions: s.instructions,
           intervalMs: s.intervalMs,
           enabled: false,
           nextAt: Date.now() + s.intervalMs,
@@ -167,6 +164,8 @@ export class InitiativeStore {
           'Previous heartbeat was interrupted; the next scheduled check will use the existing conversation';
         this.log('interrupted', { reason: s.lastError });
       }
+      // Product instructions come from code, never from persisted configuration.
+      delete s.instructions;
     });
   }
   claim() {

@@ -27,7 +27,7 @@ function fixture() {
   const dir = mkdtempSync(join(tmpdir(), 'initiative-store-'));
   const store = new InitiativeStore(dir, 'first');
   assert.equal(store.lease(), true);
-  store.configure({ sessionId: 'owner', cwd: dir }, 'Explore', 60000);
+  store.configure({ sessionId: 'owner', cwd: dir }, 60000);
   return {
     dir,
     store,
@@ -62,7 +62,7 @@ test('restart preserves cadence, interrupted admission retains cadence without r
     assert.ok(other.lease());
     other.recover();
     assert.equal(other.get().enabled, true);
-    assert.equal(other.get().instructions, 'Explore');
+    assert.equal(Object.hasOwn(other.get(), 'instructions'), false);
     other.control('check');
     other.claim();
     other.release();
@@ -142,6 +142,25 @@ test('failures retain cadence without a rejection-count cutoff; one-off checks s
     assert.equal(f.store.get().enabled, false);
     assert.equal(f.store.get().checkRequested, false);
     assert.equal(f.store.get().failures, 0);
+  } finally {
+    f.close();
+  }
+});
+
+test('recovery removes obsolete instructions without changing conversation or scheduling state', () => {
+  const f = fixture();
+  try {
+    const before = f.store.get();
+    assert.equal(Object.hasOwn(before, 'instructions'), false);
+    f.store.save({ ...before, instructions: 'obsolete custom prompt' });
+    f.store.recover();
+    assert.deepEqual(f.store.get(), before);
+    const persisted = JSON.parse(
+      String(f.store.db.prepare('SELECT payload FROM state WHERE id=1').get()!.payload),
+    );
+    assert.equal(Object.hasOwn(persisted, 'instructions'), false);
+    f.store.recover();
+    assert.deepEqual(f.store.get(), before);
   } finally {
     f.close();
   }
