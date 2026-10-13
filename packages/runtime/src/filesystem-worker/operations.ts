@@ -18,7 +18,13 @@
  */
 
 import { searchFiles, GrepSearchError, type GrepRunner } from '../grep-search.js';
+import {
+  prepareFileWrite,
+  executePreparedFileWrite,
+  buildFileWriteResult,
+} from '../file-write-evidence.js';
 import { promises as fs } from 'node:fs';
+import type { FileWriteDirectories } from '@maka/core/file-write-evidence';
 import { globFiles } from '../glob-search.js';
 import { dirname, isAbsolute, parse, resolve } from 'node:path';
 import { isPathInside } from '../path-containment.js';
@@ -67,6 +73,8 @@ import { isLikelySandboxDenial } from '../sandbox/detect.js';
 const { realpath, realpathAllowMissing, resolveCanonicalDirectoryEntryTarget } = sandboxPathApi();
 
 export interface FilesystemWorkerOperationDependencies {
+  /** Host identities captured outside the sandbox mount namespace. */
+  hostDirectories?: FileWriteDirectories;
   grepExecutable?: string;
   /** Where this worker runs, as the Host observed it; names the install location in Grep's guidance. */
   ripgrepEnvironment?: RipgrepEnvironment;
@@ -94,7 +102,7 @@ export async function executeFilesystemWorkerRequest(
       result: await executeFilesystemOperation(
         request.operation,
         request.operationBoundary,
-        dependencies,
+        { ...dependencies, hostDirectories: request.hostDirectories },
         request.expectedTarget,
       ),
     };
@@ -116,6 +124,21 @@ export async function executeFilesystemOperation(
   expectedTarget?: FilesystemWorkerTarget,
 ): Promise<FilesystemWorkerResult> {
   switch (operation.kind) {
+    case 'prepare_write': {
+      const path = await resolveWritableAllowed(
+        operation.cwd,
+        operation.path,
+        'Write',
+        operationBoundary,
+      );
+      const observation = await prepareFileWrite(
+        operation.cwd,
+        path,
+        operation.content,
+        dependencies.hostDirectories,
+      );
+      return { kind: 'prepare_write', ...(observation ? { observation } : {}) };
+    }
     case 'read': {
       const path = await resolveExistingAllowed(
         operation.cwd,
@@ -158,6 +181,15 @@ export async function executeFilesystemOperation(
         'Write',
         operationBoundary,
       );
+      if (operation.observation) {
+        return executePreparedFileWrite(
+          operation.cwd,
+          path,
+          operation.content,
+          operation.observation,
+          dependencies.hostDirectories,
+        );
+      }
       // Pin the approved object (#2600): open once, validate the identity on
       // the descriptor, and write through that descriptor — a path swap between
       // validation and the write cannot divert the bytes onto the replacement.
@@ -190,17 +222,7 @@ export async function executeFilesystemOperation(
         // the bytes went to an orphan and the visible file is the replacement.
         const visibility = await hostVisibilityAfterWrite(path, handle);
         if (visibility) throw visibility;
-        const diff =
-          previous === 'unknown'
-            ? undefined
-            : createUnifiedDiff(path, previous === 'new' ? undefined : previous, operation.content);
-        return {
-          kind: 'write',
-          ok: true,
-          path,
-          bytes: Buffer.byteLength(operation.content, 'utf8'),
-          ...(diff !== undefined ? { diff } : {}),
-        };
+        return buildFileWriteResult(path, operation.content, previous);
       } finally {
         await handle.close();
       }

@@ -185,6 +185,8 @@ describe('builtin file tools use the sandboxed worker', () => {
         execute: async (input) => {
           calls.push(input);
           switch (input.operation.kind) {
+            case 'prepare_write':
+              return { kind: 'prepare_write' };
             case 'read':
               return {
                 kind: 'read',

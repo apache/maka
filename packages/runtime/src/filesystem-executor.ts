@@ -29,6 +29,8 @@
 // "full access" stricter than ask mode, which grants :slash_tmp outright (#2083).
 
 import { Buffer } from 'node:buffer';
+import { buildFileWriteResult } from './file-write-evidence.js';
+import type { FileWriteObservation } from '@maka/core/file-write-evidence';
 import { readPage } from './read-page.js';
 import { formatJsonText } from './format-json.js';
 import { lstat, realpath, stat } from 'node:fs/promises';
@@ -45,7 +47,7 @@ import {
 } from './filesystem-authority.js';
 import { StableWriteFailure } from './file-stable-write.js';
 import { applyUpdateToContent } from './apply-patch-file.js';
-import { withFileWriteLock } from './file-write-lock.js';
+import { acquireFileWriteLock, withFileWriteLock } from './file-write-lock.js';
 import type {
   FilesystemWorkerClient,
   FilesystemWorkerClientOperation,
@@ -61,6 +63,7 @@ import type {
   WorkspaceApplyPatchExecutor,
   WorkspacePathScope,
   WorkspaceReadModifyWriteExecutor,
+  WorkspacePreparedWriteExecutor,
   WorkspaceSearchExecutor,
   WorkspaceWriteExecutor,
 } from './workspace-executor.js';
@@ -108,6 +111,9 @@ export interface ApplyPatchResult {
 }
 
 export interface FilesystemExecutor {
+  prepareWrite(
+    input: FilesystemExecuteInput & { operation: Extract<FilesystemOperation, { kind: 'write' }> },
+  ): Promise<PreparedFilesystemWrite>;
   /**
    * Run one operation under the authority of the boundary it carries. A mutating
    * operation holds the target's write lock for its whole read-modify-write, so
@@ -117,11 +123,18 @@ export interface FilesystemExecutor {
   applyPatch(input: FilesystemApplyPatchInput): Promise<ApplyPatchResult>;
 }
 
+export interface PreparedFilesystemWrite {
+  observation?: FileWriteObservation;
+  execute(): Promise<FilesystemResult>;
+  cancel(): void;
+}
+
 /** The workspace primitives the host-local backend drives. */
 export type FilesystemWorkspaceExecutor = WorkspaceWriteExecutor &
   WorkspaceEditExecutor &
   Partial<WorkspaceApplyPatchExecutor> &
   Partial<WorkspaceReadModifyWriteExecutor> &
+  Partial<WorkspacePreparedWriteExecutor> &
   WorkspaceSearchExecutor;
 
 export interface BoundaryFilesystemExecutorInput {
@@ -288,6 +301,80 @@ export function createBoundaryFilesystemExecutor(
     return { key: normalized.enforcementPath, canonicalPath: normalized.enforcementPath };
   }
   return {
+    async prepareWrite(input) {
+      const call = {
+        ...input,
+        ...(input.executionBoundary
+          ? { executionBoundary: structuredClone(input.executionBoundary) }
+          : {}),
+      };
+      // Keep an immutable private copy: neither caller nor evidence consumers own execution args.
+      const operation = structuredClone(call.operation);
+      const { key, canonicalPath } = await writeLockTarget(call, operation.path);
+      const expectedIdentity = await captureIdentityAtLockAcquisition(canonicalPath, true);
+      const release = await acquireFileWriteLock(key, call.abortSignal);
+      let state: 'prepared' | 'executing' | 'closed' = 'prepared';
+      const cancel = () => {
+        if (state !== 'prepared') return;
+        state = 'closed';
+        call.abortSignal?.removeEventListener('abort', cancel);
+        release();
+      };
+      try {
+        call.abortSignal?.throwIfAborted();
+        const prepared = await run(
+          {
+            ...call,
+            operation: { kind: 'prepare_write', path: operation.path, content: operation.content },
+          },
+          expectedIdentity,
+        );
+        if (prepared.kind !== 'prepare_write')
+          throw new Error('Invalid Write preparation response');
+        const observation = prepared.observation
+          ? structuredClone(prepared.observation)
+          : undefined;
+        if (
+          observation &&
+          (expectedIdentity
+            ? observation.before.kind !== 'file' ||
+              observation.before.identity.dev !== expectedIdentity.dev ||
+              observation.before.identity.ino !== expectedIdentity.ino
+            : observation.before.kind !== 'missing')
+        ) {
+          throw new StableWriteFailure(
+            'path_changed',
+            'The Write target changed while waiting for its lock.',
+          );
+        }
+        call.abortSignal?.throwIfAborted();
+        call.abortSignal?.addEventListener('abort', cancel, { once: true });
+        return {
+          ...(observation ? { observation: structuredClone(observation) } : {}),
+          cancel,
+          async execute() {
+            if (state !== 'prepared') throw new Error('Prepared Write has already settled');
+            call.abortSignal?.throwIfAborted();
+            state = 'executing';
+            call.abortSignal?.removeEventListener('abort', cancel);
+            try {
+              return await run(
+                { ...call, operation: { ...operation, ...(observation ? { observation } : {}) } },
+                expectedIdentity,
+              );
+            } catch (error) {
+              throw settleMutationFailure(error);
+            } finally {
+              state = 'closed';
+              release();
+            }
+          },
+        };
+      } catch (error) {
+        cancel();
+        throw error;
+      }
+    },
     async execute(call) {
       if (operationAccess(call.operation.kind) !== 'write') return await run(call);
       // Canonicalisation without any containment check, so a target the policy
@@ -384,6 +471,18 @@ function createWorkspaceFilesystemExecutor(
   return {
     async execute({ operation, cwd, abortSignal }, scope, expectedIdentity) {
       switch (operation.kind) {
+        case 'prepare_write': {
+          const observation =
+            workspace.prepareWrite && workspace.executePreparedWrite
+              ? await workspace.prepareWrite({
+                  cwd,
+                  path: operation.path,
+                  content: operation.content,
+                  scope,
+                })
+              : undefined;
+          return { kind: 'prepare_write', ...(observation ? { observation } : {}) };
+        }
         case 'read': {
           const { path } = await workspace.resolveExistingPath({
             cwd,
@@ -404,6 +503,17 @@ function createWorkspaceFilesystemExecutor(
           };
         }
         case 'write': {
+          if (operation.observation) {
+            if (!workspace.executePreparedWrite)
+              throw new Error('Prepared Write executor unavailable');
+            return workspace.executePreparedWrite({
+              cwd,
+              path: operation.path,
+              content: operation.content,
+              scope,
+              observation: operation.observation,
+            });
+          }
           const { path } = await workspace.resolveWritablePath({
             cwd,
             path: operation.path,
@@ -421,21 +531,7 @@ function createWorkspaceFilesystemExecutor(
               approvedIdentity: expectedIdentity,
               transform: () => operation.content,
             });
-            const diff =
-              result.previous === 'unknown'
-                ? undefined
-                : createUnifiedDiff(
-                    path,
-                    result.previous === 'new' ? undefined : result.previous,
-                    operation.content,
-                  );
-            return {
-              kind: 'write',
-              ok: true,
-              path,
-              bytes: Buffer.byteLength(operation.content, 'utf8'),
-              ...(diff !== undefined ? { diff } : {}),
-            };
+            return buildFileWriteResult(path, operation.content, result.previous);
           }
           // Fallback (remote/isolated workspace): path-based, unprotected by
           // the identity authority.

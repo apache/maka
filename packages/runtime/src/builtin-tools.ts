@@ -81,7 +81,7 @@ import {
 // tool-runtime.ts is the single source of truth for the tool shape; this
 // re-export only keeps back-compat for callers that imported from
 // builtin-tools directly.
-import type { MakaTool, MakaToolContext } from './tool-runtime.js';
+import type { MakaTool, MakaToolContext, MakaToolPreparationContext } from './tool-runtime.js';
 export type { MakaTool, MakaToolContext };
 import { profileRequiresSandbox, type SandboxManager } from './sandbox/sandbox-manager.js';
 import { SandboxCommandError } from './sandbox/errors.js';
@@ -430,16 +430,23 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
         content: z.string().describe('The complete text to write to the file.'),
       }),
       executionFacts,
+      prepareExecution: async ({ path, content }, ctx) => {
+        const prepared = await filesystem.prepareWrite({
+          operation: { kind: 'write', path, content },
+          ...filesystemCall(ctx),
+        });
+        return {
+          ...(prepared.observation ? { fileWriteObservation: prepared.observation } : {}),
+          cancel: () => prepared.cancel(),
+          execute: async () => writeToolOutput(await prepared.execute()),
+        };
+      },
       impl: async ({ path, content }, ctx) => {
         const result = await filesystem.execute({
           operation: { kind: 'write', path, content },
           ...filesystemCall(ctx),
         });
-        if (result.kind !== 'write')
-          throw internalFilesystemWriteFailure('Write', 'the file was written');
-        if (result.diff !== undefined)
-          return { kind: 'file_diff' as const, paths: [result.path], diff: result.diff };
-        return { kind: 'file_write' as const, path: result.path, bytes: result.bytes };
+        return writeToolOutput(result);
       },
       toModelOutput: ({ output }) => fileWriteToolResultToModelOutput('Write', output),
     },
@@ -611,7 +618,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
 
 /** The per-call context every file tool hands to the filesystem authority. */
 function filesystemCall(
-  ctx: MakaToolContext,
+  ctx: MakaToolPreparationContext,
 ): Pick<FilesystemExecuteInput, 'cwd' | 'executionBoundary' | 'permissionMode' | 'abortSignal'> {
   return {
     cwd: ctx.cwd,
@@ -619,6 +626,16 @@ function filesystemCall(
     ...(ctx.permissionMode ? { permissionMode: ctx.permissionMode } : {}),
     ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}),
   };
+}
+
+function writeToolOutput(
+  result: Awaited<ReturnType<ReturnType<typeof createBoundaryFilesystemExecutor>['execute']>>,
+) {
+  if (result.kind !== 'write')
+    throw internalFilesystemWriteFailure('Write', 'the file was written');
+  if (result.diff !== undefined)
+    return { kind: 'file_diff' as const, paths: [result.path], diff: result.diff };
+  return { kind: 'file_write' as const, path: result.path, bytes: result.bytes };
 }
 
 interface ExecutorBashSandboxOptions {

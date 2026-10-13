@@ -130,6 +130,8 @@ import {
   type RuntimeUserQuestionClosureReason,
 } from './interaction-authority.js';
 
+import { bindFileWriteEvidence, type FileWriteObservation } from '@maka/core/file-write-evidence';
+
 export interface ResolvedMakaToolCall {
   tool: MakaTool;
   turnId: string;
@@ -168,6 +170,7 @@ export type MakaToolPreparationContext = Pick<
 >;
 
 export interface PreparedMakaToolExecution<R = unknown> {
+  fileWriteObservation?: FileWriteObservation;
   execute(context: MakaToolContext): Promise<R> | R;
   cancel(): Promise<void> | void;
 }
@@ -1402,17 +1405,20 @@ export class ToolRuntime {
       return this.errorReturn(reason);
     }
 
-    let clientCapabilityBoundary: ExecutionBoundary | undefined;
-    let clientCapabilityPermissionMode: PermissionMode | undefined;
+    let preparedBoundary: ExecutionBoundary | undefined;
+    let preparedPermissionMode: PermissionMode | undefined;
     let preparedExecution: PreparedMakaToolExecution | undefined;
-    if (tool.hostAdmission === 'client_capability') {
+    if (
+      tool.hostAdmission === 'client_capability' ||
+      (tool.prepareExecution && this.input.runtimeCommitSink)
+    ) {
       try {
-        clientCapabilityBoundary = await this.readExecutionBoundary();
-        clientCapabilityPermissionMode = await this.livePermissionMode(clientCapabilityBoundary);
+        preparedBoundary = await this.readExecutionBoundary();
+        preparedPermissionMode = await this.livePermissionMode(preparedBoundary);
       } catch (error) {
         const reason = formatSyntheticToolErrorText(error);
         await refuseBeforeDispatch(reason);
-        trace?.emit('tool', 'tool_failed', 'Client Capability boundary read failed', {
+        trace?.emit('tool', 'tool_failed', 'Tool preparation boundary read failed', {
           toolUseId,
           toolName: tool.name,
           status: 'error',
@@ -1421,11 +1427,14 @@ export class ToolRuntime {
         this.recordLoopGateOutcome(callSignature, true);
         return this.errorReturn(reason);
       }
-      const admissionFailure = !tool.prepareExecution
-        ? CLIENT_CAPABILITY_PREPARATION_MESSAGE
-        : clientCapabilityBoundary.kind !== 'bypass' && clientCapabilityPermissionMode !== 'ask'
-          ? CLIENT_CAPABILITY_BOUNDARY_MESSAGE
-          : undefined;
+      const admissionFailure =
+        tool.hostAdmission !== 'client_capability'
+          ? undefined
+          : !tool.prepareExecution
+            ? CLIENT_CAPABILITY_PREPARATION_MESSAGE
+            : preparedBoundary.kind !== 'bypass' && preparedPermissionMode !== 'ask'
+              ? CLIENT_CAPABILITY_BOUNDARY_MESSAGE
+              : undefined;
       if (admissionFailure) {
         await refuseBeforeDispatch(admissionFailure, {
           reason: 'requires_bypass',
@@ -1440,8 +1449,8 @@ export class ToolRuntime {
         this.recordLoopGateOutcome(callSignature, true);
         return this.errorReturn(admissionFailure);
       }
-      // Narrowed by admissionFailure above; Bypass still prepares so the
-      // provider cannot regain a direct pre-T1 dispatch path.
+      // Client capabilities always prepare. Durable filesystem tools also
+      // prepare before T1, under the same boundary used for execution.
       const prepareExecution = tool.prepareExecution!;
       const pauseTarget = this.input.getPermissionPauseTarget();
       pauseTarget?.pause();
@@ -1451,22 +1460,31 @@ export class ToolRuntime {
           turnId,
           ...(runId ? { runId } : {}),
           cwd: this.input.header.cwd,
-          executionBoundary: clientCapabilityBoundary,
-          permissionMode: clientCapabilityPermissionMode,
+          executionBoundary: preparedBoundary,
+          permissionMode: preparedPermissionMode,
           toolCallId: toolUseId,
           abortSignal: ctx.abortSignal,
         });
       } catch (error) {
         const reason = formatSyntheticToolErrorText(error);
-        await refuseBeforeDispatch(reason);
-        trace?.emit('tool', 'tool_failed', 'Client Capability preparation failed', {
+        const sandbox = serializeSandboxError(error);
+        const boundaryKind = sandboxBoundaryFailureKind(sandbox);
+        const boundaryDetails = sandboxBoundaryFailureSignal(sandbox);
+        if (boundaryKind)
+          this.recordSandboxBoundaryFailure(
+            boundaryKind,
+            boundaryCorrectionStep,
+            sandboxBoundaryDecisionGeneration,
+          );
+        await refuseBeforeDispatch(reason, boundaryDetails);
+        trace?.emit('tool', 'tool_failed', 'Tool preparation failed', {
           toolUseId,
           toolName: tool.name,
           status: 'error',
-          errorClass: 'ClientCapabilityPreparation',
+          errorClass: 'ToolPreparation',
         });
-        this.recordLoopGateOutcome(callSignature, true);
-        return this.errorReturn(reason);
+        this.recordLoopGateOutcome(callSignature, true, boundaryKind, boundaryDetails);
+        return sandbox ? { error: reason, sandbox } : this.errorReturn(reason);
       } finally {
         pauseTarget?.resume();
       }
@@ -1490,6 +1508,7 @@ export class ToolRuntime {
     try {
       durableAttempt = await this.prepareDurableToolAttempt({
         tool,
+        fileWriteObservation: preparedExecution?.fileWriteObservation,
         startEvent: buildCallEvent('dispatch'),
         persistedArgs,
         abortSignal: ctx.abortSignal,
@@ -1500,11 +1519,6 @@ export class ToolRuntime {
       await preparedExecution?.cancel();
       if (reservedSubagentSlot) this.releaseSubagentSlot(tool);
       throw error;
-    }
-    publishCallEvent(buildCallEvent('dispatch'));
-    emitToolStartedTrace();
-    if (durableAttempt) {
-      this.durableToolAttempts.set(durableAttemptKey(turnId, toolUseId), durableAttempt);
     }
     const startedAt = this.input.now();
     const output = createToolOutputDeltaEmitter({
@@ -1524,6 +1538,11 @@ export class ToolRuntime {
     let attemptBoundaryKind: SandboxBoundaryFailureKind | undefined;
     let attemptBoundaryDetails: SandboxBoundaryFailureDetails;
     try {
+      publishCallEvent(buildCallEvent('dispatch'));
+      emitToolStartedTrace();
+      if (durableAttempt) {
+        this.durableToolAttempts.set(durableAttemptKey(turnId, toolUseId), durableAttempt);
+      }
       // Pause the stream idle watchdog for the whole tool execution. In the
       // ai-sdk step loop a tool runs *between* model requests — the tool-call
       // step's stream already finished and the next request has not started —
@@ -1536,9 +1555,9 @@ export class ToolRuntime {
       pauseTarget?.pause();
       try {
         const runId = this.input.runId;
-        const executionBoundary = clientCapabilityBoundary ?? (await this.readExecutionBoundary());
+        const executionBoundary = preparedBoundary ?? (await this.readExecutionBoundary());
         const permissionMode =
-          clientCapabilityPermissionMode ?? (await this.livePermissionMode(executionBoundary));
+          preparedPermissionMode ?? (await this.livePermissionMode(executionBoundary));
         const toolContext: MakaToolContext = {
           sessionId: this.input.sessionId,
           turnId,
@@ -1897,6 +1916,7 @@ export class ToolRuntime {
       });
       return sandboxError ? { error: msg, sandbox: sandboxError } : this.errorReturn(msg);
     } finally {
+      await preparedExecution?.cancel();
       this.recordLoopGateOutcome(
         callSignature,
         attemptFailed,
@@ -1909,6 +1929,7 @@ export class ToolRuntime {
 
   private async prepareDurableToolAttempt(input: {
     tool: MakaTool;
+    fileWriteObservation?: FileWriteObservation;
     startEvent: ToolStartEvent;
     persistedArgs: unknown;
     abortSignal: AbortSignal;
@@ -1997,6 +2018,20 @@ export class ToolRuntime {
           toolName: input.tool.name,
           canonicalArgsHash,
           recoveryMode,
+          ...(input.fileWriteObservation
+            ? {
+                fileWriteEvidence: bindFileWriteEvidence(input.fileWriteObservation, {
+                  sessionId: this.input.sessionId,
+                  invocationId,
+                  runId,
+                  turnId: input.startEvent.turnId,
+                  operationId,
+                  dispatchEventId: `${operationId}_dispatch`,
+                  providerToolCallId: input.startEvent.toolUseId,
+                  canonicalArgsHash,
+                }),
+              }
+            : {}),
         },
       },
       refs: {

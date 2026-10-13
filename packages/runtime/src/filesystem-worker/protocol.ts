@@ -18,20 +18,24 @@
  */
 
 import { z } from 'zod';
+import { isFileWriteObservation, type FileWriteObservation } from '@maka/core/file-write-evidence';
 import { readContinuationSchema, readPageSchema } from '../read-page.js';
 import { validateSandboxBoundaryExpansion } from '@maka/core/sandbox-boundary';
 import { GREP_MAX_LINES, GREP_MAX_LINES_PER_FILE, GREP_MAX_MATCH_BYTES } from '../grep-search.js';
 
-// v10 adds bounded Read pages to v9's exact Grep counts; v11 adds Glob's
-// truncation flag to v10's result contract. Older workers cannot satisfy the
-// combined result contract and must be rejected at the handshake.
-export const FILESYSTEM_WORKER_PROTOCOL_VERSION = 11 as const;
+// v12 adds non-mutating Write preparation and the guarded execution observation.
+// Older workers must not silently discard the guard on a prepared Write.
+export const FILESYSTEM_WORKER_PROTOCOL_VERSION = 12 as const;
 
 /** The single authority on which operation kinds are writes. Shared by the
  * client (permission/identity decisions) and the worker (operation guards) so
  * the set cannot drift. */
 export function operationAccess(kind: FilesystemWorkerOperation['kind']): 'read' | 'write' {
-  return kind === 'write' || kind === 'apply_patch' || kind === 'edit' || kind === 'format_json'
+  return kind === 'write' ||
+    kind === 'prepare_write' ||
+    kind === 'apply_patch' ||
+    kind === 'edit' ||
+    kind === 'format_json'
     ? 'write'
     : 'read';
 }
@@ -112,7 +116,16 @@ export const FilesystemWorkerOperationSchema = z.union([
       continuation: readContinuationSchema.optional(),
     })
     .strict(),
-  z.object({ kind: z.literal('write'), cwd, path, content: z.string() }).strict(),
+  z
+    .object({
+      kind: z.literal('write'),
+      cwd,
+      path,
+      content: z.string(),
+      observation: z.custom<FileWriteObservation>(isFileWriteObservation).optional(),
+    })
+    .strict(),
+  z.object({ kind: z.literal('prepare_write'), cwd, path, content: z.string() }).strict(),
   z
     .object({
       kind: z.literal('apply_patch'),
@@ -170,10 +183,20 @@ export const FilesystemWorkerRequestSchema = z
     operation: FilesystemWorkerOperationSchema,
     operationBoundary: OperationBoundarySchema,
     expectedTarget: FilesystemWorkerTargetSchema,
+    hostDirectories: z
+      .object({ workspace: FilesystemTargetIdentitySchema, parent: FilesystemTargetIdentitySchema })
+      .strict()
+      .optional(),
   })
   .strict();
 
 export const FilesystemWorkerResultSchema = z.discriminatedUnion('kind', [
+  z
+    .object({
+      kind: z.literal('prepare_write'),
+      observation: z.custom<FileWriteObservation>(isFileWriteObservation).optional(),
+    })
+    .strict(),
   readPageSchema.extend({ kind: z.literal('read') }).strict(),
   z
     .object({
