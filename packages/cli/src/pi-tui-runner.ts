@@ -1563,16 +1563,27 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // `Invalid Message quotes` while the queue rows are already gone (#5265
   // review). Stage what fits; the remainder goes back as quoted text in the
   // restored draft so every excerpt stays visible and editable.
-  const formatQuoteOverflow = (quotes: MakaRetractedMessages['quotes']): string =>
-    quotes
+  const formatQuoteOverflow = (quotes: MakaRetractedMessages['quotes']): string => {
+    const prefixed = (text: string): string =>
+      text
+        .split('\n')
+        .map((line) => `> ${line}`)
+        .join('\n');
+    return quotes
       .map((quote) => {
-        const excerpt = `> ${quote.label ? `[${quote.label}] ` : ''}${quote.text}`;
+        const lines = [
+          `${quote.label ? `[${quote.label}] ` : ''}${quote.text}`,
+          ...(quote.comment ? [`comment: ${quote.comment}`] : []),
+        ];
         // The comment is the user's own model-facing intent for quoting this;
-        // reducing the structured staging to text must not drop it (#5265
-        // review).
-        return quote.comment ? `${excerpt}\n> comment: ${quote.comment}` : excerpt;
+        // reducing the structured staging to text must not drop it, and every
+        // line of every field keeps the blockquote prefix — the fields are
+        // multi-line-capable, and in the raw text the model receives the
+        // `> ` marks are the only excerpt/comment boundary (#5265 review).
+        return lines.map(prefixed).join('\n');
       })
-      .join('\n');
+      .join('\n>\n');
+  };
 
   const acceptRetraction = (retracted: MakaRetractedMessages) => {
     for (const messageId of retracted.messageIds) removeTransientUserMessage(messageId);

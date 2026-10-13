@@ -8973,12 +8973,15 @@ Slug openai-work<cursor>
     const terminal = new FakeTerminal();
     const driver = new RetractingQuotesDriver([]);
     const quote = (n: number) => ({
-      text: `recovered excerpt ${n}`,
+      // Quote 18 is multi-line: every line of a degraded excerpt must keep the
+      // `> ` prefix, or the raw text loses the excerpt/comment boundary
+      // (Astro-Han review of 6d5d20338).
+      text: n === 18 ? 'recovered excerpt 18\nsecond line 18' : `recovered excerpt ${n}`,
       label: `q${n}`,
       // The overflow excerpt carries the user's model-facing intent; converting
       // it to plaintext must not drop the annotation (Astro-Han review of
       // b7c01c7a).
-      ...(n >= 17 ? { comment: `why I quoted ${n}` } : {}),
+      ...(n >= 17 ? { comment: n === 18 ? 'why I quoted 18\nmore 18' : `why I quoted ${n}` } : {}),
     });
     // Two independently valid queue entries: 9 + 9 quotes retract to a combined
     // 18, past the Host's 16-per-message admission cap (me2seeks review of
@@ -9017,9 +9020,14 @@ Slug openai-work<cursor>
     await waitFor(() =>
       plainTerminalOutput(terminal.screenOutput()).includes('recovered excerpt 18'),
     );
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('why I quoted 18'));
+    // Every line of a multi-line overflow excerpt keeps the blockquote prefix:
+    // in the raw text the model receives, the `> ` marks are the only
+    // excerpt/comment boundary (Astro-Han review of 6d5d20338).
     await waitFor(() =>
-      plainTerminalOutput(terminal.screenOutput()).includes('why I quoted 18'),
+      plainTerminalOutput(terminal.screenOutput()).includes('> second line 18'),
     );
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('> more 18'));
 
     // The restored draft resubmits within admission: 16 staged quotes ride it
     // and the inlined overflow rides the text.
