@@ -16,10 +16,10 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 | Classification | Count |
 |---|---:|
 | windows-backend-gap | 27 |
-| portable-candidate | 57 |
+| portable-candidate | 62 |
 | platform-contract | 48 |
 
-Total Windows-excluded declarations: **132**
+Total Windows-excluded declarations: **137**
 
 ## Inventory
 
@@ -92,10 +92,15 @@ Total Windows-excluded declarations: **132**
 | platform-contract | `packages/runtime/src/__tests__/owned-child-process.test.ts` supervisor mirrors a command that dies from ${signal} | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |
 | platform-contract | `packages/runtime/src/__tests__/owned-child-process.test.ts` group-wide signals from the command do not end its supervisor | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |
 | platform-contract | `packages/runtime/src/__tests__/owned-child-process.test.ts` unexpected POSIX supervisor death terminates its command and cannot report success | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |
+| portable-candidate | `packages/runtime/src/__tests__/pty-process-driver-write-lifecycle.test.ts` closed PTY input cannot reach a replacement PTY (same fd on Linux) before child exit | `process.platform === 'win32' ? 'Unix PTY file-descriptor lifecycle only' : false` |
+| portable-candidate | `packages/runtime/src/__tests__/pty-process-driver.test.ts` a real PTY input fence drains backpressure before the next owner writes | `process.platform === 'win32'` |
 | portable-candidate | `packages/runtime/src/__tests__/shell-exec.test.ts` writes a legacy WSL Bash command through stdin | `process.platform === 'win32' ? 'uses /bin/sh as a portable stdin probe' : false` |
 | platform-contract | `packages/runtime/src/__tests__/shell-exec.test.ts` bounds output drain after the root exits while a detached descendant retains stdout | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |
 | platform-contract | `packages/runtime/src/__tests__/shell-owner-death.test.ts` ${mode} (stop already requested: ${beginStop}): owner SIGKILL terminates an admitted command before its delayed write | `beginStop && process.platform === 'win32' ? 'POSIX graceful SIGTERM window required' : false` |
 | platform-contract | `packages/runtime/src/__tests__/shell-owner-death.test.ts` owner SIGKILL also terminates a descendant that left the command group with setsid | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |
+| portable-candidate | `packages/runtime/src/__tests__/shell-run-manager.test.ts` handoff answers a query still queued in the public parser exactly once | `process.platform === 'win32'` |
+| portable-candidate | `packages/runtime/src/__tests__/shell-run-manager.test.ts` handoff replay does not inject an old DSR response into a private prompt | `process.platform === 'win32'` |
+| portable-candidate | `packages/runtime/src/__tests__/shell-run-manager.test.ts` private handoff preserves a real shell and excludes immediate and delayed echoes from durable projections | `process.platform === 'win32'` |
 | platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` latches timeout when the root exits during POSIX process discovery | `process.platform === 'win32' ? 'POSIX process discovery only' : false` |
 | platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` preserves cancellation when timeout fires during POSIX process discovery | `process.platform === 'win32' ? 'POSIX process discovery only' : false` |
 | platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` ignores a Stop abort that occurs after another admitted Stop commits termination | `process.platform === 'win32' ? 'Windows termination has no asynchronous POSIX snapshot window' : false` |

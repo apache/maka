@@ -45,9 +45,9 @@ import {
   type ShellRunProcessManagerInput,
 } from '../shell-run-contract.js';
 import { defaultShellPlan, type ShellPlan } from '../shell-detect.js';
-import { PtyProcessDriver as NativePtyDriver } from '../pty-process-driver.js';
+import { PtyInputClosedError, PtyProcessDriver as NativePtyDriver } from '../pty-process-driver.js';
 import xtermHeadless from '@xterm/headless';
-import { PTY_PROTOCOL_REPLY_MAX_BYTES } from '../pty-screen-collector.js';
+import { PTY_PROTOCOL_REPLY_MAX_BYTES, PtyScreenCollector } from '../pty-screen-collector.js';
 import { waitFor } from '@maka/core/test-only/async-primitives';
 
 const NO_ABORT = new AbortController().signal;
@@ -63,6 +63,261 @@ after(async () => {
 });
 
 describe('ShellRunProcessManager', () => {
+  test('input closure before process exit rejects control without failing the terminal', async (t) => {
+    const cwd = await workspace();
+    const manager = createManager(sqliteShellRunStore(cwd));
+    const initial = await manager.runBackgroundBash(
+      shellInput({
+        cwd,
+        pty: true,
+        command: nodeCommand('process.stdout.write("READY"); setInterval(() => {}, 1000);'),
+      }),
+    );
+    try {
+      await waitForPtyText(manager, initial.ref, /READY/);
+      t.mock.method(NativePtyDriver.prototype, 'write', () => {
+        throw new PtyInputClosedError();
+      });
+      t.mock.method(NativePtyDriver.prototype, 'resize', () => {
+        throw new PtyInputClosedError();
+      });
+      for (const control of [
+        { input: 'first' },
+        { input: 'later' },
+        { size: { cols: 100, rows: 30 } },
+      ]) {
+        await assert.rejects(
+          manager.writeStdin({ sessionId: 'session-1', ref: initial.ref, ...control }),
+          ShellRunPtyControlClosedError,
+        );
+      }
+      const snapshot = await manager.inspectResource('session-1', initial.ref);
+      assert.equal(snapshot.status, 'running');
+      assert.equal(snapshot.failureMessage, undefined);
+    } finally {
+      t.mock.restoreAll();
+      await manager.terminateAll();
+    }
+  });
+
+  test('handoff answers a query still queued in the public parser exactly once', {
+    skip: process.platform === 'win32',
+  }, async (t) => {
+    const cwd = await workspace();
+    const manager = createManager(sqliteShellRunStore(cwd));
+    const queryQueued = deferred();
+    const privateInstalled = deferred();
+    const parseGate = deferred();
+    const accept = PtyScreenCollector.prototype.accept;
+    const write = NativePtyDriver.prototype.write;
+    let replies = 0;
+    t.mock.method(
+      NativePtyDriver.prototype,
+      'write',
+      function (this: NativePtyDriver, data: string) {
+        if (data === '\x1b[0n') replies += 1;
+        return write.call(this, data);
+      },
+    );
+    t.mock.method(
+      PtyScreenCollector.prototype,
+      'accept',
+      function (this: PtyScreenCollector, data: string, replyToQueries = true) {
+        if (replyToQueries && data.includes('\x1b[5n')) {
+          void this.mutateAtCut(() => parseGate.promise);
+          queryQueued.resolve();
+        }
+        accept.call(this, data, replyToQueries);
+        if (data.includes('Terminal output is private')) privateInstalled.resolve();
+      },
+    );
+    const initial = await manager.runBackgroundBash(
+      shellInput({
+        cwd,
+        pty: true,
+        command: nodeCommand(`
+          process.stdin.setRawMode(true);
+          process.stdin.once('data', () => {
+            process.stdin.on('data', data => process.stdout.write('REPLY:' + data.toString('hex')));
+            process.stdout.write('\\u001b[5n');
+          });
+          process.stdout.write('READY');
+        `),
+      }),
+    );
+    try {
+      await waitForPtyText(manager, initial.ref, /READY/);
+      await manager.writeStdin({ sessionId: 'session-1', ref: initial.ref, input: 'query' });
+      await queryQueued.promise;
+      const handoff = manager.preparePtyHandoff(
+        'session-1',
+        initial.ref,
+        AbortSignal.timeout(5_000),
+      );
+      await privateInstalled.promise;
+      parseGate.resolve();
+      await handoff;
+      await waitUntil(async () =>
+        (await manager.readPrivatePtySnapshot('session-1', initial.ref)).text.includes(
+          'REPLY:1b5b306e',
+        ),
+      );
+      assert.equal(replies, 1, 'the public query must be answered once, with replay suppressed');
+      assert.doesNotMatch(
+        JSON.stringify(await manager.inspectResource('session-1', initial.ref)),
+        /REPLY:/,
+      );
+    } finally {
+      parseGate.resolve();
+      t.mock.restoreAll();
+      await manager.terminateAll();
+    }
+  });
+
+  test('handoff replay does not inject an old DSR response into a private prompt', {
+    skip: process.platform === 'win32',
+  }, async () => {
+    const cwd = await workspace();
+    const manager = createManager(sqliteShellRunStore(cwd));
+    const initial = await manager.runBackgroundBash(
+      shellInput({
+        cwd,
+        pty: true,
+        command: nodeCommand(`
+      process.stdin.setRawMode(true);
+      let first = true;
+      process.stdin.on('data', data => {
+        if (first) {
+          first = false;
+          process.stdout.write('AUTH_READY');
+        } else {
+          process.stdout.write('PRIVATE_INPUT:' + data.toString('hex') + '\\n');
+        }
+      });
+      process.stdout.write('\\u001b[5n');
+    `),
+      }),
+    );
+    try {
+      await waitForPtyText(manager, initial.ref, /AUTH_READY/);
+      assert.match(manager.getLivePtySnapshot('session-1', initial.ref)!.buffer, /\u001b\[5n/);
+      await manager.preparePtyHandoff('session-1', initial.ref, AbortSignal.timeout(5_000));
+      await manager.writePrivatePtyInput(
+        'session-1',
+        initial.ref,
+        'safe\r',
+        AbortSignal.timeout(5_000),
+      );
+      await waitUntil(async () =>
+        (await manager.readPrivatePtySnapshot('session-1', initial.ref)).text.includes(
+          'PRIVATE_INPUT:',
+        ),
+      );
+      const snapshot = await manager.readPrivatePtySnapshot('session-1', initial.ref);
+      assert.doesNotMatch(
+        snapshot.text,
+        /1b5b306e/,
+        'historical DSR must not reach the current prompt',
+      );
+      assert.match(snapshot.text, /736166650d/);
+    } finally {
+      await manager.terminateAll();
+    }
+  });
+
+  test('private handoff preserves a real shell and excludes immediate and delayed echoes from durable projections', {
+    skip: process.platform === 'win32',
+  }, async () => {
+    const cwd = await workspace();
+    const store = sqliteShellRunStore(cwd);
+    const publicData: string[] = [];
+    const updates: ShellRunUpdate[] = [];
+    const manager = createManager(store, (update) => updates.push(update), {
+      onPtyData: (event) => publicData.push(event.data),
+    });
+    const secret = `synthetic-${crypto.randomUUID()}`;
+    const command =
+      'stty -echo; printf "AUTH_READY\\n"; IFS= read -r credential; marker=handoff-preserved; cd /tmp; printf "%s\\nAUTH_DONE\\n" "$credential"; while IFS= read -r operation; do eval "$operation"; done';
+    const initial = await manager.runBackgroundBash(shellInput({ cwd, command, pty: true }));
+    try {
+      await waitForPtyText(manager, initial.ref, /AUTH_READY/);
+      await manager.preparePtyHandoff('session-1', initial.ref, AbortSignal.timeout(5_000));
+      await assert.rejects(
+        () =>
+          manager.writeStdin({
+            sessionId: 'session-1',
+            ref: initial.ref,
+            input: 'must-not-enter\r',
+          }),
+        /human input/,
+      );
+      await manager.writePrivatePtyInput(
+        'session-1',
+        initial.ref,
+        `${secret}\r`,
+        AbortSignal.timeout(5_000),
+      );
+      await waitUntil(async () =>
+        (await manager.readPrivatePtySnapshot('session-1', initial.ref)).text.includes('AUTH_DONE'),
+      );
+      assert.ok(
+        (await manager.readPrivatePtySnapshot('session-1', initial.ref)).text.includes(secret),
+      );
+      assert.equal(await manager.resumePtyHandoff('session-1', initial.ref), true);
+      assert.equal(
+        (await manager.readPrivatePtySnapshot('session-1', initial.ref)).text.includes(secret),
+        false,
+      );
+      await manager.writeStdin({
+        sessionId: 'session-1',
+        ref: initial.ref,
+        input: 'printf "%s\\n" "$credential"; printf "CONTINUITY:%s:%s\\n" "$marker" "$PWD"\r',
+      });
+      await waitUntil(async () =>
+        (await manager.readPrivatePtySnapshot('session-1', initial.ref)).text.includes(
+          'CONTINUITY:handoff-preserved:/tmp',
+        ),
+      );
+      await manager.writeStdin({
+        sessionId: 'session-1',
+        ref: initial.ref,
+        input:
+          nodeCommand(`
+          process.stdin.setRawMode(true);
+          process.stdin.once('data', data => {
+            process.stdout.write('PRIVATE-DSR:' + data.toString('hex') + '\\n', () => process.exit(0));
+          });
+          process.stdout.write('\\u001b[5n');
+        `) + '\r',
+      });
+      await waitUntil(async () =>
+        (await manager.readPrivatePtySnapshot('session-1', initial.ref)).text.includes(
+          'PRIVATE-DSR:1b5b306e',
+        ),
+      );
+      const privateView = await manager.readPrivatePtySnapshot('session-1', initial.ref);
+      assert.ok(privateView.text.includes(secret), 'fixture must actually echo after Resume');
+      const observed = await manager.readRuntimeResource('session-1', initial.ref, NO_ABORT);
+      assert.equal(JSON.stringify(observed).includes('CONTINUITY:handoff-preserved:/tmp'), false);
+      assert.match(JSON.stringify(observed), /Terminal output is private/);
+      const persisted = await store.listSessionShellRuns('session-1');
+      for (const projection of [
+        observed,
+        persisted,
+        updates,
+        publicData,
+        manager.getLivePtySnapshot('session-1', initial.ref),
+      ]) {
+        assert.equal(
+          JSON.stringify(projection).includes(secret),
+          false,
+          'private bytes escaped a public projection',
+        );
+      }
+    } finally {
+      await manager.terminateAll();
+    }
+  });
   test('rejects a model Read of a user-owned resource while preserving client inspection', async () => {
     const store = createSqliteShellRunStore(await workspace());
     await store.createShellRun({

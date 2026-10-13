@@ -36,6 +36,8 @@ import {
 } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
 import { defineOperation } from './operation-spec.js';
+import { TERMINAL_HANDOFF_OPERATION_SPECS } from './terminal-handoff.js';
+export * from './terminal-handoff.js';
 
 export const RUNTIME_RESOURCE_RESULT_MAX_BYTES = 52 * 1024;
 export const RUNTIME_RESOURCE_CONTROLLER_ACQUIRE_RESULT_MAX_BYTES = 90 * 1024;
@@ -174,6 +176,7 @@ export interface RuntimeResourceStartResult {
 export type RuntimeResourceStopResult = Record<never, never>;
 
 export const RUNTIME_RESOURCE_OPERATION_SPECS = {
+  ...TERMINAL_HANDOFF_OPERATION_SPECS,
   'runtime.resource.query': defineOperation<
     RuntimeResourceQueryInput,
     RuntimeResourceQueryResult,

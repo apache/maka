@@ -387,6 +387,7 @@ export function WorkbarSurface(props: {
   togglePosition?: WorkbarTogglePosition;
   workspace?: 'session' | 'workhub';
   sessionId?: string;
+  prepareTerminalHandoff?: () => Promise<void>;
   projectId?: string | null;
   projectAliases?: readonly string[];
   hidden: boolean;
@@ -542,6 +543,7 @@ export function WorkbarSurface(props: {
               <SessionTerminalPanel
                 sessionId={tab.ownerSessionId ?? props.sessionId!}
                 terminalRef={terminalRef}
+                prepareHandoff={props.prepareTerminalHandoff}
                 active={!props.hidden && active}
               />
             </Suspense>

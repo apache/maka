@@ -26,13 +26,15 @@ import { useUiLocale } from '@maka/ui';
 import { ICON_SIZE, Terminal as TerminalIcon } from '@maka/ui/icons';
 import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
-import { getDesktopConversationCopy } from '../../../../application/contracts/conversation-copy';
-import { SessionTerminalHydration, SessionTerminalRenderQueue } from './session-terminal-hydration';
-import { suppressTerminalQueryReplies } from './session-terminal-query';
-import { scheduleTerminalFrame } from './session-terminal-frame';
-import { loadTerminalWebLinks } from './terminal-web-links';
+import { getDesktopConversationCopy } from '../../../../application/contracts/conversation-copy.js';
+import { SessionTerminalHydration, SessionTerminalRenderQueue } from './session-terminal-hydration.js';
+import { suppressTerminalQueryReplies } from './session-terminal-query.js';
+import { scheduleTerminalFrame } from './session-terminal-frame.js';
+import { loadTerminalWebLinks } from './terminal-web-links.js';
 import { useWorkbarServices } from '../../services-context.js';
-import { getTerminalFontSize, subscribeTerminalFontSize } from '../../../../theme';
+import { getTerminalFontSize, subscribeTerminalFontSize } from '../../../../theme.js';
+import { TerminalHandoffPanel } from './terminal-handoff-panel.js';
+import type { RuntimeResourceHandoffResult } from '@maka/runtime-host/protocol';
 
 function terminalTheme(element: HTMLElement) {
   const styles = getComputedStyle(element);
@@ -48,6 +50,45 @@ function terminalTheme(element: HTMLElement) {
 }
 
 export function SessionTerminalPanel(props: {
+  sessionId: string;
+  prepareHandoff?: () => Promise<void>;
+  terminalRef: string | null;
+  active: boolean;
+}) {
+  const { terminal, review } = useWorkbarServices();
+  const [handoff, setHandoff] = useState<RuntimeResourceHandoffResult['request']>();
+  const [checked, setChecked] = useState(!terminal.handoff);
+  useEffect(() => {
+    if (!terminal.handoff || !props.terminalRef) { setChecked(true); return; }
+    let disposed = false;
+    setChecked(false);
+    setHandoff(undefined);
+    const refresh = async () => {
+      try {
+        const result = await terminal.handoff!({ action: 'lookup', sessionId: props.sessionId, ref: props.terminalRef! });
+        if (!disposed) { setHandoff(result.request); setChecked(true); }
+      } catch { if (!disposed) setChecked(true); }
+    };
+    void refresh();
+    const unsubscribe = terminal.subscribeUpdates((update) => {
+      if (update.sessionId === props.sessionId && update.result.ref === props.terminalRef) void refresh();
+    });
+    const unsubscribeResync = terminal.subscribeResync(({ sessionId }) => {
+      if (sessionId === props.sessionId) void refresh();
+    });
+    // A second handoff on the same PTY changes the request, not the tab/ref.
+    // Refresh from its canonical event even if the resource projection is unchanged.
+    const unsubscribeHandoff = review.subscribeSessionEvents(props.sessionId, (event) => {
+      if (event.type === 'terminal_handoff_request' && event.ref === props.terminalRef) void refresh();
+    });
+    return () => { disposed = true; unsubscribe(); unsubscribeResync(); unsubscribeHandoff(); };
+  }, [terminal, review, props.sessionId, props.terminalRef]);
+  if (handoff) return <TerminalHandoffPanel key={handoff.requestId} sessionId={props.sessionId} request={handoff} active={props.active} prepareHandoff={props.prepareHandoff} />;
+  if (!checked) return <div className="maka-session-terminal-panel" aria-busy="true" />;
+  return <StandardSessionTerminalPanel {...props} />;
+}
+
+function StandardSessionTerminalPanel(props: {
   sessionId: string;
   terminalRef: string | null;
   active: boolean;

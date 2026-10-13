@@ -196,6 +196,7 @@ export function ChatComposerRegion({
     activeInteraction?.type === 'client_capability_request' ? activeInteraction : undefined;
   const activeQuestion = activeInteraction?.type === 'user_question_request' ? activeInteraction : undefined;
   const activeForm = activeInteraction?.type === 'form_request' ? activeInteraction : undefined;
+  const activeTerminalHandoff = activeInteraction?.type === 'terminal_handoff_request' ? activeInteraction : undefined;
   const activeModelChoice = composerRest.activeModel
     ? composerRest.modelChoices?.find(
         (choice) =>
@@ -391,6 +392,7 @@ export function ChatComposerRegion({
             onRespond={respondToUserForm}
           />
         )}
+        {activeTerminalHandoff && <Banner status="info" role="status" title={activeTerminalHandoff.message} />}
       </div>
       {LiveContextUsageProbe ? (
         <LiveContextUsageProbe

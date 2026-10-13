@@ -56,6 +56,9 @@ export * from './tools/terminal/terminal-interaction-policy.js';
 export * from './tools/terminal/session-terminal-hydration.js';
 export * from './tools/terminal/session-terminal-query.js';
 export * from './tools/terminal/session-terminal-frame.js';
+export * from './tools/terminal/terminal-handoff-feedback.js';
+export { TerminalHandoffPanel } from './tools/terminal/terminal-handoff-panel.js';
+export const loadSessionTerminalPanelForTest = () => import('./tools/terminal/session-terminal-panel.js');
 export * from '../../application/contracts/session-inspector/use-session-trace.js';
 export { useWorkbarController } from './controller/use-workbar-controller.js';
 export type {

@@ -263,6 +263,9 @@ function canonicalOutcomeForHistoricalAnswer(
   answer: InteractionAnswer,
   committedAt: number,
 ): Exclude<InteractionCanonicalOutcome, { kind: 'closure' }> {
+  if (answer.kind === 'terminal_handoff') {
+    return { kind: 'terminal_handoff_answer', action: answer.action, committedAt };
+  }
   if (answer.kind === 'question') {
     return questionCanonicalOutcome(answer, committedAt);
   }

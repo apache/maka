@@ -43,6 +43,25 @@ describe('PtyScreenCollector', () => {
     }
   });
 
+  test('suppresses replay queries without coalescing away fresh replies', async () => {
+    const replies: string[] = [];
+    const { collector, failures } = await createCollector({
+      onProtocolReply: (data) => replies.push(data),
+    });
+    try {
+      collector.accept('history\u001b[5n', false);
+      // Arrives before historical parsing starts: both entries are queued.
+      collector.accept('live\u001b[5n');
+      collector.accept('\u001b[5n');
+      const snapshot = await collector.snapshotAtCut();
+      assert.deepEqual(replies, ['\u001b[0n\u001b[0n']);
+      assert.match(snapshot.output.screen, /historylive/);
+      assert.deepEqual(failures, []);
+    } finally {
+      collector.dispose();
+    }
+  });
+
   test('coalesces queued parser writes so a cut waits behind bounded work', async () => {
     const replies: string[] = [];
     const { collector, failures } = await createCollector({

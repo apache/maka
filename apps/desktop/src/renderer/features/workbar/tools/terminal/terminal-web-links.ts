@@ -20,7 +20,7 @@
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import type { Terminal } from '@xterm/xterm';
 
-import { terminalWebUrl } from './terminal-interaction-policy';
+import { terminalWebUrl } from './terminal-interaction-policy.js';
 
 /**
  * Wires clickable HTTP(S) links into an xterm instance. Renderer-side URL

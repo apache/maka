@@ -53,14 +53,14 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - 'package-lock.json'
-      - 'patches/**'
-      - 'scripts/apply-dependency-patches.mjs'
-      - 'scripts/install-electron-with-retry.mjs'
-      - 'scripts/run-electron-installer.cjs'
-      - 'scripts/clean-build.mjs'
-      - 'scripts/clean-paths.mjs'
-      - 'scripts/windows-runtime-host-local-ipc-trust.ps1'
+      - "package-lock.json"
+      - "patches/**"
+      - "scripts/apply-dependency-patches.mjs"
+      - "scripts/install-electron-with-retry.mjs"
+      - "scripts/run-electron-installer.cjs"
+      - "scripts/clean-build.mjs"
+      - "scripts/clean-paths.mjs"
+      - "scripts/windows-runtime-host-local-ipc-trust.ps1"
       # Every file in the import closure of the suites below that branches on
       # `process.platform === 'win32'`. Generated, not curated:
       # `scripts/windows-package-source-closure.test.mjs` recomputes this set
@@ -92,6 +92,7 @@ on:
       - 'packages/runtime-host/src/protocol/skill-catalog.ts'
       - 'packages/runtime-host/src/server/access-credential-store.ts'
       - 'packages/runtime-host/src/server/host-resource-probe.ts'
+      - 'packages/runtime-host/src/server/runtime-resource-coordinator.ts'
       - 'packages/runtime-host/src/server/skill-catalog-repository.ts'
       - 'packages/runtime-host/src/server/skill-catalog-transaction.ts'
       - 'packages/runtime/src/__tests__/owned-child-process.test.ts'
@@ -141,7 +142,7 @@ on:
     branches: [main]
   schedule:
     # Offset from windows-sandbox-w0 so the Windows lanes do not overlap.
-    - cron: '17 8 * * *'
+    - cron: "17 8 * * *"
   workflow_dispatch:
 
 # Pull request pushes supersede each other, keyed on the pull request number

@@ -159,6 +159,8 @@ function isHostProjectionSessionEvent(event: SessionEvent): event is Extract<
       | 'message_admission'
       | 'context_compaction_started'
       | 'client_capability_request'
+      | 'terminal_handoff_request'
+      | 'terminal_handoff_answer_ack'
       | 'client_capability_decision_ack';
   }
 > {
@@ -167,6 +169,8 @@ function isHostProjectionSessionEvent(event: SessionEvent): event is Extract<
     event.type === 'message_admission' ||
     event.type === 'context_compaction_started' ||
     event.type === 'client_capability_request' ||
+    event.type === 'terminal_handoff_request' ||
+    event.type === 'terminal_handoff_answer_ack' ||
     event.type === 'client_capability_decision_ack'
   );
 }
