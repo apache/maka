@@ -130,7 +130,10 @@ import {
   type RuntimeUserQuestionClosureReason,
 } from './interaction-authority.js';
 
-import { bindFileWriteEvidence, type FileWriteObservation } from '@maka/core/file-write-evidence';
+import {
+  bindFileMutationEvidence,
+  type FileMutationObservation,
+} from '@maka/core/file-mutation-evidence';
 
 export interface ResolvedMakaToolCall {
   tool: MakaTool;
@@ -170,7 +173,7 @@ export type MakaToolPreparationContext = Pick<
 >;
 
 export interface PreparedMakaToolExecution<R = unknown> {
-  fileWriteObservation?: FileWriteObservation;
+  fileMutationObservation?: FileMutationObservation;
   execute(context: MakaToolContext): Promise<R> | R;
   cancel(): Promise<void> | void;
 }
@@ -1508,7 +1511,7 @@ export class ToolRuntime {
     try {
       durableAttempt = await this.prepareDurableToolAttempt({
         tool,
-        fileWriteObservation: preparedExecution?.fileWriteObservation,
+        fileMutationObservation: preparedExecution?.fileMutationObservation,
         startEvent: buildCallEvent('dispatch'),
         persistedArgs,
         abortSignal: ctx.abortSignal,
@@ -1929,7 +1932,7 @@ export class ToolRuntime {
 
   private async prepareDurableToolAttempt(input: {
     tool: MakaTool;
-    fileWriteObservation?: FileWriteObservation;
+    fileMutationObservation?: FileMutationObservation;
     startEvent: ToolStartEvent;
     persistedArgs: unknown;
     abortSignal: AbortSignal;
@@ -2018,9 +2021,9 @@ export class ToolRuntime {
           toolName: input.tool.name,
           canonicalArgsHash,
           recoveryMode,
-          ...(input.fileWriteObservation
+          ...(input.fileMutationObservation
             ? {
-                fileWriteEvidence: bindFileWriteEvidence(input.fileWriteObservation, {
+                fileMutationEvidence: bindFileMutationEvidence(input.fileMutationObservation, {
                   sessionId: this.input.sessionId,
                   invocationId,
                   runId,

@@ -34,7 +34,7 @@
  */
 
 import { isWorkHubActionReceipt, type WorkHubActionReceipt } from './workhub-action-result.js';
-import { isFileWriteEvidence, type FileWriteEvidence } from './file-write-evidence.js';
+import { isFileMutationEvidence, type FileMutationEvidence } from './file-mutation-evidence.js';
 import { isToolCallOutcome } from './tool-result-status.js';
 import { isModelRetryDecision, type ModelRetryDecision } from './model-failure.js';
 
@@ -447,7 +447,7 @@ export interface RuntimeEventToolDispatch {
   /** T1-frozen managed workspace mutation identity. */
   managedMutation?: RuntimeEventManagedWorkspaceMutationV2;
   /** Trusted pre-dispatch observation; does not by itself authorize replay. */
-  fileWriteEvidence?: FileWriteEvidence;
+  fileMutationEvidence?: FileMutationEvidence;
 }
 
 /**
@@ -916,7 +916,7 @@ const RUNTIME_TOOL_DISPATCH_SHAPE = defineObjectShape<RuntimeEventToolDispatch>(
     'canonicalArgsHash',
     'recoveryMode',
   ],
-  ['managedMutation', 'resultProjectionVersion', 'fileWriteEvidence'],
+  ['managedMutation', 'resultProjectionVersion', 'fileMutationEvidence'],
 );
 const RUNTIME_MANAGED_WORKSPACE_MUTATION_SHAPE =
   defineObjectShape<RuntimeEventManagedWorkspaceMutationV2>()(
@@ -1037,10 +1037,11 @@ export function decodeRuntimeEvent(value: unknown): RuntimeEvent {
   runtimeHandoffPause(value as unknown as RuntimeEvent);
   const event = value as unknown as RuntimeEvent;
   const dispatch = event.actions?.toolDispatch;
-  if (dispatch?.fileWriteEvidence) {
-    const binding = dispatch.fileWriteEvidence.binding;
+  if (dispatch?.fileMutationEvidence) {
+    const binding = dispatch.fileMutationEvidence.binding;
     if (
-      dispatch.toolName !== 'Write' ||
+      dispatch.toolName !==
+        (dispatch.fileMutationEvidence.observation.result.kind === 'write' ? 'Write' : 'Edit') ||
       dispatch.managedMutation !== undefined ||
       dispatch.recoveryMode !== 'never_auto_retry' ||
       binding.sessionId !== event.sessionId ||
@@ -1462,7 +1463,7 @@ function isRuntimeToolDispatch(value: unknown): value is RuntimeEventToolDispatc
       value.recoveryMode === 'never_auto_retry') &&
     (value.managedMutation === undefined ||
       isRuntimeManagedWorkspaceMutation(value.managedMutation)) &&
-    (value.fileWriteEvidence === undefined || isFileWriteEvidence(value.fileWriteEvidence))
+    (value.fileMutationEvidence === undefined || isFileMutationEvidence(value.fileMutationEvidence))
   );
 }
 

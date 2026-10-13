@@ -36,7 +36,7 @@ import { afterEach, describe, test } from 'node:test';
 import { createManagedExecutionBoundary } from '@maka/core/sandbox-boundary';
 import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 import { MAX_READ_IMAGE_BYTES } from '@maka/core/attachments';
-import { prepareFileWrite } from '../file-write-evidence.js';
+import { prepareFileWrite } from '../file-mutation-evidence.js';
 import { executeFilesystemWorkerRequest } from '../filesystem-worker/operations.js';
 import {
   canReadPath,
@@ -99,6 +99,44 @@ describe('filesystem worker client permission snapshots', () => {
     assert.equal(requests[0]!.expectedTarget.access, 'write');
     // Native namespaces must recheck their actual directories inside the worker.
     assert.equal(requests[0]!.hostDirectories, undefined);
+  });
+
+  test('Edit preparation uses the execution write grant and existing identity', async () => {
+    const cwd = await temporaryDirectory('maka-edit-prepare-grant-');
+    const path = join(cwd, 'notes.txt');
+    await writeFile(path, 'before');
+    const stat = await lstat(path, { bigint: true });
+    const { client, requests } = fakeClient();
+    for (const kind of ['prepare_edit', 'edit'] as const) {
+      await client.execute({
+        operation: { kind, path, oldString: 'before', newString: 'after' },
+        cwd,
+        mode: 'ask',
+        expectedIdentity: { dev: String(stat.dev), ino: String(stat.ino) },
+      });
+    }
+    assert.deepEqual(requests[0]!.operationBoundary, requests[1]!.operationBoundary);
+    assert.deepEqual(requests[0]!.expectedTarget, requests[1]!.expectedTarget);
+    assert.equal(requests[0]!.expectedTarget.access, 'write');
+    assert.equal(requests[0]!.hostDirectories, undefined);
+  });
+
+  test('a read-only profile cannot prepare an Edit', async () => {
+    const cwd = await temporaryDirectory('maka-edit-prepare-denied-');
+    const path = join(cwd, 'notes.txt');
+    await writeFile(path, 'before');
+    const { client, requests } = fakeClient();
+    await assert.rejects(
+      client.execute({
+        operation: { kind: 'prepare_edit', path, oldString: 'before', newString: 'after' },
+        cwd,
+        permissionProfile: createReadOnlyPermissionProfile(),
+        expectedIdentity: 'unchecked',
+      }),
+      (error: unknown) =>
+        error instanceof FilesystemWorkerClientError && error.reason === 'path_denied',
+    );
+    assert.deepEqual(requests, []);
   });
 
   test('a prepared Write rejects substituted host directory identity before worker launch', async () => {
@@ -897,7 +935,18 @@ function fakeClient(
 function fakeResult(request: FilesystemWorkerRequest): FilesystemWorkerResult {
   switch (request.operation.kind) {
     case 'prepare_write':
-      return { kind: 'prepare_write' };
+    case 'prepare_edit':
+      return { kind: request.operation.kind };
+    case 'edit':
+      return {
+        kind: 'edit',
+        ok: true,
+        path: request.operation.path,
+        replacements: 1,
+        matchedVia: 'exact',
+        startLine: 1,
+        endLine: 1,
+      };
     case 'read':
       return request.operation.path.endsWith('.png')
         ? { kind: 'read_image', base64: 'iVBORw==', mimeType: 'image/png' }

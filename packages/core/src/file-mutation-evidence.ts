@@ -20,15 +20,44 @@
 import { createHash } from 'node:crypto';
 import { stableJsonStringify } from './tool-args-identity.js';
 
-/** Observation contract only. Registration does not authorize reconciliation. */
+/** Versioned evidence contracts only; neither declaration authorizes recovery execution. */
 export const FILE_WRITE_EVIDENCE_CONTRACT = Object.freeze({
   id: 'builtin.Write.utf8',
   version: 1,
+  evidenceKind: 'file_state_v1',
   algorithm: 'overwrite_utf8_v1',
   maxFileBytes: 1_048_576,
   maxResultBytes: 262_144,
   pathPolicy: 'canonical_target_no_follow_v1',
 } as const);
+
+export const FILE_EDIT_EVIDENCE_CONTRACT = Object.freeze({
+  ...FILE_WRITE_EVIDENCE_CONTRACT,
+  id: 'builtin.Edit.utf8',
+  algorithm: 'unique_replace_utf8_v1',
+} as const);
+
+export type FileMutation =
+  | { kind: 'write'; content: string }
+  | { kind: 'edit'; oldString: string; newString: string };
+
+export interface FileWriteResult {
+  kind: 'write';
+  ok: true;
+  path: string;
+  bytes: number;
+  diff?: string;
+}
+export interface FileEditResult {
+  kind: 'edit';
+  ok: true;
+  path: string;
+  replacements: 1;
+  matchedVia: 'exact' | 'line-trimmed' | 'whitespace' | 'escape';
+  startLine: number;
+  endLine: number;
+  diff?: string;
+}
 
 export interface FileIdentity {
   dev: string;
@@ -36,23 +65,23 @@ export interface FileIdentity {
 }
 
 /** Host identities; a sandbox may synthesize different directory inodes. */
-export interface FileWriteDirectories {
+export interface FileMutationDirectories {
   workspace: FileIdentity;
   parent: FileIdentity;
 }
 
-export interface FileWriteObservation {
-  contract: typeof FILE_WRITE_EVIDENCE_CONTRACT;
+export interface FileMutationObservation {
+  contract: typeof FILE_WRITE_EVIDENCE_CONTRACT | typeof FILE_EDIT_EVIDENCE_CONTRACT;
   workspace: { path: string; identity: FileIdentity };
   target: { path: string; parentIdentity: FileIdentity };
   before:
     | { kind: 'missing' }
     | { kind: 'file'; identity: FileIdentity; bytes: number; digest: string };
   after: { bytes: number; digest: string };
-  result: { kind: 'write'; ok: true; path: string; bytes: number; diff?: string };
+  result: FileWriteResult | FileEditResult;
 }
 
-export interface FileWriteEvidenceBinding {
+export interface FileMutationEvidenceBinding {
   sessionId: string;
   invocationId: string;
   runId: string;
@@ -63,9 +92,9 @@ export interface FileWriteEvidenceBinding {
   canonicalArgsHash: string;
 }
 
-export interface FileWriteEvidence {
-  observation: FileWriteObservation;
-  binding: FileWriteEvidenceBinding;
+export interface FileMutationEvidence {
+  observation: FileMutationObservation;
+  binding: FileMutationEvidenceBinding;
   digest: string;
 }
 
@@ -73,22 +102,22 @@ export function fileEvidenceDigest(value: unknown): string {
   return `sha256:${createHash('sha256').update(stableJsonStringify(value)).digest('hex')}`;
 }
 
-export function bindFileWriteEvidence(
-  observation: FileWriteObservation,
-  binding: FileWriteEvidenceBinding,
-): FileWriteEvidence {
+export function bindFileMutationEvidence(
+  observation: FileMutationObservation,
+  binding: FileMutationEvidenceBinding,
+): FileMutationEvidence {
   const body = structuredClone({ observation, binding });
-  if (!isFileWriteObservation(body.observation) || !isBinding(body.binding)) {
-    throw new Error('Invalid file Write evidence');
+  if (!isFileMutationObservation(body.observation) || !isBinding(body.binding)) {
+    throw new Error('Invalid file mutation evidence');
   }
   return { ...body, digest: fileEvidenceDigest(body) };
 }
 
-export function isFileWriteEvidence(value: unknown): value is FileWriteEvidence {
+export function isFileMutationEvidence(value: unknown): value is FileMutationEvidence {
   try {
     if (!record(value, ['observation', 'binding', 'digest'])) return false;
     return (
-      isFileWriteObservation(value.observation) &&
+      isFileMutationObservation(value.observation) &&
       isBinding(value.binding) &&
       value.digest ===
         fileEvidenceDigest({ observation: value.observation, binding: value.binding })
@@ -98,7 +127,7 @@ export function isFileWriteEvidence(value: unknown): value is FileWriteEvidence 
   }
 }
 
-export function isFileWriteObservation(value: unknown): value is FileWriteObservation {
+export function isFileMutationObservation(value: unknown): value is FileMutationObservation {
   try {
     return validateObservation(value);
   } catch {
@@ -106,13 +135,14 @@ export function isFileWriteObservation(value: unknown): value is FileWriteObserv
   }
 }
 
-function validateObservation(value: unknown): value is FileWriteObservation {
+function validateObservation(value: unknown): value is FileMutationObservation {
   if (!record(value, ['contract', 'workspace', 'target', 'before', 'after', 'result']))
     return false;
   const { contract, workspace, target, before, after, result } = value;
   return (
     record(contract, Object.keys(FILE_WRITE_EVIDENCE_CONTRACT)) &&
-    stableJsonStringify(contract) === stableJsonStringify(FILE_WRITE_EVIDENCE_CONTRACT) &&
+    (stableJsonStringify(contract) === stableJsonStringify(FILE_WRITE_EVIDENCE_CONTRACT) ||
+      stableJsonStringify(contract) === stableJsonStringify(FILE_EDIT_EVIDENCE_CONTRACT)) &&
     record(workspace, ['path', 'identity']) &&
     path(workspace.path) &&
     identity(workspace.identity) &&
@@ -128,18 +158,33 @@ function validateObservation(value: unknown): value is FileWriteObservation {
     record(after, ['bytes', 'digest']) &&
     bytes(after.bytes) &&
     digest(after.digest) &&
-    record(result, ['kind', 'ok', 'path', 'bytes'], ['diff']) &&
-    result.kind === 'write' &&
+    ((contract.id === FILE_WRITE_EVIDENCE_CONTRACT.id &&
+      record(result, ['kind', 'ok', 'path', 'bytes'], ['diff']) &&
+      result.kind === 'write' &&
+      result.bytes === after.bytes) ||
+      (contract.id === FILE_EDIT_EVIDENCE_CONTRACT.id &&
+        before.kind === 'file' &&
+        record(
+          result,
+          ['kind', 'ok', 'path', 'replacements', 'matchedVia', 'startLine', 'endLine'],
+          ['diff'],
+        ) &&
+        result.kind === 'edit' &&
+        result.replacements === 1 &&
+        ['exact', 'line-trimmed', 'whitespace', 'escape'].includes(result.matchedVia as string) &&
+        Number.isSafeInteger(result.startLine) &&
+        (result.startLine as number) >= 1 &&
+        Number.isSafeInteger(result.endLine) &&
+        (result.endLine as number) >= (result.startLine as number))) &&
     result.ok === true &&
     result.path === target.path &&
-    result.bytes === after.bytes &&
     (result.diff === undefined || typeof result.diff === 'string') &&
     Buffer.byteLength(stableJsonStringify(result), 'utf8') <=
       FILE_WRITE_EVIDENCE_CONTRACT.maxResultBytes
   );
 }
 
-function isBinding(value: unknown): value is FileWriteEvidenceBinding {
+function isBinding(value: unknown): value is FileMutationEvidenceBinding {
   return (
     record(value, [
       'sessionId',

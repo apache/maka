@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { bindFileMutationEvidence } from '@maka/core/file-mutation-evidence';
+
 import type { AgentRunEvent, AgentRunStore, EmittedAgentRunEvent } from '@maka/core/agent-run';
 import {
   isPartialRuntimeEvent,
@@ -1637,6 +1639,28 @@ function cloneRuntimeEvent(
     sessionId: ids.sessionId,
     runId: ids.runId,
   };
+  const dispatch = cloned.actions?.toolDispatch;
+  if (dispatch?.fileMutationEvidence) {
+    // Preserve the historical observation while rebinding the copied fact. This
+    // does not authorize a new filesystem effect or upgrade its recovery mode.
+    encodeCanonicalRuntimeEvent(event);
+    cloned.actions = {
+      ...cloned.actions,
+      toolDispatch: {
+        ...dispatch,
+        fileMutationEvidence: bindFileMutationEvidence(dispatch.fileMutationEvidence.observation, {
+          sessionId: cloned.sessionId,
+          invocationId: cloned.invocationId,
+          runId: cloned.runId,
+          turnId: cloned.turnId,
+          dispatchEventId: cloned.id,
+          operationId: dispatch.operationId,
+          providerToolCallId: dispatch.providerToolCallId,
+          canonicalArgsHash: dispatch.canonicalArgsHash,
+        }),
+      },
+    };
+  }
   const accepted = event.actions?.permissionAnswerAccepted;
   const decision = accepted ? copiedPermissionDecisions.get(accepted.requestId) : undefined;
   if (!decision || !cloned.actions) return cloned;

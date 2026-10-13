@@ -29,8 +29,8 @@
 // "full access" stricter than ask mode, which grants :slash_tmp outright (#2083).
 
 import { Buffer } from 'node:buffer';
-import { buildFileWriteResult } from './file-write-evidence.js';
-import type { FileWriteObservation } from '@maka/core/file-write-evidence';
+import { buildFileWriteResult, buildFileEditResult } from './file-mutation-evidence.js';
+import type { FileMutationObservation } from '@maka/core/file-mutation-evidence';
 import { readPage } from './read-page.js';
 import { formatJsonText } from './format-json.js';
 import { lstat, realpath, stat } from 'node:fs/promises';
@@ -40,7 +40,7 @@ import type { PermissionMode } from '@maka/core/permission';
 import type { PermissionProfile } from '@maka/core/permission-profile';
 import { ToolOutcomeUnknownError } from '@maka/core/events';
 import { computeEditedSource } from './edit-replace.js';
-import { createEditUnifiedDiff, createUnifiedDiff } from './unified-diff.js';
+import { createUnifiedDiff } from './unified-diff.js';
 import {
   classifyFailedMutationOutcome,
   type FilesystemTargetIdentity,
@@ -63,7 +63,7 @@ import type {
   WorkspaceApplyPatchExecutor,
   WorkspacePathScope,
   WorkspaceReadModifyWriteExecutor,
-  WorkspacePreparedWriteExecutor,
+  WorkspacePreparedMutationExecutor,
   WorkspaceSearchExecutor,
   WorkspaceWriteExecutor,
 } from './workspace-executor.js';
@@ -111,9 +111,11 @@ export interface ApplyPatchResult {
 }
 
 export interface FilesystemExecutor {
-  prepareWrite(
-    input: FilesystemExecuteInput & { operation: Extract<FilesystemOperation, { kind: 'write' }> },
-  ): Promise<PreparedFilesystemWrite>;
+  prepareMutation(
+    input: FilesystemExecuteInput & {
+      operation: Extract<FilesystemOperation, { kind: 'write' | 'edit' }>;
+    },
+  ): Promise<PreparedFilesystemMutation>;
   /**
    * Run one operation under the authority of the boundary it carries. A mutating
    * operation holds the target's write lock for its whole read-modify-write, so
@@ -123,8 +125,8 @@ export interface FilesystemExecutor {
   applyPatch(input: FilesystemApplyPatchInput): Promise<ApplyPatchResult>;
 }
 
-export interface PreparedFilesystemWrite {
-  observation?: FileWriteObservation;
+export interface PreparedFilesystemMutation {
+  observation?: FileMutationObservation;
   execute(): Promise<FilesystemResult>;
   cancel(): void;
 }
@@ -134,7 +136,7 @@ export type FilesystemWorkspaceExecutor = WorkspaceWriteExecutor &
   WorkspaceEditExecutor &
   Partial<WorkspaceApplyPatchExecutor> &
   Partial<WorkspaceReadModifyWriteExecutor> &
-  Partial<WorkspacePreparedWriteExecutor> &
+  Partial<WorkspacePreparedMutationExecutor> &
   WorkspaceSearchExecutor;
 
 export interface BoundaryFilesystemExecutorInput {
@@ -301,7 +303,7 @@ export function createBoundaryFilesystemExecutor(
     return { key: normalized.enforcementPath, canonicalPath: normalized.enforcementPath };
   }
   return {
-    async prepareWrite(input) {
+    async prepareMutation(input) {
       const call = {
         ...input,
         ...(input.executionBoundary
@@ -325,11 +327,19 @@ export function createBoundaryFilesystemExecutor(
         const prepared = await run(
           {
             ...call,
-            operation: { kind: 'prepare_write', path: operation.path, content: operation.content },
+            operation:
+              operation.kind === 'write'
+                ? { kind: 'prepare_write', path: operation.path, content: operation.content }
+                : {
+                    kind: 'prepare_edit',
+                    path: operation.path,
+                    oldString: operation.oldString,
+                    newString: operation.newString,
+                  },
           },
           expectedIdentity,
         );
-        if (prepared.kind !== 'prepare_write')
+        if (prepared.kind !== (operation.kind === 'write' ? 'prepare_write' : 'prepare_edit'))
           throw new Error('Invalid Write preparation response');
         const observation = prepared.observation
           ? structuredClone(prepared.observation)
@@ -471,17 +481,25 @@ function createWorkspaceFilesystemExecutor(
   return {
     async execute({ operation, cwd, abortSignal }, scope, expectedIdentity) {
       switch (operation.kind) {
-        case 'prepare_write': {
+        case 'prepare_write':
+        case 'prepare_edit': {
           const observation =
-            workspace.prepareWrite && workspace.executePreparedWrite
-              ? await workspace.prepareWrite({
+            workspace.prepareMutation && workspace.executePreparedMutation
+              ? await workspace.prepareMutation({
                   cwd,
                   path: operation.path,
-                  content: operation.content,
+                  mutation:
+                    operation.kind === 'prepare_write'
+                      ? { kind: 'write', content: operation.content }
+                      : {
+                          kind: 'edit',
+                          oldString: operation.oldString,
+                          newString: operation.newString,
+                        },
                   scope,
                 })
               : undefined;
-          return { kind: 'prepare_write', ...(observation ? { observation } : {}) };
+          return { kind: operation.kind, ...(observation ? { observation } : {}) };
         }
         case 'read': {
           const { path } = await workspace.resolveExistingPath({
@@ -504,12 +522,12 @@ function createWorkspaceFilesystemExecutor(
         }
         case 'write': {
           if (operation.observation) {
-            if (!workspace.executePreparedWrite)
+            if (!workspace.executePreparedMutation)
               throw new Error('Prepared Write executor unavailable');
-            return workspace.executePreparedWrite({
+            return workspace.executePreparedMutation({
               cwd,
               path: operation.path,
-              content: operation.content,
+              mutation: operation,
               scope,
               observation: operation.observation,
             });
@@ -593,6 +611,17 @@ function createWorkspaceFilesystemExecutor(
           return { kind: 'apply_patch', ok: true, path: patched.path };
         }
         case 'edit': {
+          if (operation.observation) {
+            if (!workspace.executePreparedMutation)
+              throw new Error('Prepared Edit executor unavailable');
+            return workspace.executePreparedMutation({
+              cwd,
+              path: operation.path,
+              mutation: operation,
+              scope,
+              observation: operation.observation,
+            });
+          }
           const { path } = await workspace.resolveExistingPath({
             cwd,
             path: operation.path,
@@ -620,17 +649,7 @@ function createWorkspaceFilesystemExecutor(
                 return edited.content;
               },
             });
-            const diff = createEditUnifiedDiff(path, originalContent, edited.content, edited);
-            return {
-              kind: 'edit',
-              ok: true,
-              path,
-              replacements: 1,
-              matchedVia: edited.matchedVia,
-              startLine: edited.startLine,
-              endLine: edited.endLine,
-              ...(diff !== undefined ? { diff } : {}),
-            };
+            return buildFileEditResult(path, originalContent, edited);
           }
           const read = await workspace.readFile({ cwd, path });
           if ('bytes' in read) throw new Error('Edit does not support image files.');
@@ -641,17 +660,7 @@ function createWorkspaceFilesystemExecutor(
             operation.path,
           );
           await workspace.writeFile({ cwd, path, content: edited.content });
-          const diff = createEditUnifiedDiff(path, read.content, edited.content, edited);
-          return {
-            kind: 'edit',
-            ok: true,
-            path,
-            replacements: 1,
-            matchedVia: edited.matchedVia,
-            startLine: edited.startLine,
-            endLine: edited.endLine,
-            ...(diff !== undefined ? { diff } : {}),
-          };
+          return buildFileEditResult(path, read.content, edited);
         }
         case 'format_json': {
           const { path } = await workspace.resolveExistingPath({

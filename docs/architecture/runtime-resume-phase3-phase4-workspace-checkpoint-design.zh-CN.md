@@ -482,39 +482,45 @@ PR C 沿用 PR A 的 durable vocabulary：`matches_expected_state` 可 finalize�
 `matches_prior_state`、`diverged`、`unreadable` 均提交 terminal parked decision。UI 直接展示
 durable reason code（如 `reconcile_matches_prior_state`），不维护第二套展示层状态名。
 
-#### PR C 的首个实现切片：Write 的 T1 evidence
+#### PR C 的首个实现切片：Write/Edit 的 T1 evidence
 
-单文件 Write 的 evidence 由拥有文件权限的 executor 产生，位于
-`RuntimeEvent.actions.toolDispatch.fileWriteEvidence`。它随 call、dispatch 和 journal
+单文件 Write/Edit 的 evidence 由拥有文件权限的 executor 产生，位于
+`RuntimeEvent.actions.toolDispatch.fileMutationEvidence`。它随 call、dispatch 和 journal
 通过现有 `commitToolPrepared` 事务原子提交；不新增恢复数据库或独立持久化回调。
 
-固定 contract 为 `builtin.Write.utf8` version 1，transform 为
-`overwrite_utf8_v1`。记录包含 canonical cwd 的目录身份、canonical target 与父目录身份、
-before 的文件身份/字节数/SHA-256（或 missing）、expected-after 的字节数/SHA-256，
-以及与普通 Write 共用构造逻辑的 worker result。外层 digest 还绑定 session、invocation、
-run、turn、operation、provider call、dispatch event 和 canonical args hash。
-decoder 拒绝未知 contract、digest 改写与跨操作替换。
+契约为 `builtin.Write.utf8` / `builtin.Edit.utf8` version 1，evidence kind 为
+`file_state_v1`，算法分别为 `overwrite_utf8_v1` / `unique_replace_utf8_v1`。
+记录包含 canonical cwd 的目录身份、canonical target 与父目录身份、before 的文件身份、
+字节数和 SHA-256（Write 允许 missing）、expected-after 的字节数和 SHA-256，以及
+production-shaped result。外层 digest 绑定 session、invocation、run、turn、operation、
+provider call、dispatch event 和 canonical args hash。decoder 拒绝未知 contract、算法、
+工具替换、digest 改写与跨操作替换；没有新字段的历史事件仍可读取。
 
-执行顺序为：获取现有文件写锁 → 非变更 prepare → T1 → guarded write → T2。
-worker 协议 v12 增加 `prepare_write`，继续使用一次请求一个进程的生命周期。
-prepare 不创建 missing target，也不跨 T1 持有 worker 文件句柄。filesystem client 在宿主侧
-捕获目录身份，并在 dispatch 前及 worker 返回后复核。仅 Linux mount namespace 通过 request
-传递宿主身份，其临时父目录 inode 不能作为宿主身份；missing target 的 pinned mount source
-必须与证据中的父目录身份一致。原生 worker 直接复核实际目录。worker 在同一个已验证句柄上检查 before 内容并写入。missing target 只在 T1 后以 exclusive create
-创建。取消、prepare/T1 失败和执行结束释放同一把写锁；prepared execution 只能消费一次。
+执行顺序：获取现有写锁 → 非变更 prepare → T1 → guarded mutation → T2。
+worker 协议 v12 增加 `prepare_write` / `prepare_edit`，继续使用一次请求一个进程。
+prepare 不创建文件，也不跨 T1 持有 worker 文件句柄。Edit prepare 与执行都调用生产
+`computeEditedSource`，保留 exact/fuzzy 唯一匹配语义，并共享结果构造；执行前检查
+before，重新计算后核对 expected-after 与结果，再通过已验证句柄写入。
+
+filesystem client 在宿主侧捕获目录身份，在 dispatch 前及 worker 返回后复核。
+仅 Linux mount namespace 通过 request 传递宿主身份；missing Write 的 pinned mount source
+必须与证据中的父目录身份一致。原生 worker 直接复核目录。missing target 只在 T1 后
+exclusive create；Edit 不创建目标。取消、prepare/T1 失败和结束均释放写锁，execution 只能消费一次。
 
 观察边界为可读取的 regular UTF-8 文件，before/after 各最多 1 MiB，result JSON 最多
-256 KiB；符号链接别名沿用既有 canonical target 规则，最终打开目标时不跟随新链接。
-不支持的观察（包括没有该能力的外部 executor）不记录 evidence，保留原 Write 执行路径。
-本地 backend 也保留其 image-path 不生成文本 diff 的规则。
+256 KiB；沿用 canonical target 路径规则，最终打开时不跟随新链接。不支持的观察
+（包括没有此能力的外部 executor）不记录 evidence，沿用保守的普通执行路径。
+本地 backend 保留 image-path 策略。会话复制保留历史 observation，重新绑定新事件身份及 digest；
+复制不会赋予执行权限，也不会改变 recovery mode。
 
-这个切片仍固定 `never_auto_retry`，没有注册可执行 reconciler，也不调用
-`commitToolRecoveryBundle`。重启后可以读取 T1 evidence，但不能据此宣布恢复成功或自动重写。
-进程内锁不排斥 Bash 或外部程序；复核与实际写入之间的外部并发窗口仍然存在，
-因此该 contract 不是通用 filesystem transaction 或跨进程 CAS。
+本切片固定 `never_auto_retry`，没有 Host-owned executable contract registry、observer/reconciler、
+恢复扫描或 Host 生命周期接线，不调用 `commitToolRecoveryBundle`。重启后可读取 T1 evidence，
+不能据此宣布恢复成功或自动重做。进程内锁不排斥 Bash 或外部程序，复核与写入之间仍有
+外部并发窗口；本契约不是通用 filesystem transaction 或跨进程 CAS。
 
-测试入口：`packages/runtime/src/__tests__/file-write-evidence.test.ts`，覆盖 T1 内部回滚、
-T1/T2 间断点重开、外部改写、身份替换、取消/重复执行、证据替换及真实一次性 worker。
+测试入口：`packages/runtime/src/__tests__/file-mutation-evidence.test.ts` 与
+`conversation-copy.test.ts`，覆盖两种工具的 T1 回滚、崩溃窗口重开/rebuild、外部改写、
+身份/证据替换、取消、生产结果一致性、真实一次性 worker 及会话复制身份重绑定。
 
 ### PR D — Host owner lifecycle
 

@@ -431,12 +431,12 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
       }),
       executionFacts,
       prepareExecution: async ({ path, content }, ctx) => {
-        const prepared = await filesystem.prepareWrite({
+        const prepared = await filesystem.prepareMutation({
           operation: { kind: 'write', path, content },
           ...filesystemCall(ctx),
         });
         return {
-          ...(prepared.observation ? { fileWriteObservation: prepared.observation } : {}),
+          ...(prepared.observation ? { fileMutationObservation: prepared.observation } : {}),
           cancel: () => prepared.cancel(),
           execute: async () => writeToolOutput(await prepared.execute()),
         };
@@ -465,6 +465,17 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
         new_string: z.string(),
       }),
       executionFacts,
+      prepareExecution: async ({ path, old_string, new_string }, ctx) => {
+        const prepared = await filesystem.prepareMutation({
+          operation: { kind: 'edit', path, oldString: old_string, newString: new_string },
+          ...filesystemCall(ctx),
+        });
+        return {
+          ...(prepared.observation ? { fileMutationObservation: prepared.observation } : {}),
+          cancel: () => prepared.cancel(),
+          execute: async () => editToolOutput(await prepared.execute()),
+        };
+      },
       impl: async ({ path, old_string, new_string }, ctx) => {
         const result = await filesystem.execute({
           operation: {
@@ -475,22 +486,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
           },
           ...filesystemCall(ctx),
         });
-        if (result.kind !== 'edit')
-          throw internalFilesystemWriteFailure(
-            'Edit',
-            'the edit was applied',
-            'a different old_string will not help',
-          );
-        if (result.diff !== undefined)
-          return { kind: 'file_diff' as const, paths: [result.path], diff: result.diff };
-        return {
-          ok: result.ok,
-          path: result.path,
-          replacements: result.replacements,
-          matchedVia: result.matchedVia,
-          startLine: result.startLine,
-          endLine: result.endLine,
-        };
+        return editToolOutput(result);
       },
       toModelOutput: ({ output }) => fileWriteToolResultToModelOutput('Edit', output),
     },
@@ -636,6 +632,27 @@ function writeToolOutput(
   if (result.diff !== undefined)
     return { kind: 'file_diff' as const, paths: [result.path], diff: result.diff };
   return { kind: 'file_write' as const, path: result.path, bytes: result.bytes };
+}
+
+function editToolOutput(
+  result: Awaited<ReturnType<ReturnType<typeof createBoundaryFilesystemExecutor>['execute']>>,
+) {
+  if (result.kind !== 'edit')
+    throw internalFilesystemWriteFailure(
+      'Edit',
+      'the edit was applied',
+      'a different old_string will not help',
+    );
+  if (result.diff !== undefined)
+    return { kind: 'file_diff' as const, paths: [result.path], diff: result.diff };
+  return {
+    ok: result.ok,
+    path: result.path,
+    replacements: result.replacements,
+    matchedVia: result.matchedVia,
+    startLine: result.startLine,
+    endLine: result.endLine,
+  };
 }
 
 interface ExecutorBashSandboxOptions {

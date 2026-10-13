@@ -18,7 +18,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import type { FileWriteDirectories } from '@maka/core/file-write-evidence';
+import type { FileMutationDirectories } from '@maka/core/file-mutation-evidence';
 import { lstat, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -355,7 +355,7 @@ export class FilesystemWorkerClient {
     });
     // Linux mount namespaces may expose synthetic ancestor inodes. Keep the
     // host identity bound to the actual mount source and verify host visibility.
-    let hostDirectories: FileWriteDirectories | undefined;
+    let hostDirectories: FileMutationDirectories | undefined;
     const captureDirectory = async (path: string) => {
       const metadata = await lstat(path, { bigint: true });
       if (!metadata.isDirectory() || metadata.isSymbolicLink())
@@ -379,7 +379,8 @@ export class FilesystemWorkerClient {
     };
     if (
       operation.kind === 'prepare_write' ||
-      (operation.kind === 'write' && operation.observation)
+      operation.kind === 'prepare_edit' ||
+      ((operation.kind === 'write' || operation.kind === 'edit') && operation.observation)
     ) {
       try {
         hostDirectories = {
@@ -394,7 +395,7 @@ export class FilesystemWorkerClient {
           'Write directories could not be observed.',
         );
       }
-      if (operation.kind === 'write' && operation.observation) {
+      if ((operation.kind === 'write' || operation.kind === 'edit') && operation.observation) {
         const observation = operation.observation;
         if (
           observation.workspace.path !== canonicalCwd ||
@@ -793,7 +794,9 @@ export class FilesystemWorkerClient {
     }
     if (!(await directoriesUnchanged())) {
       throw clientError(
-        operation.kind === 'write' ? 'outcome_unknown' : 'path_changed',
+        operation.kind === 'write' || operation.kind === 'edit'
+          ? 'outcome_unknown'
+          : 'path_changed',
         'operation',
         requestId,
         'The prepared Write directories changed while the worker ran.',

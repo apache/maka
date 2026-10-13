@@ -19,8 +19,8 @@
 
 import { promises as fs } from 'node:fs';
 import { exec } from 'node:child_process';
-import type { FileWriteObservation } from '@maka/core/file-write-evidence';
-import { prepareFileWrite, executePreparedFileWrite } from './file-write-evidence.js';
+import type { FileMutationObservation, FileMutation } from '@maka/core/file-mutation-evidence';
+import { prepareFileMutation, executePreparedFileMutation } from './file-mutation-evidence.js';
 import { globFiles } from './glob-search.js';
 import { isAbsolute, resolve } from 'node:path';
 import {
@@ -167,20 +167,20 @@ export interface WorkspaceReadModifyWriteExecutor {
   readModifyWrite(input: WorkspaceReadModifyWriteInput): Promise<WorkspaceReadModifyWriteResult>;
 }
 
-export interface WorkspacePreparedWriteExecutor {
-  prepareWrite(input: {
+export interface WorkspacePreparedMutationExecutor {
+  prepareMutation(input: {
     cwd: string;
     path: string;
-    content: string;
+    mutation: FileMutation;
     scope: WorkspacePathScope;
-  }): Promise<FileWriteObservation | undefined>;
-  executePreparedWrite(input: {
+  }): Promise<FileMutationObservation | undefined>;
+  executePreparedMutation(input: {
     cwd: string;
     path: string;
-    content: string;
+    mutation: FileMutation;
     scope: WorkspacePathScope;
-    observation: FileWriteObservation;
-  }): Promise<FileWriteObservation['result']>;
+    observation: FileMutationObservation;
+  }): Promise<FileMutationObservation['result']>;
 }
 
 /**
@@ -369,22 +369,22 @@ export class LocalWorkspaceExecutor implements WorkspaceExecutor {
     };
   }
 
-  async prepareWrite(
-    input: Parameters<WorkspacePreparedWriteExecutor['prepareWrite']>[0],
-  ): Promise<FileWriteObservation | undefined> {
+  async prepareMutation(
+    input: Parameters<WorkspacePreparedMutationExecutor['prepareMutation']>[0],
+  ): Promise<FileMutationObservation | undefined> {
     const cwd = await fs.realpath(input.cwd);
     const { path } = await canonicalPathInScope(cwd, input.path, 'Write', input.scope);
     // Match the local executor's binary/image result policy.
     if (isSupportedImagePath(path)) return undefined;
-    return prepareFileWrite(cwd, path, input.content);
+    return prepareFileMutation(cwd, path, input.mutation);
   }
 
-  async executePreparedWrite(
-    input: Parameters<WorkspacePreparedWriteExecutor['executePreparedWrite']>[0],
-  ): Promise<FileWriteObservation['result']> {
+  async executePreparedMutation(
+    input: Parameters<WorkspacePreparedMutationExecutor['executePreparedMutation']>[0],
+  ): Promise<FileMutationObservation['result']> {
     const cwd = await fs.realpath(input.cwd);
     const { path } = await canonicalPathInScope(cwd, input.path, 'Write', input.scope);
-    return executePreparedFileWrite(cwd, path, input.content, input.observation);
+    return executePreparedFileMutation(cwd, path, input.mutation, input.observation);
   }
 
   async readModifyWrite(

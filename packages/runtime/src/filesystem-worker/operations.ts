@@ -19,12 +19,14 @@
 
 import { searchFiles, GrepSearchError, type GrepRunner } from '../grep-search.js';
 import {
-  prepareFileWrite,
+  prepareFileMutation,
+  executePreparedFileMutation,
+  buildFileEditResult,
   executePreparedFileWrite,
   buildFileWriteResult,
-} from '../file-write-evidence.js';
+} from '../file-mutation-evidence.js';
 import { promises as fs } from 'node:fs';
-import type { FileWriteDirectories } from '@maka/core/file-write-evidence';
+import type { FileMutationDirectories } from '@maka/core/file-mutation-evidence';
 import { globFiles } from '../glob-search.js';
 import { dirname, isAbsolute, parse, resolve } from 'node:path';
 import { isPathInside } from '../path-containment.js';
@@ -44,7 +46,7 @@ import {
 import { computeEditedSource } from '../edit-replace.js';
 import { readPage } from '../read-page.js';
 import { formatJsonText } from '../format-json.js';
-import { createEditUnifiedDiff, createUnifiedDiff } from '../unified-diff.js';
+import { createUnifiedDiff } from '../unified-diff.js';
 import {
   compareAndDeleteEntry,
   hostVisibilityAfterWrite,
@@ -74,7 +76,7 @@ const { realpath, realpathAllowMissing, resolveCanonicalDirectoryEntryTarget } =
 
 export interface FilesystemWorkerOperationDependencies {
   /** Host identities captured outside the sandbox mount namespace. */
-  hostDirectories?: FileWriteDirectories;
+  hostDirectories?: FileMutationDirectories;
   grepExecutable?: string;
   /** Where this worker runs, as the Host observed it; names the install location in Grep's guidance. */
   ripgrepEnvironment?: RipgrepEnvironment;
@@ -124,20 +126,23 @@ export async function executeFilesystemOperation(
   expectedTarget?: FilesystemWorkerTarget,
 ): Promise<FilesystemWorkerResult> {
   switch (operation.kind) {
-    case 'prepare_write': {
+    case 'prepare_write':
+    case 'prepare_edit': {
       const path = await resolveWritableAllowed(
         operation.cwd,
         operation.path,
         'Write',
         operationBoundary,
       );
-      const observation = await prepareFileWrite(
+      const observation = await prepareFileMutation(
         operation.cwd,
         path,
-        operation.content,
+        operation.kind === 'prepare_write'
+          ? { kind: 'write', content: operation.content }
+          : { kind: 'edit', oldString: operation.oldString, newString: operation.newString },
         dependencies.hostDirectories,
       );
-      return { kind: 'prepare_write', ...(observation ? { observation } : {}) };
+      return { kind: operation.kind, ...(observation ? { observation } : {}) };
     }
     case 'read': {
       const path = await resolveExistingAllowed(
@@ -282,6 +287,14 @@ export async function executeFilesystemOperation(
         'write',
         operationBoundary,
       );
+      if (operation.observation)
+        return executePreparedFileMutation(
+          operation.cwd,
+          path,
+          operation,
+          operation.observation,
+          dependencies.hostDirectories,
+        );
       const handle = await openStableTarget({
         path,
         approvedIdentity:
@@ -307,17 +320,7 @@ export async function executeFilesystemOperation(
         await writeThroughHandle(handle, source.content);
         const visibility = await hostVisibilityAfterWrite(path, handle);
         if (visibility) throw visibility;
-        const diff = createEditUnifiedDiff(path, content, source.content, source);
-        return {
-          kind: 'edit',
-          ok: true,
-          path,
-          replacements: 1,
-          matchedVia: source.matchedVia,
-          startLine: source.startLine,
-          endLine: source.endLine,
-          ...(diff !== undefined ? { diff } : {}),
-        };
+        return buildFileEditResult(path, content, source);
       } finally {
         await handle.close();
       }

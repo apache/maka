@@ -18,12 +18,15 @@
  */
 
 import { z } from 'zod';
-import { isFileWriteObservation, type FileWriteObservation } from '@maka/core/file-write-evidence';
+import {
+  isFileMutationObservation,
+  type FileMutationObservation,
+} from '@maka/core/file-mutation-evidence';
 import { readContinuationSchema, readPageSchema } from '../read-page.js';
 import { validateSandboxBoundaryExpansion } from '@maka/core/sandbox-boundary';
 import { GREP_MAX_LINES, GREP_MAX_LINES_PER_FILE, GREP_MAX_MATCH_BYTES } from '../grep-search.js';
 
-// v12 adds non-mutating Write preparation and the guarded execution observation.
+// v12 adds non-mutating Write/Edit preparation and the guarded execution observation.
 // Older workers must not silently discard the guard on a prepared Write.
 export const FILESYSTEM_WORKER_PROTOCOL_VERSION = 12 as const;
 
@@ -33,6 +36,7 @@ export const FILESYSTEM_WORKER_PROTOCOL_VERSION = 12 as const;
 export function operationAccess(kind: FilesystemWorkerOperation['kind']): 'read' | 'write' {
   return kind === 'write' ||
     kind === 'prepare_write' ||
+    kind === 'prepare_edit' ||
     kind === 'apply_patch' ||
     kind === 'edit' ||
     kind === 'format_json'
@@ -122,10 +126,19 @@ export const FilesystemWorkerOperationSchema = z.union([
       cwd,
       path,
       content: z.string(),
-      observation: z.custom<FileWriteObservation>(isFileWriteObservation).optional(),
+      observation: z.custom<FileMutationObservation>(isFileMutationObservation).optional(),
     })
     .strict(),
   z.object({ kind: z.literal('prepare_write'), cwd, path, content: z.string() }).strict(),
+  z
+    .object({
+      kind: z.literal('prepare_edit'),
+      cwd,
+      path,
+      oldString: z.string(),
+      newString: z.string(),
+    })
+    .strict(),
   z
     .object({
       kind: z.literal('apply_patch'),
@@ -143,6 +156,7 @@ export const FilesystemWorkerOperationSchema = z.union([
       path,
       oldString: z.string(),
       newString: z.string(),
+      observation: z.custom<FileMutationObservation>(isFileMutationObservation).optional(),
     })
     .strict(),
   z
@@ -193,8 +207,8 @@ export const FilesystemWorkerRequestSchema = z
 export const FilesystemWorkerResultSchema = z.discriminatedUnion('kind', [
   z
     .object({
-      kind: z.literal('prepare_write'),
-      observation: z.custom<FileWriteObservation>(isFileWriteObservation).optional(),
+      kind: z.enum(['prepare_write', 'prepare_edit']),
+      observation: z.custom<FileMutationObservation>(isFileMutationObservation).optional(),
     })
     .strict(),
   readPageSchema.extend({ kind: z.literal('read') }).strict(),
