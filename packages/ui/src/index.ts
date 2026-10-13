@@ -26,6 +26,7 @@ export * from './client-plugin-runtime.js';
 export * from './chat-empty-hero.js';
 export * from './chat-model-helpers.js';
 export * from './use-mounted-ref.js';
+export * from './use-draft-mutation-guard.js';
 export * from './session-setting-intent.js';
 export * from './components.js';
 export type { ComposerProps } from './components.js';
