@@ -177,6 +177,7 @@ import { HostExternalSessionCoordinator } from './external-session-coordinator.j
 import { boundedFailureDiagnostic } from './failure-diagnostic.js';
 import { HostSessionBundleCoordinator } from './session-bundle-coordinator.js';
 import { HostGoalCoordinator } from './goal-coordinator.js';
+import { readGoalFormEvidence } from './goal-form-evidence.js';
 import { HostGoalExecutionCoordinator } from './goal-execution-coordinator.js';
 import { HostHostedExecutionCoordinator } from './hosted-execution-coordinator.js';
 import { HostHostedExecutionRunner } from './hosted-execution-runner.js';
@@ -2167,7 +2168,16 @@ export async function createExecutionRuntimeHostComposition(
     goal = new HostGoalCoordinator({
       store: openedGoalStore,
       stores,
-      readSessionMessages: (sessionId) => requireSessionManager(manager).getMessages(sessionId),
+      readSessionContext: async (sessionId) => {
+        const { messages, events } =
+          await requireSessionManager(manager).readConversationCopySnapshot(sessionId);
+        return {
+          messages,
+          formAnswers: await readGoalFormEvidence(sessionId, events, (requestId) =>
+            stores.interactionStore.readInteraction(requestId),
+          ),
+        };
+      },
       executions: coordinator,
       sessionAdmission,
       evaluator: createHostGoalEvaluator({
