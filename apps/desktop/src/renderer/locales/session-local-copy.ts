@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { defineShippedUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
+
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 const en = {
@@ -42,7 +44,7 @@ const en = {
   draftReady: 'Ready to edit. The failed message is kept until you delete it.',
 };
 type SessionLocalCopy = { [K in keyof typeof en]: string };
-const catalog = {
+const catalog = resolveUiMessageCatalog(defineShippedUiMessageCatalog<SessionLocalCopy>()({
   en,
   'zh-CN': {
     saved: '等待发送',
@@ -88,6 +90,6 @@ const catalog = {
     draftBlocked: '請先完成或清空輸入框中的草稿、附件和引用，再編輯這則訊息。',
     draftReady: '已恢復到輸入框，可編輯後傳送。失敗訊息會保留，直到你刪除它。',
   },
-} satisfies UiCatalog<SessionLocalCopy>;
+})) satisfies UiCatalog<SessionLocalCopy>;
 
 export function getSessionLocalCopy(locale: UiLocale): SessionLocalCopy { return catalog[locale]; }
