@@ -27,7 +27,7 @@ import {
 test('proactive instructions match the approved text verbatim and retain the assistant contract', () => {
   assert.equal(
     createHash('sha256').update(PROACTIVE_TASK).digest('hex'),
-    'c6a8895bdc0c6ed8a63c6d85fe76fadbf889f347061081ab46250472535b5654',
+    '73b4559e6c2d37ff6638938e54cc22759cfbcb44cf5dc02a1ab511a9c609bd22',
   );
   assert.match(ASSISTANT_ROLE, /没有索引也正常交流/);
   assert.match(ASSISTANT_ROLE, /只有转交工具成功后/);

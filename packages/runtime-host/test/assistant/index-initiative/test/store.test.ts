@@ -62,6 +62,7 @@ test('restart preserves cadence, interrupted admission retains cadence without r
     assert.ok(other.lease());
     other.recover();
     assert.equal(other.get().enabled, true);
+    assert.equal(other.get().instructions, 'Explore');
     other.control('check');
     other.claim();
     other.release();

@@ -33,6 +33,16 @@ The Host suppresses the three former packages on every composition projection, i
 
 Memory defaults remain 12-hour maintenance and at most 5 concurrent indexing jobs, configurable in the native component configuration. Each index retains its own maintenance controls. Only checkpoints advance coverage; reading refreshes observations without organizing. The UI controls heartbeat cadence, per-index maintenance and task recovery. There is no automatic Feishu authorization or historical import.
 
+## Index sources and navigation
+
+`MemoryIndexAddSources` appends IDs from `MemorySources` to one or more existing indexes in one transaction. It preserves documents, references, coverage, grouping and maintenance settings. Actual additions require idle group workers and no unfinished range on each changed index. Repeated additions are no-ops. Reading refreshes observations; `MemoryIndexMaintain` organizes the new history through the existing Agent. Only its checkpoint advances coverage.
+
+Index reads expose shared usage guidance. `MemoryIndexContent` defaults to directory navigation; `key`, `keys` and `view=full` read bodies. `MemoryIndexLinks` navigates saved references to originals and accessible related entries, preserving exact versions and paginating expanded paths. Its shared-object count is not a recommendation score. It neither retrieves remote bodies nor runs maintenance.
+
+## Proactive instructions
+
+New assistant bindings and `InitiativeEnable` without an `instructions` argument use `PROACTIVE_TASK`. Heartbeats use the binding's persisted instructions. Existing bindings, including earlier defaults and custom text, keep that text through restart and UI enable/resume; there is no automatic prompt migration. To explicitly adopt the current default, invoke `InitiativeEnable` in the bound conversation, omitting `instructions` and passing the desired `intervalMinutes` (otherwise it defaults to 30). This enables future heartbeats; it does not immediately run a check. Pass `instructions` explicitly to retain or replace custom text. The ordinary chat role and heartbeat scheduler are unchanged.
+
 ## Verification
 
 Run `npm run build --workspace @maka/runtime-host`, `npm run test:assistant --workspace @maka/runtime-host`, and the native service/platform tests in `dist/__tests__`. The behavioral tests now start the native service directly. Their external-source test still installs the real Feishu source plugin. Mock models are used; no paid model test is started. The assistant suite is also part of the Host's normal `test:dist` command.

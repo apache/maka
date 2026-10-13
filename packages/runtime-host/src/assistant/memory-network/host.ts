@@ -24,6 +24,9 @@ import { MemoryController } from './controller.js';
 import { extractHistory } from './extractor.js';
 
 const id = z.string().min(1).max(300);
+const INDEX_USAGE =
+  '索引是原始信息某个视角的投影，不是完整事实或待办清单。目录只用于导航，不代表已读正文；可用 MemoryIndexContent 的 key/keys/view=full 读取不同视角的正文并形成线索。用 MemoryIndexLinks(indexId,key) 查看条目→引用原文→其他关联索引条目的链路，再用 MemoryOriginal 核实原文、用 MemoryIndexContent 继续展开。共享原文只表示关联，不证明结论一致或值得推荐；按调查需要选择深入、转向或停止，不要求遍历所有索引。';
+
 export async function initializeMemory(
   ctx: AssistantModuleServices,
   directory: string,
@@ -202,6 +205,7 @@ export async function initializeMemory(
           const f = controller.freshness(index.id, allowed);
           results.push({
             id: index.id,
+            usage: INDEX_USAGE,
             name: index.name,
             instructions: index.instructions,
             freshness: {
@@ -228,7 +232,7 @@ export async function initializeMemory(
           });
         } catch {
           // Do not leak index content or reinterpret inaccessible history as empty.
-          results.push({ id: index.id, unavailable: true });
+          results.push({ id: index.id, unavailable: true, usage: INDEX_USAGE });
         }
       }
       return results;
@@ -347,11 +351,33 @@ export async function initializeMemory(
     true,
   );
   register(
+    'MemoryIndexAddSources',
+    'Append registered source IDs to existing indexes atomically; use MemorySources to find IDs. Finish running group jobs and unfinished organizing ranges first. Adding sources and organizing them are separate operations: this tool preserves contents and coveredCursor, does not rebuild, call a model or enable scheduled maintenance. Read indexes to refresh observations; use MemoryIndexMaintain to organize new history with the existing Agent.',
+    z.object({ indexIds: z.array(id).min(1).max(30), sources: z.array(id).min(1).max(30) }),
+    (input: any) => controller.addSources(input.indexIds, input.sources),
+    true,
+  );
+  register(
+    'MemoryIndexLinks',
+    'Navigate stored references from one index entry to originals and other accessible entries sharing the same original object, including other versions. Returns paginated one-hop paths, not bodies, semantic search or recommendation ranking. Read bodies with MemoryIndexContent and verify evidence with MemoryOriginal. Does not fetch remote bodies, refresh sources, organize or advance coverage.',
+    z.object({
+      indexId: id,
+      key: id,
+      offset: z.number().int().nonnegative().default(0),
+      limit: z.number().int().min(1).max(50).default(20),
+    }),
+    (input: any) => controller.indexLinks(input.indexId, input.key, input.offset, input.limit),
+    false,
+    'direct',
+  );
+  register(
     'MemoryIndexRead',
     'Read index criterion, exact covered/pending cursor ranges, progress notes, the COMPLETE document directory (titles, sizes and citation counts) and maintenance status. Automatically refreshes source observations before returning, updating freshness/knownPending; does not organize the index or advance coveredCursor.',
     z.object({ indexId: id }),
-    async (input: any) =>
-      controller.summary(input.indexId, await controller.observe(input.indexId)),
+    async (input: any) => ({
+      ...controller.summary(input.indexId, await controller.observe(input.indexId)),
+      usage: INDEX_USAGE,
+    }),
     false,
     'direct',
   );
@@ -389,7 +415,7 @@ export async function initializeMemory(
   );
   register(
     'MemoryIndexContent',
-    'Read index documents: key for one full document; keys for a batch; view=full for full texts across the index; default view=directory lists ALL matching keys/titles/sizes. Optional query is case-insensitive literal search in keys and bodies. after/limit select document pages; maxChars optionally budgets full documents, never silently truncates a document. No limit means all matches. Follow memory citations with MemoryOriginal. Automatically refreshes source observations before returning, updating freshness/knownPending; does not organize the index or advance coveredCursor.',
+    'Read index documents: key for one full document; keys for a batch; view=full for full texts across the index; default view=directory only lists ALL matching keys/titles/sizes, not document bodies. Optional query is case-insensitive literal search in keys and bodies. after/limit select document pages; maxChars optionally budgets full documents, never silently truncates a document. No limit means all matches. Navigate associated entries with MemoryIndexLinks; verify original evidence with MemoryOriginal. Automatically refreshes source observations before returning, updating freshness/knownPending; does not organize the index or advance coveredCursor.',
     z.object({
       indexId: id,
       key: id.optional(),
@@ -403,7 +429,12 @@ export async function initializeMemory(
     async (input: any) => {
       const allowed = await controller.observe(input.indexId);
       const freshness = controller.freshness(input.indexId, allowed);
-      if (input.key) return { ...store.content(input.indexId, input.key, allowed), freshness };
+      if (input.key)
+        return {
+          ...store.content(input.indexId, input.key, allowed),
+          freshness,
+          usage: INDEX_USAGE,
+        };
       const query = input.query?.toLocaleLowerCase();
       const matches = store
         .allEntries(input.indexId, allowed)
@@ -427,6 +458,7 @@ export async function initializeMemory(
         chars += e.body.length;
       }
       return {
+        usage: INDEX_USAGE,
         freshness,
         revision: store.index(input.indexId).revision,
         total: matches.length,

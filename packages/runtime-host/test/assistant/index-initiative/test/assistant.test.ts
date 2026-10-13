@@ -20,6 +20,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fixture, until } from './fixture.js';
+import { PROACTIVE_TASK } from '../../../../src/assistant/index-initiative/prompt.js';
 
 test('first open binds one ordinary chat without import, indexing, model calls or heartbeat', async () => {
   const f = await fixture();
@@ -61,7 +62,8 @@ test('UI enable checks immediately, status exposes failure without disabling sch
   let checks = 0;
   try {
     await f.remote('assistant.bind', { sessionId: 'owner' });
-    f.setRunner(async () => {
+    f.setRunner(async ({ prompt }: any) => {
+      assert.ok(prompt.includes(PROACTIVE_TASK), 'new UI binding uses the new default');
       checks++;
       throw Error('test provider unavailable');
     });
@@ -184,6 +186,30 @@ test('original reader preserves cited evidence and rechecks external permissions
     deleted = true;
     assert.equal((await read({ latest: true })).status, 'deleted');
     assert.equal(f.workers.size, 1);
+  } finally {
+    await f.close();
+  }
+});
+
+test('existing instructions survive rebinding and UI enabling; explicit configuration adopts the default', async () => {
+  const f = await fixture();
+  const custom = '只关注我自己指定的内容';
+  const prompts: string[] = [];
+  f.setRunner(async ({ prompt }: any) => {
+    prompts.push(prompt);
+  });
+  try {
+    await f.invoke('InitiativeEnable', { instructions: custom, intervalMinutes: 60 });
+    await f.remote('assistant.bind', { sessionId: 'owner' });
+    await f.remote('assistant.control', { action: 'enable', intervalMinutes: 60 });
+    await until(async () => prompts.length === 1 && !(await f.invoke('InitiativeStatus')).active);
+    assert.ok(prompts[0].includes(custom));
+    assert.ok(!prompts[0].includes(PROACTIVE_TASK));
+    await f.invoke('InitiativeEnable', { intervalMinutes: 60 });
+    await f.invoke('InitiativeControl', { action: 'check' });
+    await until(async () => prompts.length === 2 && !(await f.invoke('InitiativeStatus')).active);
+    assert.ok(prompts[1].includes(PROACTIVE_TASK));
+    assert.ok(!prompts[1].includes(custom));
   } finally {
     await f.close();
   }

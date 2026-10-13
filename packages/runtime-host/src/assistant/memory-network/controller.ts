@@ -77,6 +77,199 @@ export class MemoryController {
   indexVisible(indexId: string) {
     return this.visible(this.store.index(indexId).sources ?? ['maka']);
   }
+  async addSources(indexIds: string[], sources: string[]) {
+    this.assertOwner();
+    await this.ctx.sessionQuery.historyList();
+    const additions = [...new Set(sources)];
+    const validateSources = () => {
+      const registered = new Set([
+        ...this.ctx.sessionQuery.historySources().map((s: any) => s.id),
+        ...this.ctx.sources.list().map((s: any) => s.id),
+      ]);
+      for (const source of additions)
+        if (!registered.has(source)) throw Error(`Unknown source: ${source}; use MemorySources`);
+    };
+    validateSources();
+    const assertVisible = (id: string, visible: string[]) => {
+      this.store.assertIndexVisible(id, visible);
+      for (const row of this.store.db
+        .prepare('SELECT DISTINCT ref FROM links WHERE index_id=?')
+        .all(id))
+        this.store.fragment(String(row.ref), visible);
+    };
+    const targets: { id: string; revision: number; visible: string[] }[] = [];
+    for (const id of new Set(indexIds)) {
+      const index = this.store.index(id);
+      const visible = await this.indexVisible(id);
+      assertVisible(id, visible);
+      targets.push({ id, revision: index.revision, visible });
+    }
+    // Nothing awaits between final validation and commit. A failure rolls back the whole set.
+    this.assertOwner();
+    validateSources();
+    return this.store.transaction(() => {
+      return targets.map(({ id, revision, visible }) => {
+        const index = this.store.index(id);
+        if (index.revision !== revision) throw Error('Index changed; retry source addition');
+        assertVisible(id, visible);
+        const before = index.sources ?? ['maka'];
+        const added = additions.filter((source) => !before.includes(source));
+        if (added.length) {
+          const worker = this.store.worker(id);
+          const members: string[] = worker?.groupIndexIds ?? [id];
+          if (members.some((member) => this.runs.has(member)))
+            throw Error('Index group has running organizing work; finish it before adding sources');
+          const work = this.store.work(id);
+          if (work && !work.completed)
+            throw Error(
+              'Index has an unfinished organizing range; finish it before adding sources',
+            );
+          index.sources = [...before, ...added];
+          index.revision++;
+          this.store.save(index);
+          if (worker)
+            this.store.saveWorker(id, {
+              ...worker,
+              lastCheckError: 'Sources appended; source observations need refreshing',
+            });
+          this.store.db
+            .prepare('INSERT INTO commits(index_id,at,body) VALUES(?,?,?)')
+            .run(
+              id,
+              Date.now(),
+              JSON.stringify({ event: 'sources-added', added, revision: index.revision }),
+            );
+        }
+        return {
+          indexId: id,
+          name: index.name,
+          sources: index.sources ?? ['maka'],
+          added,
+          revision: index.revision,
+          coveredCursor: this.store.boundary(id),
+          notice:
+            (added.length ? '来源已追加。' : '所选来源已存在，本次未追加。') +
+            '原正文、原文引用和 coveredCursor 未变；新增来源历史尚未整理。读取索引可以刷新来源范围，MemoryIndexMaintain 使用现有建索引 Agent 整理。定时维护设置未改变；本操作不重建索引、不调用模型、不自动开启定时维护。',
+        };
+      });
+    });
+  }
+  async indexLinks(indexId: string, key: string, offset: number, limit: number) {
+    const store = this.store;
+    const assertEntryVisible = (id: string, entryKey: string, allowed: string[]) => {
+      store.assertIndexVisible(id, allowed);
+      if (!store.db.prepare('SELECT 1 FROM entries WHERE index_id=? AND id=?').get(id, entryKey))
+        throw Error('Unknown index entry');
+      for (const row of store.db
+        .prepare('SELECT ref FROM links WHERE index_id=? AND entry_id=?')
+        .all(id, entryKey))
+        store.fragment(String(row.ref), allowed);
+    };
+    const start = store.index(indexId);
+    const visibility = new Map<string, string[] | null>();
+    visibility.set(indexId, await this.indexVisible(indexId));
+    assertEntryVisible(indexId, key, visibility.get(indexId)!);
+    const originals = store.db
+      .prepare('SELECT ref FROM links WHERE index_id=? AND entry_id=? ORDER BY ref')
+      .all(indexId, key)
+      .map((row) => store.reference(String(row.ref))!);
+    const candidates = store.db.prepare(`
+      SELECT l.index_id,l.entry_id,l.ref FROM memory_references r
+      JOIN links l ON l.ref=r.ref JOIN entries e ON e.index_id=l.index_id AND e.id=l.entry_id
+      WHERE r.source=? AND r.object_id=? ORDER BY l.index_id,l.entry_id,l.ref`);
+    const paths: any[] = [];
+    const shared = new Map<string, Set<string>>();
+    const readable = new Map<string, boolean>();
+    const revisions = new Map<string, number>([[indexId, start.revision]]);
+    for (const original of originals) {
+      let linked = false;
+      for (const row of candidates.all(original.source, original.object.id)) {
+        const targetId = String(row.index_id),
+          targetKey = String(row.entry_id);
+        if (targetId === indexId && targetKey === key) continue;
+        const document = JSON.stringify([targetId, targetKey]);
+        if (!readable.has(document)) {
+          try {
+            // Each target uses its own source scope, never the starting index's sources.
+            if (!revisions.has(targetId)) revisions.set(targetId, store.index(targetId).revision);
+            if (!visibility.has(targetId)) {
+              try {
+                visibility.set(targetId, await this.indexVisible(targetId));
+              } catch {
+                visibility.set(targetId, null);
+              }
+            }
+            const allowed = visibility.get(targetId);
+            if (!allowed) throw Error('Associated source unavailable');
+            assertEntryVisible(targetId, targetKey, allowed);
+            readable.set(document, true);
+          } catch {
+            readable.set(document, false);
+          }
+        }
+        if (!readable.get(document)) continue;
+        linked = true;
+        const objects = shared.get(document) ?? new Set<string>();
+        objects.add(JSON.stringify([original.source, original.object.id]));
+        shared.set(document, objects);
+        paths.push({
+          original,
+          document,
+          related: {
+            indexId: targetId,
+            key: targetKey,
+            ref: String(row.ref),
+            sameRevision: row.ref === original.ref,
+            read: { tool: 'MemoryIndexContent', indexId: targetId, key: targetKey },
+          },
+        });
+      }
+      if (!linked) paths.push({ original, related: null });
+    }
+    const exposedIndexes = new Set<string>([
+      indexId,
+      ...paths.flatMap((path) => (path.related ? [path.related.indexId] : [])),
+    ]);
+    for (const id of exposedIndexes)
+      if (store.index(id).revision !== revisions.get(id))
+        throw Error('Index changed during navigation; retry');
+    const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+    const items = paths
+      .map(({ original, document, related }) => ({
+        original: {
+          ref: original.ref,
+          source: original.source,
+          objectId: original.object.id,
+          revision: original.object.revision,
+          read: { tool: 'MemoryOriginal', ref: original.ref },
+        },
+        related,
+        sharedOriginals: document ? shared.get(document)!.size : 0,
+      }))
+      .sort(
+        (a, b) =>
+          b.sharedOriginals - a.sharedOriginals ||
+          compare(a.related?.indexId ?? '', b.related?.indexId ?? '') ||
+          compare(a.related?.key ?? '', b.related?.key ?? '') ||
+          compare(a.original.ref, b.original.ref) ||
+          compare(a.related?.ref ?? '', b.related?.ref ?? ''),
+      );
+    return {
+      entry: {
+        indexId,
+        key,
+        revision: start.revision,
+        read: { tool: 'MemoryIndexContent', indexId, key },
+      },
+      originalCount: originals.length,
+      relatedDocumentCount: shared.size,
+      total: items.length,
+      items: items.slice(offset, offset + limit),
+      nextOffset: offset + limit < items.length ? offset + limit : null,
+      notice:
+        '这是已存引用的一跳链路，不是完整语义关系，也不是价值排序；共享原文不代表结论一致，不同版本需要回查原文。返回导航不代表已读正文；nextOffset 非空说明还有路径。未建立链接的信息仍可通过来源检索发现。',
+    };
+  }
   async sourceQuery(source: string, request: any) {
     await this.ctx.sessionQuery.historyList();
     const page = await this.ctx.sources.query(source, request);

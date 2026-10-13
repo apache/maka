@@ -32,6 +32,7 @@ test('heartbeat uses the human Session and exits normally without checkpoint or 
     f.setRunner(async ({ id, prompt, finish }: any) => {
       assert.equal(id, 'owner');
       assert.match(prompt, /Runtime heartbeat/);
+      assert.ok(prompt.includes(PROACTIVE_TASK), 'default instructions reach the actual heartbeat');
       assert.equal((await finish()).allow, true);
       checks++;
     });
