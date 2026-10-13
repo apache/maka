@@ -85,6 +85,7 @@ import type {
   ExternalSessionCatalogItem,
   TurnResumeParkReason,
 } from '@maka/runtime-host/protocol';
+import { TURN_MESSAGE_QUOTE_MAX_COUNT } from '@maka/runtime-host/protocol';
 import type { AgentGraphEpochDirectory } from '@maka/runtime-host/client';
 import { MakaSkillHighlightEditor } from './skill-highlight-editor.js';
 import { parseGraphCommand, type ParsedGraphCommand } from '@maka/core/graph-command';
@@ -1470,16 +1471,38 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     if (index >= 0) state.entries.splice(index, 1);
   };
 
+  // Host admission caps one Message at TURN_MESSAGE_QUOTE_MAX_COUNT quotes:
+  // several independently valid queue entries can retract to a combined array
+  // past that cap, and staging it whole would make every resubmit fail with
+  // `Invalid Message quotes` while the queue rows are already gone (#5265
+  // review). Stage what fits; the remainder goes back as quoted text in the
+  // restored draft so every excerpt stays visible and editable.
+  const formatQuoteOverflow = (quotes: MakaRetractedMessages['quotes']): string =>
+    quotes.map((quote) => `> ${quote.label ? `[${quote.label}] ` : ''}${quote.text}`).join('\n');
+
   const acceptRetraction = (retracted: MakaRetractedMessages) => {
     for (const messageId of retracted.messageIds) removeTransientUserMessage(messageId);
-    refillEditorFromQueues(retracted.text);
+    const stageable = retracted.quotes.slice(0, TURN_MESSAGE_QUOTE_MAX_COUNT);
+    const overflow = retracted.quotes.slice(TURN_MESSAGE_QUOTE_MAX_COUNT);
+    refillEditorFromQueues(
+      overflow.length > 0
+        ? `${retracted.text}\n\n${formatQuoteOverflow(overflow)}`
+        : retracted.text,
+    );
     // The Host returns the full MessageContent with a retraction: quotes that
     // rode a queued or steered message come back with it and restage here, so
     // the re-edited retry does not go out without them (#5109 review). They
     // ride the restored draft text, so they follow it across switches and
     // draft parking (#5265 review).
-    if (retracted.quotes.length > 0) {
-      setStagedQuotes(retracted.quotes, input.driver.getSessionId(), true);
+    if (stageable.length > 0) {
+      setStagedQuotes(stageable, input.driver.getSessionId(), true);
+    }
+    if (overflow.length > 0) {
+      state.entries.push({
+        kind: 'notice',
+        level: 'info',
+        text: 'Some recovered quotes exceed the per-message quote limit; the overflow was added to the draft as quoted text.',
+      });
     }
   };
 

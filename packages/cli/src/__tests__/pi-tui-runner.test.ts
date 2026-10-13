@@ -8967,6 +8967,63 @@ Slug openai-work<cursor>
     ]);
   });
 
+  test('caps staged quotes at the per-message admission limit when several quoted entries retract', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new RetractingQuotesDriver([]);
+    const quote = (n: number) => ({ text: `recovered excerpt ${n}`, label: `q${n}` });
+    // Two independently valid queue entries: 9 + 9 quotes retract to a combined
+    // 18, past the Host's 16-per-message admission cap (me2seeks review of
+    // b8b41ee8b) — the old behavior staged all 18 and every resubmit was
+    // rejected with `Invalid Message quotes`.
+    driver.queuedRows.push(
+      {
+        messageId: 'm-1',
+        text: 'first batch',
+        quotes: Array.from({ length: 9 }, (_, i) => quote(i + 1)),
+      },
+      {
+        messageId: 'm-2',
+        text: 'second batch',
+        quotes: Array.from({ length: 9 }, (_, i) => quote(i + 10)),
+      },
+    );
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('\x1b[1;2D'); // Shift+Left retracts both entries.
+    await waitFor(() => driver.retractCalls === 1);
+    // Only the first 16 restage; the notice names the overflow policy and the
+    // remaining excerpts are preserved in the draft as quoted text.
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('quotes:16'));
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes('exceed the per-message quote limit'),
+    );
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('recovered excerpt 18'),
+    );
+
+    // The restored draft resubmits within admission: 16 staged quotes ride it
+    // and the inlined overflow rides the text.
+    terminal.input('\r');
+    await waitFor(() => driver.submittedQuotes.length === 1);
+    assert.equal(driver.submittedQuotes[0]?.length, 16);
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
   test('does not retract the switched-to queue when enqueues settle after a switch', async () => {
     const terminal = new FakeTerminal();
     const driver = new RetractingQuotesDriver([{ turnId: 'turn-1', label: 'first question' }]);
