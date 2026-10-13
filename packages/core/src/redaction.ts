@@ -71,7 +71,7 @@ const AWS_SECRET_ASSIGNMENT_PATTERN = new RegExp(
 const SECRET_PATTERNS: RegExp[] = [
   /\b(sk-(?:ant-)?[a-z0-9_-]{8,})\b/gi,
   /\b(AIza[0-9A-Za-z_-]{20,})\b/g,
-  /\b(gh[pousr]_[0-9A-Za-z_]{20,})\b/g,
+  /\b(gh[pousr]_[0-9A-Za-z_]{20,}|github_pat_[0-9A-Za-z_]{20,})\b/g,
   /\b(xox[abprs]-[0-9A-Za-z-]{10,})\b/g,
   /\b([a-f0-9]{40,})\b/gi,
 ];

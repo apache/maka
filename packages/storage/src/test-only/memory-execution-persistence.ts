@@ -17,6 +17,10 @@
  * under the License.
  */
 
+import {
+  createMemoryEventWaitAuthority,
+  deleteMemoryEventWaits,
+} from './memory-event-wait-authority.js';
 import type {
   ExecutionPersistenceProvider,
   ExecutionPersistence,
@@ -82,6 +86,7 @@ export function createMemoryExecutionPersistenceProvider(
         runtimeEventStore: scoped(createMemoryRuntimeStore(authority)),
         graphControlStore: scoped(createMemoryGraphStore(authority)),
         interactionStore: scoped(createMemoryInteractionStore(authority)),
+        eventWaitStore: scoped(createMemoryEventWaitAuthority(authority)),
         goalStore: scoped(createMemoryGoalStore(authority)),
         async purgeConversationOperationalState(sessionId) {
           if (closed) throw new Error('Reference execution persistence is closed');
@@ -89,6 +94,7 @@ export function createMemoryExecutionPersistenceProvider(
           if (sessionId === WORKSPACE_AUTHORITY_SESSION_ID)
             throw new Error('Workspace authority cannot be purged as a conversation');
           authority.write('execution.purgeOperational', (s) => {
+            deleteMemoryEventWaits(s, sessionId);
             const eventIds = new Set(
               [...rows<RuntimeEvent[]>(s, 'runtimeEvents').values()]
                 .flat()

@@ -373,7 +373,12 @@ function projectEventSteps(events: readonly RuntimeEvent[]): TraceStep[] {
       if (settled) {
         settled.endedAt = event.ts;
         settled.durationMs = Math.max(0, event.ts - settled.startedAt);
-        settled.status = response.isError === true ? 'failed' : 'completed';
+        settled.status =
+          response.outcome === 'aborted'
+            ? 'interrupted'
+            : response.isError === true
+              ? 'failed'
+              : 'completed';
       }
       continue;
     }

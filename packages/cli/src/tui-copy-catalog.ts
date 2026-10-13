@@ -1505,6 +1505,17 @@ export const TUI_COPY_RESOURCES = {
       requeueHint: 'Shift+← 取回佇列訊息重新編輯',
     },
   },
+  'unread-indicator': {
+    en: {
+      hint: '↓ {count, plural, one {# new line} other {# new lines}} — End to jump to latest',
+    },
+    'zh-CN': {
+      hint: '↓ {count, plural, other {# 行新输出 · 按 End 跳到最新}}',
+    },
+    'zh-TW': {
+      hint: '↓ {count, plural, other {# 行新輸出 · 按 End 跳到最新}}',
+    },
+  },
   'session-status': {
     en: {
       running: 'running',

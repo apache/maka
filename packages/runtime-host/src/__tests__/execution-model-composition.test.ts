@@ -653,6 +653,7 @@ async function runPermissionUpdateHostRegression(
                 kind: 'client.capability.result',
                 invocationId: frame.invocationId,
                 result: {
+                  outcome: 'success',
                   content: [{ type: 'text', text: CLIENT_CAPABILITY_RESULT_TEXT }],
                 },
               });
@@ -1988,6 +1989,7 @@ test('production backend preserves coordinator Client Capability semantics acros
                 kind: 'client.capability.result',
                 invocationId: frame.invocationId,
                 result: {
+                  outcome: 'success',
                   content: [{ type: 'text', text: CLIENT_CAPABILITY_RESULT_TEXT }],
                 },
               });
@@ -2223,6 +2225,7 @@ test('cold WorkHub recovery waits for Desktop tools across pending-message and a
                   kind: 'client.capability.result',
                   invocationId: frame.invocationId,
                   result: {
+                    outcome: 'success',
                     content: [],
                     structuredContent: {
                       operation: 'associate',

@@ -162,6 +162,7 @@ export async function exportSessionBundle(
         requireQuiescent: true,
         includeSubtree: true,
         omitDiagnostics: true,
+        omitEventWaits: true,
       });
     } catch (error) {
       const failure = asExportFailure(error, input.workspaceRoot);

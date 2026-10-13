@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deleteMemoryEventWaits } from './memory-event-wait-authority.js';
 import { createHash } from 'node:crypto';
 import { isCanonicalReadOnlyPermissionProfile as isReadOnlyProfile } from '@maka/core/permission-profile';
 import { tmpdir } from 'node:os';
@@ -414,6 +415,7 @@ function remove(s: MemoryState, id: string, group: Set<string>): void {
   rows(s, 'tombstones').set(id, true);
   rows(s, 'cleanup').set(id, true);
   rows(s, 'goals').delete(id);
+  deleteMemoryEventWaits(s, id);
   rows(s, 'boundaries').delete(id);
   rows(s, 'autoBoundaryProfiles').delete(id);
   for (const [k, a] of admissions(s)) if (a.sessionId === id) admissions(s).delete(k);
@@ -709,7 +711,10 @@ export function createMemorySessionStore(
         const archivedAt = Date.now();
         return ids.map(({ sessionId, expectedVersion }) => {
           const result = setArchived(s, sessionId, isArchived, archivedAt, expectedVersion);
-          if (isArchived) rows(s, 'goals').delete(sessionId);
+          if (isArchived) {
+            rows(s, 'goals').delete(sessionId);
+            deleteMemoryEventWaits(s, sessionId);
+          }
           return result;
         });
       }),
@@ -731,6 +736,7 @@ export function createMemorySessionStore(
           if (group.has(i.sessionId)) conflict('Cannot archive and remove the same Session');
           setArchived(s, i.sessionId, true, archivedAt);
           rows(s, 'goals').delete(i.sessionId);
+          deleteMemoryEventWaits(s, i.sessionId);
         }
         for (const i of ids) if (headers(s).has(i.sessionId)) remove(s, i.sessionId, group);
         return [...group];

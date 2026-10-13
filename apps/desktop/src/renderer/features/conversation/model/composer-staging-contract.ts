@@ -29,6 +29,7 @@ export interface ComposerStagingSubmission {
   readonly hasStagedQuotes: boolean;
   readonly submittableAttachments: readonly PendingAttachment[] | undefined;
   readonly directoryOptions: { readonly directoryReferences?: readonly DirectoryReference[] };
+  retainAttachments(pending: readonly PendingAttachment[] | undefined): () => void;
   /** Without an owner key this answers from the captured snapshot; the
    *  revision send passes the branch child's key because the lifecycle
    *  re-keys the plate mid-send and empties the source bucket, so the

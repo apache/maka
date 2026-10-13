@@ -44,11 +44,8 @@ import type { NewChatExecutionTarget } from './use-shell-chat-model.js';
 import type { ConversationNewTaskTarget } from '../ports.js';
 import type { ComposerSubmissionServices, ConversationMessageCommand } from '../submission-services.js';
 import type { ComposerSurfaceOwner } from '../model/composer-submission-contract.js';
+import type { ComposerMessageContext } from './composer-follow-up.js';
 
-export interface WorkspaceFileReferencePosition {
-  value: string;
-  start: number;
-}
 import {
   isNoRealConnectionError,
   noRealConnectionReasonFromError,
@@ -72,12 +69,7 @@ type ToastApi = {
   info(title: string, description?: string): void;
 };
 
-type DirectoryReferences = NonNullable<TransientUserMessageProjection['directoryReferences']>;
-type MessageContextOptions = {
-  directoryReferences?: DirectoryReferences;
-  quotes?: readonly QuoteRef[];
-  workspaceFileReferences?: readonly WorkspaceFileReferencePosition[];
-};
+type MessageContextOptions = ComposerMessageContext;
 type SendOptions = MessageContextOptions & {
   waitForHostAdmission?: boolean;
   targetSessionId?: string;
@@ -240,7 +232,7 @@ export function createChatActions<Owner extends ComposerSurfaceOwner>(deps: {
         return { kind: 'unreconciled' };
       }
       removeTransientMessage(sessionId, messageId);
-      if (surfaceVisible) skillFeedback.showSubmissionFeedback(uiLocale, toastApi, result, sessionId);
+      if (surfaceVisible) skillFeedback.showSubmissionFeedback(uiLocale, toastApi, result, sessionId, input.command.attachmentItems);
       return { kind: 'refused' };
     }
     if (result.disposition === 'locally_saved') {
@@ -320,6 +312,7 @@ export function createChatActions<Owner extends ComposerSurfaceOwner>(deps: {
           ...copiedArray('directoryReferences', directoryReferences),
           ...copiedArray('quotes', quotes),
           ...copiedArray('workspaceFileReferences', options.workspaceFileReferences),
+          replacesLocalMessageId: options.replacesLocalMessageId,
         };
         return submitAndProject({
           sessionId,
@@ -481,6 +474,7 @@ export function createChatActions<Owner extends ComposerSurfaceOwner>(deps: {
           ...copiedArray('directoryReferences', directoryReferences),
           ...copiedArray('quotes', quotes),
           ...copiedArray('workspaceFileReferences', options.workspaceFileReferences),
+          replacesLocalMessageId: options.replacesLocalMessageId,
         },
         ...copiedArray('quotes', quotes),
         isSurfaceVisible: () => activeIdRef.current === sessionId,
@@ -498,6 +492,7 @@ export function createChatActions<Owner extends ComposerSurfaceOwner>(deps: {
     response: Response,
     submit: (sessionId: string, response: Response) => Promise<void>,
     onApplied?: (sessionId: string) => void,
+    propagateFailure = false,
   ) {
     const sessionId = activeIdRef.current;
     if (!sessionId) return;
@@ -507,17 +502,21 @@ export function createChatActions<Owner extends ComposerSurfaceOwner>(deps: {
       onApplied?.(sessionId);
       settleInteraction(sessionId, response.requestId);
     } catch (error) {
-      if (activeIdRef.current !== sessionId) return;
-      if (isSessionWorkspaceUnavailableError(error)) {
-        showSessionWorkspaceUnavailableToast(toastApi, getShellCopy(uiLocale).errors, { sessionId });
-      } else {
-        toastApi.error(
-          copy.responseFailedTitle,
-          localizedShellErrorMessage(error, copy.responseFailedFallback, uiLocale),
-          undefined,
-          { sessionId },
-        );
+      if (activeIdRef.current === sessionId) {
+        if (isSessionWorkspaceUnavailableError(error)) {
+          showSessionWorkspaceUnavailableToast(toastApi, getShellCopy(uiLocale).errors, { sessionId });
+        } else {
+          toastApi.error(
+            copy.responseFailedTitle,
+            localizedShellErrorMessage(error, copy.responseFailedFallback, uiLocale),
+            undefined,
+            { sessionId },
+          );
+        }
       }
+      // A user-question prompt must retain its saved answer on a late Host
+      // rejection, even if the user switched Sessions while it was in flight.
+      if (propagateFailure) throw error;
     }
   }
 
@@ -541,7 +540,7 @@ export function createChatActions<Owner extends ComposerSurfaceOwner>(deps: {
         onExecutionBoundaryChanged,
       ),
     respondToUserQuestion: (response) =>
-      respondToInteraction(response, services.respondToUserQuestion),
+      respondToInteraction(response, services.respondToUserQuestion, undefined, true),
     respondToUserForm: (response) => respondToInteraction(response, submitUserForm),
   };
 }

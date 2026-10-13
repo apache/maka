@@ -731,7 +731,7 @@
           "react": 1
         },
         "importSpecifiers": 43,
-        "nonTriviaTokens": 7330
+        "nonTriviaTokens": 7290
       },
       "src/renderer/use-app-shell-session-list.ts": {
         "importDeclarations": 3,
@@ -951,9 +951,9 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
+          "./application/contracts/provider-retirement.js": 1,
           "./locales/shell-copy.js": 1,
           "./settings/settings-nav.js": 1,
-          "@maka/core/provider-registry": 1,
           "@maka/ui/icons": 1
         }
       },
@@ -3293,6 +3293,7 @@
         "actionFactories": [],
         "dependencyPaths": {
           "./platform/desktop/default-runtime-host-operation.js": 1,
+          "@maka/ui": 1,
           "react": 1
         }
       },

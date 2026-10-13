@@ -43,7 +43,8 @@ export interface AddSessionWorkspaceInput {
   sessionId: string;
   profileId: string;
   host: TaskEntryHostRef;
-  name: string;
+  /** The optional name from the New project dialog; absent means the folder name. */
+  name?: string;
   request?: SessionWorkspaceRecoveryRequest;
 }
 

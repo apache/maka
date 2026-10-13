@@ -1782,6 +1782,7 @@ test('production WorkHub inspects an independent Session through its provider to
                 kind: 'client.capability.result',
                 invocationId: frame.invocationId,
                 result: {
+                  outcome: 'success',
                   content: [],
                   structuredContent: {
                     operation: 'associate',

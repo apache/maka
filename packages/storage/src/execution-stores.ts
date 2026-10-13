@@ -17,6 +17,10 @@
  * under the License.
  */
 
+import {
+  openInteractiveEventWaitAuthorityForWrite,
+  type InteractiveEventWaitAuthorityWriter,
+} from './event-wait-authority.js';
 import type { AgentRunEvent, AgentRunEventType, AgentRunProjectionKey } from '@maka/core/agent-run';
 import type { RuntimeEvent, ToolBoundaryProtocol } from '@maka/core/runtime-event';
 import type {
@@ -215,6 +219,7 @@ interface ExecutionStoresWriterBase<K extends StorageRootKind> {
 
 export interface InteractiveExecutionStoresWriter extends ExecutionStoresWriterBase<'interactive'> {
   readonly graphControlStore: ExecutionGraphStore;
+  readonly eventWaitStore: InteractiveEventWaitAuthorityWriter;
   readonly goalStore: InteractiveGoalAuthorityWriter;
   readonly interactionStore: InteractiveInteractionStoreWriterFacade;
 }
@@ -426,6 +431,7 @@ async function createExecutionStoresForWrite(
     purge: (sessionId: string) => persistence.purgeConversationOperationalState(sessionId),
   };
   let interactionStore: InteractiveInteractionStoreWriterFacade | undefined;
+  let eventWaitStore: InteractiveEventWaitAuthorityWriter | undefined;
   let goalStore: InteractiveGoalAuthorityWriter | undefined;
   const releaseChildBindings: Array<() => void> = [];
   const retainUntilGroupClose = (release: () => void) => releaseChildBindings.push(release);
@@ -448,6 +454,21 @@ async function createExecutionStoresForWrite(
       provider === localExecutionPersistenceProvider ? createSqliteInteractionStore : provider,
       retainUntilGroupClose,
     );
+    if (
+      !persistence.eventWaitStore ||
+      ['read', 'listSession', 'listPending', 'commit', 'close'].some(
+        (name) => typeof Reflect.get(persistence.eventWaitStore, name) !== 'function',
+      )
+    ) {
+      throw new TypeError('Execution persistence requires an eventWaitStore');
+    }
+    eventWaitStore = await openInteractiveEventWaitAuthorityForWrite(lease, {
+      read: (input) => run(async () => persistence.eventWaitStore.read(input)),
+      listSession: (input) => run(async () => persistence.eventWaitStore.listSession(input)),
+      listPending: (input) => run(async () => persistence.eventWaitStore.listPending(input)),
+      commit: (input) => run(async () => persistence.eventWaitStore.commit(input)),
+      close: () => {},
+    });
     goalStore = await openInteractiveGoalAuthorityForWrite(
       lease,
       () => ({
@@ -465,6 +486,11 @@ async function createExecutionStoresForWrite(
     const failures: unknown[] = [error];
     try {
       if (interactionStore) closeSqliteInteractionStoreFacade(interactionStore);
+    } catch (closeError) {
+      failures.push(closeError);
+    }
+    try {
+      await eventWaitStore?.close();
     } catch (closeError) {
       failures.push(closeError);
     }
@@ -499,6 +525,11 @@ async function createExecutionStoresForWrite(
       }
       subscriptions.clear();
       await Promise.allSettled([...active]);
+      try {
+        await eventWaitStore!.close();
+      } catch (error) {
+        errors.push(error);
+      }
       try {
         await goalStore!.close();
       } catch (error) {
@@ -546,6 +577,7 @@ async function createExecutionStoresForWrite(
     interactionStore,
     graphControlStore,
     goalStore,
+    eventWaitStore,
     kind,
     [executionStoresWriterBrand]: kind,
     purgeConversationOperationalState: (sessionId) =>

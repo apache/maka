@@ -19,7 +19,7 @@
 
 
 import { desktopSessionKey, parseDesktopSessionKey } from '../../../../shared/runtime-host-identity.js';
-import { readWorkHubTopicAssociation, workHubAssociationTarget } from '../../../application/contracts/workhub-topic-association.js';
+import { readWorkHubTopicAssociation, workHubAssociationTarget } from '../../../../shared/desktop-session-projection.js';
 import { workspaceNameFromCwd } from './workspace-name.js';
 
 import type { StoredMessage } from '@maka/core/session';
