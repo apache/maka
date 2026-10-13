@@ -24,7 +24,9 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
 import { createSessionStore } from '@maka/storage/session-store';
+import { openRuntimeEventReadPersistence } from '@maka/storage/runtime-event-persistence';
 import {
   acquireOperationalStateDatabase,
   OPERATIONAL_STATE_DATABASE_NAME,
@@ -36,10 +38,26 @@ import {
   exportSessionTranscriptMarkdown,
   exportSessionTranscriptMarkdownToFile,
   renderSessionTranscriptMarkdown,
+  type SessionTranscriptExportSources,
 } from '../session-transcript-export.js';
 
 const CONNECTION_SLUG = 'test-connection';
 const MODEL = 'test-model';
+
+// The exporter receives storage openers from composition (storage dependency
+// guard); tests compose the same read-only, require-current stores the CLI
+// command hands it.
+const sources: SessionTranscriptExportSources = {
+  openSessionStore: (workspaceRoot) =>
+    createSessionStore(workspaceRoot, { schemaMigration: 'require_current', access: 'read' }),
+  openRuntimeEventLedger: (workspaceRoot) =>
+    openRuntimeEventReadPersistence({ workspaceRoot }).then((persistence) => ({
+      // The read persistence carries every method the read model calls; the
+      // runtime reader fragment is narrower than the full write store contract.
+      runtimeEventStore: persistence.runtimeEventStore as unknown as RuntimeEventStore,
+      close: () => persistence.close(),
+    })),
+};
 
 async function withWorkspace(
   name: string,
@@ -171,6 +189,7 @@ test('exports the full transcript from persistence, tool results included', asyn
     ]);
 
     const result = await exportSessionTranscriptMarkdown({
+      sources,
       workspaceRoot,
       sessionId,
       now: () => 0,
@@ -230,6 +249,7 @@ test('redacts secrets in assistant text, tool intents, and tool results', async 
     ]);
 
     const result = await exportSessionTranscriptMarkdown({
+      sources,
       workspaceRoot,
       sessionId,
       now: () => 0,
@@ -257,6 +277,7 @@ test('thinking stays out by default and rides in behind the flag', async () => {
     ]);
 
     const defected = await exportSessionTranscriptMarkdown({
+      sources,
       workspaceRoot,
       sessionId,
       now: () => 0,
@@ -265,6 +286,7 @@ test('thinking stays out by default and rides in behind the flag', async () => {
     assert.equal(defected.markdown.includes('the user wants me to hurry'), false);
 
     const withThinking = await exportSessionTranscriptMarkdown({
+      sources,
       workspaceRoot,
       sessionId,
       includeThinking: true,
@@ -299,6 +321,7 @@ test('operational rows never reach the export', async () => {
     ]);
 
     const result = await exportSessionTranscriptMarkdown({
+      sources,
       workspaceRoot,
       sessionId,
       now: () => 0,
@@ -319,6 +342,7 @@ test('operational rows never reach the export', async () => {
       assistantMessage({ id: 'a1', turnId: 'turn-1', ts: 4, text: 'Hi.' }),
     ]);
     const clean = await exportSessionTranscriptMarkdown({
+      sources,
       workspaceRoot,
       sessionId: cleanSessionId,
       now: () => 0,
@@ -331,6 +355,7 @@ test('operational rows never reach the export', async () => {
 test('structured failures for missing workspace and session', async () => {
   await withWorkspace('transcript-export-missing', async (workspaceRoot) => {
     const noWorkspace = await exportSessionTranscriptMarkdown({
+      sources,
       workspaceRoot: join(workspaceRoot, 'absent'),
       sessionId: 's1',
     });
@@ -342,6 +367,7 @@ test('structured failures for missing workspace and session', async () => {
     // An initialized-but-empty workspace has no database to share, so the
     // read-only open fails closed before the session lookup (#6036 review).
     const emptyWorkspace = await exportSessionTranscriptMarkdown({
+      sources,
       workspaceRoot,
       sessionId: 'does-not-exist',
     });
@@ -351,6 +377,7 @@ test('structured failures for missing workspace and session', async () => {
     // With a current database in place the missing session surfaces itself.
     acquireOperationalStateDatabase(workspaceRoot).close();
     const noSession = await exportSessionTranscriptMarkdown({
+      sources,
       workspaceRoot,
       sessionId: 'does-not-exist',
     });
@@ -362,6 +389,7 @@ test('structured failures for missing workspace and session', async () => {
 test('never creates the operational database: an uninitialized workspace fails closed', async () => {
   await withWorkspace('transcript-export-readonly-empty', async (workspaceRoot) => {
     const result = await exportSessionTranscriptMarkdown({
+      sources,
       workspaceRoot,
       sessionId: 's1',
     });
@@ -386,6 +414,7 @@ test('never migrates the operational database: an older schema fails instead of 
     older.close();
 
     const result = await exportSessionTranscriptMarkdown({
+      sources,
       workspaceRoot,
       sessionId: 's1',
     });
@@ -418,6 +447,7 @@ test('read-only export leaves the writer journal mode untouched', async () => {
     // The journal flip happened at open time in the flagged behavior — even a
     // failing export (missing session here) must not touch it (#6036 review).
     const result = await exportSessionTranscriptMarkdown({
+      sources,
       workspaceRoot,
       sessionId: 'does-not-exist',
     });
@@ -517,6 +547,7 @@ test('exports a ledger-backed session the read model projects, not zero rows', a
     await seedLedgerTurn(workspaceRoot, sessionId);
 
     const result = await exportSessionTranscriptMarkdown({
+      sources,
       workspaceRoot,
       sessionId,
       now: () => 0,
@@ -735,6 +766,7 @@ test('file export streams the string form and appends subagent sessions', async 
 
     const outPath = join(workspaceRoot, 'transcript.md');
     const result = await exportSessionTranscriptMarkdownToFile({
+      sources,
       workspaceRoot,
       sessionId: parent.id,
       outPath,
@@ -745,6 +777,7 @@ test('file export streams the string form and appends subagent sessions', async 
     const file = await readFile(outPath, 'utf8');
 
     const stringForm = await exportSessionTranscriptMarkdown({
+      sources,
       workspaceRoot,
       sessionId: parent.id,
       now: () => 0,
@@ -799,6 +832,7 @@ test('file export memory stays bounded on a 1,000-turn session', { timeout: 180_
     const before = process.memoryUsage.rss();
     const startedAt = Date.now();
     const result = await exportSessionTranscriptMarkdownToFile({
+      sources,
       workspaceRoot,
       sessionId,
       outPath,

@@ -43,14 +43,39 @@
 import { openSync, writeSync, closeSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
-import type { StoredMessage } from '@maka/core/session';
+import type { SessionHeader, StoredMessage } from '@maka/core/session';
 import { userFacingText } from '@maka/core/session';
 import { redactSecrets } from '@maka/core/redaction';
-import { openRuntimeEventReadPersistence } from '@maka/storage/runtime-event-persistence';
 import { OperationalStateMigrationBlockedError } from '@maka/storage/operational-state-store';
-import { createSessionStore, type SessionAuthorityStore } from '@maka/storage/session-store';
 import { renderConversationMarkdown } from '@maka/core/conversation-markdown';
 import { RuntimeReadModel } from './runtime-read-model.js';
+
+/** The slice of the Session authority store an export reads. */
+export interface SessionTranscriptSessionStore {
+  readHeaderSnapshot(sessionId: string): Promise<SessionHeader>;
+  readMessagesSnapshot(sessionId: string): Promise<StoredMessage[]>;
+  listHeaders(): Promise<SessionHeader[]>;
+  close?(): Promise<void>;
+}
+
+/** One open of a workspace's runtime event ledger. */
+export interface SessionTranscriptEventLedger {
+  runtimeEventStore: RuntimeEventStore;
+  close(): unknown;
+}
+
+/**
+ * Storage openers handed in by the entry point. The storage dependency guard
+ * keeps concrete store construction out of the runtime package, so an export
+ * cannot build its own readers: the CLI command opens both sources — with
+ * `require_current` so an export never creates or migrates the operational
+ * database, and `access: 'read'` so it cannot flip a writer's journal mode —
+ * and passes them in (#6036 review).
+ */
+export interface SessionTranscriptExportSources {
+  openSessionStore(workspaceRoot: string): SessionTranscriptSessionStore;
+  openRuntimeEventLedger(workspaceRoot: string): Promise<SessionTranscriptEventLedger>;
+}
 
 export interface ExportSessionTranscriptMarkdownInput {
   workspaceRoot: string;
@@ -58,6 +83,7 @@ export interface ExportSessionTranscriptMarkdownInput {
   /** Model working notes; off by default per the Desktop-export precedent. */
   includeThinking?: boolean;
   now?: () => number;
+  sources: SessionTranscriptExportSources;
 }
 
 export type ExportSessionTranscriptMarkdownResult =
@@ -82,14 +108,12 @@ export async function exportSessionTranscriptMarkdown(
 
   // An export is a read-side surface: it must never create or migrate the
   // operational database it reads (a running Host owns those migrations).
-  // `require_current` fails closed on an uninitialized workspace and on a
-  // schema this build does not understand (#6036 review).
-  let store: SessionAuthorityStore;
+  // Composition opens the store with `require_current`, which fails closed on
+  // an uninitialized workspace and on a schema this build does not understand
+  // (#6036 review).
+  let store: SessionTranscriptSessionStore;
   try {
-    store = createSessionStore(input.workspaceRoot, {
-      schemaMigration: 'require_current',
-      access: 'read',
-    });
+    store = input.sources.openSessionStore(input.workspaceRoot);
   } catch (error) {
     if (error instanceof OperationalStateMigrationBlockedError) {
       return { ok: false, reason: { kind: 'schema_unsupported' } };
@@ -103,8 +127,11 @@ export async function exportSessionTranscriptMarkdown(
     } catch {
       return { ok: false, reason: { kind: 'session_not_found' } };
     }
-    const messages = await readSessionMessages(input.workspaceRoot, input.sessionId, () =>
-      store.readMessagesSnapshot(input.sessionId),
+    const messages = await readSessionMessages(
+      input.sources,
+      input.workspaceRoot,
+      input.sessionId,
+      () => store.readMessagesSnapshot(input.sessionId),
     );
     const markdown = renderSessionTranscriptMarkdown(sessionName, messages, {
       includeThinking: input.includeThinking,
@@ -158,12 +185,9 @@ export async function exportSessionTranscriptMarkdownToFile(
     };
   }
 
-  let store: SessionAuthorityStore;
+  let store: SessionTranscriptSessionStore;
   try {
-    store = createSessionStore(input.workspaceRoot, {
-      schemaMigration: 'require_current',
-      access: 'read',
-    });
+    store = input.sources.openSessionStore(input.workspaceRoot);
   } catch (error) {
     if (error instanceof OperationalStateMigrationBlockedError) {
       return { ok: false, outPath: input.outPath, reason: { kind: 'schema_unsupported' } };
@@ -180,8 +204,11 @@ export async function exportSessionTranscriptMarkdownToFile(
     } catch {
       return { ok: false, outPath: input.outPath, reason: { kind: 'session_not_found' } };
     }
-    const mainMessages = await readSessionMessages(input.workspaceRoot, input.sessionId, () =>
-      store.readMessagesSnapshot(input.sessionId),
+    const mainMessages = await readSessionMessages(
+      input.sources,
+      input.workspaceRoot,
+      input.sessionId,
+      () => store.readMessagesSnapshot(input.sessionId),
     );
 
     // Exclusive creation, aligned with the bundle exporter: an existing path
@@ -236,8 +263,11 @@ export async function exportSessionTranscriptMarkdownToFile(
       subagentSessions += 1;
       emit(`\n\n# ${header.name}\n\n`);
       try {
-        const childMessages = await readSessionMessages(input.workspaceRoot, header.id, () =>
-          store.readMessagesSnapshot(header.id),
+        const childMessages = await readSessionMessages(
+          input.sources,
+          input.workspaceRoot,
+          header.id,
+          () => store.readMessagesSnapshot(header.id),
         );
         renderConversationMarkdown(header.name, childMessages, {
           copy: {
@@ -284,24 +314,19 @@ export interface RenderSessionTranscriptMarkdownOptions {
  * reporting success with zero messages.
  */
 async function readSessionMessages(
+  sources: SessionTranscriptExportSources,
   workspaceRoot: string,
   sessionId: string,
   readLegacyRows: () => Promise<StoredMessage[]>,
 ): Promise<StoredMessage[]> {
-  const persistence = await openRuntimeEventReadPersistence({ workspaceRoot }).catch(
-    () => undefined,
-  );
-  if (!persistence) return readLegacyRows();
+  const ledger = await sources.openRuntimeEventLedger(workspaceRoot).catch(() => undefined);
+  if (!ledger) return readLegacyRows();
   try {
-    // The read store carries every method the read model calls; the runtime
-    // reader fragment is narrower than the full write store interface.
-    const readModel = new RuntimeReadModel({
-      runtimeEventStore: persistence.runtimeEventStore as unknown as RuntimeEventStore,
-    });
+    const readModel = new RuntimeReadModel({ runtimeEventStore: ledger.runtimeEventStore });
     const projected = await readModel.getSessionMessages(sessionId);
     return projected.length > 0 ? projected : readLegacyRows();
   } finally {
-    persistence.close();
+    await ledger.close();
   }
 }
 

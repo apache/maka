@@ -17,7 +17,13 @@
  * under the License.
  */
 
-import { exportSessionTranscriptMarkdownToFile } from '@maka/runtime/session-transcript-export';
+import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
+import { createSessionStore } from '@maka/storage/session-store';
+import { openRuntimeEventReadPersistence } from '@maka/storage/runtime-event-persistence';
+import {
+  exportSessionTranscriptMarkdownToFile,
+  type SessionTranscriptExportSources,
+} from '@maka/runtime/session-transcript-export';
 
 const USAGE =
   'maka session-export-markdown --workspace-root <dir> --session <id> --out <file.md> [--include-thinking]';
@@ -67,6 +73,24 @@ function parseArgs(args: string[]): ParsedArgs {
   };
 }
 
+// Concrete store construction stays in composition (storage dependency guard):
+// the command opens both read sources — `require_current` so an export can
+// never create or migrate the operational database, `access: 'read'` so it
+// cannot flip a writer's journal mode — and hands them to the exporter.
+const sources: SessionTranscriptExportSources = {
+  openSessionStore: (workspaceRoot) =>
+    createSessionStore(workspaceRoot, { schemaMigration: 'require_current', access: 'read' }),
+  openRuntimeEventLedger: async (workspaceRoot) => {
+    const persistence = await openRuntimeEventReadPersistence({ workspaceRoot });
+    return {
+      // The read persistence carries every method the read model calls; the
+      // runtime reader fragment is narrower than the full write store contract.
+      runtimeEventStore: persistence.runtimeEventStore as unknown as RuntimeEventStore,
+      close: () => persistence.close(),
+    };
+  },
+};
+
 export async function runMakaSessionExportMarkdownCli(args: string[]): Promise<number> {
   let parsed: ParsedArgs;
   try {
@@ -94,6 +118,7 @@ export async function runMakaSessionExportMarkdownCli(args: string[]): Promise<n
     sessionId: parsed.sessionId,
     outPath: parsed.destination,
     includeThinking: parsed.includeThinking,
+    sources,
   });
   if (!result.ok) {
     process.stderr.write(`${JSON.stringify(result.reason)}\n`);
