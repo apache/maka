@@ -23,7 +23,10 @@ import {
   createRuntimeHostSessionProjectionSeed,
   type RuntimeHostSessionProjectionSeed,
 } from '@maka/runtime-host/adapter';
-import { RuntimeHostSubscriptionError } from '@maka/runtime-host/client';
+import {
+  RuntimeHostOperationError,
+  RuntimeHostSubscriptionError,
+} from '@maka/runtime-host/client';
 import {
   SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
   type SessionTranscriptPage,
@@ -111,18 +114,18 @@ export class DesktopTranscriptReplica {
   readonly #durable = new Map<number, ResidentMessage>();
   #residentBytes = 0;
   #durableThrough: number | null;
-  #targetThrough: number | null;
   #hasOlder: boolean;
   #beginsAtTurnBoundary: boolean;
   #resident = true;
   #residentExternallyAccounted = true;
   #closed = false;
+  #failure: Error | undefined;
   #catchUpTask: Promise<void> | undefined;
-  #operationTail = Promise.resolve();
 
   private constructor(
     handle: DesktopRuntimeHostSession,
     options: DesktopTranscriptReplicaOptions,
+    durable: SessionTranscriptPage,
   ) {
     this.#handle = handle;
     this.sessionId = handle.snapshot.session.sessionId;
@@ -135,21 +138,55 @@ export class DesktopTranscriptReplica {
     this.#maxMessageBytes = options.maxMessageBytes ?? DESKTOP_TRANSCRIPT_MESSAGE_MAX_BYTES;
     this.#accountPreparationBytes = options.accountPreparationBytes ?? (() => undefined);
     this.#onChange = options.onChange ?? (() => undefined);
-    this.#durableThrough = handle.transcriptBootstrap.durable.throughSequence;
-    this.#targetThrough = this.#durableThrough;
-    this.#hasOlder = handle.transcriptBootstrap.durable.nextCursor !== null;
-    this.#beginsAtTurnBoundary = handle.transcriptBootstrap.durable.endsAtTurnBoundary;
+    this.#durableThrough = durable.throughSequence;
+    this.#hasOlder = durable.nextCursor !== null;
+    this.#beginsAtTurnBoundary = durable.endsAtTurnBoundary;
   }
 
   static async prepare(
     handle: DesktopRuntimeHostSession,
     options: DesktopTranscriptReplicaOptions = {},
   ): Promise<DesktopTranscriptReplica> {
-    const replica = new DesktopTranscriptReplica(handle, options);
+    return this.#install(handle, options, handle.transcriptBootstrap.durable);
+  }
+
+  /**
+   * Rebuilds the tail on a live subscription whose replica was evicted. The
+   * bootstrap page is stale by then — the durable tail is re-read at the
+   * current watermark, then one catch-up closes whatever landed during the
+   * fetch.
+   */
+  static async reseed(
+    handle: DesktopRuntimeHostSession,
+    options: DesktopTranscriptReplicaOptions = {},
+  ): Promise<DesktopTranscriptReplica> {
+    const durable = await handle.loadTranscriptPage({
+      direction: 'older',
+      throughSequence: handle.transcriptWatermark,
+      cursor: null,
+      anchorSequence: null,
+      maxBytes: SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
+    });
+    const replica = await this.#install(handle, options, durable);
     try {
-      await replica.#withDecodedPage(handle.transcriptBootstrap.durable, (durable) => {
-        replica.#installDurable(durable.messages);
-        replica.#hasOlder = durable.nextCursor !== null;
+      await replica.advance();
+    } catch (error) {
+      replica.close();
+      throw error;
+    }
+    return replica;
+  }
+
+  static async #install(
+    handle: DesktopRuntimeHostSession,
+    options: DesktopTranscriptReplicaOptions,
+    durable: SessionTranscriptPage,
+  ): Promise<DesktopTranscriptReplica> {
+    const replica = new DesktopTranscriptReplica(handle, options, durable);
+    try {
+      await replica.#withDecodedPage(durable, (decoded) => {
+        replica.#installDurable(decoded.messages);
+        replica.#hasOlder = decoded.nextCursor !== null;
       });
       replica.#evictToBudget();
       return replica;
@@ -164,7 +201,10 @@ export class DesktopTranscriptReplica {
   }
 
   get resident(): boolean {
-    return this.#resident;
+    // A latched failure makes this a dead read model even while it still holds
+    // durable bytes, so callers see what they see for an evicted replica and
+    // take the same reseed/recovery path instead of touching it.
+    return this.#resident && this.#failure === undefined;
   }
 
   adoptResidentAccounting(): void {
@@ -178,13 +218,12 @@ export class DesktopTranscriptReplica {
   }
 
   get projectionSeed(): RuntimeHostSessionProjectionSeed {
-    this.#assertResident();
+    this.#assertLive();
     return createRuntimeHostSessionProjectionSeed(this.messages(), this.#handle.snapshot);
   }
 
   snapshot(): DesktopTranscriptReplicaSnapshot {
-    this.#assertOpen();
-    this.#assertResident();
+    this.#assertLive();
     return {
       sessionId: this.sessionId,
       generation: this.generation,
@@ -197,8 +236,7 @@ export class DesktopTranscriptReplica {
   }
 
   messages(): StoredMessage[] {
-    this.#assertOpen();
-    this.#assertResident();
+    this.#assertLive();
     return this.#orderedDurable().map((entry) => entry.message);
   }
 
@@ -207,8 +245,7 @@ export class DesktopTranscriptReplica {
   }
 
   latestDurableVisibleMessageId(): string | null {
-    this.#assertOpen();
-    this.#assertResident();
+    this.#assertLive();
     let latest: ResidentMessage | undefined;
     for (const entry of this.#durable.values()) {
       if (
@@ -300,37 +337,53 @@ export class DesktopTranscriptReplica {
     return durable;
   }
 
-  advance(throughSequence: number): Promise<void> {
+  advance(): Promise<void> {
+    if (this.#failure) return Promise.reject(this.#failure);
     this.#assertOpen();
-    if (this.#targetThrough === null || throughSequence > this.#targetThrough) {
-      this.#targetThrough = throughSequence;
-    }
-    if (!this.#resident) {
-      this.#durableThrough = this.#targetThrough;
+    if (!this.#resident) return Promise.resolve();
+    const target = this.#handle.transcriptWatermark;
+    if (
+      target === null ||
+      (this.#durableThrough !== null && target <= this.#durableThrough)
+    ) {
       return Promise.resolve();
     }
-    this.#catchUpTask ??= this.#enqueue(() => this.#catchUp()).finally(() => {
-      this.#catchUpTask = undefined;
-      if (
-        !this.#closed &&
-        this.#targetThrough !== null &&
-        (this.#durableThrough === null || this.#targetThrough > this.#durableThrough)
-      ) {
-        void this.advance(this.#targetThrough).catch(() => undefined);
-      }
-    });
+    this.#catchUpTask ??= this.#catchUp().then(
+      () => {
+        this.#catchUpTask = undefined;
+        const watermark = this.#handle.transcriptWatermark;
+        // A frame that arrived mid-catch-up may not be covered by it, so a
+        // settled read re-arms once to close that gap. A rejection never
+        // re-arms — this replica's read failures are permanent for the
+        // subscription it is bound to.
+        if (
+          this.#isLive() &&
+          watermark !== null &&
+          (this.#durableThrough === null || watermark > this.#durableThrough)
+        ) {
+          void this.advance().catch(() => undefined);
+        }
+      },
+      (error: unknown) => {
+        this.#catchUpTask = undefined;
+        throw error;
+      },
+    );
     return this.#catchUpTask;
   }
 
+  // A closed replica reports !resident, so the residency check must precede
+  // the liveness assert: the observer's global trim/discard pass can meet a
+  // replica that recovery just closed, and that must be a no-op, not a throw.
   trimDurable(targetResidentBytes: number): void {
-    this.#assertOpen();
     if (!this.#resident) return;
+    this.#assertOpen();
     this.#evictToBudget(targetResidentBytes);
   }
 
   discard(): void {
-    this.#assertOpen();
     if (!this.#resident) return;
+    this.#assertOpen();
     this.#resident = false;
     this.#clearDurable();
   }
@@ -346,8 +399,32 @@ export class DesktopTranscriptReplica {
   }
 
   async #catchUp(): Promise<void> {
+    try {
+      await this.#readToWatermark();
+    } catch (error) {
+      // A Runtime Host read failure is permanent for the subscription this
+      // replica is bound to when it names a dead subscription or a gone
+      // transcript context. Latch it so later calls fail with the same error
+      // instead of retrying a dead subscription — the owner decides whether
+      // recovery means replacing this replica or the whole subscription.
+      // Transient operation failures stay retryable: the only caller that
+      // swallows a rejection is the post-settle re-arm, and latching there
+      // would turn a retryable blip into a sticky terminal on the next frame.
+      if (
+        error instanceof RuntimeHostSubscriptionError ||
+        (error instanceof RuntimeHostOperationError &&
+          error.operation === 'session.transcript.page' &&
+          error.code === 'not_found')
+      ) {
+        this.#failure ??= error;
+      }
+      throw error;
+    }
+  }
+
+  async #readToWatermark(): Promise<void> {
     while (this.#isLive()) {
-      const target = this.#targetThrough;
+      const target = this.#handle.transcriptWatermark;
       if (target === null) return;
       const anchorSequence = this.#durableThrough;
       if (anchorSequence !== null && target <= anchorSequence) return;
@@ -569,20 +646,11 @@ export class DesktopTranscriptReplica {
   }
 
   #assertLive(): void {
+    if (this.#failure) throw this.#failure;
     this.#assertOpen();
-    this.#assertResident();
-  }
-
-  #assertResident(): void {
     if (!this.#resident) {
       throw new Error('Desktop transcript replica was evicted');
     }
-  }
-
-  #enqueue<T>(operation: () => Promise<T>): Promise<T> {
-    const task = this.#operationTail.then(operation);
-    this.#operationTail = task.then(() => undefined, () => undefined);
-    return task;
   }
 }
 

@@ -33,7 +33,7 @@ function fixture() {
   const deps: Parameters<typeof createWorkHubRuntime>[0] = {
     isCurrent: () => current,
     client: () => client,
-    createContext: async () => ({ workspace: { kind: 'project', projectId: 'project' }, defaults: { permissionMode: 'ask' } }),
+    createContext: async () => ({ workspace: { kind: 'project', projectId: 'project' } }),
     changed: (...args) => { changes.push(args); },
   };
   const client = {
@@ -54,7 +54,6 @@ test('task delegation binds the tool action to the Host turn and trusted creatio
   assert.deepEqual(f.requests, [{
     turnId: 'turn', actionId: 'tool-call', proposal: { disposition: 'create_new', title: 'Fix login' },
     delegationText: 'Implement and test the login fix', create: { workspace: { kind: 'project', projectId: 'project' } },
-    newWorkDefaults: { permissionMode: 'ask' },
   }]);
   assert.ok('actionId' in result);
   assert.equal(result.actionId, 'tool-call');
@@ -95,11 +94,9 @@ test('nested tool calls produce stable task identities accepted by both Host act
 
 test('linked task operations remain operations at the Host protocol boundary', async () => {
   const f = fixture();
-  await f.runtime.actTasks(scope, 'turn', 'correct-action', {
-    operation: 'correct',
-    replacesActionId: 'old-action',
-    candidateSetId: 'set',
-    target: { disposition: 'delegate_existing', candidateRef: 'candidate' },
+  await f.runtime.actTasks(scope, 'turn', 'steer-action', {
+    operation: 'delegate_existing',
+    candidateRef: 'candidate',
     text: 'Move the delegated work',
   });
   await f.runtime.actTasks(scope, 'turn', 'stop-action', {
@@ -115,14 +112,11 @@ test('linked task operations remain operations at the Host protocol boundary', a
   assert.deepEqual(f.requests, [
     {
       turnId: 'turn',
-      actionId: 'correct-action',
+      actionId: 'steer-action',
       proposal: {
-        operation: 'correct',
-        replacesActionId: 'old-action',
-        target: { disposition: 'delegate_existing', candidateRef: 'candidate' },
+        disposition: 'delegate_existing', candidateRef: 'candidate',
       },
       delegationText: 'Move the delegated work',
-      candidateSetId: 'set',
     },
     {
       turnId: 'turn',
@@ -141,14 +135,14 @@ test('linked task operations remain operations at the Host protocol boundary', a
   ]);
 });
 
-test('the task tool exposes correction as a linked operation, not a disposition', () => {
+test('the task tool rejects atomic correction operations', () => {
   const correction = {
     operation: 'correct',
     replacesActionId: 'old-action',
     target: { disposition: 'create_new', title: 'Replacement' },
     text: 'Correct the earlier delegation',
   };
-  assert.deepEqual(workHubTasksSchema.parse(correction), correction);
+  assert.equal(workHubTasksSchema.safeParse(correction).success, false);
   assert.equal(
     workHubTasksSchema.safeParse({ ...correction, operation: 'replace' }).success,
     false,
@@ -176,4 +170,62 @@ test('a changed turn identity cannot become the takeover target', async () => {
   f.client.queryTurn = async () => ({ sessionId: WORKHUB_COORDINATION_SESSION_ID, turnId: 'new-turn', runId: 'new-run', status: 'running' });
   await assert.rejects(f.runtime.interrupt(scope, 'turn'), /turn identity changed/);
   assert.deepEqual(f.stops, []);
+});
+
+test('delegation receipts explicitly distinguish admission from completion evidence', async () => {
+  const f = fixture();
+  const result = await f.runtime.actTasks(scope, 'turn', 'receipt', { operation: 'create_new', title: 'Work', text: 'Write a plan' });
+  assert.deepEqual((result as unknown as Record<string, unknown>).executionEvidence, {
+    status: 'admitted', completionVerified: false, artifactsVerified: false,
+  });
+});
+
+test('task status can be checked without dispatching another task', () => {
+  assert.equal(workHubTasksSchema.safeParse({ operation: 'status', targetSessionId: 'target', targetTurnId: 'target-turn' }).success, true);
+});
+
+test('status reads exact turn facts without delegation and rejects stale Host or target identity', async () => {
+  const f = fixture();
+  f.client.listWorkHubCoordinationCandidates = async () => ({ candidateSetId: 'set', candidates: [{ sessionId: 'target' }] }) as unknown as Awaited<ReturnType<typeof f.client.listWorkHubCoordinationCandidates>>;
+  f.client.queryTurn = async () => ({ sessionId: 'target', turnId: 'target-turn', runId: 'run', status: 'completed', terminalEventId: 'done' });
+  const request = { operation: 'status' as const, targetSessionId: 'target', targetTurnId: 'target-turn' };
+  const result = await f.runtime.actTasks(scope, 'turn', 'status-call', request);
+  assert.ok('executionEvidence' in result);
+  assert.deepEqual(result.executionEvidence, { status: 'completed', scope: 'exact_turn', completionVerified: true, artifactsVerified: false });
+  assert.deepEqual(f.requests, []);
+  assert.deepEqual(f.stops, []);
+  assert.deepEqual(f.changes, []);
+  await assert.rejects(f.runtime.actTasks(scope, 'turn', 'other', { ...request, targetSessionId: 'outside' }), /outside current WorkHub discovery/);
+  f.client.queryTurn = async () => ({ sessionId: 'wrong', turnId: 'target-turn', runId: 'run', status: 'running' });
+  await assert.rejects(f.runtime.actTasks(scope, 'turn', 'wrong', request), /identity changed/);
+  f.client.queryTurn = async () => { f.retire(); return { sessionId: 'target', turnId: 'target-turn', runId: 'run', status: 'running' }; };
+  await assert.rejects(f.runtime.actTasks(scope, 'turn', 'stale', request), /Host changed/);
+});
+
+test('status does not treat waiting, cancelled or failed execution as completed', async () => {
+  const f = fixture();
+  f.client.listWorkHubCoordinationCandidates = async () => ({ candidateSetId: 'set', candidates: [{ sessionId: 'target' }] }) as unknown as Awaited<ReturnType<typeof f.client.listWorkHubCoordinationCandidates>>;
+  for (const status of ['waiting_for_user', 'cancelled', 'failed'] as const) {
+    f.client.queryTurn = async () => ({ sessionId: 'target', turnId: 'target-turn', runId: 'run', status, terminalEventId: 'terminal', abortSource: 'user', failureClass: 'test' });
+    const result = await f.runtime.actTasks(scope, 'turn', 'status', { operation: 'status', targetSessionId: 'target', targetTurnId: 'target-turn' });
+    assert.ok('executionEvidence' in result);
+    assert.equal(result.executionEvidence?.status, status);
+    assert.equal(result.executionEvidence?.completionVerified, false);
+  }
+});
+
+test('stop and resume receipts survive the client capability JSON boundary', async () => {
+  const { decodeClientCapabilityResult } = await import('@maka/runtime-host/protocol');
+  for (const disposition of ['stop_work', 'resume_work'] as const) {
+    const f = fixture();
+    f.client.actWorkHubCoordinationFromTurn = async () => ({
+      disposition, outcome: disposition === 'stop_work' ? 'stop_delivered' : 'resume_started',
+      targetSessionId: 'target', targetTurnId: 'target-turn',
+    } as Awaited<ReturnType<typeof f.client.actWorkHubCoordinationFromTurn>>);
+    const result = await f.runtime.actTasks(scope, 'turn', 'action', disposition === 'stop_work'
+      ? { operation: 'stop', targetSessionId: 'target' }
+      : { operation: 'resume', targetSessionId: 'target', resumesActionId: 'previous' });
+    assert.deepEqual(decodeClientCapabilityResult({ outcome: 'success', content: [], structuredContent: result }).structuredContent, result);
+    assert.equal(Object.hasOwn(result, 'executionEvidence'), false);
+  }
 });

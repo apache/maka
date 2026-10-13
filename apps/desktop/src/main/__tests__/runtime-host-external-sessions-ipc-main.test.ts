@@ -63,6 +63,7 @@ test('forwards bounded external Session requests and publishes imported Sessions
         },
       }),
       emitSessionsChanged: (reason, sessionId) => events.push({ reason, sessionId }),
+      resolveImportWorkspace: async () => ({ kind: 'project', projectId: 'selected-project' }),
     },
     ipc,
   );
@@ -99,7 +100,11 @@ test('forwards bounded external Session requests and publishes imported Sessions
   );
   assert.deepEqual(requests, [
     { adapterId: 'codex', includeArchived: true, cursor: '16' },
-    { adapterId: 'codex', sourceSessionId: 'source-1' },
+    {
+      adapterId: 'codex',
+      sourceSessionId: 'source-1',
+      workspace: { kind: 'project', projectId: 'selected-project' },
+    },
   ]);
   assert.deepEqual(events, [{ reason: 'created', sessionId: 'imported-1' }]);
 });
@@ -119,6 +124,7 @@ test('an uncertain commit still asks the shell to re-read the catalog', async ()
         },
       }),
       emitSessionsChanged: (reason, sessionId) => events.push({ reason, sessionId }),
+      resolveImportWorkspace: async () => ({ kind: 'host_path', path: '/workspace' }),
     },
     ipc,
   );
@@ -136,6 +142,37 @@ test('an uncertain commit still asks the shell to re-read the catalog', async ()
   // they come back and import the same conversation again. No id, because not
   // knowing which task landed is what `commit_outcome_unknown` means.
   assert.deepEqual(events, [{ reason: 'created', sessionId: undefined }]);
+});
+
+test('does not turn a missing import destination into an uncertain commit', async () => {
+  let imports = 0;
+  const events: string[] = [];
+  const ipc = ipcHarness();
+  registerRuntimeHostExternalSessionsIpc(
+    {
+      client: clientFixture({
+        importExternalSession: async () => {
+          imports += 1;
+          return { kind: 'imported', session: session('unexpected') };
+        },
+      }),
+      emitSessionsChanged: (reason) => events.push(reason),
+      resolveImportWorkspace: async () => {
+        throw new Error('Select a project from the Runtime Host first');
+      },
+    },
+    ipc,
+  );
+
+  await assert.rejects(
+    () => ipc.invoke('external-sessions:import', {
+      adapterId: 'codex',
+      sourceSessionId: 'source-1',
+    }),
+    /Select a project from the Runtime Host first/,
+  );
+  assert.equal(imports, 0);
+  assert.deepEqual(events, []);
 });
 
 test('keeps catalog eligibility owned by the Host after an uncertain import', async () => {
@@ -161,6 +198,7 @@ test('keeps catalog eligibility owned by the Host after an uncertain import', as
         },
       }),
       emitSessionsChanged() {},
+      resolveImportWorkspace: async () => ({ kind: 'host_path', path: '/workspace' }),
     },
     ipc,
   );
@@ -200,6 +238,7 @@ test('a dispatched interrupted import has the same uncertain outcome as the Host
         },
       }),
       emitSessionsChanged: (reason, sessionId) => events.push({ reason, sessionId }),
+      resolveImportWorkspace: async () => ({ kind: 'host_path', path: '/workspace' }),
     },
     ipc,
   );
@@ -225,6 +264,7 @@ test('fails closed when a dispatched import response cannot be decoded', async (
         },
       }),
       emitSessionsChanged: (reason, sessionId) => events.push({ reason, sessionId }),
+      resolveImportWorkspace: async () => ({ kind: 'host_path', path: '/workspace' }),
     },
     ipc,
   );
@@ -254,6 +294,7 @@ test('does not relabel an explicitly undispatched import as uncertain', async ()
         },
       }),
       emitSessionsChanged() {},
+      resolveImportWorkspace: async () => ({ kind: 'host_path', path: '/workspace' }),
     },
     ipc,
   );
@@ -284,6 +325,7 @@ test('maps a no-usable-model failure to a distinct, non-recovering reason', asyn
         },
       }),
       emitSessionsChanged: (reason, sessionId) => events.push({ reason, sessionId }),
+      resolveImportWorkspace: async () => ({ kind: 'host_path', path: '/workspace' }),
     },
     ipc,
   );
@@ -313,6 +355,7 @@ test('maps a pre-commit conversion failure to source_unreadable', async () => {
         },
       }),
       emitSessionsChanged() {},
+      resolveImportWorkspace: async () => ({ kind: 'host_path', path: '/workspace' }),
     },
     ipc,
   );
@@ -338,6 +381,7 @@ test('maps a decoded source limit to IPC data without publishing a created Sessi
   registerRuntimeHostExternalSessionsIpc({
     client: clientFixture({ importExternalSession: async () => wireResult }),
     emitSessionsChanged: (reason) => events.push(reason),
+    resolveImportWorkspace: async () => ({ kind: 'host_path', path: '/workspace' }),
   }, ipc);
 
   assert.deepEqual(await ipc.invoke('external-sessions:import', {
@@ -365,6 +409,7 @@ test('rethrows import failures that have no distinct renderer reason', async () 
         },
       }),
       emitSessionsChanged() {},
+      resolveImportWorkspace: async () => ({ kind: 'host_path', path: '/workspace' }),
     },
     ipc,
   );
@@ -395,6 +440,7 @@ test('rejects malformed renderer requests before they reach the Host client', as
         },
       }),
       emitSessionsChanged() {},
+      resolveImportWorkspace: async () => ({ kind: 'host_path', path: '/workspace' }),
     },
     ipc,
   );

@@ -19,9 +19,9 @@
 
 import type { ProviderType } from '@maka/core/llm-connections';
 import type { SettingsSection } from '@maka/core/settings';
-import type { OverlaySearchThread } from '../ports.js';
+import type { OverlayPaletteActions, OverlaySearchRecall } from '../ports.js';
 import type { SearchScrollTarget } from './search-scroll-target.js';
-import type { SettingsSurface } from './settings-surface.js';
+import type { SettingsModalState } from './settings-modal-state.js';
 
 /** What the shell and the overlay layer may ask the overlays to do. */
 export interface OverlaysCommands {
@@ -31,11 +31,11 @@ export interface OverlaysCommands {
   closePalette(): void;
   openSearch(): void;
   closeSearch(): void;
-  searchThread: OverlaySearchThread;
-  cancelSearchThread(requestId: string): Promise<void>;
+  searchRecall: OverlaySearchRecall;
+  cancelSearchRecall(requestId: string): Promise<void>;
   setSearchScrollTarget(target: SearchScrollTarget | null): void;
   openSettings(): void;
-  openSettingsSection(section: SettingsSection): void;
+  openSettingsSection(section?: SettingsSection): void;
   openProjectSettings(profileId: string): void;
   openProviderCatalog(): void;
   openConnectionDetail(slug: string): void;
@@ -51,11 +51,17 @@ export interface OverlaysSelectors {
   readonly searchOpen: boolean;
   /** Help, palette, or search: the modals that make the shell inert. */
   readonly anyModalOpen: boolean;
-  readonly settings: SettingsSurface;
+  readonly settings: SettingsModalState;
   readonly searchScrollTarget: SearchScrollTarget | null;
 }
 
 export interface OverlaysShellProjection {
   readonly commands: OverlaysCommands;
   readonly selectors: OverlaysSelectors;
+  /**
+   * The Desktop operations behind the palette's own rows, for the shell's
+   * row builder (`app-shell-command-actions.ts`) while it stays outside this
+   * feature. Created once with the services, so its identity never moves.
+   */
+  readonly paletteActions: OverlayPaletteActions;
 }

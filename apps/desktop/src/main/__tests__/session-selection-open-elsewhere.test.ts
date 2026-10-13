@@ -80,16 +80,16 @@ function toggle(selection: SessionRailSelection, sessionId: string): void {
 async function mountSelection(openId: string): Promise<{
   latest(): SessionRailSelection;
   /** A task opened from outside the rail: a new active id, and nothing else. */
-  open(sessionId: string): Promise<void>;
+  open(sessionId: string | undefined): Promise<void>;
 }> {
   const { document, window } = parseHTML('<div id="root"></div>');
   Object.assign(globalThis, { document, window, IS_REACT_ACT_ENVIRONMENT: true });
 
   const commands = {} as unknown as SessionNavigationRowActions;
   let latest: SessionRailSelection | undefined;
-  let setActiveId: ((sessionId: string) => void) | undefined;
+  let setActiveId: ((sessionId: string | undefined) => void) | undefined;
   function Probe(): ReactNode {
-    const [activeId, setActive] = useState(openId);
+    const [activeId, setActive] = useState<string | undefined>(openId);
     setActiveId = setActive;
     latest = useSessionSelection({ sessions: ORDER.map(summary), commands, activeId });
     return null;
@@ -124,6 +124,20 @@ test('opening a task the set does not hold drops the picks', async () => {
 
   // Empty, not {c}: the rail paints the open row regardless, so an empty set
   // already reads as "just this row".
+  assert.deepEqual([...probe.latest().selectedIds], []);
+});
+
+test('starting a new task drops the picks', async () => {
+  const probe = await mountSelection('a');
+  // A plain click puts the row it opened in the set; ⌘ adds another.
+  await act(() =>
+    probe.latest().commands.pick({ sessionId: 'a', pick: 'replace', orderedSessionIds: ORDER }),
+  );
+  await act(() => toggle(probe.latest(), 'b'));
+
+  // 新建任务 leaves no task open.
+  await probe.open(undefined);
+
   assert.deepEqual([...probe.latest().selectedIds], []);
 });
 

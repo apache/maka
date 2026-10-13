@@ -133,6 +133,22 @@ function compareExactString(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
+function searchableToolNames(
+  tools: readonly Pick<MakaTool, 'name'>[],
+  config: ToolAvailabilityConfig | undefined,
+): Set<string> {
+  if (config === undefined) return new Set();
+  return new Set(tools.map(({ name }) => name).filter((name) => !DIRECT_TOOL_NAMES.has(name)));
+}
+
+/** Returns the synthetic connector names injected by ToolAvailabilityRuntime. */
+export function toolAvailabilityConnectorNames(
+  tools: readonly Pick<MakaTool, 'name'>[],
+  config: ToolAvailabilityConfig | undefined,
+): string[] {
+  return searchableToolNames(tools, config).size > 0 ? [TOOL_SEARCH_NAME] : [];
+}
+
 /** Everything the backend needs for one turn. */
 export interface ToolAvailabilityPlan {
   /** Full dispatch set (sorted bound tools + search connector + repair fallback). */
@@ -167,9 +183,9 @@ interface SearchDocument {
 /**
  * Immutable, backend-scoped bound-tool inventory and MiniSearch index.
  *
- * Mutable activation belongs to the per-send TurnScope and is passed to
- * prepare(). Constructing one AiSdkBackend therefore constructs one index; all
- * turns on that backend reuse it without sharing activation state.
+ * Mutable activation is passed into prepare(). One AiSdkBackend constructs one
+ * index; Turns on that backend share the Session activation map so later
+ * Turns keep previously activated schemas.
  */
 export class ToolAvailabilityRuntime {
   private readonly tools: readonly MakaTool[];
@@ -196,10 +212,7 @@ export class ToolAvailabilityRuntime {
     this.activationKeysByName = new Map(tools.map((tool) => [tool.name, toolActivationKey(tool)]));
 
     const known = new Set(this.toolsByName.keys());
-    const searchable =
-      config === undefined
-        ? new Set<string>()
-        : new Set([...known].filter((name) => !DIRECT_TOOL_NAMES.has(name)));
+    const searchable = searchableToolNames(this.tools, config);
     const claimed = new Set<string>();
     const groups: SearchGroup[] = [];
     for (const group of config?.groups ?? []) {
@@ -322,7 +335,11 @@ export class ToolAvailabilityRuntime {
       };
     }
 
-    const connector = this.buildSearchConnector(activeTools);
+    const requiredNames = [...requiredToolNames].filter((name) => this.toolsByName.has(name));
+    const requiredNameSet = new Set(requiredNames);
+    // Required names are already on the provider list. Omit them from the
+    // search inventory so an exact-name search does not "activate" them again.
+    const connector = this.buildSearchConnector(activeTools, requiredNameSet);
     const allTools = [...this.tools, connector];
     const canonical = canonicalizeToolSet(allTools, this.invalidTool);
     const knownNames = new Set(canonical.providerTools.map((tool) => tool.name));
@@ -332,7 +349,6 @@ export class ToolAvailabilityRuntime {
     for (const [name, activatedKey] of activeTools) {
       if (this.activationKeysByName.get(name) !== activatedKey) activeTools.delete(name);
     }
-    const requiredNames = [...requiredToolNames].filter((name) => knownNames.has(name));
     const step = { active: new Set<string>() };
     const computeActive = (): string[] => {
       const names = new Set<string>([...this.directNames, TOOL_SEARCH_NAME]);
@@ -358,12 +374,19 @@ export class ToolAvailabilityRuntime {
 
   private buildSearchConnector(
     activeTools: Map<string, string>,
+    requiredToolNames: ReadonlySet<string>,
   ): MakaTool<{ query: string; limit?: number }, ToolSearchResult> {
     return {
       name: TOOL_SEARCH_NAME,
-      description: renderInventory(this.groups),
+      description: renderInventory(this.groups, requiredToolNames),
       parameters: z.object({
-        query: z.string().trim().min(1).describe('Search query describing the needed capability.'),
+        query: z
+          .string()
+          .trim()
+          .min(1)
+          .describe(
+            'Search query describing the needed capability. An exact catalog tool name activates only that tool.',
+          ),
         limit: z
           .number()
           .int()
@@ -374,11 +397,7 @@ export class ToolAvailabilityRuntime {
       }),
       impl: ({ query, limit = TOOL_SEARCH_DEFAULT_LIMIT }, context) => {
         const normalizedQuery = query.trim();
-        const ranked = this.searchIndex!.search(normalizedQuery)
-          .map((result) => String(result.id))
-          .filter((name) => !activeTools.has(name))
-          .slice(0, TOOL_SEARCH_MAX_LIMIT)
-          .filter((name) => this.searchableNames.has(name));
+        const ranked = this.rankDeferredSearchHits(normalizedQuery, activeTools, requiredToolNames);
         const activated: string[] = [];
         let blocked: ToolSearchResult['blocked'];
         let schemaChars = 0;
@@ -427,6 +446,41 @@ export class ToolAvailabilityRuntime {
     };
   }
 
+  /**
+   * Rank deferred tools for one search. An exact catalog name (case-sensitive,
+   * then unique case-insensitive) never expands into MiniSearch neighbors, so
+   * naming one tool cannot invalidate the prompt-cache prefix with up to
+   * `TOOL_SEARCH_DEFAULT_LIMIT` extra schemas.
+   */
+  private rankDeferredSearchHits(
+    query: string,
+    activeTools: ReadonlyMap<string, string>,
+    requiredToolNames: ReadonlySet<string>,
+  ): string[] {
+    const withheld = (name: string) => activeTools.has(name) || requiredToolNames.has(name);
+    const exactName = this.resolveExactCatalogName(query);
+    if (exactName !== undefined) {
+      return this.searchableNames.has(exactName) && !withheld(exactName) ? [exactName] : [];
+    }
+    return this.searchIndex!.search(query)
+      .map((result) => String(result.id))
+      .filter((name) => !withheld(name))
+      .slice(0, TOOL_SEARCH_MAX_LIMIT)
+      .filter((name) => this.searchableNames.has(name));
+  }
+
+  private resolveExactCatalogName(query: string): string | undefined {
+    if (this.toolsByName.has(query)) return query;
+    const lowered = query.toLowerCase();
+    let match: string | undefined;
+    for (const name of this.toolsByName.keys()) {
+      if (name.toLowerCase() !== lowered) continue;
+      if (match !== undefined) return undefined;
+      match = name;
+    }
+    return match;
+  }
+
   private buildDiagnostic(
     allTools: readonly MakaTool[],
     active: readonly string[],
@@ -462,11 +516,15 @@ export class ToolAvailabilityRuntime {
   }
 }
 
-function renderInventory(groups: readonly SearchGroup[]): string {
-  const lines = groups.flatMap((group) => [
-    `${group.id}:`,
-    ...group.toolNames.map((name) => `- ${name}`),
-  ]);
+function renderInventory(
+  groups: readonly SearchGroup[],
+  omitNames: ReadonlySet<string> = new Set(),
+): string {
+  const lines = groups.flatMap((group) => {
+    const names = group.toolNames.filter((name) => !omitNames.has(name));
+    if (names.length === 0) return [];
+    return [`${group.id}:`, ...names.map((name) => `- ${name}`)];
+  });
   return [
     'Search the deferred tools bound to this run. A successful search activates the',
     'bounded top matches; their complete callable definitions become visible on the',

@@ -18,8 +18,13 @@
  */
 
 import type { SessionEvent } from '@maka/core/events';
+import { createRefreshReadCoordinator } from '@maka/core/refresh-read-coordinator';
 import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
-import { createTraceRefreshCoalescer, type TraceRefreshCoalescer } from './session-trace-refresh.js';
+import type {
+  ContextUsageSnapshot,
+  ContextUsageTokens,
+} from './context-usage-snapshot.js';
+import { isTraceRelevantEvent } from './session-trace-refresh.js';
 
 /**
  * What the composer is about to send on, and therefore the only route a
@@ -38,12 +43,14 @@ export interface LiveContextRoute {
   readonly providerType?: string;
 }
 
-/** The gauge's reading: the last settled request's prompt, and its ceiling. */
-export interface LiveContextUsage {
-  readonly usageTokens: number;
-  /** The window the request was metered against, frozen at call time. */
-  readonly contextWindow?: number;
-}
+/**
+ * The live half of the gauge's answer, in the same shape the transcript
+ * selector uses: a measured prompt until a live compaction boundary retires
+ * it, then that boundary until a measurement provably settled after it
+ * lands. `resolveContextUsage` arbitrates the two sources by their `at`
+ * clocks; giving them one union is what makes that arbitration symmetric.
+ */
+export type LiveContextReading = ContextUsageSnapshot | undefined;
 
 /**
  * Maps a context diagnostics snapshot onto the gauge, or refuses.
@@ -55,11 +62,15 @@ export interface LiveContextUsage {
  * numerator by the same row's denominator exactly as the inspector's bar
  * does — a window from the live catalog could disagree with the metered
  * request, while a user-declared override still wins by design.
+ *
+ * The settlement time rides along for the same reason the window does: it
+ * belongs to this request alone, and a reader comparing this reading against a
+ * compaction boundary has no other row to get it from.
  */
 export function liveContextUsageFromDiagnostics(
   diagnostics: ContextDiagnosticsResult | undefined,
   route: LiveContextRoute,
-): LiveContextUsage | undefined {
+): ContextUsageTokens | undefined {
   if (!diagnostics || diagnostics.status !== 'available') return undefined;
   if (route.model === undefined || route.providerType === undefined) return undefined;
   if (diagnostics.modelId !== route.model || diagnostics.providerId !== route.providerType) {
@@ -70,10 +81,12 @@ export function liveContextUsageFromDiagnostics(
     return undefined;
   }
   return {
-    usageTokens: inputTokens,
+    kind: 'tokens',
+    tokens: inputTokens,
     ...(diagnostics.contextWindow !== undefined
       ? { contextWindow: diagnostics.contextWindow }
       : {}),
+    ...(diagnostics.completedAt !== undefined ? { at: diagnostics.completedAt } : {}),
   };
 }
 
@@ -117,13 +130,13 @@ export interface LiveContextUsageTracker {
  * completion (#4545 spells out why the alternatives were rejected). This
  * tracker pulls that snapshot on the same signal the inspector uses — the
  * trace-relevant live events, coalesced — with the three protections the
- * inspector proved out: a revision counter drops reads that answer an older
- * question, a failed read keeps the last value standing, and a target change
- * clears that value first and discards whatever is still in flight. The last
- * two compose rather than collide: the value kept standing is only ever the
- * CURRENT target's, because switching targets clears the previous target's
- * reading before the first read on the new one — a rejected first read must
- * not pin the old target's number in place.
+ * inspector proved out: the refresh coordinator drops reads that answer an
+ * older question, a failed read keeps the last value standing, and a target
+ * change clears that value first and discards whatever is still in flight.
+ * The last two compose rather than collide: the value kept standing is only
+ * ever the CURRENT target's, because switching targets clears the previous
+ * target's reading before the first read on the new one — a rejected first
+ * read must not pin the old target's number in place.
  *
  * Framework-free on purpose: the timer and the query are injected, so the
  * policy is testable without a DOM, and the hook in
@@ -134,33 +147,31 @@ export function createLiveContextUsageTracker(input: {
   delayMs: number;
   schedule: (callback: () => void, delayMs: number) => unknown;
   cancel: (handle: unknown) => void;
-  onChange: (usage: LiveContextUsage | undefined) => void;
+  onChange: (usage: LiveContextReading) => void;
 }): LiveContextUsageTracker {
   let target: LiveContextUsageTarget | undefined;
-  let revision = 0;
-  const coalescer: TraceRefreshCoalescer = createTraceRefreshCoalescer({
-    refresh: () => refresh(),
+  let appliedAt: number | undefined;
+  const coordinator = createRefreshReadCoordinator({
+    read: () => target ? input.query(target.sessionId) : Promise.resolve(undefined),
+    apply: (diagnostics) => {
+      // Every target change invalidates in-flight reads before they can apply.
+      if (!diagnostics || !target) return;
+      const usage = liveContextUsageFromDiagnostics(diagnostics, target.route);
+      // A live boundary holds the gauge on "compacted" until a read lands
+      // that provably settled after it; reads at or before the boundary — or
+      // carrying no settlement time — cannot re-earn the number.
+      input.onChange(
+        appliedAt !== undefined && !(usage !== undefined && usage.at !== undefined && usage.at > appliedAt)
+          ? { kind: 'compacted', at: appliedAt }
+          : usage,
+      );
+    },
     delayMs: input.delayMs,
-    schedule: input.schedule,
-    cancel: input.cancel,
+    schedule: (callback, delayMs) => {
+      const handle = input.schedule(callback, delayMs);
+      return () => input.cancel(handle);
+    },
   });
-
-  function refresh(): void {
-    const current = target;
-    if (!current) return;
-    const readRevision = ++revision;
-    void input.query(current.sessionId).then(
-      (diagnostics) => {
-        if (readRevision !== revision) return;
-        input.onChange(liveContextUsageFromDiagnostics(diagnostics, current.route));
-      },
-      () => {
-        // A failed read leaves the last value standing: it is still the newest
-        // answer anyone has, and blanking it would report "no usage" for a
-        // read that simply failed.
-      },
-    );
-  }
 
   return {
     setTarget(next) {
@@ -172,24 +183,32 @@ export function createLiveContextUsageTracker(input: {
       // would otherwise pin it there indefinitely. Re-aiming at the SAME
       // target does not clear — the standing value still answers it, and
       // blanking it would flicker.
-      revision += 1;
       const changed = !sameLiveContextUsageTarget(target, next);
       target = next;
-      coalescer.cancel();
+      coordinator.cancel();
+      if (changed) appliedAt = undefined;
       if (!next) {
         input.onChange(undefined);
         return;
       }
       if (changed) input.onChange(undefined);
-      refresh();
+      coordinator.refresh();
     },
     observe(event) {
-      coalescer.observe(event);
+      if (!target) return;
+      if (event.type === 'context_compaction_applied') {
+        if (appliedAt !== undefined && event.ts <= appliedAt) return;
+        appliedAt = event.ts;
+        // Retire pre-boundary reads immediately, before the debounced refresh.
+        coordinator.observe();
+        input.onChange({ kind: 'compacted', at: appliedAt });
+        return;
+      }
+      if (isTraceRelevantEvent(event)) coordinator.observe();
     },
     dispose() {
-      revision += 1;
       target = undefined;
-      coalescer.cancel();
+      coordinator.cancel();
     },
   };
 }

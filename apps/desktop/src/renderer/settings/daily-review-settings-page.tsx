@@ -17,11 +17,13 @@
  * under the License.
  */
 
+import type { UiLocale } from '@maka/core/ui-locale';
+
 import { useEffect, useMemo, useState } from 'react';
 import { Banner } from '@astryxdesign/core';
 import type { DailyReviewConfig } from '@maka/core/daily-review';
 import type { LlmConnection, ProjectedLlmConnection } from '@maka/core/llm-connections';
-import { ModelWheelPicker, Switch, TextInput, useMountedRef, useUiLocale } from '@maka/ui';
+import { Selector, Switch, TextInput, useMountedRef, useUiLocale } from '@maka/ui';
 import { buildCatalogDailyReviewModelOptions } from '../model-catalog-choices';
 import { getDailyReviewSettingsCopy, type DailyReviewSettingsCopy } from '../locales/settings-daily-review-copy';
 import { settingsActionErrorMessage } from './settings-error-copy';
@@ -39,7 +41,7 @@ function buildDailyReviewModelOptions(
   connections: readonly ProjectedLlmConnection[],
   currentModelKey: string,
   copy: DailyReviewSettingsCopy,
-  locale: 'zh-CN' | 'zh-TW' | 'en',
+  locale: UiLocale,
 ): Array<{ value: string; label: string }> {
   return [
     { value: DAILY_REVIEW_DEFAULT_MODEL_VALUE, label: copy.defaultModel },
@@ -176,15 +178,15 @@ export function DailyReviewSettingsPage(props: { connections: readonly Projected
         <SettingsRow
           label={copy.model}
           description={copy.modelHelp}
-          end={<ModelWheelPicker
+          end={<Selector
             value={selectedModelValue}
-            label={modelOptions.find((option) => option.value === selectedModelValue)?.label ?? selectedModelValue}
-            ariaLabel={copy.model}
+            label={copy.model}
+            isLabelHidden
             options={modelOptions}
-            size="md"
-            triggerClassName="settingsModelPickerTrigger"
-            disabled={formDisabled || modelOptions.length === 0}
-            onValueChange={(value) => patchConfig('modelKey', {
+            hasSearch
+            placement="below"
+            isDisabled={formDisabled || modelOptions.length === 0}
+            onChange={(value) => void patchConfig('modelKey', {
               modelKey: value === DAILY_REVIEW_DEFAULT_MODEL_VALUE ? '' : value,
             })}
           />}

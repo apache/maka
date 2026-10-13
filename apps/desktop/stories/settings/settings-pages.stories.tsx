@@ -55,6 +55,10 @@ import {
   AppUpdateServicesProvider,
   type AppUpdateServices,
 } from '../../src/renderer/features/app-update/index.js';
+import {
+  DiagnosticsServicesProvider,
+  createFakeDiagnosticsServices,
+} from '../../src/renderer/features/diagnostics/testing.js';
 import type { SessionSummary } from '@maka/core/session';
 import { revisionFamilySessionIds } from '@maka/core/session-revisions';
 import type {
@@ -64,6 +68,7 @@ import type {
   ProviderType,
 } from '@maka/core/llm-connections';
 import { resolveConnectionModelCatalog } from '@maka/core/model-catalog';
+import { connectionEnabledModelIds } from '@maka/core/llm-connections';
 import { buildChatModelChoices } from '@maka/core/chat-model-choice';
 import type { LocalMemoryBackupInfo, LocalMemoryEntryPreview, LocalMemoryState } from '@maka/core/local-memory';
 import { buildHealthSnapshot } from '@maka/core/health';
@@ -71,6 +76,8 @@ import { createDefaultSettings, mergeSettings } from '@maka/core/settings';
 import { DEFAULT_DAILY_REVIEW_CONFIG } from '@maka/core/daily-review';
 import type { PetPackManifestV1 } from '@maka/core/pet';
 import { SettingsSurface } from '../../src/renderer/settings/settings-surface';
+import { TaskEntryServicesProvider } from '../../src/renderer/features/task-entry';
+import { createFakeTaskEntryServices } from '../../src/renderer/features/task-entry/testing';
 import { ConnectionSettingsServicesProvider } from '../../src/renderer/features/connection-settings';
 import { RuntimeHostManagementServicesProvider } from '../../src/renderer/features/runtime-host-management';
 import {
@@ -87,6 +94,12 @@ import {
 import type { ConnectionsBridge } from '../../src/renderer/settings/providers-panel';
 import type { ProjectRecord } from '@maka/core/project';
 import type { ArchivedTasksBridge } from '../../src/renderer/settings/tasks-settings-page';
+import type { SessionNavigationRowActions } from '../../src/renderer/features/session-navigation';
+import { runtimeHostProjectKey } from '../../src/renderer/application/contracts/runtime-host-project-key';
+import {
+  createSessionCatalogController,
+  type SessionCatalogController,
+} from '../../src/renderer/application/contracts/session-catalog/session-catalog-state.js';
 import type {
   DesktopLocalRuntimeHostRemoteAccessSnapshot,
   DesktopRuntimeHostProfileChangedEvent,
@@ -131,6 +144,7 @@ const noop = () => undefined;
 
 // Both halves open a native file dialog, which a story has none of. Cancelled is
 // the outcome that leaves the page exactly as it was.
+const taskEntryServices = createFakeTaskEntryServices();
 const sessionBundleServices: SessionBundleServices = {
   exportBundle: async () => ({ ok: false, reason: 'canceled' }),
   importBundle: async () => ({ ok: false, reason: 'canceled' }),
@@ -154,7 +168,8 @@ function makeConnection(input: {
     createdAt: NOW - 6 * 24 * 60 * 60 * 1000,
     updatedAt: NOW - 12 * 60_000,
   };
-  return { ...stored, catalogEntries: resolveConnectionModelCatalog(stored) };
+  const projected = { ...stored, enabledModelIds: connectionEnabledModelIds(stored) };
+  return { ...projected, catalogEntries: resolveConnectionModelCatalog(projected) };
 }
 
 const connections: ProjectedLlmConnection[] = [
@@ -999,20 +1014,37 @@ const makaBridge = {
     readSpriteSheet: async () => ({ ok: false as const, reason: 'not_found' as const }),
     subscribeChanges: () => () => undefined,
   },
+  // 工作区 reads and subscribes on window.maka.projects when it mounts. Only
+  // the projects-specific bridges supplied it, so opening 工作区 from any other
+  // settings story through the sidebar threw (getSnapshot / subscribeChanges
+  // of undefined).
+  projects: {
+    getSnapshot: async () => ({
+      projects: [],
+      capabilities: {
+        chooseClientDirectory: false,
+        chooseHostDirectory: false,
+        selectNoProject: false,
+        setLocalDefault: true,
+        viewClientPath: true,
+      },
+    }),
+    subscribeChanges: () => () => undefined,
+  },
 } satisfies Record<string, unknown>;
 
 const withSettingsBridge = withScopedMakaBridge(makaBridge);
 
 let typographyStoryDefaultSlug: string | null = 'zai-live';
-let typographyStorySelectedPetId: string | null = 'storybook.typography-pet';
+let storyPetSelectedId: string | null = 'storybook.pet';
 
-const typographyStoryPet = {
+const storyPet = {
   schema: 'maka.pet/v1',
-  id: 'storybook.typography-pet',
-  displayName: 'Typography Pet',
-  description: 'Exercises action-to-badge transitions in the custom pet rows.',
+  id: 'storybook.pet',
+  displayName: 'Storybook Pet',
+  description: 'An imported pet pack.',
   spriteSheet: {
-    path: 'assets/typography-pet.png',
+    path: 'assets/storybook-pet.png',
     format: 'png',
     frameWidth: 32,
     frameHeight: 32,
@@ -1044,14 +1076,14 @@ const withConnectionDefaultTypographyBridge = withScopedMakaBridge({
   },
 } satisfies Record<string, unknown>);
 
-const withPetActionBadgeTypographyBridge = withScopedMakaBridge({
+const withPetsBridge = withScopedMakaBridge({
   ...makaBridge,
   pets: {
     ...makaBridge.pets,
-    list: async () => [typographyStoryPet],
-    getSelection: async () => typographyStorySelectedPetId,
+    list: async () => [storyPet],
+    getSelection: async () => storyPetSelectedId,
     select: async (petId: string | null) => {
-      typographyStorySelectedPetId = petId;
+      storyPetSelectedId = petId;
       return { ok: true as const, selectedPetId: petId };
     },
   },
@@ -1074,6 +1106,9 @@ const settingsAppUpdateServices: AppUpdateServices = {
     subscribeUpdateStatus: (handler) => window.maka.app.subscribeUpdateStatus(handler),
   },
 };
+
+/** About's 复制诊断信息 resolves without a Desktop bridge to copy from. */
+const settingsDiagnosticsServices = createFakeDiagnosticsServices();
 
 /**
  * A PACKAGED install, which the shared fixture cannot be: it is a dev checkout,
@@ -1597,19 +1632,25 @@ const archivedTaskProjects: ProjectRecord[] = [
  */
 function useArchivedTasksStoryBridge(seed: readonly SessionSummary[]): ArchivedTasksBridge {
   const toast = useToast();
-  const [sessions, setSessions] = useState<DesktopSessionSummary[]>(() =>
-    seed.map((session) => ({
-      ...session,
-      revision: 1,
-      runtimeHostId: 'storybook-local',
-      profileId: 'local',
-      profileName: 'Local',
-      profileKind: 'local',
-    })),
-  );
+  const catalogRef = useRef<SessionCatalogController | null>(null);
+  catalogRef.current ??= (() => {
+    const controller = createSessionCatalogController();
+    controller.commitSessions(
+      seed.map((session) => ({
+        ...session,
+        revision: 1,
+        runtimeHostId: 'storybook-local',
+        profileId: 'local',
+        profileName: 'Local',
+        profileKind: 'local',
+      })),
+    );
+    return controller;
+  })();
+  const catalog = catalogRef.current;
   const confirmDelete = (sessionId: string) =>
     toast.confirm({
-      title: `彻底删除「${sessions.find((session) => session.id === sessionId)?.name ?? ''}」？`,
+      title: `彻底删除「${catalog.getState().sessions.find((session) => session.id === sessionId)?.name ?? ''}」？`,
       description: '任务及其全部消息会被永久删除，无法撤销。',
       confirmLabel: '永久删除',
       cancelLabel: '取消',
@@ -1619,40 +1660,46 @@ function useArchivedTasksStoryBridge(seed: readonly SessionSummary[]): ArchivedT
   // edit-and-resend family with it. Dropping only the id on screen would leave
   // an older revision behind and show a list the real app never produces.
   const drop = (ids: readonly string[]) => {
-    setSessions((current) => {
-      const doomed = new Set(ids.flatMap((id) => revisionFamilySessionIds(current, id)));
-      return current.filter((session) => !doomed.has(session.id));
-    });
+    const current = catalog.getState().sessions;
+    const doomed = new Set(ids.flatMap((id) => revisionFamilySessionIds(current, id)));
+    catalog.commitSessions(current.filter((session) => !doomed.has(session.id)));
   };
-  return {
-    sessions,
-    projects: archivedTaskProjects,
-    onRestore: (sessionId) =>
-      setSessions((current) => {
-        const family = new Set(revisionFamilySessionIds(current, sessionId));
-        return current.map((session) =>
+  const commands = {
+    unarchiveSession: async (sessionId: string) => {
+      const current = catalog.getState().sessions;
+      const family = new Set(revisionFamilySessionIds(current, sessionId));
+      catalog.commitSessions(
+        current.map((session) =>
           family.has(session.id) ? { ...session, isArchived: false } : session,
-        );
-      }),
+        ),
+      );
+    },
     // Mirrors the shell's own row action, which always confirms first — a
     // story where a row vanishes on one click would be showing an interaction
     // the app does not have.
-    onDelete: (sessionId) => {
-      void confirmDelete(sessionId).then((ok) => {
-        if (ok) drop([sessionId]);
+    deleteSession: async (sessionId: string) => {
+      if (await confirmDelete(sessionId)) drop([sessionId]);
+    },
+    purgeArchived: async (request: { sessionIds: readonly string[] }) => {
+      const ok = await toast.confirm({
+        title: `删除当前显示的 ${request.sessionIds.length} 条任务？`,
+        description: '这些任务及其全部消息会被永久删除，无法撤销。',
+        confirmLabel: '永久删除',
+        cancelLabel: '取消',
+        destructive: true,
       });
+      if (ok) drop(request.sessionIds);
     },
-    onPurge: async (sessionIds) => {
-      drop(sessionIds);
-      return {
-        removed: sessionIds.length,
-        archivedSubtasks: 0,
-        remaining: [],
-        restored: [],
-        verified: true,
-        firstError: undefined,
-      };
-    },
+  } as unknown as SessionNavigationRowActions;
+  return {
+    catalog,
+    projectScopes: archivedTaskProjects.map((project) => ({
+      key: runtimeHostProjectKey('storybook-local', project.id),
+      hostId: 'storybook-local',
+      profileName: 'Local',
+      project,
+    })),
+    commands: { current: commands },
   };
 }
 const gitBashSettings = mergeSettings(createDefaultSettings(), {
@@ -1939,6 +1986,13 @@ function focusedRowOutline() {
   return { outlineStyle: style.outlineStyle, outlineWidth: style.outlineWidth };
 }
 
+function fieldChrome(element: HTMLElement) {
+  const field = element.parentElement;
+  if (!field) throw new Error('Settings field chrome is missing');
+  const style = getComputedStyle(field);
+  return `${style.borderColor} | ${style.boxShadow}`;
+}
+
 /**
  * The provider has to sit above the body: 已归档任务's story bridge confirms
  * through the same toast surface the shell's row action uses, and a hook cannot
@@ -1947,11 +2001,15 @@ function focusedRowOutline() {
 function SettingsStory(props: SettingsStoryProps) {
   return (
     <ToastProvider>
-      <AppUpdateServicesProvider services={settingsAppUpdateServices}>
-        <AppUpdateProvider>
-          <SettingsStoryFrame {...props} />
-        </AppUpdateProvider>
-      </AppUpdateServicesProvider>
+      <DiagnosticsServicesProvider services={settingsDiagnosticsServices}>
+        <AppUpdateServicesProvider services={settingsAppUpdateServices}>
+          <AppUpdateProvider>
+            <TaskEntryServicesProvider services={taskEntryServices}>
+              <SettingsStoryFrame {...props} />
+            </TaskEntryServicesProvider>
+          </AppUpdateProvider>
+        </AppUpdateServicesProvider>
+      </DiagnosticsServicesProvider>
     </ToastProvider>
   );
 }
@@ -2059,7 +2117,7 @@ async function openDailyReviewModelSelector(canvasElement: HTMLElement): Promise
   );
   await userEvent.click(selector);
   await waitForStoryCondition(
-    () => canvasElement.querySelector('.maka-model-wheel-viewport') !== null,
+    () => document.querySelector('[popover]:popover-open [role="listbox"]') !== null,
     'Daily Review model selector did not open',
   );
   return selector;
@@ -2070,7 +2128,7 @@ export const Models: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="models" />,
 };
-// Real path: 设置 → 模型 → 连接详情, comparing the action before selection
+// Real path: 设置 → 模型 → 连接详情 with one enabled chat model, comparing the action before selection
 // with the settled state after a connection is the default. Both occupy the
 // same header slot, so changing state must not shrink the label typography.
 export const ModelsDefaultBadgeTypography: Story = {
@@ -2088,7 +2146,7 @@ export const ModelsDefaultBadgeTypography: Story = {
 
     await userEvent.click(setDefaultButton);
     const detailHeader = await canvas.findByRole('toolbar', { name: 'OpenAI Review' });
-    const defaultLabel = within(detailHeader).getByText('默认');
+    const defaultLabel = await within(detailHeader).findByText('默认');
     const defaultBadge = defaultLabel.closest<HTMLElement>('.astryx-badge');
     if (!defaultBadge) throw new Error('Connection default-state badge did not render');
 
@@ -2125,7 +2183,7 @@ export const General: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="general" />,
 };
-// Real path: 设置 → 通用 → 默认模型. Focus stays on the floating magnetic wheel;
+// Real path: 设置 → 通用 → 默认模型. Focus moves into the open Selector popup;
 // the containing settings row must not add a second focus ring.
 export const GeneralPickerOpenFocusRing: Story = {
   decorators: [withSettingsBridge],
@@ -2134,29 +2192,22 @@ export const GeneralPickerOpenFocusRing: Story = {
     const canvas = within(canvasElement);
     const trigger = await canvas.findByRole('button', { name: '默认模型' });
     trigger.scrollIntoView({ block: 'center' });
-    const rows = () => Array.from(canvasElement.querySelectorAll('.astryx-item')).map((element) => {
-      const { x, y, width, height } = element.getBoundingClientRect();
-      return { x, y, width, height };
-    });
-    const before = rows();
     await userEvent.click(trigger);
     await waitFor(() => {
       const active = document.activeElement as HTMLElement | null;
-      expect(active?.matches('.maka-model-wheel-viewport')).toBe(true);
+      expect(document.querySelector('[popover]:popover-open')).not.toBeNull();
+      expect(active?.closest('[popover]:popover-open')).not.toBeNull();
     });
     const active = document.activeElement as HTMLElement;
     const row = active.closest<HTMLElement>('.astryx-item');
     expect(row).not.toBeNull();
     expect(row ? getComputedStyle(row).outlineStyle : null).toBe('none');
-    expect(rows()).toEqual(before);
     await userEvent.keyboard('{Escape}');
     await waitFor(() => expect(trigger).toHaveFocus());
-    expect(rows()).toEqual(before);
-    await userEvent.click(trigger);
   },
 };
 
-// Real path: keyboard navigation through 设置 → 通用. The model button carries the
+// Real path: keyboard navigation through 设置 → 通用. The field carries the
 // visible focus treatment; its containing Item does not add a second ring.
 export const GeneralKeyboardFocusRing: Story = {
   decorators: [withSettingsBridge],
@@ -2165,19 +2216,16 @@ export const GeneralKeyboardFocusRing: Story = {
     const canvas = within(canvasElement);
     const tone = await canvas.findByRole('textbox', { name: '助手语气偏好' });
     const trigger = canvas.getByRole('button', { name: '默认模型' });
+    const resting = fieldChrome(trigger);
     tone.focus();
     await tabTo(trigger);
     expect(focusedRowOutline()?.outlineStyle).toBe('none');
-    await waitFor(() => {
-      const style = getComputedStyle(trigger);
-      expect(style.outlineStyle).toBe('solid');
-      expect(Number.parseFloat(style.outlineWidth)).toBeGreaterThan(0);
-    });
+    await waitFor(() => expect(fieldChrome(trigger)).not.toBe(resting));
   },
 };
 
 // Real path: Windows High Contrast keyboard navigation through 设置 → 通用.
-// The model button's outline survives, and the Item retains its shared fallback.
+// The field loses its own paint there, so the Item retains the focus ring.
 export const GeneralForcedColorsFocusRing: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="general" />,
@@ -2185,10 +2233,10 @@ export const GeneralForcedColorsFocusRing: Story = {
     const canvas = within(canvasElement);
     const tone = await canvas.findByRole('textbox', { name: '助手语气偏好' });
     const trigger = canvas.getByRole('button', { name: '默认模型' });
+    const resting = fieldChrome(trigger);
     tone.focus();
     await tabTo(trigger);
-    expect(getComputedStyle(trigger).outlineStyle).toBe('solid');
-    expect(Number.parseFloat(getComputedStyle(trigger).outlineWidth)).toBeGreaterThan(0);
+    expect(fieldChrome(trigger)).toBe(resting);
     expect(focusedRowOutline()?.outlineStyle).toBe('solid');
   },
 };
@@ -2231,7 +2279,7 @@ export const GeneralHostSettingsLoading: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await canvas.findByText('显示名称');
-    await canvas.findByRole('switch', { name: '完成时发送系统通知' });
+    await canvas.findByRole('switch', { name: '发送系统通知' });
     await expect(
       await canvas.findByRole('button', { name: '默认模型' }),
     ).toBeEnabled();
@@ -2275,7 +2323,7 @@ export const GeneralCachedRevalidation: Story = {
     await expect(tone).toBeDisabled();
     await expect(defaultModel).toBeDisabled();
     await expect(
-      canvas.getByRole('switch', { name: '完成时发送系统通知' }),
+      canvas.getByRole('switch', { name: '发送系统通知' }),
     ).toBeEnabled();
     await expect(canvas.getByRole('combobox', { name: '界面语言' })).toBeEnabled();
     const mixedBoundary = canvasElement.querySelector<HTMLElement>(
@@ -2376,7 +2424,7 @@ export const GeneralHostGenerationRevalidation: Story = {
     await expect(tone).toBeDisabled();
     await expect(defaultModel).toBeDisabled();
     await expect(
-      canvas.getByRole('switch', { name: '完成时发送系统通知' }),
+      canvas.getByRole('switch', { name: '发送系统通知' }),
     ).toBeEnabled();
     await expect(canvas.getByRole('combobox', { name: '界面语言' })).toBeEnabled();
     const mixedBoundary = canvasElement.querySelector<HTMLElement>(
@@ -2441,7 +2489,7 @@ export const GeneralBackgroundHostReconnectThenSelect: Story = {
     const currentTone = canvas.queryByRole('textbox', { name: '助手语气偏好' });
     if (currentTone) await expect(currentTone).toBeDisabled();
     await expect(
-      canvas.getByRole('switch', { name: '完成时发送系统通知' }),
+      canvas.getByRole('switch', { name: '发送系统通知' }),
     ).toBeEnabled();
     await expect(canvas.getByRole('combobox', { name: '界面语言' })).toBeEnabled();
   },
@@ -2458,7 +2506,7 @@ export const GeneralHostSettingsError: Story = {
     await expect(alert).toHaveTextContent('载入设置失败');
     await canvas.findByRole('button', { name: '重试' });
     await expect(
-      canvas.getByRole('switch', { name: '完成时发送系统通知' }),
+      canvas.getByRole('switch', { name: '发送系统通知' }),
     ).toBeEnabled();
     await expect(canvas.getByRole('button', { name: '默认模型' })).toBeEnabled();
     await expect(canvas.queryByText('显示名称')).not.toBeInTheDocument();
@@ -2477,7 +2525,7 @@ export const GeneralRuntimeHostUnavailable: Story = {
     const alert = await canvas.findByRole('alert');
     await expect(alert).toHaveTextContent('Runtime Host');
     await expect(
-      canvas.getByRole('switch', { name: '完成时发送系统通知' }),
+      canvas.getByRole('switch', { name: '发送系统通知' }),
     ).toBeEnabled();
     await expect(
       Array.from(canvasElement.querySelectorAll('[role="status"]')).some(
@@ -2558,6 +2606,15 @@ export const Appearance: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await canvas.findByRole('heading', { name: 'App icon' });
+    const workbarToggle = await canvas.findByRole('switch', { name: 'Show Workbar toggle in titlebar' });
+    expect(workbarToggle).toBeChecked();
+    await userEvent.click(workbarToggle);
+    await waitFor(() => expect(workbarToggle).not.toBeChecked());
+    expect(storyClientSettings.appearance.workbarTogglePosition).toBe('edge');
+    await userEvent.click(workbarToggle);
+    await waitFor(() => expect(workbarToggle).toBeChecked());
+    expect(storyClientSettings.appearance.workbarTogglePosition).toBe('titlebar');
+
     for (const name of ['Azure', 'Classic']) {
       const input = await canvas.findByRole('checkbox', { name });
       const card = input.parentElement;
@@ -2574,40 +2631,48 @@ export const Appearance: Story = {
     }
   },
 };
-// Real path: 设置 → 外观 → 桌宠. The selected and disabled badges each
-// replace a small action in the same row, so both settled states must retain
-// the action label's type tier.
-export const PetsActionBadgeTypography: Story = {
-  decorators: [withPetActionBadgeTypographyBridge],
+// Real path: 设置 → 外观 → 应用图标 with 浅色和深色用不同图标 turned on.
+// The slot control decides which appearance the icon grid edits.
+export const AppearanceSplitAppIcons: Story = {
+  decorators: [
+    withScopedMakaBridge({
+      ...makaBridge,
+      settings: {
+        ...makaBridge.settings,
+        getClient: async () => ({
+          ...storyClientSettings,
+          appearance: { ...storyClientSettings.appearance, appIconDark: 'ink' as const },
+        }),
+      },
+    }),
+  ],
+  globals: { locale: 'en' },
+  render: () => <SettingsStory section="appearance" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const slots = await canvas.findByRole('radiogroup', { name: 'Use a different icon in dark mode' });
+    const ink = await canvas.findByRole('checkbox', { name: 'Ink' });
+    expect(ink).not.toBeChecked();
+    await userEvent.click(within(slots).getByRole('radio', { name: 'Dark' }));
+    await waitFor(() => expect(ink).toBeChecked());
+  },
+};
+// Real path: 设置 → 外观 → 桌宠 with one imported pet in use, then 关闭宠物.
+// Turning the pet off must hand the row its 使用 action back.
+export const PetsSelectedThenDisabled: Story = {
+  decorators: [withPetsBridge],
   globals: { locale: 'zh-CN' },
   render: () => {
-    typographyStorySelectedPetId = typographyStoryPet.id;
+    storyPetSelectedId = storyPet.id;
     return <SettingsStory section="appearance" />;
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const selectedLabel = await canvas.findByText('正在使用');
-    const selectedBadge = selectedLabel.closest<HTMLElement>('.astryx-badge');
-    const selectedActions = selectedBadge?.closest<HTMLElement>('.settingsRowEnd');
-    const removeButton = selectedActions
-      ? within(selectedActions).getByRole('button', { name: '删除' })
-      : null;
-    if (!selectedBadge || !removeButton) {
-      throw new Error('Selected-pet action row did not render');
-    }
-    await expect(getComputedStyle(selectedBadge).fontSize).toBe(
-      getComputedStyle(removeButton).fontSize,
-    );
-
-    const disableButton = await canvas.findByRole('button', { name: '关闭宠物' });
-    const disableActionFontSize = getComputedStyle(disableButton).fontSize;
-    await userEvent.click(disableButton);
-    const disabledLabels = await canvas.findAllByText('已关闭');
-    const disabledBadge = disabledLabels
-      .map((label) => label.closest<HTMLElement>('.astryx-badge'))
-      .find((badge): badge is HTMLElement => badge !== null);
-    if (!disabledBadge) throw new Error('Disabled-pet action badge did not render');
-    await expect(getComputedStyle(disabledBadge).fontSize).toBe(disableActionFontSize);
+    await canvas.findByText(`当前使用：${storyPet.displayName}`);
+    await expect(canvas.queryByRole('button', { name: '使用' })).not.toBeInTheDocument();
+    await userEvent.click(await canvas.findByRole('button', { name: '关闭宠物' }));
+    await canvas.findByRole('button', { name: '使用' });
+    await expect(canvas.queryByRole('button', { name: '关闭宠物' })).not.toBeInTheDocument();
   },
 };
 
@@ -2657,9 +2722,14 @@ export const UsageRetainedCapacityFailure: Story = {
     const details = canvas.queryByRole('button', {name: copy.showDetails});
     if (details) await userEvent.click(details);
     await canvas.findByRole('button', {name: /next page|下一页|下一頁/i});
+    await expect(await canvas.findByText('420')).toBeVisible();
+    const retainedRow = /^重构使用统计页请求日志的任务列，改为显示会话名称并处理超长标题的截断$/;
+    await expect(await canvas.findByText(retainedRow)).toBeVisible();
     await userEvent.type(await canvas.findByRole('textbox', {name: copy.filterAria}), 'new-filter');
     await expect(await canvas.findByText(new RegExp(copy.capacityBody))).toBeVisible();
     await expect(await canvas.findByText(new RegExp(copy.retainedBody))).toBeVisible();
+    await expect(await canvas.findByText('420')).toBeVisible();
+    await expect(await canvas.findByText(retainedRow)).toBeVisible();
     await expect(await canvas.findByRole('button', {name: /next page|下一页|下一頁/i})).toBeDisabled();
   },
 };
@@ -2678,6 +2748,51 @@ export const UsageSingleProvider: Story = {
 export const UsageMultiModel: Story = {
   decorators: [withUsageMultiModelBridge],
   render: () => <SettingsStory section="usage" />,
+  play: async ({ canvasElement, globals }) => {
+    const canvas = within(canvasElement);
+    const copy = getUsageSettingsCopy(
+      globals.locale === 'en' ? 'en' : globals.locale === 'zh-TW' ? 'zh-TW' : 'zh-CN',
+    );
+    const tabs = within(await canvas.findByRole('navigation', { name: copy.viewAria }));
+    await userEvent.click(tabs.getByRole('button', { name: new RegExp(`^${copy.tabs[2]}`) }));
+    const table = within(await canvas.findByRole('table', { name: copy.tables.modelsAria }));
+
+    async function expectExactTooltip(trigger: HTMLElement, exactValue: string) {
+      await waitFor(() => {
+        const tooltipId = trigger.getAttribute('aria-describedby');
+        expect(tooltipId).toBeTruthy();
+        const tooltip = canvasElement.ownerDocument.getElementById(tooltipId!);
+        expect(tooltip).toHaveAttribute('role', 'tooltip');
+        expect(tooltip).toBeVisible();
+        expect(tooltip?.textContent).toBe(exactValue);
+        expect(trigger).toHaveAccessibleDescription(exactValue);
+      });
+    }
+
+    for (const compact of ['624K', '318K', '214K', '96K', '32K']) {
+      const token = table.getByText(compact);
+      const cell = token.closest('td');
+      if (!cell) throw new Error('Token count did not render inside a table cell');
+      const range = canvasElement.ownerDocument.createRange();
+      range.selectNodeContents(token);
+      const cellStyle = getComputedStyle(cell);
+      const requiredWidth = range.getBoundingClientRect().width
+        + Number.parseFloat(cellStyle.paddingLeft) + Number.parseFloat(cellStyle.paddingRight);
+      expect(requiredWidth).toBeLessThanOrEqual(cell.clientWidth);
+    }
+
+    const first = table.getByText('624K');
+    await userEvent.hover(first);
+    await expectExactTooltip(first, '624,000');
+    await userEvent.unhover(first);
+    expect(first).toHaveAttribute('tabindex', '0');
+    first.focus();
+    await userEvent.tab();
+    const second = table.getByText('318K');
+    expect(second).toHaveFocus();
+    await expectExactTooltip(second, '318,000');
+    second.blur();
+  },
 };
 // Real path: 设置 → 使用统计 → 详情记录 on → 活动记录, with long model and tool names.
 export const UsageLongTail: Story = {
@@ -2976,7 +3091,7 @@ export const DataCachedHostRevalidation: Story = {
     await expect(canvas.getByRole('button', { name: '复制路径' })).toBeDisabled();
     await expect(canvas.getByRole('button', { name: '导出配置…' })).toBeDisabled();
     await expect(canvas.getByRole('button', { name: '导入配置…' })).toBeDisabled();
-    await expect(canvas.getByRole('switch', { name: '模型连接' })).toBeEnabled();
+    await expect(canvas.getByRole('checkbox', { name: '模型连接' })).toBeEnabled();
     await expect(
       canvas.getByRole('combobox', { name: '导入时同名连接的处理方式' }),
     ).toBeEnabled();
@@ -3527,6 +3642,22 @@ export const ArchivedTasks: Story = {
   render: () => (
     <SettingsStory section="archived-tasks" archivedTaskSessions={archivedTaskSessions} />
   ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    // The newer revision represents this task family in the archived list.
+    const title = 'Single agent_spawn, second attempt';
+    const unarchive = await canvas.findByRole('button', { name: `取消归档「${title}」` });
+    const remove = await canvas.findByRole('button', { name: `彻底删除「${title}」` });
+    await expect(unarchive).toBeVisible();
+    await expect(remove).toBeVisible();
+    await expect(unarchive.querySelector('svg[aria-hidden="true"]')).not.toBeNull();
+    await expect(remove.querySelector('svg[aria-hidden="true"]')).not.toBeNull();
+    await expect(canvas.queryByRole('button', { name: `「${title}」的更多操作` })).toBeNull();
+    const row = unarchive.closest('li');
+    if (!row) throw new Error('archived task row is missing');
+    await userEvent.click(unarchive);
+    await waitFor(() => expect(row).not.toBeInTheDocument());
+  },
 };
 
 // Real path: 设置 → 导入任务 on a machine that has Codex installed.

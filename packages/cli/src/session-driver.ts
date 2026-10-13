@@ -18,7 +18,7 @@
  */
 
 import { realpath } from 'node:fs/promises';
-import type { SessionEvent, ShellRunSnapshotResult, ShellRunUpdate } from '@maka/core/events';
+import type { SessionEvent, ShellRunStateResult, ShellRunUpdate } from '@maka/core/events';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { PermissionMode } from '@maka/core/permission';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
@@ -26,6 +26,7 @@ import type { SessionSummary, StoredMessage } from '@maka/core/session';
 import type { SessionTodoItem } from '@maka/core/session-todo';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { CreateSessionInput, TurnOrchestration } from '@maka/core/runtime-inputs';
+import type { TurnOrigin } from '@maka/core/turn-origin';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { InteractionFormResponse } from '@maka/core/interaction';
 import type { ContextDiagnostics } from '@maka/runtime/context-diagnostics';
@@ -104,6 +105,7 @@ export interface MakaPreparePromptOptions {
   modelText?: string;
   turnOrchestration?: TurnOrchestration;
   maxSteps?: number;
+  origin?: TurnOrigin;
 }
 
 export interface MakaSubmitMessageOptions {
@@ -138,18 +140,22 @@ export function skillInvocationBlockedMessage(skillInvocation: SkillInvocationRe
 
 export interface MakaUserCommand {
   readonly commandId: string;
-  readonly result: ShellRunSnapshotResult;
+  readonly result: ShellRunStateResult;
   /** Returns the newest update that raced the initial card into the transcript. */
   takeRacedUpdate(): ShellRunUpdate['result'] | undefined;
 }
 
 export interface MakaSessionDriver {
-  listSessions(): Promise<SessionSummary[]>;
+  listSessions(options?: MakaSessionListOptions): Promise<SessionSummary[]>;
+  getSessionSummary?(sessionId: string): Promise<SessionSummary | undefined>;
   /** The Host workspace currently attached to this shell, when one exists. */
   getWorkspaceTarget(): WorkspaceTarget | undefined;
   /** Reads the current committed Todo projection for the attached Session. */
   queryTodo?(sessionId: string): Promise<{ sessionId: string; items: SessionTodoItem[] }>;
   getSessionResumeAvailability?(session: SessionSummary): Promise<SessionResumeAvailability>;
+  getSessionResumeCandidateAvailability?(
+    session: SessionSummary,
+  ): Promise<SessionResumeAvailability>;
   preparePrompt(
     prompt: string,
     options?: MakaPreparePromptOptions,
@@ -247,6 +253,23 @@ export interface MakaSessionDriver {
    * invented mode here.
    */
   getPermissionMode?(): PermissionMode | undefined;
+}
+
+export interface MakaSessionListOptions {
+  /** Maximum number returned; truncation before the catalog ends is reported as incomplete. */
+  readonly limit?: number;
+  /** Restrict the catalog read to sessions in this working directory. */
+  readonly cwd?: string;
+}
+
+export class MakaSessionCatalogIncompleteError extends Error {
+  constructor(
+    readonly scannedPages: number,
+    readonly sessions: readonly SessionSummary[] = [],
+  ) {
+    super(`Session catalog results may be incomplete after scanning ${scannedPages} pages.`);
+    this.name = 'MakaSessionCatalogIncompleteError';
+  }
 }
 
 /**

@@ -47,10 +47,6 @@ import {
   isArtifactTurnKey,
   isCanonicalArtifactEntityId,
 } from '@maka/core/artifacts';
-import {
-  isDeepResearchArtifactRole,
-  type DeepResearchArtifactRole,
-} from '@maka/core/deep-research-run';
 import { sniffAttachmentMimeType } from '@maka/core/attachments';
 import {
   isSafeRelativeArtifactPath,
@@ -106,7 +102,6 @@ export interface CreateArtifactInput {
   mimeType?: string;
   source: ArtifactSource;
   summary?: string;
-  deepResearchRole?: DeepResearchArtifactRole;
   now?: number;
   id?: string;
 }
@@ -145,7 +140,6 @@ export interface ConversationArtifactCopyInput {
    * match the current source under the Artifact writer lock. Never overwrites.
    */
   readonly existingTarget?: 'reject' | 'reuse_verified';
-  readonly excludeArtifactIds?: readonly string[];
   /**
    * Source-Session artifact ids to copy in addition to the turn-scoped
    * selection, regardless of their `turnId`. Used to carry user-uploaded
@@ -286,12 +280,6 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
       throw new Error('Invalid Artifact source');
     }
     if (
-      acceptedInput.deepResearchRole !== undefined &&
-      !isDeepResearchArtifactRole(acceptedInput.deepResearchRole)
-    ) {
-      throw new Error('Invalid Artifact deep-research role');
-    }
-    if (
       acceptedInput.now !== undefined &&
       (!Number.isSafeInteger(acceptedInput.now) || acceptedInput.now < 0)
     ) {
@@ -325,9 +313,6 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
           ...(acceptedInput.mimeType ? { mimeType: acceptedInput.mimeType } : {}),
           source: acceptedInput.source,
           ...(acceptedInput.summary ? { summary: acceptedInput.summary } : {}),
-          ...(acceptedInput.deepResearchRole
-            ? { deepResearchRole: acceptedInput.deepResearchRole }
-            : {}),
         },
         (targetPath) => writeFile(targetPath, acceptedInput.content, { flag: 'wx' }),
       );
@@ -343,7 +328,6 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
       throw new Error('Artifact conversation copy requires distinct Sessions');
     }
     const turnIds = new Set(input.turnIds);
-    const excludedArtifactIds = new Set(input.excludeArtifactIds ?? []);
     const includedArtifactIds = new Set(input.includeArtifactIds ?? []);
     for (const turnId of turnIds) assertArtifactTurnKey(turnId);
     const linkedArtifacts = input.linkedArtifacts ?? [];
@@ -364,10 +348,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
       await this.load();
       const selected = this.records
         .filter(
-          (record) =>
-            record.sessionId === input.sourceSessionId &&
-            turnIds.has(record.turnId) &&
-            !excludedArtifactIds.has(record.id),
+          (record) => record.sessionId === input.sourceSessionId && turnIds.has(record.turnId),
         )
         .map((record) => ({ ...record }));
       for (const [sessionId, artifactIds] of requestedLinkedArtifactIds) {
@@ -388,7 +369,6 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
         if (
           record.sessionId === input.sourceSessionId &&
           includedArtifactIds.has(record.id) &&
-          !excludedArtifactIds.has(record.id) &&
           !selectedIds.has(record.id)
         ) {
           selected.push({ ...record });
@@ -620,7 +600,6 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
       existing.mimeType !== optionalCanonicalText(input.mimeType) ||
       existing.source !== input.source ||
       existing.summary !== optionalCanonicalText(input.summary) ||
-      existing.deepResearchRole !== input.deepResearchRole ||
       (input.now !== undefined && existing.createdAt !== input.now)
     ) {
       throw artifactReplayConflict(canonical.id);
@@ -1172,8 +1151,7 @@ function sameArtifactRecord(a: ArtifactRecord, b: ArtifactRecord): boolean {
     a.sizeBytes === b.sizeBytes &&
     a.mimeType === b.mimeType &&
     a.source === b.source &&
-    a.summary === b.summary &&
-    a.deepResearchRole === b.deepResearchRole
+    a.summary === b.summary
   );
 }
 

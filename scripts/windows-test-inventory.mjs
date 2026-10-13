@@ -219,6 +219,7 @@ function classifySkip(path, title, expression) {
     value.includes('posix process snapshot') ||
     value.includes('graceful sigterm') ||
     value.includes('publishes private posix endpoint') ||
+    value.includes('legacy posix') ||
     value.includes('open sqlite') ||
     value.includes('fifo') ||
     value.includes('non-utf-8 git path') ||

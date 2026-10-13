@@ -79,7 +79,7 @@ TUI / Desktop 选择来源与外部 Session
 
 ## 1 · 模块边界
 
-- `packages/core/external-session` 只定义跨来源 contract、query、sanitize 和 limit 语义，不理解任何来源的文件格式。
+- `packages/core/external-session` 定义跨来源 contract、query、来源 Session ID/标题/cwd 匹配、sanitize 和 limit 语义，不理解任何来源的文件格式。
 - storage adapter 各自拥有 Claude、Codex、OpenCode 的发现、筛选、分页、解码和消息转换规则。
 - Runtime Host 拥有 workspace 解析、wire 边界、导入并发、错误分类、暂存和发布。
 - TUI 与 Desktop 只展示 catalog、提交选择、按稳定结果码更新交互，不解析来源数据或错误字符串。
@@ -152,7 +152,7 @@ Runtime Host TUI 的 external-session surface 是 workspace scope 的唯一决�
 - 没有 workspace target：surface 只提供“全部”，界面不显示无效的 workspace 切换。
 - 如果发起当前 workspace 查询时 target 已失效，surface 明确拒绝，不会省略 workspace 参数后静默查询全部。
 
-TUI runner 只展示 surface 给出的选项并转发用户选择，不再读取 Session driver 自行推导 scope。这个 scope 仍与 Maka Session 列表的 Current/All 标签无关；后者只控制原生 Session 列表的展示范围。
+TUI runner 只展示 surface 给出的选项并转发用户选择，不再读取 Session driver 自行推导 scope。这个 scope 仍与 Maka Session 列表的 Current/All 标签无关；后者只控制原生 Session 列表的展示范围。TUI runner 会在查询 Host 前短暂合并连续的搜索输入；每次输入都会立即推进同一个 request revision，并清除当前显示的 rows 与 cursor，因此新查询等待 debounce 时，旧的在途响应既不能回写 catalog，也不能继续旧分页。
 
 ## 7 · 分页由 adapter 拥有
 
@@ -170,8 +170,8 @@ Codex 不保存跨请求的 SQLite 事务、catalog snapshot、TTL 或 LRU 状�
 
 两条来源路径分别使用自己的稳定排序键：
 
-1. **state DB**：`(sort_key DESC, id DESC)`。`sort_key` 由查询算一次、随行一起选出，cursor 直接读回该行上的这个值 —— 这样 cursor 指向的位置必然就是查询排序的位置。秒级与毫秒级时间戳先统一成这一个数值键再排序。首页只读最新的 `state_N.sqlite`；若该 generation 读不了，本页改由 filesystem fallback 回答，而**不是**退到更旧的 generation：更旧那本是上一次跃迁时冻结的快照，跃迁之后新建的会话都不在里面。cursor 记录起始 generation，续页仍只读打开同一个文件，通过 `WHERE` keyset 条件继续，并保持严格 —— 原 generation 已删除或不可读时 cursor 明确失效，读失败仍是 persistence failure。连接用完立即关闭。
-2. **filesystem fallback**：`(mtime DESC, relative path ASC)`。一次遍历 active 和可选 archived roots，以 `maxCatalogCandidates` 限制遍历的文件数；超过上限返回 typed limit error。候选先用 stat 已知排序键与当前页尾比较，只有可能进入当前页的候选才读取有界 head 并完成 query/path 校验；内存最多保留 `limit + 1` 个匹配摘要，不物化整个 catalog，也不为深分页重复扫描多轮。
+1. **state DB**：`(sort_key DESC, id DESC)`。`sort_key` 由查询算一次、随行一起选出，cursor 直接读回该行上的这个值 —— 这样 cursor 指向的位置必然就是查询排序的位置。adapter 中的唯一 normalizer 接受有限数值或数字字符串形式的 epoch 秒/毫秒，以及 ISO 8601 等可解析 date-time 字符串；SQLite 排序、cursor 位置和展示的摘要时间都调用同一条规则。首页只读最新的 `state_N.sqlite`；若该 generation 读不了，本页改由 filesystem fallback 回答，而**不是**退到更旧的 generation：更旧那本是上一次跃迁时冻结的快照，跃迁之后新建的会话都不在里面。cursor 记录起始 generation，续页仍只读打开同一个文件，通过 `WHERE` keyset 条件继续，并保持严格 —— 原 generation 已删除或不可读时 cursor 明确失效，读失败仍是 persistence failure。连接用完立即关闭。
+2. **filesystem fallback**：`(mtime DESC, fixed-size path identity ASC)`。opaque cursor 使用版本化的 `f2` filesystem tag；identity 由相对 rollout path 一次派生，因此深层路径不会使 cursor 超过 Host wire 上限。一次遍历 active 和可选 archived roots，以 `maxCatalogCandidates` 限制遍历的文件数；超过上限返回 typed limit error。候选先用 stat 已知排序键与当前页尾比较，只有可能进入当前页的候选才读取有界 head 并完成 query/path 校验；内存最多保留 `limit + 1` 个匹配摘要，不物化整个 catalog，也不为深分页重复扫描多轮。
 
 keyset 的语义是“继续读取严格排在最后交付项之后的记录”。如果一个尚未读取的 live Session 在两页之间更新并移动到 cursor 之前，本次遍历可能看不到它，但不会因此重复已经交付的行；重新打开或刷新 catalog 会看到当前最新顺序。这是实时可变来源下不持有 snapshot 的明确边界。
 
@@ -185,10 +185,10 @@ Host 同时限制每页项目数和编码后的 JSON 字节数。若下一项使
 
 ## 10 · 暂存、发布与恢复
 
-导入先创建 `transcriptLedgerVersion: 0` 的暂存 Session。Ledger 物化完成后才升级为已发布状态，并出现在任务列表和 catalog 的副本统计中。
+导入在宣布持久化提交开始前，先完成 canonical 输入校验和确定性 catalog 投影。然后创建 `transcriptLedgerVersion: 0` 的暂存 Session。Ledger 物化完成后才升级为已发布状态，并出现在任务列表和 catalog 的副本统计中。
 
 - 物化前失败：删除暂存 Session。
-- Host 重启：`recover()` 继续处理版本 0 的 Session。
+- Host 重启：`recover()` 继续处理版本 0 的 Session。每个 staged Session 独立恢复；若准备和删除都失败，该 Session 保持未发布，等待后续 Host 启动时再次恢复，不会阻断其他 staged Session 或 Host 启动。
 - 只有已发布副本计入 `importedCount`。
 - 同一来源的两个并发导入请求由 Host 合并到同一个 in-flight Promise；前一次结束后的再次显式导入会创建独立副本。
 

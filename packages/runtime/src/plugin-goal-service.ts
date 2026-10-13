@@ -19,6 +19,7 @@
 
 import { Service, type Context, type Disposable } from './plugin-kernel.js';
 import type { PluginAgentInvocation, PluginAgentService } from './plugin-agent-service.js';
+import { PluginRuntimeBinding } from './plugin-internals.js';
 
 declare module './plugin-kernel.js' {
   interface Context {
@@ -46,25 +47,18 @@ export interface PluginGoalRuntime {
 
 /** Current-Session Goal facade; mutations retain Maka's Turn lease and revision authority. */
 export class PluginGoalService extends Service {
-  private goalRuntime?: PluginGoalRuntime;
+  private readonly runtimeBinding: PluginRuntimeBinding<PluginGoalRuntime>;
 
   constructor(
     ctx: Context,
     private readonly agents: PluginAgentService,
   ) {
     super(ctx, 'goals');
+    this.runtimeBinding = new PluginRuntimeBinding('goals', 'Goal');
   }
 
   bindRuntime(runtime: PluginGoalRuntime): Disposable<Promise<void>> {
-    if (this.ctx.maka) throw new Error('Only the Host may bind the Goal Runtime');
-    if (this.goalRuntime) throw new Error('Plugin Goal Runtime is already bound');
-    this.goalRuntime = runtime;
-    return this.ctx.effect(
-      () => () => {
-        if (this.goalRuntime === runtime) this.goalRuntime = undefined;
-      },
-      'goals.bindRuntime()',
-    );
+    return this.runtimeBinding.bind(this.ctx, runtime);
   }
 
   get(): Promise<unknown> {
@@ -85,7 +79,6 @@ export class PluginGoalService extends Service {
   }
 
   private execute(operation: PluginGoalOperation): Promise<unknown> {
-    if (!this.goalRuntime) throw new Error('Plugin Goal Runtime is unavailable');
-    return this.goalRuntime.execute(operation, this.agents.requireInvocation());
+    return this.runtimeBinding.get().execute(operation, this.agents.requireInvocation());
   }
 }

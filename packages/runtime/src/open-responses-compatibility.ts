@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { OpenResponsesCompatibilityProfile } from './provider-runtime-policy.js';
+import type { OpenResponsesCompatibilityProfile } from '@maka/core/llm-connections';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);

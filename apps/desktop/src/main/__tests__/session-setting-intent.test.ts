@@ -22,7 +22,8 @@ import { afterEach, test } from 'node:test';
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
-import { useSessionSettingIntent } from '@maka/ui';
+import { useSessionSettingIntent, type SessionSettingIntentCatalog } from '@maka/ui';
+import { createObservableState } from '../../renderer/application/contracts/session-catalog/observable-state.js';
 
 type SessionSettingIntentController<Value> = ReturnType<
   typeof useSessionSettingIntent<{ setting: Value }>
@@ -68,10 +69,16 @@ test('Runtime leaving Plan after approval supersedes the committed Plan overlay'
   mountedRoot = root;
 
   let controller: SessionSettingIntentController<boolean> | undefined;
-  const render = async (catalogRevision: number, catalogValue: boolean) => {
+  const catalogRevision = createObservableState(0);
+  const catalog: SessionSettingIntentCatalog = {
+    revision: catalogRevision.getState,
+    subscribeChanged: catalogRevision.subscribe,
+  };
+  const render = async (revision: number, catalogValue: boolean) => {
     await act(async () => {
+      catalogRevision.replaceState(revision);
       root.render(createElement(Harness, {
-        catalogRevision,
+        catalog,
         catalogValue,
         capture: (next) => {
           controller = next;
@@ -156,16 +163,16 @@ test('rapid requests share the worker and settle only after the latest value com
 });
 
 function Harness({
-  catalogRevision,
+  catalog,
   catalogValue,
   capture,
 }: {
-  catalogRevision: number;
+  catalog: SessionSettingIntentCatalog;
   catalogValue: boolean;
   capture(controller: SessionSettingIntentController<boolean>): void;
 }) {
   const controller = useSessionSettingIntent<{ setting: boolean }>({
-    catalogRevision,
+    catalog,
     refreshCatalog: async () => {
       throw new Error('catalog unavailable');
     },
@@ -190,7 +197,7 @@ function LatestIntentHarness({
   write(sessionId: string, value: string): Promise<boolean>;
 }) {
   const controller = useSessionSettingIntent<{ setting: string }>({
-    catalogRevision: 0,
+    catalog: { revision: () => 0, subscribeChanged: () => () => {} },
     refreshCatalog: async () => {},
     channels: {
       setting: {

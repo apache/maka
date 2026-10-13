@@ -24,6 +24,13 @@ loads the Runtime Host/Project catalog, preserves a selection per Host, derives
 the new-task target and draft identity, projects the Workspace Picker, and owns
 add/relink plus remote-directory handoff lifecycles.
 
+It also reveals folders in the system file manager: a task's project folder
+through that task, otherwise the default Runtime Host's project or workspace
+folder. The Desktop adapter resolves the default Host and names the task or
+Host profile each failure belongs to; the controller reports it in the shell's
+open-folder copy, and a task whose workspace is gone gets the
+workspace-unavailable notice instead.
+
 ## Dependency direction
 
 - Consumers import production APIs from `features/task-entry`.
@@ -58,6 +65,45 @@ add/relink plus remote-directory handoff lifecycles.
   picker. Closing or completing the picker restores focus to its opener.
 - Draft identity is target-scoped. An unresolved catalog always uses the stable
   unresolved new-task key, preserving reload and target-switch handoff behavior.
+
+## Registration recovery
+
+`useProjectRegistration` owns single-flight pending state, archived-project
+confirmation, and recovery through the injected catalog.
+`ProjectRegistrationBoundary` is a thin render-prop adapter for legacy callers,
+whose architecture contract forbids adding hook calls. Cancellation is silent;
+failures return to the caller's existing error surface. Host changes, lost Host
+verification, locale changes, unmount, and caller request fences prevent stale
+confirmation or recovery results from continuing.
+
+Project Settings keeps its original folder-picker add operation, row-action
+errors, and refresh. The shared remote-directory browser keeps directory I/O,
+navigation, request sequencing, and accepted-project handoff. The hook does
+not take ownership of either surface's broader lifecycle.
+
+## Existing Session workspace recovery
+
+`useSessionWorkspaceRecovery` owns the repair request, not the new-task target.
+Its Add action shares `resolveProjectRegistration` with other registration
+callers: confirm restoring the original Project **and using it for this Session**,
+restore it, check availability, then call the existing Session relocation port.
+Even a same-Project move must pass Runtime Host eligibility checks.
+
+- Restoration and relocation are separate commits. A rejected move leaves the
+  Project restored and the repair picker available, with a partial-success error.
+  Recovery never archives the Project to roll back, renames it, creates a Session,
+  or sends a message.
+- Cancellation does not restore, relocate, or refresh. An unavailable restored
+  directory cannot be used; the user can relocate it or choose another Project.
+- Opaque restore/move rejections are unconfirmed outcomes, not proof that the
+  write failed. The UI asks the user to check state before retrying; it never
+  resubmits automatically. Catalog refresh failure cannot undo a committed move.
+- Each request has an identity even when reopening the same Session. Leaving
+  that Session/Host, closing recovery, changing service/locale, or unmounting
+  fences pending work. Already-submitted writes cannot be undone, but their
+  results cannot close a newer repair request. Single-flight remains held until
+  the physical attempt settles. Closing the dropdown for the naming dialog is
+  only a UI handoff and keeps the request alive.
 
 ## Non-ownership
 

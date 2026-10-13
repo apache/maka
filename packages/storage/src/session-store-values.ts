@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { isExecutorConfiguration } from '@maka/core/executor-catalog';
 import { randomUUID } from 'node:crypto';
 import { DEFAULT_SESSION_NAME, normalizeUserSessionName } from '@maka/core/session-name';
 import { isExecutorId } from '@maka/core/executor-id';
@@ -43,8 +44,11 @@ import { isOrchestrationMode } from '@maka/core/orchestration';
 import { decodePersistedPermissionMode, isPermissionMode } from '@maka/core/permission';
 import type { PersistedValue } from '@maka/core/persisted-value';
 import { isSubagentWorkspaceBinding } from '@maka/core/subagent-workspace';
-import type { CreateSessionInput } from '@maka/core/runtime-inputs';
-import { assertSafeSessionId, isSafeSessionId } from './session-store-contract.js';
+import {
+  assertSafeSessionId,
+  isSafeSessionId,
+  type StableSessionCreateInput,
+} from './session-store-contract.js';
 
 export function assertCoordinationIdentityPairing(
   sessionId: string,
@@ -57,7 +61,7 @@ export function assertCoordinationIdentityPairing(
 
 export function buildSessionHeader(
   workspaceRoot: string,
-  input: CreateSessionInput & { readonly role?: SessionRole },
+  input: StableSessionCreateInput,
   sessionId: string = randomUUID(),
   conversationCopy?: SessionConversationCopy,
 ): SessionHeader {
@@ -82,6 +86,7 @@ export function buildSessionHeader(
     createdAt: now,
     name,
     titleIsManual: false,
+    ...(input.branchNameOrigin ? { branchNameOrigin: input.branchNameOrigin } : {}),
     isFlagged: false,
     labels: input.labels ?? [],
     isArchived: false,
@@ -104,7 +109,12 @@ export function buildSessionHeader(
     ...(input.revisionState ? { revisionState: input.revisionState } : {}),
     hasUnread: false,
     backend: input.executorId ? 'plugin-executor' : 'ai-sdk',
-    ...(input.executorId ? { executorId: input.executorId } : {}),
+    ...(input.executorId
+      ? {
+          executorId: input.executorId,
+          ...(input.executorConfig ? { executorConfig: input.executorConfig } : {}),
+        }
+      : {}),
     ...(input.llmConnectionId === undefined ? {} : { llmConnectionId: input.llmConnectionId }),
     llmConnectionSlug: input.llmConnectionSlug,
     // A subagent Session's route is chosen by the spawn that created it and is
@@ -135,6 +145,11 @@ function normalizeRequiredSessionName(name: string): string {
   return normalized.value;
 }
 
+function isCanonicalSessionName(value: unknown): value is string {
+  const normalized = normalizeUserSessionName(value);
+  return normalized.ok && normalized.value === value;
+}
+
 /** Validate and normalize a current SessionHeader before canonical persistence. */
 export function normalizeSessionHeader(
   header: SessionHeader,
@@ -152,6 +167,11 @@ export function normalizeSessionHeader(
     (header.lastMessageAt === undefined || isFiniteNumber(header.lastMessageAt)) &&
     typeof header.name === 'string' &&
     typeof header.titleIsManual === 'boolean' &&
+    (header.branchNameOrigin === undefined ||
+      (header.branchNameOrigin !== null &&
+        typeof header.branchNameOrigin === 'object' &&
+        isCanonicalSessionName(header.branchNameOrigin.base) &&
+        isCanonicalSessionName(header.branchNameOrigin.name))) &&
     typeof header.isFlagged === 'boolean' &&
     Array.isArray(header.labels) &&
     header.labels.every((label) => typeof label === 'string') &&
@@ -336,9 +356,12 @@ function isPersistedBackendKind(value: unknown): value is SessionHeader['backend
 
 function isValidExecutorSelection(header: SessionHeader): boolean {
   if (header.backend === 'plugin-executor') {
-    return isExecutorId(header.executorId);
+    return (
+      isExecutorId(header.executorId) &&
+      (header.executorConfig === undefined || isExecutorConfiguration(header.executorConfig))
+    );
   }
-  return header.executorId === undefined;
+  return header.executorId === undefined && header.executorConfig === undefined;
 }
 
 function isFiniteNumber(value: unknown): value is number {
@@ -379,7 +402,12 @@ export function toSummary(header: SessionHeader): SessionSummary {
     ...(header.revisionIndex !== undefined ? { revisionIndex: header.revisionIndex } : {}),
     ...(header.revisionState ? { revisionState: header.revisionState } : {}),
     backend: header.backend,
-    ...(header.executorId ? { executorId: header.executorId } : {}),
+    ...(header.executorId
+      ? {
+          executorId: header.executorId,
+          ...(header.executorConfig ? { executorConfig: header.executorConfig } : {}),
+        }
+      : {}),
     ...(header.llmConnectionId === undefined ? {} : { llmConnectionId: header.llmConnectionId }),
     llmConnectionSlug: header.llmConnectionSlug,
     connectionLocked: header.connectionLocked,

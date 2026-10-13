@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { FAKE_HOLD_OPEN_PROMPT, FAKE_WAIT_FOR_STEERING_PROMPT } from '@maka/runtime/test-only/fake-backend';
+import { FAKE_WAIT_FOR_STEERING_PROMPT } from '@maka/runtime/test-only/fake-backend';
 import { connectExistingRuntimeHost } from '@maka/runtime-host/client';
 import { RUNTIME_HOST_PROTOCOL_VERSION } from '@maka/runtime-host/protocol';
 import type { ElectronApplication } from '@playwright/test';
@@ -74,9 +74,10 @@ async function armConnectionGap(app: ElectronApplication): Promise<void> {
 
 // The real main-window capture listener previously swallowed queue drops, and
 // the restored main/preload observation left completed entries in this panel.
-// Component/Host tests omit those Electron owners; this one window verifies
-// their wiring while the existing hook/projector suites cover state orderings.
-test('Side Chat follow-ups survive queue actions, Host handoffs and reconnect', async ({}, testInfo) => {
+// Row-level edit/delete/promote semantics live in the ComposerMessageQueue
+// component tests now; this window keeps the native drop guard, the queue's
+// drain across Host turn handoffs, and the transport reconnect journey.
+test('Side Chat queue survives a native reorder and a Desktop reconnect', async ({}, testInfo) => {
   await withE2eWindow({
     seed: true,
     readinessSelector: COMPOSER_INPUT,
@@ -88,17 +89,17 @@ test('Side Chat follow-ups survive queue actions, Host handoffs and reconnect', 
     await composer.fill('side conversation acceptance source');
     await awaitSendReady(page);
     await composer.press('Enter');
-    await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1, { timeout: 20_000 });
+    await expect(page.locator('.maka-assistant-answer [data-action="copy"]')).toHaveCount(1, { timeout: 20_000 });
     const originalSessionIds = await page.evaluate(async () =>
       (await window.maka.sessions.list()).map((session) => session.id));
     await page.getByRole('button', { name: '展开任务工作栏' }).click();
     await page.getByRole('button', { name: /侧边对话.*在不打断主任务的情况下追问和只读探索/ }).click();
     const companion = page.locator('.maka-quote-companion');
     const sideComposer = companion.locator(COMPOSER_INPUT);
-    await sideComposer.fill(FAKE_HOLD_OPEN_PROMPT);
+    await sideComposer.fill(FAKE_WAIT_FOR_STEERING_PROMPT);
     await awaitSendReady(companion);
     await sideComposer.press('Enter');
-    await expect(companion).toContainText('Fake backend waiting');
+    await expect(companion.getByRole('button', { name: '停止', exact: true })).toBeVisible();
     const forkId = await page.evaluate(async (existingIds) => {
       const created = (await window.maka.sessions.list()).filter((session) => !existingIds.includes(session.id));
       if (created.length !== 1) throw new Error(`Expected one Side Chat fork, found ${created.length}`);
@@ -112,61 +113,23 @@ test('Side Chat follow-ups survive queue actions, Host handoffs and reconnect', 
       await sideComposer.press('Enter');
       await expect(queued).toContainText(text);
     }
-    await expect(queued.locator('.maka-composer-queue-text')).toHaveText([
-      'first follow-up', 'second follow-up', 'retract this follow-up',
-    ]);
-    await queued.getByRole('button', { name: '编辑', exact: true }).first().click();
-    const edit = queued.getByRole('textbox', { name: '编辑', exact: true });
-    await edit.fill('edited first follow-up');
-    await edit.press('Enter');
-    await expect(queued.locator('.maka-composer-queue-text').first()).toHaveText('edited first follow-up');
+    // A drag only reorders Host-owned ('queued') entries; a still-pending
+    // admission has no draggable grip, so enabled edit buttons settle it.
+    await expect(queued.getByRole('button', { name: '编辑', exact: true }).nth(2)).toBeEnabled();
     const grips = queued.locator('[draggable="true"]');
     await grips.nth(1).dragTo(grips.nth(0));
     await expect(queued.locator('.maka-composer-queue-text')).toHaveText([
-      'second follow-up', 'edited first follow-up', 'retract this follow-up',
+      'second follow-up', 'first follow-up', 'retract this follow-up',
     ]);
-    await queued.getByRole('button', { name: '删除', exact: true }).nth(2).click();
-    await expect(queued).not.toContainText('retract this follow-up');
-    await expect(companion.getByRole('button', { name: '停止', exact: true })).toBeVisible();
-
-    await sideComposer.fill('steer the current response');
-    await awaitSendReady(companion);
-    await sideComposer.press('Shift+Enter');
-    await expect(companion).toContainText('Acknowledged steering: steer the current response');
-    await expect(queued.locator('.maka-composer-queue-text')).toHaveText([
-      'second follow-up', 'edited first follow-up',
-    ]);
-    await queued.getByRole('button', { name: '调整方向', exact: true }).first().click();
-    await expect(companion.locator('.maka-steering-message').last()).toContainText('second follow-up');
-    await expect(queued.locator('.maka-composer-queue-text')).toHaveText(['edited first follow-up']);
-    await queued.getByRole('button', { name: '删除', exact: true }).click();
-    await expect(queued).toHaveCount(0);
-    await page.screenshot({ path: testInfo.outputPath('side-chat-steering.png'), fullPage: true });
-    await companion.getByRole('button', { name: '停止', exact: true }).click();
-    await expect(companion.getByRole('button', { name: '停止', exact: true })).toHaveCount(0, { timeout: 20_000 });
-    // The held-open fixture's pipe-separated acknowledgment is an unfinished
-    // Markdown table candidate until Stop flushes the final assistant message.
-    await expect(companion).toContainText('steer the current response | second follow-up');
-
-    // Hold a second Turn before its first token, queue two successors, then
-    // release it by steering. All three replies must survive the Host handoffs.
-    await sideComposer.fill(FAKE_WAIT_FOR_STEERING_PROMPT);
-    await awaitSendReady(companion);
-    await sideComposer.press('Enter');
-    await expect(companion.getByRole('button', { name: '停止', exact: true })).toBeVisible();
-    for (const text of ['successor one', 'successor two']) {
-      await sideComposer.fill(text);
-      await awaitSendReady(companion);
-      await sideComposer.press('Enter');
-      await expect(queued).toContainText(text);
-    }
-    await page.screenshot({ path: testInfo.outputPath('side-chat-queue.png'), fullPage: true });
+    // Steering releases the held Turn; the reordered queue then drains into
+    // its own Turns in the Host-observed order and the panel clears.
     await sideComposer.fill('release the held response');
     await awaitSendReady(companion);
-    await sideComposer.press('Shift+Enter');
+    await sideComposer.press('ControlOrMeta+Enter');
     await expect(companion).toContainText('Acknowledged steering: release the held response');
-    await expect(companion).toContainText('Fake backend received: successor one', { timeout: 20_000 });
-    await expect(companion).toContainText('Fake backend received: successor two', { timeout: 20_000 });
+    await expect(companion).toContainText('Fake backend received: second follow-up', { timeout: 20_000 });
+    await expect(companion).toContainText('Fake backend received: first follow-up');
+    await expect(companion).toContainText('Fake backend received: retract this follow-up');
     await expect(companion.getByRole('button', { name: '停止', exact: true })).toHaveCount(0, { timeout: 20_000 });
     await expect(queued).toHaveCount(0);
     await page.screenshot({ path: testInfo.outputPath('side-chat-settled.png'), fullPage: true });

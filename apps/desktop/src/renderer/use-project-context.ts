@@ -17,32 +17,53 @@
  * under the License.
  */
 
-import { useEffect, useRef, useState } from 'react';
-import { useStableActions } from './use-stable-actions.js';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ProjectRecord } from '@maka/core/project';
-import type { UiLocale } from '@maka/core/ui-locale';
 import type { RuntimeHostProfileKind } from '@maka/runtime-host/profile-kind';
+import {
+  deriveTitlebarProjectName,
+  type TitlebarProject,
+  type ToastApi,
+} from '@maka/ui';
 import type {
   DesktopProjectCapabilities,
   DesktopRuntimeHostRef,
+  TaskDirectoryBinding,
 } from '../preload/bridge-contract.js';
-import {
-  createAppShellProjectActions,
-  type AppShellProjectActions,
-  type RendererAppInfo,
-  type SessionProjectInfoState,
-} from './app-shell-project-actions';
+import type { DesktopSessionSummary } from '../shared/desktop-session-projection.js';
+import type { SessionCollaborationDialogProjection } from './features/session-collaboration/index.js';
+import type { getShellCopy } from './locales/shell-copy.js';
 import {
   runIfDefaultRuntimeHostCurrent,
   runOnDefaultRuntimeHost,
-} from './default-runtime-host-operation.js';
+} from './platform/desktop/default-runtime-host-operation.js';
 
 type RefBox<T> = { current: T };
+type ShellAppCopy = ReturnType<typeof getShellCopy>['app'];
 
-type ToastApi = {
-  success(title: string, description?: string): void;
-  error(title: string, description?: string): void;
-};
+interface TitlebarMenuItem {
+  readonly label: string;
+  onClick(): void;
+}
+
+interface TaskDirectoryNotice {
+  readonly title: string;
+  readonly description: string;
+  readonly actionLabel: string;
+  onAction(): void;
+}
+
+interface RendererAppInfo {
+  projectId?: string | null;
+  projectPath: string;
+  projectGit: { isGitRepo: boolean; branch?: string };
+  /** How a projectless Session's bound directory is classified; absent when unclassified. */
+  taskDirectory?: TaskDirectoryBinding;
+}
+
+interface SessionProjectInfoState extends RendererAppInfo {
+  sessionId: string;
+}
 
 const NO_PROJECT_CAPABILITIES: DesktopProjectCapabilities = {
   chooseClientDirectory: false,
@@ -53,64 +74,64 @@ const NO_PROJECT_CAPABILITIES: DesktopProjectCapabilities = {
 };
 
 /**
- * Owns the workspace / project-picker cluster: the new-task project, active
- * session project projection, the persistent project catalog, and the
- * project-picker pending state / dedup refs. Seeds appInfo from the persisted composer defaults so the home view
- * is populated before the async `app:info`
- * round-trip completes on mount.
- *
- * The picker refs are returned so AppShell can hand them to the bootstrap
- * unmount cleanup (which cancels an in-flight pick), and the action helpers
- * (createAppShellProjectActions) are created here so their setters never
- * have to be threaded back out through AppShell.
+ * The read-only project projection the root composes into the titlebar,
+ * Workbar, Module Hub, command palette and mentions: the owner Session's
+ * project (path, Git state, current project, capabilities) and, with no
+ * Session, the default Host's. Project mutations and the open-folder
+ * commands belong to Task Entry.
  */
 export function useAppShellProjectContext(options: {
-  uiLocale: UiLocale;
   rendererMountedRef: RefBox<boolean>;
   sessionId?: string;
   sessionCwd?: string;
   sessionProjectId?: string | null;
   sessionProfileKind?: RuntimeHostProfileKind;
-  onProjectSelected(ownerSessionId?: string): void;
-  toastApi: ToastApi;
-}): AppShellProjectActions & {
+  /** Everything the titlebar identity needs that this hook does not already own. */
+  titlebar: {
+    sharedSessionActive: boolean;
+    activeSession: DesktopSessionSummary | undefined;
+    sharedSessionDialog: SessionCollaborationDialogProjection;
+    moveToDedicatedDirectory(sessionId: string): Promise<string | undefined>;
+    openProjectFolder(): void;
+    copy: ShellAppCopy;
+    toastApi: ToastApi;
+  };
+}): {
+  /** Re-reads the default Host's project context; resolves to its projects. */
+  refreshProjects(): Promise<ProjectRecord[]>;
   projectInfo: RendererAppInfo | null;
-  projects: ProjectRecord[];
   projectCapabilities: DesktopProjectCapabilities;
   activeProjectCapabilities: DesktopProjectCapabilities;
-  localProjects: readonly ProjectRecord[];
-  selectedProjectId: string | null | undefined;
   currentProjectId: string | null | undefined;
   currentProject: ProjectRecord | undefined;
-  projectPickerPending: boolean;
-  projectPickerPendingRef: RefBox<boolean>;
-  projectPickerRequestRef: RefBox<number>;
+  /** Menu state for TitlebarSessionIdentity: share action, repair item, project. */
+  titlebarSession: {
+    readonly action: TitlebarMenuItem | undefined;
+    readonly actions: readonly TitlebarMenuItem[] | undefined;
+    readonly project: TitlebarProject | undefined;
+  };
+  /** Repair prompt shown above the conversation for an unsafe bound directory. */
+  taskDirectoryNotice: TaskDirectoryNotice | undefined;
 } {
   const {
-    uiLocale,
     rendererMountedRef,
     sessionId,
     sessionCwd,
     sessionProjectId,
     sessionProfileKind,
-    onProjectSelected,
-    toastApi,
+    titlebar,
   } = options;
   const [appInfo, setAppInfo] = useState<RendererAppInfo | null>(null);
   const [sessionProjectInfo, setSessionProjectInfo] = useState<SessionProjectInfoState | null>(null);
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
   const [projectCapabilities, setProjectCapabilities] =
     useState<DesktopProjectCapabilities>(NO_PROJECT_CAPABILITIES);
-  const [localHostProjects, setLocalHostProjects] = useState<ProjectRecord[]>([]);
   const [sessionProjectSnapshot, setSessionProjectSnapshot] = useState<{
     sessionId: string;
     projects: ProjectRecord[];
     capabilities: DesktopProjectCapabilities;
   } | null>(null);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null | undefined>(undefined);
-  const [projectPickerPending, setProjectPickerPending] = useState(false);
-  const projectPickerPendingRef = useRef(false);
-  const projectPickerRequestRef = useRef(0);
   const defaultRefreshGenerationRef = useRef(0);
 
   const refreshDefaultProjectState = async (
@@ -155,29 +176,6 @@ export function useAppShellProjectContext(options: {
     refresh();
     return () => {
       defaultRefreshGenerationRef.current += 1;
-      unsubscribe();
-    };
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    let refreshGeneration = 0;
-    const refresh = () => {
-      const generation = ++refreshGeneration;
-      return window.maka.projects.getLocalSnapshot().then(
-        (snapshot) => {
-          if (cancelled || generation !== refreshGeneration) return;
-          setLocalHostProjects([...snapshot.projects]);
-        },
-        () => {
-          // The Local Host may be reconnecting; its ready event retries this read.
-        },
-      );
-    };
-    const unsubscribe = window.maka.projects.subscribeLocalChanges(() => void refresh());
-    void refresh();
-    return () => {
-      cancelled = true;
       unsubscribe();
     };
   }, []);
@@ -252,37 +250,88 @@ export function useAppShellProjectContext(options: {
         (project) =>
           project.id === currentProjectId || project.aliases?.includes(currentProjectId ?? ''),
       );
-  // Stable identities, because the rail's Project rows are built from these:
-  // rebuilt per render they put the whole list back on every AppShell commit
-  // (#4109). Same facade the shell's other action factories already use
-  // (#1043); this one was the last bare call site.
-  const actions = useStableActions(createAppShellProjectActions, {
-    uiLocale,
-    projectPickerPendingRef,
-    projectPickerRequestRef,
-    rendererMountedRef,
-    setProjectPickerPending,
-    refreshDefaultProjectState,
-    selectedProjectId,
-    projects,
-    projectCapabilities,
-    sessionId,
-    onProjectSelected,
+  // Read through an effect event by the bootstrap subscriptions, so a fresh
+  // identity per render costs nothing.
+  const refreshProjects = async (): Promise<ProjectRecord[]> =>
+    (await runOnDefaultRuntimeHost((host) => refreshDefaultProjectState(host))).value;
+
+  const {
+    sharedSessionActive,
+    activeSession,
+    sharedSessionDialog,
+    moveToDedicatedDirectory,
+    openProjectFolder,
+    copy,
     toastApi,
-  });
+  } = titlebar;
+  // The titlebar names the directory the ACTIVE session runs in, so it reads
+  // the same projected project state the picker does — `projectInfo` already
+  // resolves to the session's own cwd once a session owns it.
+  const titlebarProjectName = sharedSessionActive
+    ? undefined
+    : deriveTitlebarProjectName({
+        projectName: currentProject?.name,
+        projectPath: projectInfo?.projectPath,
+      });
+  /**
+   * The explicit per-task correction: rebinds the Session to a fresh
+   * dedicated task directory through the Runtime Host's relocation
+   * authority. On success the catalog refresh re-reads the binding class
+   * and both the banner and the menu item retire themselves.
+   */
+  const moveSessionToDedicatedDirectory = useCallback(async () => {
+    if (!sessionId) return;
+    // Task Entry reports refusals and failures itself; only success lands here.
+    const directory = await moveToDedicatedDirectory(sessionId);
+    if (directory === undefined) return;
+    toastApi.toast({
+      title: copy.taskDirectoryMovedTitle,
+      description: copy.taskDirectoryMovedDescription(directory),
+    });
+  }, [sessionId, moveToDedicatedDirectory, copy, toastApi]);
+  const taskDirectory = projectInfo?.taskDirectory;
 
   return {
+    refreshProjects,
     projectInfo,
-    projects,
     projectCapabilities,
     activeProjectCapabilities,
-    localProjects: localHostProjects,
-    selectedProjectId,
     currentProjectId,
     currentProject,
-    projectPickerPending,
-    projectPickerPendingRef,
-    projectPickerRequestRef,
-    ...actions,
+    titlebarSession: {
+      action:
+        sharedSessionActive || !activeSession || activeSession.profileKind === 'environment'
+          ? undefined
+          : {
+              label: sharedSessionDialog.shareActionLabel,
+              onClick: () => sharedSessionDialog.openSession(activeSession),
+            },
+      actions:
+        !sharedSessionActive && taskDirectory !== undefined && taskDirectory !== 'managed'
+          ? [{ label: copy.taskDirectoryMoveLabel, onClick: () => void moveSessionToDedicatedDirectory() }]
+          : undefined,
+      project: titlebarProjectName
+        ? {
+            name: titlebarProjectName,
+            path: projectInfo?.projectPath,
+            onOpenFolder: activeProjectCapabilities.viewClientPath ? openProjectFolder : undefined,
+          }
+        : undefined,
+    },
+    /**
+     * The proactive repair prompt: only a binding that cannot be a
+     * deliberate choice (filesystem root, inside the install or app state,
+     * a redirected path) earns a banner — 'other' stays reachable through
+     * the task menu.
+     */
+    taskDirectoryNotice:
+      !sharedSessionActive && activeSession && taskDirectory === 'suspicious'
+        ? {
+            title: copy.taskDirectorySuspiciousTitle,
+            description: copy.taskDirectorySuspiciousDescription,
+            actionLabel: copy.taskDirectoryMoveLabel,
+            onAction: () => void moveSessionToDedicatedDirectory(),
+          }
+        : undefined,
   };
 }

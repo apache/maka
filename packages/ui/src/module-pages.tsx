@@ -36,6 +36,8 @@ import type {
   ScheduledTaskDraftInput,
   ScheduledTaskUpdatePatch,
   SkillEntry,
+  SkillLocation,
+  SkillLocationRef,
 } from './module-panel-types.js';
 
 const SkillsModuleMain = lazy(() => import('./skills-panel.js').then((module) => ({ default: module.SkillsModuleMain })));
@@ -61,12 +63,13 @@ function ModulePanelFallback(props: { message: string }) {
 
 export function SkillsPage(props: {
   skills?: SkillEntry[];
+  skillLocations?: SkillLocation[];
   hubHeader?: ModuleHubHeader;
   scheduledTasks?: ScheduledTask[];
   onRefreshSkills?(): void | Promise<void>;
   onOpenSkill?(skillId: string): void | Promise<void>;
   onUseSkill?(skillId: string, skillName: string): void;
-  onOpenSkillsFolder?(): void | Promise<void>;
+  onOpenSkillLocation?(ref: SkillLocationRef, createIfMissing: boolean): void | Promise<void>;
   managedSkillSources?: ManagedSkillSourceEntry[];
   onRefreshManagedSkillSources?(): void | Promise<void>;
   onImportManagedSkillSource?(): void | Promise<void>;

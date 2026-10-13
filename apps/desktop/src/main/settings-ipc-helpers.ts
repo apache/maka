@@ -29,7 +29,6 @@ import type { BotProvider } from '@maka/core/bot-chat-settings';
 import { botDisplayLabel } from '@maka/core/bot-events';
 import { generalizedErrorMessage, redactSecrets } from '@maka/core/redaction';
 import {
-  SENSITIVE_PLACEHOLDER,
   maskSensitive,
   type TestProxyResult,
 } from "@maka/core/settings/network-settings";
@@ -72,18 +71,16 @@ export function proxyTestFailure(result: TestProxyResult): {
 
 export function maskAppSettings(
   settings: RuntimeHostAppSettings,
-  revealPatch?: UpdateAppSettingsInput,
 ): RuntimeHostAppSettings;
 export function maskAppSettings(
   settings: AppSettings,
-  revealPatch?: UpdateAppSettingsInput,
 ): AppSettings;
 export function maskAppSettings(
   settings: AppSettings,
-  revealPatch: UpdateAppSettingsInput = {},
 ): AppSettings {
   return {
     ...settings,
+    jev: { ...settings.jev, apiKey: maskSensitive(settings.jev.apiKey) ?? "" },
     botChat: {
       ...settings.botChat,
       channels: Object.fromEntries(
@@ -91,17 +88,8 @@ export function maskAppSettings(
           provider,
           {
             ...channel,
-            token: shouldReveal(
-              revealPatch.botChat?.channels?.[provider as BotProvider]?.token,
-            )
-              ? channel.token
-              : (maskSensitive(channel.token) ?? ""),
-            appSecret: shouldReveal(
-              revealPatch.botChat?.channels?.[provider as BotProvider]
-                ?.appSecret,
-            )
-              ? channel.appSecret
-              : (maskSensitive(channel.appSecret) ?? ""),
+            token: maskSensitive(channel.token) ?? "",
+            appSecret: maskSensitive(channel.appSecret) ?? "",
           },
         ]),
       ) as AppSettings["botChat"]["channels"],
@@ -135,6 +123,8 @@ export function maskAppSettings(
 export function stripSettingsSecretsForExport(
   settings: AppSettings,
 ): Record<string, unknown> {
+  const jev = { ...settings.jev } as Record<string, unknown>;
+  delete jev.apiKey;
   const proxy = { ...settings.network.proxy } as Record<string, unknown>;
   delete proxy.password;
   delete proxy.passwordConfigured;
@@ -155,6 +145,7 @@ export function stripSettingsSecretsForExport(
 
   return {
     ...settings,
+    jev,
     network: { ...settings.network, proxy },
     botChat: { ...settings.botChat, channels },
     webSearch: {
@@ -178,17 +169,9 @@ export function buildSettingsUpdateResult(
 ): UpdateAppSettingsResult {
   const personalization = collectPersonalizationWarnings(patch.personalization);
   return {
-    settings: maskAppSettings(settings, patch),
+    settings: maskAppSettings(settings),
     ...(personalization.length ? { warnings: { personalization } } : {}),
   };
-}
-
-function shouldReveal(value: string | undefined): boolean {
-  return (
-    typeof value === "string" &&
-    value.length > 0 &&
-    value !== SENSITIVE_PLACEHOLDER
-  );
 }
 
 export function toSettingsTestResult(

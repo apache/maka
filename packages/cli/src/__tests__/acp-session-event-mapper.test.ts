@@ -21,9 +21,89 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { SessionEvent } from '@maka/core/events';
 import type { SessionNotification } from '@agentclientprotocol/sdk';
+import type { InteractionPendingSnapshot } from '@maka/runtime-host/protocol';
 import { AcpSessionEventMapper } from '../acp/session-event-mapper.js';
 
 describe('ACP Session event mapper', () => {
+  for (const text of ['', 'Read this report']) {
+    test(`replays attachments with user text ${JSON.stringify(text)}`, async () => {
+      const notifications: SessionNotification[] = [];
+      const mapper = eventMapper(notifications);
+      const attachments = [
+        {
+          kind: 'other' as const,
+          name: 'report.txt',
+          mimeType: 'text/plain',
+          bytes: 12,
+          ref: {
+            kind: 'session_file' as const,
+            sessionId: 'session-1',
+            relativePath: 'artifacts/report.txt',
+          },
+        },
+      ];
+      await mapper.acceptHistoricalMessage({
+        type: 'user',
+        id: 'user-1',
+        turnId: 'turn-1',
+        ts: 1,
+        text: `${text} file:///workspace/report.txt`,
+        displayText: text,
+        attachments,
+      });
+      await mapper.flush();
+      assert.deepEqual(
+        notifications.map(({ update }) => update),
+        [
+          {
+            sessionUpdate: 'user_message_chunk',
+            messageId: 'user-1',
+            content: {
+              type: 'text',
+              text: [text, '[Attachment: report.txt (text/plain, 12 bytes)]']
+                .filter(Boolean)
+                .join('\n\n'),
+            },
+            _meta: { '_maka/attachments': attachments },
+          },
+        ],
+      );
+    });
+  }
+
+  test('replay preserves non-user origin and omits unsupported steering rows', async () => {
+    const notifications: SessionNotification[] = [];
+    const mapper = eventMapper(notifications);
+    await mapper.acceptHistoricalMessage({
+      type: 'user',
+      id: 'scheduled',
+      turnId: 'turn-1',
+      ts: 1,
+      text: 'Run the report',
+      origin: { kind: 'scheduled_task', scheduledTaskId: 'schedule-1' },
+    });
+    await mapper.acceptHistoricalMessage({
+      type: 'user',
+      id: 'steering',
+      turnId: 'turn-1',
+      ts: 2,
+      text: 'Continue',
+      steeringEventId: 'steering-event',
+    });
+    await mapper.flush();
+    assert.deepEqual(
+      notifications.map(({ update }) => update),
+      [
+        {
+          sessionUpdate: 'user_message_chunk',
+          messageId: 'scheduled',
+          content: { type: 'text', text: 'Run the report' },
+          _meta: { '_maka/origin': { kind: 'scheduled_task', scheduledTaskId: 'schedule-1' } },
+        },
+      ],
+    );
+  });
+
   test('streams text and thinking while deduplicating matching completion events', async () => {
     const notifications: SessionNotification[] = [];
     const mapper = eventMapper(notifications);
@@ -273,6 +353,32 @@ describe('ACP Session event mapper', () => {
     );
     await mapper.finishTools('turn-1');
     assert.equal(notifications.length, count);
+  });
+
+  test('updates ACP host status when only the explicit outcome changes', async () => {
+    const notifications: SessionNotification[] = [];
+    const mapper = eventMapper(notifications);
+    for (const outcome of ['error', 'aborted'] as const) {
+      await mapper.accept(
+        event({
+          type: 'tool_result',
+          toolUseId: 'tool',
+          contentOmitted: true,
+          isError: true,
+          outcome,
+          content: { kind: 'text', text: '' },
+        }),
+      );
+    }
+    const updates = notifications.map(toolUpdate);
+    assert.deepEqual(
+      updates.map((update) => (update._meta?.maka as { hostStatus?: string })?.hostStatus),
+      ['errored', 'interrupted'],
+    );
+    assert.deepEqual(
+      updates.map((update) => update.status),
+      ['failed', 'failed'],
+    );
   });
 
   test('result before start creates one terminal card and late start only fills identity', async () => {
@@ -548,6 +654,125 @@ describe('ACP Session event mapper', () => {
       }),
     );
     assert.equal(notifications.length, 1);
+  });
+
+  test('a corrected tool result removes an obsolete Artifact reference', async () => {
+    const notifications: SessionNotification[] = [];
+    const mapper = eventMapper(notifications);
+    await mapper.accept(
+      event({
+        type: 'tool_result',
+        toolUseId: 'tool',
+        isError: false,
+        content: {
+          kind: 'archived_tool_result',
+          status: 'not_loaded',
+          runtimeEventId: 'event-1',
+          toolCallId: 'tool',
+          toolName: 'Read',
+          artifactId: 'artifact-1',
+          originalEstimatedTokens: 1,
+          originalBytes: 1,
+          rewriteVersion: 1,
+          reason: 'tool_result_pruned',
+        },
+      }),
+    );
+    assert.equal(
+      (
+        (toolUpdate(notifications.at(-1)!)._meta?.maka as { artifacts?: unknown[] })?.artifacts ??
+        []
+      ).length,
+      1,
+    );
+    await mapper.accept(
+      event({
+        type: 'tool_result',
+        toolUseId: 'tool',
+        isError: false,
+        content: { kind: 'text', text: 'Corrected result without an Artifact' },
+      }),
+    );
+    assert.equal(
+      (toolUpdate(notifications.at(-1)!)._meta?.maka as { artifacts?: unknown[] })?.artifacts,
+      undefined,
+    );
+  });
+
+  for (const status of ['missing', 'corrupt'] as const) {
+    test(`an ${status} archived result does not advertise a readable Artifact`, async () => {
+      const notifications: SessionNotification[] = [];
+      const mapper = eventMapper(notifications);
+      await mapper.accept(
+        event({
+          type: 'tool_result',
+          toolUseId: 'tool',
+          isError: false,
+          content: {
+            kind: 'archived_tool_result',
+            status,
+            runtimeEventId: 'event-1',
+            toolCallId: 'tool',
+            toolName: 'Read',
+            artifactId: 'artifact-1',
+            originalEstimatedTokens: 1,
+            originalBytes: 1,
+            rewriteVersion: 1,
+            reason: 'tool_result_pruned',
+          },
+        }),
+      );
+      const update = toolUpdate(notifications.at(-1)!);
+      assert.equal((update._meta?.maka as { artifacts?: unknown[] })?.artifacts, undefined);
+      assert.doesNotMatch(toolText(notifications.at(-1)!), /read with _maka\/artifact\/query/);
+    });
+  }
+
+  test('interaction updates preserve Host closure reasons without reopening terminal tools', async () => {
+    const notifications: SessionNotification[] = [];
+    const mapper = eventMapper(notifications);
+    const pending: InteractionPendingSnapshot = {
+      schemaVersion: 1,
+      interactionId: 'interaction',
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      runId: 'run',
+      revision: 1,
+      status: 'pending',
+      outcome: null,
+      request: { kind: 'question', toolUseId: 'tool', questions: [] },
+    };
+    await mapper.pendingInteraction(pending);
+    assert.equal(toolUpdate(notifications.at(-1)!).status, 'pending');
+    await mapper.resolvedInteraction(
+      {
+        ...pending,
+        revision: 2,
+        status: 'closed',
+        outcome: { kind: 'closure', reason: 'provider_disconnected', committedAt: 2 },
+      },
+      pending,
+    );
+    assert.equal(
+      (
+        toolUpdate(notifications.at(-1)!)._meta?.maka as
+          | { interaction: { reason: string } }
+          | undefined
+      )?.interaction.reason,
+      'provider_disconnected',
+    );
+    await mapper.accept(
+      event({
+        type: 'tool_result',
+        toolUseId: 'tool',
+        isError: true,
+        content: { kind: 'text', text: 'closed' },
+      }),
+    );
+    const count = notifications.length;
+    await mapper.pendingInteraction(pending);
+    assert.equal(notifications.length, count);
+    assert.equal(toolUpdate(notifications.at(-1)!).status, 'failed');
   });
 });
 

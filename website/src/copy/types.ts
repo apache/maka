@@ -44,8 +44,8 @@ export interface Copy {
   hero: {
     headline: [string, string, string];
     lede: string;
-    nightly: string;
-    source: string;
+    releases: string;
+    contribute: string;
     fine: string;
     architecture: string;
   };
@@ -70,8 +70,7 @@ export interface Copy {
   get: {
     h3: string;
     p: string;
-    nightly: { title: string; body: string; note: string };
-    source: { title: string; body: string; note: string };
+    contribute: { title: string; body: string; note: string };
     releases: { title: string; body: string; note: string };
   };
   reads: {
@@ -103,13 +102,10 @@ export interface Copy {
     copied: string;
     status: {
       h3: string;
-      release: { label: string; value: string; note: string };
-      nightly: { label: string; value: string; note: string };
-      source: { label: string; value: string; note: string };
+      release: { label: string };
     };
-    releases: { h2: string; note: string; p: string; distNote: string };
+    releases: { h2: string; p: string; checksum: string; signature: string; archiveNote: string };
     verify: { h2: string; p: string; keys: string; signature: string; checksum: string };
-    nightly: { h2: string; note: string; p: string; windows: string };
-    source: { h2: string; prerequisites: string[]; clone: string; build: string; after: string };
+    development: { h2: string; p: string; contribute: string; discuss: string };
   };
 }

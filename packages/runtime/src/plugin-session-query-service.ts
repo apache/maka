@@ -19,6 +19,7 @@
 
 import { Service, type Context, type Disposable } from './plugin-kernel.js';
 import type { PluginAgentInvocation, PluginAgentService } from './plugin-agent-service.js';
+import { PluginRuntimeBinding } from './plugin-internals.js';
 
 declare module './plugin-kernel.js' {
   interface Context {
@@ -71,25 +72,18 @@ export interface PluginSessionQueryRuntime {
 
 /** Read-only, paged Session projection. It never exposes the mutable Session Store. */
 export class PluginSessionQueryService extends Service {
-  private queryRuntime?: PluginSessionQueryRuntime;
+  private readonly runtimeBinding: PluginRuntimeBinding<PluginSessionQueryRuntime>;
 
   constructor(
     ctx: Context,
     private readonly agents: PluginAgentService,
   ) {
     super(ctx, 'sessionQuery');
+    this.runtimeBinding = new PluginRuntimeBinding('sessionQuery', 'Session Query');
   }
 
   bindRuntime(runtime: PluginSessionQueryRuntime): Disposable<Promise<void>> {
-    if (this.ctx.maka) throw new Error('Only the Host may bind the Session Query Runtime');
-    if (this.queryRuntime) throw new Error('Plugin Session Query Runtime is already bound');
-    this.queryRuntime = runtime;
-    return this.ctx.effect(
-      () => () => {
-        if (this.queryRuntime === runtime) this.queryRuntime = undefined;
-      },
-      'sessionQuery.bindRuntime()',
-    );
+    return this.runtimeBinding.bind(this.ctx, runtime);
   }
 
   list(): Promise<readonly PluginSessionSummary[]> {
@@ -115,8 +109,7 @@ export class PluginSessionQueryService extends Service {
   }
 
   private runtime(): PluginSessionQueryRuntime {
-    if (!this.queryRuntime) throw new Error('Plugin Session Query Runtime is unavailable');
-    return this.queryRuntime;
+    return this.runtimeBinding.get();
   }
 
   private caller(): PluginSessionQueryCaller {

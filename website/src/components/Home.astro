@@ -56,8 +56,8 @@ const reads = [
     <h1 class="display">{copy.hero.headline[0]}<b>{copy.hero.headline[1]}</b>{copy.hero.headline[2]}</h1>
     <p class="lede">{copy.hero.lede}</p>
     <div class="cta">
-      <a class="btn primary" href={links.releases}>{copy.hero.nightly} <span class="arr">→</span></a>
-      <a class="btn secondary" href={`${downloads}#source`}>{copy.hero.source}</a>
+      <a class="btn primary" href={`${downloads}#apache-releases`}>{copy.hero.releases} <span class="arr">→</span></a>
+      <a class="btn secondary" href={localized.contributing[l]}>{copy.hero.contribute}</a>
     </div>
     <div class="fine">{copy.hero.fine} · <a href={localized.architecture[l]}>{copy.hero.architecture}</a></div>
 
@@ -126,18 +126,14 @@ const reads = [
       </div>
       <div class="tile c12 plain get">
         <div class="get-h"><h3>{copy.get.h3}</h3><p>{copy.get.p}</p></div>
-        <div class="paths3">
-          <a class="path" href={links.releases}>
-            <div><b>{copy.get.nightly.title}</b><span>{copy.get.nightly.body}</span></div>
-            <span class="note">{copy.get.nightly.note}</span>
-          </a>
-          <a class="path" href={`${downloads}#source`}>
-            <div><b>{copy.get.source.title}</b><span>{copy.get.source.body}</span></div>
-            <span class="note mut">{copy.get.source.note}</span>
-          </a>
+        <div class="paths">
           <a class="path" href={`${downloads}#apache-releases`}>
             <div><b>{copy.get.releases.title}</b><span>{copy.get.releases.body}</span></div>
             <span class="note mut">{copy.get.releases.note}</span>
+          </a>
+          <a class="path" href={localized.contributing[l]}>
+            <div><b>{copy.get.contribute.title}</b><span>{copy.get.contribute.body}</span></div>
+            <span class="note mut">{copy.get.contribute.note}</span>
           </a>
         </div>
       </div>

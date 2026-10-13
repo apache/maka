@@ -9,6 +9,10 @@
       "tests": 1,
       "electron": "the folder reference has to survive a renderer reload and still agree with the Host's session record"
     },
+    "composer-session-reference.spec.ts": {
+      "tests": 1,
+      "electron": "the referenced transcript snapshot crosses renderer, preload, main process, and Runtime Host boundaries before the staged quote can be sent"
+    },
     "expected-failure-feedback.spec.ts": {
       "tests": 2,
       "electron": "WorkHub attachment rejection crosses a native file dialog, preload and main; Session settings and Plan failures must preserve their codes through a real contextBridge IPC round trip"
@@ -38,8 +42,8 @@
       "electron": "needs a second real Session (Host round trip) to switch to; the focus and draft-restore halves alone would not earn a window"
     },
     "session-local-recovery.spec.ts": {
-      "tests": 3,
-      "electron": "SQLite admission crosses preload and main, survives both renderer reload and complete Electron restart, and cached history must render when the live IPC endpoint is unavailable"
+      "tests": 6,
+      "electron": "SQLite admission crosses preload and main, survives renderer reload and complete Electron restart, and cached history renders without live IPC. Failed-message recovery reads original bytes, fences drafts, and preserves one-shot slash intent through the real composer/Main path. Stop retractions remain retired across offline navigation and application restart. Failed-message alignment with transcript turns is covered by the FailedLocalMessage Storybook play function."
     },
     "session-workbar.spec.ts": {
       "tests": 5,
@@ -55,11 +59,7 @@
     },
     "side-chat-followups.spec.ts": {
       "tests": 1,
-      "electron": "queue mutations and successive Side Chat Turns cross renderer/preload/main/Host; native dragging must pass the main-window drop guard and Host reconnect must restore the live fork without remounting it"
-    },
-    "skill-draft-lifecycle.spec.ts": {
-      "tests": 2,
-      "electron": "revision retry and cancel are Host-owned draft transitions across a parent and a child Session"
+      "electron": "native queue dragging must pass the main-window drop guard, queued follow-ups drain in order across real Host turn handoffs, and closing the Desktop transport while an external client drives the fork exercises observation reseed without remount"
     },
     "slash-command-compact.spec.ts": {
       "tests": 1,
@@ -71,15 +71,15 @@
     },
     "workhub-layout.spec.ts": {
       "tests": 3,
-      "electron": "WorkHub model configuration and attachment sending cross the Host boundary; the Project New task action must dismiss the native dock owned by a separate WebContentsView; the native Workbar menu must coexist with the live sibling WebContentsView without hiding its compositor; the compact native window grows only with the inline composer wheel and keeps its bottom anchor; opening context details routes to Main’s Workbar without resizing or docking the floating conversation, while the thinking menu stays within the compact bounds, and pointer dragging scrolls the no-drag wheel instead of moving the frameless window; native floating preserves macOS Dock visibility; a held-open Host Turn verifies immediate prompt visibility, durable transcript handoff and persistence after renderer reload"
+      "electron": "WorkHub model configuration and attachment sending cross the Host boundary; the Project New task action must dismiss the native dock owned by a separate WebContentsView; the default titlebar toggle controls the sibling WorkHub WebContentsView through Main IPC, and switching to edge mode restores the native-renderer toggle; the native Workbar menu must coexist with the live sibling WebContentsView without hiding its compositor; a delayed sidebar-preview capture keeps the sibling view live until its decoded backdrop can take over; the compact native window grows only with the inline composer wheel and keeps its bottom anchor; opening context details routes to Main’s Workbar without resizing or docking the floating conversation, while the thinking sheet stays within the compact bounds, and pointer dragging scrolls the no-drag wheel instead of moving the frameless window; native floating preserves macOS Dock visibility; a held-open Host Turn verifies immediate prompt visibility, durable transcript handoff and persistence after renderer reload"
     },
     "workhub-reconstruction.spec.ts": {
       "tests": 1,
       "electron": "the same WebContentsView and unsent draft survive reparenting between native main and floating windows, shared appearance changes and the explicit return-from-picture-in-picture button"
     },
-    "workhub-return-rail.spec.ts": {
-      "tests": 2,
-      "electron": "WorkHub lives in a separate native WebContentsView: open a Session and return through the shell while retaining the same WorkHub draft; a Host-backed pending question survives renderer reload and native detach/dock with its selection and focus"
+    "workhub-pending-question.spec.ts": {
+      "tests": 1,
+      "electron": "a Host-backed pending question survives renderer reload and native detach/dock with its selection and focus"
     },
     "zh-tw-locale.spec.ts": {
       "tests": 1,

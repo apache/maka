@@ -21,6 +21,7 @@ import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  createRuntimeHostReconnectLifecycle,
   createRuntimeHostReconnectingConnection,
   remoteRuntimeHostUnavailableError,
   RuntimeHostOperationError,
@@ -36,6 +37,7 @@ import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_PROTOCOL_VERSION,
+  type ArtifactChangedFrame,
   type HostIncompatible,
   type HostStatusResult,
   type OperationInput,
@@ -125,6 +127,68 @@ test('a reconnecting Client reports the connection generation used by direct ope
   replacement.disconnect();
   await yieldToEventLoop();
   assert.equal(availability.length, 3);
+  await connection.close();
+});
+
+test('a reconnecting Client forwards Artifact invalidations only from its current connection', async () => {
+  const first = connectionHarness('first', () => undefined);
+  const replacement = connectionHarness('replacement', () => undefined);
+  const connection = await createRuntimeHostReconnectingConnection({
+    initialConnection: first.connection,
+    connect: async () => replacement.connection,
+  });
+  const changes: ArtifactChangedFrame[] = [];
+  const unsubscribe = connection.subscribeArtifactChanges((frame) => changes.push(frame));
+
+  first.emitArtifactChange({
+    kind: 'artifact.changed',
+    reason: 'deleted',
+    sessionId: 'session-1',
+    artifactId: 'artifact-1',
+  });
+  assert.deepEqual(changes, [
+    {
+      kind: 'artifact.changed',
+      reason: 'deleted',
+      sessionId: 'session-1',
+      artifactId: 'artifact-1',
+    },
+  ]);
+
+  first.disconnect();
+  await waitForCondition(() => replacement.artifactSubscribers === 1);
+  first.emitArtifactChange({
+    kind: 'artifact.changed',
+    reason: 'session_purged',
+    sessionId: 'stale-session',
+  });
+  replacement.emitArtifactChange({
+    kind: 'artifact.changed',
+    reason: 'session_purged',
+    sessionId: 'session-2',
+  });
+  assert.deepEqual(changes, [
+    {
+      kind: 'artifact.changed',
+      reason: 'deleted',
+      sessionId: 'session-1',
+      artifactId: 'artifact-1',
+    },
+    {
+      kind: 'artifact.changed',
+      reason: 'session_purged',
+      sessionId: 'session-2',
+    },
+  ]);
+
+  unsubscribe();
+  replacement.emitArtifactChange({
+    kind: 'artifact.changed',
+    reason: 'deleted',
+    sessionId: 'session-2',
+    artifactId: 'artifact-2',
+  });
+  assert.equal(changes.length, 2);
   await connection.close();
 });
 
@@ -426,6 +490,189 @@ test('reconnect lifecycle close waits for a resource returned after cancellation
   releaseLateClose.resolve();
   await closeTask;
   assert.equal(closeSettled, true);
+});
+
+for (const closeDuringConnect of [false, true]) {
+  test(`reconnect lifecycle close waits for its initial connection and late resource cleanup (${closeDuringConnect ? 'reentrant' : 'caller'} close)`, {
+    timeout: 5_000,
+  }, async () => {
+    const acquired = deferredValue<RuntimeHostConnection>();
+    const closeEntered = deferred();
+    const releaseClose = deferred();
+    const late = connectionHarness('late-initial', () => undefined);
+    const lifecycle = createRuntimeHostReconnectLifecycle({
+      connect: async () => {
+        if (closeDuringConnect) void lifecycle.close();
+        return acquired.promise;
+      },
+    });
+    const starting = lifecycle.start();
+    let closeSettled = false;
+    let closedSettled = false;
+    const closing = lifecycle.close().then(() => {
+      closeSettled = true;
+    });
+    void lifecycle.closed.then(() => {
+      closedSettled = true;
+    });
+    const resource = {
+      ...late.connection,
+      close: async () => {
+        closeEntered.resolve();
+        await releaseClose.promise;
+        await late.connection.close();
+      },
+    };
+    try {
+      acquired.resolve(resource);
+      await closeEntered.promise;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(closeSettled, false);
+      assert.equal(closedSettled, false);
+      assert.equal(lifecycle.current, undefined);
+      releaseClose.resolve();
+      await Promise.all([starting, closing, lifecycle.closed, late.connection.closed]);
+      assert.equal(closeSettled, true);
+      assert.equal(closedSettled, true);
+    } finally {
+      acquired.resolve(resource);
+      releaseClose.resolve();
+      await Promise.allSettled([starting, closing]);
+      await late.connection.close();
+    }
+  });
+}
+
+test('reconnect lifecycle close waits for initial abort cleanup without reporting a fatal failure', {
+  timeout: 5_000,
+}, async () => {
+  const cleanupEntered = deferred();
+  const releaseCleanup = deferred();
+  const fatalErrors: Error[] = [];
+  let cleaned = false;
+  let reentrantCloseSettled = false;
+  const lifecycle = createRuntimeHostReconnectLifecycle({
+    connect: async (signal): Promise<RuntimeHostConnection> => {
+      await new Promise<void>((resolve) =>
+        signal.addEventListener(
+          'abort',
+          () => {
+            void lifecycle.close().then(() => {
+              reentrantCloseSettled = true;
+            });
+            resolve();
+          },
+          { once: true },
+        ),
+      );
+      cleanupEntered.resolve();
+      await releaseCleanup.promise;
+      cleaned = true;
+      throw signal.reason;
+    },
+    onFatalError: (error) => fatalErrors.push(error),
+  });
+  const starting = lifecycle.start().catch((error: unknown) => error);
+  let closedSettled = false;
+  let closeSettled = false;
+  void lifecycle.closed.then(() => {
+    closedSettled = true;
+  });
+  const closing = lifecycle.close().then(() => {
+    closeSettled = true;
+  });
+  try {
+    await cleanupEntered.promise;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(closeSettled, false);
+    assert.equal(closedSettled, false);
+    assert.equal(reentrantCloseSettled, false);
+    assert.equal(cleaned, false);
+    releaseCleanup.resolve();
+    await Promise.all([starting, closing, lifecycle.closed]);
+    assert.equal(cleaned, true);
+    assert.equal(closeSettled, true);
+    assert.equal(closedSettled, true);
+    assert.equal(reentrantCloseSettled, true);
+    assert.deepEqual(fatalErrors, []);
+  } finally {
+    releaseCleanup.resolve();
+    await Promise.allSettled([starting, closing]);
+  }
+});
+
+test('reconnect lifecycle closes an unstarted initial resource and cannot start after close', {
+  timeout: 5_000,
+}, async () => {
+  const initial = connectionHarness('unstarted', () => undefined);
+  let connectCalls = 0;
+  const lifecycle = createRuntimeHostReconnectLifecycle({
+    initial: initial.connection,
+    connect: async () => {
+      connectCalls += 1;
+      return initial.connection;
+    },
+  });
+  let resourceClosed = false;
+  void initial.connection.closed.then(() => {
+    resourceClosed = true;
+  });
+  try {
+    await lifecycle.close();
+    await lifecycle.closed;
+    assert.equal(resourceClosed, true);
+    await assert.rejects(lifecycle.start(), /lifecycle is closed/u);
+    assert.equal(connectCalls, 0);
+    assert.equal(lifecycle.current, undefined);
+  } finally {
+    await initial.connection.close();
+  }
+});
+
+test('reconnect lifecycle repeated start acquires only one initial resource', {
+  timeout: 5_000,
+}, async () => {
+  const resource = connectionHarness('initial', () => undefined);
+  const acquired = deferredValue<RuntimeHostConnection>();
+  let connectCalls = 0;
+  const lifecycle = createRuntimeHostReconnectLifecycle({
+    connect: async () => {
+      connectCalls += 1;
+      return acquired.promise;
+    },
+  });
+  const first = lifecycle.start();
+  const second = lifecycle.start();
+  try {
+    acquired.resolve(resource.connection);
+    await Promise.all([first, second]);
+    assert.equal(connectCalls, 1);
+    assert.equal(lifecycle.current, resource.connection);
+  } finally {
+    acquired.resolve(resource.connection);
+    await Promise.allSettled([first, second]);
+    await lifecycle.close();
+  }
+});
+
+test('reconnect lifecycle initial permanent failure rejects waiters and completes close', {
+  timeout: 5_000,
+}, async () => {
+  const failure = new RuntimeHostPermanentReconnectError('initial admission rejected');
+  const fatalErrors: Error[] = [];
+  const lifecycle = createRuntimeHostReconnectLifecycle<RuntimeHostConnection>({
+    connect: async () => {
+      throw failure;
+    },
+    onFatalError: (error) => {
+      fatalErrors.push(error);
+    },
+  });
+  const waiting = assert.rejects(lifecycle.waitForCurrent(), (error) => error === failure);
+  await assert.rejects(lifecycle.start(), (error) => error === failure);
+  await Promise.all([waiting, lifecycle.closed, lifecycle.close()]);
+  assert.deepEqual(fatalErrors, [failure]);
+  assert.equal(lifecycle.current, undefined);
 });
 
 test('reconnect lifecycle quiescence suppresses replacement until it is resumed', async () => {
@@ -874,6 +1121,7 @@ function connectionHarness(
     resolveClosed = resolve;
   });
   const operations: DirectRequestOperationKey[] = [];
+  const artifactListeners = new Set<(frame: ArtifactChangedFrame) => void>();
   let openedSubscriptions = 0;
   const connection = {
     rootId: 'root-id',
@@ -893,6 +1141,10 @@ function connectionHarness(
       return openSubscription();
     },
     subscribeConfigurationChanges: () => () => {},
+    subscribeArtifactChanges: (listener: (frame: ArtifactChangedFrame) => void) => {
+      artifactListeners.add(listener);
+      return () => artifactListeners.delete(listener);
+    },
     subscribeConnectionCatalogChanges: () => () => {},
     subscribeProjectCatalogChanges: () => () => {},
     subscribeSessionCatalogChanges: () => () => {},
@@ -903,6 +1155,12 @@ function connectionHarness(
     connection,
     operations,
     disconnect: resolveClosed,
+    emitArtifactChange: (frame: ArtifactChangedFrame) => {
+      for (const listener of artifactListeners) listener(frame);
+    },
+    get artifactSubscribers() {
+      return artifactListeners.size;
+    },
     get openedSubscriptions() {
       return openedSubscriptions;
     },

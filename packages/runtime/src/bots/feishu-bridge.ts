@@ -41,20 +41,8 @@ export async function closeLarkChannel(channel: ClosableLarkChannel): Promise<vo
   await channel.disconnect().catch(() => {});
 }
 
-export function feishuMessageToEvent(
-  message: NormalizedMessage,
-  receivedAt: number,
-  allowedUserIds?: ReadonlyArray<string>,
-) {
+export function feishuMessageToEvent(message: NormalizedMessage, receivedAt: number) {
   if (!message.content.trim() || !message.senderId || !message.chatId) return null;
-  // PR-BOT-USER-ALLOWLIST-0 / PR1197 review: the Lark SDK policy gate only
-  // enforces the allowlist for DMs (PolicyGate.evaluateGroup checks
-  // groupAllowlist + requireMention, and this bridge sets requireMention:false),
-  // so group messages from unauthorized senders slip past the SDK. Mirror the
-  // WeCom/Telegram local check: an empty/absent list allows all, otherwise the
-  // sender must be listed. Dropped silently — no bounce that would let scanners
-  // enumerate the policy.
-  if (allowedUserIds?.length && !allowedUserIds.includes(message.senderId)) return null;
   return {
     platform: 'feishu' as const,
     userId: message.senderId,
@@ -194,12 +182,11 @@ export class FeishuBotBridge extends BaseBotAdapter implements SendCapable {
     this.unsubscribe.push(
       channel.on('message', (message) => {
         const receivedAt = Date.now();
-        const event = feishuMessageToEvent(message, receivedAt, this.settings.allowedUserIds);
+        const event = feishuMessageToEvent(message, receivedAt);
         if (!event || this.channel !== channel) return;
-        this.lastEventAt = receivedAt;
+        if (!this.emitIncomingMessage(event)) return;
         this.readiness = 'operational';
         this.reason = undefined;
-        this.emitIncomingMessage(event);
         this.emitStatusChange();
       }),
       channel.on('error', (error) => {

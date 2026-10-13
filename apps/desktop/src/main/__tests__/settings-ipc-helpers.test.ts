@@ -19,7 +19,11 @@
 
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { createDefaultSettings, mergeSettings } from "@maka/core/settings";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createSettingsStore } from "@maka/storage/settings-store";
+import { BOT_PROVIDERS, createDefaultSettings, mergeSettings } from "@maka/core/settings";
 import { SENSITIVE_PLACEHOLDER } from "@maka/core/settings/network-settings";
 import {
   buildSettingsUpdateResult,
@@ -65,20 +69,28 @@ describe("settings IPC helpers", () => {
     }
   });
 
-  test("reveals sensitive fields only when the current patch explicitly changes them", () => {
-    const settings = createDefaultSettings();
-    settings.botChat.channels.telegram.token = "new-bot-token";
-    settings.botChat.channels.feishu.appSecret = "stored-feishu-secret";
-
-    const masked = maskAppSettings(settings, {
-      botChat: { channels: { telegram: { token: "new-bot-token" } } },
-    });
-
-    assert.equal(masked.botChat.channels.telegram.token, "new-bot-token");
-    assert.equal(
-      masked.botChat.channels.feishu.appSecret,
-      SENSITIVE_PLACEHOLDER,
-    );
+  test("masks bot credentials in save responses and preserves them across masked saves and reloads", async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "maka-bot-settings-"));
+    try {
+      const store = createSettingsStore(workspaceRoot);
+      for (const provider of BOT_PROVIDERS) {
+        const patch = { botChat: { channels: { [provider]: { token: "stored-token", appSecret: "stored-secret" } } } };
+        const configured = await store.update(patch);
+        const response = buildSettingsUpdateResult(configured, patch);
+        assert.equal(response.settings.botChat.channels[provider].token, SENSITIVE_PLACEHOLDER, provider);
+        assert.equal(response.settings.botChat.channels[provider].appSecret, SENSITIVE_PLACEHOLDER, provider);
+        await store.update({ botChat: response.settings.botChat });
+        const saved = await createSettingsStore(workspaceRoot).get();
+        assert.equal(saved.botChat.channels[provider].token, "stored-token", provider);
+        assert.equal(saved.botChat.channels[provider].appSecret, "stored-secret", provider);
+        await store.update({ botChat: { channels: { [provider]: { token: "", appSecret: "" } } } });
+        const cleared = await createSettingsStore(workspaceRoot).get();
+        assert.equal(cleared.botChat.channels[provider].token, "", provider);
+        assert.ok(!cleared.botChat.channels[provider].appSecret, provider);
+      }
+    } finally {
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
   });
 
   test("never reveals Tavily API key back to renderer, even on the save response", () => {
@@ -86,9 +98,9 @@ describe("settings IPC helpers", () => {
       webSearch: { providers: { tavily: { apiKey: "tvly-new-secret" } } },
     });
 
-    const masked = maskAppSettings(settings, {
+    const masked = buildSettingsUpdateResult(settings, {
       webSearch: { providers: { tavily: { apiKey: "tvly-new-secret" } } },
-    });
+    }).settings;
 
     assert.equal(
       masked.webSearch.providers.tavily.apiKey,

@@ -143,3 +143,25 @@ test('Web custom cancellation cannot replace Host invocation cancellation', asyn
   assert.equal(pluginAbort.signal.aborted, false);
   await root.fiber.dispose();
 });
+
+test('Host runtime bindings preserve caller authority and release for rebinding', async () => {
+  const root = new Context();
+  const agents = new PluginAgentService(root);
+  const fs = new PluginFilesystemService(root, agents);
+  const runtime = { execute: async () => undefined };
+  const release = fs.bindRuntime(runtime);
+  assert.throws(() => fs.bindRuntime(runtime), /Plugin Filesystem Runtime is already bound/u);
+
+  const plugin = root.extend({
+    maka: { rootId: 'profile', packageId: 'fixture', entryId: 'fixture', generation: 1 },
+  });
+  assert.throws(
+    () => plugin.fs.bindRuntime(runtime),
+    /Only the Host may bind the Filesystem Runtime/u,
+  );
+
+  await release();
+  const rebound = fs.bindRuntime(runtime);
+  await rebound();
+  await root.fiber.dispose();
+});

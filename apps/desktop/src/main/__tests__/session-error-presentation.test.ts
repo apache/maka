@@ -20,8 +20,8 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { describeSessionErrorReason } from '../../renderer/session-error-presentation.js';
-import { describeTurnErrorClass } from '../../renderer/session-status-presentation.js';
+import { describeSessionErrorReason } from '../../renderer/application/contracts/session-error-presentation.js';
+import { describeTurnErrorClass } from '../../renderer/application/contracts/session-status-presentation.js';
 
 describe('provider capacity presentation', () => {
   it('uses capacity-specific copy instead of the unknown error fallback', () => {

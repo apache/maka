@@ -34,6 +34,7 @@
  */
 
 import { isWorkHubActionReceipt, type WorkHubActionReceipt } from './workhub-action-result.js';
+import { isToolCallOutcome } from './tool-result-status.js';
 import { isModelRetryDecision, type ModelRetryDecision } from './model-failure.js';
 
 import {
@@ -71,11 +72,7 @@ import {
 } from './orchestration.js';
 import { isToolMode, type ToolMode } from './tool-mode.js';
 import { isExecutorId } from './executor-id.js';
-import {
-  isRuntimeSystemNoteKind,
-  type PersistedBackendKind,
-  type RuntimeSystemNoteKind,
-} from './session.js';
+import { isSystemNoteKind, type PersistedBackendKind, type SystemNoteKind } from './session.js';
 import { decodeTurnOrigin, type TurnOrigin } from './turn-origin.js';
 import type { UserQuestionRequest } from './user-question.js';
 import {
@@ -226,6 +223,7 @@ export interface RuntimeEventFunctionResponseContent {
   name: string;
   result: unknown;
   isError?: boolean;
+  outcome?: import('./tool-result-status.js').ToolCallOutcome;
   providerExecuted?: boolean;
   /** Raw provider result retained for provider-native replay; never rendered directly. */
   providerOutput?: unknown;
@@ -244,7 +242,7 @@ export interface RuntimeEventFunctionResponseContent {
  */
 export interface RuntimeEventSystemNoteContent {
   kind: 'system_note';
-  note: RuntimeSystemNoteKind;
+  note: SystemNoteKind;
   /** Shape depends on `note`, exactly as it does on the transcript row. */
   data?: unknown;
 }
@@ -756,7 +754,7 @@ const FUNCTION_CALL_CONTENT_SHAPE = defineObjectShape<RuntimeEventFunctionCallCo
 );
 const FUNCTION_RESPONSE_CONTENT_SHAPE = defineObjectShape<RuntimeEventFunctionResponseContent>()(
   ['kind', 'id', 'name', 'result'],
-  ['isError', 'providerExecuted', 'providerOutput', 'modelProjection'],
+  ['isError', 'outcome', 'providerExecuted', 'providerOutput', 'modelProjection'],
 );
 const ERROR_CONTENT_SHAPE = defineObjectShape<RuntimeEventErrorContent>()(
   ['kind', 'message'],
@@ -1112,6 +1110,9 @@ function isRuntimeEventContent(value: unknown): value is RuntimeEventContent {
         typeof value.name === 'string' &&
         Object.hasOwn(value, 'result') &&
         (value.isError === undefined || typeof value.isError === 'boolean') &&
+        (value.outcome === undefined ||
+          (isToolCallOutcome(value.outcome) &&
+            (value.outcome !== 'success') === (value.isError === true))) &&
         (value.providerExecuted === undefined || typeof value.providerExecuted === 'boolean') &&
         (value.modelProjection === undefined ||
           decodesDurableToolResultProjection(value.modelProjection))
@@ -1129,7 +1130,7 @@ function isRuntimeEventContent(value: unknown): value is RuntimeEventContent {
       return (
         hasExactShape(value, SYSTEM_NOTE_CONTENT_SHAPE) &&
         typeof value.note === 'string' &&
-        isRuntimeSystemNoteKind(value.note)
+        isSystemNoteKind(value.note)
       );
     case 'invocation_opened':
       return isRuntimeInvocationOpened(value);

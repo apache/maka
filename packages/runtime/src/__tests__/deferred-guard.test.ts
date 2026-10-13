@@ -175,6 +175,15 @@ describe('tool-availability execute-boundary guard', () => {
     );
   });
 
+  test('deferred-not-loaded text names the exact tool_search query', () => {
+    assert.equal(
+      formatDeferredNotLoadedText('request_sandbox_boundary'),
+      'Tool "request_sandbox_boundary" is available but not loaded yet. ' +
+        'Call tool_search with query "request_sandbox_boundary" to activate it first, ' +
+        'then call "request_sandbox_boundary" on a later step.',
+    );
+  });
+
   test('rejects a gated tool absent from the step snapshot before implementation', async () => {
     const h = makeHarness();
     const implCalls: string[] = [];

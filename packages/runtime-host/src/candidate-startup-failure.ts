@@ -24,6 +24,7 @@ export const CANDIDATE_STARTUP_FAILURE_REASONS = [
   'operational_state_migration_blocked',
   'local_ipc_security_failed',
   'internal_startup_failure',
+  'launch_election_lost',
   ...RUNTIME_HOST_MANAGED_LAUNCH_REJECTIONS,
 ] as const;
 
@@ -57,6 +58,10 @@ const EXIT_CODE_BY_REASON: Readonly<Record<CandidateStartupFailureReason, number
   deployment_launch_mismatch: 85,
   deployment_transition_in_progress: 86,
   deployment_needs_repair: 87,
+  // Losing the launch election is a normal outcome, not a failure: losing
+  // candidates still exit 2. This entry exists so the startup diagnostic can
+  // name the outcome; the code itself is never used as an exit code.
+  launch_election_lost: 88,
 };
 
 export function classifyCandidateStartupFailure(error: unknown): CandidateStartupFailure {

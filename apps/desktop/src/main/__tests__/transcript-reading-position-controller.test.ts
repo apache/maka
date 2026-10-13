@@ -26,10 +26,10 @@ import type { DesktopTranscriptHandle } from '../../preload/transcript-contract.
 import { encodeDesktopTranscriptBatches, encodeDesktopTranscriptSnapshot } from '../desktop-transcript-ipc.js';
 import { createDesktopTranscriptRangeController, DesktopTranscriptRangeStore } from '../../renderer/platform/desktop/desktop-transcript-range-store.js';
 import {
-  createAppShellSessionUiStateController,
   TranscriptReadingPositionController,
   type TranscriptReadingPositionCommands,
-} from '../../renderer/features/conversation/index.js';
+} from '../../renderer/features/conversation/testing.js';
+import { createAppShellSessionUiStateController } from '../../renderer/features/conversation/testing.js';
 import {
   createTranscriptRestoreLifecycle,
   prepareTranscriptForSend,
@@ -119,6 +119,65 @@ test('a bookmark the Turn index does not know, or cannot be asked about, is unav
   }
 });
 
+test('a cached transcript keeps a stored bookmark pending until the live answer replaces it', async () => {
+  const store = new DesktopTranscriptRangeStore(SESSION_ID);
+  for (const batch of encodeDesktopTranscriptSnapshot({
+    beginsAtTurnBoundary: true,
+    ...IDENTITY, generation: 'cached:generation', durableThrough: 30,
+    durable: [{ sequence: 30, message: answer('c') }], hasOlder: true,
+  })) store.accept(batch);
+  const reads: (number | undefined)[] = [];
+  const lookups: string[] = [];
+  const controller = createDesktopTranscriptRangeController(store, async () => handle({
+    async loadEarlier(throughSequence) {
+      reads.push(throughSequence);
+      for (const batch of encodeDesktopTranscriptBatches(IDENTITY, {
+        durableThrough: 30,
+        durable: [{ sequence: 10, message: answer('a') }, { sequence: 20, message: answer('b') }],
+        hasOlder: false, earlierThan: 30, reset: false, ready: true,
+      })) store.accept(batch);
+    },
+  }), { onError: (error) => assert.fail(String(error)) });
+  let anchor: { turnId: string } | undefined = { turnId: 'a' };
+  const unavailable: string[] = [];
+  const lifecycle = createTranscriptRestoreLifecycle();
+  const restore = () => restoreSessionTranscriptRange({
+    lifecycle, sessionId: SESSION_ID, controller, readingAnchor: { turnId: 'a' },
+    isCurrent: () => true,
+    lookupTurn: async (_sessionId, turnId) => { lookups.push(turnId); return 10; },
+    setReadingAnchor: (_sessionId, next) => { anchor = next; },
+    onRestoreUnavailable: (_sessionId, turnId) => { unavailable.push(turnId); },
+    onError: (error) => assert.fail(String(error)),
+  });
+  try {
+    await controller.ready();
+    restore();
+    for (let tick = 0; tick < 4; tick += 1) await settle();
+    restore();
+    await settle();
+    assert.deepEqual(lookups, []);
+    assert.deepEqual(reads, []);
+    assert.deepEqual(anchor, { turnId: 'a' });
+    assert.deepEqual(unavailable, []);
+    for (const batch of encodeDesktopTranscriptSnapshot({
+      beginsAtTurnBoundary: true,
+      ...IDENTITY, durableThrough: 30,
+      durable: [{ sequence: 30, message: answer('c') }], hasOlder: true,
+    })) store.accept(batch);
+    restore();
+    for (let tick = 0; tick < 4; tick += 1) await settle();
+    restore();
+    await settle();
+    assert.deepEqual(lookups, ['a']);
+    assert.deepEqual(reads, [10]);
+    assert.deepEqual(store.snapshot().messages.map(({ turnId }) => turnId), ['a', 'b', 'c']);
+    assert.deepEqual(anchor, { turnId: 'a' });
+    assert.deepEqual(unavailable, []);
+  } finally {
+    await controller.close();
+  }
+});
+
 test('sending before transcript open completes cancels the queued bookmark without delaying admission', { timeout: 5_000 }, async () => {
   const store = new DesktopTranscriptRangeStore(SESSION_ID);
   const opening = deferred<DesktopTranscriptHandle>();
@@ -165,7 +224,7 @@ test('loading earlier history only reaches the current Session controller', asyn
   await fixture.commands.current!.loadEarlier();
   assert.equal(first, 1);
 
-  fixture.props.currentSessionId.current = 'session-2';
+  fixture.currentSessionId.current = 'session-2';
   await fixture.commands.current!.loadEarlier();
   assert.equal(first, 1, 'a superseded Session cannot load history');
 
@@ -187,7 +246,7 @@ test('captured reading anchors belong to the current Session and preparing a sen
   await fixture.render();
   const anchors = fixture.props.sessionUi.transcriptReadingAnchorBySessionRef;
 
-  fixture.commands.current!.captureAnchor('turn-1');
+  fixture.commands.current!.captureAnchor('session-1', 'turn-1');
   assert.deepEqual(anchors.current['session-1'], { turnId: 'turn-1' });
 
   assert.equal(fixture.commands.current!.prepareSend('session-2'), false);
@@ -196,8 +255,8 @@ test('captured reading anchors belong to the current Session and preparing a sen
   assert.deepEqual(followed, ['session-1']);
   assert.equal(anchors.current['session-1'], undefined);
 
-  fixture.props.currentSessionId.current = 'session-2';
-  fixture.commands.current!.captureAnchor('turn-2');
+  fixture.currentSessionId.current = 'session-2';
+  fixture.commands.current!.captureAnchor('session-1', 'turn-2');
   assert.equal(anchors.current['session-1'], undefined, 'a superseded Session cannot capture an anchor');
 });
 
@@ -230,6 +289,7 @@ test('a Turn index read that failed is read again when the transcript reopens', 
 function controllerFixture() {
   const { root } = installReactRenderer();
   const commands = createRef<TranscriptReadingPositionCommands>();
+  const currentSessionId = { current: 'session-1' };
   const controller = {
     loadEarlier: async () => {},
     store: {
@@ -240,7 +300,7 @@ function controllerFixture() {
   const props: ComponentProps<typeof TranscriptReadingPositionController> = {
     commands,
     sessionId: 'session-1',
-    currentSessionId: { current: 'session-1' },
+    currentSessionId,
     rangeController: { current: controller },
     messages: [],
     searchTarget: undefined,
@@ -252,7 +312,7 @@ function controllerFixture() {
     onRestoreError: (error) => assert.fail(String(error)),
   };
   return {
-    commands, controller, props,
+    commands, controller, props, currentSessionId,
     render: () => act(() => root.render(createElement(TranscriptReadingPositionController, props))),
   };
 }

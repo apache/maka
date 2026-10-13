@@ -20,7 +20,28 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { SessionSummary } from '@maka/core/session';
-import { createAppShellTurnActions } from '../../renderer/app-shell-turn-actions.js';
+import { createTurnActions } from '../../renderer/features/conversation/testing.js';
+import { windowSubmissionServices } from './app-shell-chat-actions-fixture.js';
+import { deriveTurnFooterActions } from '../../renderer/application/contracts/turn-footer-actions.js';
+
+test('footer no longer exposes Regenerate', () => {
+  assert.deepEqual(
+    deriveTurnFooterActions({
+      status: 'completed',
+      hasContent: true,
+      locale: 'en',
+    }).map((action) => action.id),
+    ['branch', 'copy'],
+  );
+  assert.deepEqual(
+    deriveTurnFooterActions({
+      status: 'running',
+      hasContent: false,
+      locale: 'en',
+    }).map((action) => action.id),
+    ['branch', 'copy'],
+  );
+});
 
 test('preserves a Branch copy identity after an ambiguous failure and completes it on success', async () => {
   const calls: Array<{ sourceTurnId: string; copyId?: string }> = [];
@@ -38,7 +59,8 @@ test('preserves a Branch copy identity after an ambiguous failure and completes 
   });
   const pending = new Set<string>();
   const opened: string[] = [];
-  const actions = createAppShellTurnActions({
+  const actions = createTurnActions({
+    services: windowSubmissionServices(),
     uiLocale: 'en',
     activeIdRef: { current: 'branch-action-source' },
     captureSelection: () => {

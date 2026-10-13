@@ -1,0 +1,24 @@
+diff --git a/node_modules/app-builder-lib/out/targets/archive.js b/node_modules/app-builder-lib/out/targets/archive.js
+index 467df9d..2a02a7e 100644
+--- a/node_modules/app-builder-lib/out/targets/archive.js
++++ b/node_modules/app-builder-lib/out/targets/archive.js
+@@ -144,6 +144,7 @@ function compute7zCompressArgs(format, options = {}) {
+         // For all other formats the codec is implicit from the output file extension.
+         args.push(`-mm=${storeOnly ? "Copy" : "Deflate"}`);
+         args.push("-mcu");
++        args.push("-mtm=off", "-mta=off");
+     }
+     return args;
+ }
+@@ -179,6 +180,11 @@ async function archive(format, outFile, dirToArchive, options = {}) {
++    // Maka: keep macOS ZIPs on the system zip, as 26.15.3 did, so the update
++    // archive Squirrel.Mac unpacks is built the way shipped releases were.
++    if (process.platform === "darwin" && format === "zip" && options.preserveSymlinks) {
++        use7z = false;
++    }
+     if (storedMembers.length > 0 && !use7z) {
+         throw new Error("storedPaths is not supported with the native zip fallback");
+     }
+     if (use7z) {
+         const args = compute7zCompressArgs(format, options);
+         // Modern 7-Zip (24.09) dereferences symlinks by default; the 7-Zip 16.02 bundled before

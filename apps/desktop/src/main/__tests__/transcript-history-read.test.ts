@@ -69,7 +69,7 @@ test('keeps both Turns reachable when an oversized ledger Turn is followed by a 
       throughSequence: completeThrough,
     });
     assert.equal((await subscription.next()).value?.kind, 'subscription.transcript_advanced');
-    await replica.advance(completeThrough);
+    await replica.advance();
     assertRecords(replica, second);
 
     // A history read walks older pages through the watermark without touching
@@ -128,7 +128,7 @@ for (const checkpoint of ['running-b', 'result-b'] as const) {
         throughSequence,
       });
       assert.equal((await opened.subscription.next()).value?.kind, 'subscription.transcript_advanced');
-      await replica.advance(throughSequence);
+      await replica.advance();
       const second = (await ledger.durableRecords()).filter(({ message }) => message.turnId === 'b');
       assertRecords(replica, second);
     } finally {
@@ -232,8 +232,9 @@ async function openReplica(
   }, async () => undefined, (request) => readSessionTranscriptPage({ reader, state: opened.state, request }), async () => undefined);
   const decodeMessage = (value: unknown) => decodeStoredMessage(markPersisted<StoredMessage>(value));
   const replica = await DesktopTranscriptReplica.prepare(runtimeHostSessionFixture({
-    snapshot: subscription.snapshot, transcript: Promise.resolve([]), events: subscription,
+    snapshot: subscription.snapshot, events: subscription,
     transcriptBootstrap: opened.bootstrap,
+    transcriptWatermark: () => subscription.transcriptWatermark,
     decodeTranscriptPage: (page, maxBytes, accountBytes) => subscription.decodeTranscriptPage(page, decodeMessage, maxBytes, accountBytes),
     loadTranscriptPage: (request) =>
       hostPage ? Promise.resolve(hostPage(request)) : subscription.loadTranscriptPage(request),

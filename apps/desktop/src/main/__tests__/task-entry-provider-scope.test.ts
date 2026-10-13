@@ -18,9 +18,16 @@
  */
 
 import { strict as assert } from 'node:assert';
+import { deferred } from '@maka/core/test-only/async-primitives';
 import { afterEach, describe, it } from 'node:test';
-import { act, createElement, Fragment } from 'react';
-import { LocaleProvider, ToastProvider } from '@maka/ui';
+import { act, createElement, Fragment, type ReactNode } from 'react';
+import {
+  AstryxLocaleProvider,
+  LocaleProvider,
+  ToastProvider,
+  type ToastErrorAction,
+  type WorkspacePickerModel,
+} from '@maka/ui';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 import {
   createFakeTaskEntryServices,
@@ -40,7 +47,11 @@ let workspaceRenders = 0;
 let hostRenders = 0;
 let latestTaskEntry: TaskEntryShellProjection | undefined;
 let latestDirectoryHostId: string | undefined;
+let latestProjectDialog: ReturnType<typeof useTaskEntryHostModel>['newProjectDialog'];
 let latestWorkspaceGroupCount = 0;
+let latestRecoveryPicker: WorkspacePickerModel | undefined;
+let recoverySelectedProject: string | undefined;
+let recoveryPickerOpenStates: boolean[] = [];
 
 function project(id: string) {
   return {
@@ -69,8 +80,29 @@ function remoteHost(): Extract<TaskEntryHost, { state: 'available' }> {
   };
 }
 
+function localHost(projects: ReturnType<typeof project>[] = []): Extract<TaskEntryHost, { state: 'available' }> {
+  return {
+    profile: { id: 'local', name: 'Local', kind: 'local' },
+    hostId: 'host-local',
+    readiness: 'ready',
+    state: 'available',
+    projects,
+    capabilities: {
+      chooseClientDirectory: true,
+      chooseHostDirectory: false,
+      selectNoProject: true,
+    },
+    selectedProjectId: projects[0]?.id,
+    chatDefaults: { permissionMode: 'ask', thinkingLevel: 'high' },
+  };
+}
+
 function catalog(): TaskEntryCatalog {
   return { defaultProfileId: 'remote', hosts: [remoteHost()] };
+}
+
+function localCatalog(projects: ReturnType<typeof project>[] = []): TaskEntryCatalog {
+  return { defaultProfileId: 'local', hosts: [localHost(projects)] };
 }
 
 function WorkspaceProbe() {
@@ -88,7 +120,40 @@ function HostProbe() {
   const host = useTaskEntryHostModel();
   hostRenders += 1;
   latestDirectoryHostId = host.directoryHost?.hostId;
+  latestProjectDialog = host.newProjectDialog;
   return null;
+}
+
+function RecoveryWorkspaceProbe({ local = false, sessionId = 'session-1', hostId = 'host-local' }: {
+  local?: boolean;
+  sessionId?: string;
+  hostId?: string;
+}) {
+  return createElement(TaskEntryWorkspacePickerConsumer, {
+    manageProjects() {},
+    activeSession: local
+      ? {
+          id: sessionId,
+          profileId: 'local',
+          runtimeHostId: hostId,
+          projectId: null,
+          profileKind: 'local',
+        }
+      : {
+          id: 'session-1',
+          profileId: 'remote',
+          runtimeHostId: 'host-remote',
+          projectId: 'missing-project',
+          profileKind: 'remote',
+        },
+    children: (workspacePicker) => {
+      latestRecoveryPicker = workspacePicker;
+      if (workspacePicker.showForActiveSession) {
+        recoveryPickerOpenStates.push(workspacePicker.isMenuOpen === true);
+      }
+      return null;
+    },
+  });
 }
 
 function FrameProbe() {
@@ -106,9 +171,28 @@ function ShellProbe() {
   });
 }
 
+function RecoveryShellProbe() {
+  return createElement(TaskEntryRoot, {
+    children: (taskEntry) => {
+      latestTaskEntry = taskEntry;
+      return createElement(RecoveryWorkspaceProbe);
+    },
+  });
+}
+
+function LocalRecoveryShellProbe(props: { sessionId?: string; hostId?: string }) {
+  return createElement(TaskEntryRoot, {
+    children: (taskEntry) => {
+      latestTaskEntry = taskEntry;
+      return createElement(RecoveryWorkspaceProbe, { local: true, ...props });
+    },
+  });
+}
+
 function renderProvider(
   root: ReturnType<typeof installReactRenderer>['root'],
   services: TaskEntryServices,
+  probe: ReactNode = createElement(ShellProbe),
 ) {
   root.render(
     createElement(LocaleProvider, {
@@ -119,7 +203,7 @@ function renderProvider(
         createElement(
           TaskEntryServicesProvider,
           { services },
-          createElement(ShellProbe),
+          probe,
         ),
       ),
     }),
@@ -133,16 +217,81 @@ afterEach(() => {
   hostRenders = 0;
   latestTaskEntry = undefined;
   latestDirectoryHostId = undefined;
+  latestProjectDialog = undefined;
   latestWorkspaceGroupCount = 0;
+  latestRecoveryPicker = undefined;
+  recoverySelectedProject = undefined;
+  recoveryPickerOpenStates = [];
   cleanupFakeDom();
 });
 
 describe('TaskEntryRoot render scope', () => {
+  for (const transition of ['session', 'host', 'unmount'] as const) {
+    it(`invalidates a directory handoff on ${transition} change and rejects its retained callback`, async () => {
+      const { root } = installReactRenderer();
+      const picked = deferred<Awaited<ReturnType<TaskEntryServices['catalog']['addProject']>>>();
+      const calls: string[] = [];
+      const services = createFakeTaskEntryServices({
+        catalog: {
+          getCatalog: async () => localCatalog([project('project-a')]),
+          addProject: async () => { calls.push('add'); return picked.promise; },
+        },
+        sessions: {
+          relocateWorkspace: async () => { calls.push('relocate'); return { ok: true }; },
+        },
+      });
+      await act(async () => renderProvider(root, services, createElement(LocalRecoveryShellProbe)));
+      await act(async () => latestTaskEntry?.commands.openSessionWorkspaceRecovery('session-1'));
+      const oldAdd = latestRecoveryPicker?.groups[0]?.onAdd;
+      assert.ok(oldAdd);
+      await act(async () => oldAdd('Imported'));
+      assert.equal(latestRecoveryPicker?.pending, true);
+      await act(async () => renderProvider(root, services, createElement(LocalRecoveryShellProbe, {
+        ...(transition === 'session' ? { sessionId: 'session-2' } : {}),
+        ...(transition === 'host' ? { hostId: 'replacement' } : {}),
+      })));
+      if (transition === 'unmount') await act(async () => root.unmount());
+      if (transition !== 'unmount') {
+        await act(async () => renderProvider(root, services, createElement(LocalRecoveryShellProbe)));
+        await act(async () => latestTaskEntry?.commands.openSessionWorkspaceRecovery('session-1'));
+      }
+      await act(async () => { picked.resolve({ ok: true, project: project('project-b') }); });
+      await act(async () => oldAdd('Stale dialog'));
+      assert.deepEqual(calls, ['add']);
+      if (transition !== 'unmount') {
+        assert.equal(latestRecoveryPicker?.showForActiveSession, true);
+        assert.equal(latestRecoveryPicker?.isMenuOpen, true);
+        assert.equal(latestRecoveryPicker?.pending, false);
+      }
+    });
+  }
+
+  it('does not let an already-submitted move close the next Session recovery picker', async () => {
+    const { root } = installReactRenderer();
+    const moved = deferred<Awaited<ReturnType<TaskEntryServices['sessions']['relocateWorkspace']>>>();
+    const calls: string[] = [];
+    const services = createFakeTaskEntryServices({
+      catalog: { getCatalog: async () => localCatalog([project('project-a')]) },
+      sessions: {
+        relocateWorkspace: async (sessionId) => { calls.push(sessionId); return moved.promise; },
+      },
+    });
+    await act(async () => renderProvider(root, services, createElement(LocalRecoveryShellProbe)));
+    await act(async () => latestTaskEntry?.commands.openSessionWorkspaceRecovery('session-1'));
+    await act(async () => latestRecoveryPicker?.groups[0]?.onSelectProject?.('project-a'));
+    await act(async () => renderProvider(root, services, createElement(LocalRecoveryShellProbe, { sessionId: 'session-2' })));
+    await act(async () => latestTaskEntry?.commands.openSessionWorkspaceRecovery('session-2'));
+    await act(async () => { moved.resolve({ ok: true }); });
+    assert.deepEqual(calls, ['session-1']);
+    assert.equal(latestRecoveryPicker?.showForActiveSession, true);
+    assert.equal(latestRecoveryPicker?.isMenuOpen, true);
+    assert.equal(latestRecoveryPicker?.pending, false);
+  });
+
   it('keeps a controller-only directory handoff below the shell frame', async () => {
     const { root } = installReactRenderer();
     const services = createFakeTaskEntryServices({
       catalog: {
-        ...createFakeTaskEntryServices().catalog,
         getCatalog: async () => catalog(),
       },
     });
@@ -166,11 +315,40 @@ describe('TaskEntryRoot render scope', () => {
     await act(async () => root.unmount());
   });
 
+  it('opens and closes the named-project dialog without rerendering the shell', async () => {
+    const { root } = installReactRenderer();
+    const names: Array<string | undefined> = [];
+    const host = {
+      ...remoteHost(),
+      capabilities: { chooseClientDirectory: true, chooseHostDirectory: false, selectNoProject: false },
+    };
+    const services = createFakeTaskEntryServices({
+      catalog: {
+        getCatalog: async () => ({ defaultProfileId: 'remote', hosts: [host] }),
+        addProject: async (_host, name) => {
+          names.push(name);
+          return { ok: false, reason: 'cancelled' };
+        },
+      },
+    });
+    await act(async () => renderProvider(root, services));
+    const before = { shell: shellRenders, frame: frameRenders, workspace: workspaceRenders };
+    await act(async () => latestTaskEntry?.commands.openNewProject());
+    assert.ok(latestProjectDialog);
+    assert.deepEqual({ shell: shellRenders, frame: frameRenders, workspace: workspaceRenders }, before);
+    await act(async () => latestProjectDialog?.submit('Named from the rail'));
+    assert.deepEqual(names, ['Named from the rail']);
+    await act(async () => latestProjectDialog?.close());
+    assert.equal(latestProjectDialog, undefined);
+    await act(async () => latestTaskEntry?.commands.addProject('Named through the bridge'));
+    assert.deepEqual(names, ['Named from the rail', 'Named through the bridge']);
+    await act(async () => root.unmount());
+  });
+
   it('retains the shell projection across an equivalent catalog refresh', async () => {
     const { root } = installReactRenderer();
     const services = createFakeTaskEntryServices({
       catalog: {
-        ...createFakeTaskEntryServices().catalog,
         getCatalog: async () => catalog(),
       },
     });
@@ -185,5 +363,163 @@ describe('TaskEntryRoot render scope', () => {
     assert.equal(latestTaskEntry?.selectors.target?.projectId, 'project-a');
 
     await act(async () => root.unmount());
+  });
+
+  it('scopes active-session recovery to available projects on that Host', async () => {
+    const { root } = installReactRenderer();
+    const services = createFakeTaskEntryServices({
+      catalog: {
+        getCatalog: async () => catalog(),
+      },
+      sessions: {
+        relocateWorkspace: async (_sessionId, projectId) => {
+          recoverySelectedProject = projectId;
+          return { ok: true };
+        },
+      },
+    });
+
+    await act(async () => {
+      root.render(
+        createElement(LocaleProvider, {
+          locale: 'en',
+          children: createElement(
+            ToastProvider,
+            null,
+            createElement(
+              TaskEntryServicesProvider,
+              { services },
+              createElement(RecoveryShellProbe),
+            ),
+          ),
+        }),
+      );
+    });
+
+    await act(async () => {
+      latestTaskEntry?.commands.openSessionWorkspaceRecovery('session-1');
+    });
+
+    assert.equal(latestRecoveryPicker?.showForActiveSession, true);
+    assert.equal(latestRecoveryPicker?.isMenuOpen, true);
+    assert.deepEqual(recoveryPickerOpenStates.slice(-2), [false, true]);
+    assert.equal(latestRecoveryPicker?.groups.length, 1);
+    assert.deepEqual(
+      latestRecoveryPicker?.groups[0]?.projects.map(({ id }) => id),
+      ['project-a'],
+    );
+    await act(async () => latestRecoveryPicker?.onOpenChange?.(false));
+    assert.equal(latestRecoveryPicker?.isMenuOpen, false);
+    assert.equal(latestRecoveryPicker?.showForActiveSession, true);
+    // The readiness action is repeatable after dismissing its menu.
+    await act(async () => latestTaskEntry?.commands.openSessionWorkspaceRecovery('session-1'));
+    assert.equal(latestRecoveryPicker?.isMenuOpen, true);
+    await act(async () => {
+      latestRecoveryPicker?.groups[0]?.onSelectProject?.('project-a');
+      await Promise.resolve();
+    });
+    assert.equal(recoverySelectedProject, 'project-a');
+    assert.equal(latestRecoveryPicker?.showForActiveSession, undefined);
+
+    await act(async () => root.unmount());
+  });
+
+  it('adds a local Project before relocating the active Session', async () => {
+    const { root } = installReactRenderer();
+    const calls: string[] = [];
+    let reads = 0;
+    const services = createFakeTaskEntryServices({
+      catalog: {
+        getCatalog: async () => {
+          reads += 1;
+          return reads === 1 ? localCatalog() : localCatalog([project('project-new')]);
+        },
+        addProject: async (host, name) => {
+          calls.push(`add:${host.profileId}:${host.hostId}:${name}`);
+          return { ok: true, project: project('project-new') };
+        },
+      },
+      sessions: {
+        relocateWorkspace: async (sessionId, projectId) => {
+          calls.push(`relocate:${sessionId}:${projectId}`);
+          return { ok: true };
+        },
+      },
+    });
+
+    await act(async () => renderProvider(root, services, createElement(LocalRecoveryShellProbe)));
+    await act(async () => latestTaskEntry?.commands.openSessionWorkspaceRecovery('session-1'));
+    assert.equal(typeof latestRecoveryPicker?.groups[0]?.onAdd, 'function');
+
+    // DropdownMenu closes when New project is selected, before the naming
+    // dialog submits. Its owning picker and Session context must survive.
+    await act(async () => latestRecoveryPicker?.onOpenChange?.(false));
+    assert.equal(latestRecoveryPicker?.showForActiveSession, true);
+    assert.equal(latestRecoveryPicker?.isMenuOpen, false);
+    await act(async () => {
+      latestRecoveryPicker?.groups[0]?.onAdd?.('Imported');
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    assert.deepEqual(calls, ['add:local:host-local:Imported', 'relocate:session-1:project-new']);
+    assert.equal(latestRecoveryPicker?.showForActiveSession, undefined);
+    await act(async () => root.unmount());
+  });
+});
+
+describe('TaskEntryRoot error reports', () => {
+  type TreeNode = { readonly childNodes?: readonly TreeNode[]; readonly tagName?: string; readonly textContent: string };
+
+  async function clickButton(root: TreeNode, label: string): Promise<void> {
+    const buttons: TreeNode[] = [];
+    const visit = (node: TreeNode) => {
+      if (node.tagName === 'BUTTON') buttons.push(node);
+      for (const child of node.childNodes ?? []) visit(child);
+    };
+    visit(root);
+    const button = buttons.find((candidate) => candidate.textContent === label);
+    assert.ok(button, `missing button ${label}`);
+    const key = Object.keys(button).find((candidate) => candidate.startsWith('__reactProps$'));
+    assert.ok(key, 'missing React button props');
+    const props = (button as unknown as Record<string, { onClick(event: unknown): void }>)[key];
+    await act(async () => props.onClick({ preventDefault() {}, stopPropagation() {} }));
+  }
+
+  it('reports a task folder failure against the task', async () => {
+    const { root, container } = installReactRenderer();
+    const reports: Parameters<ToastErrorAction['onClick']>[0][] = [];
+    const errorAction: ToastErrorAction = {
+      label: 'Report',
+      failureTitle: 'Report failed',
+      failureDescription: 'Report failed',
+      onClick: async (report) => {
+        reports.push(report);
+      },
+    };
+    const services = createFakeTaskEntryServices({
+      folders: {
+        openProjectFolder: async () => ({
+          kind: 'refused',
+          reason: 'missing',
+          diagnosticTarget: { sessionId: 'session-1' },
+        }),
+        openWorkspaceFolder: async () => ({ kind: 'opened' }),
+      },
+    });
+    await act(async () => root.render(createElement(LocaleProvider, {
+      locale: 'en',
+      children: createElement(AstryxLocaleProvider, {
+        children: createElement(ToastProvider, {
+          errorAction,
+          children: createElement(TaskEntryServicesProvider, { services }, createElement(ShellProbe)),
+        }),
+      }),
+    })));
+
+    await act(async () => latestTaskEntry?.commands.openProjectFolder('session-1'));
+    await clickButton(container, 'Report');
+
+    assert.equal(reports.length, 1);
+    assert.deepEqual(reports[0]?.diagnosticTarget, { sessionId: 'session-1' });
   });
 });

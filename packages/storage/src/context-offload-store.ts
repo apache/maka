@@ -25,6 +25,7 @@ import type {
 } from '@maka/core/context-offload';
 import {
   assertStorageRootLease,
+  assertStorageRootLeaseActive,
   runWithStorageRootLease,
   StorageRootAuthorityError,
   type StorageRootLease,
@@ -60,6 +61,10 @@ export interface InteractiveContextOffloadWriter extends Omit<ContextOffloadStor
   readonly kind: 'interactive';
   readonly access: 'write';
   readonly [writerBrand]: true;
+  reclaimFreePages(input: { readonly maxPages: number }): Promise<{
+    readonly reclaimedPages: number;
+    readonly hasMore: boolean;
+  }>;
   close(): Promise<void>;
 }
 
@@ -123,11 +128,15 @@ export async function openInteractiveContextOffloadStoreForWrite(
 ): Promise<InteractiveContextOffloadWriter> {
   const limits = snapshotLimits(options.limits);
   const limitsKey = serializeLimits(limits);
-  await assertStorageRootLease(lease, 'interactive', 'write');
+  // Claim or join the per-lease slot before the first await so the earliest caller binds
+  // the limits; the on-disk root identity checks of concurrent callers finish in no fixed order.
+  assertStorageRootLeaseActive(lease, 'interactive', 'write');
   const existing = writerByLease.get(lease);
   if (existing) {
     assertSameLimits(existing.limitsKey, limitsKey);
-    return existing.writer;
+    await assertStorageRootLease(lease, 'interactive', 'write');
+    if (writerByLease.get(lease) === existing) return existing.writer;
+    return openInteractiveContextOffloadStoreForWrite(lease, { limits });
   }
   const opening = writerOpeningByLease.get(lease);
   if (opening) {
@@ -237,6 +246,10 @@ function createWriterFacade(
     collectGarbage: (input) => {
       const accepted = Object.freeze({ ...input });
       return run(() => store.collectGarbage(accepted));
+    },
+    reclaimFreePages: (input) => {
+      const accepted = Object.freeze({ ...input });
+      return run(() => store.reclaimFreePages(accepted));
     },
     usage: (sessionId) => run(() => store.usage(sessionId)),
     close: () => {

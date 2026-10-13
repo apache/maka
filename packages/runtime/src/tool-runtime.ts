@@ -18,6 +18,7 @@
  */
 
 import { decodeCanonicalToolResultContent } from '@maka/core/tool-result-record-schema';
+import { requireToolCallOutcome, type ToolCallOutcome } from '@maka/core/tool-result-status';
 import { projectAgentSwarmResult } from '@maka/core/agent-swarm';
 import { projectToolActivityArgs } from '@maka/core/tool-activity-args';
 import { resolveCollaborationPermissionMode } from '@maka/core/collaboration';
@@ -71,7 +72,7 @@ import type {
   UserQuestionResponse,
   UserQuestionResult,
 } from '@maka/core/user-question';
-import { computerUseModelCallArgs } from '@maka/core/computer-use';
+import { buildToolCallArgs, snapshotToolArgs } from './tool-call-snapshot.js';
 import type { SessionHeader } from '@maka/core/session';
 import type { ToolInvocationRecord } from '@maka/core/usage-stats/types';
 import { redactSecrets } from '@maka/core/redaction';
@@ -193,7 +194,11 @@ export interface MakaTool<P = any, R = unknown> {
    * client-executed tools such as ApplyPatch still settle through ToolRuntime.
    */
   providerTool?: {
-    readonly kind: 'openai-apply-patch' | 'openai-web-search' | 'anthropic-web-search-20250305';
+    readonly kind:
+      | 'openai-apply-patch'
+      | 'codex-apply-patch'
+      | 'openai-web-search'
+      | 'anthropic-web-search-20250305';
     readonly searchContextSize?: 'low' | 'medium' | 'high';
     readonly maxUses?: number;
   };
@@ -219,6 +224,8 @@ export interface MakaTool<P = any, R = unknown> {
    * settlement instead of detaching, so late side effects cannot outlive `exec`.
    */
   impl: (args: P, ctx: MakaToolContext) => Promise<R> | R;
+  /** Explicit call status for tools with a declared result envelope. */
+  resultOutcome?(output: R): ToolCallOutcome;
   /** Best-effort compensation after T2 rejects a result that already produced side effects. */
   compensateDurableOutcomeCommitFailure?: (input: {
     readonly result: unknown;
@@ -449,6 +456,7 @@ interface DurableToolAttempt {
     isError: boolean,
     modelProjection: DurableToolResultProjection,
     durationMs?: number,
+    outcome?: ToolCallOutcome,
   ): Promise<{ id: string; operationId: string; ts: number }>;
 }
 
@@ -990,6 +998,7 @@ export class ToolRuntime {
     uncertainOutcome?: ToolUncertainOutcomeSignal,
     activityIdentity: ToolActivityIdentity = {},
     attempt?: DurableToolAttempt,
+    outcome?: ToolCallOutcome,
   ): Promise<void> {
     const content: ToolResultContent = {
       kind: 'text',
@@ -1016,6 +1025,7 @@ export class ToolRuntime {
           name: toolName,
           result: content,
           isError: true,
+          ...(outcome ? { outcome } : {}),
         },
         this.input.sessionId,
       ) ?? DURABLE_TOOL_RESULT_PROJECTION_FAILURE;
@@ -1024,6 +1034,7 @@ export class ToolRuntime {
       turnId,
       toolUseId,
       isError: true,
+      ...(outcome ? { outcome } : {}),
       content,
       modelProjection,
       activityIdentity,
@@ -1036,6 +1047,7 @@ export class ToolRuntime {
     turnId: string;
     toolUseId: string;
     isError: boolean;
+    outcome?: ToolCallOutcome;
     content: ToolResultContent;
     modelProjection: DurableToolResultProjection;
     durationMs?: number;
@@ -1047,6 +1059,7 @@ export class ToolRuntime {
       input.isError,
       input.modelProjection,
       input.durationMs,
+      input.outcome,
     );
     input.queue.push({
       type: 'tool_result',
@@ -1056,6 +1069,7 @@ export class ToolRuntime {
       toolUseId: input.toolUseId,
       ...(durableOutcome ? { operationId: durableOutcome.operationId } : {}),
       isError: input.isError,
+      ...(input.outcome ? { outcome: input.outcome } : {}),
       content: input.content,
       modelProjection: input.modelProjection,
       ...(input.durationMs !== undefined ? { durationMs: input.durationMs } : {}),
@@ -1089,39 +1103,31 @@ export class ToolRuntime {
         ? `Tool ${tool.name} is direct-only and cannot run inside exec.`
         : undefined;
     const admissionFailure = directOnlyFailure ?? this.admitToolForStep(tool, stepId);
-    let permissionArgs = executionArgs;
-    let permissionArgsError: unknown;
-    if (directOnlyFailure === undefined) {
-      try {
-        // An unavailable sandbox-boundary surface rejects the expansion before
-        // interpreting it, including legacy shapes whose validation stays deferred.
-        const sandboxBoundaryUnavailable =
-          tool.name === 'request_sandbox_boundary' &&
-          !this.interactionRun() &&
-          (!this.input.createSandboxBoundaryRequest || !this.input.settleSandboxBoundaryRequest);
-        if (!sandboxBoundaryUnavailable) {
-          await validateDeclaredToolArgs(tool.parameters, executionArgs);
-        }
-        permissionArgs = tool.permissionArgs
-          ? snapshotToolArgs(
-              tool.permissionArgs(structuredClone(executionArgs) as never, {
-                sessionId: this.input.sessionId,
-                turnId,
-                toolCallId: toolUseId,
-              }),
-            )
-          : executionArgs;
-      } catch (error) {
-        permissionArgsError = error;
-      }
-    }
-    // Permission args are a policy/UI projection. Persistence and model replay
-    // share one canonical tool-dialect projection; Computer Use also strips
-    // screen-derived and user-typed values at this boundary.
-    const persistedArgs =
-      tool.categoryHint === 'computer_use'
-        ? snapshotToolArgs(computerUseModelCallArgs(permissionArgs))
-        : permissionArgs;
+    // An unavailable sandbox-boundary surface cannot carry the expansion the
+    // tool requests, and that availability contract holds even when an older
+    // caller sends a legacy shape — validation stays deferred for it.
+    const sandboxBoundaryUnavailable =
+      tool.name === 'request_sandbox_boundary' &&
+      !this.interactionRun() &&
+      (!this.input.createSandboxBoundaryRequest || !this.input.settleSandboxBoundaryRequest);
+    const callArgs = await buildToolCallArgs({
+      toolName: tool.name,
+      parameters: tool.parameters,
+      categoryHint: tool.categoryHint,
+      permissionArgs: tool.permissionArgs,
+      // Upstream renamed rawExecutionArgs to executionArgs after this
+      // refactor; buildToolCallArgs passes it through unchanged, and the
+      // entry snapshot above already holds that same value.
+      executionArgs,
+      sessionId: this.input.sessionId,
+      turnId,
+      toolCallId: toolUseId,
+      directOnlyRejected: directOnlyFailure !== undefined,
+      validationDeferred: sandboxBoundaryUnavailable,
+    });
+    const permissionArgs = callArgs.permissionArgs;
+    const persistedArgs = callArgs.persistedArgs;
+    const permissionArgsError = callArgs.permissionArgsError;
     const now = this.input.now();
     const trace = this.input.getRunTrace?.() ?? null;
     const runId = this.input.runId;
@@ -1629,30 +1635,39 @@ export class ToolRuntime {
           ) {
             throw new ToolResultLimitError();
           }
-          const content = coerceResultContent(result);
+          const declaredOutcome = tool.resultOutcome
+            ? requireToolCallOutcome(tool.resultOutcome(result))
+            : undefined;
+          const content = coerceResultContent(
+            declaredOutcome === undefined
+              ? result
+              : stripDeclaredToolOutcome(result, declaredOutcome),
+          );
           const projected = this.projectToolResult(tool, turnId, toolUseId, executionArgs, result);
           const modelProjection = isPromiseLike(projected) ? await projected : projected;
+          const outcome = declaredOutcome ?? deriveToolResultStatus(content, result);
           return {
             result,
             content,
-            isError: deriveToolResultStatus(content, result) !== 'success',
+            outcome,
             durationMs: this.input.now() - startedAt,
             modelProjection,
           };
         };
-        const { result, content, isError, durationMs, modelProjection } =
+        const { result, content, outcome, durationMs, modelProjection } =
           await prepareOperationValue();
+        const isError = outcome !== 'success';
         output.flush();
-        // Keep the full provider-facing terminal classification. `isError` is
-        // sufficient for the durable response envelope, but it intentionally
-        // collapses `aborted` into an error bit and therefore cannot drive live
-        // tool status, telemetry, or subagent lifecycle projection.
-        const toolResultStatus = deriveToolResultStatus(content, result);
+        // Keep the full provider-facing terminal classification. `isError`
+        // remains a compatibility bit, while explicit outcomes preserve aborts
+        // for durable replay, live status, telemetry, and subagent projection.
+        const toolResultStatus = outcome;
         await this.commitAndPublishToolResult({
           queue,
           turnId,
           toolUseId,
           isError,
+          outcome,
           content,
           modelProjection,
           durationMs,
@@ -1762,6 +1777,11 @@ export class ToolRuntime {
         executionArgs,
         err,
       );
+      const failureOutcome =
+        !uncertainOutcome &&
+        (ctx.abortSignal.aborted || terminalFailure?.content.status === 'cancelled')
+          ? 'aborted'
+          : 'error';
       if (terminalFailure) {
         if (terminalFailure.sandboxDenied) {
           const denialKey = sandboxDenialKey(tool.name, this.input.header.cwd, executionArgs);
@@ -1792,6 +1812,7 @@ export class ToolRuntime {
           turnId,
           toolUseId,
           isError: true,
+          outcome: failureOutcome,
           content: terminalFailure.content,
           modelProjection,
           durationMs,
@@ -1806,7 +1827,7 @@ export class ToolRuntime {
           providerId: this.input.connection.providerType,
           modelId: this.input.modelId,
           durationMs,
-          status: 'error',
+          status: failureOutcome,
           errorClass,
           argsSummary:
             tool.categoryHint === 'computer_use'
@@ -1821,7 +1842,7 @@ export class ToolRuntime {
           toolUseId,
           toolName: tool.name,
           durationMs,
-          status: 'error',
+          status: failureOutcome,
           errorClass,
           ...(sandboxError ? { sandbox: sandboxError } : {}),
         });
@@ -1846,6 +1867,7 @@ export class ToolRuntime {
         uncertainOutcome,
         activityIdentity,
         durableAttempt,
+        failureOutcome,
       );
       this.input.recordToolInvocation?.({
         sessionId: this.input.sessionId,
@@ -1855,7 +1877,7 @@ export class ToolRuntime {
         providerId: this.input.connection.providerType,
         modelId: this.input.modelId,
         durationMs: Math.max(0, this.input.now() - startedAt),
-        status: 'error',
+        status: failureOutcome,
         errorClass,
         argsSummary:
           tool.categoryHint === 'computer_use'
@@ -1869,7 +1891,7 @@ export class ToolRuntime {
         toolUseId,
         toolName: tool.name,
         durationMs: Math.max(0, this.input.now() - startedAt),
-        status: 'error',
+        status: failureOutcome,
         errorClass,
         ...(sandboxError ? { sandbox: sandboxError } : {}),
       });
@@ -2012,6 +2034,7 @@ export class ToolRuntime {
       isError: boolean,
       modelProjection: DurableToolResultProjection,
       durationMs: number | undefined,
+      outcome: ToolCallOutcome | undefined,
       ts: number,
     ): RuntimeEvent => ({
       id: `${operationId}_response`,
@@ -2031,6 +2054,7 @@ export class ToolRuntime {
         name: input.tool.name,
         result,
         ...(isError ? { isError: true } : {}),
+        ...(outcome ? { outcome } : {}),
         modelProjection,
       },
       refs: {
@@ -2048,13 +2072,14 @@ export class ToolRuntime {
     let committedOutcome: { id: string; operationId: string; ts: number } | undefined;
     return {
       operationId,
-      commitOutcome: async (result, isError, modelProjection, durationMs) => {
+      commitOutcome: async (result, isError, modelProjection, durationMs, outcome) => {
         if (committedOutcome) return committedOutcome;
         const responseEvent = buildResponseEvent(
           result,
           isError,
           modelProjection,
           durationMs,
+          outcome,
           this.input.now(),
         );
         try {
@@ -2915,55 +2940,6 @@ export class ToolRuntime {
   }
 }
 
-async function validateDeclaredToolArgs(parameters: unknown, args: unknown): Promise<void> {
-  if (!parameters || (typeof parameters !== 'object' && typeof parameters !== 'function')) {
-    return;
-  }
-  const schema = parameters as {
-    safeParseAsync?: (
-      value: unknown,
-    ) => PromiseLike<{ success: true; data: unknown } | { success: false; error: unknown }>;
-    safeParse?: (
-      value: unknown,
-    ) => { success: true; data: unknown } | { success: false; error: unknown };
-    validate?: (
-      value: unknown,
-    ) =>
-      | { success: true; value: unknown }
-      | { success: false; error: unknown }
-      | PromiseLike<{ success: true; value: unknown } | { success: false; error: unknown }>;
-    '~standard'?: {
-      validate?: (
-        value: unknown,
-      ) =>
-        | { value: unknown }
-        | { issues: readonly unknown[] }
-        | PromiseLike<{ value: unknown } | { issues: readonly unknown[] }>;
-    };
-  };
-
-  if (typeof schema.safeParseAsync === 'function') {
-    const parsed = await schema.safeParseAsync(args);
-    if (parsed.success) return;
-    throw parsed.error;
-  }
-  if (typeof schema.safeParse === 'function') {
-    const parsed = schema.safeParse(args);
-    if (parsed.success) return;
-    throw parsed.error;
-  }
-  if (typeof schema.validate === 'function') {
-    const parsed = await schema.validate(args);
-    if (parsed.success) return;
-    throw parsed.error;
-  }
-  if (typeof schema['~standard']?.validate === 'function') {
-    const parsed = await schema['~standard'].validate(args);
-    if ('value' in parsed) return;
-    throw new Error('Tool arguments failed declared schema validation', { cause: parsed.issues });
-  }
-}
-
 function isInteractionControlError(error: unknown): boolean {
   return (
     error instanceof RuntimeInteractionAdmissionRejectedError ||
@@ -3028,7 +3004,8 @@ function racePromiseWithAbort<T>(promise: Promise<T>, signal: AbortSignal): Prom
 export function formatDeferredNotLoadedText(toolName: string): string {
   return (
     `Tool "${toolName}" is available but not loaded yet. ` +
-    `Call tool_search to activate it first, then call "${toolName}" on a later step.`
+    `Call tool_search with query "${toolName}" to activate it first, ` +
+    `then call "${toolName}" on a later step.`
   );
 }
 
@@ -3264,7 +3241,7 @@ function uncertainOutcomeSignalFromError(error: unknown): ToolUncertainOutcomeSi
   };
 }
 
-function coerceResultContent(raw: unknown): ToolResultContent {
+export function coerceResultContent(raw: unknown): ToolResultContent {
   if (typeof raw === 'string') return { kind: 'text', text: raw };
   if (raw && typeof raw === 'object') {
     const obj = raw as { kind?: string; text?: string };
@@ -3279,6 +3256,14 @@ function coerceResultContent(raw: unknown): ToolResultContent {
     return { kind: 'json', value: raw };
   }
   return { kind: 'text', text: String(raw ?? '') };
+}
+
+function stripDeclaredToolOutcome(raw: unknown, outcome: ToolCallOutcome): unknown {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw;
+  const record = raw as Record<string, unknown>;
+  if (record.outcome !== outcome) return raw;
+  const { outcome: _outcome, ...content } = record;
+  return content;
 }
 
 function coerceTerminalFailure(
@@ -3336,10 +3321,11 @@ function coerceTerminalFailure(
           }
         : {}),
     },
-    // The in-turn result the model acts on is just this message (the structured
-    // content above goes to session history). Without the actual output the
-    // model is blind to *why* the command failed, so fold in a bounded tail of
-    // stderr/stdout — the tail is where shell errors land.
+    // Short error for the direct caller, built from the tail because that is
+    // where shell errors land; Code Mode's nested callTool throws it as an
+    // Error. It is not the model-visible result: each step is rebuilt from
+    // durable events, where `content` above is what the model reads. When that
+    // result is pruned, failure details stay pageable content (#5247).
     message: buildTerminalFailureMessage(error.code, stdout, stderr, sandboxDenied),
     sandboxDenied,
   };
@@ -3410,7 +3396,7 @@ function isBoundaryAuthorityAttempt(toolName: string, args: unknown): boolean {
   );
 }
 
-function deriveToolResultStatus(
+export function deriveToolResultStatus(
   content: ToolResultContent,
   raw?: unknown,
 ): ToolInvocationRecord['status'] {
@@ -3446,10 +3432,25 @@ function deriveToolResultStatus(
     content.operation.failed
   )
     return 'error';
-  // All other structured results are successful tool executions. That includes
-  // ShellRun observations: their embedded process status stays model-visible,
-  // but reading or returning the observation itself succeeded.
-  return 'success';
+  // Observing a failed process is still a successful call. Business JSON has
+  // the same legacy behavior unless its tool declares an outcome reader.
+  switch (content.kind) {
+    case 'text':
+    case 'json':
+    case 'file_diff':
+    case 'file_write':
+    case 'image':
+    case 'summary':
+    case 'archived_tool_result':
+    case 'web_search':
+    case 'shell_run':
+    case 'rive_workflow':
+      return 'success';
+    default: {
+      const exhaustive: never = content;
+      return exhaustive;
+    }
+  }
 }
 
 function summarizeToolResultForTelemetry(
@@ -3541,26 +3542,4 @@ function byteLength(value: unknown): number {
   if (value === undefined) return 0;
   const text = typeof value === 'string' ? value : JSON.stringify(value ?? null);
   return Buffer.byteLength(text, 'utf8');
-}
-
-function snapshotToolArgs(value: unknown): unknown {
-  return snapshotJsonValue(value, new WeakSet<object>());
-}
-
-function snapshotJsonValue(value: unknown, seen: WeakSet<object>): unknown {
-  if (value === null || typeof value !== 'object') return value;
-  if (seen.has(value)) throw new Error('Tool arguments must not contain cycles');
-  seen.add(value);
-  if (Array.isArray(value)) {
-    return Object.freeze(value.map((entry) => snapshotJsonValue(entry, seen)));
-  }
-  const output: Record<string, unknown> = {};
-  for (const key of Object.keys(value)) {
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (!descriptor || !('value' in descriptor)) {
-      throw new Error(`Tool argument ${key} must be a plain data property`);
-    }
-    output[key] = snapshotJsonValue(descriptor.value, seen);
-  }
-  return Object.freeze(output);
 }
