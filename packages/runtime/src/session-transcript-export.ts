@@ -46,7 +46,8 @@ import type { StoredMessage, ToolResultMessage } from '@maka/core/session';
 import { userFacingText } from '@maka/core/session';
 import { redactSecrets } from '@maka/core/redaction';
 import { openRuntimeEventReadPersistence } from '@maka/storage/runtime-event-persistence';
-import { createSessionStore } from '@maka/storage/session-store';
+import { OperationalStateMigrationBlockedError } from '@maka/storage/operational-state-store';
+import { createSessionStore, type SessionAuthorityStore } from '@maka/storage/session-store';
 import { RuntimeReadModel } from './runtime-read-model.js';
 
 export interface ExportSessionTranscriptMarkdownInput {
@@ -63,7 +64,8 @@ export type ExportSessionTranscriptMarkdownResult =
       ok: false;
       reason:
         | { kind: 'workspace_not_found'; workspaceRoot: string }
-        | { kind: 'session_not_found' };
+        | { kind: 'session_not_found' }
+        | { kind: 'schema_unsupported' };
     };
 
 export async function exportSessionTranscriptMarkdown(
@@ -76,7 +78,19 @@ export async function exportSessionTranscriptMarkdown(
     };
   }
 
-  const store = createSessionStore(input.workspaceRoot);
+  // An export is a read-side surface: it must never create or migrate the
+  // operational database it reads (a running Host owns those migrations).
+  // `require_current` fails closed on an uninitialized workspace and on a
+  // schema this build does not understand (#6036 review).
+  let store: SessionAuthorityStore;
+  try {
+    store = createSessionStore(input.workspaceRoot, { schemaMigration: 'require_current' });
+  } catch (error) {
+    if (error instanceof OperationalStateMigrationBlockedError) {
+      return { ok: false, reason: { kind: 'schema_unsupported' } };
+    }
+    throw error;
+  }
   try {
     let sessionName: string;
     try {

@@ -18,13 +18,17 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdir, rm } from 'node:fs/promises';
+import { mkdir, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { DatabaseSync } from 'node:sqlite';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { createSessionStore } from '@maka/storage/session-store';
-import { OPERATIONAL_STATE_DATABASE_NAME } from '@maka/storage/operational-state-store';
+import {
+  acquireOperationalStateDatabase,
+  OPERATIONAL_STATE_DATABASE_NAME,
+} from '@maka/storage/operational-state-store';
 import { createSqliteRuntimeStore } from '@maka/storage/sqlite-runtime-store';
 import { seedInvocation } from './invocation-fixture.js';
 import type { StoredMessage } from '@maka/core/session';
@@ -316,12 +320,74 @@ test('structured failures for missing workspace and session', async () => {
       reason: { kind: 'workspace_not_found', workspaceRoot: join(workspaceRoot, 'absent') },
     });
 
+    // An initialized-but-empty workspace has no database to share, so the
+    // read-only open fails closed before the session lookup (#6036 review).
+    const emptyWorkspace = await exportSessionTranscriptMarkdown({
+      workspaceRoot,
+      sessionId: 'does-not-exist',
+    });
+    assert.ok(!emptyWorkspace.ok);
+    assert.equal(emptyWorkspace.ok ? null : emptyWorkspace.reason.kind, 'schema_unsupported');
+
+    // With a current database in place the missing session surfaces itself.
+    acquireOperationalStateDatabase(workspaceRoot).close();
     const noSession = await exportSessionTranscriptMarkdown({
       workspaceRoot,
       sessionId: 'does-not-exist',
     });
     assert.ok(!noSession.ok);
     assert.equal(noSession.ok ? null : noSession.reason.kind, 'session_not_found');
+  });
+});
+
+test('never creates the operational database: an uninitialized workspace fails closed', async () => {
+  await withWorkspace('transcript-export-readonly-empty', async (workspaceRoot) => {
+    const result = await exportSessionTranscriptMarkdown({
+      workspaceRoot,
+      sessionId: 's1',
+    });
+    assert.ok(!result.ok);
+    assert.equal(result.ok ? null : result.reason.kind, 'schema_unsupported');
+    await assert.rejects(stat(join(workspaceRoot, OPERATIONAL_STATE_DATABASE_NAME)));
+  });
+});
+
+test('never migrates the operational database: an older schema fails instead of upgrading', async () => {
+  await withWorkspace('transcript-export-readonly-legacy', async (workspaceRoot) => {
+    // Build a current database, then rewind one migration so only its Runtime
+    // Host may bring it forward (same fixture the storage store tests use).
+    acquireOperationalStateDatabase(workspaceRoot).close();
+    const older = new DatabaseSync(join(workspaceRoot, OPERATIONAL_STATE_DATABASE_NAME));
+    older.exec(`
+      ALTER TABLE core_agent_runs ADD COLUMN record_json TEXT;
+      UPDATE operational_schema_migrations
+      SET version = 6
+      WHERE scope = 'core_execution';
+    `);
+    older.close();
+
+    const result = await exportSessionTranscriptMarkdown({
+      workspaceRoot,
+      sessionId: 's1',
+    });
+    assert.ok(!result.ok);
+    assert.equal(result.ok ? null : result.reason.kind, 'schema_unsupported');
+
+    // The rewind the export found on open is still the one on disk: a write
+    // path would have migrated `core_execution` past version 6.
+    const reader = new DatabaseSync(join(workspaceRoot, OPERATIONAL_STATE_DATABASE_NAME), {
+      readOnly: true,
+    });
+    try {
+      const row = reader
+        .prepare(
+          "SELECT version FROM operational_schema_migrations WHERE scope = 'core_execution'",
+        )
+        .get() as { version: number };
+      assert.equal(row.version, 6);
+    } finally {
+      reader.close();
+    }
   });
 });
 
