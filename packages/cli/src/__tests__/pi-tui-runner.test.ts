@@ -9024,9 +9024,7 @@ Slug openai-work<cursor>
     // Every line of a multi-line overflow excerpt keeps the blockquote prefix:
     // in the raw text the model receives, the `> ` marks are the only
     // excerpt/comment boundary (Astro-Han review of 6d5d20338).
-    await waitFor(() =>
-      plainTerminalOutput(terminal.screenOutput()).includes('> second line 18'),
-    );
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('> second line 18'));
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('> more 18'));
 
     // The restored draft resubmits within admission: 16 staged quotes ride it
