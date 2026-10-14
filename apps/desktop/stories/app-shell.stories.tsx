@@ -1712,6 +1712,26 @@ export const EmptyHome: Story = {
     await waitFor(() => expect(emptyComposerSend).toHaveBeenCalledWith('send and clear', undefined));
     await waitFor(() => expect(editor.textContent).toBe(''));
     assertLineBox();
+
+    const layout = canvasElement.querySelector<HTMLElement>('.maka-chat-layout')!;
+    const columns = canvasElement.querySelectorAll<HTMLElement>('.maka-chatContent, .maka-composer-astryx');
+    expect(columns).toHaveLength(2);
+    // Native scrollbars appearing and disappearing must keep both columns centered.
+    for (const messages of [[], longConversation, []]) {
+      await transition({ messages });
+      await waitFor(() => {
+        expect(layout.scrollHeight > layout.clientHeight).toBe(messages.length > 0);
+        if (messages.length > 0) {
+          expect(layout.offsetWidth - layout.clientWidth).toBeGreaterThan(0);
+        }
+        const box = layout.getBoundingClientRect();
+        for (const column of columns) {
+          const content = column.getBoundingClientRect();
+          expect(Math.abs(content.left + content.width / 2 - (box.left + box.width / 2)))
+            .toBeLessThanOrEqual(1);
+        }
+      });
+    }
   },
 };
 
@@ -1720,19 +1740,20 @@ type EmptyComposerState = {
   chatHidden: boolean;
   draftKey: string;
   disabled: boolean;
+  messages: StoredMessage[];
 };
 let setEmptyComposerState: ((next: Partial<EmptyComposerState>) => void) | undefined;
 const emptyComposerSend = fn();
 function EmptyComposerLifecycle() {
   const [state, setState] = useState<EmptyComposerState>({
-    switchingSession: false, chatHidden: false, draftKey: 'session:caret-a', disabled: false,
+    switchingSession: false, chatHidden: false, draftKey: 'session:caret-a', disabled: false, messages: [],
   });
   useEffect(() => {
     emptyComposerSend.mockClear();
     setEmptyComposerState = (next) => setState((current) => ({ ...current, ...next }));
     return () => { setEmptyComposerState = undefined; };
   }, []);
-  return <ComposedShell chat={{ messages: [] }} switchingSession={state.switchingSession}
+  return <ComposedShell chat={{ messages: state.messages }} switchingSession={state.switchingSession}
     chatHidden={state.chatHidden} composer={{ draftKey: state.draftKey, disabled: state.disabled, onSend: emptyComposerSend }} />;
 }
 
