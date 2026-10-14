@@ -80,6 +80,7 @@ export * from './goal.js';
 export * from './hosted-execution.js';
 export * from './host-resources.js';
 export * from './plan.js';
+export * from './personal-assistant.js';
 export * from './peer-mesh.js';
 export * from './project-catalog.js';
 export * from './project-catalog-change.js';
@@ -106,7 +107,12 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 220 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 222 as const;
+// 222: Built-in personal assistant operations and the Host-owned default-off
+// master switch require matching Client and Host support.
+// 221: Epoch-220 peers do not support `artifact.image.resolve` or its image
+// delivery result shapes. Older Hosts reject the unknown operation and close
+// the connection, so mixed peers must fail admission.
 // 220: Client Capability results require a tri-state outcome; session tool
 // continuity and trace steps carry interrupted results. Older peers cannot
 // decode the changed strict shapes.

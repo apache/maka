@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import {
+  MAKA_CLIENT_NATIVE_SLOT_SPECS,
   MakaClientSessionScope,
   MakaClientSlotCore,
   MakaClientSlotOutlet,
@@ -106,6 +107,13 @@ describe('Maka Client Slot core', () => {
       ({ command }: MakaClientSlotRuntimeProps<'test.keyed', 'bash'>) => <i>{command}</i>,
     );
     assert.equal(core.activeEntries('test.keyed')[0]?.options.key, 'bash');
+  });
+
+  it('exposes the main sidebar navigation slot as an additive root list', () => {
+    assert.deepEqual(MAKA_CLIENT_NATIVE_SLOT_SPECS['sidebar.navigation'], {
+      kind: 'list',
+      scope: 'root',
+    });
   });
 
   it('removes a recursively declared subtree with its parent', () => {

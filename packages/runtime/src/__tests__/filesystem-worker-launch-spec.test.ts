@@ -18,12 +18,46 @@
  */
 
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { chmod, copyFile, mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 
 import { createFilesystemWorkerLaunchSpecProvider } from '../filesystem-worker/launch-spec.js';
+import {
+  FILESYSTEM_WORKER_BUNDLE_NAME,
+  resolveFilesystemWorkerBundle,
+} from '../filesystem-worker/resource-resolver.js';
+import { FilesystemWorkerResponseSchema } from '../filesystem-worker/protocol.js';
+
+for (const packageConfig of ['{invalid JSON', '{"type":"commonjs"}']) {
+  test(`worker startup does not consult parent package config: ${packageConfig}`, async (t) => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-worker-module-boundary-'));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const source = await resolveFilesystemWorkerBundle({ kind: 'runtime' });
+    assert.ok(source.ok);
+    const workers = join(root, 'workers');
+    await mkdir(workers);
+    const bundle = join(workers, FILESYSTEM_WORKER_BUNDLE_NAME);
+    await copyFile(source.path, bundle);
+    await writeFile(join(root, 'package.json'), packageConfig);
+    const result = spawnSync(process.execPath, ['--preserve-symlinks-main', bundle], {
+      cwd: root,
+      input: '{}',
+      encoding: 'utf8',
+      timeout: 5000,
+    });
+    assert.equal(
+      result.status,
+      0,
+      result.stderr || result.error?.message || 'Worker did not exit successfully',
+    );
+    const response = FilesystemWorkerResponseSchema.parse(JSON.parse(result.stdout));
+    assert.equal(response.ok, false);
+    if (!response.ok) assert.equal(response.error.code, 'invalid_request');
+  });
+}
 
 test('Linux Electron worker launch does not require a macOS Frameworks directory', async () => {
   const getLaunchSpec = createFilesystemWorkerLaunchSpecProvider({

@@ -346,7 +346,7 @@ for (const chat of ['one', 'two']) {
   });
 }
 
-test('a same-turn topic switch uses the corrected work heading', async () => {
+test('a same-turn topic switch uses the corrected work heading', async (t) => {
   const f = await fixture((id) => id === 'cs336' ? 'CS336' : 'SQL 入门');
   try {
     await f.bridge.handle(message('one', '其实是 CS336'));
@@ -354,6 +354,6 @@ test('a same-turn topic switch uses the corrected work heading', async () => {
     await f.transcript([...association(turnId, 'initial', 'sql'), ...association(turnId, 'switch', 'cs336'),
       { type: 'assistant', id: 'answer', turnId, ts: 3, text: '课程回答。', modelId: 'test' },
     ]);
-    assert.deepEqual(f.sends, [{ chat: 'one', text: '[CS336]\n课程回答。' }]);
+    await t.waitFor(() => assert.deepEqual(f.sends, [{ chat: 'one', text: '[CS336]\n课程回答。' }]));
   } finally { await f.close(); }
 });

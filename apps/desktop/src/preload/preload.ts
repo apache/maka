@@ -1251,8 +1251,8 @@ const runtimeHost: MakaBridge['runtimeHost'] = {
       OperationOutput<typeof operation>
     >;
   },
-  command(operation, input) {
-    return invokeActiveRuntimeHost('runtime-host:command', operation, input) as Promise<
+  command(operation, input, host) {
+    return (host ? invokeSelectedRuntimeHost(host, 'runtime-host:command', operation, input) : invokeActiveRuntimeHost('runtime-host:command', operation, input)) as Promise<
       OperationOutput<typeof operation>
     >;
   },
@@ -3422,6 +3422,7 @@ const makaBridge = {
     },
   },
   attachments: {
+    resolveImageDelivery: (sessionId, request) => invokeSessionRuntimeHost('attachments:resolveImage', sessionId, request),
     pickDirectory: () => invokeWhenReady('directories:pick'),
     // The renderer hands over the dropped or pasted File objects, never paths:
     // only a File backed by something the user dropped or pasted has a path,

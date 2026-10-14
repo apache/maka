@@ -387,6 +387,11 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     private readonly prepareWorkHubRoutingDecision?: (
       input: HostWorkHubRoutingDecisionPreparation,
     ) => Promise<WorkHubRoutingDecision | undefined>,
+    private readonly featureUnavailableReason?: (header: SessionHeader) => string | undefined,
+    private readonly observeAssistantText?: (
+      sessionId: string,
+      event: import('@maka/core/events').TextCompleteEvent,
+    ) => void,
   ) {
     this.stores = authenticateExecutionStoresWriter(stores, 'interactive');
     this.executionProjection = new HostedExecutionProjectionReader(this.stores);
@@ -420,6 +425,13 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       )
         continue;
       try {
+        // Keep disabled feature admissions durable without replaying them on Host startup.
+        if (
+          this.featureUnavailableReason?.(
+            await this.stores.sessionStore.readHeaderSnapshot(sessionId),
+          )
+        )
+          continue;
         for (const admission of plan.admissions) {
           const run = await this.readRunIfPresent(sessionId, admission.runId);
           if (!run) continue;
@@ -460,7 +472,10 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
         const disposition = await this.sessionAdmission.run(sessionId, async (lease) => {
           if (admission.execution.kind === 'safe_boundary_continuation') {
             const header = await this.stores.sessionStore.readHeaderSnapshot(sessionId);
-            if (runtimeHostSafeBoundaryContinuationUnavailableReason(header)) {
+            if (
+              this.featureUnavailableReason?.(header) ??
+              runtimeHostSafeBoundaryContinuationUnavailableReason(header)
+            ) {
               this.parkContinuationAdmission(admission);
               return undefined;
             }
@@ -588,7 +603,9 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       if (header.conversationCopy?.state === 'preparing') return null;
       return {
         isArchived: header.isArchived,
-        unavailableReason: runtimeHostExternalTurnUnavailableReason(header),
+        unavailableReason:
+          this.featureUnavailableReason?.(header) ??
+          runtimeHostExternalTurnUnavailableReason(header),
       };
     } catch (error) {
       if (isSessionNotFoundError(error)) return null;
@@ -1103,7 +1120,9 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
             'Cannot start a hosted root execution in an archived Session',
           );
         }
-        const unavailableReason = runtimeHostExecutionUnavailableReason(header, input.execution);
+        const unavailableReason =
+          this.featureUnavailableReason?.(header) ??
+          runtimeHostExecutionUnavailableReason(header, input.execution);
         if (unavailableReason) {
           throw new RuntimeHostedRootUnavailableError(input.sessionId, unavailableReason);
         }
@@ -1421,7 +1440,9 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       if (!reservation) return { error: 'Another root Turn is being admitted' };
       try {
         const header = await this.stores.sessionStore.readHeaderSnapshot(input.sessionId);
-        const unavailableReason = runtimeHostExternalTurnUnavailableReason(header);
+        const unavailableReason =
+          this.featureUnavailableReason?.(header) ??
+          runtimeHostExternalTurnUnavailableReason(header);
         if (unavailableReason) return { error: unavailableReason };
         const turnId = input.turnId ?? randomUUID();
         const runId = input.runId ?? randomUUID();
@@ -1567,7 +1588,9 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       };
       if (!(await this.bindRecoveryCapabilities(input.sessionId, execution)))
         return { deferred: true };
-      const unavailableReason = runtimeHostExecutionUnavailableReason(header, execution);
+      const unavailableReason =
+        this.featureUnavailableReason?.(header) ??
+        runtimeHostExecutionUnavailableReason(header, execution);
       if (unavailableReason) return { error: unavailableReason };
       execution = await this.prepareFreshWorkHubExecution(header, turnId, input.content, execution);
       const reservation = this.reserveRootTurn(input.sessionId);
@@ -1896,7 +1919,11 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
           if (!(await this.bindRecoveryCapabilities(sessionId, execution)))
             return 'pending' as const;
           const header = await this.stores.sessionStore.readHeaderSnapshot(sessionId);
-          if (runtimeHostExecutionUnavailableReason(header, execution)) return 'pending' as const;
+          if (
+            this.featureUnavailableReason?.(header) ??
+            runtimeHostExecutionUnavailableReason(header, execution)
+          )
+            return 'pending' as const;
           const reservation = this.reserveRootTurn(sessionId);
           if (!reservation) return 'pending' as const;
           try {
@@ -2172,7 +2199,9 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
         if (header.isArchived) {
           return completedStart(sessionArchived(request.archivedMessage));
         }
-        const unavailableReason = runtimeHostExecutionUnavailableReason(header, request.execution);
+        const unavailableReason =
+          this.featureUnavailableReason?.(header) ??
+          runtimeHostExecutionUnavailableReason(header, request.execution);
         if (unavailableReason) return completedStart(operationUnavailable(unavailableReason));
         if (this.#executions.has(request.sessionId)) {
           return completedStart(sessionBusy('Session already has an active root Turn'));
@@ -2350,7 +2379,9 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       if (header.isArchived) {
         return sessionArchived('Cannot continue an archived Session');
       }
-      const unavailableReason = runtimeHostSafeBoundaryContinuationUnavailableReason(header);
+      const unavailableReason =
+        this.featureUnavailableReason?.(header) ??
+        runtimeHostSafeBoundaryContinuationUnavailableReason(header);
       if (unavailableReason) return operationUnavailable(unavailableReason);
       const reservation = this.#admissions.get(input.sessionId);
       const parkedAdmission = this.parkedContinuationAdmission(input.sessionId);
@@ -2441,7 +2472,9 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
               };
             }
             const header = await this.stores.sessionStore.readHeaderSnapshot(input.sessionId);
-            const unavailableReason = runtimeHostSafeBoundaryContinuationUnavailableReason(header);
+            const unavailableReason =
+              this.featureUnavailableReason?.(header) ??
+              runtimeHostSafeBoundaryContinuationUnavailableReason(header);
             if (unavailableReason) {
               return {
                 kind: 'complete',
@@ -2556,7 +2589,9 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
               outcome: sessionArchived('Cannot continue an archived Session'),
             };
           }
-          const unavailableReason = runtimeHostSafeBoundaryContinuationUnavailableReason(header);
+          const unavailableReason =
+            this.featureUnavailableReason?.(header) ??
+            runtimeHostSafeBoundaryContinuationUnavailableReason(header);
           if (unavailableReason) {
             return {
               kind: 'complete',
@@ -2877,8 +2912,10 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     const session = await this.stores.sessionStore.readHeaderSnapshot(input.sessionId);
     const unavailableReason =
       admission.execution.kind === 'safe_boundary_continuation'
-        ? runtimeHostSafeBoundaryContinuationUnavailableReason(session)
-        : runtimeHostExecutionUnavailableReason(session, admission.execution);
+        ? (this.featureUnavailableReason?.(session) ??
+          runtimeHostSafeBoundaryContinuationUnavailableReason(session))
+        : (this.featureUnavailableReason?.(session) ??
+          runtimeHostExecutionUnavailableReason(session, admission.execution));
     if (unavailableReason) {
       return completedStart(operationUnavailable(unavailableReason));
     }
@@ -3225,6 +3262,13 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
               active.execution.onEvent(event);
             } catch {
               // Presentation observers do not participate in execution authority.
+            }
+          }
+          if (event.type === 'text_complete') {
+            try {
+              this.observeAssistantText?.(input.sessionId, event);
+            } catch {
+              // Image presentation must never interrupt canonical execution.
             }
           }
           if (isRuntimeSessionForwardedEvent(event)) {

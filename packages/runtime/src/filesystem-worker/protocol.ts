@@ -22,10 +22,9 @@ import { readContinuationSchema, readPageSchema } from '../read-page.js';
 import { validateSandboxBoundaryExpansion } from '@maka/core/sandbox-boundary';
 import { GREP_MAX_LINES, GREP_MAX_LINES_PER_FILE, GREP_MAX_MATCH_BYTES } from '../grep-search.js';
 
-// v10 adds bounded Read pages to v9's exact Grep counts; v11 adds Glob's
-// truncation flag to v10's result contract. Older workers cannot satisfy the
-// combined result contract and must be rejected at the handshake.
-export const FILESYSTEM_WORKER_PROTOCOL_VERSION = 11 as const;
+// v12 adds chat image reads with a bounded payload and no model dimension limit.
+// Older workers cannot satisfy this read policy and must be rejected at the handshake.
+export const FILESYSTEM_WORKER_PROTOCOL_VERSION = 12 as const;
 
 /** The single authority on which operation kinds are writes. Shared by the
  * client (permission/identity decisions) and the worker (operation guards) so
@@ -107,6 +106,7 @@ export const FilesystemWorkerOperationSchema = z.union([
       kind: z.literal('read'),
       cwd,
       path,
+      imagePurpose: z.literal('chat').optional(),
       offset: z.number().int().nonnegative().optional(),
       limit: z.number().int().positive().optional(),
       continuation: readContinuationSchema.optional(),
@@ -251,6 +251,8 @@ export const FilesystemWorkerErrorCodeSchema = z.enum([
   'grep_unavailable',
   'sandbox_denied',
   'filesystem_denied',
+  'image_too_large',
+  'invalid_image',
   'filesystem_error',
   // The worker may have applied the mutation before it lost the ability to
   // report back (e.g. it wrote the file then the post-write identity check

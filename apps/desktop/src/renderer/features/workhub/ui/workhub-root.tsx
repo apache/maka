@@ -408,7 +408,7 @@ export function WorkHubRoot() {
         <div ref={history} className="workHubHistory" aria-hidden={!showConversation} inert={!showConversation}>
         <WorkHubConversation
           workLinks={links}
-          onReadAttachmentBytes={services.readAttachmentBytes}
+          onReadAttachmentBytes={services.readAttachmentBytes} onResolveImageDelivery={services.resolveImageDelivery}
           onOpenWork={(id) => call(services.presentation.openSession(id))}
           scrollBehavior="auto"
           onNew={() => composer.current?.focus()}

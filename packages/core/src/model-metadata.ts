@@ -517,6 +517,14 @@ const COMMAND_CODE_MODEL_METADATA: Record<string, ModelMetadata> = {
 function buildStaticModelMetadata(active: ModelsDevMetadata): ModelsDevMetadata {
   return {
     anthropic: ANTHROPIC_MODEL_OVERRIDES,
+    opencode: {
+      'claude-sonnet-4-5': {
+        thinkingOptions: ANTHROPIC_MODEL_OVERRIDES['claude-sonnet-4-5'].thinkingOptions,
+      },
+      'claude-haiku-4-5': {
+        thinkingOptions: ANTHROPIC_MODEL_OVERRIDES['claude-haiku-4-5'].thinkingOptions,
+      },
+    },
     openai: OPENAI_GPT6_MODEL_OVERRIDES,
     'claude-subscription': claudeSubscriptionModelMetadata(active),
     // The Command Code Provider-API plan rides the same effort table.

@@ -27,6 +27,7 @@ on:
       - 'native/runtime-host-peer/**'
       - 'native/runtime-host-windows-task-launcher/**'
       - 'package-lock.json'
+      - 'patches/node-pty+1.2.0-beta.15.patch'
       - 'packages/cli/RUNTIME_HOST_PEER_*'
       - 'packages/cli/src/cli-core.ts'
       - 'packages/cli/src/runtime-host-cli.ts'
