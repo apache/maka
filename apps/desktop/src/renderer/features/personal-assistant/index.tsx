@@ -152,30 +152,28 @@ export function PersonalAssistantEntry({
 }
 
 const time = (at?: number | null) => (at ? new Date(at).toLocaleString() : '—');
-export function PersonalAssistantSettings(props: {
-  host?: DesktopRuntimeHostRef;
-  onOpenSession?(id: string): void;
+/** The master control lives beside WorkHub in General Settings, scoped to the selected Host. */
+export function PersonalAssistantEnableSwitch(props: {
+  host: DesktopRuntimeHostRef;
+  label: string;
+  isLabelHidden?: boolean;
+  isDisabled?: boolean;
 }) {
   const enablement = useAssistantEnablement(props.host);
   const [switching, setSwitching] = useState(false);
-  const visibility = useAssistantSessionVisibility();
-  const visible = useShowAssistantBackgroundSessions();
-  const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   return (
-    <div className="personal-assistant-settings">
-      <h2>个人助手</h2>
-      <p>启用后显示侧栏入口，并开放记忆索引、主动发现和持续任务。默认关闭。</p>
+    <>
       <Switch
-        label="启用个人助手"
+        label={props.label}
+        isLabelHidden={props.isLabelHidden}
         value={enablement.enabled}
-        isDisabled={switching || !enablement.ready}
+        isDisabled={props.isDisabled || switching || !enablement.ready}
         changeAction={async (enabled) => {
           setSwitching(true);
           setError('');
           try {
-            const host = props.host ?? (await window.maka.runtimeHostProfiles.getDefaultHost());
-            await assistantCall('assistant.set-enabled', { enabled }, host);
+            await assistantCall('assistant.set-enabled', { enabled }, props.host);
           } catch (e) {
             setError(String(e));
           } finally {
@@ -184,10 +182,26 @@ export function PersonalAssistantSettings(props: {
           }
         }}
       />
+      {(error || enablement.error) && <span role="alert">{error || enablement.error}</span>}
+    </>
+  );
+}
+
+export function PersonalAssistantSettings(props: {
+  host?: DesktopRuntimeHostRef;
+  onOpenSession?(id: string): void;
+}) {
+  const enablement = useAssistantEnablement(props.host);
+  const visibility = useAssistantSessionVisibility();
+  const visible = useShowAssistantBackgroundSessions();
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  return (
+    <div className="personal-assistant-settings">
+      <h2>个人助手</h2>
       <p>
-        {switching
-          ? '正在切换，等待后台工作停止或就绪…'
-          : '关闭后隐藏入口、停止助手及后台工作，不再运行主动检查、索引维护或持续任务；已有数据保留。重新启用会恢复调度，已暂停的任务需手动恢复。'}
+        总开关位于「设置 → 通用」，与 WorkHub 开关放在一起。关闭后停止助手及后台工作，保留已有数据。
+        重新启用会恢复调度，已暂停的任务需手动恢复。
       </p>
       {(error || enablement.error) && <p role="alert">{error || enablement.error}</p>}
       {enablement.enabled && (
