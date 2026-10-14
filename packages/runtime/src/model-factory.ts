@@ -543,24 +543,17 @@ function buildThinkingProviderOptions(
         },
       };
     }
-    case 'openai-codex': {
-      const reasoningEffort = level === 'off' ? 'none' : level;
-      return {
-        openai: {
-          store: false,
-          textVerbosity: 'medium',
-          ...openAiResponsesSummary(modelId, reasoningEffort),
-          ...(reasoningEffort ? { reasoningEffort } : {}),
-        },
-      };
-    }
+    case 'openai-codex':
     case 'openai': {
-      const usesResponses = runtime.wire === 'openai-responses';
+      const isCodex = connection.providerType === 'openai-codex';
       const reasoningEffort = level === 'off' ? 'none' : level;
       return {
         openai: {
           store: false,
-          ...(usesResponses ? openAiResponsesSummary(modelId, reasoningEffort) : {}),
+          ...(isCodex ? { textVerbosity: 'medium' } : {}),
+          ...(runtime.wire === 'openai-responses'
+            ? openAiResponsesSummary(modelId, reasoningEffort)
+            : {}),
           ...(reasoningEffort ? { reasoningEffort } : {}),
         },
       };
