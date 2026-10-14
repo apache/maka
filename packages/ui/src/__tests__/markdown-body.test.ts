@@ -771,7 +771,42 @@ it('does not escape bare dollar signs when a chunk boundary splits before or ins
     children: createElement(MarkdownBody, { text: linkFull }),
   }));
   assert.match(markup, /href="https:\/\/example\.com\/search\?query=\$100&amp;cost=\$200"/);
-  assert.doesNotMatch(markup, /\\\$100/);
+});
+
+it('preserves normal prose processing and math when an inline tail remains incomplete', () => {
+  const literalDollar = 'prefix ](literal $x$ text';
+  const oneshotDollar = prepareMarkdownMath(literalDollar, createMarkdownMathCache());
+  const cacheDollar = createMarkdownMathCache();
+  let streamedDollar = '';
+  for (let end = 1; end <= literalDollar.length; end++) {
+    streamedDollar = prepareMarkdownMath(literalDollar.slice(0, end), cacheDollar);
+  }
+  assert.equal(streamedDollar, oneshotDollar);
+  assert.match(oneshotDollar, /\\\$x\\\$/);
+
+  const markupDollar = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(MarkdownBody, { text: literalDollar, streaming: false }),
+  }));
+  assert.doesNotMatch(markupDollar, /class="maka-math/);
+  assert.doesNotMatch(markupDollar, /class="katex/);
+  assert.match(markupDollar, /\$x\$/);
+
+  const inlineMath = 'prefix ](literal \\(x+1\\) text';
+  const oneshotMath = prepareMarkdownMath(inlineMath, createMarkdownMathCache());
+  const cacheMath = createMarkdownMathCache();
+  let streamedMath = '';
+  for (let end = 1; end <= inlineMath.length; end++) {
+    streamedMath = prepareMarkdownMath(inlineMath.slice(0, end), cacheMath);
+  }
+  assert.equal(streamedMath, oneshotMath);
+
+  const markupMath = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(MarkdownBody, { text: inlineMath, streaming: false }),
+  }));
+  assert.match(markupMath, /class="maka-math maka-math-inline"/);
+  assert.match(markupMath, /class="katex"/);
 });
 
 it('preserves reference link tails across chunk boundaries and incremental streaming', () => {

@@ -352,16 +352,8 @@ function translateMarkdownMath(
       markSafe();
       continue;
     }
-    if (destination.kind === 'pending') {
-      text += source.slice(index);
-      index = source.length;
-      atLineStart = false;
-      if (isFinalSegment) {
-        markSafe();
-      } else {
-        canMarkSafe = false;
-      }
-      break;
+    if (destination.kind === 'pending' && !isFinalSegment) {
+      canMarkSafe = false;
     }
 
     const autolink = readAutolink(source, index);
@@ -445,7 +437,7 @@ function translateMarkdownMath(
     if (
       isFinalSegment
       || index < source.length
-      || (character !== '\\' && character !== '$' && character !== '`')
+      || (character !== '\\' && character !== '$' && character !== '`' && character !== ']')
     ) {
       markSafe();
     }
