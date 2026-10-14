@@ -157,6 +157,30 @@ describe('TUI copy resources', () => {
     assert.equal(TUI_COPY_RESOURCES.todo['zh-TW'].unavailable, '待辦不可用');
   });
 
+  test('localizes the fullscreen unread hint', () => {
+    assert.equal(
+      TUI_COPY_RESOURCES['unread-indicator'].en.hint,
+      '↓ {count, plural, one {# new line} other {# new lines}} — End to jump to latest',
+    );
+    assert.equal(
+      formatUiMessage(TUI_COPY_RESOURCES['unread-indicator']['zh-CN'].hint, { count: 3 }, 'zh-CN'),
+      '↓ 3 行新输出 · 按 End 跳到最新',
+    );
+    assert.equal(
+      formatUiMessage(TUI_COPY_RESOURCES['unread-indicator']['zh-TW'].hint, { count: 3 }, 'zh-TW'),
+      '↓ 3 行新輸出 · 按 End 跳到最新',
+    );
+    // Chinese has one CLDR plural category, so neither entry may carry the
+    // English singular branch.
+    for (const locale of ['zh-CN', 'zh-TW'] as const) {
+      assert.doesNotMatch(
+        TUI_COPY_RESOURCES['unread-indicator'][locale].hint,
+        /\bone \{/u,
+        `${locale} must not mirror the English plural forms`,
+      );
+    }
+  });
+
   test('localizes stable onboarding failure codes at the TUI boundary', () => {
     assert.equal(
       onboardingFailureMessage({ kind: 'rejected', reason: 'connection_not_found' }, 'en'),

@@ -24,7 +24,8 @@ import { TranscriptDisclosure } from './transcript-disclosure.js';
 import { Markdown } from './markdown.js';
 import { formatTurnDuration } from './chat-display-helpers.js';
 import { formatAbsoluteTimestamp } from '@maka/core/relative-time';
-import { isTimeDrivenMotionEnabled } from './streaming-presentation.js';
+import { isTimeDrivenMotionEnabled, isProgressiveStreamingEnabled } from './streaming-presentation.js';
+import { ImageMessageProvider } from './image-delivery.js';
 import { computerRunningLabel } from './tool-activity/computer-action-label.js';
 import {
   Badge,
@@ -213,7 +214,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
             dataMessageId={props.messageId}
           />
           {props.delivery?.deliveryActions?.map((action) => (
-            <UiIconButton key={action.label} label={action.label} tooltip={action.label} variant="ghost" size="sm" icon={action.icon} onClick={action.onClick} />
+            <UiIconButton key={action.label} label={action.label} tooltip={action.label} variant="ghost" size="sm" icon={action.icon} isDisabled={action.disabled} clickAction={action.onClick} />
           ))}
           {timeOrDelivery}
         </>
@@ -285,7 +286,7 @@ export function TransientUserMessage(props: {
     <LocalizedChatMessage
       accessibleLabel={copy.userAriaLabel}
       sender="user"
-      className="maka-chat-message maka-user-message"
+      className="maka-chat-message maka-user-message maka-transient-message"
       data-transient-message-id={message.id}
     >
       <UserMessageBody
@@ -296,8 +297,25 @@ export function TransientUserMessage(props: {
         quotes={message.quotes}
         directoryReferences={message.directoryReferences}
         inlineReferences={message.inlineReferences}
-        delivery={message}
+        delivery={message.deliveryStatus ? undefined : message}
       />
+      {message.deliveryStatus && (
+        <div className="maka-message-delivery" data-tone={message.deliveryTone ?? 'neutral'}>
+          <div role="status" aria-atomic="true">
+            <span className="maka-message-delivery-status">{message.deliveryStatus}</span>
+            {message.deliveryDetail && <p className="maka-message-delivery-detail">{message.deliveryDetail}</p>}
+          </div>
+          {!!message.deliveryActions?.length && <div className="maka-message-delivery-actions">
+            {message.deliveryActions.map((action) => (
+              <UiButton key={action.label} label={action.label} isDisabled={action.disabled} variant="ghost" size="sm" onClick={action.onClick} />
+            ))}
+          </div>}
+          {message.deliveryDiagnostic && <details className="maka-message-delivery-diagnostic">
+            <summary>{message.deliveryDiagnosticLabel}</summary>
+            <p>{message.deliveryDiagnostic}</p>
+          </details>}
+        </div>
+      )}
     </LocalizedChatMessage>
   );
 }
@@ -751,6 +769,7 @@ export const TurnView = memo(function TurnView(props: {
                     key={`processing-${item.id}`}
                     activityObserved={props.activityObserved}
                     entries={item.children}
+                    turnId={turn.turnId}
                     running={!!props.liveStreaming}
                     statusRow={
                       index === activityProcessIndex && hasLiveStatus
@@ -765,7 +784,10 @@ export const TurnView = memo(function TurnView(props: {
                   <TurnTimelineEntry
                     key={timelineEntryKey(item, index)}
                     activityObserved={props.activityObserved}
+                    // The next tool can still turn a live reply into process commentary.
+                    imageDisplay={statusBarStatus === 'running' ? 'link' : undefined}
                     item={item}
+                    turnId={turn.turnId}
                     onStreamingSettled={props.liveStreaming?.onStreamingSettled}
                     onOpenLinkedSession={props.onOpenLinkedSession}
                     initialLiveContent={props.liveStreaming?.initialLiveContent}
@@ -1286,7 +1308,7 @@ export function ModelProviderRetryIndicator(props: { retry: LiveProviderRetry })
  */
 type AssistantAnswerPhase = 'historical' | 'streaming' | 'settled';
 
-type AssistantAnswerBubbleProps =
+type AssistantAnswerBubbleProps = { imageIdentity?: { turnId: string; messageId: string }; imageDisplay?: 'image' | 'link' } & (
   | { text: string; phase: 'historical'; interrupted?: true }
   | {
       text: string;
@@ -1297,7 +1319,7 @@ type AssistantAnswerBubbleProps =
       truncated?: boolean;
       /** Called once when this answer's stream closes. */
       onSettled?: () => void;
-    };
+    });
 
 /**
  * The assistant's answer, in every state it can be in.
@@ -1342,22 +1364,25 @@ const AssistantAnswerBubble = memo(function AssistantAnswerBubble(props: Assista
           : 'maka-chat-message-bubble maka-chat-message-bubble-assistant maka-bubble-streaming'
       }
     >
-      <Markdown
-        text={props.text}
-        streaming={props.phase === 'streaming'}
-        settledText={settledText}
-        // Names the surface, and not exclusively: the desktop Artifact
-        // Preview asks for compact too and takes the same rules, so retuning
-        // them here is retuning them there. What this prop does NOT do is set
-        // this turn's block spacing. Every top-level gap in a transcript turn
-        // comes from the rhythm table in styles.css, which keys on the
-        // `data-density="compact"` this prop reflects and overrides Astryx's
-        // own margins outright. So `compact` still buys the transcript
-        // heading scale and the tighter rhythm inside a list item or a quote,
-        // and reading it as "paragraphs are squeezed here" is the wrong
-        // file — retune `--md-gap-block` instead.
-        density="compact"
-      />
+      <ImageMessageProvider identity={props.imageIdentity} streaming={isProgressiveStreamingEnabled(props.phase === 'streaming')}>
+        <Markdown
+          text={props.text}
+          imageDisplay={props.imageDisplay}
+          streaming={props.phase === 'streaming'}
+          settledText={settledText}
+          // Names the surface, and not exclusively: the desktop Artifact
+          // Preview asks for compact too and takes the same rules, so retuning
+          // them here is retuning them there. What this prop does NOT do is set
+          // this turn's block spacing. Every top-level gap in a transcript turn
+          // comes from the rhythm table in styles.css, which keys on the
+          // `data-density="compact"` this prop reflects and overrides Astryx's
+          // own margins outright. So `compact` still buys the transcript
+          // heading scale and the tighter rhythm inside a list item or a quote,
+          // and reading it as "paragraphs are squeezed here" is the wrong
+          // file — retune `--md-gap-block` instead.
+          density="compact"
+        />
+      </ImageMessageProvider>
       {truncated && (
         <Tooltip content={copy.outputTruncatedTitle}>
           {/* Colour-name archive, not the semantic one: Astryx paints
@@ -1397,8 +1422,10 @@ function timelineEntryKey(item: TurnTimelineItem, index: number): string {
 
 /** Render one timeline entry: reasoning disclosure / answer bubble / tool group. */
 const TurnTimelineEntry = memo(function TurnTimelineEntry(props: {
+  turnId?: string;
   activityObserved?: boolean;
   item: Exclude<TurnTimelineItem, { kind: 'user' }>;
+  imageDisplay?: 'image' | 'link';
   onStreamingSettled?: (messageId?: string) => void;
   onOpenLinkedSession?(sessionId: string): void;
   initialLiveContent?: ReadonlyMap<string, string>;
@@ -1424,9 +1451,11 @@ const TurnTimelineEntry = memo(function TurnTimelineEntry(props: {
     );
   }
   // Same component either way — a type swap here would remount the answer.
-  if (item.live !== true) return <AssistantAnswerBubble text={item.text} interrupted={item.interrupted} phase="historical" />;
+  if (item.live !== true) return <AssistantAnswerBubble imageIdentity={props.turnId ? { turnId: props.turnId, messageId: item.messageId } : undefined} imageDisplay={props.imageDisplay} text={item.text} interrupted={item.interrupted} phase="historical" />;
   return (
     <AssistantAnswerBubble
+      imageIdentity={props.turnId ? { turnId: props.turnId, messageId: item.messageId } : undefined}
+      imageDisplay={props.imageDisplay}
       text={item.text}
       interrupted={item.interrupted}
       phase={item.complete === true ? 'settled' : 'streaming'}
@@ -1448,6 +1477,7 @@ const TurnTimelineEntry = memo(function TurnTimelineEntry(props: {
  * owns no chrome — keep the plain process label.
  */
 const ProcessingBlock = memo(function ProcessingBlock(props: {
+  turnId?: string;
   activityObserved?: boolean;
   entries: FoldedTimelineChild[];
   running: boolean;
@@ -1466,7 +1496,9 @@ const ProcessingBlock = memo(function ProcessingBlock(props: {
           <TurnTimelineEntry
             key={timelineEntryKey(entry, index)}
             activityObserved={open && props.activityObserved !== false}
+            imageDisplay="link"
             item={entry}
+            turnId={props.turnId}
             onStreamingSettled={props.onStreamingSettled}
             onOpenLinkedSession={props.onOpenLinkedSession}
             initialLiveContent={props.initialLiveContent}
@@ -1492,6 +1524,7 @@ function DeepThinking(props: { text: string; live: boolean; settledText?: string
       <Markdown
         text={props.text}
         streaming={props.live}
+        imageDisplay="link"
         // A truncated reasoning buffer slides at the head. It is a current
         // snapshot, not an append-only prefix for the reveal cursor to replay.
         settledText={props.truncated ? props.text : props.settledText}

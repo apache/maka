@@ -388,6 +388,10 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       input: HostWorkHubRoutingDecisionPreparation,
     ) => Promise<WorkHubRoutingDecision | undefined>,
     private readonly featureUnavailableReason?: (header: SessionHeader) => string | undefined,
+    private readonly observeAssistantText?: (
+      sessionId: string,
+      event: import('@maka/core/events').TextCompleteEvent,
+    ) => void,
   ) {
     this.stores = authenticateExecutionStoresWriter(stores, 'interactive');
     this.executionProjection = new HostedExecutionProjectionReader(this.stores);
@@ -3258,6 +3262,13 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
               active.execution.onEvent(event);
             } catch {
               // Presentation observers do not participate in execution authority.
+            }
+          }
+          if (event.type === 'text_complete') {
+            try {
+              this.observeAssistantText?.(input.sessionId, event);
+            } catch {
+              // Image presentation must never interrupt canonical execution.
             }
           }
           if (isRuntimeSessionForwardedEvent(event)) {

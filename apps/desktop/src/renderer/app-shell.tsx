@@ -53,7 +53,6 @@ import {
   type TurnFooterActionMeta,
   useToast,
   deriveComposerModelSwitchAvailability,
-  deriveTitlebarProjectName,
 } from '@maka/ui';
 import type { ConnectionEvent } from '@maka/core/connections';
 import { ChatMessageSurface } from './chat-message-surface';
@@ -676,6 +675,10 @@ function AppShellContent({
         }
       : undefined;
   const moduleHubCommands = useMemo(ModuleHub.createModuleHubCommandPort, []);
+  const openProjectFolder = useCallback(
+    () => taskEntry.commands.openProjectFolder(ownerActiveId),
+    [taskEntry.commands, ownerActiveId],
+  );
   const {
     projectInfo,
     projectCapabilities,
@@ -683,17 +686,24 @@ function AppShellContent({
     currentProjectId,
     currentProject,
     refreshProjects,
+    titlebarSession,
+    taskDirectoryNotice,
   } = useAppShellProjectContext({
     rendererMountedRef,
     sessionId: ownerActiveId,
     sessionCwd: sharedSessionActive ? undefined : activeSession?.cwd,
     sessionProjectId: sharedSessionActive ? undefined : activeSession?.projectId,
     sessionProfileKind: sharedSessionActive ? undefined : activeSession?.profileKind,
+    titlebar: {
+      sharedSessionActive,
+      activeSession,
+      sharedSessionDialog,
+      moveToDedicatedDirectory: taskEntry.commands.moveSessionToDedicatedDirectory,
+      openProjectFolder,
+      copy: shellCopy,
+      toastApi,
+    },
   });
-  const openProjectFolder = useCallback(
-    () => taskEntry.commands.openProjectFolder(ownerActiveId),
-    [taskEntry.commands, ownerActiveId],
-  );
   const captureActiveComposerClaim = useCallback(() => {
     const sessionId = activeIdRef.current;
     const claim = navSelectionRef.current.section === 'sessions' && sessionId
@@ -718,15 +728,6 @@ function AppShellContent({
   };
   const taskSubmissionHardBlocked =
     !activeId && !taskEntry.selectors.target;
-  // The titlebar names the directory the ACTIVE session runs in, so it reads
-  // the same projected project state the picker does — `projectInfo` already
-  // resolves to the session's own cwd once a session owns it.
-  const titlebarProjectName = sharedSessionActive
-    ? undefined
-    : deriveTitlebarProjectName({
-        projectName: currentProject?.name,
-        projectPath: projectInfo?.projectPath,
-      });
   const openNewTaskSurface = useCallback(() => {
     composerStaging.resetImageNotice(NEW_TASK_PENDING_KEY);
     const ownerToken = startNewSession();
@@ -1076,35 +1077,6 @@ function AppShellContent({
       sessionId={ownerActiveId} newTaskTarget={activeId ? undefined : taskEntry.selectors.target}
       workspaceRecoverySessionId={activeSession?.id} openSessionWorkspaceRecovery={openSessionWorkspaceRecovery}
       addProject={taskEntry.selectors.canAddProject ? taskEntry.commands.addProject : undefined}>
-    <Conversation.ComposerSubmissionProvider commands={composerSubmission} staging={composerStaging}
-      sharedSessionActive={sharedSessionActive} ownerSessionId={ownerActiveId}
-      newTask={{
-        target: taskEntry.selectors.target,
-        model: newChatExecutionTarget ?? null,
-        thinkingLevel: executorTarget ? newChatExecutionThinkingLevel ?? null : pendingNewChatThinkingLevel,
-        executorSelection: executor.selection,
-        executorEntry: executor.entry,
-        permissionChoice: newTaskSettings.permissionChoice,
-        clearPermissionChoice: sessionSettingIntent.commands.clearNewTaskPermissionChoice,
-        collaborationMode: newTaskSettings.planMode ? 'plan' : 'agent',
-        orchestrationMode: newTaskSettings.orchestrationMode,
-      }}
-      shell={{
-        captureOwner: captureComposerImportOwner,
-        isOwnerActive: isShellSurfaceOwnerActive,
-        isNewChatOwnerActive: isNewChatSendSurfaceActive,
-        activateFirstSendSession: Conversation.createExecutorSessionActivator(executor, commitSession, setNavSelection, setActiveId),
-        openSession: openSessionInChat,
-        retireSession: clearSessionRendererState,
-        refreshSessions,
-        reloadExecutionBoundary: reloadActiveExecutionBoundary,
-        respondToUserForm: commands.respondToUserForm,
-        showModelSetupToast,
-        bindNewTaskSessionResolver: commands.bindNewTaskSessionResolver,
-        openSideChat: (options) => commands.openTool('side-chat', 'right', options),
-        orchestrationMode: () => activeOrchestrationMode,
-        setOrchestrationModeActive,
-      }}>
     <Conversation.PlanProvider session={ownerActiveId ? activeHostSession : undefined}>
     <SessionSettingsProvider
       bridge={sessionSettingIntent.bridge}
@@ -1152,6 +1124,36 @@ function AppShellContent({
     <ModuleHub.ModuleHubSkillCatalogRevisionBoundary
       render={renderComposerMentionsProvider(composerMentionsSurface)}
     >
+    <Conversation.ComposerSubmissionProvider commands={composerSubmission} staging={composerStaging}
+      sharedSessionActive={sharedSessionActive} ownerSessionId={ownerActiveId}
+      recoveryEnabled={sessionsSelected} directoryHostId={directoryHostId}
+      newTask={{
+        target: taskEntry.selectors.target,
+        model: newChatExecutionTarget ?? null,
+        thinkingLevel: executorTarget ? newChatExecutionThinkingLevel ?? null : pendingNewChatThinkingLevel,
+        executorSelection: executor.selection,
+        executorEntry: executor.entry,
+        permissionChoice: newTaskSettings.permissionChoice,
+        clearPermissionChoice: sessionSettingIntent.commands.clearNewTaskPermissionChoice,
+        collaborationMode: newTaskSettings.planMode ? 'plan' : 'agent',
+        orchestrationMode: newTaskSettings.orchestrationMode,
+      }}
+      shell={{
+        captureOwner: captureComposerImportOwner,
+        isOwnerActive: isShellSurfaceOwnerActive,
+        isNewChatOwnerActive: isNewChatSendSurfaceActive,
+        activateFirstSendSession: Conversation.createExecutorSessionActivator(executor, commitSession, setNavSelection, setActiveId),
+        openSession: openSessionInChat,
+        retireSession: clearSessionRendererState,
+        refreshSessions,
+        reloadExecutionBoundary: reloadActiveExecutionBoundary,
+        respondToUserForm: commands.respondToUserForm,
+        showModelSetupToast,
+        bindNewTaskSessionResolver: commands.bindNewTaskSessionResolver,
+        openSideChat: (options) => commands.openTool('side-chat', 'right', options),
+        orchestrationMode: () => activeOrchestrationMode,
+        setOrchestrationModeActive,
+      }}>
     <SessionCollaboration.SessionTurnRequestInboxProvider
       catalog={sessionCatalogController}
       onOpenSession={openSession}
@@ -1239,28 +1241,12 @@ function AppShellContent({
                 key={activeSessionForView.id}
                 sessionName={activeSessionForView.name}
                 readOnly={sharedSessionActive}
-                action={
-                  sharedSessionActive ||
-                  !activeSession ||
-                  activeSession.profileKind === 'environment'
-                    ? undefined
-                    : {
-                        label: sharedSessionDialog.shareActionLabel,
-                        onClick: () => sharedSessionDialog.openSession(activeSession),
-                      }
-                }
+                action={titlebarSession.action}
+                actions={titlebarSession.actions}
                 onRenameSession={(name) => {
                   void sessionNavigationCommandsRef.current?.renameSession(activeSessionForView.id, name);
                 }}
-                project={
-                  titlebarProjectName
-                    ? {
-                        name: titlebarProjectName,
-                        path: projectInfo?.projectPath,
-                        onOpenFolder: activeProjectCapabilities.viewClientPath ? openProjectFolder : undefined,
-                      }
-                    : undefined
-                }
+                project={titlebarSession.project}
                 parentSession={titlebarParentSession}
               />
             )}
@@ -1394,8 +1380,6 @@ function AppShellContent({
                   onUpdateQueuedEntry={activeId ? queueSurface.updateQueuedEntry : undefined}
                   onDeleteQueuedEntry={activeId ? queueSurface.deleteQueuedEntry : undefined}
                   onReorderQueuedEntries={activeId ? queueSurface.reorderQueuedEntries : undefined}
-                  allowAttachmentOnlySend={canStageComposerContext}
-                  canStageContext={canStageComposerContext}
                   contextPickEnabled={canStageComposerContext}
                   executorComposer={{ selection: executor, taskSubmissionHardBlocked, connectionCount: connections.length, onSetup: () => openSettingsSection('external-agents'), onNewTask: openNewTaskSurface }}
                   activeSession={activeSessionForView}
@@ -1483,6 +1467,7 @@ function AppShellContent({
                     : undefined
                 }
                 sessionHealthNotice={sessionHealthNotice}
+                taskDirectoryNotice={taskDirectoryNotice}
                 localInteractionAvailable={activeBoundarySurface.localInteractionAvailable}
                 workspaceReadinessRecovery={workspaceReadinessRecovery}
                 showOnboardingHero={showOnboardingHero}
@@ -1564,12 +1549,12 @@ function AppShellContent({
     </div>
     </WorkbarProvider>
     </SessionCollaboration.SessionTurnRequestInboxProvider>
+    </Conversation.ComposerSubmissionProvider>
     </ModuleHub.ModuleHubSkillCatalogRevisionBoundary>
     </ModuleHub.ModuleHubProvider>
     </Goals.GoalProvider>
     </SessionSettingsProvider>
     </Conversation.PlanProvider>
-    </Conversation.ComposerSubmissionProvider>
     </Conversation.TaskReadinessProvider>
     </Conversation.ComposerStagingProvider>
   );

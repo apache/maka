@@ -39,11 +39,17 @@
 - Keep the composer context gauge from showing stale pre-compaction usage. The gauge returns to its localized Usage label until the provider measures a request after the compaction boundary (#5548).
 - Preserve interrupted tool settlement, session recovery and provider context handling across retries and restarts (#5610, #5621, #5587).
 - Report browser toolbar action failures and distinguish empty Git comparisons from review errors (#5955, #5967).
+- Desktop Edit & resend now keeps a selected message's quotes. Messages that carry attachments still cannot be edited (#5274).
+- Record aborted or usage-less auxiliary model calls as usage-unknown rather than zero (#5890).
+- Stop pipe-mode shell commands when their Runtime Host dies, instead of leaving them running without an owner (#5986).
+- Keep native Anthropic prompt caching effective across steps and turns by placing the cache breakpoint on replayed history (#6041).
+- Update shipped dependencies to clear published advisories in brace-expansion, fast-uri and axios (#5906).
 
 ### Changed
 
 - Custom connections now use one provider type with a default API protocol and per-model overrides. Legacy connections migrate while retaining identifiers, credentials and model overrides (#5684).
 - TUI queue and retract shortcuts use Tab and Shift+Left in place of Alt chords (#5910).
+- Manual archiving now refuses a task while a WorkHub delegation or a live linked child task still points at it, instead of hiding it from WorkHub (#5957).
 - Reduced idle and streaming renderer work, paused transcript reads while the shell is covered, and bounded Host framing and storage queries (#5608, #6014, #5356, #5514).
 - Reclaim unused context-offload SQLite pages during Host maintenance; new runtime databases support incremental vacuum (#5855, #6044).
 - Removed the provider-dropping context note because differing upstream token counts could trigger it without evidence of dropped history. Historical sessions containing it still open (#5672).

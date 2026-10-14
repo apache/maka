@@ -191,10 +191,9 @@ jobs:
             --key-id "$APPLE_API_KEY_ID" \
             --issuer "$APPLE_API_ISSUER" \
             --wait
-          xcrun stapler staple "$DMG_PATH"
+          node scripts/staple-macos-artifact.mjs "$DMG_PATH"
 
           codesign --verify --verbose=4 "$DMG_PATH"
-          xcrun stapler validate "$DMG_PATH"
           spctl --assess \
             --type open \
             --context context:primary-signature \

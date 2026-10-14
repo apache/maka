@@ -18,7 +18,9 @@
  */
 
 import type { ComponentProps } from 'react';
-import { Composer } from '@maka/ui';
+import { Composer, type ComposerSendMetadata } from '@maka/ui';
+import type { ComposerStagingSubmission } from '../model/composer-staging-contract.js';
+import { captureComposerStaging } from '../controller/capture-composer-staging.js';
 import { useComposerStaging } from './composer-staging-context.js';
 
 export type ComposerStagingProp =
@@ -29,14 +31,17 @@ export type ComposerStagingProp =
 /** Actual Composer reader; no staging projection travels through AppShell. */
 export function StagedComposer({
   stagingEnabled, canStageContext, contextPickEnabled, directoryPickerEnabled, ...props
-}: Omit<ComponentProps<typeof Composer>, ComposerStagingProp> & {
+}: Omit<ComponentProps<typeof Composer>, ComposerStagingProp | 'onSend'> & {
+  readonly onSend: (text: string, metadata?: ComposerSendMetadata, staging?: ComposerStagingSubmission) => boolean | void | Promise<boolean | void>;
   readonly stagingEnabled: boolean;
   readonly canStageContext: boolean;
   readonly contextPickEnabled: boolean;
   readonly directoryPickerEnabled: boolean;
 }) {
   const staging = useComposerStaging();
-  return <Composer {...props} {...(stagingEnabled ? {
+  return <Composer {...props} onSend={(text, metadata) =>
+    props.onSend(text, metadata, captureComposerStaging(staging, staging.draftKey))} {...(stagingEnabled ? {
+    retainSendContext: () => staging.retainAttachments(staging.submittableAttachments),
     pendingAttachments: staging.pendingAttachments,
     onRemoveAttachment: staging.removeAttachment,
     onPickAttachments: contextPickEnabled ? staging.pickAttachments : undefined,

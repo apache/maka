@@ -34,6 +34,18 @@ import {
   DesktopRuntimeHostClientError,
 } from '../runtime-host-client.js';
 
+test('image resolution keeps the routed session even if a request carries another id', async () => {
+  const { client, requests } = clientWithResponses([{ status: 'requires_confirmation' }]);
+  await client.resolveImageDelivery('routed-session', {
+    sessionId: 'injected-session', turnId: 'turn', messageId: 'message',
+    source: 'https://example.invalid/image.png', loadRemote: true,
+  } as import('@maka/core/image-delivery').ImageDeliveryRequest);
+  assert.deepEqual(requests, [{ operation: 'artifact.image.resolve', input: {
+    sessionId: 'routed-session', turnId: 'turn', messageId: 'message',
+    source: 'https://example.invalid/image.png', loadRemote: true,
+  } }]);
+});
+
 test('restarts a paginated catalog read instead of mixing revisions', async () => {
   const revisionOne = catalogRevision('1');
   const revisionTwo = catalogRevision('2');

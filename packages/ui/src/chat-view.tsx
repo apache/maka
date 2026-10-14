@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { ImageDeliveryProvider } from './image-delivery.js';
 import {
   Fragment,
   useCallback,
@@ -144,7 +145,10 @@ export interface ChatViewGoalIndicatorProps {
 export interface TransientUserMessageProjection {
   deliveryStatus?: string;
   deliveryDetail?: string;
-  deliveryActions?: readonly { label: string; icon: ReactNode; onClick(): void | Promise<void> }[];
+  deliveryTone?: 'neutral' | 'warning' | 'danger';
+  deliveryDiagnostic?: string;
+  deliveryDiagnosticLabel?: string;
+  deliveryActions?: readonly { label: string; icon?: ReactNode; disabled?: boolean; onClick(): void | Promise<void> }[];
   id: string;
   text: string;
   ts: number;
@@ -294,6 +298,7 @@ export function ChatView(props: {
    * host-agnostic with no direct host-global access.
    */
   onReadAttachmentBytes?: ReadAttachmentBytes;
+  onResolveImageDelivery?: import('@maka/core/image-delivery').ResolveImageDelivery;
   /**
    * Open a linked subagent child session in the main chat column (option A).
    * Threaded into linked subagent rows inside ToolTrow.
@@ -502,6 +507,7 @@ export function ChatView(props: {
     const turn = message.hostTurnId ? turnsById.get(message.hostTurnId) : undefined;
     if (
       turn === undefined
+      || message.deliveryTone === 'danger'
       || turn.user !== undefined
       || turn.timeline.some((item) => item.kind === 'user' && item.messageId === message.id)
     ) continue;
@@ -903,6 +909,7 @@ export function ChatView(props: {
 
   return (
     <MakaClientSessionScope sessionId={props.activeSession.id}>
+      <ImageDeliveryProvider sessionId={props.activeSession.id} resolve={props.onResolveImageDelivery}>
       <SessionAttachmentProvider
         sessionId={props.activeSession.id}
         readBytes={props.onReadAttachmentBytes}
@@ -1152,6 +1159,7 @@ export function ChatView(props: {
       </div>
       </section>
       </SessionAttachmentProvider>
+      </ImageDeliveryProvider>
     </MakaClientSessionScope>
   );
 }

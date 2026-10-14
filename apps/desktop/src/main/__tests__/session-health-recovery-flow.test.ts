@@ -159,6 +159,7 @@ async function renderFlow(props: Parameters<typeof RecoveryFlow>[0]) {
   }) as unknown as CSSStyleDeclaration;
   // linkedom lacks the popover API; record the calls so tests can tell an open
   // panel from one that is mounted but hidden.
+  window.getSelection = () => null;
   window.HTMLElement.prototype.showPopover = function () {
     this.setAttribute('data-popover-open', '');
   };
@@ -200,10 +201,18 @@ test('recovery CTA opens the production Composer model picker', async () => {
     onOpenSettings: assert.fail,
   });
   await act(() => flow.action.dispatchEvent(new flow.window.Event('click', { bubbles: true })));
-  const popup = [...flow.document.querySelectorAll<HTMLElement>('[data-popover-open]')]
-    .find((panel) => panel.querySelector('[role="option"]'));
-  assert.ok(popup, 'the recovery action opens the shared model picker');
-  const options = popup.querySelectorAll('[role="option"]');
+  assert.equal(
+    flow.document.querySelector('.maka-composer-options-trigger')?.getAttribute('aria-expanded'),
+    'true',
+    'the recovery action opens the composer model menu',
+  );
+  // Astryx has no controlled open for DropdownMenuSubMenu, so the model list is
+  // one step further: its row in the open menu.
+  const modelRow = [...flow.document.querySelectorAll<HTMLElement>('[role="menuitem"][aria-haspopup="menu"]')]
+    .find((row) => row.textContent?.includes('Model'));
+  assert.ok(modelRow, 'the open menu offers the model list');
+  await act(() => modelRow.dispatchEvent(new flow.window.Event('click', { bubbles: true })));
+  const options = [...flow.document.querySelectorAll<HTMLElement>('[role="menuitemradio"]')];
   assert.equal(options.length, 1, 'only the available exact account-and-model choice is offered');
   assert.equal(options[0]?.textContent?.includes(CHOICE.label), true);
 });

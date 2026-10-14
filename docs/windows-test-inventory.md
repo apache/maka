@@ -16,10 +16,10 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 | Classification | Count |
 |---|---:|
 | windows-backend-gap | 27 |
-| portable-candidate | 56 |
-| platform-contract | 48 |
+| portable-candidate | 57 |
+| platform-contract | 49 |
 
-Total Windows-excluded declarations: **131**
+Total Windows-excluded declarations: **133**
 
 ## Inventory
 
@@ -28,6 +28,7 @@ Total Windows-excluded declarations: **131**
 | platform-contract | `apps/desktop/scripts/check-renderer-architecture.test.mjs` handles read-only POSIX permissions on the checker directory according to --strict-base | `process.platform === 'win32' \|\| process.getuid?.() === 0` |
 | portable-candidate | `apps/desktop/scripts/dev-worktree.test.mjs` a symlink to a worktree uses the same data directory | `process.platform === 'win32'` |
 | portable-candidate | `apps/desktop/src/main/__tests__/external-agent-executable-selection.test.ts` macOS rejects ${invalid} before returning a path to save | `process.platform === 'win32' && invalid.startsWith('non-executable')` |
+| portable-candidate | `apps/desktop/src/main/__tests__/managed-task-directory.test.ts` refuses a managed root owned by another user | `process.platform === 'win32'` |
 | portable-candidate | `apps/desktop/src/main/__tests__/mcp-ipc-commit-unknown.test.ts` MCP remove reconciles a live manager after the real store publishes then fails directory sync | `process.platform === 'win32'` |
 | portable-candidate | `apps/desktop/src/main/__tests__/mcp-ipc-commit-unknown.test.ts` MCP update reconciles the reread authority including an intervening writer without replaying its mutation | `process.platform === 'win32'` |
 | portable-candidate | `apps/desktop/src/main/__tests__/mcp-ipc-commit-unknown.test.ts` MCP published write explicitly reports out-of-sync when reconciliation ${phase} fails | `process.platform === 'win32'` |
@@ -86,6 +87,7 @@ Total Windows-excluded declarations: **131**
 | platform-contract | `packages/runtime/src/__tests__/filesystem-worker-process-runner.test.ts` filesystem worker rejects boundedly when a detached descendant retains stdout | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |
 | platform-contract | `packages/runtime/src/__tests__/filesystem-worker-smoke.test.ts` macOS filesystem worker smoke | `process.platform !== 'darwin'` |
 | platform-contract | `packages/runtime/src/__tests__/glob-search.test.ts` both Glob paths report permission failures and recover after permissions are restored | `process.platform === 'win32' \|\| process.getuid?.() === 0` |
+| platform-contract | `packages/runtime/src/__tests__/image-file.test.ts` chat reads reject FIFOs without waiting for a writer | `process.platform === 'win32'` |
 | portable-candidate | `packages/runtime/src/__tests__/node-pty-write-lifecycle.test.ts` does not carry queued Unix PTY writes past native exit | `process.platform === 'win32' ? 'Unix PTY file-descriptor lifecycle only' : false` |
 | platform-contract | `packages/runtime/src/__tests__/owned-child-process.test.ts` POSIX cancellation delivers SIGTERM exactly once to the owned command | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |
 | platform-contract | `packages/runtime/src/__tests__/owned-child-process.test.ts` supervisor mirrors a command that dies from ${signal} | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |

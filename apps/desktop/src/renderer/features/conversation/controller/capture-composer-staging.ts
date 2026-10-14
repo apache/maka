@@ -1,0 +1,45 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import type { useComposerAttachments } from './use-composer-attachments.js';
+import type { ComposerStagingSubmission } from '../model/composer-staging-contract.js';
+
+/** Capture one draft's sources; late reference quotes are read at invocation. */
+export function captureComposerStaging(
+  staging: ReturnType<typeof useComposerAttachments>, draftKey: string,
+): ComposerStagingSubmission {
+  const quotes = staging.quotesForSend()?.slice();
+  return {
+    draftKey,
+    hasPendingContext: staging.hasPendingContext,
+    hasStagedQuotes: Boolean(quotes?.length),
+    submittableAttachments: staging.submittableAttachments,
+    directoryOptions: staging.directoryOptions,
+    retainAttachments: staging.retainAttachments,
+    // Revision sends re-key quotes onto the branch child after this capture.
+    // Ordinary sends keep the original snapshot and clear only its entries.
+    quotesForSend: (ownerKey?: string) =>
+      ownerKey === undefined ? quotes : staging.quotesForSend(ownerKey),
+    clearSubmittedContext: staging.clearSubmittedContext,
+    clearQuotes: (ownerKey?: string) => {
+      if (ownerKey === undefined) staging.clearSubmittedQuotes(quotes ?? []);
+      else staging.clearQuotes(ownerKey);
+    },
+  };
+}

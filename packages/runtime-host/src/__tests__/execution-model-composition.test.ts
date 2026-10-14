@@ -653,6 +653,7 @@ async function runPermissionUpdateHostRegression(
                 kind: 'client.capability.result',
                 invocationId: frame.invocationId,
                 result: {
+                  outcome: 'success',
                   content: [{ type: 'text', text: CLIENT_CAPABILITY_RESULT_TEXT }],
                 },
               });
@@ -1988,6 +1989,7 @@ test('production backend preserves coordinator Client Capability semantics acros
                 kind: 'client.capability.result',
                 invocationId: frame.invocationId,
                 result: {
+                  outcome: 'success',
                   content: [{ type: 'text', text: CLIENT_CAPABILITY_RESULT_TEXT }],
                 },
               });
@@ -2223,6 +2225,7 @@ test('cold WorkHub recovery waits for Desktop tools across pending-message and a
                   kind: 'client.capability.result',
                   invocationId: frame.invocationId,
                   result: {
+                    outcome: 'success',
                     content: [],
                     structuredContent: {
                       operation: 'associate',
@@ -2947,26 +2950,13 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     // must never see WebSearch in the effective root tool surface. Non-direct
     // bound tools stay deferred behind tool_search until activated, except
     // request_sandbox_boundary which stays visible in sandboxed Sessions.
+    // The personal assistant is default-off, so its tools must stay absent.
     assert.deepEqual(toolNames(request?.body), [
       'AskUserQuestion',
       'Bash',
       'Edit',
       'Glob',
       'Grep',
-      'MatterAdopt',
-      'MatterDelegate',
-      'MatterDelegationRecover',
-      'MatterFeedbackRetry',
-      'MatterOverview',
-      'MatterTaskControl',
-      'MatterTaskMessage',
-      'MatterTasks',
-      'MemoryExtract',
-      'MemoryIndexContent',
-      'MemoryIndexList',
-      'MemoryIndexRead',
-      'MemoryOriginal',
-      'MemorySourceQuery',
       'Read',
       'Skill',
       'SkillSearch',

@@ -51,6 +51,7 @@ import {
   resolveArtifactPath,
   sanitizeArtifactName,
 } from '../artifact-store.js';
+import { ImageArchiveQuotaError } from '../artifact-image-storage.js';
 import { withArtifactWriterLock } from '../artifact-writer-lock.js';
 import { createSqliteArtifactMetadataRepository } from '../sqlite-artifact-metadata.js';
 
@@ -378,6 +379,91 @@ describe('SQLite Artifact store', () => {
       assert.equal(
         (await getArtifact(store, 'child-artifact', 'child-session'))?.sessionId,
         'child-session',
+      );
+    });
+  });
+
+  test('conversation copies enforce the target image budget across root and linked child Sessions', async () => {
+    await withWorkspace(async (root) => {
+      const store = createArtifactStore(root);
+      const limits = { sessionBytes: 3, workspaceBytes: 6 };
+      const image = (id: string, sessionId: string, content: string): CreateArtifactInput => ({
+        ...artifactInput(id, content, 10),
+        sessionId,
+        turnId: 'image-turn',
+        mimeType: 'image/png',
+        imageArchiveLimits: limits,
+        imageDelivery: {
+          status: 'ready',
+          messageId: id,
+          source: '/tmp/image.png',
+          contentSha256: createHash('sha256').update(content).digest('hex'),
+        },
+      });
+      await store.create(image('root-image', 'session-1', 'one'));
+      await assert.rejects(
+        store.create(image('extra-image', 'session-1', 'two')),
+        ImageArchiveQuotaError,
+      );
+      await store.create(image('child-image', 'child-session', 'two'));
+      await assert.rejects(
+        store.copyConversationArtifacts({
+          sourceSessionId: 'session-1',
+          targetSessionId: 'session-copy',
+          turnIds: ['image-turn'],
+          linkedArtifacts: [{ sessionId: 'child-session', artifactIds: ['child-image'] }],
+          imageArchiveLimits: limits,
+        }),
+        ImageArchiveQuotaError,
+      );
+      const target = await listArtifacts(store, 'session-copy');
+      assert.equal(target.length, 1);
+      assert.equal(
+        target.reduce((sum, record) => sum + record.sizeBytes, 0),
+        limits.sessionBytes,
+      );
+      assert.deepEqual(await readArtifactText(store, 'root-image'), { ok: true, text: 'one' });
+      assert.deepEqual(await readArtifactText(store, 'child-image', 'child-session'), {
+        ok: true,
+        text: 'two',
+      });
+    });
+  });
+
+  test('conversation copies count identical image bytes once and allow verified retries at the limit', async () => {
+    await withWorkspace(async (root) => {
+      const store = createArtifactStore(root);
+      const limits = { sessionBytes: 3, workspaceBytes: 3 };
+      for (const [id, sessionId] of [
+        ['root-image', 'session-1'],
+        ['child-image', 'child-session'],
+      ]) {
+        await store.create({
+          ...artifactInput(id!, 'one', 10),
+          sessionId: sessionId!,
+          turnId: 'image-turn',
+          imageArchiveLimits: limits,
+          imageDelivery: {
+            status: 'ready',
+            messageId: id!,
+            source: '/tmp/image.png',
+            contentSha256: createHash('sha256').update('one').digest('hex'),
+          },
+        });
+      }
+      const input = {
+        sourceSessionId: 'session-1',
+        targetSessionId: 'session-copy',
+        turnIds: ['image-turn'],
+        linkedArtifacts: [{ sessionId: 'child-session', artifactIds: ['child-image'] }],
+        imageArchiveLimits: limits,
+      };
+      const copied = await store.copyConversationArtifacts(input);
+      assert.equal(copied.artifactIds.size, 2);
+      assert.equal((await listArtifacts(store, 'session-copy')).length, 2);
+      assert.deepEqual(
+        await store.copyConversationArtifacts({ ...input, existingTarget: 'reuse_verified' }),
+        copied,
       );
     });
   });

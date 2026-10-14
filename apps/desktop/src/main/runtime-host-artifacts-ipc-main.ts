@@ -17,7 +17,8 @@
  * under the License.
  */
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiLocale, defineShippedUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
+import { isImageDeliveryRequest } from '@maka/core/image-delivery';
 import { randomUUID } from "node:crypto";
 import { open, mkdir, rename, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -83,10 +84,16 @@ export function registerRuntimeHostArtifactsIpc(
     "artifacts:delete",
     async (_event, sessionId: string, artifactId: string) => {
       const result = await deps.client.deleteArtifact(sessionId, artifactId);
+      // Keep the direct revoke: the Host also publishes artifact.changed, but
+      // stopping the bytes here must not depend on feed delivery to this Client.
       await deps.preview?.service.revoke(deps.preview.scope, sessionId, artifactId);
       return result;
     },
   );
+  deps.ipcMain.handle('attachments:resolveImage', (_event, sessionId: string, request: unknown) => {
+    if (!isImageDeliveryRequest(request)) throw new Error('Invalid image delivery request');
+    return deps.client.resolveImageDelivery(sessionId, request);
+  });
   registerRuntimeHostAttachmentPreviewIpc(deps);
   const materializePresentationArtifact = async (
     sessionId: string,
@@ -320,8 +327,8 @@ async function syncDirectory(path: string): Promise<void> {
   }
 }
 
-const ARTIFACT_DIALOG_COPY = {
+const ARTIFACT_DIALOG_COPY = resolveUiMessageCatalog(defineShippedUiMessageCatalog<{ saveAs(name: string): string }>()({
   'zh-CN': { saveAs: (name: string) => `另存为 ${name}` },
   'zh-TW': { saveAs: (name: string) => `另存為 ${name}` },
   en: { saveAs: (name: string) => `Save ${name} as` },
-} satisfies UiCatalog<{ saveAs(name: string): string }>;
+}));
