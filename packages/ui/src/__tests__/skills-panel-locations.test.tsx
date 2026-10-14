@@ -31,6 +31,9 @@ const originalGlobals = {
   cancelAnimationFrame: globalThis.cancelAnimationFrame,
   CSS: globalThis.CSS,
   document: globalThis.document,
+  Element: globalThis.Element,
+  HTMLElement: globalThis.HTMLElement,
+  Node: globalThis.Node,
   matchMedia: globalThis.matchMedia,
   requestAnimationFrame: globalThis.requestAnimationFrame,
   window: globalThis.window,
@@ -76,6 +79,9 @@ test('Skill locations under Add close the menu before opening and create only a 
   Object.assign(globalThis, {
     document,
     window,
+    Element: window.Element,
+    HTMLElement: window.HTMLElement,
+    Node: window.Node,
     matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
     requestAnimationFrame: (callback: FrameRequestCallback) => {
       frames.set(++frameId, callback);

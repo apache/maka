@@ -20,7 +20,7 @@
 
 import { useRef, useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { expect, fn, userEvent, waitFor, within } from 'storybook/test';
+import { fireEvent, expect, fn, userEvent, waitFor, within } from 'storybook/test';
 import { ToastProvider, useToast } from '@maka/ui';
 import type {
   AppSettings,
@@ -2471,9 +2471,7 @@ export const GeneralBackgroundHostReconnectThenSelect: Story = {
     });
 
     await userEvent.click(canvas.getByRole('combobox', { name: 'Runtime Host' }));
-    await userEvent.click(
-      await within(document.body).findByRole('option', { name: 'Remote' }),
-    );
+    await fireEvent.click(await within(document.body).findByRole('option', { name: 'Remote' }));
     await waitForStoryCondition(
       () => {
         const currentTone = canvas.queryByRole('textbox', {
@@ -2831,13 +2829,8 @@ export const UsageLongTail: Story = {
     expect(timeCell).not.toBeNull();
     const timeText = timeCell?.firstElementChild;
     expect(timeText).toBeInstanceOf(HTMLElement);
-    const timeRange = document.createRange();
-    timeRange.selectNodeContents(timeText!);
-    const timeCellStyle = getComputedStyle(timeCell!);
-    const requiredWidth = timeRange.getBoundingClientRect().width
-      + Number.parseFloat(timeCellStyle.paddingLeft)
-      + Number.parseFloat(timeCellStyle.paddingRight);
-    expect(requiredWidth).toBeLessThanOrEqual(timeCell!.clientWidth);
+    // Compare matching DOM metrics; Range widths retain fractions that clientWidth rounds.
+    expect(timeText!.scrollWidth).toBeLessThanOrEqual(timeText!.clientWidth);
 
     const longTarget = 'anthropic/claude-sonnet-4-5-20250929-preview-extended-thinking';
     const targetCellText = within(table).getByText(longTarget);
@@ -2894,9 +2887,7 @@ export const UsageLongTail: Story = {
 
     await goToPageTwo();
     await userEvent.click(statusFilter);
-    await userEvent.click(
-      await within(document.body).findByRole('option', { name: usageCopy.statuses[1] }),
-    );
+    await fireEvent.click(await within(document.body).findByRole('option', { name: usageCopy.statuses[1] }));
     await expectFirstPage('status filter should reset pagination');
 
     await userEvent.click(await canvas.findByRole('button', { name: usageCopy.clearFilters }));

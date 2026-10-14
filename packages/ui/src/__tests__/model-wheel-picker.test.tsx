@@ -27,6 +27,9 @@ import { ModelWheelPicker } from '../model-wheel-picker.js';
 test('ordinary rerenders keep the layer anchor attached', async () => {
   const original = {
     document: globalThis.document,
+    Element: globalThis.Element,
+    HTMLElement: globalThis.HTMLElement,
+    Node: globalThis.Node,
     window: globalThis.window,
     IS_REACT_ACT_ENVIRONMENT: (globalThis as typeof globalThis & {
       IS_REACT_ACT_ENVIRONMENT?: boolean;
@@ -58,7 +61,7 @@ test('ordinary rerenders keep the layer anchor attached', async () => {
       return proxy;
     },
   });
-  Object.assign(globalThis, { document, window, IS_REACT_ACT_ENVIRONMENT: true });
+  Object.assign(globalThis, { document, window, Element: window.Element, HTMLElement: window.HTMLElement, Node: window.Node, IS_REACT_ACT_ENVIRONMENT: true });
   const root = createRoot(document.querySelector('#root')!);
   const options = ['A', 'B'].map((value) => ({ value, label: value }));
   try {
@@ -80,6 +83,9 @@ test('ordinary rerenders keep the layer anchor attached', async () => {
 test('the wheel applies settled selection once and restores the saved model on failure', async () => {
   const original = {
     document: globalThis.document,
+    Element: globalThis.Element,
+    HTMLElement: globalThis.HTMLElement,
+    Node: globalThis.Node,
     window: globalThis.window,
     IS_REACT_ACT_ENVIRONMENT: (globalThis as typeof globalThis & {
       IS_REACT_ACT_ENVIRONMENT?: boolean;
@@ -88,7 +94,7 @@ test('the wheel applies settled selection once and restores the saved model on f
   const { document, window } = parseHTML('<div id="root"></div>');
   window.getComputedStyle = () => ({ direction: 'ltr', writingMode: 'horizontal-tb',
     getPropertyValue: () => '' }) as unknown as CSSStyleDeclaration;
-  Object.assign(globalThis, { document, window, IS_REACT_ACT_ENVIRONMENT: true });
+  Object.assign(globalThis, { document, window, Element: window.Element, HTMLElement: window.HTMLElement, Node: window.Node, IS_REACT_ACT_ENVIRONMENT: true });
   const root = createRoot(document.querySelector('#root')!);
   const calls: string[] = [];
   let finish: ((success: boolean) => void) | undefined;

@@ -116,8 +116,8 @@
   },
   "devDependencies": {
     "@ai-sdk/provider-utils": "5.0.51",
-    "@astryxdesign/cli": "0.6.3",
-    "@astryxdesign/core": "0.6.3",
+    "@astryxdesign/cli": "0.6.6",
+    "@astryxdesign/core": "0.6.6",
     "@biomejs/biome": "2.5.14",
     "@electron/asar": "4.3.0",
     "@types/node": "^26.6.3",
@@ -129,8 +129,8 @@
     "yaml": "2.9.1"
   },
   "allowScripts": {
-    "@astryxdesign/cli@0.6.3": false,
-    "@astryxdesign/core@0.6.3": false,
+    "@astryxdesign/cli@0.6.6": false,
+    "@astryxdesign/core@0.6.6": false,
     "@jackwener/opencli@1.8.8": false,
     "electron-winstaller@5.4.0": true,
     "esbuild@0.28.2": true,

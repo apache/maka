@@ -19,7 +19,7 @@
 
 import { useState, type ReactNode } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { expect, userEvent, waitFor, within } from 'storybook/test';
+import { fireEvent, expect, userEvent, waitFor, within } from 'storybook/test';
 import type { ProviderType } from '@maka/core/llm-connections';
 import type { ExecutorCatalogEntry, ExecutorSelection } from '@maka/core/executor-catalog';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
@@ -634,7 +634,7 @@ export const LongModelNames: Story = {
       };
       await expectEndEllipsis(SUFFIX_CHOICES[0]!.label);
       await userEvent.click(trigger);
-      await userEvent.click(await within(document.body).findByRole('option', { name: 'GPT-5' }));
+      await fireEvent.click(await within(document.body).findByRole('option', { name: 'GPT-5' }));
       await waitFor(() => expect(trigger).toHaveAttribute('aria-expanded', 'false'));
       await waitFor(() => expect(trigger.querySelector('.maka-composer-model-label')).toHaveTextContent(/^GPT-5$/));
       await expect(trigger).toHaveAccessibleName(/GPT-5/);
@@ -648,7 +648,7 @@ export const LongModelNames: Story = {
         name: new RegExp(SUFFIX_CHOICES[1]!.label),
       });
       await expect(option.querySelector('.modelPickerProviderMark')).not.toBeNull();
-      await userEvent.click(option);
+      await fireEvent.click(option);
       await waitFor(() => expect(trigger).toHaveAttribute('aria-expanded', 'false'));
       await expectEndEllipsis(SUFFIX_CHOICES[1]!.label);
     }

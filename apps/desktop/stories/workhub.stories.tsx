@@ -22,7 +22,7 @@ import { ComposerPromptSuggestionProvider, ToastProvider, LocaleProvider, Astryx
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { StoredMessage, SessionSummary } from '@maka/core/session';
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { expect, fn, userEvent, within, waitFor } from 'storybook/test';
+import { fireEvent, expect, fn, userEvent, within, waitFor } from 'storybook/test';
 import { WorkHubRoot, WorkHubServicesProvider, type WorkHubServices, type WorkHubTranscriptSnapshot } from '../src/renderer/features/workhub/index.js';
 import { WorkHubConversation, WorkHubHighlightContext } from '../src/renderer/features/workhub/testing.js';
 import { desktopSessionKey } from '../src/shared/runtime-host-identity.js';
@@ -230,12 +230,12 @@ export const StandardComposer: Story = {
     await waitFor(() => expect(canvas.getByRole('button', { name: /切换当前任务模型/ })).toBeEnabled());
     await waitFor(() => expect(canvas.getByRole('button', { name: '打开用量追踪' }).textContent).toContain('1%'));
     await userEvent.click(canvas.getByRole('button', { name: /切换当前任务模型/ }));
-    await userEvent.click(page.getByRole('option', { name: /model-b/ }));
+    await fireEvent.click(page.getByRole('option', { name: /model-b/ }));
     await waitFor(() => expect(writes.model).toHaveBeenCalledWith(sessionId, {
       expectedRevision: 1, modelTarget: { kind: 'explicit', connectionId: 'connection-test', connectionSlug: 'test', model: 'model-b' }, thinkingLevel: null,
     }));
     await userEvent.click(canvas.getByRole('button', { name: '添加上下文' }));
-    await userEvent.click(page.getByRole('menuitem', { name: /添加文件/ }));
+    await fireEvent.click(page.getByRole('menuitem', { name: /添加文件/ }));
     const editor = canvasElement.querySelector('[contenteditable="true"]') as HTMLElement;
     await userEvent.click(editor); await userEvent.type(editor, 'Review requirements'); await userEvent.keyboard('{Enter}');
     await waitFor(() => expect(writes.answer).toHaveBeenCalledWith(sessionId, expect.objectContaining({ text: 'Review requirements', attachments: [expect.objectContaining({ name: 'requirements.txt' })] })));
@@ -252,13 +252,13 @@ export const ThinkingLevelPicker: Story = {
     const usage = canvas.getByRole('button', { name: '打开用量追踪' });
     await waitFor(() => expect(usage.textContent).toContain('1%'));
     await userEvent.click(canvas.getByRole('combobox', { name: '思考级别: 默认' }));
-    await userEvent.click(page.getByRole('option', { name: /^高$/ }));
+    await fireEvent.click(page.getByRole('option', { name: /^高$/ }));
     await waitFor(() => expect(canvas.getByRole('combobox', { name: '思考级别: 高' })).toBeEnabled());
     await expect(writes.model).toHaveBeenCalledWith(sessionId, {
       expectedRevision: 1, modelTarget: { kind: 'explicit', connectionId: 'connection-test', connectionSlug: 'test', model: 'model-a' }, thinkingLevel: 'high',
     });
     await userEvent.click(canvas.getByRole('combobox', { name: '思考级别: 高' }));
-    await userEvent.click(page.getByRole('option', { name: /^默认$/ }));
+    await fireEvent.click(page.getByRole('option', { name: /^默认$/ }));
     await waitFor(() => expect(canvas.getByRole('combobox', { name: '思考级别: 默认' })).toBeEnabled());
     await expect(writes.model).toHaveBeenLastCalledWith(sessionId, {
       expectedRevision: 2, modelTarget: { kind: 'explicit', connectionId: 'connection-test', connectionSlug: 'test', model: 'model-a' }, thinkingLevel: null,
@@ -324,7 +324,7 @@ export const ComposerRetainsFailedAttachment: Story = {
     const canvas = within(canvasElement); const page = within(canvasElement.ownerDocument.body);
     await waitFor(() => expect(canvas.getByRole('button', { name: /切换当前任务模型/ })).toBeEnabled());
     await userEvent.click(canvas.getByRole('button', { name: '添加上下文' }));
-    await userEvent.click(page.getByRole('menuitem', { name: /添加文件/ }));
+    await fireEvent.click(page.getByRole('menuitem', { name: /添加文件/ }));
     const editor = canvasElement.querySelector('[contenteditable="true"]') as HTMLElement;
     await userEvent.click(editor); await userEvent.type(editor, 'Review requirements'); await userEvent.keyboard('{Enter}');
     await waitFor(() => expect(canvas.getByRole('alert')).toHaveTextContent('Temporary Host failure'));

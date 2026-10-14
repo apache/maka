@@ -104,10 +104,27 @@ export function stripVariantsReference(dts) {
   return dts.replace(/^\/\/\/\s*<reference\s+path="\.\/maka\.variants\.d\.ts"\s*\/>\s*\n/m, '');
 }
 
+// The CLI emits one import per binding, and the renderer architecture ledger
+// counts every import declaration of a package as separate dependency debt.
+export function mergeNamedImports(js) {
+  const namedImport = /^import \{ ([^}]+) \} from '([^']+)';\n/gm;
+  const bindings = new Map();
+  for (const [, names, source] of js.matchAll(namedImport)) {
+    bindings.set(source, [...(bindings.get(source) ?? []), names]);
+  }
+  const emitted = new Set();
+  return js.replace(namedImport, (_line, _names, source) => {
+    if (emitted.has(source)) return '';
+    emitted.add(source);
+    return `import { ${bindings.get(source).join(', ')} } from '${source}';\n`;
+  });
+}
+
 function postProcessGeneratedFile(file, source) {
   const normalized = normalizeGeneratedHeader(source);
   if (file === 'maka.css') return stripResetLayer(normalized, file);
   if (file === 'maka.d.ts') return stripVariantsReference(normalized);
+  if (file === 'maka.js') return mergeNamedImports(normalized);
   return normalized;
 }
 
