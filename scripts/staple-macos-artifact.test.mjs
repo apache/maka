@@ -52,59 +52,69 @@ test('recovers a lost ticket connection and validates the same artifact', async 
   assert.match(output.join(''), /The network connection was lost/u);
 });
 
-test('fails after three lost connections without validating an unstapled artifact', async () => {
-  let attempts = 0;
+test('recovers a lost validation connection without stapling again', async () => {
+  const calls = [];
   const delays = [];
-  const failure = networkFailure();
-  await assert.rejects(
-    stapleMacosArtifact('/release/Maka.dmg', {
-      run: async (_command, args) => {
-        assert.equal(args[1], 'staple');
-        attempts += 1;
-        throw failure;
-      },
-      wait: async (delay) => delays.push(delay),
-      report: () => {},
-    }),
-    (error) => error === failure,
-  );
-  assert.equal(attempts, 3);
-  assert.deepEqual(delays, [10_000, 20_000]);
+  await stapleMacosArtifact('/release/Maka.dmg', {
+    run: async (_command, args) => {
+      calls.push(args[1]);
+      if (calls.length === 2) throw networkFailure();
+      return { stdout: '', stderr: '' };
+    },
+    wait: async (delay) => delays.push(delay),
+    report: () => {},
+  });
+  assert.deepEqual(calls, ['staple', 'validate', 'validate']);
+  assert.deepEqual(delays, [10_000]);
 });
 
-test('does not retry other stapling failures or a rejected validation', async () => {
-  for (const failure of [
-    Object.assign(new Error('ticket missing'), { code: 68, stdout: 'Record not found' }),
-    Object.assign(networkFailure(), { code: 65 }),
-  ]) {
-    let attempts = 0;
+test('fails after three lost connections at either ticket stage', async () => {
+  for (const action of ['staple', 'validate']) {
+    const calls = [];
+    const delays = [];
+    const failure = networkFailure();
     await assert.rejects(
       stapleMacosArtifact('/release/Maka.dmg', {
-        run: async () => {
-          attempts += 1;
-          throw failure;
+        run: async (_command, args) => {
+          calls.push(args[1]);
+          if (args[1] === action) throw failure;
+          return { stdout: '', stderr: '' };
         },
-        wait: async () => assert.fail('permanent failures must not be retried'),
+        wait: async (delay) => delays.push(delay),
         report: () => {},
       }),
       (error) => error === failure,
     );
-    assert.equal(attempts, 1);
+    assert.deepEqual(
+      calls,
+      action === 'staple'
+        ? ['staple', 'staple', 'staple']
+        : ['staple', 'validate', 'validate', 'validate'],
+    );
+    assert.deepEqual(delays, [10_000, 20_000]);
   }
+});
 
-  const calls = [];
-  const failure = networkFailure();
-  await assert.rejects(
-    stapleMacosArtifact('/release/Maka.dmg', {
-      run: async (_command, args) => {
-        calls.push(args[1]);
-        if (args[1] === 'validate') throw failure;
-        return { stdout: '', stderr: '' };
-      },
-      wait: async () => assert.fail('a failed validation must not be retried'),
-      report: () => {},
-    }),
-    (error) => error === failure,
-  );
-  assert.deepEqual(calls, ['staple', 'validate']);
+test('does not retry permanent failures at either ticket stage', async () => {
+  for (const action of ['staple', 'validate']) {
+    for (const failure of [
+      Object.assign(new Error('ticket missing'), { code: 68, stdout: 'Record not found' }),
+      Object.assign(networkFailure(), { code: 65 }),
+    ]) {
+      const calls = [];
+      await assert.rejects(
+        stapleMacosArtifact('/release/Maka.dmg', {
+          run: async (_command, args) => {
+            calls.push(args[1]);
+            if (args[1] === action) throw failure;
+            return { stdout: '', stderr: '' };
+          },
+          wait: async () => assert.fail('permanent failures must not be retried'),
+          report: () => {},
+        }),
+        (error) => error === failure,
+      );
+      assert.deepEqual(calls, action === 'staple' ? ['staple'] : ['staple', 'validate']);
+    }
+  }
 });

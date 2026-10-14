@@ -29,25 +29,27 @@ export async function stapleMacosArtifact(
   { run = execute, wait = sleep, report = (text) => process.stderr.write(text) } = {},
 ) {
   const options = { encoding: 'utf8', timeout: 120_000 };
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
-    try {
-      const result = await run('xcrun', ['stapler', 'staple', path], options);
-      report(`${result.stdout ?? ''}${result.stderr ?? ''}`);
-      break;
-    } catch (error) {
-      const output = `${error.stdout ?? ''}${error.stderr ?? ''}`;
-      report(output);
-      // Exit 68 also covers invalid tickets; retry only the observed transport failure.
-      if (error.code !== 68 || !/NSURLErrorDomain Code=-1005\b/u.test(output) || attempt === 3) {
-        throw error;
+  for (const action of ['staple', 'validate']) {
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        const result = await run('xcrun', ['stapler', action, path], options);
+        report(`${result.stdout ?? ''}${result.stderr ?? ''}`);
+        break;
+      } catch (error) {
+        const output = `${error.stdout ?? ''}${error.stderr ?? ''}`;
+        report(output);
+        // Exit 68 also covers invalid tickets; retry only the observed transport failure.
+        if (error.code !== 68 || !/NSURLErrorDomain Code=-1005\b/u.test(output) || attempt === 3) {
+          throw error;
+        }
+        const delay = attempt * 10_000;
+        report(
+          `[stapler ${action}] ticket connection lost on attempt ${attempt}/3; retrying in ${delay}ms\n`,
+        );
+        await wait(delay);
       }
-      const delay = attempt * 10_000;
-      report(`[stapler] ticket connection lost on attempt ${attempt}/3; retrying in ${delay}ms\n`);
-      await wait(delay);
     }
   }
-  const validated = await run('xcrun', ['stapler', 'validate', path], options);
-  report(`${validated.stdout ?? ''}${validated.stderr ?? ''}`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
