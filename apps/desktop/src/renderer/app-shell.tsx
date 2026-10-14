@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { MemoryOriginalHost, type MemoryOriginalHandle } from './features/personal-assistant/original-reader.js';
+import { MemoryOriginalHost, PersonalAssistantEntry, createInternalUriDispatcher } from './features/personal-assistant/index.js';
 import { WorkHubControlOverlay, WorkHubDock, WorkHubMainNavigation } from './features/workhub';
 import { WorkHubEnablementWatch } from './application/contracts/workhub-workspace/workhub-enablement.js';
 import { RuntimeHostHandoffOverlay } from './features/runtime-host-management/index.js';
@@ -41,7 +41,6 @@ import { hasSettledInitialOnboarding } from '@maka/core/onboarding-milestone';
 import {
   ChatSurfaceLayout,
   type ComposerHandle,
-  type MakaUriDest,
   MakaUriContext,
   AstryxLocaleProvider,
   LocaleProvider,
@@ -259,7 +258,6 @@ function AppShellContent({
     switchingSession,
     queueSurface,
   } = useAppShellSessionWorkspace(toastApi);
-  const originalReader = useRef<MemoryOriginalHandle>(null);
   // The shell's own reading of the catalog rides the membership set the list
   // hook already publishes — background row churn belongs to the rail, which
   // subscribes the catalog inside SessionNavigationProvider (#4109).
@@ -930,25 +928,7 @@ function AppShellContent({
     bootstrapSelectionLease.release();
   }
 
-  /** Internal links only navigate; originals are read with the current chat's Host identity. */
-  function dispatchMakaUri(dest: MakaUriDest) {
-    switch (dest.kind) {
-      case 'memory-original':
-        originalReader.current?.open(dest.ref);
-        return;
-      case 'settings':
-        openSettingsSection(dest.section);
-        return;
-      case 'compose':
-        composerEditing.replaceText(dest.text);
-        composerEditing.focus();
-        return;
-      default: {
-        const _exhaustive: never = dest;
-        return _exhaustive;
-      }
-    }
-  }
+  const dispatchMakaUri = createInternalUriDispatcher(ownerActiveId, openSettingsSection, composerEditing);
 
   function closeSettings() {
     overlays.commands.closeSettings();
@@ -1268,6 +1248,7 @@ function AppShellContent({
           <ModuleHub.ModuleHubScheduledTasksBoundary
             render={(scheduledTasks) => (
               <SessionNavigationProvider
+                personalAssistantNavigation={<PersonalAssistantEntry activeSessionId={workHubActive || shellObscured ? undefined : activeId} openSession={openSession} />}
                 historyBlocked={shellObscured}
                 scheduledTasks={scheduledTasks}
                 catalog={sessionCatalogController}
@@ -1312,7 +1293,7 @@ function AppShellContent({
               which is correct: those surfaces shouldn't be a
               navigation entry point. */}
           <MakaUriContext.Provider value={dispatchMakaUri}>
-          <MemoryOriginalHost ref={originalReader} sessionId={ownerActiveId} />
+          <MemoryOriginalHost sessionId={ownerActiveId} />
 
           <div className="maka-detail-with-artifacts">
             <Conversation.ConversationHomeSurface className="mainColumn" eligible={homeSurfaceEligible}

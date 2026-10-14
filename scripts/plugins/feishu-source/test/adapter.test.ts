@@ -74,8 +74,7 @@ test('Feishu pages, thread expansion, permission reads and stable versions are r
 });
 test('empty filtered page retains cursor; API errors and unconfigured containers fail closed', async () => {
   assert.throws(
-    () =>
-      createFeishuSource({ instanceId: 'x', containers: [], startTime: 1 }, async () => ''),
+    () => createFeishuSource({ instanceId: 'x', containers: [], startTime: 1 }, async () => ''),
     /containers/,
   );
   const source = createFeishuSource(
@@ -92,8 +91,7 @@ test('empty filtered page retains cursor; API errors and unconfigured containers
   const denied = createFeishuSource(
     { instanceId: 'x', containers: [{ type: 'chat', id: 'oc_a' }], startTime: 1 },
     async () => 'test',
-    async () =>
-      new Response(JSON.stringify({ code: 99991672, msg: 'secret should not leak' })),
+    async () => new Response(JSON.stringify({ code: 99991672, msg: 'secret should not leak' })),
   );
   await assert.rejects(denied.enumerate(undefined, { invocation: {} }), /99991672/);
 });
@@ -193,9 +191,7 @@ test('empty discovery pages retain cursors; chat/time/type filters and paginatio
       chats: async (cursor) =>
         cursor ? { items: [{ type: 'chat', id: 'oc_a' }] } : { items: [], next: 'c2' },
       search: async (q) => ({
-        items: [
-          { message_id: 'om_a', chat_id: q.chatId, msg_type: 'text', create_time: '2000' },
-        ],
+        items: [{ message_id: 'om_a', chat_id: q.chatId, msg_type: 'text', create_time: '2000' }],
         ...(q.cursor ? {} : { next: 'filtered2' }),
       }),
     },

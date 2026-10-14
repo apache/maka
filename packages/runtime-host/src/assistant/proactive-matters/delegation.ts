@@ -39,8 +39,13 @@ export function registerDelegation(
       owner TEXT NOT NULL, task_key TEXT NOT NULL, session TEXT NOT NULL UNIQUE,
       title TEXT NOT NULL, request TEXT NOT NULL, PRIMARY KEY(owner,task_key));`);
   ctx.onClose(() => db.close());
-  ctx.backgroundSessions?.register(() => db.prepare('SELECT session FROM delegations').all()
-    .map((row) => String(row.session)).filter((id) => !id.startsWith('creating:')));
+  ctx.backgroundSessions?.register(() =>
+    db
+      .prepare('SELECT session FROM delegations')
+      .all()
+      .map((row) => String(row.session))
+      .filter((id) => !id.startsWith('creating:')),
+  );
   const all = (owner: string) => db.prepare('SELECT * FROM delegations WHERE owner=?').all(owner);
   const owned = (owner: string, id: string) => {
     const m = store.get(id).matter;

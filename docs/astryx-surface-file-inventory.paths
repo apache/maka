@@ -67,6 +67,9 @@ apps/desktop/src/renderer/features/overlays/ui/keyboard-help-modal.tsx
 apps/desktop/src/renderer/features/overlays/ui/overlays-context.tsx
 apps/desktop/src/renderer/features/overlays/ui/overlays-root.tsx
 apps/desktop/src/renderer/features/overlays/ui/search-modal-host.tsx
+apps/desktop/src/renderer/features/personal-assistant/original-reader.css
+apps/desktop/src/renderer/features/personal-assistant/original-reader.tsx
+apps/desktop/src/renderer/features/personal-assistant/personal-assistant.css
 apps/desktop/src/renderer/features/runtime-host-management/services-context.tsx
 apps/desktop/src/renderer/features/runtime-host-management/ui/peer-mesh-peer-id-button.tsx
 apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-add-computer-menu.tsx

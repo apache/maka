@@ -19,7 +19,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createAssistantNavigation, originalHost } from '../../renderer/features/personal-assistant/navigation.js';
+import { createAssistantNavigation, originalHost } from '../../renderer/features/personal-assistant/testing.js';
 import { sessionMatchesRail } from '../../renderer/application/contracts/session-catalog/session-rail-visibility.js';
 
 test('native assistant coalesces opening, reuses its conversation and matches the owning Host', async () => {

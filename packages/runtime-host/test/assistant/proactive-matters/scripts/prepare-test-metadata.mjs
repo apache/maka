@@ -17,7 +17,6 @@
  * under the License.
  */
 
-
 import { mkdir } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { createAssistantNavigation, identity } from './navigation.js';
+import { identity } from './navigation.js';
 import { useEffect, useState, useRef } from 'react';
 import {
   useAssistantSessionVisibility,
@@ -26,23 +26,15 @@ import {
 import { SideNavItem } from '@astryxdesign/core/SideNav';
 import { Sparkles } from '@maka/ui/icons';
 import { Switch } from '@maka/ui';
-import type { DesktopRuntimeHostRef } from '../../../preload/bridge-contract.js';
+import { usePersonalAssistantServices, type AssistantHost as DesktopRuntimeHostRef } from './services.js';
+export { createPersonalAssistantServices, PersonalAssistantServicesProvider, type PersonalAssistantPort } from './services.js';
+export { MemoryOriginalHost } from './original-reader.js';
 import type { PersonalAssistantRequest } from '@maka/runtime-host/protocol';
 
-export async function assistantCall(
-  method: PersonalAssistantRequest['method'],
-  input: unknown = {},
-  host?: DesktopRuntimeHostRef,
-): Promise<any> {
-  const result = await window.maka.runtimeHost.command(
-    'personal-assistant.call',
-    { method, input },
-    host,
-  );
-  return result.value;
-}
 const ENABLEMENT_CHANGED = 'personal-assistant-enablement-changed';
 function useAssistantEnablement(host?: DesktopRuntimeHostRef) {
+  const assistantDesktop = usePersonalAssistantServices();
+  const assistantCall = assistantDesktop.call;
   const [state, setState] = useState<{ enabled: boolean; ready: boolean; error: string }>({
     enabled: false,
     ready: false,
@@ -57,7 +49,7 @@ function useAssistantEnablement(host?: DesktopRuntimeHostRef) {
       clearTimeout(timer);
       const version = ++revision.current;
       try {
-        const target = host ?? (await window.maka.runtimeHostProfiles.getDefaultHost());
+        const target = host ?? (await assistantDesktop.defaultHost());
         const result = await assistantCall('assistant.enablement', {}, target);
         if (live && version === revision.current)
           setState({ enabled: result.enabled === true, ready: true, error: '' });
@@ -82,16 +74,6 @@ function useAssistantEnablement(host?: DesktopRuntimeHostRef) {
   }, [host?.hostId, host?.profileId]);
   return state;
 }
-const navigation = createAssistantNavigation({
-  host: () => window.maka.runtimeHostProfiles.getDefaultHost(),
-  // Binding is rejected by the Host while disabled, before navigation creates a Session.
-  binding: (host) => assistantCall('assistant.binding', {}, host),
-  bind: (host, sessionId) => assistantCall('assistant.bind', { sessionId }, host),
-  create: () => window.maka.sessions.create({ name: '个人助手', labels: ['personal-assistant'] }),
-  list: () => window.maka.sessions.list(),
-});
-export const openAssistant = () => navigation.open();
-
 export function PersonalAssistantEntry({
   activeSessionId,
   openSession,
@@ -99,6 +81,8 @@ export function PersonalAssistantEntry({
   activeSessionId?: string;
   openSession(id: string): void;
 }) {
+  const assistantDesktop = usePersonalAssistantServices();
+  const assistantCall = assistantDesktop.call;
   const enablement = useAssistantEnablement();
   const [bound, setBound] = useState<string>();
   const [error, setError] = useState('');
@@ -111,7 +95,7 @@ export function PersonalAssistantEntry({
     let timer: ReturnType<typeof setTimeout>;
     const check = async () => {
       try {
-        const host = await window.maka.runtimeHostProfiles.getDefaultHost();
+        const host = await assistantDesktop.defaultHost();
         const { state } = await assistantCall('assistant.binding', {}, host);
         if (live) {
           setBound(state && host ? JSON.stringify([host.hostId, state.sessionId]) : undefined);
@@ -139,7 +123,7 @@ export function PersonalAssistantEntry({
       aria-label={error ? '个人助手：' + error : '个人助手'}
       endContent={error ? <span aria-label={error}>!</span> : undefined}
       onClick={() => {
-        void openAssistant()
+        void assistantDesktop.open()
           .then((id) => {
             setBound(id);
             setError('');
@@ -159,6 +143,7 @@ export function PersonalAssistantEnableSwitch(props: {
   isLabelHidden?: boolean;
   isDisabled?: boolean;
 }) {
+  const { call: assistantCall } = usePersonalAssistantServices();
   const enablement = useAssistantEnablement(props.host);
   const [switching, setSwitching] = useState(false);
   const [error, setError] = useState('');
@@ -242,6 +227,8 @@ function PersonalAssistantStatusSettings({
   host?: DesktopRuntimeHostRef;
   onOpenSession?(id: string): void;
 }) {
+  const assistantDesktop = usePersonalAssistantServices();
+  const assistantCall = assistantDesktop.call;
   const [data, setData] = useState<any>();
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -295,7 +282,7 @@ function PersonalAssistantStatusSettings({
     return <div className="personal-assistant-settings">{error || '正在读取个人助手状态…'}</div>;
   const openTask = async (sessionId: string) => {
     try {
-      const matches = (await window.maka.sessions.list()).filter(
+      const matches = (await assistantDesktop.listSessions()).filter(
         (s) =>
           identity(s.id)[1] === sessionId &&
           (!identity(s.id)[0] || identity(s.id)[0] === host?.hostId),
@@ -470,3 +457,5 @@ function PersonalAssistantStatusSettings({
     </div>
   );
 }
+
+export { createInternalUriDispatcher } from './internal-uri.js';

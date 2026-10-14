@@ -17,7 +17,6 @@
  * under the License.
  */
 
-
 import assert from 'node:assert/strict';
 import { rm } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';

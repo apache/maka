@@ -17,7 +17,6 @@
  * under the License.
  */
 
-
 import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import assert from 'node:assert/strict';

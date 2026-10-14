@@ -63,9 +63,7 @@ test('source hot reload stages publication and old disposal does not remove the 
   const old = owner(1).sources.register(adapter('old'));
   const nextOwner = owner(2),
     transaction = new MakaPluginTransactionBuffer(nextOwner);
-  const next = nextOwner
-    .extend({ makaTransaction: transaction })
-    .sources.register(adapter('new'));
+  const next = nextOwner.extend({ makaTransaction: transaction }).sources.register(adapter('new'));
   assert.equal((await list())[0]!.description, 'old');
   await transaction.commit();
   assert.equal((await list())[0]!.description, 'new');

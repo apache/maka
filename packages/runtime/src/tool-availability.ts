@@ -138,7 +138,11 @@ function searchableToolNames(
   config: ToolAvailabilityConfig | undefined,
 ): Set<string> {
   if (config === undefined) return new Set();
-  return new Set(tools.filter((tool) => !DIRECT_TOOL_NAMES.has(tool.name) && tool.discovery !== 'direct').map(({ name }) => name));
+  return new Set(
+    tools
+      .filter((tool) => !DIRECT_TOOL_NAMES.has(tool.name) && tool.discovery !== 'direct')
+      .map(({ name }) => name),
+  );
 }
 
 /** Returns the synthetic connector names injected by ToolAvailabilityRuntime. */

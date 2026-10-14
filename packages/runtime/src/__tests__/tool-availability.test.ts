@@ -87,7 +87,9 @@ test('availability reports the synthetic connector only when Runtime generates i
   assert.deepEqual(toolAvailabilityConnectorNames([tool('Read')], {}), []);
   const direct = { ...tool('MemoryExtract'), discovery: 'direct' as const };
   assert.deepEqual(toolAvailabilityConnectorNames([direct], {}), []);
-  assert.deepEqual(toolAvailabilityConnectorNames([direct, tool('docs_read')], {}), [TOOL_SEARCH_NAME]);
+  assert.deepEqual(toolAvailabilityConnectorNames([direct, tool('docs_read')], {}), [
+    TOOL_SEARCH_NAME,
+  ]);
 });
 
 function runtime() {

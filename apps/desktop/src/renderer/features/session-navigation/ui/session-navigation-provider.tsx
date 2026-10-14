@@ -18,7 +18,6 @@
  */
 
 import { useShowAssistantBackgroundSessions } from '../../../application/contracts/session-catalog/assistant-session-visibility.js';
-import { PersonalAssistantEntry } from '../../personal-assistant/index.js';
 import { useMakaClientNavigationSessionLabels } from '@maka/ui/client-plugin';
 
 import {
@@ -114,6 +113,7 @@ export interface SessionNavigationProviderProps extends SessionNavigationChromeI
    */
   commandsRef: { current: SessionNavigationRowActions | null };
   children?: ReactNode;
+  personalAssistantNavigation?: ReactNode;
 }
 
 /**
@@ -337,7 +337,7 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
       props.onNew();
     },
     onOpenSettings: props.onOpenSettings,
-    personalAssistantNavigation: <PersonalAssistantEntry activeSessionId={props.workHubActive || props.surfaceObscured ? undefined : props.activeSessionId} openSession={props.onSelectSession} />,
+    personalAssistantNavigation: props.personalAssistantNavigation,
     workHubEntry: workHubEnabled && props.onOpenWorkHub ? {
       active: props.workHubActive,
       label: 'WorkHub',

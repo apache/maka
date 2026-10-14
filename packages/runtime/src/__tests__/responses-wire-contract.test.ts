@@ -93,7 +93,8 @@ describe('responses wire contract', () => {
       repairToolCall: async () => null,
     });
     for await (const event of stream.events) void event;
-    const tool = (body?.tools as Array<Record<string, unknown>>)[0]!;
+    assert.ok(body);
+    const tool = (body.tools as Array<Record<string, unknown>>)[0]!;
     assert.equal(tool.strict, false);
     assert.deepEqual((tool.parameters as { required: string[] }).required, ['cursor']);
   });

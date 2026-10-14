@@ -146,10 +146,7 @@ export class PluginSourceService extends Service {
     return result;
   }
   private page(page: SourcePage) {
-    if (
-      !Array.isArray(page.items) ||
-      (page.next !== undefined && typeof page.next !== 'string')
-    )
+    if (!Array.isArray(page.items) || (page.next !== undefined && typeof page.next !== 'string'))
       throw Error('Invalid source page');
     for (const o of page.items) {
       if (

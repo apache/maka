@@ -920,7 +920,11 @@ export class MemoryController {
     }
     const agent = first?.groupIndexIds
       ? { sessionId: first.sessionId }
-      : await this.ctx.agents.create({ background: true, name: 'Memory index group', labels: [ASSISTANT_BACKGROUND_SESSION_LABEL] });
+      : await this.ctx.agents.create({
+          background: true,
+          name: 'Memory index group',
+          labels: [ASSISTANT_BACKGROUND_SESSION_LABEL],
+        });
     this.store.db
       .prepare('INSERT OR IGNORE INTO memory_worker_sessions VALUES(?)')
       .run(agent.sessionId);
