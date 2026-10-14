@@ -21,6 +21,7 @@ import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { runtimeEventHasModelVisibleContent } from '@maka/core/runtime-event';
 import type { SessionHeader } from '@maka/core/session';
 import { isSideConversationSession } from '@maka/core/side-conversation';
+import { isHistoryCompactCheckpointEvent } from './history-compact-checkpoint.js';
 
 /**
  * The RuntimeEvent id of the replay item that owns the side-conversation
@@ -72,10 +73,12 @@ export function resolveSideConversationForkBoundaryEventId(
           }
         }
         if (cutIndex < 0) {
-          // The inherited fork boundary turn was itself sliced out: the replay
-          // holds only inherited parent history with no fork-owned user
-          // message, so the caller prefixes the new fork turn instead.
-          return undefined;
+          // A fold replaces the covered prefix with a compact block, so the
+          // first fork-owned user message after it still owns the boundary.
+          // No block means the replay really is inherited-only, and the caller
+          // prefixes the new fork turn instead.
+          cutIndex = lastLeadingHistoryCompactBlockIndex(events);
+          if (cutIndex < 0) return undefined;
         }
       }
       // A copy of an empty side fork has no fork boundary turn and no parent
@@ -94,4 +97,12 @@ export function resolveSideConversationForkBoundaryEventId(
     }
   }
   return undefined;
+}
+
+function lastLeadingHistoryCompactBlockIndex(events: readonly RuntimeEvent[]): number {
+  let index = -1;
+  while (index + 1 < events.length && isHistoryCompactCheckpointEvent(events[index + 1]!)) {
+    index += 1;
+  }
+  return index;
 }

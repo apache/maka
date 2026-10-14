@@ -40,6 +40,21 @@ function textEvent(id: string, turnId: string, text: string): RuntimeEvent {
   };
 }
 
+function compactBlockEvent(checkpointId: string, highWaterSeq: number): RuntimeEvent {
+  return {
+    id: `history-compact:${checkpointId}`,
+    sessionId: 'session-1',
+    runId: `history-compact:${checkpointId}`,
+    invocationId: `history-compact:${checkpointId}`,
+    turnId: `history-compact:${highWaterSeq}`,
+    ts: 1,
+    partial: false,
+    role: 'user',
+    author: 'system',
+    content: { kind: 'text', text: 'Compacted history checkpoint' },
+  };
+}
+
 function sideHeader(input: {
   kind?: 'branch' | 'revision';
   sourceTurnId?: string;
@@ -162,5 +177,46 @@ test('revision copy of an EMPTY side fork keeps the boundary on the fork first u
   // turn is the current turn and never appears in the resolved events.
   const events = [textEvent('ev-s1', 'turn-s1', 'side one')];
   const header = sideHeader({ kind: 'revision', sourceTurnId: 'turn-s2' });
+  assert.equal(resolveSideConversationForkBoundaryEventId(events, header), 'ev-s1');
+});
+
+test('a mid-turn fold that removes the fork boundary turn re-homes onto the surviving fork first user turn', () => {
+  // Compaction collapsed the fork-point turn into a compact block, so neither
+  // conversationCopy.sourceTurnId nor branchOfTurnId appears in the replay.
+  // The block is not itself a fork-owned turn: the boundary moves to the first
+  // fork-owned user message that survives after it, so the fork's cached
+  // provider prefix stays intact.
+  const events = [
+    compactBlockEvent('ckpt-1', 3),
+    textEvent('ev-anchor', 'turn-1', 'side one'),
+    textEvent('ev-tail', 'turn-2', 'side two'),
+  ];
+  const header = sideHeader({ sourceTurnId: 'turn-0', branchOfTurnId: 'turn-0' });
+  assert.equal(resolveSideConversationForkBoundaryEventId(events, header), 'ev-anchor');
+});
+
+test('a fold that leaves only the compact block resolves no boundary', () => {
+  // Nothing fork-owned survives after the block, so there is no boundary to
+  // re-home onto and the block itself must never be selected.
+  const events = [compactBlockEvent('ckpt-1', 3)];
+  const header = sideHeader({ sourceTurnId: 'turn-0', branchOfTurnId: 'turn-0' });
+  assert.equal(resolveSideConversationForkBoundaryEventId(events, header), undefined);
+});
+
+test('a fold of a copied fork boundary turn keeps the boundary on the first surviving fork user turn', () => {
+  // Revision of a side turn: the copy inherits the source fork's boundary turn
+  // (branchOfTurnId), but a fold covered both the copied parent prefix and the
+  // fork boundary turn. The boundary re-homes onto the first fork-owned user
+  // turn after the block rather than on any inherited parent event.
+  const events = [
+    compactBlockEvent('ckpt-1', 4),
+    textEvent('ev-s1', 'turn-s1', 'side one'),
+    textEvent('ev-s2', 'turn-s2-revised', 'side two revised'),
+  ];
+  const header = sideHeader({
+    kind: 'revision',
+    sourceTurnId: 'turn-s2',
+    branchOfTurnId: 'turn-p2',
+  });
   assert.equal(resolveSideConversationForkBoundaryEventId(events, header), 'ev-s1');
 });
