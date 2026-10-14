@@ -47,6 +47,32 @@ Runtime Host owns Session and Turn identity, agent lifecycle, continuation, tool
 3. Agent Graph schedules dependent work using child Sessions and sends every activation back through the same Runtime.
 4. Storage owns interactive Runtime state. It has no Eval-specific root, TaskRun ledger, or experiment result authority.
 
+## Tool resource admission
+
+Tool execution uses three separate layers. `ToolScheduler` orders conflicting
+claims inside one provider batch. A process-owned shared/exclusive coordinator
+provides cross-batch correctness: `all()` holds its exclusive side, while each
+participating non-empty resource authority holds the shared side. Domain owners
+then acquire their own leases (for example filesystem exact/tree read-write
+leases) and revalidate identity before the effect.
+
+Filesystem owners acquire the entire canonical path lease set, then the entire
+observed `(dev, ino)` object lease set. Exact reads and writes through hard links
+therefore exclude one another even across owners. Identity is checked again
+after object admission; a changed object fails closed. Tree searches coordinate
+by path and do not promise a snapshot against hard links outside the searched
+tree or writers outside these authorities. External workspaces without pinned
+handles retain their weaker path-based contract.
+
+Human interactions (`AskUserQuestion` and `request_sandbox_boundary`) use the
+existing Session interaction authority and never hold a process barrier while
+waiting for an answer. A fatal batch rejection freezes dispatch and queued
+slots retain the original cause so provider-order settlement cannot hide it.
+
+The fixed acquisition order is process admission, then domain leases. Explicit
+`none()` operations bypass both the batch conflict graph and the process
+barrier; `all()` does not mean "every asynchronous operation in the process."
+
 ## Eval boundary
 
 ```text

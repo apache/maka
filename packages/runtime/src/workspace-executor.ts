@@ -33,6 +33,7 @@ import {
   openStableTarget,
   writeThroughHandle,
 } from './file-stable-write.js';
+import { readStableTarget, type StableReadExpectedIdentity } from './file-stable-read.js';
 import { promisify } from 'node:util';
 import type { ToolExecutionFacts } from '@maka/core/permission';
 import {
@@ -103,6 +104,15 @@ export interface WorkspaceReadImageResult {
 
 export type WorkspaceReadFileResult = WorkspaceReadTextResult | WorkspaceReadImageResult;
 
+export interface WorkspaceStableReadInput extends WorkspaceReadFileInput {
+  /** The object observed after filesystem lease admission. */
+  expectedIdentity: StableReadExpectedIdentity;
+}
+
+export interface WorkspaceStableReadExecutor {
+  stableReadFile(input: WorkspaceStableReadInput): Promise<WorkspaceReadFileResult>;
+}
+
 export interface WorkspaceWriteFileInput {
   cwd: string;
   path: string;
@@ -121,7 +131,7 @@ export type WorkspaceApplyPatchInput = WorkspaceResolvePathInput &
      * Captured at lock acquisition; carried through to the compare-and-delete
      * guard for delete (#2600). Optional so external callers are unaffected.
      */
-    approvedIdentity?: { dev: string; ino: string };
+    approvedIdentity?: { dev: string; ino: string } | 'missing';
   };
 
 export interface WorkspaceApplyPatchResult {
@@ -194,7 +204,10 @@ export interface WorkspaceWriteLockKeyInput {
 }
 
 export interface WorkspaceWriteLockKeyResult {
+  /** Canonical coordination identity retained for compatibility. */
   key: string;
+  /** Canonical path that may be passed back to this workspace executor. */
+  canonicalPath: string;
 }
 
 export interface WorkspaceGlobInput {
@@ -298,6 +311,7 @@ export interface WorkspaceExecutor
     WorkspaceGlobExecutor,
     WorkspaceGrepExecutor,
     Partial<WorkspaceApplyPatchExecutor>,
+    Partial<WorkspaceStableReadExecutor>,
     Partial<WorkspaceReadModifyWriteExecutor> {}
 
 /** @internal Test seams for deterministic executable-discovery coverage. */
@@ -340,6 +354,10 @@ export class LocalWorkspaceExecutor implements WorkspaceExecutor {
     const file = await readWorkspaceFile(input.path);
     if ('bytes' in file) return file;
     return { content: readTextLineWindow(file.content, input.offset, input.limit) };
+  }
+
+  async stableReadFile(input: WorkspaceStableReadInput): Promise<WorkspaceReadFileResult> {
+    return await readStableTarget(input);
   }
 
   async writeFile(input: WorkspaceWriteFileInput): Promise<WorkspaceWriteFileResult> {
@@ -443,7 +461,7 @@ export class LocalWorkspaceExecutor implements WorkspaceExecutor {
       input.semantics === 'entry'
         ? (await resolveCanonicalDirectoryEntryTarget(input.cwd, input.path)).path
         : (await canonicalPathUnderCwd(input.cwd, input.path)).path;
-    return { key: path };
+    return { key: path, canonicalPath: path };
   }
 
   async globFiles(input: WorkspaceGlobInput): Promise<WorkspaceGlobResult> {

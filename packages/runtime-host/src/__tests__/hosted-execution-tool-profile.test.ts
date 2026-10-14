@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { ToolPreparationService, ToolAuthorityRegistry } from '@maka/runtime/tool-preparation';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { MakaTool } from '@maka/runtime/tool-runtime';
@@ -265,6 +266,7 @@ test('WorkHub v2 keeps its attachment and browser tool ceiling visible in direct
   let providerCatalog = '';
   let providerPrompt = '';
   const backend = new AiSdkBackend({
+    preparationService: new ToolPreparationService(new ToolAuthorityRegistry()),
     sessionId: WORKHUB_COORDINATION_SESSION_ID,
     header: {
       id: WORKHUB_COORDINATION_SESSION_ID,

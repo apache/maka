@@ -40,6 +40,9 @@ import {
   type ToolResultArchiveServices,
 } from '../tool-result-archive-capability.js';
 import { ToolRuntime, type ToolRuntimeInput } from '../tool-runtime.js';
+import { ToolAuthorityRegistry } from '../preparation/tool-authority-registry.js';
+import { defaultToolAuthorityRegistrations } from '../preparation/default-tool-authorities.js';
+import { ToolPreparationService } from '../preparation/tool-preparation-service.js';
 import type { ModelProjectionTransition } from '@maka/core/model-projection-transition';
 
 export const readExternalExecutionBoundary: AiSdkBackendInput['readExecutionBoundary'] = async () =>
@@ -47,9 +50,11 @@ export const readExternalExecutionBoundary: AiSdkBackendInput['readExecutionBoun
 
 type TestAiSdkBackendInput = Omit<
   AiSdkBackendInput,
-  'readExecutionBoundary' | 'readPermissionMode'
+  'readExecutionBoundary' | 'readPermissionMode' | 'preparationService'
 > &
-  Partial<Pick<AiSdkBackendInput, 'readExecutionBoundary' | 'readPermissionMode'>> & {
+  Partial<
+    Pick<AiSdkBackendInput, 'readExecutionBoundary' | 'readPermissionMode' | 'preparationService'>
+  > & {
     testProjectionArtifacts?: boolean;
     /**
      * The transcript this backend's turn produces, row by row as it appears.
@@ -104,6 +109,9 @@ export function createTestAiSdkBackend(input: TestAiSdkBackendInput): AiSdkBacke
   const backend = new AiSdkBackend({
     readExecutionBoundary: readExternalExecutionBoundary,
     readPermissionMode: async () => input.header.permissionMode,
+    preparationService: new ToolPreparationService(
+      new ToolAuthorityRegistry(defaultToolAuthorityRegistrations()),
+    ),
     loadModelProjectionTransitions: async () => ({
       transitions: [...transitions],
       unreadableTargets: new Set<string>(),

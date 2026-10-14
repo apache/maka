@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { open } from 'node:fs/promises';
+import { open, type FileHandle } from 'node:fs/promises';
 import { extname } from 'node:path';
 import { imageDimensionsFromData } from 'image-dimensions';
 import {
@@ -41,19 +41,27 @@ export async function readWorkspaceFile(
 ): Promise<{ content: string } | { bytes: Uint8Array; mimeType: ImageMimeType }> {
   const file = await open(path, 'r');
   try {
-    const prefix = Buffer.alloc(ATTACHMENT_MIME_SNIFF_BYTES);
-    // A positioned read leaves the descriptor's offset at zero for readFile.
-    const { bytesRead } = await file.read(prefix, 0, prefix.length, 0);
-    if (isSupportedImagePath(path) || sniffImageMime(prefix.subarray(0, bytesRead))) {
-      const size = await file.stat();
-      if (!size.isFile()) throw new Error('Image path is not a file.');
-      if (size.size > MAX_READ_IMAGE_BYTES) throw imageTooLargeError();
-      return validateImageBytes(await file.readFile());
-    }
-    return { content: await file.readFile('utf8') };
+    return await readWorkspaceFileHandle(file, path);
   } finally {
     await file.close();
   }
+}
+
+/** Read through an already pinned descriptor without taking ownership of it. */
+export async function readWorkspaceFileHandle(
+  file: FileHandle,
+  path: string,
+): Promise<{ content: string } | { bytes: Uint8Array; mimeType: ImageMimeType }> {
+  const prefix = Buffer.alloc(ATTACHMENT_MIME_SNIFF_BYTES);
+  // A positioned read leaves the descriptor's offset at zero for readFile.
+  const { bytesRead } = await file.read(prefix, 0, prefix.length, 0);
+  if (isSupportedImagePath(path) || sniffImageMime(prefix.subarray(0, bytesRead))) {
+    const size = await file.stat();
+    if (!size.isFile()) throw new Error('Image path is not a file.');
+    if (size.size > MAX_READ_IMAGE_BYTES) throw imageTooLargeError();
+    return validateImageBytes(await file.readFile());
+  }
+  return { content: await file.readFile('utf8') };
 }
 
 export function validateImageBytes(bytes: Uint8Array): {

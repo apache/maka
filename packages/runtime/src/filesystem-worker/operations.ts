@@ -48,9 +48,9 @@ import {
   writeThroughHandle,
 } from '../file-stable-write.js';
 import { readWorkspaceFile } from '../image-file.js';
+import { readStableTarget } from '../file-stable-read.js';
 import {
   FILESYSTEM_WORKER_PROTOCOL_VERSION,
-  operationAccess,
   operationUsesDirectoryEntry,
   type FilesystemWorkerErrorCode,
   type FilesystemWorkerOperation,
@@ -85,7 +85,6 @@ export async function executeFilesystemWorkerRequest(
       request.operation.path,
       request.expectedTarget,
       operationUsesDirectoryEntry(request.operation),
-      operationAccess(request.operation.kind),
     );
     return {
       version: FILESYSTEM_WORKER_PROTOCOL_VERSION,
@@ -124,7 +123,10 @@ export async function executeFilesystemOperation(
         'read',
         operationBoundary,
       );
-      const file = await readWorkspaceFile(path).catch((error: unknown) => {
+      const file = await (expectedTarget && expectedTarget.identity !== 'unchecked'
+        ? readStableTarget({ path, expectedIdentity: expectedTarget.identity })
+        : readWorkspaceFile(path)
+      ).catch((error: unknown) => {
         throw operationError(
           'filesystem_error',
           error instanceof Error ? error.message : 'File could not be read.',
@@ -222,7 +224,7 @@ export async function executeFilesystemOperation(
           await compareAndDeleteEntry({
             path,
             approvedIdentity:
-              typeof expectedTarget?.identity === 'object' ? expectedTarget.identity : undefined,
+              expectedTarget?.identity === 'unchecked' ? undefined : expectedTarget?.identity,
           });
         return { kind: 'apply_patch', ok: true, path };
       }
@@ -470,7 +472,6 @@ async function assertTargetUnchanged(
   path: string,
   expected: FilesystemWorkerTarget,
   noFollowFinalSymlink = false,
-  access: 'read' | 'write' = 'read',
 ): Promise<void> {
   const enforcementPath = noFollowFinalSymlink
     ? (await resolveCanonicalDirectoryEntryTarget(cwd, path)).path
@@ -484,22 +485,19 @@ async function assertTargetUnchanged(
       'The approved filesystem target changed before execution.',
     );
   }
-  // Compare the on-disk identity against the one captured at authorisation
-  // time. This is the load-bearing check for the queue window: a path swapped
-  // while the call waited for the lock has a different inode even when its
-  // canonical path and type still match.
+  // Compare the on-disk identity against the admission-time observation. This
+  // is an early rejection; exact reads and mutations additionally validate the
+  // opened descriptor so a later pathname swap cannot redirect their effect.
   //
   // The wire carries one required three-state identity contract (#3484):
   // - { dev, ino }: CAS against the on-disk inode.
-  // - 'missing': T0 saw no target but T1 does — something created it while
-  //   this call waited. Writing would clobber content the caller never saw.
+  // - 'missing': admission saw no target but one exists now.
   // - 'unchecked': the caller deliberately does not participate in CAS.
-  //   Reads never mutate and are exempt either way.
-  if (access === 'write' && expected.targetType !== 'missing') {
+  if (expected.targetType !== 'missing') {
     if (expected.identity === 'missing') {
       throw operationError(
         'path_changed',
-        'The target was created while this call waited for the lock; re-read before writing.',
+        'The target appeared after filesystem admission; the operation was not started.',
       );
     }
     if (typeof expected.identity === 'object') {

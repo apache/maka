@@ -22,10 +22,11 @@ import { readContinuationSchema, readPageSchema } from '../read-page.js';
 import { validateSandboxBoundaryExpansion } from '@maka/core/sandbox-boundary';
 import { GREP_MAX_LINES, GREP_MAX_LINES_PER_FILE, GREP_MAX_MATCH_BYTES } from '../grep-search.js';
 
+// v12 adds admission-pinned reads to the bounded Read/Glob contracts.
 // v10 adds bounded Read pages to v9's exact Grep counts; v11 adds Glob's
 // truncation flag to v10's result contract. Older workers cannot satisfy the
 // combined result contract and must be rejected at the handshake.
-export const FILESYSTEM_WORKER_PROTOCOL_VERSION = 11 as const;
+export const FILESYSTEM_WORKER_PROTOCOL_VERSION = 12 as const;
 
 /** The single authority on which operation kinds are writes. Shared by the
  * client (permission/identity decisions) and the worker (operation guards) so
@@ -82,11 +83,11 @@ export const FilesystemWorkerTargetSchema = z
     scope: z.enum(['exact', 'subtree']),
     targetType: z.enum(['file', 'directory', 'symlink', 'other', 'missing']),
     // The execution-time identity contract, one required field (no separate
-    // T0 marker — a single three-state shape mirrors the client input, so an
+    // marker — a single three-state shape mirrors the client input, so an
     // illegal combination cannot be expressed on the wire):
-    // - { dev, ino }: the T0 identity the worker must CAS against at T1.
-    // - 'missing': T0 saw no target; a target present at execution time was
-    //   created while the call waited and must fail.
+    // - { dev, ino }: the admission identity the worker must validate.
+    // - 'missing': admission saw no target; a target present at execution time
+    //   appeared in the effect window and must fail.
     // - 'unchecked': the caller does not participate in CAS; the write
     //   proceeds without an identity comparison.
     identity: FilesystemTargetIdentitySchema.or(z.literal('missing')).or(z.literal('unchecked')),

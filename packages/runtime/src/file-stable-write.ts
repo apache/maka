@@ -105,7 +105,7 @@ export async function openStableTarget(input: {
   if (input.targetType !== undefined && input.targetType !== 'missing') {
     // An existing target with no identity: the caller explicitly opted out of
     // CAS (#3484). Open without truncation but perform no comparison — the
-    // caller's own absence of a T0 snapshot is the contract.
+    // caller's own absence of an identity snapshot is the contract.
     return openExistingNoTruncate(input.path);
   }
   try {
@@ -263,7 +263,7 @@ export async function hostVisibilityAfterWrite(
  */
 export async function compareAndDeleteEntry(input: {
   path: string;
-  approvedIdentity: FilesystemTargetIdentity | undefined;
+  approvedIdentity: FilesystemTargetIdentity | 'missing' | undefined;
 }): Promise<void> {
   // Fast refusal when the directory is visible up front (#2600 review): a
   // rename into the tombstone succeeds for directories, but the tombstone
@@ -271,6 +271,9 @@ export async function compareAndDeleteEntry(input: {
   // stray name instead of failing cleanly. The post-capture check below is
   // the enforcement; this pre-check just avoids moving anything.
   const entryBefore = await lstat(input.path);
+  if (input.approvedIdentity === 'missing') {
+    throw pathChanged('The target appeared after filesystem admission; it was not deleted.');
+  }
   if (entryBefore.isDirectory()) {
     throw new StableWriteFailure(
       'is_directory',

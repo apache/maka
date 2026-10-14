@@ -120,6 +120,10 @@ import { PluginSessionQueryService } from '@maka/runtime/plugin-session-query-se
 import { PluginShellEnvService } from '@maka/runtime/plugin-shell-env-service';
 import { PluginSkillService } from '@maka/runtime/plugin-skill-service';
 import type { RuntimeHostedRootAuthority } from '@maka/runtime/message-authority';
+import { buildBuiltinToolComposition } from '@maka/runtime/builtin-tools';
+import { processFilesystemLeases } from '@maka/runtime/filesystem-lease-coordinator';
+import { processResourceAdmissions } from '@maka/runtime/process-resource-admission';
+import { ToolPreparationService } from '@maka/runtime/tool-preparation';
 import { isHostedExecutionTerminal } from './hosted-execution-authority.js';
 import type {
   ExecutionPersistenceProvider,
@@ -603,6 +607,8 @@ export async function createExecutionRuntimeHostComposition(
             },
           }
         : {}),
+      filesystemLeaseCoordinator: processFilesystemLeases,
+      processResourceAdmissionCoordinator: processResourceAdmissions,
       ...(sandboxManager ? { sandboxManager } : {}),
       ...(filesystemWorker ? { filesystemWorker } : {}),
     };
@@ -715,6 +721,13 @@ export async function createExecutionRuntimeHostComposition(
           pluginAttachmentRef,
         ),
     });
+    // Process lifetime: every root/child backend resolves through this exact
+    // registry and synthesis service. Turn-local tool rebuilding only changes
+    // declarations such as the selected shell; it never creates authorities.
+    const toolPreparationService = new ToolPreparationService(
+      buildBuiltinToolComposition(builtinTools).authorityRegistry,
+      processResourceAdmissions,
+    );
     const webSearchService = createHostWebSearchService({
       policy: runtimePolicyStores.operations,
     });
@@ -1161,6 +1174,7 @@ export async function createExecutionRuntimeHostComposition(
       context: backendContext,
       runtimePolicy: runtimePolicyStores,
       oauthCredentials,
+      preparationService: toolPreparationService,
       createRunComposer: createInteractiveRunComposerFactory({
         skills,
         pluginSkills,

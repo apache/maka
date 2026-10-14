@@ -47,6 +47,28 @@ Runtime Host 拥有 Session 和 Turn identity、agent lifecycle、continuation�
 3. Agent Graph 通过 child Session 调度依赖工作，并把每次 activation 送回同一 Runtime。
 4. Storage 只拥有交互 Runtime 状态，不再有 Eval 专用 root、TaskRun ledger 或实验结果 authority。
 
+## 工具资源准入
+
+工具执行分为三个彼此独立的层次。`ToolScheduler` 只在单个 provider batch
+内按冲突 claim 排序；进程级 shared/exclusive coordinator 提供跨 batch
+correctness：`all()` 获取 exclusive，所有参与建模的非空资源 authority 获取
+shared；随后领域 owner 再获取自己的 lease（例如 filesystem exact/tree
+读写 lease），并在真实 effect 前重新校验 identity。
+
+Filesystem owner 先原子获取整组 canonical path lease，再获取整组已观察到的
+`(dev, ino)` object lease。因此，即使由不同 owner 执行，经硬链接访问同一文件的
+exact read/write 也会互斥。等待 object admission 后再次校验 identity；目标发生
+变化则拒绝执行。Tree search 按路径协调，不保证针对搜索树外硬链接或未参与
+这些 authority 的 writer 提供快照。不能固定文件句柄的外部 workspace 仍保留
+较弱的基于路径的执行契约。
+
+`AskUserQuestion` 和 `request_sandbox_boundary` 使用已有 Session interaction
+权限边界，等待用户回答期间不持有进程 barrier。Batch 发生致命拒绝后停止派发，
+队列槽位保留原始错误，避免按 provider 顺序结算时掩盖真正原因。
+
+固定获取顺序是 process admission，再 domain leases。显式 `none()` 同时绕过
+batch 冲突图和 process barrier；`all()` 并不表示“阻塞进程中的一切异步操作”。
+
 ## Eval 边界
 
 ```text
