@@ -65,6 +65,22 @@ export function createMarkdownMathCache(): MarkdownMathCache {
   return { source: '', text: '', safeSourceEnd: 0, safeTextEnd: 0 };
 }
 
+type PendingLinkScan =
+  | {
+      kind: 'label';
+      labelState: LabelScanState;
+      speculativeSafeSourceEnd: number;
+      speculativeSafeTextEnd: number;
+    }
+  | {
+      kind: 'tail';
+      tailState: TailScanState;
+      speculativeSafeSourceEnd: number;
+      speculativeSafeTextEnd: number;
+    };
+
+const pendingLinkScans = new WeakMap<MarkdownMathCache, PendingLinkScan>();
+
 export function prepareMarkdownMath(
   source: string,
   cache: MarkdownMathCache,
@@ -74,17 +90,87 @@ export function prepareMarkdownMath(
   // keeps the scanner on the changing tail; it does not make the full-string
   // identity check itself incremental.
   const extendsPrevious = source.startsWith(cache.source);
+  if (!extendsPrevious) {
+    pendingLinkScans.delete(cache);
+  } else {
+    const pending = pendingLinkScans.get(cache);
+    if (pending !== undefined) {
+      let isStillPending = false;
+      if (pending.kind === 'label') {
+        const continued = scanLabel(source, pending.labelState);
+        if (continued.kind === 'pending') {
+          pending.labelState = continued.state;
+          isStillPending = true;
+        }
+      } else {
+        const continued = scanInlineTail(source, pending.tailState);
+        if (continued.kind === 'pending') {
+          pending.tailState = continued.state;
+          isStillPending = true;
+        }
+      }
+
+      if (isStillPending) {
+        const specSourceStart = pending.speculativeSafeSourceEnd;
+        const specTextStart = pending.speculativeSafeTextEnd;
+        const lastNewline = specSourceStart > 0 ? source.lastIndexOf('\n', specSourceStart - 1) : -1;
+        const linePrefix = specSourceStart > 0 && lastNewline < specSourceStart - 1
+          ? source.slice(lastNewline + 1, specSourceStart)
+          : '';
+        const translated = translateMarkdownMath(source.slice(specSourceStart), {
+          startsAtLineStart: specSourceStart === 0 || source[specSourceStart - 1] === '\n',
+          priorTextChar: cache.text[specTextStart - 1],
+          leadingBackslashes: countPrecedingBackslashes(source, specSourceStart),
+          linePrefix,
+        });
+        cache.source = source;
+        cache.text = specTextStart === cache.text.length
+          ? cache.text + translated.text
+          : `${cache.text.slice(0, specTextStart)}${translated.text}`;
+        pending.speculativeSafeSourceEnd = specSourceStart + translated.speculativeSafeSourceEnd;
+        pending.speculativeSafeTextEnd = specTextStart + translated.speculativeSafeTextEnd;
+        return cache.text;
+      }
+      pendingLinkScans.delete(cache);
+    }
+  }
+
   const sourceStart = extendsPrevious ? cache.safeSourceEnd : 0;
   const textStart = extendsPrevious ? cache.safeTextEnd : 0;
   const lastNewline = sourceStart > 0 ? source.lastIndexOf('\n', sourceStart - 1) : -1;
   const linePrefix = sourceStart > 0 && lastNewline < sourceStart - 1
     ? source.slice(lastNewline + 1, sourceStart)
     : '';
+
+  let pendingToSet: PendingLinkScan | undefined;
+
   const translatedTail = translateMarkdownMath(source.slice(sourceStart), {
     startsAtLineStart: sourceStart === 0 || source[sourceStart - 1] === '\n',
     priorTextChar: cache.text[textStart - 1],
     leadingBackslashes: countPrecedingBackslashes(source, sourceStart),
     linePrefix,
+    onLinkPending: (info) => {
+      if (info.kind === 'label') {
+        info.labelState.index += sourceStart;
+        if (info.labelState.runStart !== null) info.labelState.runStart += sourceStart;
+        info.labelState.codeSearchFrom += sourceStart;
+        pendingToSet = {
+          kind: 'label',
+          labelState: info.labelState,
+          speculativeSafeSourceEnd: 0,
+          speculativeSafeTextEnd: 0,
+        };
+      } else {
+        info.tailState.index += sourceStart;
+        info.tailState.from += sourceStart;
+        pendingToSet = {
+          kind: 'tail',
+          tailState: info.tailState,
+          speculativeSafeSourceEnd: 0,
+          speculativeSafeTextEnd: 0,
+        };
+      }
+    },
   });
   const text = `${extendsPrevious ? cache.text.slice(0, textStart) : ''}${translatedTail.text}`;
 
@@ -92,6 +178,15 @@ export function prepareMarkdownMath(
   cache.text = text;
   cache.safeSourceEnd = sourceStart + translatedTail.safeSourceEnd;
   cache.safeTextEnd = textStart + translatedTail.safeTextEnd;
+
+  if (pendingToSet) {
+    pendingToSet.speculativeSafeSourceEnd = sourceStart + translatedTail.speculativeSafeSourceEnd;
+    pendingToSet.speculativeSafeTextEnd = textStart + translatedTail.speculativeSafeTextEnd;
+    pendingLinkScans.set(cache, pendingToSet);
+  } else {
+    pendingLinkScans.delete(cache);
+  }
+
   return text;
 }
 
@@ -137,6 +232,7 @@ type TranslateMarkdownMathOptions = {
   isFinalSegment?: boolean;
   leadingBackslashes?: number;
   linePrefix?: string;
+  onLinkPending?: (info: PendingLinkInfo) => void;
 };
 
 /**
@@ -160,22 +256,33 @@ function translateMarkdownMath(
     isFinalSegment = false,
     leadingBackslashes = 0,
     linePrefix = '',
+    onLinkPending,
   }: TranslateMarkdownMathOptions = {},
 ): {
   text: string;
   safeSourceEnd: number;
   safeTextEnd: number;
+  speculativeSafeSourceEnd: number;
+  speculativeSafeTextEnd: number;
 } {
   let text = '';
   let index = 0;
   let safeSourceEnd = 0;
   let safeTextEnd = 0;
+  let speculativeSafeSourceEnd = 0;
+  let speculativeSafeTextEnd = 0;
   let atLineStart = startsAtLineStart;
   let canMarkSafe = true;
+  let canMarkSpeculativeSafe = true;
   const markSafe = () => {
-    if (!canMarkSafe) return;
-    safeSourceEnd = index;
-    safeTextEnd = text.length;
+    if (canMarkSafe) {
+      safeSourceEnd = index;
+      safeTextEnd = text.length;
+    }
+    if (canMarkSpeculativeSafe) {
+      speculativeSafeSourceEnd = index;
+      speculativeSafeTextEnd = text.length;
+    }
   };
 
   while (index < source.length) {
@@ -250,6 +357,7 @@ function translateMarkdownMath(
           markSafe();
         } else {
           canMarkSafe = false;
+          canMarkSpeculativeSafe = false;
         }
         continue;
       }
@@ -263,6 +371,9 @@ function translateMarkdownMath(
 
     const link = readMarkdownLink(source, index, leadingBackslashes);
     if (link?.kind === 'pending') {
+      if (link.pendingInfo !== undefined && safeSourceEnd === index) {
+        onLinkPending?.(link.pendingInfo);
+      }
       if (!isFinalSegment) {
         canMarkSafe = false;
       }
@@ -321,6 +432,9 @@ function translateMarkdownMath(
         markSafe();
       } else {
         canMarkSafe = false;
+        if (!labelSafe || !refSafe) {
+          canMarkSpeculativeSafe = false;
+        }
       }
       continue;
     }
@@ -335,8 +449,19 @@ function translateMarkdownMath(
       markSafe();
       continue;
     }
-    if (destination.kind === 'pending' && !isFinalSegment) {
-      canMarkSafe = false;
+    if (destination.kind === 'pending') {
+      if (
+        destination.tailState !== undefined
+        && safeSourceEnd === index
+      ) {
+        onLinkPending?.({
+          kind: 'tail',
+          tailState: destination.tailState,
+        });
+      }
+      if (!isFinalSegment) {
+        canMarkSafe = false;
+      }
     }
 
     const autolink = readAutolink(source, index);
@@ -377,6 +502,7 @@ function translateMarkdownMath(
         markSafe();
       } else {
         canMarkSafe = false;
+        canMarkSpeculativeSafe = false;
       }
       continue;
     }
@@ -426,7 +552,13 @@ function translateMarkdownMath(
     }
   }
 
-  return { text, safeSourceEnd, safeTextEnd };
+  return {
+    text,
+    safeSourceEnd,
+    safeTextEnd,
+    speculativeSafeSourceEnd,
+    speculativeSafeTextEnd,
+  };
 }
 
 /**
@@ -513,7 +645,7 @@ function displayMathSource(
 type LinkDestinationScan =
   | { kind: 'matched'; end: number }
   | { kind: 'invalid' }
-  | { kind: 'pending' };
+  | { kind: 'pending'; tailState?: TailScanState };
 
 /**
  * Span of `](destination …)`/`![…](destination …)` and `][label]` reference
@@ -537,23 +669,12 @@ function readLinkDestination(source: string, index: number): LinkDestinationScan
 
   if (source[index + 1] !== '(') return { kind: 'invalid' };
 
-  let depth = 0;
-  for (let i = index + 1; i < source.length; i++) {
-    const char = source[i];
-    if (char === '\\') {
-      if (i + 1 >= source.length) return { kind: 'pending' };
-      i++;
-    } else if (char === '(') {
-      depth++;
-      if (depth > MAX_LINK_TAIL_DEPTH) return { kind: 'invalid' };
-    } else if (char === ')') {
-      depth--;
-      if (depth === 0) return { kind: 'matched', end: i + 1 };
-    } else if (char === '\n' && depth === 1) {
-      return { kind: 'invalid' };
-    }
+  const scan = scanInlineTail(source, initialTailScanState(index + 1));
+  if (scan.kind === 'closed') return { kind: 'matched', end: scan.end };
+  if (scan.kind === 'pending') {
+    return { kind: 'pending', tailState: scan.state };
   }
-  return { kind: 'pending' };
+  return { kind: 'invalid' };
 }
 
 /** `<scheme:…>` and `<address@host>` autolinks take `$` verbatim. */
@@ -692,6 +813,16 @@ const MAX_LINK_LABEL_DEPTH = 32;
 const MAX_LINK_TAIL_DEPTH = 32;
 const MAX_LINK_TAIL_LENGTH = 65536;
 
+type PendingLinkInfo =
+  | {
+      kind: 'label';
+      labelState: LabelScanState;
+    }
+  | {
+      kind: 'tail';
+      tailState: TailScanState;
+    };
+
 type MarkdownLinkScan =
   | {
       kind: 'match';
@@ -701,7 +832,7 @@ type MarkdownLinkScan =
       refLabelStart?: number;
       refLabelEnd?: number;
     }
-  | { kind: 'pending'; end: number }
+  | { kind: 'pending'; end: number; pendingInfo?: PendingLinkInfo }
   | undefined;
 
 /**
@@ -732,7 +863,11 @@ function readMarkdownLink(
 
   const firstScan = scanLabel(source, initialLabelScanState(openerEnd));
   if (firstScan.kind === 'pending') {
-    return { kind: 'pending', end: source.length };
+    return {
+      kind: 'pending',
+      end: source.length,
+      pendingInfo: { kind: 'label', labelState: firstScan.state },
+    };
   }
   if (firstScan.kind === 'invalid') return { kind: 'pending', end: firstScan.end };
   const labelEnd = firstScan.end;
@@ -746,15 +881,25 @@ function readMarkdownLink(
 
   const tail = source[labelEnd + 1] ?? '';
   if (tail === '(') {
-    const tailEnd = findInlineTailEnd(source, labelEnd + 1);
-    if (tailEnd === 'pending') return { kind: 'pending', end: source.length };
-    if (typeof tailEnd !== 'number') return match(tailEnd.end);
-    return match(tailEnd);
+    const tailScan = scanInlineTail(source, initialTailScanState(labelEnd + 1));
+    if (tailScan.kind === 'pending') {
+      return {
+        kind: 'pending',
+        end: source.length,
+        pendingInfo: { kind: 'tail', tailState: tailScan.state },
+      };
+    }
+    if (tailScan.kind === 'invalid') return match(tailScan.end);
+    return match(tailScan.end);
   }
   if (tail === '[') {
     const refScan = scanLabel(source, initialLabelScanState(labelEnd + 2));
     if (refScan.kind === 'pending') {
-      return { kind: 'pending', end: source.length };
+      return {
+        kind: 'pending',
+        end: source.length,
+        pendingInfo: { kind: 'label', labelState: refScan.state },
+      };
     }
     if (refScan.kind === 'invalid') return match(refScan.end);
     return {
@@ -909,43 +1054,67 @@ function scanLabel(source: string, st: LabelScanState): LabelScanResult {
   return pending();
 }
 
-/**
- * Find the end of an inline `(destination)` tail starting at its `(`. A
- * pending tail consumes the remaining source in one pass; resuming at the
- * opener would rescan the same suffix for every `[label](` in a stream.
- */
-function findInlineTailEnd(
-  source: string,
-  from: number,
-): number | 'pending' | { kind: 'invalid'; end: number } {
-  let depth = 1;
-  let i = from + 1;
-  while (i < source.length) {
-    if (i - from >= MAX_LINK_TAIL_LENGTH) {
-      return { kind: 'invalid', end: findInvalidLinkBoundary(source, i) };
+type TailScanState = {
+  from: number;
+  index: number;
+  depth: number;
+  escapeNext: boolean;
+};
+
+function initialTailScanState(from: number): TailScanState {
+  return {
+    from,
+    index: from + 1,
+    depth: 1,
+    escapeNext: false,
+  };
+}
+
+type TailScanResult =
+  | { kind: 'pending'; state: TailScanState }
+  | { kind: 'closed'; end: number }
+  | { kind: 'invalid'; end: number };
+
+function scanInlineTail(source: string, st: TailScanState): TailScanResult {
+  while (st.index < source.length) {
+    if (st.index - st.from >= MAX_LINK_TAIL_LENGTH) {
+      return { kind: 'invalid', end: findInvalidLinkBoundary(source, st.index) };
     }
-    const ch = source[i] ?? '';
-    if (ch === '\n' && source[i + 1] === '\n') return { kind: 'invalid', end: i };
+    if (st.escapeNext) {
+      if (st.index + 1 >= source.length) return { kind: 'pending', state: st };
+      st.escapeNext = false;
+      st.index += 2;
+      continue;
+    }
+    const ch = source[st.index] ?? '';
+    if (ch === '\n' && source[st.index + 1] === '\n') {
+      return { kind: 'invalid', end: st.index };
+    }
     if (ch === '\\') {
-      if (i + 1 >= source.length) return 'pending';
-      i += 2;
+      if (st.index + 1 >= source.length) {
+        st.escapeNext = true;
+        return { kind: 'pending', state: st };
+      }
+      st.index += 2;
       continue;
     }
     if (ch === '(') {
-      depth++;
-      if (depth > MAX_LINK_TAIL_DEPTH) {
-        return { kind: 'invalid', end: findInvalidLinkBoundary(source, i) };
+      st.depth++;
+      if (st.depth > MAX_LINK_TAIL_DEPTH) {
+        return { kind: 'invalid', end: findInvalidLinkBoundary(source, st.index) };
       }
-      i++;
+      st.index++;
       continue;
     }
     if (ch === ')') {
-      depth--;
-      if (depth === 0) return i + 1;
+      st.depth--;
+      if (st.depth === 0) {
+        return { kind: 'closed', end: st.index + 1 };
+      }
     }
-    i++;
+    st.index++;
   }
-  return 'pending';
+  return { kind: 'pending', state: st };
 }
 
 function findInvalidLinkBoundary(source: string, from: number): number {

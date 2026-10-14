@@ -681,6 +681,32 @@ it('streams an unfinished reference identifier without rescanning from its opene
   assert.match(markup, />visible</);
 });
 
+it('streams unfinished labels, identifiers, and tails in small chunks without quadratic slowdown', () => {
+  const cases = [
+    { name: 'unfinished label', head: `[${'a'.repeat(32_000 - 1)}` },
+    { name: 'unfinished reference identifier', head: `[visible][${'c'.repeat(32_000)}` },
+    { name: 'unfinished inline tail', head: `[visible](${'d'.repeat(32_000)}` },
+  ];
+
+  for (const { name, head } of cases) {
+    const cache = createMarkdownMathCache();
+    const started = performance.now();
+    let incremental = '';
+    const chunkSize = 16;
+    for (let end = chunkSize; end <= head.length; end += chunkSize) {
+      incremental = prepareMarkdownMath(head.slice(0, end), cache);
+    }
+    if (head.length % chunkSize !== 0) {
+      incremental = prepareMarkdownMath(head, cache);
+    }
+    const elapsed = performance.now() - started;
+
+    assert.equal(incremental, head, `Incremental content mismatch for ${name}`);
+    assert.equal(cache.safeSourceEnd, 0, `safeSourceEnd should stay 0 while ${name} is open`);
+    assert.ok(elapsed < 2_000, `Small chunk streaming for ${name} took ${elapsed.toFixed(1)}ms (expected < 2000ms)`);
+  }
+});
+
 it('reparses an earlier delimiter that closes after a pending label', () => {
   const cases = [
     // Unclosed code span, then its closer plus display math.
