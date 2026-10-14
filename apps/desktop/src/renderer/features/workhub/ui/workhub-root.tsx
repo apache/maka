@@ -74,7 +74,7 @@ function revealWordmark(element: HTMLDivElement | null, content: HTMLDivElement 
 
 export function WorkHubRoot({ renderProviderMark }: {
   /** Injected by the composition root so the provider SVG library stays out of the main-process test build. */
-  renderProviderMark?: NonNullable<import('@maka/ui').ComposerProps['renderProviderMark']>;
+  renderProviderMark: NonNullable<import('@maka/ui').ComposerProps['renderProviderMark']>;
 }) {
   const highlight = useWorkHubHighlightState();
   const composer = useRef<ComposerHandle>(null);

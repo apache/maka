@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { afterEach, test } from 'node:test';
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -109,4 +110,29 @@ test('the WorkHub composer renders provider marks like regular chat', async () =
   const mark = document.querySelector('[data-provider-mark]');
   assert.ok(mark, 'the provider mark must render beside the model switcher');
   assert.equal(mark.getAttribute('data-provider-mark'), 'openai');
+});
+
+// The render test above pins the composer seam by feeding the prop itself, so
+// it stays green if the passthrough is narrowed away. This pins the wiring:
+// the composition root must hand its mark to the WorkHub root, and the root
+// must keep forwarding it to the composer (#6100 review).
+test('the WorkHub wiring keeps the injected mark flowing to its composer', () => {
+  const rootSource = readFileSync(
+    new URL('../../../src/renderer/features/workhub/ui/workhub-root.tsx', import.meta.url),
+    'utf8',
+  );
+  assert.match(
+    rootSource,
+    /renderProviderMark=\{renderProviderMark\}/,
+    'WorkHubRoot must forward the injected mark to its composer',
+  );
+  const adapterSource = readFileSync(
+    new URL('../../../src/renderer/composition/legacy-desktop-region.tsx', import.meta.url),
+    'utf8',
+  );
+  assert.match(
+    adapterSource,
+    /renderProviderMark=\{renderProviderMark\}/,
+    'the composition adapter must pass its mark supplier into WorkHubRoot',
+  );
 });
