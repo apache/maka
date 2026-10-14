@@ -19,85 +19,91 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { CuDispatchBackend } from '@maka/runtime/computer-use-types';
-import type { MakaCuBackendOptions } from '../maka-cu-backend.js';
+import type { CuaDriverService } from '../cua-driver-service.js';
 import { selectComputerUseBackend } from '../select-backend.js';
 
-test('service invalidation producer advances Runtime to reobserve', async () => {
+test('selected backend enforces physical input and advances Runtime on executor loss', async () => {
   if (process.platform !== 'darwin') return;
-  let invalidate:
-    | ((input: { sessionId: string; reason: 'child_exit'; outcomeUnknown: boolean }) => void)
-    | undefined;
-  const backend: CuDispatchBackend = {
-    async preflight() {
-      return { accessibility: true, screenRecording: true };
+  let close: (() => void) | undefined;
+  const dispatched: string[] = [];
+  const service = {
+    snapshot: () => ({ state: 'ready' as const, generation: 1 }),
+    dispose: async () => {},
+    async call(name: string) {
+      switch (name) {
+        case 'check_permissions':
+          return {
+            content: [],
+            structuredContent: { accessibility: true, screen_recording: true },
+          };
+        case 'list_windows':
+          return { content: [], structuredContent: { windows: [{ window_id: 7, pid: 42 }] } };
+        case 'list_apps':
+          return { content: [], structuredContent: { apps: [{ bundle_id: 'Fixture', pid: 42 }] } };
+        case 'get_window_state':
+          return {
+            content: [],
+            structuredContent: {
+              snapshot_id: 'fixture',
+              elements: [
+                {
+                  element_index: 0,
+                  element_token: 'fixture:0',
+                  role: 'AXTextField',
+                },
+              ],
+            },
+          };
+        default:
+          dispatched.push(name);
+          throw new Error(`Unexpected dispatch: ${name}`);
+      }
     },
-    async observeApp() {
-      return {
-        observationId: 'backend-observation',
-        appId: 'Fixture',
-        pid: 42,
-        windowId: 7,
-        elements: [],
-      };
-    },
-    async run() {
-      return { outcome: { ok: true, tier: 'ax', verified: true } };
-    },
-  };
+  } as unknown as CuaDriverService;
   const selected = selectComputerUseBackend({
     binaryPath: '/tmp/fake-executor',
     expectedBinarySha256: '0'.repeat(64),
-    createBackend(options) {
-      invalidate = options.onSessionInvalidated as typeof invalidate;
-      return backend;
+    physicalInputRecentlyActive: () => true,
+    createService(_path, _digest, onClose) {
+      close = onClose;
+      return service;
     },
   });
   const [tool] = selected.tools;
-  await tool.impl(
+  const context = (toolCallId: string) => ({
+    sessionId: 'session-1',
+    turnId: 'turn-1',
+    toolCallId,
+    cwd: '/tmp',
+    abortSignal: new AbortController().signal,
+    emitOutput() {},
+  });
+  const observed = (await tool.impl(
     {
       action: 'observe',
       app: 'Fixture',
       include_screenshot: false,
     } as never,
+    context('observe'),
+  )) as { text: string };
+  assert.equal(selected.tools.sessionEvents.snapshot('session-1').status, 'active');
+  const action = (await tool.impl(
     {
-      sessionId: 'session-1',
-      turnId: 'turn-1',
-      toolCallId: 'observe',
-      cwd: '/tmp',
-      abortSignal: new AbortController().signal,
-      emitOutput() {},
-    },
+      action: 'type',
+      element_id: '0',
+      text: 'blocked',
+      observation_id: JSON.parse(observed.text).observation_id,
+    } as never,
+    context('type'),
+  )) as { error?: string };
+  assert.equal(action.error, 'user_intervened');
+  assert.deepEqual(dispatched, []);
+  await tool.impl(
+    { action: 'observe', app: 'Fixture', include_screenshot: false } as never,
+    context('observe-after-intervention'),
   );
   assert.equal(selected.tools.sessionEvents.snapshot('session-1').status, 'active');
-  invalidate?.({
-    sessionId: 'session-1',
-    reason: 'child_exit',
-    outcomeUnknown: false,
-  });
+  close?.();
   assert.equal(selected.tools.sessionEvents.snapshot('session-1').status, 'reobserve_required');
-});
-
-test('physical input policy is passed to the selected backend', () => {
-  if (process.platform !== 'darwin') return;
-  const physicalInputRecentlyActive = () => true;
-  let received: MakaCuBackendOptions['physicalInputRecentlyActive'];
-  const backend: CuDispatchBackend = {
-    async preflight() {
-      return { accessibility: true, screenRecording: true };
-    },
-    async run() {
-      return { outcome: { ok: true, tier: 'ax', verified: true } };
-    },
-  };
-  selectComputerUseBackend({
-    binaryPath: '/tmp/fake-executor',
-    expectedBinarySha256: '0'.repeat(64),
-    physicalInputRecentlyActive,
-    createBackend(options) {
-      received = options.physicalInputRecentlyActive;
-      return backend;
-    },
-  });
-  assert.equal(received, physicalInputRecentlyActive);
+  selected.backend?.dispose?.();
 });

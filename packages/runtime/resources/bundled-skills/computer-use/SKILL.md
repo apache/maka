@@ -41,16 +41,18 @@ Use Browser tools for web pages inside Maka. Use Read, Write, Bash, connectors, 
 Prefer:
 
 - `click_element`
+- `type` with `element_id` to insert into a named editable control, and `press_key` with `element_id` to send a single key to it
 - `set_value` for complete replacement of an editable value
-- `select_text`
 - `scroll_element`
 - `secondary_action` only when the element advertises it
-- `window_action` for move, resize, or minimize; minimize cannot be reversed through this surface
+- `window_action` for move or resize
 - `element_sequence` for at most 12 exact-label `click` or `set_value` steps
 
 `element_sequence` re-observes between steps and stops at the first missing, ambiguous, or refused control. Its completed-step count may represent partial progress.
 
 Coordinate mutation is not part of the production action space. Do not plan around pointer clicks, drag, coordinate scroll, mouse movement, cursor position, or zoom. Keyboard actions remain capability-dependent and must be bound to the observed target or a verified focus owner. If semantic actions cannot express the task, report the capability gap.
+
+Direct text-range selection, selected-text read-back, window minimization, and focus read-back are not supported by the bundled executor. `type` with `element_id` can replace an existing selection in that control, but cannot establish or verify that selection. `set_value` replaces the whole field and can discard rich-text formatting; do not use it as a substitute for a partial edit. Typing and single keys without an explicit control are refused. Application hotkeys remain window-bound and capability-dependent. The upstream driver targets the control but its synthesized-key fallback restores focus only on a best-effort basis; verify the resulting state before continuing.
 
 ## Wait and recover
 

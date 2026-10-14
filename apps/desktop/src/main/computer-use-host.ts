@@ -28,8 +28,7 @@ import {
 } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { MakaCuBackendOptions } from '@maka/computer-use';
-import type { MakaCuServiceSnapshot } from '@maka/computer-use';
+import type { CuaDriverBackendOptions, CuaDriverServiceState } from '@maka/computer-use';
 import {
   selectComputerUseBackend,
   type SelectedComputerUseBackend,
@@ -65,9 +64,9 @@ export function createComputerUseHost(input: {
     mimeType: string,
   ) => { base64: string; mimeType: 'image/png' | 'image/jpeg' };
   physicalInputRecentlyActive: () => boolean | Promise<boolean>;
+  requestAccessibilityPermission?: CuaDriverBackendOptions['requestAccessibilityPermission'];
   /** Whether the machine is locked; refuses every call while it is. */
   screenLocked?: (context: { sessionId: string }) => boolean | Promise<boolean>;
-  onTrace?: MakaCuBackendOptions['onTrace'];
   overlay?: CuOverlayHook;
 }): ComputerUseHostState {
   const manifestPath = input.manifestPath ?? (input.isPackaged
@@ -79,24 +78,24 @@ export function createComputerUseHost(input: {
         'bundled-tools.json',
       ));
   const binaryPath = input.binaryPath ?? (input.isPackaged
-    ? join(input.resourcesPath, 'bin', 'maka-cu')
+    ? join(input.resourcesPath, 'bin', 'cua-driver')
     : resolve(
         dirname(fileURLToPath(import.meta.url)),
         '..',
         '..',
         'resources',
         'bin',
-        'maka-cu',
+        'cua-driver',
       ));
   try {
     const manifest = JSON.parse(readRegularFile(manifestPath).toString('utf8')) as {
-      makaCu?: {
+      cuaDriver?: {
         binarySha256?: string;
         distributionReady?: boolean;
       };
     };
-    const expectedBinarySha256 = manifest.makaCu?.binarySha256;
-    if (input.isPackaged && manifest.makaCu?.distributionReady !== true) {
+    const expectedBinarySha256 = manifest.cuaDriver?.binarySha256;
+    if (input.isPackaged && manifest.cuaDriver?.distributionReady !== true) {
       return { selected: selectComputerUseBackend() };
     }
     if (!expectedBinarySha256 || !/^[a-f0-9]{64}$/.test(expectedBinarySha256)) {
@@ -110,16 +109,15 @@ export function createComputerUseHost(input: {
       return { selected: selectComputerUseBackend() };
     }
     return {
-      // No `backendId`: the host takes whatever `DEFAULT_CU_BACKEND_ID` names,
-      // so "which executor ships" is one decision recorded in one place rather
-      // than a default and a host that could disagree about it.
       selected: selectComputerUseBackend({
         binaryPath,
         expectedBinarySha256,
         ...(input.compressFrame ? { compressFrame: input.compressFrame } : {}),
         physicalInputRecentlyActive: input.physicalInputRecentlyActive,
+        ...(input.requestAccessibilityPermission
+          ? { requestAccessibilityPermission: input.requestAccessibilityPermission }
+          : {}),
         ...(input.screenLocked ? { screenLocked: input.screenLocked } : {}),
-        ...(input.onTrace ? { onTrace: input.onTrace } : {}),
         ...(input.overlay ? { overlay: input.overlay } : {}),
       }),
       binaryPath,
@@ -136,16 +134,9 @@ export function createDesktopPhysicalInputGuard(
   return () => getSystemIdleTime() < 1;
 }
 
-/**
- * One executor, one state.
- *
- * cua-driver ran as a pair of roles — one process to act, one to capture — so
- * this had to reconcile two states into one word, and "healthy" meant both.
- * maka-cu supervises a single child, so the reported state is the state.
- */
 export function computerUseServiceHealth(
   backendId: SelectedComputerUseBackend['backendId'],
-  state: MakaCuServiceSnapshot | undefined,
+  state: { state: CuaDriverServiceState; generation: number } | undefined,
 ): {
   state: 'not_available' | 'not_run' | 'healthy' | 'degraded';
   reason: CapabilityReasonCode;
@@ -159,7 +150,6 @@ export function computerUseServiceHealth(
     case 'unavailable':
       return { state: 'not_available', reason: 'cu_executor_start_failed' };
     case 'starting':
-    case 'backing_off':
       return { state: 'degraded', reason: 'cu_executor_recovering' };
     case 'ready':
       return { state: 'healthy', reason: 'cu_executor_ready' };

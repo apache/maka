@@ -126,6 +126,7 @@ export async function packageMacos({
   await run('npm', ['run', 'build']);
   await run('npm', ['run', 'build:runtime-host-peer']);
   await run('npm', ['run', 'check:runtime-host-peer-notices']);
+  await run('node', ['scripts/computer-use.mjs', 'prepare']);
   await run('npm', ['run', 'check:release']);
   await remove(target.releaseDirectory, { recursive: true, force: true });
   await run('npm', ['--workspace', '@maka/desktop', 'run', `package:macos-${targetArch}`]);

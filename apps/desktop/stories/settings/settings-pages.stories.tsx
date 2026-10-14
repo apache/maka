@@ -635,7 +635,7 @@ const capabilitySnapshot: CapabilitySnapshotCollection = {
         state: 'degraded',
         source: 'runtime_probe',
         lastCheckedAt: NOW - 5 * 60_000,
-        reason: 'maka-cu 未响应握手，已回落到只读观察模式。',
+        reason: 'Cua Driver 未响应，Computer Use 暂不可用。',
       },
       osPermissions: [
         { id: 'accessibility', required: true, status: 'granted' },
@@ -689,15 +689,15 @@ const healthSignals: HealthSignal[] = [
     relatedCapabilityId: 'computer_use',
   },
   {
-    id: 'probe:maka-cu',
-    label: 'maka-cu 运行态探测',
+    id: 'probe:cua-driver',
+    label: 'Cua Driver 运行态探测',
     scope: 'capability',
     layer: 'runtime_probe',
     status: 'warning',
     source: 'runtime_probe',
     checkedAt: NOW - 5 * 60_000,
     message: 'capability_degraded',
-    detail: { kind: 'capability_reason', reason: 'maka-cu service 启动失败、已退出或已停止。' },
+    detail: { kind: 'capability_reason', reason: 'Cua Driver 启动失败、已退出或已停止。' },
     relatedCapabilityId: 'computer_use',
     blocksCapability: true,
   },
@@ -3566,6 +3566,15 @@ export const AboutRelease: Story = {
     }),
   ],
   render: () => <SettingsStory section="about" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.findByRole('heading', { name: '第三方组件' })).resolves.toBeTruthy();
+    await expect(canvas.findByText(/Cua Driver（MIT）/u)).resolves.toBeTruthy();
+    await expect(canvas.getByRole('link', { name: 'Cua Driver' })).toHaveAttribute(
+      'href',
+      'https://github.com/trycua/cua',
+    );
+  },
 };
 
 // Real path: the same page mid-download. The row keeps the shape of every

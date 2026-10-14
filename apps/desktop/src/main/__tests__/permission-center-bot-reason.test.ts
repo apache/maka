@@ -120,7 +120,7 @@ test('health center resolves non-bot capability codes through the shared catalog
       getCapabilityReasonCopy(locale).cu_executor_start_failed,
     );
     assert.equal(
-      localizedSignalDetail(signal('maka-cu service 启动失败、已退出或已停止。'), copy, locale),
+      localizedSignalDetail(signal('Cua Driver 启动失败、已退出或已停止。'), copy, locale),
       copy.signalDetail(signal('future_code')),
     );
   }
