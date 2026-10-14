@@ -54,7 +54,6 @@ describe('buildProviderOptions: thinking level', () => {
   test('provider defaults reach the SDK request body without thinking overrides', async () => {
     for (const [connection, modelId] of [
       [conn('openai'), 'gpt-5.5'],
-      [conn('anthropic'), 'claude-haiku-4-5'],
       [conn('kimi-coding-plan'), 'k3'],
       [conn('kimi-coding-plan'), 'kimi-for-coding'],
       [{ ...conn('kimi-coding-plan'), models: [{ id: 'k3', apiProtocol: 'openai-chat' }] }, 'k3'],
@@ -153,37 +152,43 @@ describe('buildProviderOptions: thinking level', () => {
   });
 
   test('toggle-only Claude sends on and off without inventing an effort', async () => {
-    const bodies: Record<string, unknown>[] = [];
-    const connection = conn('anthropic');
-    const modelId = 'claude-haiku-4-5';
-    const model = getAIModel({
-      connection,
-      modelId,
-      apiKey: 'test-key',
-      fetch: async (_input, init) => {
-        bodies.push(JSON.parse(String(init?.body)));
-        return Response.json({
-          id: 'msg-1',
-          type: 'message',
-          role: 'assistant',
-          model: modelId,
-          content: [{ type: 'text', text: 'ok' }],
-          stop_reason: 'end_turn',
-          usage: { input_tokens: 1, output_tokens: 1 },
-        });
-      },
-    });
-    for (const level of ['on', 'off', 'high'] as const) {
-      await model.doGenerate({
-        prompt: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
-        providerOptions: buildProviderOptions(connection, modelId, level),
+    for (const [providerType, modelId] of [
+      ['anthropic', 'claude-haiku-4-5'],
+      ['opencode', 'claude-sonnet-4-5'],
+      ['opencode', 'claude-haiku-4-5'],
+    ] as const) {
+      const bodies: Record<string, unknown>[] = [];
+      const connection = conn(providerType);
+      const model = getAIModel({
+        connection,
+        modelId,
+        apiKey: 'test-key',
+        fetch: async (_input, init) => {
+          bodies.push(JSON.parse(String(init?.body)));
+          return Response.json({
+            id: 'msg-1',
+            type: 'message',
+            role: 'assistant',
+            model: modelId,
+            content: [{ type: 'text', text: 'ok' }],
+            stop_reason: 'end_turn',
+            usage: { input_tokens: 1, output_tokens: 1 },
+          });
+        },
       });
+      for (const level of [undefined, 'on', 'off', 'high'] as const) {
+        await model.doGenerate({
+          prompt: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+          providerOptions: buildProviderOptions(connection, modelId, level),
+        });
+      }
+      assert.deepEqual(
+        bodies.map((body) => body.thinking),
+        [undefined, { type: 'enabled', budget_tokens: 1_024 }, { type: 'disabled' }, undefined],
+        `${providerType}/${modelId}`,
+      );
+      for (const body of bodies) assert.equal(body.output_config, undefined);
     }
-    assert.deepEqual(
-      bodies.map((body) => body.thinking),
-      [{ type: 'enabled', budget_tokens: 1_024 }, { type: 'disabled' }, undefined],
-    );
-    for (const body of bodies) assert.equal(body.output_config, undefined);
   });
 
   test('Claude 4.5 uses legacy enabled thinking even when the UI exposes effort levels', () => {

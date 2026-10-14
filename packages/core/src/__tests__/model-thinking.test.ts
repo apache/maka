@@ -46,7 +46,15 @@ test('relay declarations accept effort tiers but not thinking switches', () => {
 });
 
 test('toggle-only Claude models offer an explicit on choice without inventing effort', () => {
-  assert.deepEqual(thinkingVariantsForModel('anthropic', 'claude-haiku-4-5'), ['off', 'on']);
+  for (const providerType of ['anthropic', 'opencode'] as const) {
+    for (const modelId of ['claude-sonnet-4-5', 'claude-haiku-4-5']) {
+      assert.deepEqual(
+        thinkingVariantsForModel(providerType, modelId),
+        ['off', 'on'],
+        `${providerType}/${modelId}`,
+      );
+    }
+  }
   assert.equal(resolveThinkingLevel({ providerType: 'anthropic' }, 'claude-haiku-4-5', 'on'), 'on');
   assert.equal(
     defaultThinkingLevelForConnection(
