@@ -345,12 +345,23 @@ function translateMarkdownMath(
     // Destinations take `$` verbatim: escaping there would reach the href,
     // where `\$` does not round-trip back to `$`.
     const destination = readLinkDestination(source, index);
-    if (destination !== undefined) {
-      text += source.slice(index, destination);
-      index = destination;
+    if (destination.kind === 'matched') {
+      text += source.slice(index, destination.end);
+      index = destination.end;
       atLineStart = false;
       markSafe();
       continue;
+    }
+    if (destination.kind === 'pending') {
+      text += source.slice(index);
+      index = source.length;
+      atLineStart = false;
+      if (isFinalSegment) {
+        markSafe();
+      } else {
+        canMarkSafe = false;
+      }
+      break;
     }
 
     const autolink = readAutolink(source, index);
@@ -520,35 +531,50 @@ function displayMathSource(
   return `\n${margin}$$\n${margin}${body}\n${margin}$$\n${margin}`;
 }
 
+type LinkDestinationScan =
+  | { kind: 'matched'; end: number }
+  | { kind: 'invalid' }
+  | { kind: 'pending' };
+
 /**
  * Span of `](destination …)`/`![…](destination …)` and `][label]` reference
  * links. A destination ends at the `)` that returns paren depth to zero; an
  * unclosed one is prose and gets the ordinary `$` treatment.
  */
-function readLinkDestination(source: string, index: number): number | undefined {
-  if (source[index] !== ']') return undefined;
+function readLinkDestination(source: string, index: number): LinkDestinationScan {
+  if (source[index] !== ']') return { kind: 'invalid' };
+  if (index + 1 >= source.length) return { kind: 'pending' };
+
   if (source[index + 1] === '[') {
     const close = source.indexOf(']', index + 2);
-    return close >= 0 && !source.slice(index + 2, close).includes('\n')
-      ? close + 1
-      : undefined;
+    if (close < 0) {
+      if (source.slice(index + 2).includes('\n')) return { kind: 'invalid' };
+      return { kind: 'pending' };
+    }
+    return !source.slice(index + 2, close).includes('\n')
+      ? { kind: 'matched', end: close + 1 }
+      : { kind: 'invalid' };
   }
-  if (source[index + 1] !== '(') return undefined;
+
+  if (source[index + 1] !== '(') return { kind: 'invalid' };
+
   let depth = 0;
   for (let i = index + 1; i < source.length; i++) {
     const char = source[i];
     if (char === '\\') {
+      if (i + 1 >= source.length) return { kind: 'pending' };
       i++;
     } else if (char === '(') {
       depth++;
+      if (depth > MAX_LINK_TAIL_DEPTH) return { kind: 'invalid' };
     } else if (char === ')') {
       depth--;
-      if (depth === 0) return i + 1;
+      if (depth === 0) return { kind: 'matched', end: i + 1 };
     } else if (char === '\n' && depth === 1) {
-      return undefined;
+      return { kind: 'invalid' };
     }
   }
-  return undefined;
+  return { kind: 'pending' };
 }
 
 /** `<scheme:…>` and `<address@host>` autolinks take `$` verbatim. */

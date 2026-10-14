@@ -707,6 +707,152 @@ it('does not rescan malformed link tails quadratically', () => {
   assert.ok(streamedElapsed < 1_000, `streaming malformed link scan took ${streamedElapsed.toFixed(1)}ms`);
 });
 
+it('does not escape bare dollar signs when a chunk boundary splits before or inside link destinations', () => {
+  const full = 'prefix ](https://example.com/search?query=$100&cost=$200)';
+  const splitPoints = [
+    'prefix ]',
+    'prefix ](',
+    'prefix ](https://example.com/search?query=',
+  ];
+
+  for (const head of splitPoints) {
+    const cache = createMarkdownMathCache();
+    prepareMarkdownMath(head, cache);
+    const incremental = prepareMarkdownMath(full, cache);
+    const oneshot = prepareMarkdownMath(full, createMarkdownMathCache());
+
+    assert.equal(incremental, oneshot, `Failed at split point: "${head}"`);
+    assert.doesNotMatch(incremental, /\\\$/, `Dollar should not be escaped in destination for head: "${head}"`);
+  }
+
+  const linkFull = '[search](https://example.com/search?query=$100&cost=$200)';
+  const linkSplitPoints = [
+    '[search]',
+    '[search](',
+    '[search](https://example.com/search?query=',
+  ];
+
+  for (const head of linkSplitPoints) {
+    const cache = createMarkdownMathCache();
+    prepareMarkdownMath(head, cache);
+    const incremental = prepareMarkdownMath(linkFull, cache);
+    const oneshot = prepareMarkdownMath(linkFull, createMarkdownMathCache());
+
+    assert.equal(incremental, oneshot, `Failed at link split point: "${head}"`);
+    assert.doesNotMatch(incremental, /\\\$/, `Dollar should not be escaped in link destination for head: "${head}"`);
+  }
+
+  // Incremental 1-byte streaming across entire string
+  const cache = createMarkdownMathCache();
+  let byteIncremental = '';
+  for (let end = 1; end <= linkFull.length; end++) {
+    byteIncremental = prepareMarkdownMath(linkFull.slice(0, end), cache);
+  }
+  assert.equal(byteIncremental, prepareMarkdownMath(linkFull, createMarkdownMathCache()));
+
+  // Render via MarkdownBody to verify href is preserved without backslash escapes
+  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(MarkdownBody, { text: linkFull }),
+  }));
+  assert.match(markup, /href="https:\/\/example\.com\/search\?query=\$100&amp;cost=\$200"/);
+  assert.doesNotMatch(markup, /\\\$100/);
+});
+
+it('preserves reference link tails across chunk boundaries and incremental streaming', () => {
+  const full = 'prefix ][ref_$target]';
+  const splitPoints = [
+    'prefix ]',
+    'prefix ][',
+    'prefix ][ref_',
+    'prefix ][ref_$target]',
+  ];
+
+  for (const head of splitPoints) {
+    const cache = createMarkdownMathCache();
+    prepareMarkdownMath(head, cache);
+    const incremental = prepareMarkdownMath(full, cache);
+    const oneshot = prepareMarkdownMath(full, createMarkdownMathCache());
+
+    assert.equal(incremental, oneshot, `Failed at split point: "${head}"`);
+  }
+
+  // 1-byte streaming across unassociated reference tail
+  const cache = createMarkdownMathCache();
+  let incremental = '';
+  for (let end = 1; end <= full.length; end++) {
+    incremental = prepareMarkdownMath(full.slice(0, end), cache);
+  }
+  assert.equal(incremental, prepareMarkdownMath(full, createMarkdownMathCache()));
+
+  // Reference link with target identifier containing $
+  const linkText = '[label][ref_$target]\n\n[ref_$target]: https://example.com/path';
+  const linkSplitPoints = [
+    '[label]',
+    '[label][',
+    '[label][ref_',
+  ];
+
+  for (const head of linkSplitPoints) {
+    const linkCache = createMarkdownMathCache();
+    prepareMarkdownMath(head, linkCache);
+    const inc = prepareMarkdownMath(linkText, linkCache);
+    const oneshot = prepareMarkdownMath(linkText, createMarkdownMathCache());
+
+    assert.equal(inc, oneshot, `Failed at link split point: "${head}"`);
+  }
+
+  // Incremental 1-byte streaming across complete reference link and definition
+  const fullLinkCache = createMarkdownMathCache();
+  let fullIncremental = '';
+  for (let end = 1; end <= linkText.length; end++) {
+    fullIncremental = prepareMarkdownMath(linkText.slice(0, end), fullLinkCache);
+  }
+  assert.equal(fullIncremental, prepareMarkdownMath(linkText, createMarkdownMathCache()));
+
+  // Check valid reference link render in MarkdownBody
+  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(MarkdownBody, { text: linkText }),
+  }));
+  assert.match(markup, /href="https:\/\/example\.com\/path"/);
+  assert.match(markup, />label</);
+  assert.doesNotMatch(markup, /maka-math/);
+});
+
+it('round-trips literal transport tokens across modes 0, 1, and 2 without KaTeX decoding', () => {
+  const tokens = [
+    { mode: '0 (inline)', token: '\uE000MAKA_MATH:0:78\uE001' },
+    { mode: '1 (display)', token: '\uE000MAKA_MATH:1:78\uE001' },
+    { mode: '2 (literal)', token: '\uE000MAKA_MATH:2:78\uE001' },
+  ];
+
+  for (const { mode, token } of tokens) {
+    const full = `Prose before ${token} prose after`;
+
+    // One-shot prepare
+    const oneshot = prepareMarkdownMath(full, createMarkdownMathCache());
+
+    // Incremental byte-by-byte streaming
+    const cache = createMarkdownMathCache();
+    let incremental = '';
+    for (let end = 1; end <= full.length; end++) {
+      incremental = prepareMarkdownMath(full.slice(0, end), cache);
+    }
+
+    assert.equal(incremental, oneshot, `Incremental mismatch for mode ${mode}`);
+
+    // Render through MarkdownBody: ensure it does not decode into KaTeX math
+    const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+      locale: 'en',
+      children: createElement(MarkdownBody, { text: full }),
+    }));
+
+    assert.doesNotMatch(markup, /class="maka-math/, `KaTeX maka-math rendered for literal token mode ${mode}`);
+    assert.doesNotMatch(markup, /class="katex/, `KaTeX class rendered for literal token mode ${mode}`);
+  }
+});
+
 it('keeps the copy control in a toolbar above a one-line code scroll viewport', () => {
   const markup = renderToStaticMarkup(createElement(LocaleProvider, {
     locale: 'en',
