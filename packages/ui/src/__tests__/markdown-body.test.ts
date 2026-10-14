@@ -773,40 +773,79 @@ it('does not escape bare dollar signs when a chunk boundary splits before or ins
   assert.match(markup, /href="https:\/\/example\.com\/search\?query=\$100&amp;cost=\$200"/);
 });
 
-it('preserves normal prose processing and math when an inline tail remains incomplete', () => {
-  const literalDollar = 'prefix ](literal $x$ text';
-  const oneshotDollar = prepareMarkdownMath(literalDollar, createMarkdownMathCache());
-  const cacheDollar = createMarkdownMathCache();
-  let streamedDollar = '';
-  for (let end = 1; end <= literalDollar.length; end++) {
-    streamedDollar = prepareMarkdownMath(literalDollar.slice(0, end), cacheDollar);
+it('preserves normal prose processing and math when an unfinished label or inline tail remains incomplete', () => {
+  const cases = [
+    {
+      source: 'prefix ](literal $x$ text',
+      hasMath: false,
+      expectedPattern: /\$x\$/,
+    },
+    {
+      source: 'prefix ](literal \\(x+1\\) text',
+      hasMath: true,
+    },
+    {
+      source: 'prefix [literal $x$ text',
+      hasMath: false,
+      expectedPattern: /\$x\$/,
+    },
+    {
+      source: 'prefix [literal \\(x+1\\) text',
+      hasMath: true,
+    },
+    {
+      source: 'prefix [label](literal $x$ text',
+      hasMath: false,
+      expectedPattern: /\$x\$/,
+    },
+    {
+      source: 'prefix [label](literal \\(x+1\\) text',
+      hasMath: true,
+    },
+  ];
+
+  for (const { source, hasMath, expectedPattern } of cases) {
+    const oneshot = prepareMarkdownMath(source, createMarkdownMathCache());
+    const cache = createMarkdownMathCache();
+    let streamed = '';
+    for (let end = 1; end <= source.length; end++) {
+      streamed = prepareMarkdownMath(source.slice(0, end), cache);
+    }
+    assert.equal(streamed, oneshot, `Incremental mismatch for "${source}"`);
+
+    const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+      locale: 'en',
+      children: createElement(MarkdownBody, { text: source, streaming: false }),
+    }));
+
+    if (hasMath) {
+      assert.match(markup, /class="maka-math maka-math-inline"/, `Missing KaTeX for "${source}"`);
+      assert.match(markup, /class="katex"/, `Missing KaTeX for "${source}"`);
+    } else {
+      assert.doesNotMatch(markup, /class="maka-math/, `Unexpected KaTeX for "${source}"`);
+      assert.doesNotMatch(markup, /class="katex/, `Unexpected KaTeX for "${source}"`);
+      if (expectedPattern) {
+        assert.match(markup, expectedPattern, `Expected pattern not found for "${source}"`);
+      }
+    }
   }
-  assert.equal(streamedDollar, oneshotDollar);
-  assert.match(oneshotDollar, /\\\$x\\\$/);
 
-  const markupDollar = renderToStaticMarkup(createElement(LocaleProvider, {
+  // Multi-chunk streaming where an incomplete destination later closes
+  const chunk1 = 'prefix [label](https://example.com/search?query=$100';
+  const chunk2 = 'prefix [label](https://example.com/search?query=$100&cost=$200)';
+  const cacheChunks = createMarkdownMathCache();
+  prepareMarkdownMath(chunk1, cacheChunks);
+  assert.equal(cacheChunks.safeSourceEnd, 'prefix '.length);
+
+  const res2 = prepareMarkdownMath(chunk2, cacheChunks);
+  assert.equal(res2, prepareMarkdownMath(chunk2, createMarkdownMathCache()));
+  assert.doesNotMatch(res2, /\\\$/, 'Destination bare dollars must not be escaped after closing');
+
+  const markupClosed = renderToStaticMarkup(createElement(LocaleProvider, {
     locale: 'en',
-    children: createElement(MarkdownBody, { text: literalDollar, streaming: false }),
+    children: createElement(MarkdownBody, { text: chunk2 }),
   }));
-  assert.doesNotMatch(markupDollar, /class="maka-math/);
-  assert.doesNotMatch(markupDollar, /class="katex/);
-  assert.match(markupDollar, /\$x\$/);
-
-  const inlineMath = 'prefix ](literal \\(x+1\\) text';
-  const oneshotMath = prepareMarkdownMath(inlineMath, createMarkdownMathCache());
-  const cacheMath = createMarkdownMathCache();
-  let streamedMath = '';
-  for (let end = 1; end <= inlineMath.length; end++) {
-    streamedMath = prepareMarkdownMath(inlineMath.slice(0, end), cacheMath);
-  }
-  assert.equal(streamedMath, oneshotMath);
-
-  const markupMath = renderToStaticMarkup(createElement(LocaleProvider, {
-    locale: 'en',
-    children: createElement(MarkdownBody, { text: inlineMath, streaming: false }),
-  }));
-  assert.match(markupMath, /class="maka-math maka-math-inline"/);
-  assert.match(markupMath, /class="katex"/);
+  assert.match(markupClosed, /href="https:\/\/example\.com\/search\?query=\$100&amp;cost=\$200"/);
 });
 
 it('preserves reference link tails across chunk boundaries and incremental streaming', () => {

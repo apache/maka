@@ -74,38 +74,17 @@ export function prepareMarkdownMath(
   // keeps the scanner on the changing tail; it does not make the full-string
   // identity check itself incremental.
   const extendsPrevious = source.startsWith(cache.source);
-  if (!extendsPrevious) {
-    pendingLabelScans.delete(cache);
-  } else {
-    const pending = pendingLabelScans.get(cache);
-    if (pending !== undefined) {
-      // The unfinished label is the only unsettled business: resume its scan
-      // over the appended bytes instead of re-walking from its opener.
-      const continued = scanLabel(source, pending);
-      if (continued.kind === 'pending') {
-        pendingLabelScans.set(cache, continued.state);
-        cache.text += source.slice(cache.source.length);
-        cache.source = source;
-        return cache.text;
-      }
-      pendingLabelScans.delete(cache);
-    }
-  }
   const sourceStart = extendsPrevious ? cache.safeSourceEnd : 0;
   const textStart = extendsPrevious ? cache.safeTextEnd : 0;
+  const lastNewline = sourceStart > 0 ? source.lastIndexOf('\n', sourceStart - 1) : -1;
+  const linePrefix = sourceStart > 0 && lastNewline < sourceStart - 1
+    ? source.slice(lastNewline + 1, sourceStart)
+    : '';
   const translatedTail = translateMarkdownMath(source.slice(sourceStart), {
     startsAtLineStart: sourceStart === 0 || source[sourceStart - 1] === '\n',
     priorTextChar: cache.text[textStart - 1],
     leadingBackslashes: countPrecedingBackslashes(source, sourceStart),
-    onLabelPending: (state) => {
-      // The scan ran on the sliced tail, so its positions are relative to
-      // sourceStart; the continuation resumes on the full source and needs
-      // absolute positions.
-      state.index += sourceStart;
-      if (state.runStart !== null) state.runStart += sourceStart;
-      state.codeSearchFrom += sourceStart;
-      pendingLabelScans.set(cache, state);
-    },
+    linePrefix,
   });
   const text = `${extendsPrevious ? cache.text.slice(0, textStart) : ''}${translatedTail.text}`;
 
@@ -145,6 +124,10 @@ export const MARKDOWN_MATH_PLUGINS = [{
 
 const ZWSP = '\u200B';
 const WORD_CHAR = /[\w$]/;
+const NON_SPECIAL_RUN = /[^\\$`\[\]<!\n\uE000hwm@~]+/y;
+const AUTOLINK_PATTERN = /<(?:[a-zA-Z][a-zA-Z0-9+.-]*:|[^<>\s@]+@[^<>\s@]+)[^<>\s]*>/y;
+const BARE_URL_PATTERN = /(?:https?:\/\/|www\.|mailto:|[\w.+-]+@[\w-]+(?:\.[\w-]+)+)\S*/y;
+const REFERENCE_DEFINITION_PATTERN = / {0,3}\[[^\]\n]+\]:[^\n]*/y;
 
 type TranslateMarkdownMathOptions = {
   startsAtLineStart?: boolean;
@@ -153,7 +136,7 @@ type TranslateMarkdownMathOptions = {
   protectEscapedBrackets?: boolean;
   isFinalSegment?: boolean;
   leadingBackslashes?: number;
-  onLabelPending?: (state: LabelScanState) => void;
+  linePrefix?: string;
 };
 
 /**
@@ -176,7 +159,7 @@ function translateMarkdownMath(
     protectEscapedBrackets = false,
     isFinalSegment = false,
     leadingBackslashes = 0,
-    onLabelPending,
+    linePrefix = '',
   }: TranslateMarkdownMathOptions = {},
 ): {
   text: string;
@@ -241,6 +224,19 @@ function translateMarkdownMath(
       continue;
     }
 
+    if (!atLineStart) {
+      NON_SPECIAL_RUN.lastIndex = index;
+      const nonSpecial = NON_SPECIAL_RUN.exec(source);
+      if (nonSpecial) {
+        const run = nonSpecial[0];
+        text += run;
+        index += run.length;
+        atLineStart = false;
+        markSafe();
+        continue;
+      }
+    }
+
     if (source[index] === '`') {
       let runEnd = index + 1;
       while (source[runEnd] === '`') runEnd++;
@@ -267,22 +263,9 @@ function translateMarkdownMath(
 
     const link = readMarkdownLink(source, index, leadingBackslashes);
     if (link?.kind === 'pending') {
-      // Remember the scan only when everything before its opener already
-      // settled: an earlier unresolved backtick or math opener must be
-      // reparsed together with later chunks, and resuming just the label
-      // would skip it forever.
-      if (link.labelState !== undefined && safeSourceEnd === index) {
-        onLabelPending?.(link.labelState);
-      }
-      text += source.slice(index, link.end);
-      index = link.end;
-      atLineStart = false;
-      if (isFinalSegment) {
-        markSafe();
-      } else {
+      if (!isFinalSegment) {
         canMarkSafe = false;
       }
-      continue;
     }
     if (link?.kind === 'match') {
       // A bare closed label with nothing after it can still grow an inline
@@ -402,9 +385,9 @@ function translateMarkdownMath(
       // containing `|` degrades to an inline span inside the cell.
       const displayInline = delimited.display
         && !delimited.formula.includes('\n')
-        && lineHasPipe(source, index);
+        && lineHasPipe(source, index, linePrefix);
       if (delimited.display && !displayInline) {
-        text += displayMathSource(delimited.formula, source, index);
+        text += displayMathSource(delimited.formula, source, index, linePrefix);
         index = delimited.end;
         atLineStart = source[index - 1] === '\n';
         markSafe();
@@ -418,7 +401,7 @@ function translateMarkdownMath(
       text += inlineMathSource(
         delimited.formula,
         text.length > 0 ? text[text.length - 1] : priorTextChar,
-        next !== undefined && nextBreaksInlineClose(source, delimited.end),
+        next !== undefined && nextBreaksInlineClose(source, delimited.end, linePrefix),
       );
       index = delimited.end;
       atLineStart = source[index - 1] === '\n';
@@ -437,7 +420,7 @@ function translateMarkdownMath(
     if (
       isFinalSegment
       || index < source.length
-      || (character !== '\\' && character !== '$' && character !== '`' && character !== ']')
+      || (character !== '\\' && character !== '$' && character !== '`' && character !== ']' && character !== '[')
     ) {
       markSafe();
     }
@@ -472,7 +455,7 @@ function inlineMathSource(
  * that invalidate a just-emitted `$…$` closing delimiter. A pending `$$`
  * opener passes through raw, so it counts even before its closer arrives.
  */
-function nextBreaksInlineClose(source: string, index: number): boolean {
+function nextBreaksInlineClose(source: string, index: number, linePrefix = ''): boolean {
   if (/\d/.test(source[index])) return true;
   const next =
     readDelimitedMath(source, index, '\\(', '\\)', false)
@@ -480,7 +463,7 @@ function nextBreaksInlineClose(source: string, index: number): boolean {
     ?? readDelimitedMath(source, index, '$$', '$$', true);
   if (!next) return false;
   if (next.kind === 'pending') return source[index] === '$';
-  return !next.display || (!next.formula.includes('\n') && lineHasPipe(source, index));
+  return !next.display || (!next.formula.includes('\n') && lineHasPipe(source, index, linePrefix));
 }
 
 /**
@@ -499,10 +482,11 @@ function escapeFormulaDollars(formula: string): string {
 
 /** Whether the delimiter's enclosing source line contains a `|` — i.e. it may
  * be a table row that a `$$` line would split apart. */
-function lineHasPipe(source: string, index: number): boolean {
+function lineHasPipe(source: string, index: number, linePrefix = ''): boolean {
   const lineStart = source.lastIndexOf('\n', index - 1) + 1;
   const lineEnd = source.indexOf('\n', index);
-  return source.slice(lineStart, lineEnd < 0 ? source.length : lineEnd).includes('|');
+  const prefix = lineStart === 0 ? linePrefix : '';
+  return (prefix + source.slice(lineStart, lineEnd < 0 ? source.length : lineEnd)).includes('|');
 }
 
 /**
@@ -515,10 +499,13 @@ function displayMathSource(
   formula: string,
   source: string,
   index: number,
+  linePrefix = '',
 ): string {
   const lineStart = source.lastIndexOf('\n', index - 1) + 1;
-  const quotePrefix = /^ {0,3}(?:> ?)*/.exec(source.slice(lineStart, index))?.[0] ?? '';
-  const margin = quotePrefix + ' '.repeat(index - lineStart - quotePrefix.length);
+  const prefix = lineStart === 0 ? linePrefix : '';
+  const lineSoFar = prefix + source.slice(lineStart, index);
+  const quotePrefix = /^ {0,3}(?:> ?)*/.exec(lineSoFar)?.[0] ?? '';
+  const margin = quotePrefix + ' '.repeat(lineSoFar.length - quotePrefix.length);
   const body = formula.replaceAll('\n', `\n${margin}`);
   return `\n${margin}$$\n${margin}${body}\n${margin}$$\n${margin}`;
 }
@@ -572,9 +559,8 @@ function readLinkDestination(source: string, index: number): LinkDestinationScan
 /** `<scheme:…>` and `<address@host>` autolinks take `$` verbatim. */
 function readAutolink(source: string, index: number): number | undefined {
   if (source[index] !== '<') return undefined;
-  const match = /^<(?:[a-zA-Z][a-zA-Z0-9+.-]*:|[^<>\s@]+@[^<>\s@]+)[^<>\s]*>/.exec(
-    source.slice(index),
-  );
+  AUTOLINK_PATTERN.lastIndex = index;
+  const match = AUTOLINK_PATTERN.exec(source);
   return match ? index + match[0].length : undefined;
 }
 
@@ -585,15 +571,15 @@ function readAutolink(source: string, index: number): number | undefined {
 function readBareUrl(source: string, index: number): number | undefined {
   const previous = source[index - 1];
   if (previous !== undefined && WORD_CHAR.test(previous)) return undefined;
-  const match = /^(?:https?:\/\/|www\.|mailto:|[\w.+-]+@[\w-]+(?:\.[\w-]+)+)\S*/.exec(
-    source.slice(index),
-  );
+  BARE_URL_PATTERN.lastIndex = index;
+  const match = BARE_URL_PATTERN.exec(source);
   return match ? index + match[0].length : undefined;
 }
 
 /** `[label]: destination` reference lines take `$` verbatim. */
 function readReferenceDefinition(source: string, index: number): number | undefined {
-  const match = /^ {0,3}\[[^\]\n]+\]:[^\n]*/.exec(source.slice(index));
+  REFERENCE_DEFINITION_PATTERN.lastIndex = index;
+  const match = REFERENCE_DEFINITION_PATTERN.exec(source);
   return match ? index + match[0].length : undefined;
 }
 
@@ -715,13 +701,8 @@ type MarkdownLinkScan =
       refLabelStart?: number;
       refLabelEnd?: number;
     }
-  | { kind: 'pending'; end: number; labelState?: LabelScanState }
+  | { kind: 'pending'; end: number }
   | undefined;
-
-// Resume state for an unfinished first-label scan, keyed by the owning cache.
-// Only the top-level scan stores here: nested scans re-derive on the next
-// full pass, and any closure funnels through a full reprocess anyway.
-const pendingLabelScans = new WeakMap<MarkdownMathCache, LabelScanState>();
 
 /**
  * Recognize a bounded Markdown label starting at `index` so its contents can
@@ -751,7 +732,7 @@ function readMarkdownLink(
 
   const firstScan = scanLabel(source, initialLabelScanState(openerEnd));
   if (firstScan.kind === 'pending') {
-    return { kind: 'pending', end: source.length, labelState: firstScan.state };
+    return { kind: 'pending', end: source.length };
   }
   if (firstScan.kind === 'invalid') return { kind: 'pending', end: firstScan.end };
   const labelEnd = firstScan.end;
@@ -771,13 +752,9 @@ function readMarkdownLink(
     return match(tailEnd);
   }
   if (tail === '[') {
-    // The identifier scan resumes the same way the first label does: its
-    // pending state is forwarded so streamed updates continue it instead of
-    // restarting at the reference opener on every update. An invalid
-    // identifier is definitive, so it keeps the old match-and-settle path.
     const refScan = scanLabel(source, initialLabelScanState(labelEnd + 2));
     if (refScan.kind === 'pending') {
-      return { kind: 'pending', end: source.length, labelState: refScan.state };
+      return { kind: 'pending', end: source.length };
     }
     if (refScan.kind === 'invalid') return match(refScan.end);
     return {
