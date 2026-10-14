@@ -19,6 +19,7 @@
 
 import { Service, type Context, type Disposable } from './plugin-kernel.js';
 import type { PluginAgentInvocation, PluginAgentService } from './plugin-agent-service.js';
+import { PluginRuntimeBinding } from './plugin-internals.js';
 
 declare module './plugin-kernel.js' {
   interface Context {
@@ -66,30 +67,22 @@ export interface PluginFilesystemRuntime {
 
 /** Full-fidelity filesystem entry point bound to Maka's canonical workspace authority. */
 export class PluginFilesystemService extends Service {
-  private filesystemRuntime?: PluginFilesystemRuntime;
+  private readonly runtimeBinding: PluginRuntimeBinding<PluginFilesystemRuntime>;
 
   constructor(
     ctx: Context,
     private readonly agents: PluginAgentService,
   ) {
     super(ctx, 'fs');
+    this.runtimeBinding = new PluginRuntimeBinding('fs', 'Filesystem');
   }
 
   bindRuntime(runtime: PluginFilesystemRuntime): Disposable<Promise<void>> {
-    if (this.ctx.maka) throw new Error('Only the Host may bind the Filesystem Runtime');
-    if (this.filesystemRuntime) throw new Error('Plugin Filesystem Runtime is already bound');
-    this.filesystemRuntime = runtime;
-    return this.ctx.effect(
-      () => () => {
-        if (this.filesystemRuntime === runtime) this.filesystemRuntime = undefined;
-      },
-      'fs.bindRuntime()',
-    );
+    return this.runtimeBinding.bind(this.ctx, runtime);
   }
 
   execute(operation: PluginFilesystemOperation): Promise<unknown> {
-    if (!this.filesystemRuntime) throw new Error('Plugin Filesystem Runtime is unavailable');
-    return this.filesystemRuntime.execute(operation, this.agents.requireInvocation());
+    return this.runtimeBinding.get().execute(operation, this.agents.requireInvocation());
   }
 
   read(path: string, options: { readonly offset?: number; readonly limit?: number } = {}) {

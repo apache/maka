@@ -62,6 +62,11 @@ export async function readCanonicalTurnSnapshot(
   const terminal = classifyTerminalRuntimeLedger(logical.tip, logical.events);
   if (terminal.kind === 'fact') {
     const fact = terminal.fact;
+    if (fact.runStatus === 'handed_off') {
+      // The pause ends this run, not the turn: the logical execution continues
+      // in the handoff successor.
+      return { sessionId, turnId, runId, status: 'running', ...rootExecutionKind };
+    }
     if (fact.runStatus === 'completed') {
       const contextCompactionOutcome = readContextCompactionOutcome(
         fact.terminalEvent.actions?.stateDelta?.contextCompactionOutcome,

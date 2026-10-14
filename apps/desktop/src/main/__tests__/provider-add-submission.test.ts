@@ -67,11 +67,9 @@ const onboardingSaveInput: Parameters<ApiKeyOnboardingBridge['save']>[0] = {
   enabledModelIds: ['gpt-5'],
 };
 
-const RELAY_TYPES: readonly ProviderType[] = ['openai-compatible', 'openai-responses-compatible'];
-
 function draft(over: Partial<AddProviderDraft> = {}): AddProviderDraft {
   return {
-    providerType: 'openai-compatible',
+    providerType: 'custom',
     slug: 'house-relay',
     existingSlugs: [],
     apiKey: 'sk-test',
@@ -86,13 +84,23 @@ function connection(slug: string): IdentifiedLlmConnection {
     connectionId: `connection-${slug}`,
     slug,
     name: slug,
-    providerType: 'openai-compatible',
+    providerType: 'custom',
+    defaultApiProtocol: 'openai-chat',
+    baseUrl: 'https://relay.example.com/v1',
     defaultModel: '',
     enabled: true,
     createdAt: 0,
     updatedAt: 0,
   } as IdentifiedLlmConnection;
 }
+
+const CUSTOM_INPUT: CreateConnectionInput = {
+  slug: 'house-relay',
+  name: 'House',
+  providerType: 'custom',
+  defaultApiProtocol: 'openai-chat',
+  baseUrl: 'https://relay.example.com/v1',
+};
 
 function bridge(over: {
   create?: (input: CreateConnectionInput) => Promise<IdentifiedLlmConnection>;
@@ -105,12 +113,10 @@ function bridge(over: {
 }
 
 // The first of the two behaviours this module exists to protect. A custom
-// relay used to be the only provider class that refused to be created without
-// a hand-typed model id — before the app had asked the relay what it serves.
-test('a custom relay is created without a hand-typed model id', () => {
-  for (const providerType of RELAY_TYPES) {
-    assert.equal(validateAddProviderDraft(draft({ providerType })), null, providerType);
-  }
+// connection used to be the only provider class that refused to be created
+// without a hand-typed model id — before the app had asked it what it serves.
+test('a custom connection is created without a hand-typed model id', () => {
+  assert.equal(validateAddProviderDraft(draft()), null);
 });
 
 test('no provider type demands a model id at creation', () => {
@@ -134,21 +140,19 @@ test('no provider type demands a model id at creation', () => {
 });
 
 // The second. Discovery failures were reported for every provider except the
-// custom relays, which are the endpoints most likely to be misconfigured.
-test('a discovery failure reaches the caller for a custom relay', async () => {
-  for (const providerType of RELAY_TYPES) {
-    const failure = new Error('relay refused /v1/models');
-    const created = await createProviderWithDiscovery(
-      bridge({
-        fetchModels: async () => {
-          throw failure;
-        },
-      }),
-      { slug: 'house-relay', name: 'House', providerType } as CreateConnectionInput,
-    );
-    assert.equal(created.connection.slug, 'house-relay');
-    assert.equal(created.modelDiscoveryError, failure, providerType);
-  }
+// custom connections, which are the endpoints most likely to be misconfigured.
+test('a discovery failure reaches the caller for a custom connection', async () => {
+  const failure = new Error('relay refused /v1/models');
+  const created = await createProviderWithDiscovery(
+    bridge({
+      fetchModels: async () => {
+        throw failure;
+      },
+    }),
+    CUSTOM_INPUT,
+  );
+  assert.equal(created.connection.slug, 'house-relay');
+  assert.equal(created.modelDiscoveryError, failure);
 });
 
 test('a discovery failure reaches the caller for a built-in provider too', async () => {
@@ -174,7 +178,7 @@ test('a failed catalog fetch still yields the created connection', async () => {
         throw new Error('ECONNREFUSED');
       },
     }),
-    { slug: 'house-relay', name: 'House', providerType: 'openai-compatible' } as CreateConnectionInput,
+    CUSTOM_INPUT,
   );
   assert.equal(created.connection.slug, 'house-relay');
 });
@@ -182,7 +186,7 @@ test('a failed catalog fetch still yields the created connection', async () => {
 test('a successful catalog fetch reports no error', async () => {
   const created = await createProviderWithDiscovery(
     bridge({}),
-    { slug: 'house-relay', name: 'House', providerType: 'openai-compatible' } as CreateConnectionInput,
+    CUSTOM_INPUT,
   );
   assert.equal(created.modelDiscoveryError, undefined);
 });
@@ -215,7 +219,7 @@ test('a create failure propagates instead of being reported as a discovery probl
           throw failure;
         },
       }),
-      { slug: 'house-relay', name: 'House', providerType: 'openai-compatible' } as CreateConnectionInput,
+      CUSTOM_INPUT,
     ),
     failure,
   );
@@ -281,7 +285,7 @@ test('routes only fixed-endpoint API-key drafts without request customization to
     hasRequestBodyOverlay: true,
   }), { kind: 'legacy', reason: 'request_body' });
   assert.deepEqual(apiKeyOnboardingRoute({
-    providerType: 'openai-compatible',
+    providerType: 'custom',
     requestHeaderCount: 0,
     hasRequestBodyOverlay: false,
   }), { kind: 'legacy', reason: 'custom_endpoint' });

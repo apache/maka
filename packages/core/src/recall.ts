@@ -134,12 +134,23 @@ const JSON_ESCAPED_PRINTABLE_PATTERN = /["\\]/u;
 const FIRST_UNESCAPED_CODE_POINT = 0x20;
 
 /**
+ * A surrogate without its partner. `JSON.stringify` writes one as a `\u`
+ * escape, and a store binding the term as UTF-8 cannot represent it at all, so
+ * not even a stored pair it is half of is offered. Under the `u` flag a
+ * well-formed pair is one code point, so an emoji does not match.
+ */
+const UNPAIRED_SURROGATE_PATTERN = /\p{Cs}/u;
+
+/**
  * A term containing a character that `JSON.stringify` escapes is stored in a
  * different literal form than it was typed, so a candidate source scanning
- * serialized records would under-select it. Such terms force a full scan.
+ * serialized records would under-select it. A lone surrogate also cannot be
+ * bound as UTF-8, so such a scan misses it even where it is stored literally,
+ * as half of a pair. Such terms force a full scan.
  */
 function hasJsonEscapedCharacter(term: string): boolean {
   if (JSON_ESCAPED_PRINTABLE_PATTERN.test(term)) return true;
+  if (UNPAIRED_SURROGATE_PATTERN.test(term)) return true;
   for (const character of term) {
     if ((character.codePointAt(0) ?? 0) < FIRST_UNESCAPED_CODE_POINT) return true;
   }
@@ -959,9 +970,28 @@ function optionalTimestamp(value: unknown): number | undefined | null {
   return value;
 }
 
+/** Complete read-only history corpus for plugin organizers; same privacy and
+ * revision rules as Recall, without the search query's scan-count cap. */
+export async function listRecallHistorySessions(
+  deps: Pick<RecallDeps, 'listSessions' | 'getPrivacyContext'>,
+  activeSessionId: string,
+): Promise<SessionSummary[]> {
+  const privacy = validateWorkspacePrivacyContext(await deps.getPrivacyContext());
+  if (!privacy.ok || privacy.value.incognitoActive)
+    throw new Error(
+      'History is unavailable while workspace privacy cannot be verified or incognito is active',
+    );
+  return eligibleSessions(
+    collapseSessionRevisions(await deps.listSessions(), activeSessionId),
+    { includeArchived: false },
+    Number.POSITIVE_INFINITY,
+  );
+}
+
 function eligibleSessions(
   sessions: readonly SessionSummary[],
   filter: { readonly sessionId?: string; readonly includeArchived: boolean },
+  limit = MAX_SESSIONS_SCANNED,
 ): SessionSummary[] {
   return sessions
     .filter(
@@ -976,7 +1006,7 @@ function eligibleSessions(
       const byTime = (right.lastMessageAt ?? 0) - (left.lastMessageAt ?? 0);
       return byTime !== 0 ? byTime : left.id.localeCompare(right.id);
     })
-    .slice(0, MAX_SESSIONS_SCANNED);
+    .slice(0, limit);
 }
 
 async function readFacts(
@@ -1029,6 +1059,18 @@ async function collectHits(
     }
   }
 
+  // A narrowed scan needs the corpus count to rank the same way as a full
+  // scan. Resolve it before reading transcripts so a declined count cannot
+  // discard work and reread every candidate during fallback.
+  const storedCorpusSize = deps.countSearchableMessages
+    ? await deps.countSearchableMessages({ sessionIds: input.sessionIds })
+    : null;
+  if (input.abortSignal?.aborted) return null;
+  if (storedCorpusSize === null && !scannedFully) {
+    sessionIds = input.sessionIds;
+    scannedFully = true;
+  }
+
   const hits: VerifiedHit[] = [];
   let counted = 0;
   for (const sessionId of sessionIds) {
@@ -1053,18 +1095,7 @@ async function collectHits(
     }
   }
 
-  // The narrowed path never sees the Sessions it skipped, so its corpus size
-  // has to come from the store. The full scan takes the same number when the
-  // store offers one, which is what keeps a score independent of the path.
-  let corpusSize: number | null = counted;
-  if (deps.countSearchableMessages) {
-    corpusSize = await deps.countSearchableMessages({ sessionIds: input.sessionIds });
-    if (input.abortSignal?.aborted) return null;
-    if (corpusSize === null) {
-      if (!scannedFully) return collectHits(deps, { ...input, forceFullScan: true });
-      corpusSize = counted;
-    }
-  }
+  const corpusSize = storedCorpusSize ?? counted;
   return { hits, corpusSize, scannedFully, transcripts };
 }
 

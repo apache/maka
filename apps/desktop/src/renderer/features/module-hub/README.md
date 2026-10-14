@@ -53,9 +53,9 @@ All environment I/O is represented by `ModuleHubServices` and mapped once by
 `platform/desktop/create-module-hub-services.ts`. The adapter is also where an
 older preload is converted into an unsupported keep-awake capability.
 
-MCP is the explicit exception to I/O ownership in this slice. `McpPage` keeps
-its existing page-owned controller and direct Desktop bridge. `ModuleHubHost`
-only selects and mounts that leaf; moving MCP internals is a separate change.
+`McpPage` and its editor model live in this feature. The page reads and changes
+MCP state through `useMcpController` and `ModuleHubServices`; the Desktop adapter
+owns the bridge. `ModuleHubHost` only selects and mounts the page.
 
 The production entry deliberately does not export `useModuleHubController`.
 The renderer architecture policy records its implementation and

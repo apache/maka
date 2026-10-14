@@ -29,6 +29,7 @@ import type { SessionHeader } from '@maka/core/session';
 import type { SessionEvent } from '@maka/core/events';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { z } from 'zod';
+import { deferred } from '@maka/core/test-only/async-primitives';
 import { AiSdkBackend } from '../ai-sdk-backend.js';
 import { buildDefaultContextBudgetPolicy } from '../context-budget-policy.js';
 import {
@@ -102,6 +103,8 @@ interface MidTurnFixture {
 }
 
 interface MidTurnFixtureOptions {
+  /** Hold a provider request open to inspect live events before settlement. */
+  beforeRequest?: (call: number) => Promise<void>;
   contextWindow?: number;
   /** Omit the model's context window entirely (unknown model metadata). */
   withoutContextWindow?: boolean;
@@ -149,8 +152,6 @@ interface MidTurnFixtureOptions {
   firstResult?: string;
   /** The model finishes on the second request instead of running three steps. */
   finalAtSecondCall?: boolean;
-  /** One request and no tool call, so only the step-0 comparison can fire. */
-  singleRequest?: boolean;
   /** Leading tool-call steps before the final text step (default 2). */
   toolSteps?: number;
   /** Per provider-call reported usage, keyed by 1-based call number. */
@@ -165,6 +166,8 @@ interface MidTurnFixtureOptions {
   firstStepFinishReason?: 'length';
   /** Override the final (text) step's reported usage. */
   finalStepUsage?: { input: number; output: number };
+  /** Make the first provider request reject as a context overflow. */
+  firstRequestContextOverflow?: boolean;
   /** Prior-turn RuntimeEvents appended after the shaped priors (e.g. a persisted usage anchor). */
   extraPriorEvents?: readonly RuntimeEvent[];
   /** Run headers for the prior turns, so a persisted anchor can be identity-gated. */
@@ -173,12 +176,6 @@ interface MidTurnFixtureOptions {
   systemPromptChars?: number;
   /** An always-active tool whose schema dominates the request payload. */
   bigActiveTool?: boolean;
-  /**
-   * Run as a child agent with a two-step budget, so the turn's LAST request is
-   * the child-summary finalization step: it adds a prompt fragment and sends no
-   * tool schemas at all.
-   */
-  childFinalization?: boolean;
   /** Enable and capture automatic Memory extraction without allowing it to settle. */
   captureMemoryExtraction?: boolean;
   memoryGate?:
@@ -285,7 +282,6 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
         ? toolCallChunks('tool-1', 'tool_search', { query: 'Big' }, call)
         : doneChunks(call);
     }
-    if (options.singleRequest) return doneChunks(call);
     if (call === 1) {
       const first = toolCallChunks('tool-1', 'Read', { path: 'one.md' }, call);
       if (!options.assistantTextInFirstStep) return first;
@@ -315,6 +311,13 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
         throw Object.assign(new Error('aborted'), { name: 'AbortError' });
       }
       const call = model.doStreamCalls.length;
+      await options.beforeRequest?.(call);
+      if (options.firstRequestContextOverflow && call === 1) {
+        throw Object.assign(new Error('prompt is too long: 213462 tokens > 200000 maximum'), {
+          name: 'AI_APICallError',
+          statusCode: 400,
+        });
+      }
       if (call === 3) recordedAtThirdRequest = recorded.length > 0;
       const chunks = chunksForCall(call);
       return {
@@ -481,10 +484,7 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
 
   const backend = createTestAiSdkBackend({
     sessionId: 'session-1',
-    header: options.childFinalization
-      ? { ...header(), collaborationMode: 'agent' as const }
-      : header(),
-    ...(options.childFinalization ? { maxSteps: 2 } : {}),
+    header: header(),
     appendMessage: async (message) => {
       messages.push(message);
     },
@@ -578,7 +578,11 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
     ...(options.bigToolGroup
       ? { toolAvailability: { groups: [{ id: 'big', toolNames: ['Big'] }] } }
       : {}),
-    ...(options.systemPromptChars ? { systemPrompt: 'S'.repeat(options.systemPromptChars) } : {}),
+    systemPrompt: () => ({
+      ...(options.systemPromptChars ? { text: 'S'.repeat(options.systemPromptChars) } : {}),
+      contexts: [{ name: 'test.request-context', text: 'ACTIVE_REQUEST_CONTEXT' }],
+      sourceRevisions: [],
+    }),
     contextBudget: options.useRuntimeDefaultPolicy
       ? buildDefaultContextBudgetPolicy({
           name: 'runtime-default-mid-turn',
@@ -743,6 +747,18 @@ function promptJson(fixture: MidTurnFixture, call: number): string {
   );
 }
 
+function assertRequestContextPreserved(fixture: MidTurnFixture): void {
+  for (const { prompt } of fixture.model.doStreamCalls) {
+    const texts = prompt.flatMap((message) =>
+      message.role === 'user'
+        ? message.content.flatMap((part) => (part.type === 'text' ? [part.text] : []))
+        : [],
+    );
+    assert.equal(texts.filter((text) => text === 'ACTIVE_REQUEST_CONTEXT').length, 1);
+  }
+  assert.doesNotMatch(JSON.stringify(fixture.ledger), /ACTIVE_REQUEST_CONTEXT/u);
+}
+
 function compactionDecisions(
   fixture: MidTurnFixture,
 ): NonNullable<ContextBudgetDiagnostic['compactionDecisions']> {
@@ -753,6 +769,47 @@ function compactionDecisions(
 }
 
 function defineMidTurnSuite(consumer: ConsumerMode): void {
+  test('publishes the applied boundary while the post-compaction request is still running', {
+    timeout: 5_000,
+  }, async () => {
+    const requestStarted = deferred();
+    const requestHeld = deferred();
+    const fixture = buildFixture({
+      beforeRequest: async (call) => {
+        if (call !== 3) return;
+        requestStarted.resolve();
+        await requestHeld.promise;
+      },
+    });
+    const turn = runFixtureTurn(fixture, consumer);
+    try {
+      await requestStarted.promise;
+      assert.equal(fixture.recorded.length, 1, 'the checkpoint has been persisted');
+      assert.equal(
+        fixture.events.some((event) => event.type === 'complete'),
+        false,
+      );
+      assert.equal(
+        fixture.events.filter((event) => event.type === 'context_compaction_applied').length,
+        1,
+        'the live boundary must arrive before the next request settles',
+      );
+      const boundaries = fixture.ledger.filter(
+        (event) =>
+          event.content?.kind === 'system_note' &&
+          event.content.note === 'context_compaction_applied',
+      );
+      assert.equal(boundaries.length, 1, 'the stream persists exactly one canonical boundary');
+      const applied = fixture.events.find((event) => event.type === 'context_compaction_applied');
+      assert.equal(boundaries[0]?.id, applied?.id);
+      assert.equal(boundaries[0]?.ts, applied?.ts);
+      assert.equal(boundaries[0]?.modelVisibility, 'hidden');
+    } finally {
+      requestHeld.resolve();
+      await turn;
+    }
+  });
+
   test('keeps user_stop when stopping while a usage-triggered fold is summarizing', async () => {
     // The fold now starts from the provider's real usage instead of a local
     // estimate, but a user stop during its summarizer call must still end the
@@ -795,6 +852,7 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
 
     // The turn ran three steps and completed normally.
     assert.equal(fixture.model.doStreamCalls.length, 3);
+    assertRequestContextPreserved(fixture);
     const complete = fixture.events.find((event) => event.type === 'complete');
     assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'end_turn');
 
@@ -957,10 +1015,11 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
   });
 
   test('sends an over-window request no shaper could rescue, rather than ending the turn', async () => {
-    // No prior turns and a window the first step's usage already exceeds: the
-    // pool is [anchor, one open call/result pair], so no safe completed span
-    // and nothing to compact. Only the provider can say whether that request
-    // fits, so it goes out and the turn runs to its own end.
+    // No prior turns and a window the first step's usage already exceeds: at
+    // that step the pool is [anchor, one completed call/result pair], which
+    // mid-turn coverage cannot fold. Only the provider can say whether that
+    // request fits, so it goes out and the turn runs to its own end. The miss
+    // is per-step — the grown pool may still fold a later request (#5790).
     const fixture = buildFixture({
       contextWindow: 120,
       withoutPriorTurns: true,
@@ -1021,6 +1080,10 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
       (decision) => decision.phase === 'mid_turn' && decision.decision === 'failedOpen',
     );
     assert.equal(failedOpen?.failOpenReason, 'write_failed');
+    assert.equal(
+      fixture.events.some((event) => event.type === 'context_compaction_applied'),
+      false,
+    );
   });
 
   test('a malformed summarizer completion fails open end-to-end with its granular reason', async () => {
@@ -1094,26 +1157,53 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     assert.equal(failedOpen[0]?.failOpenReason, 'provider_error');
   });
 
-  test('does not report provider dropping when the step dropped its tool schemas', async () => {
-    // A finalization step resolves an empty tool set, so its request loses
-    // several thousand schema tokens with no fold, prune or image omission.
-    // Maka shaped that request; the provider dropped nothing.
+  test('bounds an input-too-large rejection across later steps in the same turn (#5790 review)', async () => {
+    // No invocation proves a boundary, so the rejection is a plain summarizer
+    // failure and the Turn latches it — a later step never re-dispatches it.
     const fixture = buildFixture({
-      contextWindow: 200,
-      finalAtSecondCall: true,
-      childFinalization: true,
-      finalStepUsage: { input: 50, output: 10 },
+      toolSteps: 3,
+      summarize: () => {
+        throw new HistoryCompactSummarizerError('input_too_large');
+      },
+    });
+
+    await runFixtureTurn(fixture, consumer);
+
+    assert.equal(fixture.summarizerCalls, 1);
+    assert.equal(fixture.recorded.length, 0);
+    const failedOpen = compactionDecisions(fixture).filter(
+      (decision) => decision.decision === 'failedOpen',
+    );
+    assert.equal(failedOpen[0]?.failOpenReason, 'input_too_large');
+  });
+
+  test('a no_safe_completed_span attempt does not suppress the fold once the pool grows (#5790)', async () => {
+    // No prior turns: at the first trigger the pool is only the anchor plus
+    // one completed tool pair, which mid-turn coverage cannot fold (the anchor
+    // alone saves nothing). The attempt fails open WITHOUT calling the
+    // summarizer — a property of the pool at that step, not a failure — so it
+    // must not latch the turn. Once the next step lands a second pair the new
+    // attempt re-reads the grown ledger and folds.
+    const fixture = buildFixture({
+      contextWindow: 150,
+      withoutPriorTurns: true,
+      toolSteps: 2,
     });
     await runFixtureTurn(fixture, consumer);
 
-    assert.equal(
-      fixture.messages.some(
-        (message) =>
-          (message as { type?: string; kind?: string }).type === 'system_note' &&
-          (message as { kind?: string }).kind === 'context_provider_dropping',
-      ),
-      false,
+    const complete = fixture.events.find((event) => event.type === 'complete');
+    assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'end_turn');
+    const failedOpen = compactionDecisions(fixture).find(
+      (decision) => decision.decision === 'failedOpen',
     );
+    assert.equal(failedOpen?.failOpenReason, 'no_safe_completed_span');
+    // The grown pool folded: exactly one summarizer call, one checkpoint.
+    assert.equal(fixture.summarizerCalls, 1);
+    assert.equal(fixture.recorded.length, 1);
+    const thirdPrompt = promptJson(fixture, 2);
+    assert.match(thirdPrompt, /maka_history_compact_checkpoint/);
+    assert.equal(thirdPrompt.includes('RAW_SPAN_ONE_'), false);
+    assert.equal(thirdPrompt.includes('RAW_SPAN_TWO_'), true);
   });
 
   test('fails closed before provider dispatch when the durable ledger read fails', async () => {
@@ -1175,6 +1265,9 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
 
     assert.equal(fixture.summarizerCalls, 2);
     assert.equal(fixture.recorded.length, 2);
+    const applied = fixture.events.filter((event) => event.type === 'context_compaction_applied');
+    assert.equal(applied.length, 2, 'each applied fold publishes its own boundary');
+    assert.notEqual(applied[0]?.id, applied[1]?.id);
     // The second fold covers the step the first one left out.
     assert.equal(
       fixture.recorded[1]!.coverage.eventCount > fixture.recorded[0]!.coverage.eventCount,
@@ -1347,114 +1440,9 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     );
   });
 
-  test('reports provider context dropping across the send boundary', async () => {
-    // The Ollama shape: the provider truncates to its own window, so the input
-    // it counts is the SAME on every later request while the user keeps adding
-    // turns. A send of one or two steps never sees that from the inside
-    // (#4623). One request here, so only the step-0 comparison can write it.
-    const fixture = buildFixture({
-      withoutContextWindow: true,
-      singleRequest: true,
-      finalStepUsage: { input: 3_716, output: 10 },
-      extraPriorEvents: [priorUsageEvent({ inputTokens: 3_716, outputTokens: 12 })],
-      priorInvocations: [priorRunInvocation()],
-    });
-    await runFixtureTurn(fixture, consumer);
-
-    const note = fixture.messages.find(
-      (message): message is { type: 'system_note'; kind: string; data?: unknown } =>
-        (message as { kind?: string }).kind === 'context_provider_dropping',
-    );
-    assert.deepEqual(note?.data, {
-      inputTokens: 3_716,
-      priorInputTokens: 3_716,
-    });
-  });
-
-  test('does not report dropping across the boundary when the input grew', async () => {
-    const fixture = buildFixture({
-      withoutContextWindow: true,
-      singleRequest: true,
-      finalStepUsage: { input: 4_000, output: 10 },
-      extraPriorEvents: [priorUsageEvent({ inputTokens: 3_716, outputTokens: 12 })],
-      priorInvocations: [priorRunInvocation()],
-    });
-    await runFixtureTurn(fixture, consumer);
-
-    assert.equal(
-      fixture.messages.some(
-        (message) => (message as { kind?: string }).kind === 'context_provider_dropping',
-      ),
-      false,
-    );
-  });
-
-  test('does not report dropping across the boundary when the input merely shrank', async () => {
-    // A manual compaction leaves the pre-compaction anchor behind, a turn can
-    // carry a smaller tool set, and a user can edit or branch history. All
-    // three shrink the input legitimately, and none lands on exactly the same
-    // count, so equality is what separates them from a truncating provider.
-    const fixture = buildFixture({
-      withoutContextWindow: true,
-      singleRequest: true,
-      finalStepUsage: { input: 900, output: 10 },
-      extraPriorEvents: [priorUsageEvent({ inputTokens: 3_716, outputTokens: 12 })],
-      priorInvocations: [priorRunInvocation()],
-    });
-    await runFixtureTurn(fixture, consumer);
-
-    assert.equal(
-      fixture.messages.some(
-        (message) => (message as { kind?: string }).kind === 'context_provider_dropping',
-      ),
-      false,
-    );
-  });
-
-  test('does not report dropping across the boundary when this send folded first', async () => {
-    // A fold before the first request explains a smaller input by itself.
-    const fixture = buildFixture({
-      contextWindow: 3_000,
-      singleRequest: true,
-      finalStepUsage: { input: 3_716, output: 10 },
-      extraPriorEvents: [priorUsageEvent({ inputTokens: 3_716, outputTokens: 12 })],
-      priorInvocations: [priorRunInvocation()],
-    });
-    await runFixtureTurn(fixture, consumer);
-
-    assert.equal(fixture.summarizerCalls, 1);
-    assert.equal(
-      fixture.messages.some(
-        (message) => (message as { kind?: string }).kind === 'context_provider_dropping',
-      ),
-      false,
-    );
-  });
-
-  test('records provider context dropping when an append-only step reports the same usage', async () => {
-    // The Ollama shape: the provider truncates to its own window, so input
-    // stops growing rather than dropping while Maka keeps appending. A
-    // plateau is the signal the copy promises ("usage did not grow").
-    const fixture = buildFixture({
-      contextWindow: 200,
-      finalAtSecondCall: true,
-      firstStepUsage: { input: 100, output: 20 },
-      finalStepUsage: { input: 100, output: 10 },
-    });
-    await runFixtureTurn(fixture, consumer);
-
-    const note = fixture.messages.find(
-      (message): message is { type: 'system_note'; kind: string; data?: unknown } =>
-        (message as { type?: string }).type === 'system_note',
-    );
-    assert.equal(note?.kind, 'context_provider_dropping');
-    assert.deepEqual(note?.data, {
-      inputTokens: 100,
-      priorInputTokens: 100,
-    });
-  });
-
-  test('records provider context dropping only for an unshaped usage decrease', async () => {
+  test('a falling input count between steps writes no note', async () => {
+    // A relay that moves a request to another upstream reports a smaller
+    // input for the same history. That is not evidence of dropped context.
     const fixture = buildFixture({
       contextWindow: 200,
       finalAtSecondCall: true,
@@ -1462,34 +1450,9 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     });
     await runFixtureTurn(fixture, consumer);
 
-    const note = fixture.messages.find(
-      (message): message is { type: 'system_note'; kind: string; data?: unknown } =>
-        (message as { type?: string }).type === 'system_note',
-    );
-    assert.equal(note?.kind, 'context_provider_dropping');
-    assert.deepEqual(note?.data, {
-      inputTokens: 50,
-      priorInputTokens: 100,
-    });
-  });
-
-  test('does not call provider context dropping when active pruning explains the decrease', async () => {
-    const fixture = buildFixture({
-      contextWindow: 200,
-      finalAtSecondCall: true,
-      hugeFirstResult: true,
-      toolResultPrune: true,
-      finalStepUsage: { input: 50, output: 10 },
-    });
-    await runFixtureTurn(fixture, consumer);
-
-    assert.equal(
-      fixture.messages.some(
-        (message) =>
-          (message as { type?: string; kind?: string }).type === 'system_note' &&
-          (message as { kind?: string }).kind === 'context_provider_dropping',
-      ),
-      false,
+    assert.deepEqual(
+      fixture.messages.filter((message) => (message as { type?: string }).type === 'system_note'),
+      [],
     );
   });
 
@@ -1811,6 +1774,7 @@ describe('the shipped runtime default drives the proactive long-turn journey (is
     const fixture = buildFixture({
       contextWindow: 1_000_000,
       finalAtSecondCall: true,
+      meteredSummarizer: true,
     });
     await runFixtureTurn(fixture);
 
@@ -1826,10 +1790,12 @@ describe('the shipped runtime default drives the proactive long-turn journey (is
     // Two steps: 100 + 120 reported input, and the send sum is both.
     assert.equal(usage?.input, 220);
     const anchor = usage?.lastRequestAnchor as
-      | { inputTokens: number; outputTokens?: number }
+      | { inputTokens: number; outputTokens?: number; completedAt?: number }
       | undefined;
     assert.equal(anchor?.inputTokens, 120);
     assert.equal(anchor?.outputTokens, 10);
+    const lastMainAttempt = fixture.modelCalls.filter((call) => call.callKind === 'main').at(-1);
+    assert.equal(anchor?.completedAt, lastMainAttempt?.completedAt);
   });
 
   test('an anchor is discarded unless its invocation proves it came from this model', async () => {
@@ -1900,6 +1866,139 @@ describe('the shipped runtime default drives the proactive long-turn journey (is
     assert.equal(fold?.phase, 'pre_turn');
   });
 
+  test('a compaction boundary supersedes an anchor whose request predates the compaction (#5547)', async () => {
+    // The failed-send ledger shape: the settlement usage row lands after the
+    // apply row, but its anchor still describes the pre-compaction request — the
+    // retry never completed. Such an anchor must not seed the next send's
+    // baseline: it measures context the compaction already replaced.
+    for (const [boundaryTs, anchorCompletedAt, folds] of [
+      [1_800_000_001_000, 1_800_000_000_500, false],
+      [1_800_000_000_100, 1_800_000_000_500, true],
+    ] as const) {
+      const fixture = buildFixture({
+        priorChars: 2_000,
+        contextWindow: 20_000,
+        finalAtSecondCall: true,
+        extraPriorEvents: [
+          {
+            ...runtimeTextEvent(`prior-applied-${boundaryTs}`, 'turn-0', 'model', ''),
+            runId: 'run-0',
+            invocationId: 'run-0',
+            role: 'system' as const,
+            author: 'system' as const,
+            ts: boundaryTs,
+            content: {
+              kind: 'system_note' as const,
+              note: 'context_compaction_applied',
+            },
+          },
+          priorUsageEvent({
+            inputTokens: 30_000,
+            outputTokens: 10,
+            completedAt: anchorCompletedAt,
+          }),
+        ],
+        priorInvocations: [priorRunInvocation()],
+      });
+      await runFixtureTurn(fixture);
+
+      assert.equal(fixture.recorded.length, folds ? 1 : 0);
+    }
+  });
+
+  test('a settlement compaction note delegates its boundary to the apply row', async () => {
+    // The display note is written when the turn settles — after every
+    // request of its turn — so ordering an anchor against the note's own
+    // row time discards every post-compaction measurement. The apply row carries
+    // the real boundary: an anchor completed after the compaction still seeds
+    // the next send's baseline, and one completed before it does not.
+    for (const [appliedTs, anchorCompletedAt, folds] of [
+      // Post-compaction anchor: applied at T2, anchor completed at T4, note
+      // settled at T5 — the anchor survives and the over-window seed
+      // compacts step 0.
+      [1_800_000_001_000, 1_800_000_004_000, true],
+      // Stale anchor: applied at T2 but the anchor completed at T1 — the
+      // retry never finished, so nothing post-compaction is measured.
+      [1_800_000_001_000, 1_800_000_000_500, false],
+    ] as const) {
+      const fixture = buildFixture({
+        priorChars: 2_000,
+        contextWindow: 20_000,
+        finalAtSecondCall: true,
+        extraPriorEvents: [
+          {
+            ...runtimeTextEvent(`prior-applied-${appliedTs}`, 'turn-0', 'model', ''),
+            runId: 'run-0',
+            invocationId: 'run-0',
+            role: 'system' as const,
+            author: 'system' as const,
+            ts: appliedTs,
+            content: {
+              kind: 'system_note' as const,
+              note: 'context_compaction_applied',
+            },
+          },
+          {
+            ...runtimeTextEvent(`prior-note-${appliedTs}`, 'turn-0', 'model', ''),
+            runId: 'run-0',
+            invocationId: 'run-0',
+            role: 'system' as const,
+            author: 'system' as const,
+            ts: 1_800_000_005_000,
+            content: {
+              kind: 'system_note' as const,
+              note: 'context_compacted',
+            },
+          },
+          priorUsageEvent({
+            inputTokens: 30_000,
+            outputTokens: 10,
+            completedAt: anchorCompletedAt,
+          }),
+        ],
+        priorInvocations: [priorRunInvocation()],
+      });
+      await runFixtureTurn(fixture);
+
+      assert.equal(fixture.recorded.length, folds ? 1 : 0);
+    }
+  });
+
+  test('a settlement note without an apply row is itself the boundary', async () => {
+    // Ledgers written before `context_compaction_applied` existed — or a
+    // failed apply-row write — leave the settlement note as the only
+    // boundary. Its time postdates every request of its turn, so no anchor
+    // can be shown to postdate the compaction and the conservative seed is none.
+    const fixture = buildFixture({
+      priorChars: 2_000,
+      contextWindow: 20_000,
+      finalAtSecondCall: true,
+      extraPriorEvents: [
+        {
+          ...runtimeTextEvent('prior-note-legacy', 'turn-0', 'model', ''),
+          runId: 'run-0',
+          invocationId: 'run-0',
+          role: 'system' as const,
+          author: 'system' as const,
+          ts: 1_800_000_005_000,
+          content: {
+            kind: 'system_note' as const,
+            note: 'context_compacted',
+          },
+        },
+        priorUsageEvent({
+          inputTokens: 30_000,
+          outputTokens: 10,
+          completedAt: 1_800_000_004_000,
+        }),
+      ],
+      priorInvocations: [priorRunInvocation()],
+    });
+    await runFixtureTurn(fixture);
+
+    assert.equal(fixture.recorded.length, 0);
+  });
+
   test('the reserve is twice the last real reply, bounded, not the model output limit', async () => {
     // With the window declared at the provider's real size, an accepted
     // request can never exceed it on its own; the reply the next request must
@@ -1927,9 +2026,30 @@ describe('the shipped runtime default drives the proactive long-turn journey (is
     }
   });
 
-  test('an unrescuable turn under the shipped default still dispatches', async () => {
-    // No prior turns leaves no safe completed span. The request still goes out
-    // because only the provider can decide whether it fits.
+  test('keeps a useful output floor so a near-window request still recovers', async () => {
+    const fixture = buildFixture({
+      contextWindow: 200_000,
+      modelMaxOutputTokens: 128_000,
+      finalAtSecondCall: true,
+      firstRequestContextOverflow: true,
+      extraPriorEvents: [priorUsageEvent({ inputTokens: 191_999, outputTokens: 0 })],
+      priorInvocations: [priorRunInvocation()],
+    });
+    await runFixtureTurn(fixture);
+
+    assert.equal(fixture.model.doStreamCalls.length, 2);
+    assert.equal(fixture.model.doStreamCalls[0]?.maxOutputTokens, 8_000);
+    assertRequestContextPreserved(fixture);
+    assert.notEqual(fixture.model.doStreamCalls[0]?.maxOutputTokens, 1);
+    assert.equal(fixture.recorded.length, 1);
+    assert.equal(fixture.summarizerCalls, 1);
+    assert.equal(fixture.events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+  });
+
+  test('a first trigger with nothing foldable still dispatches under the shipped default', async () => {
+    // No prior turns leaves the first trigger no safe completed span. The
+    // request still goes out because only the provider can decide whether it
+    // fits — and the per-step miss does not latch the turn (#5790).
     const fixture = buildFixture({
       useRuntimeDefaultPolicy: true,
       contextWindow: 120,
@@ -1955,6 +2075,7 @@ describe('the shipped runtime default drives the proactive long-turn journey (is
 function priorUsageEvent(lastRequestAnchor: {
   inputTokens: number;
   outputTokens?: number;
+  completedAt?: number;
 }): RuntimeEvent {
   return {
     ...runtimeTextEvent('prior-usage', 'turn-0', 'model', ''),

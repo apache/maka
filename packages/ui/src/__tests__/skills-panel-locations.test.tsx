@@ -29,6 +29,7 @@ import { ToastProvider } from '../toast.js';
 
 const originalGlobals = {
   cancelAnimationFrame: globalThis.cancelAnimationFrame,
+  CSS: globalThis.CSS,
   document: globalThis.document,
   matchMedia: globalThis.matchMedia,
   requestAnimationFrame: globalThis.requestAnimationFrame,
@@ -55,7 +56,7 @@ const locations: SkillLocation[] = [
   { ref: 'user:agents', scope: 'user', source: 'agents', path: '/home/user/.agents/skills', status: 'available', skillCount: 1 },
 ];
 
-test('Skill locations close the menu before opening and create only a missing directory', async () => {
+test('Skill locations under Add close the menu before opening and create only a missing directory', async () => {
   const { document, window } = parseHTML('<div id="root"></div>');
   const frames = new Map<number, FrameRequestCallback>();
   let frameId = 0;
@@ -81,6 +82,7 @@ test('Skill locations close the menu before opening and create only a missing di
       return frameId;
     },
     cancelAnimationFrame: (id: number) => frames.delete(id),
+    CSS: { escape: (value: string) => value },
     IS_REACT_ACT_ENVIRONMENT: true,
   });
 
@@ -104,7 +106,7 @@ test('Skill locations close the menu before opening and create only a missing di
     );
   });
 
-  await clickByLabel(document, window, 'More Skill actions');
+  await clickAddMenu(document, window);
   await clickMenuItem(document, window, 'Skill locations…');
 
   const markup = document.documentElement.innerHTML;
@@ -116,15 +118,15 @@ test('Skill locations close the menu before opening and create only a missing di
 
   await clickMenuItem(document, window, 'Project · Maka');
   assert.deepEqual(opened, []);
-  assert.equal(document.querySelector('[aria-label="More Skill actions"]')?.getAttribute('aria-expanded'), 'false');
+  assert.equal(addMenuButton(document).getAttribute('aria-expanded'), 'false');
   await flushFrames();
   assert.deepEqual(opened, [{ ref: 'project:maka', createIfMissing: true }]);
 
-  await clickByLabel(document, window, 'More Skill actions');
+  await clickAddMenu(document, window);
   await clickMenuItem(document, window, 'Skill locations…');
   await clickMenuItem(document, window, 'Project · Agents');
   assert.equal(opened.length, 1);
-  assert.equal(document.querySelector('[aria-label="More Skill actions"]')?.getAttribute('aria-expanded'), 'false');
+  assert.equal(addMenuButton(document).getAttribute('aria-expanded'), 'false');
   await flushFrames();
   assert.deepEqual(opened, [
     { ref: 'project:maka', createIfMissing: true },
@@ -132,13 +134,18 @@ test('Skill locations close the menu before opening and create only a missing di
   ]);
 });
 
-async function clickByLabel(
+function addMenuButton(document: Document): HTMLElement {
+  const element = Array.from(document.querySelectorAll<HTMLElement>('button[aria-haspopup]'))
+    .find((candidate) => candidate.textContent?.trim() === 'Add');
+  assert.ok(element, 'missing Add menu');
+  return element;
+}
+
+async function clickAddMenu(
   document: Document,
   window: ReturnType<typeof parseHTML>['window'],
-  label: string,
 ): Promise<void> {
-  const element = document.querySelector<HTMLElement>(`[aria-label="${label}"]`);
-  assert.ok(element, `missing ${label}`);
+  const element = addMenuButton(document);
   await act(async () => {
     element.dispatchEvent(new window.Event('click', { bubbles: true }));
     await Promise.resolve();

@@ -17,10 +17,13 @@
  * under the License.
  */
 
+import { useLayoutEffect } from 'react';
+import { useMediaQuery } from '@astryxdesign/core/hooks';
 import { useExternalStoreSelector } from '../../../application/contracts/session-catalog/use-external-store-selector.js';
 import type { SessionCatalogState } from '../../../application/contracts/session-catalog/session-catalog-state.js';
 import type { SessionCatalogController } from '../../../application/contracts/session-catalog/session-catalog-state.js';
-import { deriveBranchBanner, type BranchBanner } from '../model/branch-banner.js';
+import { deriveSessionRail } from '../model/session-rail.js';
+import { SHELL_SIDEBAR_COMPACT_QUERY } from '../../../application/contracts/shell-layout-contract.js';
 import {
   selectRailLayout,
   sessionRailLayoutStore,
@@ -33,23 +36,11 @@ import {
 import type { SessionNavigationSession } from '../ports.js';
 
 export interface SessionNavigationReads {
-  branchBanner: BranchBanner | undefined;
   revisionNavigation: SessionRevisionNavigation | undefined;
   /** The active Session's parent row, for the titlebar breadcrumb. */
   activeParentSession: SessionNavigationSession | undefined;
   layout: SessionRailLayoutState;
 }
-
-const selectBranchBanner = (
-  state: SessionCatalogState,
-  activeSessionId: string | undefined,
-): BranchBanner | undefined =>
-  deriveBranchBanner(
-    activeSessionId === undefined
-      ? undefined
-      : state.sessions.find((session) => session.id === activeSessionId),
-    state.sessions,
-  );
 
 const selectRevisionNavigation = (
   state: SessionCatalogState,
@@ -61,6 +52,9 @@ const selectActiveParentSession = (
   state: SessionCatalogState,
   activeSessionId: string | undefined,
 ): SessionNavigationSession | undefined => {
+  const linkedParent = deriveSessionRail(state.sessions, activeSessionId, () => true)
+    .activeParentSession;
+  if (linkedParent) return linkedParent;
   const parentSessionId = state.sessions.find(
     (session) => session.id === activeSessionId,
   )?.parentSessionId;
@@ -68,17 +62,6 @@ const selectActiveParentSession = (
     ? undefined
     : state.sessions.find((session) => session.id === parentSessionId);
 };
-
-function branchBannersEqual(
-  left: BranchBanner | undefined,
-  right: BranchBanner | undefined,
-): boolean {
-  if (left === right) return true;
-  if (!left || !right) return false;
-  return left.parentSessionId === right.parentSessionId
-    && left.parentSessionName === right.parentSessionName
-    && left.fromAbortedTurn === right.fromAbortedTurn;
-}
 
 function revisionNavigationsEqual(
   left: SessionRevisionNavigation | undefined,
@@ -106,12 +89,6 @@ export function useSessionNavigationReads(input: {
   activeSessionId: string | undefined;
 }): SessionNavigationReads {
   const { activeSessionId, catalog } = input;
-  const branchBanner = useExternalStoreSelector(
-    catalog,
-    selectBranchBanner,
-    activeSessionId,
-    branchBannersEqual,
-  );
   const revisionNavigation = useExternalStoreSelector(
     catalog,
     selectRevisionNavigation,
@@ -123,6 +100,13 @@ export function useSessionNavigationReads(input: {
     selectActiveParentSession,
     activeSessionId,
   );
+  /* The one place the rail asks how wide the window is. The store is
+     module-scoped, so it is told rather than handed a prop; a layout effect
+     re-renders before paint, so a narrow launch never shows it. */
+  const sidebarCompact = useMediaQuery(SHELL_SIDEBAR_COMPACT_QUERY);
+  useLayoutEffect(() => {
+    sessionRailLayoutStore.setCompact(sidebarCompact);
+  }, [sidebarCompact]);
   const layout = useExternalStoreSelector(sessionRailLayoutStore, selectRailLayout);
-  return { branchBanner, revisionNavigation, activeParentSession, layout };
+  return { revisionNavigation, activeParentSession, layout };
 }

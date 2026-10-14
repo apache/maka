@@ -31,6 +31,8 @@ import type { ToolAvailabilityConfig } from '@maka/runtime/tool-availability';
 export type HostModelPromptContext = SystemPromptContext;
 
 export interface ResolvedRunPrompt {
+  /** Require a tool step until the Host-owned prerequisite is settled. */
+  readonly requireToolCall?: boolean;
   readonly text: string | undefined;
   readonly contexts?: readonly { readonly name: string; readonly text: string }[];
   readonly sourceRevisions: readonly RunCompositionSourceRevision[];

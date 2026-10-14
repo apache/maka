@@ -121,7 +121,7 @@ test('schema one converts both old declarations once and ignores the old file af
         .kind,
       'committed',
     );
-    assert.equal(JSON.parse(await readFile(path, 'utf8')).schemaVersion, 2);
+    assert.equal(JSON.parse(await readFile(path, 'utf8')).schemaVersion, 3);
     await writeFile(join(root, 'model-facts.json'), '{broken legacy input');
     const restarted = new RuntimePolicyCoordinator((operation) => operation(root));
     assert.deepEqual((await restarted.getCatalogSnapshot()).connections[0]?.modelOverrides, {

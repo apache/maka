@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { isExecutorConfiguration, type ExecutorConfiguration } from '@maka/core/executor-catalog';
 import { isCollaborationMode, type CollaborationMode } from '@maka/core/collaboration';
 import { isOrchestrationMode, type OrchestrationMode } from '@maka/core/orchestration';
 import { isPermissionMode, type PermissionMode } from '@maka/core/permission';
@@ -26,6 +27,8 @@ import {
   isSessionToolProfile,
   SESSION_MODEL_ID_MAX_BYTES,
   type PersistedBackendKind,
+  type SessionBackgroundActivity,
+  type SessionBackgroundActivityVersion,
   type SessionBlockedReason,
   type SessionStatus,
   type SessionSubagentProjection,
@@ -70,6 +73,7 @@ export const SESSION_CATALOG_MODEL_MAX_BYTES = SESSION_MODEL_ID_MAX_BYTES;
 export const SESSION_CATALOG_CONNECTION_SLUG_MAX_BYTES = 256;
 export const SESSION_CATALOG_LIVE_RUN_STATE_SCHEMA_VERSION = 1 as const;
 export const SESSION_CATALOG_RUNNING_TURN_MAX_ITEMS = 64;
+export const SESSION_CATALOG_HOST_GENERATION_MAX_CHARS = 128;
 
 const QUERY_ERRORS = [
   'host_not_ready',
@@ -113,6 +117,7 @@ const PROJECTION_REQUIRED_FIELDS = [
 ] as const;
 const PROJECTION_FIELDS = [
   ...PROJECTION_REQUIRED_FIELDS,
+  'archivedAt',
   'lastMessageAt',
   'lastMessagePreview',
   'blockedReason',
@@ -126,9 +131,12 @@ const PROJECTION_FIELDS = [
   'revisionIndex',
   'revisionState',
   'executorId',
+  'executorConfig',
   'thinkingLevel',
   'lastReadMessageId',
   'liveRunState',
+  'backgroundActivity',
+  'backgroundActivityVersion',
 ] as const;
 
 export type SessionCatalogRevision = `sha256:${string}`;
@@ -168,6 +176,7 @@ export interface SessionCreateInput {
   readonly executorId?: string;
   /** Optional executor-specific model. Only valid with executorId. */
   readonly executorModel?: string;
+  readonly executorConfig?: ExecutorConfiguration;
   /** Omitted applies the model preference; null explicitly uses the provider default. */
   readonly thinkingLevel?: ThinkingLevel | null;
   readonly toolProfile?: SessionToolProfile;
@@ -189,6 +198,7 @@ export interface SessionMetadataUpdateInput {
 }
 
 export interface SessionConfigurationPatch {
+  readonly executorConfig?: ExecutorConfiguration;
   readonly modelTarget?: Extract<SessionModelTarget, { readonly kind: 'explicit' }>;
   readonly executorTarget?: SessionExecutorTarget;
   readonly thinkingLevel?: ThinkingLevel | null;
@@ -221,6 +231,23 @@ export interface SessionExecutionBoundaryQueryInput {
 export interface SessionCatalogLiveRunState {
   readonly schemaVersion: typeof SESSION_CATALOG_LIVE_RUN_STATE_SCHEMA_VERSION;
   readonly runningTurnIds: readonly string[];
+  /**
+   * The runtime's own order for this live state, bumped on every turn start
+   * and end. `revision` does not move for those transitions, so two
+   * same-revision reads can disagree about `runningTurnIds` — the epoch says
+   * which read is older (#5713). Absent from hosts that do not track it. The
+   * counter is per-process; across a Host restart only `hostGeneration`
+   * orders observations, never the epoch.
+   */
+  readonly runEpoch?: number;
+  /**
+   * Identifies the Host process generation that produced this live state.
+   * Rows survive a Host restart while the epoch counter restarts at zero, so
+   * clients must not order same-revision reads across generations by epoch —
+   * a restarted Host supersedes every observation its predecessor published.
+   * Absent from hosts that do not track it.
+   */
+  readonly hostGeneration?: string;
 }
 
 export interface SessionCatalogProjection {
@@ -232,6 +259,11 @@ export interface SessionCatalogProjection {
   readonly name: string;
   readonly isFlagged: boolean;
   readonly isArchived: boolean;
+  /**
+   * When the Session last entered the archive. Absent when it is not archived,
+   * and when the Host has no record of the time (archived before it was kept).
+   */
+  readonly archivedAt?: number;
   readonly labels: readonly string[];
   readonly labelsTruncated: boolean;
   readonly hasUnread: boolean;
@@ -240,6 +272,8 @@ export interface SessionCatalogProjection {
   readonly lastMessagePreview?: string;
   readonly status: SessionStatus;
   readonly liveRunState?: SessionCatalogLiveRunState;
+  readonly backgroundActivity?: SessionBackgroundActivity;
+  readonly backgroundActivityVersion?: SessionBackgroundActivityVersion;
   readonly blockedReason?: SessionBlockedReason;
   readonly statusUpdatedAt?: number;
   readonly parentSessionId?: string;
@@ -252,6 +286,7 @@ export interface SessionCatalogProjection {
   readonly revisionState?: 'preparing' | 'committed';
   readonly backend: PersistedBackendKind;
   readonly executorId?: string;
+  readonly executorConfig?: ExecutorConfiguration;
   readonly llmConnectionId: string | null;
   readonly llmConnectionSlug: string;
   readonly connectionLocked: boolean;
@@ -280,6 +315,8 @@ export interface SharedSessionCatalogProjection {
   readonly lastMessagePreview?: string;
   readonly status: SessionStatus;
   readonly liveRunState?: SessionCatalogLiveRunState;
+  readonly backgroundActivity?: SessionBackgroundActivity;
+  readonly backgroundActivityVersion?: SessionBackgroundActivityVersion;
   readonly blockedReason?: SessionBlockedReason;
   readonly statusUpdatedAt?: number;
 }
@@ -443,7 +480,15 @@ export function decodeSharedSessionCatalogProjection(
     value,
     'shared Session catalog projection',
     ['kind', 'id', 'revision', 'createdAt', 'activityAt', 'name', 'status'],
-    ['lastMessageAt', 'lastMessagePreview', 'liveRunState', 'blockedReason', 'statusUpdatedAt'],
+    [
+      'lastMessageAt',
+      'lastMessagePreview',
+      'liveRunState',
+      'backgroundActivity',
+      'backgroundActivityVersion',
+      'blockedReason',
+      'statusUpdatedAt',
+    ],
   );
   if (exact.kind !== 'shared_session') throw invalidProtocolFrame('Invalid shared Session kind');
   return {
@@ -457,6 +502,7 @@ export function decodeSharedSessionCatalogProjection(
     ...optionalText(exact, 'lastMessagePreview', SESSION_CATALOG_PREVIEW_MAX_BYTES),
     status: decodeSessionStatus(exact.status),
     ...optionalLiveRunState(exact),
+    ...optionalBackgroundActivity(exact),
     ...optionalBlockedReason(exact),
     ...optionalTimestamp(exact, 'statusUpdatedAt'),
   };
@@ -537,6 +583,7 @@ export function decodeSessionCreateInput(value: unknown): SessionCreateInput {
       'modelTarget',
       'executorId',
       'executorModel',
+      'executorConfig',
       'thinkingLevel',
       'toolProfile',
       'permissionMode',
@@ -547,12 +594,24 @@ export function decodeSessionCreateInput(value: unknown): SessionCreateInput {
   const executorId = Object.hasOwn(input, 'executorId')
     ? executorIdValue(input.executorId)
     : undefined;
+  if (
+    input.executorConfig !== undefined &&
+    (!executorId || !isExecutorConfiguration(input.executorConfig))
+  )
+    throw invalidProtocolFrame('Invalid executor configuration');
   const target = Object.hasOwn(input, 'modelTarget') ? modelTarget(input.modelTarget) : undefined;
   const executorModel = Object.hasOwn(input, 'executorModel')
     ? requireUtf8String(input.executorModel, 'Executor model', SESSION_CATALOG_MODEL_MAX_BYTES)
     : undefined;
   if ((executorId === undefined) === (target === undefined)) {
     throw invalidProtocolFrame('Session creation requires exactly one model target or executor id');
+  }
+  if (
+    executorModel !== undefined &&
+    (input.executorConfig as ExecutorConfiguration | undefined)?.model !== undefined &&
+    executorModel !== (input.executorConfig as ExecutorConfiguration).model
+  ) {
+    throw invalidProtocolFrame('Conflicting executor models');
   }
   if (executorModel !== undefined && executorId === undefined) {
     throw invalidProtocolFrame('Executor model requires an executor id');
@@ -566,6 +625,14 @@ export function decodeSessionCreateInput(value: unknown): SessionCreateInput {
     ...(target ? { modelTarget: target } : {}),
     ...(executorId ? { executorId } : {}),
     ...(executorModel ? { executorModel } : {}),
+    ...(executorId
+      ? {
+          executorId,
+          ...(input.executorConfig
+            ? { executorConfig: input.executorConfig as ExecutorConfiguration }
+            : {}),
+        }
+      : {}),
     ...(Object.hasOwn(input, 'thinkingLevel')
       ? { thinkingLevel: input.thinkingLevel === null ? null : thinkingLevel(input.thinkingLevel) }
       : {}),
@@ -635,6 +702,7 @@ export function decodeSessionConfigurationUpdateInput(
     'Session configuration patch',
     [],
     [
+      'executorConfig',
       'modelTarget',
       'executorTarget',
       'thinkingLevel',
@@ -643,6 +711,13 @@ export function decodeSessionConfigurationUpdateInput(
       'orchestrationMode',
     ],
   );
+  if (
+    patch.executorConfig !== undefined &&
+    (!isExecutorConfiguration(patch.executorConfig) ||
+      patch.modelTarget !== undefined ||
+      patch.executorTarget !== undefined)
+  )
+    throw invalidProtocolFrame('Invalid executor configuration');
   if (Object.keys(patch).length === 0) {
     throw invalidProtocolFrame('Session configuration patch is empty');
   }
@@ -653,6 +728,9 @@ export function decodeSessionConfigurationUpdateInput(
     sessionId: requireEntityId(input.sessionId, 'sessionId'),
     expectedRevision: positiveRevision(input.expectedRevision, 'expected Session revision'),
     patch: {
+      ...(patch.executorConfig
+        ? { executorConfig: patch.executorConfig as ExecutorConfiguration }
+        : {}),
       ...(Object.hasOwn(patch, 'modelTarget')
         ? { modelTarget: explicitModelTarget(patch.modelTarget) }
         : {}),
@@ -788,6 +866,7 @@ export function decodeSessionCatalogProjection(value: unknown): SessionCatalogPr
     name: sessionName(record.name),
     isFlagged: boolean(record.isFlagged, 'Session flagged state'),
     isArchived: boolean(record.isArchived, 'Session archived state'),
+    ...optionalArchivedAt(record),
     labels: labels(record.labels),
     labelsTruncated: boolean(record.labelsTruncated, 'Session labels truncated state'),
     hasUnread: boolean(record.hasUnread, 'Session unread state'),
@@ -796,6 +875,7 @@ export function decodeSessionCatalogProjection(value: unknown): SessionCatalogPr
     ...optionalText(record, 'lastMessagePreview', SESSION_CATALOG_PREVIEW_MAX_BYTES),
     status: decodeSessionStatus(record.status),
     ...optionalLiveRunState(record),
+    ...optionalBackgroundActivity(record),
     ...optionalBlockedReason(record),
     ...optionalTimestamp(record, 'statusUpdatedAt'),
     ...optionalEntityId(record, 'parentSessionId'),
@@ -826,6 +906,9 @@ export function decodeSessionCatalogProjection(value: unknown): SessionCatalogPr
   };
   if ((projection.backend === 'plugin-executor') !== (projection.executorId !== undefined)) {
     throw invalidProtocolFrame('Session executor identity does not match its backend');
+  }
+  if (projection.archivedAt !== undefined && !projection.isArchived) {
+    throw invalidProtocolFrame('Session archive time requires an archived Session');
   }
   requireEncodedByteLimit(
     projection,
@@ -919,6 +1002,16 @@ function optionalTimestamp<Field extends 'lastMessageAt' | 'statusUpdatedAt'>(
     : {};
 }
 
+// One object type with an optional key rather than a union, so this spread
+// does not multiply the projection literal's inferred union past TS2590.
+function optionalArchivedAt(
+  record: Record<string, unknown>,
+): Pick<SessionCatalogProjection, 'archivedAt'> {
+  return Object.hasOwn(record, 'archivedAt')
+    ? { archivedAt: timestamp(record.archivedAt, 'Session archivedAt') }
+    : {};
+}
+
 function optionalText<Field extends 'lastMessagePreview'>(
   record: Record<string, unknown>,
   field: Field,
@@ -962,36 +1055,97 @@ function optionalBlockedReason(
   return { blockedReason: record.blockedReason };
 }
 
+function optionalBackgroundActivity(
+  record: Record<string, unknown>,
+): Pick<SessionCatalogProjection, 'backgroundActivity' | 'backgroundActivityVersion'> {
+  const activity = record.backgroundActivity;
+  if (activity === undefined) {
+    if (record.backgroundActivityVersion !== undefined)
+      throw invalidProtocolFrame('Session background activity version requires activity');
+    return {};
+  }
+  if (
+    activity !== 'idle' &&
+    activity !== 'running' &&
+    activity !== 'waiting_for_user' &&
+    activity !== 'blocked'
+  )
+    throw invalidProtocolFrame('Invalid Session background activity');
+  if (record.backgroundActivityVersion === undefined) return { backgroundActivity: activity };
+  const version = requireExactRecord(
+    record.backgroundActivityVersion,
+    'Session background activity version',
+    ['hostGeneration', 'revision'],
+  );
+  return {
+    backgroundActivity: activity,
+    backgroundActivityVersion: {
+      hostGeneration: decodeHostGeneration(version.hostGeneration),
+      revision: requireCount(version.revision, 'Session background activity revision'),
+    },
+  };
+}
+
 function optionalLiveRunState(
   record: Record<string, unknown>,
 ): Pick<SessionCatalogProjection, 'liveRunState'> | Record<string, never> {
   if (record.liveRunState === undefined) return {};
-  const state = requireExactRecord(record.liveRunState, 'Session catalog live run state', [
+  const liveRunState = requireRecord(record.liveRunState, 'Session catalog live run state');
+  assertAllowedKeys(liveRunState, 'Session catalog live run state', [
     'schemaVersion',
     'runningTurnIds',
+    'runEpoch',
+    'hostGeneration',
   ]);
-  if (state.schemaVersion !== SESSION_CATALOG_LIVE_RUN_STATE_SCHEMA_VERSION) {
+  if (liveRunState.schemaVersion !== SESSION_CATALOG_LIVE_RUN_STATE_SCHEMA_VERSION) {
     throw invalidProtocolFrame('Unsupported Session catalog live run state schema version');
   }
   if (
-    !Array.isArray(state.runningTurnIds) ||
-    state.runningTurnIds.length > SESSION_CATALOG_RUNNING_TURN_MAX_ITEMS
+    !Object.hasOwn(liveRunState, 'runningTurnIds') ||
+    !Array.isArray(liveRunState.runningTurnIds) ||
+    liveRunState.runningTurnIds.length > SESSION_CATALOG_RUNNING_TURN_MAX_ITEMS
   ) {
     throw invalidProtocolFrame('Invalid Session catalog running turn ids');
   }
   const runningTurnIds: string[] = [];
-  for (let index = 0; index < state.runningTurnIds.length; index += 1) {
-    runningTurnIds.push(requireEntityId(state.runningTurnIds[index], 'Session running turn id'));
+  for (let index = 0; index < liveRunState.runningTurnIds.length; index += 1) {
+    runningTurnIds.push(
+      requireEntityId(liveRunState.runningTurnIds[index], 'Session running turn id'),
+    );
   }
   if (new Set(runningTurnIds).size !== runningTurnIds.length) {
     throw invalidProtocolFrame('Duplicate Session catalog running turn id');
+  }
+  if (
+    liveRunState.runEpoch !== undefined &&
+    (typeof liveRunState.runEpoch !== 'number' ||
+      !Number.isSafeInteger(liveRunState.runEpoch) ||
+      liveRunState.runEpoch < 0)
+  ) {
+    throw invalidProtocolFrame('Invalid Session catalog run epoch');
   }
   return {
     liveRunState: {
       schemaVersion: SESSION_CATALOG_LIVE_RUN_STATE_SCHEMA_VERSION,
       runningTurnIds,
+      ...(liveRunState.runEpoch === undefined ? {} : { runEpoch: liveRunState.runEpoch }),
+      ...(liveRunState.hostGeneration === undefined
+        ? {}
+        : { hostGeneration: decodeHostGeneration(liveRunState.hostGeneration) }),
     },
   };
+}
+
+function decodeHostGeneration(value: unknown): string {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.length > SESSION_CATALOG_HOST_GENERATION_MAX_CHARS ||
+    /[\u0000-\u001f\u007f]/.test(value)
+  ) {
+    throw invalidProtocolFrame('Invalid Session catalog host generation');
+  }
+  return value;
 }
 
 function optionalSubagent(
@@ -1076,9 +1230,20 @@ function executorTarget(value: unknown): SessionExecutorTarget {
 
 function optionalExecutorId(
   record: Record<string, unknown>,
-): Pick<SessionCatalogProjection, 'executorId'> | Record<string, never> {
-  if (record.executorId === undefined) return {};
-  return { executorId: executorIdValue(record.executorId) };
+): Pick<SessionCatalogProjection, 'executorId' | 'executorConfig'> | Record<string, never> {
+  if (record.executorId === undefined) {
+    if (record.executorConfig !== undefined)
+      throw invalidProtocolFrame('Executor configuration requires an executor');
+    return {};
+  }
+  if (record.executorConfig !== undefined && !isExecutorConfiguration(record.executorConfig))
+    throw invalidProtocolFrame('Invalid executor configuration');
+  return {
+    executorId: executorIdValue(record.executorId),
+    ...(record.executorConfig
+      ? { executorConfig: record.executorConfig as ExecutorConfiguration }
+      : {}),
+  };
 }
 
 function thinkingLevel(value: unknown): ThinkingLevel {

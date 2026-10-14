@@ -19,7 +19,7 @@
 
 import type { ProviderType } from '@maka/core/llm-connections';
 import type { SettingsSection } from '@maka/core/settings';
-import type { OverlaySearchRecall } from '../ports.js';
+import type { OverlayPaletteActions, OverlaySearchRecall } from '../ports.js';
 import type { SearchScrollTarget } from './search-scroll-target.js';
 import type { SettingsModalState } from './settings-modal-state.js';
 
@@ -58,4 +58,10 @@ export interface OverlaysSelectors {
 export interface OverlaysShellProjection {
   readonly commands: OverlaysCommands;
   readonly selectors: OverlaysSelectors;
+  /**
+   * The Desktop operations behind the palette's own rows, for the shell's
+   * row builder (`app-shell-command-actions.ts`) while it stays outside this
+   * feature. Created once with the services, so its identity never moves.
+   */
+  readonly paletteActions: OverlayPaletteActions;
 }

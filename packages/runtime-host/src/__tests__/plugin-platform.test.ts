@@ -2728,3 +2728,41 @@ class FailingClosePackageLoader extends TrustedPluginPackageLoader {
     throw new Error('injected package loader close failure');
   }
 }
+
+test('Host-replaced packages retain config but cannot activate on recovery or later enable', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'native-replaces-plugin-'));
+  const platform = new HostPluginPlatform(join(root, 'control'), {
+    replacedPackages: ['retired-core'],
+  });
+  try {
+    await platform.recover();
+    const source = await writeFixturePackage(root, 'retired-core', 'old-core', {
+      throwOnApply: true,
+      composition: [
+        { type: 'insert', rootId: 'profile', entry: { id: 'old-core', packageId: 'retired-core' } },
+      ],
+    });
+    const result = await platform.installPackage(source);
+    assert.deepEqual(result.failures, []);
+    assert.equal(platform.inspect('profile')[0]?.status, 'disabled');
+    const enabled = await platform.apply({
+      operations: [{ type: 'update', entryId: 'old-core', patch: { disabled: false } }],
+    });
+    assert.deepEqual(enabled.failures, []);
+    assert.equal(platform.inspect('profile')[0]?.status, 'disabled');
+    await platform.close();
+    const again = new HostPluginPlatform(join(root, 'control'), {
+      replacedPackages: ['retired-core'],
+    });
+    try {
+      await again.recover();
+      assert.equal(again.inspect('profile')[0]?.status, 'disabled');
+      assert.deepEqual(again.failures(), []);
+    } finally {
+      await again.close();
+    }
+  } finally {
+    await platform.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});

@@ -20,6 +20,10 @@
 import { join } from 'node:path';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type {
+  RuntimeInvocationRecoveryInventoryEntry,
+  RuntimeSessionEventSnapshot,
+} from '@maka/core/runtime-event-store';
+import type {
   RuntimeInvocationPageInput,
   RuntimeInvocationPageResult,
   RuntimeInvocationRecord,
@@ -46,7 +50,11 @@ export type RuntimeEventReadPersistence = {
 };
 
 export interface RuntimeEventReadStore {
+  readSessionRuntimeSnapshot?(sessionId: string): Promise<RuntimeSessionEventSnapshot>;
   listSessionInvocations(sessionId: string): Promise<RuntimeInvocationRecord[]>;
+  listInvocationRecoveryInventory(
+    sessionIds: readonly string[],
+  ): Promise<RuntimeInvocationRecoveryInventoryEntry[]>;
   readRunInvocation(sessionId: string, runId: string): Promise<RuntimeInvocationRecord | undefined>;
   listSessionInvocationsBounded(
     sessionId: string,
@@ -65,6 +73,7 @@ export interface RuntimeEventReadStore {
   ): Promise<BoundedEvidenceReadResult<RuntimeEvent>>;
   readImmutableRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]>;
   readSessionRuntimeEvents(sessionId: string): Promise<RuntimeEvent[]>;
+  readSessionHistoryRevision(sessionId: string): Promise<string>;
   /** Session-wide events with the ordinal that fixes their transcript order. */
   readSessionRuntimeEventEntries(
     sessionId: string,
@@ -106,7 +115,11 @@ export async function openRuntimeEventReadPersistence(input: {
   return {
     kind: 'sqlite',
     runtimeEventStore: Object.freeze({
+      readSessionRuntimeSnapshot: (sessionId: string) =>
+        store.readSessionRuntimeSnapshot(sessionId),
       listSessionInvocations: (sessionId: string) => store.listSessionInvocations(sessionId),
+      listInvocationRecoveryInventory: (sessionIds: readonly string[]) =>
+        store.listInvocationRecoveryInventory(sessionIds),
       readRunInvocation: (sessionId: string, runId: string) =>
         store.readRunInvocation(sessionId, runId),
       listSessionInvocationsBounded: (sessionId: string, limit: number) =>
@@ -122,6 +135,8 @@ export async function openRuntimeEventReadPersistence(input: {
       readImmutableRuntimeEvents: (sessionId: string, runId: string) =>
         store.readImmutableRuntimeEvents(sessionId, runId),
       readSessionRuntimeEvents: (sessionId: string) => store.readSessionRuntimeEvents(sessionId),
+      readSessionHistoryRevision: (sessionId: string) =>
+        store.readSessionHistoryRevision(sessionId),
       readSessionRuntimeEventEntries: (sessionId: string) =>
         store.readSessionRuntimeEventEntries(sessionId),
       listSessionsWithRuntimeEventText: (sessionIds: readonly string[], terms: readonly string[]) =>

@@ -20,7 +20,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
   MCP_CONFIG_VERSION,
-  mcpConfigChangeRetiresCredentials,
   resolveMcpProtocolPreference,
   type McpConfigFile,
   type McpConfigSourceFailureReason,
@@ -34,7 +33,8 @@ import { createFileCredentialStore } from '@maka/storage/credential-store';
 import {
   AtomicFileWriteCommitUnknownError,
   createMcpConfigStore,
-  assertMcpEndpointPolicyOnChanges,
+  updateMcpConfiguration,
+  McpConfigurationValidationError,
   McpConfigSourceError,
   normalizeMcpConfig,
   normalizeMcpImport,
@@ -79,6 +79,8 @@ export interface TuiMcpServerSnapshot {
 
 export interface TuiMcpSnapshot {
   readonly initialization: 'loading' | 'ready' | 'error';
+  /** Safe source location for invalid persisted JSON, never the parser message. */
+  readonly invalidConfigPath?: string;
   readonly configuration: 'ready' | 'synchronizing' | 'out_of_sync';
   readonly publication: TuiMcpPublicationState;
   readonly canManagePublicationCredential?: boolean;
@@ -140,6 +142,11 @@ export type TuiMcpActionEffect =
 export type TuiMcpActionResult =
   | { readonly status: 'applied'; readonly effect: TuiMcpActionEffect }
   | { readonly status: 'tested'; readonly test: McpTestResult; readonly effect: TuiMcpActionEffect }
+  | {
+      readonly status: 'failed';
+      readonly reason: 'invalid-config-file';
+      readonly path: string;
+    }
   | {
       readonly status: 'failed';
       readonly reason: 'commit-unknown';
@@ -213,7 +220,7 @@ export interface TuiMcpPublicationTarget
 }
 
 interface TuiMcpControllerDeps {
-  readonly configStore: Pick<McpConfigStore, 'get' | 'transform'>;
+  readonly configStore: Pick<McpConfigStore, 'get' | 'transform' | 'subscribeChanges'>;
   readonly manager: TuiMcpManager;
   readonly createProvider: (manager: TuiMcpManager) => ClientCapabilityProvider | undefined;
 }
@@ -245,6 +252,7 @@ class TuiMcpControllerImpl implements TuiMcpController {
   readonly #listeners = new Set<() => void>();
   readonly #disposeManagerChange: () => void;
   readonly #disposeConnectionAvailability: () => void;
+  readonly #disposeConfigChanges: () => void;
   readonly #initialization: Promise<void>;
   #availability: TuiMcpPublicationAvailability = { kind: 'unavailable' };
   #closed = false;
@@ -324,6 +332,16 @@ class TuiMcpControllerImpl implements TuiMcpController {
         }
       },
     );
+    // Desktop edits the same file. A change during startup waits for it
+    // rather than being dropped, since startup may have read the file first.
+    // Failing to follow leaves the TUI's own edits working, so it stays quiet
+    // rather than print over the screen.
+    this.#disposeConfigChanges = deps.configStore.subscribeChanges((error) => {
+      if (error) return;
+      void this.#initialization
+        .then(() => this.#serializeAction(() => this.#followConfigChange()))
+        .catch(() => undefined);
+    });
     this.#initialization = this.#initialize();
   }
 
@@ -390,6 +408,7 @@ class TuiMcpControllerImpl implements TuiMcpController {
     this.#closed = true;
     this.#disposeManagerChange();
     this.#disposeConnectionAvailability();
+    this.#disposeConfigChanges();
     this.#listeners.clear();
     this.#preparedImport = undefined;
     const publicationClosing = this.#publication.close().catch(() => undefined);
@@ -411,13 +430,19 @@ class TuiMcpControllerImpl implements TuiMcpController {
       this.#config = cloneConfig(config);
       this.#refreshManagerSnapshot('ready', 'ready');
       this.#requestPublication();
-    } catch {
+    } catch (error) {
       if (this.#closed) return;
-      this.#updateSnapshot({ initialization: 'error', publication: 'not_published' });
+      this.#updateSnapshot({
+        initialization: 'error',
+        publication: 'not_published',
+        ...(error instanceof McpConfigSourceError && error.reason === 'invalid-json' && error.path
+          ? { invalidConfigPath: error.path }
+          : {}),
+      });
     }
   }
 
-  #serializeAction(work: () => Promise<TuiMcpActionResult>): Promise<TuiMcpActionResult> {
+  #serializeAction<T>(work: () => Promise<T>): Promise<T> {
     const run = this.#actionLane.then(work, work);
     this.#actionLane = run.then(
       () => undefined,
@@ -481,37 +506,34 @@ class TuiMcpControllerImpl implements TuiMcpController {
   ): Promise<TuiMcpActionResult> {
     let committed: McpConfigFile;
     try {
-      committed = await this.#deps.configStore.transform(async (current) => {
-        if (this.#closed) {
-          throw new TuiMcpMutationError({ status: 'failed', reason: 'closed' });
-        }
-        const prepared = this.#prepareMutation(current, action);
-        if ('status' in prepared) throw new TuiMcpMutationError(prepared);
-        const { next } = prepared;
-        try {
-          assertMcpEndpointPolicyOnChanges(current, next);
-        } catch {
-          throw new TuiMcpMutationError({ status: 'failed', reason: 'invalid-config' });
-        }
-        try {
-          for (const [serverId, previous] of Object.entries(current.mcpServers)) {
-            if (!mcpConfigChangeRetiresCredentials(previous, next.mcpServers[serverId])) continue;
+      committed = await updateMcpConfiguration(
+        this.#deps.configStore,
+        (current) => {
+          if (this.#closed) throw new TuiMcpMutationError({ status: 'failed', reason: 'closed' });
+          const prepared = this.#prepareMutation(current, action);
+          if ('status' in prepared) throw new TuiMcpMutationError(prepared);
+          return prepared.next;
+        },
+        async (serverId, previous) => {
+          try {
             await this.#deps.manager.forgetServerCredentials(serverId, previous);
-            if (this.#closed) {
-              throw new TuiMcpMutationError({ status: 'failed', reason: 'closed' });
-            }
+          } catch {
+            throw new TuiMcpMutationError({
+              status: 'failed',
+              reason: 'credential-cleanup-failed',
+            });
           }
-        } catch (error) {
-          if (error instanceof TuiMcpMutationError) throw error;
-          throw new TuiMcpMutationError({
-            status: 'failed',
-            reason: 'credential-cleanup-failed',
-          });
-        }
-        return next;
-      });
+          if (this.#closed) throw new TuiMcpMutationError({ status: 'failed', reason: 'closed' });
+        },
+      );
     } catch (error) {
       if (error instanceof TuiMcpMutationError) return error.result;
+      if (error instanceof McpConfigurationValidationError)
+        return { status: 'failed', reason: 'invalid-config' };
+
+      if (error instanceof McpConfigSourceError && error.reason === 'invalid-json' && error.path) {
+        return { status: 'failed', reason: 'invalid-config-file', path: error.path };
+      }
       if (error instanceof AtomicFileWriteCommitUnknownError) {
         // The transform has already published, including any credential
         // retirement. Reload its authority; never replay those effects.
@@ -547,7 +569,21 @@ class TuiMcpControllerImpl implements TuiMcpController {
       }
       return { status: 'failed', reason: 'persist-failed' };
     }
+    this.#preparedImport = undefined;
     return (await this.#synchronizeCommittedConfig(committed)).result;
+  }
+
+  async #followConfigChange(): Promise<void> {
+    if (this.#closed) return;
+    if (this.#snapshot.initialization === 'error') return this.#initialize();
+    const latest = await this.#deps.configStore.get();
+    // An import preview survives: its commit re-checks each server it replaces.
+    if (
+      this.#snapshot.configuration !== 'ready' ||
+      JSON.stringify(latest) !== JSON.stringify(this.#config)
+    ) {
+      await this.#synchronizeCommittedConfig(latest);
+    }
   }
 
   async #synchronizeCommittedConfig(committed: McpConfigFile): Promise<{
@@ -555,7 +591,6 @@ class TuiMcpControllerImpl implements TuiMcpController {
     readonly reconciliationError?: unknown;
   }> {
     if (this.#closed) return { result: { status: 'failed', reason: 'closed' } };
-    this.#preparedImport = undefined;
     this.#config = cloneConfig(committed);
     this.#updateSnapshot({ configuration: 'synchronizing' });
     this.#refreshManagerSnapshot();
@@ -689,7 +724,9 @@ class TuiMcpControllerImpl implements TuiMcpController {
   }
 
   #updateSnapshot(
-    update: Partial<Pick<TuiMcpSnapshot, 'initialization' | 'configuration' | 'publication'>>,
+    update: Partial<
+      Pick<TuiMcpSnapshot, 'initialization' | 'configuration' | 'publication' | 'invalidConfigPath'>
+    >,
   ): void {
     this.#snapshot = freezeSnapshot({ ...this.#snapshot, ...update });
     this.#notify();

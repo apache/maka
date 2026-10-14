@@ -20,7 +20,8 @@
 // Local bot channel brand logos.
 //
 // Sources and licenses:
-// - Telegram, Discord, WeChat, QQ, Slack: Simple Icons, CC0-1.0.
+// - Telegram, Discord, WeChat, QQ, Slack: paths from Simple Icons. The
+//   collection's CC0 license does not establish each brand's icon terms.
 // - WeCom: TDesign Icons `logo-wecom`, MIT, by Tencent.
 // - DingTalk: MingCute Icon `dingtalk-fill`, Apache-2.0.
 // - Feishu/Lark: Allogo `feishu/icon.svg`; Allogo code is MIT, and

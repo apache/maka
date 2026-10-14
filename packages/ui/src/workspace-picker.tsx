@@ -21,6 +21,7 @@ import type { ProjectRecord } from '@maka/core/project';
 import { useState } from 'react';
 import { createPortal } from 'react-dom';
 import { DropdownMenu, DropdownMenuItem } from '@astryxdesign/core/DropdownMenu';
+import { Icon } from '@astryxdesign/core/Icon';
 import { ICON_SIZE, AlertTriangle, Check, FolderOpen, Network, Plus, RefreshCcw, Settings, X } from './icons.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
@@ -28,6 +29,8 @@ import { NewProjectDialog } from './new-project-dialog.js';
 
 export interface WorkspacePickerGroup {
   id: string;
+  /** Runtime Host identity for session-scoped recovery actions. */
+  hostId?: string;
   label: string;
   status?: string;
   disabled?: boolean;
@@ -35,11 +38,12 @@ export interface WorkspacePickerGroup {
   selectedProjectId?: string | null;
   onSelectProject?(projectId: string): void;
   /**
-   * Create a project on this host. The picker collects the name first (see
+   * Create a project on this host. The dialog collects an optional name (see
    * `NewProjectDialog`) and passes it here; the handler then asks for the
-   * directory and registers the project under that name.
+   * directory and registers the project under that name, or under the folder
+   * name when none was given.
    */
-  onAdd?(name: string): void;
+  onAdd?(name?: string): void;
   onManage?(): void;
   onRelink?(projectId: string): void;
   onSelectNoProject?(): void;
@@ -50,6 +54,11 @@ export interface WorkspacePickerModel {
   hostBadge?: string;
   branch?: string | null;
   pending?: boolean;
+  /** Keep the picker mounted when it is repairing an existing Session. */
+  showForActiveSession?: boolean;
+  /** Optional controlled open state used by an external recovery action. */
+  isMenuOpen?: boolean;
+  onOpenChange?(isOpen: boolean): void;
   selectedGroupId?: string;
   groups: readonly WorkspacePickerGroup[];
   retry?: { label: string; onClick(): void };
@@ -60,9 +69,9 @@ export function WorkspacePicker({ workspacePicker: picker }: {
 }) {
   const copy = getConversationCopy(useUiLocale()).workspace;
   const locked = picker.pending === true;
-  // Which host's New project dialog is open. The picker names the project, then
-  // the caller's `onAdd` opens the folder picker — so the name is collected
-  // before the directory step, not after it.
+  // Which host's New project dialog is open. The dialog optionally names the
+  // project, then the caller's `onAdd` opens the folder picker — a blank name
+  // simply means the folder's name will be used.
   const [newProjectGroupId, setNewProjectGroupId] = useState<string | null>(null);
   const newProjectGroup = picker.groups.find((group) => group.id === newProjectGroupId);
 
@@ -70,7 +79,8 @@ export function WorkspacePicker({ workspacePicker: picker }: {
     <>
     <DropdownMenu
       placement="above"
-      hasChevron={false}
+      isMenuOpen={picker.isMenuOpen}
+      onOpenChange={picker.onOpenChange}
       className="maka-composer-quiet-menu"
       button={{
         label: picker.label ?? copy.choose,
@@ -81,12 +91,19 @@ export function WorkspacePicker({ workspacePicker: picker }: {
         isLoading: locked,
         tooltip: copy.chooseTitle(picker.branch ?? undefined),
         className: 'maka-workspace-picker',
-        endContent: picker.hostBadge ? (
-          <span className="maka-workspace-picker-host-badge">
-            <Network size={ICON_SIZE.meta} aria-hidden="true" />
-            <span>{picker.hostBadge}</span>
+        // Any endContent replaces DropdownMenu's own chevron, so the chevron is
+        // drawn here, as the model and thinking Selectors draw theirs.
+        endContent: (
+          <span className="maka-workspace-picker-end">
+            {picker.hostBadge ? (
+              <span className="maka-workspace-picker-host-badge">
+                <Network size={ICON_SIZE.meta} aria-hidden="true" />
+                <span>{picker.hostBadge}</span>
+              </span>
+            ) : null}
+            <Icon icon="chevronDown" size="sm" color="secondary" className="maka-workspace-picker-chevron" />
           </span>
-        ) : undefined,
+        ),
         'aria-label': copy.chooseAriaLabel(
           picker.hostBadge
             ? `${picker.hostBadge} · ${picker.label ?? copy.current}`

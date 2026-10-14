@@ -29,22 +29,44 @@ import {
   thinkingOptionsForModel,
   thinkingVariantsForConnection,
   thinkingVariantsForModel,
-  supportsRelayFastServiceTier,
+  supportsCustomFastServiceTier,
+  declaredModelApiProtocol,
 } from '../model-thinking.js';
-import { isRelayProviderType } from '../llm-connections.js';
 
-test('declarable relay levels are every intensity tier but off', () => {
-  // `off` is a disable-wire encoding (reasoning_effort 'none'), not an
-  // intensity tier — a hybrid UI/data contract keeps it out of declarations.
-  assert.deepEqual(normalizeModelOverrides({ m: { thinkingLevels: ['off', 'low'] } }), {
+test('relay declarations accept effort tiers but not thinking switches', () => {
+  assert.deepEqual(normalizeModelOverrides({ m: { thinkingLevels: ['off', 'on', 'low'] } }), {
     m: { thinkingLevels: ['low'] },
   });
   assert.deepEqual(normalizeModelOverrides({ m: { thinkingLevels: ['off'] } }), { m: {} });
   const declaredOff = {
-    providerType: 'openai-compatible',
+    providerType: 'custom',
     modelOverrides: { m: { thinkingLevels: ['off', 'low'] } },
   } as const;
   assert.deepEqual([...thinkingVariantsForConnection(declaredOff, 'm')], ['low']);
+});
+
+test('toggle-only Claude models offer an explicit on choice without inventing effort', () => {
+  for (const providerType of ['anthropic', 'opencode'] as const) {
+    for (const modelId of ['claude-sonnet-4-5', 'claude-haiku-4-5']) {
+      assert.deepEqual(
+        thinkingVariantsForModel(providerType, modelId),
+        ['off', 'on'],
+        `${providerType}/${modelId}`,
+      );
+    }
+  }
+  assert.equal(resolveThinkingLevel({ providerType: 'anthropic' }, 'claude-haiku-4-5', 'on'), 'on');
+  assert.equal(
+    defaultThinkingLevelForConnection(
+      {
+        providerType: 'anthropic',
+        modelOverrides: { 'claude-haiku-4-5': { defaultThinkingLevel: 'on' } },
+      },
+      'claude-haiku-4-5',
+    ),
+    'on',
+  );
+  assert.equal(thinkingVariantsForModel('anthropic', 'claude-opus-4-8').includes('on'), false);
 });
 
 test('relay profiles preserve the fast service tier declaration', () => {
@@ -56,7 +78,7 @@ test('relay profiles preserve the fast service tier declaration', () => {
 
 test('per-model thinking defaults resolve only when the model offers the level', () => {
   const connection = {
-    providerType: 'openai-compatible',
+    providerType: 'custom',
     modelOverrides: {
       reasoner: { thinkingLevels: ['low', 'high'], defaultThinkingLevel: 'high' },
       stale: { thinkingLevels: ['low'], defaultThinkingLevel: 'high' },
@@ -88,14 +110,45 @@ test('Fast visibility mirrors the pinned OpenAI SDK priority-processing families
     ['plain-relay-id', false],
   ] as const;
   for (const [modelId, expected] of cases) {
-    assert.equal(supportsRelayFastServiceTier('openai-responses-compatible', modelId), expected);
-    assert.equal(supportsRelayFastServiceTier('openai-compatible', modelId), false);
+    const responses = { providerType: 'custom', defaultApiProtocol: 'openai-responses' } as const;
+    const chat = { providerType: 'custom', defaultApiProtocol: 'openai-chat' } as const;
+    assert.equal(supportsCustomFastServiceTier(responses, modelId), expected);
+    assert.equal(supportsCustomFastServiceTier(chat, modelId), false);
+    // The gate follows the model's own wire, not the connection default.
+    assert.equal(
+      supportsCustomFastServiceTier(
+        { ...chat, modelOverrides: { [modelId]: { apiProtocol: 'openai-responses' } } },
+        modelId,
+      ),
+      expected,
+    );
+    assert.equal(
+      supportsCustomFastServiceTier({ providerType: 'openai', models: [] }, modelId),
+      false,
+    );
   }
+});
+
+test('a model wire is its declaration, then discovery, then the connection default', () => {
+  const connection = {
+    providerType: 'custom',
+    defaultApiProtocol: 'openai-chat',
+    models: [
+      { id: 'discovered', apiProtocol: 'anthropic-messages' },
+      { id: 'declared', apiProtocol: 'anthropic-messages' },
+      { id: 'plain' },
+    ],
+    modelOverrides: { declared: { apiProtocol: 'openai-responses' } },
+  } as const;
+  assert.equal(declaredModelApiProtocol(connection, 'declared'), 'openai-responses');
+  assert.equal(declaredModelApiProtocol(connection, 'discovered'), 'anthropic-messages');
+  assert.equal(declaredModelApiProtocol(connection, 'plain'), 'openai-chat');
+  assert.equal(declaredModelApiProtocol(connection, 'unlisted'), 'openai-chat');
 });
 
 test('modelOverride returns undefined without a usable declaration', () => {
   const connection = {
-    providerType: 'openai-compatible',
+    providerType: 'custom',
     modelOverrides: {
       empty: {},
       junk: 'nope',
@@ -124,7 +177,7 @@ test('modelOverride returns undefined without a usable declaration', () => {
 
 test('modelOverride normalizes order, keeps explicit vision:false, and bounds context windows', () => {
   const connection = {
-    providerType: 'openai-compatible',
+    providerType: 'custom',
     modelOverrides: {
       reasoner: { thinkingLevels: ['high', 'low', 'turbo'], vision: false },
       visual: { vision: true },
@@ -140,7 +193,7 @@ test('modelOverride normalizes order, keeps explicit vision:false, and bounds co
 
   const windowed = (contextWindow: unknown) =>
     ({
-      providerType: 'openai-compatible' as const,
+      providerType: 'custom' as const,
       modelOverrides: { m: { contextWindow } },
     }) as unknown as ConnectionThinkingContext;
   assert.deepEqual(modelOverride(windowed(128_000), 'm'), { contextWindow: 128_000 });
@@ -156,12 +209,7 @@ test('modelOverride honours a declaration on any provider', () => {
   // one — Maka has no other way to learn the fact — is not confined to relays:
   // it holds for any model newer than the bundled snapshot, and for every
   // model on a provider with no model-list endpoint (#1584).
-  for (const providerType of [
-    'openai-compatible',
-    'openai-responses-compatible',
-    'anthropic',
-    'volcengine-agent-plan',
-  ] as const) {
+  for (const providerType of ['custom', 'anthropic', 'volcengine-agent-plan'] as const) {
     assert.deepEqual(modelOverride({ providerType, modelOverrides: profiles }, 'm'), {
       vision: true,
       contextWindow: 64_000,
@@ -172,13 +220,6 @@ test('modelOverride honours a declaration on any provider', () => {
     modelOverride({ providerType: 'anthropic', modelOverrides: profiles }, 'other'),
     undefined,
   );
-});
-
-test('isRelayProviderType only accepts the two custom OpenAI relay providers', () => {
-  assert.equal(isRelayProviderType('openai-compatible'), true);
-  assert.equal(isRelayProviderType('openai-responses-compatible'), true);
-  assert.equal(isRelayProviderType('openai'), false);
-  assert.equal(isRelayProviderType('anthropic'), false);
 });
 
 test('normalizeModelOverrides sanitizes write-side tables', () => {
@@ -209,7 +250,7 @@ test('normalizeModelOverrides sanitizes write-side tables', () => {
 
 test('resolveThinkingLevel discards levels the model does not offer', () => {
   const relay = {
-    providerType: 'openai-compatible',
+    providerType: 'custom',
     modelOverrides: { m: { thinkingLevels: ['off', 'low'] } },
   } as const;
   assert.equal(resolveThinkingLevel(relay, 'm', 'low'), 'low');
@@ -253,6 +294,7 @@ test('ApplyPatch defaults are model-specific and explicit choices win', () => {
     'gpt-5.6-luna',
     'gpt-6-astra',
     'gpt-5.4-2026-03-05',
+    'deepseek-flash',
     'deepseek-v4-flash',
     'deepseek-v4-pro',
   ]) {

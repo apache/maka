@@ -45,6 +45,12 @@ const DEFAULT_TIMEOUT_MS = 15_000;
 export interface AcpChildProcessHarnessOptions {
   readonly timeoutMs?: number;
   readonly startRuntimeHost?: boolean;
+  readonly memoryEnabled?: boolean;
+  readonly safeBoundaryResume?: boolean;
+  readonly beforeHostStart?: (input: {
+    workspaceRoot: string;
+    modelConnectionId?: string;
+  }) => Promise<void>;
   readonly model?: {
     readonly id: string;
     readonly thinkingLevels: readonly ThinkingLevel[];
@@ -78,9 +84,12 @@ export class AcpChildProcessHarness {
   readonly #exit: Promise<AcpChildProcessExit>;
   readonly #spawn: Promise<void>;
   readonly #timeoutMs: number;
+  readonly #env: NodeJS.ProcessEnv;
+  readonly #ownsResources: boolean;
   #connection: ClientConnection | undefined;
   #clientOpened = false;
   #stdinClosed = false;
+  #hostStopped = false;
   #closePromise: Promise<void> | undefined;
 
   constructor(input: {
@@ -90,6 +99,8 @@ export class AcpChildProcessHarness {
     host?: RuntimeHostKernel;
     stdoutTap: PassThrough;
     timeoutMs: number;
+    env: NodeJS.ProcessEnv;
+    ownsResources?: boolean;
   }) {
     this.#root = input.root;
     this.#workspaceRoot = input.workspaceRoot;
@@ -97,6 +108,8 @@ export class AcpChildProcessHarness {
     this.#host = input.host;
     this.#stdout = new StdoutCaptureBridge(input.stdoutTap);
     this.#timeoutMs = input.timeoutMs;
+    this.#env = input.env;
+    this.#ownsResources = input.ownsResources ?? true;
     this.#child.stderr.on('data', (chunk: Buffer) => this.#stderr.push(Buffer.from(chunk)));
     this.#spawn = waitForChildSpawn(this.#child);
     this.#exit = new Promise<AcpChildProcessExit>((resolve, reject) => {
@@ -134,6 +147,12 @@ export class AcpChildProcessHarness {
       if (isErrorWithCode(error, 'ENOENT')) return false;
       throw error;
     }
+  }
+
+  async stopRuntimeHost(): Promise<void> {
+    if (!this.#host) throw new Error('ACP harness has no in-process Runtime Host');
+    await this.#host.close();
+    this.#hostStopped = true;
   }
 
   async withClient<T>(
@@ -193,6 +212,28 @@ export class AcpChildProcessHarness {
     }
   }
 
+  /** Spawn another ACP process against this harness's existing Runtime Host root. */
+  async spawnSibling(): Promise<AcpChildProcessHarness> {
+    const child = spawn(
+      process.execPath,
+      [fileURLToPath(new URL('../dev-cli.js', import.meta.url)), '--acp'],
+      { cwd: this.#workspaceRoot, env: this.#env, stdio: ['pipe', 'pipe', 'pipe'] },
+    );
+    const stdoutTap = new PassThrough();
+    pipeCapturedStdout(child.stdout, stdoutTap);
+    const sibling = new AcpChildProcessHarness({
+      root: this.#root,
+      workspaceRoot: this.#workspaceRoot,
+      child,
+      stdoutTap,
+      timeoutMs: this.#timeoutMs,
+      env: this.#env,
+      ownsResources: false,
+    });
+    await sibling.waitForSpawn();
+    return sibling;
+  }
+
   close(): Promise<void> {
     this.#closePromise ??= this.closeOnce();
     return this.#closePromise;
@@ -203,7 +244,7 @@ export class AcpChildProcessHarness {
     for (const cleanup of [
       () => this.closeConnection(),
       () => this.stopChild(),
-      () => this.#host?.close(),
+      ...(this.#ownsResources && !this.#hostStopped ? [() => this.#host?.close()] : []),
     ]) {
       try {
         await cleanup();
@@ -211,7 +252,7 @@ export class AcpChildProcessHarness {
         failure ??= error;
       }
     }
-    await rm(this.#root, { recursive: true, force: true });
+    if (this.#ownsResources) await rm(this.#root, { recursive: true, force: true });
     if (failure !== undefined) throw failure;
   }
 
@@ -297,10 +338,15 @@ export async function startAcpChildProcessHarness(
   let rootCleanupFollowsHostStartup = false;
   try {
     await mkdir(workspaceRoot, { recursive: true });
-    if (options.model) await seedModelConnection(workspaceRoot, options.model);
+    const modelConnectionId = options.model
+      ? await seedModelConnection(workspaceRoot, options.model, options.memoryEnabled)
+      : undefined;
+    await options.beforeHostStart?.({ workspaceRoot, modelConnectionId });
     if (options.startRuntimeHost) {
-      hostStartup = startExecutionRuntimeHostService({ rootPath: workspaceRoot });
+      const previousSafeBoundaryResume = process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME;
+      if (options.safeBoundaryResume) process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME = '1';
       try {
+        hostStartup = startExecutionRuntimeHostService({ rootPath: workspaceRoot });
         host = await withStartupTimeout(
           hostStartup,
           timeoutMs,
@@ -308,7 +354,7 @@ export async function startAcpChildProcessHarness(
           workspaceRoot,
         );
       } catch (error) {
-        if (error instanceof StartupTimeoutError) {
+        if (error instanceof StartupTimeoutError && hostStartup) {
           rootCleanupFollowsHostStartup = true;
           void hostStartup
             .then(
@@ -321,6 +367,10 @@ export async function startAcpChildProcessHarness(
             .catch(() => undefined);
         }
         throw error;
+      } finally {
+        if (previousSafeBoundaryResume === undefined)
+          delete process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME;
+        else process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME = previousSafeBoundaryResume;
       }
     }
     const child = spawn(
@@ -337,6 +387,7 @@ export async function startAcpChildProcessHarness(
       ...(host ? { host } : {}),
       stdoutTap,
       timeoutMs,
+      env,
     });
     await harness.waitForSpawn();
     return harness;
@@ -353,18 +404,31 @@ export async function startAcpChildProcessHarness(
 async function seedModelConnection(
   rootPath: string,
   model: NonNullable<AcpChildProcessHarnessOptions['model']>,
-): Promise<void> {
+  memoryEnabled?: boolean,
+): Promise<string> {
   const capability = await resolveStorageRoot({ path: rootPath, kind: 'interactive' });
   const owner = await tryAcquireInteractiveRootOwner(capability);
   if (!owner) throw new Error('Unable to acquire ACP model fixture root');
   try {
     const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+    if (memoryEnabled !== undefined) {
+      const snapshot = await policy.runtimePolicy.getSnapshot();
+      const enabled = await policy.runtimePolicy.mutate({
+        expectedRevision: snapshot.revision,
+        operation: {
+          kind: 'set_memory',
+          value: { enabled: memoryEnabled, agentReadEnabled: memoryEnabled },
+        },
+      });
+      if (enabled.kind !== 'committed') throw new Error('ACP memory fixture did not commit');
+    }
     const created = await policy.connectionCatalog.create({
       expectedCatalogRevision: 0,
       connection: {
         slug: 'acp-fixture-model',
         name: 'ACP fixture model',
-        providerType: 'openai-compatible',
+        providerType: 'custom',
+        defaultApiProtocol: 'openai-chat',
         baseUrl: model.baseUrl ?? 'https://acp-model.invalid/v1',
         enabled: true,
         enabledModelIds: [model.id],
@@ -395,6 +459,7 @@ async function seedModelConnection(
       target: { connectionId: connection.connectionId, modelId: model.id },
     });
     if (defaulted.kind !== 'committed') throw new Error('ACP model fixture was not selected');
+    return connection.connectionId;
   } finally {
     await owner.close();
   }

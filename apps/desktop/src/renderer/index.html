@@ -21,6 +21,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <meta name="referrer" content="no-referrer" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       http-equiv="Content-Security-Policy"
@@ -78,7 +79,9 @@
       }
       .maka-preload-mark {
         color: #71a8fd;
-        animation: maka-preload-breathe 2.4s ease-in-out infinite;
+        /* Four cycles outlast the overlay, which hides by 8s at the latest.
+           An infinite loop kept running, hidden, for the life of the window. */
+        animation: maka-preload-breathe 2.4s ease-in-out 4;
       }
       @keyframes maka-preload-breathe {
         0%, 100% { opacity: 0.55; }

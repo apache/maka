@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { McpConfigFile, McpServerStatus, McpServerConfig, McpConfigAddResult, McpConfigImportResult, McpConfigUpdateResult, McpTestResult, OpencliChromeStatus } from '@maka/core/mcp';
 import type {
   DailyReviewArchive,
   DailyReviewArchiveSummary,
@@ -41,6 +42,8 @@ import type {
   OpenSkillLocationResult,
   SkillLocationsSnapshot,
 } from '../../../shared/skill-locations.js';
+
+import type { McpIpcResult } from '../../../shared/mcp-ipc.js';
 
 export type ModuleHubUnsubscribe = () => void;
 
@@ -248,7 +251,25 @@ export interface ModuleHubClipboardService {
 }
 
 /** Environment capabilities owned by the Module Hub feature slice. */
+export interface ModuleHubMcpService {
+  getConfig(host: ModuleHubRuntimeHostRef): Promise<McpIpcResult<McpConfigFile>>;
+  listStatuses(host: ModuleHubRuntimeHostRef): Promise<McpIpcResult<McpServerStatus[]>>;
+  add(id: string, config: McpServerConfig, host: ModuleHubRuntimeHostRef): Promise<McpIpcResult<McpConfigAddResult>>;
+  update(id: string, config: McpServerConfig, basis: McpServerConfig, host: ModuleHubRuntimeHostRef): Promise<McpIpcResult<McpConfigUpdateResult>>;
+  setEnabled(id: string, enabled: boolean, host: ModuleHubRuntimeHostRef): Promise<McpIpcResult<McpConfigUpdateResult>>;
+  importConfig(source: string, host: ModuleHubRuntimeHostRef): Promise<McpIpcResult<McpConfigImportResult>>;
+  remove(id: string, host: ModuleHubRuntimeHostRef): Promise<McpIpcResult<McpConfigFile>>;
+  test(id: string, host: ModuleHubRuntimeHostRef): Promise<McpIpcResult<McpTestResult>>;
+  login(id: string, host: ModuleHubRuntimeHostRef): Promise<McpIpcResult<McpServerStatus>>;
+  cancelLogin(id: string, host: ModuleHubRuntimeHostRef): Promise<McpIpcResult<boolean>>;
+  logout(id: string, host: ModuleHubRuntimeHostRef): Promise<McpIpcResult<McpServerStatus>>;
+  chromeStatus(host: ModuleHubRuntimeHostRef): Promise<OpencliChromeStatus>;
+  connectChrome(host: ModuleHubRuntimeHostRef): Promise<void>;
+  subscribeChanges(handler: () => void): ModuleHubUnsubscribe;
+}
+
 export interface ModuleHubServices {
+  mcp: ModuleHubMcpService;
   runtimeHosts: ModuleHubRuntimeHostsService;
   skills: ModuleHubSkillsService;
   scheduledTasks: ModuleHubScheduledTasksService;

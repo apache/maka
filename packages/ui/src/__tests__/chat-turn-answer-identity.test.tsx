@@ -28,6 +28,8 @@ import { LocalizedChatMessage, TurnView } from '../chat-turn.js';
 import { LocaleProvider } from '../locale-context.js';
 import type { TurnTimelineItem, TurnViewModel } from '../materialize.js';
 import { applyThinkingDelta } from '../thinking-stream.js';
+import { ImageDeliveryProvider, type ResolveImageDelivery } from '../image-delivery.js';
+import { SessionAttachmentProvider } from '../attachment-image.js';
 
 const originalGlobals = {
   document: globalThis.document,
@@ -87,12 +89,20 @@ function turnWith(timeline: TurnTimelineItem[]): TurnViewModel {
 function renderTurn(
   root: ReturnType<typeof createRoot>,
   turn: TurnViewModel,
-  liveStreaming?: { runningStatus?: boolean; onStreamingSettled?: (messageId?: string) => void },
+  liveStreaming?: {
+    runningStatus?: boolean;
+    onStreamingSettled?: (messageId?: string) => void;
+  },
+  safeResumeAction?: { pending: boolean; onResume(): void },
 ): Promise<void> {
   return act(() => {
     root.render(
       <LocaleProvider locale="en">
-        <TurnView turn={turn} liveStreaming={liveStreaming} />
+        <TurnView
+          turn={turn}
+          liveStreaming={liveStreaming}
+          safeResumeAction={safeResumeAction}
+        />
       </LocaleProvider>,
     );
   }) as unknown as Promise<void>;
@@ -198,6 +208,59 @@ test('keeps reasoning expanded when its last neighboring tool is projected away'
   assert.ok(after);
   assert.ok(after.isSameNode(header));
   assert.equal(after.getAttribute('aria-expanded'), 'true');
+});
+
+test('process image links never load bytes while the completed final reply still displays an image', async () => {
+  const { container, root } = domRoot();
+  const sources: string[] = [];
+  let reads = 0;
+  const resolve: ResolveImageDelivery = async (_session, request) => {
+    sources.push(request.source);
+    return { status: 'ready', artifactId: 'final-image' };
+  };
+  const readBytes = async () => {
+    reads++;
+    return { ok: true as const, mimeType: 'image/png', base64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==' };
+  };
+  const thinking: TurnTimelineItem = { kind: 'thinking', messageId: 'reasoning', text: '![Reasoning](https://example.com/reasoning.png)' };
+  const commentary: TurnTimelineItem = { kind: 'text', messageId: 'commentary', text: '![Intermediate](https://example.com/commentary.png)', live: true, complete: true };
+  const final: TurnTimelineItem = { kind: 'text', messageId: 'final', text: '![Final](https://example.com/final.png)' };
+  const render = async (timeline: TurnTimelineItem[], completed = false) => {
+    await act(async () => {
+      root.render(<LocaleProvider locale="en">
+        <SessionAttachmentProvider sessionId="session" readBytes={readBytes}>
+          <ImageDeliveryProvider sessionId="session" resolve={resolve}>
+            <TurnView turn={{ ...turnWith(timeline), status: completed ? 'completed' : 'running' }}
+              liveStreaming={completed ? undefined : { runningStatus: true }} />
+          </ImageDeliveryProvider>
+        </SessionAttachmentProvider>
+      </LocaleProvider>);
+    });
+  };
+
+  // The live last text step is provisional: the next tool can move it into the process.
+  await render([thinking, commentary]);
+  assert.ok(container.querySelector('a[href="https://example.com/commentary.png"]'));
+  assert.equal(container.querySelectorAll('img, .maka-markdown-image-resource').length, 0);
+  assert.deepEqual(sources, []);
+  assert.equal(reads, 0);
+
+  await render([thinking, commentary, RUNNING_TOOL]);
+  assert.ok(container.querySelector('.maka-processing-body a[href="https://example.com/commentary.png"]'));
+  assert.deepEqual(sources, []);
+  assert.equal(reads, 0);
+
+  await render([thinking, commentary, { ...RUNNING_TOOL, items: RUNNING_TOOL.items.map(item => ({ ...item, status: 'completed' })) }, final], true);
+  assert.deepEqual(sources, ['https://example.com/final.png']);
+  assert.equal(reads, 1);
+  assert.equal(container.querySelectorAll('img').length, 1);
+  await act(() => { container.querySelector('.maka-processing-summary')?.dispatchEvent(new window.Event('click', { bubbles: true })); });
+  await act(() => { container.querySelector('.maka-deep-thinking [data-slot="activity-card-header"]')?.dispatchEvent(new window.Event('click', { bubbles: true })); });
+  assert.ok(container.querySelector('.maka-processing-body a[href="https://example.com/reasoning.png"]'));
+  assert.ok(container.querySelector('.maka-processing-body a[href="https://example.com/commentary.png"]'));
+  assert.equal(container.querySelectorAll('.maka-processing-body img, .maka-processing-body .maka-markdown-image-resource').length, 0);
+  assert.deepEqual(sources, ['https://example.com/final.png']);
+  assert.equal(reads, 1);
 });
 
 test('redacts secrets before rendering a settled collapsed reasoning preview', async () => {
@@ -313,6 +376,25 @@ test('gives each answer in a steered turn its own stable element', async () => {
   assert.equal(settledAnswers[1]?.isSameNode(answers[1]), true, 'the second answer keeps its element');
 });
 
+test('a turn identity header appears once, above the root prompt', async () => {
+  const { container, root } = domRoot();
+  const turn = turnWith([
+    { kind: 'text', text: 'first answer', messageId: 'answer-1', live: false },
+    { kind: 'user', message: { id: 'steer-1', role: 'user', text: 'actually...', ts: 2 }, messageId: 'steer-1' },
+    { kind: 'text', text: 'second answer', messageId: 'answer-2', live: false },
+  ]);
+  await act(() => {
+    root.render(
+      <LocaleProvider locale="en">
+        <TurnView turn={turn} messageHeader={<span className="turn-identity">Work</span>} />
+      </LocaleProvider>,
+    );
+  });
+  const headers = [...container.querySelectorAll('.turn-identity')];
+  assert.equal(headers.length, 1);
+  assert.ok(headers[0]!.closest('.maka-user-message:not(.maka-steering-message)'));
+});
+
 test('uses human conversation context instead of raw ids in action names', async () => {
   const { container, root } = domRoot();
   const turn = {
@@ -406,6 +488,85 @@ test('does not edit and resend a message with folder references', async () => {
   );
   await act(() => editButton.dispatchEvent(new window.Event('click', { bubbles: true })));
   assert.equal(editCalls, 0, 'folder references must not be silently dropped by revision');
+});
+
+/**
+ * Quotes and attachments restage into the revision draft (#5109): a selected
+ * user message carrying either stays editable, unlike folder references,
+ * whose Host-owned session binding has no client-side restage path.
+ */
+test('keeps an attachment-carrying message editable', async () => {
+  const { container, root } = domRoot();
+  let editCalls = 0;
+  const turn = {
+    ...turnWith([{ ...ANSWER, live: false }]),
+    status: 'completed' as const,
+    user: {
+      id: 'ask-with-image',
+      role: 'user' as const,
+      text: 'Read this chart',
+      ts: 1,
+      attachments: [
+        {
+          kind: 'image' as const,
+          name: 'chart.png',
+          mimeType: 'image/png',
+          bytes: 10,
+          ref: { kind: 'session_file' as const, sessionId: 'session-1', relativePath: 'a.png' },
+        },
+      ],
+    },
+  };
+
+  await act(() => {
+    root.render(
+      <LocaleProvider locale="en">
+        <TurnView turn={turn} onEditUserMessage={() => { editCalls += 1; }} />
+      </LocaleProvider>,
+    );
+  });
+
+  const editButton = container.querySelector('[data-action="edit"]');
+  assert.ok(editButton, 'the edit action renders');
+  assert.doesNotMatch(
+    editButton.getAttribute('aria-label') ?? '',
+    /does not yet support/,
+  );
+  await act(() => editButton.dispatchEvent(new window.Event('click', { bubbles: true })));
+  assert.equal(editCalls, 1, 'the selected message quotes and attachments restage');
+});
+
+test('keeps a quote-carrying message editable', async () => {
+  const { container, root } = domRoot();
+  let editCalls = 0;
+  const turn = {
+    ...turnWith([]),
+    status: 'completed' as const,
+    user: {
+      id: 'ask-with-quote',
+      role: 'user' as const,
+      text: 'Explain this excerpt',
+      ts: 1,
+      quotes: [{ text: 'selected excerpt', sourceTurnId: 'turn-0' }],
+    },
+  };
+
+  await act(() => {
+    root.render(
+      <LocaleProvider locale="en">
+        <TurnView turn={turn} onEditUserMessage={() => { editCalls += 1; }} />
+      </LocaleProvider>,
+    );
+  });
+
+  const editButton = container.querySelector('[data-action="edit"]');
+  assert.ok(editButton, 'the edit action renders');
+  assert.doesNotMatch(
+    editButton.getAttribute('aria-label') ?? '',
+    /does not yet support/,
+  );
+  await act(() => editButton.dispatchEvent(new window.Event('click', { bubbles: true })));
+  assert.equal(editCalls, 1, 'the selected message quotes restage into the draft');
 });
 
 /**
@@ -853,4 +1014,18 @@ test('states the outcome without a duration when none is recorded, and localizes
     container.querySelector('.maka-processing-summary')?.textContent ?? '',
     /^已完成 · 用时 3 分 33 秒$/,
   );
+});
+
+
+test('WorkHub feedback is a system notice without a user message bubble', async () => {
+  const { container, root } = domRoot();
+  await renderTurn(root,{
+    ...turnWith([{ ...ANSWER, live: false }]),
+    status: 'completed',
+    user:{id:'feedback',role:'user',text:'Order summary',ts:1,hostOrigin:{kind:'workhub_result',eventId:'feedback',actionId:'action',delegationId:'delegation',targetSessionId:'target',targetTurnId:'target-turn'}},
+  });
+  assert.ok(container.textContent.includes('Task result update · Order summary'));
+  assert.equal(container.querySelectorAll('.maka-user-message').length, 0);
+  assert.ok(container.querySelector('[role="status"][aria-label="Task result update · Order summary"]'));
+  assert.ok(container.textContent.includes('the answer'));
 });

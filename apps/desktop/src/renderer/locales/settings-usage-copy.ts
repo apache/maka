@@ -17,13 +17,14 @@
  * under the License.
  */
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, defineShippedUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 export type UsageSettingsCopy = {
   staleTitle: string; staleBody: string; loadFailed: string; capacityBody: string; retainedBody: string;
   saveFailed: string; toolbarAria: string; rangeAria: string; ranges: readonly [string, string, string, string];
   refreshingAria: string; refreshAria: string; summaryAria: string; totalRequests: string; totalCost: string; costHelp: string;
-  totalTokens: string; tokenDetail(input: number, output: number): string; cacheTokens: string; cacheDetail(miss: number, read: number, creation: number): string;
+  totalTokens: string; tokenDetail(input: string, output: string): string; cacheTokens: string; cacheDetail(miss: string, read: string, creation: string): string;
+  tokenTooltip: { total: string; input: string; output: string; cached: string; new: string; hit: string; created: string };
   viewAria: string; tabs: readonly [string, string, string, string, string]; filtersAria: string; filterPlaceholder: string; filterAria: string;
   statusAria: string; statuses: readonly [string, string, string, string]; details: string; detailsAria: string; recordCount(count: number): string; clearFilters: string;
   paginationAria: string; previousPage: string; nextPage: string; goToPage(page: number): string; pageProgress(loadedPage: number, targetPage: number): string;
@@ -37,14 +38,13 @@ export type UsageSettingsCopy = {
     toolEmptyTitle: string; toolEmptyBody: string; pricingEmptyBody: string;
   };
 };
-
-const SETTINGS_USAGE_COPY = {
-  'zh-CN': {
+const settingsUsageCopyZhCn: UsageSettingsCopy = {
     staleTitle: "统计已更新", staleBody: "当前显示的是之前的完整结果。请刷新后继续浏览。", loadFailed: "无法加载使用统计", capacityBody: "统计结果超出显示容量，请求未返回任何部分数据。", retainedBody: "当前仍显示上次成功加载的结果，新查询尚未生效。",
     saveFailed: '保存使用统计设置失败', toolbarAria: '使用统计范围与刷新', rangeAria: '使用统计时间范围', ranges: ['24h', '7天', '30天', '全部'],
     refreshingAria: '正在刷新使用统计', refreshAria: '刷新使用统计', summaryAria: '使用统计汇总指标', totalRequests: '模型调用', totalCost: '总费用', costHelp: '以模型供应商最终结算为准',
     totalTokens: '总 Token', tokenDetail: (input, output) => `输入 ${input} / 输出 ${output}`, cacheTokens: '缓存 Token',
     cacheDetail: (miss, read, creation) => `新 ${miss} / 命中 ${read} / 创建 ${creation}`, viewAria: '使用统计视图', tabs: ['活动记录', '供应商统计', '模型统计', '工具统计', '定价配置'],
+    tokenTooltip: { total: '总计', input: '输入', output: '输出', cached: '缓存', new: '新', hit: '命中', created: '创建' },
     filtersAria: '活动记录筛选', filterPlaceholder: '按模型或工具筛选…', filterAria: '按模型或工具筛选活动记录', statusAria: '活动状态筛选',
     statuses: ['全部状态', '成功', '错误', '已中止'], details: '详情记录', detailsAria: '显示使用统计详情记录', recordCount: (count) => `共 ${count} 条记录`, clearFilters: '清除筛选',
     paginationAria: '活动记录分页', previousPage: '上一页', nextPage: '下一页', goToPage: (page) => `转到第 ${page} 页`, pageProgress: (loadedPage, targetPage) => `正在加载第 ${loadedPage} / ${targetPage} 页`,
@@ -62,9 +62,10 @@ const SETTINGS_USAGE_COPY = {
       toolEmptyTitle: '暂无工具调用', toolEmptyBody: '智能体调用工具后，这里会按工具聚合调用次数、成功、错误与平均耗时。',
       pricingEmptyBody: '未配置定价覆盖时，费用按内置模型定价表结算；在此可为特定模型登记自定义价格。',
     },
-  },
-  'zh-TW': {
+  };
+const settingsUsageCopyZhTw: UsageSettingsCopy = {
     staleTitle: "統計已更新", staleBody: "目前顯示先前的完整結果。請重新整理後繼續瀏覽。", loadFailed: "無法載入使用統計", capacityBody: "統計結果超出顯示容量，請求未傳回任何部分資料。", retainedBody: "目前仍顯示上次成功載入的結果，新查詢尚未生效。",
+    tokenTooltip: { total: '總計', input: '輸入', output: '輸出', cached: '快取', new: '新', hit: '命中', created: '建立' },
     saveFailed: '儲存使用統計設定失敗', toolbarAria: '使用統計範圍與重新整理', rangeAria: '使用統計時間範圍', ranges: ['24h', '7天', '30天', '全部'],
     refreshingAria: '正在重新整理使用統計', refreshAria: '重新整理使用統計', summaryAria: '使用統計彙總指標', totalRequests: '總請求', totalCost: '總費用', costHelp: '以模型供應商最終結算為準',
     totalTokens: '總 Token', tokenDetail: (input, output) => `輸入 ${input} / 輸出 ${output}`, cacheTokens: '快取 Token',
@@ -86,13 +87,14 @@ const SETTINGS_USAGE_COPY = {
       toolEmptyTitle: '暫無工具呼叫', toolEmptyBody: '智慧體呼叫工具後，這裡會按工具聚合呼叫次數、成功、錯誤與平均耗時。',
       pricingEmptyBody: '未設定定價覆蓋時，費用按內建模型定價表結算；在此可為特定模型登記自訂價格。',
     },
-  },
-  en: {
+  };
+const settingsUsageCopyEn: UsageSettingsCopy = {
     staleTitle: 'Usage has changed', staleBody: 'The previous complete result is still shown. Refresh to continue browsing.', loadFailed: 'Unable to load Usage', capacityBody: 'This complete result exceeds the display capacity. No partial result was loaded.', retainedBody: 'The last successfully loaded result is still shown; the new query has not taken effect.',
     saveFailed: 'Failed to save usage settings', toolbarAria: 'Usage range and refresh', rangeAria: 'Usage time range', ranges: ['24h', '7 days', '30 days', 'All'],
     refreshingAria: 'Refreshing usage', refreshAria: 'Refresh usage', summaryAria: 'Usage summary metrics', totalRequests: 'Model calls', totalCost: 'Total cost', costHelp: 'Final billing is determined by the model provider',
     totalTokens: 'Total tokens', tokenDetail: (input, output) => `Input ${input} / output ${output}`, cacheTokens: 'Cache tokens',
     cacheDetail: (miss, read, creation) => `New ${miss} / hit ${read} / created ${creation}`, viewAria: 'Usage view', tabs: ['Activity log', 'Providers', 'Models', 'Tools', 'Pricing'],
+    tokenTooltip: { total: 'Total', input: 'Input', output: 'Output', cached: 'Cached', new: 'New', hit: 'Hit', created: 'Created' },
     filtersAria: 'Activity filters', filterPlaceholder: 'Filter by model or tool…', filterAria: 'Filter activity by model or tool', statusAria: 'Filter by activity status',
     statuses: ['All statuses', 'Success', 'Error', 'Aborted'], details: 'Detailed records', detailsAria: 'Show detailed usage records', recordCount: (count) => `${count} ${count === 1 ? 'record' : 'records'}`, clearFilters: 'Clear filters',
     paginationAria: 'Activity pages', previousPage: 'Go to previous page', nextPage: 'Go to next page', goToPage: (page) => `Go to page ${page}`, pageProgress: (loadedPage, targetPage) => `Loading page ${loadedPage} of ${targetPage}`,
@@ -110,8 +112,9 @@ const SETTINGS_USAGE_COPY = {
       toolEmptyTitle: 'No tool calls', toolEmptyBody: 'After an agent calls a tool, calls, successes, errors, and average duration appear here by tool.',
       pricingEmptyBody: 'Without pricing overrides, costs use the built-in model pricing table. Add custom prices here for specific models.',
     },
-  },
-} satisfies UiCatalog<UsageSettingsCopy>;
+  };
+
+const SETTINGS_USAGE_COPY = resolveUiMessageCatalog(defineShippedUiMessageCatalog<UsageSettingsCopy>()({ 'zh-CN': settingsUsageCopyZhCn, 'zh-TW': settingsUsageCopyZhTw, en: settingsUsageCopyEn })) satisfies UiCatalog<UsageSettingsCopy>;
 
 export function getUsageSettingsCopy(locale: UiLocale): UsageSettingsCopy {
   return SETTINGS_USAGE_COPY[locale];

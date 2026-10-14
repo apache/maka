@@ -61,6 +61,8 @@ export interface TranscriptLayout {
   offsetOf(turnId: string): number | undefined;
   /** An animated or centered reveal, which the virtualizer runs itself. */
   reveal(turnId: string, options: { align: 'start' | 'center'; smooth: boolean }): void;
+  /** The list knows its viewport; until then it renders no Turns. */
+  measured(): boolean;
 }
 
 /** How a list of Turns changed: where Turns were added, if anywhere but in place. */
@@ -121,6 +123,12 @@ export interface TranscriptScrollAuthority {
    * wait for the scroll or resize that will report it.
    */
   measureReadingTurn(): string | undefined;
+  /**
+   * Calls back once, on a frame where the list is measured and the reader is
+   * where the last command put them, or after the settle budget.
+   * Returns the cancel.
+   */
+  whenInPlace(callback: () => void): () => void;
   subscribe(listener: () => void): () => void;
   getSnapshot(): TranscriptScrollSnapshot;
 }
@@ -227,6 +235,13 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
       current.navigation?.onSettled?.();
     };
     current.frame = requestAnimationFrame(step);
+  };
+  const inPlace = (): boolean => {
+    if (!root || !layout?.measured()) return false;
+    if (pinned) return distanceToTail() <= PIN_THRESHOLD_PX;
+    if (positioning?.gap === undefined) return positioning?.revealed ?? true;
+    const offset = layout.offsetOf(positioning.turnId);
+    return offset !== undefined && Math.abs(root.scrollTop - (offset - positioning.gap)) < 0.5;
   };
   return {
     attach(next, nextLayout) {
@@ -471,6 +486,14 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
       readingTurnId = readTurn();
       publish();
       return readingTurnId;
+    },
+    whenInPlace(callback) {
+      let framesLeft = SETTLE_FRAMES;
+      let frame = requestAnimationFrame(function check() {
+        if (inPlace() || --framesLeft <= 0) callback();
+        else frame = requestAnimationFrame(check);
+      });
+      return () => cancelAnimationFrame(frame);
     },
     subscribe(listener) {
       listeners.add(listener);

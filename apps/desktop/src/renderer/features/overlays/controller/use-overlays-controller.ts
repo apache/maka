@@ -117,5 +117,9 @@ export function useOverlaysController(): OverlaysController {
     [helpOpen, paletteOpen, searchOpen, settings, searchScrollTarget],
   );
 
-  return useMemo(() => ({ commands, selectors }), [commands, selectors]);
+  const paletteActions = services.palette;
+  return useMemo(
+    () => ({ commands, selectors, paletteActions }),
+    [commands, selectors, paletteActions],
+  );
 }

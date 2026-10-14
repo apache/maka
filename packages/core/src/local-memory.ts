@@ -602,8 +602,10 @@ export function findLocalMemoryEntryDraftRange(
     };
   };
 
+  const isCodeFenceLine = createMemoryCodeFenceTracker();
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index] ?? '';
+    if (isCodeFenceLine(line)) continue;
     const heading = /^##\s+(.+?)\s*$/.exec(line);
     if (heading) {
       const matched = matchCurrent(index);
@@ -708,7 +710,12 @@ function parseLocalMemoryMarkdownRaw(input: string): LocalMemoryRawParseResult {
     current = null;
   };
 
+  const isCodeFenceLine = createMemoryCodeFenceTracker();
   for (const line of lines) {
+    if (isCodeFenceLine(line)) {
+      current?.body.push(line);
+      continue;
+    }
     const heading = /^##\s+(.+?)\s*$/.exec(line);
     if (heading) {
       flush();
@@ -744,8 +751,31 @@ function stripPromptContent(entry: LocalMemoryRawEntry): LocalMemoryEntryPreview
   return preview;
 }
 
+// All entry readers and editors share fence state so code examples cannot split entries.
+function createMemoryCodeFenceTracker(): (line: string) => boolean {
+  let fence: { marker: string; length: number } | undefined;
+  return (line) => {
+    const match = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if (fence) {
+      if (
+        match &&
+        match[1][0] === fence.marker &&
+        match[1].length >= fence.length &&
+        match[2].trim() === ''
+      ) {
+        fence = undefined;
+      }
+      return true;
+    }
+    if (!match || (match[1][0] === '`' && match[2].includes('`'))) return false;
+    fence = { marker: match[1][0], length: match[1].length };
+    return true;
+  };
+}
+
 function parseMetaComment(line: string): Record<string, string> | null {
-  const match = /^<!--\s*maka-memory:\s*(.*?)\s*-->$/.exec(line.trim());
+  // Four-space or tab indentation denotes a code example, not entry identity or state.
+  const match = /^ {0,3}<!--\s*maka-memory:\s*(.*?)\s*-->[ \t]*$/.exec(line);
   if (!match) return null;
   const meta: Record<string, string> = {};
   for (const part of (match[1] ?? '').split(/\s+/)) {
@@ -784,8 +814,10 @@ function findLocalMemoryEntrySection(
     return id === entryId || proposalId === entryId ? { id, ...current } : null;
   };
 
+  const isCodeFenceLine = createMemoryCodeFenceTracker();
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index] ?? '';
+    if (isCodeFenceLine(line)) continue;
     const heading = /^##\s+(.+?)\s*$/.exec(line);
     if (heading) {
       const matched = matchCurrent();
@@ -849,8 +881,13 @@ function findLocalMemoryEntryFullSection(
     };
   };
 
+  const isCodeFenceLine = createMemoryCodeFenceTracker();
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index] ?? '';
+    if (isCodeFenceLine(line)) {
+      current?.body.push(line);
+      continue;
+    }
     const heading = /^##\s+(.+?)\s*$/.exec(line);
     if (heading) {
       const matched = matchCurrent(index);

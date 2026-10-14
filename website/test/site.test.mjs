@@ -32,6 +32,25 @@ const repo = new URL('../../', import.meta.url);
 const page = (path) => readFileSync(new URL(path, dist), 'utf8');
 const locales = ['en', 'zh-CN'];
 const pages = ['index.html', 'downloads/index.html'];
+const canonicalUrls = [
+  'https://maka.apache.org/en/',
+  'https://maka.apache.org/zh-CN/',
+  'https://maka.apache.org/en/downloads/',
+  'https://maka.apache.org/zh-CN/downloads/',
+];
+const llmsSources = [
+  'docs/README.md',
+  'ARCHITECTURE.md',
+  'docs/architecture/runtime-host-architecture.md',
+  'docs/eval/terminal-bench-2.1-deepseek-v4-flash-edit-contracts.md',
+  'docs/eval/terminal-bench-2.1-deepseek-v4-flash-four-arm.md',
+  'docs/eval/terminal-bench-2.1-deepseek-v4-flash-maka-vs-opencode.md',
+  'docs/eval/terminal-bench-2.1-deepseek-v4-flash-nine-arm.md',
+  'docs/eval/terminal-bench-2.1-maka-vs-kimi-code-v11.md',
+  'docs/eval/terminal-bench-2.1-ollama-deepseek-v4-flash-0731-maka-vs-opencode.md',
+  'SECURITY.md',
+  'CONTRIBUTING.md',
+];
 
 const positioning =
   'Apache Maka (Incubating) is a high-performance agent workspace that keeps a complete record of everything it did.';
@@ -65,6 +84,30 @@ const normalize = (href) => href.replace(/\.zh-CN\.md$/u, '.md').replace(/^\/zh-
 
 test('the root redirects to the English homepage without a delay', () => {
   assert.match(page('index.html'), /content="0;url=\/en\/"/u);
+});
+
+test('machine-readable entry points describe the published site', () => {
+  const robots = page('robots.txt');
+  assert.match(robots, /^User-agent: \*\nAllow: \/$/mu);
+  assert.match(robots, /^Sitemap: https:\/\/maka\.apache\.org\/sitemap\.xml$/mu);
+
+  const sitemapUrls = [...page('sitemap.xml').matchAll(/<loc>([^<]+)<\/loc>/gu)].map(
+    ([, url]) => url,
+  );
+  assert.deepEqual(sitemapUrls, canonicalUrls);
+  assert.ok(!sitemapUrls.includes('https://maka.apache.org/'));
+
+  const llms = page('llms.txt');
+  assert.match(llms, /^# Apache Maka \(Incubating\)$/mu);
+  assert.ok(llms.includes(positioning));
+  for (const url of canonicalUrls) assert.ok(llms.includes(url), url);
+
+  const rawUrls = [
+    ...llms.matchAll(/https:\/\/raw\.githubusercontent\.com\/apache\/maka\/main\/([^\s)]+)/gu),
+  ].map(([, path]) => path);
+  assert.deepEqual(rawUrls, llmsSources);
+  for (const path of rawUrls)
+    assert.doesNotThrow(() => statSync(new URL(`../../${path}`, import.meta.url)));
 });
 
 const readmeAlt = (locale) =>

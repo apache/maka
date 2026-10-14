@@ -28,15 +28,17 @@ import { build } from 'esbuild';
 import type { MakaBridge } from '../../preload/bridge-contract.js';
 
 // The renderer mounts before the Runtime Host module graph finishes
-// registering its IPC handlers. Two preload seams keep early calls safe:
-//   1. invokeWhenReady parks every invoke on `app:bootstrapReady` until the
-//      boot module's registration pass has run;
-//   2. activeRuntimeHostRef parks a scoped call while the default Host still
-//      reports connecting, releasing it on the next profiles:changed event.
+// registering its IPC handlers. The preload seams keep early calls safe:
+//   1. invokeWhenReady parks persistent calls on `app:bootstrapReady` until
+//      the boot module's registration pass has run;
+//   2. scoped calls additionally wait for the target router's stable gate;
+//   3. the default Host's scope is known while it is still connecting, so a
+//      default-scope call goes straight to that gate.
 
 const owner = {
-  hostId: 'owner-host', targetEpoch: 'owner-epoch', profileId: 'local',
+  hostId: 'owner-host', epoch: 'owner-epoch', profileId: 'local',
   profileName: 'Local', profileKind: 'local', profileAccess: 'owner', readiness: 'ready',
+  isDefault: true,
 };
 
 test('invokes wait for the boot registration pass before dispatching', async () => {
@@ -74,83 +76,87 @@ test('the gate falls open when the bootstrap channel itself is absent', async ()
   assert.deepEqual(await bridge.app.checkForUpdates(), { status: 'idle' });
 });
 
-test('a still-starting default Host keeps scoped reads pending until it settles', async () => {
-  let readiness: string = 'connecting';
-  const { bridge, events } = await preloadHarness(async (channel) => {
+test('scoped Runtime Host calls wait for target IPC registration after first paint', async () => {
+  const targetGate = deferred<unknown>();
+  const seen: string[] = [];
+  const { bridge } = await preloadHarness(async (channel) => {
+    seen.push(channel);
     if (channel === 'app:bootstrapReady') return;
-    if (channel === 'runtime-host:activeIdentity') {
-      throw new Error('Desktop Runtime Host identity is unavailable');
-    }
-    if (channel === 'runtime-host-profiles:getSnapshot') {
-      return {
-        entries: [{ profileId: 'local', isDefault: true, readiness }],
-        defaultProfileId: 'local',
-      };
-    }
+    if (channel === 'runtime-host:identities') return [owner];
+    if (channel === 'runtime-host:awaitReady') return targetGate.promise;
+    if (channel === 'projects:getSnapshot') return { projects: [] };
     throw new Error('Unexpected channel: ' + channel);
   });
 
-  let outcome: { resolved?: unknown; error?: unknown } = {};
-  const call = bridge.runtimeHostProfiles
-    .getDefaultHost()
-    .then((value) => { outcome.resolved = value; }, (error) => { outcome.error = error; });
+  const call = bridge.projects.getSnapshot(undefined, { profileId: 'local', hostId: owner.hostId });
   await new Promise<void>((resolve) => setImmediate(resolve));
-  assert.deepEqual(outcome, {}, 'connecting Host must keep the read pending');
+  assert.deepEqual(seen, ['app:bootstrapReady', 'runtime-host:identities', 'runtime-host:awaitReady']);
 
-  events.emit('runtime-host-profiles:changed', {}, {
-    epoch: 'e1', profileId: 'local', profileName: 'Local', profileKind: 'local',
-    profileAccess: 'owner', readiness: 'ready', hostId: 'owner-host', isDefault: true,
-  });
-  await call;
-  // Cross-realm objects fail deepStrictEqual prototype checks; compare fields.
-  const resolved = outcome.resolved as { profileId: string; hostId: string };
-  assert.equal(resolved.profileId, 'local');
-  assert.equal(resolved.hostId, 'owner-host');
+  targetGate.resolve(undefined);
+  assert.deepEqual(await call, { projects: [] });
+  assert.deepEqual(
+    await bridge.projects.getSnapshot(undefined, { profileId: 'local', hostId: owner.hostId }),
+    { projects: [] },
+  );
+  assert.deepEqual(seen, [
+    'app:bootstrapReady',
+    'runtime-host:identities',
+    'runtime-host:awaitReady',
+    'projects:getSnapshot',
+    'runtime-host:identities',
+    'projects:getSnapshot',
+  ]);
 });
 
-test('a profiles:changed push landing inside the readiness probe still wakes the read', async () => {
-  let identityCalls = 0;
-  const snapshotGate = deferred<unknown>();
-  let probeReached!: () => void;
-  const probeInFlight = new Promise<void>((resolve) => { probeReached = resolve; });
-  const { bridge, events } = await preloadHarness(async (channel) => {
+test('offline session-local transcript reads bypass Runtime Host readiness', async () => {
+  const seen: string[] = [];
+  const { bridge } = await preloadHarness(async (channel) => {
+    seen.push(channel);
     if (channel === 'app:bootstrapReady') return;
-    if (channel === 'runtime-host:activeIdentity') {
-      identityCalls += 1;
-      if (identityCalls === 1) {
-        throw new Error('Desktop Runtime Host identity is unavailable');
-      }
-      return { ...owner };
+    if (channel === 'runtime-host:identities') return [owner];
+    if (channel === 'runtime-host:awaitReady') {
+      throw new Error('The cached transcript must not wait for Runtime Host readiness');
     }
-    if (channel === 'runtime-host-profiles:getSnapshot') {
-      probeReached();
-      await snapshotGate.promise;
-      return {
-        entries: [{ profileId: 'local', isDefault: true, readiness: 'connecting' }],
-        defaultProfileId: 'local',
-      };
-    }
+    if (channel === 'session-local:transcript') return { batches: [] };
     throw new Error('Unexpected channel: ' + channel);
   });
 
-  let outcome: { resolved?: unknown; error?: unknown } = {};
-  const call = bridge.runtimeHostProfiles
-    .getDefaultHost()
-    .then((value) => { outcome.resolved = value; }, (error) => { outcome.error = error; });
-  // Hold the readiness probe open and land the transition push inside it. A
-  // waiter registered only after the probe resolves would miss this event
-  // and park the read forever.
-  await probeInFlight;
-  events.emit('runtime-host-profiles:changed', {}, {
-    epoch: 'e1', profileId: 'local', profileName: 'Local', profileKind: 'local',
-    profileAccess: 'owner', readiness: 'ready', hostId: 'owner-host', isDefault: true,
+  assert.deepEqual(
+    await bridge.sessionLocal.readTranscript(JSON.stringify([owner.hostId, 'session-1'])),
+    { batches: [] },
+  );
+  assert.deepEqual(seen, [
+    'app:bootstrapReady',
+    'runtime-host:identities',
+    'session-local:transcript',
+  ]);
+});
+
+test('a connecting default Host hands out its scope and the call waits at the target gate', async () => {
+  const targetGate = deferred<unknown>();
+  const seen: string[] = [];
+  const { bridge } = await preloadHarness(async (channel, scope) => {
+    seen.push(channel);
+    if (channel === 'app:bootstrapReady') return;
+    if (channel === 'runtime-host:identities') return [{ ...owner, readiness: 'connecting' }];
+    if (channel === 'runtime-host:awaitReady') {
+      assert.deepEqual(
+        { ...(scope as object) },
+        { hostId: owner.hostId, targetEpoch: owner.epoch },
+      );
+      return targetGate.promise;
+    }
+    if (channel === 'projects:getSnapshot') return { projects: [] };
+    throw new Error('Unexpected channel: ' + channel);
   });
-  snapshotGate.resolve(undefined);
-  await call;
-  // Cross-realm objects fail deepStrictEqual prototype checks; compare fields.
-  const resolved = outcome.resolved as { profileId: string; hostId: string };
-  assert.equal(resolved.profileId, 'local');
-  assert.equal(resolved.hostId, 'owner-host');
+
+  const call = bridge.projects.getSnapshot();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(seen, ['app:bootstrapReady', 'runtime-host:identities', 'runtime-host:awaitReady']);
+
+  targetGate.resolve(undefined);
+  assert.deepEqual(await call, { projects: [] });
+  assert.deepEqual(seen.at(-1), 'projects:getSnapshot');
 });
 
 test('module-level sends queue behind the gate until listeners exist', async () => {
@@ -168,40 +174,26 @@ test('module-level sends queue behind the gate until listeners exist', async () 
   assert.deepEqual(sent, ['browser:document-ready']);
 });
 
-test('a settled-unavailable default Host releases the pending read as an error', async () => {
-  let readiness: string = 'connecting';
+test('the default Host follows profile pushes and fails fast once unavailable', async () => {
+  let readiness = 'unavailable';
   const { bridge, events } = await preloadHarness(async (channel) => {
     if (channel === 'app:bootstrapReady') return;
-    if (channel === 'runtime-host:activeIdentity') {
-      throw new Error('Desktop Runtime Host identity is unavailable');
-    }
-    if (channel === 'runtime-host-profiles:getSnapshot') {
-      return {
-        entries: [{ profileId: 'local', isDefault: true, readiness }],
-        defaultProfileId: 'local',
-      };
-    }
+    if (channel === 'runtime-host:identities') return [{ ...owner, readiness }];
     throw new Error('Unexpected channel: ' + channel);
   });
 
-  let outcome: { resolved?: unknown; error?: unknown } = {};
-  const call = bridge.runtimeHostProfiles
-    .getDefaultHost()
-    .then((value) => { outcome.resolved = value; }, (error) => { outcome.error = error; });
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  assert.deepEqual(outcome, {}, 'connecting Host must keep the read pending');
+  await assert.rejects(bridge.runtimeHostProfiles.getDefaultHost(), /identity is unavailable/);
+
+  readiness = 'connecting';
+  events.emit('runtime-host-profiles:changed', {}, { ...owner, epoch: 'retry-epoch', readiness });
+  // Cross-realm objects fail deepStrictEqual prototype checks; compare fields.
+  const host = await bridge.runtimeHostProfiles.getDefaultHost();
+  assert.equal(host.profileId, 'local');
+  assert.equal(host.hostId, owner.hostId);
 
   readiness = 'unavailable';
-  events.emit('runtime-host-profiles:changed', {}, {
-    epoch: 'e1', profileId: 'local', profileName: 'Local', profileKind: 'local',
-    profileAccess: 'owner', readiness: 'unavailable', isDefault: true,
-  });
-  await call;
-  assert.match(
-    String(outcome.error),
-    /identity is unavailable/,
-    'settled Host must surface the identity error instead of hanging',
-  );
+  events.emit('runtime-host-profiles:changed', {}, { ...owner, epoch: 'retry-epoch', readiness });
+  await assert.rejects(bridge.runtimeHostProfiles.getDefaultHost(), /identity is unavailable/);
 });
 
 async function preloadHarness(

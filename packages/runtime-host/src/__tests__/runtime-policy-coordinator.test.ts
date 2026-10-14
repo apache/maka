@@ -60,6 +60,19 @@ const context: ConnectionContext = {
   acquireResidency: () => ({ release: () => undefined }),
 };
 
+test('default-target protocol keeps legacy requests unchanged and requires explicit enable consent', () => {
+  const decode =
+    RUNTIME_POLICY_OPERATION_SPECS['connection.catalog.set-default-target'].decodeInput;
+  const legacy = {
+    expectedCatalogRevision: 7,
+    target: { connectionId: randomUUID(), modelId: 'chosen' },
+  };
+  assert.deepEqual(decode(legacy), legacy);
+  assert.deepEqual(decode({ ...legacy, enableModel: true }), { ...legacy, enableModel: true });
+  assert.throws(() => decode({ ...legacy, enableModel: 'true' }));
+  assert.throws(() => decode({ ...legacy, target: null, enableModel: true }));
+});
+
 test('model settings tool confirms and atomically updates canonical Runtime Policy', async () => {
   await withCoordinator(async ({ coordinator, stores }) => {
     const tool = coordinator.modelTools.find(({ name }) => name === 'MakaSettingsUpdate');
@@ -1004,7 +1017,8 @@ test('a fully profiled relay catalog paginates with profiles riding per item', a
       connection: {
         slug: 'profiled-relay',
         name: 'Profiled relay',
-        providerType: 'openai-compatible',
+        providerType: 'custom',
+        defaultApiProtocol: 'openai-chat',
         baseUrl: 'https://relay.example/v1',
         enabled: true,
         enabledModelIds: [],
@@ -1143,7 +1157,8 @@ test('catalog protocol preserves an extra request body after a committed update'
       connection: {
         slug: 'custom-request',
         name: 'Custom request',
-        providerType: 'openai-compatible',
+        providerType: 'custom',
+        defaultApiProtocol: 'openai-chat',
         baseUrl: `https://example.test/${'a'.repeat(2_048 - 'https://example.test/'.length)}`,
         enabled: true,
         enabledModelIds: ['deepseek/deepseek-v4-flash-0731'],

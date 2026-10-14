@@ -111,6 +111,7 @@ export {
 } from './ssh-tunnel.js';
 export {
   RuntimeHostPermanentReconnectError,
+  createRuntimeHostReconnectLifecycle,
   startRuntimeHostReconnectLifecycle,
   type RuntimeHostReconnectBackoff,
   type RuntimeHostReconnectLifecycle,
@@ -156,8 +157,11 @@ export {
   type RuntimeHostConnectionCatalogSnapshot,
 } from './catalog-reader.js';
 export {
+  DEFAULT_ELECTION_DEADLINE_MS,
+  ELECTION_DEADLINE_MS_ENV_VAR,
   IDLE_GRACE_MS_ENV_VAR,
   connectOrSpawnRuntimeHost,
+  electionDeadlineMsFromEnvironment,
   type CandidateExitDetails,
   type ConnectOrSpawnRuntimeHostInput,
   type ConnectOrSpawnRuntimeHostResult,

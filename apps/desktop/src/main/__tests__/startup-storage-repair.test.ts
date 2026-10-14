@@ -33,6 +33,7 @@ import type { BrowserMessageBoxAppearance } from '../browser-message-box.js';
 import { showMessageBoxWithDiagnostics } from '../native-diagnostic-dialog.js';
 import { getNativeDiagnosticDialogCopy } from '../native-diagnostic-dialog-copy.js';
 import { resolveDesktopStorageRoot } from '../storage-root-startup.js';
+import { createSettingsRecoveryReporter } from '../settings-recovery.js';
 import { startupStep } from '../startup-step.js';
 import { resolveWindowRevealMode } from '../window-reveal.js';
 
@@ -118,6 +119,7 @@ for (const accept of [false, true]) {
           assert.equal(await readFile(markerPath, 'utf8'), staleMarker);
           return { response: accept ? 0 : 1, checkboxChecked: false };
         },
+        createSettingsRecoveryReporter,
         createSettingsStore: () => { settingsOpened = true; throw stopped; },
       };
       const completion = runInNewContext(`${boot}\nmodule.exports.default()`, {

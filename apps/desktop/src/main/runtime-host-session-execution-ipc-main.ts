@@ -83,6 +83,10 @@ import type {
 import type { DesktopSessionStopResult } from '../preload/bridge-contract.js';
 import { toDesktopHostSessionSummary } from "./runtime-host-session-catalog-ipc-main.js";
 import { mergeWorkspaceFileInlineReferences } from "./session-workspace-inline-references.js";
+import {
+  registerRuntimeHostQueueMutationIpc,
+  type RuntimeHostQueueMutationClient,
+} from "./runtime-host-queue-mutation-ipc.js";
 
 type SideConversationBranchResult =
   | { readonly ok: true; readonly session: ReturnType<typeof toDesktopHostSessionSummary> }
@@ -112,6 +116,7 @@ type RuntimeHostSessionExecutionClient = Pick<
   | "compactContext"
   | "copySession"
   | "getSession"
+  | "generatePromptSuggestion"
   | "ingestAttachment"
   | "interruptTurn"
   | "openSession"
@@ -121,16 +126,12 @@ type RuntimeHostSessionExecutionClient = Pick<
   | 'queryMessages'
   | "queryTurnResume"
   | "readExecutionBoundary"
-  | "retractQueueEntry"
-  | "promoteQueueEntry"
-  | "updateQueueEntry"
-  | "reorderQueueEntries"
   | "setSessionReadMarker"
   | "startTurnResume"
   | "submitMessage"
   | "updateSessionMetadata"
   | "updateSessionConfiguration"
->;
+> & RuntimeHostQueueMutationClient;
 
 /** No Skill was named, so the Host resolved none. */
 const EMPTY_SKILL_INVOCATION = { loaded: [], failed: [], receipts: [] } as const;
@@ -165,6 +166,7 @@ async function submitMessageWithReconnect(
 }
 
 export interface RuntimeHostSessionExecutionIpcDeps {
+  retireCancelledMessages?: (sessionId: string, messageIds: readonly string[]) => void;
   client: RuntimeHostSessionExecutionClient;
   observer: RuntimeHostSessionObserver;
   attachmentApprovals: AttachmentApprovalRegistry;
@@ -365,6 +367,7 @@ export function registerRuntimeHostSessionExecutionIpc(
       if (new Set(cancelledMessageIds).size !== cancelledMessageIds.length) {
         throw new Error('Duplicate cancelled Message identities');
       }
+      deps.retireCancelledMessages?.(normalizedSessionId, cancelledMessageIds);
       return { cancelledMessageIds };
     },
   );
@@ -388,6 +391,10 @@ export function registerRuntimeHostSessionExecutionIpc(
       }
       return { resolutions };
     },
+  );
+
+  ipcMain.handle('sessions:generatePromptSuggestion', async (_event, sessionId: unknown) =>
+    deps.client.generatePromptSuggestion(requiredId(sessionId, 'Session')),
   );
 
   handleReconnectableRead(ipcMain, 'sessions:listTurns', async (_event, sessionId: unknown) =>
@@ -644,67 +651,7 @@ export function registerRuntimeHostSessionExecutionIpc(
       };
     },
   );
-  ipcMain.handle(
-    "sessions:retractQueueEntry",
-    async (_event, sessionId: string, entryId: unknown) => {
-      if (typeof entryId !== "string") {
-        throw new TypeError("Invalid queue entry identity");
-      }
-      await deps.client.retractQueueEntry({
-        sessionId,
-        entryId,
-        retractId: newId(),
-      });
-    },
-  );
-  ipcMain.handle(
-    "sessions:promoteQueueEntry",
-    async (_event, sessionId: string, entryId: unknown) => {
-      if (typeof entryId !== "string") {
-        throw new TypeError("Invalid queue entry identity");
-      }
-      await deps.client.promoteQueueEntry({
-        sessionId,
-        entryId,
-        promoteId: newId(),
-      });
-    },
-  );
-  ipcMain.handle(
-    "sessions:updateQueueEntry",
-    async (
-      _event,
-      sessionId: unknown,
-      entryId: unknown,
-      expectedQueueRevision: unknown,
-      text: unknown,
-    ) => {
-      const normalizedText = requiredText(text, "Queued message").trim();
-      await deps.client.updateQueueEntry({
-        sessionId: requiredId(sessionId, "Session"),
-        entryId: requiredId(entryId, "Queue entry"),
-        updateId: newId(),
-        expectedQueueRevision: requiredSequence(expectedQueueRevision, "Queue"),
-        text: normalizedText,
-      });
-    },
-  );
-  ipcMain.handle(
-    "sessions:reorderQueueEntries",
-    async (_event, sessionId: string, entryIds: unknown) => {
-      if (
-        !Array.isArray(entryIds) ||
-        entryIds.some((entryId) => typeof entryId !== "string")
-      ) {
-        throw new TypeError("Invalid queue entry order");
-      }
-      await deps.client.reorderQueueEntries({
-        sessionId,
-        reorderId: newId(),
-        entryIds,
-      });
-    },
-  );
+  registerRuntimeHostQueueMutationIpc(ipcMain, deps.client, newId);
   ipcMain.handle(
     "sessions:stop",
     async (_event, sessionId: string, input: unknown) => {
@@ -810,6 +757,12 @@ export function registerRuntimeHostSessionExecutionIpc(
     const result = await deps.client.compactContext({ sessionId, turnId });
     deps.emitSessionsChanged("status-change", sessionId, { turnId });
     return result;
+  });
+  // Read-only preview behind the composer's Resume offer (#5903): the plan is
+  // the authority — the renderer never decides resumability from local turn
+  // state, and clicking still re-validates everything inside startTurnResume.
+  ipcMain.handle("sessions:queryResumeLatest", async (_event, sessionId: string) => {
+    return deps.client.queryTurnResume({ sessionId });
   });
   ipcMain.handle("sessions:resumeLatest", async (_event, sessionId: string) => {
     const plan = await deps.client.queryTurnResume({ sessionId });
@@ -965,7 +918,7 @@ function retainedAttachmentsForSession(
 function createRuntimeHostSessionStop(
   deps: Pick<
     RuntimeHostSessionExecutionIpcDeps,
-    "beforeStop" | "client" | "observer" | "emitSessionsChanged"
+    "beforeStop" | "client" | "observer" | "emitSessionsChanged" | "retireCancelledMessages"
   >,
   newId: () => string = randomUUID,
 ): (
@@ -991,6 +944,7 @@ function createRuntimeHostSessionStop(
             }),
           () => deps.client.getSession(sessionId),
         );
+        deps.retireCancelledMessages?.(sessionId, [entry.messageId]);
         deps.emitSessionsChanged('status-change', sessionId);
         return { kind: 'retracted', messageId: entry.messageId };
       }
@@ -1032,6 +986,7 @@ function createRuntimeHostSessionStop(
       turnId: turn.turnId,
       runId: turn.runId,
     });
+    deps.retireCancelledMessages?.(sessionId, interrupted.retracted.map((message) => message.messageId));
     deps.emitSessionsChanged("turn-status-change", sessionId, {
       turnId: turn.turnId,
     });

@@ -52,7 +52,8 @@ describe('OpenAI Responses ModelAdapter continuation', () => {
     }) as typeof globalThis.fetch;
     const connection = {
       slug: 'responses-relay',
-      providerType: 'openai-responses-compatible' as const,
+      providerType: 'custom' as const,
+      defaultApiProtocol: 'openai-responses' as const,
       baseUrl: 'https://relay.example/v1',
       defaultModel: 'gpt-5.6-sol',
     };
@@ -83,7 +84,7 @@ describe('OpenAI Responses ModelAdapter continuation', () => {
       if (event.kind === 'text') text += event.text;
     }
 
-    assert.deepEqual(requestBody?.reasoning, { effort: 'medium', summary: 'auto' });
+    assert.deepEqual(requestBody?.reasoning, { summary: 'auto' });
     assert.equal(thinking, summary);
     assert.equal(text, answer);
   });

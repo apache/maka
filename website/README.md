@@ -33,6 +33,7 @@ npm --workspace @maka/website run test:dist
 - English and Chinese are one page each in `src/copy/`. Both share the `Copy` type in `src/copy/types.ts`, so a section, claim or link added to one language fails to type-check until the other has it too, and `test/site.test.mjs` asserts the built pages link the same documents. Yuhan Lei (@Astro-Han) keeps the two in sync.
 - Numbers on the homepage are drawn from the reports in [`docs/eval/`](../docs/eval/) and link to them. The reports own the numbers.
 - Fact-check cadence: the homepage is re-read against the product at every release, and whenever the positioning, the primary journey, platform support or the trust boundary changes. The README's *Get Maka* section, `SECURITY.md` and `docs/eval/` are the sources to check against.
+- Machine-readable entry points live in `public/`: page changes must update `sitemap.xml`, and authoritative document changes must update `llms.txt`. The latter links to raw Markdown in the repository rather than copying documentation into the site.
 
 ## Design
 
@@ -48,4 +49,4 @@ Colour, radius and surface tokens are the desktop app's defaults, copied by valu
 | Push of a release-candidate tag (`v*-rc*`) | `site/<tag>-staging` | https://maka-<tag>.staged.apache.org |
 | `workflow_dispatch` with a `stage` name | `site/<stage>-staging` | https://maka-<stage>.staged.apache.org |
 
-A `workflow_dispatch` without a `stage` name publishes only from `main`; any other ref fails instead of overwriting the live site. The published `.asf.yaml` carries just `publish: whoami: asf-site` and `staging: autostage: site/*`, the same layout Apache OpenDAL uses; the repository settings in the root `.asf.yaml` stay on `main`, the only branch asfyaml reads them from. Nothing else in the repository is published.
+A `workflow_dispatch` without a `stage` name publishes only from `main`; any other ref fails instead of overwriting the live site. The published `.asf.yaml` carries just `publish: whoami: asf-site` and `staging: profile: ~, autostage: site/*`, the same layout Apache OpenDAL uses; the repository settings in the root `.asf.yaml` stay on `main`, the only branch asfyaml reads them from. Nothing else in the repository is published.

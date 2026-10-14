@@ -88,8 +88,13 @@ export function assertRendererEntryHtml(html: string, expectedScriptSource?: str
       htmlAttribute(attributes, 'http-equiv')?.toLowerCase() === 'content-security-policy' &&
       htmlAttribute(attributes, 'content')?.trim().replace(/\s+/gu, ' ') === CONTENT_SECURITY_POLICY,
   );
+  const referrerMetas = metas.filter(
+    (attributes) => htmlAttribute(attributes, 'name')?.toLowerCase() === 'referrer' &&
+      htmlAttribute(attributes, 'content') === 'no-referrer',
+  );
   const validMetas =
-    metas.length === 3 &&
+    metas.length === 4 &&
+    referrerMetas.length === 1 &&
     charsetMetas.length === 1 &&
     viewportMetas.length === 1 &&
     policyMetas.length === 1;

@@ -21,7 +21,7 @@ import type { SubagentProfile } from '@maka/core/subagent-settings';
 
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, defineShippedUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 type ProfileCopy = {
   label: string;
@@ -99,7 +99,7 @@ export type SubagentSettingsCopy = {
   thinking: Record<ThinkingLevel, string>;
 };
 
-const SETTINGS_SUBAGENTS_COPY_BY_LOCALE = {
+const SETTINGS_SUBAGENTS_COPY_BY_LOCALE = resolveUiMessageCatalog(defineShippedUiMessageCatalog<SubagentSettingsCopy>()({
   'zh-CN': {
     section: {
       title: '已批准的子 Agent',
@@ -174,6 +174,7 @@ const SETTINGS_SUBAGENTS_COPY_BY_LOCALE = {
     },
     thinking: {
       off: '关闭',
+      on: '开启',
       minimal: '最少',
       low: '低',
       medium: '中',
@@ -256,6 +257,7 @@ const SETTINGS_SUBAGENTS_COPY_BY_LOCALE = {
     },
     thinking: {
       off: '關閉',
+      on: '開啟',
       minimal: '最少',
       low: '低',
       medium: '中',
@@ -338,6 +340,7 @@ const SETTINGS_SUBAGENTS_COPY_BY_LOCALE = {
     },
     thinking: {
       off: 'Off',
+      on: 'On',
       minimal: 'Minimal',
       low: 'Low',
       medium: 'Medium',
@@ -346,7 +349,7 @@ const SETTINGS_SUBAGENTS_COPY_BY_LOCALE = {
       max: 'Maximum',
     },
   },
-} satisfies UiCatalog<SubagentSettingsCopy>;
+})) satisfies UiCatalog<SubagentSettingsCopy>;
 
 export function getSubagentSettingsCopy(locale: UiLocale): SubagentSettingsCopy {
   return SETTINGS_SUBAGENTS_COPY_BY_LOCALE[locale];

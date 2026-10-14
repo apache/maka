@@ -23,6 +23,7 @@ import type { ExecutionBoundary } from '@maka/core/sandbox-boundary';
 import type { AgentProfile } from './agent-catalog.js';
 import { Service, type Context, type Disposable } from './plugin-kernel.js';
 import { pluginInvocationSignal } from './plugin-invocation-signal.js';
+import { PluginRuntimeBinding } from './plugin-internals.js';
 import type { MakaToolContext } from './tool-runtime.js';
 
 declare module './plugin-kernel.js' {
@@ -53,6 +54,11 @@ export interface PluginAgentDescriptor {
 }
 
 export interface PluginAgentCreateOptions {
+  /** Create an independent persistent Session. Does not inherit the caller turn lifetime. */
+  readonly background?: boolean;
+  /** Persistent background Session labels, e.g. an opaque plugin recovery identity. */
+  readonly labels?: readonly string[];
+  readonly name?: string;
   readonly sessionId?: string;
   readonly cwd?: string;
   readonly prompt?: string;
@@ -120,25 +126,18 @@ export interface PluginAgent {
 /** Agent registry and invocation carrier exposed to trusted Host plugins. */
 export class PluginAgentService extends Service {
   private readonly invocations = new AsyncLocalStorage<PluginAgentInvocation>();
-  private agentRuntime: PluginAgentRuntime | undefined;
+  private readonly runtimeBinding: PluginRuntimeBinding<PluginAgentRuntime>;
 
   constructor(ctx: Context) {
     super(ctx, 'agents');
+    this.runtimeBinding = new PluginRuntimeBinding('agents', 'Agent');
     ctx.accessor('agent', {
       get: () => this.current(),
     });
   }
 
   bindRuntime(runtime: PluginAgentRuntime): Disposable<Promise<void>> {
-    if (this.ctx.maka) throw new Error('Only the Host may bind the Agent Runtime');
-    if (this.agentRuntime) throw new Error('Plugin Agent Runtime is already bound');
-    this.agentRuntime = runtime;
-    return this.ctx.effect(
-      () => () => {
-        if (this.agentRuntime === runtime) this.agentRuntime = undefined;
-      },
-      'agents.bindRuntime()',
-    );
+    return this.runtimeBinding.bind(this.ctx, runtime);
   }
 
   currentInvocation(): PluginAgentInvocation | undefined {
@@ -226,8 +225,7 @@ export class PluginAgentService extends Service {
   }
 
   private runtime(): PluginAgentRuntime {
-    if (!this.agentRuntime) throw new Error('Plugin Agent Runtime is unavailable');
-    return this.agentRuntime;
+    return this.runtimeBinding.get();
   }
 
   private handle(

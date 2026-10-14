@@ -93,7 +93,10 @@ import type {
   CuSemanticAction,
 } from './computer-use-types.js';
 
-export { adaptToCuAction, snapshotComputerParams } from './computer-use-codec.js';
+export {
+  adaptToCuAction,
+  snapshotComputerParams,
+} from './computer-use-codec.js';
 export type {
   CuAppSummary,
   CuDispatchBackend,
@@ -320,6 +323,21 @@ interface ComputerToolResult {
   failureClass?: 'ambiguous_target';
   screenshot?: { base64: string; mimeType: string };
   includeScreenshotInModelOutput?: boolean;
+}
+
+type SettledComputerToolResult = ComputerToolResult &
+  (
+    | { outcome: 'success'; error?: never }
+    | { outcome: 'error'; error: ComputerUseErrorCode }
+    | { outcome: 'aborted'; error: 'user_stopped' }
+  );
+
+function settleComputerResult(result: ComputerToolResult): SettledComputerToolResult {
+  if (result.error === 'user_stopped')
+    return { ...result, error: 'user_stopped', outcome: 'aborted' };
+  if (result.error) return { ...result, error: result.error, outcome: 'error' };
+  const { error: _error, ...content } = result;
+  return { ...content, outcome: 'success' };
 }
 
 export const COMPUTER_USE_MODEL_SCREENSHOT_POLICY = {
@@ -679,7 +697,12 @@ export function buildComputerUseTools(deps: {
     windowId?: number;
     elements?: Map<string, CuObservedElement>;
     /** From the last observation: the windows stacked above the target. */
-    obscuringRects?: Array<{ x: number; y: number; width: number; height: number }>;
+    obscuringRects?: Array<{
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    }>;
   }
   const observations = new Map<string, SessionObservationRecord>();
   interface SessionStateRecord {
@@ -902,10 +925,13 @@ export function buildComputerUseTools(deps: {
     };
   }
 
-  function registerObservation(
+  function acceptObservation(
+    state: CuaSessionState,
     record: SessionObservationRecord,
+    lease: CuaActionLease,
     observation: CuObservation,
-  ): CuObservation {
+  ): CuObservation | undefined {
+    if (!state.validateObservationLease(lease).ok) return undefined;
     const normalized = {
       ...observation,
       elements: observation.elements.map((element) => ({
@@ -930,6 +956,7 @@ export function buildComputerUseTools(deps: {
     record.windowId = observation.windowId;
     record.obscuringRects = observation.obscuringRects;
     record.elements = new Map(normalized.elements.map((element) => [element.elementId, element]));
+    state.freshObservationSucceeded();
     return { ...normalized, observationId: frame.frameId };
   }
 
@@ -939,15 +966,18 @@ export function buildComputerUseTools(deps: {
     | 'target_changed'
     | 'capture_failed';
 
+  function publicBindingFailureCode(reason: string): ComputerUseErrorCode | undefined {
+    if (isComputerUseErrorCode(reason)) return reason;
+    if (reason === 'retired_action') return 'duplicate_action';
+    if (reason === 'invalid_binding') return 'stale_frame';
+    return undefined;
+  }
+
   function bindingFailure(reason: BindingFailureReason, action?: string): ComputerToolResult {
     // `retired_action` is an internal distinction, not a twenty-ninth word for
     // the model: it is the same fact as `duplicate_action` with a different
     // recovery, and the recovery is the sentence, not the code.
-    const error: ComputerUseErrorCode = isComputerUseErrorCode(reason)
-      ? reason
-      : reason === 'retired_action'
-        ? 'duplicate_action'
-        : 'stale_frame';
+    const error = publicBindingFailureCode(reason) ?? 'stale_frame';
     const tool = action ? `maka_computer.${action}` : 'maka_computer';
     return {
       text: `${tool} failed: ${error} — ${BINDING_FAILURE_RECOVERY[reason]}`,
@@ -1253,12 +1283,7 @@ export function buildComputerUseTools(deps: {
       captured && result.screenshot && !captured.screenshot
         ? { ...captured, screenshot: result.screenshot }
         : captured;
-    if (!fresh || !state.validateObservationLease(observationLease.lease).ok) {
-      return undefined;
-    }
-    const registered = registerObservation(record, fresh);
-    const snapshot = state.freshObservationSucceeded();
-    return snapshot.status === 'active' ? registered : undefined;
+    return fresh ? acceptObservation(state, record, observationLease.lease, fresh) : undefined;
   }
 
   async function withInvocationQueue<T>(
@@ -1408,6 +1433,7 @@ export function buildComputerUseTools(deps: {
     // -1 is not undefined — an unguarded field would hand `window:-1:0` to the
     // reorder and rely on it throwing.
     const targetWindowId = context.boundAction?.target.windowId;
+    const overlayRects = observations.get(context.sessionId)?.obscuringRects;
     const overlayContext: CuOverlayHookContext = {
       sessionId: context.sessionId,
       toolCallId: context.toolCallId,
@@ -1415,6 +1441,7 @@ export function buildComputerUseTools(deps: {
       ...(Number.isInteger(targetWindowId) && (targetWindowId as number) > 0
         ? { targetWindowId: targetWindowId as number }
         : {}),
+      ...(overlayRects && overlayRects.length > 0 ? { obscuringRects: overlayRects } : {}),
     };
     let fence: CuPresentationFence | undefined;
     try {
@@ -1460,7 +1487,74 @@ export function buildComputerUseTools(deps: {
     }
   }
 
-  const tool: MakaTool<ComputerParams, ComputerToolResult> = {
+  async function executeBoundAction(input: {
+    state: CuaSessionState;
+    lease: CuaActionLease;
+    record: SessionObservationRecord;
+    binding: CuaBoundAction;
+    action: CuPresentationAction;
+    context: CuRunContext;
+    signal: AbortSignal;
+    generation: number;
+    dispatch(context: CuRunContext): Promise<CuRunResult>;
+  }): Promise<
+    | { blocked: ComputerToolResult; result?: never; finish?: never }
+    | {
+        blocked?: never;
+        result: CuRunResult;
+        finish(result?: CuRunResult): void;
+      }
+  > {
+    const { state, lease, record, binding, action, signal } = input;
+    let result: CuRunResult | undefined;
+    let consumeFailure: BindingFailureReason | undefined;
+    let presentation: Awaited<ReturnType<typeof runWithPresentation>> | undefined;
+    try {
+      const blocked = validateActionLease(state, lease);
+      if (blocked) return { blocked };
+      const context = { ...input.context, boundAction: binding };
+      presentation = await runWithPresentation(
+        action,
+        context,
+        signal,
+        () => input.dispatch(context),
+        () => validateActionLease(state, lease),
+        input.generation,
+      );
+      if (presentation.blocked) return { blocked: presentation.blocked };
+      if (!presentation.result) {
+        presentation.finish();
+        return { blocked: bindingFailure('capture_failed', action.type) };
+      }
+      result = preservePartialDelivery(presentation.result);
+      applyTypedOutcomeState(state, result.outcome);
+      if (result.outcome.ok) {
+        const blocked = validateActionLease(state, lease);
+        if (blocked) {
+          presentation.finish();
+          return { blocked };
+        }
+      }
+    } finally {
+      // A path:none refusal retains its frame; a delivered or unknown attempt
+      // consumes it even if the backend throws.
+      if (dispatchedNothing(result)) {
+        consumeFailure = retireBoundAction(record, binding);
+      } else {
+        consumeFailure = consumeBoundAction(record, binding);
+        if (state.validateLease(lease).ok) state.reobserveRequired();
+      }
+    }
+    if (consumeFailure && !hasUncertainDeliveredOutcome(result)) {
+      presentation.finish();
+      return {
+        blocked: refusalAfterDispatch(consumeFailure, result, action.type),
+      };
+    }
+    return { result, finish: presentation.finish };
+  }
+
+  const rawTool: MakaTool<ComputerParams, ComputerToolResult> = {
     name: 'maka_computer',
     displayName: 'Maka Computer',
     // The kind every other builtin declares, and the reason `'computer'` is on
@@ -1571,7 +1665,9 @@ export function buildComputerUseTools(deps: {
         ...('element_id' in input &&
         input.element_id !== undefined &&
         record.elements?.get(input.element_id)?.identity
-          ? { element_identity: record.elements.get(input.element_id)!.identity }
+          ? {
+              element_identity: record.elements.get(input.element_id)!.identity,
+            }
           : {}),
       };
     },
@@ -1579,7 +1675,8 @@ export function buildComputerUseTools(deps: {
       args,
       { abortSignal, sessionId, turnId, toolCallId, emitProgress },
     ): Promise<ComputerToolResult> => {
-      if (abortSignal.aborted) return { text: 'computer aborted before start' };
+      if (abortSignal.aborted)
+        return { text: 'computer aborted before start', error: 'user_stopped' };
       const input = snapshotComputerParams(computerParams.parse(args));
       const includeScreenshotInModelOutput = shouldSendScreenshotToModel(input);
       // Before anything is claimed against a frame or dispatched: an argument
@@ -1602,6 +1699,10 @@ export function buildComputerUseTools(deps: {
             state.screenLocked();
             return sessionFailure('screen_locked');
           }
+          // A new Turn retires the previous frame and advances the session
+          // generation. Do that before leasing an observe, not after capture.
+          const observingRecord =
+            input.action === 'observe' ? sessionObservation(sessionId, turnId) : undefined;
           // Both halves of the wire enum are partitioned in `@maka/core`, so a
           // new action cannot be added without landing on one side or the
           // other — and offline consumers read the same partition.
@@ -1650,6 +1751,7 @@ export function buildComputerUseTools(deps: {
               }
             }
             return {
+              error: 'permission_missing',
               text: 'maka_computer failed: permission_missing — Accessibility not granted (System Settings → Privacy & Security → Accessibility)',
             };
           }
@@ -1657,6 +1759,7 @@ export function buildComputerUseTools(deps: {
           if (input.action === 'element_sequence') {
             if (!deps.backend.runSemantic || !deps.backend.captureObservation) {
               return {
+                error: 'unsupported_action',
                 text:
                   'maka_computer.element_sequence failed: unsupported_action — ' +
                   `${MISSING_CAPABILITY} Send the steps one at a time with click_element or ` +
@@ -1665,6 +1768,7 @@ export function buildComputerUseTools(deps: {
             }
             if (!tcc.screenRecording) {
               return {
+                error: 'permission_missing',
                 text: 'maka_computer.element_sequence failed: permission_missing — Screen Recording not granted (System Settings → Privacy & Security → Screen Recording)',
               };
             }
@@ -1686,7 +1790,12 @@ export function buildComputerUseTools(deps: {
                   elements: [...record.elements.values()],
                 }
               : undefined;
-            const done: Array<{ step: number; label: string; ok: boolean; detail?: string }> = [];
+            const done: Array<{
+              step: number;
+              label: string;
+              ok: boolean;
+              detail?: string;
+            }> = [];
             let stopped: string | undefined;
             emitProgress?.(0, input.steps.length);
             for (const [index, step] of input.steps.entries()) {
@@ -1711,7 +1820,11 @@ export function buildComputerUseTools(deps: {
                     // measured on a real run, `stopped at step 1 of 9:
                     // capture_failed` with step 1 reported `ok`, so a nine-key
                     // calculation could never get past its first key.
-                    { app: record.appId, windowId: record.windowId, includeScreenshot: false },
+                    {
+                      app: record.appId,
+                      windowId: record.windowId,
+                      includeScreenshot: false,
+                    },
                     abortSignal,
                     runCtx,
                   );
@@ -1719,12 +1832,12 @@ export function buildComputerUseTools(deps: {
                   stopped = 'capture_failed';
                   break;
                 }
-                current = registerObservation(record, recaptured);
-                // A frame the host just captured is a live frame. Without this
-                // the session stays in `reobserve_required` from the previous
-                // step and the next action is refused — the sequence would take
-                // exactly one step and stop.
-                state.freshObservationSucceeded();
+                current = acceptObservation(state, record, lease.lease, recaptured);
+                if (!current) {
+                  const valid = state.validateObservationLease(lease.lease);
+                  stopped = valid.ok ? 'reobserve_required' : valid.reason;
+                  break;
+                }
               }
               const wanted = step.label.trim().toLowerCase();
               const matches = (current?.elements ?? []).filter(
@@ -1785,36 +1898,32 @@ export function buildComputerUseTools(deps: {
                 stopped = 'stale_frame';
                 break;
               }
-              const operationContext = { ...runCtx, boundAction: binding };
-              let stepResult: CuRunResult | undefined;
-              let presentation: Awaited<ReturnType<typeof runWithPresentation>> | undefined;
-              try {
-                presentation = await runWithPresentation(
-                  summarySemanticAction(semantic),
-                  operationContext,
-                  abortSignal,
-                  () =>
-                    deps.backend.runSemantic!(
-                      { ...semantic, observationId: record.backendObservationId! },
-                      abortSignal,
-                      operationContext,
-                    ),
-                  undefined,
-                  invocationGeneration,
-                );
-                if (presentation.blocked) return presentation.blocked;
-                stepResult = presentation.result;
-              } finally {
-                consumeBoundAction(record, binding);
-                state.reobserveRequired();
+              const backendAction = {
+                ...semantic,
+                observationId: record.backendObservationId,
+              };
+              const execution = await executeBoundAction({
+                state,
+                lease: actionLeaseResult.lease,
+                record,
+                binding,
+                action: summarySemanticAction(semantic),
+                context: runCtx,
+                signal: abortSignal,
+                generation: invocationGeneration,
+                dispatch: (context) =>
+                  deps.backend.runSemantic!(backendAction, abortSignal, context),
+              });
+              if (execution.blocked) {
+                stopped = execution.blocked.error ?? 'outcome_unknown';
+                done.push({ step: index + 1, label: step.label, ok: false });
+                emitProgress?.(done.length, input.steps.length);
+                break;
               }
-              presentation?.finish(stepResult);
-              if (!stepResult || !stepResult.outcome.ok) {
-                if (stepResult) applyTypedOutcomeState(state, stepResult.outcome);
-                stopped =
-                  stepResult && !stepResult.outcome.ok
-                    ? stepResult.outcome.error
-                    : 'capture_failed';
+              const stepResult = execution.result;
+              execution.finish(stepResult);
+              if (!stepResult.outcome.ok) {
+                stopped = stepResult.outcome.error;
                 done.push({ step: index + 1, label: step.label, ok: false });
                 emitProgress?.(done.length, input.steps.length);
                 break;
@@ -1825,6 +1934,7 @@ export function buildComputerUseTools(deps: {
             // One observation at the end, whatever happened: the model needs a
             // current frame either to carry on or to work out what went wrong.
             let final: CuObservation | undefined;
+            let closingBlock: CuaSessionActionBlockReason | undefined;
             try {
               const lease = state.beforeObservation();
               if (lease.ok) {
@@ -1845,17 +1955,34 @@ export function buildComputerUseTools(deps: {
                     abortSignal,
                     runCtx,
                   );
-                final = registerObservation(
+                final = acceptObservation(
+                  state,
                   record,
+                  lease.lease,
                   await capture(true).catch(() => capture(false)),
                 );
+                if (!final) {
+                  const valid = state.validateObservationLease(lease.lease);
+                  closingBlock = valid.ok ? 'reobserve_required' : valid.reason;
+                }
+              } else {
+                closingBlock = lease.reason;
               }
             } catch {
               final = undefined;
             }
-            const headline = stopped
-              ? `maka_computer.element_sequence stopped at step ${done.length} of ${input.steps.length}: ${stopped}`
-              : `maka_computer.element_sequence ok (${done.length} of ${input.steps.length} steps)`;
+            const stoppedError = stopped
+              ? (publicBindingFailureCode(stopped) ?? 'outcome_unknown')
+              : undefined;
+            const stoppedRecovery =
+              stopped && stopped in BINDING_FAILURE_RECOVERY
+                ? BINDING_FAILURE_RECOVERY[stopped as BindingFailureReason]
+                : undefined;
+            const headline = stoppedError
+              ? `maka_computer.element_sequence stopped at step ${done.length} of ${input.steps.length}: ${stoppedError}${stoppedRecovery ? ` — ${stoppedRecovery}` : ''}`
+              : closingBlock
+                ? `maka_computer.element_sequence failed after ${done.length} of ${input.steps.length} steps: ${closingBlock} — ${SESSION_BLOCK_RECOVERY[closingBlock]}`
+                : `maka_computer.element_sequence ok (${done.length} of ${input.steps.length} steps)`;
             const persistedTail = final
               ? `\nFresh observation: ${persistedObservationText(final)}`
               : '';
@@ -1869,7 +1996,11 @@ export function buildComputerUseTools(deps: {
             return {
               text: `${headline}${persistedTail}`,
               modelText: `${headline}\n${stepLines}${modelTail}`,
-              ...(stopped && isComputerUseErrorCode(stopped) ? { error: stopped } : {}),
+              ...(stoppedError
+                ? { error: stoppedError }
+                : closingBlock
+                  ? { error: closingBlock }
+                  : {}),
               ...(final?.screenshot
                 ? {
                     screenshot: {
@@ -1883,6 +2014,7 @@ export function buildComputerUseTools(deps: {
           if (input.action === 'launch_app') {
             if (!deps.backend.launchApp) {
               return {
+                error: 'unsupported_action',
                 text:
                   'maka_computer.launch_app failed: unsupported_action — ' +
                   `${MISSING_CAPABILITY} Ask the user to open the application, then call ` +
@@ -1913,6 +2045,7 @@ export function buildComputerUseTools(deps: {
           if (input.action === 'list_apps') {
             if (!deps.backend.listApps) {
               return {
+                error: 'unsupported_action',
                 text:
                   'maka_computer.list_apps failed: unsupported_action — ' +
                   `${MISSING_CAPABILITY} Name the application directly in action:"observe" ` +
@@ -2014,6 +2147,7 @@ export function buildComputerUseTools(deps: {
             const record = observations.get(sessionId);
             if (!deps.backend.observeApp || !record?.appId) {
               return {
+                error: 'no_active_frame',
                 text: 'maka_computer.wait failed: no_active_frame — a condition is checked against the window you last observed, and there is none yet. Observe first, or wait with only a duration.',
               };
             }
@@ -2042,6 +2176,7 @@ export function buildComputerUseTools(deps: {
                   };
                 }
                 return {
+                  error: 'target_missing',
                   text: 'maka_computer.wait failed: target_missing — the window being waited on is no longer there',
                 };
               }
@@ -2052,8 +2187,13 @@ export function buildComputerUseTools(deps: {
                   .some((part) => part.toLowerCase().includes(needle)),
               );
               if (found === wantPresent) {
-                const observation = registerObservation(record, last);
-                state.freshObservationSucceeded();
+                const observation = observationLease?.ok
+                  ? acceptObservation(state, record, observationLease.lease, last)
+                  : undefined;
+                if (!observation) {
+                  const valid = state.beforeAction();
+                  return sessionFailure(valid.ok ? 'reobserve_required' : valid.reason, 'wait');
+                }
                 const waited = (
                   (Date.now() - (deadline - Math.round((input.duration ?? 5) * 1000))) /
                   1000
@@ -2069,8 +2209,13 @@ export function buildComputerUseTools(deps: {
                 // holds instead is the whole question a model asks next, and
                 // making it spend another call on that is the round trip this
                 // action exists to remove.
-                const observation = registerObservation(record, last);
-                state.freshObservationSucceeded();
+                const observation = observationLease?.ok
+                  ? acceptObservation(state, record, observationLease.lease, last)
+                  : undefined;
+                if (!observation) {
+                  const valid = state.beforeAction();
+                  return sessionFailure(valid.ok ? 'reobserve_required' : valid.reason, 'wait');
+                }
                 const text = `maka_computer.wait failed: timeout — ${JSON.stringify(input.wait_for_text ?? input.wait_for_text_gone)} was still ${wantPresent ? 'absent' : 'present'} after ${(input.duration ?? 5).toFixed(1)}s and ${polls} looks. This is the window as it stands.`;
                 return {
                   text: `${text}\n${persistedObservationText(observation)}`,
@@ -2084,6 +2229,7 @@ export function buildComputerUseTools(deps: {
           if (input.action === 'observe') {
             if (!deps.backend.observeApp) {
               return {
+                error: 'unsupported_action',
                 text:
                   'maka_computer.observe failed: unsupported_action — ' +
                   `${MISSING_CAPABILITY} Nothing on this computer can be read or driven; ` +
@@ -2112,6 +2258,7 @@ export function buildComputerUseTools(deps: {
             const includeScreenshot = input.include_screenshot ?? false;
             if (includeScreenshot && !tcc.screenRecording) {
               return {
+                error: 'permission_missing',
                 text:
                   'maka_computer.observe failed: permission_missing — Screen Recording not ' +
                   'granted (System Settings → Privacy & Security → Screen Recording). ' +
@@ -2146,6 +2293,7 @@ export function buildComputerUseTools(deps: {
             const resolvedApp = await resolveAppName(input.app, abortSignal);
             if (resolvedApp && 'ambiguous' in resolvedApp) {
               return {
+                error: 'ambiguous_target',
                 text:
                   `maka_computer.observe failed: ambiguous_target — "${input.app}" matches ` +
                   `${resolvedApp.ambiguous.join(', ')}. Name one of them.`,
@@ -2224,15 +2372,13 @@ export function buildComputerUseTools(deps: {
                 error: code,
               };
             }
-            if (
-              !observationLease?.ok ||
-              !state.validateObservationLease(observationLease.lease).ok
-            ) {
+            // The observe record was created before taking the lease, so both
+            // must be present before accepting this capture.
+            if (!observingRecord || !observationLease?.ok) {
               const blocked = state.beforeAction();
               return sessionFailure(blocked.ok ? 'reobserve_required' : blocked.reason, 'observe');
             }
-            const record = sessionObservation(sessionId, turnId);
-            const observation = registerObservation(record, {
+            const observation = acceptObservation(state, observingRecord, observationLease.lease, {
               ...withRequestedView(backendObservation, {
                 ...(input.query ? { query: input.query } : {}),
                 ...(input.menu ? { menu: input.menu } : {}),
@@ -2248,19 +2394,19 @@ export function buildComputerUseTools(deps: {
                 ? { appAlias: input.app }
                 : {}),
             });
-            const activated = state.freshObservationSucceeded();
-            if (activated.status !== 'active') {
-              invalidateObservation(sessionId);
-              return sessionFailure(
-                activated.status === 'blocked_url' ? 'blocked_url' : 'user_stopped',
-              );
+            if (!observation) {
+              const valid = state.beforeAction();
+              return sessionFailure(valid.ok ? 'reobserve_required' : valid.reason, 'observe');
             }
             const screenshot = observation.screenshot;
             return screenshot
               ? {
                   text: persistedObservationText(observation),
                   modelText: observationText({ ...observation, screenshot }),
-                  screenshot: { base64: screenshot.base64, mimeType: screenshot.mimeType },
+                  screenshot: {
+                    base64: screenshot.base64,
+                    mimeType: screenshot.mimeType,
+                  },
                   includeScreenshotInModelOutput,
                 }
               : {
@@ -2271,6 +2417,7 @@ export function buildComputerUseTools(deps: {
           if (input.action === 'screenshot') {
             if (!deps.backend.observeApp) {
               return {
+                error: 'unsupported_action',
                 text:
                   'maka_computer.screenshot failed: unsupported_action — ' +
                   `${MISSING_CAPABILITY} Use action:"observe", which returns the same window ` +
@@ -2279,6 +2426,7 @@ export function buildComputerUseTools(deps: {
             }
             if (!tcc.screenRecording) {
               return {
+                error: 'permission_missing',
                 text:
                   'maka_computer.screenshot failed: permission_missing — ' +
                   'Screen Recording not granted ' +
@@ -2305,7 +2453,10 @@ export function buildComputerUseTools(deps: {
               );
             }
             if (!screenshotObservation.screenshot) {
-              return { text: 'maka_computer.screenshot failed: capture_failed' };
+              return {
+                text: 'maka_computer.screenshot failed: capture_failed',
+                error: 'capture_failed',
+              };
             }
             return {
               text: JSON.stringify({
@@ -2341,6 +2492,7 @@ export function buildComputerUseTools(deps: {
           ) {
             if (!deps.backend.runSemantic) {
               return {
+                error: 'unsupported_action',
                 text:
                   `maka_computer.${input.action} failed: unsupported_action — ` +
                   `${MISSING_CAPABILITY} No element offers it either; report the limit instead ` +
@@ -2349,6 +2501,7 @@ export function buildComputerUseTools(deps: {
             }
             if (!tcc.screenRecording) {
               return {
+                error: 'permission_missing',
                 text: `maka_computer.${input.action} failed: permission_missing — Screen Recording not granted (System Settings → Privacy & Security → Screen Recording)`,
               };
             }
@@ -2396,7 +2549,9 @@ export function buildComputerUseTools(deps: {
                                 direction: input.scroll_direction ?? 'down',
                                 ...(input.scroll_amount === undefined
                                   ? {}
-                                  : { pages: input.scroll_amount / SCROLL_UNITS_PER_PAGE }),
+                                  : {
+                                      pages: input.scroll_amount / SCROLL_UNITS_PER_PAGE,
+                                    }),
                                 elementIdentity: record.elements?.get(input.element_id)?.identity,
                               }
                             : input.action === 'window_action'
@@ -2406,10 +2561,20 @@ export function buildComputerUseTools(deps: {
                                   elementId: input.element_id,
                                   action: input.window_action,
                                   ...(input.position
-                                    ? { position: { x: input.position[0], y: input.position[1] } }
+                                    ? {
+                                        position: {
+                                          x: input.position[0],
+                                          y: input.position[1],
+                                        },
+                                      }
                                     : {}),
                                   ...(input.size
-                                    ? { size: { width: input.size[0], height: input.size[1] } }
+                                    ? {
+                                        size: {
+                                          width: input.size[0],
+                                          height: input.size[1],
+                                        },
+                                      }
                                     : {}),
                                   elementIdentity: record.elements?.get(input.element_id)?.identity,
                                 }
@@ -2434,58 +2599,22 @@ export function buildComputerUseTools(deps: {
               observationId: record.backendObservationId,
             };
             const summaryAction = summarySemanticAction(semanticAction);
-            let result: CuRunResult | undefined;
-            let consumeFailure: BindingFailureReason | undefined;
-            let presentation: Awaited<ReturnType<typeof runWithPresentation>> | undefined;
-            try {
-              if (!actionLease) return sessionFailure('no_active_frame', input.action);
-              const leaseFailure = validateActionLease(state, actionLease);
-              if (leaseFailure) return leaseFailure;
-              const operationContext = { ...runCtx, boundAction: binding };
-              presentation = await runWithPresentation(
-                summaryAction,
-                operationContext,
-                abortSignal,
-                () => deps.backend.runSemantic!(semanticAction, abortSignal, operationContext),
-                () => validateActionLease(state, actionLease),
-                invocationGeneration,
-              );
-              if (presentation.blocked) return presentation.blocked;
-              if (!presentation.result) return bindingFailure('capture_failed', input.action);
-              result = preservePartialDelivery(presentation.result);
-              applyTypedOutcomeState(state, result.outcome);
-              if (result.outcome.ok) {
-                const postDispatchFailure = validateActionLease(state, actionLease);
-                if (postDispatchFailure) {
-                  presentation.finish();
-                  return postDispatchFailure;
-                }
-              }
-            } finally {
-              // A refusal that never reached the window leaves the frame it was
-              // quoted against exactly as it was, so it keeps its frame and its
-              // lease. Consuming both is what turned one refusal into three
-              // calls: the action failed, the frame was thrown away, and the
-              // code was not one that hands back a fresh one — so the model's
-              // next call was `reobserve_required` and the one after it was the
-              // `observe` it should never have had to spend.
-              if (dispatchedNothing(result)) {
-                consumeFailure = retireBoundAction(record, binding);
-              } else {
-                consumeFailure = consumeBoundAction(record, binding);
-                if (actionLease && state.validateLease(actionLease).ok) {
-                  state.reobserveRequired();
-                }
-              }
-            }
-            if (consumeFailure && !hasUncertainDeliveredOutcome(result)) {
-              presentation?.finish();
-              return refusalAfterDispatch(consumeFailure, result, input.action);
-            }
-            if (!result) {
-              presentation?.finish();
-              return bindingFailure('capture_failed', input.action);
-            }
+            if (!actionLease) return sessionFailure('no_active_frame', input.action);
+            const execution = await executeBoundAction({
+              state,
+              lease: actionLease,
+              record,
+              binding,
+              action: summaryAction,
+              context: runCtx,
+              signal: abortSignal,
+              generation: invocationGeneration,
+              dispatch: (context) =>
+                deps.backend.runSemantic!(semanticAction, abortSignal, context),
+            });
+            if (execution.blocked) return execution.blocked;
+            const { result } = execution;
+            const presentation = execution;
             // One action removes its own target on purpose, and the machinery
             // below reads a missing target as an uncertain outcome.
             //
@@ -2546,7 +2675,7 @@ export function buildComputerUseTools(deps: {
             // `REOBSERVABLE_FAILURES` — `target_missing`, `target_changed`,
             // `ambiguous_target`, `duplicate_action`, `stale_frame`,
             // `invalid_coordinate` — takes the fresh observation above, and
-            // `registerObservation` makes that the current frame. The sentence
+            // `acceptObservation` makes that the current frame. The sentence
             // then named a frame the same reply had just superseded: the model
             // read "observation X is still current, use it rather than
             // observing again", did exactly that, and collected `stale_frame`
@@ -2619,6 +2748,7 @@ export function buildComputerUseTools(deps: {
           if (requiresActionLease) {
             if (!tcc.screenRecording) {
               return {
+                error: 'permission_missing',
                 text: `maka_computer.${action.type} failed: permission_missing — Screen Recording not granted (System Settings → Privacy & Security → Screen Recording)`,
               };
             }
@@ -2631,6 +2761,7 @@ export function buildComputerUseTools(deps: {
           const capturing = action.type === 'screenshot';
           if (capturing && !tcc.screenRecording) {
             return {
+              error: 'permission_missing',
               text: 'maka_computer failed: permission_missing — Screen Recording not granted (System Settings → Privacy & Security → Screen Recording)',
             };
           }
@@ -2743,7 +2874,10 @@ export function buildComputerUseTools(deps: {
                   modelText,
                   ...(!result.outcome.ok ? { error: result.outcome.error } : {}),
                   ...(failureClass ? { failureClass } : {}),
-                  screenshot: { base64: screenshot.base64, mimeType: screenshot.mimeType },
+                  screenshot: {
+                    base64: screenshot.base64,
+                    mimeType: screenshot.mimeType,
+                  },
                   includeScreenshotInModelOutput,
                 }
               : {
@@ -2763,7 +2897,9 @@ export function buildComputerUseTools(deps: {
     // PiP frame stays local. Explicit visual requests receive the native image
     // block.
     toModelOutput: ({ output }) => {
-      const o = (output ?? {}) as Partial<ComputerToolResult> & { error?: unknown };
+      const o = (output ?? {}) as Partial<ComputerToolResult> & {
+        error?: unknown;
+      };
       const text =
         typeof o.modelText === 'string'
           ? redactSecrets(o.modelText)
@@ -2788,6 +2924,11 @@ export function buildComputerUseTools(deps: {
         ],
       };
     },
+  };
+  const tool: MakaTool<ComputerParams, ComputerToolResult> = {
+    ...rawTool,
+    resultOutcome: (output) => (output as SettledComputerToolResult).outcome,
+    impl: async (args, context) => settleComputerResult(await rawTool.impl(args, context)),
   };
   const debug = deps.debug;
   if (debug) {

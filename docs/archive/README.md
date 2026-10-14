@@ -36,6 +36,7 @@ The root `DESIGN.md` owns shared product design intent. `docs/frontend-css-gover
 
 ## Validation snapshots
 
+- `antigravity-acp-pr2-acceptance.md` — PR #5224's point-in-time controlled-process and real-Agent acceptance record; current behavior is defined by source, tests, and the Plugin READMEs.
 - `desktop-smoke-plan-legacy.md` — completed PR acceptance paths and deferred UI designs removed from the current executable smoke runbook.
 
 ## Former repository notes
@@ -82,3 +83,7 @@ The computer-use follow-up files are per-PR follow-up records, incident investig
 ## Benchmark logs
 
 - `economic-mechanisms-benchmark.md` — the first synthesis-cache benchmark entry for economic-mechanisms tracking issue #481 and slice #578. Current progress belongs in those issues.
+
+## Assistant plugin experiments
+
+`assistant-plugin-experiments/` preserves historical memory, initiative and follow-up test logs. These mix superseded designs and dated results and are excluded from extension packages. Current behavior and verification commands live in each plugin README. The private-data live-ten harness and removed task-overlay preview are retired; their old commands are not supported.

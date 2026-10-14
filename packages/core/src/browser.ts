@@ -34,6 +34,8 @@ export interface BrowserState {
   secure: boolean;
   /** A real page is loaded (not blank / about:) — gates the DOM empty state. */
   hasPage: boolean;
+  /** Main-frame load failure; absent/null for healthy or older snapshots. */
+  loadError?: { url: string; code: number } | null;
 }
 
 /** Where the embedded view sits, in renderer CSS px; native hosts must apply renderer zoom. */

@@ -44,6 +44,7 @@ export interface InteractivePlanStoreWriter extends PlanStore {
   readonly kind: 'interactive';
   readonly access: 'write';
   readonly [writerBrand]: true;
+  listPlanRecoverySessionIds(): Promise<string[]>;
   purgeSessionState(sessionId: string): Promise<void>;
   close(): void;
 }
@@ -91,6 +92,7 @@ export function observeInteractivePlanStoreWriter(
     access: writer.access,
     [writerBrand]: true,
     readState: (sessionId) => writer.readState(sessionId),
+    listPlanRecoverySessionIds: () => writer.listPlanRecoverySessionIds(),
     readOperationReceipt: (sessionId, operationId, operationInput) =>
       writer.readOperationReceipt(sessionId, operationId, operationInput),
     submitProposal: (input) => publish(input.sessionId, () => writer.submitProposal(input)),
@@ -181,6 +183,7 @@ function createWriterFacade(
     access: 'write',
     [writerBrand]: true,
     readState: (sessionId) => run(() => store.readState(sessionId)),
+    listPlanRecoverySessionIds: () => run(() => store.listPlanRecoverySessionIds()),
     readOperationReceipt: (sessionId, operationId, operationInput) =>
       run(() =>
         store.readOperationReceipt(sessionId, operationId, structuredClone(operationInput)),

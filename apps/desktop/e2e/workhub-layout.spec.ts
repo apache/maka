@@ -34,9 +34,7 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await awaitSendReady(page);
   await page.locator(COMPOSER_INPUT).press('Enter');
   await expect(page.getByText('Fake backend received: WorkHub navigation regression')).toBeVisible();
-  await page.evaluate(async () => {
-    for (let index = 0; index < 8; index++) await window.maka.sessions.create({ name: `Drag task ${index}` });
-  });
+  await page.evaluate(() => window.maka.sessions.create({ name: 'Sidebar task' }));
   await page.evaluate(() => window.maka.settings.updateClient({ workHub: { enabled: true } }));
   const workhub = await getWorkHubPage(app);
   const sessionId = await workhub.evaluate(() => window.maka.workHub.resolveCoordinationSession());
@@ -57,13 +55,48 @@ test('WorkHub uses its coordination model and shared attachment composer', async
     await expect.poll(() => page.evaluate(() => innerWidth)).toBe(contentWidth);
     const dockWidth = await page.locator('.workHubDock').evaluate((element) => Math.round(element.getBoundingClientRect().width));
     await expect.poll(() => workhub.evaluate(() => innerWidth)).toBe(dockWidth);
-    const rail = workhub.locator('.workhub-anchor-rail');
-    await expect.poll(() => rail.evaluate((element) => element.getBoundingClientRect().width)).toBeGreaterThanOrEqual(180);
-    await expect.poll(() => rail.locator('.workhub-navigation-label').first().evaluate((element) => element.getBoundingClientRect().width)).toBeGreaterThanOrEqual(140);
-    await expect.poll(() => workhub.locator('.workhub-conversation-shell').evaluate((element) => {
+    await expect.poll(() => workhub.locator('[data-chat-scroll-container]').evaluate((element) => {
       const conversation = element.getBoundingClientRect();
       return conversation.left >= 0 && conversation.right <= innerWidth + 1;
     })).toBe(true);
+  }
+  const shellFloor = await page.locator('.maka-shell-astryx').evaluate((element) =>
+    Math.round(parseFloat(getComputedStyle(element).minWidth)));
+  const nativeMinWidth = await mainWindow.evaluate((window) => window.getMinimumSize()[0]);
+  // The renderer's shell floor can be below the native safety floor when both
+  // panels are hidden. Requests below the native floor must clamp the whole
+  // host and its docked WorkHub together instead of reducing the main window
+  // to an unusable titlebar sliver.
+  expect(nativeMinWidth).toBe(600);
+  const desktopConversationFloor = await page.evaluate(() =>
+    getComputedStyle(document.documentElement).getPropertyValue('--maka-conversation-min-width').trim());
+  const workhubConversationFloor = await workhub.evaluate(() =>
+    getComputedStyle(document.documentElement).getPropertyValue('--maka-conversation-min-width').trim());
+  expect(workhubConversationFloor).toBe(desktopConversationFloor);
+  await expect.poll(() => workhub.locator('.workHubLive').evaluate((element) =>
+    getComputedStyle(element).minWidth)).toBe(desktopConversationFloor);
+  const dockLeft = await page.locator('.workHubDock').evaluate((element) =>
+    Math.round(element.getBoundingClientRect().left));
+  let frozenDockWidth: number | undefined;
+  for (const width of [shellFloor - 10, shellFloor - 40]) {
+    const contentWidth = await mainWindow.evaluate((window, nextWidth) => {
+      window.setBounds({ width: nextWidth });
+      return window.getContentSize()[0];
+    }, width);
+    await expect.poll(() => page.evaluate(() => innerWidth)).toBe(contentWidth);
+    expect(contentWidth).toBeGreaterThanOrEqual(nativeMinWidth);
+    expect(contentWidth).toBeGreaterThanOrEqual(shellFloor);
+    const dockWidth = await page.locator('.workHubDock').evaluate((element) =>
+      Math.round(element.getBoundingClientRect().width));
+    expect(await page.locator('.workHubDock').evaluate((element) =>
+      Math.round(element.getBoundingClientRect().left))).toBe(dockLeft);
+    frozenDockWidth ??= dockWidth;
+    expect(dockWidth).toBe(frozenDockWidth);
+    await expect.poll(() => workhub.evaluate(() => innerWidth)).toBe(dockWidth);
+    await expect.poll(() => workhub.locator('.workHubLive').evaluate((element) =>
+      Math.round(element.getBoundingClientRect().width))).toBe(dockWidth);
+    await expect.poll(() => workhub.locator('.workHubLive').evaluate((element) =>
+      Math.round(element.getBoundingClientRect().left))).toBe(0);
   }
   const restoredContentWidth = await mainWindow.evaluate((window, bounds) => {
     window.setBounds(bounds);
@@ -72,18 +105,42 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await expect.poll(() => page.evaluate(() => innerWidth)).toBe(restoredContentWidth);
   const restoredDockWidth = await page.locator('.workHubDock').evaluate((element) => Math.round(element.getBoundingClientRect().width));
   await expect.poll(() => workhub.evaluate(() => innerWidth)).toBe(restoredDockWidth);
+  // Main's titlebar controls the sibling WorkHub WebContentsView through IPC.
+  const workbar = page.locator('.maka-session-workbar[data-placement="right"]');
+  await page.getByRole('button', { name: '展开任务工作栏', exact: true }).click();
+  await expect(workbar).toBeVisible();
+  await page.getByRole('button', { name: '收起任务工作栏', exact: true }).click();
+  await expect(workbar).toBeHidden();
+  await page.evaluate(() => window.maka.settings.updateClient({ appearance: { workbarTogglePosition: 'edge' } }));
   // The edge belongs to the native conversation renderer. A Main DOM overlay
   // would be covered by this WebContentsView and never receive native clicks.
   await workhub.getByRole('button', { name: '展开任务工作栏', exact: true }).click();
   await expect(page.locator('.maka-session-workbar[data-placement="right"]')).toBeVisible();
-  // A real native menu must coexist with the live sibling WebContentsView.
-  // DOM tests cannot detect replacing that view with a frozen screenshot.
+  // The menu interaction must coexist with the live sibling WebContentsView.
+  // DOM tests cannot detect replacing that view with a frozen screenshot, so
+  // the WorkHub view's native visibility is asserted below. The popup itself
+  // is stubbed instead of really opened: on Linux the native teardown races
+  // the scripted close and crashes the main process (#5995), and every
+  // assertion here is Maka state — aria-expanded, the dock backdrop, the
+  // view's visibility — none of which needs a real GTK menu.
   await app.evaluate(({ Menu }) => {
     const original = Menu.prototype.popup;
     Menu.prototype.popup = function (options) {
-      (globalThis as unknown as { workbarMenu: Electron.Menu }).workbarMenu = this;
+      const probe = globalThis as unknown as { workbarMenu: Electron.Menu; workbarMenuOpen: boolean };
+      probe.workbarMenu = this;
+      probe.workbarMenuOpen = true;
+      // Restoring immediately keeps the later task-action menu on the real
+      // native popup; only this scripted one is simulated.
       Menu.prototype.popup = original;
-      return original.call(this, options);
+      // The popup contract is that options.callback fires once the menu is
+      // closed; that callback resolves the renderer's request and drops
+      // aria-expanded. Driving it from the menu's own lifecycle event lets
+      // the test close the menu without ever touching native closePopup.
+      this.once('menu-will-close', () => {
+        probe.workbarMenuOpen = false;
+        (options as { callback?: () => void } | undefined)?.callback?.();
+      });
+      return undefined;
     };
   });
   const addPanel = page.getByRole('button', { name: '添加面板', exact: true });
@@ -95,32 +152,20 @@ test('WorkHub uses its coordination model and shared attachment composer', async
       'webContents' in child && (child as Electron.WebContentsView).webContents.getURL().includes('surface=workhub')));
     return container?.getVisible();
   })).toBe(true);
-  // aria-expanded tracks the popup IPC resolution, so a menu that already
-  // auto-dismissed (Linux closes popups after window resizes) must not be
-  // closed again — closePopup on a dead popup crashes the main process.
-  if ((await addPanel.getAttribute('aria-expanded')) === 'true') {
-    await app.evaluate(() => (globalThis as unknown as { workbarMenu: Electron.Menu }).workbarMenu.closePopup());
-  }
-  await expect(addPanel).toHaveAttribute('aria-expanded', 'false');
+  // Close through the menu's own lifecycle event. The stubbed popup never
+  // opened a native menu, so there is nothing for closePopup to close — and
+  // closePopup on a popup GTK already tore down crashes the main process
+  // (#5995). Decide inside the main process, in the same task as the emit,
+  // so the close cannot land before the state behind the assertions above.
+  await mainWindow.evaluate(() => {
+    const probe = globalThis as unknown as { workbarMenu: Electron.Menu; workbarMenuOpen: boolean };
+    if (probe.workbarMenuOpen) probe.workbarMenu.emit('menu-will-close');
+  });
+  await expect(addPanel).not.toHaveAttribute('aria-expanded', 'true');
   await workhub.getByRole('button', { name: '收起任务工作栏', exact: true }).click();
   await expect(page.locator('.maka-session-workbar[data-placement="right"]')).toBeHidden();
-  const anchors = workhub.locator('.workhub-anchors');
-  const draftBeforeOverlays = 'Draft survives main-window overlays and dragging.';
+  const draftBeforeOverlays = 'Draft survives main-window overlays.';
   await workhub.locator(COMPOSER_INPUT).fill(draftBeforeOverlays);
-  const railBounds = await anchors.boundingBox();
-  const dragStart = { x: railBounds!.x + railBounds!.width - 40, y: railBounds!.y + railBounds!.height / 2 };
-  await workhub.mouse.move(dragStart.x, dragStart.y);
-  await workhub.mouse.down();
-  await workhub.mouse.move(dragStart.x - 300, dragStart.y, { steps: 12 });
-  await workhub.mouse.up();
-  await expect.poll(() => anchors.evaluate((element) => element.scrollLeft)).toBeGreaterThan(250);
-  await expect(page.locator('.workHubDock')).toBeVisible();
-  await expect(workhub.locator(COMPOSER_INPUT)).toHaveText(draftBeforeOverlays);
-  await workhub.mouse.move(dragStart.x - 300, dragStart.y);
-  await workhub.mouse.down();
-  await workhub.mouse.move(dragStart.x, dragStart.y, { steps: 12 });
-  await workhub.mouse.up();
-  await expect.poll(() => anchors.evaluate((element) => element.scrollLeft)).toBeLessThan(5);
   const expandSidebar = page.getByRole('button', { name: '展开侧边栏', exact: true });
   if (await expandSidebar.isVisible()) await expandSidebar.click();
   const nativeWorkHubVisible = () => mainWindow.evaluate((window) => {
@@ -130,8 +175,40 @@ test('WorkHub uses its coordination model and shared attachment composer', async
     );
     return visible(window.contentView);
   });
-  const actions = page.getByRole('button', { name: /Drag task 0.*任务操作$/ });
-  await page.getByRole('button', { name: 'Drag task 0', exact: true }).hover();
+  const actions = page.getByRole('button', { name: /Sidebar task.*任务操作$/ });
+  const sidebarTask = page.getByRole('button').filter({ has: page.getByText('Sidebar task', { exact: true }) });
+  // A delayed native capture must not expose an empty dock. This boundary
+  // needs the sibling WebContentsView; DOM tests only cover decode/ack ordering.
+  await app.evaluate(({ webContents }) => {
+    const contents = webContents.getAllWebContents().find(contents => contents.getURL().includes('surface=workhub'))!;
+    const capture = contents.capturePage.bind(contents);
+    const probe = globalThis as unknown as { previewCaptureStarted: boolean; releasePreviewCapture: () => void };
+    probe.previewCaptureStarted = false;
+    contents.capturePage = async (...args) => {
+      contents.capturePage = capture;
+      probe.previewCaptureStarted = true;
+      await new Promise<void>(resolve => { probe.releasePreviewCapture = resolve; });
+      return capture(...args);
+    };
+  });
+  await sidebarTask.hover();
+  const preview = page.locator('.maka-sidebar-hover-card').filter({ hasText: 'Sidebar task' });
+  await expect.poll(() => app.evaluate(() => (globalThis as unknown as { previewCaptureStarted: boolean }).previewCaptureStarted)).toBe(true);
+  expect(await nativeWorkHubVisible()).toBe(true);
+  await expect(preview).toBeHidden();
+  await expect(page.locator('[data-workhub-preview-pending]')).toHaveCount(1);
+  await app.evaluate(() => (globalThis as unknown as { releasePreviewCapture: () => void }).releasePreviewCapture());
+  await expect(preview).toBeVisible();
+  await expect.poll(nativeWorkHubVisible).toBe(false);
+  expect(await page.locator('.workHubDockBackdrop').evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth > 0)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('sidebar-preview-ready.png') });
+  await page.keyboard.press('Escape');
+  await expect(preview).toBeHidden();
+  await expect.poll(nativeWorkHubVisible).toBe(true);
+  await expect(page.locator('.workHubDockBackdrop')).toHaveCount(0);
+  await expect(workhub.locator(COMPOSER_INPUT)).toHaveText(draftBeforeOverlays);
+  // Dismissal/restoration is a separate interaction; do not reuse its hover state.
+  await sidebarTask.hover();
   await actions.click();
   await expect(page.getByRole('menuitem', { name: '重命名', exact: true })).toBeVisible();
   await expect.poll(nativeWorkHubVisible).toBe(false);
@@ -141,7 +218,7 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await page.keyboard.press('Escape');
   await expect(page.getByRole('textbox', { name: '重命名任务' })).toBeHidden();
   await expect(actions).toBeFocused();
-  const actionTooltip = page.getByRole('tooltip', { name: 'Drag task 0 任务操作', exact: true });
+  const actionTooltip = page.getByRole('tooltip', { name: /^Sidebar task.*任务操作$/ });
   await expect(actionTooltip).toBeVisible();
   await expect.poll(nativeWorkHubVisible).toBe(false);
   const workHubNavigation = page.getByRole('button', { name: 'WorkHub', exact: true });
@@ -156,15 +233,6 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await expect.poll(nativeWorkHubVisible).toBe(true);
   await expect(workhub.locator(COMPOSER_INPUT)).toHaveText(draftBeforeOverlays);
   await expect(page.locator('.workHubDockBackdrop')).toHaveCount(0);
-  const workRail = anchors.locator('.workhub-navigation-item').first();
-  await workRail.click();
-  await expect(page.locator('.workHubDock')).toBeVisible();
-  await expect(workhub.getByRole('region', { name: '筛选此 Work 的对话' })).toHaveCount(0);
-  await workRail.click();
-  await expect(workhub.getByRole('region', { name: '筛选此 Work 的对话' })).toBeVisible();
-  await workRail.click();
-  await expect(workhub.getByRole('region', { name: '筛选此 Work 的对话' })).toHaveCount(0);
-  await expect(workhub.locator(COMPOSER_INPUT)).toHaveText(draftBeforeOverlays);
   await page.getByRole('button').filter({ has: page.getByText('WorkHub navigation regression', { exact: true }) }).click();
   await expect(page.locator('.workHubDock')).toBeHidden();
   await page.getByRole('button', { name: 'WorkHub', exact: true }).click();
@@ -196,6 +264,9 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   expect(await app.evaluate(({ app }) => process.platform !== 'darwin' || app.dock!.isVisible())).toBe(true);
   const editor = workhub.locator('.maka-composer-editor [contenteditable="true"]');
   await editor.fill('Keep this draft while folding the conversation.');
+  // The floating native window is foregrounded on local runs. Release its
+  // editor so host keyboard input cannot mutate the draft under assertion.
+  await editor.blur();
   const expandedHeight = await workhub.evaluate(() => window.innerHeight);
   const floatingBottom = () => app.evaluate(({ BrowserWindow }) => {
     const bounds = BrowserWindow.getAllWindows().find((window) => window.getTitle() === 'WorkHub')!.getBounds();
@@ -252,13 +323,7 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await expect(thinking).toContainText(/高|High/);
   await workhub.screenshot({ animations: 'disabled', path: testInfo.outputPath('floating-composer-controls.png') });
   const compactHeight = await workhub.evaluate(() => innerHeight);
-  const screenLayout = async () => {
-    const origin = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((window) => window.getTitle() === 'WorkHub')!.getContentBounds());
-    return workhub.evaluate(({ x, y }) => Array.from(document.querySelectorAll('.maka-composer-editor, .maka-composer button, .workHubExpandButton')).map((element) => {
-      const rect = element.getBoundingClientRect();
-      return { x: x + rect.x, y: y + rect.y, width: rect.width, height: rect.height };
-    }), origin);
-  };
+  const floatingBounds = () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((window) => window.getTitle() === 'WorkHub')!.getContentBounds());
   await model.click();
   const wheel = workhub.getByRole('listbox');
   await expect(wheel).toBeVisible();
@@ -293,7 +358,7 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await expect(wheel.getByRole('option')).toHaveCount(3);
   await expect.poll(() => workhub.evaluate(() => innerHeight === Math.ceil(document.querySelector('.workHubComposerSurface')!.getBoundingClientRect().height))).toBe(true);
   const dragInitialTop = await wheel.evaluate((element) => element.scrollTop);
-  const beforeDrag = await screenLayout();
+  const beforeDrag = await floatingBounds();
   const dragDistance = dragInitialTop > 0 ? 32 : -32;
   const wheelBounds = (await wheel.boundingBox())!;
   const dragX = wheelBounds.x + wheelBounds.width / 2;
@@ -303,7 +368,8 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await workhub.mouse.move(dragX, dragY + dragDistance, { steps: 8 });
   await expect.poll(() => wheel.evaluate((element) => element.scrollTop)).toBe(dragInitialTop - dragDistance);
   await workhub.mouse.up();
-  await expect.poll(screenLayout).toEqual(beforeDrag);
+  // A model label may resize; dragging the no-drag wheel must not move its window.
+  await expect.poll(floatingBounds).toEqual(beforeDrag);
   await expect(wheel).toBeVisible();
   const draggedIndex = Math.round((dragInitialTop - dragDistance + 44) / 44) % modelChoices.length;
   await expectSnappedSelection(draggedIndex);
@@ -379,7 +445,8 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await expect.poll(floatingBottom).toBe(anchoredBottom);
   await expect.poll(() => workhub.locator('[data-chat-scroll-container]').evaluate((element) => element.scrollTop)).toBe(scrollTop);
   await expect(editor).toHaveText('Keep this draft while folding the conversation.');
-  await expect(model).toHaveAttribute('aria-haspopup', 'listbox');
+  // Expanded again, the wheel gives way to the composer's popover options menu.
+  await expect(model).toHaveAttribute('aria-haspopup', 'menu');
 });
 
 
@@ -440,7 +507,7 @@ test('WorkHub keeps the submitted prompt visible while its agent is still runnin
   await expect(prompt).toHaveCount(1);
   await expect(workhub.locator('.maka-bubble-streaming')).toContainText('Fake backend waiting');
   await expect(stop).toBeVisible();
-  const followups = workhub.locator('[data-queue-placement="next_turn"] .maka-composer-queue-text');
+  const followups = workhub.locator('.maka-composer-queue .maka-composer-queue-text');
   const queuedTexts = ['下一轮整理测试结果', '再下一轮补充使用说明'] as const;
   await workhub.locator(COMPOSER_INPUT).fill(queuedTexts[0]);
   await workhub.getByRole('button', { name: /^(发送|Send)$/ }).click();
@@ -451,17 +518,6 @@ test('WorkHub keeps the submitted prompt visible while its agent is still runnin
   await awaitSendReady(workhub);
   await workhub.locator(COMPOSER_INPUT).press('Enter');
   await expect(followups).toHaveText(queuedTexts);
-  const shortcuts = workhub.getByRole('button', { name: '发送快捷键', exact: true });
-  await expect(shortcuts).toHaveCount(1);
-  await shortcuts.hover();
-  const shortcutHint = workhub.getByRole('tooltip');
-  const steerModifier = process.platform === 'darwin' ? 'Cmd' : 'Ctrl';
-  await expect(shortcutHint).toHaveText(`${steerModifier}+Enter：转向（Steering）\nEnter：下一轮（Follow-up）\nShift+Enter：换行`);
-  await expect.poll(() => shortcutHint.evaluate((element) => {
-    const bounds = element.getBoundingClientRect();
-    return bounds.left >= 0 && bounds.right <= innerWidth && bounds.top >= 0 && bounds.bottom <= innerHeight;
-  })).toBe(true);
-  await workhub.screenshot({ path: testInfo.outputPath('workhub-queue-shortcuts.png') });
   for (const text of queuedTexts) {
     await expect(workhub.locator('.maka-user-message').filter({ hasText: text })).toHaveCount(0);
   }
@@ -469,7 +525,9 @@ test('WorkHub keeps the submitted prompt visible while its agent is still runnin
   await workhub.locator(COMPOSER_INPUT).fill('立即调整方向，保持当前任务');
   await awaitSendReady(workhub);
   await workhub.locator(COMPOSER_INPUT).press('ControlOrMeta+Enter');
-  await expect(workhub.locator('.maka-bubble-streaming')).toContainText('Acknowledged steering: 立即调整方向，保持当前任务');
+  await expect(workhub.locator('.maka-bubble-streaming', {
+    hasText: 'Acknowledged steering: 立即调整方向，保持当前任务',
+  })).toHaveCount(1);
   const steered = workhub.locator('.maka-user-message').filter({ hasText: '立即调整方向，保持当前任务' });
   await expect(steered).toHaveCount(1);
   // A queued message is only ever durable at the tail, so sending one has to

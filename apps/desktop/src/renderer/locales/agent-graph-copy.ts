@@ -21,7 +21,7 @@ import type {
   AgentGraphClientOperator,
   AgentGraphClientSnapshot,
 } from '@maka/runtime/stream-graph-read-model';
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, defineShippedUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 export interface AgentGraphPanelCopy {
   title: string;
@@ -37,6 +37,9 @@ export interface AgentGraphPanelCopy {
   openSession: string;
   operators: string;
   selectedResults: string;
+  liveOutput: string;
+  completedOutput: string;
+  throughput(tokensPerSecond: number): string;
   epoch: string;
   currentEpoch: string;
   historicalEpoch: string;
@@ -48,9 +51,7 @@ export interface AgentGraphPanelCopy {
   operatorStatus(status: AgentGraphClientOperator['status']): string;
   wait(operator: AgentGraphClientOperator): string | undefined;
 }
-
-const AGENT_GRAPH_PANEL_COPY = {
-  'zh-CN': {
+const agentGraphPanelCopyZhCn: AgentGraphPanelCopy = {
     title: 'Agent Graph',
     loading: '正在读取 Graph 状态…',
     retry: '重试',
@@ -64,6 +65,9 @@ const AGENT_GRAPH_PANEL_COPY = {
     openSession: '打开子任务',
     operators: 'Operators',
     selectedResults: '已选择结果',
+    liveOutput: '实时输出',
+    completedOutput: '结果预览',
+    throughput: (tokensPerSecond) => `平均 ${tokensPerSecond.toFixed(1)} 输出 token/s`,
     epoch: 'Graph 运行轮次',
     currentEpoch: '当前',
     historicalEpoch: '历史记录（只读）',
@@ -95,8 +99,8 @@ const AGENT_GRAPH_PANEL_COPY = {
         cancelled: '取消',
       })[status],
     wait: waitReasonZh,
-  },
-  'zh-TW': {
+  };
+const agentGraphPanelCopyZhTw: AgentGraphPanelCopy = {
     title: 'Agent Graph',
     loading: '正在讀取 Graph 狀態…',
     retry: '重試',
@@ -110,6 +114,9 @@ const AGENT_GRAPH_PANEL_COPY = {
     openSession: '開啟子任務',
     operators: 'Operators',
     selectedResults: '已選取結果',
+    liveOutput: '即時輸出',
+    completedOutput: '結果預覽',
+    throughput: (tokensPerSecond) => `平均 ${tokensPerSecond.toFixed(1)} 輸出 token/s`,
     epoch: 'Graph 執行輪次',
     currentEpoch: '目前',
     historicalEpoch: '歷史記錄（唯讀）',
@@ -141,8 +148,8 @@ const AGENT_GRAPH_PANEL_COPY = {
         cancelled: '已取消',
       })[status],
     wait: waitReasonZhTw,
-  },
-  en: {
+  };
+const agentGraphPanelCopyEn: AgentGraphPanelCopy = {
     title: 'Agent Graph',
     loading: 'Loading graph state…',
     retry: 'Retry',
@@ -156,6 +163,9 @@ const AGENT_GRAPH_PANEL_COPY = {
     openSession: 'Open child task',
     operators: 'Operators',
     selectedResults: 'Selected results',
+    liveOutput: 'Live output',
+    completedOutput: 'Result preview',
+    throughput: (tokensPerSecond) => `avg ${tokensPerSecond.toFixed(1)} output token/s`,
     epoch: 'Graph run',
     currentEpoch: 'Current',
     historicalEpoch: 'History (read-only)',
@@ -187,8 +197,9 @@ const AGENT_GRAPH_PANEL_COPY = {
         cancelled: 'Cancelled',
       })[status],
     wait: waitReasonEn,
-  },
-} satisfies UiCatalog<AgentGraphPanelCopy>;
+  };
+
+const AGENT_GRAPH_PANEL_COPY = resolveUiMessageCatalog(defineShippedUiMessageCatalog<AgentGraphPanelCopy>()({ 'zh-CN': agentGraphPanelCopyZhCn, 'zh-TW': agentGraphPanelCopyZhTw, en: agentGraphPanelCopyEn })) satisfies UiCatalog<AgentGraphPanelCopy>;
 
 export function getAgentGraphPanelCopy(locale: UiLocale): AgentGraphPanelCopy {
   return AGENT_GRAPH_PANEL_COPY[locale];

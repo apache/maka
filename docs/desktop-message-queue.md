@@ -21,31 +21,72 @@
 
 ## Problem
 
-Desktop used a rendered `streaming` prop to decide whether a composer submit started a root turn or steered the active turn. Immediately after the first send completed its IPC round trip, the Runtime Host could already own an active turn while React had not rendered the new `streaming` value yet. A second submit in that interval entered the root-turn path and could fail with `session_busy`. Multiple burst submissions also produced duplicate error toasts.
+The renderer once selected root-turn versus active-turn submission from the last rendered `streaming` value. Runtime Host ownership can advance before React commits that projection, so a second message could take the stale root-turn path and fail with `session_busy`. Burst sends could also fan out the same failure through multiple toasts.
 
 Runtime Host already owns the durable message semantics:
 
 - `current_turn` queues steering for the next provider boundary.
 - `next_turn` queues one successor turn per accepted message.
 - queue projections are authoritative.
-- queue projections carry the canonical queued message content; mutation results return only queue state.
+- projections contain canonical queue entries; commands acknowledge only the committed queue revision.
 
 ## Desktop Behavior
 
-- While a turn is active, a composer submit queues a follow-up. There is no mode switch: Send is always Send.
+- Ordinary submission during an active turn creates a follow-up. Steering remains an explicit shortcut rather than a persistent composer mode.
 - `Cmd+Enter` on macOS (`Ctrl+Enter` on Windows/Linux) steers the draft into the active turn once; while idle it sends normally.
 - `Shift+Enter` and `Alt+Enter` always insert a line break, including during an active turn.
-- Queued messages render in a pending plate above the composer card, in send order (first at the top). Per entry the plate offers:
-  - drag the hover grip to reorder the follow-up queue,
-  - promote (立即发送) to steer the entry into the active turn,
-  - retract (收回草稿) to restore the entry into the composer draft.
-- Queue contents and mutations are Runtime Host operations (`turn.message.submit`, `queue.entry.promote`, `queue.entry.retract`, `queue.entries.reorder`); the renderer mirrors the authoritative projection.
+- The pending plate renders the Host order above the composer. A queued row can be edited, reordered within its lane, promoted from follow-up to steering, or retracted.
+- Runtime Host owns submission and mutation (`turn.message.submit`, `queue.entry.update`, `queue.entry.promote`, `queue.entry.retract`, and `queue.entries.reorder`). The renderer never invents a local queue order.
 - Identical active toasts reuse one toast instead of stacking duplicates.
 
 ## Race Fix
 
-Submission routing reads the synchronous live-turn ref and the latest session catalog snapshot at the instant of submission. It does not rely only on the previous React render.
+At submission time Desktop consults the live-turn reference together with the latest catalog projection. The decision therefore does not wait for another React commit.
 
 ## Deliberate Scope
 
-Per-entry queue mutation is limited to reorder, promote-to-steering, and retract-to-draft. Editing a queued entry in place, pausing the queue, and cross-session moves still require separate Runtime Host protocol and durability review.
+Mutation remains lane-local. Pausing delivery or moving an entry between sessions would require new Host protocol and durability semantics.
+
+## Local paused-message downgrade safety
+
+The client can pause a never-dispatched local message for editing before the
+Host owns it. In the local outbox, these records use `failed` in the SQLite
+state column and retain `paused` in the JSON payload. Older readers use the
+column, so their delivery workers skip the original instead of automatically
+sending it. They may display it as a failed message. New readers recover the
+paused state only when both values match this encoding; genuine failures remain
+failures, and an explicit resume writes `saved` to both values.
+
+This protects automatic dispatch of paused originals; it does not promise full
+application downgrade compatibility or prevent explicit edits and deletion in an
+older version.
+
+## Local edit recovery
+
+Editing a never-dispatched local message pauses its durable original first.
+If the user navigates before recovery returns, the complete text, staged
+attachments, directories, quotes and replacement identity return to the original
+Session's draft, without changing the visible Session's content or focus.
+The restore is conditional on the original draft staying unchanged: typing and
+then clearing, adding and removing context (including pending Session references),
+explicit clearing, Session deletion or ownership changes, and owner unmounts
+invalidate the request. A refused restore releases only its unused temporary
+approvals; the paused original remains recoverable. Successful sending atomically
+replaces that original. Host-owned queue and failed-message recovery keep their
+existing behavior.
+
+Drafts linked to a paused original stay in memory, including their replacement
+identity. Their text is not written to the optional draft persistence adapter:
+restoring text alone after a restart would turn the edit into an unrelated new
+message. After a restart, edit the saved original again to recover its text and
+attachments. Unsent changes to the edit do not survive the restart.
+
+Recovery attachment approvals expire after 30 minutes and are scoped to the
+current recovery owner. If a send refuses an expired or unavailable source, the
+draft stays intact. The error explains how to recover the attachments: copy text
+edits, clear the draft and its context, then edit the original message again.
+For mixed attachment sources, the error first asks users to remove and reselect
+newly added files, then explains how to restore original attachments and re-add
+other files if needed. The batch error does not identify which source expired.
+The original's saved bytes remain available until explicit deletion or successful
+atomic replacement.

@@ -287,7 +287,8 @@ test('retries connection delete after a stale revision instead of failing perman
             revision,
             slug: 'openrouter',
             name: 'OpenRouter',
-            providerType: 'openai-compatible',
+            providerType: 'custom',
+            defaultApiProtocol: 'openai-chat',
             baseUrl: 'https://openrouter.ai/api/v1',
             enabled: true,
             catalogEntries: [],
@@ -538,7 +539,8 @@ test('projects the Host default target without inventing a second Connection aut
       connectionId: 'connection-1',
       slug: 'openrouter',
       name: 'OpenRouter',
-      providerType: 'openai-compatible',
+      providerType: 'custom',
+      defaultApiProtocol: 'openai-chat',
       baseUrl: 'https://openrouter.ai/api/v1',
       enabled: true,
       defaultModel: 'model-1',
@@ -609,7 +611,8 @@ function catalog(): ConnectionCatalogSnapshot {
         revision: 4,
         slug: 'openrouter',
         name: 'OpenRouter',
-        providerType: 'openai-compatible',
+        providerType: 'custom',
+        defaultApiProtocol: 'openai-chat',
         baseUrl: 'https://openrouter.ai/api/v1',
         enabled: true,
         enabledModelIds: ['model-1', 'model-2'],
@@ -650,11 +653,17 @@ test('renderer service saves through IPC into the canonical catalog and reads it
           })) };
         },
         updateConnection: (expected: UpdateCatalogConnectionInput['expected'], changes: UpdateCatalogConnectionInput['changes']) => stores.connectionCatalog.update({ expected, changes }),
+        setDefaultConnectionTarget: (expectedCatalogRevision: number, target: { connectionId: string; modelId: string } | null, enableModel?: boolean) =>
+          stores.connectionCatalog.setDefaultTarget({ expectedCatalogRevision, target, ...(enableModel === undefined ? {} : { enableModel }) }),
       } as never,
       emitConnectionListChanged() {},
     });
     const host = { profileId: 'profile', hostId: 'host' };
     const services = createDesktopConnectionSettingsServices(() => ({ connections: {
+      setDefault: (identity: unknown, target: unknown, modelId: unknown) => {
+        assert.deepEqual(target, host);
+        return handlers.get('connections:setDefault')!({}, identity, modelId);
+      },
       update: (identity: unknown, patch: unknown, target: unknown) => {
         assert.deepEqual(target, host);
         return handlers.get('connections:update')!({}, identity, patch);
@@ -677,6 +686,15 @@ test('renderer service saves through IPC into the canonical catalog and reads it
     assert.deepEqual((await stores.connectionCatalog.getSnapshot()).connections[0], saved);
     await services.update(identity, { modelOverride: { modelId: 'manual', expected: value, value: {} } });
     assert.deepEqual((await services.getSnapshot()).connections[0]?.modelOverrides, { other: { vision: true }, manual: {} });
+    await services.update(identity, { enabledModelIds: [] });
+    const beforeDefault = await stores.connectionCatalog.getSnapshot();
+    await services.setDefault(identity, 'manual');
+    const defaulted = await stores.connectionCatalog.getSnapshot();
+    assert.equal(defaulted.revision, beforeDefault.revision + 1);
+    assert.deepEqual(defaulted.defaultTarget, { connectionId: identity.connectionId, modelId: 'manual' });
+    assert.deepEqual((await services.getSnapshot()).connections[0]?.enabledModelIds, ['manual']);
+    await assert.rejects(services.setDefault(identity, 'missing'), /DEFAULT_MODEL_UNAVAILABLE/);
+    assert.deepEqual(await stores.connectionCatalog.getSnapshot(), defaulted);
   } finally {
     await owner.close();
     await rm(root, { recursive: true, force: true });

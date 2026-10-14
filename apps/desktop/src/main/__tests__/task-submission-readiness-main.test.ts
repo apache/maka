@@ -108,7 +108,9 @@ function connection(): LlmConnection {
   return {
     slug: 'provider',
     name: 'Provider',
-    providerType: 'openai-compatible',
+    providerType: 'custom',
+    defaultApiProtocol: 'openai-chat',
+    baseUrl: 'https://relay.example/v1',
     enabled: true,
     defaultModel: 'model-a',
     enabledModelIds: ['model-a'],
