@@ -167,6 +167,26 @@ describe('config-transfer', () => {
     );
   });
 
+  it('skips retired providers for both new connections and overwrites', () => {
+    for (const providerType of [
+      'opencode-free',
+      'commandcode-go',
+      'claude-subscription',
+    ] as const) {
+      const retired = conn(providerType, { providerType });
+      for (const strategy of ['skip', 'overwrite'] as const) {
+        for (const existing of [[], [retired]]) {
+          const plan = planConnectionMerge(existing, [retired, conn('active')], strategy);
+          assert.deepEqual(plan, {
+            create: [conn('active')],
+            overwrite: [],
+            skipped: [{ slug: providerType, reason: 'provider_retired' }],
+          });
+        }
+      }
+    }
+  });
+
   it('skips a connection whose provider type no longer exists', () => {
     const legacy = {
       ...conn('relay', { baseUrl: 'https://relay.example/v1' }),

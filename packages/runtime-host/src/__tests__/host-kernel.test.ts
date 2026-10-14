@@ -50,6 +50,7 @@ import {
   type RuntimeHostConnection,
 } from '../client/index.js';
 import {
+  DEFAULT_ELECTION_DEADLINE_MS,
   IDLE_GRACE_MS_ENV_VAR,
   connectOrSpawnRuntimeHostWithDependencies,
 } from '../client/connect-or-spawn.js';
@@ -4137,7 +4138,7 @@ async function retryConnect(
     clientInstanceId?: string;
   },
 ) {
-  const deadline = Date.now() + 5_000;
+  const deadline = Date.now() + DEFAULT_ELECTION_DEADLINE_MS;
   let result = await connectRuntimeHost({
     ...paths,
     ...options,

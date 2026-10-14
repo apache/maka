@@ -49,7 +49,7 @@ import {
   type LlmConnection,
 } from './llm-connections.js';
 import { isModelExplicitlyUnsupportedForChat } from './model-catalog.js';
-import { isRetiredProvider } from './provider-registry.js';
+import { isRetiredProvider } from './provider-retirement.js';
 
 /**
  * Canonical reasons why an LlmConnection is not ready to send.

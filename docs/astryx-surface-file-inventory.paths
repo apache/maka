@@ -45,6 +45,7 @@ apps/desktop/src/renderer/features/conversation/ui/plan-panels.tsx
 apps/desktop/src/renderer/features/conversation/ui/plan-provider.tsx
 apps/desktop/src/renderer/features/conversation/ui/plan-surfaces.tsx
 apps/desktop/src/renderer/features/conversation/ui/staged-composer.tsx
+apps/desktop/src/renderer/features/conversation/ui/staged-local-messages.tsx
 apps/desktop/src/renderer/features/conversation/ui/staged-quote-chat-view.tsx
 apps/desktop/src/renderer/features/conversation/ui/task-readiness-provider.tsx
 apps/desktop/src/renderer/features/diagnostics/services-context.tsx
@@ -271,6 +272,7 @@ packages/ui/src/components.tsx
 packages/ui/src/composer-message-queue-view.tsx
 packages/ui/src/composer-message-queue.tsx
 packages/ui/src/composer-model-label.tsx
+packages/ui/src/composer-options-menu.tsx
 packages/ui/src/composer.tsx
 packages/ui/src/daily-review-panel.tsx
 packages/ui/src/directory-reference-chip.tsx

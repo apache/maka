@@ -163,7 +163,6 @@ async function sessionRecoveryHarness(options: {
   let restoredProject: ReturnType<typeof project> | undefined;
   const services = createFakeTaskEntryServices({
     catalog: {
-      ...createFakeTaskEntryServices().catalog,
       getCatalog: async () => {
         calls.push('catalog');
         return options.getCatalog ? options.getCatalog() : catalog(readyHost({
@@ -414,7 +413,6 @@ describe('useTaskEntryController', () => {
     const { root } = installReactRenderer();
     const services = createFakeTaskEntryServices({
       catalog: {
-        ...createFakeTaskEntryServices().catalog,
         getCatalog: async () => catalog(readyHost({ selectNoProject: true })),
       },
     });
@@ -454,7 +452,6 @@ describe('useTaskEntryController', () => {
       [];
     const services = createFakeTaskEntryServices({
       catalog: {
-        ...createFakeTaskEntryServices().catalog,
         getCatalog: async () => ({
           defaultProfileId: 'local',
           hosts: [local, remote],
@@ -511,7 +508,6 @@ describe('useTaskEntryController', () => {
     let disposed = 0;
     const services = createFakeTaskEntryServices({
       catalog: {
-        ...createFakeTaskEntryServices().catalog,
         getCatalog: () => (++reads === 1 ? first.promise : second.promise),
         subscribeChanges: (handler) => {
           emit = handler;
@@ -543,13 +539,11 @@ describe('useTaskEntryController', () => {
     const current = deferred<TaskEntryCatalog>();
     const obsoleteServices = createFakeTaskEntryServices({
       catalog: {
-        ...createFakeTaskEntryServices().catalog,
         getCatalog: () => obsolete.promise,
       },
     });
     const currentServices = createFakeTaskEntryServices({
       catalog: {
-        ...createFakeTaskEntryServices().catalog,
         getCatalog: () => current.promise,
       },
     });
@@ -581,7 +575,6 @@ describe('useTaskEntryController', () => {
     });
     const services = createFakeTaskEntryServices({
       catalog: {
-        ...createFakeTaskEntryServices().catalog,
         getCatalog: async () => catalog(++reads === 1 ? initialHost : refreshedHost),
         addProject: () => {
           addCalls += 1;
@@ -613,7 +606,6 @@ describe('useTaskEntryController', () => {
     });
     const services = createFakeTaskEntryServices({
       catalog: {
-        ...createFakeTaskEntryServices().catalog,
         getCatalog: async () =>
           catalog(++reads === 1 ? readyHost() : refreshedHost),
         addProject: async () => ({
@@ -654,7 +646,6 @@ describe('useTaskEntryController', () => {
     let restoreCalls = 0;
     const services = createFakeTaskEntryServices({
       catalog: {
-        ...createFakeTaskEntryServices().catalog,
         getCatalog: async () => catalog(),
         addProject: async () => ({
           ok: false,
@@ -707,7 +698,6 @@ describe('useTaskEntryController', () => {
     });
     const services = createFakeTaskEntryServices({
       catalog: {
-        ...createFakeTaskEntryServices().catalog,
         getCatalog: async () => catalog(++reads === 1 ? initialHost : refreshedHost),
         relinkProject: (host, projectId) => {
           relinkCalls.push({ host, projectId });
@@ -746,7 +736,6 @@ describe('useTaskEntryController', () => {
     };
     const services = createFakeTaskEntryServices({
       catalog: {
-        ...createFakeTaskEntryServices().catalog,
         getCatalog: async () => {
           reads += 1;
           return {
@@ -783,7 +772,6 @@ describe('useTaskEntryController', () => {
       const renames: string[] = [];
       const services = createFakeTaskEntryServices({
         catalog: {
-          ...createFakeTaskEntryServices().catalog,
           getCatalog: async () => ({ defaultProfileId: 'remote', hosts: [remote] }),
           renameProject: async (_host, _projectId, name) => {
             renames.push(name);
@@ -810,7 +798,6 @@ describe('useTaskEntryController', () => {
     let reads = 0;
     const services = createFakeTaskEntryServices({
       catalog: {
-        ...createFakeTaskEntryServices().catalog,
         getCatalog: async () => ({
           defaultProfileId: 'remote',
           hosts: [readyRemoteHost(++reads === 1 ? 'generation-a' : 'generation-b')],
@@ -844,7 +831,6 @@ describe('useTaskEntryController', () => {
     let reads = 0;
     const services = createFakeTaskEntryServices({
       catalog: {
-        ...createFakeTaskEntryServices().catalog,
         getCatalog: async () => catalogs[reads++]!,
       },
     });
@@ -876,7 +862,6 @@ describe('useTaskEntryController', () => {
     let reads = 0;
     const services = createFakeTaskEntryServices({
       catalog: {
-        ...createFakeTaskEntryServices().catalog,
         getCatalog: async () => {
           reads += 1;
           if (reads === 1) {
@@ -919,7 +904,6 @@ describe('useTaskEntryController', () => {
     let emit: (() => void) | undefined;
     const services = createFakeTaskEntryServices({
       catalog: {
-        ...createFakeTaskEntryServices().catalog,
         getCatalog: async () => {
           reads += 1;
           if (reads === 1) return catalog();
@@ -975,7 +959,6 @@ describe('useTaskEntryController', () => {
     let emit: (() => void) | undefined;
     const services = createFakeTaskEntryServices({
       catalog: {
-        ...createFakeTaskEntryServices().catalog,
         getCatalog: async () => {
           reads += 1;
           if (reads === 1) return catalog();
@@ -1028,7 +1011,6 @@ describe('useTaskEntryController', () => {
     let emit: (() => void) | undefined;
     const services = createFakeTaskEntryServices({
       catalog: {
-        ...createFakeTaskEntryServices().catalog,
         getCatalog: async () => {
           reads += 1;
           if (reads === 1) return catalog();
@@ -1079,7 +1061,6 @@ describe('useTaskEntryController', () => {
     let reads = 0;
     const services = createFakeTaskEntryServices({
       catalog: {
-        ...createFakeTaskEntryServices().catalog,
         getCatalog: async () => {
           reads += 1;
           if (reads === 1) return catalog();
@@ -1106,7 +1087,6 @@ describe('useTaskEntryController', () => {
     let reads = 0;
     const services = createFakeTaskEntryServices({
       catalog: {
-        ...createFakeTaskEntryServices().catalog,
         getCatalog: async () => {
           reads += 1;
           return reads === 1 ? catalog() : refreshed.promise;
@@ -1137,7 +1117,6 @@ describe('useTaskEntryController', () => {
     const errors: unknown[] = [];
     const services = createFakeTaskEntryServices({
       catalog: {
-        ...createFakeTaskEntryServices().catalog,
         getCatalog: async () => catalog(),
       },
       sessions: {

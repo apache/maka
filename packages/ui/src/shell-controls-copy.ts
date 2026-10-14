@@ -18,7 +18,7 @@
  */
 
 import type { RecallFailureReason } from '@maka/core/recall';
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiLocale, defineShippedUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 /**
  * The failures the Search modal can show. Recall's own vocabulary, because
@@ -58,7 +58,7 @@ type ShellControlsCopy = {
   };
 };
 
-const SHELL_CONTROLS_COPY_BY_LOCALE = {
+const SHELL_CONTROLS_COPY_BY_LOCALE = resolveUiMessageCatalog(defineShippedUiMessageCatalog<ShellControlsCopy>()({
   'zh-CN': {
     shared: { close: '关闭' },
     navigation: {
@@ -150,7 +150,7 @@ const SHELL_CONTROLS_COPY_BY_LOCALE = {
       resultsLabel: 'Search results',
     },
   },
-} satisfies UiCatalog<ShellControlsCopy>;
+}));
 
 export function getShellControlsCopy(locale: UiLocale): ShellControlsCopy {
   return SHELL_CONTROLS_COPY_BY_LOCALE[locale];

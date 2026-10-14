@@ -29,7 +29,7 @@ import { RuntimeHostOperationError } from '@maka/runtime-host/client';
 import { clientCapabilityEntityId } from '@maka/runtime-host/client-capability-entity-id';
 import { SESSION_TRANSCRIPT_PAGE_MAX_BYTES, type InteractionPendingSnapshot, type SessionContinuitySnapshot } from '@maka/runtime-host/protocol';
 import type { DesktopRuntimeHostClient, DesktopRuntimeHostSession } from './runtime-host-client.js';
-import { readWorkHubTopicAssociation, workHubAssociationTarget } from '../renderer/application/contracts/workhub-topic-association.js';
+import { readWorkHubTopicAssociation, workHubAssociationTarget } from '../shared/desktop-session-projection.js';
 import { formatRemoteChoices, parseRemoteChoices } from './workhub-remote-choices.js';
 
 type Source = Pick<BotIncomingMessage, 'platform' | 'chatId' | 'userId' | 'sourceMessageId'> & { targetSessionId?: string; associationTargetSessionId?: string | null; associationTurnId?: string };

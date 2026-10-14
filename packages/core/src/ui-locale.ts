@@ -32,7 +32,24 @@ export const UI_LOCALE_PREFERENCES = ['auto', ...UI_LOCALES] as const;
 /** A catalog must carry copy for every supported resolved locale. */
 export type UiCatalog<T> = Record<UiLocale, T>;
 
-type DeepPartial<T> = T extends readonly unknown[]
+/** Existing translations remain complete while new locales roll out gradually. */
+export const SHIPPED_UI_LOCALES = ['en', 'zh-CN', 'zh-TW'] as const;
+export type ShippedUiLocale = (typeof SHIPPED_UI_LOCALES)[number];
+export type ShippedUiCatalog<T> = Record<ShippedUiLocale, T>;
+
+/** Widen literal copy without losing function signatures or nested keys. */
+export type UiMessageShape<T> = T extends MessageFunction
+  ? T
+  : T extends string
+    ? string
+    : T extends object
+      ? { [Key in keyof T]: UiMessageShape<T[Key]> }
+      : T;
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type MessageFunction = (...args: any[]) => unknown;
+
+type DeepPartial<T> = T extends readonly unknown[] | MessageFunction
   ? T
   : T extends object
     ? { readonly [Key in keyof T]?: DeepPartial<T[Key]> }
@@ -44,20 +61,24 @@ export type UiMessageCatalog<T> = {
   readonly [Locale in Exclude<UiLocale, 'en'>]: DeepPartial<T>;
 }>;
 
-type ExactMessageShape<Actual, Expected> = Actual extends readonly unknown[]
-  ? NonNullable<Expected> extends readonly unknown[]
+type ExactMessageShape<Actual, Expected> = Actual extends MessageFunction
+  ? NonNullable<Expected> extends MessageFunction
     ? Actual
     : never
-  : Actual extends object
-    ? Exclude<keyof Actual, keyof NonNullable<Expected>> extends never
-      ? {
-          readonly [Key in keyof Actual]: ExactMessageShape<
-            Actual[Key],
-            NonNullable<Expected>[Key & keyof NonNullable<Expected>]
-          >;
-        }
+  : Actual extends readonly unknown[]
+    ? NonNullable<Expected> extends readonly unknown[]
+      ? Actual
       : never
-    : Actual;
+    : Actual extends object
+      ? Exclude<keyof Actual, keyof NonNullable<Expected>> extends never
+        ? {
+            readonly [Key in keyof Actual]: ExactMessageShape<
+              Actual[Key],
+              NonNullable<Expected>[Key & keyof NonNullable<Expected>]
+            >;
+          }
+        : never
+      : Actual;
 
 const messageFormatters = new Map<string, IntlMessageFormat>();
 
@@ -67,6 +88,20 @@ export function defineUiMessageCatalog<Expected>() {
       readonly en: ExactMessageShape<Catalog['en'], Expected>;
     } & {
       readonly [Locale in Exclude<UiLocale, 'en'>]?: ExactMessageShape<
+        NonNullable<Catalog[Locale]>,
+        DeepPartial<Expected>
+      >;
+    },
+  ): UiMessageCatalog<Expected> => catalog;
+}
+
+/** Require complete shipped copy; only future locales may use partial overlays. */
+export function defineShippedUiMessageCatalog<Expected>() {
+  return <Catalog extends ShippedUiCatalog<Expected> & UiMessageCatalog<Expected>>(
+    catalog: Catalog & {
+      readonly [Locale in ShippedUiLocale]: ExactMessageShape<Catalog[Locale], Expected>;
+    } & {
+      readonly [Locale in Exclude<UiLocale, ShippedUiLocale>]?: ExactMessageShape<
         NonNullable<Catalog[Locale]>,
         DeepPartial<Expected>
       >;
@@ -108,9 +143,12 @@ function mergeUiMessages<T>(fallback: T, translation: DeepPartial<T> | undefined
   if (translation === undefined) return fallback;
   if (!isMessageRecord(fallback) || !isMessageRecord(translation)) return translation as T;
   return Object.fromEntries(
-    Object.entries(fallback).map(([key, value]) => [
+    [...new Set([...Object.keys(fallback), ...Object.keys(translation)])].map((key) => [
       key,
-      mergeUiMessages(value, Object.hasOwn(translation, key) ? translation[key] : undefined),
+      mergeUiMessages(
+        fallback[key],
+        Object.hasOwn(translation, key) ? translation[key] : undefined,
+      ),
     ]),
   ) as T;
 }

@@ -18,6 +18,7 @@
  */
 
 import type {
+  ArtifactChangedFrame,
   ConfigurationChangedFrame,
   ConnectionCatalogChangedFrame,
   ProjectCatalogChangedFrame,
@@ -28,6 +29,7 @@ import type {
 } from '../protocol/index.js';
 
 export type HostChangeFrame =
+  | ArtifactChangedFrame
   | ConfigurationChangedFrame
   | ConnectionCatalogChangedFrame
   | ProjectCatalogChangedFrame
@@ -39,6 +41,7 @@ export interface HostChangeSubscription {
 }
 
 export interface HostChangeSubscriptionMask {
+  readonly artifact?: true;
   readonly configuration?: boolean;
   readonly connectionCatalog?: boolean;
   readonly projectCatalog?: boolean;
@@ -84,6 +87,14 @@ export class HostChangeFeed {
       kind: 'configuration.changed',
       revision: this.#configurationRevision,
     });
+  }
+
+  publishArtifactDeleted(sessionId: string, artifactId: string): void {
+    this.#publish({ kind: 'artifact.changed', reason: 'deleted', sessionId, artifactId });
+  }
+
+  publishArtifactSessionPurged(sessionId: string): void {
+    this.#publish({ kind: 'artifact.changed', reason: 'session_purged', sessionId });
   }
 
   /** The Host now resolves connection catalogs differently; clients re-read. */
@@ -162,6 +173,8 @@ export class HostChangeFeed {
 
 function isSubscribed(mask: HostChangeSubscriptionMask, frame: HostChangeFrame): boolean {
   switch (frame.kind) {
+    case 'artifact.changed':
+      return mask.artifact === true;
     case 'configuration.changed':
       return mask.configuration === true;
     case 'connection.catalog.changed':

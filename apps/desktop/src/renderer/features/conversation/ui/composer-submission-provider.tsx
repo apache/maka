@@ -20,7 +20,7 @@
 import { useLayoutEffect, type ReactNode } from 'react';
 import { CatalogRowWatch } from '../../../application/contracts/session-catalog/catalog-row-watch.js';
 import { useSessionCatalogController } from '../../../application/contracts/session-catalog/session-catalog-state.js';
-import { SessionLocalMessages } from '../controller/session-local-messages.js';
+import { StagedLocalMessages } from './staged-local-messages.js';
 import { useComposerSubmission } from '../controller/use-composer-submission.js';
 import { submissionBindings } from '../model/composer-submission-binding.js';
 import type { ComposerStagingCommands } from '../model/composer-staging-contract.js';
@@ -46,6 +46,8 @@ export function ComposerSubmissionProvider<Owner extends ComposerSurfaceOwner>(p
   readonly newTask: ComposerNewTaskSubmission;
   readonly sharedSessionActive: boolean;
   readonly ownerSessionId: string | undefined;
+  readonly recoveryEnabled: boolean;
+  readonly directoryHostId?: string;
   readonly children?: ReactNode;
 }) {
   const submission = useComposerSubmission({
@@ -68,7 +70,10 @@ export function ComposerSubmissionProvider<Owner extends ComposerSurfaceOwner>(p
       <ComposerTurnContext.Provider value={submission.turnReader}>
         <CatalogRowWatch catalog={catalog} sessionIds={submission.revisionWatch.sessionIds}
           onRows={submission.revisionWatch.onRows} />
-        <SessionLocalMessages sessionId={submission.turnReader.activeId} {...submission.localMessages} />
+        <StagedLocalMessages sessionId={submission.turnReader.activeId}
+          directoryHostId={props.directoryHostId}
+          enabled={props.recoveryEnabled && !submission.reader.revisionDraft}
+          restoreContext={props.staging.restoreContext} />
         {props.children}
       </ComposerTurnContext.Provider>
     </ComposerSubmissionContext.Provider>

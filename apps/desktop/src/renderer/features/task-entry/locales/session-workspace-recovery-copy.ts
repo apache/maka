@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { defineShippedUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
+
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 interface SessionWorkspaceRecoveryCopy {
@@ -34,7 +36,7 @@ interface SessionWorkspaceRecoveryCopy {
   readonly refreshFailed: string;
 }
 
-const COPY_BY_LOCALE = {
+const COPY_BY_LOCALE = resolveUiMessageCatalog(defineShippedUiMessageCatalog<SessionWorkspaceRecoveryCopy>()({
   'zh-CN': {
     confirmDescription: '此目录属于一个已归档的项目。是否恢复原项目，并将当前任务的工作区切换到该项目目录？不会创建新任务或自动发送消息。',
     confirmLabel: '恢复并用于当前任务',
@@ -77,7 +79,7 @@ const COPY_BY_LOCALE = {
     refreshFailedTitle: 'Could not refresh the project list',
     refreshFailed: 'A refresh failure does not undo a completed project restoration or workspace switch. Refresh the project list.',
   },
-} satisfies UiCatalog<SessionWorkspaceRecoveryCopy>;
+})) satisfies UiCatalog<SessionWorkspaceRecoveryCopy>;
 
 export function getSessionWorkspaceRecoveryCopy(locale: UiLocale): SessionWorkspaceRecoveryCopy {
   return COPY_BY_LOCALE[locale];
