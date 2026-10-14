@@ -120,6 +120,7 @@ export function prepareMarkdownMath(
         const translated = translateMarkdownMath(source.slice(specSourceStart), {
           startsAtLineStart: specSourceStart === 0 || source[specSourceStart - 1] === '\n',
           priorTextChar: cache.text[specTextStart - 1],
+          allowDisplayMath: false,
           leadingBackslashes: countPrecedingBackslashes(source, specSourceStart),
           linePrefix,
         });
@@ -376,6 +377,9 @@ function translateMarkdownMath(
       }
       if (!isFinalSegment) {
         canMarkSafe = false;
+      }
+      if (link.pendingInfo !== undefined) {
+        allowDisplayMath = false;
       }
     }
     if (link?.kind === 'match') {
@@ -657,19 +661,25 @@ function readLinkDestination(source: string, index: number): LinkDestinationScan
   if (index + 1 >= source.length) return { kind: 'pending' };
 
   if (source[index + 1] === '[') {
-    const close = source.indexOf(']', index + 2);
-    if (close < 0) {
-      if (source.slice(index + 2).includes('\n')) return { kind: 'invalid' };
-      return { kind: 'pending' };
+    let i = index + 2;
+    while (i < source.length) {
+      const ch = source[i];
+      if (ch === '\n' || ch === '\r') return { kind: 'invalid' };
+      if (ch === '\\') {
+        if (i + 1 >= source.length) return { kind: 'pending' };
+        if (source[i + 1] === '\n' || source[i + 1] === '\r') return { kind: 'invalid' };
+        i += 2;
+        continue;
+      }
+      if (ch === ']') return { kind: 'matched', end: i + 1 };
+      i++;
     }
-    return !source.slice(index + 2, close).includes('\n')
-      ? { kind: 'matched', end: close + 1 }
-      : { kind: 'invalid' };
+    return { kind: 'pending' };
   }
 
   if (source[index + 1] !== '(') return { kind: 'invalid' };
 
-  const scan = scanInlineTail(source, initialTailScanState(index + 1));
+  const scan = scanInlineTail(source, initialTailScanState(index + 1, false));
   if (scan.kind === 'closed') return { kind: 'matched', end: scan.end };
   if (scan.kind === 'pending') {
     return { kind: 'pending', tailState: scan.state };
@@ -1059,14 +1069,16 @@ type TailScanState = {
   index: number;
   depth: number;
   escapeNext: boolean;
+  allowNewlines: boolean;
 };
 
-function initialTailScanState(from: number): TailScanState {
+function initialTailScanState(from: number, allowNewlines = true): TailScanState {
   return {
     from,
     index: from + 1,
     depth: 1,
     escapeNext: false,
+    allowNewlines,
   };
 }
 
@@ -1083,10 +1095,16 @@ function scanInlineTail(source: string, st: TailScanState): TailScanResult {
     if (st.escapeNext) {
       if (st.index + 1 >= source.length) return { kind: 'pending', state: st };
       st.escapeNext = false;
+      if (!st.allowNewlines && (source[st.index + 1] === '\n' || source[st.index + 1] === '\r')) {
+        return { kind: 'invalid', end: st.index + 1 };
+      }
       st.index += 2;
       continue;
     }
     const ch = source[st.index] ?? '';
+    if (!st.allowNewlines && (ch === '\n' || ch === '\r')) {
+      return { kind: 'invalid', end: st.index };
+    }
     if (ch === '\n' && source[st.index + 1] === '\n') {
       return { kind: 'invalid', end: st.index };
     }
@@ -1094,6 +1112,9 @@ function scanInlineTail(source: string, st: TailScanState): TailScanResult {
       if (st.index + 1 >= source.length) {
         st.escapeNext = true;
         return { kind: 'pending', state: st };
+      }
+      if (!st.allowNewlines && (source[st.index + 1] === '\n' || source[st.index + 1] === '\r')) {
+        return { kind: 'invalid', end: st.index + 1 };
       }
       st.index += 2;
       continue;

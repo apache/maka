@@ -459,8 +459,8 @@ it('matches escaped image reference identifiers between use and definition', () 
     }),
   }));
 
-  assert.match(markup, /<img\b[^>]*src="https:\/\/example\.com\/image\.png"/);
-  assert.match(markup, /alt="visible"/);
+  assert.match(markup, /href="https:\/\/example\.com\/image\.png"/);
+  assert.match(markup, />visible</);
   assert.doesNotMatch(markup, /maka-math-display|katex-display/);
 });
 
@@ -491,8 +491,7 @@ it('keeps a split image opener identical between incremental and one-shot scans'
     children: createElement(MarkdownBody, { text: full }),
   }));
 
-  assert.match(markup, /<img\b[^>]*src="https:\/\/example\.com\/a\.png"/);
-  assert.match(markup, /alt="alt \[x\]"/);
+  assert.match(markup, /href="https:\/\/example\.com\/a\.png"/);
   assert.doesNotMatch(markup, /maka-math/);
   assert.doesNotMatch(markup, /MAKA_MATH/);
 });
@@ -545,8 +544,8 @@ it('renders images whose alt contains escaped brackets', () => {
       children: createElement(MarkdownBody, { text }),
     }));
 
-    assert.match(markup, /<img\b[^>]*src="https:\/\/example\.com\//, text);
-    assert.match(markup, new RegExp(`alt="${alt.replace(/[[\]]/g, '\\$&')}"`), text);
+    assert.match(markup, /href="https:\/\/example\.com\//, text);
+    assert.match(markup, new RegExp(`>${alt.replace(/[[\]]/g, '\\$&')}<`), text);
     assert.doesNotMatch(markup, /maka-math/, text);
     assert.doesNotMatch(markup, /MAKA_MATH/, text);
   }
@@ -567,8 +566,8 @@ it('keeps escaped image alt text identical between incremental and one-shot scan
     children: createElement(MarkdownBody, { text: full }),
   }));
 
-  assert.match(markup, /<img\b[^>]*src="https:\/\/example\.com\/a\.png"/);
-  assert.match(markup, /alt="\[alt\] preview"/);
+  assert.match(markup, /href="https:\/\/example\.com\/a\.png"/);
+  assert.match(markup, />\[alt\] preview</);
   assert.doesNotMatch(markup, /maka-math/);
   assert.doesNotMatch(markup, /MAKA_MATH/);
 });
@@ -590,8 +589,8 @@ it('preserves links and images with labels past the defensive scan bound', () =>
     children: createElement(MarkdownBody, { text: longImg }),
   }));
 
-  assert.match(imgMarkup, /<img\b[^>]*src="https:\/\/example\.com\/y\.png"/);
-  assert.match(imgMarkup, /alt="\[alt\] b/);
+  assert.match(imgMarkup, /href="https:\/\/example\.com\/y\.png"/);
+  assert.match(imgMarkup, />\[alt\] b/);
   assert.doesNotMatch(imgMarkup, /maka-math/);
   assert.doesNotMatch(imgMarkup, /MAKA_MATH/);
 });
@@ -1293,4 +1292,94 @@ it('memory citations route internally and never navigate as external URLs', () =
   }));
   assert.equal((markup.match(/data-maka-uri-kind="memory-original"/g) ?? []).length, 2);
   assert.doesNotMatch(markup, /unsafe-scheme|href="memory-original/);
+});
+
+it('treats orphan link destinations spanning a single newline as prose and translates math', () => {
+  const dollarInput = 'prefix ](literal\n$x$)';
+  const dollarOneShot = prepareMarkdownMath(dollarInput, createMarkdownMathCache());
+  assert.equal(dollarOneShot, 'prefix ](literal\n\\$x\\$)');
+
+  const dollarCache = createMarkdownMathCache();
+  let dollarStream = '';
+  for (let i = 1; i <= dollarInput.length; i++) {
+    dollarStream = prepareMarkdownMath(dollarInput.slice(0, i), dollarCache);
+  }
+  assert.equal(dollarStream, 'prefix ](literal\n\\$x\\$)');
+
+  const mathInput = 'prefix ](literal\n\\(x+1\\))';
+  const mathOneShot = prepareMarkdownMath(mathInput, createMarkdownMathCache());
+  assert.equal(mathOneShot, 'prefix ](literal\n$x+1$)');
+
+  const mathCache = createMarkdownMathCache();
+  let mathStream = '';
+  for (let i = 1; i <= mathInput.length; i++) {
+    mathStream = prepareMarkdownMath(mathInput.slice(0, i), mathCache);
+  }
+  assert.equal(mathStream, 'prefix ](literal\n$x+1$)');
+
+  const escapedDollarInput = 'prefix ](literal\\\n$x$)';
+  assert.equal(prepareMarkdownMath(escapedDollarInput, createMarkdownMathCache()), 'prefix ](literal\\\n\\$x\\$)');
+  const escapedDollarCache = createMarkdownMathCache();
+  let escapedDollarStream = '';
+  for (let i = 1; i <= escapedDollarInput.length; i++) {
+    escapedDollarStream = prepareMarkdownMath(escapedDollarInput.slice(0, i), escapedDollarCache);
+  }
+  assert.equal(escapedDollarStream, 'prefix ](literal\\\n\\$x\\$)');
+
+  const escapedMathInput = 'prefix ](literal\\\n\\(x+1\\))';
+  assert.equal(prepareMarkdownMath(escapedMathInput, createMarkdownMathCache()), 'prefix ](literal\\\n$x+1$)');
+  const escapedMathCache = createMarkdownMathCache();
+  let escapedMathStream = '';
+  for (let i = 1; i <= escapedMathInput.length; i++) {
+    escapedMathStream = prepareMarkdownMath(escapedMathInput.slice(0, i), escapedMathCache);
+  }
+  assert.equal(escapedMathStream, 'prefix ](literal\\\n$x+1$)');
+
+  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(MarkdownBody, { text: mathInput }),
+  }));
+  assert.match(markup, /class="maka-math maka-math-inline"/);
+  assert.match(markup, /class="katex"/);
+});
+
+it('preserves reference-identifier context during speculative streaming without leaking display math', () => {
+  const openInput = 'prefix [label][\\[display\\]';
+  const openOneShot = prepareMarkdownMath(openInput, createMarkdownMathCache());
+  assert.equal(openOneShot, 'prefix [label][\\[display\\]');
+
+  const openCache = createMarkdownMathCache();
+  let openStream = '';
+  for (let i = 1; i <= openInput.length; i++) {
+    openStream = prepareMarkdownMath(openInput.slice(0, i), openCache);
+    assert.doesNotMatch(openStream, /\$\$/, `chunk ${i} leaked into display math`);
+  }
+  assert.equal(openStream, openOneShot);
+
+  const multiInput = 'prefix [label][\\[display\\] and \\[more\\]';
+  const multiOneShot = prepareMarkdownMath(multiInput, createMarkdownMathCache());
+  assert.equal(multiOneShot, 'prefix [label][\\[display\\] and \\[more\\]');
+  const multiCache = createMarkdownMathCache();
+  let multiStream = '';
+  for (let i = 1; i <= multiInput.length; i++) {
+    multiStream = prepareMarkdownMath(multiInput.slice(0, i), multiCache);
+    assert.doesNotMatch(multiStream, /\$\$/, `multi chunk ${i} leaked into display math`);
+  }
+  assert.equal(multiStream, multiOneShot);
+
+  const closedInput = 'prefix [label][\\[display\\]]';
+  const closedOneShot = prepareMarkdownMath(closedInput, createMarkdownMathCache());
+  const closedCache = createMarkdownMathCache();
+  let closedStream = '';
+  for (let i = 1; i <= closedInput.length; i++) {
+    closedStream = prepareMarkdownMath(closedInput.slice(0, i), closedCache);
+  }
+  assert.equal(closedStream, closedOneShot);
+  assert.doesNotMatch(closedStream, /\$\$/);
+
+  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(MarkdownBody, { text: closedInput }),
+  }));
+  assert.doesNotMatch(markup, /maka-math-display|katex-display/);
 });
