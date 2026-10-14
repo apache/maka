@@ -1,5 +1,3 @@
-> Historical experiment log. Describes multiple superseded implementations; not the current plugin contract or validation result. Refer to the plugin README and executable tests for current behavior.
-
 <!--
   Licensed to the Apache Software Foundation (ASF) under one
   or more contributor license agreements.  See the NOTICE file
@@ -18,6 +16,9 @@
   specific language governing permissions and limitations
   under the License.
 -->
+
+
+> Historical experiment log. Describes multiple superseded implementations; not the current plugin contract or validation result. Refer to the plugin README and executable tests for current behavior.
 
 # 持续跟进插件验证记录
 
