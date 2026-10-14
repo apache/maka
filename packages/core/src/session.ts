@@ -2076,3 +2076,6 @@ function inferLegacyTurnStatus(messages: readonly StoredMessage[]): TurnStatus {
     return 'failed';
   return 'completed';
 }
+
+/** Durable provenance for assistant-created workers; visibility is a client preference. */
+export const ASSISTANT_BACKGROUND_SESSION_LABEL = 'personal-assistant-background';

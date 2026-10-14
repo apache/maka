@@ -55,6 +55,7 @@ export async function nativeFixture(
   let service: any;
   const initialize = async () => {
     service = new Main.PersonalAssistantService(directory, {
+      markBackgroundSessions: async () => {},
       agents: ctx.agents,
       llm: ctx.llm,
       sessionQuery: ctx.sessionQuery,

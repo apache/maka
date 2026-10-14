@@ -89,6 +89,7 @@ export async function fixture(config: any = {}) {
   let cancellations = 0;
   agents.bindRuntime({
     create: async (options: any) => {
+      assert.ok(options.labels.includes('personal-assistant-background'));
       assert.equal(options.background, true);
       const id = randomUUID();
       workers.set(id, {});

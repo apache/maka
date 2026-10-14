@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { markAssistantBackgroundSessions } from '../assistant/background-sessions.js';
 import { PersonalAssistantService, ASSISTANT_LEGACY_PACKAGES } from '../assistant/service.js';
 import { createWorkHubResultRuntime } from './workhub-result-runtime.js';
 import { createWorkHubInspectionTool } from './workhub-inspection-tool.js';
@@ -443,6 +444,7 @@ export async function createExecutionRuntimeHostComposition(
     const personalAssistant = (assistant = new PersonalAssistantService(
       join(context.owner.controlDirectory, 'personal-assistant'),
       {
+        markBackgroundSessions: (ids) => markAssistantBackgroundSessions(stores.sessionStore, ids),
         agents: pluginAgents,
         llm: pluginLlm,
         sessionQuery: pluginSessionQuery,

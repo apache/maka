@@ -51,6 +51,7 @@ export async function initializeMemory(
   const location = { value: directory };
   const store = new CorpusStore(location.value);
   const controller = new MemoryController(ctx, store, config);
+  ctx.backgroundSessions?.register(() => [...controller.hidden()]);
   const activate = () => {
     controller.start();
     return async () => {

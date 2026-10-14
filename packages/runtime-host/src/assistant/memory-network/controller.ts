@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { ASSISTANT_BACKGROUND_SESSION_LABEL } from '@maka/core/session';
 import { createHash, randomUUID } from 'node:crypto';
 import { sourceKey } from './store.js';
 import { CorpusStore } from './corpus.js';
@@ -771,6 +772,7 @@ export class MemoryController {
     if (this.store.worker(indexId)?.protocol === 'cursor-v1') return;
     const agent = await this.ctx.agents.create({
       background: true,
+      labels: [ASSISTANT_BACKGROUND_SESSION_LABEL],
       name: `Memory: ${this.store.index(indexId).name}`,
     });
     this.store.db
@@ -918,7 +920,7 @@ export class MemoryController {
     }
     const agent = first?.groupIndexIds
       ? { sessionId: first.sessionId }
-      : await this.ctx.agents.create({ background: true, name: 'Memory index group' });
+      : await this.ctx.agents.create({ background: true, name: 'Memory index group', labels: [ASSISTANT_BACKGROUND_SESSION_LABEL] });
     this.store.db
       .prepare('INSERT OR IGNORE INTO memory_worker_sessions VALUES(?)')
       .run(agent.sessionId);

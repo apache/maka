@@ -45,7 +45,9 @@ async function fixture() {
   const sessionQuery = new PluginSessionQueryService(ctx, agents);
   const sources = new PluginSourceService(ctx, agents);
   const pluginTools = new PluginToolService(ctx, { agents });
+  const marked: string[][] = [];
   const dependencies = {
+    markBackgroundSessions: async (ids: readonly string[]) => { marked.push([...ids]); },
     agents,
     llm,
     sessionQuery,
@@ -61,6 +63,7 @@ async function fixture() {
     legacy,
     directory,
     dependencies,
+    marked,
     close: async () => {
       await service.close();
       await rm(root, { recursive: true, force: true });
@@ -192,6 +195,11 @@ test('adopting all three stores preserves coverage, references, unfinished group
   memory.saveWorker(todos.id, worker);
   memory.close();
 
+  await mkdir(directories['proactive-matters'], { recursive: true });
+  const delegation = new DatabaseSync(join(directories['proactive-matters'], 'delegations.sqlite'));
+  delegation.exec('CREATE TABLE delegations(owner TEXT NOT NULL, task_key TEXT NOT NULL, session TEXT NOT NULL UNIQUE, title TEXT NOT NULL, request TEXT NOT NULL, PRIMARY KEY(owner,task_key))');
+  delegation.prepare('INSERT INTO delegations VALUES(?,?,?,?,?)').run('old-assistant', 'task', 'old-task', '交期核验', '等回复');
+  delegation.close();
   const now = Date.now();
   const tasks = createMatterStore(directories['proactive-matters'], { now: () => now });
   const task = tasks.create({
@@ -242,6 +250,7 @@ test('adopting all three stores preserves coverage, references, unfinished group
       pass === 0 ? f.service : new PersonalAssistantService(f.directory, f.dependencies);
     try {
       await service.recover(f.legacy, entries as any);
+      assert.deepEqual([...f.marked.at(-1)!].sort(), ['old-task', 'old-worker']);
       service.start();
       assert.deepEqual(((await service.call('assistant.binding', {})) as any).state, savedBinding);
       const state = (await service.call('matters.list', {})) as any;

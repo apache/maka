@@ -19,8 +19,10 @@
 
 import { createAssistantNavigation, identity } from './navigation.js';
 import { useEffect, useState } from 'react';
+import { useAssistantSessionVisibility, useShowAssistantBackgroundSessions } from '../../application/contracts/session-catalog/assistant-session-visibility.js';
 import { SideNavItem } from '@astryxdesign/core/SideNav';
 import { Sparkles } from '@maka/ui/icons';
+import { Switch } from '@maka/ui';
 import type { DesktopRuntimeHostRef } from '../../../preload/bridge-contract.js';
 import type { PersonalAssistantRequest } from '@maka/runtime-host/protocol';
 
@@ -99,7 +101,36 @@ export function PersonalAssistantEntry({
 }
 
 const time = (at?: number | null) => (at ? new Date(at).toLocaleString() : '—');
-export function PersonalAssistantSettings({
+export function PersonalAssistantSettings(props: {
+  host?: DesktopRuntimeHostRef;
+  onOpenSession?(id: string): void;
+}) {
+  const visibility = useAssistantSessionVisibility();
+  const visible = useShowAssistantBackgroundSessions();
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  return <div className="personal-assistant-settings">
+      <h2>个人助手</h2>
+      <p>
+        通过侧栏的个人助手入口聊天。记忆索引和持续任务已内置；导入历史和启用主动发现均由你决定。
+      </p>
+    <section>
+      <h3>会话列表</h3>
+      <Switch label="显示助手后台会话" value={visible} isDisabled={saving}
+        changeAction={async (value) => {
+          setSaving(true);
+          setError('');
+          try { await visibility.setVisible(value); }
+          catch (e) { setError(String(e)); }
+          finally { setSaving(false); }
+        }} />
+      <p>在侧栏和会话搜索中显示建索引、委派任务的后台会话。隐藏不影响运行，仍可从任务详情打开。</p>
+      {error && <p role="alert">{error}</p>}
+    </section>
+    <PersonalAssistantStatusSettings {...props} />
+  </div>;
+}
+function PersonalAssistantStatusSettings({
   host,
   onOpenSession,
 }: {
@@ -173,10 +204,6 @@ export function PersonalAssistantSettings({
   const state = data.state;
   return (
     <div className="personal-assistant-settings">
-      <h2>个人助手</h2>
-      <p>
-        通过侧栏的个人助手入口聊天。记忆索引和持续任务已内置；导入历史和启用主动发现均由你决定。
-      </p>
       {error && <p role="alert">{error}</p>}
       {!state ? (
         <p>请先从侧栏打开个人助手，创建专属会话。</p>

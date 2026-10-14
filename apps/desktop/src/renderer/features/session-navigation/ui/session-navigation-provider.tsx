@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { useShowAssistantBackgroundSessions } from '../../../application/contracts/session-catalog/assistant-session-visibility.js';
 import { PersonalAssistantEntry } from '../../personal-assistant/index.js';
 import { useMakaClientNavigationSessionLabels } from '@maka/ui/client-plugin';
 
@@ -133,6 +134,7 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
   );
   const sessions = useExternalStoreSelector(props.catalog, selectSessions);
   const entryLabels = useMakaClientNavigationSessionLabels();
+  const showAssistantBackgroundSessions = useShowAssistantBackgroundSessions();
   // Send outcomes come from the onboarding authority, not through AppShell.
   const sessionSendOutcomes = useOnboardingSessionSendOutcomes();
   const staleSessionIds = useExternalStoreSelector(
@@ -144,9 +146,9 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
   const rail = useMemo(
     () =>
       deriveSessionRail(sessions, props.activeSessionId, (session) =>
-        !props.hiddenSessionIds.has(session.id) && sessionMatchesRail(session, entryLabels),
+        !props.hiddenSessionIds.has(session.id) && sessionMatchesRail(session, entryLabels, showAssistantBackgroundSessions),
       ),
-    [sessions, props.activeSessionId, props.hiddenSessionIds, entryLabels],
+    [sessions, props.activeSessionId, props.hiddenSessionIds, entryLabels, showAssistantBackgroundSessions],
   );
   const controller = useSessionNavigationController({
     rail,

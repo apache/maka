@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { ASSISTANT_BACKGROUND_SESSION_LABEL } from '@maka/core/session';
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
@@ -38,6 +39,8 @@ export function registerDelegation(
       owner TEXT NOT NULL, task_key TEXT NOT NULL, session TEXT NOT NULL UNIQUE,
       title TEXT NOT NULL, request TEXT NOT NULL, PRIMARY KEY(owner,task_key));`);
   ctx.onClose(() => db.close());
+  ctx.backgroundSessions?.register(() => db.prepare('SELECT session FROM delegations').all()
+    .map((row) => String(row.session)).filter((id) => !id.startsWith('creating:')));
   const all = (owner: string) => db.prepare('SELECT * FROM delegations WHERE owner=?').all(owner);
   const owned = (owner: string, id: string) => {
     const m = store.get(id).matter;
@@ -217,7 +220,7 @@ export function registerDelegation(
           const agent = await ctx.agents.create({
             background: true,
             name: input.title,
-            labels: [creationLabel(row)],
+            labels: [creationLabel(row), ASSISTANT_BACKGROUND_SESSION_LABEL],
           });
           sessionId = agent.sessionId;
         } finally {

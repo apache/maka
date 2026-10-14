@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { AssistantSessionVisibilityProvider } from '../../renderer/application/contracts/session-catalog/assistant-session-visibility.js';
 import { strict as assert } from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
 import { act, createElement, type ReactNode } from 'react';
@@ -219,7 +220,7 @@ function navigationTree(
 ) {
   return createElement(LocaleProvider, {
     locale: 'en',
-    children: createElement(WorkHubEnablementProvider, { value: authorities.workHub ?? WORKHUB_OFF },
+    children: createElement(AssistantSessionVisibilityProvider, { value: { getSnapshot: () => false, subscribe: () => () => {}, setVisible: async () => {} } }, createElement(WorkHubEnablementProvider, { value: authorities.workHub ?? WORKHUB_OFF },
       createElement(OnboardingAuthorityProvider, { value: authorities.onboarding ?? onboardingWith(null) }, createElement(
       SessionNavigationServicesProvider,
       { services: fakeServices },
@@ -243,7 +244,7 @@ function navigationTree(
         },
         child,
       ),
-    ))),
+    )))),
   });
 }
 

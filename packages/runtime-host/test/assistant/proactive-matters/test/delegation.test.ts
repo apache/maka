@@ -9,6 +9,7 @@ function driver() {
   let count = 0;
   d.runtime.create = async (o: any) => {
     assert.equal(o.background, true);
+    assert.ok(o.labels.includes('personal-assistant-background'));
     count++;
     const id = randomUUID();
     assert.equal(o.sessionId, undefined);

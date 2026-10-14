@@ -77,6 +77,8 @@ import {
   createWorkHubEnablement,
   WorkHubEnablementProvider,
 } from '../application/contracts/workhub-workspace/workhub-enablement.js';
+import { createAssistantSessionVisibility, AssistantSessionVisibilityProvider } from '../application/contracts/session-catalog/assistant-session-visibility.js';
+import { createDesktopAssistantSessionVisibilitySource } from '../platform/desktop/create-assistant-session-visibility-source.js';
 import { createDesktopWorkHubEnablementSource } from '../platform/desktop/create-workhub-enablement-source.js';
 import {
   createOnboardingAuthority,
@@ -100,6 +102,7 @@ export function createDesktopFeatureServices() {
     sessionCatalog: createSessionCatalogController(createDesktopSessionCatalogSource()),
     // Client-global, like the catalog: the shell, Workbar, the rail and the
     // WorkHub dock all follow the same switch.
+    assistantSessionVisibility: createAssistantSessionVisibility(createDesktopAssistantSessionVisibilitySource()),
     workHubEnablement: createWorkHubEnablement(createDesktopWorkHubEnablementSource()),
     // First-run state is read by the shell, the rail and composer readiness.
     onboarding: createOnboardingAuthority(createDesktopOnboardingSource()),
@@ -136,6 +139,7 @@ export function DesktopFeatureServicesProvider(props: {
 }) {
   return (
     <SessionCatalogContext.Provider value={props.services.sessionCatalog}>
+    <AssistantSessionVisibilityProvider value={props.services.assistantSessionVisibility}>
     <WorkHubEnablementProvider value={props.services.workHubEnablement}>
     <OnboardingAuthorityProvider value={props.services.onboarding}>
     <ShellLifecycleSourcesProvider value={props.services.shellLifecycle}>
@@ -189,6 +193,7 @@ export function DesktopFeatureServicesProvider(props: {
     </ShellLifecycleSourcesProvider>
     </OnboardingAuthorityProvider>
     </WorkHubEnablementProvider>
+    </AssistantSessionVisibilityProvider>
     </SessionCatalogContext.Provider>
   );
 }

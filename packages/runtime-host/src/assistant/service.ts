@@ -55,10 +55,12 @@ export interface AssistantDependencies {
   llm: PluginLlmService;
   sessionQuery: PluginSessionQueryService;
   sources: PluginSourceService;
+  markBackgroundSessions(sessionIds: readonly string[]): Promise<void>;
   resolveTools(sessionId: string, core: readonly MakaTool[]): { tools: readonly MakaTool[] };
 }
 
 export interface AssistantModuleServices extends Omit<AssistantDependencies, 'resolveTools'> {
+  backgroundSessions: { register(read: () => readonly string[]): void };
   onClose(dispose: Dispose): void;
   onStart(start: () => Dispose): void;
   tools: {
@@ -95,7 +97,9 @@ export class PersonalAssistantService {
   async recover(legacy: HostPluginDataRuntime, entries: readonly MakaCompositionEntryInspection[]) {
     if (this.initialized) throw Error('Personal assistant already initialized');
     const settings = await this.loadSettings(legacy, entries);
+    const backgroundSessions: (() => readonly string[])[] = [];
     const services: AssistantModuleServices = {
+      backgroundSessions: { register: (read) => backgroundSessions.push(read) },
       ...this.dependencies,
       onClose: (dispose: Dispose) => this.disposers.push(dispose),
       onStart: (start: () => Dispose) => this.starters.push(start),
@@ -133,6 +137,9 @@ export class PersonalAssistantService {
         ['index-initiative', initializeInitiative],
       ] as const)
         await initialize(services, settings[name].directory, settings[name].config);
+      await this.dependencies.markBackgroundSessions([
+        ...new Set(backgroundSessions.flatMap((read) => read())),
+      ]);
       this.initialized = true;
     } catch (error) {
       await this.close();
