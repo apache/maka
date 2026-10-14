@@ -43,7 +43,7 @@ function session(id: string): SessionSummary {
   return { id, llmConnectionId: choice.connectionId, llmConnectionSlug: choice.connectionSlug, model: choice.model } as SessionSummary;
 }
 
-test('"Model default" in the effort submenu clears the level', async () => {
+test('"Default" in the effort submenu clears the level', async () => {
   const dom = installTranscriptDom();
   dom.window.getSelection = () => null;
   const levels: (ThinkingLevel | undefined)[] = [];
@@ -83,7 +83,7 @@ test('"Model default" in the effort submenu clears the level', async () => {
     assert.equal(label?.getAttribute('dir'), 'ltr');
     await click(dom.document.querySelector('.maka-composer-options-trigger'));
     await click(row('menuitem', 'Effort'));
-    await click(row('menuitemradio', 'Model default'));
+    await click(row('menuitemradio', 'Default'));
     assert.deepEqual(levels, [undefined]);
   } finally {
     await dom.cleanup();
