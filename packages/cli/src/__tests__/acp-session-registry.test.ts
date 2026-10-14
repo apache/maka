@@ -80,8 +80,9 @@ const DEFAULT_CONFIG_OPTIONS: Array<Extract<SessionConfigOption, { type: 'select
     category: 'thought_level',
     currentValue: 'default',
     options: [
-      { value: 'default', name: 'Default' },
+      { value: 'default', name: 'Provider default' },
       { value: 'off', name: 'Off' },
+      { value: 'on', name: 'On' },
       { value: 'minimal', name: 'Minimal' },
       { value: 'low', name: 'Low' },
       { value: 'medium', name: 'Medium' },

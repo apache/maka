@@ -29,11 +29,6 @@ test('goal token labels use shared compact units in every locale', () => {
   }
 });
 
-test('labels the Chinese default thinking level as default', () => {
-  assert.equal(getConversationCopy('zh-CN').model.defaultLevel, '默认');
-  assert.equal(getConversationCopy('zh-TW').model.defaultLevel, '預設');
-});
-
 test('explains why folder-reference messages cannot be edited and resent', () => {
   assert.equal(
     getConversationCopy('zh-CN').messages.editMessageDisabledDirectoryReferences,

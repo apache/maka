@@ -42,8 +42,9 @@ const PERMISSION_NAMES: Readonly<Record<PermissionMode, string>> = {
 };
 
 const THINKING_NAMES: Readonly<Record<ThinkingLevel | 'default', string>> = {
-  default: 'Default',
+  default: 'Provider default',
   off: 'Off',
+  on: 'On',
   minimal: 'Minimal',
   low: 'Low',
   medium: 'Medium',
