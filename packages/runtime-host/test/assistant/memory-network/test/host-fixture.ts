@@ -199,6 +199,7 @@ export async function fixture(config: any = {}) {
     root,
     platform,
     restart: native.restart,
+    remote: native.remote,
     ctx,
     tools,
     systemPrompt,

@@ -29,6 +29,7 @@ export class InitiativeController {
   heartbeat: any;
   owned = false;
   running?: Promise<void>;
+  private activeAgent?: any;
   ticking?: Promise<void>;
   enabling = false;
   constructor(
@@ -102,6 +103,7 @@ export class InitiativeController {
   }
   async run(agent: any, state: any) {
     const id = state.active.id;
+    this.activeAgent = agent;
     try {
       const admitted = await agent.followup(wake(state));
       if (!['turn_started', 'followup'].includes(admitted?.disposition))
@@ -131,6 +133,8 @@ export class InitiativeController {
       } catch {
         /* A newer owner fences writes and cancellation. */
       }
+    } finally {
+      this.activeAgent = undefined;
     }
   }
   async enable(input: any, call: any) {
@@ -163,8 +167,19 @@ export class InitiativeController {
   async close() {
     clearInterval(this.timer);
     clearInterval(this.heartbeat);
+    // Stopping the entire feature must stop the heartbeat execution, not only its observer.
+    let failure: unknown;
+    try {
+      if (this.activeAgent && this.owned) {
+        this.store.fence();
+        await this.activeAgent.cancel();
+      }
+    } catch (error) {
+      failure = error;
+    }
     this.abort.abort(Error('Initiative service stopped'));
     await Promise.allSettled([this.ticking, this.running].filter(Boolean));
     if (this.owned) this.store.release();
+    if (failure) throw failure;
   }
 }

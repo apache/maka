@@ -105,7 +105,8 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 218 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 219 as const;
+// 219: Personal assistant has a Host-owned default-off master switch.
 // 218: Built-in personal assistant operations require matching Client and Host support.
 // 217: token_usage.lastRequestAnchor may carry completedAt, the provider
 // request settlement time; transcripts may carry context_compaction_applied

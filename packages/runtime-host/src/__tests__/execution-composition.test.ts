@@ -171,6 +171,92 @@ test('Plugin Agent background messages cannot race Root Turn startup recovery', 
   });
 });
 
+test('assistant master switch gates real Host execution and stops only assistant sessions', {
+  timeout: 20000,
+}, async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const sent = new Set<string>();
+    const { composition, manager } = await createCapturedExecutionComposition(owner, {
+      primaryBackendFactory: (context) =>
+        new (class extends FakeBackend {
+          override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+            sent.add(context.sessionId);
+            yield* super.send({ ...input, text: FAKE_HOLD_OPEN_PROMPT });
+          }
+        })(context),
+    });
+    const residencies = new HostResidencyRegistry();
+    const caller: ConnectionContext = {
+      hostEpoch: 'execution-composition-test',
+      connectionId: 'client',
+      principal: 'local_os_user',
+      acquireResidency: () => residencies.acquire('assistant-test'),
+    };
+    const call = async (
+      method: 'assistant.enablement' | 'assistant.set-enabled',
+      input: unknown = {},
+    ) => {
+      const result = await composition.handlers['personal-assistant.call'](
+        { method, input },
+        caller,
+      );
+      assert.equal(result.ok, true, JSON.stringify(result));
+      return result.ok ? result.result.value : undefined;
+    };
+    try {
+      assert.deepEqual(await call('assistant.enablement'), { enabled: false });
+      const create = (labels: string[]) =>
+        manager.createSession({
+          cwd: root,
+          llmConnectionId: FAKE_CONNECTION_ID,
+          llmConnectionSlug: 'fake',
+          model: 'fake-model',
+          permissionMode: 'ask',
+          labels,
+        });
+      const ordinary = await create([]);
+      const assistant = await create(['personal-assistant']);
+      const worker = await create(['personal-assistant-background']);
+      const start = (sessionId: string) =>
+        composition.handlers['turn.start'](
+          {
+            sessionId,
+            turnId: randomUUID(),
+            content: { text: 'keep working' },
+          },
+          caller,
+        );
+      for (const sessionId of [assistant.id, worker.id]) {
+        const result = await start(sessionId);
+        assert.equal(result.ok, false, JSON.stringify(result));
+        assert.match(JSON.stringify(result), /disabled/);
+      }
+      assert.equal(sent.size, 0, 'disabled sessions never reach the backend');
+      await start(ordinary.id);
+      await pollFor(() => sent.has(ordinary.id));
+      await call('assistant.set-enabled', { enabled: true });
+      await start(assistant.id);
+      await start(worker.id);
+      await pollFor(() => sent.has(assistant.id) && sent.has(worker.id));
+      await call('assistant.set-enabled', { enabled: false });
+      const sessions = await manager.listSessions();
+      assert.ok(!sessions.find((s) => s.id === assistant.id)?.runningTurnIds?.length);
+      assert.ok(!sessions.find((s) => s.id === worker.id)?.runningTurnIds?.length);
+      assert.ok(
+        sessions.find((s) => s.id === ordinary.id)?.runningTurnIds?.length,
+        'ordinary chat is not stopped',
+      );
+      const before = sent.size;
+      const disabledStart = await start(assistant.id).catch((error) => ({ error: String(error) }));
+      assert.ok('error' in disabledStart || !disabledStart.ok, JSON.stringify(disabledStart));
+      assert.equal(sent.size, before);
+      assert.deepEqual(await call('assistant.enablement'), { enabled: false });
+    } finally {
+      await composition.close();
+    }
+  });
+});
+
 test('Plugin Agent snapshot exposes pending interaction without losing ownership or inherited model settings', async (t) => {
   await withCompositionRoot(async ({ root, owner }) => {
     let runtime!: PluginAgentRuntime;

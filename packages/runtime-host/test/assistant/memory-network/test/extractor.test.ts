@@ -203,3 +203,22 @@ test('extractor has no fixed deadline; caller cancellation settles even if provi
   abort.abort(new Error('User stopped'));
   await assert.rejects(pending, /User stopped/);
 });
+
+test('master disable aborts an in-flight extractor before closing its database', async (t) => {
+  const f = await fixture();
+  t.after(() => f.close());
+  const range = await f.invoke('MemoryRange', {});
+  let began!: () => void;
+  const generating = new Promise<void>((r) => (began = r));
+  f.setExtractRunner(async () => {
+    began();
+    return new Promise(() => {});
+  });
+  const pending = f.invoke('MemoryExtract', { to: range.to, requirements: 'Extract' });
+  const rejected = assert.rejects(pending, /disabled/);
+  await generating;
+  await f.remote('assistant.set-enabled', { enabled: false });
+  await rejected;
+  assert.deepEqual(await f.remote('assistant.enablement'), { enabled: false });
+  await assert.rejects(readdir(join(f.root, 'data', 'extractions')), /ENOENT/);
+});

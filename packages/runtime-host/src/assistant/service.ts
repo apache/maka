@@ -36,9 +36,6 @@ import type {
 } from '@maka/runtime/plugin-turn-finish-service';
 import type { HostPluginDataRuntime } from '../server/plugin-data-runtime.js';
 import type { MakaCompositionEntryInspection } from '@maka/runtime/plugin-runtime';
-import { initializeMemory } from './memory-network/host.js';
-import { initializeMatters } from './proactive-matters/host.js';
-import { initializeInitiative } from './index-initiative/host.js';
 
 export const ASSISTANT_LEGACY_PACKAGES = [
   'dev.maka.memory-network',
@@ -55,11 +52,13 @@ export interface AssistantDependencies {
   llm: PluginLlmService;
   sessionQuery: PluginSessionQueryService;
   sources: PluginSourceService;
+  stopSessions(): Promise<void>;
   markBackgroundSessions(sessionIds: readonly string[]): Promise<void>;
   resolveTools(sessionId: string, core: readonly MakaTool[]): { tools: readonly MakaTool[] };
 }
 
-export interface AssistantModuleServices extends Omit<AssistantDependencies, 'resolveTools'> {
+export interface AssistantModuleServices
+  extends Omit<AssistantDependencies, 'resolveTools' | 'stopSessions'> {
   backgroundSessions: { register(read: () => readonly string[]): void };
   onClose(dispose: Dispose): void;
   onStart(start: () => Dispose): void;
@@ -75,7 +74,7 @@ export interface AssistantModuleServices extends Omit<AssistantDependencies, 're
   api: { register(name: string, invoke: (input: any) => any): void };
 }
 
-export class PersonalAssistantService {
+class AssistantRuntime {
   readonly tools: MakaTool[] = [];
   private readonly sections: PluginSystemPromptSection[] = [];
   private readonly contexts: PluginSystemPromptSection[] = [];
@@ -84,6 +83,8 @@ export class PersonalAssistantService {
   private readonly starters: (() => Dispose)[] = [];
   private readonly stops: Dispose[] = [];
   private readonly disposers: Dispose[] = [];
+  private readonly abort = new AbortController();
+  private readonly pending = new Set<Promise<unknown>>();
   private initialized = false;
   private started = false;
   private draining = false;
@@ -111,7 +112,19 @@ export class PersonalAssistantService {
             ...tool,
             impl: (input, call) => {
               if (this.closing) throw Error('Personal assistant is shutting down');
-              return this.dependencies.agents.withInvocation(call, () => tool.impl(input, call));
+              const scoped = {
+                ...call,
+                abortSignal: AbortSignal.any([
+                  this.abort.signal,
+                  ...(call.abortSignal ? [call.abortSignal] : []),
+                ]),
+              };
+              return this.track(() => {
+                scoped.abortSignal.throwIfAborted();
+                return this.dependencies.agents.withInvocation(scoped, () =>
+                  tool.impl(input, scoped),
+                );
+              });
             },
           });
         },
@@ -131,6 +144,12 @@ export class PersonalAssistantService {
       },
     };
     try {
+      const [{ initializeMemory }, { initializeMatters }, { initializeInitiative }] =
+        await Promise.all([
+          import('./memory-network/host.js'),
+          import('./proactive-matters/host.js'),
+          import('./index-initiative/host.js'),
+        ]);
       for (const [name, initialize] of [
         ['memory-network', initializeMemory],
         ['proactive-matters', initializeMatters],
@@ -157,7 +176,7 @@ export class PersonalAssistantService {
     if (!this.started || this.draining) throw Error('Personal assistant is not ready');
     const invoke = this.calls.get(method);
     if (!invoke) throw Error('Unknown personal assistant operation');
-    return JSON.parse(JSON.stringify(await invoke(input)));
+    return this.track(async () => JSON.parse(JSON.stringify(await invoke(input))));
   }
   async prompt(context: PluginSystemPromptContext, baseText?: string) {
     const resolve = async (items: PluginSystemPromptSection[]) => {
@@ -168,38 +187,74 @@ export class PersonalAssistantService {
       }
       return result;
     };
-    const nativeSections = await resolve(this.sections);
-    const contexts = await resolve(this.contexts);
-    return {
-      text:
-        [baseText, ...nativeSections.map((x) => x.text)].filter(Boolean).join('\n\n') || undefined,
-      contexts,
-      sourceRevision: {
-        id: 'host.personal-assistant',
-        revision:
-          'sha256:' +
-          createHash('sha256')
-            .update(JSON.stringify({ sections: nativeSections, contexts }))
-            .digest('hex'),
-      },
-    };
+    if (this.closing) return { text: baseText, contexts: [], sourceRevision: undefined };
+    return this.track(async () => {
+      const nativeSections = await resolve(this.sections);
+      const contexts = await resolve(this.contexts);
+      if (this.closing) return { text: baseText, contexts: [], sourceRevision: undefined };
+      return {
+        text:
+          [baseText, ...nativeSections.map((x) => x.text)].filter(Boolean).join('\n\n') ||
+          undefined,
+        contexts,
+        sourceRevision: {
+          id: 'host.personal-assistant',
+          revision:
+            'sha256:' +
+            createHash('sha256')
+              .update(JSON.stringify({ sections: nativeSections, contexts }))
+              .digest('hex'),
+        },
+      };
+    });
   }
   async beforeFinish(context: TurnFinishContext): Promise<TurnFinishDecision> {
-    for (const check of this.checks) {
-      const result = await check.check(context);
-      if (!result.allow) return result;
-    }
-    return { allow: true };
+    if (this.closing) return { allow: true };
+    return this.track(async () => {
+      for (const check of this.checks) {
+        if (this.closing) break;
+        const result = await check.check(context);
+        if (!result.allow && !this.closing) return result;
+      }
+      return { allow: true };
+    });
   }
   beginDrain() {
     this.draining = true;
   }
+  private track<T>(operation: () => T | Promise<T>): Promise<T> {
+    const pending = Promise.resolve().then(operation);
+    this.pending.add(pending);
+    void pending.finally(() => this.pending.delete(pending)).catch(() => {});
+    return pending;
+  }
   close(): Promise<void> {
     this.closing = true;
+    this.abort.abort(Error('Personal assistant disabled'));
     this.beginDrain();
     return (this.shutdown ??= (async () => {
       const failures: unknown[] = [];
-      for (const dispose of [...this.stops.reverse(), ...this.disposers.reverse()]) {
+      try {
+        await this.dependencies.stopSessions();
+      } catch (error) {
+        failures.push(error);
+      }
+      // Stop admission and schedulers before closing stores used by in-flight tools.
+      for (const dispose of [...this.stops].reverse()) {
+        try {
+          await dispose();
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+      await Promise.allSettled([...this.pending]);
+      // Also stop foreground assistant turns and any worker admitted while stopping.
+      try {
+        await this.dependencies.stopSessions();
+      } catch (error) {
+        failures.push(error);
+      }
+      for (const dispose of [...this.disposers].reverse()) {
         try {
           await dispose();
         } catch (error) {
@@ -254,5 +309,141 @@ export class PersonalAssistantService {
     await writeFile(temp, JSON.stringify(settings, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
     await rename(temp, path);
     return settings;
+  }
+}
+
+/** Host-owned opt-in. Disabled Hosts do not load modules, open their databases or start timers. */
+export class PersonalAssistantService {
+  private runtime?: AssistantRuntime;
+  private legacy?: HostPluginDataRuntime;
+  private entries: readonly MakaCompositionEntryInspection[] = [];
+  private started = false;
+  private draining = false;
+  private recovered = false;
+  private transition: Promise<unknown> = Promise.resolve();
+  private shutdown?: Promise<void>;
+  private stoppingError?: unknown;
+  constructor(
+    readonly directory: string,
+    readonly dependencies: AssistantDependencies,
+  ) {}
+
+  get enabled() {
+    return !!this.runtime && !this.draining;
+  }
+  get tools(): readonly MakaTool[] {
+    return this.enabled ? this.runtime!.tools : [];
+  }
+
+  async recover(legacy: HostPluginDataRuntime, entries: readonly MakaCompositionEntryInspection[]) {
+    if (this.recovered) throw Error('Personal assistant already initialized');
+    this.legacy = legacy;
+    this.entries = entries;
+    let enabled = false;
+    try {
+      const saved = JSON.parse(await readFile(join(this.directory, 'enablement.json'), 'utf8'));
+      if (typeof saved.enabled !== 'boolean') throw Error('Invalid personal assistant enablement');
+      enabled = saved.enabled;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    if (enabled) this.runtime = await this.initialize();
+    this.recovered = true;
+  }
+  private async initialize() {
+    const runtime = new AssistantRuntime(this.directory, this.dependencies);
+    try {
+      await runtime.recover(this.legacy!, this.entries);
+      return runtime;
+    } catch (error) {
+      await runtime.close();
+      throw error;
+    }
+  }
+  start() {
+    if (this.draining) return;
+    if (!this.recovered) throw Error('Personal assistant is not ready');
+    this.started = true;
+    this.runtime?.start();
+  }
+  private async persist(enabled: boolean) {
+    await mkdir(this.directory, { recursive: true, mode: 0o700 });
+    const path = join(this.directory, 'enablement.json');
+    const temp = `${path}.${randomUUID()}.tmp`;
+    await writeFile(temp, JSON.stringify({ enabled }) + '\n', { mode: 0o600, flag: 'wx' });
+    await rename(temp, path);
+  }
+  async call(method: string, input: unknown): Promise<unknown> {
+    if (!this.started || this.draining) throw Error('Personal assistant is not ready');
+    if (method === 'assistant.enablement') return { enabled: this.enabled };
+    if (method === 'assistant.set-enabled') {
+      if (
+        !input ||
+        typeof input !== 'object' ||
+        Object.keys(input).length !== 1 ||
+        typeof (input as { enabled?: unknown }).enabled !== 'boolean'
+      )
+        throw Error('Expected { enabled: boolean }');
+      const enabled = (input as { enabled: boolean }).enabled;
+      const change = this.transition.then(async () => {
+        if (this.draining) throw Error('Personal assistant is not ready');
+        if (this.stoppingError)
+          throw Error('Personal assistant did not stop cleanly; restart Host before enabling', {
+            cause: this.stoppingError,
+          });
+        if (enabled === this.enabled) return { enabled };
+        if (enabled) {
+          const runtime = await this.initialize();
+          try {
+            if (this.draining) throw Error('Personal assistant is shutting down');
+            await this.persist(true);
+            if (this.draining) throw Error('Personal assistant is shutting down');
+            this.runtime = runtime;
+            runtime.start();
+          } catch (error) {
+            this.runtime = undefined;
+            await this.persist(false);
+            await runtime.close();
+            throw error;
+          }
+        } else {
+          await this.persist(false);
+          const runtime = this.runtime!;
+          this.runtime = undefined;
+          try {
+            await runtime.close();
+          } catch (error) {
+            this.stoppingError = error;
+            throw error;
+          }
+        }
+        return { enabled: this.enabled };
+      });
+      this.transition = change.catch(() => {});
+      return change;
+    }
+    if (!this.enabled) throw Error('Personal assistant is disabled; enable it in Settings');
+    return this.runtime!.call(method, input);
+  }
+  async prompt(context: PluginSystemPromptContext, baseText?: string) {
+    return this.enabled
+      ? this.runtime!.prompt(context, baseText)
+      : { text: baseText, contexts: [], sourceRevision: undefined };
+  }
+  async beforeFinish(context: TurnFinishContext): Promise<TurnFinishDecision> {
+    return this.enabled ? this.runtime!.beforeFinish(context) : { allow: true };
+  }
+  beginDrain() {
+    this.draining = true;
+    this.runtime?.beginDrain();
+  }
+  close(): Promise<void> {
+    this.beginDrain();
+    return (this.shutdown ??= (async () => {
+      await this.transition;
+      const runtime = this.runtime;
+      this.runtime = undefined;
+      await runtime?.close();
+    })());
   }
 }

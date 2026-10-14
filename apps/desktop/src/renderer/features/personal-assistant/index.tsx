@@ -18,8 +18,11 @@
  */
 
 import { createAssistantNavigation, identity } from './navigation.js';
-import { useEffect, useState } from 'react';
-import { useAssistantSessionVisibility, useShowAssistantBackgroundSessions } from '../../application/contracts/session-catalog/assistant-session-visibility.js';
+import { useEffect, useState, useRef } from 'react';
+import {
+  useAssistantSessionVisibility,
+  useShowAssistantBackgroundSessions,
+} from '../../application/contracts/session-catalog/assistant-session-visibility.js';
 import { SideNavItem } from '@astryxdesign/core/SideNav';
 import { Sparkles } from '@maka/ui/icons';
 import { Switch } from '@maka/ui';
@@ -38,8 +41,50 @@ export async function assistantCall(
   );
   return result.value;
 }
+const ENABLEMENT_CHANGED = 'personal-assistant-enablement-changed';
+function useAssistantEnablement(host?: DesktopRuntimeHostRef) {
+  const [state, setState] = useState<{ enabled: boolean; ready: boolean; error: string }>({
+    enabled: false,
+    ready: false,
+    error: '',
+  });
+  const revision = useRef(0);
+  useEffect(() => {
+    let live = true;
+    let timer: ReturnType<typeof setTimeout>;
+    setState({ enabled: false, ready: false, error: '' });
+    const check = async () => {
+      clearTimeout(timer);
+      const version = ++revision.current;
+      try {
+        const target = host ?? (await window.maka.runtimeHostProfiles.getDefaultHost());
+        const result = await assistantCall('assistant.enablement', {}, target);
+        if (live && version === revision.current)
+          setState({ enabled: result.enabled === true, ready: true, error: '' });
+      } catch (e) {
+        if (live && version === revision.current)
+          setState({ enabled: false, ready: false, error: String(e) });
+      } finally {
+        if (live && version === revision.current) timer = setTimeout(check, 10000);
+      }
+    };
+    const changed = () => {
+      void check();
+    };
+    window.addEventListener(ENABLEMENT_CHANGED, changed);
+    void check();
+    return () => {
+      live = false;
+      ++revision.current;
+      clearTimeout(timer);
+      window.removeEventListener(ENABLEMENT_CHANGED, changed);
+    };
+  }, [host?.hostId, host?.profileId]);
+  return state;
+}
 const navigation = createAssistantNavigation({
   host: () => window.maka.runtimeHostProfiles.getDefaultHost(),
+  // Binding is rejected by the Host while disabled, before navigation creates a Session.
   binding: (host) => assistantCall('assistant.binding', {}, host),
   bind: (host, sessionId) => assistantCall('assistant.bind', { sessionId }, host),
   create: () => window.maka.sessions.create({ name: '个人助手', labels: ['personal-assistant'] }),
@@ -54,9 +99,14 @@ export function PersonalAssistantEntry({
   activeSessionId?: string;
   openSession(id: string): void;
 }) {
+  const enablement = useAssistantEnablement();
   const [bound, setBound] = useState<string>();
   const [error, setError] = useState('');
   useEffect(() => {
+    if (!enablement.enabled) {
+      setBound(undefined);
+      return;
+    }
     let live = true;
     let timer: ReturnType<typeof setTimeout>;
     const check = async () => {
@@ -78,7 +128,8 @@ export function PersonalAssistantEntry({
       live = false;
       clearTimeout(timer);
     };
-  }, []);
+  }, [enablement.enabled]);
+  if (!enablement.enabled) return null;
   return (
     <SideNavItem
       label="个人助手"
@@ -105,30 +156,70 @@ export function PersonalAssistantSettings(props: {
   host?: DesktopRuntimeHostRef;
   onOpenSession?(id: string): void;
 }) {
+  const enablement = useAssistantEnablement(props.host);
+  const [switching, setSwitching] = useState(false);
   const visibility = useAssistantSessionVisibility();
   const visible = useShowAssistantBackgroundSessions();
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
-  return <div className="personal-assistant-settings">
+  return (
+    <div className="personal-assistant-settings">
       <h2>个人助手</h2>
-      <p>
-        通过侧栏的个人助手入口聊天。记忆索引和持续任务已内置；导入历史和启用主动发现均由你决定。
-      </p>
-    <section>
-      <h3>会话列表</h3>
-      <Switch label="显示助手后台会话" value={visible} isDisabled={saving}
-        changeAction={async (value) => {
-          setSaving(true);
+      <p>启用后显示侧栏入口，并开放记忆索引、主动发现和持续任务。默认关闭。</p>
+      <Switch
+        label="启用个人助手"
+        value={enablement.enabled}
+        isDisabled={switching || !enablement.ready}
+        changeAction={async (enabled) => {
+          setSwitching(true);
           setError('');
-          try { await visibility.setVisible(value); }
-          catch (e) { setError(String(e)); }
-          finally { setSaving(false); }
-        }} />
-      <p>在侧栏和会话搜索中显示建索引、委派任务的后台会话。隐藏不影响运行，仍可从任务详情打开。</p>
-      {error && <p role="alert">{error}</p>}
-    </section>
-    <PersonalAssistantStatusSettings {...props} />
-  </div>;
+          try {
+            const host = props.host ?? (await window.maka.runtimeHostProfiles.getDefaultHost());
+            await assistantCall('assistant.set-enabled', { enabled }, host);
+          } catch (e) {
+            setError(String(e));
+          } finally {
+            window.dispatchEvent(new Event(ENABLEMENT_CHANGED));
+            setSwitching(false);
+          }
+        }}
+      />
+      <p>
+        {switching
+          ? '正在切换，等待后台工作停止或就绪…'
+          : '关闭后隐藏入口、停止助手及后台工作，不再运行主动检查、索引维护或持续任务；已有数据保留。重新启用会恢复调度，已暂停的任务需手动恢复。'}
+      </p>
+      {(error || enablement.error) && <p role="alert">{error || enablement.error}</p>}
+      {enablement.enabled && (
+        <>
+          <section>
+            <h3>会话列表</h3>
+            <Switch
+              label="显示助手后台会话"
+              value={visible}
+              isDisabled={saving}
+              changeAction={async (value) => {
+                setSaving(true);
+                setError('');
+                try {
+                  await visibility.setVisible(value);
+                } catch (e) {
+                  setError(String(e));
+                } finally {
+                  setSaving(false);
+                }
+              }}
+            />
+            <p>
+              在侧栏和会话搜索中显示建索引、委派任务的后台会话。隐藏不影响运行，仍可从任务详情打开。
+            </p>
+            {error && <p role="alert">{error}</p>}
+          </section>
+          <PersonalAssistantStatusSettings {...props} />
+        </>
+      )}
+    </div>
+  );
 }
 function PersonalAssistantStatusSettings({
   host,

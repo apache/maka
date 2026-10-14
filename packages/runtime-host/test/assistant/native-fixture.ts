@@ -55,6 +55,7 @@ export async function nativeFixture(
   let service: any;
   const initialize = async () => {
     service = new Main.PersonalAssistantService(directory, {
+      stopSessions: async () => {},
       markBackgroundSessions: async () => {},
       agents: ctx.agents,
       llm: ctx.llm,
@@ -64,6 +65,7 @@ export async function nativeFixture(
     });
     await service.recover(data, entries);
     service.start();
+    await service.call('assistant.set-enabled', { enabled: true });
   };
   await initialize();
   return {

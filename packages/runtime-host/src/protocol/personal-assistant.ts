@@ -23,6 +23,8 @@ import { requireEncodedByteLimit } from './codec.js';
 const request = z
   .object({
     method: z.enum([
+      'assistant.enablement',
+      'assistant.set-enabled',
       'assistant.binding',
       'assistant.original',
       'assistant.status',

@@ -106,3 +106,17 @@ test('original references follow the displayed Host instead of the default and n
   assert.throws(() => originalHost(JSON.stringify(['host-b', 'same-session']),
     entries.map(e => ({ ...e, enabled: e.hostId === 'host-a' }))), /Host/);
 });
+
+
+test('disabled Host rejects opening before creating a dedicated assistant conversation', async () => {
+  let created = 0;
+  const nav = createAssistantNavigation({
+    host: async () => ({ hostId: 'host-a', profileId: 'profile-a' }),
+    binding: async () => { throw Error('Personal assistant is disabled; enable it in Settings'); },
+    create: async () => { created++; return { id: 'unexpected' }; },
+    bind: async () => { throw Error('must not bind'); },
+    list: async () => [],
+  });
+  await assert.rejects(nav.open(), /disabled/);
+  assert.equal(created, 0);
+});

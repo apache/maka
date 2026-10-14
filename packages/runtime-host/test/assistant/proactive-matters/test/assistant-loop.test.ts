@@ -107,3 +107,42 @@ test('unified entry + background index + timed task + parent feedback run togeth
     await f.close();
   }
 });
+
+test('master switch stops concurrent index, durable task and proactive runs without deleting their state', async () => {
+  const f = await fixture({ matters: true });
+  let release!: () => void;
+  const hold = new Promise<void>((r) => (release = r));
+  try {
+    await f.remote('assistant.bind', { sessionId: 'owner' });
+    f.setIndexRunner(async () => hold);
+    f.setRunner(async () => hold);
+    const range = await f.invoke('MemoryRange', {});
+    const index = await f.invoke('MemoryIndexCreate', {
+      name: 'Project context',
+      instructions: '按事件整理',
+      cursor: range.to,
+      background: true,
+    });
+    const task = await f.invoke('MatterDelegate', {
+      taskKey: 'disable-test',
+      title: '验收核对',
+      request: '只读核对验收状态',
+    });
+    await until(() => [...f.workers.values()].filter((w) => w.status === 'running').length >= 2);
+    await f.remote('assistant.control', { action: 'enable', intervalMinutes: 30 });
+    await until(() => f.workers.get('owner').status === 'running');
+    const count = f.workers.size;
+    await f.remote('assistant.set-enabled', { enabled: false });
+    assert.ok(f.cancels() >= 3, 'all three active kinds receive runtime cancellation');
+    assert.ok([...f.workers.values()].every((w) => w.status !== 'running'));
+    assert.deepEqual(f.tools.resolve('owner', []).tools, []);
+    await new Promise((r) => setTimeout(r, 80));
+    assert.equal(f.workers.size, count, 'disabled schedulers must not create replacement workers');
+    await assert.rejects(f.invoke('MatterTasks', { id: task.id }));
+    await assert.rejects(f.invoke('MemoryIndexRead', { indexId: index.index.id }));
+    assert.deepEqual(await f.remote('assistant.enablement'), { enabled: false });
+  } finally {
+    release();
+    await f.close();
+  }
+});

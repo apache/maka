@@ -19,7 +19,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile, mkdir } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile, mkdir, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Context } from '@maka/runtime/plugin-kernel';
@@ -37,7 +37,7 @@ import { InitiativeStore } from '../assistant/index-initiative/store.js';
 import { PERSONAL_ASSISTANT_OPERATION_SPECS } from '../protocol/personal-assistant.js';
 import { operationAllowsRemoteOwner } from '../protocol/operations.js';
 
-async function fixture() {
+async function fixture(enabled = true) {
   const root = await mkdtemp(join(tmpdir(), 'maka-native-assistant-中文-'));
   const ctx = new Context();
   const agents = new PluginAgentService(ctx);
@@ -47,7 +47,10 @@ async function fixture() {
   const pluginTools = new PluginToolService(ctx, { agents });
   const marked: string[][] = [];
   const dependencies = {
-    markBackgroundSessions: async (ids: readonly string[]) => { marked.push([...ids]); },
+    stopSessions: async () => {},
+    markBackgroundSessions: async (ids: readonly string[]) => {
+      marked.push([...ids]);
+    },
     agents,
     llm,
     sessionQuery,
@@ -55,6 +58,10 @@ async function fixture() {
     resolveTools: (id: string, core: any) => pluginTools.resolve(id, core),
   };
   const directory = join(root, 'native');
+  if (enabled) {
+    await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, 'enablement.json'), JSON.stringify({ enabled: true }));
+  }
   const legacy = new HostPluginDataRuntime(root);
   const service = new PersonalAssistantService(directory, dependencies);
   return {
@@ -197,8 +204,12 @@ test('adopting all three stores preserves coverage, references, unfinished group
 
   await mkdir(directories['proactive-matters'], { recursive: true });
   const delegation = new DatabaseSync(join(directories['proactive-matters'], 'delegations.sqlite'));
-  delegation.exec('CREATE TABLE delegations(owner TEXT NOT NULL, task_key TEXT NOT NULL, session TEXT NOT NULL UNIQUE, title TEXT NOT NULL, request TEXT NOT NULL, PRIMARY KEY(owner,task_key))');
-  delegation.prepare('INSERT INTO delegations VALUES(?,?,?,?,?)').run('old-assistant', 'task', 'old-task', '交期核验', '等回复');
+  delegation.exec(
+    'CREATE TABLE delegations(owner TEXT NOT NULL, task_key TEXT NOT NULL, session TEXT NOT NULL UNIQUE, title TEXT NOT NULL, request TEXT NOT NULL, PRIMARY KEY(owner,task_key))',
+  );
+  delegation
+    .prepare('INSERT INTO delegations VALUES(?,?,?,?,?)')
+    .run('old-assistant', 'task', 'old-task', '交期核验', '等回复');
   delegation.close();
   const now = Date.now();
   const tasks = createMatterStore(directories['proactive-matters'], { now: () => now });
@@ -338,4 +349,138 @@ test('ambiguous or malformed adopted settings fail closed without creating repla
   } finally {
     await service.close();
   }
+});
+
+test('default-off is cold: no legacy adoption, databases, tools, prompts or schedulers', async (t) => {
+  const f = await fixture(false);
+  t.after(f.close);
+  let legacyReads = 0;
+  f.legacy.read = async () => {
+    legacyReads++;
+    throw Error('must not adopt while off');
+  };
+  await f.service.recover(f.legacy, []);
+  f.service.start();
+  assert.deepEqual(await f.service.call('assistant.enablement', {}), { enabled: false });
+  assert.deepEqual(f.service.tools, []);
+  assert.deepEqual(
+    await f.service.prompt({ sessionId: 'ordinary', turnId: 'turn', cwd: f.root }, 'normal prompt'),
+    {
+      text: 'normal prompt',
+      contexts: [],
+      sourceRevision: undefined,
+    },
+  );
+  assert.deepEqual(
+    await f.service.beforeFinish({
+      sessionId: 'ordinary',
+      turnId: 'turn',
+      signal: new AbortController().signal,
+    }),
+    { allow: true },
+  );
+  for (const method of [
+    'assistant.binding',
+    'assistant.bind',
+    'assistant.control',
+    'assistant.recover',
+    'assistant.status',
+  ])
+    await assert.rejects(f.service.call(method, {}), /disabled/);
+  await assert.rejects(readdir(f.directory), { code: 'ENOENT' });
+  assert.equal(legacyReads, 0);
+  assert.deepEqual(f.marked, []);
+});
+
+test('master switch is persistent, repeatable, rejects stale tools and retains stored data', async (t) => {
+  const f = await fixture(false);
+  t.after(f.close);
+  let stops = 0;
+  f.dependencies.stopSessions = async () => {
+    stops++;
+  };
+  await f.service.recover(f.legacy, []);
+  f.service.start();
+  await assert.rejects(f.service.call('assistant.set-enabled', { enabled: 'yes' }), /boolean/);
+  const initiative = new InitiativeStore(join(f.directory, 'index-initiative'), 'inspection');
+  initiative.lease();
+  initiative.bind({ sessionId: 'retained-assistant', cwd: f.root });
+  initiative.release();
+  initiative.close();
+  await Promise.all([
+    f.service.call('assistant.set-enabled', { enabled: true }),
+    f.service.call('assistant.set-enabled', { enabled: true }),
+  ]);
+  assert.equal(f.marked.length, 1, 'one runtime generation, despite concurrent enable requests');
+  const names = f.service.tools.map((t) => t.name);
+  const captured = f.service.tools.find((t) => t.name === 'InitiativeStatus')!;
+  const settings = await readFile(join(f.directory, 'assistant.json'), 'utf8');
+  await f.service.call('assistant.set-enabled', { enabled: false });
+  assert.equal(f.service.enabled, false);
+  assert.deepEqual(f.service.tools, []);
+  assert.throws(() => captured.impl({}, {} as any), /shutting down/);
+  assert.ok(stops > 0);
+  assert.equal(await readFile(join(f.directory, 'assistant.json'), 'utf8'), settings);
+  await f.service.close();
+  const again = new PersonalAssistantService(f.directory, f.dependencies);
+  t.after(() => again.close());
+  await again.recover(f.legacy, []);
+  again.start();
+  assert.equal(again.enabled, false);
+  assert.equal(f.marked.length, 1, 'restart while off does not initialize stores');
+  await again.call('assistant.set-enabled', { enabled: true });
+  assert.deepEqual(
+    again.tools.map((t) => t.name),
+    names,
+  );
+  assert.equal(
+    ((await again.call('assistant.binding', {})) as any).state.sessionId,
+    'retained-assistant',
+  );
+  assert.equal(again.tools.length, new Set(names).size);
+  await again.call('assistant.set-enabled', { enabled: false });
+});
+
+test('existing component configuration is not implicit consent; enable failure stays disabled and can be retried', async (t) => {
+  const f = await fixture(false);
+  t.after(f.close);
+  await mkdir(f.directory, { recursive: true });
+  await writeFile(join(f.directory, 'assistant.json'), '{broken');
+  await f.service.recover(f.legacy, []);
+  f.service.start();
+  assert.equal(f.service.enabled, false);
+  await assert.rejects(f.service.call('assistant.set-enabled', { enabled: true }), SyntaxError);
+  assert.equal(f.service.enabled, false);
+  await assert.rejects(readFile(join(f.directory, 'memory-network', 'network.sqlite')), {
+    code: 'ENOENT',
+  });
+  await rm(join(f.directory, 'assistant.json'));
+  await f.service.call('assistant.set-enabled', { enabled: true });
+  assert.equal(f.service.enabled, true);
+});
+
+test('disable fences admission before waiting for stop and serializes re-enable', async (t) => {
+  const f = await fixture();
+  t.after(f.close);
+  await f.service.recover(f.legacy, []);
+  f.service.start();
+  let release!: () => void;
+  let stopping!: () => void;
+  const began = new Promise<void>((r) => (stopping = r));
+  const wait = new Promise<void>((r) => (release = r));
+  f.dependencies.stopSessions = async () => {
+    stopping();
+    await wait;
+  };
+  const off = f.service.call('assistant.set-enabled', { enabled: false });
+  await began;
+  assert.equal(f.service.enabled, false);
+  assert.deepEqual(f.service.tools, []);
+  await assert.rejects(f.service.call('assistant.bind', {}), /disabled/);
+  const on = f.service.call('assistant.set-enabled', { enabled: true });
+  assert.equal(f.service.enabled, false);
+  release();
+  await off;
+  await on;
+  assert.equal(f.service.enabled, true);
 });

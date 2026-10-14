@@ -255,3 +255,26 @@ test('obsolete timeout config cannot expire an active heartbeat; pause still win
     await f.close();
   }
 });
+
+test('master disable stops an active heartbeat and removes tools until explicitly enabled again', async () => {
+  const f = await fixture();
+  let release!: () => void;
+  const hold = new Promise<void>((r) => (release = r));
+  try {
+    await f.remote('assistant.bind', { sessionId: 'owner' });
+    f.setRunner(async () => hold);
+    await f.remote('assistant.control', { action: 'enable', intervalMinutes: 30 });
+    await until(() => f.workers.get('owner')?.status === 'running');
+    await f.remote('assistant.set-enabled', { enabled: false });
+    assert.ok(f.cancels() >= 1, 'the runtime heartbeat is cancelled, not merely its observer');
+    assert.equal(f.workers.get('owner').status, 'idle');
+    assert.deepEqual(f.tools.resolve('owner', []).tools, []);
+    await assert.rejects(f.remote('assistant.control', { action: 'check' }), /disabled/);
+    release();
+    await f.remote('assistant.set-enabled', { enabled: true });
+    assert.equal((await f.remote('assistant.binding')).state.sessionId, 'owner');
+  } finally {
+    release();
+    await f.close();
+  }
+});

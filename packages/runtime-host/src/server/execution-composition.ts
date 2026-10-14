@@ -40,6 +40,7 @@ import {
   type RuntimeInvocationRecord,
 } from '@maka/core/runtime-invocation';
 import {
+  ASSISTANT_BACKGROUND_SESSION_LABEL,
   type SessionHeader,
   type WorkHubDelegationAssignedMessage,
   WORKHUB_COORDINATION_SESSION_ID,
@@ -444,6 +445,21 @@ export async function createExecutionRuntimeHostComposition(
     const personalAssistant = (assistant = new PersonalAssistantService(
       join(context.owner.controlDirectory, 'personal-assistant'),
       {
+        stopSessions: async () => {
+          if (!rootCoordinator) return;
+          const failures: unknown[] = [];
+          for (const session of await stores.sessionStore.listHeaders()) {
+            try {
+              const header = await stores.sessionStore.readHeaderSnapshot(session.id);
+              if (isAssistantSession(header))
+                await rootCoordinator.stopSession(session.id, { source: 'stop_button' });
+            } catch (error) {
+              failures.push(error);
+            }
+          }
+          if (failures.length)
+            throw new AggregateError(failures, 'Failed to stop assistant sessions');
+        },
         markBackgroundSessions: (ids) => markAssistantBackgroundSessions(stores.sessionStore, ids),
         agents: pluginAgents,
         llm: pluginLlm,
@@ -452,6 +468,17 @@ export async function createExecutionRuntimeHostComposition(
         resolveTools: (sessionId, core) => pluginTools.resolve(sessionId, core),
       },
     ));
+    const isAssistantSession = (header: { labels?: readonly string[] }) =>
+      header.labels?.some(
+        (label) => label === 'personal-assistant' || label === ASSISTANT_BACKGROUND_SESSION_LABEL,
+      ) ?? false;
+    const assertAssistantSessionEnabled = async (sessionId: string) => {
+      if (
+        !personalAssistant.enabled &&
+        isAssistantSession(await stores.sessionStore.readHeaderSnapshot(sessionId))
+      )
+        throw Error('Personal assistant is disabled; enable it in Settings');
+    };
     const openedProjectCatalog = storage.projectCatalog;
     const runtimePolicyStores = storage.runtimePolicy;
     const builtinExternalAgentPlugins = new HostBuiltinExternalAgentPluginCoordinator({
@@ -948,6 +975,11 @@ export async function createExecutionRuntimeHostComposition(
           await requireRootCoordinator(rootCoordinator).readSessionHeader(sessionId);
         if (!projected || projected.unavailableReason) return projected;
         const header = await stores.sessionStore.readHeaderSnapshot(sessionId);
+        if (!personalAssistant.enabled && isAssistantSession(header))
+          return {
+            ...projected,
+            unavailableReason: 'Personal assistant is disabled; enable it in Settings',
+          };
         if (!header.executorId) return projected;
         const [entry] = await pluginExecutors.catalog({
           sessionId,
@@ -1199,12 +1231,15 @@ export async function createExecutionRuntimeHostComposition(
         goalTools: requireGoal(goal).tools,
         builtinTools,
         hostTools,
-        resolveRootTools: async (sessionId) => [
-          ...personalAssistant.tools,
-          ...(sessionId === WORKHUB_COORDINATION_SESSION_ID && workHubResults && workHubInspection
-            ? [workHubResults.tool, workHubInspection]
-            : await requireGraphCoordinator(graphCoordinator).toolsForSession(sessionId)),
-        ],
+        resolveRootTools: async (sessionId) => {
+          await assertAssistantSessionEnabled(sessionId);
+          return [
+            ...personalAssistant.tools,
+            ...(sessionId === WORKHUB_COORDINATION_SESSION_ID && workHubResults && workHubInspection
+              ? [workHubResults.tool, workHubInspection]
+              : await requireGraphCoordinator(graphCoordinator).toolsForSession(sessionId)),
+          ];
+        },
         resolvePluginTools: (sessionId, coreTools) =>
           pluginTools.resolveContributions(sessionId, coreTools),
         resolvePluginSystemPrompt: async (sessionId, promptContext, baseText) => {
@@ -1225,7 +1260,7 @@ export async function createExecutionRuntimeHostComposition(
             contexts: [...assembly.contexts, ...native.contexts],
             sourceRevisions: [
               ...(assembly.sourceRevision ? [assembly.sourceRevision] : []),
-              native.sourceRevision,
+              ...(native.sourceRevision ? [native.sourceRevision] : []),
             ],
           };
         },
@@ -1261,14 +1296,24 @@ export async function createExecutionRuntimeHostComposition(
       runtimeCommitSink: stores.runtimeEventStore,
       requestDrain: context.requestDrain,
     });
-    backends.register(
-      'ai-sdk',
-      dependencies.primaryBackendFactory ?? {
-        prepare: (backendContext) => prepareHostAiSdkBackend(hostAiSdkBackendInput(backendContext)),
+    backends.register('ai-sdk', {
+      prepare: async (backendContext) => {
+        await assertAssistantSessionEnabled(backendContext.sessionId);
+        const prepared = dependencies.primaryBackendFactory
+          ? { build: dependencies.primaryBackendFactory }
+          : await prepareHostAiSdkBackend(hostAiSdkBackendInput(backendContext));
+        return {
+          ...prepared,
+          build: async (factoryContext) => {
+            await assertAssistantSessionEnabled(factoryContext.sessionId);
+            return prepared.build(factoryContext);
+          },
+        };
       },
-    );
+    });
     backends.register('plugin-executor', {
       prepare: async (backendContext) => {
+        await assertAssistantSessionEnabled(backendContext.sessionId);
         const executorId = backendContext.header.executorId;
         if (!executorId) throw new Error('Plugin executor Session is missing its executor id');
         const binding = pluginExecutors.bind(backendContext.sessionId, executorId);
@@ -1862,6 +1907,10 @@ export async function createExecutionRuntimeHostComposition(
       // Fresh WorkHub Turns use the coordinating Agent directly. Persisted
       // routing decisions remain readable for recovery of historical Turns.
       undefined,
+      (header) =>
+        !personalAssistant.enabled && isAssistantSession(header)
+          ? 'Personal assistant is disabled; enable it in Settings'
+          : undefined,
     );
     const coordinator = rootCoordinator;
     const pluginModel = createHostPluginModel({
@@ -2026,6 +2075,8 @@ export async function createExecutionRuntimeHostComposition(
       if (!(await visibleAgentSessions(initiator)).some((session) => session.id === id)) {
         throw new Error('Agent is outside the current ownership tree');
       }
+      initiator.abortSignal.throwIfAborted();
+      await assertAssistantSessionEnabled(id);
       const content = normalizeMessageContent(
         typeof message === 'string' ? { text: message } : (message as { text: string }),
       );
