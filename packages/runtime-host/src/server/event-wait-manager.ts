@@ -61,10 +61,13 @@ export interface EventWaitObservationPolicy {
   readonly pageSize: number;
   readonly minIntervalMs: number;
   readonly pollIntervalMs: number;
+  /** Caps local error backoff before jitter, not a source's Retry-After. */
   readonly maxBackoffMs: number;
   readonly readTimeoutMs: number;
   readonly closeTimeoutMs: number;
+  /** Total observation budget, including healthy pending reads; exhaustion ends the wait. */
   readonly maxAttempts: number;
+  /** Independent lifetime ceiling, not a guarantee that the attempt budget lasts this long. */
   readonly maxLifetimeMs: number;
   readonly maxConcurrent: number;
   readonly maxPerSource: number;

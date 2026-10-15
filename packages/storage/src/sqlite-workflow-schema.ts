@@ -19,8 +19,8 @@
 
 import type { DatabaseSync } from 'node:sqlite';
 
-// v16 indexes durable observation order so bounded schedulers need no per-wait fairness cache.
-export const SQLITE_WORKFLOW_SCHEMA_VERSION = 16;
+// v14 adds observation indexes and source cooldowns with crash-safe dispatch reservations.
+export const SQLITE_WORKFLOW_SCHEMA_VERSION = 14;
 
 const RELEASED_WORKFLOW_PROJECTION_TABLES = [
   {
@@ -171,8 +171,12 @@ export function migrateSqliteWorkflowDatabase(db: DatabaseSync): void {
 
     CREATE TABLE IF NOT EXISTS workflow_event_wait_source_cooldowns (
       source_key TEXT PRIMARY KEY,
-      until_ms INTEGER NOT NULL CHECK (until_ms >= 0)
+      until_ms INTEGER NOT NULL CHECK (until_ms >= 0),
+      dispatch_token TEXT,
+      dispatch_until_ms INTEGER NOT NULL DEFAULT 0 CHECK (dispatch_until_ms >= 0)
     );
+    CREATE INDEX IF NOT EXISTS workflow_event_wait_source_cooldowns_expiry
+      ON workflow_event_wait_source_cooldowns(MAX(until_ms, dispatch_until_ms), source_key);
 
     CREATE TABLE IF NOT EXISTS workflow_goal_authority (
       session_id TEXT PRIMARY KEY,
@@ -185,24 +189,6 @@ export function migrateSqliteWorkflowDatabase(db: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS workflow_goal_authority_status
       ON workflow_goal_authority(status, session_id);
-  `);
-
-  const sourceCooldownColumns = new Set(
-    (
-      db.prepare('PRAGMA table_info(workflow_event_wait_source_cooldowns)').all() as Array<{
-        name: string;
-      }>
-    ).map(({ name }) => name),
-  );
-  if (!sourceCooldownColumns.has('dispatch_token'))
-    db.exec('ALTER TABLE workflow_event_wait_source_cooldowns ADD COLUMN dispatch_token TEXT');
-  if (!sourceCooldownColumns.has('dispatch_until_ms'))
-    db.exec(`ALTER TABLE workflow_event_wait_source_cooldowns
-      ADD COLUMN dispatch_until_ms INTEGER NOT NULL DEFAULT 0 CHECK (dispatch_until_ms >= 0)`);
-  db.exec(`
-    DROP INDEX IF EXISTS workflow_event_wait_source_cooldowns_expiry;
-    CREATE INDEX workflow_event_wait_source_cooldowns_expiry
-      ON workflow_event_wait_source_cooldowns(MAX(until_ms, dispatch_until_ms), source_key);
   `);
 
   const cleanupColumns = new Set(

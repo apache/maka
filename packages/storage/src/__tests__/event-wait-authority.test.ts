@@ -938,26 +938,35 @@ test('workflow-12 migration adds only dormant schema, retains Session/Goal data,
     } finally {
       await rm(backup, { recursive: true, force: true });
     }
-    const future = new DatabaseSync(join(root, 'runtime.sqlite'));
-    try {
-      future
-        .prepare("UPDATE operational_schema_migrations SET version = ? WHERE scope = 'workflow'")
-        .run(SQLITE_WORKFLOW_SCHEMA_VERSION + 1);
-    } finally {
-      future.close();
-    }
-    assert.throws(() => createSqliteEventWaitAuthority(root));
-    const check = new DatabaseSync(join(root, 'runtime.sqlite'), { readOnly: true });
-    try {
-      assert.equal(
-        check
-          .prepare("SELECT version FROM operational_schema_migrations WHERE scope = 'workflow'")
-          .get()!.version,
-        SQLITE_WORKFLOW_SCHEMA_VERSION + 1,
-      );
-      assert.equal(check.prepare('SELECT COUNT(*) AS n FROM workflow_event_waits').get()!.n, 1);
-    } finally {
-      check.close();
+    // Consolidating this unreleased change at v14 must not silently downgrade
+    // databases from the earlier v15/v16 development snapshots.
+    for (const version of [
+      SQLITE_WORKFLOW_SCHEMA_VERSION + 1,
+      SQLITE_WORKFLOW_SCHEMA_VERSION + 2,
+    ]) {
+      const future = new DatabaseSync(join(root, 'runtime.sqlite'));
+      let before: unknown;
+      try {
+        future
+          .prepare("UPDATE operational_schema_migrations SET version = ? WHERE scope = 'workflow'")
+          .run(version);
+        before = future.prepare('SELECT * FROM workflow_event_waits').all();
+      } finally {
+        future.close();
+      }
+      assert.throws(() => createSqliteEventWaitAuthority(root), /workflow is newer than supported/);
+      const check = new DatabaseSync(join(root, 'runtime.sqlite'), { readOnly: true });
+      try {
+        assert.equal(
+          check
+            .prepare("SELECT version FROM operational_schema_migrations WHERE scope = 'workflow'")
+            .get()!.version,
+          version,
+        );
+        assert.deepEqual(check.prepare('SELECT * FROM workflow_event_waits').all(), before);
+      } finally {
+        check.close();
+      }
     }
   });
 });
@@ -1369,7 +1378,7 @@ for (const [backend, make] of [
   });
 }
 
-test('workflow-15 upgrade indexes observation order without rewriting legacy wait records', async () => {
+test('workflow-13 upgrade indexes observation order without rewriting legacy wait records', async () => {
   await withProvider(localExecutionPersistenceProvider, async (s, root, owner) => {
     const session = await s.sessionStore.create(input(root));
     const record = waiting(session.id);
@@ -1379,8 +1388,10 @@ test('workflow-15 upgrade indexes observation order without rewriting legacy wai
     const before = old.prepare('SELECT record_json FROM workflow_event_waits').get();
     try {
       old.exec('DROP INDEX workflow_event_waits_observation_order');
+      old.exec('DROP INDEX workflow_event_waits_by_status');
+      old.exec('DROP TABLE workflow_event_wait_source_cooldowns');
       old
-        .prepare("UPDATE operational_schema_migrations SET version = 15 WHERE scope = 'workflow'")
+        .prepare("UPDATE operational_schema_migrations SET version = 13 WHERE scope = 'workflow'")
         .run();
     } finally {
       old.close();
@@ -1427,29 +1438,33 @@ test('workflow-15 upgrade indexes observation order without rewriting legacy wai
   });
 });
 
-test('workflow-14 upgrade retains source cooldown facts and adds dispatch reservations', async () => {
+test('workflow-14 reopen retains source cooldown facts and dispatch reservations', async () => {
   await withProvider(localExecutionPersistenceProvider, async (s, root, owner) => {
+    const source = { providerId: 'fake', connectionId: null };
+    await s.eventWaitStore.extendSourceCooldown({ ...source, observedAt: 10, until: 500 });
+    const reservedSource = { ...source, connectionId: 'reserved' };
+    assert.equal(
+      await s.eventWaitStore.reserveSourceDispatch({
+        ...reservedSource,
+        token: 'in-flight',
+        observedAt: 100,
+        until: 600,
+      }),
+      true,
+    );
     await s.sessionStore.close?.();
-    const old = new DatabaseSync(join(root, 'runtime.sqlite'));
-    try {
-      old.exec(`DROP TABLE workflow_event_wait_source_cooldowns;
-        CREATE TABLE workflow_event_wait_source_cooldowns (
-          source_key TEXT PRIMARY KEY, until_ms INTEGER NOT NULL CHECK (until_ms >= 0)
-        );
-        CREATE INDEX workflow_event_wait_source_cooldowns_expiry
-          ON workflow_event_wait_source_cooldowns(until_ms, source_key);`);
-      old
-        .prepare('INSERT INTO workflow_event_wait_source_cooldowns VALUES (?, ?)')
-        .run('["fake",null]', 500);
-      old
-        .prepare("UPDATE operational_schema_migrations SET version = 14 WHERE scope = 'workflow'")
-        .run();
-    } finally {
-      old.close();
-    }
     const reopened = await openInteractiveExecutionStoresForWrite(owner.lease);
     try {
-      const source = { providerId: 'fake', connectionId: null };
+      assert.equal(await reopened.eventWaitStore.readSourceCooldown(reservedSource), 600);
+      assert.equal(
+        await reopened.eventWaitStore.completeSourceDispatch({
+          ...reservedSource,
+          token: 'in-flight',
+          observedAt: 110,
+          until: 130,
+        }),
+        130,
+      );
       assert.equal(await reopened.eventWaitStore.readSourceCooldown(source), 500);
       assert.equal(
         await reopened.eventWaitStore.reserveSourceDispatch({
@@ -1484,7 +1499,7 @@ test('workflow-14 upgrade retains source cooldown facts and adds dispatch reserv
   });
 });
 
-test('workflow-13 upgrade retains wait bytes and adds status access and source cooldowns', async () => {
+test('workflow-13 upgrade to 14 retains wait bytes and adds status access and source limits', async () => {
   await withProvider(localExecutionPersistenceProvider, async (s, root, owner) => {
     const session = await s.sessionStore.create(input(root));
     const record = waiting(session.id);
@@ -1494,6 +1509,7 @@ test('workflow-13 upgrade retains wait bytes and adds status access and source c
     const before = old.prepare('SELECT record_json FROM workflow_event_waits').get();
     try {
       old.exec('DROP INDEX workflow_event_waits_by_status');
+      old.exec('DROP INDEX workflow_event_waits_observation_order');
       old.exec('DROP TABLE workflow_event_wait_source_cooldowns');
       old
         .prepare("UPDATE operational_schema_migrations SET version = 13 WHERE scope = 'workflow'")
@@ -1517,6 +1533,33 @@ test('workflow-13 upgrade retains wait bytes and adds status access and source c
       assert.equal(await reopened.eventWaitStore.readSourceCooldown(source), null);
       await reopened.eventWaitStore.extendSourceCooldown({ ...source, observedAt: 10, until: 500 });
       assert.equal(await reopened.eventWaitStore.readSourceCooldown(source), 500);
+      assert.equal(
+        await reopened.eventWaitStore.reserveSourceDispatch({
+          ...source,
+          token: 'dispatch-1',
+          observedAt: 499,
+          until: 600,
+        }),
+        false,
+      );
+      assert.equal(
+        await reopened.eventWaitStore.reserveSourceDispatch({
+          ...source,
+          token: 'dispatch-1',
+          observedAt: 500,
+          until: 600,
+        }),
+        true,
+      );
+      assert.equal(
+        await reopened.eventWaitStore.completeSourceDispatch({
+          ...source,
+          token: 'dispatch-1',
+          observedAt: 510,
+          until: 530,
+        }),
+        530,
+      );
       const db = new DatabaseSync(join(root, 'runtime.sqlite'), { readOnly: true });
       try {
         assert.deepEqual(db.prepare('SELECT record_json FROM workflow_event_waits').get(), before);
@@ -1524,7 +1567,7 @@ test('workflow-13 upgrade retains wait bytes and adds status access and source c
           db
             .prepare("SELECT version FROM operational_schema_migrations WHERE scope = 'workflow'")
             .get()?.version,
-          SQLITE_WORKFLOW_SCHEMA_VERSION,
+          14,
         );
       } finally {
         db.close();

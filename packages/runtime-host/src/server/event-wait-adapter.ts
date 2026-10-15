@@ -25,7 +25,16 @@ export type EventWaitObservationResult = {
   readonly eventKey?: string;
 } & (
   | { readonly kind: 'pending' }
-  | { readonly kind: 'unknown'; readonly reason: string; readonly retryAfterMs?: number }
+  | {
+      readonly kind: 'unknown';
+      readonly reason: string;
+      /**
+       * Minimum delay for this provider/connection, in relative milliseconds. The adapter
+       * must normalize source timestamps/units before returning it. The manager preserves
+       * the full delay across wait cleanup and restart; local backoff caps do not shorten it.
+       */
+      readonly retryAfterMs?: number;
+    }
   | {
       readonly kind: 'satisfied' | 'invalidated' | 'source_unavailable';
       readonly receiptKey: string;
@@ -36,7 +45,12 @@ export type EventWaitObservationResult = {
 export type EventWaitObservationAccess =
   | { readonly kind: 'allowed'; readonly context: unknown }
   | { readonly kind: 'revoked'; readonly reason: string }
-  | { readonly kind: 'unknown'; readonly reason: string; readonly retryAfterMs?: number };
+  | {
+      readonly kind: 'unknown';
+      readonly reason: string;
+      /** Same normalized, source-wide minimum delay as an unknown observation result. */
+      readonly retryAfterMs?: number;
+    };
 
 export interface EventWaitReadContext {
   readonly wait: EventWaitRecord;

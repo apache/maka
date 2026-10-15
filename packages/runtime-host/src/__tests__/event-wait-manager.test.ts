@@ -50,7 +50,8 @@ import {
 } from '../server/event-wait-manager.js';
 
 async function settle() {
-  // Lease validation includes filesystem I/O; microtasks alone do not drain that work.
+  // Yield to I/O, but do not treat a fixed number of turns as a completion barrier.
+  // Observe the expected durable state before asserting completion or advancing past it.
   for (let n = 0; n < 40; n++) await new Promise<void>((resolve) => setImmediate(resolve));
 }
 async function eventually(check: () => Promise<boolean> | boolean) {
@@ -754,6 +755,37 @@ test('transient errors back off, successful observations reset errors, budget ex
   assert.deepEqual(f.errors, []);
 });
 
+for (const backend of ['Local', 'Memory'] as const) {
+  test(`${backend}: healthy pending observations can exhaust the budget before the deadline`, async (t) => {
+    const f = await fixture(t, backend);
+    const r = await f.wait();
+    const source = new Source();
+    const manager = f.manager(source, { policy: { ...policy, maxAttempts: 3 } });
+    // Lifetime and request count are independent limits, even for a healthy source.
+    manager.validate(r);
+    await manager.start();
+    for (let attempts = 1; attempts <= 3; attempts++) {
+      await eventually(async () => {
+        const record = await f.read(r);
+        return (
+          record?.observation?.attempts === attempts && record.observation.outcome === 'pending'
+        );
+      });
+      assert.equal((await f.read(r))?.observation?.consecutiveErrors, 0);
+      await f.clock.advance(policy.pollIntervalMs);
+    }
+    await eventually(async () => (await f.read(r))?.status === 'resolved');
+    const result = await f.read(r);
+    assert.ok(result?.status === 'resolved');
+    assert.equal(result.resolution.outcome, 'source_unavailable');
+    assert.equal(result.observation?.reason, 'observation_budget_exhausted');
+    assert.equal(result.observation?.attempts, 3);
+    assert.ok(result.resolvedAt < result.deadlineAt);
+    assert.equal(source.calls.length, 3);
+    assert.deepEqual(f.errors, []);
+  });
+}
+
 test('uncooperative reads time out without releasing request capacity, and cannot defeat expiry', async (t) => {
   const f = await fixture(t);
   const r = await f.wait('blocked', { deadlineAt: 1_250 });
@@ -960,7 +992,13 @@ for (const phase of [1, 2, 3, 'read'] as const) {
         for (let step = 0; step < handoffSteps; step++) await Promise.resolve();
         releaseSecond();
         await cancellation;
-        await settle();
+        await eventually(
+          async () =>
+            (await f.stores.eventWaitStore.readSourceCooldown({
+              providerId: 'fake',
+              connectionId: null,
+            })) === 1_500,
+        );
         const cancelled = await f.read(a);
         assert.equal(cancelled?.status, 'cancelled');
         assert.equal(
@@ -1745,6 +1783,15 @@ for (const backend of ['Local', 'Memory'] as const) {
       const manager = f.manager(source);
       await manager.start();
       await eventually(async () => (await f.read(a))?.observation?.outcome === 'unknown');
+      // The shared source delay exceeds local maxBackoffMs (400), and may also
+      // outlive the originating wait. Neither boundary may shorten it for peers.
+      assert.equal(
+        await f.stores.eventWaitStore.readSourceCooldown({
+          providerId: 'fake',
+          connectionId: null,
+        }),
+        1_500,
+      );
       await f.clock.advance(60);
       assert.equal(source.calls.filter(({ wait }) => wait.waitId === b.waitId).length, 0);
       if (retirement === 'cancel')
@@ -2586,8 +2633,18 @@ for (const backend of ['Local', 'Memory'] as const) {
         },
       })
       .start();
-    await eventually(() => source.calls.length === 1);
-    await f.clock.advance(600);
+    // Finish each page's observation before advancing virtual time. Otherwise real
+    // lease I/O can still be pending when the clock passes the waits' deadlines.
+    for (let observed = 1; observed <= waits.length; observed++) {
+      await eventually(async () => {
+        const records = await Promise.all(waits.map((wait) => f.read(wait)));
+        return (
+          records.filter((record) => record?.observation?.lastObservedAt != null).length >= observed
+        );
+      });
+      if (observed < waits.length) await f.clock.advance(30);
+    }
+    await f.clock.advance(1_600 - f.clock.now());
     assert.equal((await f.read(waits[2]))?.status, 'resolved');
     for (const wait of waits)
       assert.ok(source.calls.some((call) => call.wait.waitId === wait.waitId));
@@ -2984,6 +3041,13 @@ for (const failCooldown of [false, true]) {
     assert.equal(source.calls.length, 0);
     cooldownUnavailable = false;
     await f.clock.advance(10);
+    await eventually(
+      async () =>
+        (await f.stores.eventWaitStore.readSourceCooldown({
+          providerId: 'fake',
+          connectionId: null,
+        })) === 1_500,
+    );
     assert.equal(
       await f.stores.eventWaitStore.readSourceCooldown({ providerId: 'fake', connectionId: null }),
       1_500,
@@ -4467,6 +4531,7 @@ for (const count of [1, 7]) {
         .start();
       await eventually(() => failures.size > 0);
       await f.clock.advance(250);
+      await eventually(async () => (await f.read(healthy))?.status === 'resolved');
       assert.equal((await f.read(healthy))?.status, 'resolved');
       assert.equal((await f.read(healthy))?.observation?.attempts, 1);
       assert.deepEqual(
@@ -4675,6 +4740,7 @@ test('without storage failures durable observation age remains ahead of lexical 
     [z.waitId],
   );
   await f.clock.advance(30);
+  await eventually(async () => (await f.read(a))?.status === 'resolved');
   assert.equal((await f.read(a))?.status, 'resolved');
   assert.deepEqual(
     source.calls.map(({ wait }) => wait.waitId),
