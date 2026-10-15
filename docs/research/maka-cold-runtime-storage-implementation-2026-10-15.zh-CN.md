@@ -83,7 +83,7 @@ Host 增加明确的 `upgrading_storage` 状态，协议兼容 epoch 更新至 2
 
 UI 使用真实阶段：**准备升级 → 整理历史 → 校验历史 → 打开历史**，显示当前步骤、已用时间和不定进度条。SQLite 没有提供可直接用于这里的完整 VACUUM 百分比分母，不能用时间或文件大小伪造完成比例。[SQLite progress handler](https://sqlite.org/c3ref/progress_handler.html)
 
-[真实客户端进度条截图](./cold-storage-2026-10-15/upgrade.png)
+[真实客户端进度条截图](../images/pr/cold-runtime-storage/upgrade.png)
 
 普通退出会取消启动，Root 所有权保持到 worker 真正退出；进程被强制结束后由 SQLite 恢复。支持安全检查和重试，不承诺从中断百分比续传。进程终止实验也不等同于真实断电实验。
 
