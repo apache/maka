@@ -22,7 +22,8 @@ import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog';
 import { ProgressBar } from '@astryxdesign/core/ProgressBar';
 import { Text, useUiLocale } from '@maka/ui';
 import { defineShippedUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
-import type { DesktopStorageUpgradeStatus } from '../shared/runtime-host-identity.js';
+import type { DesktopStorageUpgradeStatus } from '../../../../shared/runtime-host-identity.js';
+import { useRuntimeHostManagementServices } from '../services-context.js';
 
 const PHASES = ['preparing', 'rebuilding', 'verifying', 'opening'] as const;
 
@@ -56,31 +57,35 @@ const COPY = resolveUiMessageCatalog(defineShippedUiMessageCatalog<{
 
 export function StorageUpgradeOverlay() {
   const copy = COPY[useUiLocale()];
+  const { storageUpgrade } = useRuntimeHostManagementServices();
   const [status, setStatus] = useState<DesktopStorageUpgradeStatus>({ active: false });
   const { active } = status;
   const phase = status.phase ?? 'preparing';
   const [seconds, setSeconds] = useState(0);
   useEffect(() => {
-    const bridge = window.maka?.appWindow;
-    if (!bridge?.getStorageUpgradeStatus || !bridge.subscribeStorageUpgrade) return;
     let mounted = true;
     let pushed = false;
-    const stop = bridge.subscribeStorageUpgrade((status) => {
+    const stop = storageUpgrade.subscribe((status) => {
       pushed = true;
       if (mounted) setStatus(status);
     });
-    void bridge.getStorageUpgradeStatus().then((status) => {
+    void storageUpgrade.current().then((status) => {
       if (mounted && !pushed) setStatus(status);
     }).catch(() => {});
     return () => { mounted = false; stop(); };
-  }, []);
+  }, [storageUpgrade]);
   useEffect(() => {
     setSeconds(0);
     if (!active) return;
     const started = Date.now();
-    const timer = setInterval(() => setSeconds(Math.floor((Date.now() - started) / 1000)), 1000);
-    return () => clearInterval(timer);
-  }, [active]);
+    let cancel = () => {};
+    const tick = () => {
+      setSeconds(Math.floor((Date.now() - started) / 1000));
+      cancel = storageUpgrade.schedule(tick, 1000);
+    };
+    cancel = storageUpgrade.schedule(tick, 1000);
+    return () => cancel();
+  }, [active, storageUpgrade]);
   if (!active) return null;
   return <>
     <span data-maka-content-ready hidden />

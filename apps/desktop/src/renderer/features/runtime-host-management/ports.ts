@@ -19,6 +19,7 @@
 
 import type { RuntimeHostPeerMeshManagementAction } from '@maka/runtime-host/operator';
 import type { RuntimeHostWebRtcStunPolicy } from '@maka/runtime-host/operator';
+import type { DesktopStorageUpgradeStatus } from '../../../shared/runtime-host-identity.js';
 import type {
   HostHandoffPresentation,
   HostHandoffView,
@@ -131,5 +132,10 @@ export interface RuntimeHostManagementServices {
   readonly connectionCodes: RuntimeHostConnectionCodeServices;
   readonly resources: RuntimeHostResourceServices;
   readonly handoff: RuntimeHostHandoffServices;
+  readonly storageUpgrade: {
+    current(): Promise<DesktopStorageUpgradeStatus>;
+    subscribe(handler: (status: DesktopStorageUpgradeStatus) => void): () => void;
+    schedule(callback: () => void, delayMs: number): () => void;
+  };
   readonly supportsWsl: boolean;
 }

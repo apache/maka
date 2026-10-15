@@ -24,6 +24,14 @@ import { Button, Text, useToast, useUiLocale } from '@maka/ui';
 import type { RuntimeHostHandoffPayload } from '../ports.js';
 import { getRuntimeHostHandoffCopy } from '../locales/runtime-host-handoff-copy.js';
 import { useRuntimeHostManagementServices } from '../services-context.js';
+import { StorageUpgradeOverlay } from './storage-upgrade-overlay.js';
+
+export function RuntimeHostLifecycleOverlay() {
+  return <>
+    <RuntimeHostHandoffOverlay />
+    <StorageUpgradeOverlay />
+  </>;
+}
 
 /**
  * The in-window face of a Runtime Host handoff. Background reconciliation is
