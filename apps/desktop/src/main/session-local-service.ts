@@ -368,24 +368,26 @@ export class DesktopSessionLocalService {
       .map((target) => {
         const connection = this.#observeCatalogConnection(target);
         const fresh = this.#catalogFresh.get(target.partition);
-        const authoritative = !this.#closed && !!target.client && fresh?.connection === connection;
+        const live = !this.#closed && !!target.client && fresh?.connection === connection;
         const sessions = this.store
           .sessions(target.partition)
           .map((session) =>
             this.store.creation(target.partition, session.id)
               ? { ...session, localState: 'pending' as const }
-              : authoritative
+              : live
                 ? session
                 : { ...session, runningTurnIds: undefined, backgroundActivity: undefined, backgroundActivityVersion: undefined, localState: 'cached' as const },
           );
         if (
           target.client &&
-          (!authoritative || !fresh ||
+          (!live || !fresh ||
             fresh.invalidationVersion !== connection.invalidationVersion ||
             Date.now() - fresh.at > 5000)
         )
           this.#refreshCatalog(target, connection);
-        return { scope: target.scope, sessions, authoritative };
+        // A live snapshot still carries observed activity, but cannot prove
+        // absence after a Host change until the catalog catches up.
+        return { scope: target.scope, sessions, authoritative: live && fresh.invalidationVersion === connection.invalidationVersion };
       });
   }
 
