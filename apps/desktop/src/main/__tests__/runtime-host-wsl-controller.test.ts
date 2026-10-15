@@ -31,6 +31,7 @@ import {
   RUNTIME_HOST_SETUP_SOURCE_PACKAGE_INTEGRITY_ENV,
 } from '@maka/runtime-host/operator';
 import {
+  recoverDesktopRuntimeHostWslNode,
   runDesktopRuntimeHostWslManagement,
   runDesktopRuntimeHostWslSetup,
   runDesktopRuntimeHostWslUpdate,
@@ -287,3 +288,31 @@ test('released WSL discovery accepts an existing binding without a credential or
   });
   assert.deepEqual(result, existing);
 });
+
+for (const rootMatches of [true, false]) {
+  test(`WSL missing-Node recovery uses login bootstrap and fences the result: ${rootMatches}`, async () => {
+    const frame = {
+      schemaVersion: 1 as const, sequence: 0, kind: 'existing_environment' as const,
+      version: '0.2.0', serviceId: 'a'.repeat(64), rootId: (rootMatches ? 'a' : 'b').repeat(64), rootPath: '/state',
+      deploymentId: '00000000-0000-4000-8000-000000000001', operator: { ...OPERATOR, nodePath: '/new/node' },
+    };
+    let command = '';
+    const result = recoverDesktopRuntimeHostWslNode({ distribution: 'Ubuntu', rootId: 'a'.repeat(64),
+      operator: OPERATOR, setupPackage: { kind: 'npm', specifier: 'maka-agent@0.2.1' } }, {
+      wslExecutable: 'wsl.exe', processFactory: (_executable, args) => {
+        command = args.at(-1)!;
+        const child = new EventEmitter() as ChildProcessWithoutNullStreams;
+        const stdout = new PassThrough(); const stderr = new PassThrough();
+        Object.assign(child, { stdin: new PassThrough(), stdout, stderr, kill: () => true });
+        process.nextTick(() => { stdout.end(encodeRuntimeHostSetupFrame(frame)); stderr.end(); child.emit('close', 0, null); });
+        return child;
+      },
+    });
+    if (rootMatches) assert.deepEqual(await result, frame);
+    else await assert.rejects(result, /different deployment/);
+    assert.match(command, /\$\{SHELL:-\/bin\/sh\}.*-lic/u);
+    assert.match(command, /npx.*maka-agent@0\.2\.1.*repair-wsl-node/u);
+    assert.match(command, /--expected-node-path/);
+    assert.doesNotMatch(command, /--update-existing|--allow-interrupt-active-tasks/);
+  });
+}

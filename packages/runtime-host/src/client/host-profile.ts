@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { RuntimeHostWslNodeRecovery } from './wsl-node-recovery.js';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   ResumablePeerStream,
@@ -192,7 +193,15 @@ export function sameResolvedRuntimeHostProfileTarget(
   if (left.profile.kind !== right.profile.kind) return false;
   if (left.profile.kind === 'local' || right.profile.kind === 'local') return true;
   if (left.profile.kind === 'environment' || right.profile.kind === 'environment') {
-    return profileTargetBinding(left.profile) === profileTargetBinding(right.profile);
+    if (left.profile.kind !== 'environment' || right.profile.kind !== 'environment') return false;
+    const a = left.profile.operator;
+    const b = right.profile.operator;
+    return (
+      sameEnvironmentRuntimeHostDeployment(left.profile, right.profile) &&
+      (a.kind === 'node' && b.kind === 'node'
+        ? a.modulePath === b.modulePath
+        : operatorTargetBinding(a) === operatorTargetBinding(b))
+    );
   }
   return (
     left.profile.id === right.profile.id &&
@@ -224,6 +233,10 @@ export function sameRemoteRuntimeHostProfileTarget(
 }
 
 export interface RuntimeHostProfileCatalog {
+  updateEnvironmentOperatorIfCurrent(
+    expected: EnvironmentRuntimeHostProfile,
+    operator: RuntimeHostPosixOperatorCommand,
+  ): Promise<boolean>;
   read(): Promise<RuntimeHostProfileDocument>;
   resolve(profileId?: string): Promise<ResolvedRuntimeHostProfile>;
   create(
@@ -402,6 +415,7 @@ export function runtimeHostProfileTargetFingerprint(profile: RemoteRuntimeHostPr
 
 export async function connectRuntimeHostProfile(
   input: {
+    readonly recoverMissingWslNode?: RuntimeHostWslNodeRecovery;
     readonly profile: PersistedRuntimeHostProfile;
     readonly credential?: string;
     readonly clientInstanceId: string;
@@ -429,6 +443,7 @@ export async function connectRuntimeHostProfile(
   if (input.profile.kind === 'environment') {
     return (overrides.connectWsl ?? connectRuntimeHostWslEnvironment)(
       {
+        ...(input.recoverMissingWslNode ? { recoverMissingNode: input.recoverMissingWslNode } : {}),
         distribution: input.profile.provider.distribution,
         operator: input.profile.operator,
         rootId: input.profile.rootId,
@@ -1202,6 +1217,41 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
         throw error;
       }
       return { rebound: true, document: next };
+    });
+  }
+
+  updateEnvironmentOperatorIfCurrent(
+    expected: EnvironmentRuntimeHostProfile,
+    operator: RuntimeHostPosixOperatorCommand,
+  ): Promise<boolean> {
+    const source = decodeEnvironmentRuntimeHostProfile(expected);
+    const replacement = decodeRuntimeHostPosixOperatorCommand(operator);
+    if (
+      source.operator.kind !== 'node' ||
+      replacement.kind !== 'node' ||
+      source.operator.modulePath !== replacement.modulePath
+    )
+      throw new Error('WSL recovery must retain its operator module');
+    return this.#exclusive(async () => {
+      const current = await this.#readSnapshot();
+      const profile = current.profiles.find(
+        (p): p is EnvironmentRuntimeHostProfile => p.id === source.id && p.kind === 'environment',
+      );
+      if (
+        !profile ||
+        !sameEnvironmentRuntimeHostDeployment(profile, source) ||
+        operatorTargetBinding(profile.operator) !== operatorTargetBinding(source.operator)
+      )
+        return false;
+      const updated = decodeEnvironmentRuntimeHostProfile({ ...profile, operator: replacement });
+      await writeProfileDocument(
+        this.path,
+        decodeRuntimeHostProfileDocument({
+          schemaVersion: PROFILE_SCHEMA_VERSION,
+          profiles: current.profiles.map((p) => (p.id === profile.id ? updated : p)),
+        }),
+      );
+      return true;
     });
   }
 

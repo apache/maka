@@ -441,6 +441,7 @@ test('remote CLI profiles pin root identity and resolve credential outside the p
         rebindIfCurrent: async () => {
           throw new Error('unexpected write');
         },
+        updateEnvironmentOperatorIfCurrent: async () => false,
         updateRemoteProfileIfCurrent: async () => {
           throw new Error('unexpected write');
         },
@@ -710,6 +711,7 @@ function singleRemoteProfileCatalog(profile: RemoteRuntimeHostProfile): RuntimeH
     remove: async () => assert.fail('unexpected write'),
     removeIfCurrent: async () => assert.fail('unexpected write'),
     rebindIfCurrent: async () => assert.fail('unexpected write'),
+    updateEnvironmentOperatorIfCurrent: async () => false,
     updateRemoteProfileIfCurrent: async () => assert.fail('unexpected write'),
     mutateRemoteProfileIfCurrent: async () => assert.fail('unexpected write'),
     readRemoteProfileIfCurrent: async () => assert.fail('unexpected read'),

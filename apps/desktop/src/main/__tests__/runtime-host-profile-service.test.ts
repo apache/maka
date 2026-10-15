@@ -1912,3 +1912,27 @@ function unavailable(
     error,
   };
 }
+
+test('WSL Node recovery persists profile and management binding during enable without reentering its queue', async () => {
+  const root = await clientRoot();
+  const catalog = createClientRuntimeHostProfileCatalog(root);
+  const managedServices = createDesktopRuntimeHostManagedServiceStore(root);
+  const profile = { id: 'ubuntu', name: 'Ubuntu', kind: 'environment' as const,
+    provider: { kind: 'wsl' as const, distribution: 'Ubuntu' }, rootId: 'd'.repeat(64), operator: OPERATOR };
+  await catalog.create(profile);
+  const startup = await resolveDesktopRuntimeHostStartup(root, { catalog });
+  const recovered = { operator: { ...OPERATOR, nodePath: '/new/node' }, rootPath: '/state', deploymentId: '00000000-0000-4000-8000-000000000001' };
+  const expected = { distribution: 'Ubuntu', rootId: 'd'.repeat(64), operator: OPERATOR };
+  const service = createDesktopRuntimeHostProfileService({ clientDataRoot: root, startup, catalog, managedServices,
+    states: () => [ready({ profile: LOCAL_RUNTIME_HOST_PROFILE })],
+    enable: async () => { await service.recordRecoveredWslNode(expected, recovered); },
+    disable: async () => undefined, setDefault: () => undefined, finalizePairing: async () => undefined,
+  });
+  await service.setEnabled('ubuntu', true);
+  assert.deepEqual((await catalog.resolve('ubuntu')).profile, { ...profile, operator: recovered.operator });
+  const binding = (await managedServices.read()).bindings.find((b) => b.profile.id === 'ubuntu');
+  assert.deepEqual(binding?.profile, { ...profile, operator: recovered.operator });
+  // A previously committed catalog update can repair its management projection idempotently.
+  await service.recordRecoveredWslNode(expected, recovered);
+  assert.equal((await managedServices.read()).bindings.length, 1);
+});

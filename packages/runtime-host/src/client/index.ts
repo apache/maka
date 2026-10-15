@@ -209,3 +209,9 @@ export {
   createOAuthPresentationClientProvider,
   type OAuthPresentationBackend,
 } from './oauth-presentation.js';
+
+export {
+  resolveRuntimeHostWslNodeOperator,
+  type RuntimeHostWslNodeRecovery,
+  type RuntimeHostWslNodeRecoveryInput,
+} from './wsl-node-recovery.js';
