@@ -15,11 +15,11 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 
 | Classification | Count |
 |---|---:|
-| windows-backend-gap | 27 |
+| windows-backend-gap | 29 |
 | portable-candidate | 57 |
 | platform-contract | 49 |
 
-Total Windows-excluded declarations: **133**
+Total Windows-excluded declarations: **135**
 
 ## Inventory
 
@@ -82,6 +82,8 @@ Total Windows-excluded declarations: **133**
 | windows-backend-gap | `packages/runtime-host/src/__tests__/usage-pricing-client-correlation.test.ts` fails the connection for a canonical response with mismatched ${mismatch.name} | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/usage-pricing-client-correlation.test.ts` rejects local invalid input without poisoning transport and correlates a private canonical copy | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/usage-pricing-two-client-uds.test.ts` two clients share usage projection and one revision-CAS pricing authority | `process.platform === 'win32'` |
+| windows-backend-gap | `packages/runtime-host/src/__tests__/wsl-node-recovery.test.ts` WSL Node recovery trigger: ${state} | `process.platform === 'win32'` |
+| windows-backend-gap | `packages/runtime-host/src/__tests__/wsl-node-recovery.test.ts` a missing WSL Node is recovered once before connecting, never retried for subsequent Host failure | `process.platform === 'win32'` |
 | portable-candidate | `packages/runtime/src/__tests__/filesystem-apply-patch.test.ts` deletes a self-referential symlink entry without following it | `process.platform === 'win32'` |
 | portable-candidate | `packages/runtime/src/__tests__/filesystem-authority.test.ts` the model-facing Glob result marks a capped permission-limited walk incomplete | `process.platform === 'win32' \|\| process.getuid?.() === 0` |
 | platform-contract | `packages/runtime/src/__tests__/filesystem-worker-process-runner.test.ts` filesystem worker rejects boundedly when a detached descendant retains stdout | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |
