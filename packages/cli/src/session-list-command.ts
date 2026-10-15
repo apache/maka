@@ -17,11 +17,22 @@
  * under the License.
  */
 
-import type { SessionSummary } from '@maka/core/session';
-import { readRuntimeHostSessions, projectSessionCatalogSummary } from '@maka/runtime-host/client';
+import { isLinkedSubagentSession, type SessionSummary } from '@maka/core/session';
+import { isSideConversationSession } from '@maka/core/side-conversation';
+import {
+  projectSessionCatalogSummary,
+  readRuntimeHostSessionCatalogPage,
+  readRuntimeHostSessions,
+  RuntimeHostSessionCatalogRevisionChangedError,
+  type RuntimeHostSessionCatalogPageCursor,
+} from '@maka/runtime-host/client';
+import type { SessionCatalogItem } from '@maka/runtime-host/protocol';
 import { connectRuntimeHostCliConnection } from './runtime-host-cli-context.js';
 
-export interface MakaSessionListOptions {
+// Restarts after the catalog revision moved under a paged read.
+const MAX_BOUNDED_READ_ATTEMPTS = 3;
+
+export interface MakaSessionListCliOptions {
   readonly hostProfileId?: string;
   readonly includeArchived: boolean;
   readonly json: boolean;
@@ -29,15 +40,21 @@ export interface MakaSessionListOptions {
 }
 
 export type ParseMakaSessionListArgsResult =
-  | { readonly kind: 'list'; readonly options: MakaSessionListOptions }
+  | { readonly kind: 'list'; readonly options: MakaSessionListCliOptions }
   | { readonly kind: 'help' }
   | { readonly kind: 'error'; readonly message: string };
 
 export interface MakaSessionListDeps {
-  listSessions(hostProfileId: string | undefined): Promise<SessionSummary[]>;
+  /** Returns listable Sessions in Host order, at most `query.limit` of them. */
+  listSessions(
+    hostProfileId: string | undefined,
+    query: MakaSessionListQuery,
+  ): Promise<SessionSummary[]>;
   writeStdout(text: string): void;
   writeStderr(text: string): void;
 }
+
+export type MakaSessionListQuery = Pick<MakaSessionListCliOptions, 'includeArchived' | 'limit'>;
 
 export interface MakaSessionListRow {
   readonly id: string;
@@ -97,13 +114,13 @@ export function sessionListHelpText(cliCommand: string): string {
     `Usage: ${cliCommand} session-list [options]`,
     '',
     'Lists Sessions on the local or a remote Runtime Host, newest first.',
-    'Subagent Sessions are not listed.',
+    'Subagent and side-conversation Sessions are not listed.',
     '',
     'Options:',
     '  --host <profile-id>   List Sessions on a saved Runtime Host profile',
     '  --archived            Include archived Sessions',
     '  --limit <n>           Show at most n Sessions',
-    '  --json                Emit one JSON object per line',
+    '  --json                Emit one JSON object per line; activityAt is epoch milliseconds',
   ].join('\n');
 }
 
@@ -123,12 +140,12 @@ export async function runMakaSessionListCli(
   }
   let sessions: SessionSummary[];
   try {
-    sessions = await deps.listSessions(parsed.options.hostProfileId);
+    sessions = await deps.listSessions(parsed.options.hostProfileId, parsed.options);
   } catch (error) {
     deps.writeStderr(`session-list failed: ${error instanceof Error ? error.message : error}\n`);
     return 1;
   }
-  const rows = selectSessionListRows(sessions, parsed.options);
+  const rows = sessions.map(toListRow);
   deps.writeStdout(
     parsed.options.json
       ? rows.map((row) => `${JSON.stringify(row)}\n`).join('')
@@ -137,32 +154,28 @@ export async function runMakaSessionListCli(
   return 0;
 }
 
-export function selectSessionListRows(
-  sessions: readonly SessionSummary[],
-  options: Pick<MakaSessionListOptions, 'includeArchived' | 'limit'>,
-): MakaSessionListRow[] {
-  return sessions
-    .filter(
-      (session) =>
-        session.subagentParent === undefined && (options.includeArchived || !session.isArchived),
-    )
-    .map((session) => ({
-      id: session.id,
-      name: session.name,
-      status: session.status,
-      cwd: session.cwd ?? null,
-      model: session.model,
-      archived: session.isArchived,
-      activityAt: finiteOrNull(session.activityAt ?? session.lastMessageAt),
-    }))
-    .sort((left, right) => {
-      const delta = (right.activityAt ?? 0) - (left.activityAt ?? 0);
-      return delta !== 0 ? delta : left.id.localeCompare(right.id);
-    })
-    .slice(0, options.limit);
+// The catalog is already ordered `activity_at DESC, session_id ASC`; rows keep that order.
+export function isListableSession(session: SessionSummary, includeArchived: boolean): boolean {
+  return (
+    !isLinkedSubagentSession(session) &&
+    !isSideConversationSession(session.labels) &&
+    (includeArchived || !session.isArchived)
+  );
 }
 
-// A corrupt record must not poison the sort comparator with NaN.
+function toListRow(session: SessionSummary): MakaSessionListRow {
+  return {
+    id: session.id,
+    name: session.name,
+    status: session.status,
+    cwd: session.cwd ?? null,
+    model: session.model,
+    archived: session.isArchived,
+    activityAt: finiteOrNull(session.activityAt ?? session.lastMessageAt),
+  };
+}
+
+// A corrupt record must not surface a non-finite time to scripts.
 function finiteOrNull(value: number | undefined): number | null {
   return value !== undefined && Number.isFinite(value) ? value : null;
 }
@@ -195,6 +208,7 @@ function formatActivityTime(activityAt: number | null): string {
 export interface MakaSessionListConnectionDeps {
   connect: typeof connectRuntimeHostCliConnection;
   readSessions: typeof readRuntimeHostSessions;
+  readPage: typeof readRuntimeHostSessionCatalogPage;
 }
 
 export async function runMakaSessionListCommand(
@@ -207,6 +221,7 @@ export async function runMakaSessionListCommand(
   connectionDeps: MakaSessionListConnectionDeps = {
     connect: connectRuntimeHostCliConnection,
     readSessions: readRuntimeHostSessions,
+    readPage: readRuntimeHostSessionCatalogPage,
   },
   io: Pick<MakaSessionListDeps, 'writeStdout' | 'writeStderr'> = {
     writeStdout: (text) => void process.stdout.write(text),
@@ -217,21 +232,20 @@ export async function runMakaSessionListCommand(
     argv,
     {
       ...io,
-      listSessions: async (hostProfileId) => {
+      listSessions: async (hostProfileId, query) => {
         const context = await connectionDeps.connect({
           rootPath: options.workspaceRoot,
           clientDataRoot: options.clientDataRoot,
           ...(hostProfileId ? { profileId: hostProfileId } : {}),
         });
         try {
-          const items = await connectionDeps.readSessions(context.connection);
-          const sessions = items.flatMap((item) =>
-            'kind' in item ? [] : [projectSessionCatalogSummary(item)],
+          const { sessions, unsupported } = await readListableSessions(
+            context.connection,
+            connectionDeps,
+            query,
           );
-          if (sessions.length < items.length) {
-            io.writeStderr(
-              `${items.length - sessions.length} session(s) in an unsupported format were not listed\n`,
-            );
+          if (unsupported > 0) {
+            io.writeStderr(`${unsupported} session(s) in an unsupported format were not listed\n`);
           }
           return sessions;
         } finally {
@@ -241,4 +255,55 @@ export async function runMakaSessionListCommand(
     },
     options.cliCommand,
   );
+}
+
+// Without a limit the whole catalog is read. With one, pages are read in Host order only until
+// enough Sessions pass the filter, so `--limit 5` does not page through a large history.
+async function readListableSessions(
+  connection: Parameters<MakaSessionListConnectionDeps['readSessions']>[0],
+  deps: MakaSessionListConnectionDeps,
+  query: MakaSessionListQuery,
+): Promise<{ sessions: SessionSummary[]; unsupported: number }> {
+  const sessions: SessionSummary[] = [];
+  let unsupported = 0;
+  // Returns true once `query.limit` Sessions are collected.
+  const take = (items: readonly SessionCatalogItem[]): boolean => {
+    for (const item of items) {
+      if ('kind' in item) {
+        unsupported += 1;
+        continue;
+      }
+      const session = projectSessionCatalogSummary(item);
+      if (!isListableSession(session, query.includeArchived)) continue;
+      sessions.push(session);
+      if (sessions.length === query.limit) return true;
+    }
+    return false;
+  };
+
+  if (query.limit === undefined) {
+    take(await deps.readSessions(connection));
+    return { sessions, unsupported };
+  }
+  for (let attempt = 1; ; attempt += 1) {
+    sessions.length = 0;
+    unsupported = 0;
+    try {
+      const cursors = new Set<string>();
+      let cursor: RuntimeHostSessionCatalogPageCursor | null = null;
+      do {
+        const page = await deps.readPage(connection, cursor ?? undefined);
+        if (take(page.sessions)) break;
+        cursor = page.nextCursor;
+        if (cursor && cursors.has(cursor.cursor)) {
+          throw new Error('Runtime Host Session catalog returned a repeated cursor');
+        }
+        if (cursor) cursors.add(cursor.cursor);
+      } while (cursor);
+      return { sessions, unsupported };
+    } catch (error) {
+      const revisionMoved = error instanceof RuntimeHostSessionCatalogRevisionChangedError;
+      if (!revisionMoved || attempt >= MAX_BOUNDED_READ_ATTEMPTS) throw error;
+    }
+  }
 }

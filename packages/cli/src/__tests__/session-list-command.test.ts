@@ -20,14 +20,18 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { SessionSummary } from '@maka/core/session';
-import type { RuntimeHostConnection } from '@maka/runtime-host/client';
+import {
+  RuntimeHostSessionCatalogRevisionChangedError,
+  type RuntimeHostConnection,
+  type RuntimeHostSessionCatalogPage,
+} from '@maka/runtime-host/client';
 import type { SessionCatalogProjection } from '@maka/runtime-host/protocol';
 import { parseMakaCliArgs } from '../cli-core.js';
 import {
   parseMakaSessionListArgs,
   runMakaSessionListCli,
   runMakaSessionListCommand,
-  selectSessionListRows,
+  isListableSession,
   type MakaSessionListConnectionDeps,
 } from '../session-list-command.js';
 
@@ -69,45 +73,38 @@ describe('maka session-list argument parsing', () => {
   });
 });
 
-describe('maka session-list selection', () => {
-  test('orders by recency, hides archived and subagent sessions, applies the limit', () => {
-    const rows = selectSessionListRows(
-      [
-        session({ id: 'old', lastMessageAt: 10 }),
-        session({ id: 'new', activityAt: 300, lastMessageAt: 20 }),
-        session({ id: 'archived', isArchived: true, lastMessageAt: 400 }),
+describe('maka session-list filtering', () => {
+  test('hides archived Sessions unless asked', () => {
+    const archived = session({ isArchived: true });
+    assert.equal(isListableSession(archived, false), false);
+    assert.equal(isListableSession(archived, true), true);
+  });
+
+  test('hides linked subagent Sessions in both the Host and the legacy shape', () => {
+    assert.equal(
+      isListableSession(session({ subagent: { parentSessionId: 'parent' } }), true),
+      false,
+    );
+    assert.equal(
+      isListableSession(
         session({
-          id: 'child',
-          lastMessageAt: 500,
           subagentParent: {
             kind: 'subagent',
-            parentSessionId: 'new',
+            parentSessionId: 'parent',
             spawnedBy: { parentRunId: 'run-1', parentTurnId: 'turn-1', toolCallId: 'call-1' },
             lifecycle: 'foreground',
           },
         }),
-        session({ id: 'mid', lastMessageAt: 100 }),
-      ],
-      { includeArchived: false },
+        true,
+      ),
+      false,
     );
-    assert.deepEqual(
-      rows.map((row) => row.id),
-      ['new', 'mid', 'old'],
-    );
-    assert.deepEqual(
-      selectSessionListRows([session({ id: 'a' }), session({ id: 'b' })], {
-        includeArchived: false,
-        limit: 1,
-      }).map((row) => row.id),
-      ['a'],
-    );
+    assert.equal(isListableSession(session(), true), true);
   });
 
-  test('includes archived sessions on request', () => {
-    const rows = selectSessionListRows([session({ id: 'x', isArchived: true })], {
-      includeArchived: true,
-    });
-    assert.equal(rows[0]?.archived, true);
+  test('hides side-conversation Sessions like the TUI does', () => {
+    assert.equal(isListableSession(session({ labels: ['mode:side_conversation'] }), true), false);
+    assert.equal(isListableSession(session({ labels: ['other'] }), true), true);
   });
 });
 
@@ -159,33 +156,45 @@ describe('maka session-list dispatch', () => {
 });
 
 describe('maka session-list ordering and rendering', () => {
-  test('falls back from activityAt to lastMessageAt and sorts unknown times last', () => {
-    const rows = selectSessionListRows(
-      [
-        session({ id: 'unknown', lastMessageAt: undefined }),
-        session({ id: 'message', lastMessageAt: 50 }),
-        session({ id: 'activity', activityAt: 90, lastMessageAt: 10 }),
+  test('keeps the Host order instead of re-sorting', async () => {
+    const out: string[] = [];
+    await runMakaSessionListCli(['--json'], {
+      listSessions: async () => [
+        session({ id: 'b', lastMessageAt: 1 }),
+        session({ id: 'a', lastMessageAt: 9 }),
       ],
-      { includeArchived: false },
-    );
+      writeStdout: (text) => void out.push(text),
+      writeStderr: () => undefined,
+    });
     assert.deepEqual(
-      rows.map((row) => [row.id, row.activityAt]),
-      [
-        ['activity', 90],
-        ['message', 50],
-        ['unknown', null],
-      ],
+      out
+        .join('')
+        .trimEnd()
+        .split('\n')
+        .map((line) => JSON.parse(line).id),
+      ['b', 'a'],
     );
   });
 
-  test('breaks recency ties by id', () => {
-    const rows = selectSessionListRows(
-      [session({ id: 'b', lastMessageAt: 1 }), session({ id: 'a', lastMessageAt: 1 })],
-      { includeArchived: false },
-    );
+  test('reports activityAt, falling back to lastMessageAt, and null when unknown', async () => {
+    const out: string[] = [];
+    await runMakaSessionListCli(['--json'], {
+      listSessions: async () => [
+        session({ id: 'activity', activityAt: 90, lastMessageAt: 10 }),
+        session({ id: 'message', lastMessageAt: 50 }),
+        session({ id: 'unknown', lastMessageAt: undefined }),
+        session({ id: 'nan', activityAt: Number.NaN, lastMessageAt: undefined }),
+      ],
+      writeStdout: (text) => void out.push(text),
+      writeStderr: () => undefined,
+    });
     assert.deepEqual(
-      rows.map((row) => row.id),
-      ['a', 'b'],
+      out
+        .join('')
+        .trimEnd()
+        .split('\n')
+        .map((line) => JSON.parse(line).activityAt),
+      [90, 50, null, null],
     );
   });
 
@@ -254,101 +263,214 @@ describe('maka session-list failure handling', () => {
     const lines = out.join('').trimEnd().split('\n');
     assert.equal(lines.length, 2);
     assert.doesNotMatch(out.join(''), /\u001b/);
-    // `b` has a finite but out-of-range time, so it sorts ahead of the NaN row `a`;
-    // both are unusable as dates and render as the placeholder.
-    assert.match(lines[0]!, /^b +active +- /);
-    assert.match(lines[1]!, /^a +active +- /);
-    assert.match(lines[1]!, /two lines /);
-  });
-
-  test('sorts a non-finite timestamp last instead of corrupting the order', () => {
-    const rows = selectSessionListRows(
-      [
-        session({ id: 'nan', activityAt: Number.NaN, lastMessageAt: undefined }),
-        session({ id: 'new', lastMessageAt: 300 }),
-        session({ id: 'inf', activityAt: Number.POSITIVE_INFINITY }),
-        session({ id: 'old', lastMessageAt: 100 }),
-      ],
-      { includeArchived: false, limit: 2 },
-    );
-    assert.deepEqual(
-      rows.map((row) => row.id),
-      ['new', 'old'],
-    );
+    // Both times are unusable as dates and render as the placeholder.
+    assert.match(lines[0]!, /^a +active +- /);
+    assert.match(lines[0]!, /two lines /);
+    assert.match(lines[1]!, /^b +active +- /);
   });
 });
 
 describe('maka session-list Runtime Host connection', () => {
+  const paths = { clientDataRoot: '/client', workspaceRoot: '/workspace', cliCommand: 'maka' };
+
   test('connects to the selected profile, drops non-session rows and closes the connection', async () => {
-    const calls: string[] = [];
-    const out: string[] = [];
-    const warnings: string[] = [];
-    const deps = {
-      connect: async (input: { profileId?: string; rootPath: string }) => {
-        calls.push(`connect:${input.profileId ?? 'local'}:${input.rootPath}`);
-        return {
-          connection: {} as RuntimeHostConnection,
-          close: async () => void calls.push('close'),
-        };
-      },
-      readSessions: async () => [
-        projection({ id: 'visible' }),
-        {
-          kind: 'unsupported_legacy_record',
-          id: 'legacy',
-          revision: 1,
-          reason: 'not_wire_representable',
-        },
+    const host = fakeHost({
+      pages: [
+        [
+          projection({ id: 'visible' }),
+          {
+            kind: 'unsupported_legacy_record',
+            id: 'legacy',
+            revision: 1,
+            reason: 'not_wire_representable',
+          },
+        ],
       ],
-    } as unknown as MakaSessionListConnectionDeps;
+    });
 
     const code = await runMakaSessionListCommand(
       ['--json', '--host', 'office'],
-      { clientDataRoot: '/client', workspaceRoot: '/workspace', cliCommand: 'maka' },
-      deps,
-      {
-        writeStdout: (text) => void out.push(text),
-        writeStderr: (text) => void warnings.push(text),
-      },
+      paths,
+      host.deps,
+      host.io,
     );
 
     assert.equal(code, 0);
-    assert.deepEqual(calls, ['connect:office:/workspace', 'close']);
-    assert.deepEqual(warnings, ['1 session(s) in an unsupported format were not listed\n']);
-    assert.deepEqual(
-      out
-        .join('')
-        .trimEnd()
-        .split('\n')
-        .map((line) => JSON.parse(line).id),
-      ['visible'],
+    assert.deepEqual(host.calls, ['connect:office:/workspace', 'close']);
+    assert.deepEqual(host.stderr, ['1 session(s) in an unsupported format were not listed\n']);
+    assert.deepEqual(host.listedIds(), ['visible']);
+  });
+
+  test('hides subagent children as the Host actually projects them', async () => {
+    const host = fakeHost({
+      pages: [
+        [
+          projection({ id: 'parent' }),
+          projection({ id: 'child', subagent: { parentSessionId: 'parent' } }),
+          projection({ id: 'side', labels: ['mode:side_conversation'] }),
+          projection({ id: 'archived', isArchived: true }),
+        ],
+      ],
+    });
+    assert.equal(await runMakaSessionListCommand(['--json'], paths, host.deps, host.io), 0);
+    assert.deepEqual(host.listedIds(), ['parent']);
+    assert.equal(host.pagesRead, 0, 'without a limit the stable full reader is used');
+  });
+
+  test('with --limit, stops reading pages once enough Sessions pass the filter', async () => {
+    const host = fakeHost({
+      pages: [
+        [
+          projection({ id: 's1' }),
+          projection({ id: 'archived', isArchived: true }),
+          projection({ id: 'child', subagent: { parentSessionId: 's1' } }),
+        ],
+        [projection({ id: 's2' }), projection({ id: 's3' })],
+        [projection({ id: 's4' })],
+      ],
+    });
+    assert.equal(
+      await runMakaSessionListCommand(['--json', '--limit', '2'], paths, host.deps, host.io),
+      0,
     );
+    assert.deepEqual(host.listedIds(), ['s1', 's2']);
+    assert.equal(host.pagesRead, 2, 'the third page is never requested');
+  });
+
+  test('with --limit, keeps paging past pages that are filtered out entirely', async () => {
+    const host = fakeHost({
+      pages: [
+        [projection({ id: 'a1', isArchived: true })],
+        [projection({ id: 'a2', isArchived: true })],
+        [projection({ id: 'keep' })],
+      ],
+    });
+    await runMakaSessionListCommand(['--json', '--limit', '1'], paths, host.deps, host.io);
+    assert.deepEqual(host.listedIds(), ['keep']);
+    assert.equal(host.pagesRead, 3);
+  });
+
+  test('with --limit, includes archived Sessions on request', async () => {
+    const host = fakeHost({ pages: [[projection({ id: 'a', isArchived: true })]] });
+    await runMakaSessionListCommand(
+      ['--json', '--archived', '--limit', '1'],
+      paths,
+      host.deps,
+      host.io,
+    );
+    assert.deepEqual(host.listedIds(), ['a']);
+  });
+
+  test('with --limit, restarts the read when the catalog revision moves', async () => {
+    const host = fakeHost({
+      pages: [[projection({ id: 'one' })], [projection({ id: 'two' })]],
+      revisionChangesBeforeSuccess: 1,
+    });
+    assert.equal(
+      await runMakaSessionListCommand(['--json', '--limit', '2'], paths, host.deps, host.io),
+      0,
+    );
+    assert.deepEqual(host.listedIds(), ['one', 'two']);
+  });
+
+  test('with --limit, gives up when the revision keeps moving', async () => {
+    const host = fakeHost({
+      pages: [[projection({ id: 'one' })]],
+      revisionChangesBeforeSuccess: 99,
+    });
+    assert.equal(
+      await runMakaSessionListCommand(['--json', '--limit', '2'], paths, host.deps, host.io),
+      1,
+    );
+    assert.match(host.stderr.join(''), /session-list failed: .*revision changed/);
+    assert.deepEqual(host.calls.at(-1), 'close');
+  });
+
+  test('with --limit, rejects a catalog that loops on a cursor', async () => {
+    const host = fakeHost({ pages: [[projection({ id: 'one' })]], loopCursor: true });
+    assert.equal(
+      await runMakaSessionListCommand(['--json', '--limit', '5'], paths, host.deps, host.io),
+      1,
+    );
+    assert.match(host.stderr.join(''), /repeated cursor/);
   });
 
   test('closes the connection when reading sessions fails', async () => {
-    let closed = false;
-    const deps = {
-      connect: async () => ({
-        connection: {} as RuntimeHostConnection,
-        close: async () => void (closed = true),
-      }),
-      readSessions: async () => {
-        throw new Error('host unavailable');
-      },
-    } as unknown as MakaSessionListConnectionDeps;
-
-    const err: string[] = [];
-    const code = await runMakaSessionListCommand(
-      [],
-      { clientDataRoot: '/client', workspaceRoot: '/workspace', cliCommand: 'maka' },
-      deps,
-      { writeStdout: () => undefined, writeStderr: (text) => void err.push(text) },
-    );
+    const host = fakeHost({ pages: [], readFailure: new Error('host unavailable') });
+    const code = await runMakaSessionListCommand([], paths, host.deps, host.io);
     assert.equal(code, 1);
-    assert.match(err.join(''), /session-list failed: host unavailable/);
-    assert.equal(closed, true);
+    assert.match(host.stderr.join(''), /session-list failed: host unavailable/);
+    assert.equal(host.calls.at(-1), 'close');
   });
 });
+
+type FakeCatalogItem = Awaited<ReturnType<MakaSessionListConnectionDeps['readSessions']>>[number];
+
+function fakeHost(config: {
+  readonly pages: readonly (readonly FakeCatalogItem[])[];
+  readonly revisionChangesBeforeSuccess?: number;
+  readonly loopCursor?: boolean;
+  readonly readFailure?: Error;
+}) {
+  const calls: string[] = [];
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  let revisionChanges = config.revisionChangesBeforeSuccess ?? 0;
+  const state = { pagesRead: 0 };
+  const deps = {
+    connect: async (input: { profileId?: string; rootPath: string }) => {
+      calls.push(`connect:${input.profileId ?? 'local'}:${input.rootPath}`);
+      return {
+        connection: {} as RuntimeHostConnection,
+        close: async () => void calls.push('close'),
+      };
+    },
+    readSessions: async () => {
+      if (config.readFailure) throw config.readFailure;
+      return config.pages.flat();
+    },
+    readPage: async (
+      _connection: RuntimeHostConnection,
+      cursor?: { readonly cursor: string },
+    ): Promise<RuntimeHostSessionCatalogPage> => {
+      if (config.readFailure) throw config.readFailure;
+      if (revisionChanges > 0) {
+        revisionChanges -= 1;
+        throw new RuntimeHostSessionCatalogRevisionChangedError('sha256:old', 'sha256:new');
+      }
+      state.pagesRead += 1;
+      const index = cursor ? Number(cursor.cursor) : 0;
+      const next = config.loopCursor ? 0 : index + 1;
+      return {
+        revision: 'sha256:rev',
+        sessions: config.pages[index] ?? [],
+        nextCursor:
+          config.loopCursor || next < config.pages.length
+            ? { revision: 'sha256:rev', cursor: String(next) }
+            : null,
+      };
+    },
+  } as unknown as MakaSessionListConnectionDeps;
+  return {
+    deps,
+    calls,
+    stderr,
+    get pagesRead() {
+      return state.pagesRead;
+    },
+    io: {
+      writeStdout: (text: string) => void stdout.push(text),
+      writeStderr: (text: string) => void stderr.push(text),
+    },
+    listedIds: () =>
+      stdout
+        .join('')
+        .trimEnd()
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line).id as string),
+  };
+}
 
 function projection(overrides: Partial<SessionCatalogProjection> = {}): SessionCatalogProjection {
   return {
