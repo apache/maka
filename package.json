@@ -140,6 +140,9 @@
     "tree-sitter-javascript@0.25.0": true
   },
   "overrides": {
+    "app-builder-lib": {
+      "@electron/notarize@2.5.0": "3.1.2"
+    },
     "@ai-sdk/code-mode": {
       "run": "2.1.4"
     },
