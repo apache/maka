@@ -330,16 +330,10 @@ export function createDesktopRuntimeHostProfileService(input: {
     input.startup.pairingIntents.map((intent) => [intent.target.profile.id, intent]),
   );
   let pairingReadFailure = input.startup.pairingReadFailure;
-  let mutationTail = Promise.resolve();
-
-  const mutate = <T>(operation: () => Promise<T>): Promise<T> => {
-    const pending = mutationTail.then(operation);
-    mutationTail = pending.then(
-      () => undefined,
-      () => undefined,
-    );
-    return pending;
-  };
+  const mutate = createMutationQueue();
+  // Local binding writes must also serialize with removal when recovery is invoked
+  // by management outside the lifecycle queue. Enable may already hold `mutate`.
+  const mutateProfileBindings = createMutationQueue();
 
   const assertPreferencesWritable = (): void => {
     // The Local fallback is effective startup state, not a replacement for
@@ -784,23 +778,23 @@ export function createDesktopRuntimeHostProfileService(input: {
   };
 
   return {
-    async recordRecoveredWslNode(expected, recovered) {
-      // Called during enable, which already holds the profile mutation queue.
-      // The catalog CAS owns serialization; do not reenter that queue here.
-      const document = await catalog.read();
-      for (const profile of document.profiles) {
-        if (profile.kind !== 'environment' || profile.rootId !== expected.rootId ||
-            profile.provider.distribution !== expected.distribution) continue;
-        const alreadyRecovered = isDeepStrictEqual(profile.operator, recovered.operator);
-        if (!alreadyRecovered && !isDeepStrictEqual(profile.operator, expected.operator)) continue;
-        if (!alreadyRecovered && !await catalog.updateEnvironmentOperatorIfCurrent(profile, recovered.operator)) {
-          throw new Error('WSL profile changed during Node recovery');
+    recordRecoveredWslNode(expected, recovered) {
+      return mutateProfileBindings(async () => {
+        const document = await catalog.read();
+        for (const profile of document.profiles) {
+          if (profile.kind !== 'environment' || profile.rootId !== expected.rootId ||
+              profile.provider.distribution !== expected.distribution) continue;
+          const alreadyRecovered = isDeepStrictEqual(profile.operator, recovered.operator);
+          if (!alreadyRecovered && !isDeepStrictEqual(profile.operator, expected.operator)) continue;
+          if (!alreadyRecovered && !await catalog.updateEnvironmentOperatorIfCurrent(profile, recovered.operator)) {
+            throw new Error('WSL profile changed during Node recovery');
+          }
+          const updated = { ...profile, operator: recovered.operator };
+          await managedServices.save(updated, { deployment: {
+            id: expected.rootId, rootPath: recovered.rootPath, deploymentId: recovered.deploymentId,
+          } });
         }
-        const updated = { ...profile, operator: recovered.operator };
-        await managedServices.save(updated, { deployment: {
-          id: expected.rootId, rootPath: recovered.rootPath, deploymentId: recovered.deploymentId,
-        } });
-      }
+      });
     },
     getSnapshot: () => mutate(snapshot),
     addAndEnable(value) {
@@ -1335,7 +1329,7 @@ export function createDesktopRuntimeHostProfileService(input: {
       });
     },
     remove(profileId) {
-      return mutateProfiles(async () => {
+      return mutateProfiles(() => mutateProfileBindings(async () => {
         if (profileId === LOCAL_RUNTIME_HOST_PROFILE.id) {
           throw new Error("Local Runtime Host cannot be removed");
         }
@@ -1377,8 +1371,17 @@ export function createDesktopRuntimeHostProfileService(input: {
         await catalog.remove(profileId);
         unavailable.delete(profileId);
         return snapshot();
-      });
+      }));
     },
+  };
+}
+
+function createMutationQueue() {
+  let tail = Promise.resolve();
+  return <T>(operation: () => Promise<T>): Promise<T> => {
+    const pending = tail.then(operation);
+    tail = pending.then(() => undefined, () => undefined);
+    return pending;
   };
 }
 
