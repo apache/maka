@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { type UiCatalog, type UiLocale, lookupCopy, defineShippedUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, type UiMessageCatalog, lookupCopy, defineShippedUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 import { type PermissionMode } from '@maka/core/permission';
 
@@ -731,11 +731,6 @@ const KO_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
     platformHint: { apple: '⌥⌘S', other: 'Ctrl+Alt+S' },
     group: '동작',
   },
-  'action:new-deep-research': {
-    label: '새 심층 리서치',
-    hint: '읽기 전용 탐색',
-    group: '동작',
-  },
   'action:new-scheduled-task': {
     label: '새 정기 작업',
     hint: '작업 양식 열기',
@@ -766,11 +761,6 @@ const KO_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   },
   'diag:open-project-folder': {
     label: '프로젝트 폴더 열기',
-    hint: 'Finder',
-    group: '진단',
-  },
-  'diag:open-skills': {
-    label: 'Skills 폴더 열기',
     hint: 'Finder',
     group: '진단',
   },
@@ -859,7 +849,7 @@ const EN_SETTINGS_SECTIONS: Record<SettingsSection, string> = {
   about: 'About',
 };
 
-const KO_SETTINGS_SECTIONS: Record<SettingsSection, string> = {
+const KO_SETTINGS_SECTIONS: Partial<Record<SettingsSection, string>> = {
   general: '일반',
   appearance: '모양',
   projects: '작업 공간',
@@ -867,7 +857,6 @@ const KO_SETTINGS_SECTIONS: Record<SettingsSection, string> = {
   subagents: '하위 에이전트',
   usage: '사용량',
   'archived-tasks': '보관된 작업',
-  'import-tasks': '작업 가져오기',
   memory: '메모리',
   'daily-review': '데일리 리뷰',
   'bot-chat': '원격 접속',
@@ -2541,17 +2530,14 @@ const shellCopyByLocaleEn: ShellCopy = {
       resizeWorkbar: 'Resize task workbar',
     },
   };
-const shellCopyByLocaleKo: ShellCopy = {
+const shellCopyByLocaleKo: UiMessageCatalog<ShellCopy>['ko'] = {
     navigation: { settings: '설정' },
     actions: { retry: '다시 시도' },
     paths: {
       workspace: '작업 공간',
       project: '프로젝트 폴더',
-      skills: 'Skills 폴더',
     },
     errors: {
-      messageRead: '작업 내용을 일시적으로 사용할 수 없습니다. 잠시 후 다시 시도해 주세요.',
-      messageRefresh: '작업 내용을 새로고침하지 못했습니다. 잠시 후 다시 시도해 주세요.',
       openPath: (path: string) => `${path} 열기에 실패했습니다. 잠시 후 다시 시도해 주세요.`,
       workspaceUnavailableTitle: '작업 디렉터리를 사용할 수 없음',
       workspaceUnavailableDescription:
@@ -2576,7 +2562,6 @@ const shellCopyByLocaleKo: ShellCopy = {
       },
       responseFailedTitle: '응답 실패',
       responseFailedFallback: '작업 동작을 수행하지 못했습니다. 잠시 후 다시 시도해 주세요.',
-      refreshFailedTitle: '작업 새로고침 실패',
       sessionStartFailedTitle: '작업 시작 실패',
       sessionStartFailedFallback: '작업을 시작하지 못했습니다. 잠시 후 다시 시도해 주세요.',
     },
@@ -2609,7 +2594,6 @@ const shellCopyByLocaleKo: ShellCopy = {
       openFailedTitle: (path: string) => `${path} 열기 실패`,
       openPathLabels: {
         workspace: '작업 공간 폴더',
-        skills: 'Skills 폴더',
         memory: '메모리 폴더',
         project: '프로젝트 폴더',
       },
@@ -3005,7 +2989,6 @@ const shellCopyByLocaleKo: ShellCopy = {
       workspaceActions: '작업 공간 동작',
     },
     app: {
-      returnToWorkHub: 'WorkHub로 돌아가기',
       loadingWorkbarLabel: '작업 워크바 불러오는 중',
       loadingWorkbar: '작업 워크바 불러오는 중…',
       useSkillPrompt: (skillName: string) => `${skillName} Skill 사용: `,

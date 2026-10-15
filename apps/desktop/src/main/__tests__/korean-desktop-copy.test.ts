@@ -70,7 +70,14 @@ test('Korean command palette uses its own commands and settings sections, not th
     assert.notEqual(command.label, en.commands[id as keyof typeof en.commands].label, id);
     assert.match(command.label, HANGUL_SYLLABLE, id);
   }
+  // Sections added or reworded upstream after slice 1 fall back to English
+  // until they are translated; remove an entry here when it gets its ko text.
+  const untranslated = new Set(['external-agents', 'import-tasks']);
   for (const [section, label] of Object.entries(ko.settingsSections)) {
+    if (untranslated.has(section)) {
+      assert.equal(label, en.settingsSections[section as keyof typeof en.settingsSections], section);
+      continue;
+    }
     assert.notEqual(label, en.settingsSections[section as keyof typeof en.settingsSections], section);
     assert.match(label, HANGUL_SYLLABLE, section);
   }
@@ -104,7 +111,7 @@ test('Korean templates drop the English-only plural and case branches', () => {
   assert.equal(shell.deletedSubtaskNote(3), '하위 작업 3개를 보관된 작업으로 이동했습니다');
 
   const proxy = getSettingsPreferencesCopy('ko').general;
-  assert.equal(proxy.autoBypass(1).replace('1', '#'), proxy.autoBypass(3).replace('3', '#'));
+  assert.equal(proxy.bypassHelp(1).replace('1', '#'), proxy.bypassHelp(3).replace('3', '#'));
 
   // The English lowercases the status label; Korean has no case to change.
   assert.equal(getPermissionCenterCopy('ko').summaryFilterAria('허용됨', 2, false), '허용됨 권한만 표시, 2개');

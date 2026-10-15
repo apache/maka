@@ -302,11 +302,6 @@ const koCopy: ShellRemainingCopy = {
     scheduledTask: "정기 작업",
     viewScheduledTasks: "정기 작업 보기",
   },
-  previousMainProcessInterruption: {
-    title: "Maka 복구됨",
-    description: "이전 종료가 완료되지 않았습니다.",
-    copyDiagnostics: "보고서 복사",
-  },
   conversationExport: {
     exported: (date) => `${date}에 Maka에서 내보냈습니다.`,
     you: "나",

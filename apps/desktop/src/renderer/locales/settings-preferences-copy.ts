@@ -18,7 +18,7 @@
  */
 import type { AppIcon, ThemePalette, ThemePreference } from '@maka/core/settings';
 
-import { type UiCatalog, type UiLocale, type UiLocalePreference, defineShippedUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, type UiLocalePreference, type UiMessageCatalog, defineShippedUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 type OptionCopy = { label: string; help: string };
 
@@ -540,14 +540,14 @@ const settingsPreferencesCopyByLocaleEn: SettingsPreferencesCopy = {
     },
     password: { copyFailed: 'Copy failed', clipboardUnavailable: 'The clipboard is unavailable or access was denied.', copying: 'Copying', copied: 'Copied', copy: 'Copy', hide: 'Hide', show: 'Show', value: 'credential value' },
   };
-const settingsPreferencesCopyByLocaleKo: SettingsPreferencesCopy = {
+const settingsPreferencesCopyByLocaleKo: UiMessageCatalog<SettingsPreferencesCopy>['ko'] = {
     personalization: {
       saveFailed: '저장 실패', displayName: '표시 이름', displayNameHelp: 'Maka가 사용자를 부를 때 이 이름을 씁니다. 비워 두면 이름 없이 부릅니다.', displayNamePlaceholder: '예: JK', displayNameUnset: '설정 안 됨 — Maka가 이름 없이 부릅니다', displayNameChange: '변경', displayNameSet: '설정', interfaceLanguage: '인터페이스 언어', interfaceLanguageHelp: 'Maka에서 사용할 언어를 선택하세요. 변경 사항은 즉시 적용되며 다시 시작한 후에도 유지됩니다.', localeOptions: [['auto', '시스템 설정 따름'], ['zh-CN', '简体中文'], ['zh-TW', '繁體中文'], ['ko', '한국어'], ['en', 'English']], assistantTone: '어시스턴트 어조', assistantToneHelp: '최대 500자입니다. 응답 스타일만 바뀌며 권한과 안전 규칙은 그대로 적용됩니다. 변경 사항은 자동으로 저장됩니다.', assistantTonePlaceholder: '예: 기술적으로 엄밀하게, 간결하게, 이모지 없이.',
     },
     sections: {
       identity: '프로필', identityHelp: 'Maka가 사용자를 부르는 방식과 인터페이스 언어, 응답 어조를 정합니다.',
       privacy: '개인정보 보호 및 알림', privacyHelp: 'Maka가 로컬에서 읽고 쓸 수 있는 범위와 알림을 보내는 시점을 정합니다.',
-      chatDefaults: '작업 기본값', chatDefaultsHelp: '새 작업이 시작할 때 쓰는 모델, 권한 모드, 사고 수준입니다.',
+      chatDefaults: '작업 기본값',
       shell: '명령 실행 환경', shellHelp: 'Runtime Host가 Bash 도구와 터미널 명령에 사용할 셸을 선택하세요.',
       network: '네트워크', networkHelp: 'AI 모델 요청이 거치는 네트워크 경로입니다.',
       theme: '테마', themeHelp: '시스템 화면 모드를 따르거나 라이트 또는 다크로 고정합니다.',
@@ -571,8 +571,8 @@ const settingsPreferencesCopyByLocaleKo: SettingsPreferencesCopy = {
       removeErrors: { invalid_id: '펫 ID가 올바르지 않습니다.', remove_failed: '로컬 펫 팩을 제거하지 못했습니다.' },
     },
     general: {
-      incognito: '시크릿 모드', incognitoHelp: '로컬 메모리, 웹 검색, 정기 작업 실행을 일시 중지합니다.', enableIncognito: '시크릿 모드 켜기', incognitoFailed: '시크릿 모드 변경 실패', notifications: '완료되면 시스템 알림 보내기', notificationsHelp: '창이 백그라운드에 있을 때 응답이 완료되거나 실패하면 알립니다.', notificationsFailed: '알림 설정 변경 실패', workspaceInstructions: '프로젝트 지침 따르기', workspaceInstructionsHelp: '각 프로젝트에 있는 AGENTS.md, CLAUDE.md, GEMINI.md 파일을 자동으로 읽습니다. 파일은 각 프로젝트에서 관리하세요.', workspaceInstructionsFailed: '프로젝트 지침 설정 변경 실패', workHub: 'WorkHub 켜기', workHubHelp: 'WorkHub는 아직 사용할 수 없습니다. 이 토글은 개발 테스트용이며, 켜도 사용할 수 있는 기능이 생기지 않습니다.', workHubFailed: 'WorkHub 설정 변경 실패', updateFailed: '설정이 적용되지 않았습니다. 잠시 후 다시 시도해 주세요.', defaultModel: '기본 모델', defaultModelHelp: '새 작업에 사용할 모델입니다.', notSet: '설정 안 됨', saveDefaultModelFailed: '기본 모델 저장 실패', defaultPermission: '기본 권한 모드', defaultPermissionHelp: '새 작업의 초기 권한 모드입니다. 언제든지 바꿀 수 있습니다.', saveDefaultPermissionFailed: '기본 권한 모드 저장 실패', defaultThinking: '기본 사고 수준', defaultThinkingHelp: '새 작업의 사고 수준입니다. 선택한 수준을 지원하지 않는 모델은 자체 기본값을 사용합니다.', followModelDefault: '모델 기본값 따름', saveDefaultThinkingFailed: '기본 사고 수준 저장 실패', proxy: '프록시 서버', proxyHelp: 'AI 모델 요청에 사용할 네트워크 프록시를 설정하세요', enableProxy: '프록시 서버 켜기', saveNetworkFailed: '네트워크 설정 저장 실패', proxyProtocol: '프록시 프로토콜', serverAddress: '서버 주소', port: '포트', proxyAuth: '프록시 인증', proxyAuthHelp: '사용자 이름과 비밀번호가 필요할 때 켜세요.', enableProxyAuth: '프록시 인증 켜기', username: '사용자 이름', password: '비밀번호', bypassList: '프록시 우회 목록', bypassHelp: '이 도메인은 프록시를 거치지 않고 직접 연결됩니다. 여러 도메인은 쉼표로 구분하세요.', autoBypass: (count) => `도메인 ${count}개가 자동으로 추가되었습니다. 프록시는 AI 모델 요청에만 적용됩니다.`, testing: '테스트하는 중…', testCurrent: '현재 구성 테스트', proxyReachable: '프록시에 연결할 수 있음', proxyTestFailed: '프록시 테스트 실패', proxyTestError: '프록시를 테스트하지 못함',
-      shellPreference: 'Bash 도구 셸', shellPreferenceHelp: '자동은 PowerShell을 우선하는 Windows 기본 동작을 유지합니다. Git Bash는 현재 Runtime Host에만 적용되는 명시적 재정의입니다.', shellAuto: '자동(권장)', shellGitBash: 'Git Bash', shellExecutable: 'Git Bash 실행 파일', shellExecutableHelp: 'Runtime Host를 실행하는 Windows 컴퓨터에서 bash.exe의 절대 경로를 입력하세요. 기존 System32 WSL Bash 심(shim)도 인식합니다. Maka는 저장하기 전에 GNU Bash인지 확인합니다.', saveShell: '셸 설정 저장', savingShell: '저장하는 중…', shellSaved: '저장됨', saveShellFailed: '셸 설정 저장 실패', shellExecutableRejected: '현재 Runtime Host에서 이 경로를 GNU Bash로 실행하지 못했습니다. Host가 Windows에서 실행 중인지, 경로가 있는지, 파일 이름이 bash.exe인지 확인하세요.',
+      incognito: '시크릿 모드', incognitoHelp: '로컬 메모리, 웹 검색, 정기 작업 실행을 일시 중지합니다.', enableIncognito: '시크릿 모드 켜기', incognitoFailed: '시크릿 모드 변경 실패', notificationsFailed: '알림 설정 변경 실패', workspaceInstructions: '프로젝트 지침 따르기', workspaceInstructionsHelp: '각 프로젝트에 있는 AGENTS.md, CLAUDE.md, GEMINI.md 파일을 자동으로 읽습니다. 파일은 각 프로젝트에서 관리하세요.', workspaceInstructionsFailed: '프로젝트 지침 설정 변경 실패', workHub: 'WorkHub 켜기', workHubHelp: 'WorkHub는 아직 사용할 수 없습니다. 이 토글은 개발 테스트용이며, 켜도 사용할 수 있는 기능이 생기지 않습니다.', workHubFailed: 'WorkHub 설정 변경 실패', updateFailed: '설정이 적용되지 않았습니다. 잠시 후 다시 시도해 주세요.', defaultModel: '기본 모델', defaultModelHelp: '새 작업에 사용할 모델입니다.', notSet: '설정 안 됨', saveDefaultModelFailed: '기본 모델 저장 실패', defaultPermission: '기본 권한 모드', defaultPermissionHelp: '새 작업의 초기 권한 모드입니다. 언제든지 바꿀 수 있습니다.', saveDefaultPermissionFailed: '기본 권한 모드 저장 실패', proxy: '프록시 서버', proxyHelp: 'AI 모델 요청에 사용할 네트워크 프록시를 설정하세요', enableProxy: '프록시 서버 켜기', saveNetworkFailed: '네트워크 설정 저장 실패', proxyProtocol: '프록시 프로토콜', serverAddress: '서버 주소', port: '포트', proxyAuth: '프록시 인증', proxyAuthHelp: '사용자 이름과 비밀번호가 필요할 때 켜세요.', enableProxyAuth: '프록시 인증 켜기', username: '사용자 이름', password: '비밀번호', bypassList: '프록시 우회 목록', bypassHelp: (count) => `이 도메인은 프록시를 거치지 않고 직접 연결됩니다. 여러 도메인은 쉼표로 구분하세요. 도메인 ${count}개가 자동으로 추가되었습니다. 프록시는 AI 모델 요청에만 적용됩니다.`, testing: '테스트하는 중…', testCurrent: '현재 구성 테스트', proxyReachable: '프록시에 연결할 수 있음', proxyTestFailed: '프록시 테스트 실패', proxyTestError: '프록시를 테스트하지 못함',
+      shellPreference: 'Bash 도구 셸', shellPreferenceHelp: '자동은 PowerShell을 우선하는 Windows 기본 동작을 유지합니다. Git Bash는 현재 Runtime Host에만 적용되는 명시적 재정의입니다.', shellAuto: '자동(권장)', shellGitBash: 'Git Bash', shellExecutable: 'Git Bash 실행 파일', shellExecutableHelp: 'Runtime Host를 실행하는 Windows 컴퓨터에서 bash.exe의 절대 경로를 입력하세요. 기존 System32 WSL Bash 심(shim)도 인식합니다. Maka는 저장하기 전에 GNU Bash인지 확인합니다.', saveShell: '셸 설정 저장', savingShell: '저장하는 중…', saveShellFailed: '셸 설정 저장 실패', shellExecutableRejected: '현재 Runtime Host에서 이 경로를 GNU Bash로 실행하지 못했습니다. Host가 Windows에서 실행 중인지, 경로가 있는지, 파일 이름이 bash.exe인지 확인하세요.',
       passwordSavedPlaceholder: '비밀번호가 저장되어 있습니다. 바꾸려면 새 비밀번호를 입력하세요',
     },
     about: {
@@ -590,12 +590,9 @@ const settingsPreferencesCopyByLocaleKo: SettingsPreferencesCopy = {
       checkingForUpdates: '업데이트 확인하는 중…',
       updateIdle: '아직 업데이트를 확인하지 않음',
       updateNotAvailable: '최신 버전을 사용 중입니다',
-      updateAvailable: (version) => `v${version} 사용 가능`,
-      updateDownloading: (version, percent) => `v${version} 다운로드하는 중(${percent}%)`,
-      updateVerifying: (version) => `v${version}의 릴리스 출처 확인하는 중`,
-      updateDownloaded: (version) => `v${version} 설치 준비됨`,
-      updateDownloadedHint: '사이드바 아래쪽에서 다시 시작하면 설치됩니다.',
-      updateInstalling: (version) => `v${version} 설치하는 중`,
+      updateDownloading: (percent) => `다운로드하는 중(${percent}%)`,
+      updateVerifying: '릴리스 출처 확인하는 중',
+      updateInstalling: '설치하는 중',
       updateFailed: { check: '업데이트 확인 실패', download: '업데이트 다운로드 실패', install: '업데이트 설치 실패' },
       openSourceSummary: 'Apache Maka (incubating) · Apache License 2.0',
       sourceCode: '소스 코드', releaseNotes: '릴리스 노트',
