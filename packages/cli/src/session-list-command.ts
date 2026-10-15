@@ -29,8 +29,11 @@ import {
 import type { SessionCatalogItem } from '@maka/runtime-host/protocol';
 import { connectRuntimeHostCliConnection } from './runtime-host-cli-context.js';
 
-// Restarts after the catalog revision moved under a paged read.
-const MAX_BOUNDED_READ_ATTEMPTS = 3;
+// Restarts after the catalog revision moved under a paged read. Matches the retry policy of
+// `readRuntimeHostSessions`, so `--limit` gives up on a busy Host no sooner than a full read.
+const MAX_BOUNDED_READ_ATTEMPTS = 8;
+const BOUNDED_READ_RETRY_BASE_DELAY_MS = 8;
+const BOUNDED_READ_RETRY_MAX_DELAY_MS = 64;
 
 export interface MakaSessionListCliOptions {
   readonly hostProfileId?: string;
@@ -209,6 +212,7 @@ export interface MakaSessionListConnectionDeps {
   connect: typeof connectRuntimeHostCliConnection;
   readSessions: typeof readRuntimeHostSessions;
   readPage: typeof readRuntimeHostSessionCatalogPage;
+  sleep(ms: number): Promise<void>;
 }
 
 export async function runMakaSessionListCommand(
@@ -222,6 +226,7 @@ export async function runMakaSessionListCommand(
     connect: connectRuntimeHostCliConnection,
     readSessions: readRuntimeHostSessions,
     readPage: readRuntimeHostSessionCatalogPage,
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   },
   io: Pick<MakaSessionListDeps, 'writeStdout' | 'writeStderr'> = {
     writeStdout: (text) => void process.stdout.write(text),
@@ -305,5 +310,11 @@ async function readListableSessions(
       const revisionMoved = error instanceof RuntimeHostSessionCatalogRevisionChangedError;
       if (!revisionMoved || attempt >= MAX_BOUNDED_READ_ATTEMPTS) throw error;
     }
+    await deps.sleep(
+      Math.min(
+        BOUNDED_READ_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1),
+        BOUNDED_READ_RETRY_MAX_DELAY_MS,
+      ),
+    );
   }
 }

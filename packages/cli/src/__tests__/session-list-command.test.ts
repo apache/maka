@@ -361,19 +361,20 @@ describe('maka session-list Runtime Host connection', () => {
     assert.deepEqual(host.listedIds(), ['a']);
   });
 
-  test('with --limit, restarts the read when the catalog revision moves', async () => {
+  test('with --limit, restarts with backoff as often as the full reader does', async () => {
     const host = fakeHost({
       pages: [[projection({ id: 'one' })], [projection({ id: 'two' })]],
-      revisionChangesBeforeSuccess: 1,
+      revisionChangesBeforeSuccess: 7,
     });
     assert.equal(
       await runMakaSessionListCommand(['--json', '--limit', '2'], paths, host.deps, host.io),
       0,
     );
     assert.deepEqual(host.listedIds(), ['one', 'two']);
+    assert.deepEqual(host.delays, [8, 16, 32, 64, 64, 64, 64]);
   });
 
-  test('with --limit, gives up when the revision keeps moving', async () => {
+  test('with --limit, gives up after 8 attempts when the revision keeps moving', async () => {
     const host = fakeHost({
       pages: [[projection({ id: 'one' })]],
       revisionChangesBeforeSuccess: 99,
@@ -383,6 +384,8 @@ describe('maka session-list Runtime Host connection', () => {
       1,
     );
     assert.match(host.stderr.join(''), /session-list failed: .*revision changed/);
+    assert.equal(host.revisionChangesSeen, 8);
+    assert.equal(host.delays.length, 7, 'no wait after the last attempt');
     assert.deepEqual(host.calls.at(-1), 'close');
   });
 
@@ -415,8 +418,9 @@ function fakeHost(config: {
   const calls: string[] = [];
   const stdout: string[] = [];
   const stderr: string[] = [];
+  const delays: number[] = [];
   let revisionChanges = config.revisionChangesBeforeSuccess ?? 0;
-  const state = { pagesRead: 0 };
+  const state = { pagesRead: 0, revisionChangesSeen: 0 };
   const deps = {
     connect: async (input: { profileId?: string; rootPath: string }) => {
       calls.push(`connect:${input.profileId ?? 'local'}:${input.rootPath}`);
@@ -436,6 +440,7 @@ function fakeHost(config: {
       if (config.readFailure) throw config.readFailure;
       if (revisionChanges > 0) {
         revisionChanges -= 1;
+        state.revisionChangesSeen += 1;
         throw new RuntimeHostSessionCatalogRevisionChangedError('sha256:old', 'sha256:new');
       }
       state.pagesRead += 1;
@@ -450,13 +455,18 @@ function fakeHost(config: {
             : null,
       };
     },
+    sleep: async (ms: number) => void delays.push(ms),
   } as unknown as MakaSessionListConnectionDeps;
   return {
     deps,
     calls,
     stderr,
+    delays,
     get pagesRead() {
       return state.pagesRead;
+    },
+    get revisionChangesSeen() {
+      return state.revisionChangesSeen;
     },
     io: {
       writeStdout: (text: string) => void stdout.push(text),
