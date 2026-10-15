@@ -6,7 +6,7 @@ source_language: en
 implementation_status: current
 document_status: current
 translation_status: source-only
-last_verified: 2026-10-14
+last_verified: 2026-10-15
 owners:
   - maka-backend
 ---
@@ -118,8 +118,8 @@ when `XDG_CONFIG_HOME` is unset. The workspace is `workspaces/default` beneath t
 Credentials are local plaintext files protected by the operating-system account and owner-only
 permissions; see [SECURITY.md](../SECURITY.md).
 
-Linux persistent Hosts use **systemd user services**, not system-wide root services. Service
-installation requires user lingering. From a persistent global CLI installation:
+On Linux, `maka runtime-host service install` uses **systemd user services** and requires user
+lingering. From a persistent global CLI installation:
 
 ```sh
 maka runtime-host service install \
@@ -131,8 +131,28 @@ maka runtime-host service status --json
 Use the [remote Host guide](./runtime-host-remote-access.md) for user-service prerequisites,
 client credentials, SSH profiles, and experimental direct-peer access. For its one-command
 `npx` setup path, select the complete `maka-agent@nightly` package rather than the placeholder
-`latest` line. Remove the service with `maka runtime-host service uninstall` before uninstalling
-the global package; service removal preserves workspace data.
+`latest` line. Unlike `service install`, `runtime-host setup` falls back to OpenRC when the
+systemd user-service preflight fails: `openrc_system` when run as root, or `openrc_user` otherwise.
+
+Before uninstalling the global package, remove the service installed above with an explicit
+expected target. Obtain the values from that installation:
+
+- `<root-path>`: `service.config.rootPath` in `maka runtime-host service status --json`.
+- `<root-id>`: `rootId` in `<root-path>/.maka-storage-root.json`.
+- `<service-id>`: the ID in the Host unit name `maka-runtime-host-<service-id>.service`, listed by
+  `systemctl --user list-unit-files 'maka-runtime-host-*.service'`; do not use the update unit.
+
+Replace the placeholders with those values, then run:
+
+```sh
+maka runtime-host service uninstall \
+  --expected-service-id '<service-id>' \
+  --expected-root-path '<root-path>' \
+  --expected-root-id '<root-id>'
+```
+
+Only uninstall the global package after service removal succeeds; service removal preserves
+workspace data.
 
 ## Sandbox and display boundaries
 
