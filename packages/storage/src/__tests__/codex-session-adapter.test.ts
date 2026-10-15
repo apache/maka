@@ -555,6 +555,9 @@ describe('CodexSessionAdapter', () => {
         {
           text: `${BROWSER_CONTEXT.replace('ambient-ui-state', 'unknown')}\n\n## My request:\nKeep this`,
         },
+        {
+          text: `${BROWSER_CONTEXT}\n\n<unknown-context>Keep this visible</unknown-context>\n\n${BROWSER_CONTEXT}\n\n## My request:\nKeep everything`,
+        },
         { text: `${BROWSER_CONTEXT}\n\n## My request:\n` },
         {
           text: '<send_user_message_question_reply>\nnot JSON\n</send_user_message_question_reply>',
