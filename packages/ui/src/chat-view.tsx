@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { ImageDeliveryProvider } from './image-delivery.js';
 import {
   Fragment,
   useCallback,
@@ -144,7 +145,10 @@ export interface ChatViewGoalIndicatorProps {
 export interface TransientUserMessageProjection {
   deliveryStatus?: string;
   deliveryDetail?: string;
-  deliveryActions?: readonly { label: string; icon: ReactNode; onClick(): void | Promise<void> }[];
+  deliveryTone?: 'neutral' | 'warning' | 'danger';
+  deliveryDiagnostic?: string;
+  deliveryDiagnosticLabel?: string;
+  deliveryActions?: readonly { label: string; icon?: ReactNode; disabled?: boolean; onClick(): void | Promise<void> }[];
   id: string;
   text: string;
   ts: number;
@@ -205,7 +209,7 @@ export function ChatView(props: {
    */
   emptyOverride?: ReactNode;
   /** Optional host-owned identity beside a turn; absent for ordinary transcripts. */
-  turnDecorations?: ReadonlyMap<string, { header: ReactNode; accentColor?: string; messageRail?: ReactNode }>;
+  turnDecorations?: ReadonlyMap<string, { header?: ReactNode; context?: ReactNode; accentColor?: string; messageRail?: ReactNode }>;
   /** Session-owned records anchored after a durable conversation turn. */
   conversationItems?: ReadonlyArray<{
     id: string;
@@ -294,6 +298,7 @@ export function ChatView(props: {
    * host-agnostic with no direct host-global access.
    */
   onReadAttachmentBytes?: ReadAttachmentBytes;
+  onResolveImageDelivery?: import('@maka/core/image-delivery').ResolveImageDelivery;
   /**
    * Open a linked subagent child session in the main chat column (option A).
    * Threaded into linked subagent rows inside ToolTrow.
@@ -502,6 +507,7 @@ export function ChatView(props: {
     const turn = message.hostTurnId ? turnsById.get(message.hostTurnId) : undefined;
     if (
       turn === undefined
+      || message.deliveryTone === 'danger'
       || turn.user !== undefined
       || turn.timeline.some((item) => item.kind === 'user' && item.messageId === message.id)
     ) continue;
@@ -903,6 +909,7 @@ export function ChatView(props: {
 
   return (
     <MakaClientSessionScope sessionId={props.activeSession.id}>
+      <ImageDeliveryProvider sessionId={props.activeSession.id} resolve={props.onResolveImageDelivery}>
       <SessionAttachmentProvider
         sessionId={props.activeSession.id}
         readBytes={props.onReadAttachmentBytes}
@@ -979,8 +986,11 @@ export function ChatView(props: {
                           // The list's row gap does not reach inside the virtualizer.
                           // A tail transient is the next Turn before it lands, outside
                           // the virtualizer, where that gap supplies part of the space.
+                          // Result notices add no inter-turn gap; their inner gap stays 12px.
                           paddingBlockEnd: index < turns.length - 1
-                            ? 'var(--space-10)'
+                            ? turns[index + 1]?.user?.hostOrigin?.kind === 'workhub_result'
+                              ? 0
+                              : 'var(--space-10)'
                             : tailTransientMessages.length > 0 ? 'calc(var(--space-10) - var(--spacing-4))' : undefined,
                           ...(decoration?.accentColor
                             ? { '--maka-turn-accent': decoration.accentColor } as CSSProperties : undefined),
@@ -990,6 +1000,7 @@ export function ChatView(props: {
                           turn={turn}
                           activityObserved={turn.turnId === props.activeTurn?.turnId}
                           messageHeader={decoration?.header}
+                          turnContext={decoration?.context}
                           messageRail={decoration?.messageRail}
                           transientMessages={inlineTransientMessagesByTurn.get(turn.turnId)}
                           userLabel={props.userLabel}
@@ -1148,6 +1159,7 @@ export function ChatView(props: {
       </div>
       </section>
       </SessionAttachmentProvider>
+      </ImageDeliveryProvider>
     </MakaClientSessionScope>
   );
 }

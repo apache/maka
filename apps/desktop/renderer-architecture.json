@@ -417,6 +417,17 @@
         "OverlaysServicesProvider"
       ]
     },
+    "src/renderer/features/personal-assistant/index.tsx": {
+      "appShell": [
+        "MemoryOriginalHost",
+        "PersonalAssistantEntry",
+        "createInternalUriDispatcher"
+      ],
+      "composition": [
+        "PersonalAssistantServicesProvider",
+        "createPersonalAssistantServices"
+      ]
+    },
     "src/renderer/features/runtime-host-management/index.ts": {
       "appShell": [
         "RuntimeHostHandoffOverlay"
@@ -701,6 +712,7 @@
           "./features/goals": 1,
           "./features/module-hub": 1,
           "./features/overlays/index.js": 1,
+          "./features/personal-assistant/index.js": 1,
           "./features/runtime-host-management/index.js": 1,
           "./features/session-collaboration": 1,
           "./features/session-navigation": 1,
@@ -737,7 +749,7 @@
           "react": 1
         },
         "importSpecifiers": 43,
-        "nonTriviaTokens": 7330
+        "nonTriviaTokens": 7285
       },
       "src/renderer/use-app-shell-session-list.ts": {
         "importDeclarations": 3,
@@ -957,9 +969,9 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
+          "./application/contracts/provider-retirement.js": 1,
           "./locales/shell-copy.js": 1,
           "./settings/settings-nav.js": 1,
-          "@maka/core/provider-registry": 1,
           "@maka/ui/icons": 1
         }
       },
@@ -1098,7 +1110,9 @@
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
-        "dependencyPaths": {}
+        "dependencyPaths": {
+          "@maka/core/ui-locale": 1
+        }
       },
       "src/renderer/locales/artifact-copy.ts": {
         "bridgePaths": {},
@@ -1107,7 +1121,9 @@
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
-        "dependencyPaths": {}
+        "dependencyPaths": {
+          "@maka/core/ui-locale": 1
+        }
       },
       "src/renderer/locales/browser-copy.ts": {
         "bridgePaths": {},
@@ -1116,7 +1132,9 @@
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
-        "dependencyPaths": {}
+        "dependencyPaths": {
+          "@maka/core/ui-locale": 1
+        }
       },
       "src/renderer/locales/capability-reason-copy.ts": {
         "bridgePaths": {},
@@ -1136,7 +1154,9 @@
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
-        "dependencyPaths": {}
+        "dependencyPaths": {
+          "@maka/core/ui-locale": 1
+        }
       },
       "src/renderer/locales/mcp-copy.ts": {
         "bridgePaths": {},
@@ -1145,7 +1165,9 @@
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
-        "dependencyPaths": {}
+        "dependencyPaths": {
+          "@maka/core/ui-locale": 1
+        }
       },
       "src/renderer/locales/onboarding-copy.ts": {
         "bridgePaths": {},
@@ -1154,7 +1176,9 @@
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
-        "dependencyPaths": {}
+        "dependencyPaths": {
+          "@maka/core/ui-locale": 1
+        }
       },
       "src/renderer/locales/peer-mesh-copy.ts": {
         "bridgePaths": {},
@@ -1163,7 +1187,9 @@
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
-        "dependencyPaths": {}
+        "dependencyPaths": {
+          "@maka/core/ui-locale": 1
+        }
       },
       "src/renderer/locales/permission-center-copy.ts": {
         "bridgePaths": {},
@@ -1172,7 +1198,9 @@
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
-        "dependencyPaths": {}
+        "dependencyPaths": {
+          "@maka/core/ui-locale": 1
+        }
       },
       "src/renderer/locales/plan-mode-copy.ts": {
         "bridgePaths": {},
@@ -1192,7 +1220,9 @@
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
-        "dependencyPaths": {}
+        "dependencyPaths": {
+          "@maka/core/ui-locale": 1
+        }
       },
       "src/renderer/locales/session-local-copy.ts": {
         "bridgePaths": {},
@@ -1201,7 +1231,9 @@
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
-        "dependencyPaths": {}
+        "dependencyPaths": {
+          "@maka/core/ui-locale": 1
+        }
       },
       "src/renderer/locales/settings-bot-copy.ts": {
         "bridgePaths": {},
@@ -1221,7 +1253,9 @@
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
-        "dependencyPaths": {}
+        "dependencyPaths": {
+          "@maka/core/ui-locale": 1
+        }
       },
       "src/renderer/locales/settings-data-copy.ts": {
         "bridgePaths": {},
@@ -1230,7 +1264,9 @@
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
-        "dependencyPaths": {}
+        "dependencyPaths": {
+          "@maka/core/ui-locale": 1
+        }
       },
       "src/renderer/locales/settings-external-agents-copy.ts": {
         "bridgePaths": {},
@@ -1239,7 +1275,9 @@
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
-        "dependencyPaths": {}
+        "dependencyPaths": {
+          "@maka/core/ui-locale": 1
+        }
       },
       "src/renderer/locales/settings-health-copy.ts": {
         "bridgePaths": {},
@@ -1248,7 +1286,9 @@
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
-        "dependencyPaths": {}
+        "dependencyPaths": {
+          "@maka/core/ui-locale": 1
+        }
       },
       "src/renderer/locales/settings-jev-copy.ts": {
         "bridgePaths": {},
@@ -1257,7 +1297,9 @@
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
-        "dependencyPaths": {}
+        "dependencyPaths": {
+          "@maka/core/ui-locale": 1
+        }
       },
       "src/renderer/locales/settings-memory-copy.ts": {
         "bridgePaths": {},
@@ -1277,7 +1319,9 @@
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
-        "dependencyPaths": {}
+        "dependencyPaths": {
+          "@maka/core/ui-locale": 1
+        }
       },
       "src/renderer/locales/settings-preferences-copy.ts": {
         "bridgePaths": {},
@@ -1286,7 +1330,9 @@
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
-        "dependencyPaths": {}
+        "dependencyPaths": {
+          "@maka/core/ui-locale": 1
+        }
       },
       "src/renderer/locales/settings-pricing-copy.ts": {
         "bridgePaths": {},
@@ -1315,27 +1361,11 @@
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
-        "dependencyPaths": {}
+        "dependencyPaths": {
+          "@maka/core/ui-locale": 1
+        }
       },
       "src/renderer/locales/settings-subagents-copy.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {}
-      },
-      "src/renderer/locales/settings-tasks-copy.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {}
-      },
-      "src/renderer/locales/settings-test-result-copy.ts": {
         "bridgePaths": {},
         "environmentCapabilities": {},
         "hookCalls": {},
@@ -1346,6 +1376,28 @@
           "@maka/core/ui-locale": 1
         }
       },
+      "src/renderer/locales/settings-tasks-copy.ts": {
+        "bridgePaths": {},
+        "environmentCapabilities": {},
+        "hookCalls": {},
+        "lifecycleMethods": {},
+        "unresolvedDependencies": 0,
+        "actionFactories": [],
+        "dependencyPaths": {
+          "@maka/core/ui-locale": 1
+        }
+      },
+      "src/renderer/locales/settings-test-result-copy.ts": {
+        "bridgePaths": {},
+        "environmentCapabilities": {},
+        "hookCalls": {},
+        "lifecycleMethods": {},
+        "unresolvedDependencies": 0,
+        "actionFactories": [],
+        "dependencyPaths": {
+          "@maka/core/ui-locale": 2
+        }
+      },
       "src/renderer/locales/settings-usage-copy.ts": {
         "bridgePaths": {},
         "environmentCapabilities": {},
@@ -1353,7 +1405,9 @@
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
-        "dependencyPaths": {}
+        "dependencyPaths": {
+          "@maka/core/ui-locale": 1
+        }
       },
       "src/renderer/locales/settings-web-search-copy.ts": {
         "bridgePaths": {},
@@ -1362,7 +1416,9 @@
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
-        "dependencyPaths": {}
+        "dependencyPaths": {
+          "@maka/core/ui-locale": 1
+        }
       },
       "src/renderer/locales/shell-copy.ts": {
         "bridgePaths": {},
@@ -1384,7 +1440,9 @@
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
-        "dependencyPaths": {}
+        "dependencyPaths": {
+          "@maka/core/ui-locale": 1
+        }
       },
       "src/renderer/locales/storage-usage-copy.ts": {
         "bridgePaths": {},
@@ -1393,7 +1451,9 @@
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
-        "dependencyPaths": {}
+        "dependencyPaths": {
+          "@maka/core/ui-locale": 1
+        }
       },
       "src/renderer/locales/task-readiness-copy.ts": {
         "bridgePaths": {},
@@ -1402,7 +1462,9 @@
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
-        "dependencyPaths": {}
+        "dependencyPaths": {
+          "@maka/core/ui-locale": 1
+        }
       },
       "src/renderer/locales/work-board-error-copy.ts": {
         "bridgePaths": {},
@@ -1412,7 +1474,7 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
-          "@maka/core/ui-locale": 1
+          "@maka/core/ui-locale": 2
         }
       },
       "src/renderer/model-catalog-choices.ts": {
@@ -1962,6 +2024,7 @@
         "dependencyPaths": {
           "../features/jev-settings": 1,
           "../features/network-proxy/index.js": 1,
+          "../features/personal-assistant/index.js": 1,
           "../locales/settings-preferences-copy.js": 1,
           "../locales/settings-shared-copy.js": 1,
           "../locales/settings-test-result-copy.js": 1,
@@ -2934,6 +2997,7 @@
           "../browser-storage": 1,
           "../features/connection-settings": 1,
           "../features/external-agent-settings/index.js": 1,
+          "../features/personal-assistant/index.js": 1,
           "../features/session-bundle": 1,
           "../features/session-navigation": 1,
           "../locales/settings-navigation-copy.js": 1,
@@ -3308,6 +3372,7 @@
         "actionFactories": [],
         "dependencyPaths": {
           "./platform/desktop/default-runtime-host-operation.js": 1,
+          "@maka/ui": 1,
           "react": 1
         }
       },

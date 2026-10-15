@@ -32,6 +32,7 @@ import {
   importSessionBundleState,
   listSessionBundleMergeTables,
 } from '../session-bundle-policy.js';
+import { writeImageDeliveryAttempt, readImageDeliveryAttempt } from '../sqlite-image-delivery.js';
 import { createSqliteRuntimeStore } from '../sqlite-runtime-store.js';
 
 test('exports one Session as filtered SQLite', async () => {
@@ -51,6 +52,13 @@ test('exports one Session as filtered SQLite', async () => {
     sourceDatabase
       .prepare('INSERT INTO usage_pricing_overrides(model_key, record_json) VALUES (?, ?)')
       .run('private-model', '{}');
+    for (const sessionId of [selected.id, excluded.id]) {
+      writeImageDeliveryAttempt(
+        sourceDatabase,
+        { sessionId, turnId: 'turn-1', messageId: 'image-message', source: '/tmp/image.png' },
+        { status: 'failed', reason: 'not_found' },
+      );
+    }
     sourceDatabase.close();
 
     const plan = await exportSessionBundleState({
@@ -67,6 +75,13 @@ test('exports one Session as filtered SQLite', async () => {
         .all()
         .map((row) => (row as { session_id: string }).session_id);
       assert.deepEqual(ids, [selected.id]);
+      assert.deepEqual(
+        database
+          .prepare('SELECT session_id FROM image_delivery_attempts')
+          .all()
+          .map((row) => row.session_id),
+        [selected.id],
+      );
       assert.equal(
         (
           database.prepare('SELECT COUNT(*) AS count FROM session_messages').get() as {
@@ -85,6 +100,22 @@ test('exports one Session as filtered SQLite', async () => {
       );
     } finally {
       database.close();
+    }
+    const targetRoot = join(base, 'imported');
+    await importSessionBundleState({ stateRoot: targetRoot, bundleStateRoot: destinationRoot });
+    const imported = new DatabaseSync(join(targetRoot, 'runtime.sqlite'), { readOnly: true });
+    try {
+      assert.deepEqual(
+        readImageDeliveryAttempt(imported, {
+          sessionId: selected.id,
+          turnId: 'turn-1',
+          messageId: 'image-message',
+          source: '/tmp/image.png',
+        }),
+        { status: 'failed', reason: 'not_found' },
+      );
+    } finally {
+      imported.close();
     }
   } finally {
     await rm(base, { recursive: true, force: true });

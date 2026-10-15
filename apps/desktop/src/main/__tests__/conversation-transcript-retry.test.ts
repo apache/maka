@@ -107,7 +107,7 @@ function harness() {
   let target!: ReturnType<typeof useAppShellSessionUiState>;
   let transcript!: TranscriptView;
   function Transcript(props: TranscriptView) { transcript = props; return null; }
-  function Shell() {
+  function ToastProbe() {
     const toast = useToast();
     if (!recordedToasts.has(toast)) {
       recordedToasts.add(toast);
@@ -117,9 +117,13 @@ function harness() {
         return error(title, description, ...rest);
       };
     }
+    return null;
+  }
+  function Shell() {
     target = useAppShellSessionUiState();
     owner = useConversationOwner();
     return createElement(Fragment, null,
+      createElement(ToastProbe),
       createElement(ConversationLifecycle, {
         refreshSessions: async () => [], onExecutionBoundaryChanged() {},
         showModelSetupToast() {}, onTurnCompleted() {}, searchTarget: null, clearSearchTarget() {},
@@ -131,7 +135,11 @@ function harness() {
     createElement(ToastProvider, { children:
       createElement(SessionCatalogContext.Provider, { value: catalog, children:
         createElement(ConversationServicesProvider, { services, children:
-          createElement(ConversationProvider, { children: withComposerSubmission(createElement(Shell)) }),
+          // The fixture has its own toast provider; observe both the controller and lifecycle feedback.
+          createElement(ConversationProvider, { children: createElement(Fragment, null,
+            createElement(ToastProbe),
+            withComposerSubmission(createElement(Shell), { conversationServices: services }),
+          ) }),
         }),
       }),
     }),

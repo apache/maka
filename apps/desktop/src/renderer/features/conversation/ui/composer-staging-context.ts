@@ -20,7 +20,7 @@
 import { createContext, useContext } from 'react';
 import type { useComposerAttachments } from '../controller/use-composer-attachments.js';
 
-export const ComposerStagingContext = createContext<ReturnType<typeof useComposerAttachments> | undefined>(undefined);
+export const ComposerStagingContext = createContext<(ReturnType<typeof useComposerAttachments> & { readonly draftKey: string }) | undefined>(undefined);
 export function useComposerStaging() {
   const staging = useContext(ComposerStagingContext);
   if (!staging) throw new Error('ComposerStagingProvider is required');

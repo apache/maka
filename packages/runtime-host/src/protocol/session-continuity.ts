@@ -208,7 +208,7 @@ export type SessionToolEvent =
   | (SessionToolEventIdentity & {
       type: 'tool_result';
       operationId?: string;
-      status: 'completed' | 'errored';
+      status: 'completed' | 'errored' | 'interrupted';
       sandboxFailureReason?: SandboxBoundaryFailureSignal['reason'];
       durationMs?: number;
     })
@@ -233,11 +233,18 @@ export interface SessionSteeringEvent {
   content: MessageContent;
 }
 
+export interface SessionContextCompactionAppliedEvent {
+  type: 'context_compaction_applied';
+  id: string;
+  turnId: string;
+  ts: number;
+}
+
 export interface SessionEventFrame extends SubscriptionEnvelope {
   kind: 'subscription.session_event';
   sessionId: string;
   runId: string;
-  event: SessionToolEvent | SessionSteeringEvent;
+  event: SessionToolEvent | SessionSteeringEvent | SessionContextCompactionAppliedEvent;
 }
 
 export interface SessionTranscriptAdvancedFrame extends SubscriptionEnvelope {
@@ -801,8 +808,22 @@ function decodeAssistantDelta(value: unknown): SessionAssistantDelta {
   };
 }
 
-function decodeSessionFrameEvent(value: unknown): SessionToolEvent | SessionSteeringEvent {
+function decodeSessionFrameEvent(value: unknown): SessionEventFrame['event'] {
   const record = requireRecord(value, 'Session event');
+  if (record.type === 'context_compaction_applied') {
+    assertExactKeys(record, 'Session context compaction applied event', [
+      'type',
+      'id',
+      'turnId',
+      'ts',
+    ]);
+    return {
+      type: record.type,
+      id: requireId(record.id, 'Session context compaction applied event id'),
+      turnId: requireEntityId(record.turnId, 'turnId'),
+      ts: requireCount(record.ts, 'Session context compaction applied event timestamp'),
+    };
+  }
   if (record.type === 'steering_message') return decodeSessionSteeringEvent(record);
   return decodeSessionToolEvent(record);
 }
@@ -982,7 +1003,11 @@ function decodeSessionToolEvent(value: unknown): SessionToolEvent {
       'toolUseId',
       'status',
     ]);
-    if (record.status !== 'completed' && record.status !== 'errored') {
+    if (
+      record.status !== 'completed' &&
+      record.status !== 'errored' &&
+      record.status !== 'interrupted'
+    ) {
       throw invalidProtocolFrame('Invalid Session tool result status');
     }
     if (record.status === 'completed' && record.sandboxFailureReason !== undefined) {

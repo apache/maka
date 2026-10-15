@@ -590,7 +590,9 @@ function runRuntimeHostUntilVerifierStop(
 
     const startupTimer = setTimeout(() => {
       requestVerifierStop(
-        new Error(`Released Runtime Host did not publish Ready within ${startupTimeoutMs} ms`),
+        new Error(
+          `Released Runtime Host did not publish Ready within ${startupTimeoutMs} ms: ${stderr || stdout}`,
+        ),
       );
     }, startupTimeoutMs);
 

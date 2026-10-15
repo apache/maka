@@ -35,6 +35,7 @@ import { useAppShellTurnPresentation } from '../../../application/contracts/turn
 import { getShellCopy } from '../../../locales/shell-copy.js';
 import { composerTurnGates, desktopComposerSlashCommands } from '../model/composer-turn-gates.js';
 import { executorComposerProps } from '../model/executor-composer.js';
+import type { LatestRequestUsage } from '../../../application/contracts/session-inspector/latest-request-usage.js';
 import { liveTurnFlags } from '../model/live-turn-flags.js';
 
 /** The displayed Session's Turn, read at chrome frequency. */
@@ -128,7 +129,7 @@ type TurnGatedProps = ReturnType<typeof composerTurnGates> & ReturnType<typeof e
 type ComposerProps = SubmissionProps & TurnGatedProps & {
   /** The owner's editor handle; regions outside Conversation get named edits instead. */
   composerRef: ReturnType<typeof useConversationQueueCommands>['composer'];
-  processing: boolean; pendingMessages: ChatProps['transientMessages']; latestRequestUsageTokens?: number;
+  processing: boolean; pendingMessages: ChatProps['transientMessages']; latestRequestUsage?: LatestRequestUsage;
   /** The owner Session's open interaction; the Composer slot answers it. */
   activeInteraction: ComposerInteraction | undefined;
   queuedMessages: UiComposerProps['queuedMessages'];
@@ -144,6 +145,7 @@ type ComposerGateInputs = {
 };
 /** The shell's picker gates; an edit-and-resend draft narrows them here. */
 type ComposerPickGates = { contextPickEnabled?: boolean; directoryPickerEnabled?: boolean };
+type OwnedComposerProps = ComposerProps & { canStageContext: boolean; allowAttachmentOnlySend?: boolean };
 /**
  * Lives in the persistent composer slot, outside the conditional transcript.
  * Submission state (send pending, Stop pending, the edit-and-resend draft) and
@@ -154,7 +156,7 @@ type ComposerPickGates = { contextPickEnabled?: boolean; directoryPickerEnabled?
  */
 export function ConversationComposerRegion<P extends object>(
   props: { surface: ComponentType<P>; usageModel?: string; usageRoute?: { llmConnectionId?: string } }
-    & ComposerGateInputs & Omit<P, keyof ComposerProps>,
+    & ComposerGateInputs & Omit<P, keyof OwnedComposerProps>,
 ) {
   const { surface, usageModel, usageRoute, sessionState, executorComposer, ...presentation } = props;
   const { workspace } = useConversationOwner();
@@ -175,13 +177,16 @@ export function ConversationComposerRegion<P extends object>(
   const { selection: executor, ...executorInput } = executorComposer;
   const view = useSyncExternalStore(workspace.composer.subscribe, workspace.composer.getSnapshot);
   const usage = useMemo(() => workspace.usage(usageModel, usageRoute?.llmConnectionId), [workspace, usageModel, usageRoute?.llmConnectionId]);
-  const latestRequestUsageTokens = useSyncExternalStore(usage.subscribe, usage.getSnapshot);
+  const latestRequestUsage = useSyncExternalStore(usage.subscribe, usage.getSnapshot);
   const stopPending = useSessionUiRead(workspace.ui.reads, 'stop', activeId);
   const draft = submission.revisionDraft;
   const editing = draft !== null && activeId === draft.draftSessionId;
   const gates = presentation as ComposerPickGates;
-  const owned: ComposerProps & ComposerPickGates = {
+  const owned: OwnedComposerProps & ComposerPickGates = {
     composerRef,
+    // Picking and sending staged context share the shell's single availability input.
+    canStageContext: gates.contextPickEnabled ?? false,
+    allowAttachmentOnlySend: gates.contextPickEnabled,
     activeInteraction: interaction,
     queuedMessages: queue?.entries,
     queuedMessageRevision: queue?.queueRevision,
@@ -221,7 +226,7 @@ export function ConversationComposerRegion<P extends object>(
       : {}),
     processing: view.transientMessages.length > 0,
     pendingMessages: view.transientMessages,
-    latestRequestUsageTokens,
+    latestRequestUsage,
   };
   return createElement(surface, { ...presentation, ...owned } as unknown as P);
 }

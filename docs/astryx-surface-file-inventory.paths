@@ -45,6 +45,7 @@ apps/desktop/src/renderer/features/conversation/ui/plan-panels.tsx
 apps/desktop/src/renderer/features/conversation/ui/plan-provider.tsx
 apps/desktop/src/renderer/features/conversation/ui/plan-surfaces.tsx
 apps/desktop/src/renderer/features/conversation/ui/staged-composer.tsx
+apps/desktop/src/renderer/features/conversation/ui/staged-local-messages.tsx
 apps/desktop/src/renderer/features/conversation/ui/staged-quote-chat-view.tsx
 apps/desktop/src/renderer/features/conversation/ui/task-readiness-provider.tsx
 apps/desktop/src/renderer/features/diagnostics/services-context.tsx
@@ -66,6 +67,9 @@ apps/desktop/src/renderer/features/overlays/ui/keyboard-help-modal.tsx
 apps/desktop/src/renderer/features/overlays/ui/overlays-context.tsx
 apps/desktop/src/renderer/features/overlays/ui/overlays-root.tsx
 apps/desktop/src/renderer/features/overlays/ui/search-modal-host.tsx
+apps/desktop/src/renderer/features/personal-assistant/original-reader.css
+apps/desktop/src/renderer/features/personal-assistant/original-reader.tsx
+apps/desktop/src/renderer/features/personal-assistant/personal-assistant.css
 apps/desktop/src/renderer/features/runtime-host-management/services-context.tsx
 apps/desktop/src/renderer/features/runtime-host-management/ui/peer-mesh-peer-id-button.tsx
 apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-add-computer-menu.tsx
@@ -273,17 +277,20 @@ packages/ui/src/components.tsx
 packages/ui/src/composer-message-queue-view.tsx
 packages/ui/src/composer-message-queue.tsx
 packages/ui/src/composer-model-label.tsx
+packages/ui/src/composer-options-menu.tsx
 packages/ui/src/composer.tsx
 packages/ui/src/daily-review-panel.tsx
 packages/ui/src/directory-reference-chip.tsx
 packages/ui/src/executor-model-picker.tsx
 packages/ui/src/form-interaction-prompt.tsx
 packages/ui/src/icons.tsx
+packages/ui/src/image-delivery.tsx
 packages/ui/src/inline-reference.tsx
 packages/ui/src/inline-rename-input.tsx
 packages/ui/src/locale-context.tsx
 packages/ui/src/maka-wordmark.tsx
 packages/ui/src/markdown-body.tsx
+packages/ui/src/markdown-image.tsx
 packages/ui/src/markdown-math.tsx
 packages/ui/src/markdown.tsx
 packages/ui/src/mermaid-diagram.tsx
@@ -328,6 +335,7 @@ packages/ui/src/tool-activity.tsx
 packages/ui/src/tool-activity/diff-code-preview.tsx
 packages/ui/src/tool-activity/tool-code-block.tsx
 packages/ui/src/tool-activity/tool-result-preview.tsx
+packages/ui/src/transcript-disclosure.tsx
 packages/ui/src/transcript-scroll-authority.tsx
 packages/ui/src/ui.tsx
 packages/ui/src/user-question-prompt.tsx

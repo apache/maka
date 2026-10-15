@@ -20,6 +20,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
+  defineShippedUiMessageCatalog,
   UI_LOCALES,
   defineUiMessageCatalog,
   formatUiMessage,
@@ -80,6 +81,38 @@ describe('UI locale', () => {
 });
 
 describe('UI message catalogs', () => {
+  it('keeps shipped translations complete and preserves optional translated fields', () => {
+    const catalog = defineShippedUiMessageCatalog<{
+      title: string;
+      detail: { ready: string };
+      count(n: number): string;
+      badge?: string;
+    }>()({
+      en: { title: 'Status', detail: { ready: 'Ready' }, count: (n) => `${n} items` },
+      'zh-CN': { title: '状态', detail: { ready: '就绪' }, count: (n) => `${n} 项`, badge: '推荐' },
+      'zh-TW': { title: '狀態', detail: { ready: '就緒' }, count: (n) => `${n} 項`, badge: '推薦' },
+    });
+    const resolved = resolveUiMessageCatalog(catalog);
+    assert.equal(resolved['zh-CN'].badge, '推荐');
+    assert.equal(resolved['zh-TW'].badge, '推薦');
+    assert.equal(resolved['zh-CN'].count(2), '2 项');
+  });
+
+  it('rejects missing shipped keys and incompatible copy function parameters at compile time', () => {
+    type Copy = { title: string; count(n: number): string };
+    const en: Copy = { title: 'Status', count: (n) => `${n} items` };
+    // @ts-expect-error Both shipped Chinese catalogs are required.
+    defineShippedUiMessageCatalog<Copy>()({ en });
+    // @ts-expect-error A shipped translation cannot omit count and silently fall back.
+    defineShippedUiMessageCatalog<Copy>()({ en, 'zh-CN': { title: '状态' }, 'zh-TW': en });
+    defineShippedUiMessageCatalog<Copy>()({
+      en,
+      // @ts-expect-error Function arguments retain their declared numeric signature.
+      'zh-CN': { title: '状态', count: (n: string) => n },
+      'zh-TW': en,
+    });
+  });
+
   it('falls back to complete English copy for missing translations', () => {
     const catalog = defineUiMessageCatalog<{
       title: string;

@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { defineShippedUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
+
 import type { InspectorCopy } from './session-inspector/copy.js';
 
 import type { ChatConfigurationReason } from '@maka/core/connection-readiness';
@@ -342,7 +344,7 @@ function enDetail(parts: readonly string[]): string {
   return parts.length > 0 ? `: ${parts.join(', ')}` : '';
 }
 
-const COPY = {
+const COPY = resolveUiMessageCatalog(defineShippedUiMessageCatalog<DesktopConversationCopy>()({
   'zh-CN': {
     actions: { stopFailedTitle: '停止失败', stopFailedFallback: '任务操作失败，请稍后重试。', refreshSessionsFailedTitle: '刷新任务列表失败', refreshSessionsFailedFallback: '刷新任务列表失败，请稍后重试。', conversationErrorTitle: '任务出错', conversationErrorFallback: '任务运行失败，请稍后重试。', branchCreatedTitle: '已创建分支', branchCreatedDescription: (name) => `新任务 ${name}`, revisionStartedTitle: '已创建修改版草稿', revisionStartedDescription: '原任务仍会保留；发送后将在新版本中继续', revisionReadyTitle: '可以修改并重发了', revisionReadyDescription: '已回到该消息之前；可直接重发或修改后发送', revisionUnavailableTitle: '暂时无法编辑这条消息', revisionAttachmentsUnsupported: '这条消息自带的附件不参与编辑并重发，请复制文字后新建消息。', revisionTransformedTextUnsupported: '通过显式技能发送的历史消息暂不支持编辑并重发，请复制文字后重新选择技能。', revisionDraftAttachmentConflict: 'Composer 中已有待发送附件，请先发送或移除附件，再编辑历史消息。', revisionDraftQuoteConflict: 'Composer 中已有暂存引用，请先发送或移除引用，再编辑历史消息。', revisionMixedContextUnsupported: '编辑期间新增的暂存内容不能与恢复的引用一起发送，请取消本次编辑后重试。', revisionCommandUnsupported: '修改消息时不能执行 /compact、/side 或编排命令，请取消修改后再试。', revisionAlreadyActive: '已有一条消息正在修改，请先发送或取消当前修改。', revisionCancelLabel: '取消', revisionBannerTitle: '正在修改已发送消息', revisionBannerDetail: '· 发送后创建新版本', operationFailedTitle: '操作失败', operationFailedFallback: '任务操作失败，请稍后重试。', attachmentFailedTitle: '添加附件失败', folderNotAttachable: '文件夹不能作为附件添加。', folderNotAttachableUseReference: '文件夹不能作为附件添加，请改用“引用文件夹”。', imageAttachmentNotDirectTitle: '图片已作为附件添加', imageAttachmentNotDirectDescription: '当前模型不会直接接收图片。图片已作为附件提供给模型。', tryAgain: '请稍后重试。', modelReboundTitle: '已切换到可用模型', modelReboundDescription: (modelId) => `原任务使用的连接已不可用${modelId ? ` · ${modelId}` : ''}`, messageReadFailedTitle: '读取任务失败', scrollMainToBottom: '滚动主对话到底部' },
     model: {
@@ -1091,7 +1093,7 @@ const COPY = {
     },
     turnError: { streamTruncated: 'The response stream ended before completion.', requestRejected: 'The model service rejected the request. Check the model and request configuration.', retryExhausted: 'The automatic retry limit was reached.', retryDeclined: { side_effects: 'Tool activity already occurred in this attempt. Automatic retry was declined to avoid repeating operations. Check the tool results first.', observable_output: 'This attempt already produced output, so it was not retried automatically. Check the retained content first.', policy: 'This attempt was not retried under the current retry policy.', budget: 'The execution budget was exhausted, so this attempt was not retried automatically.' }, unknown: 'Something went wrong; the cause is unknown.', contextOverflow: 'Context exceeded the model window. Reduce attachments or start a new task.', timeout: 'The model request timed out.', auth: 'Model authentication failed. Reconnect or sign in again from Settings.', providerBilling: 'Model billing is restricted. Check the account balance or subscription.', providerCapacity: 'The model service is temporarily at capacity.', rateLimit: 'Requests were rate-limited.', network: 'The network connection failed. Check the network.', provider: 'The model service returned an error.', stepCap: 'The tool-step limit was reached, so the task may be incomplete. Send a message to continue.', tool: 'A tool call failed. Check the tool result above before deciding whether to retry.', permission: 'This turn ended while waiting for permission. Send a message and it will ask again.', restarted: 'The app restarted before the previous turn completed', sandboxBoundaryClosed: 'The app restarted, so the pending request to reach outside the workspace was closed as denied. Send a message to decide again.', executionState: { erroredTool: 'A tool errored during this turn. Read its result before deciding whether to send another message.', toolRan: 'Tools already ran during this turn and may have made real changes. Read their results before sending another message.' } },
   },
-} satisfies UiCatalog<DesktopConversationCopy>;
+})) satisfies UiCatalog<DesktopConversationCopy>;
 
 export function getDesktopConversationCopy(locale: UiLocale): DesktopConversationCopy {
   return COPY[locale];

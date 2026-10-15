@@ -103,7 +103,10 @@ import {
   subagentSessionRuntimeSummary,
 } from '@maka/core/session';
 import { decodeAgentGraphIntentClaim } from '@maka/core/agent-graph-control';
-import { executionBoundaryContains } from '@maka/core/sandbox-boundary';
+import {
+  createGenesisExecutionBoundary,
+  executionBoundaryContains,
+} from '@maka/core/sandbox-boundary';
 import { failureClassFromCompleteStopReason } from '@maka/core/events';
 import { isActiveShellRunStatus } from '@maka/core/shell-run';
 import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
@@ -668,10 +671,17 @@ export interface StrictRecoveryStores {
 // BackendRegistry — factory dispatch by the session header's durable backend
 // ============================================================================
 
+export interface TurnExecutionPolicy {
+  readonly permissionMode: PermissionMode;
+  /** Missing information is returned to the caller instead of suspending a worker. */
+  readonly questions?: 'return';
+}
+
 export interface BackendFactoryContext {
   sessionId: string;
   workspaceRoot: string;
   header: SessionHeader;
+  executionPolicy?: TurnExecutionPolicy;
   store: SessionStore;
   /** Process-local cancellation for the execution that owns this activation. */
   abortSignal?: AbortSignal;
@@ -831,6 +841,11 @@ interface SessionManagerBaseDeps {
   /** Reject patch publication while the child still owns live Runtime Resources. */
   assertChildWorkspaceQuiescent?: (sessionId: string) => Promise<void>;
   runtimeKernel?: RuntimeKernelLike;
+  /** Restore a delegated run policy from the Host's durable execution lineage. */
+  resolveExecutionPolicy?: (
+    sessionId: string,
+    runId: string,
+  ) => Promise<TurnExecutionPolicy | undefined>;
   /** Optional host-owned parent run authority for runtimes that execute the parent externally. */
   isParentRunActive?: (sessionId: string, runId: string, turnId: string) => boolean;
   shellRuns?: ShellRunProcessManager;
@@ -2650,6 +2665,30 @@ export class SessionManager {
     await this.runtimeKernel.preflightContextCompaction(sessionId);
   }
 
+  returnExecutionQuestions(sessionId: string, runId: string): void {
+    if (!this.runtimeKernel.returnExecutionQuestions)
+      throw new Error('Runtime does not support execution question policy');
+    this.runtimeKernel.returnExecutionQuestions(sessionId, runId);
+  }
+
+  private async readExecutionPolicy(
+    sessionId: string,
+    runId: string,
+  ): Promise<TurnExecutionPolicy | undefined> {
+    return (
+      this.runtimeKernel.readExecutionPolicy?.(sessionId, runId) ??
+      (await this.deps.resolveExecutionPolicy?.(sessionId, runId))
+    );
+  }
+
+  private async readExecutionBoundaryForRun(sessionId: string, runId: string) {
+    const policy = await this.readExecutionPolicy(sessionId, runId);
+    const boundary = await this.deps.store.readExecutionBoundary(sessionId);
+    return policy && (policy.permissionMode === 'bypass' || boundary.kind === 'bypass')
+      ? createGenesisExecutionBoundary(policy.permissionMode)
+      : boundary;
+  }
+
   /**
    * Create and run a durable linked child Session.
    *
@@ -2739,7 +2778,7 @@ export class SessionManager {
     const [parentHeader, sourceRun, parentBoundary] = await Promise.all([
       this.deps.store.readHeader(input.source.sessionId),
       this.readInvocation(input.source.sessionId, input.source.runId),
-      this.deps.store.readExecutionBoundary(input.source.sessionId),
+      this.readExecutionBoundaryForRun(input.source.sessionId, input.source.runId),
     ]);
     if (
       sourceRun.sessionId !== input.source.sessionId ||
@@ -2769,7 +2808,10 @@ export class SessionManager {
       ? []
       : await this.resolveChildToolNames(input.source.sessionId, parentHeader, definition);
     const childPermissionMode =
-      parentHeader.permissionMode === 'bypass' ? 'bypass' : definition.permissionMode;
+      ((await this.readExecutionPolicy(input.source.sessionId, input.source.runId))
+        ?.permissionMode ?? parentHeader.permissionMode) === 'bypass'
+        ? 'bypass'
+        : definition.permissionMode;
 
     const initialTurnId = this.deps.newId();
     const initialRunId = this.deps.newId();
@@ -3073,6 +3115,10 @@ export class SessionManager {
       child.subagentParent.parentSessionId,
       child.id,
     );
+    const executionPolicy = await this.readExecutionPolicy(
+      child.subagentParent.parentSessionId,
+      child.subagentParent.spawnedBy.parentRunId,
+    );
     const rootExecution: RootExecutionDescriptor = {
       kind: 'claimed_agent_graph_intent',
       claim,
@@ -3238,6 +3284,7 @@ export class SessionManager {
               : {}),
             onRunStarted,
             execution: runtimeExecution,
+            ...(executionPolicy ? { executionPolicy } : {}),
           },
         ),
       onReady: notifyReady,
@@ -3408,8 +3455,12 @@ export class SessionManager {
     const [parentHeader, parentRun, parentBoundary] = await Promise.all([
       this.deps.store.readHeader(parentSessionId),
       this.readInvocation(parentSessionId, input.spawnedBy.parentRunId),
-      this.deps.store.readExecutionBoundary(parentSessionId),
+      this.readExecutionBoundaryForRun(parentSessionId, input.spawnedBy.parentRunId),
     ]);
+    const executionPolicy = await this.readExecutionPolicy(
+      parentSessionId,
+      input.spawnedBy.parentRunId,
+    );
     this.assertActiveParentRun(parentSessionId, parentRun, input.spawnedBy.parentTurnId);
 
     const definition = requireBuiltinAgentDefinitionByProfile(input.agentProfile);
@@ -3587,6 +3638,7 @@ export class SessionManager {
                 durability: 'required',
                 onRunStarted,
                 execution: runtimeOwner.execution,
+                ...(executionPolicy ? { executionPolicy } : {}),
               },
             ),
           onReady: notifyReady,
@@ -3761,8 +3813,10 @@ export class SessionManager {
     parentSessionId: string,
     childSessionId: string,
   ): Promise<void> {
+    const child = await this.deps.store.readHeader(childSessionId);
+    if (!child.subagentParent) throw new Error('Linked child is missing parent provenance');
     const [parentBoundary, childBoundary] = await Promise.all([
-      this.deps.store.readExecutionBoundary(parentSessionId),
+      this.readExecutionBoundaryForRun(parentSessionId, child.subagentParent.spawnedBy.parentRunId),
       this.deps.store.readExecutionBoundary(childSessionId),
     ]);
     if (!executionBoundaryContains(parentBoundary, childBoundary)) {

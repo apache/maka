@@ -64,6 +64,69 @@ const PREFIX_PROOF_TEST_BUDGET = {
 };
 
 describe('SqliteRuntimeStore', () => {
+  it('history revision tracks durable append identity without using event time', async () => {
+    await withStore(async (store) => {
+      const first = functionCallEvent({
+        id: 'history-one',
+        content: { kind: 'text', text: 'first' },
+        ts: 100,
+      });
+      assert.equal(await store.readSessionHistoryRevision(first.sessionId), 'empty');
+      await store.appendRuntimeEvent(first.sessionId, first.runId, first);
+      const revision = await store.readSessionHistoryRevision(first.sessionId);
+      await store.appendRuntimeEvent(first.sessionId, first.runId, first);
+      assert.equal(await store.readSessionHistoryRevision(first.sessionId), revision);
+      await store.appendRuntimeEvent(first.sessionId, first.runId, {
+        ...first,
+        id: 'history-late',
+        ts: 1,
+      });
+      assert.notEqual(await store.readSessionHistoryRevision(first.sessionId), revision);
+    });
+  });
+
+  it('leaves an existing NONE auto-vacuum database unchanged', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-sqlite-runtime-existing-none-'));
+    const dbPath = join(root, 'runtime.sqlite');
+    const existing = new DatabaseSync(dbPath);
+    existing.exec('CREATE TABLE existing_data (value TEXT NOT NULL)');
+    existing.close();
+    try {
+      const store = createSqliteRuntimeStore(dbPath);
+      store.close();
+      const inspected = new DatabaseSync(dbPath, { readOnly: true });
+      try {
+        assert.equal(
+          (inspected.prepare('PRAGMA auto_vacuum').get() as { auto_vacuum: number }).auto_vacuum,
+          0,
+        );
+        assert.ok(
+          inspected
+            .prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'existing_data'")
+            .get(),
+        );
+      } finally {
+        inspected.close();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('creates runtime databases with incremental auto-vacuum', async () => {
+    await withStore(async (_store, dbPath) => {
+      const inspected = new DatabaseSync(dbPath, { readOnly: true });
+      try {
+        assert.equal(
+          (inspected.prepare('PRAGMA auto_vacuum').get() as { auto_vacuum: number }).auto_vacuum,
+          2,
+        );
+      } finally {
+        inspected.close();
+      }
+    });
+  });
+
   it('reads a complete Session from one snapshot while another connection commits its terminal', async (t) => {
     await withStore(async (store, dbPath) => {
       const opening = invocationOpeningEvent(1);
@@ -2230,6 +2293,36 @@ describe('SqliteRuntimeStore', () => {
         ['prepared', 'outcome_committed'],
       );
       assert.deepEqual(await store.listUnsettledToolOperations(), []);
+    });
+  });
+
+  it('retains an aborted tool outcome after reopening the T2 ledger', async () => {
+    await withStore(async (store, dbPath) => {
+      await commitPrepared(store);
+      const response = functionResponseEvent({
+        content: {
+          kind: 'function_response',
+          id: 'provider-call-1',
+          name: 'Read',
+          result: { kind: 'text', text: 'stopped' },
+          isError: true,
+          outcome: 'aborted',
+        },
+      });
+      await store.commitToolOutcome({
+        operationId: 'operation-1',
+        journalEventId: 'operation-1_outcome',
+        runtimeEvent: response,
+        committedAt: 20,
+      });
+      store.close();
+      const reopened = createSqliteRuntimeStore(dbPath);
+      try {
+        const events = await reopened.readRuntimeEvents('session-1', 'run-1');
+        assert.deepEqual(events.at(-1), response);
+      } finally {
+        reopened.close();
+      }
     });
   });
 

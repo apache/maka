@@ -360,6 +360,18 @@ export type DesktopSessionStopResult =
   | { kind: 'interrupted'; retractedMessageIds: string[] }
   | undefined;
 
+/**
+ * How a projectless Session's bound directory relates to the Client's
+ * dedicated task-directory root:
+ * - `managed`: inside the dedicated root — the policy's steady state.
+ * - `suspicious`: a binding that cannot be a deliberate user choice — the
+ *   filesystem root, or inside a reserved location (application state,
+ *   install files) — and warrants a repair offer.
+ * - `other`: a real path outside the root — possibly intentional, possibly
+ *   inherited; correctable but not flagged.
+ */
+export type TaskDirectoryBinding = 'managed' | 'suspicious' | 'other';
+
 /** Cancellation proof aggregated across every Runtime Host query batch. */
 export interface DesktopMessageCancellationQueryResult {
   readonly cancelledMessageIds: readonly string[];
@@ -903,6 +915,7 @@ export interface MakaBridge {
     command<K extends RendererRuntimeHostCommandOperation>(
       operation: K,
       input: OperationInput<K>,
+      host?: DesktopRuntimeHostRef,
     ): Promise<OperationOutput<K>>;
   };
 
@@ -1158,8 +1171,6 @@ export interface MakaBridge {
     prepareAttachments(coordinationSessionId: string, items: RendererIngestInput[]): Promise<WorkHubPrepareAttachmentsResult>;
     answer(coordinationSessionId: string, input: WorkHubAnswerInput): Promise<WorkHubAnswerResult>;
     configureModel(coordinationSessionId: string, input: OperationInput<'workhub.coordination.configureModel'>): Promise<OperationOutput<'workhub.coordination.configureModel'>>;
-    getNewWorkDefaults(coordinationSessionId: string): Promise<Omit<import('@maka/core/session').WorkHubCreateDefaults, 'permissionMode'>>;
-    setNewWorkDefaults(coordinationSessionId: string, defaults: Omit<import('@maka/core/session').WorkHubCreateDefaults, 'permissionMode'>): Promise<void>;
     /** Resolve the active Runtime Host's stable coordination conversation. */
     resolveCoordinationSession(): Promise<string | { readonly kind: 'model_required' }>;
 
@@ -1258,6 +1269,7 @@ export interface MakaBridge {
         text: string;
         /** Local presentation before the Host assigns a Turn or queue entry. */
         localDisplayPlacement?: 'current_turn' | 'next_turn';
+        replacesLocalMessageId?: string;
         displayText?: string;
         skillIds?: string[];
         turnOrchestration?: TurnOrchestration;
@@ -1379,6 +1391,14 @@ export interface MakaBridge {
      * archived Session.
      */
     moveToProject(sessionId: string, projectId: string | null): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>>;
+    /**
+     * Explicit per-task correction: rebinds this Session's workspace to a
+     * fresh dedicated task directory. Preserves every relocation safeguard of
+     * `moveToProject` (busy/archived/CAS); refuses on Hosts that cannot
+     * provision Client directories. The landed directory is the returned
+     * Session's `cwd`.
+     */
+    moveToDedicatedDirectory(sessionId: string): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>>;
     setPermissionMode(sessionId: string, mode: PermissionMode): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>>;
     /**
      * Enter or leave Plan — a temporary collaboration excursion Runtime ends
@@ -1739,6 +1759,7 @@ export interface MakaBridge {
       | { ok: true; base64: string; mimeType: string }
       | { ok: false; reason: string }
     >;
+    resolveImageDelivery: import('@maka/core/image-delivery').ResolveImageDelivery;
     readBytes(sessionId: string, artifactId: string): Promise<ArtifactBinaryReadResult>;
   };
   search: {
@@ -1975,6 +1996,7 @@ export interface MakaBridge {
     sessionProjectInfo(sessionId: string): Promise<{
       projectPath: string;
       projectGit: { isGitRepo: boolean; branch?: string };
+      taskDirectory?: TaskDirectoryBinding;
     }>;
     openPath(
       key: 'workspace' | 'memory' | 'project',

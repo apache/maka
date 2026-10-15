@@ -1,0 +1,10 @@
+[
+  {
+    "type": "insert",
+    "rootId": "profile",
+    "entry": {
+      "id": "feishu-source-host",
+      "packageId": "dev.maka.feishu-source"
+    }
+  }
+]

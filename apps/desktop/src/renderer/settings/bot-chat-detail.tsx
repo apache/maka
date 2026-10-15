@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import type { UiLocale } from '@maka/core/ui-locale';
+
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { ICON_SIZE, ArrowLeft } from '@maka/ui/icons';
 import {
@@ -659,7 +661,7 @@ function BotAllowedUserIdsField(props: {
   );
 }
 
-function botConnectionLabel(connection: BotStatus['connection'], locale: 'zh-CN' | 'zh-TW' | 'en'): string {
+function botConnectionLabel(connection: BotStatus['connection'], locale: UiLocale): string {
   const copy = getBotSettingsCopy(locale).status;
   switch (connection) {
     case 'polling': return copy.polling;

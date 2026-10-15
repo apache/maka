@@ -588,8 +588,8 @@ function LongModelNameComposer({ kind }: { kind: 'existing' | 'new' | 'unified' 
 
 // Real path: a custom relay exposes two path-like model IDs differing only in
 // their suffix. Each panel uses the production Composer that owns the trigger's
-// width cap: an existing native session, the standalone new-chat fallback,
-// and the unified home / side-chat default picker.
+// width cap: an existing native session (the unified options menu), the
+// standalone new-chat fallback, and the unified home / side-chat default picker.
 // The stacked arrangement is a review scaffold, not a single application screen.
 export const LongModelNames: Story = {
   render: () => (
@@ -633,8 +633,16 @@ export const LongModelNames: Story = {
         await expect(range.getBoundingClientRect().right).toBeGreaterThan(clip.right);
       };
       await expectEndEllipsis(SUFFIX_CHOICES[0]!.label);
-      await userEvent.click(trigger);
-      await userEvent.click(await within(document.body).findByRole('option', { name: 'GPT-5' }));
+      // An open Session picks through the unified menu's Model submenu; the
+      // new-task panels keep their searchable picker until phase 2 of #5787.
+      const openChoice = async (choiceName: string | RegExp) => {
+        await userEvent.click(trigger);
+        const page = within(document.body);
+        if (name !== 'Existing conversation') return page.findByRole('option', { name: choiceName });
+        await userEvent.click(await page.findByRole('menuitem', { name: /^(模型|Model)/ }));
+        return page.findByRole('menuitemradio', { name: choiceName });
+      };
+      await userEvent.click(await openChoice('GPT-5'));
       await waitFor(() => expect(trigger).toHaveAttribute('aria-expanded', 'false'));
       await waitFor(() => expect(trigger.querySelector('.maka-composer-model-label')).toHaveTextContent(/^GPT-5$/));
       await expect(trigger).toHaveAccessibleName(/GPT-5/);
@@ -643,10 +651,7 @@ export const LongModelNames: Story = {
       shortRange.selectNodeContents(shortLabel);
       await expect(shortRange.getBoundingClientRect().left).toBeCloseTo(shortLabel.getBoundingClientRect().left, 0);
       await expect(shortRange.getBoundingClientRect().right).toBeLessThanOrEqual(shortLabel.getBoundingClientRect().right + 1);
-      await userEvent.click(trigger);
-      const option = await within(document.body).findByRole('option', {
-        name: new RegExp(SUFFIX_CHOICES[1]!.label),
-      });
+      const option = await openChoice(new RegExp(SUFFIX_CHOICES[1]!.label));
       await expect(option.querySelector('.modelPickerProviderMark')).not.toBeNull();
       await userEvent.click(option);
       await waitFor(() => expect(trigger).toHaveAttribute('aria-expanded', 'false'));

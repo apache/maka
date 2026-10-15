@@ -28,6 +28,8 @@ import { LocalizedChatMessage, TurnView } from '../chat-turn.js';
 import { LocaleProvider } from '../locale-context.js';
 import type { TurnTimelineItem, TurnViewModel } from '../materialize.js';
 import { applyThinkingDelta } from '../thinking-stream.js';
+import { ImageDeliveryProvider, type ResolveImageDelivery } from '../image-delivery.js';
+import { SessionAttachmentProvider } from '../attachment-image.js';
 
 const originalGlobals = {
   document: globalThis.document,
@@ -206,6 +208,59 @@ test('keeps reasoning expanded when its last neighboring tool is projected away'
   assert.ok(after);
   assert.ok(after.isSameNode(header));
   assert.equal(after.getAttribute('aria-expanded'), 'true');
+});
+
+test('process image links never load bytes while the completed final reply still displays an image', async () => {
+  const { container, root } = domRoot();
+  const sources: string[] = [];
+  let reads = 0;
+  const resolve: ResolveImageDelivery = async (_session, request) => {
+    sources.push(request.source);
+    return { status: 'ready', artifactId: 'final-image' };
+  };
+  const readBytes = async () => {
+    reads++;
+    return { ok: true as const, mimeType: 'image/png', base64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==' };
+  };
+  const thinking: TurnTimelineItem = { kind: 'thinking', messageId: 'reasoning', text: '![Reasoning](https://example.com/reasoning.png)' };
+  const commentary: TurnTimelineItem = { kind: 'text', messageId: 'commentary', text: '![Intermediate](https://example.com/commentary.png)', live: true, complete: true };
+  const final: TurnTimelineItem = { kind: 'text', messageId: 'final', text: '![Final](https://example.com/final.png)' };
+  const render = async (timeline: TurnTimelineItem[], completed = false) => {
+    await act(async () => {
+      root.render(<LocaleProvider locale="en">
+        <SessionAttachmentProvider sessionId="session" readBytes={readBytes}>
+          <ImageDeliveryProvider sessionId="session" resolve={resolve}>
+            <TurnView turn={{ ...turnWith(timeline), status: completed ? 'completed' : 'running' }}
+              liveStreaming={completed ? undefined : { runningStatus: true }} />
+          </ImageDeliveryProvider>
+        </SessionAttachmentProvider>
+      </LocaleProvider>);
+    });
+  };
+
+  // The live last text step is provisional: the next tool can move it into the process.
+  await render([thinking, commentary]);
+  assert.ok(container.querySelector('a[href="https://example.com/commentary.png"]'));
+  assert.equal(container.querySelectorAll('img, .maka-markdown-image-resource').length, 0);
+  assert.deepEqual(sources, []);
+  assert.equal(reads, 0);
+
+  await render([thinking, commentary, RUNNING_TOOL]);
+  assert.ok(container.querySelector('.maka-processing-body a[href="https://example.com/commentary.png"]'));
+  assert.deepEqual(sources, []);
+  assert.equal(reads, 0);
+
+  await render([thinking, commentary, { ...RUNNING_TOOL, items: RUNNING_TOOL.items.map(item => ({ ...item, status: 'completed' })) }, final], true);
+  assert.deepEqual(sources, ['https://example.com/final.png']);
+  assert.equal(reads, 1);
+  assert.equal(container.querySelectorAll('img').length, 1);
+  await act(() => { container.querySelector('.maka-processing-summary')?.dispatchEvent(new window.Event('click', { bubbles: true })); });
+  await act(() => { container.querySelector('.maka-deep-thinking [data-slot="activity-card-header"]')?.dispatchEvent(new window.Event('click', { bubbles: true })); });
+  assert.ok(container.querySelector('.maka-processing-body a[href="https://example.com/reasoning.png"]'));
+  assert.ok(container.querySelector('.maka-processing-body a[href="https://example.com/commentary.png"]'));
+  assert.equal(container.querySelectorAll('.maka-processing-body img, .maka-processing-body .maka-markdown-image-resource').length, 0);
+  assert.deepEqual(sources, ['https://example.com/final.png']);
+  assert.equal(reads, 1);
 });
 
 test('redacts secrets before rendering a settled collapsed reasoning preview', async () => {

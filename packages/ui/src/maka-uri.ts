@@ -25,6 +25,7 @@ const COMPOSE_TEXT_MAX_LENGTH = 4096;
 
 /** Closed internal navigation surface; it never executes actions. */
 export type MakaUriDest =
+  | { kind: 'memory-original'; ref: string }
   | { kind: 'settings'; section: SettingsSection }
   | { kind: 'compose'; text: string };
 
@@ -35,6 +36,11 @@ export type MakaUriDest =
 export function parseMakaUri(href: string): MakaUriDest | null {
   if (typeof href !== 'string') return null;
   if (href.length === 0 || href.length > RAW_HREF_MAX_LENGTH) return null;
+  if (href.startsWith('memory-original:')) {
+    const ref = href.slice('memory-original:'.length);
+    return /^[A-Za-z0-9_-]+(?::[0-9]+)?$/.test(ref)
+      ? { kind: 'memory-original', ref } : null;
+  }
   if (!href.startsWith('maka:')) return null;
 
   let url: URL;
@@ -73,7 +79,7 @@ export function parseMakaUri(href: string): MakaUriDest | null {
  * external navigation path. Parsing remains lowercase-only.
  */
 export function isMakaUriCandidate(href: string): boolean {
-  return typeof href === 'string' && /^maka:/i.test(href);
+  return typeof href === 'string' && /^(?:maka|memory-original):/i.test(href);
 }
 
 /** External links are restricted to browser and mail destinations. */

@@ -2,7 +2,7 @@
 document_status: implementation-contract
 status: merged-stacked-foundation
 date: 2026-08-08
-last_verified: 2026-09-04
+last_verified: 2026-10-10
 milestone: M1.3-storage-authority
 base: upstream/main@08bcf324b
 ---

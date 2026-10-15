@@ -1665,7 +1665,6 @@ describe('useWorkbarController', () => {
     });
     const taskEntryServices = createFakeTaskEntryServices({
       catalog: {
-        ...createFakeTaskEntryServices().catalog,
         getCatalog: async () => ({
           defaultProfileId: 'profile-1',
           hosts: [taskEntryHost()],

@@ -25,7 +25,11 @@ import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { SessionSummary, StoredMessage } from '@maka/core/session';
 import type { SessionTodoItem } from '@maka/core/session-todo';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
-import type { CreateSessionInput, TurnOrchestration } from '@maka/core/runtime-inputs';
+import type {
+  CreateSessionInput,
+  CreateSessionRequestInput,
+  TurnOrchestration,
+} from '@maka/core/runtime-inputs';
 import type { TurnOrigin } from '@maka/core/turn-origin';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { InteractionFormResponse } from '@maka/core/interaction';
@@ -282,9 +286,10 @@ export class MakaSessionCatalogIncompleteError extends Error {
  * choice", and it is the only way the configured default can apply — sending
  * a literal would silently override it.
  */
-export type CreateSessionRequest = Omit<CreateSessionInput, 'permissionMode'> & {
-  permissionMode?: PermissionMode;
-};
+export type CreateSessionRequest = Omit<CreateSessionInput, 'permissionMode' | 'thinkingLevel'> &
+  Pick<CreateSessionRequestInput, 'thinkingLevel'> & {
+    permissionMode?: PermissionMode;
+  };
 
 export type MakaTranscriptReplacementReason = 'reconcile' | 'reconnect';
 

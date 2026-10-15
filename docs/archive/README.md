@@ -83,3 +83,7 @@ The computer-use follow-up files are per-PR follow-up records, incident investig
 ## Benchmark logs
 
 - `economic-mechanisms-benchmark.md` — the first synthesis-cache benchmark entry for economic-mechanisms tracking issue #481 and slice #578. Current progress belongs in those issues.
+
+## Assistant plugin experiments
+
+`assistant-plugin-experiments/` preserves historical memory, initiative and follow-up test logs. These mix superseded designs and dated results and are excluded from extension packages. Current behavior and verification commands live in each plugin README. The private-data live-ten harness and removed task-overlay preview are retired; their old commands are not supported.

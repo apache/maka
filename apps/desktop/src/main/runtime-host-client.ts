@@ -100,6 +100,7 @@ import {
   type ProjectDirectoryEntry,
   type ProjectDirectoryRoot,
   SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
+  type ArtifactChangedFrame,
   type SessionCatalogChangedFrame,
   type ScheduledTaskChangedFrame,
   type SessionCatalogItem,
@@ -356,6 +357,11 @@ export class DesktopRuntimeHostClient {
   subscribeConfigurationChanges(listener: (revision: number) => void): () => void {
     this.#assertOpen();
     return this.connection.subscribeConfigurationChanges(listener);
+  }
+
+  subscribeArtifactChanges(listener: (frame: ArtifactChangedFrame) => void): () => void {
+    this.#assertOpen();
+    return this.connection.subscribeArtifactChanges(listener);
   }
 
   subscribeConnectionCatalogChanges(listener: (revision: number) => void): () => void {
@@ -843,6 +849,10 @@ export class DesktopRuntimeHostClient {
   #projectForMutation(result: ProjectCatalogMutateResult): ProjectCatalogProject {
     if (result.kind !== "project") throw invalidProjection("Project mutation");
     return result.project;
+  }
+
+  resolveImageDelivery(sessionId: string, request: import('@maka/core/image-delivery').ImageDeliveryRequest): Promise<import('@maka/core/image-delivery').ImageDeliveryResult> {
+    return this.request('artifact.image.resolve', { ...request, sessionId });
   }
 
   async listArtifacts(sessionId: string): Promise<ArtifactProjection[]> {

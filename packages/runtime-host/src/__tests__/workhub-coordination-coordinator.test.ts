@@ -1109,7 +1109,7 @@ describe('Host WorkHub Coordination coordinator', () => {
     }
   });
 
-  test('rejects a correction whose source is no longer the latest active linkage', async () => {
+  test('rejects correction through the live coordination interface', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-workhub-stale-correction-'));
     const store = createSessionStore(root);
     try {
@@ -1188,7 +1188,7 @@ describe('Host WorkHub Coordination coordinator', () => {
       );
 
       assert.equal(correction.ok, false);
-      if (!correction.ok) assert.equal(correction.error.code, 'operation_conflict');
+      if (!correction.ok) assert.equal(correction.error.code, 'operation_unavailable');
       assert.equal(await store.readWorkHubReplacement(staleSource.delegationId), undefined);
       assert.equal(await store.readWorkHubSupersession(staleSource.delegationId), undefined);
     } finally {

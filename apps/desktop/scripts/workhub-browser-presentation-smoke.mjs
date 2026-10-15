@@ -36,6 +36,7 @@ import { registerBrowserIpc } from '../dist/main/browser-ipc-main.js';
 import { BrowserViewController } from '../dist/main/browser/controller.js';
 import { BrowserViewManager } from '../dist/main/browser/view-manager.js';
 import { browserViewHost, provideBrowserViewHost } from '../dist/main/browser/browser-host.js';
+import { withBrowserPage, releaseBrowserSession } from '../dist/main/browser/session.js';
 
 const temp = mkdtempSync(join(tmpdir(), 'maka-workhub-native-'));
 app.setPath('userData', join(temp, 'state'));
@@ -89,6 +90,7 @@ async function run() {
   const host = { visible: true, rect: { x: 0, y: 0, width: 470, height: 700 } };
   const rect = { x: 500, y: 80, width: 430, height: 560 };
   const viewport = (r) => send(main.webContents, 'browser:setViewport', scope, { sessionId, rect: r }, 'main', 1);
+  const browserSessionId = desktopSessionResourceKey({ ...scope, sessionId });
   let controller;
   try {
     await command(main.webContents, 'host', host);
@@ -99,7 +101,7 @@ async function run() {
     await send(main.webContents, 'browser:document-ready', 'main');
     await send(main.webContents, 'browser:active-session', scope, sessionId, 'main', 1);
     // Use the actual IPC owner resolver, not an independently constructed tree.
-    controller = views.getOrCreate(desktopSessionResourceKey({ ...scope, sessionId }));
+    controller = views.getOrCreate(browserSessionId);
     await controller.navigate(`${url}/page`);
     await viewport(rect);
 
@@ -179,25 +181,30 @@ async function run() {
     await wait(100);
     assert.ok(controller.hasParent(ownerParent));
     assert.equal(controller.state().hasPage, true);
-    const closedMainLease = controller.beginBackgroundAction();
-    await closedMainLease.ready;
-    await controller.navigate(`${url}/page?main-closed`);
+    // Use the same navigation, target preparation and native input path as
+    // WorkHub tools. A hand-built down/up pair skips OpenCLI's DOM scrolling,
+    // hit testing and pointer positioning after the hidden view is reparented.
+    await withBrowserPage(browserSessionId, 'navigate after Main closes',
+      (page) => page.goto(`${url}/page?main-closed`, { waitUntil: 'load' }),
+      { takeover: 'navigate' });
+    const click = await withBrowserPage(browserSessionId, 'click after Main closes', async (page) => {
+      // The view was just reparented into the floating window and navigated.
+      // Under Xvfb it may not have committed a frame (and hit-test data) in its
+      // new window yet, and Chromium drops input it cannot route. Wait for the
+      // page to load and render two frames before the single click. The timer
+      // only bounds the wait; it never adds a second click. Keep this wait inside
+      // the action lease so the background view stays attached through the click.
+      const readiness = await page.evaluate(`new Promise((resolve) => {
+        const done = (via) => resolve({ via, visibility: document.visibilityState });
+        const frames = () => requestAnimationFrame(() => requestAnimationFrame(() => done('frames')));
+        setTimeout(() => done('timeout'), 2000);
+        if (document.readyState === 'complete') frames(); else addEventListener('load', frames, { once: true });
+      })`);
+      console.log(`Background page input readiness: ${readiness.via}, ${readiness.visibility}`);
+      return page.click('button');
+    }, { takeover: 'mutate' });
+    assert.equal(click.click_method, 'cdp', 'background click must use native input, not a DOM fallback');
     const page = ownerParent.children.find((child) => 'webContents' in child && child.webContents !== owner).webContents;
-    // The view was just reparented into the floating window and navigated.
-    // Under Xvfb it may not have committed a frame (and hit-test data) in its
-    // new window yet, and Chromium drops input it cannot route. Wait for the
-    // page to load and render two frames before the single click. The timer
-    // only bounds the wait; it never adds a second click.
-    const readiness = await page.executeJavaScript(`new Promise((resolve) => {
-      const done = (via) => resolve({ via, visibility: document.visibilityState });
-      const frames = () => requestAnimationFrame(() => requestAnimationFrame(() => done('frames')));
-      setTimeout(() => done('timeout'), 2000);
-      if (document.readyState === 'complete') frames(); else addEventListener('load', frames, { once: true });
-    })`);
-    console.log(`Background page input readiness: ${readiness.via}, ${readiness.visibility}`);
-    const point = await page.executeJavaScript(`(() => { const r = document.querySelector('button').getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2}; })()`);
-    await page.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', buttons: 1, clickCount: 1 });
-    await page.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', buttons: 0, clickCount: 1 });
     // CDP input acknowledgement can precede the renderer's click handler on
     // Linux. Observe its effect without dispatching another click, so a lost
     // event or broken background-page attachment still fails this smoke.
@@ -209,9 +216,9 @@ async function run() {
       await wait(20);
     } while (Date.now() < clickDeadline);
     assert.equal(buttonText, 'Clicked', 'background page must handle the native click after Main closes');
-    await closedMainLease.release();
     console.log('PASS closing Main preserves the background page and native clicks');
   } finally {
+    await releaseBrowserSession(browserSessionId);
     await views.disposeAll();
     provideBrowserViewHost(null);
     presentation.dispose();

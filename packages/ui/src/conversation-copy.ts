@@ -21,7 +21,7 @@ import type { ProviderRetryReason } from '@maka/core/events';
 import type { PermissionMode } from '@maka/core/permission';
 import type { SessionBlockedReason, SessionStatus } from '@maka/core/session';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiLocale, defineShippedUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 import { formatCompactTokenCount } from './compact-token-count.js';
 
 export type DayPeriod = 'morning' | 'noon' | 'afternoon' | 'evening';
@@ -157,6 +157,7 @@ export interface ConversationCopy {
     chooseThinkingLevel: string;
     level: Record<ThinkingLevel, string>;
     switching: string;
+    effort: string;
     model: string;
     switchAriaLabel: string;
     switchWarning: string;
@@ -245,11 +246,11 @@ export interface ConversationCopy {
   workspace: {
     choose: string;
     current: string;
-    /** The picker's create action; the dialog that follows names the project. */
+    /** The picker's create action; the dialog that follows optionally names the project. */
     newProject: string;
     /** Header of the New project dialog. */
     newProjectTitle: string;
-    /** One line under the header: name first, folder next. */
+    /** One line under the header: the name is an optional override of the folder name. */
     newProjectDescription: string;
     newProjectNameLabel: string;
     /** The dialog's submit, which opens the folder picker. */
@@ -329,6 +330,7 @@ export interface ConversationCopy {
       contextUsageShare: (used: number, window: number) => string;
       contextUsageNoWindow: (used: number) => string;
       contextUsageUnavailable: string;
+      contextUsageCompacted: string;
       contextUsageOpen: string;
       stepLimit: string;
     };
@@ -437,9 +439,7 @@ export interface ConversationCopy {
     archiveCount: (count: number) => string;
   };
 }
-
-const CONVERSATION_COPY = {
-  'zh-CN': {
+const conversationCopyZhCn: ConversationCopy = {
     empty: {
       ariaLabel: '开始任务',
       surfaceAriaLabel: '新任务对话',
@@ -474,8 +474,8 @@ const CONVERSATION_COPY = {
       // Short single-token labels — trigger + popout size to content.
       // Canonical per-chat ladder: 默认 (model default, overriding Settings) / 关 / 低 / 中 / 高 / 超高
       // (minimal/max when offered).
-      level: { off: '关', minimal: '最少', low: '低', medium: '中', high: '高', xhigh: '超高', max: '最高' },
-      switching: '切换中', model: '模型', switchAriaLabel: '切换当前任务模型',
+      level: { off: '关', on: '开', minimal: '最少', low: '低', medium: '中', high: '高', xhigh: '超高', max: '最高' },
+      switching: '切换中', effort: '思考强度', model: '模型', switchAriaLabel: '切换当前任务模型',
       switchWarning: '切换模型可能需要重建服务商提示缓存，使下一次请求更慢或成本更高。',
       switchWarningDismiss: '选择即可关闭',
       newChatAriaLabel: (label) => `选择新任务模型，当前 ${label}`, newChatTitle: (label) => `新任务使用的模型：${label}`,
@@ -512,7 +512,7 @@ const CONVERSATION_COPY = {
     forms: { keyboardHint: '1–9 选择 · ↑↓ 切换 · Enter 确认 · Esc 取消', requester: (name) => `由 ${name} 请求`, requesterWithSource: (name, source) => `由 ${name} 请求 · ${source}`, required: '必填', optional: '选填', include: (label) => `提供：${label}`, enabled: (label) => `启用：${label}`, enterValue: '输入内容', enterNumber: '输入数字', constraintSeparator: '；', lengthConstraint: (minimum, maximum) => minimum === undefined ? `最多 ${maximum} 个字符` : maximum === undefined ? `至少 ${minimum} 个字符` : `长度 ${minimum}–${maximum} 个字符`, numberConstraint: (minimum, maximum) => minimum === undefined ? `最大值 ${maximum}` : maximum === undefined ? `最小值 ${minimum}` : `范围 ${minimum}–${maximum}`, itemConstraint: (minimum, maximum) => minimum === undefined ? `最多选择 ${maximum} 项` : maximum === undefined ? `至少选择 ${minimum} 项` : `选择 ${minimum}–${maximum} 项`, formatConstraint: { email: '格式：email', uri: '格式：URI', date: '格式：date（YYYY-MM-DD）', 'date-time': '格式：date-time（RFC 3339）' }, invalid: '请提供符合要求的值。', cancel: '取消', decline: '拒绝', accept: '提交', submitting: '正在提交…' },
     mentions: { noFiles: '未找到文件', noFilesOrSessions: '未找到文件或会话', noSkills: '暂无技能', noCommandsOrSkills: '没有匹配的命令或技能', filesAriaLabel: '工作区文件', filesAndSessionsAriaLabel: '工作区文件和会话', sessionsGroup: '会话', skillsAriaLabel: '技能', commandsAndSkillsAriaLabel: '命令和技能', commandsGroup: '命令', skillsGroup: 'Skills', loading: '加载中…', sessionReferenceUnavailableTitle: '无法引用会话', sessionReferenceUnavailableDetail: '该会话已不可用，请刷新任务列表后重试。', sessionReferenceEmptyTitle: '会话没有可引用内容', sessionReferenceEmptyDetail: '只会引用用户和助手文本；工具调用等内部记录不会注入当前任务。', sessionReferenceReadFailedTitle: '读取会话失败', sessionReferenceReadFailedDetail: '无法读取该会话的快照，请稍后重试。', sessionReferenceLimitDetail: '引用总数最多为 16，请移除部分引用后重试。' },
     workspace: {
-      choose: '选择项目', current: '当前项目', newProject: '新建项目', newProjectTitle: '新建项目', newProjectDescription: '先给项目起个名字，再选择它所在的文件夹。', newProjectNameLabel: '项目名称', newProjectSubmit: '选择文件夹', manageProjects: '管理项目', noProject: '无项目', relink: '重新定位', unavailable: '不可用',
+      choose: '选择项目', current: '当前项目', newProject: '新建项目', newProjectTitle: '新建项目', newProjectDescription: '可以给项目起个名字，也可以留空——之后会使用所选文件夹的名称。', newProjectNameLabel: '项目名称（可选）', newProjectSubmit: '选择文件夹', manageProjects: '管理项目', noProject: '无项目', relink: '重新定位', unavailable: '不可用',
       chooseTitle: (branch) => branch ? `选择项目 · ${branch}` : '选择项目',
       chooseAriaLabel: (label, branch) => branch ? `选择项目：${label}，当前分支 ${branch}` : `选择项目：${label}`,
     },
@@ -540,6 +540,7 @@ const CONVERSATION_COPY = {
           `上下文：${Math.round((used / window) * 100)}%（${formatCompactTokenCount(used)} / ${formatCompactTokenCount(window)} token）`,
         contextUsageNoWindow: (used) => `上下文：${formatCompactTokenCount(used)} token`,
         contextUsageUnavailable: '暂无上下文用量数据',
+        contextUsageCompacted: '上下文已压缩，用量将在下一次请求完成后更新。',
         contextUsageOpen: '打开用量追踪',
         stepLimit: '已达到本轮工具步骤上限，任务可能尚未完成。发送“继续”即可接着处理。',
       },
@@ -561,8 +562,8 @@ const CONVERSATION_COPY = {
       blockedReason: { NO_REAL_CONNECTION: '等待配置可用模型连接', auth: '需要重新登录', permission_required: '等待权限确认', tool_failed: '工具调用失败', unknown: '运行中断，可重试' },
       listAriaLabel: '任务列表', showMore: '显示更多', showMoreAriaLabel: (count) => `显示 ${count} 条更多任务`, renameAriaLabel: '重命名任务', renameProjectTitle: '重命名项目', renameSubmit: '保存', respondingAriaLabel: '正在响应', respondingTitle: '任务正在流式响应中', backgroundRunning: '子任务执行中', backgroundWaitingForUser: '子任务等待你的回应', backgroundBlocked: '子任务需要处理', staleTitle: '此任务使用的模型连接已不可用，发送时会切换到默认连接', staleAriaLabel: '任务已过期', stale: '已过期', unreadAriaLabel: '未读消息', actionsAriaLabel: (name) => `${name} 任务操作`, pin: '置顶', unpin: '取消置顶', rename: '重命名', archive: '归档', delete: '删除', moveToProject: '移动到项目', moveToNoProject: '移出项目', pinned: '置顶', recent: '最近', projects: '项目', groupByTime: '按时间', groupByProject: '按项目', groupingAriaLabel: '任务分组方式', groupingHeading: '任务', projectActionsAriaLabel: (name) => `${name} 项目操作`, projectNewTask: '新建任务', projectRename: '重命名', projectArchive: '归档', projectRestore: '恢复', projectRelink: '重新定位', projectUnavailable: '项目目录不可用', archivedProjects: '已归档项目', archivedProjectsAriaLabel: '展开已归档项目', worktreeAriaLabel: 'Git 工作树', promptRailAriaLabel: '按提问跳转', emptyPrompt: '（空提问）', jumpToPrompt: (preview) => `跳到提问：${preview}`, pickedAriaLabel: '已选中', pinCount: (count) => `置顶 ${count} 项`, unpinCount: (count) => `取消置顶 ${count} 项`, archiveCount: (count) => `归档 ${count} 项`,
     },
-  },
-  'zh-TW': {
+  };
+const conversationCopyZhTw: ConversationCopy = {
     empty: {
       ariaLabel: '開始任務',
       surfaceAriaLabel: '新任務對話',
@@ -597,8 +598,8 @@ const CONVERSATION_COPY = {
       // Short single-token labels — trigger + popout size to content.
       // Canonical per-chat ladder: 預設 (model default, overriding Settings) / 關 / 低 / 中 / 高 / 超高
       // (minimal/max when offered).
-      level: { off: '關', minimal: '最少', low: '低', medium: '中', high: '高', xhigh: '超高', max: '最高' },
-      switching: '切換中', model: '模型', switchAriaLabel: '切換目前任務模型',
+      level: { off: '關', on: '開', minimal: '最少', low: '低', medium: '中', high: '高', xhigh: '超高', max: '最高' },
+      switching: '切換中', effort: '思考強度', model: '模型', switchAriaLabel: '切換目前任務模型',
       switchWarning: '切換模型可能需要重建服務商提示快取，使下一次請求更慢或成本更高。',
       switchWarningDismiss: '選擇即可關閉',
       newChatAriaLabel: (label) => `選擇新任務模型，目前 ${label}`, newChatTitle: (label) => `新任務使用的模型：${label}`,
@@ -635,7 +636,7 @@ const CONVERSATION_COPY = {
     forms: { keyboardHint: '1–9 選擇 · ↑↓ 切換 · Enter 確認 · Esc 取消', requester: (name) => `由 ${name} 請求`, requesterWithSource: (name, source) => `由 ${name} 請求 · ${source}`, required: '必填', optional: '選填', include: (label) => `提供：${label}`, enabled: (label) => `啟用：${label}`, enterValue: '輸入內容', enterNumber: '輸入數字', constraintSeparator: '；', lengthConstraint: (minimum, maximum) => minimum === undefined ? `最多 ${maximum} 個字元` : maximum === undefined ? `至少 ${minimum} 個字元` : `長度 ${minimum}–${maximum} 個字元`, numberConstraint: (minimum, maximum) => minimum === undefined ? `最大值 ${maximum}` : maximum === undefined ? `最小值 ${minimum}` : `範圍 ${minimum}–${maximum}`, itemConstraint: (minimum, maximum) => minimum === undefined ? `最多選取 ${maximum} 項` : maximum === undefined ? `至少選取 ${minimum} 項` : `選取 ${minimum}–${maximum} 項`, formatConstraint: { email: '格式：email', uri: '格式：URI', date: '格式：date（YYYY-MM-DD）', 'date-time': '格式：date-time（RFC 3339）' }, invalid: '請提供符合要求的值。', cancel: '取消', decline: '拒絕', accept: '提交', submitting: '正在提交…' },
     mentions: { noFiles: '未找到檔案', noFilesOrSessions: '未找到檔案或作業階段', noSkills: '暫無技能', noCommandsOrSkills: '沒有符合的命令或技能', filesAriaLabel: '工作區檔案', filesAndSessionsAriaLabel: '工作區檔案和作業階段', sessionsGroup: '作業階段', skillsAriaLabel: '技能', commandsAndSkillsAriaLabel: '命令和技能', commandsGroup: '命令', skillsGroup: 'Skills', loading: '載入中…', sessionReferenceUnavailableTitle: '無法引用作業階段', sessionReferenceUnavailableDetail: '這個作業階段已無法使用，請重新整理任務清單後再試一次。', sessionReferenceEmptyTitle: '沒有可引用的內容', sessionReferenceEmptyDetail: '只會引用使用者和助理的文字；工具呼叫等內部記錄不會注入目前任務。', sessionReferenceReadFailedTitle: '讀取作業階段失敗', sessionReferenceReadFailedDetail: '無法讀取這個作業階段的快照，請稍後再試。', sessionReferenceLimitDetail: '引用總數最多為 16，請移除部分引用後再試。' },
     workspace: {
-      choose: '選擇專案', current: '目前專案', newProject: '新增專案', newProjectTitle: '新增專案', newProjectDescription: '先為專案命名，再選擇它所在的資料夾。', newProjectNameLabel: '專案名稱', newProjectSubmit: '選擇資料夾', manageProjects: '管理專案', noProject: '無專案', relink: '重新定位', unavailable: '不可用',
+      choose: '選擇專案', current: '目前專案', newProject: '新增專案', newProjectTitle: '新增專案', newProjectDescription: '可以為專案命名，也可以留空——之後會使用所選資料夾的名稱。', newProjectNameLabel: '專案名稱（可選）', newProjectSubmit: '選擇資料夾', manageProjects: '管理專案', noProject: '無專案', relink: '重新定位', unavailable: '不可用',
       chooseTitle: (branch) => branch ? `選擇專案 · ${branch}` : '選擇專案',
       chooseAriaLabel: (label, branch) => branch ? `選擇專案：${label}，目前分支 ${branch}` : `選擇專案：${label}`,
     },
@@ -663,6 +664,7 @@ const CONVERSATION_COPY = {
           `上下文：${Math.round((used / window) * 100)}%（${formatCompactTokenCount(used)} / ${formatCompactTokenCount(window)} token）`,
         contextUsageNoWindow: (used) => `上下文：${formatCompactTokenCount(used)} token`,
         contextUsageUnavailable: '暫無上下文用量資料',
+        contextUsageCompacted: '上下文已壓縮，用量將在下一次請求完成後更新。',
         contextUsageOpen: '開啟用量追蹤',
         stepLimit: '已達到本輪工具步驟上限，任務可能尚未完成。傳送“繼續”即可接著處理。',
       },
@@ -684,8 +686,8 @@ const CONVERSATION_COPY = {
       blockedReason: { NO_REAL_CONNECTION: '等待設定可用模型連線', auth: '需要重新登入', permission_required: '等待權限確認', tool_failed: '工具呼叫失敗', unknown: '執行中斷，可重試' },
       listAriaLabel: '任務列表', showMore: '顯示更多', showMoreAriaLabel: (count) => `顯示 ${count} 條更多工`, renameAriaLabel: '重新命名任務', renameProjectTitle: '重新命名專案', renameSubmit: '儲存', respondingAriaLabel: '正在響應', respondingTitle: '任務正在流式響應中', backgroundRunning: '子任務執行中', backgroundWaitingForUser: '子任務等待你的回應', backgroundBlocked: '子任務需要處理', staleTitle: '此任務使用的模型連線已不可用，傳送時會切換到預設連線', staleAriaLabel: '任務已過期', stale: '已過期', unreadAriaLabel: '未讀訊息', actionsAriaLabel: (name) => `${name} 任務操作`, pin: '置頂', unpin: '取消置頂', rename: '重新命名', archive: '歸檔', delete: '刪除', moveToProject: '移動到專案', moveToNoProject: '移出專案', pinned: '置頂', recent: '最近', projects: '專案', groupByTime: '按時間', groupByProject: '按專案', groupingAriaLabel: '任務分組方式', groupingHeading: '任務', projectActionsAriaLabel: (name) => `${name} 專案操作`, projectNewTask: '建立任務', projectRename: '重新命名', projectArchive: '歸檔', projectRestore: '恢復', projectRelink: '重新定位', projectUnavailable: '專案目錄不可用', archivedProjects: '已歸檔專案', archivedProjectsAriaLabel: '展開已歸檔專案', worktreeAriaLabel: 'Git 工作樹', promptRailAriaLabel: '按提問跳轉', emptyPrompt: '（空提問）', jumpToPrompt: (preview) => `跳到提問：${preview}`, pickedAriaLabel: '已選取', pinCount: (count) => `置頂 ${count} 項`, unpinCount: (count) => `取消置頂 ${count} 項`, archiveCount: (count) => `歸檔 ${count} 項`,
     },
-  },
-  en: {
+  };
+const conversationCopyEn: ConversationCopy = {
     empty: {
       ariaLabel: 'Start a task',
       surfaceAriaLabel: 'New task conversation',
@@ -716,9 +718,9 @@ const CONVERSATION_COPY = {
       noModelHint: 'No model connection yet, so sending is unavailable.', noModelAction: 'Go to model settings', noModelSendTitle: 'Add a model connection before sending.',
     },
     model: {
-      thinkingLevel: 'Thinking level', thinkingUnsupported: 'This model does not support thinking-level changes', changeThinkingLevel: 'Change the current model thinking level', defaultLevel: 'Model default', chooseThinkingLevel: 'Choose thinking level',
-      level: { off: 'Off', minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Maximum' },
-      switching: 'Switching', model: 'Model', switchAriaLabel: 'Switch model for this task',
+      thinkingLevel: 'Thinking level', thinkingUnsupported: 'This model does not support thinking-level changes', changeThinkingLevel: 'Change the current model thinking level', defaultLevel: 'Default', chooseThinkingLevel: 'Choose thinking level',
+      level: { off: 'Off', on: 'On', minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Maximum' },
+      switching: 'Switching', effort: 'Effort', model: 'Model', switchAriaLabel: 'Switch model for this task',
       switchWarning: 'Switching may rebuild the provider prompt cache, making the next request slower or more expensive.',
       switchWarningDismiss: 'Select to dismiss',
       newChatAriaLabel: (label) => `Choose a model for the new task, currently ${label}`, newChatTitle: (label) => `Model for the new task: ${label}`,
@@ -755,7 +757,7 @@ const CONVERSATION_COPY = {
     forms: { keyboardHint: '1–9 select · ↑↓ navigate · Enter confirm · Esc cancel', requester: (name) => `Requested by ${name}`, requesterWithSource: (name, source) => `Requested by ${name} · ${source}`, required: 'Required', optional: 'Optional', include: (label) => `Provide ${label}`, enabled: (label) => `Enable ${label}`, enterValue: 'Enter a value', enterNumber: 'Enter a number', constraintSeparator: ' · ', lengthConstraint: (minimum, maximum) => minimum === undefined ? `At most ${maximum} characters` : maximum === undefined ? `At least ${minimum} characters` : `${minimum}–${maximum} characters`, numberConstraint: (minimum, maximum) => minimum === undefined ? `Maximum ${maximum}` : maximum === undefined ? `Minimum ${minimum}` : `Range ${minimum}–${maximum}`, itemConstraint: (minimum, maximum) => minimum === undefined ? `Select at most ${maximum}` : maximum === undefined ? `Select at least ${minimum}` : `Select ${minimum}–${maximum}`, formatConstraint: { email: 'Format: email', uri: 'Format: URI', date: 'Format: date (YYYY-MM-DD)', 'date-time': 'Format: date-time (RFC 3339)' }, invalid: 'Provide a value that meets the requirements.', cancel: 'Cancel', decline: 'Decline', accept: 'Submit', submitting: 'Submitting…' },
     mentions: { noFiles: 'No files found', noFilesOrSessions: 'No files or sessions found', noSkills: 'No skills available', noCommandsOrSkills: 'No matching commands or skills', filesAriaLabel: 'Workspace files', filesAndSessionsAriaLabel: 'Workspace files and sessions', sessionsGroup: 'Sessions', skillsAriaLabel: 'Skills', commandsAndSkillsAriaLabel: 'Commands and skills', commandsGroup: 'Commands', skillsGroup: 'Skills', loading: 'Loading…', sessionReferenceUnavailableTitle: 'Session reference unavailable', sessionReferenceUnavailableDetail: 'This session is no longer available. Refresh the task list and try again.', sessionReferenceEmptyTitle: 'No referenceable content', sessionReferenceEmptyDetail: 'Only user and assistant text is shared; tool calls and internal records stay out of the current task.', sessionReferenceReadFailedTitle: 'Could not read session', sessionReferenceReadFailedDetail: 'The session snapshot could not be read. Try again later.', sessionReferenceLimitDetail: 'A message can contain at most 16 quotes. Remove a quote and try again.' },
     workspace: {
-      choose: 'Choose project', current: 'Current project', newProject: 'New project', newProjectTitle: 'New project', newProjectDescription: 'Name the project, then choose the folder it lives in.', newProjectNameLabel: 'Project name', newProjectSubmit: 'Choose folder', manageProjects: 'Manage projects', noProject: 'No project', relink: 'Relink', unavailable: 'Unavailable',
+      choose: 'Choose project', current: 'Current project', newProject: 'New project', newProjectTitle: 'New project', newProjectDescription: 'Name the project, or leave it blank to use the folder name.', newProjectNameLabel: 'Project name (optional)', newProjectSubmit: 'Choose folder', manageProjects: 'Manage projects', noProject: 'No project', relink: 'Relink', unavailable: 'Unavailable',
       chooseTitle: (branch) => branch ? `Choose project · ${branch}` : 'Choose project',
       chooseAriaLabel: (label, branch) => branch ? `Choose project: ${label}, current branch ${branch}` : `Choose project: ${label}`,
     },
@@ -784,6 +786,8 @@ const CONVERSATION_COPY = {
           `Context: ${Math.round((used / window) * 100)}% (${formatCompactTokenCount(used)} / ${formatCompactTokenCount(window)} tokens)`,
         contextUsageNoWindow: (used) => `Context: ${formatCompactTokenCount(used)} tokens`,
         contextUsageUnavailable: 'No context usage data',
+        contextUsageCompacted:
+          'Context has been compacted. Usage will update when the next request completes.',
         contextUsageOpen: 'Open usage trace',
         stepLimit: 'Reached the configured step limit. The task may be incomplete. Send “continue” to resume.',
       },
@@ -805,8 +809,9 @@ const CONVERSATION_COPY = {
       blockedReason: { NO_REAL_CONNECTION: 'Waiting for an available model connection', auth: 'Sign in again', permission_required: 'Waiting for permission', tool_failed: 'Tool call failed', unknown: 'Run interrupted; retry available' },
       listAriaLabel: 'Task list', showMore: 'Show more', showMoreAriaLabel: (count) => `Show ${count} more tasks`, renameAriaLabel: 'Rename task', renameProjectTitle: 'Rename project', renameSubmit: 'Save', respondingAriaLabel: 'Responding', respondingTitle: 'This task is streaming a response', backgroundRunning: 'Subtasks running', backgroundWaitingForUser: 'Subtasks waiting for you', backgroundBlocked: 'Subtasks need attention', staleTitle: 'This task\'s model connection is unavailable; sending will switch to the default connection', staleAriaLabel: 'Stale task', stale: 'Stale', unreadAriaLabel: 'Unread messages', actionsAriaLabel: (name) => `${name} task actions`, pin: 'Pin', unpin: 'Unpin', rename: 'Rename', archive: 'Archive', delete: 'Delete', moveToProject: 'Move to project', moveToNoProject: 'Remove from project', pinned: 'Pinned', recent: 'Recent', projects: 'Projects', groupByTime: 'By time', groupByProject: 'By project', groupingAriaLabel: 'Task grouping', groupingHeading: 'Tasks', projectActionsAriaLabel: (name) => `${name} project actions`, projectNewTask: 'New task', projectRename: 'Rename', projectArchive: 'Archive', projectRestore: 'Restore', projectRelink: 'Relocate', projectUnavailable: 'Project directory unavailable', archivedProjects: 'Archived projects', archivedProjectsAriaLabel: 'Expand archived projects', worktreeAriaLabel: 'Git worktree', promptRailAriaLabel: 'Jump by prompt', emptyPrompt: '(empty prompt)', jumpToPrompt: (preview) => `Jump to prompt: ${preview}`, pickedAriaLabel: 'Selected', pinCount: (count) => `Pin ${count} tasks`, unpinCount: (count) => `Unpin ${count} tasks`, archiveCount: (count) => `Archive ${count} tasks`,
     },
-  },
-} satisfies UiCatalog<ConversationCopy>;
+  };
+
+const CONVERSATION_COPY = resolveUiMessageCatalog(defineShippedUiMessageCatalog<ConversationCopy>()({ 'zh-CN': conversationCopyZhCn, 'zh-TW': conversationCopyZhTw, en: conversationCopyEn }));
 
 export function getConversationCopy(locale: UiLocale): ConversationCopy {
   return CONVERSATION_COPY[locale];

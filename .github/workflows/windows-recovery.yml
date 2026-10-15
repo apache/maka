@@ -73,6 +73,7 @@ on:
       - 'packages/runtime-host/src/__tests__/skill-catalog-repository.test.ts'
       - 'packages/runtime-host/src/__tests__/skill-catalog-transaction.test.ts'
       - 'packages/runtime-host/src/__tests__/skill-catalog-two-client-uds.test.ts'
+      - 'packages/runtime-host/src/assistant/proactive-matters/files.ts'
       - 'packages/runtime-host/src/client/client-instance-identity.ts'
       - 'packages/runtime-host/src/client/host-profile.ts'
       - 'packages/runtime-host/src/client/ssh-operator-activation.ts'

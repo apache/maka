@@ -547,9 +547,61 @@ test('Jev settings write Host policy and vault, project only a mask, and never p
   const saved = await module.update({ jev: { apiKey: 'jev-secret', enabled: true } });
   assert.deepEqual(saved.jev, { enabled: true, apiKey: '••••••••' });
   assert.equal(JSON.stringify(local).includes('jev-secret'), false);
-  await module.update({ jev: { apiKey: '••••••••', enabled: false } });
-  assert.equal(secret, 'jev-secret');
+  for (const apiKey of ['••••••••', '••••••']) {
+    await module.update({ jev: { apiKey, enabled: false } });
+    assert.equal(secret, 'jev-secret');
+  }
   const removed = await module.update({ jev: { apiKey: '', enabled: true } });
   assert.deepEqual(removed.jev, { enabled: false, apiKey: '' });
   assert.equal(secret, undefined);
+});
+
+test('Tavily IPC round-trips preserve the vault key for current and legacy masks', async () => {
+  let policy = createDefaultRuntimePolicy();
+  let secret: string | undefined;
+  let revision = 0;
+  const local = createDefaultSettings();
+  const module = createRuntimeHostSettingsModule({
+    client: {
+      queryRuntimePolicy: async () => ({ revision: 1, policy }),
+      queryCredential: async (locator: { scope: string }) => locator.scope === 'web_search' && secret
+        ? { configured: true, credentialId: 'tavily-key', revision, updatedAt: 1, locator } : null,
+      setCredential: async (input: { locator: { scope: string }; secret: string }) => {
+        assert.equal(input.locator.scope, 'web_search');
+        secret = input.secret;
+        revision += 1;
+        return { kind: 'committed' };
+      },
+      deleteCredential: async () => { secret = undefined; return { kind: 'committed' }; },
+      updateRuntimePolicy: async (mutation: (current: RuntimePolicy) => { kind: string; value: RuntimePolicy['webSearch'] }) => {
+        const operation = mutation(policy);
+        assert.equal(operation.kind, 'set_web_search');
+        policy = { ...policy, webSearch: operation.value };
+        return { revision: 2, policy };
+      },
+    } as never,
+    settingsStore: { get: async () => local, update: async () => { assert.fail('Host keys must not enter Desktop settings'); } } as never,
+    applyClientSettings: async () => {},
+  });
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  registerRuntimeHostSettingsIpc({
+    ipcMain: { handle(channel, listener) { handlers.set(channel, listener as (...args: unknown[]) => unknown); } },
+    module,
+  });
+  const update = handlers.get('settings:update')!;
+  const get = handlers.get('settings:get')!;
+  await update({}, { webSearch: { providers: { tavily: { apiKey: 'stored-tavily-key' } } } });
+  const saved = await get({}) as ReturnType<typeof createDefaultSettings>;
+  assert.equal(saved.webSearch.providers.tavily.apiKey, '••••••••');
+  for (const apiKey of [saved.webSearch.providers.tavily.apiKey, '••••••']) {
+    await update({}, { webSearch: { ...saved.webSearch, providers: { tavily: { ...saved.webSearch.providers.tavily, apiKey } } } });
+    assert.equal(secret, 'stored-tavily-key');
+    assert.equal(revision, 1);
+  }
+  await update({}, { webSearch: { providers: { tavily: { apiKey: 'replacement-key' } } } });
+  assert.equal(secret, 'replacement-key');
+  await update({}, { webSearch: { providers: { tavily: { apiKey: '' } } } });
+  assert.equal(secret, undefined);
+  const cleared = await get({}) as ReturnType<typeof createDefaultSettings>;
+  assert.equal(cleared.webSearch.providers.tavily.apiKey, '');
 });
