@@ -621,7 +621,7 @@ test('a user message with text still renders its bubble', async () => {
       role: 'user' as const,
       text: 'explain this',
       ts: 1,
-      quotes: [{ text: 'selected excerpt' }],
+      quotes: [{ text: 'selected excerpt', comment: 'explain this' }],
     },
   };
 
@@ -630,6 +630,10 @@ test('a user message with text still renders its bubble', async () => {
   const bubble = container.querySelector('.maka-chat-message-bubble-user');
   assert.ok(bubble, 'a text message keeps its bubble');
   assert.match(bubble?.textContent ?? '', /explain this/);
+  assert.doesNotMatch(bubble?.textContent ?? '', /selected excerpt/);
+  const quote = container.querySelector('.maka-quote-chip');
+  assert.match(quote?.textContent ?? '', /selected excerpt/);
+  assert.doesNotMatch(quote?.textContent ?? '', /explain this/);
 });
 
 test('keeps Astryx auto formatting live for user-message timestamps', async (context) => {
