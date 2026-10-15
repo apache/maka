@@ -522,6 +522,7 @@ const TUI_COPY_RESOURCES_HOST_OWNER_EN = {
   state_starting: 'Starting',
   state_containing: 'Containing',
   state_recovering: 'Recovering',
+  state_upgrading_storage: 'Optimizing history storage',
   state_ready: 'Ready',
   state_draining: 'Draining',
   localOwnerHint:
@@ -641,6 +642,7 @@ export const TUI_COPY_RESOURCES = {
         state_starting: '启动中',
         state_containing: '故障隔离中',
         state_recovering: '恢复中',
+        state_upgrading_storage: '正在优化历史存储',
         state_ready: '就绪',
         state_draining: '排空中',
         localOwnerHint:
@@ -687,6 +689,7 @@ export const TUI_COPY_RESOURCES = {
         state_starting: '啟動中',
         state_containing: '故障隔離中',
         state_recovering: '復原中',
+        state_upgrading_storage: '正在最佳化歷史儲存',
         state_ready: '就緒',
         state_draining: '排空中',
         localOwnerHint:

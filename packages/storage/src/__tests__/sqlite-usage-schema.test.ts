@@ -30,6 +30,7 @@ import { migrateSqliteCoreExecutionDatabase } from '../sqlite-core-execution-sch
 import { migrateSqliteRuntimeDatabase } from '../sqlite-runtime-schema.js';
 import { migrateSqliteSessionMetadataDatabase } from '../sqlite-session-metadata-schema.js';
 import { migrateSqliteWorkflowDatabase } from '../sqlite-workflow-schema.js';
+import { migrateColdStorageDatabase } from '../cold-storage-schema.js';
 import {
   MODEL_CALL_NOW as NOW,
   modelCallAttempt as attempt,
@@ -353,6 +354,7 @@ test('a schema-9 usage database upgrades to the target shape and stays idempoten
     migrateSqliteWorkflowDatabase(database);
     migrateSqliteUsageDatabase(database);
     migrateSqliteArtifactDatabase(database);
+    migrateColdStorageDatabase(database, 0);
     ensureOperationalSchemaRegistry(database);
     database.exec('ALTER TABLE usage_model_call_attempts DROP COLUMN no_run');
 

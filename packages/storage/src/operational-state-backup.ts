@@ -52,6 +52,10 @@ import {
   SQLITE_SESSION_MESSAGE_CHUNK_MARKER,
 } from './sqlite-session-metadata-schema.js';
 import { syncDirectory, syncDirectoryChain, syncFile } from './stable-storage.js';
+import {
+  resetColdStorageActivity,
+  COLD_STORAGE_DEFAULT_WRITER_ENABLED,
+} from './cold-storage-schema.js';
 
 export const OPERATIONAL_BACKUP_FORMAT = 'maka-operational-backup';
 export const OPERATIONAL_BACKUP_SCHEMA_VERSION = 4 as const;
@@ -97,6 +101,7 @@ export interface CreateOperationalBackupInput {
 export interface RestoreOperationalBackupInput {
   readonly backupRoot: string;
   readonly destinationRoot: string;
+  readonly now?: () => number;
 }
 
 export async function createOperationalStateBackup(
@@ -211,6 +216,20 @@ export async function restoreOperationalStateBackup(
     }
     validateSqlite(resolve(stagingRoot, OPERATIONAL_STATE_DATABASE_NAME), manifest.files);
     await validateContextSnapshot(stagingRoot);
+    // Validate the source inventory before changing local lifecycle metadata.
+    // A restore is a new local write, regardless of the backup's historical timestamps.
+    const restored = new DatabaseSync(resolve(stagingRoot, OPERATIONAL_STATE_DATABASE_NAME));
+    try {
+      restored.exec('BEGIN IMMEDIATE');
+      resetColdStorageActivity(restored, (input.now ?? Date.now)());
+      restored
+        .prepare('UPDATE runtime_storage_policy SET writer_enabled = ?, epoch = epoch + 1')
+        .run(COLD_STORAGE_DEFAULT_WRITER_ENABLED);
+      restored.exec('COMMIT; PRAGMA wal_checkpoint(TRUNCATE)');
+    } finally {
+      restored.close();
+    }
+    await syncFile(resolve(stagingRoot, OPERATIONAL_STATE_DATABASE_NAME));
     await syncDirectoryChain(stagingRoot, stagingRoot);
     await mkdir(dirname(destinationRoot), { recursive: true });
     await rename(stagingRoot, destinationRoot);

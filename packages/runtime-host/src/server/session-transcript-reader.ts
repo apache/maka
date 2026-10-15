@@ -42,22 +42,25 @@ import type {
   SessionTurnContribution,
   SessionTurnContributionPage,
   RuntimeTranscriptRun,
+  RuntimeTranscriptTurn,
 } from '@maka/storage/execution-stores';
 import { foldTurnContribution } from '@maka/storage/session-message-projection';
 import type { SessionTurnLandmark } from '../protocol/index.js';
+import { projectSessionTurnLandmarkForWire } from '../protocol/session-turns.js';
+import type { TranscriptStorageWorker } from './transcript-storage-worker-client.js';
 
 const PERMISSION_OUTCOME_READ_CONCURRENCY = 8;
 /** One event can emit content, a permission, usage, and terminal/notice rows. */
 const EVENT_SEQUENCE_STRIDE = 8;
 const TRANSCRIPT_TURN_MAX_MESSAGES = 4_096;
 export const TRANSCRIPT_TURN_MAX_BYTES = 16 * 1024 * 1024;
-const TRANSCRIPT_SOURCE_MAX_EVENTS = TRANSCRIPT_TURN_MAX_MESSAGES * 2;
+export const TRANSCRIPT_SOURCE_MAX_EVENTS = TRANSCRIPT_TURN_MAX_MESSAGES * 2;
 // One RuntimeEvent can carry both the raw Tool Result and its durable model projection.
-const TRANSCRIPT_SOURCE_MAX_RECORD_BYTES =
+export const TRANSCRIPT_SOURCE_MAX_RECORD_BYTES =
   DURABLE_TOOL_RESULT_PROJECTION_MAX_BYTES * 2 + 256 * 1024;
 // The scan releases each decoded record after projection. Its memory budget is
 // separate from the bounded amount of immutable input it may visit.
-const TRANSCRIPT_SOURCE_MAX_BYTES =
+export const TRANSCRIPT_SOURCE_MAX_BYTES =
   TRANSCRIPT_SOURCE_MAX_EVENTS * TRANSCRIPT_SOURCE_MAX_RECORD_BYTES;
 /** How much a page may scan past to fill itself when a projection hides rows. */
 const PAGE_HIDDEN_SCAN_MAX_BYTES = 16 * 1024 * 1024;
@@ -65,6 +68,7 @@ const PAGE_HIDDEN_SCAN_MAX_BYTES = 16 * 1024 * 1024;
 export function createSessionTranscriptReader(input: {
   stores: ExecutionStoresWriter<'interactive'>;
   canonicalPermissionOutcomes: CanonicalPermissionOutcomeReader;
+  storageWorker?: TranscriptStorageWorker;
   /**
    * Converts a Session whose transcript predates the ledger, before this reader
    * looks for invocations that only the conversion can create. Omitted only by
@@ -77,21 +81,30 @@ export function createSessionTranscriptReader(input: {
     await input.ensureTranscriptLedger?.(sessionId);
     return ledger;
   };
+  const reading = <T>(sessionId: string, operation: () => Promise<T>): Promise<T> =>
+    input.storageWorker ? input.storageWorker.withSessionRead(sessionId, operation) : operation();
   return {
-    readDurableHighWater: async (sessionId) => (await prepared(sessionId)).readHighWater(sessionId),
+    readDurableHighWater: (sessionId) =>
+      reading(sessionId, async () => (await prepared(sessionId)).readHighWater(sessionId)),
     readDurablePage: async (sessionId, request, project) =>
-      (await prepared(sessionId)).readPage(sessionId, request, project),
+      reading(sessionId, async () =>
+        (await prepared(sessionId)).readPage(sessionId, request, project),
+      ),
     readDurableRecords: async (sessionId, request) =>
-      (await prepared(sessionId)).readRecords(sessionId, request),
+      reading(sessionId, async () => (await prepared(sessionId)).readRecords(sessionId, request)),
     readDurableTurnContributions: async (sessionId, throughSequence, position, maxContributions) =>
-      (await prepared(sessionId)).readTurnContributions(
-        sessionId,
-        throughSequence,
-        position,
-        maxContributions,
+      reading(sessionId, async () =>
+        (await prepared(sessionId)).readTurnContributions(
+          sessionId,
+          throughSequence,
+          position,
+          maxContributions,
+        ),
       ),
     readDurableTurnLandmarks: async (sessionId, request) =>
-      (await prepared(sessionId)).readTurnLandmarks(sessionId, request),
+      reading(sessionId, async () =>
+        (await prepared(sessionId)).readTurnLandmarks(sessionId, request),
+      ),
   };
 }
 
@@ -161,6 +174,7 @@ export interface SessionTranscriptReader {
 function createDurableLedgerTranscriptReader(input: {
   stores: ExecutionStoresWriter<'interactive'>;
   canonicalPermissionOutcomes: CanonicalPermissionOutcomeReader;
+  storageWorker?: TranscriptStorageWorker;
 }) {
   const store = input.stores.runtimeEventStore;
   const highWater = async (sessionId: string): Promise<number | null> => {
@@ -230,8 +244,18 @@ function createDurableLedgerTranscriptReader(input: {
   const readRun = async (
     sessionId: string,
     request: { direction: 'older' | 'newer'; throughOrdinal: number; position: number },
-  ): Promise<PendingTranscriptRun | undefined> =>
-    store.readTranscriptRun(
+  ): Promise<PendingTranscriptRun | undefined> => {
+    if (input.storageWorker) {
+      const result = await input.storageWorker.readRun(sessionId, request);
+      return (
+        result && {
+          ...result.run,
+          ordinals: new Map(result.ordinals),
+          projection: { finish: async () => result.projected },
+        }
+      );
+    }
+    return store.readTranscriptRun(
       sessionId,
       {
         ...request,
@@ -249,6 +273,7 @@ function createDurableLedgerTranscriptReader(input: {
         return { ...turn, projection, ordinals };
       },
     );
+  };
 
   const scan = async function* (
     sessionId: string,
@@ -382,6 +407,14 @@ function createDurableLedgerTranscriptReader(input: {
     ): Promise<SessionTurnLandmarkSnapshot> {
       const throughSequence = await highWater(sessionId);
       if (throughSequence === null) return { throughSequence: null, landmarks: [] };
+      if (input.storageWorker)
+        return {
+          throughSequence,
+          landmarks: await input.storageWorker.readLandmarks(sessionId, {
+            ...request,
+            throughOrdinal: ordinalOf(throughSequence),
+          }),
+        };
       const turns = await store.readTranscriptTurns(
         sessionId,
         request.turnId === null
@@ -390,22 +423,30 @@ function createDurableLedgerTranscriptReader(input: {
       );
       const landmarks: SessionTurnLandmark[] = [];
       for (const turn of turns) {
-        const message = turn.prompt
-          ? projectRuntimeEventUserMessage(turn.prompt.event, turn.prompt.event.id)
-          : undefined;
-        const label = (message?.displayText ?? message?.text ?? '').trim();
-        // A sampled tick needs something to show; a looked-up Turn only needs a place.
-        if (!label && request.turnId === null) continue;
-        landmarks.push({
-          turnId: turn.turnId,
-          sequence: turn.firstOrdinal * EVENT_SEQUENCE_STRIDE,
-          lastSequence: turn.lastOrdinal * EVENT_SEQUENCE_STRIDE + EVENT_SEQUENCE_STRIDE - 1,
-          label,
-        });
+        const landmark = projectTranscriptTurnLandmark(turn, request.turnId);
+        if (landmark) landmarks.push(landmark);
       }
       return { throughSequence, landmarks };
     },
   };
+}
+
+/** Apply the existing wire preview bound before a large prompt can leave its read task. */
+export function projectTranscriptTurnLandmark(
+  turn: RuntimeTranscriptTurn,
+  turnId: string | null,
+): SessionTurnLandmark | null {
+  const message = turn.prompt
+    ? projectRuntimeEventUserMessage(turn.prompt.event, turn.prompt.event.id)
+    : undefined;
+  const label = (message?.displayText ?? message?.text ?? '').trim();
+  if (!label && turnId === null) return null;
+  return projectSessionTurnLandmarkForWire({
+    turnId: turn.turnId,
+    sequence: turn.firstOrdinal * EVENT_SEQUENCE_STRIDE,
+    lastSequence: turn.lastOrdinal * EVENT_SEQUENCE_STRIDE + EVENT_SEQUENCE_STRIDE - 1,
+    label,
+  });
 }
 
 interface TranscriptRecord {
@@ -572,7 +613,7 @@ function assertTurnPresentationBounded(messages: readonly StoredMessage[]): void
   }
 }
 
-async function readCanonicalPermissionOutcomes(
+export async function readCanonicalPermissionOutcomes(
   requestIds: readonly string[],
   reader: CanonicalPermissionOutcomeReader,
 ): Promise<ReadonlyMap<string, CanonicalPermissionOutcomeRecord>> {
@@ -599,12 +640,12 @@ async function readCanonicalPermissionOutcomes(
 }
 
 interface PendingTranscriptRun extends RuntimeTranscriptRun {
-  projection: ReturnType<typeof createTranscriptProjection>;
+  projection: Pick<ReturnType<typeof createTranscriptProjection>, 'finish'>;
   ordinals: Map<string, number>;
 }
 
 /** Keep only presentation state while the storage snapshot visits complete facts. */
-function createTranscriptProjection(invocations: readonly RuntimeInvocationRecord[]) {
+export function createTranscriptProjection(invocations: readonly RuntimeInvocationRecord[]) {
   const canonicalPermissionOutcomes = new Map<string, CanonicalPermissionOutcomeRecord>();
   let messageCount = 0;
   let messageBytes = 0;
@@ -621,7 +662,15 @@ function createTranscriptProjection(invocations: readonly RuntimeInvocationRecor
         throw new Error('Session transcript projection exceeds its presentation limit');
     },
   });
+  const finishWithOutcomes = (outcomes: ReadonlyMap<string, CanonicalPermissionOutcomeRecord>) => {
+    for (const [id, outcome] of outcomes) canonicalPermissionOutcomes.set(id, outcome);
+    const projected = projector.finish();
+    assertTurnPresentationBounded(projected.messages);
+    return projected;
+  };
   return {
+    permissionRequestIds: () => projector.permissionRequestIds,
+    finishWithOutcomes,
     push(event: RuntimeEvent) {
       eventCount += 1;
       const content = event.content;
@@ -643,10 +692,7 @@ function createTranscriptProjection(invocations: readonly RuntimeInvocationRecor
         projector.permissionRequestIds,
         reader,
       );
-      for (const [id, outcome] of outcomes) canonicalPermissionOutcomes.set(id, outcome);
-      const projected = projector.finish();
-      assertTurnPresentationBounded(projected.messages);
-      return projected;
+      return finishWithOutcomes(outcomes);
     },
   };
 }

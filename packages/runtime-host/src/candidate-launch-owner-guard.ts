@@ -26,6 +26,7 @@ export const RUNTIME_HOST_LAUNCH_OWNER_RELEASE_KIND = 'runtime-host-launch-owner
 
 export interface RuntimeHostLaunchOwnerGuard {
   readonly admission?: RuntimeHostLaunchOwnerAdmission;
+  readonly startupSignal: AbortSignal;
   bind(closeHost: () => Promise<unknown>): void;
   dispose(): Promise<void>;
 }
@@ -66,6 +67,8 @@ export function createRuntimeHostLaunchOwnerGuard(
         };
 
   let state: 'owned' | 'released' | 'lost' = process.connected ? 'owned' : 'lost';
+  const startup = new AbortController();
+  if (state === 'lost') startup.abort(new Error('Runtime Host launcher is unavailable'));
   let closeHost: (() => Promise<unknown>) | undefined;
   let lossSettlement: Promise<void> | undefined;
   let leaseClosed = false;
@@ -100,12 +103,14 @@ export function createRuntimeHostLaunchOwnerGuard(
   const onDisconnect = () => {
     if (state !== 'owned') return;
     state = 'lost';
+    startup.abort(new Error('Runtime Host launcher disconnected during startup'));
     settleLoss();
   };
   process.on('message', onMessage);
   process.once('disconnect', onDisconnect);
 
   return {
+    startupSignal: startup.signal,
     ...(admission ? { admission } : {}),
     bind(close) {
       closeHost = close;

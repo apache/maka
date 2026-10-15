@@ -508,6 +508,9 @@ async function filterBackedUpDatabase(
       for (const sessionId of sessionIds) assertSessionQuiescent(database, sessionId);
     }
     database.exec('PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE');
+    // Machine-local physical maintenance preferences never activate on a
+    // portable/hydrated state tree. The original source database is untouched.
+    database.exec('UPDATE runtime_storage_policy SET writer_enabled = 0, epoch = epoch + 1');
     const tables = database
       .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
       .all() as Array<{ name?: unknown }>;
@@ -690,7 +693,10 @@ const SESSION_LINK_COLUMNS = [
  * target derive it is both simpler and the only way it stays correct when the
  * derivation changes.
  */
-const TRIGGER_MAINTAINED_TABLES = new Set(['session_catalog_projection']);
+const TRIGGER_MAINTAINED_TABLES = new Set([
+  'session_catalog_projection',
+  'session_content_activity',
+]);
 
 // These are database-local ordering keys, not portable identities or references.
 // Keep this semantic policy explicit: other sequence columns belong to Sessions,
@@ -705,6 +711,7 @@ const LOCAL_SEQUENCE_COLUMNS = new Map([
 const EVENT_WAIT_TABLE = 'workflow_event_waits';
 
 const PORTABLE_GLOBAL_TABLES = new Set([
+  'runtime_storage_policy',
   'operational_schema_migrations',
   'session_metadata_schema',
   'runtime_capabilities',

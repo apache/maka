@@ -32,6 +32,11 @@ export interface DesktopHostRef {
   readonly hostId: string;
 }
 
+export interface DesktopStorageUpgradeStatus {
+  readonly active: boolean;
+  readonly phase?: import('@maka/runtime-host/protocol').HostStorageUpgradePhase;
+}
+
 export interface DesktopTargetScope extends DesktopHostRef {
   readonly targetEpoch: string;
 }

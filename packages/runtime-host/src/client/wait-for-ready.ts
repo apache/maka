@@ -18,32 +18,59 @@
  */
 
 import type { RuntimeHostConnection } from './connection.js';
+import type { HostStatusResult } from '../protocol/host-status.js';
+
+export const STORAGE_UPGRADE_READY_TIMEOUT_MS = 30 * 60 * 1000;
 
 export async function waitForRuntimeHostReady(
   connection: Pick<RuntimeHostConnection, 'status'>,
   timeoutMs = 75_000,
   signal?: AbortSignal,
+  options: { readonly storageUpgradeTimeoutMs?: number } = {},
 ): Promise<void> {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 120_000) {
     throw new RangeError('timeoutMs must be an integer between 1 and 120000');
   }
-  const deadline = Date.now() + timeoutMs;
+  let normalRemaining = timeoutMs;
+  let upgradeRemaining = options.storageUpgradeTimeoutMs ?? STORAGE_UPGRADE_READY_TIMEOUT_MS;
+  if (
+    !Number.isSafeInteger(upgradeRemaining) ||
+    upgradeRemaining <= 0 ||
+    upgradeRemaining > STORAGE_UPGRADE_READY_TIMEOUT_MS
+  )
+    throw new RangeError('Invalid storage upgrade readiness timeout');
+  let upgrading: boolean = false;
+  let measuredAt = Date.now();
+  const accountElapsed = () => {
+    const now = Date.now();
+    const elapsed = Math.max(0, now - measuredAt);
+    if (upgrading) upgradeRemaining -= elapsed;
+    else normalRemaining -= elapsed;
+    measuredAt = now;
+  };
   while (true) {
     signal?.throwIfAborted();
-    const status = await abortable(
-      () => connection.status(Math.max(1, deadline - Date.now())),
+    accountElapsed();
+    const requestBudget: number = upgrading ? upgradeRemaining : normalRemaining;
+    if (requestBudget <= 0)
+      throw new Error('Runtime Host did not become ready before the deadline');
+    const status: HostStatusResult = await abortable(
+      () => connection.status(Math.max(1, Math.min(requestBudget, 5_000))),
       signal,
     );
+    accountElapsed();
     if (status.state === 'ready') return;
     if (status.state === 'draining') {
       throw new Error('Runtime Host drained before becoming ready');
     }
-    const remaining = deadline - Date.now();
+    upgrading = status.state === 'upgrading_storage';
+    const remaining = upgrading ? upgradeRemaining : normalRemaining;
     if (remaining <= 0) {
       throw new Error('Runtime Host did not become ready before the deadline');
     }
     await abortable(
-      () => new Promise((resolve) => setTimeout(resolve, Math.min(25, remaining))),
+      () =>
+        new Promise((resolve) => setTimeout(resolve, Math.min(upgrading ? 250 : 25, remaining))),
       signal,
     );
   }

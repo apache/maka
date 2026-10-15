@@ -40,6 +40,7 @@ import {
 } from './sqlite-context-offload-store.js';
 import { syncDirectoryChain, syncFile } from './stable-storage.js';
 import { SQLITE_SESSION_MESSAGE_CHUNK_MARKER } from './sqlite-session-metadata-schema.js';
+import { parseRuntimePayloadJson } from './runtime-payload-codec.js';
 
 /**
  * Existing artifact-only snapshots keep their old admission contract. Context
@@ -378,7 +379,7 @@ function validateLedgerContextRefs(root: string, context: DatabaseSync | undefin
     for (const row of runtime
       .prepare('SELECT session_id, payload_json FROM runtime_events')
       .iterate()) {
-      const event = record(JSON.parse(String(row.payload_json)));
+      const event = record(parseRuntimePayloadJson(String(row.payload_json)));
       const item = record(event.content);
       const sessionId = String(row.session_id);
       if (item.kind === 'text') attachments(item, sessionId);

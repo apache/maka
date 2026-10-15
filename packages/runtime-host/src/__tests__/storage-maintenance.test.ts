@@ -264,3 +264,94 @@ test('context-offload page reclamation lane runs with bounded batches', async (t
   assert.equal(reclaimCalls, 2);
   await maintenance.close();
 });
+
+test('compression charges large input against its own budget and yields independently of other lanes', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let calls = 0;
+  const maintenance = new HostStorageMaintenance({
+    artifacts: {
+      reclaimUpgradeResidue: async () => ({ nextAfter: null, processedPaths: 0, failedPaths: 0 }),
+    },
+    coldStorage: {
+      reclaimFreePages: async () => ({ reclaimedPages: 0, hasMore: false, busy: false }),
+      compressBatch: async (input) => {
+        assert.equal(input?.maxBytes, 1024 * 1024);
+        calls++;
+        return {
+          scanned: 1,
+          changed: 1,
+          rawBytes: 3 * 1024 * 1024,
+          storedBytes: 1024,
+          inputBytes: 3 * 1024 * 1024,
+          skipped: 0,
+          failures: 0,
+          busy: false,
+          hasMore: calls === 1,
+        };
+      },
+    },
+    onError: assert.fail,
+  });
+  maintenance.start();
+  t.mock.timers.tick(100);
+  await settle();
+  assert.equal(calls, 1);
+  t.mock.timers.tick(2999);
+  await settle();
+  assert.equal(calls, 1);
+  t.mock.timers.tick(1);
+  await settle();
+  assert.equal(calls, 2);
+  t.mock.timers.tick(59999);
+  await settle();
+  assert.equal(calls, 2);
+  await maintenance.close();
+});
+
+test('runtime incremental reclamation keeps its own bounded cadence alongside archive retention', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let reclaimCalls = 0;
+  let retentionCalls = 0;
+  const maintenance = new HostStorageMaintenance({
+    artifacts: {
+      reclaimUpgradeResidue: async () => ({ nextAfter: null, processedPaths: 0, failedPaths: 0 }),
+    },
+    retention: { sweep: async () => (++retentionCalls, true) },
+    coldStorage: {
+      compressBatch: async () => ({
+        scanned: 0,
+        changed: 0,
+        rawBytes: 0,
+        storedBytes: 0,
+        inputBytes: 0,
+        skipped: 0,
+        failures: 0,
+        busy: false,
+        hasMore: false,
+      }),
+      reclaimFreePages: async ({ maxPages }) => {
+        assert.equal(maxPages, 64);
+        reclaimCalls++;
+        return { reclaimedPages: 64, hasMore: reclaimCalls < 2, busy: false };
+      },
+    },
+    onError: assert.fail,
+  });
+  maintenance.start();
+  t.mock.timers.tick(999);
+  await settle();
+  assert.equal(reclaimCalls, 0);
+  t.mock.timers.tick(1);
+  await settle();
+  assert.equal(reclaimCalls, 1);
+  assert.equal(retentionCalls, 1);
+  t.mock.timers.tick(1000);
+  await settle();
+  assert.equal(reclaimCalls, 2);
+  assert.equal(retentionCalls, 2);
+  t.mock.timers.tick(1000);
+  await settle();
+  assert.equal(reclaimCalls, 2, 'an exhausted reclamation lane idles for a minute');
+  assert.equal(retentionCalls, 3, 'archive retention keeps its own one-second cadence');
+  await maintenance.close();
+});

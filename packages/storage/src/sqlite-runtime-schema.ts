@@ -34,7 +34,7 @@ import {
   buildSyntheticTerminalRuntimeEvent,
 } from '@maka/core/runtime-invocation';
 
-export const SQLITE_RUNTIME_SCHEMA_VERSION = 20;
+export const SQLITE_RUNTIME_SCHEMA_VERSION = 21;
 export const RUNTIME_RECOVERY_AUTHORITY_CAPABILITY = 'runtime_recovery_authority';
 export const RUNTIME_RECOVERY_AUTHORITY_CAPABILITY_VERSION = 1;
 export const RUNTIME_CONTINUATION_AUTHORITY_CAPABILITY = 'runtime_continuation_authority';
@@ -712,6 +712,7 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
         AND dispatch_event_id IS NOT NULL;
     `,
   ],
+  [21, 'SELECT 1;'],
 ]);
 
 /**

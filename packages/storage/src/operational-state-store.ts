@@ -21,6 +21,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import type { DatabaseSync } from 'node:sqlite';
+import { migrateColdStorageDatabase } from './cold-storage-schema.js';
 import {
   configureSqliteRuntimeDatabase,
   configureSqliteRuntimeAutoVacuumForNewDatabase,
@@ -60,7 +61,7 @@ import {
 } from './operational-target-schema.js';
 
 export const OPERATIONAL_STATE_DATABASE_NAME = 'runtime.sqlite';
-export const OPERATIONAL_STATE_SCHEMA_VERSION = 2;
+export const OPERATIONAL_STATE_SCHEMA_VERSION = 3;
 
 /** Resolve the authoritative on-disk path of the operational-state database. */
 export function resolveOperationalStateDatabasePath(workspaceRoot: string): string {
@@ -169,6 +170,7 @@ export interface OperationalStateDatabaseLease {
   readonly database: DatabaseSync;
   readonly databasePath: string;
   transaction<T>(mode: 'read' | 'write', operation: () => T): T;
+  tryMaintenanceWrite<T>(operation: () => T): { value: T } | null;
   /**
    * Called once the outermost open transaction commits or rolls back, which
    * a nested `transaction` call cannot see for itself.
@@ -176,6 +178,15 @@ export interface OperationalStateDatabaseLease {
   onTransactionSettled(callback: (committed: boolean) => void): void;
   backup(destinationPath: string): Promise<number>;
   close(): void;
+}
+
+/** Offline physical rewrite must not run under an in-process operational repository. */
+export function assertOperationalStateDatabaseClosed(root: string): void {
+  if (owners.has(resolveOperationalStateDatabasePath(root))) {
+    throw new Error(
+      'Close all operational state repositories before reclaiming cold storage space',
+    );
+  }
 }
 
 /**
@@ -249,6 +260,7 @@ class OperationalStateDatabaseOwner {
       database: this.database,
       databasePath: this.databasePath,
       transaction: (mode, operation) => this.transaction(mode, operation),
+      tryMaintenanceWrite: (operation) => this.tryMaintenanceWrite(operation),
       onTransactionSettled: (callback) => {
         if (this.transactionDepth === 0)
           throw new Error('No operational state transaction is open');
@@ -290,6 +302,22 @@ class OperationalStateDatabaseOwner {
     this.closed = true;
     owners.delete(this.databasePath);
     this.database.close();
+  }
+
+  private tryMaintenanceWrite<T>(operation: () => T): { value: T } | null {
+    if (this.closed) throw new Error('Operational state database is closed');
+    if (this.transactionDepth !== 0) return null;
+    const previous = this.database.prepare('PRAGMA busy_timeout').get() as { timeout: number };
+    this.database.exec('PRAGMA busy_timeout = 0');
+    try {
+      return { value: this.transaction('write', operation) };
+    } catch (error) {
+      if (error instanceof Error && (error as Error & { errcode?: number }).errcode === 5)
+        return null;
+      throw error;
+    } finally {
+      this.database.exec(`PRAGMA busy_timeout = ${previous.timeout}`);
+    }
   }
 
   private transaction<T>(mode: 'read' | 'write', operation: () => T): T {
@@ -497,6 +525,7 @@ export function migrateOperationalStateDatabaseInternal(db: DatabaseSync, now: (
     insertMigratedScheduledTasks(db, legacyScheduledTasks);
     migrateSqliteUsageDatabase(db);
     migrateSqliteArtifactDatabase(db);
+    migrateColdStorageDatabase(db, now());
     ensureOperationalSchemaRegistry(db);
     const appliedAt = now();
     db.exec(`

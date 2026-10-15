@@ -21,6 +21,7 @@ import { MemoryOriginalHost, PersonalAssistantEntry, createInternalUriDispatcher
 import { WorkHubControlOverlay, WorkHubDock, WorkHubMainNavigation } from './features/workhub';
 import { WorkHubEnablementWatch } from './application/contracts/workhub-workspace/workhub-enablement.js';
 import { RuntimeHostHandoffOverlay } from './features/runtime-host-management/index.js';
+import { StorageUpgradeOverlay } from './storage-upgrade-overlay.js';
 import { ArchiveRetentionNotices } from './features/storage-usage/index.js';
 import {
   useCallback,
@@ -159,6 +160,7 @@ export function AppShell() {
           <ErrorBoundary locale={uiLocale}>
             <AppUpdateProvider>
               <RuntimeHostHandoffOverlay />
+              <StorageUpgradeOverlay />
               <WorkHubControlOverlay />
               <TaskEntry.TaskEntryRoot>
                 {(taskEntry) => (

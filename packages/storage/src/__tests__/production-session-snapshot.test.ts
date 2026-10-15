@@ -37,6 +37,8 @@ import type { PackQuiescentSessionBundleInput } from '../production-session-snap
 import type { SessionBundleFileService, SessionBundleLimits } from '../session-bundle-contract.js';
 import { createSessionBundleFileService } from '../session-bundle-file-service.js';
 import { createSessionStore } from '../session-store.js';
+import { acquireOperationalStateDatabase } from '../operational-state-store.js';
+import { DatabaseSync } from 'node:sqlite';
 
 const limits: SessionBundleLimits = {
   maxCompressedBytes: 4 * 1024 * 1024,
@@ -59,6 +61,12 @@ const immediateQuiescence: SessionSnapshotQuiescenceAuthority = {
 test('prepares real Session state and a policy-filtered workspace, then packs and hydrates it', async () => {
   const fixture = await createFixture();
   try {
+    const sourcePolicy = acquireOperationalStateDatabase(fixture.stateRoot);
+    try {
+      sourcePolicy.database.exec('UPDATE runtime_storage_policy SET writer_enabled = 1');
+    } finally {
+      sourcePolicy.close();
+    }
     await writeFile(join(fixture.workspaceRoot, 'README.md'), 'portable workspace\n');
     await writeFile(join(fixture.workspaceRoot, 'package-lock.json'), '{"lockfileVersion":3}\n');
     await mkdir(join(fixture.workspaceRoot, 'node_modules', 'dep'), { recursive: true });
@@ -95,6 +103,28 @@ test('prepares real Session state and a policy-filtered workspace, then packs an
     await assert.rejects(readFile(join(hydrated.workspaceRoot, '.cache', 'result')));
     await assert.rejects(readFile(join(hydrated.workspaceRoot, 'logs', 'runtime.log')));
     assert.equal((await readFile(join(hydrated.stateRoot, 'runtime.sqlite'))).byteLength > 0, true);
+    const hydratedDatabase = new DatabaseSync(join(hydrated.stateRoot, 'runtime.sqlite'), {
+      readOnly: true,
+    });
+    try {
+      assert.equal(
+        hydratedDatabase.prepare('SELECT writer_enabled FROM runtime_storage_policy').get()
+          ?.writer_enabled,
+        0,
+      );
+    } finally {
+      hydratedDatabase.close();
+    }
+    const unchanged = acquireOperationalStateDatabase(fixture.stateRoot);
+    try {
+      assert.equal(
+        unchanged.database.prepare('SELECT writer_enabled FROM runtime_storage_policy').get()
+          ?.writer_enabled,
+        1,
+      );
+    } finally {
+      unchanged.close();
+    }
 
     const inspection = await createSessionBundleFileService().inspect({
       source: { path: archivePath, expectedArchiveDigest: artifact.archiveDigest },

@@ -43,6 +43,9 @@ export class HostHostedExecutionCoordinator {
   >();
   readonly #cancelled = new Set<string>();
   #accepting = true;
+  get hasActiveExecutions(): boolean {
+    return this.#executions.size > 0;
+  }
 
   constructor(
     private readonly run: (

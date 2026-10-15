@@ -901,6 +901,7 @@ describe('non-serving Runtime Host kernel', () => {
         releaseFactory = resolve;
       });
       let maintenanceStarts = 0;
+      let reportStorageUpgrade: RuntimeHostCompositionContext['reportStorageUpgrade'];
       const unavailable = async () =>
         ({
           ok: false,
@@ -912,7 +913,8 @@ describe('non-serving Runtime Host kernel', () => {
       const hostTask = RuntimeHostKernel.start({
         owner,
         idleGraceMs: 10_000,
-        composition: defineInteractiveRuntimeHostComposition(async () => {
+        composition: defineInteractiveRuntimeHostComposition(async (context) => {
+          reportStorageUpgrade = context.reportStorageUpgrade;
           markFactoryEntered();
           await factoryReleased;
           return {
@@ -973,6 +975,19 @@ describe('non-serving Runtime Host kernel', () => {
           assert.equal(status.result.state, 'recovering');
         }
 
+        reportStorageUpgrade!('rebuilding');
+        await writeClientFrame(transport, {
+          requestId: 'storage-upgrade-status',
+          operation: 'host.status',
+          input: {},
+        });
+        const upgrading = decodeHostFrame(await transport.read(1_000));
+        assert.ok(!('kind' in upgrading) && upgrading.operation === 'host.status' && upgrading.ok);
+        if (!('kind' in upgrading) && upgrading.operation === 'host.status' && upgrading.ok) {
+          assert.equal(upgrading.result.state, 'upgrading_storage');
+          assert.equal(upgrading.result.storageUpgradePhase, 'rebuilding');
+        }
+
         await writeClientFrame(transport, {
           requestId: 'query',
           operation: 'turn.query',
@@ -983,6 +998,18 @@ describe('non-serving Runtime Host kernel', () => {
         if (!('kind' in query) && query.operation === 'turn.query' && !query.ok) {
           assert.equal(query.error.code, 'host_not_ready');
         }
+        reportStorageUpgrade!(undefined);
+        await writeClientFrame(transport, {
+          requestId: 'opening-status',
+          operation: 'host.status',
+          input: {},
+        });
+        const opening = decodeHostFrame(await transport.read(1_000));
+        assert.ok(!('kind' in opening) && opening.operation === 'host.status' && opening.ok);
+        if (!('kind' in opening) && opening.operation === 'host.status' && opening.ok) {
+          assert.equal(opening.result.state, 'recovering');
+          assert.equal(opening.result.storageUpgradePhase, 'opening');
+        }
       } finally {
         releaseFactory();
         transport?.abort();
@@ -990,6 +1017,43 @@ describe('non-serving Runtime Host kernel', () => {
         await host?.close().catch(() => undefined);
       }
       assert.equal(maintenanceStarts, 1);
+    });
+  });
+
+  test('launcher cancellation during startup retains Root ownership until storage work settles', async () => {
+    await withHostPaths(async (paths) => {
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      const launcher = new AbortController();
+      const entered = deferred<void>();
+      const aborted = deferred<void>();
+      const workerExited = deferred<void>();
+      const hostTask = RuntimeHostKernel.start({
+        owner,
+        startupSignal: launcher.signal,
+        composition: defineInteractiveRuntimeHostComposition(async (context) => {
+          context.reportStorageUpgrade?.('rebuilding');
+          context.startupSignal!.addEventListener('abort', () => aborted.resolve(), { once: true });
+          entered.resolve();
+          await workerExited.promise;
+          context.startupSignal!.throwIfAborted();
+          throw new Error('Startup must have been cancelled');
+        }),
+      });
+      const rejected = assert.rejects(hostTask, /startup was cancelled/);
+      try {
+        await withTimeout(entered.promise, 1_000, 'Startup did not enter');
+        launcher.abort();
+        await withTimeout(aborted.promise, 1_000, 'Storage work was not cancelled');
+        assert.equal(await tryAcquireInteractiveRootOwner(capability), undefined);
+      } finally {
+        workerExited.resolve();
+        await rejected;
+      }
+      const next = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(next);
+      await next.close();
     });
   });
 

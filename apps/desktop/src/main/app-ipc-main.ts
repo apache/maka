@@ -66,6 +66,7 @@ export interface AppClientIpcDeps {
   mainWindowController: MainWindowController;
   e2eFixture: E2eFixture;
   updateService: AppUpdateService;
+  getStorageUpgradeStatus?(): import('../shared/runtime-host-identity.js').DesktopStorageUpgradeStatus;
 }
 
 export function registerAppClientIpc(
@@ -73,6 +74,7 @@ export function registerAppClientIpc(
   targetIpc: Pick<ReconnectableReadIpcMain, 'handle'> = ipcMain,
 ): void {
   const { mainWindowController, e2eFixture, updateService } = deps;
+  targetIpc.handle('app:storageUpgradeStatus', () => deps.getStorageUpgradeStatus?.() ?? { active: false });
   targetIpc.handle('window:popupMenu', (event, input: unknown) => {
     if (!mainWindowController.isMainRenderer(event.sender) || event.senderFrame !== event.sender.mainFrame) {
       throw new Error('Native menus require the main renderer');
