@@ -45,6 +45,7 @@ export type MakaCliCommand =
   | { kind: 'activate'; args: string[] }
   | { kind: 'session-export'; args: string[] }
   | { kind: 'session-import'; args: string[] }
+  | { kind: 'session-list'; args: string[] }
   | { kind: 'eval'; args: string[] }
   | { kind: 'acp' }
   | RuntimeHostCliCommand
@@ -91,6 +92,7 @@ export function parseMakaCliArgs(
       ? { kind: 'help', text: sessionBundleHelpText(cliCommand, first) }
       : { kind: first, args: argv.slice(1) };
   }
+  if (first === 'session-list') return { kind: 'session-list', args: argv.slice(1) };
   if (first === 'eval') return { kind: 'eval', args: argv.slice(1) };
   if (first === 'update') return parseRuntimeHostInstalledUpdateCommand(argv.slice(1), cliCommand);
   if (first === 'runtime-host') return parseRuntimeHostCommand(argv.slice(1), cliCommand);
@@ -150,6 +152,7 @@ function helpText(cliCommand: string): string {
         ['eval ...', 'Run one declarative multi-arm experiment'],
         ['session-export ...', 'Write a Session bundle to a file'],
         ['session-import ...', 'Read a Session bundle back into a workspace'],
+        ['session-list ...', 'List Sessions on the local or a remote Runtime Host'],
         ['update ...', 'Update this npm-global CLI and its local Runtime Host'],
         ['runtime-host ...', 'Serve and manage a Runtime Host'],
       ] as const
@@ -227,6 +230,14 @@ export async function runMakaCli(
     case 'session-import': {
       const { runMakaSessionImportCli } = await import('./session-import-command.js');
       return runMakaSessionImportCli(command.args);
+    }
+    case 'session-list': {
+      const { runMakaSessionListCommand } = await import('./session-list-command.js');
+      return runMakaSessionListCommand(command.args, {
+        clientDataRoot: dataRoots.clientDataRoot,
+        workspaceRoot: dataRoots.workspaceRoot,
+        cliCommand: options.cliCommand,
+      });
     }
     case 'eval': {
       const { configureInstalledEvalBundle } = await import('./eval-bundle-path.js');
