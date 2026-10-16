@@ -44,6 +44,7 @@ members = [
     "products/maka/cli",
     "plugins/settings/store",
     "products/maka/desktop",
+    "products/maka/desktop-shell",
     "platform/computer-use",
     "platform/event-log",
     "plugins/agent/acp-executor/engine",
