@@ -127,6 +127,7 @@ export class Settings {
 
   hide() {
     this.open = false;
+    this.removing = null;
     this.closeForm();
     this.closeImport();
     this.hooks.changed();
@@ -442,7 +443,12 @@ export class Settings {
       const result = await operation('settings', 'remove', {
         expected: { connectionId: basis.connectionId, revision: basis.revision },
       });
-      if (result.kind !== 'committed') throw new Error(describeCatalog(result));
+      if (result.kind !== 'committed') {
+        // It changed meanwhile. The list is read again, so trying again
+        // sends its current revision.
+        await this.loadConnections();
+        throw new Error(describeCatalog(result));
+      }
       this.revision = result.catalogRevision;
       log(`settings: removed ${connection.slug}`);
       this.notes.delete(basis.connectionId);

@@ -268,7 +268,10 @@ class FormDraft {
    * and the form editor's size limits.
    */
   values() {
-    const values = {};
+    // Without a prototype, and defined rather than assigned, so that a field
+    // named `__proto__` is an answer like any other (as the TUI's form editor
+    // builds it).
+    const values = Object.create(null);
     for (const [index, field] of this.fields.entries()) {
       const draft = this.drafts[index];
       const raw = TEXTUAL.has(field.kind) ? draft.value() : draft;
@@ -276,12 +279,15 @@ class FormDraft {
         raw === null || raw === '' || (field.kind === 'multi_select' && raw.length === 0);
       if (empty && !field.required) continue;
       const parsed = TEXTUAL.has(field.kind) && field.kind !== 'string' ? number(raw) : raw;
-      const problem = empty ? 'Required' : fieldProblem(field, parsed);
+      // A required field is missing only with no choice made: an empty text
+      // or no options picked can be an answer, which the field's own limits
+      // judge, as the Host does.
+      const problem = raw === null ? 'Required' : fieldProblem(field, parsed);
       if (problem !== null) {
         this.problem = { index, message: problem };
         return null;
       }
-      values[field.name] = parsed;
+      Object.defineProperty(values, field.name, { value: parsed, enumerable: true, configurable: true, writable: true });
     }
     const answer = { kind: 'form_answer', action: 'accept', values, committedAt: Number.MAX_SAFE_INTEGER };
     if (utf8Length(JSON.stringify(answer)) > 8192) {
@@ -319,9 +325,9 @@ function fieldProblem(field, value) {
   switch (field.kind) {
     case 'string': {
       const length = [...value].length;
-      if (length < (field.minLength ?? 0)) return `Use at least ${field.minLength} characters`;
+      if (length < (field.minLength ?? 0)) return `Use at least ${characters(field.minLength)}`;
       if (length > (field.maxLength ?? 2048) || utf8Length(value) > 2048) {
-        return `Use at most ${field.maxLength ?? 2048} characters`;
+        return `Use at most ${characters(field.maxLength ?? 2048)}`;
       }
       return formatProblem(value, field.format);
     }
@@ -351,7 +357,7 @@ function formatProblem(value, format) {
     case 'email':
       return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value) ? null : 'Enter an email address';
     case 'uri':
-      return /^[a-zA-Z][a-zA-Z0-9+.-]*:\S+$/.test(value) ? null : 'Enter a full address, such as https://example.com';
+      return uri(value) ? null : 'Enter a full address, such as https://example.com';
     case 'date':
       return calendar(value, false) ? null : 'Enter a date as YYYY-MM-DD';
     case 'date-time':
@@ -359,6 +365,22 @@ function formatProblem(value, format) {
     default:
       return null;
   }
+}
+
+/**
+ * Whether `value` reads as an absolute URL, near enough to the Host's check
+ * (`url::Url::parse`): a scheme, then for the web schemes a host, with an
+ * IPv6 address bracketed and a port up to 65535. Spaces around it are
+ * ignored, as the parser ignores them. Anything this lets through that the
+ * parser refuses comes back from the Host as a refused answer.
+ */
+function uri(value) {
+  const trimmed = value.replace(/^[\u0000-\u0020]+|[\u0000-\u0020]+$/g, '');
+  const scheme = /^([a-zA-Z][a-zA-Z0-9+.-]*):(.*)$/s.exec(trimmed);
+  if (scheme === null) return false;
+  if (!/^(?:https?|wss?|ftp)$/i.test(scheme[1])) return true;
+  const web = /^\/\/(?:[^\/?#@]*@)?(\[[0-9a-fA-F:.]+\]|[^\s\/?#:@\[\]]+)(?::(\d*))?(?:[\/?#].*)?$/s.exec(scheme[2]);
+  return web !== null && (web[2] === undefined || web[2] === '' || Number(web[2]) <= 65535);
 }
 
 /** Whether `value` is a real calendar date (and time), as the Host checks it. */
@@ -378,6 +400,10 @@ function calendar(value, time) {
     day <= days[month - 1] &&
     (!time || (n(4) <= 23 && n(5) <= 59 && n(6) <= 59 && n(7) <= 23 && n(8) <= 59))
   );
+}
+
+function characters(count) {
+  return `${count} character${count === 1 ? '' : 's'}`;
 }
 
 function numberKind(field) {
@@ -731,9 +757,9 @@ function fieldHint(field) {
     case 'string': {
       const low = field.minLength ?? null;
       const high = field.maxLength ?? null;
-      if (low !== null && high !== null) return `${low} to ${high} characters`;
-      if (low !== null) return `At least ${low} characters`;
-      if (high !== null) return `At most ${high} characters`;
+      if (low !== null && high !== null) return `${low} to ${characters(high)}`;
+      if (low !== null) return `At least ${characters(low)}`;
+      if (high !== null) return `At most ${characters(high)}`;
       return null;
     }
     case 'number':

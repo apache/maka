@@ -102,6 +102,17 @@ export class Composer {
       this.modelLabel = fallback ? choiceLabel(fallback) : 'No model';
       // No model yet is not an error: the start pane offers Settings.
       log(`composer: default model ${this.modelLabel}`);
+      // A model chosen in the menu is kept as the Host offers it now, with
+      // its connection's current revision; one whose connection was removed
+      // is dropped, and the task's own model or the default applies again.
+      for (const [id, choice] of this.chosen) {
+        const current = await this.offered(choice.selection);
+        if (current !== null) this.chosen.set(id, current);
+        else {
+          this.chosen.delete(id);
+          log(`composer: ${choiceLabel(choice)} is not offered any more`);
+        }
+      }
     } catch (error) {
       this.hooks.report(`Models: ${error.message}`);
     } finally {
@@ -128,7 +139,14 @@ export class Composer {
    */
   async selection(transcript) {
     const chosen = this.chosen.get(transcript.id);
-    if (chosen) return { model: chosen.selection, thinkingLevel: null };
+    if (chosen) {
+      const current = await this.offered(chosen.selection);
+      if (current === null) {
+        this.chosen.delete(transcript.id);
+        throw new Error(`the model ${choiceLabel(chosen)} is not offered any more`);
+      }
+      return { model: current.selection, thinkingLevel: null };
+    }
     const backend = transcript.backend;
     if (backend?.kind === 'executor') {
       throw new Error('this session runs on an executor, which the desktop cannot start yet');
@@ -137,11 +155,19 @@ export class Composer {
       if (this.model === null) throw new Error('no model is configured');
       return { model: this.model, thinkingLevel: null };
     }
-    const models = await query('settings', 'models', { kind: 'start', query: backend.modelId });
-    const choice =
-      models.kind === 'ready' ? models.choices.find((c) => sameModel(c.selection, backend)) : null;
+    const choice = await this.offered(backend);
     if (!choice) throw new Error(`the session's model ${backend.modelId} is not offered any more`);
     return { model: choice.selection, thinkingLevel: backend.thinkingLevel ?? null };
+  }
+
+  /**
+   * The choice the Host offers now for a model (a connection and a model
+   * id), with its connection's current revision, or null when it offers none.
+   */
+  async offered(model) {
+    const models = await query('settings', 'models', { kind: 'start', query: model.modelId });
+    if (models.kind !== 'ready') throw new Error('the model list is changing; try again');
+    return models.choices.find((choice) => sameModel(choice.selection, model)) ?? null;
   }
 
   /**
