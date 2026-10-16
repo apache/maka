@@ -1222,6 +1222,14 @@ pub(crate) fn laying_out_list_row<R>(window: &mut Window, f: impl FnOnce(&mut Wi
     result
 }
 
+/// Whether a list row is being laid out: see [`laying_out_list_row`].
+pub(crate) fn is_laying_out_list_row(window: &Window) -> bool {
+    window
+        .layout_engine
+        .as_ref()
+        .is_some_and(|engine| engine.retention.list_rows > 0)
+}
+
 /// Treats any `auto` dimension of the given node's style as filling `size`.
 /// See [`TaffyLayoutEngine::stretch_auto_size_to_fill`].
 ///

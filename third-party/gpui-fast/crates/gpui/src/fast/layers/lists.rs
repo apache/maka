@@ -12,8 +12,9 @@
 //!
 //! Each row the layer holds keeps what it handed the frame besides what it
 //! drew: where its prepaint and paint records (hitboxes, listeners, element
-//! states, dispatch nodes) lie in the frame last drawn, its hitboxes as
-//! painted and the hovers it was painted by. A frame that keeps the row
+//! states, dispatch nodes) lie in the frame last drawn, the element states
+//! rendering and laying it out used, which lie before those, its hitboxes
+//! as painted and the hovers it was painted by. A frame that keeps the row
 //! carries those records into itself, its hitboxes moved by the scroll
 //! since the row was painted, as [`crate::fast::layers::reuse`] carries a
 //! div's content; a row whose hovers changed is rendered again, alone.
@@ -66,6 +67,7 @@ use crate::{
 use collections::FxHashMap;
 use smallvec::SmallVec;
 use std::{
+    any::TypeId,
     collections::{BTreeMap, BTreeSet},
     mem,
     ops::Range,
@@ -156,6 +158,15 @@ impl LayerRows {
         self.rows
             .iter()
             .map(|(row, held)| (*row, held.layout_keys.as_slice()))
+    }
+
+    /// How many element states rendering and laying out each row the layer
+    /// holds used outside its prepaint, which it keeps with the row.
+    #[cfg(test)]
+    pub(crate) fn held_layout_states(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+        self.rows
+            .iter()
+            .map(|(row, held)| (*row, held.layout_states.len()))
     }
 
     /// Moves the prepaint ranges of the rows the layer holds with `shift`,
@@ -257,6 +268,10 @@ struct Row {
     /// The keys of the layout nodes laying the row out claimed: kept while
     /// the row is, so that rendering it again reuses them.
     layout_keys: Vec<u64>,
+    /// The element states rendering and laying the row out used, which lie
+    /// outside its prepaint records: kept while the row keeps its element
+    /// states, as the list keeps them while it renders the row.
+    layout_states: Vec<(GlobalElementId, TypeId)>,
     /// The entities laying the row out, prepainting and painting it read,
     /// as of when it was rendered: when one of them changes, the row is
     /// rendered again, alone (see [`changed_rows`]). What the list read
@@ -394,6 +409,9 @@ struct RowLayout {
     /// The writes laying the row out made: the row's own. See
     /// [`crate::fast::dependencies::Writes`].
     writes: (u64, u64),
+    /// The element states rendering the row, when the list rendered it just
+    /// before, and laying it out used.
+    states: Vec<(GlobalElementId, TypeId)>,
 }
 
 /// What prepainting a row added to the frame, and the masks of its hitboxes
@@ -405,6 +423,9 @@ struct RowPrepaint {
     /// The layout keys claimed since the row before it was prepainted: those
     /// laying it out claimed.
     layout_keys: Vec<u64>,
+    /// The element states rendering and laying the row out used outside its
+    /// prepaint. See [`RowLayout::states`].
+    layout_states: Vec<(GlobalElementId, TypeId)>,
     /// Where in the log of the entities read what laying the row out and
     /// prepainting it read lies, and, once the prepaint ends, those
     /// entities.
@@ -1031,16 +1052,17 @@ fn keep_reads(window: &mut Window, cx: &mut App, id: &GlobalElementId) {
 }
 
 thread_local! {
-    /// The row a `list` rendered last, and where in the log of the entities
-    /// read what rendering it read starts. See [`spanned_render_item`].
-    static RENDERED_ROW: std::cell::Cell<Option<(usize, usize)>> =
+    /// The row a `list` rendered last, where in the log of the entities read
+    /// what rendering it read starts, and where in the frame's element
+    /// states those it used start. See [`spanned_render_item`].
+    static RENDERED_ROW: std::cell::Cell<Option<(usize, usize, usize)>> =
         const { std::cell::Cell::new(None) };
 }
 
 /// A `list`'s row renderer `render_item`, noting where what rendering each
-/// row reads starts: a list lays a row out right after rendering it, and
-/// what rendering it read is the row's, as what laying it out read is (see
-/// [`note_row_layout`]).
+/// row reads and the element states it uses start: a list lays a row out
+/// right after rendering it, and what rendering it read and used is the
+/// row's, as what laying it out read and used is (see [`note_row_layout`]).
 pub(crate) fn spanned_render_item(
     mut render_item: impl FnMut(usize, &mut Window, &mut App) -> AnyElement + 'static,
 ) -> Box<crate::RenderItemFn> {
@@ -1048,8 +1070,9 @@ pub(crate) fn spanned_render_item(
         // A row reading what the row before it read last notes it too.
         cx.entities.mark_access_boundary();
         let start = reads_len();
+        let states = window.next_frame.accessed_element_states.len();
         let element = render_item(ix, window, cx);
-        RENDERED_ROW.set(Some((ix, start)));
+        RENDERED_ROW.set(Some((ix, start, states)));
         element
     })
 }
@@ -1138,6 +1161,15 @@ fn carry_prepaint_rows(window: &mut Window, id: &GlobalElementId) {
         let delta = row.delta(translation, scale_factor);
         let element_states = !row.dropped && !leaving.contains(ix);
         window.keep_retained_layout(&row.layout_keys);
+        if element_states {
+            // Those rendering and laying the row out used, which its
+            // prepaint records do not hold: a text view's parsed document,
+            // say, without which the row is laid out anew at another height.
+            window
+                .next_frame
+                .accessed_element_states
+                .extend(row.layout_states.iter().cloned());
+        }
         row.prepaint = reuse::carry_prepaint_records(
             window,
             &row.prepaint,
@@ -1387,42 +1419,80 @@ fn end_row(window: &mut Window, list: Option<usize>) {
         writes_start,
         crate::fast::dependencies::write_generation_now(),
     ));
+    // A row laid out more than once this frame used its states each time.
+    let mut seen = collections::FxHashSet::default();
+    let layout_states = frame
+        .row_layouts
+        .iter()
+        .filter(|layout| layout.row == row)
+        .flat_map(|layout| layout.states.iter())
+        .filter(|state| seen.insert(*state))
+        .cloned()
+        .collect();
     frame.row_prepaints.push(RowPrepaint {
         row,
         range: start..end,
         masks,
         layout_keys,
+        layout_states,
         reads,
         entities: Rc::from([]),
         writes,
     });
 }
 
-/// Where the layout keys a row of the list whose rows are prepainting into
-/// its layer is about to claim, laid out outside any row's prepaint, start
-/// in the recording of them, and where what it is about to read starts in
-/// the log of the entities read. See [`note_row_layout`].
-pub(crate) fn row_layout_start(window: &mut Window) -> Option<(usize, usize, u64)> {
+/// Where what laying out a row adds to the frame and the logs starts, as
+/// [`row_layout_start`] notes it.
+pub(crate) struct RowLayoutStart {
+    /// Where the layout keys it claims start in the recording of them.
+    keys: usize,
+    /// Where what it reads starts in the log of the entities read.
+    reads: usize,
+    /// How many writes had been made.
+    writes: u64,
+    /// Where the element states it uses start in the frame's.
+    states: usize,
+    /// The row the list rendered just before, and where what rendering it
+    /// read and the element states it used start. See
+    /// [`spanned_render_item`].
+    rendered: Option<(usize, usize, usize)>,
+}
+
+/// Where what laying out a row of the list whose rows are prepainting into
+/// its layer, outside any row's prepaint, adds starts. See
+/// [`note_row_layout`].
+///
+/// A row of a list laid out while a row of another list is being laid out,
+/// as a list sized by its rows lays them out in its `request_layout`, is
+/// part of that row, and is not noted.
+pub(crate) fn row_layout_start(window: &mut Window) -> Option<RowLayoutStart> {
+    // Taken before the row is laid out: laying it out may render the rows
+    // of a list in it, which replace it.
+    let rendered = RENDERED_ROW.take();
+    if crate::fast::layout::is_laying_out_list_row(window) {
+        return None;
+    }
     let id = window.fast_layers.painting.as_ref()?.id.clone();
     let frame = window.fast_layers.layers.get(&id)?.rows.frame.as_ref()?;
     if frame.paint.is_some() || frame.open_row.is_some() || frame.layout_keys.is_none() {
         return None;
     }
     let engine = window.layout_engine.as_ref().unwrap();
-    Some((
-        engine.claimed_keys_since(0).len(),
-        reads_len(),
-        crate::fast::dependencies::write_generation_now(),
-    ))
+    Some(RowLayoutStart {
+        keys: engine.claimed_keys_since(0).len(),
+        reads: reads_len(),
+        writes: crate::fast::dependencies::write_generation_now(),
+        states: window.next_frame.accessed_element_states.len(),
+        rendered,
+    })
 }
 
 /// Notes that laying out the row `row`, from `start` (see
-/// [`row_layout_start`]), claimed the layout keys recorded since and read
-/// the entities logged since: they are the row's, whichever row is
-/// prepainted next.
-pub(crate) fn note_row_layout(window: &mut Window, row: usize, start: Option<(usize, usize, u64)>) {
-    let rendered = RENDERED_ROW.take();
-    let Some((start, reads_start, writes_start)) = start else {
+/// [`row_layout_start`]), claimed the layout keys recorded since, read the
+/// entities logged since and used the element states the frame accessed
+/// since: they are the row's, whichever row is prepainted next.
+pub(crate) fn note_row_layout(window: &mut Window, row: usize, start: Option<RowLayoutStart>) {
+    let Some(start) = start else {
         return;
     };
     let end = window
@@ -1439,23 +1509,38 @@ pub(crate) fn note_row_layout(window: &mut Window, row: usize, start: Option<(us
     else {
         return;
     };
+    let Some(frame) = frame_mut(window, &id) else {
+        return;
+    };
+    // What rendering the row, just before, read and used.
+    let rendered = start.rendered.filter(|(rendered, _, _)| *rendered == row);
+    let reads_start = match rendered {
+        Some((_, from, _)) if from >= frame.reads_start => from.min(start.reads),
+        _ => start.reads,
+    };
+    let states_start = match rendered {
+        Some((_, _, from)) if from >= frame.prepaint_start.accessed_element_states_index => {
+            from.min(start.states)
+        }
+        _ => start.states,
+    };
+    let layout = RowLayout {
+        row,
+        keys: start.keys..end,
+        reads: reads_start..reads_len(),
+        writes: (
+            start.writes,
+            crate::fast::dependencies::write_generation_now(),
+        ),
+        states: window
+            .next_frame
+            .accessed_element_states
+            .get(states_start..)
+            .map(<[_]>::to_vec)
+            .unwrap_or_default(),
+    };
     if let Some(frame) = frame_mut(window, &id) {
-        // What rendering the row, just before, read.
-        let reads_start = match rendered {
-            Some((rendered, from)) if rendered == row && from >= frame.reads_start => {
-                from.min(reads_start)
-            }
-            _ => reads_start,
-        };
-        frame.row_layouts.push(RowLayout {
-            row,
-            keys: start..end,
-            reads: reads_start..reads_len(),
-            writes: (
-                writes_start,
-                crate::fast::dependencies::write_generation_now(),
-            ),
-        });
+        frame.row_layouts.push(layout);
     }
 }
 
@@ -2763,7 +2848,7 @@ pub(crate) fn end_paint_rows(window: &mut Window, cx: &mut App, id: Option<&Glob
         let (tile_hashes, reach) = part_tile_hashes(&row_operations, paint::TILE_SIZE);
         let mut scene = Scene::default();
         scene.paint_operations = row_operations;
-        let (prepaint, hitboxes, layout_keys, read, prepaint_writes) =
+        let (prepaint, hitboxes, layout_keys, layout_states, read, prepaint_writes) =
             match row_prepaints.iter_mut().rev().find(|p| p.row == span.row) {
                 Some(prepainted) => {
                     let range = &prepainted.range;
@@ -2781,6 +2866,7 @@ pub(crate) fn end_paint_rows(window: &mut Window, cx: &mut App, id: Option<&Glob
                         range.clone(),
                         hitboxes,
                         mem::take(&mut prepainted.layout_keys),
+                        mem::take(&mut prepainted.layout_states),
                         prepainted.entities.clone(),
                         mem::take(&mut prepainted.writes),
                     )
@@ -2793,6 +2879,7 @@ pub(crate) fn end_paint_rows(window: &mut Window, cx: &mut App, id: Option<&Glob
                     let end = frame.prepaint_range.end.clone();
                     (
                         end.clone()..end,
+                        Vec::new(),
                         Vec::new(),
                         Vec::new(),
                         Rc::from([]),
@@ -2818,7 +2905,8 @@ pub(crate) fn end_paint_rows(window: &mut Window, cx: &mut App, id: Option<&Glob
         let has_states = prepaint.start.accessed_element_states_index
             != prepaint.end.accessed_element_states_index
             || span.paint.start.accessed_element_states_index
-                != span.paint.end.accessed_element_states_index;
+                != span.paint.end.accessed_element_states_index
+            || !layout_states.is_empty();
         rows.rows.insert(
             span.row,
             Row {
@@ -2835,6 +2923,7 @@ pub(crate) fn end_paint_rows(window: &mut Window, cx: &mut App, id: Option<&Glob
                 hovers: span.hovers,
                 has_states,
                 layout_keys,
+                layout_states,
                 dependencies,
                 views,
                 prepaint,

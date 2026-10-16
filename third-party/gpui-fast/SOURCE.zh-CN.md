@@ -73,3 +73,7 @@ Window 可根据原 ClickInputState interruption 创建不可 clone 的 InputGes
 可访问性日志接入既有 prepaint 回滚，action listener 的所有权不被复制；保留的 action 继续携带原物理输入来源的弱引用。上游静默 scroll-to-bottom 优化只用于无回执的旧接口，显式滚动命令仍以真实绘制结算。上游未提供等价行为的输入隔离、焦点揭示、滚动观察和资源清理继续保留。
 
 程序设置 List offset 时仍推进原依赖版本，使未显式 notify 的保留祖先也能看到偏移变化；图层单独将该版本识别为滚动，避免把它算作内容变化。未修补上游也可复现旧偏移残留。保留上游 deferred-view 拼接保护：重建 gap 外存在延迟绘制时重建祖先，防止复用过时视图；本地测试相应断言重建，并继续验证绘制因果顺序、缓存重放及与全量绘制的一致性。
+
+## 列表行保留布局期的元素状态（2026-10-16）
+
+在上游合并前，回移上游拉取请求 [#73](https://github.com/longbridge/gpui-fast/pull/73)（提交 `97bff7005ef4e5971237fcf890262947cff21b46`）。某帧沿用列表滚动图层里的行时，该行在渲染和 `request_layout` 中取得的元素状态现在随行保存，并随其 prepaint 记录一起带入新帧；此前它们在第一次沿用该行的帧结束时被丢弃。gpui-kit 的 `TextView` 把超过 4 KB 的已解析文档存为这种状态，状态新建时在后台重新解析，所以在高于视口的 markdown 行内滚动时，该行会有一帧按空文档的高度布局。在另一列表的行布局期间布局的行（内层 `ListSizingBehavior::Infer` 列表的行）属于那一行，不再记成外层列表的行。改动在 `crates/gpui/src/fast/layers/lists.rs`，另有 `crates/gpui/src/fast/layout.rs` 中的一个访问函数，以及 `crates/gpui/src/fast/tests/layers_lists.rs` 中的六个 `layout_states` 测试。固定版本越过上游合并后，删除本节及改动。
