@@ -142,6 +142,18 @@ request funnel has no public observer-lifetime hook for a call-site fix.
 
 Delete the patch when upstream releases settled request observers despite transport backpressure.
 
+## `@storybook/addon-mcp@0.7.0`
+
+The upstream MCP instructions treat Storybook documentation as an exhaustive
+catalog and prohibit consulting source or type declarations. Maka's catalog is
+incremental, so that advice would incorrectly hide existing components and
+props. The patch keeps Storybook documentation first, states the coverage gap,
+and directs agents to `DESIGN.md` plus Astryx's official API or published types
+for missing documentation without guessing props.
+
+Delete when the addon supports project-owned instructions that can replace its
+default documentation workflow.
+
 ## `@tufjs/models@5.0.0` and `@sigstore/core@4.0.1`
 
 The published ECDSA verification paths rely on Node choosing a digest when
