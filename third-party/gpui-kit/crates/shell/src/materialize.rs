@@ -145,6 +145,10 @@ use gpui_base::{
 mod components;
 mod text_view;
 
+#[cfg(test)]
+pub(crate) use components::spin::take_painted_spin_angles;
+pub(crate) use text_view::ScriptTextStyle;
+
 use crate::{
     capability::is_openable_url,
     engine::ShellRuntime,
@@ -317,6 +321,13 @@ struct Behavior {
     selectable: Option<bool>,
     text_scrollable: Option<bool>,
     on_link_click: Option<CallbackId>,
+    /// What a `TextView`'s `text_style(...)` calls fold onto the style the
+    /// theme gives it. Boxed: it holds several refinements, and this struct
+    /// sits in the frame of a recursive walk.
+    text_style: Option<Box<text_view::ScriptTextStyle>>,
+    /// One full turn of an `svg` every this long. See
+    /// [`components::spin`].
+    spin: Option<Duration>,
 
     /// Whether a `NumberInput` stacks both step buttons to the right of the
     /// text, rather than putting one on each side of it.
@@ -838,6 +849,8 @@ fn materialize_node(
     }
 
     components::tooltip::warn_unhonoured_tooltip(&component, &behavior);
+    components::spin::warn_unhonoured_spin(&component, &behavior);
+    text_view::warn_unhonoured_text_style(&component, &behavior);
     warn_unhonoured_input(&component, &behavior);
 
     match component {
@@ -1079,11 +1092,15 @@ fn materialize_component(
             )
         }
         Component::TextView(spec) => {
+            let mut style = TextViewStyle::from_theme(&Theme::global(cx));
+            if let Some(text_style) = behavior.text_style.as_deref() {
+                style = text_style.fold(style, window.rem_size());
+            }
             let mut view = match spec.format {
                 crate::spec::TextViewFormat::Html => TextView::html(spec.id, spec.text),
                 crate::spec::TextViewFormat::Markdown => TextView::markdown(spec.id, spec.text),
             }
-            .style(TextViewStyle::from_theme(&Theme::global(cx)));
+            .style(style);
             if let Some(selectable) = behavior.selectable {
                 view = view.selectable(selectable);
             }
@@ -1427,7 +1444,12 @@ fn materialize_component(
             let mut image = gpui::svg().path(SharedString::from(path));
             image.style().refine(&refinement);
             image.style().text.color = Some(inherited);
-            image.into_any_element()
+            match behavior.spin {
+                Some(period) => {
+                    components::spin::SpinningSvg::new(image, period).into_any_element()
+                }
+                None => image.into_any_element(),
+            }
         }
         Component::Accordion(id) => {
             components::accordion::accordion(&id, refinement, behavior, children)
@@ -3268,6 +3290,14 @@ fn apply_behavior(behavior: &mut Behavior, name: &str, args: &[Bridged]) {
         }
         "open_delay" => behavior.open_delay = milliseconds(args),
         "close_delay" => behavior.close_delay = milliseconds(args),
+        "spin" => behavior.spin = milliseconds(args).filter(|period| !period.is_zero()),
+        // Each call folds onto the ones before it, in chain order. The pairs
+        // were checked when they were recorded, so a failure here is a host bug.
+        "text_style" => {
+            if let Err(error) = behavior.text_style.get_or_insert_default().apply(args) {
+                tracing::error!("`text_style` failed during materialize: {error}");
+            }
+        }
         _ => tracing::error!("unhandled component method `{name}` reached materialize"),
     }
 }

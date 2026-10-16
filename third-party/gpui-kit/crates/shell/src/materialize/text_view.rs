@@ -23,6 +23,11 @@ use smol::io::AsyncReadExt as _;
 
 use crate::{Capabilities, capability::is_openable_url, policy::Policy};
 
+mod style;
+
+pub(crate) use style::ScriptTextStyle;
+pub(in crate::materialize) use style::warn_unhonoured_text_style;
+
 const MAX_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_REDIRECTS: usize = 10;
 const IMAGE_TIMEOUT: Duration = Duration::from_secs(30);

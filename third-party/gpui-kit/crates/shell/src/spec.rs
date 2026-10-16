@@ -1426,6 +1426,27 @@ impl SpecArena {
                         out.push_str(" :spring(?)");
                     }
                 }
+                SpecOp::Method("spin", args) => match args.as_slice() {
+                    [Bridged::Number(period)] => out.push_str(&format!(" :spin({period}ms)")),
+                    _ => out.push_str(" :spin(?)"),
+                },
+                SpecOp::Method("text_style", args) => {
+                    let pairs: Vec<String> = args
+                        .chunks(2)
+                        .map(|pair| match pair {
+                            // An empty object: its path, with a trailing dot.
+                            [Bridged::Str(key), _] if key.ends_with('.') => {
+                                format!("{}={{}}", key.trim_end_matches('.'))
+                            }
+                            [Bridged::Str(key), Bridged::Number(number)] => {
+                                format!("{key}={number}")
+                            }
+                            [Bridged::Str(key), Bridged::Str(text)] => format!("{key}={text:?}"),
+                            other => format!("{other:?}"),
+                        })
+                        .collect();
+                    out.push_str(&format!(" :text_style({})", pairs.join(", ")));
+                }
                 SpecOp::Method(name, args) => out.push_str(&format!(" :{name}{args:?}")),
                 SpecOp::RegisteredMethod(method) => {
                     out.push_str(&format!(" :{}(registered)", method.name()))

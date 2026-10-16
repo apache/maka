@@ -655,7 +655,7 @@ fn definite_length(value: &Bridged, method: &str) -> ShellResult<DefiniteLength>
     }
 }
 
-fn absolute_length(value: &Bridged, method: &str) -> ShellResult<AbsoluteLength> {
+pub(crate) fn absolute_length(value: &Bridged, method: &str) -> ShellResult<AbsoluteLength> {
     match parse_length(value, method)? {
         LengthLiteral::Absolute(absolute) => Ok(absolute),
         LengthLiteral::Fraction(_) | LengthLiteral::Auto => Err(ShellError::runtime(format!(

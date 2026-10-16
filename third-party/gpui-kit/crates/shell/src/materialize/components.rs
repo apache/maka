@@ -37,6 +37,7 @@ pub(super) mod resizable;
 pub(super) mod scrollbar;
 pub(super) mod select;
 pub(super) mod slider;
+pub(super) mod spin;
 pub(super) mod table;
 pub(super) mod tabs;
 pub(super) mod textarea;

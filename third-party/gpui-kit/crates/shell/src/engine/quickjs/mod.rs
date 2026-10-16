@@ -6000,6 +6000,67 @@ globalThis.__gpui = (() => {
   methods.open_delay = delay("open_delay");
   methods.close_delay = delay("close_delay");
 
+  // One full turn every `period_ms`. The angle is read from a clock when the
+  // icon is painted, so it is not a value the script recomputes, and a render
+  // that rebuilds the icon does not restart it. Honoured on an `svg(...)`.
+  methods.spin = function (period_ms) {
+    period_ms = finitePositive(period_ms, "spin period_ms");
+    if (period_ms > 86400000) {
+      throw new RangeError("spin period_ms must not exceed 86400000 milliseconds");
+    }
+    __apply(this.__id, "spin", [period_ms]);
+    return this;
+  };
+
+  // A bridged argument is a primitive, so the style object crosses as one
+  // "path", value pair per leaf: `{ headings: { 1: { text_size: 18 } } }` is
+  // sent as "headings.1.text_size", 18. An empty object is sent as its path
+  // with a trailing dot, so a misspelt key is refused even with nothing under
+  // it. Key names and values are checked on the Rust side, which knows what
+  // each object accepts; `undefined` is skipped, as an absent key is.
+  methods.text_style = function (style) {
+    if (style === null || typeof style !== "object" || Array.isArray(style)) {
+      throw new TypeError(
+        "text_style(style) expects an object of TextView style fields; got " +
+          (Array.isArray(style) ? "an array" : String(style)),
+      );
+    }
+    if (style.__slot !== undefined) {
+      __apply(this.__id, "text_style", [style]);
+      return this;
+    }
+    const pairs = [];
+    const walk = (object, prefix) => {
+      for (const key of Object.keys(object)) {
+        if (key === "" || key.includes(".")) {
+          throw new TypeError(
+            "text_style: " + JSON.stringify(prefix + key) +
+              " is not a key text_style takes; nest an object instead of writing a dotted name",
+          );
+        }
+        const value = object[key];
+        const path = prefix + key;
+        if (value === undefined) continue;
+        if (typeof value === "function") {
+          throw new TypeError("text_style: `" + path + "` is a function; it takes a value");
+        }
+        if (Array.isArray(value)) {
+          throw new TypeError("text_style: `" + path + "` is an array; it takes a value or an object");
+        }
+        if (value !== null && typeof value === "object" && value.__slot === undefined) {
+          const before = pairs.length;
+          walk(value, path + ".");
+          if (pairs.length === before) pairs.push(path + ".", true);
+        } else {
+          pairs.push(path, value);
+        }
+      }
+    };
+    walk(style, "");
+    __apply(this.__id, "text_style", pairs);
+    return this;
+  };
+
   // Two arguments rather than a range literal, which JavaScript has no spelling
   // for. The floor is required — a panel always has one, and base's own is
   // 100px — while the ceiling is optional, because most panels have none.
@@ -8273,7 +8334,9 @@ impl ShellRuntime {
             | "open_delay"
             | "close_delay"
             | "transition"
-            | "spring" => {
+            | "spring"
+            | "spin"
+            | "text_style" => {
                 let bridged = args.values(method)?;
                 let name = match method {
                     "disabled" => "disabled",
@@ -8328,6 +8391,8 @@ impl ShellRuntime {
                     "close_delay" => "close_delay",
                     "transition" => "transition",
                     "spring" => "spring",
+                    "spin" => "spin",
+                    "text_style" => "text_style",
                     "href" => "href",
                     _ => "accessibility_label",
                 };
@@ -8467,6 +8532,31 @@ impl ShellRuntime {
                         ctx,
                         "tab_index(index) expects a whole number",
                     ));
+                }
+                // The prelude checks the period; this is the check for a call
+                // that reaches `__apply` without it.
+                if name == "spin"
+                    && !matches!(
+                        bridged.as_slice(),
+                        [Bridged::Number(period)] if period.is_finite()
+                            && *period > 0.0
+                            && *period <= 86_400_000.0
+                    )
+                {
+                    return Err(Exception::throw_range(
+                        ctx,
+                        "spin(period_ms) expects a finite positive number of milliseconds, at \
+                         most 86400000",
+                    ));
+                }
+                // Checked here, once, so a misspelt key or a color in the
+                // wrong format is reported at the call site; materialize
+                // applies the same pairs again to the theme's style.
+                if name == "text_style"
+                    && let Err(error) =
+                        crate::materialize::ScriptTextStyle::default().apply(&bridged)
+                {
+                    return Err(Exception::throw_type(ctx, &format!("text_style: {error}")));
                 }
                 if name == "href" {
                     let Some(target) = bridged.first().and_then(|value| value.as_str().ok()) else {

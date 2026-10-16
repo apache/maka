@@ -15,6 +15,10 @@ mod network;
 mod process;
 mod render;
 mod snapshot;
+// Counts frames and scroll-layer work with GPUI-fast's test statistics.
+#[cfg(feature = "gpui-fast")]
+mod spin;
 mod standard_runtime;
 mod structure;
 mod template;
+mod text_style;

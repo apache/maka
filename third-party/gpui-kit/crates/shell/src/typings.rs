@@ -2082,7 +2082,27 @@ const ELEMENTS: &str = r#"
    * application's public directory works. It inherits the surrounding text
    * color unless it sets its own.
    */
-  export function svg(path: string): NativeElement;
+  export function svg(path: string): SvgElement;
+
+  /** What `svg(...)` returns: an element that can also turn. */
+  export interface SvgElement extends NativeElement {
+    /**
+     * Turns the icon about its center, one full turn every `period_ms`
+     * milliseconds, for as long as it is drawn.
+     *
+     * The angle is read from a clock when the icon is painted, not kept per
+     * element, so a render that rebuilds the icon does not restart the turn,
+     * and two icons with the same period turn in step. A spinning icon asks
+     * for the next frame each time it is painted; that frame redraws the view
+     * it is in from its last description and does not call `render` again.
+     * A `list` in that view still calls its item renderer for the rows on
+     * screen on each of those frames, as it does on any redraw of the view.
+     * With reduced motion on, the icon is drawn upright and still.
+     *
+     * `period_ms` must be a finite positive number, at most 86400000.
+     */
+    spin(period_ms: number): this;
+  }
 
   /**
    * A full-color image from the application's own directory.
@@ -2448,6 +2468,92 @@ const BASE: &str = r#"  /** A row. */
     on_link_click(handler: (url: string, cx: Context) => void): this;
     selectable(value?: boolean): this;
     scrollable(value?: boolean): this;
+    /**
+     * Changes how the document is drawn. Every key is optional: a key left
+     * out keeps the value the theme gives, and a key given replaces it.
+     * Several calls fold in order.
+     *
+     * An unknown key, a `null`, or a value of the wrong type throws where
+     * `text_style` is called.
+     */
+    text_style(style: TextViewTextStyle): this;
+  }
+  /** What `TextView.text_style(...)` sets. */
+  export interface TextViewTextStyle {
+    /** Headings, by level, with `default` applied to every level first. */
+    headings?: TextViewHeadings;
+    /** The space between blocks: paragraphs, lists, code blocks, tables. */
+    paragraph_gap?: AbsoluteLength;
+    /** Body text. */
+    foreground?: Color;
+    /** Quotes, list markers and other secondary text. */
+    muted_foreground?: Color;
+    link?: Color;
+    /** The selection highlight. */
+    selection?: Color;
+    /** Rules, quote bars, code block and table borders. */
+    border?: Color;
+    /** The fill behind code blocks. */
+    code_background?: Color;
+    /** The fill behind inline code. */
+    inline_code_background?: Color;
+    /** The font of inline code and code blocks. */
+    code_font_family?: string;
+    /** The text size of inline code and code blocks. */
+    code_font_size?: AbsoluteLength;
+    code_block?: TextViewCodeBlockStyle;
+    /** The header row of a table. */
+    table_head?: TextViewTableHeadStyle;
+    /** Every table cell, header cells included. */
+    table_cell?: TextViewTableCellStyle;
+  }
+  /**
+   * The keys are the style methods of the same name and take the same
+   * values. `line_height` given a bare number is a multiple of the text size,
+   * as `line_height(...)` is.
+   */
+  export interface TextViewHeadingStyle {
+    text_size?: AbsoluteLength;
+    line_height?: DefiniteLength;
+    /** 100 to 900. */
+    font_weight?: number;
+    text_color?: Color;
+  }
+  export interface TextViewHeadings {
+    default?: TextViewHeadingStyle;
+    1?: TextViewHeadingStyle;
+    2?: TextViewHeadingStyle;
+    3?: TextViewHeadingStyle;
+    4?: TextViewHeadingStyle;
+    5?: TextViewHeadingStyle;
+    6?: TextViewHeadingStyle;
+  }
+  /** The keys are the style methods of the same name. */
+  export interface TextViewCodeBlockStyle {
+    bg?: Color;
+    border_color?: Color;
+    rounded?: AbsoluteLength;
+    px?: DefiniteLength;
+    py?: DefiniteLength;
+    text_size?: AbsoluteLength;
+    line_height?: DefiniteLength;
+  }
+  /**
+   * The keys are the style methods of the same name. There is no padding
+   * here: a header cell takes its padding from `table_cell`.
+   */
+  export interface TextViewTableHeadStyle {
+    bg?: Color;
+    text_color?: Color;
+    text_size?: AbsoluteLength;
+    line_height?: DefiniteLength;
+    /** 100 to 900. */
+    font_weight?: number;
+  }
+  /** The keys are the style methods of the same name. */
+  export interface TextViewTableCellStyle extends TextViewTableHeadStyle {
+    px?: DefiniteLength;
+    py?: DefiniteLength;
   }
   export const TextView: {
     html(id: string, html: string): TextViewElement;
@@ -3649,8 +3755,10 @@ const BASE: &str = r#"  /** A row. */
 /// A component is built out of this runtime's vocabulary and returns an
 /// `Element`, so the dependency runs upward only.
 const BASE_IMPORTS: &str = r#"  import {
+    AbsoluteLength,
     Color,
     Context,
+    DefiniteLength,
     Element,
     NativeElement,
     FocusHandle,
@@ -4685,6 +4793,60 @@ mod tests {
         assert!(!element.contains("scrollable("));
         assert!(declarations.contains("export interface TextViewElement extends NativeElement"));
         assert!(declarations.contains("html(id: string, html: string): TextViewElement;"));
+    }
+
+    #[test]
+    fn spin_and_text_style_are_declared_only_where_they_are_honoured() {
+        let declarations = declarations();
+        let element = declarations
+            .split_once("export interface NativeElement")
+            .expect("Element declaration")
+            .1
+            .split_once("\n  }")
+            .expect("end of Element declaration")
+            .0;
+        assert!(!element.contains("spin("));
+        assert!(!element.contains("text_style("));
+        assert!(declarations.contains("export function svg(path: string): SvgElement;"));
+        assert!(declarations.contains("export interface SvgElement extends NativeElement {"));
+        assert!(declarations.contains("    spin(period_ms: number): this;"));
+        assert!(declarations.contains("    text_style(style: TextViewTextStyle): this;"));
+    }
+
+    /// The keys each `text_style` object is declared with are the keys the
+    /// runtime accepts there, no more and no fewer.
+    #[test]
+    fn text_style_declarations_match_the_keys_the_runtime_accepts() {
+        /// The member names of `interface`, its parent's included, sorted.
+        fn members(declarations: &str, interface: &str) -> Vec<String> {
+            let block = declarations
+                .split_once(&format!("export interface {interface} "))
+                .unwrap_or_else(|| panic!("{interface} is declared"))
+                .1;
+            let (head, body) = block.split_once('{').expect("interface body");
+            let body = body.split_once("\n  }").expect("end of interface").0;
+            let mut names: Vec<String> = body
+                .lines()
+                .filter_map(|line| line.trim().split_once("?:"))
+                .map(|(name, _)| name.to_owned())
+                .collect();
+            if let Some(parent) = head.trim().strip_prefix("extends ") {
+                names.extend(members(declarations, parent.trim()));
+            }
+            names.sort();
+            names
+        }
+
+        let declarations = base_declarations();
+        for (interface, accepted) in crate::materialize::ScriptTextStyle::ACCEPTED_KEYS {
+            let mut accepted: Vec<String> = accepted.iter().map(|key| (*key).to_owned()).collect();
+            accepted.sort();
+            assert_eq!(members(&declarations, interface), accepted, "{interface}");
+        }
+        assert_eq!(
+            members(&declarations, "TextViewHeadings"),
+            ["1", "2", "3", "4", "5", "6", "default"]
+        );
     }
 
     #[test]
