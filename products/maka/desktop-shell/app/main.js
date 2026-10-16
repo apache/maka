@@ -102,7 +102,9 @@ export default class MakaDesktop extends View {
     // only reaches the elements on the focus path. So the root holds the
     // focus whenever nothing inside it does: from the start, and after a
     // press on anything that does not take focus itself (GPUI moves focus to
-    // the innermost tracking element under the press).
+    // the innermost tracking element under the press). It is a tab stop so
+    // that when a pressed control goes away with the focus (Settings' close
+    // button, a form's Submit), the window root gives the focus back to it.
     this.rootFocus = cx.focus_handle();
     cx.spawn(async (cx) => followAppearance(cx));
     // Ages in the sidebar and turn footers are in minutes.
@@ -156,12 +158,16 @@ export default class MakaDesktop extends View {
       direction < 0
         ? [this.history.back, this.history.forward]
         : [this.history.forward, this.history.back];
+    const current = this.transcript?.id ?? null;
     while (from.length > 0) {
       const place = from.pop();
+      // A removed task is skipped, and so is the task shown now, which the
+      // skip can bring next to itself (A, X, A with X removed).
+      if (place === current) continue;
       const session =
         place === null ? null : this.catalog.sessions.find((entry) => entry.id === place);
       if (place !== null && session === undefined) continue;
-      to.push(this.transcript?.id ?? null);
+      to.push(current);
       if (session === null) await this.home(false);
       else await this.select(session, false);
       return;
@@ -260,6 +266,7 @@ export default class MakaDesktop extends View {
       .bg(m.canvas)
       .text_color(m.ink)
       .track_focus(this.rootFocus)
+      .tab_stop(true)
       .on_action('maka.new-task', () => this.home())
       .on_action('maka.toggle-sidebar', () => this.toggleSidebar())
       .on_action('maka.back', () => this.go(-1))
