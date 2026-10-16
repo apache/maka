@@ -76,6 +76,14 @@ export interface EventWaitObservationPolicy {
   readonly maxSourceCooldowns: number;
   readonly jitterRatio: number;
 }
+/**
+ * For a promptly responding source that stays pending, ordinary 15–18 second polling
+ * (including jitter) exhausts 10,000 attempts in roughly 42–50 hours. Exhaustion resolves
+ * the wait as source_unavailable with reason observation_budget_exhausted.
+ * This estimate excludes scheduling/I/O delays and shared-source contention or throttling;
+ * notification-triggered reads can exhaust the budget sooner. The seven-day lifetime is
+ * an independent ceiling, not a guarantee of seven days of observation.
+ */
 export const DEFAULT_EVENT_WAIT_OBSERVATION_POLICY: EventWaitObservationPolicy = Object.freeze({
   scanIntervalMs: 1_000,
   pageSize: 64,
