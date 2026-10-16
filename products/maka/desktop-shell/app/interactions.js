@@ -49,6 +49,8 @@ export class Interactions {
     this.records = new Map();
     /** requestId -> the answers chosen so far for a question with several parts. */
     this.drafts = new Map();
+    /** requestId -> why reading it failed; the card offers to read it again. */
+    this.failures = new Map();
     /** The request whose answer is in flight, if any. */
     this.responding = null;
     this.revision = -1;
@@ -72,6 +74,7 @@ export class Interactions {
     const open = new Set(pending.entries.map((entry) => entry.requestId));
     for (const id of [...this.records.keys()]) if (!open.has(id)) this.records.delete(id);
     for (const id of [...this.drafts.keys()]) if (!open.has(id)) this.drafts.delete(id);
+    for (const id of [...this.failures.keys()]) if (!open.has(id)) this.failures.delete(id);
     for (const entry of pending.entries) {
       if (!this.records.has(entry.requestId)) this.read(entry.requestId);
     }
@@ -80,6 +83,7 @@ export class Interactions {
 
   async read(requestId) {
     this.records.set(requestId, null);
+    this.failures.delete(requestId);
     try {
       const record = await query('agent', 'interaction', { sessionId: this.sessionId, requestId });
       if (this.closed || !this.entries.some((entry) => entry.requestId === requestId)) return;
@@ -87,8 +91,19 @@ export class Interactions {
       this.hooks.changed();
     } catch (error) {
       this.records.delete(requestId);
-      if (!this.closed) this.hooks.report(`Request ${requestId}: ${error.message}`);
+      if (this.closed) return;
+      // The pending list may not change while the agent waits, so nothing
+      // else would read it again.
+      this.failures.set(requestId, error.message);
+      this.hooks.report(`Request ${requestId}: ${error.message}`);
+      this.hooks.changed();
     }
+  }
+
+  /** Reads again the requests whose read failed. */
+  retry() {
+    for (const id of [...this.failures.keys()]) this.read(id);
+    this.hooks.changed();
   }
 
   /** The first request that has been read and not answered. */
@@ -152,7 +167,7 @@ export class Interactions {
  */
 export function interactionCard(interactions, cx) {
   const record = interactions.current();
-  if (record === null) return null;
+  if (record === null) return interactions.failures.size > 0 ? failureCard(interactions, cx) : null;
   const theme = cx.theme();
   const busy = interactions.responding !== null;
   const waiting = interactions.entries.length - 1;
@@ -227,16 +242,7 @@ export function interactionCard(interactions, cx) {
       ];
   }
 
-  return v_flex()
-    .flex_none()
-    .mx(theme.spacing.xl)
-    .mt(theme.spacing.md)
-    .p(theme.spacing.md)
-    .gap(theme.spacing.sm)
-    .rounded(theme.radius.lg)
-    .border_1()
-    .border_color(theme.colors.primary)
-    .bg(theme.colors.surface)
+  return frame(cx)
     .child(
       h_flex()
         .gap(theme.spacing.sm)
@@ -257,11 +263,42 @@ export function interactionCard(interactions, cx) {
     );
 }
 
+function failureCard(interactions, cx) {
+  const [reason] = interactions.failures.values();
+  return frame(cx)
+    .child(div().font_weight(600).child('The agent is waiting, but its request could not be read'))
+    .child(detail(reason, cx))
+    .child(
+      h_flex()
+        .justify_end()
+        .child(
+          button('interaction-retry', 'Try again', true, false, cx).on_click(() =>
+            interactions.retry(),
+          ),
+        ),
+    );
+}
+
 function decisions(id, busy, cx, decide) {
   return [
     button(`${id}-deny`, 'Deny', false, busy, cx).on_click(() => decide('deny')),
     button(`${id}-allow`, 'Allow', true, busy, cx).on_click(() => decide('allow')),
   ];
+}
+
+/** The card's box, above the composer. */
+function frame(cx) {
+  const theme = cx.theme();
+  return v_flex()
+    .flex_none()
+    .mx(theme.spacing.xl)
+    .mt(theme.spacing.md)
+    .p(theme.spacing.md)
+    .gap(theme.spacing.sm)
+    .rounded(theme.radius.lg)
+    .border_1()
+    .border_color(theme.colors.primary)
+    .bg(theme.colors.surface);
 }
 
 function capability(target) {

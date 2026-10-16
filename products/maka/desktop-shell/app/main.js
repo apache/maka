@@ -56,6 +56,8 @@ export default class MakaDesktop extends View {
     this.transcript = null;
     /** The directories a session can start in when none is selected (`agent.directories`). */
     this.roots = [];
+    /** Why listing them failed, or null; the start pane offers to try again. */
+    this.rootsError = null;
     this.creating = false;
     this.error = null;
     cx.spawn(async (cx) => this.start(cx));
@@ -99,13 +101,15 @@ export default class MakaDesktop extends View {
   }
 
   async loadRoots() {
+    this.rootsError = null;
     try {
       const page = await query('agent', 'directories', { kind: 'roots' });
       this.roots = page.roots ?? [];
-      this.cx.notify();
     } catch (error) {
+      this.rootsError = error.message;
       this.report(`Directories: ${error.message}`);
     }
+    this.cx.notify();
   }
 
   /**
@@ -197,6 +201,13 @@ export default class MakaDesktop extends View {
           button(`root-${index}`, root.name, false, this.creating, cx)
             .tooltip(root.path)
             .on_click(() => this.newSession(root)),
+        ),
+      )
+      .when(this.rootsError !== null, (el) =>
+        el.child(
+          button('roots-retry', 'List directories again', false, false, cx).on_click(() =>
+            this.loadRoots(),
+          ),
         ),
       );
   }

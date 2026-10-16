@@ -26,6 +26,8 @@ import { query, subscribe, next, close, log } from './host.js';
 
 const LIST = { filter: 'all', position: { kind: 'start' } };
 const RETRY_MS = 2000;
+/** Pages read after the subscribed first one; the Host pages at most 32 sessions in id order. */
+const MAX_PAGES = 32;
 
 export class SessionCatalog {
   /**
@@ -33,8 +35,12 @@ export class SessionCatalog {
    */
   constructor(hooks) {
     this.hooks = hooks;
-    /** The first page of sessions, newest first. Replaced, never edited. */
+    /** Every listed session, newest first. Replaced, never edited. */
     this.sessions = [];
+    /** The subscribed first page, and the pages after it as last read. */
+    this.first = [];
+    this.rest = [];
+    this.reading = 0;
     this.needsYou = 0;
     /** "connecting", "live" or "offline". */
     this.state = 'connecting';
@@ -60,7 +66,8 @@ export class SessionCatalog {
         }
         if (!this.restarting) log('catalog: the Host ended the subscription');
       } catch (error) {
-        this.hooks.report(`Session list: ${error.message}`);
+        // A restart closes the handle under the loop; its next() then fails.
+        if (!this.restarting) this.hooks.report(`Session list: ${error.message}`);
       } finally {
         if (this.handle !== null) await close(this.handle).catch(() => {});
         this.handle = null;
@@ -101,9 +108,49 @@ export class SessionCatalog {
     // The catalog answers after every commit; an unchanged revision is the same page.
     if (page.revision === this.revision && state === this.state) return;
     this.revision = page.revision;
-    this.sessions = [...page.sessions].sort((a, b) => b.updatedAt - a.updatedAt);
+    this.first = page.sessions;
     this.needsYou = page.needsYouCount;
     this.state = state;
+    if (page.after === null) {
+      this.reading += 1;
+      this.rest = [];
+    } else {
+      this.readRest(page);
+    }
+    this.publish();
+  }
+
+  /**
+   * Reads the pages after the first at its revision. Sessions are paged in
+   * id order, so the newest can be on any page. A conflict means the catalog
+   * changed meanwhile; the page that change brings reads them again.
+   */
+  async readRest(page) {
+    const reading = ++this.reading;
+    const rest = [];
+    let after = page.after;
+    try {
+      for (let count = 0; after !== null && count < MAX_PAGES; count += 1) {
+        const next = await query('agent', 'list', {
+          filter: LIST.filter,
+          position: { kind: 'after', revision: page.revision, cursor: after },
+        });
+        if (reading !== this.reading) return;
+        rest.push(...next.sessions);
+        after = next.after;
+      }
+    } catch (error) {
+      if (reading === this.reading) log(`catalog: later pages: ${error.message}`);
+      return;
+    }
+    this.rest = rest;
+    this.publish();
+  }
+
+  publish() {
+    const byId = new Map(this.rest.map((session) => [session.id, session]));
+    for (const session of this.first) byId.set(session.id, session);
+    this.sessions = [...byId.values()].sort((a, b) => b.updatedAt - a.updatedAt);
     log(`catalog: ${this.sessions.length} sessions, ${this.needsYou} need you`);
     this.hooks.changed();
   }
