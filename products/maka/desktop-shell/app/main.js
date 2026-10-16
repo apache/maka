@@ -18,9 +18,9 @@
  */
 
 // The Maka desktop window: sessions on the side, the selected session's
-// transcript, the composer, and a status line. Every Host call goes through
-// `maka-host` (see host.js); MAKA_HOST_ENDPOINT and MAKA_HOST_EPOCH name the
-// Host.
+// transcript, the composer, and a status line; Settings (settings.js) takes
+// the session's place while open. Every Host call goes through `maka-host`
+// (see host.js); MAKA_HOST_ENDPOINT and MAKA_HOST_EPOCH name the Host.
 //
 // An optional `dev.js` beside this file (never committed) can turn on the
 // debug log and drive the window without focus:
@@ -34,6 +34,7 @@ import { SessionCatalog, sidebar } from './sessions.js';
 import { Transcript, transcriptPane } from './transcript.js';
 import { Composer, composerPane, button } from './composer.js';
 import { interactionCard } from './interactions.js';
+import { Settings, settingsPane } from './settings.js';
 
 export default class MakaDesktop extends View {
   init(_props, cx) {
@@ -52,6 +53,8 @@ export default class MakaDesktop extends View {
       },
     });
     this.composer = new Composer(hooks, () => this.transcript);
+    // A model added or chosen in Settings is what the composer sends with next.
+    this.settings = new Settings({ ...hooks, modelsChanged: () => this.composer.loadModel() });
     /** @type {Transcript | null} */
     this.transcript = null;
     /** The directories a session can start in when none is selected (`agent.directories`). */
@@ -90,6 +93,7 @@ export default class MakaDesktop extends View {
 
   /** Switches the transcript; the previous one's watch is closed first. */
   async select(session) {
+    if (this.settings.open) this.settings.hide();
     if (this.transcript?.id === session.id) return;
     const previous = this.transcript;
     const transcript = new Transcript(session, this.hooks);
@@ -167,6 +171,7 @@ export default class MakaDesktop extends View {
           selectedId,
           (session) => this.select(session),
           { enabled: this.transcript !== null && !this.creating, create: () => this.newSession() },
+          { open: this.settings.open, show: () => this.settings.show() },
           cx,
         ),
       )
@@ -175,12 +180,18 @@ export default class MakaDesktop extends View {
           .flex_1()
           .min_w_0()
           .h_full()
-          .when(this.transcript === null, (el) => el.child(this.startPane(cx)))
-          .when(this.transcript !== null, (el) =>
-            el.child(transcriptPane(this.transcript, () => this.transcript?.loadOlder(), cx)),
+          .when(this.settings.open, (el) =>
+            el.child(settingsPane(this.settings, () => this.settings.hide(), cx)),
           )
-          .when(card !== null, (el) => el.child(card))
-          .child(composerPane(this.composer, this.transcript, cx))
+          .when(!this.settings.open, (el) =>
+            el
+              .when(this.transcript === null, (el) => el.child(this.startPane(cx)))
+              .when(this.transcript !== null, (el) =>
+                el.child(transcriptPane(this.transcript, () => this.transcript?.loadOlder(), cx)),
+              )
+              .when(card !== null, (el) => el.child(card))
+              .child(composerPane(this.composer, this.transcript, cx)),
+          )
           .child(this.statusLine(cx)),
       );
   }
@@ -195,6 +206,15 @@ export default class MakaDesktop extends View {
       .justify_center()
       .gap(theme.spacing.md)
       .text_color(theme.colors.muted_foreground)
+      .when(this.composer.loaded && this.composer.model === null, (el) =>
+        el
+          .child('No model is set up yet')
+          .child(
+            button('open-settings', 'Add a model in Settings', true, false, cx).on_click(() =>
+              this.settings.show(),
+            ),
+          ),
+      )
       .child('Select a session, or start one in a directory')
       .children(
         this.roots.map((root, index) =>

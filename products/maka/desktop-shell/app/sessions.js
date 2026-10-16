@@ -167,7 +167,10 @@ export function needsYou(session) {
  * @param {(session: object) => void} select
  * @param {{ enabled: boolean, create: () => void }} create starts a session in the selected one's workspace
  */
-export function sidebar(catalog, selectedId, select, create, cx) {
+/**
+ * @param {{ open: boolean, show: () => void }} settings the Settings button at the bottom
+ */
+export function sidebar(catalog, selectedId, select, create, settings, cx) {
   const theme = cx.theme();
   const summary =
     catalog.needsYou > 0
@@ -217,6 +220,29 @@ export function sidebar(catalog, selectedId, select, create, cx) {
           catalog.sessions.map((session) =>
             sessionRow(session, session.id === selectedId, select, cx),
           ),
+        ),
+    )
+    .child(
+      h_flex()
+        .flex_none()
+        .px(theme.spacing.sm)
+        .py(theme.spacing.sm)
+        .border_t_1()
+        .border_color(theme.colors.border)
+        .child(
+          Button.new('open-settings-sidebar')
+            .w_full()
+            .px(theme.spacing.sm)
+            .py(theme.spacing.xs)
+            .rounded(theme.radius.md)
+            .text_sm()
+            .selected(settings.open)
+            .when(settings.open, (el) =>
+              el.bg(theme.colors.accent).text_color(theme.colors.accent_foreground),
+            )
+            .when(!settings.open, (el) => el.hover((style) => style.bg(theme.colors.muted)))
+            .on_click(() => settings.show())
+            .child('Settings'),
         ),
     );
 }

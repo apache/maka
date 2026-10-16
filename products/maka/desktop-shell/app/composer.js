@@ -42,6 +42,8 @@ export class Composer {
     /** The default model's choice, or the first offered one, for sessions without their own. */
     this.model = null;
     this.modelLabel = 'No model';
+    /** Whether the model list has been read once, so "no model" is known rather than pending. */
+    this.loaded = false;
     /** The first page of `settings.models`, used to name a session's own model. */
     this.choices = [];
     this.sending = false;
@@ -59,12 +61,14 @@ export class Composer {
       this.choices = models.choices;
       const fallback =
         models.defaultModel.kind === 'ready' ? models.defaultModel.choice : models.choices[0];
-      if (!fallback) throw new Error('the Host has no selectable model');
-      this.model = fallback.selection;
-      this.modelLabel = choiceLabel(fallback);
+      this.model = fallback?.selection ?? null;
+      this.modelLabel = fallback ? choiceLabel(fallback) : 'No model';
       log(`composer: default model ${this.modelLabel}`);
+      if (!fallback) throw new Error('no model is set up; add one in Settings');
     } catch (error) {
       this.hooks.report(`Models: ${error.message}`);
+    } finally {
+      this.loaded = true;
     }
     this.hooks.changed();
   }
