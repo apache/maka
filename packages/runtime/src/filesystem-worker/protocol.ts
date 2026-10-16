@@ -26,9 +26,9 @@ import { readContinuationSchema, readPageSchema } from '../read-page.js';
 import { validateSandboxBoundaryExpansion } from '@maka/core/sandbox-boundary';
 import { GREP_MAX_LINES, GREP_MAX_LINES_PER_FILE, GREP_MAX_MATCH_BYTES } from '../grep-search.js';
 
-// v12 adds non-mutating Write/Edit preparation and the guarded execution observation.
-// Older workers must not silently discard the guard on a prepared Write.
-export const FILESYSTEM_WORKER_PROTOCOL_VERSION = 12 as const;
+// v13 adds Write/Edit preparation and guarded execution to v12 chat image reads.
+// Older workers must be rejected rather than silently discard mutation guards.
+export const FILESYSTEM_WORKER_PROTOCOL_VERSION = 13 as const;
 
 /** The single authority on which operation kinds are writes. Shared by the
  * client (permission/identity decisions) and the worker (operation guards) so
@@ -115,6 +115,7 @@ export const FilesystemWorkerOperationSchema = z.union([
       kind: z.literal('read'),
       cwd,
       path,
+      imagePurpose: z.literal('chat').optional(),
       offset: z.number().int().nonnegative().optional(),
       limit: z.number().int().positive().optional(),
       continuation: readContinuationSchema.optional(),
@@ -288,6 +289,8 @@ export const FilesystemWorkerErrorCodeSchema = z.enum([
   'grep_unavailable',
   'sandbox_denied',
   'filesystem_denied',
+  'image_too_large',
+  'invalid_image',
   'filesystem_error',
   // The worker may have applied the mutation before it lost the ability to
   // report back (e.g. it wrote the file then the post-write identity check

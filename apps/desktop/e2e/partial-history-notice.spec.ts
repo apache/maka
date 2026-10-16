@@ -58,25 +58,29 @@ async function wheelToTop(page: Page): Promise<void> {
   await frames(page, 4);
 }
 
-test('a transcript over the history budget loads earlier Turns only on request', async ({
+test('a transcript over the history budget loads earlier Turns on upward reading', async ({
   partialHistoryWindow: page,
 }) => {
   test.setTimeout(90_000);
   await page.setViewportSize({ width: 1_400, height: 800 });
-  const loadEarlier = page.getByRole('button', { name: '载入更早的记录' });
-  const pendingLoad = page.locator('button:disabled', { hasText: '载入更早的记录' });
+  const transcript = page.locator('.maka-chat-message-list');
   const ticks = page.locator(TICK);
+  const loadedTurnCount = async (): Promise<number> =>
+    Number(await transcript.getAttribute('data-turn-source-count'));
 
   await expect(page.locator(`[data-turn-id="turn-partial-history-${PARTIAL_HISTORY_TURN_COUNT}"]`)).toBeVisible();
   // The Host Turn index lists the whole Session before its history is loaded.
   await expect(ticks).toHaveCount(PARTIAL_HISTORY_TURN_COUNT);
-  await expect(loadEarlier).toHaveCount(1);
+  let loadedTurns = await loadedTurnCount();
+  expect(loadedTurns).toBeLessThan(PARTIAL_HISTORY_TURN_COUNT);
+  await frames(page, 4);
+  expect(await loadedTurnCount()).toBe(loadedTurns);
 
   let loads = 0;
-  while ((await loadEarlier.count()) > 0) {
+  while (loadedTurns < PARTIAL_HISTORY_TURN_COUNT) {
     await wheelToTop(page);
-    await loadEarlier.click();
-    await expect(pendingLoad).toHaveCount(0, { timeout: 30_000 });
+    await expect.poll(loadedTurnCount, { timeout: 30_000 }).toBeGreaterThan(loadedTurns);
+    loadedTurns = await loadedTurnCount();
     loads += 1;
     expect(loads).toBeLessThan(PARTIAL_HISTORY_TURN_COUNT);
   }

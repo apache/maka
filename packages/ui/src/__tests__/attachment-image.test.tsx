@@ -72,9 +72,11 @@ async function renderAttachmentMarkdown(text: string, readBytes: ReadAttachmentB
   const { container, root } = domRoot();
   await act(async () => {
     root.render(
-      <SessionAttachmentProvider sessionId="session-1" readBytes={readBytes}>
+      <LocaleProvider locale="en">
+        <SessionAttachmentProvider sessionId="session-1" readBytes={readBytes}>
         <MarkdownBody text={text} />
-      </SessionAttachmentProvider>,
+      </SessionAttachmentProvider>
+      </LocaleProvider>,
     );
   });
   return { container, root };
@@ -169,7 +171,7 @@ test('renders a session attachment referenced by assistant Markdown', async () =
   assert.deepEqual(readRef, { sessionId: 'session-1', artifactId: 'attachment-123' });
 });
 
-test('keeps unreadable assistant attachments as named placeholders', async () => {
+test('explains unreadable assistant attachments and offers retry', async () => {
   const cases: Array<[string, ReadAttachmentBytes]> = [
     ['missing', async () => ({ ok: false, reason: 'not_found' })],
     ['document', async () => ({ ok: true, base64: 'cGRm', mimeType: 'application/pdf' })],
@@ -188,7 +190,9 @@ test('keeps unreadable assistant attachments as named placeholders', async () =>
       readBytes,
     );
     assert.equal(container.querySelector('img'), null);
-    assert.ok(container.textContent.includes(`[${name}]`));
+    assert.ok(container.textContent.includes(name));
+    assert.ok(container.textContent.includes("Could not load the image"));
+    assert.equal(container.querySelector("button")?.textContent, "Retry");
   }
 });
 
@@ -218,14 +222,10 @@ test('retries an attachment image after a transient read failure', async () => {
       ? { ok: false, reason: 'read_failed' }
       : { ok: true, base64: 'cmVjb3ZlcmVk', mimeType: 'image/png' };
   };
-  const { container, root } = await renderAttachmentMarkdown(markdown, readBytes);
+  const { container } = await renderAttachmentMarkdown(markdown, readBytes);
   assert.equal(container.querySelector('img'), null);
   await act(async () => {
-    root.render(
-      <SessionAttachmentProvider sessionId="session-1" readBytes={readBytes}>
-        <MarkdownBody key="retry" text={markdown} />
-      </SessionAttachmentProvider>,
-    );
+    container.querySelector('button')!.click();
   });
 
   const image = container.querySelector('img[alt="preview"]');
@@ -244,22 +244,26 @@ test('renders an attachment when a streaming Markdown image becomes complete', a
   });
   await act(async () => {
     root.render(
-      <SessionAttachmentProvider sessionId="session-1" readBytes={readBytes}>
+      <LocaleProvider locale="en">
+        <SessionAttachmentProvider sessionId="session-1" readBytes={readBytes}>
         <MarkdownBody
           text="![preview](maka://runtime/attachments/attachment-"
           streaming
           settledText=""
         />
-      </SessionAttachmentProvider>,
+      </SessionAttachmentProvider>
+      </LocaleProvider>,
     );
   });
   assert.equal(container.querySelector('img'), null);
 
   await act(async () => {
     root.render(
-      <SessionAttachmentProvider sessionId="session-1" readBytes={readBytes}>
+      <LocaleProvider locale="en">
+        <SessionAttachmentProvider sessionId="session-1" readBytes={readBytes}>
         <MarkdownBody text={markdown} streaming settledText={markdown} />
-      </SessionAttachmentProvider>,
+      </SessionAttachmentProvider>
+      </LocaleProvider>,
     );
   });
 

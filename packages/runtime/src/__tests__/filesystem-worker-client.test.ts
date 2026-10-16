@@ -688,6 +688,33 @@ describe('filesystem worker operation-scoped Seatbelt profile', () => {
     );
   });
 
+  test('rejects the upstream v12 worker before accepting a response', async () => {
+    const workspace = await temporaryDirectory('maka-worker-client-old-protocol-');
+    const target = join(workspace, 'file.ts');
+    await writeFile(target, 'const value = 1;', 'utf8');
+    const { client, requests } = fakeClient({ responseVersion: 12 });
+
+    await assert.rejects(
+      client.execute({
+        operation: grepOperation(target),
+        cwd: workspace,
+        mode: 'ask',
+        expectedIdentity: 'unchecked',
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof FilesystemWorkerClientError);
+        assert.equal(error.reason, 'invalid_response');
+        assert.equal(error.stage, 'protocol');
+        return true;
+      },
+    );
+    assert.equal(requests.length, 1);
+    assert.equal(
+      FilesystemWorkerRequestSchema.safeParse({ ...requests[0], version: 12 }).success,
+      false,
+    );
+  });
+
   test('preserves an explicit sandbox denial from the worker protocol', async () => {
     const workspace = await temporaryDirectory('maka-worker-client-sandbox-denial-');
     const target = join(workspace, 'file.ts');
@@ -854,6 +881,7 @@ describe('filesystem worker Linux path context', () => {
 function fakeClient(
   options: {
     operationErrorCode?: FilesystemWorkerErrorCode;
+    responseVersion?: number;
     platform?: SandboxPlatform;
     beforeLaunchSpecReturn?: () => void;
   } = {},
@@ -906,7 +934,7 @@ function fakeClient(
         stdout: JSON.stringify(
           options.operationErrorCode
             ? {
-                version: FILESYSTEM_WORKER_PROTOCOL_VERSION,
+                version: options.responseVersion ?? FILESYSTEM_WORKER_PROTOCOL_VERSION,
                 requestId: request.requestId,
                 ok: false,
                 error: {
@@ -915,7 +943,7 @@ function fakeClient(
                 },
               }
             : {
-                version: FILESYSTEM_WORKER_PROTOCOL_VERSION,
+                version: options.responseVersion ?? FILESYSTEM_WORKER_PROTOCOL_VERSION,
                 requestId: request.requestId,
                 ok: true,
                 result: fakeResult(request),

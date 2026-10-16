@@ -47,7 +47,7 @@
     },
     "session-workbar.spec.ts": {
       "tests": 5,
-      "electron": "Git changes re-read on native window focus; native PTY ownership survives Session navigation and renderer replacement, while Stop/exit cross preload/main into the terminal view; Side Chat owns a Host fork lifecycle; first send reaches the Host; the composer usage entry opens a workbar whose per-Session visibility survives renderer reload."
+      "electron": "Git changes re-read on native window focus; native PTY ownership survives Session navigation and renderer replacement, while Stop/exit cross preload/main into the terminal view; Side Chat owns a Host fork lifecycle; first send reaches the Host; the Trace launcher opens a workbar whose per-Session visibility survives renderer reload."
     },
     "settings.spec.ts": {
       "tests": 2,

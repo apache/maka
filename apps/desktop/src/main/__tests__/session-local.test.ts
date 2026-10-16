@@ -47,6 +47,8 @@ import { createAttachmentApprovalRegistry } from '../attachment-approval.js';
 import { parseDesktopSlashCommand } from '../../renderer/application/contracts/desktop-slash-command.js';
 import { projectLocalMessageDraft } from '../../preload/session-local-draft.js';
 import type { DesktopLocalMessageDraft } from '../../shared/session-local-contract.js';
+import { createRuntimeHostSessionCatalogRefresher, resolveRuntimeHostSessionCatalog } from '../../preload/runtime-host-session-catalog.js';
+import type { DesktopSessionSummary } from '../../preload/bridge-contract.js';
 
 const accepted: TurnMessageSubmitResult = {
   disposition: 'turn_started',
@@ -134,6 +136,43 @@ async function waitFor(predicate: () => boolean): Promise<void> {
   }
   assert.fail('Local state did not settle');
 }
+
+test('a pending Owner catalog refresh cannot erase a newly admitted fork', async (t) => {
+  const db = await database(t);
+  const pending = deferred<SessionCatalogProjection[]>();
+  let reads = 0;
+  const target: DesktopSessionLocalTarget = {
+    partition: 'authority', profileId: 'profile', scope: { hostId: 'root-host', targetEpoch: 'target' },
+    client: { ...client('epoch'), listSessions: () => ++reads === 1 ? Promise.resolve([swarmCatalogSession()]) : pending.promise },
+  };
+  const service = new DesktopSessionLocalService(db.store, {
+    targets: () => [target], changed() {}, onError: (error) => assert.fail(String(error)),
+  });
+  db.beforeClose.push(() => service.close());
+  service.catalog();
+  await waitFor(() => db.store.sessions('authority').length === 1);
+  let current = { sessions: [] as DesktopSessionSummary[], completeHostIds: [] as string[] };
+  const refresher = createRuntimeHostSessionCatalogRefresher({
+    currentCatalog: () => current,
+    commitCatalog: (catalog) => { current = catalog; },
+    listCatalog: () => {
+      const [catalog] = service.catalog();
+      return resolveRuntimeHostSessionCatalog(current.sessions, Promise.resolve({
+        sessions: catalog!.sessions.map((summary) => ({ ...summary, runtimeHostId: 'root-host', profileId: 'profile' }) as DesktopSessionSummary),
+        completeHostIds: catalog!.authoritative ? ['root-host'] : [],
+      }), () => ['profile'], Promise.resolve([]));
+    },
+  });
+  await refresher.refresh();
+  const fork = { ...swarmCatalogSession(), id: 'fork' };
+  refresher.admit({ ...fork, runtimeHostId: 'root-host', profileId: 'profile' } as unknown as DesktopSessionSummary);
+  service.changed(target.scope);
+  assert.deepEqual((await refresher.refresh()).sessions.map(({ id }) => id).sort(), ['fork', 'root']);
+  pending.resolve([swarmCatalogSession(), fork]);
+  await waitFor(() => db.store.sessions('authority').length === 2);
+  assert.equal(service.catalog()[0]?.authoritative, true);
+  assert.deepEqual((await refresher.refresh()).sessions.map(({ id }) => id).sort(), ['fork', 'root']);
+});
 
 test('local acceptance survives restart with attachment bytes and an immutable dispatch epoch', async (t) => {
   const db = await database(t);
@@ -446,12 +485,12 @@ for (const staleResult of ['running', 'removed', 'failed'] as const) {
     await waitFor(() => db.store.sessions('authority').length === 1);
     await nextTurn();
     service.changed(target.scope);
-    assert.equal(service.catalog()[0]?.authoritative, true);
+    assert.equal(service.catalog()[0]?.authoritative, false);
     assert.equal(service.catalog()[0]?.sessions[0]?.backgroundActivity, 'running');
     assert.equal(reads, 2);
     const revision = db.store.revision;
 
-    // Further Host changes dirty the observation without revoking its authority.
+    // Further Host changes retain observed activity without proving absence.
     service.changed(target.scope);
     service.changed(target.scope);
     service.catalog();
@@ -469,7 +508,7 @@ for (const staleResult of ['running', 'removed', 'failed'] as const) {
       assert.equal(service.catalog()[0]?.sessions[0]?.backgroundActivity, undefined);
     } else {
       assert.ok(db.store.revision > revision, 'successful dirty reads must make progress');
-      assert.equal(service.catalog()[0]?.authoritative, true);
+      assert.equal(service.catalog()[0]?.authoritative, false);
       assert.equal(db.store.sessions('authority').length, staleResult === 'removed' ? 0 : 1);
     }
     current.resolve([swarmCatalogSession('idle')]);
@@ -511,7 +550,7 @@ test('continuous Owner invalidations cannot starve successful catalog observatio
     pending[index]!.resolve([swarmCatalogSession(activity)]);
     await waitFor(() => pending.length === index + 2);
     const catalog = service.catalog()[0]!;
-    assert.equal(catalog.authoritative, true, 'publish before notifications become quiet');
+    assert.equal(catalog.authoritative, false, 'a dirty observation cannot prove Session absence');
     assert.equal(catalog.sessions[0]?.backgroundActivity, activity);
     assert.equal(notifications, index + 1);
   }
@@ -545,7 +584,7 @@ test('a queued Owner refresh clears stale activity as soon as a slot is free wit
   })).concat(third);
   service.changed(third.scope);
   const queued = service.catalog()[2]!;
-  assert.equal(queued.authoritative, true);
+  assert.equal(queued.authoritative, false);
   assert.equal(queued.sessions[0]?.backgroundActivity, 'running');
   assert.equal(reads, 1, 'the third partition must wait for a slot');
   first.resolve([]);
@@ -644,7 +683,7 @@ test('continuous fast Owner invalidations cannot fence a slower partition catalo
     reads.get('slow')![index + 1]!.resolve([swarmCatalogSession(activity)]);
     await waitFor(() => reads.get('slow')!.length === index + 3);
     const catalog = service.catalog()[0]!;
-    assert.equal(catalog.authoritative, true);
+    assert.equal(catalog.authoritative, false);
     assert.equal(catalog.sessions[0]?.backgroundActivity, activity,
       'a successful slow observation must publish while another authority remains busy');
   }

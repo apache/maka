@@ -699,6 +699,26 @@ describe('composer first-send cleanup', () => {
     assert.equal(await actions.refreshMessages('session', { requiredAssistantMessageId: 'answer' }), true);
   });
 
+  it('a parked reader settles only after durable proof without publishing the unseen tail', async () => {
+    const catalog = createSessionCatalogController();
+    const workspace = createConversationWorkspace(catalog, stubConversationServices().observation);
+    workspace.commands.setActiveId('session');
+    let durable = false;
+    const controller = {
+      ready: async () => {},
+      waitForDurableMessage: async () => durable,
+      store: {
+        snapshot: () => ({ sessionId: 'session', messages: [], hasNewer: true }),
+        hasDurableMessage: () => false,
+      },
+    } as unknown as DesktopTranscriptRangeController;
+    workspace.transcriptRangeRef.current = controller;
+    const actions = createTranscriptCommands(workspace, { current: { locale: 'en', toast: { error: () => '' } } });
+    assert.equal(await actions.refreshMessages('session', { requiredAssistantMessageId: 'answer' }), false);
+    durable = true;
+    assert.equal(await actions.refreshMessages('session', { requiredAssistantMessageId: 'answer' }), true);
+  });
+
   it('an in-flight refresh reads publication that commits after the call began', async () => {
     const catalog = createSessionCatalogController();
     const workspace = createConversationWorkspace(catalog, stubConversationServices().observation);

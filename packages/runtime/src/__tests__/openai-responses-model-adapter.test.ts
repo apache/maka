@@ -84,7 +84,7 @@ describe('OpenAI Responses ModelAdapter continuation', () => {
       if (event.kind === 'text') text += event.text;
     }
 
-    assert.deepEqual(requestBody?.reasoning, { effort: 'medium', summary: 'auto' });
+    assert.deepEqual(requestBody?.reasoning, { summary: 'auto' });
     assert.equal(thinking, summary);
     assert.equal(text, answer);
   });

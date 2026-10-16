@@ -55,7 +55,7 @@ import {
   StableWriteFailure,
   writeThroughHandle,
 } from '../file-stable-write.js';
-import { readWorkspaceFile } from '../image-file.js';
+import { ImageFileError, readWorkspaceFile } from '../image-file.js';
 import {
   FILESYSTEM_WORKER_PROTOCOL_VERSION,
   operationAccess,
@@ -152,9 +152,11 @@ export async function executeFilesystemOperation(
         'read',
         operationBoundary,
       );
-      const file = await readWorkspaceFile(path).catch((error: unknown) => {
+      const file = await readWorkspaceFile(path, {
+        ...(operation.imagePurpose ? { imagePurpose: operation.imagePurpose } : {}),
+      }).catch((error: unknown) => {
         throw operationError(
-          'filesystem_error',
+          normalizeOperationError(error).code,
           error instanceof Error ? error.message : 'File could not be read.',
         );
       });
@@ -476,6 +478,11 @@ function operationError(
 
 function normalizeOperationError(error: unknown): FilesystemOperationError {
   if (error instanceof FilesystemOperationError) return error;
+  if (error instanceof ImageFileError)
+    return operationError(
+      error.code === 'ERR_IMAGE_TOO_LARGE' ? 'image_too_large' : 'invalid_image',
+      error.message,
+    );
   if (error instanceof StableWriteFailure) {
     return operationError(error.code, error.message);
   }

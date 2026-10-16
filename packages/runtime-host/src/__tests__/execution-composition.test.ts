@@ -21,6 +21,9 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
+import net from 'node:net';
+import dns from 'node:dns/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
 import {
   TOOL_BOUNDARY_PROTOCOL_V1,
@@ -41,6 +44,7 @@ import { runtimeHandoffPause } from '@maka/core/runtime-handoff';
 import { deferred } from '@maka/core/test-only/async-primitives';
 import { runtimeInvocationFailureClass } from '@maka/runtime/runtime-event-read-model';
 import { parseNoRealConnectionError } from '@maka/core/connection-error-copy';
+import { PluginAgentService, type PluginAgentRuntime } from '@maka/runtime/plugin-agent-service';
 import { createRequire } from 'node:module';
 import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -125,6 +129,199 @@ const HANDOFF_TEST_COMPOSITION = createRunCompositionSnapshot({
   baseProviderOptionsHash: `sha256:${'0'.repeat(64)}`,
   toolNames: [],
   contextWindow: null,
+});
+
+test('Plugin Agent background messages cannot race Root Turn startup recovery', async (t) => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    let runtime!: PluginAgentRuntime;
+    let earlyAttempt!: Promise<void>;
+    const bind = PluginAgentService.prototype.bindRuntime;
+    const initiator = {
+      sessionId: randomUUID(),
+      turnId: randomUUID(),
+      cwd: root,
+      abortSignal: new AbortController().signal,
+    };
+    t.mock.method(
+      PluginAgentService.prototype,
+      'bindRuntime',
+      function (this: PluginAgentService, bound: PluginAgentRuntime) {
+        runtime = bound;
+        // Activation callbacks run while the persisted admission tip is not yet loaded.
+        earlyAttempt = assert.rejects(
+          bound.followup(initiator.sessionId, 'continue unfinished index', initiator),
+          /not ready for Plugin Agent messages/,
+        );
+        return bind.call(this, bound);
+      },
+    );
+    const { composition } = await createCapturedExecutionComposition(owner);
+    try {
+      await earlyAttempt;
+      // After recovery, normal ownership validation is reachable again.
+      await assert.rejects(
+        runtime.followup(initiator.sessionId, 'continue unfinished index', initiator),
+        /outside the current ownership tree/,
+      );
+      composition.beginDrain();
+      await assert.rejects(
+        runtime.followup(initiator.sessionId, 'continue unfinished index', initiator),
+        /not ready for Plugin Agent messages/,
+      );
+    } finally {
+      await composition.close();
+    }
+  });
+});
+
+test('assistant master switch gates real Host execution and stops only assistant sessions', {
+  timeout: 20000,
+}, async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const sent = new Set<string>();
+    const { composition, manager } = await createCapturedExecutionComposition(owner, {
+      primaryBackendFactory: (context) =>
+        new (class extends FakeBackend {
+          override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+            sent.add(context.sessionId);
+            yield* super.send({ ...input, text: FAKE_HOLD_OPEN_PROMPT });
+          }
+        })(context),
+    });
+    const residencies = new HostResidencyRegistry();
+    const caller: ConnectionContext = {
+      hostEpoch: 'execution-composition-test',
+      connectionId: 'client',
+      principal: 'local_os_user',
+      acquireResidency: () => residencies.acquire('assistant-test'),
+    };
+    const call = async (
+      method: 'assistant.enablement' | 'assistant.set-enabled',
+      input: unknown = {},
+    ) => {
+      const result = await composition.handlers['personal-assistant.call'](
+        { method, input },
+        caller,
+      );
+      assert.equal(result.ok, true, JSON.stringify(result));
+      return result.ok ? result.result.value : undefined;
+    };
+    try {
+      assert.deepEqual(await call('assistant.enablement'), { enabled: false });
+      const create = (labels: string[]) =>
+        manager.createSession({
+          cwd: root,
+          llmConnectionId: FAKE_CONNECTION_ID,
+          llmConnectionSlug: 'fake',
+          model: 'fake-model',
+          permissionMode: 'ask',
+          labels,
+        });
+      const ordinary = await create([]);
+      const assistant = await create(['personal-assistant']);
+      const worker = await create(['personal-assistant-background']);
+      const start = (sessionId: string) =>
+        composition.handlers['turn.start'](
+          {
+            sessionId,
+            turnId: randomUUID(),
+            content: { text: 'keep working' },
+          },
+          caller,
+        );
+      for (const sessionId of [assistant.id, worker.id]) {
+        const result = await start(sessionId);
+        assert.equal(result.ok, false, JSON.stringify(result));
+        assert.match(JSON.stringify(result), /disabled/);
+      }
+      assert.equal(sent.size, 0, 'disabled sessions never reach the backend');
+      await start(ordinary.id);
+      await pollFor(() => sent.has(ordinary.id));
+      await call('assistant.set-enabled', { enabled: true });
+      await start(assistant.id);
+      await start(worker.id);
+      await pollFor(() => sent.has(assistant.id) && sent.has(worker.id));
+      await call('assistant.set-enabled', { enabled: false });
+      const sessions = await manager.listSessions();
+      assert.ok(!sessions.find((s) => s.id === assistant.id)?.runningTurnIds?.length);
+      assert.ok(!sessions.find((s) => s.id === worker.id)?.runningTurnIds?.length);
+      assert.ok(
+        sessions.find((s) => s.id === ordinary.id)?.runningTurnIds?.length,
+        'ordinary chat is not stopped',
+      );
+      const before = sent.size;
+      const disabledStart = await start(assistant.id).catch((error) => ({ error: String(error) }));
+      assert.ok('error' in disabledStart || !disabledStart.ok, JSON.stringify(disabledStart));
+      assert.equal(sent.size, before);
+      assert.deepEqual(await call('assistant.enablement'), { enabled: false });
+    } finally {
+      await composition.close();
+    }
+  });
+});
+
+test('Plugin Agent snapshot exposes pending interaction without losing ownership or inherited model settings', async (t) => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    let runtime!: PluginAgentRuntime;
+    const bind = PluginAgentService.prototype.bindRuntime;
+    t.mock.method(
+      PluginAgentService.prototype,
+      'bindRuntime',
+      function (this: PluginAgentService, bound: PluginAgentRuntime) {
+        runtime = bound;
+        return bind.call(this, bound);
+      },
+    );
+    const { composition, manager } = await createCapturedExecutionComposition(owner);
+    try {
+      const parent = await manager.createSession({
+        cwd: root,
+        llmConnectionId: FAKE_CONNECTION_ID,
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'ask',
+        thinkingLevel: 'medium',
+      });
+      const invocation = {
+        sessionId: parent.id,
+        turnId: randomUUID(),
+        cwd: root,
+        abortSignal: new AbortController().signal,
+      };
+      const child = await runtime.create(
+        { background: true, name: 'Awaiting input', labels: ['plugin-recovery:example'] },
+        invocation,
+      );
+      const sessions = await manager.listSessions();
+      const header = sessions.find((s) => s.id === child.sessionId)!;
+      assert.deepEqual(header.labels, ['plugin-recovery:example']);
+      assert.equal(header.name, 'Awaiting input');
+      assert.equal(header.model, parent.model);
+      assert.equal(header.permissionMode, parent.permissionMode);
+      assert.equal(header.thinkingLevel, parent.thinkingLevel);
+      await runtime.followup(child.sessionId, FAKE_ASK_USER_QUESTION_PROMPT, invocation);
+      await waitFor(
+        async () =>
+          ((await runtime.snapshot(child.sessionId, invocation)) as any).agent.status ===
+          'waiting_for_user',
+        5000,
+      );
+      const snapshot = (await runtime.snapshot(child.sessionId, invocation)) as any;
+      assert.ok(snapshot.pendingInteractions > 0);
+      await assert.rejects(
+        runtime.snapshot(child.sessionId, { ...invocation, sessionId: randomUUID() }),
+        /not found/,
+      );
+      await runtime.cancel(child.sessionId, invocation);
+      await waitFor(
+        async () =>
+          ((await runtime.snapshot(child.sessionId, invocation)) as any).pendingInteractions === 0,
+        5000,
+      );
+    } finally {
+      await composition.close();
+    }
+  });
 });
 
 test('production Host recovery starts with a dispatched tool whose outcome is unknown', async () => {
@@ -4629,3 +4826,311 @@ async function actWorkHub(
     await desktop.close();
   }
 }
+
+test('production Host automatically archives assistant Markdown images and serves them after source deletion', async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const source = join(root, 'delivery.png');
+    const png = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==',
+      'base64',
+    );
+    await writeFile(source, png);
+    const captured = await createCapturedExecutionComposition(owner, {
+      primaryBackendFactory: (context) =>
+        new (class extends FakeBackend {
+          override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+            yield {
+              type: 'text_complete',
+              id: 'delivery-text-event',
+              turnId: input.turnId,
+              ts: Date.now(),
+              messageId: 'delivered-message',
+              text: `![Screenshot](<${source}>)`,
+            };
+            yield {
+              type: 'complete',
+              id: 'delivery-complete-event',
+              turnId: input.turnId,
+              ts: Date.now(),
+              stopReason: 'end_turn',
+            };
+          }
+        })(context),
+      context: {
+        retainUntilProcessExit: () => undefined,
+        requestDrain: () => assert.fail('image delivery must not drain Host'),
+      },
+    });
+    try {
+      const session = await captured.manager.createSession({
+        cwd: root,
+        llmConnectionId: FAKE_CONNECTION_ID,
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'bypass',
+      });
+      const context = {
+        hostEpoch: 'execution-composition-test',
+        connectionId: 'image-client',
+        principal: 'local_os_user',
+        acquireResidency: () => ({ release() {} }),
+      };
+      const started = await captured.composition.handlers['turn.start'](
+        {
+          sessionId: session.id,
+          turnId: 'image-delivery-turn',
+          content: { text: 'deliver screenshot' },
+        },
+        context,
+      );
+      assert.equal(started.ok, true, JSON.stringify(started));
+      const request = {
+        sessionId: session.id,
+        turnId: 'image-delivery-turn',
+        messageId: 'delivered-message',
+        source,
+      };
+      let artifactId: string | undefined;
+      await waitFor(async () => {
+        const result = await captured.composition.handlers['artifact.image.resolve'](
+          request,
+          context,
+        );
+        assert.equal(result.ok, true, JSON.stringify(result));
+        if (result.ok && result.result.status === 'ready') artifactId = result.result.artifactId;
+        return !!artifactId;
+      }, 5000);
+      await rm(source);
+      const replay = await captured.composition.handlers['artifact.image.resolve'](
+        request,
+        context,
+      );
+      assert.deepEqual(replay, { ok: true, result: { status: 'ready', artifactId } });
+      const binary = await captured.composition.handlers['artifact.query'](
+        { sessionId: session.id, kind: 'read_binary', artifactId: artifactId! },
+        context,
+      );
+      assert.equal(binary.ok, true, JSON.stringify(binary));
+      if (binary.ok && binary.result.kind === 'binary' && binary.result.preview.ok)
+        assert.equal(binary.result.preview.base64, png.toString('base64'));
+      const forged = await captured.composition.handlers['artifact.image.resolve'](
+        { ...request, source: '/tmp/private.png' },
+        context,
+      );
+      assert.deepEqual(forged, { ok: true, result: { status: 'unavailable' } });
+    } finally {
+      captured.composition.beginDrain();
+      await captured.composition.close();
+    }
+  });
+});
+
+test('production Host rejects loopback image destinations even when a restricted-session client permits media loading', async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    let requests = 0;
+    const server = createServer((_request, response) => {
+      requests++;
+      response.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const source = `http://127.0.0.1:${(server.address() as import('node:net').AddressInfo).port}/secret.png`;
+    const captured = await createCapturedExecutionComposition(owner, {
+      primaryBackendFactory: (context) =>
+        new (class extends FakeBackend {
+          override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+            yield {
+              type: 'text_complete',
+              id: `text-${input.turnId}`,
+              turnId: input.turnId,
+              ts: Date.now(),
+              messageId: `message-${input.turnId}`,
+              text: `![](${source})`,
+            };
+            yield {
+              type: 'complete',
+              id: `complete-${input.turnId}`,
+              turnId: input.turnId,
+              ts: Date.now(),
+              stopReason: 'end_turn',
+            };
+          }
+        })(context),
+      context: {
+        retainUntilProcessExit: () => undefined,
+        requestDrain: () => assert.fail('remote images must not drain Host'),
+      },
+    });
+    try {
+      for (const permissionMode of ['explore', 'ask'] as const) {
+        const session = await captured.manager.createSession({
+          cwd: root,
+          llmConnectionId: FAKE_CONNECTION_ID,
+          llmConnectionSlug: 'fake',
+          model: 'fake-model',
+          permissionMode,
+        });
+        const context = {
+          hostEpoch: 'execution-composition-test',
+          connectionId: 'image-client',
+          principal: 'local_os_user',
+          acquireResidency: () => ({ release() {} }),
+        };
+        const turnId = `remote-${permissionMode}`;
+        assert.equal(
+          (
+            await captured.composition.handlers['turn.start'](
+              { sessionId: session.id, turnId, content: { text: 'deliver image' } },
+              context,
+            )
+          ).ok,
+          true,
+        );
+        const request = {
+          sessionId: session.id,
+          turnId,
+          messageId: `message-${turnId}`,
+          source,
+          loadRemote: true,
+        };
+        await waitFor(async () => {
+          const result = await captured.composition.handlers['artifact.image.resolve'](
+            request,
+            context,
+          );
+          return (
+            result.ok && result.result.status === 'failed' && result.result.reason === 'not_allowed'
+          );
+        }, 5000);
+        assert.deepEqual(
+          await captured.composition.handlers['artifact.image.resolve'](
+            { ...request, loadRemote: true },
+            context,
+          ),
+          { ok: true, result: { status: 'failed', reason: 'not_allowed' } },
+        );
+      }
+      assert.equal(requests, 0);
+    } finally {
+      captured.composition.beginDrain();
+      await captured.composition.close();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+});
+
+test('production Host loads visible remote media independently of agent sandbox networking and respects app privacy', async (t) => {
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==',
+    'base64',
+  );
+  let requests = 0;
+  const server = createServer((_request, response) => {
+    requests++;
+    response.end(png);
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const origin = `http://127.0.0.1:${(server.address() as import('node:net').AddressInfo).port}`;
+  const realConnect = net.connect;
+  t.mock.method(dns, 'lookup', async (host: string) => {
+    assert.equal(host, 'image.example');
+    return [{ address: '93.184.216.34', family: 4 }];
+  });
+  t.mock.method(net, 'connect', (options: net.TcpNetConnectOpts) => {
+    assert.equal(options.host, 'image.example');
+    assert.ok(options.lookup);
+    options.lookup(options.host, { all: true }, (error, addresses) => {
+      assert.equal(error, null);
+      assert.deepEqual(addresses, [{ address: '93.184.216.34', family: 4 }]);
+    });
+    return realConnect({ host: '127.0.0.1', port: Number(new URL(origin).port) });
+  });
+  syncBuiltinESMExports();
+  try {
+    await withCompositionRoot(async ({ root, owner }) => {
+      const captured = await createCapturedExecutionComposition(owner, {
+        primaryBackendFactory: (context) =>
+          new (class extends FakeBackend {
+            override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+              yield {
+                type: 'text_complete',
+                id: `text-${input.turnId}`,
+                turnId: input.turnId,
+                ts: Date.now(),
+                messageId: `message-${input.turnId}`,
+                text: `![](http://image.example/${input.turnId}.png)`,
+              };
+              yield {
+                type: 'complete',
+                id: `complete-${input.turnId}`,
+                turnId: input.turnId,
+                ts: Date.now(),
+                stopReason: 'end_turn',
+              };
+            }
+          })(context),
+      });
+      const context = {
+        hostEpoch: 'execution-composition-test',
+        connectionId: 'image-client',
+        principal: 'local_os_user',
+        acquireResidency: () => ({ release() {} }),
+      };
+      try {
+        for (const [permissionMode, privacy] of [
+          ['explore', false],
+          ['ask', false],
+          ['bypass', true],
+        ] as const) {
+          const policy = await captured.composition.handlers['runtime.policy.query']({}, context);
+          assert.ok(policy.ok);
+          const changed = await captured.composition.handlers['runtime.policy.mutate'](
+            {
+              expectedRevision: policy.result.revision,
+              operation: { kind: 'set_privacy', value: { incognitoActive: privacy } },
+            },
+            context,
+          );
+          assert.ok(changed.ok);
+          const session = await captured.manager.createSession({
+            cwd: root,
+            llmConnectionId: FAKE_CONNECTION_ID,
+            llmConnectionSlug: 'fake',
+            model: 'fake-model',
+            permissionMode,
+          });
+          const turnId = `media-${permissionMode}`;
+          const started = await captured.composition.handlers['turn.start'](
+            { sessionId: session.id, turnId, content: { text: 'display image' } },
+            context,
+          );
+          assert.ok(started.ok, JSON.stringify(started));
+          const request = {
+            sessionId: session.id,
+            turnId,
+            messageId: `message-${turnId}`,
+            source: `http://image.example/${turnId}.png`,
+            loadRemote: true,
+          };
+          await waitFor(async () => {
+            const result = await captured.composition.handlers['artifact.image.resolve'](
+              request,
+              context,
+            );
+            assert.ok(result.ok);
+            return privacy
+              ? result.result.status === 'failed' && result.result.reason === 'not_allowed'
+              : result.result.status === 'ready';
+          }, 5000);
+        }
+        assert.equal(requests, 2, 'privacy mode must not issue a third media request');
+      } finally {
+        captured.composition.beginDrain();
+        await captured.composition.close();
+      }
+    });
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});

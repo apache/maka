@@ -74,7 +74,7 @@ function makeServices(failFirst: boolean, withHistory: boolean | 'usage', colore
   let questionPending = question;
   let pendingForm: import('@maka/core/events').FormRequestEvent | undefined;
   const publishExecution = () => updateExecution?.({ type: 'host_execution', available: true, rootTurn: pendingForm ? { sessionId, turnId: pendingForm.turnId, runId: 'selection-run', status: 'waiting_for_user' } : questionPending ? { sessionId, turnId: 'question-turn', runId: 'question-run', status: 'waiting_for_user' } : null });
-  const publish = () => { publishExecution(); updateTranscript?.({ messages, hasOlder: false, ready: true }); };
+  const publish = () => { publishExecution(); updateTranscript?.({ messages, hasOlder: false, historyComplete: true, ready: true }); };
   return {
     inspector: {
       context: async () => ({ ok: true, data: { status: 'available', completedAt: 1, modelId: session.model, providerId: 'openai', inputTokens: 1000, contextWindow: 100_000 } }),
@@ -230,7 +230,8 @@ export const StandardComposer: Story = {
     await waitFor(() => expect(canvas.getByRole('button', { name: /切换当前任务模型/ })).toBeEnabled());
     await waitFor(() => expect(canvas.getByRole('button', { name: '打开用量追踪' }).textContent).toContain('1%'));
     await userEvent.click(canvas.getByRole('button', { name: /切换当前任务模型/ }));
-    await userEvent.click(page.getByRole('option', { name: /model-b/ }));
+    await userEvent.click(await page.findByRole('menuitem', { name: /^模型/ }));
+    await userEvent.click(await page.findByRole('menuitemradio', { name: /model-b/ }));
     await waitFor(() => expect(writes.model).toHaveBeenCalledWith(sessionId, {
       expectedRevision: 1, modelTarget: { kind: 'explicit', connectionId: 'connection-test', connectionSlug: 'test', model: 'model-b' }, thinkingLevel: null,
     }));
@@ -242,29 +243,35 @@ export const StandardComposer: Story = {
     await waitFor(() => expect(canvasElement.querySelectorAll('.maka-composer-attachment-token')).toHaveLength(0));
   },
 };
-// Real path: WorkHub composer → thinking level → choose an override or restore the default.
+// Real path: WorkHub composer → model menu → Effort → choose an override or restore the default.
 export const ThinkingLevelPicker: Story = {
   render: () => <Surface />,
   play: async ({ canvasElement }) => {
     Object.values(writes).forEach((spy) => spy.mockClear());
     const canvas = within(canvasElement); const page = within(canvasElement.ownerDocument.body);
-    await waitFor(() => expect(canvas.getByRole('combobox', { name: '思考级别: 默认' })).toBeEnabled());
+    const trigger = () => canvas.getByRole('button', { name: /切换当前任务模型/ });
+    const openEffort = async () => {
+      await userEvent.click(trigger());
+      await userEvent.click(await page.findByRole('menuitem', { name: /^思考强度/ }));
+    };
+    await waitFor(() => expect(trigger()).toBeEnabled());
     const usage = canvas.getByRole('button', { name: '打开用量追踪' });
     await waitFor(() => expect(usage.textContent).toContain('1%'));
-    await userEvent.click(canvas.getByRole('combobox', { name: '思考级别: 默认' }));
-    await userEvent.click(page.getByRole('option', { name: /^高$/ }));
-    await waitFor(() => expect(canvas.getByRole('combobox', { name: '思考级别: 高' })).toBeEnabled());
+    await openEffort();
+    await expect(page.getByRole('menuitem', { name: /^思考强度/ })).toHaveTextContent(/默认$/);
+    await userEvent.click(await page.findByRole('menuitemradio', { name: /^高$/ }));
+    await waitFor(() => expect(trigger()).toHaveAccessibleName(/ 高$/));
     await expect(writes.model).toHaveBeenCalledWith(sessionId, {
       expectedRevision: 1, modelTarget: { kind: 'explicit', connectionId: 'connection-test', connectionSlug: 'test', model: 'model-a' }, thinkingLevel: 'high',
     });
-    await userEvent.click(canvas.getByRole('combobox', { name: '思考级别: 高' }));
-    await userEvent.click(page.getByRole('option', { name: /^默认$/ }));
-    await waitFor(() => expect(canvas.getByRole('combobox', { name: '思考级别: 默认' })).toBeEnabled());
+    await openEffort();
+    await userEvent.click(await page.findByRole('menuitemradio', { name: /^默认$/ }));
+    await waitFor(() => expect(trigger()).not.toHaveAccessibleName(/ 高$/));
     await expect(writes.model).toHaveBeenLastCalledWith(sessionId, {
       expectedRevision: 2, modelTarget: { kind: 'explicit', connectionId: 'connection-test', connectionSlug: 'test', model: 'model-a' }, thinkingLevel: null,
     });
-    await userEvent.click(canvas.getByRole('combobox', { name: '思考级别: 默认' }));
-    await expect(page.getByRole('option', { name: /^默认$/ })).toHaveAttribute('aria-selected', 'true');
+    await openEffort();
+    await expect(await page.findByRole('menuitemradio', { name: /^默认$/ })).toHaveAttribute('aria-checked', 'true');
   },
 };
 // Real path: a floating WorkHub progress card → edit its composer → open the model picker.
@@ -576,13 +583,19 @@ function PagedWorkConversation() {
     </WorkHubHighlightContext.Provider>
   </ToastProvider></AstryxLocaleProvider></LocaleProvider>;
 }
+// Real path: filter a WorkHub conversation to one Work and scroll upward into its older Turns.
 export const FilterWorkHistoryPages: Story = {
   render: () => <PagedWorkConversation />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText('继续补充异常场景。')).toBeInTheDocument());
     expect(canvas.queryByText('请检查支付回调幂等性。')).toBeNull();
-    await userEvent.click(canvas.getByRole('button', { name: '载入更早的记录' }));
+    expect(canvas.getByRole('button', { name: '载入更早的记录' })).toBeInTheDocument();
+    const scroller = canvasElement.querySelector<HTMLElement>('[data-chat-scroll-container]');
+    expect(scroller).not.toBeNull();
+    scroller!.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: -120 }));
+    scroller!.scrollTop = 0;
+    scroller!.dispatchEvent(new Event('scroll'));
     await waitFor(() => expect(canvas.getByText('请检查支付回调幂等性。')).toBeInTheDocument());
     expect(canvas.queryByText('先讨论一下整体计划。')).toBeNull();
     expect(canvas.queryByRole('button', { name: '载入更早的记录' })).toBeNull();

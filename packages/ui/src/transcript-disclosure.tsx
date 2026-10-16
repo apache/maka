@@ -28,9 +28,13 @@ export function TranscriptDisclosure(props: {
   statusBar?: boolean;
   status?: string;
   className?: string;
+  /** Mount process contents on first expansion, then retain their identity. */
+  deferMount?: boolean;
 }) {
   const [manualOpen, setManualOpen] = useState(false);
   const open = Boolean(props.running) || manualOpen;
+  const [hasOpened, setHasOpened] = useState(open);
+  if (open && !hasOpened) setHasOpened(true);
   const chevron = props.running ? null : <Icon icon="chevronRight" size="xsm" color="inherit" className="maka-processing-chevron" />;
   return <details className={['maka-processing-sequence', props.className].filter(Boolean).join(' ')} data-maka-transcript-boundary="" open={open}>
     <summary className="maka-processing-summary" aria-expanded={open}
@@ -39,6 +43,6 @@ export function TranscriptDisclosure(props: {
       {props.statusBar ? <span className="maka-turn-statusbar" data-turn-status={props.status}>{props.label}{chevron}</span>
         : <><span>{props.label}</span>{chevron}</>}
     </summary>
-    <div className="maka-processing-body">{typeof props.children === 'function' ? props.children(open) : props.children}</div>
+    <div className="maka-processing-body">{(!props.deferMount || open || hasOpened) && (typeof props.children === 'function' ? props.children(open) : props.children)}</div>
   </details>;
 }

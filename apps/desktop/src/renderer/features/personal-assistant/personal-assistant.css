@@ -1,0 +1,29 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+.personal-assistant-settings { max-width: 760px; margin: 24px auto; padding: 0 24px; color: var(--foreground); line-height: 1.6; }
+.personal-assistant-settings section { border-top: 1px solid var(--border); margin-top: 24px; padding-top: 16px; }
+.personal-assistant-settings p { color: var(--muted-foreground); overflow-wrap: anywhere; }
+.personal-assistant-settings [role="alert"] { color: var(--destructive); }
+.personal-assistant-settings article { padding: 12px 0; }
+.personal-assistant-settings input { width: 80px; background: var(--background); border: 1px solid var(--border); color: inherit; padding: 5px; border-radius: 6px; }
+.personal-assistant-settings button { border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; background: var(--background); color: inherit; cursor: pointer; }
+.personal-assistant-settings button:disabled { opacity: .5; cursor: default; }
+.personal-assistant-settings button:hover:not(:disabled) { background: var(--muted); }
+.pa-controls { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }

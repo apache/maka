@@ -93,6 +93,7 @@ export function createDesktopWorkHubServices(
       bridge.connections.setDefaultModel({ slug: llmConnectionSlug, model }),
     attachments: bridge.attachments,
     readAttachmentBytes: bridge.attachments.readBytes,
+    resolveImageDelivery: bridge.attachments.resolveImageDelivery,
     prepareAttachments: async (sessionId, items) => {
       const result = await bridge.workHub.prepareAttachments(sessionId, items);
       if (!result.ok) throw new AttachmentIngestBlockedError(result.code);
@@ -129,7 +130,17 @@ export function createDesktopWorkHubServices(
     },
     async openTranscript(sessionId, handler, cancellation, onError) {
       const store = new DesktopTranscriptRangeStore(sessionId);
-      const unsubscribe = store.subscribe(() => handler(store.snapshot()));
+      const unsubscribe = store.subscribe(() => {
+        const snapshot = store.snapshot();
+        handler({
+          ...snapshot,
+          historyComplete:
+            snapshot.ready &&
+            !snapshot.hasOlder &&
+            !snapshot.hasNewer &&
+            !snapshot.generation.startsWith('cached:'),
+        });
+      });
       const controller = createDesktopTranscriptRangeController(
         store,
         openDesktopTranscriptHistory(bridge.transcripts.open, sessionId, (batch) => store.accept(batch)),
@@ -140,7 +151,7 @@ export function createDesktopWorkHubServices(
       if (cancellation.aborted) cancel();
       return {
         observationChanged: controller.observationChanged,
-        loadEarlier: () => controller.loadEarlier(),
+        loadEarlier: (throughSequence) => controller.loadEarlier(throughSequence),
         close: () => {
           cancellation.removeEventListener('abort', cancel);
           unsubscribe();

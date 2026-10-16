@@ -497,7 +497,7 @@ provider call、dispatch event 和 canonical args hash。decoder 拒绝未知 co
 工具替换、digest 改写与跨操作替换；没有新字段的历史事件仍可读取。
 
 执行顺序：获取现有写锁 → 非变更 prepare → T1 → guarded mutation → T2。
-worker 协议 v12 增加 `prepare_write` / `prepare_edit`，继续使用一次请求一个进程。
+worker 协议 v13 在上游 v12 聊天图片读取协议基础上增加 `prepare_write` / `prepare_edit`，继续使用一次请求一个进程。
 prepare 不创建文件，也不跨 T1 持有 worker 文件句柄。Edit prepare 与执行都调用生产
 `computeEditedSource`，保留 exact/fuzzy 唯一匹配语义，并共享结果构造；执行前检查
 before，重新计算后核对 expected-after 与结果，再通过已验证句柄写入。

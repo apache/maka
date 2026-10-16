@@ -516,6 +516,44 @@ function frames(frame: () => void, count = 30): void {
   for (let step = 0; step < count; step += 1) frame();
 }
 
+test('downward input pages a parked window without pinning to its temporary end', () => {
+  withObservers((resize, frame) => {
+    const root = fakeRoot();
+    const list = turnList(root, ['a', 'b', 'c']);
+    let hasNewer = true;
+    let reads = 0;
+    let latest = 0;
+    const authority = createTranscriptScrollAuthority();
+    authority.attach(root as unknown as HTMLElement, {
+      ...list.layout,
+      hasNewer: () => hasNewer,
+      readNewer: () => { reads += 1; return hasNewer; },
+      readLatest: () => { latest += 1; },
+    });
+    authority.releasePin();
+    root.scrollTop = root.scrollHeight;
+    root.input(100);
+    root.end();
+    frames(frame);
+    assert.equal(reads, 1);
+    assert.equal(latest, 0);
+    assert.equal(authority.getSnapshot().pinned, false);
+    assert.equal(authority.getSnapshot().awayFromTail, true);
+    const top = root.scrollTop;
+    list.set(['a', 'b', 'c', 'd']);
+    authority.turnsChanged('append');
+    resize();
+    assert.equal(root.scrollTop, top, 'an arriving page does not drag the reader to its end');
+    authority.pinToTail();
+    assert.equal(latest, 1);
+    hasNewer = false;
+    authority.turnsChanged('reset');
+    resize();
+    assert.equal(authority.getSnapshot().awayFromTail, false);
+    assert.equal(authority.getSnapshot().pinned, true);
+  });
+});
+
 test('a change to the list other than growth at its tail keeps the reader on their Turn', () => {
   withObservers((_resize, frame) => {
     const root = fakeRoot();

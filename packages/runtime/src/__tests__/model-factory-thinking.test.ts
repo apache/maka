@@ -51,6 +51,71 @@ function custom(
 }
 
 describe('buildProviderOptions: thinking level', () => {
+  test('provider defaults reach the SDK request body without thinking overrides', async () => {
+    for (const [connection, modelId] of [
+      [conn('openai'), 'gpt-5.5'],
+      [conn('kimi-coding-plan'), 'k3'],
+      [conn('kimi-coding-plan'), 'kimi-for-coding'],
+      [{ ...conn('kimi-coding-plan'), models: [{ id: 'k3', apiProtocol: 'openai-chat' }] }, 'k3'],
+      [conn('volcengine-ark'), 'doubao-seed-2-0-pro-260215'],
+    ] satisfies readonly (readonly [LlmConnection, string])[]) {
+      let body: Record<string, unknown> = {};
+      await getAIModel({
+        connection,
+        modelId,
+        apiKey: 'test-key',
+        fetch: async (input, init) => {
+          body = JSON.parse(String(init?.body));
+          const url = String(input);
+          return Response.json(
+            url.endsWith('/messages')
+              ? {
+                  id: 'msg-1',
+                  type: 'message',
+                  role: 'assistant',
+                  model: modelId,
+                  content: [{ type: 'text', text: 'ok' }],
+                  stop_reason: 'end_turn',
+                  usage: { input_tokens: 1, output_tokens: 1 },
+                }
+              : url.endsWith('/responses')
+                ? { id: 'resp-1', object: 'response', model: modelId, output: [] }
+                : {
+                    id: 'chatcmpl-1',
+                    object: 'chat.completion',
+                    created: 1,
+                    model: modelId,
+                    choices: [
+                      {
+                        index: 0,
+                        message: { role: 'assistant', content: 'ok' },
+                        finish_reason: 'stop',
+                      },
+                    ],
+                    usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+                  },
+          );
+        },
+      }).doGenerate({
+        prompt: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+        providerOptions: buildProviderOptions(connection, modelId),
+      });
+      const label = `${connection.providerType}/${modelId}`;
+      assert.equal(body.thinking, undefined, label);
+      assert.equal(body.reasoning_effort, undefined, label);
+      assert.equal(
+        (body.reasoning as Record<string, unknown> | undefined)?.effort,
+        undefined,
+        label,
+      );
+      assert.equal(
+        (body.output_config as Record<string, unknown> | undefined)?.effort,
+        undefined,
+        label,
+      );
+    }
+  });
+
   test('Anthropic-compatible providers do not inherit automatic prompt caching', () => {
     for (const providerType of ['MiniMax', 'MiniMax-cn', 'kimi-coding-plan'] as const) {
       const anthropic = buildProviderOptions(conn(providerType), 'claude-opus-4-8').anthropic;
@@ -84,63 +149,54 @@ describe('buildProviderOptions: thinking level', () => {
         effort: 'xhigh',
       },
     });
-    assert.deepEqual(buildProviderOptions(conn('anthropic'), 'claude-opus-4-8'), {
-      anthropic: {
-        cacheControl: { type: 'ephemeral' },
-        thinking: { type: 'adaptive', display: 'summarized' },
-      },
-    });
   });
 
-  test('anthropic budget/toggle model (haiku-4-5) sends thinking.disabled for off; drops unsupported effort', () => {
-    assert.deepEqual(buildProviderOptions(conn('anthropic'), 'claude-haiku-4-5'), {
-      anthropic: {
-        cacheControl: { type: 'ephemeral' },
-        thinking: { type: 'enabled', budgetTokens: 1_024 },
-      },
-    });
-    assert.deepEqual(buildProviderOptions(conn('anthropic'), 'claude-haiku-4-5', 'off'), {
-      anthropic: {
-        cacheControl: { type: 'ephemeral' },
-        thinking: { type: 'disabled' },
-      },
-    });
-    // haiku-4-5 has no effort variants, only off → high is dropped
-    assert.deepEqual(buildProviderOptions(conn('anthropic'), 'claude-haiku-4-5', 'high'), {
-      anthropic: { cacheControl: { type: 'ephemeral' } },
-    });
+  test('toggle-only Claude sends on and off without inventing an effort', async () => {
+    for (const [providerType, modelId] of [
+      ['anthropic', 'claude-haiku-4-5'],
+      ['opencode', 'claude-sonnet-4-5'],
+      ['opencode', 'claude-haiku-4-5'],
+    ] as const) {
+      const bodies: Record<string, unknown>[] = [];
+      const connection = conn(providerType);
+      const model = getAIModel({
+        connection,
+        modelId,
+        apiKey: 'test-key',
+        fetch: async (_input, init) => {
+          bodies.push(JSON.parse(String(init?.body)));
+          return Response.json({
+            id: 'msg-1',
+            type: 'message',
+            role: 'assistant',
+            model: modelId,
+            content: [{ type: 'text', text: 'ok' }],
+            stop_reason: 'end_turn',
+            usage: { input_tokens: 1, output_tokens: 1 },
+          });
+        },
+      });
+      for (const level of [undefined, 'on', 'off', 'high'] as const) {
+        await model.doGenerate({
+          prompt: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+          providerOptions: buildProviderOptions(connection, modelId, level),
+        });
+      }
+      assert.deepEqual(
+        bodies.map((body) => body.thinking),
+        [undefined, { type: 'enabled', budget_tokens: 1_024 }, { type: 'disabled' }, undefined],
+        `${providerType}/${modelId}`,
+      );
+      for (const body of bodies) assert.equal(body.output_config, undefined);
+    }
   });
 
   test('Claude 4.5 uses legacy enabled thinking even when the UI exposes effort levels', () => {
-    assert.deepEqual(buildProviderOptions(conn('anthropic'), 'claude-opus-4-5'), {
-      anthropic: {
-        cacheControl: { type: 'ephemeral' },
-        thinking: { type: 'enabled', budgetTokens: 1_024 },
-      },
-    });
     assert.deepEqual(buildProviderOptions(conn('anthropic'), 'claude-opus-4-5', 'high'), {
       anthropic: {
         cacheControl: { type: 'ephemeral' },
         thinking: { type: 'enabled', budgetTokens: 1_024 },
         effort: 'high',
-      },
-    });
-    assert.deepEqual(buildProviderOptions(conn('anthropic'), 'claude-sonnet-4-5'), {
-      anthropic: {
-        cacheControl: { type: 'ephemeral' },
-        thinking: { type: 'enabled', budgetTokens: 1_024 },
-      },
-    });
-    assert.deepEqual(buildProviderOptions(conn('anthropic'), 'claude-sonnet-4-5-20250929'), {
-      anthropic: {
-        cacheControl: { type: 'ephemeral' },
-        thinking: { type: 'enabled', budgetTokens: 1_024 },
-      },
-    });
-    assert.deepEqual(buildProviderOptions(conn('anthropic'), 'claude-opus-4-1-20250805'), {
-      anthropic: {
-        cacheControl: { type: 'ephemeral' },
-        thinking: { type: 'enabled', budgetTokens: 1_024 },
       },
     });
   });
@@ -151,13 +207,12 @@ describe('buildProviderOptions: thinking level', () => {
     });
   });
 
-  test('Kimi K3 passes the chosen effort through adaptive thinking, defaulting to max', () => {
+  test('Kimi K3 passes the chosen effort through adaptive thinking', () => {
     assert.deepEqual(
       [...thinkingVariantsForModel('kimi-coding-plan', 'k3')],
       ['low', 'high', 'max'],
     );
     const expected = { anthropic: { thinking: { type: 'adaptive' }, effort: 'max' } };
-    assert.deepEqual(buildProviderOptions(conn('kimi-coding-plan'), 'k3'), expected);
     assert.deepEqual(buildProviderOptions(conn('kimi-coding-plan'), 'k3', 'max'), expected);
     assert.deepEqual(buildProviderOptions(conn('kimi-coding-plan'), 'k3', 'low'), {
       anthropic: { thinking: { type: 'adaptive' }, effort: 'low' },
@@ -177,7 +232,6 @@ describe('buildProviderOptions: thinking level', () => {
       models: [{ id: 'k3', apiProtocol: 'openai-chat' as const }],
     };
     const expected = { kimiCodingPlan: { reasoningEffort: 'max' } };
-    assert.deepEqual(buildProviderOptions(connection, 'k3'), expected);
     assert.deepEqual(buildProviderOptions(connection, 'k3', 'max'), expected);
     assert.deepEqual(buildProviderOptions(connection, 'k3', 'low'), {
       kimiCodingPlan: { reasoningEffort: 'low' },
@@ -185,9 +239,7 @@ describe('buildProviderOptions: thinking level', () => {
     assert.deepEqual(buildProviderOptions(connection, 'k3', 'high'), {
       kimiCodingPlan: { reasoningEffort: 'high' },
     });
-    // Kimi has no off wire: an explicit off request is rejected (empty
-    // options), never silently upgraded to max. Unsupported levels other
-    // than off keep the global default-max semantics.
+    // Unsupported off follows the provider default.
     assert.deepEqual(buildProviderOptions(connection, 'k3', 'off'), {});
     assert.deepEqual(buildProviderOptions(conn('kimi-coding-plan'), 'k3', 'off'), {});
   });
@@ -200,7 +252,6 @@ describe('buildProviderOptions: thinking level', () => {
       openai: {
         store: false,
         reasoningSummary: 'auto',
-        reasoningEffort: 'medium',
         parallelToolCalls: true,
       },
     });
@@ -253,7 +304,6 @@ describe('buildProviderOptions: thinking level', () => {
         store: false,
         textVerbosity: 'medium',
         reasoningSummary: 'auto',
-        reasoningEffort: 'medium',
         parallelToolCalls: true,
       },
     });
@@ -285,7 +335,6 @@ describe('buildProviderOptions: thinking level', () => {
       openai: {
         store: false,
         reasoningSummary: 'auto',
-        reasoningEffort: 'medium',
         parallelToolCalls: false,
       },
     });
@@ -410,9 +459,7 @@ describe('buildProviderOptions: thinking level', () => {
     assert.deepEqual(buildProviderOptions(conn('openrouter'), 'openai/gpt-5.6-sol', 'off'), {
       openrouter: { reasoningEffort: 'none' },
     });
-    assert.deepEqual(buildProviderOptions(conn('openrouter'), 'openai/gpt-5.6-sol'), {
-      openrouter: { reasoningEffort: 'medium' },
-    });
+    assert.deepEqual(buildProviderOptions(conn('openrouter'), 'openai/gpt-5.6-sol'), {});
     // claude-sonnet-5 exposes no off switch (no `none` effort); only effort tiers.
     assert.deepEqual(
       [...thinkingVariantsForModel('openrouter', 'anthropic/claude-sonnet-5')],
@@ -486,11 +533,7 @@ describe('buildProviderOptions: thinking level', () => {
         effort: 'high',
       },
     });
-    assert.deepEqual(buildProviderOptions(conn('opencode'), 'claude-sonnet-4'), {
-      anthropic: {
-        thinking: { type: 'enabled', budgetTokens: 1_024 },
-      },
-    });
+    assert.deepEqual(buildProviderOptions(conn('opencode'), 'claude-sonnet-4'), {});
     assert.deepEqual(buildProviderOptions(conn('opencode'), 'gemini-3.5-flash', 'high'), {
       google: { thinkingConfig: { includeThoughts: true, thinkingLevel: 'high' } },
     });
@@ -504,7 +547,7 @@ describe('buildProviderOptions: thinking level', () => {
     });
   });
 
-  test('every active shipped Claude model on Anthropic Messages requests visible thinking', () => {
+  test('shipped Claude defaults leave thinking to the provider', () => {
     const activeClaudeModels: Array<{
       connection: LlmConnection;
       modelId: string;
@@ -528,28 +571,13 @@ describe('buildProviderOptions: thinking level', () => {
       }
     }
 
-    assert.ok(
-      activeClaudeModels.some(
-        ({ connection, modelId }) =>
-          connection.providerType === 'opencode' && modelId === 'claude-sonnet-4',
-      ),
-    );
     for (const { connection, modelId } of activeClaudeModels) {
       const thinking = (
         buildProviderOptions(connection, modelId).anthropic as
           | { thinking?: { type?: string; display?: string; budgetTokens?: number } }
           | undefined
       )?.thinking;
-      assert.ok(thinking, `${connection.providerType}/${modelId} must request visible thinking`);
-      if (thinking.type === 'adaptive') {
-        assert.equal(thinking.display, 'summarized', `${connection.providerType}/${modelId}`);
-      } else {
-        assert.deepEqual(
-          thinking,
-          { type: 'enabled', budgetTokens: 1_024 },
-          `${connection.providerType}/${modelId}`,
-        );
-      }
+      assert.equal(thinking, undefined, connection.providerType + '/' + modelId);
     }
   });
 
@@ -566,21 +594,19 @@ describe('buildProviderOptions: thinking level', () => {
     const anthropic = {
       ...conn('github-copilot'),
       models: [{ id: 'anthropic/claude-opus-4-8', apiProtocol: 'anthropic-messages' as const }],
+      modelOverrides: { 'anthropic/claude-opus-4-8': { thinkingLevels: ['high' as const] } },
     };
-    assert.deepEqual(buildProviderOptions(anthropic, 'anthropic/claude-opus-4-8'), {
+    assert.deepEqual(buildProviderOptions(anthropic, 'anthropic/claude-opus-4-8', 'high'), {
       anthropic: {
         thinking: { type: 'adaptive', display: 'summarized' },
+        effort: 'high',
       },
     });
     const legacyAnthropic = {
       ...conn('github-copilot'),
       models: [{ id: 'anthropic/claude-opus-4.5', apiProtocol: 'anthropic-messages' as const }],
     };
-    assert.deepEqual(buildProviderOptions(legacyAnthropic, 'anthropic/claude-opus-4.5'), {
-      anthropic: {
-        thinking: { type: 'enabled', budgetTokens: 1_024 },
-      },
-    });
+    assert.deepEqual(buildProviderOptions(legacyAnthropic, 'anthropic/claude-opus-4.5'), {});
     const responses = {
       ...conn('github-copilot'),
       models: [{ id: 'gpt-5.5', apiProtocol: 'openai-responses' as const }],
@@ -600,16 +626,13 @@ describe('buildProviderOptions: thinking level', () => {
         store: false,
         forceReasoning: true,
         reasoningSummary: 'auto',
-        reasoningEffort: 'medium',
       },
     });
   });
 
-  test('custom chat models apply family defaults only when no explicit level was supplied', () => {
+  test('custom chat models do not infer effort from a model name', () => {
     const openaiRelay = custom('openai-chat');
-    assert.deepEqual(buildProviderOptions(openaiRelay, 'gpt-5.6-sol'), {
-      custom: { reasoningEffort: 'medium' },
-    });
+    assert.deepEqual(buildProviderOptions(openaiRelay, 'gpt-5.6-sol'), {});
     assert.deepEqual(buildProviderOptions(openaiRelay, 'gpt-5.6-sol', 'minimal'), {});
     assert.deepEqual(buildProviderOptions(openaiRelay, 'gpt-5.6-sol', 'off'), {});
     assert.deepEqual(buildProviderOptions(openaiRelay, 'gpt-5.6-sol', 'high'), {});
@@ -683,9 +706,7 @@ describe('buildProviderOptions: thinking level', () => {
       [...thinkingVariantsForModel('volcengine-ark', modelId)],
       ['off', 'minimal', 'low', 'medium', 'high'],
     );
-    assert.deepEqual(buildProviderOptions(conn('volcengine-ark'), modelId), {
-      volcengineArk: { thinking: { type: 'enabled' } },
-    });
+    assert.deepEqual(buildProviderOptions(conn('volcengine-ark'), modelId), { volcengineArk: {} });
     assert.deepEqual(buildProviderOptions(conn('volcengine-ark'), modelId, 'high'), {
       volcengineArk: { thinking: { type: 'enabled' }, reasoningEffort: 'high' },
     });
@@ -963,9 +984,7 @@ describe('buildProviderOptions: openai-compatible namespace', () => {
         openai: {
           store: false,
           forceReasoning: true,
-          ...(supportsReasoningSummary
-            ? { reasoningSummary: 'auto', reasoningEffort: 'medium' }
-            : {}),
+          ...(supportsReasoningSummary ? { reasoningSummary: 'auto' } : {}),
           ...(supportsFast ? { serviceTier: 'fast' } : {}),
         },
       });
@@ -1182,7 +1201,7 @@ describe('buildProviderOptions: openai-compatible namespace', () => {
     });
     const result = await model.doGenerate({
       prompt: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
-      providerOptions: buildProviderOptions(connection, 'doubao-seed-2-0-pro-260215'),
+      providerOptions: buildProviderOptions(connection, 'doubao-seed-2-0-pro-260215', 'high'),
     });
     assert.equal(bodies.length, 1);
     assert.deepEqual(bodies[0]?.thinking, { type: 'enabled' });
@@ -1356,7 +1375,7 @@ describe('leastReasoningThinkingLevel', () => {
 
   test('asks Kimi Coding Plan for its lowest effort, since it thinks by default when none is sent', () => {
     // K3 and kimi-for-coding speak Anthropic Messages but are not Claude: an
-    // omitted level leaves the route on its default, maximum thinking.
+    // omitted level leaves the route on its provider default.
     const kimi = conn('kimi-coding-plan', 'kimi-coding-plan');
     for (const [modelId, thinking] of [
       ['k3', { type: 'adaptive' }],

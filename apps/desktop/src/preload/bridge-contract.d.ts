@@ -116,6 +116,7 @@ import type {
   DesktopTranscriptBatch,
   DesktopTranscriptHandle,
   DesktopTranscriptOpenMode,
+  DesktopTranscriptPosition,
 } from './transcript-contract.js';
 import type { PetPackManifestV1 } from '@maka/core/pet';
 import type {
@@ -910,6 +911,7 @@ export interface MakaBridge {
     command<K extends RendererRuntimeHostCommandOperation>(
       operation: K,
       input: OperationInput<K>,
+      host?: DesktopRuntimeHostRef,
     ): Promise<OperationOutput<K>>;
   };
 
@@ -1475,6 +1477,7 @@ export interface MakaBridge {
       mode?: DesktopTranscriptOpenMode,
       /** The oldest sequence the reader already holds; the first answer reads back down to it. */
       resumeFrom?: number,
+      position?: DesktopTranscriptPosition,
     ): Promise<DesktopTranscriptHandle>;
   };
   externalSessions: {
@@ -1745,6 +1748,7 @@ export interface MakaBridge {
       | { ok: true; base64: string; mimeType: string }
       | { ok: false; reason: string }
     >;
+    resolveImageDelivery: import('@maka/core/image-delivery').ResolveImageDelivery;
     readBytes(sessionId: string, artifactId: string): Promise<ArtifactBinaryReadResult>;
   };
   search: {

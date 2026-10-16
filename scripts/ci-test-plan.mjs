@@ -59,6 +59,8 @@ const RELEASE_CONTRACT_FILES = new Set([
   'scripts/audit-shipped-dependencies.mjs',
   'scripts/audit-shipped-dependencies.test.mjs',
   'scripts/package-macos.mjs',
+  'scripts/staple-macos-artifact.mjs',
+  'scripts/staple-macos-artifact.test.mjs',
   'scripts/package-macos-autoupdate-next.mjs',
   'scripts/package-macos-arm64-cli.mjs',
   'scripts/package-linux.mjs',
