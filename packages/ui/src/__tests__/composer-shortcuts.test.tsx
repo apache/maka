@@ -218,6 +218,23 @@ for (const key of ['ArrowRight', 'Tab']) {
     await h.press();
     assert.deepEqual(h.sends, [{ text: suggestedPrompt, metadata: undefined }]);
   });
+
+  test(`${key} keeps native behavior when the live draft changes before the suggestion render retires`, async () => {
+    const h = await promptSuggestionHarness();
+    const draft = 'Keep the draft that just arrived';
+    const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+    await act(() => {
+      // The imperative write updates the live ref immediately. React has not
+      // committed the render that removes the old offer when the key arrives.
+      h.ref.current!.setText(draft);
+      assert.ok(h.offer());
+      h.editor.dispatchEvent(event);
+    });
+    assert.equal(event.defaultPrevented, false);
+    assert.equal(h.ref.current!.getText(), draft);
+    assert.equal(h.offer(), null);
+    assert.deepEqual(h.sends, []);
+  });
 }
 
 for (const modifier of ['shiftKey', 'altKey', 'ctrlKey', 'metaKey'] as const) {

@@ -936,8 +936,8 @@ export const Composer = forwardRef<
       || props.pendingAttachments?.length || props.pendingQuotes?.length || props.pendingSessionReferences?.length),
   });
   const suggestionLabel = copy.promptSuggestionLabel;
-  function acceptNextPrompt() {
-    if (!nextPrompt.text || compositionActiveRef.current || textPort.getValue().length) return;
+  function acceptNextPrompt(): boolean {
+    if (!nextPrompt.text || compositionActiveRef.current || textPort.getValue().length) return false;
     const value = nextPrompt.text;
     nextPrompt.dismiss();
     focusInput();
@@ -947,6 +947,7 @@ export const Composer = forwardRef<
       saveCurrentDraft(value);
     }
     resetPromptHistoryNavigation();
+    return true;
   }
 
 
@@ -1503,7 +1504,8 @@ export const Composer = forwardRef<
       && event.currentTarget.getAttribute('aria-expanded') !== 'true') {
       if ((event.key === 'ArrowRight' || event.key === 'Tab')
         && !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {
-        event.preventDefault(); acceptNextPrompt(); return;
+        if (acceptNextPrompt()) event.preventDefault();
+        return;
       }
       if (event.key === 'Escape') { event.preventDefault(); setDragActive(false); nextPrompt.dismiss(); return; }
     }
