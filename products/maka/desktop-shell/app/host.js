@@ -41,10 +41,16 @@ export function log(message) {
  * Runs a mutation and returns the method's own result. `mutate` resolves with
  * the operation reply; the result is the receipt's returned value. Any other
  * receipt is an error. A mutation is never retried: only the original call
- * can tell whether it ran.
+ * can tell whether it ran. `attachments` maps resource slots to text, such as
+ * the `secret` of `settings.saveCredential`; it never reaches the log.
+ *
+ * @param {string} endpoint
+ * @param {string} method
+ * @param {unknown} input
+ * @param {Record<string, string>} [attachments]
  */
-export async function operation(endpoint, method, input) {
-  const reply = await mutate(endpoint, method, input);
+export async function operation(endpoint, method, input, attachments) {
+  const reply = await mutate(endpoint, method, input, attachments);
   const receipt = reply?.receipt;
   if (receipt?.kind !== 'recorded' || receipt.outcome?.kind !== 'returned') {
     throw new Error(

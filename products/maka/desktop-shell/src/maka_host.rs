@@ -25,14 +25,17 @@
 //! runtime; each call runs there and returns its answer through a oneshot.
 //! The session connects on the first call and is shared by later ones.
 use gpui_shell::{HostArguments, HostError, HostModule, HostResult, HostValue};
+use maka_capabilities::call::{Attachments, ReadResource, ResourceEncoding};
 use maka_host_runtime::application::{
     host::{Client, LocalCall},
     transport::wire::Reply,
 };
-use serde_json::Value;
+use maka_plugin_core::contract::{ResourceType, text_resource_type};
+use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     ffi::OsString,
+    ops::Range,
     path::PathBuf,
     sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError},
 };
@@ -47,8 +50,17 @@ const EXACT_INTEGER: f64 = 9_007_199_254_740_991.0;
 
 const DECLARATIONS: &str = r#"/** Runs a query method and resolves with its result. */
 export function query(endpoint: string, method: string, input?: unknown): Promise<unknown>;
-/** Runs a mutation: start, then confirm; resolves with the operation reply (receipt). Never retried. */
-export function mutate(endpoint: string, method: string, input?: unknown): Promise<unknown>;
+/**
+ * Runs a mutation: start, then confirm; resolves with the operation reply (receipt). Never retried.
+ * `attachments` maps a method's resource slots to text, sent as UTF-8 resources
+ * rather than in the input (for example the `secret` of `settings.saveCredential`).
+ */
+export function mutate(
+  endpoint: string,
+  method: string,
+  input?: unknown,
+  attachments?: Record<string, string>,
+): Promise<unknown>;
 /** Opens a subscription and resolves with a handle once the Host answers Subscribed. */
 export function subscribe(endpoint: string, method: string, input?: unknown): Promise<number>;
 /** Pulls one item; resolves with its value, or null when the subscription ended. */
@@ -99,9 +111,14 @@ fn register(bridge: Arc<Bridge>) -> HostModule {
         })
         .async_function("mutate", move |arguments| {
             let (endpoint, method, input) = request(arguments)?;
+            let resources = attachments(arguments)?;
             let bridge = mutate.clone();
-            Ok(mutate
-                .run(async move { bridge.mutate(&endpoint, method, input).await.map(to_host) }))
+            Ok(mutate.run(async move {
+                bridge
+                    .mutate(&endpoint, method, input, resources)
+                    .await
+                    .map(to_host)
+            }))
         })
         .async_function("subscribe", move |arguments| {
             let (endpoint, method, input) = request(arguments)?;
@@ -132,6 +149,54 @@ fn request(arguments: &HostArguments) -> Result<(String, String, Value), HostErr
         None => Value::Null,
     };
     Ok((endpoint, method, input))
+}
+
+/// The fourth `mutate` argument: `{ slot: text }`, each value an immutable
+/// UTF-8 resource. Absent or null means none.
+fn attachments(arguments: &HostArguments) -> Result<Attachments, HostError> {
+    let value = match arguments.get(3) {
+        Some(value) => to_json(value).map_err(HostError::new)?,
+        None => Value::Null,
+    };
+    match value {
+        Value::Null => Ok(Attachments::new()),
+        Value::Object(slots) => slots
+            .into_iter()
+            .map(|(slot, text)| match text {
+                Value::String(text) => Ok((slot, Arc::new(Text(text)) as Arc<dyn ReadResource>)),
+                _ => Err(HostError::new(format!(
+                    "attachment `{slot}` must be a string"
+                ))),
+            })
+            .collect(),
+        _ => Err(HostError::new(
+            "attachments must be an object whose values are strings",
+        )),
+    }
+}
+
+/// Text the Host reads as a `maka.text.utf8` resource. It has no Debug
+/// formatting, so a secret cannot reach a log through it.
+struct Text(String);
+impl ReadResource for Text {
+    fn encoding(&self) -> ResourceEncoding {
+        ResourceEncoding::Utf8
+    }
+    fn resource_type(&self) -> ResourceType {
+        text_resource_type()
+    }
+    fn bytes(&self) -> usize {
+        self.0.len()
+    }
+    fn metadata(&self) -> Value {
+        json!({})
+    }
+    fn read(&self, range: Range<usize>) -> Result<Vec<u8>, String> {
+        self.0
+            .get(range)
+            .map(|text| text.as_bytes().to_vec())
+            .ok_or_else(|| "the range does not fall on UTF-8 boundaries of the text".into())
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -266,16 +331,14 @@ impl Bridge {
         endpoint: &str,
         method: String,
         input: Value,
+        resources: Attachments,
     ) -> Result<LocalCall, String> {
         let client = self.client().await?;
         client
             .catalogue()
             .select(endpoint)
             .map_err(|error| format!("{error}: `{endpoint}`"))?;
-        match client
-            .call(endpoint, method, input, Default::default())
-            .await
-        {
+        match client.call(endpoint, method, input, resources).await {
             Ok(call) => Ok(call),
             Err(error) => {
                 let mut current = self.client.lock().await;
@@ -291,7 +354,9 @@ impl Bridge {
     }
 
     async fn query(&self, endpoint: &str, method: String, input: Value) -> Result<Value, String> {
-        let mut call = self.open(endpoint, method, input).await?;
+        let mut call = self
+            .open(endpoint, method, input, Attachments::new())
+            .await?;
         call.start().await?;
         match call.receive().await? {
             Reply::Finished { result, cleanup } => {
@@ -306,8 +371,14 @@ impl Bridge {
 
     /// Confirms exactly once. A lost reply is reported, never resent: only the
     /// original call and its receipt can tell whether the mutation ran.
-    async fn mutate(&self, endpoint: &str, method: String, input: Value) -> Result<Value, String> {
-        let mut call = self.open(endpoint, method, input).await?;
+    async fn mutate(
+        &self,
+        endpoint: &str,
+        method: String,
+        input: Value,
+        resources: Attachments,
+    ) -> Result<Value, String> {
+        let mut call = self.open(endpoint, method, input, resources).await?;
         call.start().await?;
         match call.receive().await? {
             Reply::Prepared { .. } => {}
@@ -334,7 +405,9 @@ impl Bridge {
     }
 
     async fn subscribe(&self, endpoint: &str, method: String, input: Value) -> Result<i64, String> {
-        let mut call = self.open(endpoint, method, input).await?;
+        let mut call = self
+            .open(endpoint, method, input, Attachments::new())
+            .await?;
         call.start().await?;
         match call.receive().await? {
             Reply::Subscribed => Ok(self.subscriptions().insert(Subscription {
@@ -624,6 +697,42 @@ mod tests {
             .err()
             .unwrap();
         assert_eq!(error.message(), "argument 2 is missing; 1 were passed");
+    }
+
+    #[test]
+    fn mutate_attachments_are_utf8_text_resources() {
+        let arguments = |attachments: HostValue| {
+            HostArguments::new([
+                HostValue::from("settings"),
+                HostValue::from("saveCredential"),
+                HostValue::Object(vec![]),
+                attachments,
+            ])
+        };
+        let slots = attachments(&arguments(HostValue::Object(vec![(
+            "secret".into(),
+            HostValue::from("k€y"),
+        )])))
+        .unwrap();
+        let secret = &slots["secret"];
+        assert_eq!(secret.resource_type(), text_resource_type());
+        assert_eq!(secret.encoding(), ResourceEncoding::Utf8);
+        assert_eq!(secret.bytes(), "k€y".len());
+        assert_eq!(secret.read(0..secret.bytes()).unwrap(), "k€y".as_bytes());
+        // A range inside a character is refused rather than split.
+        assert!(secret.read(0..2).is_err());
+
+        assert!(attachments(&arguments(HostValue::Null)).unwrap().is_empty());
+        let no_slots = HostArguments::new([HostValue::from("settings"), HostValue::from("create")]);
+        assert!(attachments(&no_slots).unwrap().is_empty());
+        let error = attachments(&arguments(HostValue::Object(vec![(
+            "secret".into(),
+            HostValue::Number(1.0),
+        )])))
+        .err()
+        .unwrap();
+        assert_eq!(error.message(), "attachment `secret` must be a string");
+        assert!(attachments(&arguments(HostValue::from("text"))).is_err());
     }
 
     #[test]
