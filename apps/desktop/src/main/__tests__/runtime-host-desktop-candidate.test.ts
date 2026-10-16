@@ -69,6 +69,7 @@ import { RuntimeHostReconnectingIpcMain } from '../runtime-host-reconnecting-ipc
 import { desktopSessionResourceKey } from '../../shared/runtime-host-identity.js';
 import { deferred, waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 import { canRepairManagedRuntimeHostStartup } from '../runtime-host-startup-recovery.js';
+import type { DesktopTranscriptBatch } from '../../preload/transcript-contract.js';
 import { ManagedArtifactPreview } from '../managed-artifact-preview.js';
 import { DesktopSessionLocalStore } from '../session-local-store.js';
 import { DesktopSessionLocalService } from '../session-local-service.js';
@@ -355,6 +356,39 @@ test('owns one complete Desktop candidate generation and can restart cleanly', a
   );
   await reconnected.close();
   assert.equal(ipc.size, 0);
+});
+
+test('forwards the candidate initial history budget to the Host page request', async (t) => {
+  const observations = new RuntimeHostSessionObservationRegistry((error) => { throw error; });
+  const consumerId = 'budget-reader';
+  const ipc = ipcHarness((channel, payload) => {
+    if (channel !== `sessions:transcript:${consumerId}`) return;
+    const batch = payload as DesktopTranscriptBatch;
+    queueMicrotask(() => observations.acknowledgeTranscript(consumerId, batch.generation, batch.deliverySequence, 1));
+  });
+  const host = connectionHarness('budget');
+  const subscribe = host.connection.openSessionSubscription.bind(host.connection);
+  const budgets: number[] = [];
+  host.connection.openSessionSubscription = async (...args) => {
+    const subscription = await subscribe(...args);
+    const page = { ...subscription.transcriptBootstrap!.durable, throughSequence: 0, endsAtTurnBoundary: true };
+    return {
+      ...subscription,
+      transcriptWatermark: 0,
+      transcriptBootstrap: { throughSequence: 0, durable: page },
+      async loadTranscriptPage(request) {
+        budgets.push(request.maxBytes);
+        return { ...page, direction: request.direction };
+      },
+    };
+  };
+  const initialBudget = 1024 * 1024;
+  const candidate = await createDesktopRuntimeHostCandidate(host.connection, {
+    ...deps(ipc), transcriptInitialHistoryBytes: initialBudget, transcriptHistoryBytes: 512 * 1024,
+  }, observations);
+  t.after(async () => { await candidate.close(); await observations.close(); });
+  await ipc.invoke('sessions:transcript:open', 'session-budget', consumerId, 'history');
+  assert.deepEqual(budgets, [512 * 1024], 'the 1 MiB opening answer uses the Host page limit, not the 128 KiB default');
 });
 
 test('Stop after Host restart durably frees a full local outbox through the registered candidate IPC', async (t) => {

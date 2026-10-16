@@ -1489,7 +1489,7 @@ const ProcessingBlock = memo(function ProcessingBlock(props: {
 }) {
   const copy = getConversationCopy(useUiLocale()).messages;
   return (
-    <TranscriptDisclosure running={props.running} statusBar={Boolean(props.statusRow)} status={props.statusRow?.status}
+    <TranscriptDisclosure deferMount running={props.running} statusBar={Boolean(props.statusRow)} status={props.statusRow?.status}
       label={props.statusRow ? <TurnStatusRow {...props.statusRow} /> : copy.processDetails}>
       {(open) => <>
         {props.entries.map((entry, index) => (

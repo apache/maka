@@ -109,6 +109,7 @@ export type SkillCatalogTransactionFailpoint =
   | 'after_managed_handoff_transaction_sync_before_skills_sync'
   | 'after_managed_handoff'
   | 'after_delete_rename_before_directory_sync'
+  | 'before_delete_rename'
   | 'after_delete_skills_directory_sync_before_transaction_sync'
   | 'after_gc_handoff_rename_before_directory_sync'
   | 'after_gc_handoff'
@@ -213,7 +214,7 @@ export class SkillCatalogTransactionWriter {
           await removePreIntentTransaction(prepared.transactions, directory);
           continue;
         }
-        await replayTransaction(prepared, transaction);
+        await replayTransaction(prepared, transaction, this.#failpoint, true);
       }
     });
   }
@@ -357,6 +358,7 @@ async function replayTransaction(
   root: PreparedRoot,
   transaction: PreparedTransaction,
   failpoint?: (point: SkillCatalogTransactionFailpoint) => void,
+  recovering = false,
 ): Promise<void> {
   await verifyTransactionEntries(transaction);
   switch (transaction.intent.kind) {
@@ -367,7 +369,7 @@ async function replayTransaction(
       await replayReplace(root, transaction, failpoint);
       return;
     case 'delete-workspace':
-      await replayDelete(root, transaction, failpoint);
+      await replayDelete(root, transaction, failpoint, recovering);
       return;
   }
 }
@@ -585,6 +587,7 @@ async function replayDelete(
   root: PreparedRoot,
   transaction: PreparedTransaction,
   failpoint?: (point: SkillCatalogTransactionFailpoint) => void,
+  recovering = false,
 ): Promise<void> {
   const intent = transaction.intent as DeleteIntent;
   const target = join(root.skills, intent.skillId);
@@ -602,7 +605,20 @@ async function replayDelete(
     }
     const targetReal = await requireContainedDirectory(root.skills, target);
     await verifyTreeManifest(targetReal, intent.expected);
-    await rename(targetReal, tombstone);
+    try {
+      failpoint?.('before_delete_rename');
+      await rename(targetReal, tombstone);
+    } catch (error) {
+      if (recovering && !(await safeLstat(tombstone))) {
+        const unchangedTarget = await safeLstat(target);
+        if (unchangedTarget?.isDirectory() && !unchangedTarget.isSymbolicLink()) {
+          await verifyTreeManifest(target, intent.expected);
+          await finishTransaction(root.transactions, transaction.directory, failpoint);
+          return;
+        }
+      }
+      throw error;
+    }
     failpoint?.('after_delete_rename_before_directory_sync');
     await syncDirectory(root.skills);
     failpoint?.('after_delete_skills_directory_sync_before_transaction_sync');

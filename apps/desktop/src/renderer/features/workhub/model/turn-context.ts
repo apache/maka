@@ -18,7 +18,7 @@
  */
 
 
-import type { StoredMessage } from '@maka/core/session';
+import type { StoredMessage, ToolCallMessage } from '@maka/core/session';
 
 export interface WorkHubTurnContext {
   readonly answers: { id: string; question: string; answer: string }[];
@@ -28,9 +28,15 @@ export interface WorkHubTurnContext {
 /** Rebuild presentation from durable answers and accepted assignments, never unaccepted tool proposals. */
 export function workHubTurnContexts(messages: readonly StoredMessage[]): Map<string, WorkHubTurnContext> {
   const contexts = new Map<string, WorkHubTurnContext>();
-  const calls = new Map(messages.flatMap((message) =>
-    message.type === 'tool_call' ? [[message.id, message] as const] : [],
-  ));
+  // Providers may reuse a tool-call id in a later turn, so calls are keyed by
+  // turn first and a result can only pair with a call from its own turn.
+  const calls = new Map<string, Map<string, ToolCallMessage>>();
+  for (const message of messages) {
+    if (message.type !== 'tool_call') continue;
+    let byId = calls.get(message.turnId);
+    if (!byId) calls.set(message.turnId, byId = new Map());
+    byId.set(message.id, message);
+  }
   const assignedActions = new Set(messages.flatMap((message) => message.type === 'workhub_coordination' && message.kind === 'delegation_assigned' ? [message.actionId] : []));
   const seen = new Set<string>();
   const contextFor = (turnId: string) => {
@@ -53,8 +59,8 @@ export function workHubTurnContexts(messages: readonly StoredMessage[]): Map<str
       });
     }
     if (message.type !== 'tool_result' || message.isError) continue;
-    const call = calls.get(message.toolUseId);
-    if (!call || call.turnId !== message.turnId) continue;
+    const call = calls.get(message.turnId)?.get(message.toolUseId);
+    if (!call) continue;
     let result: unknown;
     if (message.content.kind === 'json') result = message.content.value;
     else if (message.content.kind === 'text') {

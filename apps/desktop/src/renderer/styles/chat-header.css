@@ -169,6 +169,10 @@
 
 .maka-chat-layout {
   overscroll-behavior: contain;
+  /* Classic Windows/Linux scrollbars consume inline space. Reserve matching
+     gutters so the transcript and composer stay centered as content grows.
+     Platforms with overlay scrollbars do not reserve either gutter. */
+  scrollbar-gutter: stable both-edges;
 }
 
 .maka-chat-shell {

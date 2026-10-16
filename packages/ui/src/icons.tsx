@@ -174,6 +174,7 @@ export {
   Sparkles,
   Square,
   SquarePen,
+  SquareTerminal,
   Sun,
   SunMoon,
   Target,

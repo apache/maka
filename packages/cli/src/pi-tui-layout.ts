@@ -66,8 +66,8 @@ export function fitPendingQueueLines(lines: readonly string[], maxRows: number):
  * The fullscreen chrome's editor/pending-queue row account, isolated in one
  * function so the budget and its consumers cannot drift apart: from the rows
  * available below the transcript, reserve the editor's minimum viewport (the
- * queue trims first), then give the editor whatever remains, never less than
- * that minimum while any budget is left to reserve it from. `rowsAvailable` is
+ * queue trims first), then report the actual remainder so the caller can
+ * detect a deficit and yield optional chrome. `rowsAvailable` is
  * everything already carved out of the terminal rows — the chrome subtracts the
  * status line, activity strip, unread indicator, and the reserved transcript row
  * before calling. The main-screen layout keeps its own (upstream-owned)
@@ -85,7 +85,7 @@ function budgetEditorAndPendingRows(
   const pendingLines = fitPendingQueueLines(allPendingLines, pendingRowsAvailable);
   return {
     pendingLines,
-    editorRows: budget === 0 ? 0 : Math.max(minimumEditorRows, budget - pendingLines.length),
+    editorRows: Math.max(0, budget - pendingLines.length),
   };
 }
 

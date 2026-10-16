@@ -85,6 +85,7 @@ export function useComposerSubmission<Owner extends ComposerSurfaceOwner>(input:
     toastApi,
     shellCopy: getShellCopy(uiLocale).app,
     uiLocale,
+    onFollowLatest: commands.prepareSend,
   });
   // Held for the whole of a send; see ChatComposerRegion.
   const [newTaskSendPending, setNewTaskSendPending] = useState(false);
