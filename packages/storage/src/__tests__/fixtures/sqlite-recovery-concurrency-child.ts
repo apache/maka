@@ -21,7 +21,6 @@ import { existsSync, writeSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { type RuntimeEvent } from '@maka/core/runtime-event';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
-import { type ToolRecoveryFactEnvelope } from '@maka/core/tool-recovery-fact';
 import { type WorkspaceBaselineAuthorityInput } from '@maka/core/workspace-version-authority';
 import { createRuntimeBoundaryCursor, runtimePrefixSegment } from '@maka/core/runtime-boundary';
 import { DEFAULT_TOOL_MODE } from '@maka/core/tool-mode';
@@ -56,12 +55,6 @@ try {
     while (!existsSync(stopPath)) {
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
     }
-  } else if (mode === 'completed') {
-    await store!.commitToolRecoveryBundle(completedBundle());
-  } else if (mode === 'parked') {
-    await store!.commitToolRecoveryBundle(parkedBundle());
-  } else if (mode === 'rebuild') {
-    await store!.rebuildToolProjectionsFromRuntimeEvents();
   } else if (mode === 'workspace_baseline_a' || mode === 'workspace_baseline_b') {
     bindWorkspaceBaselineAuthorityStoreRootInternal(store!, 'a'.repeat(64));
     const result = await commitWorkspaceBaselineInternal(
@@ -176,105 +169,6 @@ try {
 } finally {
   store?.close();
   operationalLease?.close();
-}
-
-function completedBundle() {
-  return {
-    operationId: 'operation-1',
-    reconcileRuntimeEvent: recoveryFact(
-      'completed-reconcile',
-      'maka.tool.reconcile_result',
-      {
-        protocol: 'tool_reconcile_v1',
-        operationId: 'operation-1',
-        observation: 'matches_expected_state',
-        observationSchema: 'state_identity_v1',
-        observationDigest:
-          'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-      },
-      3,
-    ),
-    outcomeRuntimeEvent: outcomeEvent(),
-    decisionRuntimeEvent: recoveryFact(
-      'completed-decision',
-      'maka.tool.recovery_decision',
-      {
-        protocol: 'tool_recovery_v1',
-        operationId: 'operation-1',
-        disposition: 'completed',
-        reasonCode: 'reconcile_matches_expected_state',
-        outcomeEventId: 'completed-outcome',
-        evidenceEventIds: [
-          'call-event-1',
-          'dispatch-event-1',
-          'completed-reconcile',
-          'completed-outcome',
-        ],
-      },
-      5,
-    ),
-  } as const;
-}
-
-function parkedBundle() {
-  return {
-    operationId: 'operation-1',
-    reconcileRuntimeEvent: recoveryFact(
-      'parked-reconcile',
-      'maka.tool.reconcile_result',
-      {
-        protocol: 'tool_reconcile_v1',
-        operationId: 'operation-1',
-        observation: 'diverged',
-        observationSchema: 'state_identity_v1',
-        observationDigest:
-          'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-      },
-      3,
-    ),
-    decisionRuntimeEvent: recoveryFact(
-      'parked-decision',
-      'maka.tool.recovery_decision',
-      {
-        protocol: 'tool_recovery_v1',
-        operationId: 'operation-1',
-        disposition: 'parked',
-        reasonCode: 'reconcile_diverged',
-        evidenceEventIds: ['call-event-1', 'dispatch-event-1', 'parked-reconcile'],
-      },
-      4,
-    ),
-  } as const;
-}
-
-function outcomeEvent(): RuntimeEvent {
-  return {
-    ...baseEvent('completed-outcome', 4),
-    role: 'tool',
-    author: 'tool',
-    content: {
-      kind: 'function_response',
-      id: 'provider-call-1',
-      name: 'Write',
-      result: 'ok',
-    },
-    refs: { operationId: 'operation-1', toolCallId: 'provider-call-1' },
-  };
-}
-
-function recoveryFact(
-  id: string,
-  kind: 'maka.tool.reconcile_result' | 'maka.tool.recovery_decision',
-  payload: Record<string, unknown>,
-  ts: number,
-): RuntimeEvent {
-  return {
-    ...baseEvent(id, ts),
-    actions: {
-      toolRecovery: { kind, version: 1, payload } as unknown as ToolRecoveryFactEnvelope,
-    },
-    refs: { operationId: 'operation-1', toolCallId: 'provider-call-1' },
-  };
 }
 
 function baseEvent(id: string, ts: number): RuntimeEvent {

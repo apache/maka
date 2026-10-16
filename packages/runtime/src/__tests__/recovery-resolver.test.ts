@@ -40,10 +40,9 @@ describe('RecoveryResolver', () => {
       },
     ]);
     assert.equal(resolution.hasCorruption, false);
-    assert.equal(resolution.requiresReconciliation, false);
   });
 
-  it('requires reconciliation after dispatch when no response was committed', () => {
+  it('keeps the outcome unknown after dispatch when no response was committed', () => {
     const resolution = resolveRuntimeRecovery([
       initialEvent('t1_after_preflight_v1'),
       functionCallEvent(),
@@ -62,7 +61,6 @@ describe('RecoveryResolver', () => {
       },
     ]);
     assert.equal(resolution.hasCorruption, false);
-    assert.equal(resolution.requiresReconciliation, true);
   });
 
   it('keeps dispatched operations unresolved instead of inventing durable tool results', () => {
@@ -144,7 +142,6 @@ describe('RecoveryResolver', () => {
 
     assert.equal(resolution.decisions[0]?.status, 'indeterminate');
     assert.equal(resolution.decisions[0]?.reason, 'dispatch_without_response');
-    assert.equal(resolution.requiresReconciliation, true);
   });
 
   it('treats a matching response without dispatch as a completed pre-T1 result', () => {
@@ -166,7 +163,6 @@ describe('RecoveryResolver', () => {
         settlementOrigin: 'pre_t1_synthetic',
       },
     ]);
-    assert.equal(resolution.requiresReconciliation, false);
   });
 
   it('classifies a dispatch without its canonical function call as corruption', () => {
@@ -186,7 +182,6 @@ describe('RecoveryResolver', () => {
       },
     ]);
     assert.equal(resolution.hasCorruption, true);
-    assert.equal(resolution.requiresReconciliation, false);
   });
 
   it('classifies a response without its canonical function call as corruption', () => {
@@ -249,7 +244,6 @@ describe('RecoveryResolver', () => {
       },
     ]);
     assert.equal(resolution.hasCorruption, true);
-    assert.equal(resolution.requiresReconciliation, false);
   });
 
   it('classifies repeated response for one operation as corruption', () => {
@@ -275,7 +269,6 @@ describe('RecoveryResolver', () => {
       },
     ]);
     assert.equal(resolution.hasCorruption, true);
-    assert.equal(resolution.requiresReconciliation, false);
   });
 
   it('rejects a protocol marker added after the first canonical event', () => {
@@ -313,7 +306,6 @@ describe('RecoveryResolver', () => {
     assert.equal(resolution.decisions[0]?.status, 'indeterminate');
     assert.equal(resolution.decisions[0]?.reason, 'legacy_dispatch_unknown');
     assert.equal(resolution.hasCorruption, true);
-    assert.equal(resolution.requiresReconciliation, false);
   });
 
   it('classifies a response linked to a different operation as corruption', () => {

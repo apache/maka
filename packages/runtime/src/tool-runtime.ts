@@ -76,7 +76,11 @@ import { buildToolCallArgs, snapshotToolArgs } from './tool-call-snapshot.js';
 import type { SessionHeader } from '@maka/core/session';
 import type { ToolInvocationRecord } from '@maka/core/usage-stats/types';
 import { redactSecrets } from '@maka/core/redaction';
-import { TOOL_BOUNDARY_PROTOCOL_V1, type RuntimeEvent } from '@maka/core/runtime-event';
+import {
+  TOOL_BOUNDARY_PROTOCOL_V1,
+  type RuntimeEvent,
+  type ToolOutcomeRecoveryMode,
+} from '@maka/core/runtime-event';
 
 import { recordToolArtifactsSafely, type ToolArtifactRecorder } from './tool-artifacts.js';
 import { computerActionFields, describeComputerUseArgsViolation } from './computer-use-codec.js';
@@ -102,7 +106,6 @@ import {
   buildToolOperationId,
   canonicalToolArgsHash,
   type RuntimeCommitSink,
-  type ToolRecoveryMode,
 } from './runtime-commit-sink.js';
 import { AdmissionLimiter } from './admission-limiter.js';
 import type { AgentProfile } from './agent-catalog.js';
@@ -204,8 +207,8 @@ export interface MakaTool<P = any, R = unknown> {
     readonly searchContextSize?: 'low' | 'medium' | 'high';
     readonly maxUses?: number;
   };
-  /** Crash-recovery contract used by the durable tool boundary. */
-  recoveryMode?: ToolRecoveryMode;
+  /** How the durable boundary reports an unknown result; never authorizes automatic retry. */
+  recoveryMode?: ToolOutcomeRecoveryMode;
   /** Step-level admission contract. Exclusive tools cannot share an assistant step. */
   executionSemantics?: 'parallel' | 'exclusive_step';
   /** Nested CodeMode admission. Ordinary tools are nestable by default. */
@@ -1977,7 +1980,9 @@ export class ToolRuntime {
       ...(Object.keys(stateDelta).length > 0 ? { actions: { stateDelta } } : {}),
     };
     const canonicalArgsHash = canonicalToolArgsHash(input.tool.name, input.persistedArgs);
-    const recoveryMode = input.tool.recoveryMode ?? 'never_auto_retry';
+    // Historical tool declarations cannot opt a current dispatch into reconciliation or replay.
+    const recoveryMode =
+      input.tool.recoveryMode === 'outcome_unknown' ? 'outcome_unknown' : 'never_auto_retry';
     const dispatchEvent: RuntimeEvent = {
       id: `${operationId}_dispatch`,
       invocationId,

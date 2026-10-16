@@ -121,6 +121,44 @@ describe('ToolRuntime durable boundary', () => {
     assert.deepEqual(telemetry, ['aborted', 'error']);
   });
 
+  it('records only unknown-reporting policies even for historical tool declarations', async () => {
+    for (const mode of [
+      undefined,
+      'never_auto_retry',
+      'outcome_unknown',
+      'replay_safe',
+      'idempotent',
+      'reconcile',
+      'reattach',
+    ]) {
+      const prepared: ToolPreparedCommit[] = [];
+      let executions = 0;
+      const harness = makeHarness({
+        commitToolPrepared: async (input) => {
+          prepared.push(input);
+          return { created: true, runtimeEventSeq: 1 };
+        },
+        commitToolOutcome: async () => ({ created: true, runtimeEventSeq: 2 }),
+      });
+      const target = {
+        ...tool(() => {
+          executions += 1;
+          return 'ok';
+        }),
+        recoveryMode: mode,
+      } as unknown as MakaTool;
+      await harness.execute(target);
+      const expected = mode === 'outcome_unknown' ? 'outcome_unknown' : 'never_auto_retry';
+      assert.equal(prepared[0]?.recoveryMode, expected, String(mode));
+      assert.equal(
+        prepared[0]?.dispatchRuntimeEvent.actions?.toolDispatch?.recoveryMode,
+        expected,
+        String(mode),
+      );
+      assert.equal(executions, 1);
+    }
+  });
+
   it('does not invoke the tool or publish a result when T1 fails', async () => {
     let implementationCalls = 0;
     const harness = makeHarness({
@@ -882,7 +920,7 @@ function tool(impl: MakaTool['impl']): MakaTool {
     name: 'Read',
     description: 'read',
     parameters: {},
-    recoveryMode: 'replay_safe',
+    recoveryMode: 'never_auto_retry',
     impl,
   };
 }

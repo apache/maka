@@ -22,6 +22,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
+import { DatabaseSync } from 'node:sqlite';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import { createSqliteRuntimeStore } from '@maka/storage/sqlite-runtime-store';
@@ -36,7 +37,7 @@ const OBSERVATION_DIGEST =
   'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' as const;
 
 describe('recovery authority equivalence', () => {
-  it('gives online projection, reopen, rebuild, and Resolver one terminal interpretation', async () => {
+  it('gives historical projection, reopen, rebuild, and Resolver one terminal interpretation', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-recovery-equivalence-'));
     const dbPath = join(root, 'runtime.sqlite');
     const store = createSqliteRuntimeStore(dbPath);
@@ -52,12 +53,8 @@ describe('recovery authority equivalence', () => {
         recoveryMode: 'reconcile',
         committedAt: 10,
       });
-      await store.commitToolRecoveryBundle({
-        operationId: 'operation-1',
-        reconcileRuntimeEvent: reconcileEvent(),
-        outcomeRuntimeEvent: outcomeEvent(),
-        decisionRuntimeEvent: decisionEvent(),
-      });
+      seedHistoricalRecoveryTail(dbPath, [reconcileEvent(), outcomeEvent(), decisionEvent()]);
+      await store.rebuildToolProjectionsFromRuntimeEvents();
 
       const immutable = await store.readImmutableRuntimeEvents('session-1', 'run-1');
       const online = await store.readToolOperation('operation-1');
@@ -77,7 +74,6 @@ describe('recovery authority equivalence', () => {
           responseIsError: false,
         },
       ]);
-      assert.equal(resolution.requiresReconciliation, false);
 
       store.close();
       const reopened = createSqliteRuntimeStore(dbPath);
@@ -149,11 +145,8 @@ describe('recovery authority equivalence', () => {
             committedAt: 20,
           });
         } else if ('parked' in scenario) {
-          await store.commitToolRecoveryBundle({
-            operationId: 'operation-1',
-            reconcileRuntimeEvent: reconcileEvent('diverged'),
-            decisionRuntimeEvent: parkedDecisionEvent(),
-          });
+          seedHistoricalRecoveryTail(dbPath, [reconcileEvent('diverged'), parkedDecisionEvent()]);
+          await store.rebuildToolProjectionsFromRuntimeEvents();
         }
 
         const immutable = await store.readImmutableRuntimeEvents('session-1', 'run-1');
@@ -195,7 +188,6 @@ describe('recovery authority equivalence', () => {
       ['duplicate_event_id', 'semantic_lane_conflict'],
     );
     assert.equal(resolution.hasCorruption, true);
-    assert.equal(resolution.requiresReconciliation, false);
   });
 
   it('treats a valid parked recovery bundle as terminal', () => {
@@ -220,7 +212,6 @@ describe('recovery authority equivalence', () => {
       },
     ]);
     assert.equal(resolution.hasCorruption, false);
-    assert.equal(resolution.requiresReconciliation, false);
 
     const plan = buildResumePlanFromRuntimeEvents(events);
     assert.equal(plan.disposition, 'blocked');
@@ -393,4 +384,32 @@ function decisionEvent(): RuntimeEvent {
     },
     refs: { operationId: 'operation-1', toolCallId: 'provider-call-1' },
   });
+}
+
+/** Read-compatibility fixture: these facts were persisted by the retired writer. */
+function seedHistoricalRecoveryTail(dbPath: string, events: readonly RuntimeEvent[]): void {
+  const db = new DatabaseSync(dbPath);
+  try {
+    const insert = db.prepare(`
+      INSERT INTO runtime_events (
+        event_id, session_id, invocation_id, run_id, turn_id,
+        event_seq, event_kind, payload_json, committed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    for (const [index, event] of events.entries()) {
+      insert.run(
+        event.id,
+        event.sessionId,
+        event.invocationId,
+        event.runId,
+        event.turnId,
+        index + 3,
+        event.content?.kind ?? 'runtime_fact',
+        JSON.stringify(event),
+        event.ts,
+      );
+    }
+  } finally {
+    db.close();
+  }
 }

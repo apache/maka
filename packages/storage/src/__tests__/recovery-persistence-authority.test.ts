@@ -23,11 +23,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, it } from 'node:test';
-import { TOOL_RECOVERY_BUNDLE_CAPABILITY_V1 } from '@maka/core/runtime-event-store';
 import { type RuntimeEvent } from '@maka/core/runtime-event';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import { createSqliteRuntimeStore } from '../sqlite-runtime-store.js';
-import type { SqliteRuntimeStoreFailpoint } from '../sqlite-runtime-store.js';
 
 const ARGS_HASH = canonicalToolArgsHash('Write', {
   path: 'notes.txt',
@@ -232,7 +230,6 @@ describe('SQLite recovery persistence authority', () => {
           (await upgraded.readToolOperation('legacy-completed-operation'))?.currentState,
           'outcome_committed',
         );
-        assert.equal(upgraded.recoveryBundleCapability, TOOL_RECOVERY_BUNDLE_CAPABILITY_V1);
       } finally {
         upgraded.close();
       }
@@ -267,7 +264,7 @@ describe('SQLite recovery persistence authority', () => {
     await withStore(async (store) => {
       await assert.rejects(
         store.appendRuntimeEvent('session-1', 'run-1', reconcileEvent()),
-        /atomic recovery bundle writer/,
+        /Historical tool recovery facts are read-only/,
       );
       await assert.rejects(
         store.importRuntimeEventsBatch({
@@ -275,7 +272,7 @@ describe('SQLite recovery persistence authority', () => {
           runId: 'run-1',
           events: [reconcileEvent()],
         }),
-        /atomic recovery bundle writer/,
+        /Historical tool recovery facts are read-only/,
       );
       await assert.rejects(
         store.appendRuntimeEvent('session-1', 'run-1', dispatchEvent()),
@@ -460,16 +457,16 @@ describe('SQLite recovery persistence authority', () => {
     });
   });
 
-  it('atomically settles completed recovery and rebuilds the same projection after reopen', async () => {
+  it('reads and rebuilds historical completed recovery after reopen', async () => {
     await withStore(async (store, dbPath) => {
-      assert.equal(store.recoveryBundleCapability, TOOL_RECOVERY_BUNDLE_CAPABILITY_V1);
-      await prepare(store);
-      await store.commitToolRecoveryBundle({
-        operationId: 'operation-1',
-        reconcileRuntimeEvent: reconcileEvent(),
-        outcomeRuntimeEvent: outcomeEvent(),
-        decisionRuntimeEvent: decisionEvent(),
-      });
+      seedHistoricalRecovery(dbPath, [
+        callEvent(),
+        dispatchEvent(),
+        reconcileEvent(),
+        outcomeEvent(),
+        decisionEvent(),
+      ]);
+      await store.rebuildToolProjectionsFromRuntimeEvents();
 
       const onlineOperation = await store.readToolOperation('operation-1');
       const onlineJournal = await store.readToolJournal('operation-1');
@@ -491,6 +488,39 @@ describe('SQLite recovery persistence authority', () => {
         });
         assert.deepEqual(await reopened.readToolOperation('operation-1'), onlineOperation);
         assert.deepEqual(await reopened.readToolJournal('operation-1'), onlineJournal);
+      } finally {
+        reopened.close();
+      }
+    });
+  });
+
+  it('preserves historical parked recovery without synthesizing an outcome', async () => {
+    await withStore(async (store, dbPath) => {
+      const events = [
+        callEvent(),
+        dispatchEvent(),
+        reconcileEvent('diverged'),
+        decisionEvent('parked'),
+      ];
+      seedHistoricalRecovery(dbPath, events);
+      await store.rebuildToolProjectionsFromRuntimeEvents();
+      assert.equal((await store.readToolOperation('operation-1'))?.currentState, 'recovery_parked');
+      assert.deepEqual(await store.listUnsettledToolOperations(), []);
+      assert.deepEqual(await store.readImmutableRuntimeEvents('session-1', 'run-1'), events);
+      const journal = await store.readToolJournal('operation-1');
+      assert.deepEqual(
+        journal.map(({ state }) => state),
+        ['prepared', 'reconcile_observed', 'recovery_parked'],
+      );
+      store.close();
+      const reopened = createSqliteRuntimeStore(dbPath);
+      try {
+        await reopened.rebuildToolProjectionsFromRuntimeEvents();
+        assert.equal(
+          (await reopened.readToolOperation('operation-1'))?.currentState,
+          'recovery_parked',
+        );
+        assert.deepEqual(await reopened.readToolJournal('operation-1'), journal);
       } finally {
         reopened.close();
       }
@@ -578,77 +608,6 @@ describe('SQLite recovery persistence authority', () => {
           store.readToolJournal('operation-2'),
         ]),
         onlineJournals,
-      );
-    });
-  });
-
-  it('rolls the whole recovery bundle back at every internal crash boundary', async () => {
-    for (const failpoint of [
-      'after_recovery_reconcile',
-      'after_recovery_outcome',
-      'after_recovery_decision',
-    ] as const satisfies readonly SqliteRuntimeStoreFailpoint[]) {
-      const root = await mkdtemp(join(tmpdir(), 'maka-recovery-failpoint-'));
-      const dbPath = join(root, 'runtime.sqlite');
-      let active: SqliteRuntimeStoreFailpoint | undefined;
-      const store = createSqliteRuntimeStore(dbPath, {
-        failpoint: (point) => {
-          if (point === active) throw new Error(`recovery failpoint: ${point}`);
-        },
-      });
-      try {
-        await prepare(store);
-        active = failpoint;
-        await assert.rejects(
-          store.commitToolRecoveryBundle({
-            operationId: 'operation-1',
-            reconcileRuntimeEvent: reconcileEvent(),
-            outcomeRuntimeEvent: outcomeEvent(),
-            decisionRuntimeEvent: decisionEvent(),
-          }),
-          new RegExp(failpoint),
-        );
-        active = undefined;
-        assert.deepEqual(
-          (await store.readImmutableRuntimeEvents('session-1', 'run-1')).map(({ id }) => id),
-          ['call-event-1', 'dispatch-event-1'],
-        );
-        assert.equal((await store.readToolOperation('operation-1'))?.currentState, 'prepared');
-        assert.deepEqual(
-          (await store.readToolJournal('operation-1')).map(({ state }) => state),
-          ['prepared'],
-        );
-      } finally {
-        store.close();
-        await rm(root, { recursive: true, force: true });
-      }
-    }
-  });
-
-  it('makes one parked bundle terminal and only permits its exact retry', async () => {
-    await withStore(async (store) => {
-      await prepare(store);
-      const parked = {
-        operationId: 'operation-1',
-        reconcileRuntimeEvent: reconcileEvent('diverged'),
-        decisionRuntimeEvent: decisionEvent('parked'),
-      } as const;
-      await store.commitToolRecoveryBundle(parked);
-      await store.commitToolRecoveryBundle(parked);
-
-      assert.equal((await store.readToolOperation('operation-1'))?.currentState, 'recovery_parked');
-      assert.deepEqual(
-        (await store.readToolJournal('operation-1')).map(({ state }) => state),
-        ['prepared', 'reconcile_observed', 'recovery_parked'],
-      );
-      await assert.rejects(
-        store.commitToolRecoveryBundle({
-          operationId: 'operation-1',
-          reconcileRuntimeEvent: reconcileEvent(),
-          outcomeRuntimeEvent: outcomeEvent(),
-          decisionRuntimeEvent: decisionEvent(),
-        }),
-        /duplicate_event_id/,
       );
     });
   });
@@ -748,58 +707,6 @@ describe('SQLite recovery persistence authority', () => {
     });
   });
 
-  it('rejects recovery evidence whose JSON bytes can rewrite validated event ids', async () => {
-    await withStore(async (store) => {
-      await prepare(store);
-      const decision = decisionEvent();
-      const fact = decision.actions?.toolRecovery;
-      if (fact?.kind !== 'maka.tool.recovery_decision') throw new Error('invalid fixture');
-      Object.defineProperty(fact.payload.evidenceEventIds, 'toJSON', {
-        value: () => ['call-event-1', 'dispatch-event-1', 'reconcile-event-1', 'forged-outcome'],
-      });
-
-      await assert.rejects(
-        store.commitToolRecoveryBundle({
-          operationId: 'operation-1',
-          reconcileRuntimeEvent: reconcileEvent(),
-          outcomeRuntimeEvent: outcomeEvent(),
-          decisionRuntimeEvent: decision,
-        }),
-        /losslessly serializable/,
-      );
-      assert.equal((await store.readToolOperation('operation-1'))?.currentState, 'prepared');
-    });
-  });
-
-  it('rejects row/payload identity corruption through the online bundle writer', async () => {
-    await withStore(async (store, dbPath) => {
-      await prepare(store);
-      store.close();
-
-      const db = new DatabaseSync(dbPath);
-      db.prepare(`UPDATE runtime_events SET run_id = 'run-other' WHERE event_id = ?`).run(
-        'call-event-1',
-      );
-      db.close();
-
-      const reopened = createSqliteRuntimeStore(dbPath);
-      try {
-        await assert.rejects(
-          reopened.commitToolRecoveryBundle({
-            operationId: 'operation-1',
-            reconcileRuntimeEvent: reconcileEvent(),
-            outcomeRuntimeEvent: outcomeEvent(),
-            decisionRuntimeEvent: decisionEvent(),
-          }),
-          /row\/payload identity mismatch/,
-        );
-        assert.equal((await reopened.readToolOperation('operation-1'))?.currentState, 'prepared');
-      } finally {
-        reopened.close();
-      }
-    });
-  });
-
   it('fails an exact T1 retry closed when the immutable ledger is already corrupt', async () => {
     await withStore(async (store, dbPath) => {
       await prepare(store);
@@ -838,28 +745,6 @@ describe('SQLite recovery persistence authority', () => {
           }),
           /duplicate_call/,
         );
-      } finally {
-        reopened.close();
-      }
-    });
-  });
-
-  it('fails an exact recovery retry closed when the immutable ledger is already corrupt', async () => {
-    await withStore(async (store, dbPath) => {
-      await prepare(store);
-      const bundle = {
-        operationId: 'operation-1',
-        reconcileRuntimeEvent: reconcileEvent(),
-        outcomeRuntimeEvent: outcomeEvent(),
-        decisionRuntimeEvent: decisionEvent(),
-      } as const;
-      await store.commitToolRecoveryBundle(bundle);
-      store.close();
-      injectDuplicateCall(dbPath, 6);
-
-      const reopened = createSqliteRuntimeStore(dbPath);
-      try {
-        await assert.rejects(reopened.commitToolRecoveryBundle(bundle), /duplicate_call/);
       } finally {
         reopened.close();
       }
@@ -1207,4 +1092,34 @@ function decisionEvent(disposition: 'completed' | 'parked' = 'completed'): Runti
     },
     refs: { operationId: 'operation-1', toolCallId: 'provider-call-1' },
   });
+}
+
+/** Seed already-persisted events without exposing a production recovery writer. */
+function seedHistoricalRecovery(dbPath: string, events: readonly RuntimeEvent[]): void {
+  const db = new DatabaseSync(dbPath);
+  try {
+    const insert = db.prepare(`
+      INSERT INTO runtime_events (
+        event_id, session_id, invocation_id, run_id, turn_id,
+        event_seq, event_kind, payload_json, committed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    for (const [index, event] of events.entries()) {
+      const kind =
+        event.content?.kind ?? (event.actions?.toolDispatch ? 'tool_dispatch' : 'runtime_fact');
+      insert.run(
+        event.id,
+        event.sessionId,
+        event.invocationId,
+        event.runId,
+        event.turnId,
+        index + 1,
+        kind,
+        JSON.stringify(event),
+        event.ts,
+      );
+    }
+  } finally {
+    db.close();
+  }
 }

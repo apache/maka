@@ -137,5 +137,5 @@ export function assertOutcomeIdentity(operation: ToolOperationRecord, event: Run
 
 function assertNoReservedRecoveryFact(event: RuntimeEvent): void {
   if (event.actions?.toolRecovery !== undefined)
-    throw new Error('Tool recovery facts require the atomic recovery bundle writer');
+    throw new Error('Historical tool recovery facts are read-only');
 }

@@ -561,7 +561,6 @@ export function buildAgentGraphSupervisorTools(
       'Inspect the durable graph. Use mode=latest without a cursor for the current view; use mode=page only with a nextCursor returned by an earlier view.',
     parameters: viewSchema,
     categoryHint: 'read',
-    recoveryMode: 'replay_safe',
     impl: async (toolInput) => {
       const view = await readToolGraphView(
         input.scheduleStore,
@@ -584,7 +583,6 @@ export function buildAgentGraphSupervisorTools(
       'Adjust the graph durably. Always set operation. Prefer target_kind=new_preset with a user-approved subagent_id from agent_list; legacy agent_id remains supported. Unrelated provider-filled optional fields are ignored.',
     parameters: updateSchema,
     categoryHint: 'subagent',
-    recoveryMode: 'idempotent',
     impl: async (toolInput, context) => {
       const request = compileAgentGraphScheduleUpdate({
         graphId,
@@ -618,7 +616,6 @@ export function buildAgentGraphSupervisorTools(
       'End this supervisor turn successfully while scheduled graph work continues. Call this after the current scheduling wave has no immediate decision; do not poll, sleep, or emit a waiting message. The host will start a new supervisor turn at the next durable graph checkpoint. This does not finish or close the graph.',
     parameters: yieldSchema,
     categoryHint: 'subagent',
-    recoveryMode: 'replay_safe',
     executionSemantics: 'exclusive_step',
     impl: async ({ reason }) => {
       const permit = input.prepareYieldPermit?.();
