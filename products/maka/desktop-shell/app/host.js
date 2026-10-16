@@ -63,14 +63,15 @@ export async function operation(endpoint, method, input, attachments) {
 }
 
 /**
- * Reads one `agent.history` page, asking again with the same fence and
- * position while the Host answers `preparing` (as the TUI does,
+ * Reads one `history` page of an Agent endpoint (`agent`, or WorkHub's
+ * `coordinator`), asking again with the same fence and position while the
+ * Host answers `preparing` (as the TUI does,
  * plugins/agent/agent-screen/results.ts:705). Resolves with the ready page and
  * the number of calls it took.
  */
-export async function readHistory(input) {
+export async function readHistory(input, endpoint = 'agent') {
   for (let calls = 1; ; calls += 1) {
-    const page = await query('agent', 'history', input);
+    const page = await query(endpoint, 'history', input);
     if (input.through !== undefined && page.through !== input.through) {
       throw new Error(`history answered fence ${page.through} for ${input.through}`);
     }
@@ -79,13 +80,13 @@ export async function readHistory(input) {
 }
 
 /**
- * Reads one excerpt of a transcript field with `agent.source`, asking again
- * while the Host answers `preparing` (as the TUI's tool details do,
- * plugins/agent/tool-details/index.ts:156-180). Resolves with the source.
+ * Reads one excerpt of a transcript field with an Agent endpoint's `source`,
+ * asking again while the Host answers `preparing` (as the TUI's tool details
+ * do, plugins/agent/tool-details/index.ts:156-180). Resolves with the source.
  */
-export async function readSource(input) {
+export async function readSource(input, endpoint = 'agent') {
   for (;;) {
-    const page = await query('agent', 'source', input);
+    const page = await query(endpoint, 'source', input);
     if (page.kind === 'ready') return page.source;
   }
 }

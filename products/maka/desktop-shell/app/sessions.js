@@ -32,6 +32,7 @@ import {
   dot,
   ghostButton,
   iconButton,
+  segmentedControl,
   compactAge,
 } from './theme.js';
 import { t } from './locale.js';
@@ -254,14 +255,16 @@ function groups(sessions, grouping) {
 }
 
 /**
- * The sidebar: the wordmark, New task, the grouping control, the task groups
- * and the Host's state with the Settings button.
+ * The sidebar: the wordmark, New task, WorkHub, the grouping control, the
+ * task groups and the Host's state with the Settings button.
  * It takes the column's height left under the window strip (main.js).
  * @param {SessionCatalog} catalog
  * @param {SidebarState} ui
  * @param {string | null} selectedId
- * @param {{ select: (session: object) => void, newTask: () => void, newIn: (session: object) => void,
- *   settings: () => void, drafting: boolean }} actions
+ * @param {{ select: (session: object) => void, newTask: () => void, workhub: () => void,
+ *   newIn: (session: object) => void, settings: () => void, drafting: boolean,
+ *   inWorkHub: boolean }} actions
+ *   `drafting` and `inWorkHub` say which of New task and WorkHub shows as selected
  */
 export function sidebar(catalog, ui, selectedId, actions, cx) {
   const m = palette(cx);
@@ -298,6 +301,18 @@ export function sidebar(catalog, ui, selectedId, actions, cx) {
             .child(div().flex_1().child(t('newTask')))
             .child(text('⌘N', 'small', m.inkMuted).flex_none()),
         )
+        .child(
+          typeset(ghostButton('open-workhub', cx), 'body')
+            .w_full()
+            .h(32)
+            .px(8)
+            .gap(8)
+            .justify_start()
+            .when(actions.inWorkHub, (el) => el.bg(m.selected))
+            .on_click(() => actions.workhub())
+            .child(icon('workhub', 16, m.inkMuted))
+            .child(div().flex_1().child(t('workhubName'))),
+        )
         .child(groupingControl(ui, cx)),
     )
     .child(
@@ -325,35 +340,16 @@ export function sidebar(catalog, ui, selectedId, actions, cx) {
 }
 
 function groupingControl(ui, cx) {
-  const m = palette(cx);
-  const dark = cx.theme().is_dark;
-  const segment = (grouping, label) => {
-    const selected = ui.grouping === grouping;
-    return typeset(Button.new(`group-by-${grouping}`), 'smallLabel')
-      .flex_1()
-      .h(24)
-      .items_center()
-      .justify_center()
-      .rounded(8)
-      .text_color(selected ? m.ink : m.inkMuted)
-      .when(selected, (el) =>
-        dark
-          ? el.bg(m.activeRow).border_1().border_color(m.border)
-          : el.bg(m.plate).shadow_xs(),
-      )
-      .when(!selected, (el) => el.hover((style) => style.text_color(m.ink)))
-      .on_click(() => ui.group(grouping))
-      .child(label);
-  };
-  return h_flex()
-    .mt(8)
-    .h(28)
-    .p(2)
-    .gap(2)
-    .rounded(10)
-    .bg(dark ? m.wash : m.sunken)
-    .child(segment('time', t('groupByTime')))
-    .child(segment('project', t('groupByProject')));
+  return segmentedControl(
+    'group-by',
+    [
+      ['time', t('groupByTime')],
+      ['project', t('groupByProject')],
+    ],
+    ui.grouping,
+    (grouping) => ui.group(grouping),
+    cx,
+  ).mt(8);
 }
 
 function taskGroup(group, ui, selectedId, actions, cx) {

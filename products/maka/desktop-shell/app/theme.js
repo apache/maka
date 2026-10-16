@@ -424,6 +424,43 @@ export function iconButton(id, name, cx, size = 28, glyph = 16) {
     .child(icon(name, glyph, m.inkMuted));
 }
 
+/**
+ * Two or more choices side by side, one of them current, as the sidebar's
+ * grouping control draws them: 28 high on the sunken fill, the current
+ * segment raised on the plate (in the dark, on the active row fill with a
+ * ring). `choices` are `[value, label]` pairs; a segment's id is
+ * `${id}-${value}`. The segments share the control's width.
+ */
+export function segmentedControl(id, choices, current, choose, cx) {
+  const m = palette(cx);
+  const dark = cx.theme().is_dark;
+  const segment = ([value, label]) => {
+    const selected = value === current;
+    return typeset(Button.new(`${id}-${value}`), 'smallLabel')
+      .flex_1()
+      .h(24)
+      .items_center()
+      .justify_center()
+      .rounded(8)
+      .text_color(selected ? m.ink : m.inkMuted)
+      .when(selected, (el) =>
+        dark
+          ? el.bg(m.activeRow).border_1().border_color(m.border)
+          : el.bg(m.plate).shadow_xs(),
+      )
+      .when(!selected, (el) => el.hover((style) => style.text_color(m.ink)))
+      .on_click(() => choose(value))
+      .child(label);
+  };
+  return h_flex()
+    .h(28)
+    .p(2)
+    .gap(2)
+    .rounded(10)
+    .bg(dark ? m.wash : m.sunken)
+    .children(choices.map(segment));
+}
+
 /** The surface a menu or popover draws on. */
 export function menuSurface(cx) {
   const m = palette(cx);

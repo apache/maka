@@ -172,11 +172,14 @@ export class Transcript {
   /**
    * @param {{ id: string, title: string }} session the catalog entry
    * @param {{ changed: () => void, report: (message: string) => void }} hooks
+   * @param {string} endpoint the Agent endpoint that holds the session: `agent`
+   *   for a task, `coordinator` for WorkHub's conversation; every call goes to it
    */
-  constructor(session, hooks) {
+  constructor(session, hooks, endpoint = 'agent') {
     this.session = session;
     this.id = session.id;
     this.hooks = hooks;
+    this.endpoint = endpoint;
     this.rows = [];
     this.live = [];
     this.pending = [];
@@ -201,7 +204,7 @@ export class Transcript {
     this.watchHandle = null;
     this.watchLast = 0;
     /** What the agent is waiting on the user for. */
-    this.interactions = new Interactions(this.id, hooks);
+    this.interactions = new Interactions(this.id, hooks, endpoint);
     this.lastOutcome = null;
     /** The session's backend preference from `agent.observe`, or null. */
     this.backend = null;
@@ -236,7 +239,7 @@ export class Transcript {
   async open() {
     const started = Date.now();
     try {
-      const observed = await query('agent', 'observe', { sessionId: this.id });
+      const observed = await query(this.endpoint, 'observe', { sessionId: this.id });
       if (this.closed) return;
       this.acceptObservation(observed);
       this.parts = observed.parts.map((part) => ({
@@ -250,7 +253,7 @@ export class Transcript {
         observed.through,
         ...observed.parts.map((part) => part.startSequence - 1),
       );
-      const handle = await subscribe('agent', 'watch', { sessionId: this.id, after });
+      const handle = await subscribe(this.endpoint, 'watch', { sessionId: this.id, after });
       if (this.closed) {
         await close(handle);
         return;
@@ -261,7 +264,7 @@ export class Transcript {
       const fence = observed.through;
       let position = { kind: 'tail' };
       for (;;) {
-        const { page, calls } = await readHistory(this.historyInput(fence, position));
+        const { page, calls } = await readHistory(this.historyInput(fence, position), this.endpoint);
         this.stats.tailCalls += calls;
         if (this.closed) return;
         if (page.chunks.length === 0 && page.before !== null) {
@@ -294,8 +297,8 @@ export class Transcript {
    * `{ turnId, message }`, with the whole text of the message that started
    * it (without the lines history adds for its files: sending again sends
    * the text alone), or null as `message` when only part of that text is
-   * loaded or it has none. Null otherwise. A stopped turn is left alone: the
-   * user stopped it.
+   * loaded, it has none, or a WorkHub notice started the turn. Null
+   * otherwise. A stopped turn is left alone: the user stopped it.
    */
   failedTurn() {
     if (!this.ready || this.run !== null || this.pending.length > 0 || this.live.length > 0) {
@@ -305,8 +308,10 @@ export class Transcript {
     if (last?.timing?.finished?.outcome !== 'failed') return null;
     const start = this.rows.find((row) => row.turnId === last.turnId && row.role === 'user');
     if (!start) return null;
+    // A turn a WorkHub notice started is WorkHub's to start again, not the user's.
+    const notice = WORKHUB_NOTICE_ID.test(start.messageId ?? '');
     const whole = start.fragments[0]?.offset === 0 && utf8Length(start.text) === start.totalBytes;
-    const message = whole ? ownText(start) : '';
+    const message = whole && !notice ? ownText(start) : '';
     return { turnId: last.turnId, message: message.trim() !== '' ? message : null };
   }
 
@@ -488,7 +493,7 @@ export class Transcript {
   /** Re-reads `run` after a run fact; an older answer than the facts already seen is ignored. */
   async observeRun() {
     try {
-      const observed = await query('agent', 'observe', { sessionId: this.id });
+      const observed = await query(this.endpoint, 'observe', { sessionId: this.id });
       if (this.closed) return;
       this.acceptObservation(observed);
       this.hooks.changed();
@@ -526,7 +531,7 @@ export class Transcript {
         let position = this.afterPosition();
         let through = 0;
         for (;;) {
-          const { page } = await readHistory(this.historyInput(fence, position));
+          const { page } = await readHistory(this.historyInput(fence, position), this.endpoint);
           through = page.through;
           if (this.closed) return;
           if (this.rows.length === 0 && this.before === null && position.kind === 'tail') {
@@ -630,7 +635,7 @@ export class Transcript {
     try {
       let position = { kind: 'before', cursor: this.before };
       for (;;) {
-        const read = await readHistory(this.historyInput(this.olderFence, position));
+        const read = await readHistory(this.historyInput(this.olderFence, position), this.endpoint);
         calls += read.calls;
         if (this.closed) return calls;
         const page = read.page;
@@ -684,6 +689,12 @@ export class Transcript {
       return;
     }
     const item = this.view?.items.find((entry) => entry.key === key);
+    if (item?.kind === 'notice') {
+      // A WorkHub notice shows its task in WorkHub's Tasks tab.
+      const { taskId, worker } = item.notice;
+      if (taskId !== null) this.hooks.openTask?.(taskId, worker);
+      return;
+    }
     if (item?.kind !== 'thinking' && item?.kind !== 'tool') return;
     if (!this.expanded.delete(key)) this.expanded.add(key);
     this.expandedVersion += 1;
@@ -760,15 +771,18 @@ export class Transcript {
   }
 
   excerpt(sequence, field, path, position) {
-    return readSource({
-      sessionId: this.id,
-      // An event fence, not a row position: every loaded row is at or below it.
-      through: this.latestKnown,
-      source: { kind: 'sequence', sequence },
-      field,
-      path: path.length > 0 ? path : null,
-      position,
-    });
+    return readSource(
+      {
+        sessionId: this.id,
+        // An event fence, not a row position: every loaded row is at or below it.
+        through: this.latestKnown,
+        source: { kind: 'sequence', sequence },
+        field,
+        path: path.length > 0 ? path : null,
+        position,
+      },
+      this.endpoint,
+    );
   }
 
   /** Shows a sent message, with the files sent with it (`{ name, bytes }`), until history records it. */
@@ -847,6 +861,8 @@ function displayItems(transcript) {
     } else if (row.role === 'compaction') {
       // As in the TUI, a checkpoint shows only once it was adopted.
       if (row.compaction !== null) items.push({ key: row.key, kind: 'compaction', row });
+    } else if (row.role === 'user' && WORKHUB_NOTICE_ID.test(row.messageId ?? '')) {
+      items.push({ key: row.key, kind: 'notice', row, notice: workhubNotice(row) });
     } else {
       items.push({ key: row.key, kind: row.role === 'user' ? 'user' : 'assistant', row });
     }
@@ -893,8 +909,12 @@ function displayItems(transcript) {
   return items;
 }
 
-/** The selected task's transcript: the measured list in the reading column, and its scrollbar. */
-export function transcriptPane(transcript, loadOlder, cx) {
+/**
+ * The selected task's transcript: the measured list in the reading column,
+ * and its scrollbar. `empty`, when given, is what a transcript with no
+ * messages shows instead of saying so.
+ */
+export function transcriptPane(transcript, loadOlder, cx, empty = null) {
   const m = palette(cx);
   // One snapshot for this render; the list's callbacks run during later
   // layouts and must agree with the count given here.
@@ -910,7 +930,11 @@ export function transcriptPane(transcript, loadOlder, cx) {
       el
         .items_center()
         .justify_center()
-        .child(text(transcript.ready ? t('noMessagesYet') : t('loading'), 'body', m.inkMuted)),
+        .child(
+          transcript.ready && empty !== null
+            ? empty
+            : text(transcript.ready ? t('noMessagesYet') : t('loading'), 'body', m.inkMuted),
+        ),
     )
     .when(transcript.ready && hasRows, (el) =>
       el
@@ -959,10 +983,7 @@ function itemBody(item, transcript, cx) {
     case 'user':
       return userMessage(item.row, cx);
     case 'assistant':
-      return typeset(div(), 'reading')
-        .w_full()
-        .text_color(m.ink)
-        .child(TextView.markdown(`md-${item.key}`, item.row.text).text_style(markdownStyle(cx)));
+      return markdownText(`md-${item.key}`, item.row.text, cx);
     case 'thinking':
       return thinkingRow(item, cx);
     case 'tool':
@@ -973,6 +994,8 @@ function itemBody(item, transcript, cx) {
       return failureRow(item, cx);
     case 'compaction':
       return compactionRow(item, cx);
+    case 'notice':
+      return noticeRow(item, transcript, cx);
     case 'working':
       return h_flex()
         .h(24)
@@ -983,6 +1006,17 @@ function itemBody(item, transcript, cx) {
     default:
       return div();
   }
+}
+
+/**
+ * Markdown as an assistant's reply reads: the reading style and the native
+ * client's markdown look. WorkHub's task replies use it too.
+ */
+export function markdownText(id, source, cx) {
+  return typeset(div(), 'reading')
+    .w_full()
+    .text_color(palette(cx).ink)
+    .child(TextView.markdown(id, source).text_style(markdownStyle(cx)));
 }
 
 /**
@@ -1032,6 +1066,100 @@ function failureRow(item, cx) {
     .items_start()
     .child(div().flex_none().pt(2).child(icon('status-failed', 14, m.destructive)))
     .child(text(t('runError', { value: item.row.text }), 'small', m.ink).flex_1().min_w_0());
+}
+
+/**
+ * The message id of a WorkHub notice: when a task ends, WorkHub posts a
+ * message into the coordinator's conversation as `m_<identity>`, the identity
+ * being `wh_` and a SHA-256 (plugins/agent/native/src/workhub/tasks/
+ * notifications.rs, owner/notifications.rs). The user's own messages there
+ * have the session's id after `m_`, which goes on with `_` and more hex.
+ * History marks nothing else about it, so the id is what tells it apart.
+ */
+const WORKHUB_NOTICE_ID = /^m_wh_[0-9a-f]{64}$/;
+const WORKHUB_NOTICE_TEXT = /^WorkHub task (wt_[0-9a-f]{64}) has ended\./;
+const WORKHUB_NOTICE_OBSERVATION = '\n\nOriginal worker observation:\n';
+
+/**
+ * What a WorkHub notice says, from its text: `{ taskId, worker, outcome }`,
+ * the outcome being 'completed', 'failed', 'cancelled', 'rejected' or null
+ * when the observation cannot be read (the text is not all loaded, or its
+ * form changed). The text is the Host's fixed English, for the coordinator's
+ * model; the row says it in the user's words.
+ */
+function workhubNotice(row) {
+  const found = WORKHUB_NOTICE_TEXT.exec(row.text);
+  const notice = { taskId: found?.[1] ?? null, worker: null, outcome: null };
+  const at = row.text.indexOf(WORKHUB_NOTICE_OBSERVATION);
+  if (at < 0) return notice;
+  try {
+    const task = JSON.parse(row.text.slice(at + WORKHUB_NOTICE_OBSERVATION.length));
+    const status = task?.status ?? {};
+    const work = status.progress ?? {};
+    notice.worker = typeof task?.worker === 'string' ? task.worker : null;
+    notice.outcome =
+      status.kind === 'cancelled' || work.kind === 'cancelled'
+        ? 'cancelled'
+        : status.kind === 'rejected'
+          ? 'rejected'
+          : work.kind === 'delivered' && ['completed', 'failed', 'cancelled'].includes(work.execution?.state)
+            ? work.execution.state
+            : null;
+  } catch {
+    // Not all of it is loaded; the row says only that a task ended.
+  }
+  return notice;
+}
+
+/**
+ * The notice's words by outcome, with a title and without one, its glyph,
+ * and whether the glyph is in the destructive color; a task that ended some
+ * other way has NOTICE_ENDED's.
+ */
+const NOTICE_OUTCOMES = {
+  completed: ['workhubNoticeCompleted', 'workhubNoticeCompletedUntitled', 'status-done', false],
+  failed: ['workhubNoticeFailed', 'workhubNoticeFailedUntitled', 'status-failed', true],
+  cancelled: ['workhubNoticeCancelled', 'workhubNoticeCancelledUntitled', 'status-stopped', false],
+  rejected: ['workhubNoticeRejected', 'workhubNoticeRejectedUntitled', 'status-failed', true],
+};
+const NOTICE_ENDED = ['workhubNoticeEnded', 'workhubNoticeEndedUntitled', 'workhub', false];
+
+/**
+ * A WorkHub notice in the coordinator's conversation: which task ended and
+ * how, and View; a click on the row shows the task in WorkHub's Tasks tab
+ * (`Transcript.click`). The title comes from WorkHub (`hooks.taskTitle`),
+ * which knows the tasks it listed.
+ */
+function noticeRow(item, transcript, cx) {
+  const m = palette(cx);
+  const { taskId, outcome } = item.notice;
+  const [titled, untitled, glyph, alarm] = NOTICE_OUTCOMES[outcome] ?? NOTICE_ENDED;
+  const title = taskId === null ? '' : (transcript.hooks.taskTitle?.(taskId) ?? '');
+  const open = taskId !== null && typeof transcript.hooks.openTask === 'function';
+  return h_flex()
+    .w_full()
+    .pt(12)
+    .gap(8)
+    .items_center()
+    .child(icon(glyph, 14, alarm ? m.destructive : m.inkMuted))
+    .child(
+      text(title === '' ? t(untitled) : t(titled, { title }), 'small', m.inkMuted)
+        .min_w_0()
+        .truncate(),
+    )
+    .when(open, (el) =>
+      // The list takes the click (`Transcript.click`); the label says what it does.
+      el.child(
+        typeset(div(), 'smallLabel')
+          .flex_none()
+          .px(6)
+          .rounded(6)
+          .cursor_pointer()
+          .text_color(m.ink)
+          .hover((style) => style.bg(m.wash))
+          .child(t('workhubNoticeView')),
+      ),
+    );
 }
 
 /** Where the context was compacted, as the TUI marks it: a rule with the time it took. */
@@ -1126,6 +1254,15 @@ const TOOL_KINDS = {
   'maka.workspace.Processes@1/read': ['toolOutput', 'tool-terminal', ['ref']],
   'maka.workspace.Processes@1/writeStdin': ['toolInput', 'tool-terminal', ['ref']],
   'maka.workspace.Processes@1/stop': ['toolStop', 'tool-terminal', ['ref']],
+};
+
+/**
+ * Tools the Host names no contract for that have a name of their own here, by
+ * the call's name: the message for the label and the icon. The header's
+ * summary is found as for any other call.
+ */
+const NAMED_TOOLS = {
+  workhub_tasks: ['workhubName', 'workhub'],
 };
 
 /** The message that names each state of a tool call (see toolStatus). */
@@ -1368,7 +1505,10 @@ function toolRow(item, transcript, cx) {
   const { row, result } = item;
   const tool = (result ?? row).tool ?? row.tool;
   const kind = TOOL_KINDS[tool?.call?.presentation] ?? null;
-  const name = kind !== null ? t(kind[0]) : (tool?.call?.name ?? t('toolUnnamed'));
+  const own =
+    kind === null && Object.hasOwn(NAMED_TOOLS, tool?.call?.name ?? '') ? NAMED_TOOLS[tool.call.name] : null;
+  const name =
+    kind !== null ? t(kind[0]) : own !== null ? t(own[0]) : (tool?.call?.name ?? t('toolUnnamed'));
   // A contract's result says in its `kind` whether it failed, as the TUI
   // reads it (tool-details/index.ts:257, 268, 325).
   const outcome =
@@ -1432,7 +1572,7 @@ function toolRow(item, transcript, cx) {
         .items_center()
         .rounded(ring ? 0 : 10)
         .hover((style) => style.bg(m.hover))
-        .child(icon(kind?.[1] ?? toolIcon(name), 16, m.inkMuted))
+        .child(icon(kind?.[1] ?? own?.[1] ?? toolIcon(name), 16, m.inkMuted))
         .child(text(name, 'label', m.ink).flex_none().min_w(84).max_w(200).truncate())
         .child(
           div()

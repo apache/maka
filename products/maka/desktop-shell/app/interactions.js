@@ -41,10 +41,12 @@ export class Interactions {
   /**
    * @param {string} sessionId
    * @param {{ changed: () => void, report: (message: string) => void }} hooks
+   * @param {string} endpoint the session's Agent endpoint, as its transcript has it
    */
-  constructor(sessionId, hooks) {
+  constructor(sessionId, hooks, endpoint = 'agent') {
     this.sessionId = sessionId;
     this.hooks = hooks;
+    this.endpoint = endpoint;
     /** The pending entries as the Host last listed them: { requestId, kind, toolUseId }. */
     this.entries = [];
     /** requestId -> the request's record, or null while it is being read. */
@@ -64,7 +66,7 @@ export class Interactions {
   /** Reads the pending list; the watch reports only what changes after it opened. */
   async refresh() {
     try {
-      this.accept(await query('agent', 'pendingInteractions', { sessionId: this.sessionId }));
+      this.accept(await query(this.endpoint, 'pendingInteractions', { sessionId: this.sessionId }));
     } catch (error) {
       if (!this.closed) this.hooks.report(t('pendingRequestsFailed', { value: error.message }));
     }
@@ -94,7 +96,7 @@ export class Interactions {
     this.records.set(requestId, null);
     this.failures.delete(requestId);
     try {
-      const record = await query('agent', 'interaction', { sessionId: this.sessionId, requestId });
+      const record = await query(this.endpoint, 'interaction', { sessionId: this.sessionId, requestId });
       if (this.closed || !this.entries.some((entry) => entry.requestId === requestId)) return;
       this.adopt(record);
     } catch (error) {
@@ -142,7 +144,7 @@ export class Interactions {
     this.responding = record.requestId;
     this.hooks.changed();
     try {
-      const result = await operation('agent', 'respond', {
+      const result = await operation(this.endpoint, 'respond', {
         sessionId: this.sessionId,
         requestId: record.requestId,
         answer,

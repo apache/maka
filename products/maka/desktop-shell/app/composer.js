@@ -204,7 +204,7 @@ export class Composer {
       this.hooks.changed();
       try {
         const result = await operation(
-          'agent',
+          transcript.endpoint,
           'uploadAttachment',
           { sessionId: transcript.id, name: file.name, bytes: file.bytes, digest: file.digest },
           { file: { file: file.handle } },
@@ -269,7 +269,7 @@ export class Composer {
     try {
       let session = transcript.session;
       for (let attempt = 0; ; attempt += 1) {
-        const result = await operation('agent', 'metadata', {
+        const result = await operation(transcript.endpoint, 'metadata', {
           sessionId: session.id,
           expectedRevision: session.revision,
           title: session.title,
@@ -285,7 +285,7 @@ export class Composer {
           throw new Error(t('hostRefused', { value: JSON.stringify(result.reason) }));
         }
         if (attempt > 0) throw new Error(t('taskChangedMeanwhile'));
-        session = (await query('agent', 'observe', { sessionId: session.id })).session;
+        session = (await query(transcript.endpoint, 'observe', { sessionId: session.id })).session;
       }
     } catch (error) {
       this.hooks.report(t('permissionFailed', { value: error.message }));
@@ -430,7 +430,7 @@ export class Composer {
       }
       const { model, thinkingLevel } = await this.selection(transcript);
       if (!(await this.upload(transcript, files))) return;
-      const result = await operation('agent', 'send', {
+      const result = await operation(transcript.endpoint, 'send', {
         sessionId: transcript.id,
         message,
         model,
@@ -474,7 +474,7 @@ export class Composer {
     this.stopping = true;
     this.hooks.changed();
     try {
-      const result = await operation('agent', 'stop', {
+      const result = await operation(transcript.endpoint, 'stop', {
         sessionId: transcript.id,
         invocationId: run.invocationId,
       });
