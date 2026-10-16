@@ -2031,6 +2031,36 @@ test('catalog updates preserve the latest coalesced transcript cache write', asy
   assert.equal(db.store.transcript('authority', 'session-1')?.snapshot.durable.at(-1)?.message.id, 'answer');
 });
 
+test('catalog reconciliation cancels only removed Sessions pending cache writes across restart', async (t) => {
+  const db = await database(t);
+  const listed = deferred<SessionCatalogProjection[]>();
+  const target: DesktopSessionLocalTarget = {
+    partition: 'authority', profileId: 'profile', scope: { hostId: 'root', targetEpoch: 'target' },
+    client: { ...client('epoch'), listSessions: () => listed.promise },
+  };
+  const service = new DesktopSessionLocalService(db.store, { targets: () => [target], changed() {}, onError: assert.fail });
+  db.beforeClose.push(() => service.close());
+  for (const id of ['removed', 'retained'])
+    db.store.saveSession('authority', { id, name: id } as DesktopSessionSummaryInput);
+  service.catalog();
+  for (const id of ['removed', 'retained']) {
+    service.cacheTranscript(target.scope, {
+      sessionId: id, generation: 'generation', hostEpoch: 'epoch', durableThrough: 1,
+      durable: [{ sequence: 1, message: { type: 'assistant', id: `answer-${id}`, turnId: 'turn-1', ts: 1, text: `cached ${id}`, modelId: 'test' } }],
+      hasOlder: false, beginsAtTurnBoundary: true,
+    });
+  }
+  listed.resolve([{ ...swarmCatalogSession(), id: 'retained', name: 'Retained' }]);
+  await nextTurn();
+  assert.deepEqual(db.store.sessions('authority').map(({ id }) => id), ['retained']);
+  assert.equal(service.readTranscript(target, 'removed'), null);
+  assert.ok(service.readTranscript(target, 'retained'));
+  service.close();
+  db.reopen();
+  assert.equal(db.store.transcript('authority', 'removed'), undefined);
+  assert.equal(db.store.transcript('authority', 'retained')?.snapshot.durable[0]?.message.id, 'answer-retained');
+});
+
 test('Session removal and authority purge cancel pending transcript cache writes', async (t) => {
   for (const removal of ['session', 'authority']) {
     const db = await database(t);

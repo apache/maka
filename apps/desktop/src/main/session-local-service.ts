@@ -452,7 +452,8 @@ export class DesktopSessionLocalService {
           locallyInvalidated = true;
           return;
         }
-        this.store.saveCatalog(target.partition, sessions.map(toDesktopHostSessionSummary));
+        const removed = this.store.saveCatalog(target.partition, sessions.map(toDesktopHostSessionSummary));
+        for (const sessionId of removed) this.#snapshots.delete(`${target.partition}:${sessionId}`);
         // Publish successful observations even under continuous Host events.
         // The captured version keeps this observation dirty if another change
         // arrived while reading, so one trailing refresh can converge.
