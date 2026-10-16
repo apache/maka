@@ -20,12 +20,15 @@
 import type { AttachmentRef, DirectoryReference, QuoteRef, StorageRef } from '@maka/core/events';
 import type { AssistantThinkingPart } from '@maka/core/session';
 import {
+  MAX_PROVIDER_BINARY_REQUEST_BYTES,
   MAX_PROVIDER_IMAGE_REQUEST_BYTES,
+  MAX_PROVIDER_PDF_REQUEST_BYTES,
   PROVIDER_IMAGE_BUDGET_EXCEEDED_MESSAGE,
+  sniffAttachmentMimeType,
   type AttachmentByteReader,
 } from '@maka/core/attachments';
 import type { DurableToolResultProjection } from '@maka/core/durable-tool-result-projection';
-import type { ProviderImageBudget } from './ai-sdk-compaction.js';
+import type { ProviderAttachmentBudget } from './ai-sdk-compaction.js';
 import {
   applyPatchReplayFactText,
   normalizeApplyPatchReplayInput,
@@ -70,8 +73,11 @@ export interface AiSdkMessageProjectionInput {
   modelAdapter: ModelAdapter;
   applyPatchProfile: ApplyPatchProfile | null;
   supportsVision?: boolean;
+  supportsNativePdfInput?: boolean;
   readAttachmentBytes?: AttachmentByteReader;
   maxProviderImageRequestBytes?: number;
+  maxProviderPdfRequestBytes?: number;
+  maxProviderBinaryRequestBytes?: number;
 }
 
 function isRedactedThinking(providerOptions: AssistantThinkingPart['providerOptions']): boolean {
@@ -267,7 +273,7 @@ export class AiSdkMessageProjection {
    */
   async materializeRuntimeReplayPlan(
     plan: RuntimeEventModelReplayPlan,
-    budget: ProviderImageBudget,
+    budget: ProviderAttachmentBudget,
     historyCompactCheckpoint: HistoryCompactCheckpoint | undefined,
     providerReasoningReplayEventIds: ReadonlySet<string>,
   ): Promise<ModelMessage[]> {
@@ -497,6 +503,10 @@ export class AiSdkMessageProjection {
       plan.items,
       providerReasoningReplayEventIds,
     );
+    const replayUserMessages = await this.materializeReplayUserMessagesNewestFirst(
+      budget,
+      admittedItems,
+    );
     for (const entry of buildRuntimeEventReplayTimeline(admittedItems)) {
       if (entry.kind === 'thinking') {
         const replayReasoning = reasoningReplay(entry.item);
@@ -515,7 +525,11 @@ export class AiSdkMessageProjection {
         continue;
       }
       if (entry.kind === 'text') {
-        push(await this.materializeRuntimeReplayItem(budget, entry.item), [entry.item.eventId]);
+        push(
+          replayUserMessages.get(entry.item.eventId) ??
+            (await this.materializeRuntimeReplayItem(budget, entry.item)),
+          [entry.item.eventId],
+        );
         continue;
       }
 
@@ -556,20 +570,47 @@ export class AiSdkMessageProjection {
   }
 
   async materializeRuntimeReplayTextOnly(
-    budget: ProviderImageBudget,
+    budget: ProviderAttachmentBudget,
     plan: RuntimeEventModelReplayPlan,
     historyCompactCheckpoint?: HistoryCompactCheckpoint,
   ): Promise<ModelMessage[]> {
     const messages: ModelMessage[] = [];
+    const replayUserMessages = await this.materializeReplayUserMessagesNewestFirst(
+      budget,
+      plan.items,
+    );
     for (const item of plan.items) {
       if (item.kind === 'text')
         this.pushMemoryIndexedMessage(
           messages,
-          await this.materializeRuntimeReplayItem(budget, item),
+          replayUserMessages.get(item.eventId) ??
+            (await this.materializeRuntimeReplayItem(budget, item)),
           [item.eventId],
         );
     }
     return this.prependProviderHistoryCompactMessage(messages, historyCompactCheckpoint);
+  }
+
+  private async materializeReplayUserMessagesNewestFirst(
+    budget: ProviderAttachmentBudget,
+    items: readonly RuntimeEventModelReplayItem[],
+  ): Promise<ReadonlyMap<string, ModelMessage>> {
+    const messages = new Map<string, ModelMessage>();
+    // Decide which historical user attachments fit before rendering the
+    // chronological prompt. Tool results use any allowance left afterward.
+    for (let index = items.length - 1; index >= 0; index -= 1) {
+      const item = items[index];
+      if (
+        item?.kind === 'text' &&
+        item.role === 'user' &&
+        item.attachments?.some(
+          (attachment) => attachment.kind === 'image' || attachment.kind === 'pdf',
+        )
+      ) {
+        messages.set(item.eventId, await this.materializeRuntimeReplayItem(budget, item));
+      }
+    }
+    return messages;
   }
 
   private prependProviderHistoryCompactMessage(
@@ -606,7 +647,7 @@ export class AiSdkMessageProjection {
   }
 
   private async materializeRuntimeReplayItem(
-    budget: ProviderImageBudget,
+    budget: ProviderAttachmentBudget,
     item: Extract<RuntimeEventModelReplayItem, { kind: 'text' }>,
   ): Promise<ModelMessage> {
     if (item.role === 'user') {
@@ -614,7 +655,7 @@ export class AiSdkMessageProjection {
       // the same path the original request used — a steering replay that kept
       // only the envelope text would hand a recovery turn references without
       // the native images the first request received.
-      const content = await this.appendImageParts(
+      const content = await this.appendAttachmentParts(
         budget,
         item.content,
         item.attachments,
@@ -642,89 +683,159 @@ export class AiSdkMessageProjection {
   }
 
   /** A decision key deduplicates re-materialization; no key charges each occurrence. */
-  private chargeImageBudget(
-    budget: ProviderImageBudget,
+  private chargeAttachmentBudget(
+    budget: ProviderAttachmentBudget,
+    kind: 'image' | 'pdf',
     bytes: number,
     decisionKey?: string,
-  ): boolean {
+  ): 'keep' | 'image_limit' | 'pdf_limit' | 'combined_limit' {
     if (decisionKey !== undefined) {
       const cached = budget.decisions.get(decisionKey);
       if (cached !== undefined) return cached;
     }
-    const keep =
-      budget.used + bytes <=
-      (this.input.maxProviderImageRequestBytes ?? MAX_PROVIDER_IMAGE_REQUEST_BYTES);
-    if (keep) budget.used += bytes;
-    if (decisionKey !== undefined) budget.decisions.set(decisionKey, keep);
-    return keep;
+    const subtypeLimit =
+      kind === 'image'
+        ? (this.input.maxProviderImageRequestBytes ?? MAX_PROVIDER_IMAGE_REQUEST_BYTES)
+        : (this.input.maxProviderPdfRequestBytes ?? MAX_PROVIDER_PDF_REQUEST_BYTES);
+    const decision =
+      budget.used[kind] + bytes > subtypeLimit
+        ? kind === 'image'
+          ? 'image_limit'
+          : 'pdf_limit'
+        : budget.used.total + bytes >
+            (this.input.maxProviderBinaryRequestBytes ?? MAX_PROVIDER_BINARY_REQUEST_BYTES)
+          ? 'combined_limit'
+          : 'keep';
+    if (decision === 'keep') {
+      budget.used[kind] += bytes;
+      budget.used.total += bytes;
+    }
+    if (decisionKey !== undefined) budget.decisions.set(decisionKey, decision);
+    return decision;
   }
 
   /**
    * Render provider-visible content for a user message: keep the given
-   * (already-formatted) text, and append image attachments as provider image
-   * parts only for explicitly vision-capable models. Non-image attachments stay
-   * as placeholder refs in the text. Shared by the current turn and RuntimeEvent replay.
+   * (already-formatted) text, then append explicitly authorized image and PDF
+   * file parts. Shared by the current turn, replay, steering, and compaction.
    */
-  async appendImageParts(
-    budget: ProviderImageBudget,
+  async appendAttachmentParts(
+    budget: ProviderAttachmentBudget,
     textContent: string,
     attachments?: AttachmentRef[],
     decisionKeyPrefix?: string,
   ): Promise<UserContent> {
-    const images = attachments?.filter((a) => a.kind === 'image') ?? [];
-    if (images.length === 0) {
-      return textContent;
-    }
-    if (this.input.supportsVision !== true) {
-      // `textContent` already carries each attachment's stable Read argument.
-      // Native provider image delivery is unavailable here, but that does not
-      // establish whether the model can process the image through a tool.
-      return textContent;
-    }
-    if (!this.input.readAttachmentBytes) {
-      return textContent;
-    }
+    const binaryAttachments =
+      attachments?.filter(
+        (attachment): attachment is AttachmentRef & { kind: 'image' | 'pdf' } =>
+          attachment.kind === 'image' || attachment.kind === 'pdf',
+      ) ?? [];
+    const eligibleAttachments = binaryAttachments
+      .map((attachment, index) => ({ attachment, index }))
+      .filter(
+        ({ attachment }) =>
+          (attachment.kind === 'image' && this.input.supportsVision === true) ||
+          (attachment.kind === 'pdf' && this.input.supportsNativePdfInput === true),
+      );
+    if (eligibleAttachments.length === 0 || !this.input.readAttachmentBytes) return textContent;
     const parts: Array<
       | { type: 'text'; text: string }
       | {
           type: 'file';
           data: { type: 'data'; data: Uint8Array };
           mediaType: string;
+          filename?: string;
         }
     > = [{ type: 'text', text: textContent }];
-    let omittedByBudget = 0;
-    for (const [index, image] of images.entries()) {
-      const read = await this.input.readAttachmentBytes(image.ref);
-      if (!read.ok) {
+    const omitted = { image_limit: 0, pdf_limit: 0, combined_limit: 0 };
+    for (const { attachment, index } of eligibleAttachments) {
+      const decisionKey =
+        decisionKeyPrefix === undefined
+          ? undefined
+          : `${decisionKeyPrefix}:${attachment.kind}:${index}`;
+      const invalidMediaType =
+        decisionKey === undefined ? undefined : budget.invalidMediaTypes.get(decisionKey);
+      if (invalidMediaType !== undefined) {
         parts.push({
           type: 'text',
-          text: `Image attachment "${image.name}" could not be loaded: ${read.reason}.`,
+          text: `${attachment.kind === 'pdf' ? 'PDF' : 'Image'} attachment "${attachment.name}" was omitted because its loaded bytes are ${invalidMediaType}, not the declared ${attachment.kind} type.`,
         });
         continue;
       }
-      const decisionKey =
-        decisionKeyPrefix === undefined ? undefined : `${decisionKeyPrefix}:image:${index}`;
-      if (!this.chargeImageBudget(budget, read.bytes.length, decisionKey)) {
-        omittedByBudget += 1;
+      const cachedDecision =
+        decisionKey === undefined ? undefined : budget.decisions.get(decisionKey);
+      if (cachedDecision !== undefined && cachedDecision !== 'keep') {
+        omitted[cachedDecision] += 1;
+        continue;
+      }
+      let read: Awaited<ReturnType<AttachmentByteReader>>;
+      try {
+        read = await this.input.readAttachmentBytes(attachment.ref);
+      } catch {
+        read = { ok: false, reason: 'read_failed' };
+      }
+      if (!read.ok) {
+        parts.push({
+          type: 'text',
+          text: `${attachment.kind === 'pdf' ? 'PDF' : 'Image'} attachment "${attachment.name}" could not be loaded: ${read.reason}.`,
+        });
+        continue;
+      }
+      const mediaType =
+        sniffAttachmentMimeType(read.bytes) ??
+        read.mimeType ??
+        (attachment.kind === 'image' ? attachment.mimeType : undefined);
+      if (
+        mediaType === undefined ||
+        (attachment.kind === 'pdf' && mediaType !== 'application/pdf') ||
+        (attachment.kind === 'image' && !mediaType.startsWith('image/'))
+      ) {
+        const observedMediaType = mediaType ?? 'unknown';
+        if (decisionKey !== undefined) budget.invalidMediaTypes.set(decisionKey, observedMediaType);
+        parts.push({
+          type: 'text',
+          text: `${attachment.kind === 'pdf' ? 'PDF' : 'Image'} attachment "${attachment.name}" was omitted because its loaded bytes are ${observedMediaType}, not the declared ${attachment.kind} type.`,
+        });
+        continue;
+      }
+      const decision = this.chargeAttachmentBudget(
+        budget,
+        attachment.kind,
+        read.bytes.length,
+        decisionKey,
+      );
+      if (decision !== 'keep') {
+        omitted[decision] += 1;
         continue;
       }
       parts.push({
         type: 'file',
         data: { type: 'data', data: read.bytes },
-        mediaType: image.mimeType,
+        mediaType,
+        ...(attachment.kind === 'pdf' ? { filename: attachment.name } : {}),
       });
     }
-    if (omittedByBudget > 0) {
+    if (omitted.image_limit > 0) {
       parts.push({
         type: 'text',
-        text: `[${omittedByBudget} image attachment(s) omitted: the per-request image budget was exceeded. Earlier images were sent; ask the user to send fewer or smaller images.]`,
+        text: `[${omitted.image_limit} image attachment(s) omitted: the per-request image budget was exceeded. Earlier images were sent; ask the user to send fewer or smaller images.]`,
       });
     }
+    if (omitted.pdf_limit > 0)
+      parts.push({
+        type: 'text',
+        text: `[${omitted.pdf_limit} PDF attachment(s) omitted: the per-request PDF budget was exceeded. Earlier PDFs were sent; ask the user to send fewer or smaller PDFs.]`,
+      });
+    if (omitted.combined_limit > 0)
+      parts.push({
+        type: 'text',
+        text: `[${omitted.combined_limit} binary attachment(s) omitted: the combined image/PDF request budget was exceeded. Earlier attachments were sent; ask the user to send fewer or smaller attachments.]`,
+      });
     return parts;
   }
 
   private async materializeToolResultOutput(
-    budget: ProviderImageBudget,
+    budget: ProviderAttachmentBudget,
     output: unknown,
     isError: boolean,
     decisionKey: string,
@@ -737,7 +848,7 @@ export class AiSdkMessageProjection {
   }
 
   private async materializeImage(
-    budget: ProviderImageBudget,
+    budget: ProviderAttachmentBudget,
     ref: StorageRef,
     mediaType: string,
     decisionKey: string,
@@ -748,8 +859,9 @@ export class AiSdkMessageProjection {
     if (!this.input.readAttachmentBytes) {
       return toolResultText('Image was read, but its stored bytes are unavailable.');
     }
-    if (budget.decisions.get(decisionKey) === false) {
-      return toolResultText(PROVIDER_IMAGE_BUDGET_EXCEEDED_MESSAGE);
+    const cachedDecision = budget.decisions.get(decisionKey);
+    if (cachedDecision !== undefined && cachedDecision !== 'keep') {
+      return toolResultText(this.imageBudgetFailureMessage(cachedDecision));
     }
     let read: Awaited<ReturnType<AttachmentByteReader>>;
     try {
@@ -760,8 +872,12 @@ export class AiSdkMessageProjection {
     if (!read.ok) {
       return toolResultText(`Image could not be loaded from artifact storage: ${read.reason}.`);
     }
-    if (!this.chargeImageBudget(budget, read.bytes.length, decisionKey)) {
-      return toolResultText(PROVIDER_IMAGE_BUDGET_EXCEEDED_MESSAGE);
+    if ((sniffAttachmentMimeType(read.bytes) ?? read.mimeType) === 'application/pdf') {
+      return toolResultText('Image could not be loaded: its stored bytes are a PDF.');
+    }
+    const decision = this.chargeAttachmentBudget(budget, 'image', read.bytes.length, decisionKey);
+    if (decision !== 'keep') {
+      return toolResultText(this.imageBudgetFailureMessage(decision));
     }
     return {
       type: 'file',
@@ -770,8 +886,16 @@ export class AiSdkMessageProjection {
     };
   }
 
+  private imageBudgetFailureMessage(
+    decision: 'image_limit' | 'pdf_limit' | 'combined_limit',
+  ): string {
+    return decision === 'combined_limit'
+      ? `Image was read, but the combined image/PDF request budget (${(this.input.maxProviderBinaryRequestBytes ?? MAX_PROVIDER_BINARY_REQUEST_BYTES) / 1024 / 1024}MB across all binary attachments this turn) was exceeded; earlier attachments were sent and this one was omitted. Read fewer or smaller attachments.`
+      : PROVIDER_IMAGE_BUDGET_EXCEEDED_MESSAGE;
+  }
+
   private async materializeDurableToolResultProjection(
-    budget: ProviderImageBudget,
+    budget: ProviderAttachmentBudget,
     projection: DurableToolResultProjection,
     decisionKey: string,
   ): Promise<ToolResultOutput> {
@@ -793,14 +917,14 @@ export class AiSdkMessageProjection {
   }
 
   async buildCurrentUserContent(
-    budget: ProviderImageBudget,
+    budget: ProviderAttachmentBudget,
     text: string,
     attachments?: AttachmentRef[],
     directoryReferences?: DirectoryReference[],
     quotes?: QuoteRef[],
     runtimeEventId?: string,
   ): Promise<UserContent> {
-    return await this.appendImageParts(
+    return await this.appendAttachmentParts(
       budget,
       formatTextWithInlineRefs(text, {
         ...(attachments !== undefined ? { attachments } : {}),

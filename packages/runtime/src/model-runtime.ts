@@ -30,6 +30,7 @@ import {
   lookupModelMetadata,
   lookupModelRuntimeOverride,
   openAiAdapterApiProtocol,
+  resolveModelPdfSupport,
 } from '@maka/core/model-metadata';
 import { isRetiredProvider } from '@maka/core/provider-registry';
 import {
@@ -204,6 +205,43 @@ function resolveParallelToolCalls(
   // on both Chat Completions and Responses. Compatible providers vary, so
   // they require an explicit model declaration instead of inheriting this.
   return adapter.kind === 'openai' || adapter.kind === 'openai-codex' ? true : undefined;
+}
+
+/** Permit native PDF bytes only when model inventory and first-party wire agree. */
+export function resolveModelNativePdfInputSupport(
+  connection: ModelRuntimeConnection,
+  modelId: string,
+): boolean {
+  if (connection.providerType !== 'anthropic' && connection.providerType !== 'openai') {
+    return false;
+  }
+  if (!resolveModelPdfSupport(connection.providerType, connection.models, modelId)) return false;
+  const { wire, baseUrl } = resolveModelRuntime(connection, modelId);
+  const officialBaseUrl =
+    connection.providerType === 'anthropic'
+      ? 'https://api.anthropic.com/v1'
+      : 'https://api.openai.com/v1';
+  try {
+    const actual = new URL(baseUrl);
+    const official = new URL(officialBaseUrl);
+    if (
+      actual.origin !== official.origin ||
+      actual.pathname.replace(/\/+$/, '') !== official.pathname ||
+      actual.username ||
+      actual.password ||
+      actual.search ||
+      actual.hash
+    ) {
+      return false;
+    }
+  } catch {
+    return false;
+  }
+  return (
+    (connection.providerType === 'anthropic' && wire === 'anthropic-messages') ||
+    (connection.providerType === 'openai' &&
+      (wire === 'openai-chat' || wire === 'openai-responses'))
+  );
 }
 
 /** Native OpenAI lanes keep mutable continuation state inside ModelAdapter. */
