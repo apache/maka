@@ -26,6 +26,7 @@ import {
 } from '../model-metadata.js';
 import { PROVIDER_REGISTRY, providerFallbackModelIds } from '../provider-registry.js';
 import {
+  connectionTestModelId,
   effectiveBaseUrl,
   normalizeConnectionBaseUrl,
   providerAuthRequiresSecret,
@@ -34,7 +35,9 @@ import {
   reconcileConnectionAfterModelFetch,
   validateConnectionBaseUrl,
   validateSlug,
+  type ConnectionModelAuthorityInput,
   type IdentifiedLlmConnection,
+  type ModelInfo,
   type ProviderType,
 } from '../llm-connections.js';
 import { isRealConnection } from '../connection-readiness.js';
@@ -315,6 +318,53 @@ test('the model picker lists an enabled model a snapshot provider never listed',
     'deepseek-v4-pro-beta',
     'doubao-seed-2.1-turbo',
   ]);
+});
+
+test('the connection test model prefers enabled ids, then the account inventory, then the fallback', () => {
+  // One rule serves the Runtime's probe and the settings page's preview of it,
+  // so the two cannot name different models (#5493).
+  const fallback = providerFallbackModelIds(PROVIDER_REGISTRY.openrouter);
+  const fresh = {
+    providerType: 'openrouter' as const,
+    defaultModel: '',
+    enabledModelIds: [],
+    models: [{ id: 'acme/model-a' }, { id: 'acme/model-b:free' }],
+    modelSource: 'fetched' as const,
+  };
+
+  assert.equal(connectionTestModelId(fresh, fallback), 'acme/model-b:free');
+  assert.equal(
+    connectionTestModelId({ ...fresh, models: [{ id: 'acme/model-a' }] }, fallback),
+    'acme/model-a',
+  );
+  assert.equal(
+    connectionTestModelId({ ...fresh, enabledModelIds: ['acme/model-a'] }, fallback),
+    'acme/model-a',
+  );
+  // A shipped snapshot is not the account's list, and no list at all is legacy.
+  assert.equal(connectionTestModelId({ ...fresh, modelSource: 'fallback' }, fallback), fallback[0]);
+  assert.equal(connectionTestModelId({ ...fresh, models: undefined }, fallback), fallback[0]);
+  assert.equal(connectionTestModelId({ ...fresh, models: [] }, []), undefined);
+});
+
+test('the connection test model skips account-inventory entries that cannot chat', () => {
+  // The probe is a chat request and tries one model. An image-only `:free`
+  // entry sorted first would fail a valid credential.
+  const fallback = providerFallbackModelIds(PROVIDER_REGISTRY.openrouter);
+  const cannotChat: ModelInfo[] = [
+    { id: 'acme/image:free', capabilities: { chat: false, imageGeneration: true } },
+    { id: 'acme/speech:free', modalities: { input: ['text'], output: ['audio'] } },
+  ];
+  const connection: ConnectionModelAuthorityInput = {
+    providerType: 'openrouter',
+    defaultModel: '',
+    enabledModelIds: [],
+    models: [...cannotChat, { id: 'acme/chat', capabilities: { chat: true } }],
+    modelSource: 'fetched',
+  };
+
+  assert.equal(connectionTestModelId(connection, fallback), 'acme/chat');
+  assert.equal(connectionTestModelId({ ...connection, models: cannotChat }, fallback), fallback[0]);
 });
 
 test('chat model choices project exact vision support for attachment composition', () => {

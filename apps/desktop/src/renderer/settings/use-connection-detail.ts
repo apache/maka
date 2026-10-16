@@ -29,7 +29,12 @@ import {
   type ProjectedLlmConnection,
   type ProviderType,
 } from '@maka/core/llm-connections';
-import { PROVIDER_REGISTRY, connectionEnabledModelIds } from '@maka/core/llm-connections';
+import {
+  PROVIDER_REGISTRY,
+  connectionEnabledModelIds,
+  connectionTestModelId,
+  providerFallbackModelIds,
+} from '@maka/core/llm-connections';
 import { isRetiredProvider } from '@maka/core/provider-registry';
 import {
   normalizeModelOverrides,
@@ -285,6 +290,14 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
   }, [connection.defaultModel, connection.enabledModelIds, connection.connectionId]);
 
   const modelChoices = connection.catalogEntries;
+  // The model the next test will probe, resolved by the same rule the Runtime
+  // applies to the stored connection, so the page can name it before a request
+  // is spent on it (#5493).
+  const testModelId = connectionTestModelId(connection, providerFallbackModelIds(defaults));
+  const testModelLabel =
+    testModelId === undefined
+      ? undefined
+      : modelChoices.find((entry) => entry.id === testModelId)?.displayName?.trim() || testModelId;
 
   /**
    * Save ONE row. The patch used to carry both fields whichever row asked for
@@ -506,8 +519,8 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     setTesting(true);
     try {
       // No model argument: `resolveConnectionTestModel` already picks one from
-      // the enabled ids, then the provider fallbacks, and drops any candidate
-      // the fetched inventory doesn't list. Naming `connection.defaultModel`
+      // the enabled ids, then the account's fetched inventory, then the provider
+      // fallbacks. Naming `connection.defaultModel`
       // here handed that choice to the layer with the least information — and
       // to a field this page no longer owns, which is '' once the user enables
       // no models. Left unset, a zero-model connection still verifies its
@@ -515,8 +528,8 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       const result: ConnectionTestResult = await props.bridge.test(connectionIdentity);
       if (!isConnectionDetailCurrent(lifecycle)) return;
       if (result.ok) {
-        // The backend probes the enabled models first, then the provider
-        // fallback. When
+        // The backend probes the enabled models first, then the account's
+        // inventory or the provider fallback. When
         // the model that actually answered isn't one the user enabled, a plain
         // "connection succeeded · <model>" reads as if their selection never
         // took — and hides that their chosen model is currently down. Name both
@@ -675,6 +688,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     setBaseUrl,
     enabledModelIds,
     modelChoices,
+    testModelLabel,
     busy,
     testing,
     fetchingModels,
