@@ -28,7 +28,9 @@
 // with that endpoint). The tasks come a page at a time from
 // `workhub.watchTasks`, and each one's status from `workhub.watchTask`, read
 // and worded as the TUI's WorkHub screen does
-// (plugins/workhub/workhub-root/index.ts).
+// (plugins/workhub/workhub-root/index.ts). Its subagents (`workhub.presets`,
+// edited in Settings, subagents.js) are read with the coordinator, so the
+// conversation can say when there is none to delegate with.
 
 import { div } from 'gpui-kit';
 import { v_flex, h_flex, Button } from 'gpui-base';
@@ -53,7 +55,7 @@ import { t } from './locale.js';
  * the bundle imports into WorkHub under this name (products/maka/bundle
  * composition.ts). The name is internal and never shown.
  */
-const WORKER = 'worker';
+export const WORKER = 'worker';
 
 /** The most pages of tasks read to find the titles notices name (16 tasks a page). */
 const NAME_PAGES = 32;
@@ -134,6 +136,14 @@ export class WorkHub {
      * ended it.
      */
     this.stopped = null;
+    /**
+     * The subagents, `{ revision, entries }` as `workhub.presets` answers, as
+     * last read or as Settings last read or saved them; null until read, and
+     * after a read failed.
+     */
+    this.presets = null;
+    /** Counts the reads of the subagents and the lists taken from Settings; an older read is dropped. */
+    this.presetReads = 0;
   }
 
   /**
@@ -171,12 +181,13 @@ export class WorkHub {
     if (transcript !== null) await transcript.close();
   }
 
-  /** Reads whether WorkHub is set up; once it is, its conversation opens. */
+  /** Reads whether WorkHub is set up, and its subagents; once it is set up, its conversation opens. */
   async load() {
     const visit = this.visit;
     this.loading = true;
     this.readError = null;
     this.hooks.changed();
+    this.readPresets();
     try {
       const coordinator = await query('workhub', 'coordinator', {});
       if (visit === this.visit) this.accept(coordinator);
@@ -190,6 +201,29 @@ export class WorkHub {
         this.hooks.changed();
       }
     }
+  }
+
+  /** Reads the subagents. A failure is logged and leaves them unread; it is not reported. */
+  async readPresets() {
+    const read = ++this.presetReads;
+    try {
+      const presets = await query('workhub', 'presets', {});
+      if (read !== this.presetReads) return;
+      this.presets = presets;
+      log(`workhub: ${presets.entries.length} subagents at revision ${presets.revision}`);
+    } catch (error) {
+      if (read !== this.presetReads) return;
+      this.presets = null;
+      log(`workhub: reading the subagents failed: ${error.message}`);
+    }
+    this.hooks.changed();
+  }
+
+  /** Takes the subagents as Settings read or saved them; a read under way is dropped. */
+  acceptPresets(snapshot) {
+    this.presetReads += 1;
+    this.presets = snapshot;
+    this.hooks.changed();
   }
 
   /** Takes what the Host said of the coordinator; a ready one's conversation opens. */

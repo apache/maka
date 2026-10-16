@@ -40,6 +40,7 @@ import { interactionCard } from './interactions.js';
 import { Settings, settingsNav, settingsPage } from './settings.js';
 import { Directories, folderPicker } from './directories.js';
 import { WorkHub, workhubTabs, workhubBody, chatHint } from './workhub.js';
+import { usable } from './subagents.js';
 import { followAppearance, palette, text, icon, controlButton, ghostButton } from './theme.js';
 import { t, onLanguageChange } from './locale.js';
 
@@ -94,8 +95,13 @@ export default class MakaDesktop extends View {
         return folder === null ? Promise.resolve(null) : this.newSession(folder);
       },
     );
-    // A model added or chosen in Settings is what the composer sends with next.
-    this.settings = new Settings({ ...hooks, modelsChanged: () => this.composer.loadModel() });
+    // A model added or chosen in Settings is what the composer sends with next,
+    // and the subagents Settings reads or saves are what WorkHub's hint goes by.
+    this.settings = new Settings({
+      ...hooks,
+      modelsChanged: () => this.composer.loadModel(),
+      presetsChanged: (snapshot) => this.workhub.acceptPresets(snapshot),
+    });
     /** @type {Transcript | null} */
     this.transcript = null;
     /** Where a session starts when none is selected, and the menu to choose it. */
@@ -404,6 +410,7 @@ export default class MakaDesktop extends View {
       {
         empty: transcript === null ? this.emptyState(cx) : null,
         hint: null,
+        bar: null,
         folder: folder === null ? null : { name: folder.name, path: folder.path },
         picker:
           transcript === null
@@ -429,19 +436,47 @@ export default class MakaDesktop extends View {
       return el.child(workhubBody(workhub, { openSession: (sessionId) => this.openSession(sessionId) }, cx));
     }
     // Its folder was fixed when it was set up.
-    return this.conversation(el, chat, { empty: null, hint: chatHint(cx), folder: null, picker: null }, cx);
+    return this.conversation(
+      el,
+      chat,
+      {
+        empty: null,
+        hint: chatHint(cx),
+        bar: this.workhubNeedsSubagent() ? this.subagentBar(cx) : null,
+        folder: null,
+        picker: null,
+      },
+      cx,
+    );
+  }
+
+  /**
+   * Whether WorkHub has no subagent to delegate with: its subagents and the
+   * models have been read, and none is enabled with a model the Host offers
+   * at its connection's current revision.
+   */
+  workhubNeedsSubagent() {
+    const presets = this.workhub.presets;
+    return (
+      presets !== null &&
+      this.composer.loaded &&
+      !presets.entries.some((entry) => usable(entry, this.composer.choices))
+    );
   }
 
   /**
    * What a conversation fills the plate with under its header: the
    * transcript, or `view.empty` before there is one; the card for what the
    * agent waits on; the bar for a failed turn; and the composer. `view.hint`
-   * is what an empty transcript shows, null for the usual line, and
-   * `view.folder` and `view.picker` are the composer's (see composerPane).
+   * is what an empty transcript shows, null for the usual line; `view.bar` a
+   * bar above the composer when neither the card nor the failed turn's bar
+   * shows, or null; and `view.folder` and `view.picker` are the composer's
+   * (see composerPane).
    */
   conversation(el, transcript, view, cx) {
     const card = transcript ? interactionCard(transcript.interactions, cx) : null;
     const failed = transcript !== null && card === null ? transcript.failedTurn() : null;
+    const bar = card === null && failed === null ? view.bar : null;
     return el
       .when(transcript === null, (el) => el.child(view.empty))
       .when(transcript !== null, (el) =>
@@ -449,6 +484,7 @@ export default class MakaDesktop extends View {
       )
       .when(card !== null, (el) => el.child(card))
       .when(failed !== null, (el) => el.child(this.failedBar(transcript, failed, cx)))
+      .when(bar !== null, (el) => el.child(bar))
       .child(
         composerPane(
           this.composer,
@@ -484,35 +520,32 @@ export default class MakaDesktop extends View {
    */
   failedBar(transcript, turn, cx) {
     const m = palette(cx);
-    return h_flex()
-      .flex_none()
-      .w_full()
-      .px(24)
-      .pt(8)
-      .justify_center()
-      .child(
-        h_flex()
-          .w_full()
-          .max_w(720)
-          .py(8)
-          .pl(12)
-          .pr(8)
-          .gap(8)
-          .items_center()
-          .rounded(12)
-          .border_1()
-          .border_color(m.border)
-          .bg(m.plate)
-          .child(icon('status-failed', 16, m.destructive))
-          .child(text(t('turnFailedNote'), 'body', m.ink).flex_1().min_w_0())
-          .when(turn.message !== null, (el) =>
-            el.child(
-              controlButton('send-again', t('sendAgain'), 'outline', this.composer.sending, cx)
-                .tooltip(t('sendAgainTip'))
-                .on_click(() => this.composer.send(transcript, turn.message)),
-            ),
-          ),
-      );
+    return composerBar(
+      icon('status-failed', 16, m.destructive),
+      t('turnFailedNote'),
+      turn.message === null
+        ? null
+        : controlButton('send-again', t('sendAgain'), 'outline', this.composer.sending, cx)
+            .tooltip(t('sendAgainTip'))
+            .on_click(() => this.composer.send(transcript, turn.message)),
+      cx,
+    );
+  }
+
+  /**
+   * Above the composer in WorkHub's conversation while it has no subagent to
+   * delegate with: says so, and opens Settings on the subagents.
+   */
+  subagentBar(cx) {
+    const m = palette(cx);
+    return composerBar(
+      icon('triangle-alert', 16, m.warning),
+      t('workhubNeedsSubagent'),
+      controlButton('workhub-subagents', t('workhubSetUpSubagents'), 'outline', false, cx).on_click(
+        () => this.settings.show('subagents'),
+      ),
+      cx,
+    );
   }
 
   /**
@@ -716,6 +749,34 @@ function runState(transcript) {
   if (transcript === null) return null;
   if (transcript.interactions.entries.length > 0) return t('needsYou');
   return transcript.run ? t('working') : null;
+}
+
+/** A bar above the composer, in its column: a glyph, a line, and a button at its end, or none. */
+function composerBar(glyph, words, button, cx) {
+  const m = palette(cx);
+  return h_flex()
+    .flex_none()
+    .w_full()
+    .px(24)
+    .pt(8)
+    .justify_center()
+    .child(
+      h_flex()
+        .w_full()
+        .max_w(720)
+        .py(8)
+        .pl(12)
+        .pr(8)
+        .gap(8)
+        .items_center()
+        .rounded(12)
+        .border_1()
+        .border_color(m.border)
+        .bg(m.plate)
+        .child(glyph)
+        .child(text(words, 'body', m.ink).flex_1().min_w_0())
+        .when(button !== null, (el) => el.child(button)),
+    );
 }
 
 /** An empty part of the window chrome that moves the window. */

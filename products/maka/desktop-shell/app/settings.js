@@ -18,7 +18,8 @@
  */
 
 // Settings: the language and appearance, model connections, their API keys,
-// the default model, and import from an old Maka settings export. The calls follow the TUI's settings
+// the default model, import from an old Maka settings export, and WorkHub's
+// subagents (subagents.js). The calls follow the TUI's settings
 // plugins (plugins/settings/connection-form/operations.ts and
 // plugins/settings/credential/index.ts): create the connection, save its key
 // as the `secret` resource of `settings.saveCredential`, then let
@@ -32,6 +33,7 @@ import { div } from 'gpui-kit';
 import { v_flex, h_flex, InputState, Button } from 'gpui-base';
 import { openText } from 'maka-files';
 import { query, operation, log } from './host.js';
+import { Subagents, subagentsActions, subagentsStatus, subagentsSection } from './subagents.js';
 import {
   palette,
   typeset,
@@ -56,7 +58,7 @@ import {
 } from './locale.js';
 
 /** A control button in the settings' style: primary or outline. */
-function button(id, label, primary, disabled, cx) {
+export function button(id, label, primary, disabled, cx) {
   return controlButton(id, label, primary ? 'primary' : 'outline', disabled, cx);
 }
 
@@ -83,12 +85,13 @@ const KEY_REJECTIONS = {
 export class Settings {
   /**
    * Creates retained input state, so it belongs in the view's `init`.
-   * @param {{ changed: () => void, report: (message: string) => void, modelsChanged: () => void }} hooks
+   * @param {{ changed: () => void, report: (message: string) => void, modelsChanged: () => void,
+   *   presetsChanged: (snapshot: object) => void }} hooks
    */
   constructor(hooks) {
     this.hooks = hooks;
     this.open = false;
-    /** The page shown: "general", "models" or "connections". */
+    /** The page shown: "general", "models", "connections" or "subagents". */
     this.page = 'general';
     /** The connection catalog's revision, which every catalog change names. */
     this.revision = null;
@@ -114,6 +117,8 @@ export class Settings {
     this.removing = null;
     /** { path, rows, error, done } while an export is being imported. */
     this.importing = null;
+    /** The Subagents page, read each time it shows. */
+    this.subagents = new Subagents(hooks);
 
     this.modelQuery = InputState.new({ placeholder: t('findModel') });
     this.modelQuery.on('change', () => this.loadModels());
@@ -138,12 +143,14 @@ export class Settings {
     if (page !== null) this.page = page;
     this.open = true;
     this.load();
+    if (this.page === 'subagents') this.subagents.load();
     this.hooks.changed();
   }
 
   showPage(page) {
     if (this.page === page) return;
     this.page = page;
+    if (page === 'subagents') this.subagents.load();
     this.hooks.changed();
   }
 
@@ -152,6 +159,7 @@ export class Settings {
     this.removing = null;
     this.closeForm();
     this.closeImport();
+    this.subagents.close();
     this.hooks.changed();
   }
 
@@ -821,7 +829,7 @@ function isObject(value) {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
-function choiceLabel(choice) {
+export function choiceLabel(choice) {
   return choice.connectionName ? `${choice.label} · ${choice.connectionName}` : choice.label;
 }
 
@@ -830,6 +838,7 @@ const PAGES = [
   ['general', 'settingsGeneral', 'settings', 'settingsGeneralDetail'],
   ['models', 'settingsModels', 'cpu', 'settingsModelsDetail'],
   ['connections', 'settingsConnections', 'tool-plug', 'settingsConnectionsDetail'],
+  ['subagents', 'settingsSubagents', 'workhub', 'settingsSubagentsDetail'],
 ];
 
 /**
@@ -900,6 +909,11 @@ export function settingsPage(settings, cx) {
   const m = palette(cx);
   const busy = settings.busy !== null;
   const [, title, , description] = PAGES.find(([page]) => page === settings.page);
+  // The Subagents page reads and saves on its own, and says so in its own lines.
+  const subagents = settings.page === 'subagents';
+  const loading = subagents ? settings.subagents.loading : settings.loading;
+  const actions = subagents ? subagentsActions(settings.subagents, cx) : null;
+  const status = subagents ? subagentsStatus(settings.subagents, cx) : null;
   return v_flex()
     .id('settings')
     .flex_1()
@@ -922,7 +936,7 @@ export function settingsPage(settings, cx) {
                 .gap(12)
                 .items_center()
                 .child(text(t(title), 'display', m.ink).flex_1())
-                .when(settings.loading, (el) => el.child(text(t('loading'), 'small', m.inkMuted)))
+                .when(loading, (el) => el.child(text(t('loading'), 'small', m.inkMuted)))
                 .when(settings.page === 'connections', (el) =>
                   el
                     .child(
@@ -935,10 +949,12 @@ export function settingsPage(settings, cx) {
                         settings.openAdd(),
                       ),
                     ),
-                ),
+                )
+                .when(actions !== null, (el) => el.child(actions)),
             )
             .child(text(t(description), 'body', m.inkMuted))
-            .when(busy || settings.error !== null, (el) =>
+            .when(status !== null, (el) => el.child(status))
+            .when(!subagents && (busy || settings.error !== null), (el) =>
               el.child(
                 text(
                   busy ? settings.busy : settings.error,
@@ -950,7 +966,8 @@ export function settingsPage(settings, cx) {
         )
         .when(settings.page === 'general', (el) => el.children(generalSection(settings, cx)))
         .when(settings.page === 'models', (el) => el.child(modelSection(settings, cx)))
-        .when(settings.page === 'connections', (el) => el.child(connectionSection(settings, cx))),
+        .when(settings.page === 'connections', (el) => el.child(connectionSection(settings, cx)))
+        .when(subagents, (el) => el.child(subagentsSection(settings.subagents, cx))),
     );
 }
 
@@ -958,7 +975,7 @@ export function settingsPage(settings, cx) {
  * A settings group: heading, optional description and end slot, then rows
  * split by rules. Without a title it is only the rows.
  */
-function group(title, description, end, rows, cx) {
+export function group(title, description, end, rows, cx) {
   const m = palette(cx);
   return v_flex()
     .w_full()
@@ -1062,7 +1079,7 @@ function choiceList(id, choices, current, choose, cx) {
 }
 
 /** A settings row: title and detail on the left, controls at the end. */
-function settingRow(title, detail, end, cx) {
+export function settingRow(title, detail, end, cx) {
   const m = palette(cx);
   return h_flex()
     .w_full()
