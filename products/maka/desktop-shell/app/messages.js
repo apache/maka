@@ -1025,6 +1025,32 @@ export const MESSAGES = {
     '刪除任務失敗：{value}',
   ],
 
+  // Search (search.js, and its button in the sidebar). Where the TUI's
+  // "Search conversations" (plugins/shared/locale-messages.ts, msg_recall*)
+  // words the same thing, these copy it, with "task" for its "conversation".
+  search: ['Search', '搜索', '搜尋'],
+  searchTip: ['Search (⇧⌘F)', '搜索（⇧⌘F）', '搜尋（⇧⌘F）'],
+  searchPlaceholder: ['Search all tasks', '搜索所有任务', '搜尋所有任務'],
+  searchHint: [
+    'Find what was said in any task.',
+    '在所有任务中查找说过的内容。',
+    '在所有任務中尋找說過的內容。',
+  ],
+  searching: ['Searching…', '正在搜索…', '正在搜尋…'],
+  searchTooManyWords: [
+    'Use at most 8 words of up to 500 characters each.',
+    '最多 8 个词，每个词不超过 500 个字符。',
+    '最多 8 個詞，每個詞不超過 500 個字元。',
+  ],
+  searchPartial: [
+    'Some history could not be searched.',
+    '部分历史未能搜索。',
+    '部分歷史未能搜尋。',
+  ],
+  searchEmpty: ['Nothing matched.', '没有匹配的内容。', '沒有符合的內容。'],
+  searchFailed: ['Couldn’t search: {value}', '搜索失败：{value}', '搜尋失敗：{value}'],
+  searchClear: ['Clear', '清除', '清除'],
+
   // WorkHub: setup and the conversation (workhub.js, main.js)
   workhubChat: ['Chat', '对话', '對話'],
   workhubTasks: ['Tasks', '任务', '任務'],

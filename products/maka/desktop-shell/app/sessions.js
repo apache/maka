@@ -38,6 +38,7 @@ import {
   segmentedControl,
   compactAge,
   textField,
+  focusInput,
   menuSurface,
   menuRow,
   menuSeparator,
@@ -416,28 +417,17 @@ export class SidebarState {
   }
 
   /**
-   * Moves the keyboard into the field. An input's focus belongs to its
-   * state, which has no focus call, so the keyboard goes to the row around
-   * the field and then to the next tab stop, the field. That needs a frame
-   * with the field drawn: an attempt that lands elsewhere (the field was not
-   * drawn yet) is made again, after waiting for the field's focus event.
-   * GPUI reports no focus path for an inactive window, so there the event
-   * only comes once the window is active again and one attempt is all
-   * there is.
+   * Moves the keyboard into the field from the row around it (focusInput),
+   * then selects the whole name.
    */
   async focusField(renaming, cx) {
-    for (let attempt = 0; attempt < 10; attempt += 1) {
-      await cx.sleep(50);
-      if (this.renaming !== renaming || renaming.focused) break;
-      this.renameFocus.focus();
-      window.focus_next();
-      if (!window.is_window_active()) break;
-      for (let waited = 0; waited < 10 && this.renaming === renaming && !renaming.focused; waited += 1) {
-        await cx.sleep(50);
-      }
-      if (this.renaming !== renaming || renaming.focused) break;
-    }
-    if (this.renaming !== renaming) return;
+    const current = await focusInput(
+      this.renameFocus,
+      () => renaming.focused,
+      () => this.renaming === renaming,
+      cx,
+    );
+    if (!current) return;
     this.name.set_selected_range({ start: 0, end: this.name.value().length });
     log(`sessions: the name field ${renaming.focused ? 'has the keyboard' : 'was given the keyboard (no focus event yet)'}`);
   }
@@ -574,16 +564,18 @@ function groups(sessions, grouping) {
 }
 
 /**
- * The sidebar: the wordmark, New task, WorkHub, the grouping control, the
- * task groups and the Host's state with the Settings button.
+ * The sidebar: the wordmark with the Search button at its end, New task,
+ * WorkHub, the grouping control, the task groups and the Host's state with
+ * the Settings button.
  * It takes the column's height left under the window strip (main.js).
  * @param {SessionCatalog} catalog
  * @param {SidebarState} ui
  * @param {string | null} selectedId
  * @param {{ select: (session: object) => void, newTask: () => void, workhub: () => void,
- *   newIn: (session: object) => void, settings: () => void, drafting: boolean,
- *   inWorkHub: boolean }} actions
- *   `drafting` and `inWorkHub` say which of New task and WorkHub shows as selected
+ *   search: () => void, newIn: (session: object) => void, settings: () => void,
+ *   drafting: boolean, inWorkHub: boolean, searching: boolean }} actions
+ *   `drafting`, `inWorkHub` and `searching` say which of New task, WorkHub
+ *   and Search shows as selected
  */
 export function sidebar(catalog, ui, selectedId, actions, cx) {
   const m = palette(cx);
@@ -605,7 +597,14 @@ export function sidebar(catalog, ui, selectedId, actions, cx) {
             .mb(8)
             .pl(4)
             .items_center()
-            .child(svg('icons/wordmark.svg').w(69).h(18).text_color(m.brand)),
+            .child(svg('icons/wordmark.svg').w(69).h(18).text_color(m.brand))
+            .child(div().flex_1())
+            .child(
+              iconButton('open-search', 'search', cx, 28, 16)
+                .tooltip(t('searchTip'))
+                .when(actions.searching, (el) => el.bg(m.selected))
+                .on_click(() => actions.search()),
+            ),
         )
         .child(
           typeset(ghostButton('new-task', cx), 'body')

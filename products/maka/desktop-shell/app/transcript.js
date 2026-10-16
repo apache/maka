@@ -33,7 +33,10 @@
 // - observe, then watch from the observed fence, or from just before the
 //   first open part so its earlier deltas replay (results.ts:547-564);
 // - the tail page at that fence, going back while a page is empty
-//   (results.ts:726-737); older pages keep that first fence;
+//   (results.ts:726-737); older pages keep that first fence. Opened at an
+//   anchor (a Search result), the first page is the one that starts at the
+//   anchor's row instead, and the pages after it are read up to the newest
+//   (results.ts:588-596);
 // - facts that change the canonical transcript re-read history after the last
 //   loaded row at the newest fence (actions.ts:314-376, results.ts:1080-1087),
 //   re-reading the last fragment so its tool and timing metadata refresh;
@@ -174,12 +177,23 @@ export class Transcript {
    * @param {{ changed: () => void, report: (message: string) => void }} hooks
    * @param {string} endpoint the Agent endpoint that holds the session: `agent`
    *   for a task, `coordinator` for WorkHub's conversation; every call goes to it
+   * @param {{ anchor?: number | null }} options `anchor`, a transcript row
+   *   sequence (a Search passage's `anchorSequence`), opens the transcript at
+   *   that row instead of at the newest
    */
-  constructor(session, hooks, endpoint = 'agent') {
+  constructor(session, hooks, endpoint = 'agent', options = {}) {
     this.session = session;
     this.id = session.id;
     this.hooks = hooks;
     this.endpoint = endpoint;
+    this.anchor = options.anchor ?? null;
+    /**
+     * While the list opens at the anchor and keeps the reader where they
+     * are, instead of following the newest row (see showing).
+     */
+    this.anchored = this.anchor !== null;
+    /** The items the list last showed, `{ start, end, count }`, or null before it drew. */
+    this.visible = null;
     this.rows = [];
     this.live = [];
     this.pending = [];
@@ -235,7 +249,7 @@ export class Transcript {
     };
   }
 
-  /** Loads the tail and starts the live updates. */
+  /** Loads the tail, or the page at the anchor, and starts the live updates. */
   async open() {
     const started = Date.now();
     try {
@@ -262,8 +276,16 @@ export class Transcript {
       this.watchLast = after;
       this.interactions.refresh();
       const fence = observed.through;
+      const anchored = this.anchor === null ? null : await this.readAnchor(fence);
+      if (this.closed) return;
+      if (anchored !== null) {
+        this.olderFence = anchored.through;
+        this.before = anchored.before;
+        this.after = anchored.after;
+        this.append(anchored.chunks);
+      }
       let position = { kind: 'tail' };
-      for (;;) {
+      while (anchored === null) {
         const { page, calls } = await readHistory(this.historyInput(fence, position), this.endpoint);
         this.stats.tailCalls += calls;
         if (this.closed) return;
@@ -281,14 +303,50 @@ export class Transcript {
       this.stats.firstPageMs = Date.now() - started;
       log(
         `transcript "${this.session.title}": first page ${this.rows.length} rows in ${this.stats.firstPageMs} ms ` +
-          `(${this.stats.tailCalls} history call(s), fence ${fence}, older ${this.before ? 'available' : 'none'})`,
+          `(${this.stats.tailCalls} history call(s), fence ${fence}, older ${this.before ? 'available' : 'none'}` +
+          `${anchored === null ? '' : `, at row ${this.anchor}`})`,
       );
       this.hooks.changed();
       // Facts after the observed fence arrive on the first pages; any that
       // change the transcript read history after the tail just loaded.
       this.watch(handle);
+      // At the anchor, the rows after the first page are read up to the newest.
+      if (anchored !== null) this.follow();
     } catch (error) {
       if (!this.closed) this.hooks.report(t('transcriptFailed', { value: error.message }));
+    }
+  }
+
+  /**
+   * The history page that starts at the anchor's row, read at `fence` as the
+   * TUI reads it: after the row's start. Null when it cannot be read or has
+   * nothing, and the transcript then opens at the newest row as usual.
+   */
+  async readAnchor(fence) {
+    const position = { kind: 'after', cursor: { sequence: this.anchor, offset: 0, field: 'body' } };
+    try {
+      const { page, calls } = await readHistory(this.historyInput(fence, position), this.endpoint);
+      this.stats.tailCalls += calls;
+      if (page.chunks.length > 0) return page;
+      log(`transcript "${this.session.title}": nothing at row ${this.anchor}; opening at the newest`);
+    } catch (error) {
+      log(`transcript "${this.session.title}": reading at row ${this.anchor} failed: ${error.message}; opening at the newest`);
+    }
+    this.anchored = false;
+    return null;
+  }
+
+  /**
+   * The list showed items `range` of `count`. A transcript opened at its
+   * anchor follows its newest row again once that row is on screen with
+   * nothing newer left to read: the reader has caught up.
+   */
+  showing(range, count) {
+    this.visible = { start: range.start, end: range.end, count };
+    if (this.anchored && this.ready && !this.following && this.after === null && range.end >= count) {
+      this.anchored = false;
+      log(`transcript "${this.session.title}": the newest row is on screen; following it again`);
+      this.hooks.changed();
     }
   }
 
@@ -785,8 +843,13 @@ export class Transcript {
     );
   }
 
-  /** Shows a sent message, with the files sent with it (`{ name, bytes }`), until history records it. */
+  /**
+   * Shows a sent message, with the files sent with it (`{ name, bytes }`),
+   * until history records it. Sending ends reading at the anchor: the list
+   * follows the newest row again, where the message shows.
+   */
   addPending(messageId, text, attachments = []) {
+    this.anchored = false;
     const covered = `${messageId}/body`;
     if (this.covered.has(covered)) return;
     this.pending = [
@@ -946,12 +1009,16 @@ export function transcriptPane(transcript, loadOlder, cx, empty = null) {
             (index, cx) => transcriptItem(items[index], transcript, cx),
           )
             // Opens at the newest row and stays there while a reply
-            // streams, until the reader scrolls up.
-            .with_follow_mode('tail')
+            // streams, until the reader scrolls up. Opened at an anchor, it
+            // opens at its top, the anchor's row, and keeps the reader's top
+            // row in place as pages are put above and added below, until the
+            // reader reaches the newest row or sends (Transcript.showing).
+            .with_follow_mode(transcript.anchored ? 'normal' : 'tail')
             // Reported after the frame, however the range changed: a
             // wheel, a scrollbar drag, or rows that do not fill the view.
             .on_visible_range_change((range, shown) => {
               log(`transcript: showing ${range.start}..${range.end} of ${shown}`);
+              transcript.showing(range, shown);
               if (range.start < NEAR_TOP && transcript.before !== null) loadOlder();
             })
             .on_item_click((key, cx) => transcript.click(key, cx)),

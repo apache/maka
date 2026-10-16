@@ -20,10 +20,10 @@
 // The Maka desktop window: tasks on the canvas at the side, and the plate
 // beside them with the selected task's transcript and the composer, or the
 // empty state for a new task, or WorkHub (workhub.js), whose conversation is
-// drawn as a task's. Settings (settings.js) takes the sidebar and the plate
-// while open. The look follows the native client (theme.js). Every Host call
-// goes through `maka-host` (see host.js); MAKA_HOST_ENDPOINT and
-// MAKA_HOST_EPOCH name the Host.
+// drawn as a task's, or the Search page (search.js). Settings (settings.js)
+// takes the sidebar and the plate while open. The look follows the native
+// client (theme.js). Every Host call goes through `maka-host` (see host.js);
+// MAKA_HOST_ENDPOINT and MAKA_HOST_EPOCH name the Host.
 //
 // An optional `dev.js` beside this file (never committed) can turn on the
 // debug log and drive the window without focus:
@@ -40,6 +40,7 @@ import { interactionCard } from './interactions.js';
 import { Settings, settingsNav, settingsPage } from './settings.js';
 import { Directories, folderPicker } from './directories.js';
 import { WorkHub, workhubTabs, workhubBody, chatHint } from './workhub.js';
+import { Search, searchPage } from './search.js';
 import { usable } from './subagents.js';
 import { followAppearance, palette, text, icon, controlButton, ghostButton } from './theme.js';
 import { t, onLanguageChange } from './locale.js';
@@ -52,8 +53,9 @@ import { t, onLanguageChange } from './locale.js';
  */
 const LIGHTS_END = 80;
 
-/** WorkHub as a place in the Back and Forward lists, beside session ids. */
+/** WorkHub and the Search page as places in the Back and Forward lists, beside session ids. */
 const WORKHUB = 'workhub';
+const SEARCH = 'search';
 
 /** The application's shortcuts, as the native client binds them. */
 const SHORTCUTS = [
@@ -62,6 +64,7 @@ const SHORTCUTS = [
   { keystroke: 'secondary-[', action: 'maka.back' },
   { keystroke: 'secondary-]', action: 'maka.forward' },
   { keystroke: 'secondary-,', action: 'maka.settings' },
+  { keystroke: 'secondary-shift-f', action: 'maka.search' },
   { keystroke: 'secondary-.', action: 'maka.stop' },
   { keystroke: 'f2', action: 'maka.rename-task' },
 ];
@@ -108,6 +111,19 @@ export default class MakaDesktop extends View {
     /** Where a session starts when none is selected, and the menu to choose it. */
     this.directories = new Directories(hooks);
     this.workhub = new WorkHub(hooks, this.directories);
+    // A result opens its task as the sidebar does; the session the Host
+    // answered with gives way to the catalog's entry, which is fresher.
+    // Archived tasks, which the catalog does not list, open too.
+    const listed = (session) => this.catalog.sessions.find((entry) => entry.id === session.id) ?? session;
+    this.search = new Search(
+      {
+        changed: hooks.changed,
+        openTask: (session) => this.select(listed(session)),
+        openPassage: (session, anchor) => this.select(listed(session), true, anchor),
+        back: () => this.go(-1),
+      },
+      cx,
+    );
     // A rename shows in the open task's header at once; an archived task
     // that is open is left for the start pane, as after closing one.
     this.sidebarUi = new SidebarState(
@@ -127,8 +143,8 @@ export default class MakaDesktop extends View {
     this.error = null;
     this.sidebarHidden = false;
     /**
-     * The places Back and Forward go to: a session id, WORKHUB, or null for
-     * the start pane. The current place is not on either list.
+     * The places Back and Forward go to: a session id, WORKHUB, SEARCH, or
+     * null for the start pane. The current place is not on either list.
      */
     this.history = { back: [], forward: [] };
     // The shortcuts' actions are handled on the root below, and an action
@@ -180,9 +196,11 @@ export default class MakaDesktop extends View {
     }
   }
 
-  /** Where the window is: WORKHUB, the selected session's id, or null for the start pane. */
+  /** Where the window is: WORKHUB, SEARCH, the selected session's id, or null for the start pane. */
   place() {
-    return this.workhub.open ? WORKHUB : (this.transcript?.id ?? null);
+    if (this.workhub.open) return WORKHUB;
+    if (this.search.open) return SEARCH;
+    return this.transcript?.id ?? null;
   }
 
   /**
@@ -218,6 +236,11 @@ export default class MakaDesktop extends View {
         await this.openWorkHub(false);
         return;
       }
+      if (place === SEARCH) {
+        to.push(current);
+        await this.openSearch(false);
+        return;
+      }
       const session =
         place === null ? null : this.catalog.sessions.find((entry) => entry.id === place);
       if (place !== null && session === undefined) continue;
@@ -234,16 +257,21 @@ export default class MakaDesktop extends View {
     this.cx.notify();
   }
 
-  /** Switches the transcript, leaving WorkHub; the previous one's watch is closed first. */
-  async select(session, record = true) {
+  /**
+   * Switches the transcript, leaving WorkHub or the Search page; the previous
+   * one's watch is closed first. With `anchor` (a transcript row, from a
+   * Search passage) it opens at that row, also when the task is open already.
+   */
+  async select(session, record = true, anchor = null) {
     if (this.settings.open) this.settings.hide();
-    if (this.place() === session.id) return;
+    if (this.place() === session.id && anchor === null) return;
     if (record) this.visit(session.id);
     const previous = this.transcript;
-    const transcript = new Transcript(session, this.hooks);
+    const transcript = new Transcript(session, this.hooks, 'agent', { anchor });
     this.transcript = transcript;
     const leaving = this.workhub.hide();
-    log(`select "${session.title}"`);
+    this.search.hide();
+    log(`select "${session.title}"${anchor === null ? '' : ` at row ${anchor}`}`);
     this.cx.notify();
     if (previous !== null) await previous.close();
     await leaving;
@@ -257,6 +285,7 @@ export default class MakaDesktop extends View {
     const previous = this.transcript;
     this.transcript = null;
     const leaving = this.workhub.hide();
+    this.search.hide();
     this.cx.notify();
     if (previous !== null) await previous.close();
     await leaving;
@@ -269,11 +298,41 @@ export default class MakaDesktop extends View {
     if (record) this.visit(WORKHUB);
     const previous = this.transcript;
     this.transcript = null;
+    this.search.hide();
     log('open WorkHub');
     const showing = this.workhub.show();
     this.cx.notify();
     if (previous !== null) await previous.close();
     await showing;
+  }
+
+  /**
+   * Shows the Search page in the plate, as it was left: WorkHub hides and
+   * the selected task's transcript closes, as `openWorkHub` does.
+   */
+  async openSearch(record = true) {
+    if (this.settings.open) this.settings.hide();
+    if (this.search.open) return;
+    if (record) this.visit(SEARCH);
+    const previous = this.transcript;
+    this.transcript = null;
+    const leaving = this.workhub.hide();
+    this.search.show();
+    log('open Search');
+    this.cx.notify();
+    if (previous !== null) await previous.close();
+    await leaving;
+  }
+
+  /**
+   * The sidebar's search button and ⇧⌘F: the Search page, with the keyboard
+   * in its field and the field's text selected. On the page already, only
+   * the field is focused.
+   */
+  async startSearch() {
+    const opening = this.openSearch();
+    this.search.focusField();
+    await opening;
   }
 
   /** Selects a session WorkHub routed a task to: from the catalog, else as the Host observes it. */
@@ -371,6 +430,7 @@ export default class MakaDesktop extends View {
       .on_action('maka.back', () => this.go(-1))
       .on_action('maka.forward', () => this.go(1))
       .on_action('maka.settings', () => this.settings.show())
+      .on_action('maka.search', () => this.startSearch())
       .on_action('maka.rename-task', () => this.renameSelected())
       .on_action('maka.stop', () => {
         const current = this.current();
@@ -394,10 +454,12 @@ export default class MakaDesktop extends View {
                       select: (session) => this.select(session),
                       newTask: () => this.home(),
                       workhub: () => this.openWorkHub(),
+                      search: () => this.startSearch(),
                       newIn: (session) => this.newSession(null, session),
                       settings: () => this.settings.show(),
                       drafting: this.place() === null,
                       inWorkHub: this.workhub.open,
+                      searching: this.search.open,
                     },
                     cx,
                   ),
@@ -420,7 +482,10 @@ export default class MakaDesktop extends View {
               .overflow_hidden()
               .when(settings, (el) => el.child(settingsPage(this.settings, cx)))
               .when(!settings && this.workhub.open, (el) => this.workhubPane(el, cx))
-              .when(!settings && !this.workhub.open, (el) => this.taskPane(el, cx)),
+              .when(!settings && this.search.open, (el) => this.searchPane(el, cx))
+              .when(!settings && !this.workhub.open && !this.search.open, (el) =>
+                this.taskPane(el, cx),
+              ),
           ),
       );
   }
@@ -475,6 +540,14 @@ export default class MakaDesktop extends View {
       },
       cx,
     );
+  }
+
+  /** The plate's content while the Search page shows: its header, the connection strip, then the page. */
+  searchPane(el, cx) {
+    return el
+      .child(this.header(t('search'), null, null, cx))
+      .child(this.connectionStrip(cx))
+      .child(searchPage(this.search, this.catalog.sessions, cx));
   }
 
   /**

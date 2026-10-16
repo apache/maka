@@ -403,6 +403,34 @@ export function textField(state, cx) {
     .focus((style) => style.border_color(m.accent));
 }
 
+/**
+ * Moves the keyboard into a text field. An input's focus belongs to its
+ * state, which has no focus call, so the keyboard goes to `wrapper`, the
+ * focus handle of an element around the field, and then to the next tab
+ * stop, the field. That needs a frame with the field drawn: an attempt that
+ * lands elsewhere (the field was not drawn yet) is made again, after waiting
+ * for the field's focus event (`focused`). GPUI reports no focus path for an
+ * inactive window, so there the event only comes once the window is active
+ * again and one attempt is all there is. It stops when `current` no longer
+ * holds, and resolves with whether it still does.
+ * @param {() => boolean} focused whether the field's focus event has come
+ * @param {() => boolean} current whether the field still wants the keyboard
+ */
+export async function focusInput(wrapper, focused, current, cx) {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    await cx.sleep(50);
+    if (!current() || focused()) break;
+    wrapper.focus();
+    window.focus_next();
+    if (!window.is_window_active()) break;
+    for (let waited = 0; waited < 10 && current() && !focused(); waited += 1) {
+      await cx.sleep(50);
+    }
+    if (!current() || focused()) break;
+  }
+  return current();
+}
+
 /** A transparent button that shows the hover fill; the caller adds content and size. */
 export function ghostButton(id, cx) {
   const m = palette(cx);
