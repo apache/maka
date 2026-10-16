@@ -39,11 +39,15 @@ describe('relative-time contract', () => {
     for (const age of [0, 1_000, 30_000, 59_999]) {
       assert.equal(formatRelativeTimestamp(NOW - age, NOW, 'zh-CN'), '刚刚');
       assert.equal(formatRelativeTimestamp(NOW - age, NOW, 'en'), 'just now');
+      assert.equal(formatRelativeTimestamp(NOW - age, NOW, 'ko'), '방금 전');
+      assert.equal(formatCompactTimestamp(NOW - age, NOW, 'ko'), '방금 전');
+      assert.equal(formatSidebarTimestamp(NOW - age, NOW, 'ko'), '방금 전');
       assert.equal(formatCompactTimestamp(NOW - age, NOW, 'zh-CN'), '刚刚');
       assert.equal(formatSidebarTimestamp(NOW - age, NOW, 'zh-CN'), '刚刚');
     }
     assert.equal(formatRelativeTimestamp(NOW - 60_000, NOW, 'zh-CN'), '1分钟前');
     assert.equal(formatRelativeTimestamp(NOW - 60_000, NOW, 'en'), '1 minute ago');
+    assert.equal(formatRelativeTimestamp(NOW - 60_000, NOW, 'ko'), '1분 전');
   });
 
   it('returns the next visible refresh boundary', () => {
@@ -71,7 +75,7 @@ describe('relative-time contract', () => {
       [2 * MONTH, '2mo'],
       [365 * DAY, '1y'],
     ] as const;
-    for (const locale of ['zh-CN', 'en'] as const) {
+    for (const locale of ['zh-CN', 'ko', 'en'] as const) {
       for (const [age, expected] of cases) {
         assert.equal(formatSidebarTimestamp(NOW - age, NOW, locale), expected);
       }
