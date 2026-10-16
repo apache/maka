@@ -334,10 +334,14 @@ impl Bridge {
         resources: Attachments,
     ) -> Result<LocalCall, String> {
         let client = self.client().await?;
-        client
-            .catalogue()
-            .select(endpoint)
-            .map_err(|error| format!("{error}: `{endpoint}`"))?;
+        client.catalogue().select(endpoint).map_err(|error| {
+            // An endpoint the Host could not start has no registration; the
+            // Host says why once, for the whole catalogue.
+            match client.catalogue().startup_error() {
+                Some(reason) => format!("{error}: `{endpoint}` ({reason})"),
+                None => format!("{error}: `{endpoint}`"),
+            }
+        })?;
         match client.call(endpoint, method, input, resources).await {
             Ok(call) => Ok(call),
             Err(error) => {
