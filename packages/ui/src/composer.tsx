@@ -1501,7 +1501,8 @@ export const Composer = forwardRef<
   function onInputKeyDown(event: KeyboardEvent<HTMLDivElement>) {
     if (!event.defaultPrevented && nextPrompt.text && !compositionActiveRef.current
       && event.currentTarget.getAttribute('aria-expanded') !== 'true') {
-      if (event.key === 'Tab' && !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {
+      if ((event.key === 'ArrowRight' || event.key === 'Tab')
+        && !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {
         event.preventDefault(); acceptNextPrompt(); return;
       }
       if (event.key === 'Escape') { event.preventDefault(); setDragActive(false); nextPrompt.dismiss(); return; }
@@ -2596,7 +2597,7 @@ export const Composer = forwardRef<
                   }}
                 />
               </MakaClientSessionScope>
-              {nextPrompt.text ? <kbd className="maka-composer-next-prompt-key" aria-hidden="true">Tab</kbd> : null}
+              {nextPrompt.text ? <kbd className="maka-composer-next-prompt-key" aria-hidden="true">{copy.promptSuggestionAccept}</kbd> : null}
               {props.footerAccessory}
             </div>
           )}
