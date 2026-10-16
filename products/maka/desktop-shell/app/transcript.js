@@ -147,6 +147,8 @@ export class Transcript {
     /** What the agent is waiting on the user for. */
     this.interactions = new Interactions(this.id, hooks);
     this.lastOutcome = null;
+    /** The session's backend preference from `agent.observe`, or null. */
+    this.backend = null;
     this.stats = {
       firstPageMs: 0,
       tailCalls: 0,
@@ -404,6 +406,8 @@ export class Transcript {
 
   acceptObservation(observed) {
     this.latestKnown = Math.max(this.latestKnown, observed.through);
+    // The model the TUI would send with: the session's own, else the one the owner remembers.
+    this.backend = observed.session.backend ?? observed.rememberedBackend ?? null;
     if (observed.through >= this.runThrough) {
       this.run = observed.run ?? null;
       this.runThrough = observed.through;

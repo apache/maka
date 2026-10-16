@@ -39,28 +39,64 @@ export class Composer {
     this.draft.on('submit', (event) => {
       if (!event.shift) this.send(target());
     });
-    /** The `settings.models` selection sent with every message. */
+    /** The default model's choice, or the first offered one, for sessions without their own. */
     this.model = null;
     this.modelLabel = 'No model';
+    /** The first page of `settings.models`, used to name a session's own model. */
+    this.choices = [];
     this.sending = false;
     this.stopping = false;
   }
 
-  /** Takes choice 0 of `settings.models` for now. */
+  /**
+   * Reads the models the Host offers. A session without a model of its own
+   * uses the configured default, or the first choice when there is none.
+   */
   async loadModel() {
     try {
-      const models = await query('settings', 'models', { kind: 'start' });
-      const choice = models.kind === 'ready' ? models.choices?.[0] : undefined;
-      if (!choice) throw new Error('the Host has no selectable model');
-      this.model = choice.selection;
-      this.modelLabel = choice.connectionName
-        ? `${choice.label} · ${choice.connectionName}`
-        : choice.label;
-      log(`composer: model ${this.modelLabel}`);
+      const models = await query('settings', 'models', { kind: 'start', query: '' });
+      if (models.kind !== 'ready') throw new Error('the model list is changing; reopen the app');
+      this.choices = models.choices;
+      const fallback =
+        models.defaultModel.kind === 'ready' ? models.defaultModel.choice : models.choices[0];
+      if (!fallback) throw new Error('the Host has no selectable model');
+      this.model = fallback.selection;
+      this.modelLabel = choiceLabel(fallback);
+      log(`composer: default model ${this.modelLabel}`);
     } catch (error) {
       this.hooks.report(`Models: ${error.message}`);
     }
     this.hooks.changed();
+  }
+
+  /** What the footer names for `transcript`: its own model when it has one (as the TUI picks it). */
+  label(transcript) {
+    const backend = transcript?.backend ?? null;
+    if (backend?.kind === 'executor') return 'An executor (send from the terminal app)';
+    if (backend?.kind !== 'model') return this.modelLabel;
+    const choice = this.choices.find((c) => sameModel(c.selection, backend));
+    return choice ? choiceLabel(choice) : backend.modelId;
+  }
+
+  /**
+   * The `model` and `thinkingLevel` to send with: the session's own backend
+   * (`agent.observe`, as agent-screen/actions.ts reads it), else the default.
+   * The backend has no connection revision, so its choice is looked up.
+   */
+  async selection(transcript) {
+    const backend = transcript.backend;
+    if (backend?.kind === 'executor') {
+      throw new Error('this session runs on an executor, which the desktop cannot start yet');
+    }
+    if (backend?.kind !== 'model') {
+      if (this.model === null) throw new Error('no model is configured');
+      return { model: this.model, thinkingLevel: null };
+    }
+    const models = await query('settings', 'models', { kind: 'start', query: backend.modelId });
+    const choice =
+      models.kind === 'ready' ? models.choices.find((c) => sameModel(c.selection, backend)) : null;
+    if (!choice) throw new Error(`the session's model ${backend.modelId} is not offered any more`);
+    return { model: choice.selection, thinkingLevel: backend.thinkingLevel ?? null };
   }
 
   /**
@@ -73,10 +109,13 @@ export class Composer {
     this.sending = true;
     this.hooks.changed();
     try {
+      const { model, thinkingLevel } = await this.selection(transcript);
       const result = await operation('agent', 'send', {
         sessionId: transcript.id,
         message,
-        model: this.model,
+        model,
+        // Left out, the model's default applies; an explicit level is sent only when chosen.
+        ...(thinkingLevel !== null ? { thinkingLevel } : {}),
       });
       log(
         `composer: send ${result.kind} ${result.invocationId ?? ''} message ${result.messageId ?? ''}`,
@@ -153,7 +192,7 @@ export function composerPane(composer, transcript, cx) {
             .truncate()
             .text_xs()
             .text_color(theme.colors.muted_foreground)
-            .child(`${composer.modelLabel} · Enter to send, Shift+Enter for a new line`),
+            .child(`${composer.label(transcript)} · Enter to send, Shift+Enter for a new line`),
         )
         .when(running, (el) =>
           el.child(
@@ -172,6 +211,14 @@ export function composerPane(composer, transcript, cx) {
           ),
         ),
     );
+}
+
+function choiceLabel(choice) {
+  return choice.connectionName ? `${choice.label} · ${choice.connectionName}` : choice.label;
+}
+
+function sameModel(selection, backend) {
+  return selection.connectionId === backend.connectionId && selection.modelId === backend.modelId;
 }
 
 /** A small button in the app's style; `primary` fills it with the primary color. */
