@@ -22,12 +22,12 @@
 // them. The watch delivers the pending list, `agent.interaction` reads each
 // request once and `agent.respond` answers it, with the answer shapes the TUI
 // sends (plugins/agent/agent-screen/component-events.ts, actions.ts
-// respondInteraction and submitQuestion). A form is left to the TUI for now.
+// respondInteraction and submitQuestion, and plugins/agent/form-editor).
 
 import { div } from 'gpui-kit';
-import { v_flex, h_flex } from 'gpui-base';
+import { v_flex, h_flex, InputState } from 'gpui-base';
 import { query, operation, log } from './host.js';
-import { palette, text, icon, controlButton } from './theme.js';
+import { palette, text, icon, controlButton, textField } from './theme.js';
 
 const SCOPES = [
   ['once', 'Allow once'],
@@ -51,6 +51,8 @@ export class Interactions {
     this.drafts = new Map();
     /** requestId -> why reading it failed; the card offers to read it again. */
     this.failures = new Map();
+    /** requestId -> the form being filled in, for a form request. */
+    this.forms = new Map();
     /** The request whose answer is in flight, if any. */
     this.responding = null;
     this.revision = -1;
@@ -75,6 +77,11 @@ export class Interactions {
     for (const id of [...this.records.keys()]) if (!open.has(id)) this.records.delete(id);
     for (const id of [...this.drafts.keys()]) if (!open.has(id)) this.drafts.delete(id);
     for (const id of [...this.failures.keys()]) if (!open.has(id)) this.failures.delete(id);
+    for (const [id, form] of [...this.forms]) {
+      if (open.has(id)) continue;
+      form.release();
+      this.forms.delete(id);
+    }
     for (const entry of pending.entries) {
       if (!this.records.has(entry.requestId)) this.read(entry.requestId);
     }
@@ -87,8 +94,7 @@ export class Interactions {
     try {
       const record = await query('agent', 'interaction', { sessionId: this.sessionId, requestId });
       if (this.closed || !this.entries.some((entry) => entry.requestId === requestId)) return;
-      this.records.set(requestId, record);
-      this.hooks.changed();
+      this.adopt(record);
     } catch (error) {
       this.records.delete(requestId);
       if (this.closed) return;
@@ -98,6 +104,16 @@ export class Interactions {
       this.hooks.report(`Request ${requestId}: ${error.message}`);
       this.hooks.changed();
     }
+  }
+
+  /** Keeps a request's record, with a draft to fill in when it is an open form. */
+  adopt(record) {
+    const id = record.requestId;
+    this.records.set(id, record);
+    if (record.request.kind === 'form' && !record.outcome && !this.forms.has(id)) {
+      this.forms.set(id, new FormDraft(record.request.fields, () => this.hooks.changed()));
+    }
+    this.hooks.changed();
   }
 
   /** Reads again the requests whose read failed. */
@@ -156,9 +172,231 @@ export class Interactions {
     else this.hooks.changed();
   }
 
+  /** Sends a filled-in form, or marks the first field that cannot be sent. */
+  submitForm(record) {
+    const form = this.forms.get(record.requestId);
+    const values = form?.values();
+    if (values) this.respond(record, { kind: 'form', action: 'accept', values });
+    else this.hooks.changed();
+  }
+
   close() {
     this.closed = true;
+    for (const form of this.forms.values()) form.release();
+    this.forms.clear();
   }
+}
+
+/** The fields typed as text: a string, or a number read from text. */
+const TEXTUAL = new Set(['string', 'number', 'integer']);
+
+/** What a text field shows while it is empty, by kind and format. */
+const PLACEHOLDERS = {
+  email: 'name@example.com',
+  uri: 'https://',
+  date: 'YYYY-MM-DD',
+  'date-time': 'YYYY-MM-DDThh:mm:ssZ',
+  number: 'A number',
+  integer: 'A whole number',
+};
+
+/**
+ * The answers to one form while they are filled in: a text state for each
+ * field typed as text, and the chosen value (or values) for the rest. A field
+ * starts from the request's default. An optional field is sent only when it
+ * has a value; a required one must have a valid one.
+ */
+class FormDraft {
+  constructor(fields, changed) {
+    this.fields = fields;
+    this.changed = changed;
+    /** The field that stopped the last submission and why; index -1 is the whole form. */
+    this.problem = null;
+    this.drafts = fields.map((field, index) => {
+      if (!TEXTUAL.has(field.kind)) {
+        return field.default ?? (field.kind === 'multi_select' ? [] : null);
+      }
+      const state = InputState.new({
+        placeholder: PLACEHOLDERS[field.format ?? field.kind] ?? '',
+        value: field.default == null ? '' : String(field.default),
+      });
+      state.on('change', () => this.edited(index));
+      return state;
+    });
+  }
+
+  /** Text state for a field typed as text. */
+  state(index) {
+    return this.drafts[index];
+  }
+
+  /** The value chosen for a boolean or select field. */
+  chosen(index) {
+    return this.drafts[index];
+  }
+
+  /**
+   * Chooses a value for a boolean or single select. Choosing the chosen value
+   * of an optional field clears it, so it can be left out again.
+   */
+  choose(index, value) {
+    const field = this.fields[index];
+    this.drafts[index] = !field.required && this.drafts[index] === value ? null : value;
+    this.edited(index);
+  }
+
+  /** Adds or removes one value of a multi select, keeping the options' order. */
+  toggle(index, value) {
+    const field = this.fields[index];
+    const current = new Set(this.drafts[index]);
+    if (current.has(value)) current.delete(value);
+    else current.add(value);
+    this.drafts[index] = field.options.map((option) => option.value).filter((v) => current.has(v));
+    this.edited(index);
+  }
+
+  edited(index) {
+    if (this.problem !== null && (this.problem.index === index || this.problem.index === -1)) {
+      this.problem = null;
+    }
+    this.changed();
+  }
+
+  /**
+   * The values to send, or null after recording the first field that cannot
+   * be sent. The checks are the Host's (facts/src/capability/form_validation.rs)
+   * and the form editor's size limits.
+   */
+  values() {
+    const values = {};
+    for (const [index, field] of this.fields.entries()) {
+      const draft = this.drafts[index];
+      const raw = TEXTUAL.has(field.kind) ? draft.value() : draft;
+      const empty =
+        raw === null || raw === '' || (field.kind === 'multi_select' && raw.length === 0);
+      if (empty && !field.required) continue;
+      const parsed = TEXTUAL.has(field.kind) && field.kind !== 'string' ? number(raw) : raw;
+      const problem = empty ? 'Required' : fieldProblem(field, parsed);
+      if (problem !== null) {
+        this.problem = { index, message: problem };
+        return null;
+      }
+      values[field.name] = parsed;
+    }
+    const answer = { kind: 'form_answer', action: 'accept', values, committedAt: Number.MAX_SAFE_INTEGER };
+    if (utf8Length(JSON.stringify(answer)) > 8192) {
+      this.problem = { index: -1, message: 'The answers are too long to send. Shorten them and submit again.' };
+      return null;
+    }
+    this.problem = null;
+    return values;
+  }
+
+  release() {
+    for (const [index, field] of this.fields.entries()) {
+      if (TEXTUAL.has(field.kind)) this.drafts[index].release();
+    }
+  }
+}
+
+/** A number typed as text, or null when the text is not one (the form editor's pattern). */
+function number(text) {
+  const trimmed = text.trim();
+  return /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(trimmed) ? Number(trimmed) : null;
+}
+
+function utf8Length(text) {
+  let bytes = 0;
+  for (const char of text) {
+    const code = char.codePointAt(0);
+    bytes += code <= 0x7f ? 1 : code <= 0x7ff ? 2 : code <= 0xffff ? 3 : 4;
+  }
+  return bytes;
+}
+
+/** Why a field's value cannot be sent, or null when it can. */
+function fieldProblem(field, value) {
+  switch (field.kind) {
+    case 'string': {
+      const length = [...value].length;
+      if (length < (field.minLength ?? 0)) return `Use at least ${field.minLength} characters`;
+      if (length > (field.maxLength ?? 2048) || utf8Length(value) > 2048) {
+        return `Use at most ${field.maxLength ?? 2048} characters`;
+      }
+      return formatProblem(value, field.format);
+    }
+    case 'number':
+    case 'integer':
+      if (value === null || !Number.isFinite(value)) {
+        return field.kind === 'integer' ? 'Enter a whole number' : 'Enter a number';
+      }
+      if (field.kind === 'integer' && !Number.isSafeInteger(value)) return 'Enter a whole number';
+      if (value < (field.minimum ?? -Infinity) || value > (field.maximum ?? Infinity)) {
+        return `Enter ${numberKind(field).toLowerCase()} ${range(field.minimum, field.maximum)}`;
+      }
+      return null;
+    case 'multi_select': {
+      const fewest = field.minItems ?? 0;
+      const most = field.maxItems ?? field.options.length;
+      if (value.length < fewest || value.length > most) return `Choose ${count(fewest, most)}`;
+      return null;
+    }
+    default:
+      return null;
+  }
+}
+
+function formatProblem(value, format) {
+  switch (format) {
+    case 'email':
+      return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value) ? null : 'Enter an email address';
+    case 'uri':
+      return /^[a-zA-Z][a-zA-Z0-9+.-]*:\S+$/.test(value) ? null : 'Enter a full address, such as https://example.com';
+    case 'date':
+      return calendar(value, false) ? null : 'Enter a date as YYYY-MM-DD';
+    case 'date-time':
+      return calendar(value, true) ? null : 'Enter a date and time as YYYY-MM-DDThh:mm:ssZ';
+    default:
+      return null;
+  }
+}
+
+/** Whether `value` is a real calendar date (and time), as the Host checks it. */
+function calendar(value, time) {
+  const match = time
+    ? /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](\d{2}):(\d{2}))$/.exec(value)
+    : /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (match === null) return false;
+  const n = (index) => Number(match[index] ?? 0);
+  const [year, month, day] = [n(1), n(2), n(3)];
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return (
+    month >= 1 &&
+    month <= 12 &&
+    day >= 1 &&
+    day <= days[month - 1] &&
+    (!time || (n(4) <= 23 && n(5) <= 59 && n(6) <= 59 && n(7) <= 23 && n(8) <= 59))
+  );
+}
+
+function numberKind(field) {
+  return field.kind === 'integer' ? 'A whole number' : 'A number';
+}
+
+/** "from 1 to 10", "of at least 1" or "of at most 10". */
+function range(low, high) {
+  if (low != null && high != null) return `from ${low} to ${high}`;
+  if (low != null) return `of at least ${low}`;
+  return `of at most ${high}`;
+}
+
+/** "1 to 3 options", "at least 2 options", "1 option", … */
+function count(fewest, most) {
+  const options = (n) => (n === 1 ? '1 option' : `${n} options`);
+  if (fewest === most) return options(fewest);
+  if (fewest === 0) return `at most ${options(most)}`;
+  return `${fewest} to ${options(most)}`;
 }
 
 /**
@@ -236,12 +474,37 @@ export function interactionCard(interactions, cx) {
       }
       break;
     }
-    default:
-      title = 'The agent needs a form filled in';
+    case 'form': {
+      const form = interactions.forms.get(id);
+      title = 'The agent needs some details';
       body = [
-        detail(request.message ?? '', cx),
-        detail('The desktop cannot fill in forms yet; answer it in the terminal app (maka).', cx),
+        requester(request.requester, cx),
+        detail(request.message, cx),
+        form === undefined ? null : formFields(id, form, busy, cx),
+      ].filter((part) => part !== null);
+      // A field's problem shows on its row, which may be scrolled away, so it
+      // is named here too.
+      const problem = form?.problem ?? null;
+      if (problem !== null) {
+        const where = problem.index >= 0 ? `${request.fields[problem.index].label}: ` : '';
+        body.push(text(`${where}${problem.message}`, 'small', m.destructive));
+      }
+      actions = [
+        controlButton(`${id}-submit`, 'Submit', 'primary', busy || form === undefined, cx).on_click(
+          () => interactions.submitForm(record),
+        ),
+        controlButton(`${id}-decline`, 'Decline', 'outline', busy, cx).on_click(() =>
+          respond({ kind: 'form', action: 'decline' }),
+        ),
+        controlButton(`${id}-cancel`, 'Cancel request', 'outline', busy, cx).on_click(() =>
+          respond({ kind: 'form', action: 'cancel' }),
+        ),
       ];
+      break;
+    }
+    default:
+      title = 'The agent is waiting for something the desktop cannot show';
+      body = [detail(`A "${request.kind}" request; answer it in the terminal app (maka).`, cx)];
   }
 
   return column(
@@ -358,13 +621,138 @@ function command(run, cx) {
     );
 }
 
-function questionPart(id, question, index, chosen, busy, cx, choose) {
+/** A 28px choice button, drawn as picked with the accent ring. */
+function optionButton(key, label, picked, busy, cx) {
   const m = palette(cx);
-  const option = (key, label, picked) =>
-    controlButton(key, label, 'outline', busy, cx)
-      .h(28)
-      .px(10)
-      .when(picked, (el) => el.bg(m.selected).border_color(m.accent));
+  return controlButton(key, label, 'outline', busy, cx)
+    .h(28)
+    .px(10)
+    .when(picked, (el) => el.bg(m.selected).border_color(m.accent));
+}
+
+/** Who asks for the form: the requester the Host names, and where it comes from. */
+function requester(who, cx) {
+  const m = palette(cx);
+  return h_flex()
+    .gap(6)
+    .items_center()
+    .child(text(`From ${who.name}`, 'small', m.inkMuted).flex_none())
+    .when(who.source != null, (el) =>
+      el.child(text(who.source, 'small', m.inkDisabled).min_w_0().truncate()),
+    );
+}
+
+/**
+ * A form's fields, one row each as settings draws them: the label and what to
+ * know about it on the left, the control on the right. The rows scroll when a
+ * long form would push the composer off the plate.
+ * @param {FormDraft} form
+ */
+function formFields(id, form, busy, cx) {
+  return v_flex()
+    .id(`${id}-fields`)
+    .max_h(320)
+    .overflow_y_scrollbar()
+    .children(form.fields.map((field, index) => formField(id, form, field, index, busy, cx)));
+}
+
+function formField(id, form, field, index, busy, cx) {
+  const m = palette(cx);
+  const key = `${id}-field-${index}`;
+  let control;
+  switch (field.kind) {
+    case 'string':
+    case 'number':
+    case 'integer':
+      control = div().w(280).child(textField(form.state(index), cx));
+      break;
+    case 'boolean':
+      control = choices([
+        optionButton(`${key}-yes`, 'Yes', form.chosen(index) === true, busy, cx).on_click(() =>
+          form.choose(index, true),
+        ),
+        optionButton(`${key}-no`, 'No', form.chosen(index) === false, busy, cx).on_click(() =>
+          form.choose(index, false),
+        ),
+      ]);
+      break;
+    case 'single_select':
+      control = choices(
+        field.options.map((entry, choice) =>
+          optionButton(`${key}-${choice}`, entry.label, form.chosen(index) === entry.value, busy, cx)
+            .on_click(() => form.choose(index, entry.value)),
+        ),
+      );
+      break;
+    case 'multi_select':
+      control = choices(
+        field.options.map((entry, choice) =>
+          optionButton(`${key}-${choice}`, entry.label, form.chosen(index).includes(entry.value), busy, cx)
+            .on_click(() => form.toggle(index, entry.value)),
+        ),
+      );
+      break;
+    default:
+      control = text(`${field.kind} fields cannot be filled in here`, 'small', m.inkMuted);
+  }
+  const problem = form.problem?.index === index ? form.problem.message : null;
+  const note = problem ?? ([field.description, fieldHint(field)].filter(Boolean).join(' · ') || null);
+  return h_flex()
+    .w_full()
+    .py(8)
+    .gap(16)
+    .items_center()
+    .when(index > 0, (el) => el.border_t_1().border_color(m.borderSoft))
+    .child(
+      v_flex()
+        .flex_1()
+        .min_w_0()
+        .child(
+          h_flex()
+            .gap(6)
+            .items_center()
+            .child(text(field.label, 'label', m.ink).min_w_0().truncate())
+            .when(field.required, (el) => el.child(text('Required', 'small', m.inkMuted).flex_none())),
+        )
+        .when(note !== null, (el) =>
+          el.child(text(note, 'small', problem !== null ? m.destructive : m.inkMuted)),
+        ),
+    )
+    .child(h_flex().flex_none().max_w(360).justify_end().child(control));
+}
+
+function choices(buttons) {
+  return h_flex().flex_wrap().justify_end().gap(6).children(buttons);
+}
+
+/** The limits a field states, in words, or null when it has none. */
+function fieldHint(field) {
+  switch (field.kind) {
+    case 'string': {
+      const low = field.minLength ?? null;
+      const high = field.maxLength ?? null;
+      if (low !== null && high !== null) return `${low} to ${high} characters`;
+      if (low !== null) return `At least ${low} characters`;
+      if (high !== null) return `At most ${high} characters`;
+      return null;
+    }
+    case 'number':
+    case 'integer':
+      if (field.minimum == null && field.maximum == null) return null;
+      return `${numberKind(field)} ${range(field.minimum, field.maximum)}`;
+    case 'multi_select': {
+      const fewest = field.minItems ?? 0;
+      const most = field.maxItems ?? field.options.length;
+      if (fewest === 0 && most === field.options.length) return 'Choose any';
+      return `Choose ${count(fewest, most)}`;
+    }
+    default:
+      return null;
+  }
+}
+
+function questionPart(id, question, index, chosen, busy, cx, choose) {
+  const option = (key, label, picked) => optionButton(key, label, picked, busy, cx);
   return v_flex()
     .gap(6)
     .child(detail(question.question, cx))
