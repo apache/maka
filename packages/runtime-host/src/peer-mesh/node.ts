@@ -49,6 +49,24 @@ import {
   type SignedPeerMeshRosterV1,
 } from './model.js';
 import { canonicalPeerMeshDisplayName } from './display-name.js';
+import {
+  decodeControlRequest,
+  decodeRedeemResponse,
+  decodeSyncResponse,
+  decodeLeaveResponse,
+  decodeAnnounceRosterResponse,
+  EVIDENCE_PAGE_SIZE,
+  type RedeemInvitationRequest,
+  type RedeemInvitationResponse,
+  type RedeemInvitationRejectionReason,
+  type PeerMeshEvidenceSummary,
+  type SyncPeerMeshRequest,
+  type SyncPeerMeshResponse,
+  type LeavePeerMeshRequest,
+  type LeavePeerMeshResponse,
+  type AnnouncePeerMeshRosterRequest,
+  type AnnouncePeerMeshRosterResponse,
+} from './control-protocol.js';
 import type { PeerMeshInvitationV1 } from '../protocol/peer-mesh.js';
 import {
   authenticateSignedPeerReachabilityLease,
@@ -82,84 +100,9 @@ const CONNECT_DEADLINE_MS = 30_000;
 const CONTROL_REQUEST_DEADLINE_MS = 10_000;
 const MAX_ACTIVE_CONTROL_STREAMS = 32;
 const MAX_ACTIVE_CONTROL_STREAMS_PER_PEER = 2;
-const EVIDENCE_PAGE_SIZE = 2;
 const RECONCILE_CONCURRENCY = 4;
 const RECONCILE_DEADLINE_MS = 60 * 1_000;
 const RECONCILE_INTERVAL_MS = 5 * 60 * 1_000;
-
-interface RedeemInvitationRequest {
-  readonly kind: 'redeem-invitation';
-  readonly meshId: string;
-  readonly secret: string;
-  readonly reachability: SignedPeerReachabilityLeaseV1;
-  readonly advertisement: SignedPeerMeshMemberAdvertisementV1;
-}
-
-type RedeemInvitationResponse =
-  | {
-      readonly kind: 'invitation-redeemed';
-      readonly roster: SignedPeerMeshRosterV1;
-      readonly reachability: readonly SignedPeerReachabilityLeaseV1[];
-      readonly advertisements: readonly SignedPeerMeshMemberAdvertisementV1[];
-    }
-  | {
-      readonly kind: 'invitation-rejected';
-      readonly reason: RedeemInvitationRejectionReason;
-    };
-
-type RedeemInvitationRejectionReason = 'invalid' | 'expired' | 'closed' | 'full';
-
-interface PeerMeshEvidenceSummary {
-  readonly peerId: string;
-  readonly revision: number;
-  readonly digest: string;
-}
-
-interface SyncPeerMeshRequest {
-  readonly kind: 'sync';
-  readonly meshId: string;
-  readonly roster: SignedPeerMeshRosterV1;
-  readonly reachability: SignedPeerReachabilityLeaseV1;
-  readonly advertisement: SignedPeerMeshMemberAdvertisementV1;
-  readonly knownReachability: readonly PeerMeshEvidenceSummary[];
-  readonly knownAdvertisements: readonly PeerMeshEvidenceSummary[];
-}
-
-type SyncPeerMeshResponse =
-  | {
-      readonly kind: 'sync-result';
-      readonly roster: SignedPeerMeshRosterV1;
-      readonly reachability: readonly SignedPeerReachabilityLeaseV1[];
-      readonly advertisements: readonly SignedPeerMeshMemberAdvertisementV1[];
-      readonly more: boolean;
-    }
-  | { readonly kind: 'sync-rejected'; readonly reason: 'unknown' };
-
-interface LeavePeerMeshRequest {
-  readonly kind: 'leave';
-  readonly meshId: string;
-  readonly roster: SignedPeerMeshRosterV1;
-}
-
-type LeavePeerMeshResponse =
-  | { readonly kind: 'left'; readonly roster: SignedPeerMeshRosterV1 }
-  | { readonly kind: 'leave-rejected'; readonly reason: 'unknown' };
-
-interface AnnouncePeerMeshRosterRequest {
-  readonly kind: 'announce-roster';
-  readonly meshId: string;
-  readonly roster: SignedPeerMeshRosterV1;
-}
-
-type AnnouncePeerMeshRosterResponse =
-  | { readonly kind: 'roster-observed' }
-  | { readonly kind: 'roster-rejected'; readonly reason: 'unknown' };
-
-type PeerMeshControlRequest =
-  | RedeemInvitationRequest
-  | SyncPeerMeshRequest
-  | LeavePeerMeshRequest
-  | AnnouncePeerMeshRosterRequest;
 
 interface LocalPeerMeshEvidence {
   readonly reachability: SignedPeerReachabilityLeaseV1;
@@ -2870,197 +2813,6 @@ async function exchangeControl<Request, Response>(
   }
 }
 
-function decodeControlRequest(value: unknown): PeerMeshControlRequest {
-  const record = recordValue(value);
-  if (
-    record.kind === 'redeem-invitation' &&
-    hasExactKeys(record, ['kind', 'meshId', 'secret', 'reachability', 'advertisement'])
-  ) {
-    return {
-      kind: 'redeem-invitation',
-      meshId: requiredString(record.meshId, 128),
-      secret: requiredString(record.secret, 64),
-      reachability: decodeSignedPeerReachabilityLease(record.reachability),
-      advertisement: decodeSignedPeerMeshMemberAdvertisement(record.advertisement),
-    };
-  }
-  if (
-    record.kind === 'sync' &&
-    hasExactKeys(record, [
-      'kind',
-      'meshId',
-      'roster',
-      'reachability',
-      'advertisement',
-      'knownReachability',
-      'knownAdvertisements',
-    ])
-  ) {
-    return {
-      kind: 'sync',
-      meshId: requiredString(record.meshId, 128),
-      roster: decodeSignedPeerMeshRoster(record.roster),
-      reachability: decodeSignedPeerReachabilityLease(record.reachability),
-      advertisement: decodeSignedPeerMeshMemberAdvertisement(record.advertisement),
-      knownReachability: decodeEvidenceSummaries(record.knownReachability),
-      knownAdvertisements: decodeEvidenceSummaries(record.knownAdvertisements),
-    };
-  }
-  if (record.kind === 'leave' && hasExactKeys(record, ['kind', 'meshId', 'roster'])) {
-    return {
-      kind: 'leave',
-      meshId: requiredString(record.meshId, 128),
-      roster: decodeSignedPeerMeshRoster(record.roster),
-    };
-  }
-  if (record.kind === 'announce-roster' && hasExactKeys(record, ['kind', 'meshId', 'roster'])) {
-    return {
-      kind: 'announce-roster',
-      meshId: requiredString(record.meshId, 128),
-      roster: decodeSignedPeerMeshRoster(record.roster),
-    };
-  }
-  throw new Error('Unsupported Peer Mesh control request');
-}
-
-function decodeRedeemResponse(value: unknown): RedeemInvitationResponse {
-  const record = recordValue(value);
-  if (
-    record.kind === 'invitation-redeemed' &&
-    hasExactKeys(record, ['kind', 'roster', 'reachability', 'advertisements'])
-  ) {
-    const reachability = decodeReachabilityPage(record.reachability);
-    const advertisements = decodeAdvertisementPage(record.advertisements);
-    assertEvidencePageSize(reachability, advertisements);
-    return {
-      kind: 'invitation-redeemed',
-      roster: decodeSignedPeerMeshRoster(record.roster),
-      reachability,
-      advertisements,
-    };
-  }
-  if (
-    record.kind === 'invitation-rejected' &&
-    hasExactKeys(record, ['kind', 'reason']) &&
-    (record.reason === 'invalid' ||
-      record.reason === 'expired' ||
-      record.reason === 'closed' ||
-      record.reason === 'full')
-  ) {
-    return { kind: 'invitation-rejected', reason: record.reason };
-  }
-  throw new Error('Invalid Peer Mesh control response');
-}
-
-function decodeSyncResponse(value: unknown): SyncPeerMeshResponse {
-  const record = recordValue(value);
-  if (
-    record.kind === 'sync-result' &&
-    hasExactKeys(record, ['kind', 'roster', 'reachability', 'advertisements', 'more']) &&
-    typeof record.more === 'boolean'
-  ) {
-    const reachability = decodeReachabilityPage(record.reachability);
-    const advertisements = decodeAdvertisementPage(record.advertisements);
-    assertEvidencePageSize(reachability, advertisements);
-    return {
-      kind: 'sync-result',
-      roster: decodeSignedPeerMeshRoster(record.roster),
-      reachability,
-      advertisements,
-      more: record.more,
-    };
-  }
-  if (
-    record.kind === 'sync-rejected' &&
-    hasExactKeys(record, ['kind', 'reason']) &&
-    record.reason === 'unknown'
-  ) {
-    return { kind: 'sync-rejected', reason: record.reason };
-  }
-  throw new Error('Invalid Peer Mesh synchronization response');
-}
-
-function decodeLeaveResponse(value: unknown): LeavePeerMeshResponse {
-  const record = recordValue(value);
-  if (record.kind === 'left' && hasExactKeys(record, ['kind', 'roster'])) {
-    return { kind: 'left', roster: decodeSignedPeerMeshRoster(record.roster) };
-  }
-  if (
-    record.kind === 'leave-rejected' &&
-    hasExactKeys(record, ['kind', 'reason']) &&
-    record.reason === 'unknown'
-  ) {
-    return { kind: 'leave-rejected', reason: 'unknown' };
-  }
-  throw new Error('Invalid Peer Mesh leave response');
-}
-
-function decodeAnnounceRosterResponse(value: unknown): AnnouncePeerMeshRosterResponse {
-  const record = recordValue(value);
-  if (record.kind === 'roster-observed' && hasExactKeys(record, ['kind'])) {
-    return { kind: 'roster-observed' };
-  }
-  if (
-    record.kind === 'roster-rejected' &&
-    hasExactKeys(record, ['kind', 'reason']) &&
-    record.reason === 'unknown'
-  ) {
-    return { kind: 'roster-rejected', reason: 'unknown' };
-  }
-  throw new Error('Invalid Peer Mesh roster announcement response');
-}
-
-function decodeReachabilityPage(value: unknown): readonly SignedPeerReachabilityLeaseV1[] {
-  if (!Array.isArray(value) || value.length > EVIDENCE_PAGE_SIZE) {
-    throw new Error('Invalid Peer Mesh reachability page');
-  }
-  return Object.freeze(value.map(decodeSignedPeerReachabilityLease));
-}
-
-function decodeAdvertisementPage(value: unknown): readonly SignedPeerMeshMemberAdvertisementV1[] {
-  if (!Array.isArray(value) || value.length > EVIDENCE_PAGE_SIZE) {
-    throw new Error('Invalid Peer Mesh advertisement page');
-  }
-  return Object.freeze(value.map(decodeSignedPeerMeshMemberAdvertisement));
-}
-
-function assertEvidencePageSize(
-  reachability: readonly SignedPeerReachabilityLeaseV1[],
-  advertisements: readonly SignedPeerMeshMemberAdvertisementV1[],
-): void {
-  if (reachability.length + advertisements.length > EVIDENCE_PAGE_SIZE) {
-    throw new Error('Peer Mesh evidence page exceeds its bound');
-  }
-}
-
-function decodeEvidenceSummaries(value: unknown): readonly PeerMeshEvidenceSummary[] {
-  if (!Array.isArray(value) || value.length > PEER_MESH_MAX_MEMBERS) {
-    throw new Error('Invalid Peer Mesh evidence revisions');
-  }
-  const revisions = value.map((entry) => {
-    const record = recordValue(entry);
-    if (!hasExactKeys(record, ['peerId', 'revision', 'digest'])) {
-      throw new Error('Invalid Peer Mesh evidence revision');
-    }
-    const revision = record.revision;
-    if (!Number.isSafeInteger(revision) || (revision as number) < 1) {
-      throw new Error('Invalid Peer Mesh evidence revision');
-    }
-    if (typeof record.digest !== 'string' || !/^[0-9a-f]{64}$/u.test(record.digest)) {
-      throw new Error('Invalid Peer Mesh evidence digest');
-    }
-    return Object.freeze({
-      peerId: requiredString(record.peerId, 256),
-      revision: revision as number,
-      digest: record.digest,
-    });
-  });
-  if (new Set(revisions.map(({ peerId }) => peerId)).size !== revisions.length) {
-    throw new Error('Duplicate Peer Mesh evidence revision');
-  }
-  return Object.freeze(revisions);
-}
-
 async function writeFrame(stream: RuntimeHostPeerNativeStream, value: unknown): Promise<void> {
   const bytes = Buffer.from(`${JSON.stringify(value)}\n`);
   if (bytes.length > CONTROL_FRAME_MAX_BYTES)
@@ -3083,24 +2835,4 @@ async function readFrame(stream: RuntimeHostPeerNativeStream): Promise<unknown> 
     }
     return JSON.parse(buffered.subarray(0, newline).toString('utf8')) as unknown;
   }
-}
-
-function recordValue(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error('Invalid Peer Mesh control frame');
-  }
-  return value as Record<string, unknown>;
-}
-
-function hasExactKeys(record: Record<string, unknown>, keys: readonly string[]): boolean {
-  return (
-    Object.keys(record).length === keys.length && keys.every((key) => Object.hasOwn(record, key))
-  );
-}
-
-function requiredString(value: unknown, maxLength: number): string {
-  if (typeof value !== 'string' || value.length === 0 || value.length > maxLength) {
-    throw new Error('Invalid Peer Mesh control value');
-  }
-  return value;
 }
