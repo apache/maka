@@ -41,6 +41,15 @@ describe('hosted web search capability', () => {
       adapter: 'openai-responses',
       implemented: true,
     });
+    assert.deepEqual(resolveHostedWebSearchCapability('meta', undefined, 'muse-spark-1.3'), {
+      adapter: 'openai-responses',
+      implemented: true,
+    });
+    assert.deepEqual(
+      resolveHostedWebSearchCapability('meta', undefined, 'muse-spark-1.3-contributor'),
+      { adapter: 'openai-responses', implemented: true },
+    );
+    assert.equal(resolveHostedWebSearchCapability('meta', undefined, 'muse-spark-1.2'), null);
     assert.deepEqual(resolveHostedWebSearchCapability('alibaba', undefined, 'qwen3.5-plus'), {
       adapter: 'openai-responses',
       implemented: false,

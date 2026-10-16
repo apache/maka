@@ -31,6 +31,21 @@ test('Moonshot Global pricing comes from the models.dev snapshot', () => {
   assert.ok(pricing && pricing.inputUsdPer1M > 0 && pricing.outputUsdPer1M > 0);
 });
 
+test('Meta Standard and Contributor pricing stay distinct', () => {
+  assert.deepEqual(getBuiltinPricing('meta:muse-spark-1.3'), {
+    modelKey: 'meta:muse-spark-1.3',
+    inputUsdPer1M: 1.25,
+    outputUsdPer1M: 4.25,
+    cacheReadUsdPer1M: 0.15,
+  });
+  assert.deepEqual(getBuiltinPricing('meta:muse-spark-1.3-contributor'), {
+    modelKey: 'meta:muse-spark-1.3-contributor',
+    inputUsdPer1M: 0.1,
+    outputUsdPer1M: 0.2,
+    cacheReadUsdPer1M: 0.002,
+  });
+});
+
 describe('computeCost', () => {
   test('charges full input price only for cache-miss input', () => {
     const cost = computeCost(

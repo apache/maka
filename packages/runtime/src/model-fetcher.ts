@@ -221,7 +221,7 @@ async function fetchProviderModelsStrict(
       const models = providerObjectArray<RawProviderModel>(data.data, 'Anthropic models')
         .map(toModelInfo)
         .filter((model): model is ModelInfo => model !== null);
-      return filterDiscoveredModels(models, discovery.filter);
+      return filterDiscoveredModels(models, discovery.filter, discovery.excludeModelIdPrefixes);
     }
     case 'openai':
     case 'openai-compatible': {
@@ -264,7 +264,7 @@ async function fetchProviderModelsStrict(
           }
         }
       }
-      return filterDiscoveredModels(models, discovery.filter);
+      return filterDiscoveredModels(models, discovery.filter, discovery.excludeModelIdPrefixes);
     }
     case 'google': {
       const r = await fetchForConnectionEffect(fetchFn, googleApiUrl(baseUrl, '/models', apiKey), {
@@ -275,11 +275,13 @@ async function fetchProviderModelsStrict(
         throw new ConnectionEffectHttpError(r.status);
       }
       const data = await readProviderJson<{ models?: unknown }>(r);
-      return providerObjectArray<{ name?: string }>(data.models, 'Google models').flatMap(
-        (model) => {
+      return filterDiscoveredModels(
+        providerObjectArray<{ name?: string }>(data.models, 'Google models').flatMap((model) => {
           const id = model.name?.split('/').pop();
           return id ? [{ id }] : [];
-        },
+        }),
+        discovery.filter,
+        discovery.excludeModelIdPrefixes,
       );
     }
     default:
@@ -636,21 +638,31 @@ async function fetchCohereModels(
 }
 
 /**
- * Provider-reported filters only. `tool-capable` and `language-models` keep
- * what the provider itself said about each model; there is no filter that
+ * Provider-reported filters and documented negative facts only.
+ * `tool-capable` and `language-models` keep what the provider itself said
+ * about each model; excluded prefixes remove only model families the provider
+ * documents as incompatible with Maka's chat runtime. There is no filter that
  * intersects a live response with the array this build shipped. Doing that
- * made "the provider listed this" mean "this build has heard of it", so a
- * model the account gained after release was dropped on arrival and could
- * never be selected (#1584).
+ * made "the provider listed this" mean "this build has heard of it", so a model
+ * the account gained after release was dropped on arrival (#1584).
  */
 function filterDiscoveredModels(
   models: ModelInfo[],
   filter: 'language-models' | 'tool-capable' | undefined,
+  excludeModelIdPrefixes: readonly string[] | undefined,
 ): ModelInfo[] {
-  if (filter === 'tool-capable') {
-    return models.filter((model) => model.capabilities?.functionCalling === true);
-  }
-  return models;
+  const filtered =
+    filter === 'tool-capable'
+      ? models.filter((model) => model.capabilities?.functionCalling === true)
+      : models;
+  const excluded = excludeModelIdPrefixes
+    ?.map((prefix) => prefix.trim().toLowerCase())
+    .filter(Boolean);
+  if (!excluded?.length) return filtered;
+  return filtered.filter((model) => {
+    const id = model.id.toLowerCase();
+    return !excluded.some((prefix) => id.startsWith(prefix));
+  });
 }
 
 function modelListUrl(
