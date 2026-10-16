@@ -32,33 +32,36 @@
 //!
 //! # What keeps it turning
 //!
-//! Each paint asks GPUI for the next animation frame. That notifies the view
-//! the spinner is drawn in, which GPUI then renders again — and a
-//! [`ScriptView`](crate::ScriptView) that is notified without being
-//! invalidated replays its snapshot through materialize and does not enter
-//! the VM. So a spinner costs one materialization of its view per frame, and
-//! no script render.
+//! The angle moves in steps of [`STEP`], 30 a second, as the native Maka
+//! client's spinner does. Each paint schedules a notification of the view
+//! the spinner is drawn in for when the next step is due, and GPUI then
+//! renders that view again. A [`ScriptView`](crate::ScriptView) that is
+//! notified without being invalidated replays its snapshot through
+//! materialize and does not enter the VM, but a `list` in it calls its item
+//! renderer for the rows on screen. So a spinner costs one materialization
+//! of its view per step rather than one per display frame, which at 60 or
+//! 120 Hz would be two or four times as many.
 //!
-//! A spinner inside a scroll container must not be composited from a cached
-//! scroll layer, which would show it at the angle it was painted at. Two
-//! things keep it off one. The view it is in is notified every frame, and a
-//! notified view's content counts as changed. And the request is made while
-//! the element is painted, so GPUI-fast records it as coming from inside the
-//! container; a container whose content asks for animation frames is drawn
-//! without its layer (`fast::layers::policy::eligible`) rather than painted
-//! into it again on every frame.
+//! A spinner inside a scroll container is not left at an old angle in a
+//! cached scroll layer: the notification that brings each step makes the
+//! container's content count as changed, so GPUI-fast paints it again, or
+//! draws it without its layer once it changes that often.
 //!
 //! With reduced motion on, the icon is drawn upright and no frame is asked
 //! for, as every Base transition and spring does.
 
-use std::{sync::OnceLock, time::Duration};
+use std::{cell::RefCell, collections::HashMap, sync::OnceLock, time::Duration};
 
 use gpui::{
-    App, Bounds, Element, ElementId, GlobalElementId, InspectorElementId, IntoElement, LayoutId,
-    Pixels, Svg, Transformation, Window, radians,
+    App, Bounds, Element, ElementId, EntityId, GlobalElementId, InspectorElementId, IntoElement,
+    LayoutId, Pixels, Svg, Transformation, Window, radians,
 };
 
 use crate::{materialize::Behavior, spec::Component};
+
+/// How often a spinner's angle moves on: 30 steps a second, the native Maka
+/// client's 33 ms.
+pub(crate) const STEP: Duration = Duration::from_millis(33);
 
 /// An svg that turns once every `period` about its center.
 ///
@@ -131,27 +134,86 @@ impl Element for SpinningSvg {
         cx: &mut App,
     ) {
         if !cx.reduce_motion() {
-            let angle = spin_angle(cx.background_executor().now(), self.period);
+            let now = cx.background_executor().now();
+            let (angle, next) = spin_step(now, self.period);
             // `Svg` takes its transformation by value only.
             let svg = std::mem::replace(&mut self.svg, gpui::svg());
             self.svg = svg.with_transformation(Transformation::rotate(radians(angle)));
             #[cfg(test)]
             PAINTED_ANGLES.with(|angles| angles.borrow_mut().push(angle));
-            window.request_animation_frame();
+            notify_at(window.current_view(), now, next, cx);
         }
         self.svg
             .paint(id, inspector_id, bounds, state, prepaint, window, cx);
     }
 }
 
-/// The angle, in radians, a spinner with this period shows at `now`.
+/// The angle, in radians, a spinner with this period shows at `now`, and
+/// the instant its next step is due.
 ///
-/// Measured from one epoch for the whole process — the first instant any
-/// spinner was painted at — and well defined for an instant before it, which
-/// a test clock started earlier than the epoch can produce.
-pub(in crate::materialize) fn spin_angle(now: std::time::Instant, period: Duration) -> f32 {
+/// Steps are counted from one epoch for the whole process, the first instant
+/// any spinner was painted at, so every spinner steps at the same instants
+/// and a script render that rebuilds one does not restart its turn.
+pub(in crate::materialize) fn spin_step(
+    now: std::time::Instant,
+    period: Duration,
+) -> (f32, std::time::Instant) {
     static EPOCH: OnceLock<std::time::Instant> = OnceLock::new();
-    phase_angle(now, *EPOCH.get_or_init(|| now), period)
+    step_at(now, *EPOCH.get_or_init(|| now), period)
+}
+
+/// [`spin_step`] from a given epoch. Well defined for an instant before it,
+/// which a test clock started earlier than the epoch can produce: the steps
+/// before the epoch fall on the same grid.
+fn step_at(
+    now: std::time::Instant,
+    epoch: std::time::Instant,
+    period: Duration,
+) -> (f32, std::time::Instant) {
+    let step = STEP.as_nanos();
+    // Less than one step, so it fits.
+    let back = match now.checked_duration_since(epoch) {
+        Some(since) => since.as_nanos() % step,
+        None => (step - (epoch - now).as_nanos() % step) % step,
+    };
+    let start = now
+        .checked_sub(Duration::from_nanos(back as u64))
+        .unwrap_or(now);
+    (phase_angle(start, epoch, period), start + STEP)
+}
+
+thread_local! {
+    /// The views a step notification is scheduled for, and when it is due.
+    static DUE: RefCell<HashMap<EntityId, std::time::Instant>> = RefCell::new(HashMap::new());
+}
+
+/// Notifies `view` at `at`, unless a notification due no later is already
+/// scheduled. Every spinner in a view asks on every paint; one timer serves
+/// them all.
+fn notify_at(view: EntityId, now: std::time::Instant, at: std::time::Instant, cx: &mut App) {
+    let scheduled = DUE.with(|due| {
+        let mut due = due.borrow_mut();
+        if due.get(&view).is_some_and(|due| *due > now && *due <= at) {
+            return true;
+        }
+        due.insert(view, at);
+        false
+    });
+    if scheduled {
+        return;
+    }
+    let wait = at.saturating_duration_since(now);
+    cx.spawn(async move |cx| {
+        cx.background_executor().timer(wait).await;
+        DUE.with(|due| {
+            let mut due = due.borrow_mut();
+            if due.get(&view) == Some(&at) {
+                due.remove(&view);
+            }
+        });
+        cx.update(|cx| cx.notify(view));
+    })
+    .detach();
 }
 
 fn phase_angle(now: std::time::Instant, epoch: std::time::Instant, period: Duration) -> f32 {
@@ -227,6 +289,33 @@ mod tests {
         assert!(close(before, 3. * FRAC_PI_2), "{before}");
         let exactly = phase_angle(epoch - Duration::from_millis(2000), epoch, period);
         assert!(close(exactly, 0.), "{exactly}");
+    }
+
+    #[test]
+    fn the_angle_moves_in_steps_and_says_when_the_next_is_due() {
+        let epoch = std::time::Instant::now() + Duration::from_secs(10);
+        let period = Duration::from_millis(1000);
+        let at = |ms: u64| step_at(epoch + Duration::from_millis(ms), epoch, period);
+        let (angle, next) = at(0);
+        assert!(close(angle, 0.));
+        assert_eq!(next, epoch + STEP);
+        let (within, next) = at(20);
+        assert!(close(within, 0.), "20 ms is still the first step: {within}");
+        assert_eq!(next, epoch + STEP);
+        let (second, next) = at(40);
+        assert!(close(second, TAU * 0.033), "{second}");
+        assert_eq!(next, epoch + STEP * 2);
+    }
+
+    #[test]
+    fn steps_before_the_epoch_fall_on_the_same_grid() {
+        let epoch = std::time::Instant::now() + Duration::from_secs(10);
+        let period = Duration::from_millis(1000);
+        let (angle, next) = step_at(epoch - Duration::from_millis(20), epoch, period);
+        assert_eq!(next, epoch, "the step before the epoch ends at it");
+        assert!(close(angle, TAU - TAU * 0.033), "{angle}");
+        let (_, next) = step_at(epoch - STEP, epoch, period);
+        assert_eq!(next, epoch);
     }
 
     #[test]

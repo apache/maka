@@ -2092,12 +2092,12 @@ const ELEMENTS: &str = r#"
      *
      * The angle is read from a clock when the icon is painted, not kept per
      * element, so a render that rebuilds the icon does not restart the turn,
-     * and two icons with the same period turn in step. A spinning icon asks
-     * for the next frame each time it is painted; that frame redraws the view
-     * it is in from its last description and does not call `render` again.
-     * A `list` in that view still calls its item renderer for the rows on
-     * screen on each of those frames, as it does on any redraw of the view.
-     * With reduced motion on, the icon is drawn upright and still.
+     * and two icons with the same period turn in step. The angle moves in
+     * steps, 30 a second. Each step redraws the view the icon is in from its
+     * last description and does not call `render` again; a `list` in that
+     * view still calls its item renderer for the rows on screen, as it does
+     * on any redraw of the view. With reduced motion on, the icon is drawn
+     * upright and still.
      *
      * `period_ms` must be a finite positive number, at most 86400000.
      */

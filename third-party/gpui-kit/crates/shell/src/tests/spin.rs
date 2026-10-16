@@ -20,12 +20,12 @@
 //! `svg(path).spin(period_ms)`, end to end: what a script records, and what
 //! a spinning icon costs on the frames that follow.
 //!
-//! The cost is the point. A spinner asks for a frame on every paint, and a
-//! frame that entered the VM would make every loading indicator a script
-//! render at the display's refresh rate. These tests count script renders
-//! across native frames, read the angle each frame was painted at, and check
-//! that a spinner inside a scroll container is not frozen inside a cached
-//! scroll layer.
+//! The cost is the point. A spinner brings its view back on every step, and
+//! a step that entered the VM would make every loading indicator a script
+//! render 30 times a second. These tests count script renders and paints
+//! across steps, read the angle each step was painted at, and check that a
+//! spinner inside a scroll container is not frozen inside a cached scroll
+//! layer.
 
 use std::{f32::consts::TAU, ops::Deref as _, rc::Rc, time::Duration};
 
@@ -34,7 +34,10 @@ use gpui::{
     TouchPhase, VisualTestContext, Window, point, px,
 };
 
-use crate::{ScriptView, ShellRuntime, materialize::take_painted_spin_angles};
+use crate::{
+    ScriptView, ShellRuntime,
+    materialize::{SPIN_STEP, take_painted_spin_angles},
+};
 
 const SPINNER: &str = r#"
 import { View, div, svg } from "gpui-kit";
@@ -51,8 +54,8 @@ export default class Loading extends View {
 /// A window whose root is a `ShellRoot` over one script view, drawn once.
 ///
 /// The real window root rather than `VisualTestContext::draw`: that redraws
-/// every view from scratch, which would hide whether the spinner's own frame
-/// request is what brings its view back.
+/// every view from scratch, which would hide whether the spinner's own step
+/// is what brings its view back.
 fn mounted(
     cx: &mut TestAppContext,
     source: &str,
@@ -95,12 +98,18 @@ fn frame_after<R>(
     result
 }
 
-/// One native frame `step` after the last: the frame callbacks run, then the
-/// window is drawn. Returns how many callbacks ran.
-fn next_frame(context: &mut VisualTestContext, step: Duration) -> usize {
-    context.executor().advance_clock(step);
-    frame_after(context, |window, cx| window.simulate_next_frame(cx))
+/// The window `by` later: the clock moves on, what came due runs, and the
+/// next display frame is drawn, with any callback asked for it. Returns the
+/// angles a spinner was painted at.
+fn after(context: &mut VisualTestContext, by: Duration) -> Vec<f32> {
+    context.executor().advance_clock(by);
+    context.run_until_parked();
+    frame_after(context, |window, cx| window.simulate_next_frame(cx));
+    take_painted_spin_angles()
 }
+
+/// What one step of a 1000 ms period turns.
+const STEP_TURN: f32 = TAU * 0.033;
 
 /// How far `to` is past `from`, going round the circle forwards.
 fn turned(from: f32, to: f32) -> f32 {
@@ -112,60 +121,68 @@ fn close(left: f32, right: f32) -> bool {
 }
 
 #[gpui::test]
-fn a_spinning_svg_turns_on_native_frames_without_reentering_js(cx: &mut TestAppContext) {
+fn a_spinning_svg_turns_in_steps_without_reentering_js(cx: &mut TestAppContext) {
     let (runtime, mut context, view) = mounted(cx, SPINNER);
-    // A tenth of the period per frame.
-    let step = Duration::from_millis(100);
-    // Mounting drew more than once before any frame callback ran, so the
-    // first frame runs one callback per draw. From here on, one frame is one
-    // draw.
-    next_frame(&mut context, step);
-    take_painted_spin_angles();
+    after(&mut context, SPIN_STEP);
     let before = runtime.metrics().read();
 
     let mut angles = Vec::new();
-    for frame in 0..10 {
+    for step in 0..10 {
+        let painted = after(&mut context, SPIN_STEP);
         assert_eq!(
-            next_frame(&mut context, step),
+            painted.len(),
             1,
-            "frame {frame}: each painted spinner asks for exactly the next frame"
+            "step {step}: each step brings the view back once: {painted:?}"
         );
-        angles.extend(take_painted_spin_angles());
+        angles.extend(painted);
     }
-    assert_eq!(angles.len(), 10, "every frame paints the spinner again");
     for pair in angles.windows(2) {
         assert!(
-            close(turned(pair[0], pair[1]), TAU / 10.),
-            "100 ms of a 1000 ms period is a tenth of a turn: {angles:?}"
+            close(turned(pair[0], pair[1]), STEP_TURN),
+            "33 ms of a 1000 ms period is 0.033 of a turn: {angles:?}"
         );
     }
 
-    let frames = runtime.metrics().read().since(&before);
+    // Between steps nothing comes due: any 33 ms holds exactly one step,
+    // however the steps fall against this clock.
+    let mut between = Vec::new();
+    for _ in 0..33 {
+        between.extend(after(&mut context, Duration::from_millis(1)));
+    }
     assert_eq!(
-        frames.script_renders(),
+        between.len(),
+        1,
+        "the spinner is painted once a step, not on every frame: {between:?}"
+    );
+
+    let steps = runtime.metrics().read().since(&before);
+    assert_eq!(
+        steps.script_renders(),
         0,
-        "ten spinner frames must not enter the VM"
+        "spinner steps must not enter the VM"
     );
     assert_eq!(
-        frames.materializations(),
-        10,
-        "each spinner frame replays the retained snapshot once"
+        steps.materializations(),
+        11,
+        "each step replays the retained snapshot once"
     );
 
     // A render that rebuilds the description rebuilds the icon too. The turn
     // carries on from the clock rather than starting again from upright.
-    context.executor().advance_clock(step);
-    frame_after(&mut context, |window, cx| {
-        window.simulate_next_frame(cx);
+    let last = *between.last().unwrap();
+    let stepped = after(&mut context, SPIN_STEP);
+    assert_eq!(stepped.len(), 1, "{stepped:?}");
+    assert!(close(turned(last, stepped[0]), STEP_TURN));
+    frame_after(&mut context, |_, cx| {
         view.update(cx, |view, cx| view.refresh(cx));
     });
     let rebuilt = take_painted_spin_angles();
-    assert_eq!(rebuilt.len(), 1);
+    assert_eq!(rebuilt.len(), 1, "{rebuilt:?}");
     assert_eq!(runtime.metrics().read().since(&before).script_renders(), 1);
     assert!(
-        close(turned(*angles.last().unwrap(), rebuilt[0]), TAU / 10.),
-        "a rebuilt spinner continues the same rotation: {} then {}",
-        angles.last().unwrap(),
+        close(rebuilt[0], stepped[0]),
+        "a spinner rebuilt within a step keeps that step's angle: {} then {}",
+        stepped[0],
         rebuilt[0]
     );
 }
@@ -175,15 +192,14 @@ fn a_spinning_svg_stands_still_under_reduced_motion(cx: &mut TestAppContext) {
     cx.update(|cx| cx.set_reduce_motion(true));
     let (_runtime, mut context, _view) = mounted(cx, SPINNER);
     assert!(take_painted_spin_angles().is_empty());
-    assert_eq!(
-        next_frame(&mut context, Duration::from_millis(100)),
-        0,
-        "with reduced motion on, a spinner is drawn upright and asks for no frame"
+    assert!(
+        after(&mut context, Duration::from_millis(100)).is_empty(),
+        "with reduced motion on, a spinner is drawn upright and schedules no step"
     );
 }
 
 #[gpui::test]
-fn spin_on_anything_but_an_svg_asks_for_no_frame(cx: &mut TestAppContext) {
+fn spin_on_anything_but_an_svg_schedules_no_step(cx: &mut TestAppContext) {
     let source = r##"
 import { View, div } from "gpui-kit";
 
@@ -193,9 +209,14 @@ export default class Loading extends View {
   }
 }
 "##;
-    let (_runtime, mut context, _view) = mounted(cx, source);
+    let (runtime, mut context, _view) = mounted(cx, source);
     assert!(take_painted_spin_angles().is_empty());
-    assert_eq!(next_frame(&mut context, Duration::from_millis(100)), 0);
+    let before = runtime.metrics().read();
+    after(&mut context, Duration::from_millis(100));
+    assert_eq!(
+        runtime.metrics().read().since(&before).materializations(),
+        0
+    );
 }
 
 /// A tall feed in a 100 px scroll container, with a spinner among its rows
@@ -236,6 +257,7 @@ export default class Feed extends View {{
     // scroll layer is only promoted after scrolling on consecutive frames.
     for _ in 0..frames {
         context.executor().advance_clock(Duration::from_millis(16));
+        context.run_until_parked();
         frame_after(&mut context, |window, cx| {
             window.dispatch_event(
                 PlatformInput::ScrollWheel(ScrollWheelEvent {
@@ -259,9 +281,9 @@ export default class Feed extends View {{
 /// GPUI-fast composites a scrolled container from a cached layer once it has
 /// scrolled for a few frames. A layer holds the pixels its content was
 /// painted with, so a spinner composited from one would stand still. This
-/// checks the outcome — the spinner is painted, at a new angle, on every
-/// scrolled frame, and no frame shows a layer painted earlier — rather than
-/// which of the two reasons in `materialize::components::spin` kept it off.
+/// checks the outcome: across frames 16 ms apart, the spinner is painted on
+/// every step that comes due, each one 0.033 of a turn on from the last, so
+/// no step is left showing an angle a layer kept from earlier.
 #[gpui::test]
 fn a_spinner_in_a_scroll_container_keeps_turning_under_scroll_layers(cx: &mut TestAppContext) {
     // Scroll layers are compiled in on these platforms only; elsewhere every
@@ -273,7 +295,7 @@ fn a_spinner_in_a_scroll_container_keeps_turning_under_scroll_layers(cx: &mut Te
     )) {
         return;
     }
-    let frames = 12;
+    let frames = 24;
 
     let (composited, _) = scroll_feed(cx, false, frames);
     assert!(
@@ -282,21 +304,18 @@ fn a_spinner_in_a_scroll_container_keeps_turning_under_scroll_layers(cx: &mut Te
          what makes the other half of this test mean something"
     );
 
-    let (composited, angles) = scroll_feed(cx, true, frames);
-    assert_eq!(
-        composited, 0,
-        "a container whose content is spinning must be painted on every frame, never \
-         composited from what an earlier frame painted"
+    let (_, angles) = scroll_feed(cx, true, frames);
+    let mut steps = angles.clone();
+    steps.dedup_by(|later, earlier| close(*later, *earlier));
+    // 24 frames of 16 ms hold 11 or 12 steps.
+    assert!(
+        steps.len() >= 11,
+        "the spinner is painted on every step: {angles:?}"
     );
-    assert_eq!(
-        angles.len(),
-        frames,
-        "the spinner is painted on every scrolled frame"
-    );
-    for pair in angles.windows(2) {
+    for pair in steps.windows(2) {
         assert!(
-            turned(pair[0], pair[1]) > 0.,
-            "the spinner turns on every scrolled frame: {angles:?}"
+            close(turned(pair[0], pair[1]), STEP_TURN),
+            "each step is painted, none skipped behind a layer: {angles:?}"
         );
     }
 }

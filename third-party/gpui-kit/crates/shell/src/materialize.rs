@@ -146,7 +146,7 @@ mod components;
 mod text_view;
 
 #[cfg(test)]
-pub(crate) use components::spin::take_painted_spin_angles;
+pub(crate) use components::spin::{STEP as SPIN_STEP, take_painted_spin_angles};
 pub(crate) use text_view::ScriptTextStyle;
 
 use crate::{
