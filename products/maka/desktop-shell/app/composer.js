@@ -63,8 +63,8 @@ export class Composer {
         models.defaultModel.kind === 'ready' ? models.defaultModel.choice : models.choices[0];
       this.model = fallback?.selection ?? null;
       this.modelLabel = fallback ? choiceLabel(fallback) : 'No model';
+      // No model yet is not an error: the start pane offers Settings.
       log(`composer: default model ${this.modelLabel}`);
-      if (!fallback) throw new Error('no model is set up; add one in Settings');
     } catch (error) {
       this.hooks.report(`Models: ${error.message}`);
     } finally {
