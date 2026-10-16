@@ -4913,6 +4913,68 @@ export default class Code extends View {
     );
 }
 
+/// A placeholder set at `new()` can be replaced while the state lives, so a
+/// language chosen later reaches empty fields without rebuilding their state.
+#[gpui::test]
+fn input_and_textarea_placeholders_change_while_the_state_lives(cx: &mut TestAppContext) {
+    cx.update(crate::init);
+    let runtime = ShellRuntime::new_isolated().expect("runtime");
+    cx.update(|cx| runtime.set_global(cx));
+    let source = r#"
+import { View } from "gpui-kit";
+import { Button, Input, InputState, Textarea, TextareaState, v_flex } from "gpui-base";
+
+export default class Fields extends View {
+  init() {
+    this.line = InputState.new({ placeholder: "Name" });
+    this.text = TextareaState.new({ placeholder: "Ask anything…" });
+  }
+  render() {
+    return v_flex()
+      .child(Button.new("translate").w(100).h(40).on_click(() => {
+        this.line.set_placeholder("名称");
+        this.text.set_placeholder("问点什么…");
+      }))
+      .child(Input.new(this.line))
+      .child(Textarea.new(this.text));
+  }
+}
+"#;
+    let view_type = runtime
+        .load_source("placeholders.js", source)
+        .expect("load");
+    let runtime_for_view = Rc::clone(&runtime);
+    let window = cx.add_window(move |window, cx| {
+        let view = runtime_for_view
+            .instantiate_view(&view_type, window, cx)
+            .expect("instantiate");
+        RootedScriptView(view)
+    });
+    let mut context = VisualTestContext::from_window(*window.deref(), cx);
+    context.update(|window, cx| window.draw(cx).clear(cx));
+    let line = runtime.entities().first_input().expect("input state");
+    let text = runtime.entities().first_textarea().expect("textarea state");
+    let placeholders = |context: &mut VisualTestContext| {
+        context.update(|_, cx| {
+            (
+                line.read(cx).presentation().placeholder().to_string(),
+                text.read(cx).presentation().placeholder().to_string(),
+            )
+        })
+    };
+    assert_eq!(
+        placeholders(&mut context),
+        ("Name".to_string(), "Ask anything…".to_string())
+    );
+    context.simulate_click(point(px(50.), px(20.)), Modifiers::default());
+    context.update(|window, cx| window.draw(cx).clear(cx));
+    assert_eq!(
+        placeholders(&mut context),
+        ("名称".to_string(), "问点什么…".to_string()),
+        "set_placeholder replaces the text an empty field shows"
+    );
+}
+
 /// A progress bar is three parts, and the script draws all of it: the root
 /// announces the number and paints nothing, the track and the indicator are the
 /// only things a user sees. So the description has to carry both the announced

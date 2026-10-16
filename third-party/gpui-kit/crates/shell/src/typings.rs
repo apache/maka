@@ -3207,6 +3207,11 @@ const BASE: &str = r#"  /** A row. */
     set_masked(masked: boolean): void;
     /** Marks the state as working; the presentation is the application's. */
     set_loading(loading: boolean): void;
+    /**
+     * Replaces the text shown while the state is empty, as `new({ placeholder })`
+     * set it; for a language changed while the state lives.
+     */
+    set_placeholder(placeholder: string): void;
     release(): boolean;
   }
 
@@ -3258,6 +3263,8 @@ const BASE: &str = r#"  /** A row. */
     /** `change`, `submit`, `focus` or `blur`. */
     on(event: "change" | "submit" | "focus" | "blur", handler: (event: InputEvent, cx: Context) => void): boolean;
     /** Shows this many rows. */
+    /** Replaces the text shown while the state is empty, as on `InputState`. */
+    set_placeholder(placeholder: string): void;
     set_rows(rows: number): void;
     /** Grows with the content, between the two row counts. */
     set_auto_grow(min_rows: number, max_rows: number): void;

@@ -6225,6 +6225,7 @@ globalThis.__gpui = (() => {
     set_max: (max) => __input_set_max(handle, max === null || max === undefined ? null : Number(max)),
     set_masked: (masked) => __input_set_masked(handle, Boolean(masked)),
     set_loading: (loading) => __input_set_loading(handle, Boolean(loading)),
+    set_placeholder: (placeholder) => __input_set_placeholder(handle, String(placeholder ?? "")),
     release: () => __input_release(handle),
   });
 
@@ -6238,6 +6239,7 @@ globalThis.__gpui = (() => {
     set_value: setValue(handle, __textarea_set_value, __textarea_token_call),
     on: (event, handler) => __textarea_on(handle, String(event), handler),
     set_rows: (rows) => __textarea_set_rows(handle, oneBased(rows, "set_rows(rows)")),
+    set_placeholder: (placeholder) => __textarea_set_placeholder(handle, String(placeholder ?? "")),
     set_auto_grow: (min_rows, max_rows) =>
       __textarea_set_auto_grow(
         handle,

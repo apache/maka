@@ -221,6 +221,22 @@ pub fn install(ctx: &Ctx<'_>, module: &Object<'_>, runtime: Weak<ShellRuntime>) 
         ),
     )?;
 
+    let placeholder_runtime = runtime.clone();
+    globals.set(
+        "__input_set_placeholder",
+        Func::from(
+            move |ctx: Ctx<'_>, handle: EntityHandle, placeholder: String| -> JsResult<()> {
+                let state = live(&ctx, &placeholder_runtime, handle)?;
+                scope::with_current(|window, cx| {
+                    state.update(cx, |state, cx| {
+                        state.set_placeholder(placeholder, window, cx)
+                    });
+                })
+                .ok_or_else(|| needs_call(&ctx, "set_placeholder()"))
+            },
+        ),
+    )?;
+
     let loading_runtime = runtime.clone();
     globals.set(
         "__input_set_loading",
@@ -326,6 +342,22 @@ pub fn install(ctx: &Ctx<'_>, module: &Object<'_>, runtime: Weak<ShellRuntime>) 
                     handler,
                     "textarea",
                 )
+            },
+        ),
+    )?;
+
+    let textarea_placeholder_runtime = runtime.clone();
+    globals.set(
+        "__textarea_set_placeholder",
+        Func::from(
+            move |ctx: Ctx<'_>, handle: EntityHandle, placeholder: String| -> JsResult<()> {
+                let state = live_textarea(&ctx, &textarea_placeholder_runtime, handle)?;
+                scope::with_current(|window, cx| {
+                    state.update(cx, |state, cx| {
+                        state.set_placeholder(placeholder, window, cx)
+                    });
+                })
+                .ok_or_else(|| needs_call(&ctx, "set_placeholder()"))
             },
         ),
     )?;

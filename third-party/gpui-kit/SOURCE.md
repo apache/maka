@@ -212,3 +212,11 @@ One fix to `ShellRoot`, a candidate for an upstream pull request:
 - A pressed control takes focus, and the press can remove it, as a button that closes the panel it is in does, or one that turns disabled. GPUI was then focused on nothing it rendered and sent every key to the window root alone, so actions bound further in stopped answering until the next press. The root now registers `Window::on_focus_lost` and moves focus to `Window::focus_lost_restore_target`, the nearest tab stop left on the path focus was on. It does so only when the focused element went away: a blur, such as the root's own blur on a background press, is left alone. The root remembers what was focused when it last rendered; a blur before the frame leaves nothing there, and a blur during the frame leaves the blurred element as its own target.
 
 为 `ShellRoot` 修了一处，可提交上游 PR：按下的控件会拿到焦点，而按下的动作可能让它消失（如关闭所在面板的按钮，或变为禁用的按钮）。此前 GPUI 此时聚焦在一个已不渲染的元素上，所有按键只到窗口根节点，更内层绑定的 action 在下次点击前都不响应。现在根节点注册 `Window::on_focus_lost`，把焦点移到 `Window::focus_lost_restore_target`，即原焦点路径上仍存在的最近 tab stop。只有持有焦点的元素消失时才这样做；主动 blur（如根节点在点击背景时的 blur）保持不动。根节点记录自己上次渲染时的焦点：帧前的 blur 让该记录为空，帧内的 blur 则让被 blur 的元素本身成为目标，两种情况都不恢复。
+
+## Placeholders replaced while a field lives (2026-10-17)
+
+One addition to the script API of `gpui-shell`, a candidate for an upstream pull request:
+
+- `InputState` and `TextareaState` gain `set_placeholder(text)`, which calls gpui-base's `set_placeholder` on the live state. A placeholder could be set only by `new({ placeholder })`, so an application that changes its language while running had to rebuild every field, with its listeners, to translate the text an empty field shows.
+
+为 `gpui-shell` 的脚本 API 新增一项，可提交上游 PR：`InputState` 与 `TextareaState` 新增 `set_placeholder(text)`，在存活的状态上调用 gpui-base 的 `set_placeholder`。此前占位文字只能在 `new({ placeholder })` 时设定，应用在运行中切换语言时，必须连同监听器重建每个输入框，才能翻译空输入框显示的文字。
