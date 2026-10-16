@@ -2017,8 +2017,7 @@ function isToolActivityIdentity(value: Record<string, unknown>): boolean {
   );
 }
 
-export const STEP_LIMIT_NOTICE_TEXT =
-  'Reached the configured step limit. The task may be incomplete. Send “continue” to resume.';
+export const STEP_LIMIT_NOTICE_TEXT = 'Reached the tool-step limit. The task may be incomplete.';
 
 /** Latest actual model recorded by a completed assistant step. */
 export function latestAssistantModelId(messages: readonly StoredMessage[]): string | undefined {
