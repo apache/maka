@@ -506,6 +506,11 @@ export class DesktopSessionLocalService {
     this.#drainCatalogRefreshes();
   }
 
+  removeSession(target: DesktopSessionLocalTarget, sessionId: string): void {
+    this.#snapshots.delete(`${target.partition}:${sessionId}`);
+    this.store.removeSession(target.partition, sessionId);
+  }
+
   cacheTranscript(scope: DesktopTargetScope, snapshot: DesktopTranscriptReplicaSnapshot): void {
     if (this.#closed) return;
     let target: DesktopSessionLocalTarget;
@@ -529,11 +534,10 @@ export class DesktopSessionLocalService {
     const pending = this.#snapshots.has(key);
     this.#snapshots.set(key, { target, snapshot });
     if (pending) return;
-    const revision = this.store.revision;
     setImmediate(() => {
       const latest = this.#snapshots.get(key);
       this.#snapshots.delete(key);
-      if (!latest || !this.#current(latest.target) || revision !== this.store.revision) return;
+      if (!latest || !this.#current(latest.target)) return;
       try {
         this.store.saveTranscript(latest.target.partition, latest.snapshot);
       } catch (error) {
@@ -954,7 +958,7 @@ export function registerDesktopSessionLocalIpc(deps: {
         .some((record) => record.intent.originHostEpoch)
     )
       throw new Error('Session has a dispatched message');
-    service.store.removeSession(target.partition, sessionId);
+    service.removeSession(target, sessionId);
     deps.changed(target.scope, sessionId);
     return true;
   });
