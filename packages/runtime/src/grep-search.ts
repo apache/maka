@@ -18,6 +18,18 @@
  */
 
 import { spawn } from 'node:child_process';
+import { z } from 'zod';
+
+export const grepParameters = z.object({
+  pattern: z
+    .string()
+    .describe('Ripgrep regular expression; use an empty pattern to match every line.'),
+  path: z
+    .string()
+    .optional()
+    .describe('File or directory to search; defaults to the session working directory.'),
+  glob: z.string().optional().describe('Optional filesystem glob, for example **/*.ts.'),
+});
 
 export const GREP_MAX_LINES_PER_FILE = 50;
 export const GREP_MAX_LINES = 200;
@@ -36,7 +48,8 @@ export interface GrepResult {
 export interface GrepRunInput {
   executable: string;
   args: readonly string[];
-  cwd: string;
+  cwd?: string;
+  stdin?: string;
   timeoutMs: number;
   abortSignal?: AbortSignal;
   onStdout(chunk: Buffer): void;
@@ -148,14 +161,14 @@ export async function searchFiles(
   }
 }
 
-async function runRipgrep(input: GrepRunInput): Promise<GrepRunResult> {
+export async function runRipgrep(input: GrepRunInput): Promise<GrepRunResult> {
   if (input.abortSignal?.aborted)
     throw new GrepSearchError('Grep was cancelled; search totals are unknown.');
   return await new Promise((resolve, reject) => {
     const child = spawn(input.executable, [...input.args], {
       cwd: input.cwd,
       shell: false,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: [input.stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
     });
     let stderrTail: Buffer<ArrayBufferLike> = Buffer.alloc(0);
     let failure: unknown;
@@ -171,7 +184,7 @@ async function runRipgrep(input: GrepRunInput): Promise<GrepRunResult> {
     const abort = () => fail(new GrepSearchError('Grep was cancelled; search totals are unknown.'));
     input.abortSignal?.addEventListener('abort', abort, { once: true });
     if (input.abortSignal?.aborted) abort();
-    child.stdout.on('data', (chunk: Buffer) => {
+    child.stdout!.on('data', (chunk: Buffer) => {
       if (failure) return;
       try {
         input.onStdout(chunk);
@@ -181,12 +194,18 @@ async function runRipgrep(input: GrepRunInput): Promise<GrepRunResult> {
         );
       }
     });
-    child.stderr.on('data', (chunk: Buffer) => {
+    child.stderr!.on('data', (chunk: Buffer) => {
       stderrTail = Buffer.concat([stderrTail, chunk]).subarray(-MAX_STDERR_BYTES);
     });
     child.once('error', (error) => {
       failure ??= error;
     });
+    child.stdin?.on('error', (error: NodeJS.ErrnoException) => {
+      // Invalid patterns can close stdin before the bounded source is written.
+      // Preserve rg's exit status and diagnostic rather than replacing it with EPIPE.
+      if (error.code !== 'EPIPE') fail(error);
+    });
+    if (input.stdin !== undefined) child.stdin?.end(input.stdin);
     child.once('close', (exitCode) => {
       clearTimeout(timer);
       input.abortSignal?.removeEventListener('abort', abort);

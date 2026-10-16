@@ -9669,7 +9669,7 @@ describe('AiSdkBackend usage telemetry', () => {
     assert.equal(usageCheckpoints[0]?.costUsd, undefined);
   });
 
-  test('a pruned Bash result retains durable output and is readable without rerunning', async () => {
+  test('a pruned Bash result is searchable and readable without rerunning', async () => {
     const durable = durableTurnHarness('turn-1', 'run the verbose command');
     const stdoutLines = [
       'FRONT_SENTINEL',
@@ -9715,24 +9715,29 @@ describe('AiSdkBackend usage telemetry', () => {
           streamCalls === 1
             ? call('tool-1', 'Bash', { command: 'verbose-command' })
             : streamCalls === 2
-              ? call('tool-2', 'Read', { path: archive.resourceRef, limit: 1 })
+              ? call('tool-search', 'Grep', {
+                  path: archive.resourceRef,
+                  pattern: 'TAIL_SENTINEL|ERR_SENTINEL',
+                })
               : streamCalls === 3
-                ? call('tool-3', 'Read', {
-                    path: archive.resourceRef,
-                    offset: stdoutLines.length,
-                    limit: 1,
-                  })
-                : [
-                    { type: 'stream-start', warnings: [] },
-                    {
-                      type: 'finish',
-                      finishReason: { unified: 'stop', raw: 'stop' },
-                      usage: {
-                        inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
-                        outputTokens: { total: 1, text: 1, reasoning: 0 },
+                ? call('tool-2', 'Read', { path: archive.resourceRef, limit: 1 })
+                : streamCalls === 4
+                  ? call('tool-3', 'Read', {
+                      path: archive.resourceRef,
+                      offset: stdoutLines.length,
+                      limit: 1,
+                    })
+                  : [
+                      { type: 'stream-start', warnings: [] },
+                      {
+                        type: 'finish',
+                        finishReason: { unified: 'stop', raw: 'stop' },
+                        usage: {
+                          inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                          outputTokens: { total: 1, text: 1, reasoning: 0 },
+                        },
                       },
-                    },
-                  ];
+                    ];
         return {
           stream: simulateReadableStream({ chunks, initialDelayInMs: null, chunkDelayInMs: null }),
         };
@@ -9821,11 +9826,17 @@ describe('AiSdkBackend usage telemetry', () => {
         }
     };
     assert.equal(findToolResult(secondPrompt, 'tool-1')?.output.type, 'error-json');
-    const frontRead = findToolResult(prompts[2], 'tool-2');
+    const searchResult = findToolResult(prompts[2], 'tool-search');
+    assert.ok(searchResult);
+    assert.match(JSON.stringify(searchResult.output), /TAIL_SENTINEL/);
+    assert.match(JSON.stringify(searchResult.output), /ERR_SENTINEL/);
+    assert.equal(searchResult.output.value.matchedLines, 2);
+    assert.ok(Buffer.byteLength(JSON.stringify(searchResult.output.value)) <= 7_500);
+    const frontRead = findToolResult(prompts[3], 'tool-2');
     assert.ok(frontRead);
     assert.match(JSON.stringify(frontRead.output), /FRONT_SENTINEL/);
     assert.match(JSON.stringify(frontRead.output), /"exitCode":7/);
-    const stderrRead = findToolResult(prompts[3], 'tool-3');
+    const stderrRead = findToolResult(prompts[4], 'tool-3');
     assert.ok(stderrRead);
     assert.match(JSON.stringify(stderrRead.output), /ERR_SENTINEL/);
     assert.match(JSON.stringify(stderrRead.output), /"exitCode":7/);
