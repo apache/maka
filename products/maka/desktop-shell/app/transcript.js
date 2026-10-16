@@ -170,10 +170,10 @@ export class Transcript {
     /** The list items last built from the rows (see displayItems). */
     this.view = null;
     /**
-       * Tool arguments and results read with `agent.source`, by
-     * `<sequence>/<field>/<path>`: `{ text, complete }` once read (with
-     * `failed` when the read failed), null while it is under way. A
-     * conversation page carries tool metadata only.
+     * Tool arguments and results read with `agent.source`, by
+     * `<sequence>/<field>/<path>`: `{ text, complete, totalBytes, tail }` once
+     * read (with `failed` when the read failed), null while it is under way.
+     * A conversation page carries tool metadata only.
      */
     this.sources = new Map();
     this.stats = {
@@ -625,26 +625,33 @@ export class Transcript {
 
   /**
    * The start of a tool row's `arguments` or `result`, or of the value at
-   * `path` in it, as `{ text, complete, failed? }`; null until it has been read. The
-   * first ask starts the read and the transcript changes when it lands. Rows
-   * never change, so a read is kept for as long as the transcript.
+   * `path` in it, as `{ text, complete, totalBytes, tail, failed? }`; null until
+   * it has been read. The first ask starts the read and the transcript changes
+   * when it lands. Rows never change, so a read is kept for as long as the
+   * transcript.
+   *
+   * With `ends`, a value too long for one excerpt is read on: whole when it
+   * is at most WHOLE_BYTES (the size a command's captured output is held to),
+   * else from its end as well, `tail` becoming `{ text, offset }` (null until
+   * then). An output block shows both ends, since a command's last lines say
+   * how it ended.
    */
-  source(sequence, field, path = []) {
+  source(sequence, field, path = [], ends = false) {
     const key = `${sequence}/${field}/${path.join('/')}`;
-    if (this.sources.has(key)) return this.sources.get(key);
+    if (this.sources.has(key)) {
+      const known = this.sources.get(key);
+      if (ends && known !== null && !known.complete && known.failed === undefined && known.tail === undefined) {
+        this.readRest(key, sequence, field, path, known);
+      }
+      return known;
+    }
     this.sources.set(key, null);
-    readSource({
-      sessionId: this.id,
-      // An event fence, not a row position: every loaded row is at or below it.
-      through: this.latestKnown,
-      source: { kind: 'sequence', sequence },
-      field,
-      path: path.length > 0 ? path : null,
-      position: { kind: 'start' },
-    }).then(
+    this.excerpt(sequence, field, path, { kind: 'start' }).then(
       (source) => {
         const complete = source.offset === 0 && utf8Length(source.text) === source.totalBytes;
-        this.sources.set(key, { text: source.text, complete });
+        const read = { text: source.text, complete, totalBytes: source.totalBytes, tail: undefined };
+        this.sources.set(key, read);
+        if (ends && !complete) this.readRest(key, sequence, field, path, read);
         if (!this.closed) this.hooks.changed();
       },
       (error) => {
@@ -654,6 +661,47 @@ export class Transcript {
       },
     );
     return null;
+  }
+
+  /**
+   * Reads on past a start excerpt that did not reach the end: the rest of a
+   * value of at most WHOLE_BYTES, else its end. On a failure the start still
+   * shows; only the rest is missing.
+   */
+  async readRest(key, sequence, field, path, read) {
+    read.tail = null;
+    try {
+      if (read.totalBytes <= WHOLE_BYTES) {
+        let text = read.text;
+        let end = utf8Length(text);
+        while (end < read.totalBytes) {
+          const page = await this.excerpt(sequence, field, path, { kind: 'after', offset: end });
+          if (page.offset !== end || page.text === '') throw new Error(`no excerpt after ${end}`);
+          text += page.text;
+          end += utf8Length(page.text);
+        }
+        read.text = text;
+        read.complete = true;
+      } else {
+        const page = await this.excerpt(sequence, field, path, { kind: 'tail' });
+        read.tail = { text: page.text, offset: page.offset };
+      }
+      if (!this.closed) this.hooks.changed();
+    } catch (error) {
+      log(`source ${key} rest: ${error.message}`);
+    }
+  }
+
+  excerpt(sequence, field, path, position) {
+    return readSource({
+      sessionId: this.id,
+      // An event fence, not a row position: every loaded row is at or below it.
+      through: this.latestKnown,
+      source: { kind: 'sequence', sequence },
+      field,
+      path: path.length > 0 ? path : null,
+      position,
+    });
   }
 
   /** Shows a sent message until history records it. */
@@ -939,6 +987,19 @@ const TOOL_KINDS = {
   'maka.workspace.Processes@1/stop': ['Stop', 'tool-terminal', ['ref']],
 };
 
+/** The longest value a tool row reads whole; past it, the start and the end. */
+const WHOLE_BYTES = 64 * 1024;
+
+/** The Processes methods, whose result carries a process's output. */
+const PROCESS_METHODS = new Set(['execute', 'read', 'writeStdin', 'stop']);
+
+/** Files methods whose output is one value in the result, and how it reads. */
+const OUTPUT_PATHS = {
+  readText: [['value', 'content'], 'text'],
+  glob: [['value', 'files'], 'lines'],
+  grep: [['value', 'matches'], 'lines'],
+};
+
 /** What a tool with no named contract does, by its name: the icon its header shows. */
 function toolIcon(name) {
   const lower = name.toLowerCase();
@@ -1005,14 +1066,109 @@ function toolSummary(tool, kind, transcript) {
 }
 
 /**
- * What the output block shows for a whole `result` field, read the way the
- * TUI's tool details read their parts (tool-details/index.ts:241-350): a
- * failure's message, a command's output, a file's content, the files or
- * matches found; anything else as indented JSON.
+ * The parts an opened call's output shows, each `{ label, source, format }`
+ * with `source` null while it is read. A contract's result is read by the
+ * paths the TUI's tool details read (tool-details/index.ts:241-350): a
+ * failure's message, a process's stdout and stderr or screen, a file's
+ * content, the files or matches found. Those are plain text however long, so
+ * a long one still shows as text. Any other result is read whole.
+ */
+function outputParts(tool, kind, status, transcript) {
+  const sequence = tool.result.sequence;
+  const read = (path) => transcript.source(sequence, 'result', path, true);
+  const whole = [{ label: null, source: read([]), format: 'result' }];
+  if (kind === null) return whole;
+  if (status === null) return [{ label: null, source: null, format: 'text' }];
+  if (status.failed !== undefined) return whole;
+  if (status.text === 'failed') return [{ label: null, source: read(['message']), format: 'text' }];
+  if (status.text !== 'completed') return whole;
+  const method = tool.call.presentation.split('/').pop();
+  if (PROCESS_METHODS.has(method)) {
+    const mode = transcript.source(sequence, 'result', ['value', 'output', 'mode']);
+    if (mode === null) return [{ label: null, source: null, format: 'text' }];
+    // A process's output is captured up to its last 64 KB; the flag says
+    // whether earlier output was dropped.
+    const cut = (name) =>
+      transcript.source(sequence, 'result', ['value', 'output', name])?.text === 'true';
+    if (mode.failed === undefined && mode.text === 'pipes') {
+      return ['stdout', 'stderr'].map((stream) => ({
+        label: stream,
+        source: read(['value', 'output', stream]),
+        format: 'text',
+        cut: cut(`${stream}Truncated`),
+      }));
+    }
+    if (mode.failed === undefined && mode.text === 'pty') {
+      return [
+        { label: null, source: read(['value', 'output', 'screen']), format: 'text', cut: cut('truncated') },
+      ];
+    }
+    return whole;
+  }
+  const output = OUTPUT_PATHS[method];
+  if (output === undefined) return whole;
+  return [{ label: null, source: read(output[0]), format: output[1] }];
+}
+
+/**
+ * A part's text as the output block shows it. Output cut at its start begins
+ * mid-line; that partial first line is left out.
+ */
+function partText(part) {
+  if (part.cut === true) {
+    const text = bothEnds(part.source);
+    const newline = text.indexOf('\n');
+    return newline >= 0 && newline < 1024 ? text.slice(newline + 1) : text;
+  }
+  if (part.format === 'result') return resultText(part.source);
+  if (part.format === 'lines') {
+    const value = parsed(part.source);
+    if (Array.isArray(value)) {
+      return value.map((entry) => (typeof entry === 'string' ? entry : JSON.stringify(entry))).join('\n');
+    }
+  }
+  return bothEnds(part.source);
+}
+
+/**
+ * A value as read: whole, or for a long one its start and its end with how
+ * much lies between them (the start alone, cut, until the end is read).
+ */
+function bothEnds(source) {
+  if (source.complete) return source.text;
+  const tail = source.tail;
+  if (!tail) return `${source.text}…`;
+  const headBytes = utf8Length(source.text);
+  if (tail.offset <= headBytes) return source.text + dropBytes(tail.text, headBytes - tail.offset);
+  return `${source.text}\n\n… ${byteSize(tail.offset - headBytes)} not shown …\n\n${tail.text}`;
+}
+
+/** `text` without its first `bytes` UTF-8 bytes. */
+function dropBytes(text, bytes) {
+  let dropped = 0;
+  let index = 0;
+  for (const point of text) {
+    if (dropped >= bytes) break;
+    dropped += utf8Length(point);
+    index += point.length;
+  }
+  return text.slice(index);
+}
+
+function byteSize(bytes) {
+  if (bytes < 1024) return `${bytes} bytes`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/**
+ * What the output block shows for a whole `result` field: a failure's
+ * message, a command's output, a file's content, the files or matches found;
+ * anything else as indented JSON. One too long to read whole shows as read.
  */
 function resultText(source) {
   const result = parsed(source);
-  if (result === undefined) return source.complete ? source.text : `${source.text}…`;
+  if (result === undefined) return bothEnds(source);
   if (result?.kind === 'failed' && typeof result.message === 'string') return result.message;
   const value = result?.kind === 'completed' ? result.value : result;
   if (typeof value === 'string') return value;
@@ -1032,7 +1188,7 @@ function resultText(source) {
 /** The arguments as indented JSON, or as read when they are cut short or are not JSON. */
 function argumentsText(source) {
   const value = parsed(source);
-  if (value === undefined) return source.complete ? source.text : `${source.text}…`;
+  if (value === undefined) return bothEnds(source);
   return JSON.stringify(value, null, 2);
 }
 
@@ -1051,26 +1207,30 @@ function toolRow(item, transcript, cx) {
   // Opened, a call shows its output, after its arguments when the header
   // does not show them: a contract's argument under a title, or all of
   // another call's.
-  const reads = [];
+  const parts = [];
   if (item.open && tool?.call && kind === null) {
-    reads.push(['arguments', transcript.source(tool.call.sequence, 'arguments')]);
+    parts.push({ label: null, source: transcript.source(tool.call.sequence, 'arguments', [], true), format: 'arguments' });
   } else if (item.open && tool?.call?.title) {
-    reads.push(['argument', transcript.source(tool.call.sequence, 'arguments', kind[2])]);
+    parts.push({ label: null, source: transcript.source(tool.call.sequence, 'arguments', kind[2], true), format: 'text' });
   }
-  if (item.open && tool?.result) reads.push(['result', transcript.source(tool.result.sequence, 'result')]);
-  const blocks = reads
-    .filter(([, source]) => source !== null && source.failed === undefined)
-    .map(([field, source]) =>
-      field === 'result'
-        ? resultText(source)
-        : field === 'arguments'
-          ? argumentsText(source)
-          : `${source.text}${source.complete ? '' : '…'}`,
-    )
-    .filter((content) => content.trim() !== '');
-  const note = reads.some(([, source]) => source === null)
+  if (item.open && tool?.result) parts.push(...outputParts(tool, kind, outcome, transcript));
+  const blocks = parts
+    .filter((part) => part.source !== null && part.source.failed === undefined)
+    .map((part) => ({
+      label: part.label,
+      cut: part.cut === true,
+      content: part.format === 'arguments' ? argumentsText(part.source) : partText(part),
+    }))
+    .filter((block) => block.content.trim() !== '');
+  // stdout and stderr are named only when both have something.
+  const named = blocks.filter((block) => block.label !== null).length > 1;
+  const caption = (block) =>
+    [named ? block.label : null, block.cut ? 'Earlier output was not kept' : null]
+      .filter((part) => part !== null)
+      .join(' · ') || null;
+  const note = parts.some((part) => part.source === null)
     ? 'Loading…'
-    : reads.some(([, source]) => source.failed !== undefined)
+    : parts.some((part) => part.source.failed !== undefined)
       ? 'Could not read this call'
       : status === 'running'
         ? 'Running…'
@@ -1125,27 +1285,55 @@ function toolRow(item, transcript, cx) {
           .pt(2)
           .pb(12)
           .gap(8)
-          .children(blocks.map((content) => codeBlock(content, m)))
+          .children(
+            blocks.map((block, index) =>
+              codeBlock(`${item.key}/output/${index}`, caption(block), block.content, m),
+            ),
+          )
           .when(blocks.length === 0, (el) => el.child(text(note, 'small', m.inkMuted))),
       ),
     );
 }
 
-/** Tool input or output: 12/20 mono on the code fill, cut at 256px. */
-function codeBlock(content, m) {
-  return div()
+/**
+ * The most of one block a row lays out, as its first and last halves: the
+ * whole block is laid out again on every frame the transcript scrolls.
+ */
+const BLOCK_CHARS = 32 * 1024;
+
+/**
+ * Tool input or output: 12/20 mono on the code fill, 256px of text that
+ * scrolls, under an optional label.
+ */
+function codeBlock(id, label, content, m) {
+  const trimmed = content.replace(/\s+$/, '');
+  let shown = trimmed;
+  if (trimmed.length > BLOCK_CHARS) {
+    const head = trimmed.slice(0, BLOCK_CHARS / 2);
+    const tail = trimmed.slice(-BLOCK_CHARS / 2);
+    const hidden = trimmed.slice(head.length, trimmed.length - tail.length).split('\n').length - 1;
+    shown = `${head}\n\n… ${hidden} lines not shown …\n\n${tail}`;
+  }
+  return v_flex()
     .w_full()
-    .max_h(276)
-    .overflow_hidden()
-    .px(12)
-    .py(10)
-    .rounded(10)
-    .bg(m.code)
-    .text_size(12)
-    .line_height('20px')
-    .font_family('Menlo')
-    .text_color(m.ink)
-    .child(content.length > 4000 ? `${content.slice(0, 4000)}…` : content);
+    .gap(4)
+    .when(label !== null, (el) => el.child(text(label, 'small', m.inkMuted)))
+    .child(
+      div()
+        .id(id)
+        .w_full()
+        .max_h(276)
+        .overflow_y_scroll()
+        .px(12)
+        .py(10)
+        .rounded(10)
+        .bg(m.code)
+        .text_size(12)
+        .line_height('20px')
+        .font_family('Menlo')
+        .text_color(m.ink)
+        .child(shown),
+    );
 }
 
 function turnFooter(item, transcript, cx) {
