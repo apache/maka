@@ -44,7 +44,7 @@ import { div, list } from 'gpui-kit';
 import { v_flex, h_flex, TextView, Scrollbar } from 'gpui-base';
 import { query, subscribe, next, close, log, readHistory } from './host.js';
 
-/** Rows rendered at or above this index count as "at the top" for paging. */
+/** A visible range starting at or above this index counts as "at the top" for paging. */
 const NEAR_TOP = 3;
 /** How many rows back to look for a tool call when its result arrives. */
 const TOOL_PAIR_WINDOW = 64;
@@ -145,9 +145,6 @@ export class Transcript {
     this.watchLast = 0;
     this.pendingInteractions = 0;
     this.lastOutcome = null;
-    // The lowest index the list rendered since the last wheel event; see `nearTop`.
-    this.renderedMin = Infinity;
-    this.top = 0;
     this.stats = {
       firstPageMs: 0,
       tailCalls: 0,
@@ -537,18 +534,6 @@ export class Transcript {
       { key: `pending/${messageId}`, role: 'user', covered, pending: true, text },
     ];
   }
-
-  /**
-   * Whether the top rendered row is near the start of the list. The list
-   * reports nothing about its scroll position, so its renderer records the
-   * lowest index it draws and a wheel event reads it; a wheel event that
-   * scrolls is followed by a frame that renders the new range.
-   */
-  nearTop() {
-    if (this.renderedMin !== Infinity) this.top = this.renderedMin;
-    this.renderedMin = Infinity;
-    return this.top < NEAR_TOP;
-  }
 }
 
 /** The transcript pane: header, the measured list, and its scrollbar. */
@@ -584,10 +569,6 @@ export function transcriptPane(transcript, loadOlder, cx) {
         .relative()
         .flex_1()
         .min_h_0()
-        .on_scroll_wheel((event) => {
-          // Positive y scrolls toward the start.
-          if (event.delta.y > 0 && transcript.nearTop() && transcript.before !== null) loadOlder();
-        })
         .when(transcript.ready && count === 0, (el) =>
           el
             .items_center()
@@ -609,11 +590,17 @@ export function transcriptPane(transcript, loadOlder, cx) {
                 id,
                 count,
                 (index) => rowAt(index).key,
-                (index, cx) => {
-                  if (index < transcript.renderedMin) transcript.renderedMin = index;
-                  return transcriptRow(rowAt(index), cx);
-                },
-              ),
+                (index, cx) => transcriptRow(rowAt(index), cx),
+              )
+                // Opens at the newest row and stays there while a reply
+                // streams, until the reader scrolls up.
+                .with_follow_mode('tail')
+                // Reported after the frame, however the range changed: a
+                // wheel, a scrollbar drag, or rows that do not fill the view.
+                .on_visible_range_change((range, shown) => {
+                  log(`transcript: showing ${range.start}..${range.end} of ${shown}`);
+                  if (range.start < NEAR_TOP && transcript.before !== null) loadOlder();
+                }),
             )
             .child(Scrollbar.vertical(id).absolute().inset_0()),
         ),

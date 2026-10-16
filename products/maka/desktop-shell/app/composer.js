@@ -33,17 +33,11 @@ export class Composer {
     this.hooks = hooks;
     this.draft = TextareaState.new({ placeholder: 'Message', rows: 2 });
     this.draft.set_auto_grow(2, 8);
-    // The text before and after the latest edit; see `send`. `set_value`
-    // reports no `change`, so `setDraft` records what it writes.
-    this.before = '';
-    this.after = '';
-    this.draft.on('change', () => {
-      this.before = this.after;
-      this.after = this.draft.value();
-    });
-    // Enter sends; Shift+Enter only inserts its newline.
+    // Enter sends without inserting a newline; Shift+Enter inserts one and
+    // still reports `submit`, with `shift` set.
+    this.draft.set_submit_on_enter(true);
     this.draft.on('submit', (event) => {
-      if (!event.shift) this.send(target(), true);
+      if (!event.shift) this.send(target());
     });
     /** The `settings.models` selection sent with every message. */
     this.model = null;
@@ -72,18 +66,9 @@ export class Composer {
   /**
    * Sends the draft to the transcript's session. The draft is cleared only
    * once the Host accepted it, and only if it was not edited meanwhile.
-   *
-   * A Textarea inserts Enter's newline before it reports `submit`, and the
-   * runtime offers no submit-on-Enter switch for it, so for Enter the text
-   * from before that newline is what gets sent, and the draft is put back to
-   * it.
    */
-  async send(transcript, enter = false) {
-    let message = this.draft.value();
-    if (enter) {
-      message = withoutEnterNewline(this.before, message);
-      this.setDraft(message);
-    }
+  async send(transcript) {
+    const message = this.draft.value();
     if (transcript === null || this.sending || this.model === null || message.trim() === '') return;
     this.sending = true;
     this.hooks.changed();
@@ -98,7 +83,7 @@ export class Composer {
       );
       if (result.kind === 'rejected')
         throw new Error(`the Host rejected the message (${result.reason})`);
-      if (this.draft.value() === message) this.setDraft('');
+      if (this.draft.value() === message) this.draft.set_value('');
       // The run itself shows up through the watch (`opened`), as in the TUI.
       transcript.addPending(result.messageId, message);
     } catch (error) {
@@ -107,11 +92,6 @@ export class Composer {
       this.sending = false;
       this.hooks.changed();
     }
-  }
-
-  setDraft(text) {
-    this.draft.set_value(text);
-    this.before = this.after = text;
   }
 
   async stop(transcript) {
@@ -132,19 +112,6 @@ export class Composer {
       this.hooks.changed();
     }
   }
-}
-
-/**
- * `after` with the newline Enter just inserted taken out, when `after` is
- * `before` plus one newline; otherwise `after` without one trailing newline.
- */
-function withoutEnterNewline(before, after) {
-  if (after.length === before.length + 1) {
-    let i = 0;
-    while (i < before.length && before[i] === after[i]) i += 1;
-    if (after[i] === '\n' && after.slice(i + 1) === before.slice(i)) return before;
-  }
-  return after.replace(/\r?\n$/, '');
 }
 
 /**
