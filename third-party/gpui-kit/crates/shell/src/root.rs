@@ -12,14 +12,14 @@
 //! `gpui-base` only (see `docs/gpui-shell.md` §4.2), so the equivalent
 //! host has to be written here rather than reused.
 
-use std::{path::PathBuf, rc::Rc, time::Duration};
+use std::{cell::RefCell, path::PathBuf, rc::Rc, time::Duration};
 
 use gpui::{
     Anchor, AnyElement, AnyView, App, AppContext as _, ClickEvent, ClipboardItem, Context,
     ElementId, Entity, FocusHandle, Global, Hsla, InteractiveElement as _, IntoElement, KeyBinding,
     MouseButton, MouseDownEvent, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, StyleRefinement, Styled as _, WeakFocusHandle, Window,
-    actions, deferred, div, hsla, prelude::FluentBuilder as _, px,
+    StatefulInteractiveElement as _, StyleRefinement, Styled as _, Subscription, WeakFocusHandle,
+    Window, actions, deferred, div, hsla, prelude::FluentBuilder as _, px,
 };
 use gpui_base::{
     ColorTokens, Dialog, POPUP_PRIORITY, Placement, RadiusTokens, Sheet, SpacingTokens,
@@ -154,6 +154,10 @@ pub struct ShellRoot {
     /// The performance HUD, while a script has asked for one. See
     /// [`ShellRoot::show_fps_monitor`].
     fps_hud: Option<FpsHudRequest>,
+    /// What had the keyboard when this root last rendered. See
+    /// [`restore_lost_focus`].
+    focused_at_render: Rc<RefCell<Option<WeakFocusHandle>>>,
+    _focus_lost: Subscription,
 }
 
 /// Where the performance HUD sits over the window and how it behaves.
@@ -218,6 +222,11 @@ impl ShellRoot {
     pub fn new(content: AnyView, window: &mut Window, cx: &mut Context<Self>) -> Self {
         install_key_bindings(cx);
         Self::spawn_toast_clock(window, cx);
+        let focused_at_render = Rc::new(RefCell::new(None));
+        let focus_lost = window.on_focus_lost(cx, {
+            let focused_at_render = Rc::clone(&focused_at_render);
+            move |window, cx| restore_lost_focus(&focused_at_render, window, cx)
+        });
 
         Self {
             content,
@@ -232,6 +241,8 @@ impl ShellRoot {
             next_toast_ordinal: 0,
             tooltip_overlay: cx.new(|_| TooltipOverlay::new().render_with(render_tooltip)),
             fps_hud: None,
+            focused_at_render,
+            _focus_lost: focus_lost,
         }
     }
 
@@ -803,8 +814,44 @@ impl ShellRoot {
     }
 }
 
+/// Gives the keyboard back when the element holding it went away.
+///
+/// A pressed control takes focus, and the press can remove it: a button that
+/// closes the panel it is in, or one that turns disabled and stops tracking
+/// focus. GPUI is then focused on nothing it rendered and sends every key to
+/// the window root alone, so each action bound further in stops answering
+/// until the next press. Focus goes to the nearest tab stop left on the path
+/// it was on (`Window::focus_lost_restore_target`).
+///
+/// Only when the focused element went away. A deliberate blur, such as a
+/// press on the background or a component clearing focus, leaves focus on
+/// nothing as well, and that has to stay. A blur before this frame left
+/// nothing focused when the root rendered, so nothing is restored. A blur
+/// during the frame left the blurred element rendered, and when it is a tab
+/// stop it is its own target, which is not restored either.
+fn restore_lost_focus(
+    focused_at_render: &RefCell<Option<WeakFocusHandle>>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(previous) = focused_at_render.borrow_mut().take() else {
+        return;
+    };
+    let Some(target) = window.focus_lost_restore_target(cx) else {
+        return;
+    };
+    if previous
+        .upgrade()
+        .is_some_and(|previous| previous == target)
+    {
+        return;
+    }
+    window.focus(&target, cx);
+}
+
 impl Render for ShellRoot {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        *self.focused_at_render.borrow_mut() = window.focused(cx).map(|focus| focus.downgrade());
         let tokens = Theme::global(cx).tokens;
         let (colors, radius, spacing) = (tokens.colors, tokens.radius, tokens.spacing);
 
@@ -1299,6 +1346,88 @@ mod tests {
             cx.update(|window, _| field.is_focused(window)),
             "the root must leave focus alone when the press landed on something that took it"
         );
+    }
+
+    /// A tab stop around a control that can be taken away, the way a panel's
+    /// close button goes with the panel.
+    struct Panel {
+        outer: FocusHandle,
+        control: FocusHandle,
+        shown: bool,
+    }
+
+    impl Render for Panel {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .id("panel")
+                .track_focus(&self.outer)
+                .size_full()
+                .when(self.shown, |panel| {
+                    panel.child(
+                        div()
+                            .id("control")
+                            .track_focus(&self.control)
+                            .w(px(100.))
+                            .h(px(50.)),
+                    )
+                })
+        }
+    }
+
+    fn shell_root_with_panel(cx: &mut TestAppContext) -> (Entity<Panel>, &mut VisualTestContext) {
+        cx.update(crate::init);
+        let panel = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let (_, cx) = cx.add_window_view({
+            let panel = panel.clone();
+            move |window, cx| {
+                let content = cx.new(|cx| Panel {
+                    outer: cx.focus_handle().tab_stop(true),
+                    control: cx.focus_handle(),
+                    shown: true,
+                });
+                *panel.borrow_mut() = Some(content.clone());
+                ShellRoot::new(content.into(), window, cx)
+            }
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let panel = panel.borrow().clone().expect("panel");
+        let control = panel.read_with(cx, |panel, _| panel.control.clone());
+        cx.update(|window, cx| window.focus(&control, cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(cx.update(|window, _| control.is_focused(window)));
+        (panel, cx)
+    }
+
+    #[gpui::test]
+    fn a_focused_control_that_goes_away_gives_the_keyboard_back(cx: &mut TestAppContext) {
+        let (panel, cx) = shell_root_with_panel(cx);
+
+        panel.update(cx, |panel, cx| {
+            panel.shown = false;
+            cx.notify();
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        let outer = panel.read_with(cx, |panel, _| panel.outer.clone());
+        assert!(
+            cx.update(|window, _| outer.is_focused(window)),
+            "the nearest tab stop left on the path must have the keyboard, or keys reach the \
+             window root alone"
+        );
+    }
+
+    #[gpui::test]
+    fn a_blur_is_not_undone(cx: &mut TestAppContext) {
+        let (panel, cx) = shell_root_with_panel(cx);
+
+        cx.update(|window, cx| window.blur(cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        assert!(
+            cx.update(|window, cx| window.focused(cx)).is_none(),
+            "a blur leaves nothing focused, and the root must not put the focus back"
+        );
+        let _ = panel;
     }
 
     #[gpui::test]
