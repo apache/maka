@@ -1084,23 +1084,31 @@ function outputParts(tool, kind, status, transcript) {
   if (status.text !== 'completed') return whole;
   const method = tool.call.presentation.split('/').pop();
   if (PROCESS_METHODS.has(method)) {
+    // A command started in the background answers before it has any output
+    // (tool-details/index.ts:281-292); its output comes with a later call.
+    const state = transcript.source(sequence, 'result', ['value', 'status']);
+    if (state === null) return [{ label: null, source: null, format: 'text' }];
+    if (method === 'execute' && state.failed === undefined && ['starting', 'running'].includes(state.text)) {
+      return [{ note: 'Running in the background' }];
+    }
     const mode = transcript.source(sequence, 'result', ['value', 'output', 'mode']);
     if (mode === null) return [{ label: null, source: null, format: 'text' }];
-    // A process's output is captured up to its last 64 KB; the flag says
-    // whether earlier output was dropped.
-    const cut = (name) =>
+    const flag = (name) =>
       transcript.source(sequence, 'result', ['value', 'output', name])?.text === 'true';
+    // A stream is captured up to its last 64 KB; the flag says whether
+    // earlier output was dropped, and then the stream starts mid-line.
     if (mode.failed === undefined && mode.text === 'pipes') {
-      return ['stdout', 'stderr'].map((stream) => ({
-        label: stream,
-        source: read(['value', 'output', stream]),
-        format: 'text',
-        cut: cut(`${stream}Truncated`),
-      }));
+      return ['stdout', 'stderr'].map((stream) => {
+        const cut = flag(`${stream}Truncated`);
+        return { label: stream, source: read(['value', 'output', stream]), format: 'text', cut, midLine: cut };
+      });
     }
+    // A terminal's lines above the screen, then the screen, as the TUI shows
+    // both. They are whole lines; the flag says some earlier ones are gone.
     if (mode.failed === undefined && mode.text === 'pty') {
       return [
-        { label: null, source: read(['value', 'output', 'screen']), format: 'text', cut: cut('truncated') },
+        { label: 'scrollback', source: read(['value', 'output', 'scrollback']), format: 'text', cut: flag('truncated') },
+        { label: 'screen', source: read(['value', 'output', 'screen']), format: 'text' },
       ];
     }
     return whole;
@@ -1111,23 +1119,41 @@ function outputParts(tool, kind, status, transcript) {
 }
 
 /**
- * A part's text as the output block shows it. Output cut at its start begins
- * mid-line; that partial first line is left out.
+ * The lines the Host puts before what it kept of a field it cut short
+ * (platform/presentation/src/shell/project.rs): a terminal's, a long
+ * stream's, and any field's.
+ */
+const CUT_MARKERS = [
+  /^\[terminal snapshot truncated to fit the output limit\]\n/,
+  /^\.\.\.\d+ (?:lines|bytes) truncated\. [^\n]*\n\n/,
+  /^\[runtime resource field truncated\]\n/,
+];
+
+/**
+ * A part's text as the output block shows it, `{ text, cut }`, `cut` saying
+ * that earlier output was not kept. The Host's own note on a cut it made is
+ * left out. Without one, a stream held to its last 64 KB begins mid-line, and
+ * that partial first line is left out.
  */
 function partText(part) {
-  if (part.cut === true) {
-    const text = bothEnds(part.source);
-    const newline = text.indexOf('\n');
-    return newline >= 0 && newline < 1024 ? text.slice(newline + 1) : text;
-  }
-  if (part.format === 'result') return resultText(part.source);
+  if (part.format === 'result') return { text: resultText(part.source), cut: false };
   if (part.format === 'lines') {
     const value = parsed(part.source);
     if (Array.isArray(value)) {
-      return value.map((entry) => (typeof entry === 'string' ? entry : JSON.stringify(entry))).join('\n');
+      const lines = value.map((entry) => (typeof entry === 'string' ? entry : JSON.stringify(entry)));
+      return { text: lines.join('\n'), cut: false };
     }
   }
-  return bothEnds(part.source);
+  const text = bothEnds(part.source);
+  for (const marker of CUT_MARKERS) {
+    const found = marker.exec(text);
+    if (found !== null) return { text: text.slice(found[0].length), cut: true };
+  }
+  if (part.midLine === true) {
+    const newline = text.indexOf('\n');
+    return { text: newline >= 0 && newline < 1024 ? text.slice(newline + 1) : text, cut: true };
+  }
+  return { text, cut: part.cut === true };
 }
 
 /**
@@ -1215,26 +1241,29 @@ function toolRow(item, transcript, cx) {
   }
   if (item.open && tool?.result) parts.push(...outputParts(tool, kind, outcome, transcript));
   const blocks = parts
-    .filter((part) => part.source !== null && part.source.failed === undefined)
-    .map((part) => ({
-      label: part.label,
-      cut: part.cut === true,
-      content: part.format === 'arguments' ? argumentsText(part.source) : partText(part),
-    }))
+    .filter((part) => part.note === undefined && part.source !== null && part.source.failed === undefined)
+    .map((part) => {
+      const shown =
+        part.format === 'arguments' ? { text: argumentsText(part.source), cut: false } : partText(part);
+      return { label: part.label, cut: shown.cut, content: shown.text };
+    })
     .filter((block) => block.content.trim() !== '');
-  // stdout and stderr are named only when both have something.
+  // stdout and stderr (a terminal's scrollback and screen) are named only
+  // when both have something.
   const named = blocks.filter((block) => block.label !== null).length > 1;
   const caption = (block) =>
     [named ? block.label : null, block.cut ? 'Earlier output was not kept' : null]
       .filter((part) => part !== null)
       .join(' · ') || null;
-  const note = parts.some((part) => part.source === null)
-    ? 'Loading…'
-    : parts.some((part) => part.source.failed !== undefined)
-      ? 'Could not read this call'
-      : status === 'running'
-        ? 'Running…'
-        : 'No output';
+  const note =
+    parts.find((part) => part.note !== undefined)?.note ??
+    (parts.some((part) => part.source === null)
+      ? 'Loading…'
+      : parts.some((part) => part.source?.failed !== undefined)
+        ? 'Could not read this call'
+        : status === 'running'
+          ? 'Running…'
+          : 'No output');
   const ring = !(item.first && item.last && !item.open);
   return v_flex()
     .w_full()
@@ -1309,8 +1338,14 @@ function codeBlock(id, label, content, m) {
   const trimmed = content.replace(/\s+$/, '');
   let shown = trimmed;
   if (trimmed.length > BLOCK_CHARS) {
-    const head = trimmed.slice(0, BLOCK_CHARS / 2);
-    const tail = trimmed.slice(-BLOCK_CHARS / 2);
+    // The cuts are moved off the middle of a surrogate pair: half of one
+    // cannot be turned into the UTF-8 an element's text is.
+    let headEnd = BLOCK_CHARS / 2;
+    if (lowSurrogate(trimmed, headEnd)) headEnd -= 1;
+    let tailStart = trimmed.length - BLOCK_CHARS / 2;
+    if (lowSurrogate(trimmed, tailStart)) tailStart += 1;
+    const head = trimmed.slice(0, headEnd);
+    const tail = trimmed.slice(tailStart);
     const hidden = trimmed.slice(head.length, trimmed.length - tail.length).split('\n').length - 1;
     shown = `${head}\n\n… ${hidden} lines not shown …\n\n${tail}`;
   }
@@ -1334,6 +1369,12 @@ function codeBlock(id, label, content, m) {
         .text_color(m.ink)
         .child(shown),
     );
+}
+
+/** Whether the UTF-16 unit at `index` is the second half of a surrogate pair. */
+function lowSurrogate(text, index) {
+  const unit = text.charCodeAt(index);
+  return unit >= 0xdc00 && unit <= 0xdfff;
 }
 
 function turnFooter(item, transcript, cx) {
