@@ -77,6 +77,29 @@ export const MESSAGES = {
   settings: ['Settings', '设置', '設定'],
   workhubName: ['WorkHub', 'WorkHub', 'WorkHub'],
 
+  // A task's menu in the sidebar, and what it does (sessions.js). The words
+  // follow the native client's menu and the TUI's session actions.
+  taskActions: ['Actions for {title}', '{title} 任务操作', '{title} 任務操作'],
+  renameTask: ['Rename', '重命名', '重新命名'],
+  copyTaskId: ['Copy task ID', '复制任务 ID', '複製任務 ID'],
+  archiveTask: ['Archive', '归档', '封存'],
+  taskNameTooLong: ['Name is too long.', '名称过长。', '名稱過長。'],
+  renameFailed: [
+    'Couldn’t rename the task: {value}',
+    '重命名任务失败：{value}',
+    '重新命名任務失敗：{value}',
+  ],
+  archiveFailed: [
+    'Couldn’t archive the task: {value}',
+    '归档任务失败：{value}',
+    '封存任務失敗：{value}',
+  ],
+  sessionChangeBusy: [
+    'Stop the task and clear its queued messages before archiving or deleting it.',
+    '请先停止此任务并处理排队消息，再归档或删除。',
+    '請先停止此任務並處理佇列訊息，再封存或刪除。',
+  ],
+
   // Ages in lists (theme.js)
   ageNow: ['now', '刚刚', '剛剛'],
 
@@ -753,6 +776,12 @@ export const MESSAGES = {
     '为 WorkHub 保存可复用的代理配置。任务会保留派发时的模型和工具选择，后续修改只影响新任务。',
     '為 WorkHub 儲存可重用的代理設定。任務會保留派發時的模型和工具選擇，後續修改只影響新任務。',
   ],
+  settingsArchived: ['Archived', '已归档', '已封存'],
+  settingsArchivedDetail: [
+    'Archived tasks keep their history. Restore one to see it in the sidebar again.',
+    '已归档的任务会保留历史记录。恢复后会重新出现在侧栏。',
+    '已封存的任務會保留歷史紀錄。還原後會重新出現在側欄。',
+  ],
   backToApp:['Back to app', '返回应用', '返回應用'],
   importFromExport: ['Import from Maka export…', '从 Maka 导出文件导入…', '從 Maka 匯出檔案匯入…'],
   importFromExportTip: [
@@ -965,6 +994,35 @@ export const MESSAGES = {
     'Couldn’t save the subagent: {value}',
     '保存子代理失败：{value}',
     '儲存子代理失敗：{value}',
+  ],
+
+  // Settings: Archived (archived.js). Where the TUI (plugins/shared/
+  // locale-messages.ts) words the same thing, these copy it, with "task" for
+  // its "conversation".
+  archivedReadFailed: [
+    'Couldn’t read the archived tasks: {value}',
+    '读取已归档任务失败：{value}',
+    '讀取已封存任務失敗：{value}',
+  ],
+  noArchivedTasks: ['No archived tasks', '没有已归档任务', '沒有已封存任務'],
+  restoreTask: ['Restore', '恢复', '還原'],
+  deleteTask: ['Delete…', '删除…', '刪除…'],
+  deleteAction: ['Delete', '删除', '刪除'],
+  deleteTaskQuestion: ['Delete task?', '删除任务？', '刪除任務？'],
+  deleteTaskHelp: [
+    'This permanently removes this task from Maka. Workspace files and independent copies are kept.',
+    '将从 Maka 永久移除此任务。工作区文件和独立副本会保留。',
+    '將從 Maka 永久移除此任務。保留工作區檔案和獨立副本。',
+  ],
+  restoreFailed: [
+    'Couldn’t restore the task: {value}',
+    '恢复任务失败：{value}',
+    '還原任務失敗：{value}',
+  ],
+  deleteFailed: [
+    'Couldn’t delete the task: {value}',
+    '删除任务失败：{value}',
+    '刪除任務失敗：{value}',
   ],
 
   // WorkHub: setup and the conversation (workhub.js, main.js)

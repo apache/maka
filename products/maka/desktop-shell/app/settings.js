@@ -18,8 +18,9 @@
  */
 
 // Settings: the language and appearance, model connections, their API keys,
-// the default model, import from an old Maka settings export, and WorkHub's
-// subagents (subagents.js). The calls follow the TUI's settings
+// the default model, import from an old Maka settings export, WorkHub's
+// subagents (subagents.js) and the archived tasks (archived.js). The calls
+// follow the TUI's settings
 // plugins (plugins/settings/connection-form/operations.ts and
 // plugins/settings/credential/index.ts): create the connection, save its key
 // as the `secret` resource of `settings.saveCredential`, then let
@@ -34,6 +35,7 @@ import { v_flex, h_flex, InputState, Button } from 'gpui-base';
 import { openText } from 'maka-files';
 import { query, operation, log } from './host.js';
 import { Subagents, subagentsActions, subagentsStatus, subagentsSection } from './subagents.js';
+import { Archived, archivedStatus, archivedSection } from './archived.js';
 import {
   palette,
   typeset,
@@ -91,7 +93,7 @@ export class Settings {
   constructor(hooks) {
     this.hooks = hooks;
     this.open = false;
-    /** The page shown: "general", "models", "connections" or "subagents". */
+    /** The page shown: "general", "models", "connections", "subagents" or "archived". */
     this.page = 'general';
     /** The connection catalog's revision, which every catalog change names. */
     this.revision = null;
@@ -119,6 +121,8 @@ export class Settings {
     this.importing = null;
     /** The Subagents page, read each time it shows. */
     this.subagents = new Subagents(hooks);
+    /** The Archived page, read each time it shows. */
+    this.archived = new Archived(hooks);
 
     this.modelQuery = InputState.new({ placeholder: t('findModel') });
     this.modelQuery.on('change', () => this.loadModels());
@@ -144,6 +148,7 @@ export class Settings {
     this.open = true;
     this.load();
     if (this.page === 'subagents') this.subagents.load();
+    if (this.page === 'archived') this.archived.load();
     this.hooks.changed();
   }
 
@@ -151,6 +156,7 @@ export class Settings {
     if (this.page === page) return;
     this.page = page;
     if (page === 'subagents') this.subagents.load();
+    if (page === 'archived') this.archived.load();
     this.hooks.changed();
   }
 
@@ -160,6 +166,7 @@ export class Settings {
     this.closeForm();
     this.closeImport();
     this.subagents.close();
+    this.archived.close();
     this.hooks.changed();
   }
 
@@ -839,6 +846,7 @@ const PAGES = [
   ['models', 'settingsModels', 'cpu', 'settingsModelsDetail'],
   ['connections', 'settingsConnections', 'tool-plug', 'settingsConnectionsDetail'],
   ['subagents', 'settingsSubagents', 'workhub', 'settingsSubagentsDetail'],
+  ['archived', 'settingsArchived', 'archive', 'settingsArchivedDetail'],
 ];
 
 /**
@@ -909,11 +917,21 @@ export function settingsPage(settings, cx) {
   const m = palette(cx);
   const busy = settings.busy !== null;
   const [, title, , description] = PAGES.find(([page]) => page === settings.page);
-  // The Subagents page reads and saves on its own, and says so in its own lines.
+  // The Subagents and Archived pages read and save on their own, and say so
+  // in their own lines.
   const subagents = settings.page === 'subagents';
-  const loading = subagents ? settings.subagents.loading : settings.loading;
+  const archived = settings.page === 'archived';
+  const loading = subagents
+    ? settings.subagents.loading
+    : archived
+      ? settings.archived.loading
+      : settings.loading;
   const actions = subagents ? subagentsActions(settings.subagents, cx) : null;
-  const status = subagents ? subagentsStatus(settings.subagents, cx) : null;
+  const status = subagents
+    ? subagentsStatus(settings.subagents, cx)
+    : archived
+      ? archivedStatus(settings.archived, cx)
+      : null;
   return v_flex()
     .id('settings')
     .flex_1()
@@ -954,7 +972,7 @@ export function settingsPage(settings, cx) {
             )
             .child(text(t(description), 'body', m.inkMuted))
             .when(status !== null, (el) => el.child(status))
-            .when(!subagents && (busy || settings.error !== null), (el) =>
+            .when(!subagents && !archived && (busy || settings.error !== null), (el) =>
               el.child(
                 text(
                   busy ? settings.busy : settings.error,
@@ -967,7 +985,8 @@ export function settingsPage(settings, cx) {
         .when(settings.page === 'general', (el) => el.children(generalSection(settings, cx)))
         .when(settings.page === 'models', (el) => el.child(modelSection(settings, cx)))
         .when(settings.page === 'connections', (el) => el.child(connectionSection(settings, cx)))
-        .when(subagents, (el) => el.child(subagentsSection(settings.subagents, cx))),
+        .when(subagents, (el) => el.child(subagentsSection(settings.subagents, cx)))
+        .when(archived, (el) => el.child(archivedSection(settings.archived, cx))),
     );
 }
 

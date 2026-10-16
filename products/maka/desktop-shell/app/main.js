@@ -63,6 +63,7 @@ const SHORTCUTS = [
   { keystroke: 'secondary-]', action: 'maka.forward' },
   { keystroke: 'secondary-,', action: 'maka.settings' },
   { keystroke: 'secondary-.', action: 'maka.stop' },
+  { keystroke: 'f2', action: 'maka.rename-task' },
 ];
 
 export default class MakaDesktop extends View {
@@ -107,7 +108,21 @@ export default class MakaDesktop extends View {
     /** Where a session starts when none is selected, and the menu to choose it. */
     this.directories = new Directories(hooks);
     this.workhub = new WorkHub(hooks, this.directories);
-    this.sidebarUi = new SidebarState(() => this.cx.notify());
+    // A rename shows in the open task's header at once; an archived task
+    // that is open is left for the start pane, as after closing one.
+    this.sidebarUi = new SidebarState(
+      {
+        ...hooks,
+        renamed: (session) => {
+          if (this.transcript?.id === session.id) this.transcript.session = session;
+        },
+        archived: (sessionId) => {
+          if (this.transcript?.id === sessionId) this.home();
+        },
+        focusRoot: () => this.rootFocus.focus(),
+      },
+      cx,
+    );
     this.creating = false;
     this.error = null;
     this.sidebarHidden = false;
@@ -316,6 +331,17 @@ export default class MakaDesktop extends View {
     }
   }
 
+  /** F2: renames the selected task in the sidebar, which shows its row first. */
+  renameSelected() {
+    if (this.settings.open || this.sidebarHidden || this.workhub.open || this.transcript === null) {
+      return;
+    }
+    const session = this.catalog.sessions.find((entry) => entry.id === this.transcript.id);
+    if (session === undefined) return;
+    this.sidebarUi.reveal(session, this.catalog.sessions);
+    this.sidebarUi.startRename(session);
+  }
+
   /** Where a session started with no task selected works: the chosen folder, or the first root. */
   startFolder() {
     return this.directories.target();
@@ -345,6 +371,7 @@ export default class MakaDesktop extends View {
       .on_action('maka.back', () => this.go(-1))
       .on_action('maka.forward', () => this.go(1))
       .on_action('maka.settings', () => this.settings.show())
+      .on_action('maka.rename-task', () => this.renameSelected())
       .on_action('maka.stop', () => {
         const current = this.current();
         if (current !== null) this.composer.stop(current);
