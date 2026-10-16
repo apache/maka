@@ -160,6 +160,40 @@ export const MESSAGES = {
     '此任務在執行器上執行，請從終端機應用程式傳送',
   ],
   noticeDismiss: ['{value} (click to dismiss)', '{value}（点击关闭）', '{value}（按一下關閉）'],
+  attachFiles: ['Attach files', '添加附件', '新增附件'],
+  attachFailed: ['Attach files: {value}', '添加附件失败：{value}', '新增附件失敗：{value}'],
+  attachmentTooLarge: [
+    '{name} is over 50 MB and was not attached.',
+    '{name} 超过 50 MB，未添加。',
+    '{name} 超過 50 MB，未新增。',
+  ],
+  attachmentUnreadable: [
+    'Couldn’t attach {name}: {value}',
+    '无法添加 {name}：{value}',
+    '無法新增 {name}：{value}',
+  ],
+  attachmentLimit: [
+    'A message takes at most {limit} files; the rest were not attached.',
+    '每条消息最多 {limit} 个附件，其余未添加。',
+    '每則訊息最多 {limit} 個附件，其餘未新增。',
+  ],
+  attachmentRejected: [
+    'The Host did not take {name}: {reason}',
+    'Host 未接收 {name}：{reason}',
+    'Host 未接收 {name}：{reason}',
+  ],
+  attachmentUploadFailed: [
+    'Couldn’t upload {name}: {value}',
+    '上传 {name} 失败：{value}',
+    '上傳 {name} 失敗：{value}',
+  ],
+  attachmentInvalidFile: [
+    'the file could not be read, or it changed after it was chosen',
+    '文件无法读取，或选择后已被修改',
+    '檔案無法讀取，或選擇後已被修改',
+  ],
+  attachmentClosed: ['the Host is closing', 'Host 正在关闭', 'Host 正在關閉'],
+  attachmentArchived: ['the task is archived', '任务已归档', '任務已封存'],
 
   // Folder picker (directories.js)
   choose: ['Choose', '选择', '選擇'],

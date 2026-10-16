@@ -44,7 +44,17 @@ import { div, list } from 'gpui-kit';
 import { v_flex, h_flex, TextView, Scrollbar } from 'gpui-base';
 import { query, subscribe, next, close, log, readHistory, readSource } from './host.js';
 import { Interactions } from './interactions.js';
-import { palette, typeset, text, icon, tippedIcon, markdownStyle, MONTHS } from './theme.js';
+import {
+  palette,
+  typeset,
+  text,
+  icon,
+  tippedIcon,
+  markdownStyle,
+  byteSize,
+  fileChip,
+  MONTHS,
+} from './theme.js';
 import { t, tn, language } from './locale.js';
 
 /** A visible range starting at or above this index counts as "at the top" for paging. */
@@ -76,6 +86,8 @@ function rowFromChunk(chunk) {
     tool: chunk.tool,
     timing: chunk.timing ?? null,
     compaction: chunk.compaction ?? null,
+    // A user message's files, on its first fragment only.
+    attachments: chunk.attachments ?? [],
     totalBytes: chunk.totalBytes,
     fragments,
     text: chunk.text,
@@ -91,6 +103,7 @@ function withFragment(row, chunk) {
     ...row,
     tool: chunk.tool ?? row.tool,
     timing: chunk.timing ?? row.timing,
+    attachments: chunk.attachments ?? row.attachments,
     fragments,
     text: textOf(fragments),
   };
@@ -103,7 +116,9 @@ function joinRows(older, newer) {
     ...newer.fragments,
   ];
   fragments.sort((a, b) => a.offset - b.offset);
-  return { ...newer, fragments, text: textOf(fragments) };
+  // The files come with the first fragment, which the older part holds.
+  const attachments = older.attachments.length > 0 ? older.attachments : newer.attachments;
+  return { ...newer, attachments, fragments, text: textOf(fragments) };
 }
 
 /** Negative when the chunk comes before the row in transcript order. */
@@ -113,6 +128,34 @@ function compareToRow(chunk, row) {
 
 function partField(textKind) {
   return textKind === 'thinking' ? 'thinking' : 'body';
+}
+
+/** The size after a file's name in a line history adds for it (see ownText). */
+const FILE_SIZE = /^ · [\d.]+ (?:B|KiB|MiB)$/;
+
+/**
+ * A user message's own text. History writes a line after it for each file
+ * sent with it, "↳ name · 26 B", and one for each folder, "▱ path"
+ * (platform/event-log/src/transcript/history.rs, BODY); the files' chips show
+ * the files, so their lines are left out. Text that does not end in exactly
+ * those lines is kept whole.
+ */
+function ownText(row) {
+  const files = row.attachments ?? [];
+  if (files.length === 0) return row.text;
+  const lines = row.text.split('\n');
+  let end = lines.length;
+  while (end > 0 && lines[end - 1].startsWith('▱ ')) end -= 1;
+  const start = end - files.length;
+  const listed =
+    start >= 0 &&
+    files.every((file, index) => {
+      const line = lines[start + index];
+      const name = `↳ ${file.name}`;
+      // The size is left out when the Host has none.
+      return line === name || (line.startsWith(name) && FILE_SIZE.test(line.slice(name.length)));
+    });
+  return listed ? [...lines.slice(0, start), ...lines.slice(end)].join('\n') : row.text;
 }
 
 /** The UTF-8 size of `text`, which the Host's byte counts are in. */
@@ -249,8 +292,10 @@ export class Transcript {
   /**
    * The newest turn when it failed and nothing runs or waits to be sent:
    * `{ turnId, message }`, with the whole text of the message that started
-   * it, or null as `message` when only part of that text is loaded. Null
-   * otherwise. A stopped turn is left alone: the user stopped it.
+   * it (without the lines history adds for its files: sending again sends
+   * the text alone), or null as `message` when only part of that text is
+   * loaded or it has none. Null otherwise. A stopped turn is left alone: the
+   * user stopped it.
    */
   failedTurn() {
     if (!this.ready || this.run !== null || this.pending.length > 0 || this.live.length > 0) {
@@ -261,7 +306,8 @@ export class Transcript {
     const start = this.rows.find((row) => row.turnId === last.turnId && row.role === 'user');
     if (!start) return null;
     const whole = start.fragments[0]?.offset === 0 && utf8Length(start.text) === start.totalBytes;
-    return { turnId: last.turnId, message: whole ? start.text : null };
+    const message = whole ? ownText(start) : '';
+    return { turnId: last.turnId, message: message.trim() !== '' ? message : null };
   }
 
   /** Stops the live updates. A pending `next()` resolves with null. */
@@ -725,13 +771,13 @@ export class Transcript {
     });
   }
 
-  /** Shows a sent message until history records it. */
-  addPending(messageId, text) {
+  /** Shows a sent message, with the files sent with it (`{ name, bytes }`), until history records it. */
+  addPending(messageId, text, attachments = []) {
     const covered = `${messageId}/body`;
     if (this.covered.has(covered)) return;
     this.pending = [
       ...this.pending,
-      { key: `pending/${messageId}`, role: 'user', covered, pending: true, text },
+      { key: `pending/${messageId}`, role: 'user', covered, pending: true, text, attachments },
     ];
   }
 }
@@ -911,21 +957,7 @@ function itemBody(item, transcript, cx) {
     case 'history':
       return historyRow(item.state, transcript, cx);
     case 'user':
-      return h_flex()
-        .w_full()
-        .pt(16)
-        .justify_end()
-        .child(
-          typeset(div(), 'reading')
-            .max_w('70%')
-            .px(18)
-            .py(10)
-            .rounded(28)
-            .bg(m.bubble)
-            .text_color(m.ink)
-            .when(item.row.pending === true, (el) => el.opacity(0.6))
-            .child(item.row.text),
-        );
+      return userMessage(item.row, cx);
     case 'assistant':
       return typeset(div(), 'reading')
         .w_full()
@@ -951,6 +983,44 @@ function itemBody(item, transcript, cx) {
     default:
       return div();
   }
+}
+
+/**
+ * A message the user sent: its files right-aligned above the bubble with its
+ * text. A message of files alone has no bubble.
+ */
+function userMessage(row, cx) {
+  const m = palette(cx);
+  const files = row.attachments ?? [];
+  const own = ownText(row);
+  return v_flex()
+    .w_full()
+    .pt(16)
+    .gap(8)
+    .items_end()
+    .when(row.pending === true, (el) => el.opacity(0.6))
+    .when(files.length > 0, (el) =>
+      el.child(
+        h_flex()
+          .max_w('70%')
+          .flex_wrap()
+          .justify_end()
+          .gap(8)
+          .children(files.map((file) => fileChip(file, cx))),
+      ),
+    )
+    .when(own.trim() !== '' || files.length === 0, (el) =>
+      el.child(
+        typeset(div(), 'reading')
+          .max_w('70%')
+          .px(18)
+          .py(10)
+          .rounded(28)
+          .bg(m.bubble)
+          .text_color(m.ink)
+          .child(own),
+      ),
+    );
 }
 
 /** Why a run stopped, as the Host recorded it; the reason itself is not translated. */
@@ -1260,12 +1330,6 @@ function dropBytes(text, bytes) {
     index += point.length;
   }
   return text.slice(index);
-}
-
-function byteSize(bytes) {
-  if (bytes < 1024) return tn(bytes, 'bytesOne', 'bytesOther');
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 /**

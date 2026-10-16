@@ -30,11 +30,12 @@ use maka_host_runtime::application::{
     host::{Client, LocalCall},
     transport::wire::Reply,
 };
-use maka_plugin_core::contract::{ResourceType, text_resource_type};
+use maka_plugin_core::contract::{ResourceType, binary_resource_type, text_resource_type};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     ffi::OsString,
+    io::{Read, Seek, SeekFrom},
     ops::Range,
     path::PathBuf,
     sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError},
@@ -52,14 +53,16 @@ const DECLARATIONS: &str = r#"/** Runs a query method and resolves with its resu
 export function query(endpoint: string, method: string, input?: unknown): Promise<unknown>;
 /**
  * Runs a mutation: start, then confirm; resolves with the operation reply (receipt). Never retried.
- * `attachments` maps a method's resource slots to text, sent as UTF-8 resources
- * rather than in the input (for example the `secret` of `settings.saveCredential`).
+ * `attachments` maps a method's resource slots to what they carry, sent as
+ * resources rather than in the input: a string as UTF-8 text (for example the
+ * `secret` of `settings.saveCredential`), or `{ file: handle }` as the bytes of
+ * a file `maka-files` registered (the `file` of `agent.uploadAttachment`).
  */
 export function mutate(
   endpoint: string,
   method: string,
   input?: unknown,
-  attachments?: Record<string, string>,
+  attachments?: Record<string, string | { file: string }>,
 ): Promise<unknown>;
 /** Opens a subscription and resolves with a handle once the Host answers Subscribed. */
 export function subscribe(endpoint: string, method: string, input?: unknown): Promise<number>;
@@ -151,8 +154,9 @@ fn request(arguments: &HostArguments) -> Result<(String, String, Value), HostErr
     Ok((endpoint, method, input))
 }
 
-/// The fourth `mutate` argument: `{ slot: text }`, each value an immutable
-/// UTF-8 resource. Absent or null means none.
+/// The fourth `mutate` argument: `{ slot: value }`, each value an immutable
+/// resource. A string is UTF-8 text; `{ file: handle }` is the bytes of the
+/// file `maka-files` registered under that handle. Absent or null means none.
 fn attachments(arguments: &HostArguments) -> Result<Attachments, HostError> {
     let value = match arguments.get(3) {
         Some(value) => to_json(value).map_err(HostError::new)?,
@@ -162,17 +166,45 @@ fn attachments(arguments: &HostArguments) -> Result<Attachments, HostError> {
         Value::Null => Ok(Attachments::new()),
         Value::Object(slots) => slots
             .into_iter()
-            .map(|(slot, text)| match text {
-                Value::String(text) => Ok((slot, Arc::new(Text(text)) as Arc<dyn ReadResource>)),
-                _ => Err(HostError::new(format!(
-                    "attachment `{slot}` must be a string"
-                ))),
+            .map(|(slot, value)| {
+                let resource = resource(&slot, value)?;
+                Ok((slot, resource))
             })
             .collect(),
         _ => Err(HostError::new(
-            "attachments must be an object whose values are strings",
+            "attachments must be an object whose values are strings or { file: handle }",
         )),
     }
+}
+
+/// One attachment slot's resource: text, or a chosen file by handle.
+fn resource(slot: &str, value: Value) -> Result<Arc<dyn ReadResource>, HostError> {
+    let fields = match value {
+        Value::String(text) => return Ok(Arc::new(Text(text))),
+        Value::Object(fields) => fields,
+        _ => return Err(invalid_slot(slot)),
+    };
+    let handle = match fields.get("file") {
+        Some(Value::String(handle)) if fields.len() == 1 => handle,
+        _ => return Err(invalid_slot(slot)),
+    };
+    let chosen = crate::files::chosen(handle).ok_or_else(|| {
+        HostError::new(format!(
+            "attachment `{slot}` names no chosen file: the handle is unknown or was released"
+        ))
+    })?;
+    let bytes = usize::try_from(chosen.bytes)
+        .map_err(|_| HostError::new(format!("attachment `{slot}` is too large")))?;
+    Ok(Arc::new(File {
+        path: chosen.path,
+        bytes,
+    }))
+}
+
+fn invalid_slot(slot: &str) -> HostError {
+    HostError::new(format!(
+        "attachment `{slot}` must be a string or {{ file: handle }}"
+    ))
 }
 
 /// Text the Host reads as a `maka.text.utf8` resource. It has no Debug
@@ -196,6 +228,48 @@ impl ReadResource for Text {
             .get(range)
             .map(|text| text.as_bytes().to_vec())
             .ok_or_else(|| "the range does not fall on UTF-8 boundaries of the text".into())
+    }
+}
+
+/// A file the user chose (`maka-files`), which the Host reads as a
+/// `maka.bytes` resource of the size it had when it was chosen. Each read
+/// opens the file and reads exactly its range; a file cut short since then
+/// fails the read instead of sending something else, and the Host refuses
+/// any other change by the digest. Like Text, it has no Debug formatting.
+struct File {
+    path: PathBuf,
+    bytes: usize,
+}
+impl ReadResource for File {
+    fn encoding(&self) -> ResourceEncoding {
+        ResourceEncoding::Bytes
+    }
+    fn resource_type(&self) -> ResourceType {
+        binary_resource_type()
+    }
+    fn bytes(&self) -> usize {
+        self.bytes
+    }
+    fn metadata(&self) -> Value {
+        json!({})
+    }
+    fn read(&self, range: Range<usize>) -> Result<Vec<u8>, String> {
+        if range.start > range.end || range.end > self.bytes {
+            return Err("the range is outside the file as it was chosen".into());
+        }
+        let mut file = std::fs::File::open(&self.path)
+            .map_err(|error| format!("cannot open the chosen file: {error}"))?;
+        file.seek(SeekFrom::Start(range.start as u64))
+            .map_err(|error| format!("cannot read the chosen file: {error}"))?;
+        let mut bytes = vec![0; range.len()];
+        file.read_exact(&mut bytes).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::UnexpectedEof {
+                "the chosen file is shorter than when it was chosen".to_owned()
+            } else {
+                format!("cannot read the chosen file: {error}")
+            }
+        })?;
+        Ok(bytes)
     }
 }
 
@@ -703,16 +777,37 @@ mod tests {
         assert_eq!(error.message(), "argument 2 is missing; 1 were passed");
     }
 
+    /// `mutate` arguments with `attachments` as the fourth.
+    fn with_attachments(attachments: HostValue) -> HostArguments {
+        HostArguments::new([
+            HostValue::from("settings"),
+            HostValue::from("saveCredential"),
+            HostValue::Object(vec![]),
+            attachments,
+        ])
+    }
+
+    /// Registers files as `maka-files` `chooseFiles` does after the panel.
+    fn choose(paths: Vec<PathBuf>) -> Vec<HostValue> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        match runtime.block_on(crate::files::register(paths)).unwrap() {
+            HostValue::Array(files) => files,
+            other => panic!("register answered {other:?}"),
+        }
+    }
+
+    fn file_slot(handle: &str) -> HostValue {
+        HostValue::Object(vec![(
+            "file".into(),
+            HostValue::Object(vec![("file".into(), HostValue::from(handle))]),
+        )])
+    }
+
     #[test]
     fn mutate_attachments_are_utf8_text_resources() {
-        let arguments = |attachments: HostValue| {
-            HostArguments::new([
-                HostValue::from("settings"),
-                HostValue::from("saveCredential"),
-                HostValue::Object(vec![]),
-                attachments,
-            ])
-        };
+        let arguments = with_attachments;
         let slots = attachments(&arguments(HostValue::Object(vec![(
             "secret".into(),
             HostValue::from("k€y"),
@@ -735,8 +830,99 @@ mod tests {
         )])))
         .err()
         .unwrap();
-        assert_eq!(error.message(), "attachment `secret` must be a string");
+        assert_eq!(
+            error.message(),
+            "attachment `secret` must be a string or { file: handle }"
+        );
         assert!(attachments(&arguments(HostValue::from("text"))).is_err());
+    }
+
+    #[test]
+    fn a_chosen_file_is_a_binary_resource_read_by_range() {
+        let directory = std::env::temp_dir().join(format!("maka-host-file-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("data.bin");
+        let content: Vec<u8> = (0..=255u8).cycle().take(200_000).collect();
+        std::fs::write(&path, &content).unwrap();
+        let files = choose(vec![path.clone()]);
+        let handle = files[0].get("handle").and_then(HostValue::as_str).unwrap();
+
+        let slots = attachments(&with_attachments(file_slot(handle))).unwrap();
+        let file = &slots["file"];
+        assert_eq!(file.resource_type(), binary_resource_type());
+        assert_eq!(file.encoding(), ResourceEncoding::Bytes);
+        assert_eq!(file.bytes(), content.len());
+        assert_eq!(file.metadata(), json!({}));
+        // As the Host reads an upload: 64 KiB ranges, the last one short.
+        let mut read = Vec::new();
+        for start in (0..content.len()).step_by(64 * 1024) {
+            let end = (start + 64 * 1024).min(content.len());
+            read.extend(file.read(start..end).unwrap());
+        }
+        assert_eq!(read, content);
+        assert_eq!(file.read(1000..1010).unwrap(), &content[1000..1010]);
+        assert!(file.read(content.len() - 1..content.len() + 1).is_err());
+
+        // A file cut short since it was chosen fails instead of sending less.
+        std::fs::write(&path, &content[..1000]).unwrap();
+        assert_eq!(
+            file.read(0..2000).unwrap_err(),
+            "the chosen file is shorter than when it was chosen"
+        );
+        std::fs::remove_file(&path).unwrap();
+        assert!(
+            file.read(0..10)
+                .unwrap_err()
+                .starts_with("cannot open the chosen file")
+        );
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn an_unknown_or_released_handle_is_refused() {
+        let error = attachments(&with_attachments(file_slot("not-a-handle")))
+            .err()
+            .unwrap();
+        assert_eq!(
+            error.message(),
+            "attachment `file` names no chosen file: the handle is unknown or was released"
+        );
+        for bad in [
+            HostValue::Object(vec![("file".into(), HostValue::Number(1.0))]),
+            HostValue::Object(vec![("path".into(), HostValue::from("/etc/hosts"))]),
+            HostValue::Object(vec![
+                ("file".into(), HostValue::from("h")),
+                ("path".into(), HostValue::from("/etc/hosts")),
+            ]),
+        ] {
+            let slots = HostValue::Object(vec![("file".into(), bad)]);
+            let error = attachments(&with_attachments(slots)).err().unwrap();
+            assert_eq!(
+                error.message(),
+                "attachment `file` must be a string or { file: handle }"
+            );
+        }
+    }
+
+    #[test]
+    fn a_chosen_file_digest_is_sha256_hex_of_its_bytes() {
+        let directory = std::env::temp_dir().join(format!("maka-host-digest-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let (abc, empty) = (directory.join("abc"), directory.join("empty"));
+        std::fs::write(&abc, "abc").unwrap();
+        std::fs::write(&empty, "").unwrap();
+        let files = choose(vec![abc, empty]);
+        // The FIPS 180-2 test vectors, in the Host's `content_digest` format.
+        assert_eq!(
+            files[0].get("digest").and_then(HostValue::as_str),
+            Some("sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+        );
+        assert_eq!(
+            files[1].get("digest").and_then(HostValue::as_str),
+            Some("sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+        );
+        assert_eq!(files[1].get("bytes"), Some(&HostValue::Number(0.0)));
+        std::fs::remove_dir_all(&directory).unwrap();
     }
 
     #[test]

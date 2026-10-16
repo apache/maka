@@ -17,11 +17,12 @@
  * under the License.
  */
 
-// The composer: a multi-line draft in a rounded dock, the model menu, the
-// folder a new task starts in, and Send or Stop.
+// The composer: a multi-line draft in a rounded dock, the files attached to
+// it, the model menu, the folder a new task starts in, and Send or Stop.
 
 import { div } from 'gpui-kit';
 import { v_flex, h_flex, Button, Textarea, TextareaState, Popover } from 'gpui-base';
+import { chooseFiles, release } from 'maka-files';
 import { query, operation, log } from './host.js';
 import {
   palette,
@@ -29,6 +30,8 @@ import {
   text,
   icon,
   ghostButton,
+  iconButton,
+  fileChip,
   menuSurface,
   menuRow,
   menuLabel,
@@ -36,6 +39,16 @@ import {
   controlButton,
 } from './theme.js';
 import { t, onLanguageChange } from './locale.js';
+
+/** The most files one message carries (`agent.send` `attachments`). */
+const MAX_ATTACHMENTS = 8;
+
+/** Why the Host refused an upload (`AttachmentRejection`), in words. */
+const REJECTIONS = {
+  invalid_file: 'attachmentInvalidFile',
+  closed: 'attachmentClosed',
+  archived: 'attachmentArchived',
+};
 
 export class Composer {
   /**
@@ -87,6 +100,138 @@ export class Composer {
     this.newAccess = null;
     /** Whether a permission change is under way. */
     this.changingAccess = false;
+    /**
+     * sessionId (or '' for a new task) -> the files attached to that draft,
+     * in order: `{ handle, name, bytes, digest, id, state, error }`. `handle`
+     * is `maka-files`' registration, `id` the Host's once the file is uploaded
+     * to that session (null before), and `state` 'ready', 'uploading' or
+     * 'failed', with `error` saying why.
+     */
+    this.attached = new Map();
+    /** Whether the open panel for attachments is up. */
+    this.choosing = false;
+  }
+
+  /** The files attached to the draft for `transcript`, or for a new task. */
+  attachments(transcript) {
+    return this.attached.get(transcript?.id ?? '') ?? [];
+  }
+
+  /** Whether files can be attached to the draft for `transcript` now. */
+  canAttach(transcript) {
+    return (
+      !this.sending &&
+      !this.choosing &&
+      transcript?.backend?.kind !== 'executor' &&
+      this.attachments(transcript).length < MAX_ATTACHMENTS
+    );
+  }
+
+  /** Shows the open panel and attaches the files chosen to the draft for `transcript`. */
+  async chooseAttachments(transcript) {
+    if (!this.canAttach(transcript)) return;
+    this.choosing = true;
+    this.hooks.changed();
+    try {
+      this.attach(transcript, await chooseFiles());
+    } catch (error) {
+      this.hooks.report(t('attachFailed', { value: error.message }));
+    } finally {
+      this.choosing = false;
+      this.hooks.changed();
+    }
+  }
+
+  /**
+   * Adds files `maka-files` registered to the draft for `transcript`, up to
+   * MAX_ATTACHMENTS in all; those past the limit are released. What was not
+   * attached is reported: files too large, unreadable, or past the limit.
+   */
+  attach(transcript, files) {
+    const attached = [...this.attachments(transcript)];
+    const problems = [];
+    const over = [];
+    for (const file of files) {
+      if (file.tooLarge) {
+        problems.push(t('attachmentTooLarge', { name: file.name }));
+      } else if (file.handle === undefined) {
+        problems.push(t('attachmentUnreadable', { name: file.name, value: file.error ?? '' }));
+      } else if (attached.length >= MAX_ATTACHMENTS) {
+        over.push(file.handle);
+      } else {
+        attached.push({
+          handle: file.handle,
+          name: file.name,
+          bytes: file.bytes,
+          digest: file.digest,
+          id: null,
+          state: 'ready',
+          error: null,
+        });
+      }
+    }
+    if (over.length > 0) {
+      release(over);
+      problems.push(t('attachmentLimit', { limit: MAX_ATTACHMENTS }));
+    }
+    this.attached.set(transcript?.id ?? '', attached);
+    log(`composer: ${attached.length} file(s) attached, ${problems.length} problem(s)`);
+    if (problems.length > 0) this.hooks.report(problems.join(' '));
+    this.hooks.changed();
+  }
+
+  /** Takes a file off the draft for `transcript` and releases it. */
+  detach(transcript, handle) {
+    if (this.sending) return;
+    const kept = this.attachments(transcript).filter((file) => file.handle !== handle);
+    this.attached.set(transcript?.id ?? '', kept);
+    release([handle]);
+    this.hooks.changed();
+  }
+
+  /**
+   * Uploads each of `files` that `transcript`'s session does not have yet,
+   * one at a time. An uploaded file keeps its id, so a later try sends it as
+   * it is. Resolves to whether all of them are uploaded; one that is not (the
+   * Host refused it, or it could not be read or sent) is marked failed and
+   * reported, and the rest wait for the next try.
+   */
+  async upload(transcript, files) {
+    for (const file of files) {
+      if (file.id !== null) continue;
+      file.state = 'uploading';
+      file.error = null;
+      this.hooks.changed();
+      try {
+        const result = await operation(
+          'agent',
+          'uploadAttachment',
+          { sessionId: transcript.id, name: file.name, bytes: file.bytes, digest: file.digest },
+          { file: { file: file.handle } },
+        );
+        if (result.kind === 'rejected') {
+          const reason = Object.hasOwn(REJECTIONS, result.reason)
+            ? t(REJECTIONS[result.reason])
+            : JSON.stringify(result.reason);
+          log(`composer: upload of ${file.name} rejected: ${JSON.stringify(result.reason)}`);
+          file.state = 'failed';
+          file.error = reason;
+          this.hooks.report(t('attachmentRejected', { name: file.name, reason }));
+          return false;
+        }
+        file.id = result.attachment.id;
+        file.state = 'ready';
+        log(`composer: uploaded ${file.name} as ${file.id}`);
+      } catch (error) {
+        file.state = 'failed';
+        file.error = error.message;
+        this.hooks.report(t('attachmentUploadFailed', { name: file.name, value: error.message }));
+        return false;
+      } finally {
+        this.hooks.changed();
+      }
+    }
+    return true;
   }
 
   /**
@@ -243,14 +388,19 @@ export class Composer {
   }
 
   /**
-   * Sends the draft to the transcript's session, starting a session first
-   * when none is selected. The draft is cleared only once the Host accepted
-   * it, and only if it was not edited meanwhile. With `again`, sends that
-   * text instead (a failed turn's message) and leaves the draft alone.
+   * Sends the draft and its files to the transcript's session, starting a
+   * session first when none is selected. The files are uploaded first; the
+   * message goes only when all of them are. The draft is cleared only once
+   * the Host accepted it, and its text only if it was not edited meanwhile.
+   * With `again`, sends that text instead (a failed turn's message), without
+   * files, and leaves the draft alone.
    */
   async send(transcript, again = null) {
     const message = again ?? this.draft.value();
-    if (this.sending || this.model === null || message.trim() === '') return;
+    const files = again === null ? this.attachments(transcript) : [];
+    if (this.sending || this.model === null || (message.trim() === '' && files.length === 0)) {
+      return;
+    }
     this.sending = true;
     this.hooks.changed();
     try {
@@ -264,6 +414,11 @@ export class Composer {
           this.chosen.set(transcript.id, chosen);
           this.chosen.delete('');
         }
+        // So do its files, uploaded to the new task below.
+        if (files.length > 0) {
+          this.attached.set(transcript.id, files);
+          this.attached.delete('');
+        }
         // So does a permission level, set before the first message runs; the
         // next new task starts from the Host's default again. When it cannot
         // be set, the message is not sent with a level the user did not pick.
@@ -274,10 +429,12 @@ export class Composer {
         }
       }
       const { model, thinkingLevel } = await this.selection(transcript);
+      if (!(await this.upload(transcript, files))) return;
       const result = await operation('agent', 'send', {
         sessionId: transcript.id,
         message,
         model,
+        ...(files.length > 0 ? { attachments: files.map((file) => file.id) } : {}),
         // Left out, the model's default applies; an explicit level is sent only when chosen.
         ...(thinkingLevel !== null ? { thinkingLevel } : {}),
       });
@@ -291,8 +448,18 @@ export class Composer {
         this.draft.set_value('');
         this.empty = true;
       }
+      // The files went with the message: the draft lets go of them.
+      if (files.length > 0) {
+        const kept = this.attachments(transcript).filter((file) => !files.includes(file));
+        this.attached.set(transcript.id, kept);
+        release(files.map((file) => file.handle));
+      }
       // The run itself shows up through the watch (`opened`), as in the TUI.
-      transcript.addPending(result.messageId, message);
+      transcript.addPending(
+        result.messageId,
+        message,
+        files.map((file) => ({ name: file.name, bytes: file.bytes })),
+      );
     } catch (error) {
       this.hooks.report(t('sendFailed', { value: error.message }));
     } finally {
@@ -338,8 +505,10 @@ export function composerPane(composer, transcript, context, cx) {
   const inactive = transcript === null && context.folder === null;
   const running = transcript?.run != null;
   const executor = transcript?.backend?.kind === 'executor';
-  const canSend = !inactive && !composer.sending && composer.model !== null && !composer.empty;
-  const stop = running && composer.empty;
+  const files = composer.attachments(transcript);
+  const unsent = !composer.empty || files.length > 0;
+  const canSend = !inactive && !composer.sending && composer.model !== null && unsent;
+  const stop = running && !unsent;
   return h_flex()
     .flex_none()
     .w_full()
@@ -370,10 +539,12 @@ export function composerPane(composer, transcript, context, cx) {
                 .text_color(m.ink)
                 .disabled(inactive),
             )
+            .when(files.length > 0, (el) => el.child(attachmentRow(composer, transcript, files, cx)))
             .child(
               h_flex()
                 .gap(2)
                 .items_center()
+                .child(attachButton(composer, transcript, !inactive && composer.canAttach(transcript), cx))
                 .child(modelMenu(composer, transcript, context, cx))
                 .child(permissionMenu(composer, transcript, context, cx))
                 .when(context.picker !== null, (el) => el.child(context.picker))
@@ -395,6 +566,37 @@ export function composerPane(composer, transcript, context, cx) {
                 ),
             ),
         ),
+    );
+}
+
+/** The "+" that attaches files to the draft, first in the controls row. */
+function attachButton(composer, transcript, enabled, cx) {
+  const m = palette(cx);
+  return ghostButton('attach-files', cx)
+    .size(28)
+    .justify_center()
+    .rounded(8)
+    .disabled(!enabled)
+    .when(!enabled, (el) => el.opacity(0.5))
+    .tooltip(t('attachFiles'))
+    .child(icon('plus', 16, m.ink))
+    .on_click(() => composer.chooseAttachments(transcript));
+}
+
+/** The files attached to the draft, above the controls row, each with a remove button. */
+function attachmentRow(composer, transcript, files, cx) {
+  return h_flex()
+    .flex_wrap()
+    .gap(8)
+    .children(
+      files.map((file) =>
+        fileChip(file, cx).child(
+          iconButton(`attachment-remove-${file.handle}`, 'close', cx, 20, 14)
+            .disabled(composer.sending)
+            .tooltip(t('remove'))
+            .on_click(() => composer.detach(transcript, file.handle)),
+        ),
+      ),
     );
 }
 

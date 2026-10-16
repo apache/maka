@@ -28,7 +28,7 @@
 
 import { div, svg } from 'gpui-kit';
 import { set_theme, h_flex, v_flex, Button, Input } from 'gpui-base';
-import { t, language } from './locale.js';
+import { t, tn, language } from './locale.js';
 
 /** @typedef {Record<string, import('gpui-kit').Color>} Palette */
 
@@ -269,6 +269,60 @@ export function markdownStyle(cx) {
  */
 export function tippedIcon(name, size, color, tip) {
   return div().flex_none().child(icon(name, size, color)).tooltip(tip);
+}
+
+/** A size in bytes as people read it: "50 bytes", "25 KB", "1.5 MB". */
+export function byteSize(bytes) {
+  if (bytes < 1024) return tn(bytes, 'bytesOne', 'bytesOther');
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/**
+ * A file attached to a message, as the composer and the transcript show it:
+ * a 32px tile with the file icon, the name, and the size below it in small
+ * muted text. While the file is `uploading` the tile shows the running glyph;
+ * when it `failed`, the failed one, and the tile names `error` on hover. The
+ * composer adds a remove button after it.
+ * @param {{ name: string, bytes: number, state?: string, error?: string | null }} file
+ */
+export function fileChip(file, cx) {
+  const m = palette(cx);
+  const failed = file.state === 'failed';
+  const glyph =
+    file.state === 'uploading'
+      ? icon('status-running', 14, m.primary)
+      : failed
+        ? icon('status-failed', 16, m.destructive)
+        : icon('tool-read', 16, m.inkMuted);
+  return h_flex()
+    .flex_none()
+    .max_w(240)
+    .p(5)
+    .pr(10)
+    .gap(8)
+    .items_center()
+    .rounded(12)
+    .border_1()
+    .border_color(m.border)
+    .bg(m.plate)
+    .child(
+      h_flex()
+        .flex_none()
+        .size(32)
+        .items_center()
+        .justify_center()
+        .rounded(8)
+        .bg(m.wash)
+        .when(failed, (el) => el.tooltip(file.error ?? ''))
+        .child(glyph),
+    )
+    .child(
+      v_flex()
+        .min_w_0()
+        .child(typeset(div(), 'body').line_height('18px').text_color(m.ink).truncate().child(file.name))
+        .child(text(byteSize(file.bytes), 'small', m.inkMuted).line_height('16px')),
+    );
 }
 
 /** A colored dot in a 16px lane. */

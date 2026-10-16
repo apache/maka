@@ -42,12 +42,14 @@ export function log(message) {
  * the operation reply; the result is the receipt's returned value. Any other
  * receipt is an error. A mutation is never retried: only the original call
  * can tell whether it ran. `attachments` maps resource slots to text, such as
- * the `secret` of `settings.saveCredential`; it never reaches the log.
+ * the `secret` of `settings.saveCredential`, or to `{ file: handle }`, a file
+ * `maka-files` registered, such as the `file` of `agent.uploadAttachment`; it
+ * never reaches the log.
  *
  * @param {string} endpoint
  * @param {string} method
  * @param {unknown} input
- * @param {Record<string, string>} [attachments]
+ * @param {Record<string, string | { file: string }>} [attachments]
  */
 export async function operation(endpoint, method, input, attachments) {
   const reply = await mutate(endpoint, method, input, attachments);

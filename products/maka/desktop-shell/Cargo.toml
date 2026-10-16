@@ -24,11 +24,13 @@ publish.workspace = true
 
 [dependencies]
 gpui-shell.workspace = true
+hex.workspace = true
 maka-capabilities.workspace = true
 maka-host-runtime.workspace = true
 maka-plugin-core.workspace = true
 maka-ui-runtime.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 uuid.workspace = true

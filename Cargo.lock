@@ -9122,11 +9122,13 @@ name = "maka-desktop-shell"
 version = "0.2.0"
 dependencies = [
  "gpui-shell",
+ "hex",
  "maka-capabilities",
  "maka-host-runtime",
  "maka-plugin-core",
  "maka-ui-runtime",
  "serde_json",
+ "sha2 0.11.1",
  "tokio",
  "tokio-util",
  "uuid",

@@ -17,7 +17,8 @@
  * under the License.
  */
 
-//! The `maka-files` script module: a text file or a folder the user picks.
+//! The `maka-files` script module: a text file or a folder the user picks,
+//! and the files the user attaches to a message.
 //!
 //! A gpui-shell manifest can grant reads only under the application's own
 //! directories, and scripts have no file dialog. `openText` shows the
@@ -25,17 +26,36 @@
 //! the file is the permission, as with a browser's file input. Nothing else
 //! on disk becomes readable. `chooseFolder` shows the panel for one folder
 //! and answers its path only; the Host, not the script, reads the folder.
+//!
+//! `chooseFiles` shows the panel for any number of files and registers each
+//! one under an opaque handle, with its size and content digest. The script
+//! gets the handle, never the path, and has no way to register a path itself:
+//! here too the choice in the panel is the permission. `maka-host` reads a
+//! registered file when a mutation names its handle as an attachment (the
+//! `file` of `agent.uploadAttachment`), and `release` forgets it.
 use gpui_shell::{
-    HostArguments, HostError, HostModule, HostObject, HostValue,
+    HostArguments, HostError, HostModule, HostObject, HostResult, HostValue,
     gpui::{PathPromptOptions, SharedString},
 };
-use std::{io::Read, path::Path};
+use sha2::{Digest as _, Sha256};
+use std::{
+    collections::BTreeMap,
+    io::Read,
+    path::{Path, PathBuf},
+    sync::{Mutex, MutexGuard, PoisonError},
+};
+use uuid::Uuid;
 
 pub const NAME: &str = "maka-files";
 /// Read limit when the script does not give one.
 const DEFAULT_MAX_BYTES: u64 = 1 << 20;
 /// Largest limit a script may ask for.
 const MAX_BYTES: u64 = 16 << 20;
+/// Largest file `chooseFiles` registers: the Host's limit for an attachment
+/// (`agent.uploadAttachment`, 52428800 bytes).
+const MAX_ATTACHMENT_BYTES: u64 = 50 << 20;
+/// How much of a file is read at a time while its digest is computed.
+const DIGEST_CHUNK: usize = 64 * 1024;
 
 const DECLARATIONS: &str = r#"/**
  * Shows the open panel for one file and reads it as UTF-8 text. Resolves with
@@ -52,6 +72,33 @@ export function openText(options?: {
  * the user cancels.
  */
 export function chooseFolder(options?: { prompt?: string }): Promise<string | null>;
+
+/**
+ * One file chosen with `chooseFiles`. A registered file has a `handle`, its
+ * size and its `digest` (`sha256:` and the lowercase hex SHA-256 of its
+ * content). A file over 50 MiB (52428800 bytes, the Host's limit for an
+ * attachment) is not registered and has `tooLarge`; one that cannot be read
+ * is not registered and has `error`.
+ */
+export interface ChosenFile {
+  name: string;
+  bytes?: number;
+  handle?: string;
+  digest?: string;
+  tooLarge?: boolean;
+  error?: string;
+}
+
+/**
+ * Shows the open panel for any number of files and registers each one that
+ * can be attached. `maka-host`'s `mutate` reads a registered file when an
+ * attachment names it as `{ file: handle }`. Sizes and digests are read off
+ * the main thread. Resolves with [] when the user cancels.
+ */
+export function chooseFiles(): Promise<ChosenFile[]>;
+
+/** Forgets registered files. A handle that is not registered is ignored. */
+export function release(handles: string[]): void;
 "#;
 
 pub fn module() -> HostModule {
@@ -105,6 +152,174 @@ pub fn module() -> HostModule {
                 })
             })
         })
+        .async_function("chooseFiles", |_| {
+            let chosen = gpui_shell::with_current_app(|cx| {
+                cx.prompt_for_paths(PathPromptOptions {
+                    files: true,
+                    directories: false,
+                    multiple: true,
+                    prompt: None,
+                })
+            })
+            .ok_or_else(|| HostError::new("chooseFiles must be called from the application"))?;
+            Ok(async move {
+                let paths = chosen
+                    .await
+                    .map_err(|_| HostError::new("the open panel closed without an answer"))?
+                    .map_err(|error| HostError::new(format!("the open panel failed: {error}")))?;
+                match paths {
+                    Some(paths) => register(paths).await,
+                    None => Ok(HostValue::Array(Vec::new())),
+                }
+            })
+        })
+        .function("release", |arguments| {
+            let handles = arguments
+                .get(0)
+                .and_then(HostValue::as_array)
+                .ok_or_else(|| HostError::new("release(handles) needs an array of handles"))?
+                .iter()
+                .map(|handle| {
+                    handle
+                        .as_str()
+                        .ok_or_else(|| HostError::new("a handle must be a string"))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let mut files = chosen_files();
+            for handle in handles {
+                files.remove(handle);
+            }
+            Ok(HostValue::Null)
+        })
+}
+
+/// A file the user chose to attach: where it is, and its size and digest
+/// when it was chosen.
+#[derive(Clone)]
+pub(crate) struct Chosen {
+    pub path: PathBuf,
+    pub bytes: u64,
+    pub digest: String,
+}
+
+/// Registered files by handle, for the whole process: `maka-host` reads them.
+static CHOSEN: Mutex<BTreeMap<String, Chosen>> = Mutex::new(BTreeMap::new());
+
+fn chosen_files() -> MutexGuard<'static, BTreeMap<String, Chosen>> {
+    CHOSEN.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The file registered under `handle`, unless it was never registered or
+/// has been released.
+pub(crate) fn chosen(handle: &str) -> Option<Chosen> {
+    chosen_files().get(handle).cloned()
+}
+
+/// What `chooseFiles` found out about one file.
+enum Described {
+    Ready(Chosen),
+    TooLarge(u64),
+    Unreadable(String),
+}
+
+/// Registers the files at `paths` as `chooseFiles` does, and resolves with
+/// what it answers (see `ChosenFile` in the declarations). Only paths the
+/// user chose in the panel may be handed here. The files are read on a
+/// thread of their own: the digest of 50 MiB takes a while, and the executor
+/// driving the call is not held meanwhile.
+pub(crate) fn register(paths: Vec<PathBuf>) -> impl Future<Output = HostResult> + Send + 'static {
+    let (answer, answered) = tokio::sync::oneshot::channel();
+    let started = std::thread::Builder::new()
+        .name("maka-files-digest".into())
+        .spawn(move || {
+            let described: Vec<_> = paths
+                .iter()
+                .map(|path| (name_of(path), describe(path)))
+                .collect();
+            let _ = answer.send(described);
+        });
+    async move {
+        started
+            .map_err(|error| HostError::new(format!("cannot read the chosen files: {error}")))?;
+        let described = answered
+            .await
+            .map_err(|_| HostError::new("reading the chosen files stopped before it finished"))?;
+        let mut files = Vec::with_capacity(described.len());
+        for (name, described) in described {
+            let file = HostObject::new().field("name", name);
+            files.push(match described {
+                Described::Ready(chosen) => {
+                    let handle = Uuid::new_v4().to_string();
+                    let file = file
+                        .field("handle", handle.as_str())
+                        .field("bytes", chosen.bytes)
+                        .field("digest", chosen.digest.as_str());
+                    chosen_files().insert(handle, chosen);
+                    file.into()
+                }
+                Described::TooLarge(bytes) => {
+                    file.field("bytes", bytes).field("tooLarge", true).into()
+                }
+                Described::Unreadable(error) => file.field("error", error).into(),
+            });
+        }
+        Ok(HostValue::Array(files))
+    }
+}
+
+/// The name a file is attached under: its last path component.
+fn name_of(path: &Path) -> String {
+    path.file_name()
+        .unwrap_or(path.as_os_str())
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// The size and digest of one file as it is now, unless it is over the
+/// Host's limit or cannot be read.
+fn describe(path: &Path) -> Described {
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) => return Described::Unreadable(error.to_string()),
+    };
+    if !metadata.is_file() {
+        return Described::Unreadable("not a regular file".into());
+    }
+    if metadata.len() > MAX_ATTACHMENT_BYTES {
+        return Described::TooLarge(metadata.len());
+    }
+    match digest(path, metadata.len()) {
+        Ok(digest) => Described::Ready(Chosen {
+            path: path.to_owned(),
+            bytes: metadata.len(),
+            digest,
+        }),
+        Err(error) => Described::Unreadable(error),
+    }
+}
+
+/// `sha256:` and the lowercase hex SHA-256 of the file, as the Host computes
+/// an upload's digest (`content_digest`), read a chunk at a time. A file
+/// that does not hold `bytes` bytes by the end changed while it was read.
+fn digest(path: &Path, bytes: u64) -> Result<String, String> {
+    let mut file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0; DIGEST_CHUNK];
+    let mut read = 0;
+    while read <= bytes {
+        let count = match file.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(count) => count,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error.to_string()),
+        };
+        hasher.update(&buffer[..count]);
+        read += count as u64;
+    }
+    if read != bytes {
+        return Err("the file changed while it was read".into());
+    }
+    Ok(format!("sha256:{}", hex::encode(hasher.finalize())))
 }
 
 fn folder_options(arguments: &HostArguments) -> Result<Option<SharedString>, HostError> {
@@ -240,6 +455,96 @@ mod tests {
                 .contains("not UTF-8")
         );
         assert!(read_text(&directory.join("missing"), 16).is_err());
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn declarations_name_exactly_the_registered_functions() {
+        let module = module();
+        module.validate().unwrap();
+        assert_eq!(
+            module.function_names(),
+            ["chooseFiles", "chooseFolder", "openText", "release"]
+        );
+        assert!(!module.is_async("release"));
+    }
+
+    #[test]
+    fn chosen_files_are_registered_unless_too_large_or_unreadable() {
+        let directory = std::env::temp_dir().join(format!("maka-files-chosen-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let small = directory.join("abc.txt");
+        std::fs::write(&small, "abc").unwrap();
+        // Sparse: one byte over the limit without writing 50 MiB.
+        let large = directory.join("large.bin");
+        std::fs::File::create(&large)
+            .unwrap()
+            .set_len(MAX_ATTACHMENT_BYTES + 1)
+            .unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let answered = runtime
+            .block_on(register(vec![
+                small.clone(),
+                large,
+                directory.clone(),
+                directory.join("missing"),
+            ]))
+            .unwrap();
+        let files = answered.as_array().unwrap();
+        assert_eq!(files.len(), 4);
+
+        assert_eq!(files[0].get("name"), Some(&HostValue::from("abc.txt")));
+        assert_eq!(files[0].get("bytes"), Some(&HostValue::Number(3.0)));
+        let handle = files[0].get("handle").and_then(HostValue::as_str).unwrap();
+        let registered = chosen(handle).unwrap();
+        assert_eq!(registered.path, small);
+        assert_eq!(registered.bytes, 3);
+        assert_eq!(
+            files[0].get("digest").and_then(HostValue::as_str),
+            Some(registered.digest.as_str())
+        );
+
+        assert_eq!(files[1].get("name"), Some(&HostValue::from("large.bin")));
+        assert_eq!(files[1].get("tooLarge"), Some(&HostValue::Bool(true)));
+        assert_eq!(
+            files[1].get("bytes"),
+            Some(&HostValue::Number((MAX_ATTACHMENT_BYTES + 1) as f64))
+        );
+        assert!(files[1].get("handle").is_none());
+        assert_eq!(
+            files[2].get("error"),
+            Some(&HostValue::from("not a regular file"))
+        );
+        assert!(files[3].get("error").is_some() && files[3].get("handle").is_none());
+
+        // Released, a handle names nothing; an unknown one is ignored.
+        let release = |handles: Vec<HostValue>| {
+            module().call("release", &HostArguments::new([HostValue::Array(handles)]))
+        };
+        release(vec![HostValue::from(handle), HostValue::from("unknown")]).unwrap();
+        assert!(chosen(handle).is_none());
+        assert!(release(vec![HostValue::Number(1.0)]).is_err());
+        assert!(module().call("release", &arguments(vec![])).is_err());
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn a_file_that_changes_while_it_is_read_is_refused() {
+        let directory = std::env::temp_dir().join(format!("maka-files-digest-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("a.txt");
+        std::fs::write(&path, "abcd").unwrap();
+        assert_eq!(
+            digest(&path, 3).unwrap_err(),
+            "the file changed while it was read"
+        );
+        assert_eq!(
+            digest(&path, 5).unwrap_err(),
+            "the file changed while it was read"
+        );
+        assert!(digest(&path, 4).unwrap().starts_with("sha256:"));
         std::fs::remove_dir_all(&directory).unwrap();
     }
 }
