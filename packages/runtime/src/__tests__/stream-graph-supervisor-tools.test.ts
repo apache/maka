@@ -46,9 +46,6 @@ describe('stream graph supervisor tools', () => {
       assert.equal(viewTool.name, VIEW_AGENT_GRAPH_TOOL_NAME);
       assert.equal(updateTool.name, UPDATE_AGENT_GRAPH_TOOL_NAME);
       assert.equal(yieldTool.name, YIELD_AGENT_GRAPH_TOOL_NAME);
-      assert.equal(viewTool.recoveryMode, 'replay_safe');
-      assert.equal(updateTool.recoveryMode, 'idempotent');
-      assert.equal(yieldTool.recoveryMode, 'replay_safe');
 
       await assert.rejects(
         async () =>

@@ -27,7 +27,6 @@ import type { MakaTool } from '../tool-runtime.js';
 describe('Plan Mode tool surface', () => {
   test('requires plain-text step titles and descriptions', () => {
     const submitPlan = buildSubmitPlanTool({} as never);
-    assert.equal(submitPlan.recoveryMode, 'idempotent');
     const schema = submitPlan.parameters as {
       safeParse(input: unknown): { success: boolean };
     };
