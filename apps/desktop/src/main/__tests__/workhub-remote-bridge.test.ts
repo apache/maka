@@ -232,23 +232,26 @@ test('delayed feedback keeps its own work heading after a newer request in the s
 });
 
 test('direct-answer topic receipts survive paging and label a delayed answer without delegation', async (t) => {
-  const f = await fixture(t);
-  try {
-    await f.bridge.handle(message('one', 'SQL 第一题是什么？'));
-    const turnId = f.starts[0]!.turnId;
-    const call: StoredMessage = { type: 'tool_call', id: 'associate', turnId, ts: 1, toolName: 'mcp__desktop_workhub__tasks', args: { request: { operation: 'associate', targetSessionId: 'sql' } } };
-    await f.transcript([call]);
-    await f.bridge.handle(message('one', '再看看 CS336'));
-    await f.restart();
-    await f.transcript([call,
-      { type: 'tool_result', id: 'topic', turnId, ts: 2, toolUseId: call.id, isError: false, content: { kind: 'json', value: { structuredContent: { operation: 'associate', targetSessionId: 'sql', targetSessionKey: JSON.stringify(['host', 'sql']), targetSessionName: 'SQL 入门' } } } },
-      { type: 'assistant', id: 'answer', turnId, ts: 3, text: '查询评分不低于 9 的电影。', modelId: 'test' },
-    ]);
-    assert.deepEqual(f.sends, [{ chat: 'one', text: '[SQL 入门]\n查询评分不低于 9 的电影。' }]);
-    assert.equal(f.starts.length, 2);
-  } finally { await f.close(); }
+  for (const newerRequest of [false, true]) {
+    const f = await fixture(t);
+    try {
+      await f.bridge.handle(message('one', 'SQL 第一题是什么？'));
+      const turnId = f.starts[0]!.turnId;
+      const call: StoredMessage = { type: 'tool_call', id: 'associate', turnId, ts: 1, toolName: 'mcp__desktop_workhub__tasks', args: { request: { operation: 'associate', targetSessionId: 'sql' } } };
+      await f.transcript([call], false);
+      if (newerRequest) await f.bridge.handle(message('one', '再看看 CS336'));
+      await f.restart();
+      await f.transcript([call,
+        { type: 'tool_result', id: 'topic', turnId, ts: 2, toolUseId: call.id, isError: false, content: { kind: 'json', value: { structuredContent: { operation: 'associate', targetSessionId: 'sql', targetSessionKey: JSON.stringify(['host', 'sql']), targetSessionName: 'SQL 入门' } } } },
+        { type: 'assistant', id: 'answer', turnId, ts: 3, text: '查询评分不低于 9 的电影。', modelId: 'test' },
+      ]);
+      assert.deepEqual(f.sends, [{ chat: 'one', text: '[SQL 入门]\n查询评分不低于 9 的电影。' }]);
+      assert.equal(f.starts.length, newerRequest ? 2 : 1);
+      await f.restart();
+      assert.equal(f.sends.length, 1, 'already delivered answers are not resent');
+    } finally { await f.close(); }
+  }
 });
-
 
 test('the latest WeChat follow-up carries its associated work heading without a newer request', async (t) => {
   const f = await fixture(t, 'CS336');

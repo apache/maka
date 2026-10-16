@@ -338,14 +338,18 @@ export class DesktopSessionLocalStore {
     return row?.creation ? (JSON.parse(String(row.creation)) as SessionCreateInput) : undefined;
   }
 
-  saveCatalog(partition: string, summaries: readonly DesktopSessionSummaryInput[]): void {
-    this.#transaction(() => {
+  saveCatalog(partition: string, summaries: readonly DesktopSessionSummaryInput[]): string[] {
+    return this.#transaction(() => {
+      const removed: string[] = [];
       const seen = new Set(summaries.map((summary) => summary.id));
       for (const summary of summaries) this.saveSession(partition, summary);
       for (const previous of this.sessions(partition)) {
-        if (!seen.has(previous.id) && !this.creation(partition, previous.id))
+        if (!seen.has(previous.id) && !this.creation(partition, previous.id)) {
           this.removeSession(partition, previous.id);
+          removed.push(previous.id);
+        }
       }
+      return removed;
     });
   }
 

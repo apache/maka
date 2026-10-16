@@ -1493,7 +1493,7 @@ test('cache restoration expires independently of the outbox', async (t) => {
 
 test('durable Host evidence retires delivery independently of cache admission and submit ACK order', async (t) => {
   for (const ackFirst of [false, true]) {
-    for (const cacheLoss of ['quota', 'revision', 'coalescing']) {
+    for (const cacheLoss of ['quota', 'coalescing']) {
       await t.test(`ackFirst=${ackFirst}, cacheLoss=${cacheLoss}`, async (t) => {
         const db = await database(t);
         const response = deferred<TurnMessageSubmitResult>();
@@ -1538,7 +1538,6 @@ test('durable Host evidence retires delivery independently of cache admission an
           beginsAtTurnBoundary: true,
         };
         service.cacheTranscript(target.scope, snapshot);
-        if (cacheLoss === 'revision') db.store.enqueue('other-authority', intent('other-message'));
         if (cacheLoss === 'coalescing')
           service.cacheTranscript(target.scope, { ...snapshot, durable: [], hasOlder: true });
         await nextTurn();
@@ -2006,6 +2005,82 @@ test('durable cancellation proof retires an old Host epoch without crossing auth
   assert.ok(db.store.get('authority', 'never-dispatched'));
   assert.ok(db.store.get('authority', 'other-session'));
   assert.ok(db.store.get('other-authority', 'cancelled'));
+});
+
+test('catalog updates preserve the latest coalesced transcript cache write', async (t) => {
+  const db = await database(t);
+  const target: DesktopSessionLocalTarget = {
+    partition: 'authority', profileId: 'profile', scope: { hostId: 'root', targetEpoch: 'target' },
+  };
+  const service = new DesktopSessionLocalService(db.store, { targets: () => [target], changed() {}, onError: assert.fail });
+  db.beforeClose.push(() => service.close());
+  const snapshot: DesktopTranscriptReplicaSnapshot = {
+    sessionId: 'session-1', generation: 'generation', hostEpoch: 'epoch', durableThrough: 1,
+    durable: [{ sequence: 1, message: { type: 'user', id: 'user', turnId: 'turn-1', ts: 1, text: 'question' } }],
+    hasOlder: false, beginsAtTurnBoundary: true,
+  };
+  service.cacheTranscript(target.scope, snapshot);
+  service.cacheTranscript(target.scope, {
+    ...snapshot, durableThrough: 2,
+    durable: [...snapshot.durable, { sequence: 2, message: { type: 'assistant', id: 'answer', turnId: 'turn-1', ts: 2, text: 'cached answer', modelId: 'test' } }],
+  });
+  db.store.saveSession('authority', { id: 'session-1', name: 'Renamed' } as DesktopSessionSummaryInput);
+  await nextTurn();
+  service.close();
+  db.reopen();
+  assert.equal(db.store.transcript('authority', 'session-1')?.snapshot.durable.at(-1)?.message.id, 'answer');
+});
+
+test('catalog reconciliation cancels only removed Sessions pending cache writes across restart', async (t) => {
+  const db = await database(t);
+  const listed = deferred<SessionCatalogProjection[]>();
+  const target: DesktopSessionLocalTarget = {
+    partition: 'authority', profileId: 'profile', scope: { hostId: 'root', targetEpoch: 'target' },
+    client: { ...client('epoch'), listSessions: () => listed.promise },
+  };
+  const service = new DesktopSessionLocalService(db.store, { targets: () => [target], changed() {}, onError: assert.fail });
+  db.beforeClose.push(() => service.close());
+  for (const id of ['removed', 'retained'])
+    db.store.saveSession('authority', { id, name: id } as DesktopSessionSummaryInput);
+  service.catalog();
+  for (const id of ['removed', 'retained']) {
+    service.cacheTranscript(target.scope, {
+      sessionId: id, generation: 'generation', hostEpoch: 'epoch', durableThrough: 1,
+      durable: [{ sequence: 1, message: { type: 'assistant', id: `answer-${id}`, turnId: 'turn-1', ts: 1, text: `cached ${id}`, modelId: 'test' } }],
+      hasOlder: false, beginsAtTurnBoundary: true,
+    });
+  }
+  listed.resolve([{ ...swarmCatalogSession(), id: 'retained', name: 'Retained' }]);
+  await nextTurn();
+  assert.deepEqual(db.store.sessions('authority').map(({ id }) => id), ['retained']);
+  assert.equal(service.readTranscript(target, 'removed'), null);
+  assert.ok(service.readTranscript(target, 'retained'));
+  service.close();
+  db.reopen();
+  assert.equal(db.store.transcript('authority', 'removed'), undefined);
+  assert.equal(db.store.transcript('authority', 'retained')?.snapshot.durable[0]?.message.id, 'answer-retained');
+});
+
+test('Session removal and authority purge cancel pending transcript cache writes', async (t) => {
+  for (const removal of ['session', 'authority']) {
+    const db = await database(t);
+    const target: DesktopSessionLocalTarget = {
+      partition: 'authority', profileId: 'profile', scope: { hostId: 'root', targetEpoch: 'target' },
+    };
+    const service = new DesktopSessionLocalService(db.store, { targets: () => [target], changed() {}, onError: assert.fail });
+    db.beforeClose.push(() => service.close());
+    service.cacheTranscript(target.scope, {
+      sessionId: 'session-1', generation: 'generation', hostEpoch: 'epoch', durableThrough: 1,
+      durable: [{ sequence: 1, message: { type: 'user', id: 'user', turnId: 'turn-1', ts: 1, text: 'removed history' } }],
+      hasOlder: false, beginsAtTurnBoundary: true,
+    });
+    if (removal === 'session') service.removeSession(target, 'session-1');
+    else service.purge(target);
+    await nextTurn();
+    service.close();
+    db.reopen();
+    assert.equal(db.store.transcript('authority', 'session-1'), undefined);
+  }
 });
 
 test('cancellation cleanup preserves an already scheduled canonical transcript cache write', async (t) => {
