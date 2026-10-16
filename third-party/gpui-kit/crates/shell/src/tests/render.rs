@@ -5764,6 +5764,95 @@ export default class Bad extends View {
     );
 }
 
+/// A textarea set to submit on Enter keeps the line break out of the text,
+/// and Shift+Enter still starts a new line.
+///
+/// Without the setting base inserts the break first and then reports
+/// `submit`, so the first handler call would read `send` followed by a break.
+/// The handler records the text it reads with each break shown as `|`.
+///
+/// The test sends base's `Enter` action rather than the key. When nothing
+/// handles a key, the test window types its character, and it gives Enter the
+/// character `\n`; the macOS, Windows and Linux windows type nothing for it.
+/// Base hands a submitting Enter on to the parent, so the key would put the
+/// break back in here and only here.
+#[gpui::test]
+fn a_textarea_that_submits_on_enter_keeps_the_line_break_for_shift_enter(cx: &mut TestAppContext) {
+    cx.update(|cx| crate::init(cx));
+
+    let runtime = ShellRuntime::new_isolated().expect("runtime");
+    cx.update(|cx| runtime.set_global(cx));
+    let source = r#"
+import { View, div } from "gpui-kit";
+import { Textarea, TextareaState } from "gpui-base";
+
+export default class Composer extends View {
+  init() {
+    this.draft = TextareaState.new({ rows: 4 });
+    this.draft.set_submit_on_enter(true);
+    this.submits = [];
+    this.draft.on("submit", (event, cx) => {
+      const text = this.draft.value().replace(/\n/g, "|");
+      this.submits.push(`${event.shift ? "shift" : "enter"}=${text}`);
+      cx.notify();
+    });
+  }
+  render(cx) {
+    return div()
+      .child(Textarea.new(this.draft).w(300).h(100))
+      .child(`submits:${this.submits.join(",")};`);
+  }
+}
+"#;
+    let view_type = runtime.load_source("composer.js", source).expect("load");
+    let runtime_for_view = Rc::clone(&runtime);
+    let window = cx.add_window(move |window, cx| {
+        let view = runtime_for_view
+            .instantiate_view(&view_type, window, cx)
+            .expect("instantiate");
+        RootedScriptView(view)
+    });
+    let mut context = VisualTestContext::from_window(*window.deref(), cx);
+    context.update(|window, cx| window.draw(cx).clear(cx));
+    let view = window
+        .root(&mut context)
+        .expect("view")
+        .read_with(&context, |root, _| root.0.clone());
+    let state = runtime
+        .entities()
+        .first_textarea()
+        .expect("the script's textarea state");
+    context.update(|window, cx| state.update(cx, |state, cx| state.focus(window, cx)));
+    context.update(|window, cx| window.draw(cx).clear(cx));
+    let enter = |shift| gpui_base::input::Enter {
+        secondary: false,
+        shift,
+    };
+
+    context.simulate_input("send");
+    context.dispatch_action(enter(false));
+    context.update(|window, cx| window.draw(cx).clear(cx));
+    let entered = described(&mut context, &view);
+    assert!(
+        entered.contains("submits:enter=send;"),
+        "Enter must submit the text without a line break: {entered}"
+    );
+
+    context.dispatch_action(enter(true));
+    context.simulate_input("two");
+    context.dispatch_action(enter(false));
+    context.update(|window, cx| window.draw(cx).clear(cx));
+    let after = described(&mut context, &view);
+    assert!(
+        after.contains("submits:enter=send,shift=send|,enter=send|two;"),
+        "Shift+Enter must insert the break and report `submit` with `shift`: {after}"
+    );
+    assert_eq!(
+        context.update(|_, cx| state.read(cx).value().to_string()),
+        "send\ntwo"
+    );
+}
+
 /// Hot reload has to pick up a change in an imported module, not only in the
 /// entry point. QuickJS caches an evaluated module by name and an ES module
 /// cannot be unloaded, so a naive reload re-evaluates `main.js` against the
@@ -10866,4 +10955,367 @@ fn a_list_reports_which_item_was_clicked(cx: &mut TestAppContext) {
     // Alternating heights: row 0 covers 0..20, row 1 covers 20..60, row 2
     // covers 60..80.
     assert_a_click_reports_the_row_key(cx, measured_list_source(), 70.);
+}
+
+/// A transcript in a `list`: a hundred twenty-pixel rows in a 200px box, and
+/// under it four controls that change the collection the way a chat does —
+/// a page of older items above, one newer item below, one item taken out, and
+/// the last item grown to 60px, as a message being streamed grows.
+/// `builders` is appended to the list's own chain.
+///
+/// The key under a click is written into the tree, which is how a test reads
+/// which item is where.
+fn transcript_source(builders: &str) -> String {
+    format!(
+        r#"
+import {{ div, View, list }} from "gpui-kit";
+import {{ v_flex }} from "gpui-base";
+
+export default class Transcript extends View {{
+  init() {{
+    this.items = [];
+    for (let index = 0; index < 100; index++) this.items.push(`m${{index}}`);
+    this.pages = 0;
+    this.tall = "";
+    this.clicked = "none";
+  }}
+
+  control(label, change) {{
+    return div()
+      .h(40)
+      .on_click((_event, cx) => {{
+        change();
+        cx.notify();
+      }})
+      .child(label);
+  }}
+
+  render(cx) {{
+    return v_flex()
+      .w(300)
+      .h(400)
+      .child(
+        v_flex()
+          .h(200)
+          .child(
+            list("rows", this.items.length, (index) => this.items[index], (index) =>
+              div().h(this.items[index] === this.tall ? 60 : 20).child(this.items[index]),
+            )
+              .on_item_click((key, cx) => {{
+                this.clicked = key;
+                cx.notify();
+              }}){builders},
+          ),
+      )
+      .child(this.control("older", () => {{
+        const page = [];
+        for (let index = 0; index < 10; index++) page.push(`p${{this.pages}}-${{index}}`);
+        this.pages += 1;
+        this.items = page.concat(this.items);
+      }}))
+      .child(this.control("newer", () => {{
+        this.items = this.items.concat([`m${{this.items.length + 1000}}`]);
+      }}))
+      .child(this.control("take out m7", () => {{
+        this.items = this.items.filter((key) => key !== "m7");
+      }}))
+      .child(this.control("grow the last", () => {{
+        this.tall = this.items[this.items.length - 1];
+      }}))
+      .child(`clicked ${{this.clicked}}`);
+  }}
+}}
+"#
+    )
+}
+
+/// Clicks at `y` and draws the frame the click produced.
+fn click_at(context: &mut VisualTestContext, y: f32) {
+    context.simulate_click(point(px(150.), px(y)), Modifiers::default());
+    context.run_until_parked();
+    context.update(|window, cx| window.draw(cx).clear(cx));
+}
+
+/// The key of the transcript item under `y`, as `on_item_click` reports it.
+fn transcript_key_at(
+    context: &mut VisualTestContext,
+    view: &gpui::Entity<ScriptView>,
+    y: f32,
+) -> String {
+    click_at(context, y);
+    let tree = context.update(|_, cx| {
+        view.read(cx)
+            .snapshot()
+            .map(crate::RenderSnapshot::debug_tree)
+            .unwrap_or_default()
+    });
+    tree.split("clicked ")
+        .nth(1)
+        .and_then(|rest| {
+            rest.split(|character: char| character.is_whitespace() || character == '"')
+                .next()
+        })
+        .unwrap_or_else(|| panic!("no clicked key in: {tree}"))
+        .to_owned()
+}
+
+#[gpui::test]
+fn a_list_keeps_the_reader_on_their_item_when_the_count_changes(cx: &mut TestAppContext) {
+    let (_runtime, _window, view, mut context) = mount_list_source(cx, &transcript_source(""));
+
+    // 150px down: `m7` is at the top, ten pixels of it scrolled past, so the
+    // boundary with `m8` is ten pixels into the box.
+    scroll_by(&mut context, -150.);
+    assert_eq!(transcript_key_at(&mut context, &view, 5.), "m7");
+    assert_eq!(transcript_key_at(&mut context, &view, 15.), "m8");
+
+    // Ten older items above: GPUI's splice alone would show `p0-0` at the top.
+    click_at(&mut context, 220.);
+    assert_eq!(
+        transcript_key_at(&mut context, &view, 5.),
+        "m7",
+        "a page put above the reader must not move what they are reading"
+    );
+    assert_eq!(
+        transcript_key_at(&mut context, &view, 15.),
+        "m8",
+        "and the position inside the item must survive with it"
+    );
+
+    // One newer item below.
+    click_at(&mut context, 260.);
+    assert_eq!(transcript_key_at(&mut context, &view, 5.), "m7");
+    assert_eq!(transcript_key_at(&mut context, &view, 15.), "m8");
+
+    // The item at the top itself taken out: there is nothing to follow, so the
+    // position stays at its index, where the next item now is.
+    click_at(&mut context, 300.);
+    assert_eq!(transcript_key_at(&mut context, &view, 5.), "m8");
+}
+
+#[gpui::test]
+fn a_list_following_its_tail_stays_at_the_end_until_the_reader_scrolls_up(cx: &mut TestAppContext) {
+    let (_runtime, _window, view, mut context) =
+        mount_list_source(cx, &transcript_source(r#".with_follow_mode("tail")"#));
+
+    // It opens at the end: `m99` is flush with the bottom of the box.
+    assert_eq!(transcript_key_at(&mut context, &view, 195.), "m99");
+    assert_eq!(transcript_key_at(&mut context, &view, 5.), "m90");
+
+    // An item added below is followed, and so is the last item growing.
+    click_at(&mut context, 260.);
+    assert_eq!(transcript_key_at(&mut context, &view, 195.), "m1100");
+    click_at(&mut context, 340.);
+    assert_eq!(
+        transcript_key_at(&mut context, &view, 145.),
+        "m1100",
+        "the grown last item must fill the bottom 60px of the box"
+    );
+
+    // Scrolling up stops it: the next item lands below the fold and the item
+    // being read stays where it is.
+    scroll_by(&mut context, 60.);
+    let reading = transcript_key_at(&mut context, &view, 5.);
+    click_at(&mut context, 260.);
+    assert_eq!(
+        transcript_key_at(&mut context, &view, 5.),
+        reading,
+        "a reader who scrolled up must not be pulled back down"
+    );
+
+    // Back at the end, it follows again.
+    scroll_by(&mut context, -1000.);
+    click_at(&mut context, 260.);
+    assert_eq!(transcript_key_at(&mut context, &view, 195.), "m1102");
+}
+
+/// A follow mode GPUI does not have is refused where it was written, rather
+/// than leaving the list in whichever mode it was in.
+#[gpui::test]
+fn a_follow_mode_other_than_normal_or_tail_is_refused(cx: &mut TestAppContext) {
+    let message = render_error(
+        cx,
+        "follow.js",
+        r#"
+import { div, View, list } from "gpui-kit";
+
+export default class Transcript extends View {
+  render() {
+    return list("rows", 1, () => "only", () => div()).with_follow_mode("bottom");
+  }
+}
+"#,
+    );
+    assert!(
+        message.contains(r#"with_follow_mode(mode) expects "normal" or "tail""#),
+        "the message has to name the method and the modes it takes: {message}"
+    );
+}
+
+/// A `list` of a hundred twenty-pixel rows in a 200px box, a `Scrollbar` paired
+/// with it by name, and a control under it that adds one row. What the list
+/// last reported through `on_visible_range_change` is written into the tree.
+fn reporting_list_source() -> &'static str {
+    r#"
+import { div, View, list } from "gpui-kit";
+import { Scrollbar, v_flex } from "gpui-base";
+
+export default class Rows extends View {
+  init() {
+    this.count = 100;
+    this.reported = "none";
+  }
+
+  render(cx) {
+    return v_flex()
+      .w(300)
+      .h(400)
+      .child(
+        v_flex()
+          .relative()
+          .h(200)
+          .child(
+            list("rows", this.count, (index) => `r${index}`, (index) =>
+              div().h(20).child(`row ${index}`),
+            ).on_visible_range_change((range, count, cx) => {
+              this.reported = `${range.start}..${range.end} of ${count}`;
+              cx.notify();
+            }),
+          )
+          .child(Scrollbar.vertical("rows").mode("always").absolute().inset_0()),
+      )
+      .child(
+        div()
+          .h(40)
+          .on_click((_event, cx) => {
+            this.count += 1;
+            cx.notify();
+          })
+          .child("one more"),
+      )
+      .child(`reported ${this.reported}`);
+  }
+}
+"#
+}
+
+/// Draws until a report made after one frame has been rendered by the next,
+/// and reads `start..end of count` out of the tree.
+fn reported_visible_range(
+    context: &mut VisualTestContext,
+    view: &gpui::Entity<ScriptView>,
+) -> (usize, usize, usize) {
+    for _ in 0..3 {
+        context.run_until_parked();
+        context.update(|window, cx| window.draw(cx).clear(cx));
+    }
+    let tree = context.update(|_, cx| {
+        view.read(cx)
+            .snapshot()
+            .map(crate::RenderSnapshot::debug_tree)
+            .unwrap_or_default()
+    });
+    let text = tree
+        .split("reported ")
+        .nth(1)
+        .unwrap_or_else(|| panic!("no report in: {tree}"));
+    let numbers: Vec<usize> = text
+        .split(|character: char| !character.is_ascii_digit())
+        .filter(|part| !part.is_empty())
+        .take(3)
+        .map(|part| part.parse().expect("a number"))
+        .collect();
+    assert_eq!(numbers.len(), 3, "no `start..end of count` in: {tree}");
+    (numbers[0], numbers[1], numbers[2])
+}
+
+#[gpui::test]
+fn a_list_reports_its_visible_range_however_it_changed(cx: &mut TestAppContext) {
+    let (_runtime, _window, view, mut context) = mount_list_source(cx, reporting_list_source());
+
+    // The first frame is reported, and the handler's `cx.notify()` is
+    // honoured, which it would not be from inside layout.
+    assert_eq!(reported_visible_range(&mut context, &view), (0, 10, 100));
+
+    // A wheel scroll, which is the one case GPUI's own scroll handler sees.
+    scroll_by(&mut context, -100.);
+    assert_eq!(reported_visible_range(&mut context, &view), (5, 15, 100));
+
+    // A new item count with the same items in view.
+    click_at(&mut context, 220.);
+    assert_eq!(reported_visible_range(&mut context, &view), (5, 15, 101));
+
+    // A press on the scrollbar's track below the thumb, which moves the list
+    // without a scroll event.
+    context.simulate_click(point(px(295.), px(190.)), Modifiers::default());
+    let (start, end, count) = reported_visible_range(&mut context, &view);
+    assert!(
+        start > 5 && end - start == 10 && count == 101,
+        "a jump on the scrollbar must be reported: {start}..{end} of {count}"
+    );
+}
+
+/// The case the report exists for: a chat that loads a page of older items
+/// when the reader reaches the top, and must not then be thrown to the top of
+/// the page it loaded, which would load the next one, and the next.
+#[gpui::test]
+fn a_list_can_load_older_items_when_the_reader_reaches_the_top(cx: &mut TestAppContext) {
+    let source = r#"
+import { div, View, list } from "gpui-kit";
+import { v_flex } from "gpui-base";
+
+export default class History extends View {
+  init() {
+    this.items = [];
+    for (let index = 0; index < 100; index++) this.items.push(`m${index}`);
+    this.pages = 0;
+    this.reported = "none";
+    this.clicked = "none";
+  }
+
+  render(cx) {
+    return v_flex()
+      .w(300)
+      .h(400)
+      .child(
+        v_flex()
+          .h(200)
+          .child(
+            list("rows", this.items.length, (index) => this.items[index], (index) =>
+              div().h(20).child(this.items[index]),
+            )
+              .on_item_click((key, cx) => {
+                this.clicked = key;
+                cx.notify();
+              })
+              .on_visible_range_change((range, count, cx) => {
+                this.reported = `${range.start}..${range.end} of ${count}`;
+                if (range.start === 0) {
+                  const page = [];
+                  for (let index = 0; index < 10; index++) page.push(`p${this.pages}-${index}`);
+                  this.pages += 1;
+                  this.items = page.concat(this.items);
+                }
+                cx.notify();
+              }),
+          ),
+      )
+      .child(`reported ${this.reported} clicked ${this.clicked}`);
+  }
+}
+"#;
+    let (_runtime, _window, view, mut context) = mount_list_source(cx, source);
+
+    // The list opens at the top, so the first report loads a page, and the
+    // reader stays on `m0` with the page above the fold.
+    assert_eq!(reported_visible_range(&mut context, &view), (10, 20, 110));
+    assert_eq!(transcript_key_at(&mut context, &view, 5.), "m0");
+
+    // Scrolling up to the page's first item loads one more page, once. Two
+    // turns of the wheel, because a list scrolls only as far as it has
+    // measured, and it measures 160px above the top as it goes.
+    scroll_by(&mut context, 100.);
+    scroll_by(&mut context, 100.);
+    assert_eq!(reported_visible_range(&mut context, &view), (10, 20, 120));
+    assert_eq!(transcript_key_at(&mut context, &view, 5.), "p0-0");
 }

@@ -35,6 +35,13 @@
 //! matters; but a `list` of twenty visible rows costs twenty crossings where a
 //! virtual list costs one, and that is the price of not stating heights.
 //!
+//! A `list` also calls its `get_key` around its own layout: once for the item
+//! at the top whenever that item or the render changes, and, when the item
+//! count changes, near that item's old index until its key turns up again —
+//! one or two calls when items were added or removed on one side of it only,
+//! and the whole collection once if it is gone. That is what keeps the
+//! reader's place; [`components::list`] says why it needs the key.
+//!
 //! Three things confine it, and they are worth naming because each is what
 //! stops the exception from spreading:
 //!
@@ -445,9 +452,15 @@ struct Behavior {
     /// the press itself. Registered on the list for the same reason
     /// `on_item_click` is.
     on_item_secondary_click: Option<CallbackId>,
+    /// Reports which items a `list` shows and how many it has, after a frame
+    /// in which either changed.
+    on_visible_range_change: Option<CallbackId>,
     /// Which item a `VirtualList` measures to infer its cross-axis size.
     /// `None` keeps base's own default, which is the first.
     item_to_measure_index: Option<usize>,
+    /// Whether a `list` follows its tail. `None` is GPUI's own default,
+    /// `FollowMode::Normal`.
+    follow_mode: Option<gpui::FollowMode>,
     /// The dock commands a chrome element carries — what base is asked to do
     /// when it is clicked or dragged.
     ///
@@ -2590,6 +2603,7 @@ pub(in crate::materialize) fn resolve_ops(
                 "on_dismiss" => behavior.on_dismiss = Some(*id),
                 "on_item_click" => behavior.on_item_click = Some(*id),
                 "on_item_secondary_click" => behavior.on_item_secondary_click = Some(*id),
+                "on_visible_range_change" => behavior.on_visible_range_change = Some(*id),
                 "tab_bar" => behavior.dock_chrome.tab_bar = Some(*id),
                 "empty_group" => behavior.dock_chrome.empty_group = Some(*id),
                 "drop_indicator" => behavior.dock_chrome.drop_indicator = Some(*id),
@@ -3163,6 +3177,16 @@ fn apply_behavior(behavior: &mut Behavior, name: &str, args: &[Bridged]) {
                 .and_then(|value| value.as_f32().ok())
                 .filter(|index| *index >= 0.0 && index.fract() == 0.0)
                 .map(|index| index as usize);
+        }
+        "with_follow_mode" => {
+            behavior.follow_mode =
+                args.first()
+                    .and_then(|value| value.as_str().ok())
+                    .and_then(|mode| match mode {
+                        "normal" => Some(gpui::FollowMode::Normal),
+                        "tail" => Some(gpui::FollowMode::Tail),
+                        _ => None,
+                    });
         }
         "track_focus" => {
             behavior.focus_handle = match args.first() {
