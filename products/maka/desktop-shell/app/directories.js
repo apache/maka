@@ -154,8 +154,8 @@ export function startPane(directories, actions, cx) {
         .text_color(theme.colors.muted_foreground)
         .child(
           current === null
-            ? 'Select a session, or choose the folder a new one works in'
-            : 'Start a session in this folder, or open one of its folders',
+            ? 'Select a session, or write a message below to start one. Open a folder first to start it there.'
+            : 'A message written below starts a session in this folder',
         ),
     )
     .when(current !== null, (el) =>

@@ -53,7 +53,16 @@ export default class MakaDesktop extends View {
         hooks.changed();
       },
     });
-    this.composer = new Composer(hooks, () => this.transcript);
+    // With no session selected, sending starts one in the folder the start
+    // pane shows (the first root until a folder is opened).
+    this.composer = new Composer(
+      hooks,
+      () => this.transcript,
+      () => {
+        const folder = this.startFolder();
+        return folder === null ? Promise.resolve(null) : this.newSession(folder);
+      },
+    );
     // A model added or chosen in Settings is what the composer sends with next.
     this.settings = new Settings({ ...hooks, modelsChanged: () => this.composer.loadModel() });
     /** @type {Transcript | null} */
@@ -106,7 +115,7 @@ export default class MakaDesktop extends View {
   /**
    * Starts a session, as the TUI's "New" does: in the selected session's
    * workspace, or in `directory` when given. The title comes from the first
-   * message.
+   * message. Resolves with the new session's transcript, or null.
    */
   async newSession(directory = null) {
     const workspace =
@@ -115,7 +124,7 @@ export default class MakaDesktop extends View {
         : this.transcript !== null
           ? { kind: 'session', sessionId: this.transcript.id }
           : null;
-    if (workspace === null || this.creating) return;
+    if (workspace === null || this.creating) return null;
     this.creating = true;
     this.cx.notify();
     try {
@@ -130,12 +139,19 @@ export default class MakaDesktop extends View {
       }
       log(`new session ${created.session.id} in ${workspace.kind}`);
       await this.select(created.session);
+      return this.transcript;
     } catch (error) {
       this.report(`New session: ${error.message}`);
+      return null;
     } finally {
       this.creating = false;
       this.cx.notify();
     }
+  }
+
+  /** Where a session started from the start pane works: the folder shown, or the first root. */
+  startFolder() {
+    return this.directories.current() ?? this.directories.roots[0] ?? null;
   }
 
   report(message) {
@@ -190,7 +206,14 @@ export default class MakaDesktop extends View {
                 el.child(transcriptPane(this.transcript, () => this.transcript?.loadOlder(), cx)),
               )
               .when(card !== null, (el) => el.child(card))
-              .child(composerPane(this.composer, this.transcript, cx)),
+              .child(
+                composerPane(
+                  this.composer,
+                  this.transcript,
+                  this.transcript === null ? (this.startFolder()?.path ?? null) : null,
+                  cx,
+                ),
+              ),
           )
           .child(this.statusLine(cx)),
       );

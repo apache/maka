@@ -28,9 +28,12 @@ export class Composer {
    * Creates retained input state, so it belongs in the view's `init`.
    * @param {{ changed: () => void, report: (message: string) => void }} hooks
    * @param {() => import("./transcript.js").Transcript | null} target the session Enter sends to
+   * @param {() => Promise<import("./transcript.js").Transcript | null>} start starts a session
+   *   when none is selected, and resolves with it
    */
-  constructor(hooks, target) {
+  constructor(hooks, target, start) {
     this.hooks = hooks;
+    this.start = start;
     this.draft = TextareaState.new({ placeholder: 'Message', rows: 2 });
     this.draft.set_auto_grow(2, 8);
     // Enter sends without inserting a newline; Shift+Enter inserts one and
@@ -104,15 +107,21 @@ export class Composer {
   }
 
   /**
-   * Sends the draft to the transcript's session. The draft is cleared only
-   * once the Host accepted it, and only if it was not edited meanwhile.
+   * Sends the draft to the transcript's session, starting a session first
+   * when none is selected. The draft is cleared only once the Host accepted
+   * it, and only if it was not edited meanwhile.
    */
   async send(transcript) {
     const message = this.draft.value();
-    if (transcript === null || this.sending || this.model === null || message.trim() === '') return;
+    if (this.sending || this.model === null || message.trim() === '') return;
     this.sending = true;
     this.hooks.changed();
     try {
+      if (transcript === null) {
+        transcript = await this.start();
+        // Starting it failed; the app has said why.
+        if (transcript === null) return;
+      }
       const { model, thinkingLevel } = await this.selection(transcript);
       const result = await operation('agent', 'send', {
         sessionId: transcript.id,
@@ -160,10 +169,11 @@ export class Composer {
 /**
  * @param {Composer} composer
  * @param {import("./transcript.js").Transcript | null} transcript
+ * @param {string | null} startIn with no session selected, where sending starts one
  */
-export function composerPane(composer, transcript, cx) {
+export function composerPane(composer, transcript, startIn, cx) {
   const theme = cx.theme();
-  const inactive = transcript === null;
+  const inactive = transcript === null && startIn === null;
   const running = transcript?.run != null;
   const canSend = !inactive && !composer.sending && composer.model !== null;
   return v_flex()
@@ -196,7 +206,15 @@ export function composerPane(composer, transcript, cx) {
             .truncate()
             .text_xs()
             .text_color(theme.colors.muted_foreground)
-            .child(`${composer.label(transcript)} · Enter to send, Shift+Enter for a new line`),
+            .child(
+              [
+                composer.label(transcript),
+                transcript === null && startIn !== null ? `New session in ${startIn}` : null,
+                'Enter to send, Shift+Enter for a new line',
+              ]
+                .filter((part) => part !== null)
+                .join(' · '),
+            ),
         )
         .when(running, (el) =>
           el.child(
