@@ -20,8 +20,18 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 //! Feasibility probe: the gpui-shell command, built inside this workspace
-//! against the vendored gpui-base and gpui-fast.
+//! against the vendored gpui-base and gpui-fast, with a `maka-host` module
+//! that reaches the Host named by `MAKA_HOST_ENDPOINT` and `MAKA_HOST_EPOCH`.
+
+mod maka_host;
 
 fn main() {
+    // Imports are linked against the registry, so register before any load.
+    let registered = maka_host::module()
+        .and_then(|module| gpui_shell::export_module(module).map_err(|error| error.to_string()));
+    if let Err(error) = registered {
+        eprintln!("{}: {error}", maka_host::NAME);
+        std::process::exit(1);
+    }
     gpui_shell::host::main_with_components(gpui_shell::FrozenComponentRegistry::default());
 }

@@ -24,3 +24,8 @@ publish.workspace = true
 
 [dependencies]
 gpui-shell.workspace = true
+maka-host-runtime.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+uuid.workspace = true
