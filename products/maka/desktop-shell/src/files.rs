@@ -17,13 +17,14 @@
  * under the License.
  */
 
-//! The `maka-files` script module: a text file the user picks.
+//! The `maka-files` script module: a text file or a folder the user picks.
 //!
 //! A gpui-shell manifest can grant reads only under the application's own
 //! directories, and scripts have no file dialog. `openText` shows the
 //! platform's open panel and reads the one file the user chose, so choosing
 //! the file is the permission, as with a browser's file input. Nothing else
-//! on disk becomes readable.
+//! on disk becomes readable. `chooseFolder` shows the panel for one folder
+//! and answers its path only; the Host, not the script, reads the folder.
 use gpui_shell::{
     HostArguments, HostError, HostModule, HostObject, HostValue,
     gpui::{PathPromptOptions, SharedString},
@@ -45,6 +46,12 @@ export function openText(options?: {
   prompt?: string;
   maxBytes?: number;
 }): Promise<{ path: string; text: string } | null>;
+
+/**
+ * Shows the open panel for one folder. Resolves with its path, or null when
+ * the user cancels.
+ */
+export function chooseFolder(options?: { prompt?: string }): Promise<string | null>;
 "#;
 
 pub fn module() -> HostModule {
@@ -76,6 +83,38 @@ pub fn module() -> HostModule {
                     .into())
             })
         })
+        .async_function("chooseFolder", |arguments| {
+            let prompt = folder_options(arguments)?;
+            let chosen = gpui_shell::with_current_app(|cx| {
+                cx.prompt_for_paths(PathPromptOptions {
+                    files: false,
+                    directories: true,
+                    multiple: false,
+                    prompt,
+                })
+            })
+            .ok_or_else(|| HostError::new("chooseFolder must be called from the application"))?;
+            Ok(async move {
+                let paths = chosen
+                    .await
+                    .map_err(|_| HostError::new("the open panel closed without an answer"))?
+                    .map_err(|error| HostError::new(format!("the open panel failed: {error}")))?;
+                Ok(match paths.and_then(|paths| paths.into_iter().next()) {
+                    Some(path) => path.to_string_lossy().into_owned().into(),
+                    None => HostValue::Null,
+                })
+            })
+        })
+}
+
+fn folder_options(arguments: &HostArguments) -> Result<Option<SharedString>, HostError> {
+    let Some(options) = arguments.get(0).filter(|value| !value.is_null()) else {
+        return Ok(None);
+    };
+    if options.as_object().is_none() {
+        return Err(HostError::new("chooseFolder options must be an object"));
+    }
+    prompt(options)
 }
 
 fn options(arguments: &HostArguments) -> Result<(Option<SharedString>, u64), HostError> {
@@ -85,17 +124,7 @@ fn options(arguments: &HostArguments) -> Result<(Option<SharedString>, u64), Hos
     if options.as_object().is_none() {
         return Err(HostError::new("openText options must be an object"));
     }
-    let prompt = match options.get("prompt") {
-        None => None,
-        Some(value) if value.is_null() => None,
-        Some(value) => Some(
-            value
-                .as_str()
-                .ok_or_else(|| HostError::new("`prompt` must be a string"))?
-                .to_owned()
-                .into(),
-        ),
-    };
+    let prompt = prompt(options)?;
     let limit = match options.get("maxBytes") {
         None => DEFAULT_MAX_BYTES,
         Some(value) if value.is_null() => DEFAULT_MAX_BYTES,
@@ -109,6 +138,21 @@ fn options(arguments: &HostArguments) -> Result<(Option<SharedString>, u64), Hos
         },
     };
     Ok((prompt, limit))
+}
+
+/// The panel's button label, when the options give one.
+fn prompt(options: &HostValue) -> Result<Option<SharedString>, HostError> {
+    Ok(match options.get("prompt") {
+        None => None,
+        Some(value) if value.is_null() => None,
+        Some(value) => Some(
+            value
+                .as_str()
+                .ok_or_else(|| HostError::new("`prompt` must be a string"))?
+                .to_owned()
+                .into(),
+        ),
+    })
 }
 
 /// Reads at most `limit` bytes; a longer file is refused rather than cut.
@@ -154,6 +198,23 @@ mod tests {
             assert!(options(&arguments(vec![value])).is_err(), "{bad}");
         }
         assert!(options(&arguments(vec![HostValue::from("x")])).is_err());
+    }
+
+    #[test]
+    fn folder_options_take_a_prompt_only_from_an_object() {
+        assert_eq!(folder_options(&arguments(vec![])).unwrap(), None);
+        assert_eq!(
+            folder_options(&arguments(vec![HostValue::Null])).unwrap(),
+            None
+        );
+        let given = HostObject::new().field("prompt", "Choose").into();
+        assert_eq!(
+            folder_options(&arguments(vec![given])).unwrap().as_deref(),
+            Some("Choose")
+        );
+        let bad = HostObject::new().field("prompt", 1.0).into();
+        assert!(folder_options(&arguments(vec![bad])).is_err());
+        assert!(folder_options(&arguments(vec![HostValue::from("x")])).is_err());
     }
 
     #[test]

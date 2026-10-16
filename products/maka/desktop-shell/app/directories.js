@@ -19,29 +19,21 @@
 
 // Where a new task runs, picked from the composer's folder chip. The menu
 // lists the Host's projects (the Host registers every folder a task starts
-// in) and its root directories; "Choose a folder…" walks into the roots'
-// folders through `agent.directories`, as the TUI's directory picker does
-// (plugins/agent/directory-picker): children come 32 at a time, and the
-// folders walked through are kept for going up.
+// in) and its root directories. "Choose a folder…" shows the platform's
+// folder panel; the folder chosen there is found in the Host's listing by
+// walking `agent.directories` from the root that holds it, 32 children a
+// page, because a task starts from the Host's selection, not from a path.
 
 import { div } from 'gpui-kit';
-import { v_flex, h_flex, Button, Popover } from 'gpui-base';
-import { query } from './host.js';
-import {
-  palette,
-  typeset,
-  text,
-  icon,
-  iconButton,
-  ghostButton,
-  controlButton,
-  menuSurface,
-  menuRow,
-  menuSeparator,
-} from './theme.js';
+import { v_flex, Button, Popover } from 'gpui-base';
+import { chooseFolder } from 'maka-files';
+import { query, log } from './host.js';
+import { palette, typeset, text, icon, ghostButton, menuSurface, menuRow, menuSeparator } from './theme.js';
 
 /** Project pages read for the menu; the Host pages at most 16 projects. */
 const MAX_PROJECT_PAGES = 16;
+/** Children pages read for one folder while finding a chosen path. */
+const MAX_CHILD_PAGES = 64;
 
 export class Directories {
   /** @param {{ changed: () => void, report: (message: string) => void }} hooks */
@@ -52,18 +44,9 @@ export class Directories {
     this.projects = [];
     /** Where a new task runs, `{ name, path, selection }`; null means the first root. */
     this.chosen = null;
-    /** Whether the folder menu is open, and whether it shows the folder walk. */
     this.menuOpen = false;
-    this.browsing = false;
-    /** The folders walked into, outermost first; empty while showing the roots. */
-    this.path = [];
-    this.children = [];
-    /** The cursor of the next page of children, or null. */
-    this.after = null;
-    this.loading = false;
-    /** Why the last listing failed, or null; the walk offers to try again. */
-    this.error = null;
-    this.reads = 0;
+    /** Whether a folder from the panel is being found in the Host's listing. */
+    this.finding = false;
     this.projectReads = 0;
   }
 
@@ -72,15 +55,9 @@ export class Directories {
     return this.chosen ?? this.roots[0] ?? null;
   }
 
-  /** The folder the walk shows, or null at the roots. */
-  current() {
-    return this.path.at(-1) ?? null;
-  }
-
-  /** Opens or closes the menu; it opens on the list of places, reading the projects again. */
+  /** Opens or closes the menu; opening reads the projects again. */
   setMenuOpen(open) {
     this.menuOpen = open;
-    this.browsing = false;
     if (open) this.loadProjects();
     this.hooks.changed();
   }
@@ -89,15 +66,75 @@ export class Directories {
   choose(directory) {
     this.chosen = { name: directory.name, path: directory.path, selection: directory.selection };
     this.menuOpen = false;
-    this.browsing = false;
     this.hooks.changed();
   }
 
-  /** Starts the folder walk: inside the only root, or at the roots when there are several. */
-  browse() {
-    this.browsing = true;
+  /** Shows the folder panel and makes the folder chosen there where new tasks run. */
+  async chooseFromPanel() {
+    this.menuOpen = false;
     this.hooks.changed();
-    return this.roots.length === 1 ? this.open([this.roots[0]]) : this.loadRoots();
+    let path;
+    try {
+      path = await chooseFolder({ prompt: 'Choose' });
+    } catch (error) {
+      this.hooks.report(`Choose a folder: ${error.message}`);
+      return;
+    }
+    if (path === null) return;
+    await this.chooseByPath(path);
+  }
+
+  /** Finds `path` in the Host's folders and makes it where new tasks run. */
+  async chooseByPath(path) {
+    this.finding = true;
+    this.hooks.changed();
+    try {
+      this.choose(await this.find(path));
+      log(`directories: new tasks run in ${path}`);
+    } catch (error) {
+      this.hooks.report(`Choose a folder: ${error.message}`);
+    } finally {
+      this.finding = false;
+      this.hooks.changed();
+    }
+  }
+
+  /**
+   * The Host's directory at `path`: from the root that holds it, each
+   * folder's children are read until the next name on the path is found.
+   */
+  async find(path) {
+    const trimmed = path.length > 1 ? path.replace(/\/+$/, '') : path;
+    const root = this.roots
+      .filter((root) => trimmed === root.path || trimmed.startsWith(`${root.path.replace(/\/$/, '')}/`))
+      .sort((a, b) => b.path.length - a.path.length)[0];
+    if (root === undefined) {
+      const offered = this.roots.map((root) => root.path).join(', ') || 'none';
+      throw new Error(`${trimmed} is not inside a folder this Host offers (${offered})`);
+    }
+    let directory = root;
+    const names = trimmed.slice(root.path.length).split('/').filter(Boolean);
+    for (const name of names) {
+      directory = await this.child(directory, name);
+    }
+    return directory;
+  }
+
+  /** The child of `directory` called `name`, reading its pages in order. */
+  async child(directory, name) {
+    let after = null;
+    for (let pages = 0; pages < MAX_CHILD_PAGES; pages += 1) {
+      const page = await query('agent', 'directories', {
+        kind: 'children',
+        selection: directory.selection,
+        after,
+      });
+      const found = (page.children ?? []).find((child) => child.name === name);
+      if (found !== undefined) return found;
+      after = page.after ?? null;
+      if (after === null) break;
+    }
+    throw new Error(`the Host does not list ${name} in ${directory.path}`);
   }
 
   /**
@@ -136,84 +173,13 @@ export class Directories {
   }
 
   async loadRoots() {
-    this.path = [];
-    this.children = [];
-    this.after = null;
-    await this.list(async () => {
+    try {
       const page = await query('agent', 'directories', { kind: 'roots' });
       this.roots = page.roots ?? [];
-    });
-  }
-
-  /** Shows `directory`'s folders; `path` is where it sits. */
-  async open(path) {
-    const directory = path.at(-1);
-    await this.list(async () => {
-      const page = await query('agent', 'directories', {
-        kind: 'children',
-        selection: directory.selection,
-        after: null,
-      });
-      this.path = path;
-      this.children = page.children ?? [];
-      this.after = page.after ?? null;
-    });
-  }
-
-  enter(directory) {
-    return this.open([...this.path, directory]);
-  }
-
-  /** Whether `up()` goes to a folder (or the roots) rather than back to the list of places. */
-  canGoUp() {
-    return this.path.length > 1 || (this.path.length === 1 && this.roots.length > 1);
-  }
-
-  /** One folder up; from the top of the walk, back to the list of places. */
-  up() {
-    if (this.path.length > 1) return this.open(this.path.slice(0, -1));
-    if (this.canGoUp()) return this.loadRoots();
-    this.browsing = false;
-    this.hooks.changed();
-    return Promise.resolve();
-  }
-
-  async more() {
-    const directory = this.current();
-    if (directory === null || this.after === null) return;
-    const after = this.after;
-    await this.list(async () => {
-      const page = await query('agent', 'directories', {
-        kind: 'children',
-        selection: directory.selection,
-        after,
-      });
-      this.children = [...this.children, ...(page.children ?? [])];
-      this.after = page.after ?? null;
-    });
-  }
-
-  /** Runs one listing; a later one wins over an earlier one still in flight. */
-  async list(read) {
-    const reading = ++this.reads;
-    this.loading = true;
-    this.error = null;
-    this.hooks.changed();
-    try {
-      await read();
     } catch (error) {
-      if (reading === this.reads) {
-        this.error = error.message;
-        this.hooks.report(`Directories: ${error.message}`);
-      }
-    } finally {
-      if (reading === this.reads) this.loading = false;
-      this.hooks.changed();
+      this.hooks.report(`Directories: ${error.message}`);
     }
-  }
-
-  retry() {
-    return this.path.length > 0 ? this.open(this.path) : this.loadRoots();
+    this.hooks.changed();
   }
 }
 
@@ -266,8 +232,8 @@ export function places(directories, sessions) {
 
 /**
  * The composer's folder chip for a new task, and the menu it opens upward:
- * the places a task can run, then "Choose a folder…", which turns the menu
- * into a walk through the Host's folders.
+ * the places a task can run, then "Choose a folder…", which shows the
+ * platform's folder panel.
  * @param {Directories} directories
  * @param {object[]} sessions the catalog's sessions, to put recent places first
  * @param {boolean} disabled
@@ -275,6 +241,8 @@ export function places(directories, sessions) {
 export function folderPicker(directories, sessions, disabled, cx) {
   const m = palette(cx);
   const target = directories.target();
+  // While a folder from the panel is being found, the chip waits for it.
+  disabled = disabled || directories.finding;
   const chip = typeset(ghostButton('folder-chip', cx), 'label')
     .flex_none()
     .h(28)
@@ -293,11 +261,7 @@ export function folderPicker(directories, sessions, disabled, cx) {
     .on_open_change((open) => directories.setMenuOpen(open))
     .trigger(chip)
     .content(
-      menuSurface(cx)
-        .w(340)
-        .mb(8)
-        .when(!directories.browsing, (el) => el.children(placeRows(directories, sessions, cx)))
-        .when(directories.browsing, (el) => el.children(walkRows(directories, cx))),
+      menuSurface(cx).w(340).mb(8).children(placeRows(directories, sessions, cx)),
     );
 }
 
@@ -312,7 +276,7 @@ function placeRows(directories, sessions, cx) {
     v_flex().id('folder-places').max_h(320).overflow_y_scroll().children(rows),
     ...(rows.length > 0 ? [menuSeparator(cx)] : []),
     menuRow('folder-browse', 'Choose a folder…', { icon: 'folder-open' }, cx).on_click(() =>
-      directories.browse(),
+      directories.chooseFromPanel(),
     ),
   ];
 }
@@ -354,89 +318,4 @@ function placeRow(id, place, checked, roots, cx) {
         ),
     )
     .when(checked, (el) => el.child(icon('check', 16, m.ink)));
-}
-
-/** The walk: Back and where it is, the folders inside, then Use this folder. */
-function walkRows(directories, cx) {
-  const m = palette(cx);
-  const current = directories.current();
-  const disabled = directories.loading;
-  const entries = current === null ? directories.roots : directories.children;
-  const rows = entries.map((directory, index) =>
-    menuRow(`folder-${index}`, directory.name, { icon: 'folder' }, cx)
-      .disabled(disabled)
-      .tooltip(directory.path)
-      .child(icon('chevron-right', 16, m.inkMuted))
-      .on_click(() => directories.enter(directory)),
-  );
-  if (directories.after !== null) {
-    rows.push(
-      menuRow('folders-more', 'Show more', {}, cx)
-        .disabled(disabled)
-        .text_color(m.inkMuted)
-        .on_click(() => directories.more()),
-    );
-  }
-  let notice = null;
-  if (directories.error !== null) {
-    notice = h_flex()
-      .px(8)
-      .py(6)
-      .gap(8)
-      .items_center()
-      .child(text(directories.error, 'small', m.destructive).flex_1().min_w_0().truncate())
-      .child(
-        controlButton('folders-retry', 'Try again', 'quiet', false, cx)
-          .h(28)
-          .on_click(() => directories.retry()),
-      );
-  } else if (directories.loading && entries.length === 0) {
-    notice = text('Listing…', 'body', m.inkMuted).px(8).py(6);
-  } else if (entries.length === 0) {
-    notice = text(
-      current === null ? 'The Host offers no folders' : 'No folders inside',
-      'body',
-      m.inkMuted,
-    )
-      .px(8)
-      .py(6);
-  }
-  return [
-    h_flex()
-      .h(32)
-      .gap(4)
-      .items_center()
-      .child(
-        iconButton('folder-up', 'chevron-left', cx)
-          .tooltip(directories.canGoUp() ? 'Up' : 'Back')
-          .on_click(() => directories.up()),
-      )
-      .child(
-        div()
-          .flex_1()
-          .min_w_0()
-          .truncate()
-          .text_size(12)
-          .line_height('20px')
-          .font_family('Menlo')
-          .text_color(m.inkMuted)
-          .child(current === null ? 'Folders' : shortPath(current.path, directories.roots)),
-      ),
-    menuSeparator(cx),
-    v_flex()
-      .id('folder-walk')
-      .max_h(280)
-      .overflow_y_scroll()
-      .when(notice !== null, (el) => el.child(notice))
-      .children(rows),
-    menuSeparator(cx),
-    h_flex()
-      .justify_end()
-      .p(4)
-      .child(
-        controlButton('folder-use', 'Use this folder', 'primary', disabled || current === null, cx)
-          .h(28)
-          .on_click(() => directories.choose(current)),
-      ),
-  ];
 }
