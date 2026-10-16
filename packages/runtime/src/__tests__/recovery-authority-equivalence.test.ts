@@ -28,6 +28,7 @@ import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import { createSqliteRuntimeStore } from '@maka/storage/sqlite-runtime-store';
 import { resolveRuntimeRecovery } from '../recovery-resolver.js';
 import { buildResumePlanFromRuntimeEvents } from '../runtime-resume.js';
+import { LEGACY_TOOL_RECOVERY_DATABASE_SQL } from './fixtures/legacy-tool-recovery-database.js';
 
 const ARGS_HASH = canonicalToolArgsHash('Write', {
   path: 'notes.txt',
@@ -37,6 +38,101 @@ const OBSERVATION_DIGEST =
   'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' as const;
 
 describe('recovery authority equivalence', () => {
+  for (const scenario of ['completed', 'parked', 'prepared'] as const) {
+    it(`opens old-writer ${scenario} rows and plans resume without rebuilding`, async () => {
+      const root = await mkdtemp(join(tmpdir(), `maka-old-writer-${scenario}-`));
+      const dbPath = join(root, 'runtime.sqlite');
+      try {
+        // The schema is unchanged by writer removal. Restore captured old-writer
+        // rows into an empty schema, including its already-materialized projections.
+        createSqliteRuntimeStore(dbPath).close();
+        const db = new DatabaseSync(dbPath);
+        try {
+          db.exec(LEGACY_TOOL_RECOVERY_DATABASE_SQL[scenario]);
+        } finally {
+          db.close();
+        }
+
+        const expectedStates =
+          scenario === 'completed'
+            ? ['prepared', 'reconcile_observed', 'outcome_committed', 'recovery_completed']
+            : scenario === 'parked'
+              ? ['prepared', 'reconcile_observed', 'recovery_parked']
+              : ['prepared'];
+        const store = createSqliteRuntimeStore(dbPath);
+        try {
+          const operation = await store.readToolOperation('operation-1');
+          assert.deepEqual(operation, {
+            operationId: 'operation-1',
+            invocationId: 'invocation-1',
+            runId: 'run-1',
+            turnId: 'turn-1',
+            providerToolCallId: 'provider-call-1',
+            toolName: 'Write',
+            canonicalArgsHash: ARGS_HASH,
+            recoveryMode: 'reconcile',
+            currentState: expectedStates.at(-1),
+            callEventId: 'call-event-1',
+            dispatchEventId: 'dispatch-event-1',
+            ...(scenario === 'completed' ? { resultEventId: 'outcome-event-1' } : {}),
+            version: expectedStates.length,
+          });
+          const journal = await store.readToolJournal('operation-1');
+          assert.deepEqual(
+            journal.map(({ state }) => state),
+            expectedStates,
+          );
+          assert.deepEqual(
+            journal.map(({ journalEventId }) => journalEventId),
+            scenario === 'completed'
+              ? [
+                  'operation-1_prepared',
+                  'reconcile-event-1_journal',
+                  'operation-1_outcome',
+                  'decision-event-1_journal',
+                ]
+              : scenario === 'parked'
+                ? ['operation-1_prepared', 'reconcile-event-1_journal', 'decision-event-1_journal']
+                : ['operation-1_prepared'],
+          );
+          assert.deepEqual(
+            await store.listUnsettledToolOperations(),
+            scenario === 'prepared' ? [{ sessionId: 'session-1', ...operation }] : [],
+          );
+          assert.deepEqual(
+            await store.listUnsettledToolOperations('session-1'),
+            scenario === 'prepared' ? [{ sessionId: 'session-1', ...operation }] : [],
+          );
+
+          const events = await store.readImmutableRuntimeEvents('session-1', 'run-1');
+          assert.equal(events.length, scenario === 'completed' ? 5 : scenario === 'parked' ? 4 : 2);
+          const resolution = resolveRuntimeRecovery(events);
+          assert.equal(resolution.hasCorruption, false);
+          assert.equal(resolution.decisions.length, 1);
+          assert.equal(
+            resolution.decisions[0]?.status,
+            scenario === 'prepared' ? 'indeterminate' : scenario,
+          );
+          const plan = buildResumePlanFromRuntimeEvents(events);
+          assert.equal(plan.disposition, scenario === 'completed' ? 'safe_replay' : 'blocked');
+          assert.equal(plan.requiresVerification, scenario === 'prepared');
+          assert.deepEqual(
+            plan.rejectionReasons,
+            scenario === 'completed' ? [] : ['dangling_tool_state'],
+          );
+          assert.equal(
+            events.filter((event) => event.content?.kind === 'function_response').length,
+            scenario === 'completed' ? 1 : 0,
+          );
+        } finally {
+          store.close();
+        }
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+  }
+
   it('gives historical projection, reopen, rebuild, and Resolver one terminal interpretation', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-recovery-equivalence-'));
     const dbPath = join(root, 'runtime.sqlite');
