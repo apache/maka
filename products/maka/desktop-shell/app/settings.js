@@ -29,10 +29,19 @@
 // they are done.
 
 import { div } from 'gpui-kit';
-import { v_flex, h_flex, Input, InputState, Button } from 'gpui-base';
+import { v_flex, h_flex, InputState, Button } from 'gpui-base';
 import { openText } from 'maka-files';
 import { query, operation, log } from './host.js';
-import { palette, typeset, text, icon, pill, ghostButton, controlButton } from './theme.js';
+import {
+  palette,
+  typeset,
+  text,
+  icon,
+  pill,
+  ghostButton,
+  controlButton,
+  textField,
+} from './theme.js';
 
 /** A control button in the settings' style: primary or outline. */
 function button(id, label, primary, disabled, cx) {
@@ -739,7 +748,7 @@ function choiceLabel(choice) {
 }
 
 const PAGES = [
-  ['models', 'Models', 'chat', 'The model new tasks use, from the connections below.'],
+  ['models', 'Models', 'cpu', 'The model new tasks use, from the connections below.'],
   ['connections', 'Connections', 'tool-plug', 'Model providers and their API keys.'],
 ];
 
@@ -924,7 +933,7 @@ function modelSection(settings, cx) {
     defaultModel.choice.selection.modelId === choice.selection.modelId;
   const rows = [
     settingRow('Default model', current, null, cx),
-    settingRow('Find a model', null, div().w(260).child(field(settings.modelQuery, cx)), cx),
+    settingRow('Find a model', null, div().w(260).child(textField(settings.modelQuery, cx)), cx),
     ...choices.map((choice, index) =>
       settingRow(
         choice.label,
@@ -1056,7 +1065,7 @@ function connectionRow(settings, connection, cx) {
           .pl(44)
           .gap(8)
           .items_center()
-          .child(div().w(260).child(field(settings.key, cx)))
+          .child(div().w(260).child(textField(settings.key, cx)))
           .child(
             button(`key-save-${id}`, 'Save key', true, busy, cx).on_click(() => settings.saveKey()),
           )
@@ -1082,7 +1091,7 @@ function addForm(settings, cx) {
         p.identity.name.toLowerCase().includes(search),
     );
     const rows = [
-      settingRow('Provider', null, div().w(260).child(field(settings.providerQuery, cx)), cx),
+      settingRow('Provider', null, div().w(260).child(textField(settings.providerQuery, cx)), cx),
       v_flex()
         .py(8)
         .gap(8)
@@ -1119,7 +1128,7 @@ function addForm(settings, cx) {
   }
   const descriptor = form.descriptor;
   const auth = keyAuth(descriptor);
-  const control = (state) => div().w(260).child(field(state, cx));
+  const control = (state) => div().w(260).child(textField(state, cx));
   const rows = [settingRow('Name', null, control(settings.name), cx)];
   if (showsEndpoint(descriptor)) rows.push(settingRow('Endpoint', null, control(settings.endpoint), cx));
   if (takesKey(descriptor)) {
@@ -1200,18 +1209,4 @@ function importPanel(settings, cx) {
       ),
   );
   return group(`Import from ${plan.path.split('/').pop()}`, plan.path, null, rows, cx);
-}
-
-/** A 32px text field: plate fill, the strong border, the accent ring when focused. */
-function field(state, cx) {
-  const m = palette(cx);
-  return typeset(Input.new(state), 'body')
-    .w_full()
-    .h(32)
-    .px(12)
-    .rounded(10)
-    .border_1()
-    .border_color(m.borderStrong)
-    .bg(m.plate)
-    .focus((style) => style.border_color(m.accent));
 }

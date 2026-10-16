@@ -37,7 +37,25 @@ import { Composer, composerPane } from './composer.js';
 import { interactionCard } from './interactions.js';
 import { Settings, settingsNav, settingsPage } from './settings.js';
 import { Directories, startPane } from './directories.js';
-import { followAppearance, palette, text, icon, controlButton } from './theme.js';
+import { followAppearance, palette, text, icon, controlButton, ghostButton } from './theme.js';
+
+/**
+ * Where the window controls start, from the left of the strip or header that
+ * holds them: the traffic lights sit at 16 from the window's left (window.rs)
+ * and span 56, and the controls start 8 after them. The header keeps the same
+ * clearance from the plate's edge, as the native client's title bar does.
+ */
+const LIGHTS_END = 80;
+
+/** The application's shortcuts, as the native client binds them. */
+const SHORTCUTS = [
+  { keystroke: 'secondary-n', action: 'maka.new-task' },
+  { keystroke: 'secondary-b', action: 'maka.toggle-sidebar' },
+  { keystroke: 'secondary-[', action: 'maka.back' },
+  { keystroke: 'secondary-]', action: 'maka.forward' },
+  { keystroke: 'secondary-,', action: 'maka.settings' },
+  { keystroke: 'secondary-.', action: 'maka.stop' },
+];
 
 export default class MakaDesktop extends View {
   init(_props, cx) {
@@ -74,6 +92,18 @@ export default class MakaDesktop extends View {
     this.sidebarUi = new SidebarState(() => this.cx.notify());
     this.creating = false;
     this.error = null;
+    this.sidebarHidden = false;
+    /**
+     * The places Back and Forward go to: a session id, or null for the start
+     * pane. The current place is not on either list.
+     */
+    this.history = { back: [], forward: [] };
+    // The shortcuts' actions are handled on the root below, and an action
+    // only reaches the elements on the focus path. So the root holds the
+    // focus whenever nothing inside it does: from the start, and after a
+    // press on anything that does not take focus itself (GPUI moves focus to
+    // the innermost tracking element under the press).
+    this.rootFocus = cx.focus_handle();
     cx.spawn(async (cx) => followAppearance(cx));
     // Ages in the sidebar and turn footers are in minutes.
     cx.spawn(async (cx) => {
@@ -92,6 +122,8 @@ export default class MakaDesktop extends View {
     );
     setDebug(dev?.debug === true);
     log('start');
+    cx.bind_keys(SHORTCUTS);
+    this.rootFocus.focus();
     this.composer.loadModel();
     this.directories.loadRoots();
     cx.spawn(async (cx) => this.catalog.run(cx));
@@ -110,10 +142,43 @@ export default class MakaDesktop extends View {
     }
   }
 
+  /** Records a move from the current place, for Back. */
+  visit(next) {
+    const current = this.transcript?.id ?? null;
+    if (next === current) return;
+    this.history.back.push(current);
+    this.history.forward = [];
+  }
+
+  /** Goes one place back (`direction` -1) or forward (1), skipping tasks that are gone. */
+  async go(direction) {
+    const [from, to] =
+      direction < 0
+        ? [this.history.back, this.history.forward]
+        : [this.history.forward, this.history.back];
+    while (from.length > 0) {
+      const place = from.pop();
+      const session =
+        place === null ? null : this.catalog.sessions.find((entry) => entry.id === place);
+      if (place !== null && session === undefined) continue;
+      to.push(this.transcript?.id ?? null);
+      if (session === null) await this.home(false);
+      else await this.select(session, false);
+      return;
+    }
+    this.cx.notify();
+  }
+
+  toggleSidebar() {
+    this.sidebarHidden = !this.sidebarHidden;
+    this.cx.notify();
+  }
+
   /** Switches the transcript; the previous one's watch is closed first. */
-  async select(session) {
+  async select(session, record = true) {
     if (this.settings.open) this.settings.hide();
     if (this.transcript?.id === session.id) return;
+    if (record) this.visit(session.id);
     const previous = this.transcript;
     const transcript = new Transcript(session, this.hooks);
     this.transcript = transcript;
@@ -124,8 +189,9 @@ export default class MakaDesktop extends View {
   }
 
   /** Leaves the selected task for the start pane, where a message starts a new one. */
-  async home() {
+  async home(record = true) {
     if (this.settings.open) this.settings.hide();
+    if (record) this.visit(null);
     const previous = this.transcript;
     this.transcript = null;
     this.cx.notify();
@@ -185,27 +251,48 @@ export default class MakaDesktop extends View {
   render(cx) {
     const m = palette(cx);
     const settings = this.settings.open;
+    // Settings keep their navigation in the sidebar's place even while the
+    // sidebar is hidden: it is the only way between their pages.
+    const column = settings || !this.sidebarHidden;
     return h_flex()
       .size_full()
       .items_start()
       .bg(m.canvas)
       .text_color(m.ink)
-      .child(
-        settings
-          ? settingsNav(this.settings, () => this.settings.hide(), cx)
-          : sidebar(
-              this.catalog,
-              this.sidebarUi,
-              this.transcript?.id ?? null,
-              {
-                select: (session) => this.select(session),
-                newTask: () => this.home(),
-                newIn: (session) => this.newSession(null, session),
-                settings: () => this.settings.show(),
-                drafting: this.transcript === null,
-              },
-              cx,
+      .track_focus(this.rootFocus)
+      .on_action('maka.new-task', () => this.home())
+      .on_action('maka.toggle-sidebar', () => this.toggleSidebar())
+      .on_action('maka.back', () => this.go(-1))
+      .on_action('maka.forward', () => this.go(1))
+      .on_action('maka.settings', () => this.settings.show())
+      .on_action('maka.stop', () => {
+        if (this.transcript !== null) this.composer.stop(this.transcript);
+      })
+      .when(column, (el) =>
+        el.child(
+          v_flex()
+            .w(256)
+            .flex_none()
+            .h_full()
+            .child(this.chromeStrip(!settings, cx))
+            .child(
+              settings
+                ? settingsNav(this.settings, () => this.settings.hide(), cx)
+                : sidebar(
+                    this.catalog,
+                    this.sidebarUi,
+                    this.transcript?.id ?? null,
+                    {
+                      select: (session) => this.select(session),
+                      newTask: () => this.home(),
+                      newIn: (session) => this.newSession(null, session),
+                      settings: () => this.settings.show(),
+                      drafting: this.transcript === null,
+                    },
+                    cx,
+                  ),
             ),
+        ),
       )
       .child(
         v_flex()
@@ -214,6 +301,7 @@ export default class MakaDesktop extends View {
           .h_full()
           .py(8)
           .pr(8)
+          .when(!column, (el) => el.pl(8))
           .child(
             v_flex()
               .size_full()
@@ -274,10 +362,15 @@ export default class MakaDesktop extends View {
       );
   }
 
-  /** The plate's 48px header: the task's title and what it is doing. */
+  /**
+   * The plate's 48px header: the task's title and what it is doing. With the
+   * sidebar hidden it also carries the window controls, clear of the traffic
+   * lights.
+   */
   header(cx) {
     const m = palette(cx);
     const transcript = this.transcript;
+    const hidden = this.sidebarHidden;
     const state =
       transcript === null
         ? null
@@ -289,18 +382,82 @@ export default class MakaDesktop extends View {
     return h_flex()
       .flex_none()
       .h(48)
-      .pl(20)
       .pr(12)
-      .gap(12)
       .items_center()
-      .window_control_area('drag')
+      .when(hidden, (el) =>
+        el
+          .child(dragArea().w(LIGHTS_END).h_full())
+          .child(this.windowControls(cx))
+          .child(dragArea().w(8).h_full()),
+      )
+      .when(!hidden, (el) => el.child(dragArea().w(20).h_full()))
       .child(
-        text(transcript?.session.title ?? '', 'strong', m.ink)
+        h_flex()
           .flex_1()
           .min_w_0()
-          .truncate(),
+          .h_full()
+          .gap(12)
+          .items_center()
+          .window_control_area('drag')
+          .child(
+            text(transcript?.session.title ?? '', 'strong', m.ink)
+              .flex_1()
+              .min_w_0()
+              .truncate(),
+          )
+          .when(state !== null, (el) => el.child(text(state, 'small', m.inkMuted).flex_none())),
+      );
+  }
+
+  /**
+   * The 56px strip above the sidebar: the traffic lights, then the window
+   * controls (`controls`). Settings leave the controls out, as the native
+   * client does: they act on the task view, which waits behind settings. The
+   * empty parts move the
+   * window; the buttons are outside the drag areas so a press on them never
+   * starts a move.
+   */
+  chromeStrip(controls, cx) {
+    return h_flex()
+      .flex_none()
+      .h(56)
+      .pt(8)
+      .items_center()
+      .child(dragArea().w(LIGHTS_END).h_full())
+      .when(controls, (el) => el.child(this.windowControls(cx)))
+      .child(dragArea().flex_1().h_full());
+  }
+
+  /** Sidebar toggle, Back and Forward: 28px ghost buttons, 2 apart. */
+  windowControls(cx) {
+    const m = palette(cx);
+    const control = (id, glyph, enabled, run) =>
+      ghostButton(id, cx)
+        .size(28)
+        .justify_center()
+        .rounded(8)
+        .disabled(!enabled)
+        .when(enabled, (el) => el.on_click(run))
+        .child(icon(glyph, 16, enabled ? m.inkMuted : m.inkDisabled));
+    return h_flex()
+      .flex_none()
+      .gap(2)
+      .items_center()
+      .child(
+        control('window-sidebar', 'sidebar', true, () => this.toggleSidebar()).tooltip(
+          this.sidebarHidden ? 'Show sidebar (⌘B)' : 'Hide sidebar (⌘B)',
+        ),
       )
-      .when(state !== null, (el) => el.child(text(state, 'small', m.inkMuted).flex_none()));
+      .child(
+        control('window-back', 'chevron-left', this.history.back.length > 0, () =>
+          this.go(-1),
+        ).tooltip('Back (⌘[)'),
+      )
+      .child(
+        control('window-forward', 'chevron-right', this.history.forward.length > 0, () =>
+          this.go(1),
+        ).tooltip('Forward (⌘])'),
+      );
   }
 
   /**
@@ -363,4 +520,9 @@ export default class MakaDesktop extends View {
         ),
     );
   }
+}
+
+/** An empty part of the window chrome that moves the window. */
+function dragArea() {
+  return div().flex_none().window_control_area('drag');
 }

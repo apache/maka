@@ -28,6 +28,7 @@ import {
   typeset,
   text,
   icon,
+  tippedIcon,
   dot,
   ghostButton,
   iconButton,
@@ -282,7 +283,8 @@ export function sidebar(catalog, ui, selectedId, actions, cx) {
             .when(actions.drafting, (el) => el.bg(m.selected))
             .on_click(() => actions.newTask())
             .child(icon('compose', 16, m.inkMuted))
-            .child(div().flex_1().child('New task')),
+            .child(div().flex_1().child('New task'))
+            .child(text('⌘N', 'small', m.inkMuted).flex_none()),
         )
         .child(groupingControl(ui, cx)),
     )
@@ -429,9 +431,9 @@ function taskRow(session, selected, select, cx) {
         .items_center()
         .justify_end()
         .when(needsYou(session), (el) =>
-          el.child(icon('status-waiting', 14, m.warning).tooltip('Needs you')),
+          el.child(tippedIcon('status-waiting', 14, m.warning, 'Needs you')),
         )
-        .when(working, (el) => el.child(icon('status-running', 14, m.primary).tooltip('Working')))
+        .when(working, (el) => el.child(tippedIcon('status-running', 14, m.primary, 'Working')))
         .when(!working, (el) => el.child(text(compactAge(session.updatedAt), 'small', m.inkMuted))),
     );
 }

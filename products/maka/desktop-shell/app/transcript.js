@@ -44,7 +44,7 @@ import { div, list } from 'gpui-kit';
 import { v_flex, h_flex, TextView, Scrollbar } from 'gpui-base';
 import { query, subscribe, next, close, log, readHistory, readSource } from './host.js';
 import { Interactions } from './interactions.js';
-import { palette, typeset, text, icon } from './theme.js';
+import { palette, typeset, text, icon, tippedIcon } from './theme.js';
 
 /** A visible range starting at or above this index counts as "at the top" for paging. */
 const NEAR_TOP = 3;
@@ -1112,7 +1112,7 @@ function toolRow(item, transcript, cx) {
             .text_color(m.inkMuted)
             .child(summary),
         )
-        .child(icon(statusIcon, 14, statusColor).tooltip(status))
+        .child(tippedIcon(statusIcon, 14, statusColor, status))
         .when(item.open || status === 'failed', (el) =>
           el.child(icon(item.open ? 'chevron-down' : 'chevron-right', 14, m.inkMuted)),
         ),

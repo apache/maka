@@ -22,10 +22,12 @@
 //! Feasibility probe: the gpui-shell command, built inside this workspace
 //! against the vendored gpui-base and gpui-fast, with a `maka-host` module
 //! that reaches the Host named by `MAKA_HOST_ENDPOINT` and `MAKA_HOST_EPOCH`,
-//! and a `maka-files` module that reads a file the user picks.
+//! a `maka-files` module that reads a file the user picks, and the window
+//! Maka opens in (`window`).
 
 mod files;
 mod maka_host;
+mod window;
 
 fn main() {
     // Imports are linked against the registry, so register before any load.
@@ -39,5 +41,12 @@ fn main() {
         eprintln!("{}: {error}", files::NAME);
         std::process::exit(1);
     }
-    gpui_shell::host::main_with_components(gpui_shell::FrozenComponentRegistry::default());
+    let components = match window::components() {
+        Ok(components) => components,
+        Err(error) => {
+            eprintln!("maka-desktop: {error}");
+            std::process::exit(1);
+        }
+    };
+    gpui_shell::host::main_with_components(components);
 }

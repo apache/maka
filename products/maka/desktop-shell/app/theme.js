@@ -27,7 +27,7 @@
 // (canvas, hover, success, …) live in `M` and are read through `palette(cx)`.
 
 import { div, svg } from 'gpui-kit';
-import { set_theme, h_flex, v_flex, Button } from 'gpui-base';
+import { set_theme, h_flex, v_flex, Button, Input } from 'gpui-base';
 
 /** @typedef {Record<string, import('gpui-kit').Color>} Palette */
 
@@ -196,6 +196,14 @@ export function icon(name, size, color) {
   return svg(`icons/${name}.svg`).flex_none().size(size).text_color(color);
 }
 
+/**
+ * An icon that names itself on hover. An svg has no hover listeners of its
+ * own, so the tooltip sits on a div around it.
+ */
+export function tippedIcon(name, size, color, tip) {
+  return div().flex_none().child(icon(name, size, color)).tooltip(tip);
+}
+
 /** A colored dot in a 16px lane. */
 export function dot(color) {
   return h_flex()
@@ -258,6 +266,20 @@ export function controlButton(id, label, kind, disabled, cx) {
         .when(!disabled, (el) => el.hover((style) => style.bg(m.hover)))
         .child(label);
   }
+}
+
+/** A 32px text field: plate fill, the strong border, the accent ring when focused. */
+export function textField(state, cx) {
+  const m = palette(cx);
+  return typeset(Input.new(state), 'body')
+    .w_full()
+    .h(32)
+    .px(12)
+    .rounded(10)
+    .border_1()
+    .border_color(m.borderStrong)
+    .bg(m.plate)
+    .focus((style) => style.border_color(m.accent));
 }
 
 /** A transparent button that shows the hover fill; the caller adds content and size. */
