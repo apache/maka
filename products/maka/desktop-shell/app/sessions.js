@@ -17,12 +17,22 @@
  * under the License.
  */
 
-// The session list: a live `agent.catalog` subscription and the sidebar.
+// The task list: a live `agent.catalog` subscription and the sidebar that
+// shows it, grouped by day or by folder as the native client does.
 
-import { div } from 'gpui-kit';
+import { div, svg } from 'gpui-kit';
 import { v_flex, h_flex, Button } from 'gpui-base';
-import { button } from './composer.js';
 import { query, subscribe, next, close, log } from './host.js';
+import {
+  palette,
+  typeset,
+  text,
+  icon,
+  dot,
+  ghostButton,
+  iconButton,
+  compactAge,
+} from './theme.js';
 
 const LIST = { filter: 'all', position: { kind: 'start' } };
 const RETRY_MS = 2000;
@@ -47,6 +57,8 @@ export class SessionCatalog {
     this.revision = null;
     this.handle = null;
     this.restarting = false;
+    /** Set by Retry: the offline pause ends at once. */
+    this.wakeUp = false;
   }
 
   /**
@@ -83,8 +95,14 @@ export class SessionCatalog {
       } catch (error) {
         this.hooks.report(`Session list: ${error.message}`);
       }
-      await cx.sleep(RETRY_MS);
+      for (let waited = 0; waited < RETRY_MS && !this.wakeUp; waited += 100) await cx.sleep(100);
+      this.wakeUp = false;
     }
+  }
+
+  /** Ends the pause before the next attempt to reach the Host. */
+  retryNow() {
+    this.wakeUp = true;
   }
 
   /**
@@ -161,43 +179,112 @@ export function needsYou(session) {
   return session.activity === 'waiting';
 }
 
+/** How many tasks a group shows before "Show more". */
+const GROUP_ROWS = 8;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** What the sidebar shows: how tasks are grouped, and which groups are folded or opened. */
+export class SidebarState {
+  /** @param {() => void} changed */
+  constructor(changed) {
+    this.changed = changed;
+    /** "time" or "project". */
+    this.grouping = 'time';
+    this.folded = new Set();
+    this.expanded = new Set();
+  }
+
+  group(grouping) {
+    if (this.grouping === grouping) return;
+    this.grouping = grouping;
+    this.changed();
+  }
+
+  toggleFold(key) {
+    if (!this.folded.delete(key)) this.folded.add(key);
+    this.changed();
+  }
+
+  expand(key) {
+    this.expanded.add(key);
+    this.changed();
+  }
+}
+
+/** Today, Yesterday, This week (two to six days ago) or Earlier, by calendar day. */
+function timeGroup(at, now) {
+  const midnight = (time) => new Date(time).setHours(0, 0, 0, 0);
+  const days = Math.round((midnight(now) - midnight(at)) / DAY_MS);
+  if (days <= 0) return 'Today';
+  if (days === 1) return 'Yesterday';
+  if (days < 7) return 'This week';
+  return 'Earlier';
+}
+
+/** The sessions in groups, newest first: by day, or by the folder they work in. */
+function groups(sessions, grouping) {
+  const now = Date.now();
+  /** @type {Map<string, { key: string, label: string, path: string | null, sessions: object[] }>} */
+  const byKey = new Map();
+  for (const session of sessions) {
+    const path = session.workspace?.path ?? '';
+    const key = grouping === 'time' ? timeGroup(session.updatedAt, now) : `project:${path}`;
+    let group = byKey.get(key);
+    if (!group) {
+      const label =
+        grouping === 'time' ? key : (path.split('/').filter(Boolean).pop() ?? (path || 'No folder'));
+      group = { key, label, path: grouping === 'time' ? null : path, sessions: [] };
+      byKey.set(key, group);
+    }
+    group.sessions.push(session);
+  }
+  return [...byKey.values()];
+}
+
 /**
+ * The sidebar: the wordmark, New task, the grouping control, the task groups
+ * and the Host's state with the Settings button.
  * @param {SessionCatalog} catalog
+ * @param {SidebarState} ui
  * @param {string | null} selectedId
- * @param {(session: object) => void} select
- * @param {{ enabled: boolean, create: () => void }} create starts a session in the selected one's workspace
+ * @param {{ select: (session: object) => void, newTask: () => void, newIn: (session: object) => void,
+ *   settings: () => void, drafting: boolean }} actions
  */
-/**
- * @param {{ open: boolean, show: () => void }} settings the Settings button at the bottom
- */
-export function sidebar(catalog, selectedId, select, create, settings, cx) {
-  const theme = cx.theme();
-  const summary =
-    catalog.needsYou > 0
-      ? `${catalog.sessions.length} · ${catalog.needsYou} need you`
-      : `${catalog.sessions.length}`;
+export function sidebar(catalog, ui, selectedId, actions, cx) {
+  const m = palette(cx);
+  const list = groups(catalog.sessions, ui.grouping);
   return v_flex()
-    .w_64()
+    .w(256)
     .flex_none()
     .h_full()
-    .border_r_1()
-    .border_color(theme.colors.border)
-    .bg(theme.colors.surface)
-    .text_color(theme.colors.surface_foreground)
+    .bg(m.canvas)
+    .text_color(m.ink)
     .child(
-      h_flex()
-        .px(theme.spacing.lg)
-        .py(theme.spacing.md)
-        .gap(theme.spacing.sm)
-        .items_center()
-        .child(div().flex_1().font_weight(600).child('Sessions'))
-        .child(div().text_sm().text_color(theme.colors.muted_foreground).child(summary))
+      v_flex()
+        .flex_none()
+        .px(8)
+        .pt(8)
         .child(
-          button('new-session', 'New', false, !create.enabled, cx)
-            .h_6()
-            .tooltip('New session in this workspace')
-            .on_click(() => create.create()),
-        ),
+          h_flex()
+            .h(32)
+            .mb(8)
+            .pl(4)
+            .items_center()
+            .child(svg('icons/wordmark.svg').w(69).h(18).text_color(m.brand)),
+        )
+        .child(
+          typeset(ghostButton('new-task', cx), 'body')
+            .w_full()
+            .h(32)
+            .px(8)
+            .gap(8)
+            .justify_start()
+            .when(actions.drafting, (el) => el.bg(m.selected))
+            .on_click(() => actions.newTask())
+            .child(icon('compose', 16, m.inkMuted))
+            .child(div().flex_1().child('New task')),
+        )
+        .child(groupingControl(ui, cx)),
     )
     .child(
       v_flex()
@@ -205,87 +292,189 @@ export function sidebar(catalog, selectedId, select, create, settings, cx) {
         .flex_1()
         .min_h_0()
         .overflow_y_scrollbar()
-        .px(theme.spacing.sm)
-        .gap(theme.spacing.xxs)
+        .px(8)
+        .pb(40)
         .when(catalog.sessions.length === 0, (el) =>
           el.child(
-            div()
-              .px(theme.spacing.sm)
-              .text_sm()
-              .text_color(theme.colors.muted_foreground)
-              .child(catalog.state === 'connecting' ? 'Loading sessions…' : 'No sessions'),
+            text(
+              catalog.state === 'connecting' ? 'Loading tasks…' : 'No tasks yet',
+              'small',
+              m.inkMuted,
+            )
+              .pl(8)
+              .pt(16),
           ),
         )
-        .children(
-          catalog.sessions.map((session) =>
-            sessionRow(session, session.id === selectedId, select, cx),
-          ),
-        ),
+        .children(list.map((group) => taskGroup(group, ui, selectedId, actions, cx))),
     )
+    .child(footer(catalog, actions, cx));
+}
+
+function groupingControl(ui, cx) {
+  const m = palette(cx);
+  const dark = cx.theme().is_dark;
+  const segment = (grouping, label) => {
+    const selected = ui.grouping === grouping;
+    return typeset(Button.new(`group-by-${grouping}`), 'smallLabel')
+      .flex_1()
+      .h(24)
+      .items_center()
+      .justify_center()
+      .rounded(8)
+      .text_color(selected ? m.ink : m.inkMuted)
+      .when(selected, (el) =>
+        dark
+          ? el.bg(m.activeRow).border_1().border_color(m.border)
+          : el.bg(m.plate).shadow_xs(),
+      )
+      .when(!selected, (el) => el.hover((style) => style.text_color(m.ink)))
+      .on_click(() => ui.group(grouping))
+      .child(label);
+  };
+  return h_flex()
+    .mt(8)
+    .h(28)
+    .p(2)
+    .gap(2)
+    .rounded(10)
+    .bg(dark ? m.wash : m.sunken)
+    .child(segment('time', 'By time'))
+    .child(segment('project', 'By project'));
+}
+
+function taskGroup(group, ui, selectedId, actions, cx) {
+  const m = palette(cx);
+  const folded = ui.folded.has(group.key);
+  const shown =
+    folded ? [] : ui.expanded.has(group.key) ? group.sessions : group.sessions.slice(0, GROUP_ROWS);
+  const hidden = folded ? 0 : group.sessions.length - shown.length;
+  const id = slug(group.key);
+  return v_flex()
+    .w_full()
     .child(
       h_flex()
-        .flex_none()
-        .px(theme.spacing.sm)
-        .py(theme.spacing.sm)
-        .border_t_1()
-        .border_color(theme.colors.border)
+        .h(44)
+        .items_end()
         .child(
-          Button.new('open-settings-sidebar')
+          h_flex()
             .w_full()
-            .px(theme.spacing.sm)
-            .py(theme.spacing.xs)
-            .rounded(theme.radius.md)
-            .text_sm()
-            .selected(settings.open)
-            .when(settings.open, (el) =>
-              el.bg(theme.colors.accent).text_color(theme.colors.accent_foreground),
+            .h(28)
+            .items_center()
+            .child(
+              typeset(Button.new(`group-${id}`), 'smallLabel')
+                .h(28)
+                .pl(8)
+                .pr(4)
+                .gap(4)
+                .items_center()
+                .rounded(6)
+                .text_color(m.inkMuted)
+                .hover((style) => style.text_color(m.ink))
+                .on_click(() => ui.toggleFold(group.key))
+                .when(group.path !== null, (el) =>
+                  el.child(svg(`icons/${folded ? 'folder' : 'folder-open'}.svg`).size(14)),
+                )
+                .child(div().child(group.label))
+                .child(svg(`icons/chevron-${folded ? 'right' : 'down'}.svg`).size(12)),
             )
-            .when(!settings.open, (el) => el.hover((style) => style.bg(theme.colors.muted)))
-            .on_click(() => settings.show())
-            .child('Settings'),
+            .child(div().flex_1())
+            .when(group.path !== null, (el) =>
+              el.child(
+                iconButton(`group-new-${id}`, 'plus', cx, 20, 14)
+                  .tooltip(`New task in ${group.path}`)
+                  .on_click(() => actions.newIn(group.sessions[0])),
+              ),
+            ),
         ),
+    )
+    .children(
+      shown.map((session) => taskRow(session, session.id === selectedId, actions.select, cx)),
+    )
+    .when(hidden > 0, (el) =>
+      el.child(
+        typeset(ghostButton(`group-more-${id}`, cx), 'body')
+          .w_full()
+          .h(32)
+          .pl(32)
+          .justify_start()
+          .text_color(m.inkMuted)
+          .hover((style) => style.text_color(m.ink))
+          .on_click(() => ui.expand(group.key))
+          .child('Show more'),
+      ),
     );
 }
 
-function sessionRow(session, selected, select, cx) {
-  const theme = cx.theme();
-  const state = needsYou(session) ? 'Needs you' : session.activity === 'working' ? 'Working' : null;
-  return Button.new(`session-${session.id}`)
+function taskRow(session, selected, select, cx) {
+  const m = palette(cx);
+  const working = session.activity === 'working';
+  return typeset(Button.new(`session-${session.id}`), 'body')
     .w_full()
-    .px(theme.spacing.sm)
-    .py(theme.spacing.xs)
-    .rounded(theme.radius.md)
-    .selected(selected)
-    .when(selected, (el) => el.bg(theme.colors.accent).text_color(theme.colors.accent_foreground))
-    .when(!selected, (el) => el.hover((style) => style.bg(theme.colors.muted)))
+    .h(32)
+    .pl(32)
+    .pr(8)
+    .gap(8)
+    .items_center()
+    .rounded(10)
+    .text_color(m.ink)
+    .when(selected, (el) => el.bg(m.selected))
+    .when(!selected, (el) => el.hover((style) => style.bg(m.hover)))
     .on_click(() => select(session))
+    .child(div().flex_1().min_w_0().truncate().child(session.title))
     .child(
-      v_flex()
-        .w_full()
-        .min_w_0()
-        .gap(theme.spacing.xxs)
-        .child(
-          div()
-            .text_sm()
-            .truncate()
-            .when(selected, (el) => el.font_weight(600))
-            .child(session.title),
+      h_flex()
+        .flex_none()
+        .min_w(40)
+        .gap(6)
+        .items_center()
+        .justify_end()
+        .when(needsYou(session), (el) =>
+          el.child(icon('status-waiting', 14, m.warning).tooltip('Needs you')),
         )
-        .when(state !== null, (el) =>
-          el.child(
-            h_flex()
-              .gap(theme.spacing.xs)
-              .items_center()
-              .text_xs()
-              .text_color(needsYou(session) ? theme.colors.primary : theme.colors.muted_foreground)
-              .child(
-                div()
-                  .size(6)
-                  .rounded(theme.radius.full)
-                  .bg(needsYou(session) ? theme.colors.primary : theme.colors.muted_foreground),
-              )
-              .child(state),
-          ),
-        ),
+        .when(working, (el) => el.child(icon('status-running', 14, m.primary).tooltip('Working')))
+        .when(!working, (el) => el.child(text(compactAge(session.updatedAt), 'small', m.inkMuted))),
     );
+}
+
+function footer(catalog, actions, cx) {
+  const m = palette(cx);
+  const [color, word] = {
+    connecting: [m.warning, 'Starting…'],
+    live: [m.success, null],
+    offline: [m.destructive, 'Disconnected'],
+  }[catalog.state];
+  return h_flex()
+    .flex_none()
+    .p(8)
+    .gap(4)
+    .items_center()
+    .border_t_1()
+    .border_color(m.borderSoft)
+    .child(
+      h_flex()
+        .flex_1()
+        .min_w_0()
+        .h(36)
+        .pl(8)
+        .pr(12)
+        .gap(8)
+        .items_center()
+        .child(dot(color))
+        .child(text('Local Host', 'body', m.ink).flex_none())
+        .when(word !== null, (el) => el.child(text(word, 'small', m.inkMuted).truncate())),
+    )
+    .child(
+      iconButton('open-settings', 'settings', cx)
+        .tooltip('Settings')
+        .on_click(() => actions.settings()),
+    );
+}
+
+/** A group key as an element id. */
+function slug(key) {
+  let hash = 0;
+  for (let index = 0; index < key.length; index += 1) {
+    hash = (hash * 31 + key.charCodeAt(index)) | 0;
+  }
+  return (hash >>> 0).toString(36);
 }

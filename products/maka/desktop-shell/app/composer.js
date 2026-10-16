@@ -17,11 +17,24 @@
  * under the License.
  */
 
-// The composer: a multi-line draft, the model, Send and Stop.
+// The composer: a multi-line draft in a rounded dock, the model menu, the
+// folder a new task starts in, and Send or Stop.
 
 import { div } from 'gpui-kit';
-import { v_flex, h_flex, Button, Textarea, TextareaState } from 'gpui-base';
+import { v_flex, h_flex, Button, Textarea, TextareaState, Popover } from 'gpui-base';
 import { query, operation, log } from './host.js';
+import {
+  palette,
+  typeset,
+  text,
+  icon,
+  ghostButton,
+  menuSurface,
+  menuRow,
+  menuLabel,
+  menuSeparator,
+  controlButton,
+} from './theme.js';
 
 export class Composer {
   /**
@@ -34,8 +47,17 @@ export class Composer {
   constructor(hooks, target, start) {
     this.hooks = hooks;
     this.start = start;
-    this.draft = TextareaState.new({ placeholder: 'Message', rows: 2 });
-    this.draft.set_auto_grow(2, 8);
+    this.draft = TextareaState.new({ placeholder: 'Ask anything…', rows: 1 });
+    this.draft.set_auto_grow(1, 8);
+    // Send turns on and off with the draft; redraw only when that flips.
+    this.empty = true;
+    this.draft.on('change', () => {
+      const empty = this.draft.value().trim() === '';
+      if (empty !== this.empty) {
+        this.empty = empty;
+        this.hooks.changed();
+      }
+    });
     // Enter sends without inserting a newline; Shift+Enter inserts one and
     // still reports `submit`, with `shift` set.
     this.draft.set_submit_on_enter(true);
@@ -51,6 +73,18 @@ export class Composer {
     this.choices = [];
     this.sending = false;
     this.stopping = false;
+    /** Whether the model menu is open. */
+    this.menuOpen = false;
+    /** sessionId (or '' for a new task) -> the model chosen in the menu, which the next send uses. */
+    this.chosen = new Map();
+  }
+
+  /** Picks the model the next message in `transcript` (or a new task) is sent with. */
+  choose(transcript, choice) {
+    this.chosen.set(transcript?.id ?? '', choice);
+    this.menuOpen = false;
+    log(`composer: chose ${choiceLabel(choice)}`);
+    this.hooks.changed();
   }
 
   /**
@@ -78,6 +112,8 @@ export class Composer {
 
   /** What the footer names for `transcript`: its own model when it has one (as the TUI picks it). */
   label(transcript) {
+    const chosen = this.chosen.get(transcript?.id ?? '');
+    if (chosen) return choiceLabel(chosen);
     const backend = transcript?.backend ?? null;
     if (backend?.kind === 'executor') return 'An executor (send from the terminal app)';
     if (backend?.kind !== 'model') return this.modelLabel;
@@ -91,6 +127,8 @@ export class Composer {
    * The backend has no connection revision, so its choice is looked up.
    */
   async selection(transcript) {
+    const chosen = this.chosen.get(transcript.id);
+    if (chosen) return { model: chosen.selection, thinkingLevel: null };
     const backend = transcript.backend;
     if (backend?.kind === 'executor') {
       throw new Error('this session runs on an executor, which the desktop cannot start yet');
@@ -121,6 +159,12 @@ export class Composer {
         transcript = await this.start();
         // Starting it failed; the app has said why.
         if (transcript === null) return;
+        // A model chosen for the new task stays with the task.
+        const chosen = this.chosen.get('');
+        if (chosen) {
+          this.chosen.set(transcript.id, chosen);
+          this.chosen.delete('');
+        }
       }
       const { model, thinkingLevel } = await this.selection(transcript);
       const result = await operation('agent', 'send', {
@@ -135,7 +179,11 @@ export class Composer {
       );
       if (result.kind === 'rejected')
         throw new Error(`the Host rejected the message (${result.reason})`);
-      if (this.draft.value() === message) this.draft.set_value('');
+      if (this.draft.value() === message) {
+        // `set_value` sends no change event, so the draft's emptiness is set here.
+        this.draft.set_value('');
+        this.empty = true;
+      }
       // The run itself shows up through the watch (`opened`), as in the TUI.
       transcript.addPending(result.messageId, message);
     } catch (error) {
@@ -167,72 +215,193 @@ export class Composer {
 }
 
 /**
+ * The composer under the transcript or the start pane, in the reading column.
  * @param {Composer} composer
  * @param {import("./transcript.js").Transcript | null} transcript
- * @param {string | null} startIn with no session selected, where sending starts one
+ * @param {{ folder: { name: string, path: string } | null, notice: string | null,
+ *   dismiss: () => void, addConnection: () => void }} context `folder` is where a
+ *   new task starts when no task is selected; `notice` is the last error
  */
-export function composerPane(composer, transcript, startIn, cx) {
-  const theme = cx.theme();
-  const inactive = transcript === null && startIn === null;
+export function composerPane(composer, transcript, context, cx) {
+  const m = palette(cx);
+  const dark = cx.theme().is_dark;
+  const inactive = transcript === null && context.folder === null;
   const running = transcript?.run != null;
-  const canSend = !inactive && !composer.sending && composer.model !== null;
-  return v_flex()
+  const executor = transcript?.backend?.kind === 'executor';
+  const canSend = !inactive && !composer.sending && composer.model !== null && !composer.empty;
+  const stop = running && composer.empty;
+  return h_flex()
     .flex_none()
-    .px(theme.spacing.xl)
-    .py(theme.spacing.md)
-    .gap(theme.spacing.sm)
-    .border_t_1()
-    .border_color(theme.colors.border)
+    .w_full()
+    .px(24)
+    .pt(8)
+    .pb(16)
+    .justify_center()
     .child(
-      Textarea.new(composer.draft)
+      v_flex()
         .w_full()
-        .px(theme.spacing.md)
-        .py(theme.spacing.sm)
-        .rounded(theme.radius.md)
+        .max_w(720)
+        .rounded(28)
+        .bg(m.plate)
         .border_1()
-        .border_color(theme.colors.input)
-        .bg(theme.colors.background)
-        .focus((style) => style.border_color(theme.colors.ring))
-        .disabled(inactive),
-    )
-    .child(
-      h_flex()
-        .gap(theme.spacing.sm)
-        .items_center()
+        .border_color(dark ? m.border : m.dockRing)
+        .when(!dark, (el) => el.shadow_sm())
         .child(
-          div()
-            .flex_1()
-            .min_w_0()
-            .truncate()
-            .text_xs()
-            .text_color(theme.colors.muted_foreground)
+          v_flex()
+            .p(12)
+            .gap(6)
             .child(
-              [
-                composer.label(transcript),
-                transcript === null && startIn !== null ? `New session in ${startIn}` : null,
-                'Enter to send, Shift+Enter for a new line',
-              ]
-                .filter((part) => part !== null)
-                .join(' · '),
+              typeset(Textarea.new(composer.draft), 'body')
+                .w_full()
+                .px(8)
+                .py(4)
+                .bg('#00000000')
+                .border_0()
+                .text_color(m.ink)
+                .disabled(inactive),
+            )
+            .child(
+              h_flex()
+                .gap(2)
+                .items_center()
+                .child(modelMenu(composer, transcript, context, cx))
+                .when(transcript === null && context.folder !== null, (el) =>
+                  el.child(folderChip(context.folder, cx)),
+                )
+                .child(note(context, executor, cx))
+                .child(
+                  stop
+                    ? actionButton('stop', 'stop', cx)
+                        .bg(m.ink)
+                        .disabled(composer.stopping)
+                        .tooltip('Stop')
+                        .hover((style) => style.opacity(0.84))
+                        .on_click(() => composer.stop(transcript))
+                    : actionButton('send', 'send', cx, canSend ? m.onPrimary : m.inkMuted)
+                        .bg(canSend ? m.primary : m.wash)
+                        .disabled(!canSend)
+                        .tooltip('Send')
+                        .when(canSend, (el) => el.hover((style) => style.bg(m.primaryHover)))
+                        .on_click(() => composer.send(transcript)),
+                ),
             ),
-        )
-        .when(running, (el) =>
-          el.child(
-            button(
-              'stop',
-              composer.stopping ? 'Stopping…' : 'Stop',
-              false,
-              composer.stopping,
-              cx,
-            ).on_click(() => composer.stop(transcript)),
-          ),
-        )
-        .child(
-          button('send', composer.sending ? 'Sending…' : 'Send', true, !canSend, cx).on_click(() =>
-            composer.send(transcript),
-          ),
         ),
     );
+}
+
+/** The 32px round Send or Stop button. */
+function actionButton(id, glyph, cx, color = null) {
+  const m = palette(cx);
+  return Button.new(id)
+    .flex_none()
+    .size(32)
+    .rounded(16)
+    .items_center()
+    .justify_center()
+    .child(icon(glyph, 16, color ?? m.plate));
+}
+
+/** A chip in the controls row: 28 high, label and a chevron. */
+function chip(id, label, cx) {
+  const m = palette(cx);
+  return typeset(ghostButton(id, cx), 'label')
+    .h(28)
+    .px(8)
+    .gap(4)
+    .max_w(260)
+    .child(div().min_w_0().truncate().child(label))
+    .child(icon('chevron-down', 14, m.inkMuted));
+}
+
+/** The model chip and the menu it opens upward: models by connection, then Add connection. */
+function modelMenu(composer, transcript, context, cx) {
+  const current = composer.label(transcript);
+  const chosen = composer.chosen.get(transcript?.id ?? '');
+  const selected = chosen?.selection ?? (transcript?.backend?.kind === 'model' ? transcript.backend : composer.model);
+  const byConnection = new Map();
+  for (const choice of composer.choices) {
+    const name = choice.connectionName ?? '';
+    if (!byConnection.has(name)) byConnection.set(name, []);
+    byConnection.get(name).push(choice);
+  }
+  const rows = [];
+  for (const [name, choices] of byConnection) {
+    if (name !== '') rows.push(menuLabel(name, cx));
+    choices.forEach((choice, index) => {
+      rows.push(
+        menuRow(
+          `model-${slugOf(name)}-${index}`,
+          choice.label,
+          { checked: selected != null && sameModel(choice.selection, selected) },
+          cx,
+        ).on_click(() => composer.choose(transcript, choice)),
+      );
+    });
+  }
+  if (rows.length > 0) rows.push(menuSeparator(cx));
+  rows.push(
+    menuRow('model-add', 'Add connection…', { icon: 'plus' }, cx).on_click(() => {
+      composer.menuOpen = false;
+      context.addConnection();
+    }),
+  );
+  return Popover.new('model-menu')
+    .anchor('bottom_left')
+    .open(composer.menuOpen)
+    .on_open_change((open) => {
+      composer.menuOpen = open;
+      composer.hooks.changed();
+    })
+    .trigger(chip('model-chip', current.split(' · ')[0], cx).tooltip(current))
+    .content(
+      menuSurface(cx)
+        .id('model-menu-rows')
+        .w(280)
+        .max_h(360)
+        .overflow_y_scroll()
+        .mb(8)
+        .children(rows),
+    );
+}
+
+/** Where a new task starts: the folder the start pane shows. */
+function folderChip(folder, cx) {
+  const m = palette(cx);
+  return typeset(h_flex(), 'label')
+    .flex_none()
+    .h(28)
+    .px(8)
+    .gap(6)
+    .items_center()
+    .max_w(220)
+    .text_color(m.ink)
+    .tooltip(folder.path)
+    .child(icon('folder', 16, m.inkMuted))
+    .child(div().min_w_0().truncate().child(folder.name || folder.path));
+}
+
+/** The note between the chips and Send: the last error, or why sending is not possible. */
+function note(context, executor, cx) {
+  const m = palette(cx);
+  const message =
+    context.notice ?? (executor ? 'This task runs on an executor; send from the terminal app' : null);
+  return h_flex()
+    .id('composer-note')
+    .flex_1()
+    .min_w_0()
+    .px(8)
+    .when(message !== null, (el) =>
+      el
+        .tooltip(context.notice !== null ? `${message} (click to dismiss)` : message)
+        .when(context.notice !== null, (el) => el.cursor_pointer().on_click(() => context.dismiss()))
+        .child(
+          text(message, 'small', context.notice !== null ? m.destructive : m.inkMuted).truncate(),
+        ),
+    );
+}
+
+function slugOf(name) {
+  return name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
 }
 
 function choiceLabel(choice) {
@@ -243,27 +412,7 @@ function sameModel(selection, backend) {
   return selection.connectionId === backend.connectionId && selection.modelId === backend.modelId;
 }
 
-/** A small button in the app's style; `primary` fills it with the primary color. */
+/** A control button; `primary` fills it with the primary color (see theme.js controlButton). */
 export function button(id, label, primary, disabled, cx) {
-  const theme = cx.theme();
-  return Button.new(id)
-    .h_8()
-    .px(theme.spacing.md)
-    .items_center()
-    .justify_center()
-    .rounded(theme.radius.md)
-    .text_sm()
-    .disabled(disabled)
-    .when(primary, (el) => el.bg(theme.colors.primary).text_color(theme.colors.primary_foreground))
-    .when(!primary, (el) =>
-      el
-        .border_1()
-        .border_color(theme.colors.border)
-        .bg(theme.colors.background)
-        .text_color(theme.colors.foreground),
-    )
-    .when(disabled, (el) => el.opacity(0.5))
-    .when(!disabled, (el) => el.hover((style) => style.opacity(0.9)))
-    .focus((style) => style.border_1().border_color(theme.colors.ring))
-    .child(label);
+  return controlButton(id, label, primary ? 'primary' : 'outline', disabled, cx);
 }

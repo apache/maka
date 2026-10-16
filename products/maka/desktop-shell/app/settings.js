@@ -29,10 +29,15 @@
 // they are done.
 
 import { div } from 'gpui-kit';
-import { v_flex, h_flex, Input, InputState } from 'gpui-base';
+import { v_flex, h_flex, Input, InputState, Button } from 'gpui-base';
 import { openText } from 'maka-files';
 import { query, operation, log } from './host.js';
-import { button } from './composer.js';
+import { palette, typeset, text, icon, pill, ghostButton, controlButton } from './theme.js';
+
+/** A control button in the settings' style: primary or outline. */
+function button(id, label, primary, disabled, cx) {
+  return controlButton(id, label, primary ? 'primary' : 'outline', disabled, cx);
+}
 
 const SLUG = /^[a-z0-9]+(?:[-_][a-z0-9]+)*$/;
 const MAX_PAGES = 32;
@@ -61,6 +66,8 @@ export class Settings {
   constructor(hooks) {
     this.hooks = hooks;
     this.open = false;
+    /** The page shown: "models" or "connections". */
+    this.page = 'models';
     /** The connection catalog's revision, which every catalog change names. */
     this.revision = null;
     this.defaultTarget = null;
@@ -94,9 +101,16 @@ export class Settings {
     this.key.set_masked(true);
   }
 
-  show() {
+  show(page = null) {
+    if (page !== null) this.page = page;
     this.open = true;
     this.load();
+    this.hooks.changed();
+  }
+
+  showPage(page) {
+    if (this.page === page) return;
+    this.page = page;
     this.hooks.changed();
   }
 
@@ -724,44 +738,178 @@ function choiceLabel(choice) {
   return choice.connectionName ? `${choice.label} · ${choice.connectionName}` : choice.label;
 }
 
+const PAGES = [
+  ['models', 'Models', 'chat', 'The model new tasks use, from the connections below.'],
+  ['connections', 'Connections', 'tool-plug', 'Model providers and their API keys.'],
+];
+
 /**
+ * The settings navigation, in the sidebar's place.
  * @param {Settings} settings
  * @param {() => void} close
  */
-export function settingsPane(settings, close, cx) {
-  const theme = cx.theme();
+export function settingsNav(settings, close, cx) {
+  const m = palette(cx);
+  return v_flex()
+    .w(256)
+    .flex_none()
+    .h_full()
+    .bg(m.canvas)
+    .text_color(m.ink)
+    .px(8)
+    .pt(8)
+    .gap(2)
+    .child(
+      typeset(ghostButton('settings-close', cx), 'body')
+        .w_full()
+        .h(32)
+        .px(8)
+        .gap(8)
+        .justify_start()
+        .on_click(close)
+        .child(icon('chevron-left', 16, m.inkMuted))
+        .child('Back to app'),
+    )
+    .child(
+      typeset(div(), 'smallLabel')
+        .h(28)
+        .mt(8)
+        .px(8)
+        .flex()
+        .items_center()
+        .text_color(m.inkMuted)
+        .font_weight(600)
+        .child('Settings'),
+    )
+    .children(
+      PAGES.map(([page, label, glyph]) => {
+        const selected = settings.page === page;
+        return typeset(Button.new(`settings-page-${page}`), selected ? 'label' : 'body')
+          .w_full()
+          .h(32)
+          .px(8)
+          .gap(8)
+          .items_center()
+          .justify_start()
+          .rounded(10)
+          .text_color(m.ink)
+          .when(selected, (el) => el.bg(m.selected))
+          .when(!selected, (el) => el.hover((style) => style.bg(m.hover)))
+          .on_click(() => settings.showPage(page))
+          .child(icon(glyph, 16, m.inkMuted))
+          .child(label);
+      }),
+    );
+}
+
+/**
+ * The settings page in the plate.
+ * @param {Settings} settings
+ */
+export function settingsPage(settings, cx) {
+  const m = palette(cx);
   const busy = settings.busy !== null;
+  const [, title, , description] = PAGES.find(([page]) => page === settings.page);
   return v_flex()
     .id('settings')
     .flex_1()
     .min_h_0()
     .overflow_y_scrollbar()
-    .px(theme.spacing.xl)
-    .py(theme.spacing.lg)
-    .gap(theme.spacing.xl)
+    .items_center()
+    .px(24)
+    .pt(32)
+    .pb(48)
     .child(
+      v_flex()
+        .w_full()
+        .max_w(920)
+        .gap(32)
+        .child(
+          v_flex()
+            .gap(6)
+            .child(
+              h_flex()
+                .gap(12)
+                .items_center()
+                .child(text(title, 'display', m.ink).flex_1())
+                .when(settings.loading, (el) => el.child(text('Loading…', 'small', m.inkMuted)))
+                .when(settings.page === 'connections', (el) =>
+                  el
+                    .child(
+                      button('connection-import', 'Import from Maka export…', false, busy, cx)
+                        .tooltip('Read the API keys from a settings file exported by the old Maka app')
+                        .on_click(() => settings.chooseImport()),
+                    )
+                    .child(
+                      button('connection-add', 'Add connection', true, busy, cx).on_click(() =>
+                        settings.openAdd(),
+                      ),
+                    ),
+                ),
+            )
+            .child(text(description, 'body', m.inkMuted))
+            .when(busy || settings.error !== null, (el) =>
+              el.child(
+                text(
+                  busy ? settings.busy : settings.error,
+                  'small',
+                  busy ? m.inkMuted : m.destructive,
+                ),
+              ),
+            ),
+        )
+        .when(settings.page === 'models', (el) => el.child(modelSection(settings, cx)))
+        .when(settings.page === 'connections', (el) => el.child(connectionSection(settings, cx))),
+    );
+}
+
+/**
+ * A settings group: heading, optional description and end slot, then rows
+ * split by rules. Without a title it is only the rows.
+ */
+function group(title, description, end, rows, cx) {
+  const m = palette(cx);
+  return v_flex()
+    .w_full()
+    .when(title !== null, (el) => el.child(
       h_flex()
-        .gap(theme.spacing.sm)
-        .items_center()
-        .child(div().flex_1().text_lg().font_weight(600).child('Settings'))
-        .when(settings.loading, (el) => el.child(muted('Loading…', cx)))
-        .child(button('settings-close', 'Back to sessions', false, false, cx).on_click(close)),
+        .gap(12)
+        .pb(8)
+        .items_end()
+        .child(
+          v_flex()
+            .flex_1()
+            .min_w_0()
+            .child(text(title, 'heading', m.ink))
+            .when(description !== null, (el) => el.child(text(description, 'small', m.inkMuted))),
+        )
+        .when(end !== null, (el) => el.child(end)),
+    ))
+    .children(
+      rows.map((row) => div().w_full().border_t_1().border_color(m.borderSoft).child(row)),
+    );
+}
+
+/** A settings row: title and detail on the left, controls at the end. */
+function settingRow(title, detail, end, cx) {
+  const m = palette(cx);
+  return h_flex()
+    .w_full()
+    .py(8)
+    .gap(16)
+    .items_center()
+    .child(
+      v_flex()
+        .flex_1()
+        .min_w_0()
+        .child(typeset(div(), 'label').text_color(m.ink).truncate().child(title))
+        .when(detail !== null, (el) => el.child(text(detail, 'small', m.inkMuted).truncate())),
     )
-    .when(busy || settings.error !== null, (el) =>
-      el.child(
-        div()
-          .text_sm()
-          .when(busy, (el) => el.text_color(theme.colors.muted_foreground))
-          .when(!busy, (el) => el.text_color(theme.colors.destructive))
-          .child(busy ? settings.busy : settings.error),
-      ),
-    )
-    .child(modelSection(settings, cx))
-    .child(connectionSection(settings, cx));
+    .when(end !== null, (el) => el.child(h_flex().flex_none().max_w(320).gap(8).child(end)));
 }
 
 function modelSection(settings, cx) {
-  const theme = cx.theme();
+  const m = palette(cx);
   const busy = settings.busy !== null;
   const { choices, defaultModel, next } = settings.models;
   const current =
@@ -769,67 +917,69 @@ function modelSection(settings, cx) {
       ? choiceLabel(defaultModel.choice)
       : defaultModel.kind === 'unavailable'
         ? 'Unavailable; choose another'
-        : 'None; new sessions use the first model listed';
+        : 'None; new tasks use the first model listed';
   const isDefault = (choice) =>
     defaultModel.kind === 'ready' &&
     defaultModel.choice.selection.connectionId === choice.selection.connectionId &&
     defaultModel.choice.selection.modelId === choice.selection.modelId;
-  return section('Default model', cx)
-    .child(div().text_sm().child(current))
-    .child(field(settings.modelQuery, cx))
-    .when(choices.length === 0, (el) =>
-      el.child(muted('No models. Add a connection with a key below.', cx)),
-    )
-    .children(
-      choices.map((choice, index) =>
-        h_flex()
-          .gap(theme.spacing.sm)
-          .items_center()
-          .child(div().flex_1().min_w_0().truncate().text_sm().child(choiceLabel(choice)))
-          .child(
-            isDefault(choice)
-              ? muted('Default', cx)
-              : button(`model-${index}`, 'Use as default', false, busy, cx)
-                  .h_6()
-                  .on_click(() => settings.setDefault(choice)),
+  const rows = [
+    settingRow('Default model', current, null, cx),
+    settingRow('Find a model', null, div().w(260).child(field(settings.modelQuery, cx)), cx),
+    ...choices.map((choice, index) =>
+      settingRow(
+        choice.label,
+        choice.connectionName ?? null,
+        isDefault(choice)
+          ? pill('Default', cx)
+          : button(`model-${index}`, 'Use as default', false, busy, cx)
+              .h(28)
+              .on_click(() => settings.setDefault(choice)),
+        cx,
+      ),
+    ),
+  ];
+  if (choices.length === 0) {
+    rows.push(
+      h_flex()
+        .py(8)
+        .gap(12)
+        .items_center()
+        .child(text('No models yet. Add a connection with a key.', 'body', m.inkMuted).flex_1())
+        .child(
+          button('models-connections', 'Connections', false, false, cx).on_click(() =>
+            settings.showPage('connections'),
           ),
-      ),
-    )
-    .when(next !== null, (el) =>
-      el.child(
-        button('models-more', 'Show more', false, false, cx).on_click(() => settings.moreModels()),
-      ),
+        ),
     );
+  }
+  if (next !== null) {
+    rows.push(
+      h_flex()
+        .py(8)
+        .child(
+          button('models-more', 'Show more', false, false, cx).on_click(() => settings.moreModels()),
+        ),
+    );
+  }
+  return group('Default model', 'New tasks start with this model; the composer can pick another.', null, rows, cx);
 }
 
 function connectionSection(settings, cx) {
-  const theme = cx.theme();
-  const busy = settings.busy !== null;
-  return section('Connections', cx)
-    .child(
-      h_flex()
-        .gap(theme.spacing.sm)
-        .child(
-          button('connection-add', 'Add connection', true, busy, cx).on_click(() =>
-            settings.openAdd(),
-          ),
-        )
-        .child(
-          button('connection-import', 'Import from Maka export…', false, busy, cx)
-            .tooltip('Read the API keys from a settings file exported by the old Maka app')
-            .on_click(() => settings.chooseImport()),
-        ),
-    )
+  const m = palette(cx);
+  const rows = settings.connections.map((connection) => connectionRow(settings, connection, cx));
+  if (settings.connections.length === 0 && !settings.loading) {
+    rows.push(text('No connections yet.', 'body', m.inkMuted).py(8));
+  }
+  return v_flex()
+    .w_full()
+    .gap(32)
     .when(settings.form?.kind === 'add', (el) => el.child(addForm(settings, cx)))
     .when(settings.importing !== null, (el) => el.child(importPanel(settings, cx)))
-    .when(settings.connections.length === 0 && !settings.loading, (el) =>
-      el.child(muted('No connections yet.', cx)),
-    )
-    .children(settings.connections.map((connection) => connectionRow(settings, connection, cx)));
+    .child(group(null, null, null, rows, cx));
 }
 
 function connectionRow(settings, connection, cx) {
-  const theme = cx.theme();
+  const m = palette(cx);
   const busy = settings.busy !== null;
   const id = connection.basis.connectionId;
   const descriptor = settings.descriptors.get(connection.provider.name);
@@ -846,50 +996,67 @@ function connectionRow(settings, connection, cx) {
             : 'No key';
   const models =
     connection.enabledModelCount === 1 ? '1 model' : `${connection.enabledModelCount} models`;
-  const facts = [descriptor?.label ?? connection.provider.name, models, key];
+  const facts = [descriptor?.label ?? connection.provider.name, key];
   if (!connection.enabled) facts.push('Turned off');
   const note = settings.notes.get(id);
   const editing = settings.form?.kind === 'key' && settings.form.connectionId === id;
+  const isDefault = settings.defaultTarget?.connectionId === id;
   return v_flex()
-    .gap(theme.spacing.xs)
-    .p(theme.spacing.md)
-    .rounded(theme.radius.md)
-    .border_1()
-    .border_color(theme.colors.border)
+    .w_full()
+    .py(10)
+    .gap(8)
     .child(
       h_flex()
-        .gap(theme.spacing.sm)
+        .gap(12)
         .items_center()
+        .child(
+          h_flex()
+            .flex_none()
+            .size(32)
+            .rounded(16)
+            .items_center()
+            .justify_center()
+            .bg(m.chip)
+            .child(text((connection.name.trim()[0] ?? '?').toUpperCase(), 'strong', m.ink)),
+        )
         .child(
           v_flex()
             .flex_1()
             .min_w_0()
-            .child(div().truncate().font_weight(600).child(connection.name))
-            .child(muted(facts.join(' · '), cx)),
+            .child(
+              h_flex()
+                .gap(8)
+                .items_center()
+                .child(typeset(div(), 'label').text_color(m.ink).truncate().child(connection.name))
+                .when(isDefault, (el) => el.child(pill('Default', cx))),
+            )
+            .child(text(facts.join(' · '), 'small', m.inkMuted).truncate()),
         )
+        .child(text(models, 'body', m.inkMuted).flex_none())
         .when(connection.editable && descriptor && takesKey(descriptor), (el) =>
           el.child(
             button(`key-${id}`, 'Set key', false, busy, cx)
-              .h_6()
+              .h(28)
               .on_click(() => settings.openKey(connection)),
           ),
         )
         .when(descriptor?.discovery === true, (el) =>
           el.child(
             button(`discover-${id}`, 'Find models', false, busy, cx)
-              .h_6()
+              .h(28)
               .tooltip('Ask the provider which models it offers and enable them')
               .on_click(() => settings.findModels(connection)),
           ),
         ),
     )
-    .when(note !== undefined, (el) => el.child(muted(note, cx)))
+    .when(note !== undefined, (el) => el.child(text(note, 'small', m.inkMuted).pl(44)))
     .when(editing, (el) =>
       el.child(
         h_flex()
-          .gap(theme.spacing.sm)
+          .pl(44)
+          .gap(8)
           .items_center()
-          .child(div().flex_1().child(field(settings.key, cx)))
+          .child(div().w(260).child(field(settings.key, cx)))
           .child(
             button(`key-save-${id}`, 'Save key', true, busy, cx).on_click(() => settings.saveKey()),
           )
@@ -903,15 +1070,9 @@ function connectionRow(settings, connection, cx) {
 }
 
 function addForm(settings, cx) {
-  const theme = cx.theme();
+  const m = palette(cx);
   const busy = settings.busy !== null;
   const form = settings.form;
-  const frame = v_flex()
-    .gap(theme.spacing.sm)
-    .p(theme.spacing.md)
-    .rounded(theme.radius.md)
-    .border_1()
-    .border_color(theme.colors.primary);
   if (form.descriptor === null) {
     const search = settings.providerQuery.value().trim().toLowerCase();
     const matches = (settings.providers ?? []).filter(
@@ -920,76 +1081,85 @@ function addForm(settings, cx) {
         p.label.toLowerCase().includes(search) ||
         p.identity.name.toLowerCase().includes(search),
     );
-    return frame
-      .child(div().font_weight(600).child('Add a connection: choose the provider'))
-      .child(field(settings.providerQuery, cx))
-      .when(settings.providers === null, (el) => el.child(muted('Listing providers…', cx)))
-      .child(
-        h_flex()
-          .flex_wrap()
-          .gap(theme.spacing.sm)
-          .children(
-            matches
-              .slice(0, PROVIDER_ROWS)
-              .map((provider) =>
-                button(`provider-${provider.identity.name}`, provider.label, false, busy, cx).on_click(
-                  () => settings.chooseProvider(provider),
+    const rows = [
+      settingRow('Provider', null, div().w(260).child(field(settings.providerQuery, cx)), cx),
+      v_flex()
+        .py(8)
+        .gap(8)
+        .when(settings.providers === null, (el) =>
+          el.child(text('Listing providers…', 'body', m.inkMuted)),
+        )
+        .child(
+          h_flex()
+            .flex_wrap()
+            .gap(8)
+            .children(
+              matches
+                .slice(0, PROVIDER_ROWS)
+                .map((provider) =>
+                  button(`provider-${provider.identity.name}`, provider.label, false, busy, cx)
+                    .h(28)
+                    .on_click(() => settings.chooseProvider(provider)),
                 ),
-              ),
+            ),
+        )
+        .when(matches.length > PROVIDER_ROWS, (el) =>
+          el.child(
+            text(`${matches.length - PROVIDER_ROWS} more; type to narrow the list`, 'small', m.inkMuted),
           ),
-      )
-      .when(matches.length > PROVIDER_ROWS, (el) =>
-        el.child(muted(`${matches.length - PROVIDER_ROWS} more; type to narrow the list`, cx)),
-      )
-      .child(
-        h_flex()
-          .justify_end()
-          .child(
-            button('add-cancel', 'Cancel', false, busy, cx).on_click(() => settings.closeForm()),
-          ),
-      );
+        ),
+    ];
+    return group(
+      'Add a connection',
+      'Choose the provider',
+      button('add-cancel', 'Cancel', false, busy, cx).on_click(() => settings.closeForm()),
+      rows,
+      cx,
+    );
   }
   const descriptor = form.descriptor;
   const auth = keyAuth(descriptor);
-  return frame
-    .child(
-      h_flex()
-        .gap(theme.spacing.sm)
-        .items_center()
-        .child(div().flex_1().font_weight(600).child(`Add a ${descriptor.label} connection`))
-        .child(
-          button('add-change', 'Change provider', false, busy, cx).on_click(() =>
-            settings.openAdd(),
-          ),
-        ),
-    )
-    .child(labelled('Name', field(settings.name, cx), cx))
-    .when(showsEndpoint(descriptor), (el) =>
-      el.child(labelled('Endpoint', field(settings.endpoint, cx), cx)),
-    )
-    .when(takesKey(descriptor), (el) =>
-      el.child(
-        labelled(auth === 'optional' ? 'API key (optional)' : 'API key', field(settings.key, cx), cx),
+  const control = (state) => div().w(260).child(field(state, cx));
+  const rows = [settingRow('Name', null, control(settings.name), cx)];
+  if (showsEndpoint(descriptor)) rows.push(settingRow('Endpoint', null, control(settings.endpoint), cx));
+  if (takesKey(descriptor)) {
+    rows.push(
+      settingRow(
+        auth === 'optional' ? 'API key (optional)' : 'API key',
+        'Kept by the Host; never shown again',
+        control(settings.key),
+        cx,
       ),
-    )
-    .when(auth === 'none', (el) =>
-      el.child(muted('This provider signs in through the terminal app (maka) for now.', cx)),
-    )
-    .child(
-      h_flex()
-        .gap(theme.spacing.sm)
-        .justify_end()
-        .child(button('add-cancel', 'Cancel', false, busy, cx).on_click(() => settings.closeForm()))
-        .child(
-          button('add-save', 'Add', true, busy || auth === 'none', cx).on_click(() =>
-            settings.addConnection(),
-          ),
-        ),
     );
+  }
+  if (auth === 'none') {
+    rows.push(
+      text('This provider signs in through the terminal app (maka) for now.', 'body', m.inkMuted).py(8),
+    );
+  }
+  rows.push(
+    h_flex()
+      .py(8)
+      .gap(8)
+      .justify_end()
+      .child(button('add-cancel', 'Cancel', false, busy, cx).on_click(() => settings.closeForm()))
+      .child(
+        button('add-save', 'Add', true, busy || auth === 'none', cx).on_click(() =>
+          settings.addConnection(),
+        ),
+      ),
+  );
+  return group(
+    `Add a ${descriptor.label} connection`,
+    null,
+    button('add-change', 'Change provider', false, busy, cx).on_click(() => settings.openAdd()),
+    rows,
+    cx,
+  );
 }
 
 function importPanel(settings, cx) {
-  const theme = cx.theme();
+  const m = palette(cx);
   const busy = settings.busy !== null;
   const plan = settings.importing;
   const ready = plan.rows.filter((row) => row.state === 'ready').length;
@@ -1000,73 +1170,48 @@ function importPanel(settings, cx) {
     done: 'Imported',
     failed: 'Failed',
   };
-  return v_flex()
-    .gap(theme.spacing.sm)
-    .p(theme.spacing.md)
-    .rounded(theme.radius.md)
-    .border_1()
-    .border_color(theme.colors.primary)
-    .child(div().font_weight(600).child(`Import from ${plan.path.split('/').pop()}`))
-    .when(plan.error !== null, (el) =>
-      el.child(div().text_sm().text_color(theme.colors.destructive).child(plan.error)),
-    )
-    .when(plan.error === null && plan.rows.length === 0, (el) =>
-      el.child(muted('The file has no keys.', cx)),
-    )
-    .children(
-      plan.rows.map((row) =>
-        v_flex()
-          .child(div().text_sm().child(`${row.name} (${row.slug || 'no ID'})`))
-          .child(
-            muted(
-              [row.endpoint, states[row.state], row.note].filter((part) => part).join(' · '),
-              cx,
-            ),
-          ),
-      ),
-    )
-    .child(
-      h_flex()
-        .gap(theme.spacing.sm)
-        .justify_end()
-        .child(
-          button('import-close', plan.done ? 'Close' : 'Cancel', false, busy, cx).on_click(() =>
-            settings.closeImport(),
-          ),
-        )
-        .when(!plan.done && ready > 0, (el) =>
-          el.child(
-            button('import-run', ready === 1 ? 'Import 1 key' : `Import ${ready} keys`, true, busy, cx)
-              .on_click(() => settings.runImport()),
-          ),
+  const rows = plan.rows.map((row) =>
+    settingRow(
+      `${row.name} (${row.slug || 'no ID'})`,
+      [row.endpoint, row.note].filter((part) => part).join(' · ') || null,
+      text(states[row.state], 'small', row.state === 'failed' ? m.destructive : m.inkMuted),
+      cx,
+    ),
+  );
+  if (plan.error !== null) rows.push(text(plan.error, 'body', m.destructive).py(8));
+  if (plan.error === null && plan.rows.length === 0) {
+    rows.push(text('The file has no keys.', 'body', m.inkMuted).py(8));
+  }
+  rows.push(
+    h_flex()
+      .py(8)
+      .gap(8)
+      .justify_end()
+      .child(
+        button('import-close', plan.done ? 'Close' : 'Cancel', false, busy, cx).on_click(() =>
+          settings.closeImport(),
         ),
-    );
+      )
+      .when(!plan.done && ready > 0, (el) =>
+        el.child(
+          button('import-run', ready === 1 ? 'Import 1 key' : `Import ${ready} keys`, true, busy, cx)
+            .on_click(() => settings.runImport()),
+        ),
+      ),
+  );
+  return group(`Import from ${plan.path.split('/').pop()}`, plan.path, null, rows, cx);
 }
 
-function section(title, cx) {
-  const theme = cx.theme();
-  return v_flex()
-    .gap(theme.spacing.sm)
-    .child(div().font_weight(600).child(title));
-}
-
-function labelled(label, element, cx) {
-  return v_flex().gap(cx.theme().spacing.xxs).child(muted(label, cx)).child(element);
-}
-
+/** A 32px text field: plate fill, the strong border, the accent ring when focused. */
 function field(state, cx) {
-  const theme = cx.theme();
-  return Input.new(state)
+  const m = palette(cx);
+  return typeset(Input.new(state), 'body')
     .w_full()
-    .px(theme.spacing.md)
-    .py(theme.spacing.xs)
-    .rounded(theme.radius.md)
+    .h(32)
+    .px(12)
+    .rounded(10)
     .border_1()
-    .border_color(theme.colors.input)
-    .bg(theme.colors.background)
-    .focus((style) => style.border_color(theme.colors.ring));
-}
-
-function muted(text, cx) {
-  return div().text_xs().text_color(cx.theme().colors.muted_foreground).child(text);
+    .border_color(m.borderStrong)
+    .bg(m.plate)
+    .focus((style) => style.border_color(m.accent));
 }

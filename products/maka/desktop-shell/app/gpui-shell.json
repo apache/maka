@@ -4,5 +4,5 @@
   "version": "0.1.0",
   "shell-version": "0.7.3",
   "entry": "main.js",
-  "window": { "width": 1100, "height": 760 }
+  "window": { "width": 1512, "height": 885 }
 }

@@ -17,9 +17,10 @@
  * under the License.
  */
 
-// The Maka desktop window: sessions on the side, the selected session's
-// transcript, the composer, and a status line; Settings (settings.js) takes
-// the session's place while open. Every Host call goes through `maka-host`
+// The Maka desktop window: tasks on the canvas at the side, and the plate
+// beside them with the selected task's transcript and the composer, or the
+// start pane for a new task. Settings (settings.js) takes the sidebar and the
+// plate while open. The look follows the native client (theme.js). Every Host call goes through `maka-host`
 // (see host.js); MAKA_HOST_ENDPOINT and MAKA_HOST_EPOCH name the Host.
 //
 // An optional `dev.js` beside this file (never committed) can turn on the
@@ -30,12 +31,13 @@
 import { View, div } from 'gpui-kit';
 import { v_flex, h_flex } from 'gpui-base';
 import { operation, log, setDebug } from './host.js';
-import { SessionCatalog, sidebar } from './sessions.js';
+import { SessionCatalog, SidebarState, sidebar } from './sessions.js';
 import { Transcript, transcriptPane } from './transcript.js';
-import { Composer, composerPane, button } from './composer.js';
+import { Composer, composerPane } from './composer.js';
 import { interactionCard } from './interactions.js';
-import { Settings, settingsPane } from './settings.js';
+import { Settings, settingsNav, settingsPage } from './settings.js';
 import { Directories, startPane } from './directories.js';
+import { followAppearance, palette, text, icon, controlButton } from './theme.js';
 
 export default class MakaDesktop extends View {
   init(_props, cx) {
@@ -69,8 +71,17 @@ export default class MakaDesktop extends View {
     this.transcript = null;
     /** The folders a session can start in when none is selected. */
     this.directories = new Directories(hooks);
+    this.sidebarUi = new SidebarState(() => this.cx.notify());
     this.creating = false;
     this.error = null;
+    cx.spawn(async (cx) => followAppearance(cx));
+    // Ages in the sidebar and turn footers are in minutes.
+    cx.spawn(async (cx) => {
+      for (;;) {
+        await cx.sleep(60000);
+        this.cx.notify();
+      }
+    });
     cx.spawn(async (cx) => this.start(cx));
   }
 
@@ -112,17 +123,28 @@ export default class MakaDesktop extends View {
     await transcript.open();
   }
 
+  /** Leaves the selected task for the start pane, where a message starts a new one. */
+  async home() {
+    if (this.settings.open) this.settings.hide();
+    const previous = this.transcript;
+    this.transcript = null;
+    this.cx.notify();
+    if (previous !== null) await previous.close();
+  }
+
   /**
-   * Starts a session, as the TUI's "New" does: in the selected session's
-   * workspace, or in `directory` when given. The title comes from the first
-   * message. Resolves with the new session's transcript, or null.
+   * Starts a session, as the TUI's "New" does: in the workspace of `session`
+   * (the selected one when not given), or in `directory` when given. The
+   * title comes from the first message. Resolves with the new session's
+   * transcript, or null.
    */
-  async newSession(directory = null) {
+  async newSession(directory = null, session = null) {
+    const sessionId = session?.id ?? this.transcript?.id ?? null;
     const workspace =
       directory !== null
         ? { kind: 'directory', selection: directory.selection }
-        : this.transcript !== null
-          ? { kind: 'session', sessionId: this.transcript.id }
+        : sessionId !== null
+          ? { kind: 'session', sessionId }
           : null;
     if (workspace === null || this.creating) return null;
     this.creating = true;
@@ -161,98 +183,184 @@ export default class MakaDesktop extends View {
   }
 
   render(cx) {
-    const theme = cx.theme();
-    const selectedId = this.transcript?.id ?? null;
-    const card = this.transcript ? interactionCard(this.transcript.interactions, cx) : null;
+    const m = palette(cx);
+    const settings = this.settings.open;
     return h_flex()
       .size_full()
-      .bg(theme.colors.background)
-      .text_color(theme.colors.foreground)
+      .items_start()
+      .bg(m.canvas)
+      .text_color(m.ink)
       .child(
-        sidebar(
-          this.catalog,
-          selectedId,
-          (session) => this.select(session),
-          { enabled: this.transcript !== null && !this.creating, create: () => this.newSession() },
-          { open: this.settings.open, show: () => this.settings.show() },
-          cx,
-        ),
+        settings
+          ? settingsNav(this.settings, () => this.settings.hide(), cx)
+          : sidebar(
+              this.catalog,
+              this.sidebarUi,
+              this.transcript?.id ?? null,
+              {
+                select: (session) => this.select(session),
+                newTask: () => this.home(),
+                newIn: (session) => this.newSession(null, session),
+                settings: () => this.settings.show(),
+                drafting: this.transcript === null,
+              },
+              cx,
+            ),
       )
       .child(
         v_flex()
           .flex_1()
           .min_w_0()
           .h_full()
-          .when(this.settings.open, (el) =>
-            el.child(settingsPane(this.settings, () => this.settings.hide(), cx)),
-          )
-          .when(!this.settings.open, (el) =>
-            el
-              .when(this.transcript === null, (el) =>
-                el.child(
-                  startPane(
-                    this.directories,
-                    {
-                      creating: this.creating,
-                      start: (directory) => this.newSession(directory),
-                      noModel: this.composer.loaded && this.composer.model === null,
-                      openSettings: () => this.settings.show(),
-                    },
-                    cx,
-                  ),
-                ),
-              )
-              .when(this.transcript !== null, (el) =>
-                el.child(transcriptPane(this.transcript, () => this.transcript?.loadOlder(), cx)),
-              )
-              .when(card !== null, (el) => el.child(card))
-              .child(
-                composerPane(
-                  this.composer,
-                  this.transcript,
-                  this.transcript === null ? (this.startFolder()?.path ?? null) : null,
-                  cx,
-                ),
-              ),
-          )
-          .child(this.statusLine(cx)),
+          .py(8)
+          .pr(8)
+          .child(
+            v_flex()
+              .size_full()
+              .rounded(12)
+              .bg(m.plate)
+              .overflow_hidden()
+              .when(settings, (el) => el.child(settingsPage(this.settings, cx)))
+              .when(!settings, (el) => this.taskPane(el, cx)),
+          ),
       );
   }
 
-  statusLine(cx) {
-    const theme = cx.theme();
-    const connection = {
-      connecting: 'Connecting to the Maka Host…',
-      live: 'Connected',
-      offline: 'Disconnected; retrying',
-    }[this.catalog.state];
-    const error = this.error;
-    return h_flex()
-      .flex_none()
-      .px(theme.spacing.lg)
-      .py(theme.spacing.xs)
-      .gap(theme.spacing.md)
-      .items_center()
-      .border_t_1()
-      .border_color(theme.colors.border)
-      .text_xs()
-      .text_color(theme.colors.muted_foreground)
-      .child(div().flex_none().child(connection))
-      .when(error !== null, (el) =>
+  /** The plate's content for a task or a new one: header, connection strip, body, card, composer. */
+  taskPane(el, cx) {
+    const transcript = this.transcript;
+    const card = transcript ? interactionCard(transcript.interactions, cx) : null;
+    const folder = transcript === null ? this.startFolder() : null;
+    return el
+      .child(this.header(cx))
+      .child(this.connectionStrip(cx))
+      .when(transcript === null, (el) =>
         el.child(
-          div()
-            .flex_1()
-            .min_w_0()
-            .truncate()
-            .text_color(theme.colors.destructive)
-            .child(`${clock(error.at)} ${error.message}`),
+          startPane(
+            this.directories,
+            {
+              creating: this.creating,
+              start: (directory) => this.newSession(directory),
+              noModel: this.composer.loaded && this.composer.model === null,
+              // Without a model, a connection is what is missing.
+              openSettings: () => this.settings.show('connections'),
+            },
+            cx,
+          ),
+        ),
+      )
+      .when(transcript !== null, (el) =>
+        el.child(transcriptPane(transcript, () => transcript.loadOlder(), cx)),
+      )
+      .when(card !== null, (el) => el.child(card))
+      .child(
+        composerPane(
+          this.composer,
+          transcript,
+          {
+            folder: folder === null ? null : { name: folder.name, path: folder.path },
+            notice: this.error?.message ?? null,
+            dismiss: () => {
+              this.error = null;
+              this.cx.notify();
+            },
+            addConnection: () => {
+              this.settings.show('connections');
+              this.settings.openAdd();
+            },
+          },
+          cx,
         ),
       );
   }
-}
 
-function clock(date) {
-  return [date.getHours(), date.getMinutes(), date.getSeconds()]
-    .map((part) => String(part).padStart(2, '0'))
-    .join(':');
+  /** The plate's 48px header: the task's title and what it is doing. */
+  header(cx) {
+    const m = palette(cx);
+    const transcript = this.transcript;
+    const state =
+      transcript === null
+        ? null
+        : transcript.interactions.entries.length > 0
+          ? 'Needs you'
+          : transcript.run
+            ? 'Working…'
+            : null;
+    return h_flex()
+      .flex_none()
+      .h(48)
+      .pl(20)
+      .pr(12)
+      .gap(12)
+      .items_center()
+      .window_control_area('drag')
+      .child(
+        text(transcript?.session.title ?? '', 'strong', m.ink)
+          .flex_1()
+          .min_w_0()
+          .truncate(),
+      )
+      .when(state !== null, (el) => el.child(text(state, 'small', m.inkMuted).flex_none()));
+  }
+
+  /**
+   * Above the transcript, in its column: "Starting…" while the Host is being
+   * reached, and a banner while it cannot be. The catalog retries on its own;
+   * Retry asks it to now.
+   */
+  connectionStrip(cx) {
+    const m = palette(cx);
+    const state = this.catalog.state;
+    if (state === 'live') return div();
+    const column = (child) =>
+      h_flex()
+        .flex_none()
+        .w_full()
+        .px(24)
+        .pb(8)
+        .justify_center()
+        .child(v_flex().w_full().max_w(720).child(child));
+    if (state === 'connecting') {
+      return column(
+        h_flex()
+          .h(32)
+          .gap(8)
+          .items_center()
+          .child(icon('status-running', 16, m.primary))
+          .child(text('Starting…', 'body', m.inkMuted)),
+      );
+    }
+    return column(
+      h_flex()
+        .px(16)
+        .py(12)
+        .gap(12)
+        .items_start()
+        .rounded(12)
+        .bg(m.warningTint)
+        .child(icon('triangle-alert', 16, m.warning).mt(2))
+        .child(
+          v_flex()
+            .flex_1()
+            .min_w_0()
+            .gap(2)
+            .child(text('The Maka Host is not answering', 'strong', m.ink))
+            .child(
+              text(
+                'Tasks shown may be out of date. The desktop keeps trying to reach it.',
+                'body',
+                m.ink,
+              ),
+            )
+            .when(this.error !== null, (el) =>
+              el.child(text(this.error.message, 'small', m.destructive).truncate()),
+            ),
+        )
+        .child(
+          controlButton('host-retry', 'Retry', 'quiet', false, cx)
+            .h(28)
+            .on_click(() => this.catalog.retryNow()),
+        ),
+    );
+  }
 }

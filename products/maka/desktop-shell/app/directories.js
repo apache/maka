@@ -23,9 +23,9 @@
 // come 32 at a time, and the folders walked through are kept for going up.
 
 import { div } from 'gpui-kit';
-import { v_flex, h_flex } from 'gpui-base';
+import { v_flex, h_flex, Button } from 'gpui-base';
 import { query } from './host.js';
-import { button } from './composer.js';
+import { palette, typeset, text, icon, controlButton } from './theme.js';
 
 export class Directories {
   /** @param {{ changed: () => void, report: (message: string) => void }} hooks */
@@ -121,109 +121,166 @@ export class Directories {
 }
 
 /**
+ * The start pane: the headline, the folder a new task starts in, and its
+ * folders in one bordered group.
  * @param {Directories} directories
  * @param {{ creating: boolean, start: (directory: object) => void, noModel: boolean, openSettings: () => void }} actions
  */
 export function startPane(directories, actions, cx) {
-  const theme = cx.theme();
+  const m = palette(cx);
   const current = directories.current();
   const disabled = actions.creating || directories.loading;
   const entries = current === null ? directories.roots : directories.children;
+  const rows = entries.map((directory, index) =>
+    folderRow(`folder-${index}`, directory.name, directory.path, index > 0, disabled, cx).on_click(
+      () => directories.enter(directory),
+    ),
+  );
+  if (directories.after !== null) {
+    rows.push(
+      typeset(Button.new('folders-more'), 'body')
+        .w_full()
+        .h(44)
+        .px(16)
+        .items_center()
+        .border_t_1()
+        .border_color(m.borderSoft)
+        .text_color(m.inkMuted)
+        .disabled(disabled)
+        .hover((style) => style.bg(m.hover).text_color(m.ink))
+        .on_click(() => directories.more())
+        .child('Show more'),
+    );
+  }
   return v_flex()
+    .id('start-pane')
     .flex_1()
     .min_h_0()
+    .overflow_y_scrollbar()
     .items_center()
-    .px(theme.spacing.xl)
-    .py(theme.spacing.xl)
-    .gap(theme.spacing.md)
-    .when(actions.noModel, (el) =>
-      el.child(
-        h_flex()
-          .gap(theme.spacing.sm)
-          .items_center()
-          .child(div().text_sm().child('No model is set up yet'))
-          .child(
-            button('open-settings', 'Add a model in Settings', true, false, cx).on_click(
-              actions.openSettings,
-            ),
-          ),
-      ),
-    )
-    .child(
-      div()
-        .text_color(theme.colors.muted_foreground)
-        .child(
-          current === null
-            ? 'Select a session, or write a message below to start one. Open a folder first to start it there.'
-            : 'A message written below starts a session in this folder',
-        ),
-    )
-    .when(current !== null, (el) =>
-      el.child(
-        h_flex()
-          .w_full()
-          .max_w(640)
-          .gap(theme.spacing.sm)
-          .items_center()
-          .child(
-            div()
-              .flex_1()
-              .min_w_0()
-              .truncate()
-              .font_family(theme.typography.mono)
-              .text_sm()
-              .child(current.path),
-          )
-          .child(button('folder-up', 'Up', false, disabled, cx).on_click(() => directories.up()))
-          .child(
-            button('folder-start', 'Start a session here', true, disabled, cx).on_click(() =>
-              actions.start(current),
-            ),
-          ),
-      ),
-    )
+    .px(24)
+    .pt(48)
+    .pb(24)
     .child(
       v_flex()
-        .id('folders')
         .w_full()
-        .max_w(640)
-        .flex_1()
-        .min_h_0()
-        .overflow_y_scrollbar()
-        .gap(theme.spacing.xxs)
-        .when(directories.loading, (el) =>
-          el.child(div().text_sm().text_color(theme.colors.muted_foreground).child('Listing…')),
-        )
-        .when(!directories.loading && entries.length === 0 && directories.error === null, (el) =>
+        .max_w(720)
+        .gap(16)
+        .child(text('What should we work on?', 'display', m.ink))
+        .when(actions.noModel, (el) =>
           el.child(
-            div()
-              .text_sm()
-              .text_color(theme.colors.muted_foreground)
-              .child(current === null ? 'The Host offers no folders' : 'No folders inside'),
+            h_flex()
+              .px(16)
+              .py(12)
+              .gap(12)
+              .items_center()
+              .rounded(12)
+              .bg(m.warningTint)
+              .child(icon('triangle-alert', 16, m.warning))
+              .child(text('No model is set up yet', 'body', m.ink).flex_1())
+              .child(
+                controlButton('open-settings', 'Add a model in Settings', 'primary', false, cx).on_click(
+                  actions.openSettings,
+                ),
+              ),
           ),
         )
-        .children(
-          entries.map((directory, index) =>
-            button(`folder-${index}`, directory.name, false, disabled, cx)
+        .child(
+          text(
+            current === null
+              ? `A message written below starts a task in ${directories.roots[0]?.name ?? 'the first folder'}; open a folder to start it there instead.`
+              : 'A message written below starts a task in this folder.',
+            'body',
+            m.inkMuted,
+          ),
+        )
+        .when(current !== null, (el) =>
+          el.child(
+            h_flex()
               .w_full()
-              .justify_start()
-              .tooltip(directory.path)
-              .on_click(() => directories.enter(directory)),
+              .gap(8)
+              .items_center()
+              .child(
+                controlButton('folder-up', 'Up', 'outline', disabled, cx)
+                  .h(28)
+                  .px(8)
+                  .on_click(() => directories.up()),
+              )
+              .child(
+                div()
+                  .flex_1()
+                  .min_w_0()
+                  .truncate()
+                  .text_size(12)
+                  .line_height('20px')
+                  .font_family('Menlo')
+                  .text_color(m.inkMuted)
+                  .child(current.path),
+              )
+              .child(
+                controlButton('folder-start', 'Start a task here', 'primary', disabled, cx).on_click(
+                  () => actions.start(current),
+                ),
+              ),
           ),
         )
-        .when(directories.after !== null, (el) =>
-          el.child(
-            button('folders-more', 'Show more', false, disabled, cx).on_click(() =>
-              directories.more(),
-            ),
-          ),
+        .child(
+          v_flex()
+            .w_full()
+            .rounded(12)
+            .border_1()
+            .border_color(m.border)
+            .bg(m.plate)
+            .overflow_hidden()
+            .when(directories.loading && rows.length === 0, (el) =>
+              el.child(text('Listing…', 'body', m.inkMuted).px(16).py(12)),
+            )
+            .when(!directories.loading && entries.length === 0 && directories.error === null, (el) =>
+              el.child(
+                text(
+                  current === null ? 'The Host offers no folders' : 'No folders inside',
+                  'body',
+                  m.inkMuted,
+                )
+                  .px(16)
+                  .py(12),
+              ),
+            )
+            .when(directories.error !== null, (el) =>
+              el.child(
+                h_flex()
+                  .px(16)
+                  .py(8)
+                  .gap(12)
+                  .items_center()
+                  .child(text(directories.error, 'small', m.destructive).flex_1().min_w_0().truncate())
+                  .child(
+                    controlButton('folders-retry', 'List folders again', 'quiet', false, cx)
+                      .h(28)
+                      .on_click(() => directories.retry()),
+                  ),
+              ),
+            )
+            .children(rows),
         ),
-    )
-    .when(directories.error !== null, (el) =>
-      el.child(
-        button('folders-retry', 'List folders again', false, false, cx).on_click(() =>
-          directories.retry(),
-        ),
-      ),
     );
+}
+
+/** One 44px folder row: icon, name, and a chevron into it; rows after the first draw a rule above. */
+function folderRow(id, name, path, rule, disabled, cx) {
+  const m = palette(cx);
+  return typeset(Button.new(id), 'body')
+    .w_full()
+    .h(44)
+    .px(16)
+    .gap(12)
+    .items_center()
+    .text_color(m.ink)
+    .disabled(disabled)
+    .when(rule, (el) => el.border_t_1().border_color(m.borderSoft))
+    .hover((style) => style.bg(m.hover))
+    .tooltip(path)
+    .child(icon('folder', 16, m.inkMuted))
+    .child(div().flex_1().min_w_0().truncate().child(name))
+    .child(icon('chevron-right', 16, m.inkMuted));
 }

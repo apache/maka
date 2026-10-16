@@ -27,7 +27,7 @@
 import { div } from 'gpui-kit';
 import { v_flex, h_flex } from 'gpui-base';
 import { query, operation, log } from './host.js';
-import { button } from './composer.js';
+import { palette, text, icon, controlButton } from './theme.js';
 
 const SCOPES = [
   ['once', 'Allow once'],
@@ -162,13 +162,14 @@ export class Interactions {
 }
 
 /**
- * The card for the first pending request, or null when there is none.
+ * The card for the first pending request, or null when there is none. It sits
+ * above the composer in the reading column.
  * @param {Interactions} interactions
  */
 export function interactionCard(interactions, cx) {
   const record = interactions.current();
   if (record === null) return interactions.failures.size > 0 ? failureCard(interactions, cx) : null;
-  const theme = cx.theme();
+  const m = palette(cx);
   const busy = interactions.responding !== null;
   const waiting = interactions.entries.length - 1;
   const request = record.request;
@@ -205,13 +206,14 @@ export function interactionCard(interactions, cx) {
         body.push(command(request.request.command, cx));
       }
       actions = [
-        button(`${id}-deny`, 'Deny', false, busy, cx).on_click(() =>
-          respond({ kind: 'permissions', decision: { decision: 'deny' } }),
-        ),
         ...SCOPES.map(([scope, label]) =>
-          button(`${id}-${scope}`, label, scope === 'once', busy, cx).on_click(() =>
-            respond({ kind: 'permissions', decision: { decision: 'allow', scope, permissions } }),
-          ),
+          controlButton(`${id}-${scope}`, label, scope === 'once' ? 'primary' : 'outline', busy, cx)
+            .on_click(() =>
+              respond({ kind: 'permissions', decision: { decision: 'allow', scope, permissions } }),
+            ),
+        ),
+        controlButton(`${id}-deny`, 'Deny', 'outline', busy, cx).on_click(() =>
+          respond({ kind: 'permissions', decision: { decision: 'deny' } }),
         ),
       ];
       break;
@@ -227,7 +229,7 @@ export function interactionCard(interactions, cx) {
       if (request.questions.length > 1) {
         const complete = request.questions.every((_, index) => draft[index] !== undefined);
         actions = [
-          button(`${id}-submit`, 'Submit', true, busy || !complete, cx).on_click(() =>
+          controlButton(`${id}-submit`, 'Submit', 'primary', busy || !complete, cx).on_click(() =>
             respond({ kind: 'question', answers: draft }),
           ),
         ];
@@ -242,63 +244,90 @@ export function interactionCard(interactions, cx) {
       ];
   }
 
-  return frame(cx)
-    .child(
-      h_flex()
-        .gap(theme.spacing.sm)
-        .items_center()
-        .child(div().flex_1().min_w_0().font_weight(600).child(title))
-        .when(waiting > 0, (el) =>
-          el.child(
-            div()
-              .text_xs()
-              .text_color(theme.colors.muted_foreground)
-              .child(`${waiting} more waiting`),
+  return column(
+    frame(cx)
+      .child(
+        h_flex()
+          .gap(8)
+          .items_center()
+          .child(icon('status-waiting', 16, m.warning))
+          .child(text(title, 'strong', m.ink).flex_1().min_w_0())
+          .when(waiting > 0, (el) =>
+            el.child(text(`${waiting} more waiting`, 'small', m.inkMuted).flex_none()),
           ),
+      )
+      .children(body)
+      .when(actions.length > 0, (el) =>
+        el.child(
+          h_flex()
+            .flex_wrap()
+            .gap(8)
+            .items_center()
+            .children(actions)
+            .child(div().flex_1())
+            .child(text(busy ? 'Answering…' : 'Waiting for your answer', 'small', m.inkMuted)),
         ),
-    )
-    .children(body)
-    .when(actions.length > 0, (el) =>
-      el.child(h_flex().gap(theme.spacing.sm).justify_end().children(actions)),
-    );
+      ),
+  );
 }
 
 function failureCard(interactions, cx) {
+  const m = palette(cx);
   const [reason] = interactions.failures.values();
-  return frame(cx)
-    .child(div().font_weight(600).child('The agent is waiting, but its request could not be read'))
-    .child(detail(reason, cx))
-    .child(
-      h_flex()
-        .justify_end()
-        .child(
-          button('interaction-retry', 'Try again', true, false, cx).on_click(() =>
+  return column(
+    frame(cx)
+      .child(
+        h_flex()
+          .gap(8)
+          .items_center()
+          .child(icon('status-failed', 16, m.destructive))
+          .child(
+            text('The agent is waiting, but its request could not be read', 'strong', m.ink)
+              .flex_1()
+              .min_w_0(),
+          ),
+      )
+      .child(detail(reason, cx))
+      .child(
+        h_flex().child(
+          controlButton('interaction-retry', 'Try again', 'primary', false, cx).on_click(() =>
             interactions.retry(),
           ),
         ),
-    );
+      ),
+  );
 }
 
 function decisions(id, busy, cx, decide) {
   return [
-    button(`${id}-deny`, 'Deny', false, busy, cx).on_click(() => decide('deny')),
-    button(`${id}-allow`, 'Allow', true, busy, cx).on_click(() => decide('allow')),
+    controlButton(`${id}-allow`, 'Allow', 'primary', busy, cx).on_click(() => decide('allow')),
+    controlButton(`${id}-deny`, 'Deny', 'outline', busy, cx).on_click(() => decide('deny')),
   ];
 }
 
-/** The card's box, above the composer. */
-function frame(cx) {
-  const theme = cx.theme();
-  return v_flex()
+/** The reading column the card sits in, above the composer. */
+function column(card) {
+  return h_flex()
     .flex_none()
-    .mx(theme.spacing.xl)
-    .mt(theme.spacing.md)
-    .p(theme.spacing.md)
-    .gap(theme.spacing.sm)
-    .rounded(theme.radius.lg)
+    .w_full()
+    .px(24)
+    .pt(8)
+    .justify_center()
+    .child(card);
+}
+
+/** The card's box. */
+function frame(cx) {
+  const m = palette(cx);
+  return v_flex()
+    .w_full()
+    .max_w(720)
+    .p(12)
+    .gap(8)
+    .rounded(12)
     .border_1()
-    .border_color(theme.colors.primary)
-    .bg(theme.colors.surface);
+    .border_color(m.border)
+    .bg(m.plate);
 }
 
 function capability(target) {
@@ -308,43 +337,48 @@ function capability(target) {
   return target.capability;
 }
 
-function detail(text, cx) {
-  return div().text_sm().text_color(cx.theme().colors.foreground).child(text);
+function detail(content, cx) {
+  return text(content, 'body', palette(cx).ink);
 }
 
 function command(run, cx) {
-  const theme = cx.theme();
+  const m = palette(cx);
   return v_flex()
-    .px(theme.spacing.md)
-    .py(theme.spacing.sm)
-    .rounded(theme.radius.md)
-    .bg(theme.colors.muted)
-    .text_sm()
-    .font_family(theme.typography.mono)
+    .px(12)
+    .py(10)
+    .rounded(10)
+    .bg(m.code)
+    .text_size(14)
+    .line_height('20px')
+    .font_family('Menlo')
+    .text_color(m.ink)
     .child(div().child(`$ ${run.command}`))
-    .child(div().text_xs().text_color(theme.colors.muted_foreground).child(`in ${run.cwd}`));
+    .child(
+      div().text_size(12).text_color(m.inkMuted).child(`in ${run.cwd}`),
+    );
 }
 
 function questionPart(id, question, index, chosen, busy, cx, choose) {
-  const theme = cx.theme();
+  const m = palette(cx);
+  const option = (key, label, picked) =>
+    controlButton(key, label, 'outline', busy, cx)
+      .h(28)
+      .px(10)
+      .when(picked, (el) => el.bg(m.selected).border_color(m.accent));
   return v_flex()
-    .gap(theme.spacing.xs)
+    .gap(6)
     .child(detail(question.question, cx))
     .child(
       h_flex()
         .flex_wrap()
-        .gap(theme.spacing.sm)
+        .gap(6)
         .children(
-          question.options.map((option, choice) =>
-            button(`${id}-${index}-${choice}`, option.label, chosen === option.label, busy, cx)
-              .when(option.description !== undefined, (el) => el.tooltip(option.description))
-              .on_click(() => choose(option.label)),
+          question.options.map((entry, choice) =>
+            option(`${id}-${index}-${choice}`, entry.label, chosen === entry.label)
+              .when(entry.description !== undefined, (el) => el.tooltip(entry.description))
+              .on_click(() => choose(entry.label)),
           ),
         )
-        .child(
-          button(`${id}-${index}-skip`, 'Skip', chosen === null, busy, cx).on_click(() =>
-            choose(null),
-          ),
-        ),
+        .child(option(`${id}-${index}-skip`, 'Skip', chosen === null).on_click(() => choose(null))),
     );
 }

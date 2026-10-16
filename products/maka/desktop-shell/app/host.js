@@ -75,3 +75,15 @@ export async function readHistory(input) {
     if (page.kind === 'ready') return { page, calls };
   }
 }
+
+/**
+ * Reads one excerpt of a transcript field with `agent.source`, asking again
+ * while the Host answers `preparing` (as the TUI's tool details do,
+ * plugins/agent/tool-details/index.ts:156-180). Resolves with the source.
+ */
+export async function readSource(input) {
+  for (;;) {
+    const page = await query('agent', 'source', input);
+    if (page.kind === 'ready') return page.source;
+  }
+}

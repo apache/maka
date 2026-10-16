@@ -42,8 +42,9 @@
 
 import { div, list } from 'gpui-kit';
 import { v_flex, h_flex, TextView, Scrollbar } from 'gpui-base';
-import { query, subscribe, next, close, log, readHistory } from './host.js';
+import { query, subscribe, next, close, log, readHistory, readSource } from './host.js';
 import { Interactions } from './interactions.js';
+import { palette, typeset, text, icon } from './theme.js';
 
 /** A visible range starting at or above this index counts as "at the top" for paging. */
 const NEAR_TOP = 3;
@@ -112,6 +113,16 @@ function partField(textKind) {
   return textKind === 'thinking' ? 'thinking' : 'body';
 }
 
+/** The UTF-8 size of `text`, which the Host's byte counts are in. */
+function utf8Length(text) {
+  let size = 0;
+  for (const point of text) {
+    const value = point.codePointAt(0);
+    size += value <= 0x7f ? 1 : value <= 0x7ff ? 2 : value <= 0xffff ? 3 : 4;
+  }
+  return size;
+}
+
 export class Transcript {
   /**
    * @param {{ id: string, title: string }} session the catalog entry
@@ -149,6 +160,22 @@ export class Transcript {
     this.lastOutcome = null;
     /** The session's backend preference from `agent.observe`, or null. */
     this.backend = null;
+    /** Keys of the thinking and tool rows the reader opened; `expandedVersion` counts changes. */
+    this.expanded = new Set();
+    this.expandedVersion = 0;
+    /** Why loading earlier messages failed, until it is tried again. */
+    this.olderError = null;
+    /** The footer whose turn was just copied, for two seconds. */
+    this.copied = null;
+    /** The list items last built from the rows (see displayItems). */
+    this.view = null;
+    /**
+       * Tool arguments and results read with `agent.source`, by
+     * `<sequence>/<field>/<path>`: `{ text, complete }` once read (with
+     * `failed` when the read failed), null while it is under way. A
+     * conversation page carries tool metadata only.
+     */
+    this.sources = new Map();
     this.stats = {
       firstPageMs: 0,
       tailCalls: 0,
@@ -531,6 +558,7 @@ export class Transcript {
   async loadOlder() {
     if (this.before === null || this.loadingOlder || this.closed || !this.ready) return 0;
     this.loadingOlder = true;
+    this.olderError = null;
     this.hooks.changed();
     let calls = 0;
     try {
@@ -550,12 +578,82 @@ export class Transcript {
       this.stats.olderPages += 1;
       this.stats.olderCalls += calls;
     } catch (error) {
-      if (!this.closed) this.hooks.report(`Earlier messages: ${error.message}`);
+      if (!this.closed) {
+        this.olderError = error.message;
+        this.hooks.report(`Earlier messages: ${error.message}`);
+      }
     } finally {
       this.loadingOlder = false;
       this.hooks.changed();
     }
     return calls;
+  }
+
+  /**
+   * A click on a list item: opens or closes a thinking or tool row, retries
+   * the history, or copies a finished turn's reply.
+   */
+  click(key, cx) {
+    if (key === 'history') {
+      if (this.olderError !== null) this.loadOlder();
+      return;
+    }
+    if (key.startsWith('footer/')) {
+      const turnId = key.slice('footer/'.length);
+      const reply = this.rows
+        .filter((row) => row.turnId === turnId && row.role === 'assistant')
+        .map((row) => row.text)
+        .join('\n\n');
+      cx.write_to_clipboard(reply);
+      this.copied = key;
+      this.hooks.changed();
+      cx.spawn(async (cx) => {
+        await cx.sleep(2000);
+        if (this.copied === key) {
+          this.copied = null;
+          this.hooks.changed();
+        }
+      });
+      return;
+    }
+    const item = this.view?.items.find((entry) => entry.key === key);
+    if (item?.kind !== 'thinking' && item?.kind !== 'tool') return;
+    if (!this.expanded.delete(key)) this.expanded.add(key);
+    this.expandedVersion += 1;
+    this.hooks.changed();
+  }
+
+  /**
+   * The start of a tool row's `arguments` or `result`, or of the value at
+   * `path` in it, as `{ text, complete, failed? }`; null until it has been read. The
+   * first ask starts the read and the transcript changes when it lands. Rows
+   * never change, so a read is kept for as long as the transcript.
+   */
+  source(sequence, field, path = []) {
+    const key = `${sequence}/${field}/${path.join('/')}`;
+    if (this.sources.has(key)) return this.sources.get(key);
+    this.sources.set(key, null);
+    readSource({
+      sessionId: this.id,
+      // An event fence, not a row position: every loaded row is at or below it.
+      through: this.latestKnown,
+      source: { kind: 'sequence', sequence },
+      field,
+      path: path.length > 0 ? path : null,
+      position: { kind: 'start' },
+    }).then(
+      (source) => {
+        const complete = source.offset === 0 && utf8Length(source.text) === source.totalBytes;
+        this.sources.set(key, { text: source.text, complete });
+        if (!this.closed) this.hooks.changed();
+      },
+      (error) => {
+        log(`source ${key}: ${error.message}`);
+        this.sources.set(key, { text: '', complete: false, failed: error.message });
+        if (!this.closed) this.hooks.changed();
+      },
+    );
+    return null;
   }
 
   /** Shows a sent message until history records it. */
@@ -569,158 +667,527 @@ export class Transcript {
   }
 }
 
-/** The selected session's pane: header, the measured list, and its scrollbar. */
-export function transcriptPane(transcript, loadOlder, cx) {
-  const theme = cx.theme();
-  // One snapshot of the three arrays for this render; the list's callbacks
-  // run during later layouts and must agree with the count given here.
+/** Where the transcript's earliest history stands, as the row above the first message shows it. */
+function historyState(transcript) {
+  if (transcript.loadingOlder) return 'loading';
+  if (transcript.olderError !== null) return 'failed';
+  if (transcript.before === null && transcript.rows.length > 0) return 'start';
+  return null;
+}
+
+/**
+ * The items the list draws: the history row, the transcript rows (a tool
+ * result is drawn with its call), a footer after each finished turn, and a
+ * working row while a run is open. Rebuilt only when what it reads changed.
+ */
+function displayItems(transcript) {
   const { rows, pending, live } = transcript;
-  const count = rows.length + pending.length + live.length;
-  const rowAt = (index) =>
-    index < rows.length
-      ? rows[index]
-      : index < rows.length + pending.length
-        ? pending[index - rows.length]
-        : live[index - rows.length - pending.length];
+  const history = historyState(transcript);
+  const working = transcript.run !== null && transcript.interactions.entries.length === 0;
+  const cached = transcript.view;
+  if (
+    cached !== null &&
+    cached.rows === rows &&
+    cached.pending === pending &&
+    cached.live === live &&
+    cached.expanded === transcript.expandedVersion &&
+    cached.history === history &&
+    cached.working === working
+  ) {
+    return cached.items;
+  }
+  // A result goes with the call the Host paired it with (`tool.call.sequence`);
+  // tool use ids are only unique within a step.
+  const calls = new Set();
+  const results = new Map();
+  const timings = new Map();
+  for (const row of rows) {
+    if (row.role === 'tool_call') calls.add(row.sequence);
+    const call = row.tool?.call?.sequence;
+    if (row.role === 'tool_result' && call !== undefined) results.set(call, row);
+    if (row.timing) timings.set(row.turnId, row.timing);
+  }
+  /** @type {any[]} */
+  const items = [];
+  if (history !== null) items.push({ key: 'history', kind: 'history', state: history });
+  rows.forEach((row, index) => {
+    if (row.role === 'tool_result' && calls.has(row.tool?.call?.sequence)) {
+      // Drawn with its call.
+    } else if (row.role === 'tool_call' || row.role === 'tool_result') {
+      const result = row.role === 'tool_call' ? (results.get(row.sequence) ?? null) : row;
+      items.push({ key: row.key, kind: 'tool', row, result, open: transcript.expanded.has(row.key) });
+    } else if (row.role === 'thinking') {
+      items.push({ key: row.key, kind: 'thinking', row, open: transcript.expanded.has(row.key) });
+    } else {
+      items.push({ key: row.key, kind: row.role === 'user' ? 'user' : 'assistant', row });
+    }
+    const next = rows[index + 1];
+    const finished = timings.get(row.turnId)?.finished ?? null;
+    if ((next === undefined || next.turnId !== row.turnId) && finished !== null) {
+      items.push({ key: `footer/${row.turnId}`, kind: 'footer', turnId: row.turnId, finished });
+    }
+  });
+  for (const row of pending) items.push({ key: row.key, kind: 'user', row });
+  for (const row of live) {
+    items.push(
+      row.role === 'thinking'
+        ? { key: row.key, kind: 'thinking', row, open: transcript.expanded.has(row.key), streaming: true }
+        : { key: row.key, kind: 'assistant', row },
+    );
+  }
+  if (working) items.push({ key: 'working', kind: 'working' });
+  // Consecutive tool calls form one group; the space after a row depends on what follows.
+  items.forEach((item, index) => {
+    const next = items[index + 1];
+    const previous = items[index - 1];
+    if (item.kind === 'tool') {
+      item.first = previous?.kind !== 'tool';
+      item.last = next?.kind !== 'tool';
+    }
+    item.gap = item.kind === 'user' ? 24 : item.kind === 'tool' && next?.kind === 'tool' ? 0 : 12;
+  });
+  transcript.view = {
+    rows,
+    pending,
+    live,
+    expanded: transcript.expandedVersion,
+    history,
+    working,
+    items,
+  };
+  return items;
+}
+
+/** The selected task's transcript: the measured list in the reading column, and its scrollbar. */
+export function transcriptPane(transcript, loadOlder, cx) {
+  const m = palette(cx);
+  // One snapshot for this render; the list's callbacks run during later
+  // layouts and must agree with the count given here.
+  const items = displayItems(transcript);
+  const hasRows = transcript.rows.length + transcript.pending.length + transcript.live.length > 0;
   const id = `transcript-${transcript.id}`;
   return v_flex()
+    .id(`${id}-area`)
+    .relative()
     .flex_1()
     .min_h_0()
-    .child(header(transcript, cx))
+    .when(!transcript.ready || !hasRows, (el) =>
+      el
+        .items_center()
+        .justify_center()
+        .child(text(transcript.ready ? 'No messages yet' : 'Loading…', 'body', m.inkMuted)),
+    )
+    .when(transcript.ready && hasRows, (el) =>
+      el
+        .child(
+          list(
+            id,
+            items.length,
+            (index) => items[index].key,
+            (index, cx) => transcriptItem(items[index], transcript, cx),
+          )
+            // Opens at the newest row and stays there while a reply
+            // streams, until the reader scrolls up.
+            .with_follow_mode('tail')
+            // Reported after the frame, however the range changed: a
+            // wheel, a scrollbar drag, or rows that do not fill the view.
+            .on_visible_range_change((range, shown) => {
+              log(`transcript: showing ${range.start}..${range.end} of ${shown}`);
+              if (range.start < NEAR_TOP && transcript.before !== null) loadOlder();
+            })
+            .on_item_click((key, cx) => transcript.click(key, cx)),
+        )
+        .child(Scrollbar.vertical(id).absolute().inset_0()),
+    );
+}
+
+/** One item of the transcript list, in the reading column; called from layout for each visible item. */
+function transcriptItem(item, transcript, cx) {
+  return h_flex()
+    .w_full()
+    .px(24)
+    .justify_center()
     .child(
       v_flex()
-        .id(`${id}-area`)
-        .relative()
-        .flex_1()
-        .min_h_0()
-        .when(transcript.ready && count === 0, (el) =>
-          el
-            .items_center()
-            .justify_center()
-            .text_color(theme.colors.muted_foreground)
-            .child('No messages yet'),
-        )
-        .when(!transcript.ready, (el) =>
-          el
-            .items_center()
-            .justify_center()
-            .text_color(theme.colors.muted_foreground)
-            .child('Loading…'),
-        )
-        .when(transcript.ready && count > 0, (el) =>
-          el
-            .child(
-              list(
-                id,
-                count,
-                (index) => rowAt(index).key,
-                (index, cx) => transcriptRow(rowAt(index), cx),
-              )
-                // Opens at the newest row and stays there while a reply
-                // streams, until the reader scrolls up.
-                .with_follow_mode('tail')
-                // Reported after the frame, however the range changed: a
-                // wheel, a scrollbar drag, or rows that do not fill the view.
-                .on_visible_range_change((range, shown) => {
-                  log(`transcript: showing ${range.start}..${range.end} of ${shown}`);
-                  if (range.start < NEAR_TOP && transcript.before !== null) loadOlder();
-                }),
-            )
-            .child(Scrollbar.vertical(id).absolute().inset_0()),
-        ),
+        .w_full()
+        .max_w(720)
+        .pb(item.gap)
+        .child(itemBody(item, transcript, cx)),
     );
 }
 
-function header(transcript, cx) {
-  const theme = cx.theme();
-  const state =
-    transcript.interactions.entries.length > 0
-      ? 'Needs you'
-      : transcript.run
-        ? 'Working…'
-        : transcript.lastOutcome === 'failed'
-          ? 'Last turn failed'
-          : null;
-  return h_flex()
-    .flex_none()
-    .px(theme.spacing.xl)
-    .py(theme.spacing.md)
-    .gap(theme.spacing.md)
-    .items_center()
-    .border_b_1()
-    .border_color(theme.colors.border)
-    .child(div().flex_1().min_w_0().truncate().font_weight(600).child(transcript.session.title))
-    .when(transcript.loadingOlder, (el) =>
-      el.child(
-        div()
-          .text_sm()
-          .text_color(theme.colors.muted_foreground)
-          .child('Loading earlier messages…'),
-      ),
-    )
-    .when(state !== null, (el) =>
-      el.child(div().text_sm().text_color(theme.colors.muted_foreground).child(state)),
-    );
-}
-
-/** One row of the transcript list; called from layout for each visible row. */
-export function transcriptRow(entry, cx) {
-  const theme = cx.theme();
-  const body = v_flex().w_full().px(theme.spacing.xl).py(theme.spacing.sm);
-  switch (entry.role) {
+function itemBody(item, transcript, cx) {
+  const m = palette(cx);
+  switch (item.kind) {
+    case 'history':
+      return historyRow(item.state, transcript, cx);
     case 'user':
-      return body.items_end().child(
-        div()
-          .max_w('80%')
-          .px(theme.spacing.md)
-          .py(theme.spacing.sm)
-          .rounded(theme.radius.lg)
-          .bg(theme.colors.secondary)
-          .text_color(theme.colors.secondary_foreground)
-          .when(entry.pending === true, (el) => el.opacity(0.6))
-          .child(entry.text),
-      );
+      return h_flex()
+        .w_full()
+        .pt(16)
+        .justify_end()
+        .child(
+          typeset(div(), 'reading')
+            .max_w('70%')
+            .px(18)
+            .py(10)
+            .rounded(28)
+            .bg(m.bubble)
+            .text_color(m.ink)
+            .when(item.row.pending === true, (el) => el.opacity(0.6))
+            .child(item.row.text),
+        );
     case 'assistant':
-      return body.child(TextView.markdown(`md-${entry.key}`, entry.text));
+      return typeset(div(), 'reading')
+        .w_full()
+        .text_color(m.ink)
+        .child(TextView.markdown(`md-${item.key}`, item.row.text));
     case 'thinking':
-      return body.child(
-        div().text_sm().italic().text_color(theme.colors.muted_foreground).child(entry.text),
-      );
-    case 'tool_call':
-    case 'tool_result':
-      return body.child(toolLine(entry, cx));
+      return thinkingRow(item, cx);
+    case 'tool':
+      return toolRow(item, transcript, cx);
+    case 'footer':
+      return turnFooter(item, transcript, cx);
+    case 'working':
+      return h_flex()
+        .h(24)
+        .gap(4)
+        .items_center()
+        .child(icon('status-running', 12, m.primary))
+        .child(text('Working…', 'small', m.inkMuted));
     default:
-      return body.child(
-        div().text_sm().text_color(theme.colors.muted_foreground).child(entry.text),
-      );
+      return div();
   }
 }
 
-function toolLine(entry, cx) {
-  const theme = cx.theme();
-  const tool = entry.tool;
-  const name = tool?.call?.name ?? 'Tool';
-  const result = tool?.result;
-  const status = result
-    ? result.isError
-      ? 'failed'
-      : (result.settlement ?? 'done')
-    : tool?.call?.pending
-      ? 'running'
-      : '';
-  const label = entry.role === 'tool_call' ? name : `${name} result`;
+function historyRow(state, transcript, cx) {
+  const m = palette(cx);
+  const row = h_flex().min_h(32).gap(6).items_center().justify_center();
+  switch (state) {
+    case 'loading':
+      return row
+        .child(icon('status-running', 12, m.primary))
+        .child(text('Loading earlier messages', 'small', m.inkMuted));
+    case 'failed':
+      return row
+        .child(text('Couldn’t load earlier messages.', 'small', m.destructive))
+        .child(
+          typeset(div(), 'smallLabel')
+            .px(6)
+            .rounded(6)
+            .text_color(m.ink)
+            .hover((style) => style.bg(m.wash))
+            .child('Retry'),
+        )
+        .tooltip(transcript.olderError ?? '');
+    default:
+      return row.child(text('Beginning of task', 'small', m.inkMuted));
+  }
+}
+
+function thinkingRow(item, cx) {
+  const m = palette(cx);
+  const preview = item.row.text.trim().split('\n', 1)[0] ?? '';
+  return v_flex()
+    .w_full()
+    .child(
+      h_flex()
+        .w_full()
+        .h(36)
+        .px(12)
+        .gap(10)
+        .items_center()
+        .rounded(10)
+        .hover((style) => style.bg(m.hover))
+        .child(icon('activity', 16, m.inkMuted))
+        .child(
+          text(item.streaming ? 'Thinking…' : 'Thought', 'label', m.ink)
+            .flex_none()
+            .w(84)
+            .when(item.streaming === true, (el) => el.opacity(0.7)),
+        )
+        .child(
+          text(item.open ? '' : preview, 'small', m.inkMuted)
+            .flex_1()
+            .min_w_0()
+            .truncate(),
+        )
+        .child(icon(item.open ? 'chevron-down' : 'chevron-right', 14, m.inkMuted)),
+    )
+    .when(item.open, (el) =>
+      el.child(
+        text(item.row.text, 'body', m.inkMuted).pl(38).pr(12).pt(2).pb(8),
+      ),
+    );
+}
+
+/**
+ * Tools whose display contract the Host names in `call.presentation` (the
+ * keys the TUI reads, plugins/agent/tool-details/index.ts:48-78): the label
+ * in the name lane, the icon, and the argument the header shows.
+ */
+const TOOL_KINDS = {
+  'maka.workspace.Files@1/readText': ['Read', 'tool-read', ['path']],
+  'maka.workspace.Files@1/write': ['Write', 'tool-edit', ['path']],
+  'maka.workspace.Files@1/edit': ['Edit', 'tool-edit', ['path']],
+  'maka.workspace.Files@1/applyPatch': ['Patch', 'tool-edit', ['operation', 'path']],
+  'maka.workspace.Files@1/glob': ['Glob', 'tool-search', ['pattern']],
+  'maka.workspace.Files@1/grep': ['Grep', 'tool-search', ['pattern']],
+  'maka.workspace.Processes@1/execute': ['Run', 'tool-terminal', ['command']],
+  'maka.workspace.Processes@1/read': ['Output', 'tool-terminal', ['ref']],
+  'maka.workspace.Processes@1/writeStdin': ['Input', 'tool-terminal', ['ref']],
+  'maka.workspace.Processes@1/stop': ['Stop', 'tool-terminal', ['ref']],
+};
+
+/** What a tool with no named contract does, by its name: the icon its header shows. */
+function toolIcon(name) {
+  const lower = name.toLowerCase();
+  if (/bash|shell|exec|command|terminal|run/.test(lower)) return 'tool-terminal';
+  if (/write|edit|patch|replace|create/.test(lower)) return 'tool-edit';
+  if (/grep|glob|search|find|^ls$|list/.test(lower)) return 'tool-search';
+  if (/web|fetch|http|url|browse/.test(lower)) return 'tool-web';
+  if (/read|open|view|cat/.test(lower)) return 'tool-read';
+  return 'tool-plug';
+}
+
+/**
+ * The tool call's state: running, done, failed or stopped, with its icon and
+ * color. `reportedFailure` is a result whose own `kind` says it failed.
+ */
+function toolStatus(row, result, reportedFailure, m) {
+  if (result !== null) {
+    if (
+      reportedFailure ||
+      result.tool?.result?.isError ||
+      result.tool?.result?.settlement === 'failed'
+    ) {
+      return ['failed', 'status-failed', m.destructive];
+    }
+    if (result.tool?.result?.settlement === 'rejected') return ['stopped', 'status-stopped', m.inkMuted];
+    return ['done', 'status-done', m.inkMuted];
+  }
+  if (row.tool?.call?.pending) return ['running', 'status-running', m.primary];
+  return ['stopped', 'status-stopped', m.inkMuted];
+}
+
+/** The first line of `value`, or of the first string inside it. */
+function firstLine(value) {
+  if (typeof value === 'string') return value.trim().split('\n', 1)[0];
+  if (value === null || typeof value !== 'object') return '';
+  for (const entry of Object.values(value)) {
+    const line = firstLine(entry);
+    if (line !== '') return line;
+  }
+  return '';
+}
+
+/** `source` parsed as JSON, or undefined when it is cut short or is not JSON. */
+function parsed(source) {
+  if (!source.complete) return undefined;
+  try {
+    return JSON.parse(source.text);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The header's summary: the call's title when the Host recorded one, else the
+ * argument its contract names, else the first line of the first argument.
+ */
+function toolSummary(tool, kind, transcript) {
+  const call = tool?.call;
+  if (!call) return '';
+  if (call.title) return call.title.fallback;
+  const source = transcript.source(call.sequence, 'arguments', kind?.[2] ?? []);
+  if (source === null) return '';
+  return kind ? source.text.trim().split('\n', 1)[0] : firstLine(parsed(source) ?? '');
+}
+
+/**
+ * What the output block shows for a whole `result` field, read the way the
+ * TUI's tool details read their parts (tool-details/index.ts:241-350): a
+ * failure's message, a command's output, a file's content, the files or
+ * matches found; anything else as indented JSON.
+ */
+function resultText(source) {
+  const result = parsed(source);
+  if (result === undefined) return source.complete ? source.text : `${source.text}…`;
+  if (result?.kind === 'failed' && typeof result.message === 'string') return result.message;
+  const value = result?.kind === 'completed' ? result.value : result;
+  if (typeof value === 'string') return value;
+  const output = value?.output;
+  if (output?.mode === 'pipes') {
+    return [output.stdout, output.stderr].filter((part) => typeof part === 'string' && part !== '').join('\n');
+  }
+  if (output?.mode === 'pty') return output.screen ?? output.scrollback ?? '';
+  if (typeof value?.content === 'string') return value.content;
+  const found = value?.files ?? value?.matches;
+  if (Array.isArray(found)) {
+    return found.map((entry) => (typeof entry === 'string' ? entry : JSON.stringify(entry))).join('\n');
+  }
+  return JSON.stringify(value, null, 2);
+}
+
+/** The arguments as indented JSON, or as read when they are cut short or are not JSON. */
+function argumentsText(source) {
+  const value = parsed(source);
+  if (value === undefined) return source.complete ? source.text : `${source.text}…`;
+  return JSON.stringify(value, null, 2);
+}
+
+function toolRow(item, transcript, cx) {
+  const m = palette(cx);
+  const { row, result } = item;
+  const tool = (result ?? row).tool ?? row.tool;
+  const kind = TOOL_KINDS[tool?.call?.presentation] ?? null;
+  const name = kind?.[0] ?? tool?.call?.name ?? 'Tool';
+  // A contract's result says in its `kind` whether it failed, as the TUI
+  // reads it (tool-details/index.ts:257, 268, 325).
+  const outcome =
+    kind !== null && tool?.result ? transcript.source(tool.result.sequence, 'result', ['kind']) : null;
+  const [status, statusIcon, statusColor] = toolStatus(row, result, outcome?.text === 'failed', m);
+  const summary = toolSummary(tool, kind, transcript);
+  // Opened, a call shows its output, after its arguments when the header
+  // does not show them: a contract's argument under a title, or all of
+  // another call's.
+  const reads = [];
+  if (item.open && tool?.call && kind === null) {
+    reads.push(['arguments', transcript.source(tool.call.sequence, 'arguments')]);
+  } else if (item.open && tool?.call?.title) {
+    reads.push(['argument', transcript.source(tool.call.sequence, 'arguments', kind[2])]);
+  }
+  if (item.open && tool?.result) reads.push(['result', transcript.source(tool.result.sequence, 'result')]);
+  const blocks = reads
+    .filter(([, source]) => source !== null && source.failed === undefined)
+    .map(([field, source]) =>
+      field === 'result'
+        ? resultText(source)
+        : field === 'arguments'
+          ? argumentsText(source)
+          : `${source.text}${source.complete ? '' : '…'}`,
+    )
+    .filter((content) => content.trim() !== '');
+  const note = reads.some(([, source]) => source === null)
+    ? 'Loading…'
+    : reads.some(([, source]) => source.failed !== undefined)
+      ? 'Could not read this call'
+      : status === 'running'
+        ? 'Running…'
+        : 'No output';
+  const ring = !(item.first && item.last && !item.open);
+  return v_flex()
+    .w_full()
+    // One ring around the group: each row draws its sides, the first the top
+    // edge, the last the bottom one, and the top edge of the others divides.
+    .when(ring, (el) =>
+      el
+        .bg(m.plate)
+        .border_x_1()
+        .border_t_1()
+        .border_color(m.border)
+        .when(item.first, (el) => el.rounded_t(12))
+        .when(item.last, (el) => el.border_b_1().rounded_b(12)),
+    )
+    .child(
+      h_flex()
+        .w_full()
+        .h(36)
+        .px(12)
+        .gap(10)
+        .items_center()
+        .rounded(ring ? 0 : 10)
+        .hover((style) => style.bg(m.hover))
+        .child(icon(kind?.[1] ?? toolIcon(name), 16, m.inkMuted))
+        .child(text(name, 'label', m.ink).flex_none().min_w(84).max_w(200).truncate())
+        .child(
+          div()
+            .flex_1()
+            .min_w_0()
+            .truncate()
+            .when(tool?.call?.title != null, (el) => typeset(el, 'small'))
+            .when(tool?.call?.title == null, (el) =>
+              el.text_size(12).line_height('20px').font_family('Menlo'),
+            )
+            .text_color(m.inkMuted)
+            .child(summary),
+        )
+        .child(icon(statusIcon, 14, statusColor).tooltip(status))
+        .when(item.open || status === 'failed', (el) =>
+          el.child(icon(item.open ? 'chevron-down' : 'chevron-right', 14, m.inkMuted)),
+        ),
+    )
+    .when(item.open, (el) =>
+      el.child(
+        v_flex()
+          .pl(38)
+          .pr(12)
+          .pt(2)
+          .pb(12)
+          .gap(8)
+          .children(blocks.map((content) => codeBlock(content, m)))
+          .when(blocks.length === 0, (el) => el.child(text(note, 'small', m.inkMuted))),
+      ),
+    );
+}
+
+/** Tool input or output: 12/20 mono on the code fill, cut at 256px. */
+function codeBlock(content, m) {
+  return div()
+    .w_full()
+    .max_h(276)
+    .overflow_hidden()
+    .px(12)
+    .py(10)
+    .rounded(10)
+    .bg(m.code)
+    .text_size(12)
+    .line_height('20px')
+    .font_family('Menlo')
+    .text_color(m.ink)
+    .child(content.length > 4000 ? `${content.slice(0, 4000)}…` : content);
+}
+
+function turnFooter(item, transcript, cx) {
+  const m = palette(cx);
+  const outcome = { failed: 'Failed', aborted: 'Stopped' }[item.finished.outcome] ?? null;
+  const copied = transcript.copied === item.key;
   return h_flex()
-    .gap(theme.spacing.sm)
+    .h(24)
+    .gap(4)
     .items_center()
-    .px(theme.spacing.md)
-    .py(theme.spacing.xs)
-    .rounded(theme.radius.md)
-    .border_1()
-    .border_color(theme.colors.border)
-    .text_sm()
-    .font_family(theme.typography.mono)
-    .text_color(theme.colors.muted_foreground)
-    .child(div().text_color(theme.colors.foreground).child(label))
-    .when(status !== '', (el) => el.child(div().child(status)))
-    .when(entry.text !== '', (el) => el.child(div().min_w_0().truncate().child(entry.text)));
+    .when(outcome !== null, (el) =>
+      el.child(
+        text(outcome, 'small', item.finished.outcome === 'failed' ? m.destructive : m.inkMuted),
+      ),
+    )
+    .child(
+      text(
+        [outcome !== null ? '·' : null, relativeTime(item.finished.at)].filter(Boolean).join(' '),
+        'small',
+        m.inkMuted,
+      ),
+    )
+    .child(div().flex_1())
+    .child(
+      typeset(div(), 'small')
+        .px(6)
+        .rounded(6)
+        .text_color(m.inkMuted)
+        .hover((style) => style.bg(m.wash).text_color(m.ink))
+        .child(copied ? 'Copied' : 'Copy'),
+    );
+}
+
+/** How long ago `at` (ms) was, in words: "just now", "5 minutes ago", "3 hours ago", … */
+export function relativeTime(at, now = Date.now()) {
+  const minutes = Math.floor(Math.max(0, now - at) / 60000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return minutes === 1 ? '1 minute ago' : `${minutes} minutes ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return hours === 1 ? '1 hour ago' : `${hours} hours ago`;
+  const days = Math.floor(hours / 24);
+  if (days === 1) return 'yesterday';
+  if (days < 7) return `${days} days ago`;
+  return new Date(at).toLocaleDateString();
 }
