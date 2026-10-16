@@ -29,6 +29,7 @@ import { v_flex, Button, Popover } from 'gpui-base';
 import { chooseFolder } from 'maka-files';
 import { query, log } from './host.js';
 import { palette, typeset, text, icon, ghostButton, menuSurface, menuRow, menuSeparator } from './theme.js';
+import { t } from './locale.js';
 
 /** Project pages read for the menu; the Host pages at most 16 projects. */
 const MAX_PROJECT_PAGES = 16;
@@ -75,9 +76,9 @@ export class Directories {
     this.hooks.changed();
     let path;
     try {
-      path = await chooseFolder({ prompt: 'Choose' });
+      path = await chooseFolder({ prompt: t('choose') });
     } catch (error) {
-      this.hooks.report(`Choose a folder: ${error.message}`);
+      this.hooks.report(t('chooseFolderFailed', { value: error.message }));
       return;
     }
     if (path === null) return;
@@ -92,7 +93,7 @@ export class Directories {
       this.choose(await this.find(path));
       log(`directories: new tasks run in ${path}`);
     } catch (error) {
-      this.hooks.report(`Choose a folder: ${error.message}`);
+      this.hooks.report(t('chooseFolderFailed', { value: error.message }));
     } finally {
       this.finding = false;
       this.hooks.changed();
@@ -109,8 +110,12 @@ export class Directories {
       .filter((root) => trimmed === root.path || trimmed.startsWith(`${root.path.replace(/\/$/, '')}/`))
       .sort((a, b) => b.path.length - a.path.length)[0];
     if (root === undefined) {
-      const offered = this.roots.map((root) => root.path).join(', ') || 'none';
-      throw new Error(`${trimmed} is not inside a folder this Host offers (${offered})`);
+      const offered = this.roots.map((root) => root.path).join(', ');
+      throw new Error(
+        offered === ''
+          ? t('folderNotOfferedNone', { path: trimmed })
+          : t('folderNotOffered', { path: trimmed, offered }),
+      );
     }
     let directory = root;
     const names = trimmed.slice(root.path.length).split('/').filter(Boolean);
@@ -134,7 +139,7 @@ export class Directories {
       after = page.after ?? null;
       if (after === null) break;
     }
-    throw new Error(`the Host does not list ${name} in ${directory.path}`);
+    throw new Error(t('hostDoesNotList', { name, path: directory.path }));
   }
 
   /**
@@ -154,7 +159,7 @@ export class Directories {
             changed = true;
             break;
           }
-          if (page.kind !== 'projects') throw new Error(`the Host answered ${page.kind}`);
+          if (page.kind !== 'projects') throw new Error(t('hostAnswered', { value: page.kind }));
           projects.push(...page.projects);
           cursor = page.next ?? null;
           if (cursor === null) break;
@@ -166,9 +171,11 @@ export class Directories {
         }
         return;
       }
-      throw new Error('the list kept changing');
+      throw new Error(t('listKeptChanging'));
     } catch (error) {
-      if (reading === this.projectReads) this.hooks.report(`Projects: ${error.message}`);
+      if (reading === this.projectReads) {
+        this.hooks.report(t('projectsFailed', { value: error.message }));
+      }
     }
   }
 
@@ -177,7 +184,7 @@ export class Directories {
       const page = await query('agent', 'directories', { kind: 'roots' });
       this.roots = page.roots ?? [];
     } catch (error) {
-      this.hooks.report(`Directories: ${error.message}`);
+      this.hooks.report(t('directoriesFailed', { value: error.message }));
     }
     this.hooks.changed();
   }
@@ -250,9 +257,9 @@ export function folderPicker(directories, sessions, disabled, cx) {
     .gap(4)
     .max_w(260)
     .disabled(disabled)
-    .tooltip(target?.path ?? 'Choose a folder')
+    .tooltip(target?.path ?? t('chooseFolder'))
     .child(icon('folder', 14, m.inkMuted))
-    .child(div().min_w_0().truncate().child(target?.name || target?.path || 'Choose a folder'))
+    .child(div().min_w_0().truncate().child(target?.name || target?.path || t('chooseFolder')))
     .child(icon('chevron-down', 14, m.inkMuted));
   if (disabled) return chip;
   return Popover.new('folder-menu')
@@ -275,7 +282,7 @@ function placeRows(directories, sessions, cx) {
   return [
     v_flex().id('folder-places').max_h(320).overflow_y_scroll().children(rows),
     ...(rows.length > 0 ? [menuSeparator(cx)] : []),
-    menuRow('folder-browse', 'Choose a folder…', { icon: 'folder-open' }, cx).on_click(() =>
+    menuRow('folder-browse', t('chooseFolderMenu'), { icon: 'folder-open' }, cx).on_click(() =>
       directories.chooseFromPanel(),
     ),
   ];
@@ -310,11 +317,7 @@ function placeRow(id, place, checked, roots, cx) {
             .child(place.name || place.path),
         )
         .child(
-          text(
-            place.available ? folder : 'Folder not found',
-            'small',
-            m.inkMuted,
-          ).truncate(),
+          text(place.available ? folder : t('folderNotFound'), 'small', m.inkMuted).truncate(),
         ),
     )
     .when(checked, (el) => el.child(icon('check', 16, m.ink)));

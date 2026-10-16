@@ -17,8 +17,8 @@
  * under the License.
  */
 
-// Settings: model connections, their API keys, the default model, and import
-// from an old Maka settings export. The calls follow the TUI's settings
+// Settings: the language and appearance, model connections, their API keys,
+// the default model, and import from an old Maka settings export. The calls follow the TUI's settings
 // plugins (plugins/settings/connection-form/operations.ts and
 // plugins/settings/credential/index.ts): create the connection, save its key
 // as the `secret` resource of `settings.saveCredential`, then let
@@ -41,7 +41,19 @@ import {
   ghostButton,
   controlButton,
   textField,
+  APPEARANCES,
+  appearancePreference,
+  setAppearancePreference,
 } from './theme.js';
+import {
+  LANGUAGE_CHOICES,
+  LANGUAGE_NAMES,
+  languagePreference,
+  setLanguagePreference,
+  onLanguageChange,
+  t,
+  tn,
+} from './locale.js';
 
 /** A control button in the settings' style: primary or outline. */
 function button(id, label, primary, disabled, cx) {
@@ -53,18 +65,19 @@ const MAX_PAGES = 32;
 /** Providers listed at once while choosing one. */
 const PROVIDER_ROWS = 12;
 
+/** Why the Host did not save a key, by its reason: the message's key. */
 const KEY_REJECTIONS = {
-  invalid_input: 'the request was not valid',
-  invalid_secret: 'the key is empty, too long, or has control characters',
-  secret_unavailable: 'the key could not be read',
-  provider_unavailable: 'this Host does not offer the provider',
-  authentication_unavailable: 'the provider does not take an API key',
-  attempt_conflict: 'another save was in progress; try again',
-  connection_changed: 'the connection changed meanwhile; try again',
-  credential_changed: 'the key changed meanwhile; try again',
-  capacity: 'the key store is full',
-  slug_taken: 'the connection ID is taken',
-  authentication: 'the provider did not accept the key',
+  invalid_input: 'keyRejectedRequest',
+  invalid_secret: 'keyRejectedSecret',
+  secret_unavailable: 'keyRejectedUnreadable',
+  provider_unavailable: 'keyRejectedProvider',
+  authentication_unavailable: 'keyRejectedNoKeys',
+  attempt_conflict: 'keyRejectedConflict',
+  connection_changed: 'connectionChanged',
+  credential_changed: 'keyRejectedKeyChanged',
+  capacity: 'keyRejectedFull',
+  slug_taken: 'keyRejectedIdTaken',
+  authentication: 'keyRejectedAuthentication',
 };
 
 export class Settings {
@@ -75,8 +88,8 @@ export class Settings {
   constructor(hooks) {
     this.hooks = hooks;
     this.open = false;
-    /** The page shown: "models" or "connections". */
-    this.page = 'models';
+    /** The page shown: "general", "models" or "connections". */
+    this.page = 'general';
     /** The connection catalog's revision, which every catalog change names. */
     this.revision = null;
     this.defaultTarget = null;
@@ -102,14 +115,23 @@ export class Settings {
     /** { path, rows, error, done } while an export is being imported. */
     this.importing = null;
 
-    this.modelQuery = InputState.new({ placeholder: 'Find a model' });
+    this.modelQuery = InputState.new({ placeholder: t('findModel') });
     this.modelQuery.on('change', () => this.loadModels());
-    this.providerQuery = InputState.new({ placeholder: 'Find a provider' });
+    this.providerQuery = InputState.new({ placeholder: t('findProvider') });
     this.providerQuery.on('change', () => this.hooks.changed());
-    this.name = InputState.new({ placeholder: 'Name' });
-    this.endpoint = InputState.new({ placeholder: 'Endpoint URL' });
-    this.key = InputState.new({ placeholder: 'API key' });
+    this.name = InputState.new({ placeholder: t('fieldName') });
+    this.endpoint = InputState.new({ placeholder: t('endpointUrl') });
+    this.key = InputState.new({ placeholder: t('apiKey') });
     this.key.set_masked(true);
+    // The inputs live as long as the app, so their placeholders follow the
+    // language for good.
+    onLanguageChange(() => {
+      this.modelQuery.set_placeholder(t('findModel'));
+      this.providerQuery.set_placeholder(t('findProvider'));
+      this.name.set_placeholder(t('fieldName'));
+      this.endpoint.set_placeholder(t('endpointUrl'));
+      this.key.set_placeholder(t('apiKey'));
+    });
   }
 
   show(page = null) {
@@ -141,7 +163,7 @@ export class Settings {
       await this.loadConnections();
       await Promise.all([this.loadStatuses(), this.loadDescriptors(), this.loadModels()]);
     } catch (error) {
-      this.fail('Settings', error);
+      this.fail(t('settingsFailed', { value: error.message }));
     } finally {
       this.loading = false;
       this.hooks.changed();
@@ -157,7 +179,7 @@ export class Settings {
       let next = first.next;
       let complete = true;
       for (let pages = 1; next !== null && next !== undefined; pages += 1) {
-        if (pages >= MAX_PAGES) throw new Error('the connection list has too many pages');
+        if (pages >= MAX_PAGES) throw new Error(t('connectionListTooManyPages'));
         const page = await query('settings', 'connections', {
           kind: 'continue',
           revision: first.revision,
@@ -176,7 +198,7 @@ export class Settings {
       this.connections = rows;
       return;
     }
-    throw new Error('the connection list kept changing; try again');
+    throw new Error(t('connectionListKeptChanging'));
   }
 
   async loadStatuses() {
@@ -211,7 +233,7 @@ export class Settings {
     const known = this.descriptors.get(identity.name);
     if (known) return known;
     const provider = await query('authentication', 'provider', identity);
-    if (!provider?.descriptor) throw new Error(`no description of provider ${identity.name}`);
+    if (!provider?.descriptor) throw new Error(t('noProviderDescription', { name: identity.name }));
     this.descriptors.set(identity.name, provider.descriptor);
     return provider.descriptor;
   }
@@ -219,7 +241,7 @@ export class Settings {
   async loadProviders() {
     const providers = [];
     for (let offset = 0, pages = 0; offset !== null && offset !== undefined; pages += 1) {
-      if (pages >= MAX_PAGES) throw new Error('the provider list has too many pages');
+      if (pages >= MAX_PAGES) throw new Error(t('providerListTooManyPages'));
       const page = await query('settings', 'providers', { offset });
       providers.push(...page.providers);
       offset = page.next;
@@ -235,7 +257,7 @@ export class Settings {
       let page = await query('settings', 'models', { kind: 'start', query: search });
       if (page.kind !== 'ready') page = await query('settings', 'models', { kind: 'start', query: search });
       if (read !== this.modelReads) return;
-      if (page.kind !== 'ready') throw new Error('the model list kept changing; try again');
+      if (page.kind !== 'ready') throw new Error(t('modelListKeptChanging'));
       this.models = {
         revision: page.revision,
         choices: page.choices,
@@ -243,7 +265,7 @@ export class Settings {
         next: page.next ?? null,
       };
     } catch (error) {
-      if (read === this.modelReads) this.fail('Models', error);
+      if (read === this.modelReads) this.fail(t('modelsFailed', { value: error.message }));
     }
     this.hooks.changed();
   }
@@ -262,13 +284,18 @@ export class Settings {
         next: page.next ?? null,
       };
     } catch (error) {
-      if (read === this.modelReads) this.fail('Models', error);
+      if (read === this.modelReads) this.fail(t('modelsFailed', { value: error.message }));
     }
     this.hooks.changed();
   }
 
-  /** Runs one change at a time; its failure is shown on the page and in the status line. */
-  async run(label, work) {
+  /**
+   * Runs one change at a time; its failure is shown on the page and in the
+   * status line, as `failure` words it from the error's message.
+   * @param {string} label
+   * @param {(value: string) => string} failure
+   */
+  async run(label, failure, work) {
     if (this.busy !== null) return;
     this.busy = label;
     this.error = null;
@@ -276,20 +303,21 @@ export class Settings {
     try {
       await work();
     } catch (error) {
-      this.fail(label.replace(/…$/, ''), error);
+      this.fail(failure(error.message));
     } finally {
       this.busy = null;
       this.hooks.changed();
     }
   }
 
-  fail(what, error) {
-    this.error = `${what}: ${error.message}`;
+  fail(message) {
+    this.error = message;
     this.hooks.report(this.error);
   }
 
   setDefault(choice) {
-    return this.run('Setting the default model…', async () => {
+    const failure = (value) => t('settingDefaultFailed', { value });
+    return this.run(t('settingDefault'), failure, async () => {
       const target = {
         connectionId: choice.selection.connectionId,
         modelId: choice.selection.modelId,
@@ -332,7 +360,7 @@ export class Settings {
     if (this.providers === null) {
       this.loadProviders().then(
         () => this.hooks.changed(),
-        (error) => this.fail('Providers', error),
+        (error) => this.fail(t('providersFailed', { value: error.message })),
       );
     }
     this.hooks.changed();
@@ -353,7 +381,7 @@ export class Settings {
       this.endpoint.set_value(typeof defaults.baseUrl === 'string' ? defaults.baseUrl : '');
       this.key.set_value('');
     } catch (error) {
-      this.fail('Provider', error);
+      this.fail(t('providerFailed', { value: error.message }));
     }
     this.hooks.changed();
   }
@@ -384,7 +412,8 @@ export class Settings {
       this.hooks.changed();
       return;
     }
-    return this.run(`Adding ${name}…`, async () => {
+    const failure = (value) => t('addingConnectionFailed', { name, value });
+    return this.run(t('addingConnection', { name }), failure, async () => {
       const outcome = await this.connect({
         provider: form.provider.identity,
         descriptor: form.descriptor,
@@ -403,15 +432,16 @@ export class Settings {
     if (form?.kind !== 'key') return;
     const key = this.key.value().trim();
     if (key === '') {
-      this.error = 'Enter the API key';
+      this.error = t('enterApiKey');
       this.hooks.changed();
       return;
     }
-    return this.run('Saving the key…', async () => {
+    const failure = (value) => t('savingKeyFailed', { value });
+    return this.run(t('savingKey'), failure, async () => {
       const id = form.connectionId;
       try {
         await this.storeKey(id, key);
-        this.notes.set(id, `Key saved; ${await this.discover(id)}`);
+        this.notes.set(id, t('keySavedThen', { value: await this.discover(id) }));
         this.closeForm();
       } finally {
         await this.loadStatuses();
@@ -438,7 +468,8 @@ export class Settings {
    */
   removeConnection(connection) {
     const basis = connection.basis;
-    return this.run('Removing the connection…', async () => {
+    const failure = (value) => t('removingConnectionFailed', { value });
+    return this.run(t('removingConnection'), failure, async () => {
       this.removing = null;
       const result = await operation('settings', 'remove', {
         expected: { connectionId: basis.connectionId, revision: basis.revision },
@@ -461,7 +492,8 @@ export class Settings {
 
   findModels(connection) {
     const id = connection.basis.connectionId;
-    return this.run('Finding models…', async () => {
+    const failure = (value) => t('findingModelsFailed', { value });
+    return this.run(t('findingModels'), failure, async () => {
       this.notes.set(id, await this.discover(id));
     });
   }
@@ -473,7 +505,7 @@ export class Settings {
    * @param {(step: string) => void} [progress]
    */
   async connect(spec, progress = () => {}) {
-    progress('Creating the connection');
+    progress(t('creatingConnectionStep'));
     const created = await this.catalogChange('create', (revision) => ({
       expectedCatalogRevision: revision,
       connection: {
@@ -486,24 +518,25 @@ export class Settings {
       },
     }));
     const connectionId = created.connection?.connectionId;
-    if (!connectionId) throw new Error('the Host created no connection');
+    if (!connectionId) throw new Error(t('hostCreatedNoConnection'));
     log(`settings: created ${spec.slug}`);
     await this.loadConnections();
-    let note = 'Added';
+    let note = t('added');
     if (spec.key) {
-      progress('Saving the key');
+      progress(t('savingKeyStep'));
       try {
         await this.storeKey(connectionId, spec.key);
       } catch (error) {
-        throw new Error(`added without a key: ${error.message}`);
+        throw new Error(t('addedWithoutKey', { value: error.message }));
       } finally {
         await this.loadStatuses();
       }
-      note = 'Key saved';
+      note = t('keySaved');
     }
     if (spec.descriptor.discovery) {
-      progress('Finding models');
-      note = `${note}; ${await this.discover(connectionId)}`;
+      progress(t('findingModelsStep'));
+      const found = await this.discover(connectionId);
+      note = spec.key ? t('keySavedThen', { value: found }) : t('addedThen', { value: found });
     }
     return { connectionId, note };
   }
@@ -525,7 +558,10 @@ export class Settings {
     );
     log(`settings: saveCredential ${target.slug} ${result.kind} ${result.reason ?? ''}`);
     if (result.kind !== 'saved') {
-      throw new Error(KEY_REJECTIONS[result.reason] ?? `the Host refused the key (${result.reason})`);
+      const rejection = KEY_REJECTIONS[result.reason];
+      throw new Error(
+        rejection !== undefined ? t(rejection) : t('hostRefusedKey', { value: result.reason }),
+      );
     }
   }
 
@@ -540,22 +576,20 @@ export class Settings {
     this.hooks.modelsChanged();
     if (result.kind === 'ready') {
       const count = this.find(connectionId)?.enabledModelCount ?? 0;
-      return count === 1 ? '1 model enabled' : `${count} models enabled`;
+      return tn(count, 'modelsEnabledOne', 'modelsEnabledOther');
     }
-    return result.kind === 'superseded'
-      ? 'the connection changed while finding models; use Find models again'
-      : 'finding models failed; check the key and the endpoint, then use Find models';
+    return result.kind === 'superseded' ? t('changedWhileFinding') : t('findingModelsFailedHint');
   }
 
   /** The connection as a credential target at its current revision. */
   async target(connectionId) {
     const connection = this.find(connectionId);
-    if (!connection) throw new Error('the connection is gone');
+    if (!connection) throw new Error(t('connectionGone'));
     let detail = await query('settings', 'connection', connection.basis);
     if (detail.kind === 'stale' && detail.actual?.connectionId === connectionId) {
       detail = await query('settings', 'connection', detail.actual);
     }
-    if (detail.kind !== 'ready') throw new Error('the connection changed meanwhile; try again');
+    if (detail.kind !== 'ready') throw new Error(t('connectionChanged'));
     return detail.target;
   }
 
@@ -579,9 +613,9 @@ export class Settings {
     if (this.busy !== null) return;
     let file;
     try {
-      file = await openText({ prompt: 'Import', maxBytes: 1 << 20 });
+      file = await openText({ prompt: t('importPrompt'), maxBytes: 1 << 20 });
     } catch (error) {
-      this.fail('Import', error);
+      this.fail(t('importFailed', { value: error.message }));
       return;
     }
     if (file !== null) await this.prepareImport(file.path, file.text);
@@ -609,7 +643,8 @@ export class Settings {
   runImport() {
     const plan = this.importing;
     if (plan === null || plan.done) return;
-    return this.run('Importing…', async () => {
+    const failure = (value) => t('importingFailed', { value });
+    return this.run(t('importing'), failure, async () => {
       try {
         for (const row of plan.rows.filter((r) => r.state === 'ready')) {
           row.state = 'working';
@@ -664,11 +699,11 @@ export function importRows(text, providers, connections) {
   try {
     data = JSON.parse(text);
   } catch {
-    throw new Error('the file is not JSON');
+    throw new Error(t('notJson'));
   }
   const credentials = data?.data?.credentials;
   if (data?.schemaVersion !== 1 || !Array.isArray(credentials)) {
-    throw new Error('the file is not a Maka settings export with keys (schema version 1)');
+    throw new Error(t('notSettingsExport'));
   }
   const taken = new Set(connections.map((c) => c.slug));
   return credentials.map((credential) => {
@@ -692,11 +727,11 @@ export function importRows(text, providers, connections) {
       state: 'ready',
       note: '',
     };
-    if (credential?.kind !== 'api_key') return skip(row, 'only API keys can be imported');
-    if (provider === null) return skip(row, `this Host has no provider "${type}"`);
-    if (!SLUG.test(slug) || slug.length > 64) return skip(row, 'its ID is not a valid connection ID');
-    if (taken.has(slug)) return skip(row, 'a connection with this ID exists');
-    if (key === '') return skip(row, 'the key is empty');
+    if (credential?.kind !== 'api_key') return skip(row, t('onlyApiKeys'));
+    if (provider === null) return skip(row, t('hostHasNoProvider', { name: type }));
+    if (!SLUG.test(slug) || slug.length > 64) return skip(row, t('invalidConnectionId'));
+    if (taken.has(slug)) return skip(row, t('connectionIdExistsHere'));
+    if (key === '') return skip(row, t('keyEmpty'));
     taken.add(slug);
     return row;
   });
@@ -711,11 +746,11 @@ function skip(row, note) {
 
 /** Why the add form cannot be sent, or null. */
 function checkConnection(descriptor, name, endpoint, key) {
-  if (name === '' || name.length > 256) return 'Enter a name of at most 256 characters';
-  if (showsEndpoint(descriptor) && endpoint === '') return 'Enter the endpoint URL';
+  if (name === '' || name.length > 256) return t('enterName');
+  if (showsEndpoint(descriptor) && endpoint === '') return t('enterEndpoint');
   const auth = keyAuth(descriptor);
-  if (auth === 'none') return 'This provider signs in through the terminal app (maka) for now';
-  if (auth === 'required' && key === '') return 'Enter the API key';
+  if (auth === 'none') return t('providerSignsInTerminal');
+  if (auth === 'required' && key === '') return t('enterApiKey');
   return null;
 }
 
@@ -755,17 +790,17 @@ function configurationFor(descriptor, endpoint) {
 function describeCatalog(result) {
   switch (result.kind) {
     case 'connection_exists':
-      return `a connection with ID ${result.slug} exists`;
+      return t('connectionIdExists', { slug: result.slug });
     case 'connection_stale':
-      return 'the connection changed meanwhile; try again';
+      return t('connectionChanged');
     case 'revision_conflict':
-      return 'the settings changed meanwhile; try again';
+      return t('settingsChanged');
     case 'invalid_default_target':
-      return 'that model cannot be the default';
+      return t('invalidDefaultModel');
     case 'rejected':
-      return `the Host refused it (${result.reason})`;
+      return t('hostRefusedIt', { value: result.reason });
     default:
-      return `unexpected answer ${result.kind}`;
+      return t('unexpectedAnswer', { value: result.kind });
   }
 }
 
@@ -790,9 +825,11 @@ function choiceLabel(choice) {
   return choice.connectionName ? `${choice.label} · ${choice.connectionName}` : choice.label;
 }
 
+/** The pages: id, the message keys of title and description, and icon. */
 const PAGES = [
-  ['models', 'Models', 'cpu', 'The model new tasks use, from the connections below.'],
-  ['connections', 'Connections', 'tool-plug', 'Model providers and their API keys.'],
+  ['general', 'settingsGeneral', 'settings', 'settingsGeneralDetail'],
+  ['models', 'settingsModels', 'cpu', 'settingsModelsDetail'],
+  ['connections', 'settingsConnections', 'tool-plug', 'settingsConnectionsDetail'],
 ];
 
 /**
@@ -821,7 +858,7 @@ export function settingsNav(settings, close, cx) {
         .justify_start()
         .on_click(close)
         .child(icon('chevron-left', 16, m.inkMuted))
-        .child('Back to app'),
+        .child(t('backToApp')),
     )
     .child(
       typeset(div(), 'smallLabel')
@@ -832,7 +869,7 @@ export function settingsNav(settings, close, cx) {
         .items_center()
         .text_color(m.inkMuted)
         .font_weight(600)
-        .child('Settings'),
+        .child(t('settings')),
     )
     .children(
       PAGES.map(([page, label, glyph]) => {
@@ -850,7 +887,7 @@ export function settingsNav(settings, close, cx) {
           .when(!selected, (el) => el.hover((style) => style.bg(m.hover)))
           .on_click(() => settings.showPage(page))
           .child(icon(glyph, 16, m.inkMuted))
-          .child(label);
+          .child(t(label));
       }),
     );
 }
@@ -884,23 +921,23 @@ export function settingsPage(settings, cx) {
               h_flex()
                 .gap(12)
                 .items_center()
-                .child(text(title, 'display', m.ink).flex_1())
-                .when(settings.loading, (el) => el.child(text('Loading…', 'small', m.inkMuted)))
+                .child(text(t(title), 'display', m.ink).flex_1())
+                .when(settings.loading, (el) => el.child(text(t('loading'), 'small', m.inkMuted)))
                 .when(settings.page === 'connections', (el) =>
                   el
                     .child(
-                      button('connection-import', 'Import from Maka export…', false, busy, cx)
-                        .tooltip('Read the API keys from a settings file exported by the old Maka app')
+                      button('connection-import', t('importFromExport'), false, busy, cx)
+                        .tooltip(t('importFromExportTip'))
                         .on_click(() => settings.chooseImport()),
                     )
                     .child(
-                      button('connection-add', 'Add connection', true, busy, cx).on_click(() =>
+                      button('connection-add', t('addConnection'), true, busy, cx).on_click(() =>
                         settings.openAdd(),
                       ),
                     ),
                 ),
             )
-            .child(text(description, 'body', m.inkMuted))
+            .child(text(t(description), 'body', m.inkMuted))
             .when(busy || settings.error !== null, (el) =>
               el.child(
                 text(
@@ -911,6 +948,7 @@ export function settingsPage(settings, cx) {
               ),
             ),
         )
+        .when(settings.page === 'general', (el) => el.children(generalSection(settings, cx)))
         .when(settings.page === 'models', (el) => el.child(modelSection(settings, cx)))
         .when(settings.page === 'connections', (el) => el.child(connectionSection(settings, cx))),
     );
@@ -943,6 +981,86 @@ function group(title, description, end, rows, cx) {
     );
 }
 
+/**
+ * The General page, as the native client's: the language, then the
+ * appearance, each a list of choices with the current one checked. Both
+ * apply at once and are kept on this computer.
+ */
+function generalSection(settings, cx) {
+  return [
+    group(
+      t('settingsLanguage'),
+      t('settingsLanguageDetail'),
+      null,
+      [
+        choiceList(
+          'language',
+          LANGUAGE_CHOICES.map((value) => [
+            value,
+            value === 'system' ? t('languageSystem') : LANGUAGE_NAMES[value],
+          ]),
+          languagePreference(),
+          (value) => {
+            setLanguagePreference(value);
+            settings.hooks.changed();
+          },
+          cx,
+        ),
+      ],
+      cx,
+    ),
+    group(
+      t('settingsAppearance'),
+      t('settingsAppearanceDetail'),
+      null,
+      [
+        choiceList(
+          'appearance',
+          APPEARANCES.map((value) => [value, t(`appearance_${value}`)]),
+          appearancePreference(),
+          (value) => {
+            setAppearancePreference(value);
+            settings.hooks.changed();
+          },
+          cx,
+        ),
+      ],
+      cx,
+    ),
+  ];
+}
+
+/** Choices of which one holds: a round mark, filled and checked for the current one, and its label. */
+function choiceList(id, choices, current, choose, cx) {
+  const m = palette(cx);
+  return v_flex()
+    .py(4)
+    .children(
+      choices.map(([value, label]) => {
+        const selected = value === current;
+        return typeset(Button.new(`${id}-${value}`), 'body')
+          .h(36)
+          .gap(10)
+          .items_center()
+          .justify_start()
+          .text_color(m.ink)
+          .on_click(() => choose(value))
+          .child(
+            div()
+              .size(18)
+              .flex_none()
+              .flex()
+              .items_center()
+              .justify_center()
+              .rounded(9)
+              .when(selected, (el) => el.bg(m.ink).child(icon('check', 12, m.plate)))
+              .when(!selected, (el) => el.border_1().border_color(m.border)),
+          )
+          .child(label);
+      }),
+    );
+}
+
 /** A settings row: title and detail on the left, controls at the end. */
 function settingRow(title, detail, end, cx) {
   const m = palette(cx);
@@ -969,22 +1087,22 @@ function modelSection(settings, cx) {
     defaultModel.kind === 'ready'
       ? choiceLabel(defaultModel.choice)
       : defaultModel.kind === 'unavailable'
-        ? 'Unavailable; choose another'
-        : 'None; new tasks use the first model listed';
+        ? t('defaultUnavailable')
+        : t('defaultNone');
   const isDefault = (choice) =>
     defaultModel.kind === 'ready' &&
     defaultModel.choice.selection.connectionId === choice.selection.connectionId &&
     defaultModel.choice.selection.modelId === choice.selection.modelId;
   const rows = [
-    settingRow('Default model', current, null, cx),
-    settingRow('Find a model', null, div().w(260).child(textField(settings.modelQuery, cx)), cx),
+    settingRow(t('defaultModel'), current, null, cx),
+    settingRow(t('findModel'), null, div().w(260).child(textField(settings.modelQuery, cx)), cx),
     ...choices.map((choice, index) =>
       settingRow(
         choice.label,
         choice.connectionName ?? null,
         isDefault(choice)
-          ? pill('Default', cx)
-          : button(`model-${index}`, 'Use as default', false, busy, cx)
+          ? pill(t('defaultBadge'), cx)
+          : button(`model-${index}`, t('useAsDefault'), false, busy, cx)
               .h(28)
               .on_click(() => settings.setDefault(choice)),
         cx,
@@ -997,9 +1115,9 @@ function modelSection(settings, cx) {
         .py(8)
         .gap(12)
         .items_center()
-        .child(text('No models yet. Add a connection with a key.', 'body', m.inkMuted).flex_1())
+        .child(text(t('noModelsYet'), 'body', m.inkMuted).flex_1())
         .child(
-          button('models-connections', 'Connections', false, false, cx).on_click(() =>
+          button('models-connections', t('settingsConnections'), false, false, cx).on_click(() =>
             settings.showPage('connections'),
           ),
         ),
@@ -1010,18 +1128,20 @@ function modelSection(settings, cx) {
       h_flex()
         .py(8)
         .child(
-          button('models-more', 'Show more', false, false, cx).on_click(() => settings.moreModels()),
+          button('models-more', t('showMore'), false, false, cx).on_click(() =>
+            settings.moreModels(),
+          ),
         ),
     );
   }
-  return group('Default model', 'New tasks start with this model; the composer can pick another.', null, rows, cx);
+  return group(t('defaultModel'), t('defaultModelDetail'), null, rows, cx);
 }
 
 function connectionSection(settings, cx) {
   const m = palette(cx);
   const rows = settings.connections.map((connection) => connectionRow(settings, connection, cx));
   if (settings.connections.length === 0 && !settings.loading) {
-    rows.push(text('No connections yet.', 'body', m.inkMuted).py(8));
+    rows.push(text(t('noConnectionsYet'), 'body', m.inkMuted).py(8));
   }
   return v_flex()
     .w_full()
@@ -1039,18 +1159,17 @@ function connectionRow(settings, connection, cx) {
   const status = settings.statuses.get(id);
   const key =
     status === undefined
-      ? 'Key: …'
+      ? t('keyChecking')
       : status === null
-        ? 'Key status unknown'
+        ? t('keyStatusUnknown')
         : status.configured
-          ? 'Key saved'
+          ? t('keySaved')
           : descriptor?.anonymous
-            ? 'No key needed'
-            : 'No key';
-  const models =
-    connection.enabledModelCount === 1 ? '1 model' : `${connection.enabledModelCount} models`;
+            ? t('noKeyNeeded')
+            : t('noKey');
+  const models = tn(connection.enabledModelCount, 'modelCountOne', 'modelCountOther');
   const facts = [descriptor?.label ?? connection.provider.name, key];
-  if (!connection.enabled) facts.push('Turned off');
+  if (!connection.enabled) facts.push(t('turnedOff'));
   const note = settings.notes.get(id);
   const editing = settings.form?.kind === 'key' && settings.form.connectionId === id;
   const isDefault = settings.defaultTarget?.connectionId === id;
@@ -1082,29 +1201,29 @@ function connectionRow(settings, connection, cx) {
                 .gap(8)
                 .items_center()
                 .child(typeset(div(), 'label').text_color(m.ink).truncate().child(connection.name))
-                .when(isDefault, (el) => el.child(pill('Default', cx))),
+                .when(isDefault, (el) => el.child(pill(t('defaultBadge'), cx))),
             )
             .child(text(facts.join(' · '), 'small', m.inkMuted).truncate()),
         )
         .child(text(models, 'body', m.inkMuted).flex_none())
         .when(connection.editable && descriptor && takesKey(descriptor), (el) =>
           el.child(
-            button(`key-${id}`, 'Set key', false, busy, cx)
+            button(`key-${id}`, t('setKey'), false, busy, cx)
               .h(28)
               .on_click(() => settings.openKey(connection)),
           ),
         )
         .when(descriptor?.discovery === true, (el) =>
           el.child(
-            button(`discover-${id}`, 'Find models', false, busy, cx)
+            button(`discover-${id}`, t('findModelsButton'), false, busy, cx)
               .h(28)
-              .tooltip('Ask the provider which models it offers and enable them')
+              .tooltip(t('findModelsTip'))
               .on_click(() => settings.findModels(connection)),
           ),
         )
         .when(connection.editable, (el) =>
           el.child(
-            button(`remove-${id}`, 'Remove', false, busy || confirming, cx)
+            button(`remove-${id}`, t('remove'), false, busy || confirming, cx)
               .h(28)
               .on_click(() => settings.askRemove(connection)),
           ),
@@ -1117,24 +1236,18 @@ function connectionRow(settings, connection, cx) {
           .gap(8)
           .items_center()
           .child(
-            text(
-              isDefault
-                ? 'Remove this connection, its API keys and the default model? Tasks that used it are kept.'
-                : 'Remove this connection and its API keys? Tasks that used it are kept.',
-              'small',
-              m.ink,
-            )
+            text(isDefault ? t('confirmRemoveDefault') : t('confirmRemove'), 'small', m.ink)
               .flex_1()
               .min_w_0(),
           )
           .child(
-            controlButton(`remove-confirm-${id}`, 'Remove', 'outline', busy, cx)
+            controlButton(`remove-confirm-${id}`, t('remove'), 'outline', busy, cx)
               .h(28)
               .text_color(m.destructive)
               .on_click(() => settings.removeConnection(connection)),
           )
           .child(
-            button(`remove-cancel-${id}`, 'Cancel', false, busy, cx)
+            button(`remove-cancel-${id}`, t('cancel'), false, busy, cx)
               .h(28)
               .on_click(() => settings.cancelRemove()),
           ),
@@ -1149,10 +1262,12 @@ function connectionRow(settings, connection, cx) {
           .items_center()
           .child(div().w(260).child(textField(settings.key, cx)))
           .child(
-            button(`key-save-${id}`, 'Save key', true, busy, cx).on_click(() => settings.saveKey()),
+            button(`key-save-${id}`, t('saveKey'), true, busy, cx).on_click(() =>
+              settings.saveKey(),
+            ),
           )
           .child(
-            button(`key-cancel-${id}`, 'Cancel', false, busy, cx).on_click(() =>
+            button(`key-cancel-${id}`, t('cancel'), false, busy, cx).on_click(() =>
               settings.closeForm(),
             ),
           ),
@@ -1173,12 +1288,17 @@ function addForm(settings, cx) {
         p.identity.name.toLowerCase().includes(search),
     );
     const rows = [
-      settingRow('Provider', null, div().w(260).child(textField(settings.providerQuery, cx)), cx),
+      settingRow(
+        t('provider'),
+        null,
+        div().w(260).child(textField(settings.providerQuery, cx)),
+        cx,
+      ),
       v_flex()
         .py(8)
         .gap(8)
         .when(settings.providers === null, (el) =>
-          el.child(text('Listing providers…', 'body', m.inkMuted)),
+          el.child(text(t('listingProviders'), 'body', m.inkMuted)),
         )
         .child(
           h_flex()
@@ -1196,14 +1316,18 @@ function addForm(settings, cx) {
         )
         .when(matches.length > PROVIDER_ROWS, (el) =>
           el.child(
-            text(`${matches.length - PROVIDER_ROWS} more; type to narrow the list`, 'small', m.inkMuted),
+            text(
+              t('moreProviders', { count: matches.length - PROVIDER_ROWS }),
+              'small',
+              m.inkMuted,
+            ),
           ),
         ),
     ];
     return group(
-      'Add a connection',
-      'Choose the provider',
-      button('add-cancel', 'Cancel', false, busy, cx).on_click(() => settings.closeForm()),
+      t('addAConnection'),
+      t('chooseProvider'),
+      button('add-cancel', t('cancel'), false, busy, cx).on_click(() => settings.closeForm()),
       rows,
       cx,
     );
@@ -1211,39 +1335,41 @@ function addForm(settings, cx) {
   const descriptor = form.descriptor;
   const auth = keyAuth(descriptor);
   const control = (state) => div().w(260).child(textField(state, cx));
-  const rows = [settingRow('Name', null, control(settings.name), cx)];
-  if (showsEndpoint(descriptor)) rows.push(settingRow('Endpoint', null, control(settings.endpoint), cx));
+  const rows = [settingRow(t('fieldName'), null, control(settings.name), cx)];
+  if (showsEndpoint(descriptor)) {
+    rows.push(settingRow(t('endpoint'), null, control(settings.endpoint), cx));
+  }
   if (takesKey(descriptor)) {
     rows.push(
       settingRow(
-        auth === 'optional' ? 'API key (optional)' : 'API key',
-        'Kept by the Host; never shown again',
+        auth === 'optional' ? t('apiKeyOptional') : t('apiKey'),
+        t('keptByHost'),
         control(settings.key),
         cx,
       ),
     );
   }
   if (auth === 'none') {
-    rows.push(
-      text('This provider signs in through the terminal app (maka) for now.', 'body', m.inkMuted).py(8),
-    );
+    rows.push(text(t('providerSignsInTerminalNote'), 'body', m.inkMuted).py(8));
   }
   rows.push(
     h_flex()
       .py(8)
       .gap(8)
       .justify_end()
-      .child(button('add-cancel', 'Cancel', false, busy, cx).on_click(() => settings.closeForm()))
       .child(
-        button('add-save', 'Add', true, busy || auth === 'none', cx).on_click(() =>
+        button('add-cancel', t('cancel'), false, busy, cx).on_click(() => settings.closeForm()),
+      )
+      .child(
+        button('add-save', t('add'), true, busy || auth === 'none', cx).on_click(() =>
           settings.addConnection(),
         ),
       ),
   );
   return group(
-    `Add a ${descriptor.label} connection`,
+    t('addProviderConnection', { provider: descriptor.label }),
     null,
-    button('add-change', 'Change provider', false, busy, cx).on_click(() => settings.openAdd()),
+    button('add-change', t('changeProvider'), false, busy, cx).on_click(() => settings.openAdd()),
     rows,
     cx,
   );
@@ -1255,15 +1381,17 @@ function importPanel(settings, cx) {
   const plan = settings.importing;
   const ready = plan.rows.filter((row) => row.state === 'ready').length;
   const states = {
-    ready: 'Will be imported',
-    skipped: 'Skipped',
-    working: 'Importing',
-    done: 'Imported',
-    failed: 'Failed',
+    ready: t('importReady'),
+    skipped: t('importSkipped'),
+    working: t('importWorking'),
+    done: t('importDone'),
+    failed: t('failed'),
   };
   const rows = plan.rows.map((row) =>
     settingRow(
-      `${row.name} (${row.slug || 'no ID'})`,
+      row.slug
+        ? t('importRowTitle', { name: row.name, id: row.slug })
+        : t('importRowTitleNoId', { name: row.name }),
       [row.endpoint, row.note].filter((part) => part).join(' · ') || null,
       text(states[row.state], 'small', row.state === 'failed' ? m.destructive : m.inkMuted),
       cx,
@@ -1271,7 +1399,7 @@ function importPanel(settings, cx) {
   );
   if (plan.error !== null) rows.push(text(plan.error, 'body', m.destructive).py(8));
   if (plan.error === null && plan.rows.length === 0) {
-    rows.push(text('The file has no keys.', 'body', m.inkMuted).py(8));
+    rows.push(text(t('fileHasNoKeys'), 'body', m.inkMuted).py(8));
   }
   rows.push(
     h_flex()
@@ -1279,16 +1407,16 @@ function importPanel(settings, cx) {
       .gap(8)
       .justify_end()
       .child(
-        button('import-close', plan.done ? 'Close' : 'Cancel', false, busy, cx).on_click(() =>
+        button('import-close', plan.done ? t('close') : t('cancel'), false, busy, cx).on_click(() =>
           settings.closeImport(),
         ),
       )
       .when(!plan.done && ready > 0, (el) =>
         el.child(
-          button('import-run', ready === 1 ? 'Import 1 key' : `Import ${ready} keys`, true, busy, cx)
+          button('import-run', tn(ready, 'importKeysOne', 'importKeysOther'), true, busy, cx)
             .on_click(() => settings.runImport()),
         ),
       ),
   );
-  return group(`Import from ${plan.path.split('/').pop()}`, plan.path, null, rows, cx);
+  return group(t('importFrom', { name: plan.path.split('/').pop() }), plan.path, null, rows, cx);
 }

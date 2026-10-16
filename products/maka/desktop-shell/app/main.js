@@ -39,6 +39,7 @@ import { interactionCard } from './interactions.js';
 import { Settings, settingsNav, settingsPage } from './settings.js';
 import { Directories, folderPicker } from './directories.js';
 import { followAppearance, palette, text, icon, controlButton, ghostButton } from './theme.js';
+import { t, onLanguageChange } from './locale.js';
 
 /**
  * Where the window controls start, from the left of the strip or header that
@@ -108,6 +109,9 @@ export default class MakaDesktop extends View {
     // button, a form's Submit), the window root gives the focus back to it.
     this.rootFocus = cx.focus_handle();
     cx.spawn(async (cx) => followAppearance(cx));
+    // Every label is looked up while rendering, so a new language needs only
+    // a new frame. The app lives as long as the window, so this never ends.
+    onLanguageChange(() => this.cx.notify());
     // Ages in the sidebar and turn footers are in minutes.
     cx.spawn(async (cx) => {
       for (;;) {
@@ -224,19 +228,21 @@ export default class MakaDesktop extends View {
     this.cx.notify();
     try {
       const created = await operation('agent', 'create', {
-        title: 'New session',
+        // Stored in the Host until the automatic title replaces it, so it
+        // stays in the language the task was started in.
+        title: t('newTask'),
         automaticTitle: true,
         labels: [],
         workspace,
       });
       if (created.kind !== 'created') {
-        throw new Error(`the Host rejected it (${JSON.stringify(created.reason)})`);
+        throw new Error(t('hostRejectedTask', { value: JSON.stringify(created.reason) }));
       }
       log(`new session ${created.session.id} in ${workspace.kind}`);
       await this.select(created.session);
       return this.transcript;
     } catch (error) {
-      this.report(`New session: ${error.message}`);
+      this.report(t('newSessionFailed', { value: error.message }));
       return null;
     } finally {
       this.creating = false;
@@ -379,7 +385,7 @@ export default class MakaDesktop extends View {
       .px(24)
       .py(32)
       .gap(16)
-      .child(text('What should we work on?', 'display', m.ink).max_w(720).text_center())
+      .child(text(t('emptyStateTitle'), 'display', m.ink).max_w(720).text_center())
       .when(noModel, (el) =>
         el.child(
           h_flex()
@@ -391,9 +397,9 @@ export default class MakaDesktop extends View {
             .rounded(12)
             .bg(m.warningTint)
             .child(icon('triangle-alert', 16, m.warning))
-            .child(text('No model is set up yet', 'body', m.ink))
+            .child(text(t('noModelYet'), 'body', m.ink))
             .child(
-              controlButton('open-settings', 'Add a model in Settings', 'primary', false, cx).on_click(
+              controlButton('open-settings', t('addModelInSettings'), 'primary', false, cx).on_click(
                 () => this.settings.show('connections'),
               ),
             ),
@@ -414,9 +420,9 @@ export default class MakaDesktop extends View {
       transcript === null
         ? null
         : transcript.interactions.entries.length > 0
-          ? 'Needs you'
+          ? t('needsYou')
           : transcript.run
-            ? 'Working…'
+            ? t('working')
             : null;
     return h_flex()
       .flex_none()
@@ -484,18 +490,20 @@ export default class MakaDesktop extends View {
       .items_center()
       .child(
         control('window-sidebar', 'sidebar', true, () => this.toggleSidebar()).tooltip(
-          this.sidebarHidden ? 'Show sidebar (⌘B)' : 'Hide sidebar (⌘B)',
+          this.sidebarHidden
+            ? t('showSidebar', { shortcut: '⌘B' })
+            : t('hideSidebar', { shortcut: '⌘B' }),
         ),
       )
       .child(
         control('window-back', 'chevron-left', this.history.back.length > 0, () =>
           this.go(-1),
-        ).tooltip('Back (⌘[)'),
+        ).tooltip(t('goBack', { shortcut: '⌘[' })),
       )
       .child(
         control('window-forward', 'chevron-right', this.history.forward.length > 0, () =>
           this.go(1),
-        ).tooltip('Forward (⌘])'),
+        ).tooltip(t('goForward', { shortcut: '⌘]' })),
       );
   }
 
@@ -523,7 +531,7 @@ export default class MakaDesktop extends View {
           .gap(8)
           .items_center()
           .child(icon('status-running', 16, m.primary))
-          .child(text('Starting…', 'body', m.inkMuted)),
+          .child(text(t('starting'), 'body', m.inkMuted)),
       );
     }
     return column(
@@ -540,20 +548,14 @@ export default class MakaDesktop extends View {
             .flex_1()
             .min_w_0()
             .gap(2)
-            .child(text('The Maka Host is not answering', 'strong', m.ink))
-            .child(
-              text(
-                'Tasks shown may be out of date. The desktop keeps trying to reach it.',
-                'body',
-                m.ink,
-              ),
-            )
+            .child(text(t('hostNotAnswering'), 'strong', m.ink))
+            .child(text(t('hostNotAnsweringDetail'), 'body', m.ink))
             .when(this.error !== null, (el) =>
               el.child(text(this.error.message, 'small', m.destructive).truncate()),
             ),
         )
         .child(
-          controlButton('host-retry', 'Retry', 'quiet', false, cx)
+          controlButton('host-retry', t('retry'), 'quiet', false, cx)
             .h(28)
             .on_click(() => this.catalog.retryNow()),
         ),

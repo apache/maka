@@ -9125,6 +9125,7 @@ dependencies = [
  "maka-capabilities",
  "maka-host-runtime",
  "maka-plugin-core",
+ "maka-ui-runtime",
  "serde_json",
  "tokio",
  "tokio-util",

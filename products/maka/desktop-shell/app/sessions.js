@@ -34,6 +34,7 @@ import {
   iconButton,
   compactAge,
 } from './theme.js';
+import { t } from './locale.js';
 
 const LIST = { filter: 'all', position: { kind: 'start' } };
 const RETRY_MS = 2000;
@@ -80,7 +81,7 @@ export class SessionCatalog {
         if (!this.restarting) log('catalog: the Host ended the subscription');
       } catch (error) {
         // A restart closes the handle under the loop; its next() then fails.
-        if (!this.restarting) this.hooks.report(`Session list: ${error.message}`);
+        if (!this.restarting) this.hooks.report(t('sessionListFailed', { value: error.message }));
       } finally {
         if (this.handle !== null) await close(this.handle).catch(() => {});
         this.handle = null;
@@ -94,7 +95,7 @@ export class SessionCatalog {
       try {
         this.apply(await query('agent', 'list', LIST), 'offline');
       } catch (error) {
-        this.hooks.report(`Session list: ${error.message}`);
+        this.hooks.report(t('sessionListFailed', { value: error.message }));
       }
       for (let waited = 0; waited < RETRY_MS && !this.wakeUp; waited += 100) await cx.sleep(100);
       this.wakeUp = false;
@@ -222,6 +223,14 @@ function timeGroup(at, now) {
   return 'Earlier';
 }
 
+/** The heading of each group `timeGroup` answers. */
+const TIME_GROUPS = {
+  Today: 'groupToday',
+  Yesterday: 'groupYesterday',
+  'This week': 'groupThisWeek',
+  Earlier: 'groupEarlier',
+};
+
 /** The sessions in groups, newest first: by day, or by the folder they work in. */
 function groups(sessions, grouping) {
   const now = Date.now();
@@ -233,7 +242,9 @@ function groups(sessions, grouping) {
     let group = byKey.get(key);
     if (!group) {
       const label =
-        grouping === 'time' ? key : (path.split('/').filter(Boolean).pop() ?? (path || 'No folder'));
+        grouping === 'time'
+          ? t(TIME_GROUPS[key])
+          : (path.split('/').filter(Boolean).pop() ?? (path || t('noFolder')));
       group = { key, label, path: grouping === 'time' ? null : path, sessions: [] };
       byKey.set(key, group);
     }
@@ -284,7 +295,7 @@ export function sidebar(catalog, ui, selectedId, actions, cx) {
             .when(actions.drafting, (el) => el.bg(m.selected))
             .on_click(() => actions.newTask())
             .child(icon('compose', 16, m.inkMuted))
-            .child(div().flex_1().child('New task'))
+            .child(div().flex_1().child(t('newTask')))
             .child(text('⌘N', 'small', m.inkMuted).flex_none()),
         )
         .child(groupingControl(ui, cx)),
@@ -300,7 +311,7 @@ export function sidebar(catalog, ui, selectedId, actions, cx) {
         .when(catalog.sessions.length === 0, (el) =>
           el.child(
             text(
-              catalog.state === 'connecting' ? 'Loading tasks…' : 'No tasks yet',
+              catalog.state === 'connecting' ? t('loadingTasks') : t('noTasksYet'),
               'small',
               m.inkMuted,
             )
@@ -341,8 +352,8 @@ function groupingControl(ui, cx) {
     .gap(2)
     .rounded(10)
     .bg(dark ? m.wash : m.sunken)
-    .child(segment('time', 'By time'))
-    .child(segment('project', 'By project'));
+    .child(segment('time', t('groupByTime')))
+    .child(segment('project', t('groupByProject')));
 }
 
 function taskGroup(group, ui, selectedId, actions, cx) {
@@ -384,7 +395,7 @@ function taskGroup(group, ui, selectedId, actions, cx) {
             .when(group.path !== null, (el) =>
               el.child(
                 iconButton(`group-new-${id}`, 'plus', cx, 20, 14)
-                  .tooltip(`New task in ${group.path}`)
+                  .tooltip(t('newTaskIn', { path: group.path }))
                   .on_click(() => actions.newIn(group.sessions[0])),
               ),
             ),
@@ -403,7 +414,7 @@ function taskGroup(group, ui, selectedId, actions, cx) {
           .text_color(m.inkMuted)
           .hover((style) => style.text_color(m.ink))
           .on_click(() => ui.expand(group.key))
-          .child('Show more'),
+          .child(t('showMore')),
       ),
     );
 }
@@ -432,9 +443,11 @@ function taskRow(session, selected, select, cx) {
         .items_center()
         .justify_end()
         .when(needsYou(session), (el) =>
-          el.child(tippedIcon('status-waiting', 14, m.warning, 'Needs you')),
+          el.child(tippedIcon('status-waiting', 14, m.warning, t('needsYou'))),
         )
-        .when(working, (el) => el.child(tippedIcon('status-running', 14, m.primary, 'Working')))
+        .when(working, (el) =>
+          el.child(tippedIcon('status-running', 14, m.primary, t('taskWorking'))),
+        )
         .when(!working, (el) => el.child(text(compactAge(session.updatedAt), 'small', m.inkMuted))),
     );
 }
@@ -442,9 +455,9 @@ function taskRow(session, selected, select, cx) {
 function footer(catalog, actions, cx) {
   const m = palette(cx);
   const [color, word] = {
-    connecting: [m.warning, 'Starting…'],
+    connecting: [m.warning, t('starting')],
     live: [m.success, null],
-    offline: [m.destructive, 'Disconnected'],
+    offline: [m.destructive, t('disconnected')],
   }[catalog.state];
   return h_flex()
     .flex_none()
@@ -463,12 +476,12 @@ function footer(catalog, actions, cx) {
         .gap(8)
         .items_center()
         .child(dot(color))
-        .child(text('Local Host', 'body', m.ink).flex_none())
+        .child(text(t('localHost'), 'body', m.ink).flex_none())
         .when(word !== null, (el) => el.child(text(word, 'small', m.inkMuted).truncate())),
     )
     .child(
       iconButton('open-settings', 'settings', cx)
-        .tooltip('Settings')
+        .tooltip(t('settings'))
         .on_click(() => actions.settings()),
     );
 }

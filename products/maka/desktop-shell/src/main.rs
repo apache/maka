@@ -22,10 +22,12 @@
 //! Feasibility probe: the gpui-shell command, built inside this workspace
 //! against the vendored gpui-base and gpui-fast, with a `maka-host` module
 //! that reaches the Host named by `MAKA_HOST_ENDPOINT` and `MAKA_HOST_EPOCH`,
-//! a `maka-files` module that reads a file the user picks, and the window
-//! Maka opens in (`window`).
+//! a `maka-files` module for the file or folder the user picks, a
+//! `maka-locale` module with the language the system asks for, and the
+//! window Maka opens in (`window`).
 
 mod files;
+mod locale;
 mod maka_host;
 mod window;
 
@@ -39,6 +41,10 @@ fn main() {
     }
     if let Err(error) = gpui_shell::export_module(files::module()) {
         eprintln!("{}: {error}", files::NAME);
+        std::process::exit(1);
+    }
+    if let Err(error) = gpui_shell::export_module(locale::module()) {
+        eprintln!("{}: {error}", locale::NAME);
         std::process::exit(1);
     }
     let components = match window::components() {

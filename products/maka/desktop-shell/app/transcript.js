@@ -44,7 +44,8 @@ import { div, list } from 'gpui-kit';
 import { v_flex, h_flex, TextView, Scrollbar } from 'gpui-base';
 import { query, subscribe, next, close, log, readHistory, readSource } from './host.js';
 import { Interactions } from './interactions.js';
-import { palette, typeset, text, icon, tippedIcon, markdownStyle } from './theme.js';
+import { palette, typeset, text, icon, tippedIcon, markdownStyle, MONTHS } from './theme.js';
+import { t, tn, language } from './locale.js';
 
 /** A visible range starting at or above this index counts as "at the top" for paging. */
 const NEAR_TOP = 3;
@@ -240,7 +241,7 @@ export class Transcript {
       // change the transcript read history after the tail just loaded.
       this.watch(handle);
     } catch (error) {
-      if (!this.closed) this.hooks.report(`Transcript: ${error.message}`);
+      if (!this.closed) this.hooks.report(t('transcriptFailed', { value: error.message }));
     }
   }
 
@@ -265,9 +266,9 @@ export class Transcript {
         if (page === null || this.closed) break;
         this.deliver(page);
       }
-      if (!this.closed) this.hooks.report('Live updates for this session ended');
+      if (!this.closed) this.hooks.report(t('liveUpdatesEnded'));
     } catch (error) {
-      if (!this.closed) this.hooks.report(`Live updates: ${error.message}`);
+      if (!this.closed) this.hooks.report(t('liveUpdatesFailed', { value: error.message }));
     }
   }
 
@@ -427,7 +428,7 @@ export class Transcript {
       this.acceptObservation(observed);
       this.hooks.changed();
     } catch (error) {
-      if (!this.closed) this.hooks.report(`Session state: ${error.message}`);
+      if (!this.closed) this.hooks.report(t('sessionStateFailed', { value: error.message }));
     }
   }
 
@@ -484,7 +485,7 @@ export class Transcript {
         this.hooks.changed();
       } while (this.followAgain && !this.closed);
     } catch (error) {
-      if (!this.closed) this.hooks.report(`Transcript: ${error.message}`);
+      if (!this.closed) this.hooks.report(t('transcriptFailed', { value: error.message }));
     } finally {
       this.following = false;
     }
@@ -580,7 +581,7 @@ export class Transcript {
     } catch (error) {
       if (!this.closed) {
         this.olderError = error.message;
-        this.hooks.report(`Earlier messages: ${error.message}`);
+        this.hooks.report(t('earlierMessagesFailed', { value: error.message }));
       }
     } finally {
       this.loadingOlder = false;
@@ -823,7 +824,7 @@ export function transcriptPane(transcript, loadOlder, cx) {
       el
         .items_center()
         .justify_center()
-        .child(text(transcript.ready ? 'No messages yet' : 'Loading…', 'body', m.inkMuted)),
+        .child(text(transcript.ready ? t('noMessagesYet') : t('loading'), 'body', m.inkMuted)),
     )
     .when(transcript.ready && hasRows, (el) =>
       el
@@ -902,7 +903,7 @@ function itemBody(item, transcript, cx) {
         .gap(4)
         .items_center()
         .child(icon('status-running', 12, m.primary))
-        .child(text('Working…', 'small', m.inkMuted));
+        .child(text(t('working'), 'small', m.inkMuted));
     default:
       return div();
   }
@@ -915,21 +916,21 @@ function historyRow(state, transcript, cx) {
     case 'loading':
       return row
         .child(icon('status-running', 12, m.primary))
-        .child(text('Loading earlier messages', 'small', m.inkMuted));
+        .child(text(t('loadingEarlier'), 'small', m.inkMuted));
     case 'failed':
       return row
-        .child(text('Couldn’t load earlier messages.', 'small', m.destructive))
+        .child(text(t('loadEarlierFailed'), 'small', m.destructive))
         .child(
           typeset(div(), 'smallLabel')
             .px(6)
             .rounded(6)
             .text_color(m.ink)
             .hover((style) => style.bg(m.wash))
-            .child('Retry'),
+            .child(t('retry')),
         )
         .tooltip(transcript.olderError ?? '');
     default:
-      return row.child(text('Beginning of task', 'small', m.inkMuted));
+      return row.child(text(t('beginningOfTask'), 'small', m.inkMuted));
   }
 }
 
@@ -949,7 +950,7 @@ function thinkingRow(item, cx) {
         .hover((style) => style.bg(m.hover))
         .child(icon('activity', 16, m.inkMuted))
         .child(
-          text(item.streaming ? 'Thinking…' : 'Thought', 'label', m.ink)
+          text(item.streaming ? t('thinking') : t('thought'), 'label', m.ink)
             .flex_none()
             .w(84)
             .when(item.streaming === true, (el) => el.opacity(0.7)),
@@ -971,20 +972,29 @@ function thinkingRow(item, cx) {
 
 /**
  * Tools whose display contract the Host names in `call.presentation` (the
- * keys the TUI reads, plugins/agent/tool-details/index.ts:48-78): the label
- * in the name lane, the icon, and the argument the header shows.
+ * keys the TUI reads, plugins/agent/tool-details/index.ts:48-78): the
+ * message for the label in the name lane, the icon, and the argument the
+ * header shows.
  */
 const TOOL_KINDS = {
-  'maka.workspace.Files@1/readText': ['Read', 'tool-read', ['path']],
-  'maka.workspace.Files@1/write': ['Write', 'tool-edit', ['path']],
-  'maka.workspace.Files@1/edit': ['Edit', 'tool-edit', ['path']],
-  'maka.workspace.Files@1/applyPatch': ['Patch', 'tool-edit', ['operation', 'path']],
-  'maka.workspace.Files@1/glob': ['Glob', 'tool-search', ['pattern']],
-  'maka.workspace.Files@1/grep': ['Grep', 'tool-search', ['pattern']],
-  'maka.workspace.Processes@1/execute': ['Run', 'tool-terminal', ['command']],
-  'maka.workspace.Processes@1/read': ['Output', 'tool-terminal', ['ref']],
-  'maka.workspace.Processes@1/writeStdin': ['Input', 'tool-terminal', ['ref']],
-  'maka.workspace.Processes@1/stop': ['Stop', 'tool-terminal', ['ref']],
+  'maka.workspace.Files@1/readText': ['toolRead', 'tool-read', ['path']],
+  'maka.workspace.Files@1/write': ['toolWrite', 'tool-edit', ['path']],
+  'maka.workspace.Files@1/edit': ['toolEdit', 'tool-edit', ['path']],
+  'maka.workspace.Files@1/applyPatch': ['toolPatch', 'tool-edit', ['operation', 'path']],
+  'maka.workspace.Files@1/glob': ['toolGlob', 'tool-search', ['pattern']],
+  'maka.workspace.Files@1/grep': ['toolGrep', 'tool-search', ['pattern']],
+  'maka.workspace.Processes@1/execute': ['toolRun', 'tool-terminal', ['command']],
+  'maka.workspace.Processes@1/read': ['toolOutput', 'tool-terminal', ['ref']],
+  'maka.workspace.Processes@1/writeStdin': ['toolInput', 'tool-terminal', ['ref']],
+  'maka.workspace.Processes@1/stop': ['toolStop', 'tool-terminal', ['ref']],
+};
+
+/** The message that names each state of a tool call (see toolStatus). */
+const TOOL_STATES = {
+  running: 'toolStateRunning',
+  done: 'toolStateDone',
+  failed: 'toolStateFailed',
+  stopped: 'toolStateStopped',
 };
 
 /** The longest value a tool row reads whole; past it, the start and the end. */
@@ -1089,7 +1099,7 @@ function outputParts(tool, kind, status, transcript) {
     const state = transcript.source(sequence, 'result', ['value', 'status']);
     if (state === null) return [{ label: null, source: null, format: 'text' }];
     if (method === 'execute' && state.failed === undefined && ['starting', 'running'].includes(state.text)) {
-      return [{ note: 'Running in the background' }];
+      return [{ note: t('runningInBackground') }];
     }
     const mode = transcript.source(sequence, 'result', ['value', 'output', 'mode']);
     if (mode === null) return [{ label: null, source: null, format: 'text' }];
@@ -1100,15 +1110,16 @@ function outputParts(tool, kind, status, transcript) {
     if (mode.failed === undefined && mode.text === 'pipes') {
       return ['stdout', 'stderr'].map((stream) => {
         const cut = flag(`${stream}Truncated`);
-        return { label: stream, source: read(['value', 'output', stream]), format: 'text', cut, midLine: cut };
+        const label = stream === 'stdout' ? t('outputStdout') : t('outputStderr');
+        return { label, source: read(['value', 'output', stream]), format: 'text', cut, midLine: cut };
       });
     }
     // A terminal's lines above the screen, then the screen, as the TUI shows
     // both. They are whole lines; the flag says some earlier ones are gone.
     if (mode.failed === undefined && mode.text === 'pty') {
       return [
-        { label: 'scrollback', source: read(['value', 'output', 'scrollback']), format: 'text', cut: flag('truncated') },
-        { label: 'screen', source: read(['value', 'output', 'screen']), format: 'text' },
+        { label: t('outputScrollback'), source: read(['value', 'output', 'scrollback']), format: 'text', cut: flag('truncated') },
+        { label: t('outputScreen'), source: read(['value', 'output', 'screen']), format: 'text' },
       ];
     }
     return whole;
@@ -1166,7 +1177,8 @@ function bothEnds(source) {
   if (!tail) return `${source.text}…`;
   const headBytes = utf8Length(source.text);
   if (tail.offset <= headBytes) return source.text + dropBytes(tail.text, headBytes - tail.offset);
-  return `${source.text}\n\n… ${byteSize(tail.offset - headBytes)} not shown …\n\n${tail.text}`;
+  const gap = t('notShown', { size: byteSize(tail.offset - headBytes) });
+  return `${source.text}\n\n${gap}\n\n${tail.text}`;
 }
 
 /** `text` without its first `bytes` UTF-8 bytes. */
@@ -1182,7 +1194,7 @@ function dropBytes(text, bytes) {
 }
 
 function byteSize(bytes) {
-  if (bytes < 1024) return `${bytes} bytes`;
+  if (bytes < 1024) return tn(bytes, 'bytesOne', 'bytesOther');
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
@@ -1223,7 +1235,7 @@ function toolRow(item, transcript, cx) {
   const { row, result } = item;
   const tool = (result ?? row).tool ?? row.tool;
   const kind = TOOL_KINDS[tool?.call?.presentation] ?? null;
-  const name = kind?.[0] ?? tool?.call?.name ?? 'Tool';
+  const name = kind !== null ? t(kind[0]) : (tool?.call?.name ?? t('toolUnnamed'));
   // A contract's result says in its `kind` whether it failed, as the TUI
   // reads it (tool-details/index.ts:257, 268, 325).
   const outcome =
@@ -1252,18 +1264,18 @@ function toolRow(item, transcript, cx) {
   // when both have something.
   const named = blocks.filter((block) => block.label !== null).length > 1;
   const caption = (block) =>
-    [named ? block.label : null, block.cut ? 'Earlier output was not kept' : null]
+    [named ? block.label : null, block.cut ? t('earlierOutputNotKept') : null]
       .filter((part) => part !== null)
       .join(' · ') || null;
   const note =
     parts.find((part) => part.note !== undefined)?.note ??
     (parts.some((part) => part.source === null)
-      ? 'Loading…'
+      ? t('loading')
       : parts.some((part) => part.source?.failed !== undefined)
-        ? 'Could not read this call'
+        ? t('couldNotReadCall')
         : status === 'running'
-          ? 'Running…'
-          : 'No output');
+          ? t('running')
+          : t('noOutput'));
   const ring = !(item.first && item.last && !item.open);
   return v_flex()
     .w_full()
@@ -1301,7 +1313,7 @@ function toolRow(item, transcript, cx) {
             .text_color(m.inkMuted)
             .child(summary),
         )
-        .child(tippedIcon(statusIcon, 14, statusColor, status))
+        .child(tippedIcon(statusIcon, 14, statusColor, t(TOOL_STATES[status])))
         .when(item.open || status === 'failed', (el) =>
           el.child(icon(item.open ? 'chevron-down' : 'chevron-right', 14, m.inkMuted)),
         ),
@@ -1347,7 +1359,7 @@ function codeBlock(id, label, content, m) {
     const head = trimmed.slice(0, headEnd);
     const tail = trimmed.slice(tailStart);
     const hidden = trimmed.slice(head.length, trimmed.length - tail.length).split('\n').length - 1;
-    shown = `${head}\n\n… ${hidden} lines not shown …\n\n${tail}`;
+    shown = `${head}\n\n${tn(hidden, 'linesNotShownOne', 'linesNotShownOther')}\n\n${tail}`;
   }
   return v_flex()
     .w_full()
@@ -1379,7 +1391,7 @@ function lowSurrogate(text, index) {
 
 function turnFooter(item, transcript, cx) {
   const m = palette(cx);
-  const outcome = { failed: 'Failed', aborted: 'Stopped' }[item.finished.outcome] ?? null;
+  const outcome = { failed: t('failed'), aborted: t('stopped') }[item.finished.outcome] ?? null;
   const copied = transcript.copied === item.key;
   return h_flex()
     .h(24)
@@ -1404,19 +1416,46 @@ function turnFooter(item, transcript, cx) {
         .rounded(6)
         .text_color(m.inkMuted)
         .hover((style) => style.bg(m.wash).text_color(m.ink))
-        .child(copied ? 'Copied' : 'Copy'),
+        .child(copied ? t('copied') : t('copy')),
     );
 }
 
-/** How long ago `at` (ms) was, in words: "just now", "5 minutes ago", "3 hours ago", … */
+/**
+ * How long ago `at` (ms) was, in words, as the native client's
+ * `relative_time` (maka-gpui crates/shared/src/time.rs) says it: "just now",
+ * "5 minutes ago", "3 hours ago", "yesterday", "2 days ago" (前天), … and
+ * from a week on the date and time.
+ */
 export function relativeTime(at, now = Date.now()) {
   const minutes = Math.floor(Math.max(0, now - at) / 60000);
-  if (minutes < 1) return 'just now';
-  if (minutes < 60) return minutes === 1 ? '1 minute ago' : `${minutes} minutes ago`;
+  if (minutes < 1) return t('justNow');
+  if (minutes < 60) return tn(minutes, 'minutesAgoOne', 'minutesAgoOther');
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return hours === 1 ? '1 hour ago' : `${hours} hours ago`;
+  if (hours < 24) return tn(hours, 'hoursAgoOne', 'hoursAgoOther');
   const days = Math.floor(hours / 24);
-  if (days === 1) return 'yesterday';
-  if (days < 7) return `${days} days ago`;
-  return new Date(at).toLocaleDateString();
+  if (days === 1) return t('yesterday');
+  if (days === 2) return t('twoDaysAgo');
+  if (days < 7) return t('daysAgo', { count: days });
+  return absoluteTime(at);
+}
+
+/**
+ * A date and time as the native client's `absolute_time` writes it:
+ * "Sep 18, 2026, 3:04 PM", "2026年9月18日 15:04", "2026年9月18日 下午3:04".
+ */
+function absoluteTime(at) {
+  const date = new Date(at);
+  const [year, month, day] = [date.getFullYear(), date.getMonth() + 1, date.getDate()];
+  const hour = date.getHours();
+  const hour12 = hour % 12 === 0 ? 12 : hour % 12;
+  const minute = String(date.getMinutes()).padStart(2, '0');
+  const period = hour < 12 ? t('timeAm') : t('timePm');
+  switch (language()) {
+    case 'zh-CN':
+      return `${year}年${month}月${day}日 ${String(hour).padStart(2, '0')}:${minute}`;
+    case 'zh-TW':
+      return `${year}年${month}月${day}日 ${period}${hour12}:${minute}`;
+    default:
+      return `${MONTHS[month - 1]} ${day}, ${year}, ${hour12}:${minute} ${period}`;
+  }
 }

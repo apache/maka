@@ -28,11 +28,13 @@ import { div } from 'gpui-kit';
 import { v_flex, h_flex, InputState } from 'gpui-base';
 import { query, operation, log } from './host.js';
 import { palette, text, icon, controlButton, textField } from './theme.js';
+import { t, tn, onLanguageChange } from './locale.js';
 
+/** The scopes a permission can be allowed for, with the message that labels each. */
 const SCOPES = [
-  ['once', 'Allow once'],
-  ['turn', 'Allow for this turn'],
-  ['session', 'Allow for this session'],
+  ['once', 'allowOnce'],
+  ['turn', 'allowForTurn'],
+  ['session', 'allowForSession'],
 ];
 
 export class Interactions {
@@ -64,7 +66,7 @@ export class Interactions {
     try {
       this.accept(await query('agent', 'pendingInteractions', { sessionId: this.sessionId }));
     } catch (error) {
-      if (!this.closed) this.hooks.report(`Pending requests: ${error.message}`);
+      if (!this.closed) this.hooks.report(t('pendingRequestsFailed', { value: error.message }));
     }
   }
 
@@ -101,7 +103,7 @@ export class Interactions {
       // The pending list may not change while the agent waits, so nothing
       // else would read it again.
       this.failures.set(requestId, error.message);
-      this.hooks.report(`Request ${requestId}: ${error.message}`);
+      this.hooks.report(t('requestFailed', { id: requestId, value: error.message }));
       this.hooks.changed();
     }
   }
@@ -147,13 +149,13 @@ export class Interactions {
       });
       log(`interactions: ${record.request.kind} ${record.requestId} ${result.kind}`);
       if (result.kind === 'rejected') {
-        throw new Error(`the Host rejected the answer (${result.reason})`);
+        throw new Error(t('hostRejectedAnswer', { value: result.reason }));
       }
       // The record holds the canonical outcome, which may be another client's answer.
       this.records.set(record.requestId, result.record);
     } catch (error) {
       if (!this.closed) {
-        this.hooks.report(`Answer: ${error.message}`);
+        this.hooks.report(t('answerFailed', { value: error.message }));
         this.refresh();
       }
     } finally {
@@ -190,15 +192,25 @@ export class Interactions {
 /** The fields typed as text: a string, or a number read from text. */
 const TEXTUAL = new Set(['string', 'number', 'integer']);
 
-/** What a text field shows while it is empty, by kind and format. */
+/** What a text field shows while it is empty, by format: an example, the same in every language. */
 const PLACEHOLDERS = {
   email: 'name@example.com',
   uri: 'https://',
   date: 'YYYY-MM-DD',
   'date-time': 'YYYY-MM-DDThh:mm:ssZ',
-  number: 'A number',
-  integer: 'A whole number',
 };
+/** What a number field shows while it is empty, by kind: the message that says what to enter. */
+const PLACEHOLDER_MESSAGES = {
+  number: 'placeholderNumber',
+  integer: 'placeholderWholeNumber',
+};
+
+/** The placeholder of a field typed as text, in the current language. */
+function placeholder(field) {
+  const name = field.format ?? field.kind;
+  if (Object.hasOwn(PLACEHOLDERS, name)) return PLACEHOLDERS[name];
+  return Object.hasOwn(PLACEHOLDER_MESSAGES, name) ? t(PLACEHOLDER_MESSAGES[name]) : '';
+}
 
 /**
  * The answers to one form while they are filled in: a text state for each
@@ -212,15 +224,18 @@ class FormDraft {
     this.changed = changed;
     /** The field that stopped the last submission and why; index -1 is the whole form. */
     this.problem = null;
+    /** Stop the text states' placeholders following the language; `release` calls them. */
+    this.unsubscribe = [];
     this.drafts = fields.map((field, index) => {
       if (!TEXTUAL.has(field.kind)) {
         return field.default ?? (field.kind === 'multi_select' ? [] : null);
       }
       const state = InputState.new({
-        placeholder: PLACEHOLDERS[field.format ?? field.kind] ?? '',
+        placeholder: placeholder(field),
         value: field.default == null ? '' : String(field.default),
       });
       state.on('change', () => this.edited(index));
+      this.unsubscribe.push(onLanguageChange(() => state.set_placeholder(placeholder(field))));
       return state;
     });
   }
@@ -282,7 +297,7 @@ class FormDraft {
       // A required field is missing only with no choice made: an empty text
       // or no options picked can be an answer, which the field's own limits
       // judge, as the Host does.
-      const problem = raw === null ? 'Required' : fieldProblem(field, parsed);
+      const problem = raw === null ? t('required') : fieldProblem(field, parsed);
       if (problem !== null) {
         this.problem = { index, message: problem };
         return null;
@@ -291,14 +306,19 @@ class FormDraft {
     }
     const answer = { kind: 'form_answer', action: 'accept', values, committedAt: Number.MAX_SAFE_INTEGER };
     if (utf8Length(JSON.stringify(answer)) > 8192) {
-      this.problem = { index: -1, message: 'The answers are too long to send. Shorten them and submit again.' };
+      this.problem = { index: -1, message: t('answersTooLong') };
       return null;
     }
     this.problem = null;
     return values;
   }
 
+  /**
+   * Releases the text states, once the request is answered or gone or its
+   * session closed; their placeholders stop following the language first.
+   */
   release() {
+    for (const stop of this.unsubscribe.splice(0)) stop();
     for (const [index, field] of this.fields.entries()) {
       if (TEXTUAL.has(field.kind)) this.drafts[index].release();
     }
@@ -325,26 +345,28 @@ function fieldProblem(field, value) {
   switch (field.kind) {
     case 'string': {
       const length = [...value].length;
-      if (length < (field.minLength ?? 0)) return `Use at least ${characters(field.minLength)}`;
+      if (length < (field.minLength ?? 0)) {
+        return tn(field.minLength, 'useAtLeastCharactersOne', 'useAtLeastCharactersOther');
+      }
       if (length > (field.maxLength ?? 2048) || utf8Length(value) > 2048) {
-        return `Use at most ${characters(field.maxLength ?? 2048)}`;
+        return tn(field.maxLength ?? 2048, 'useAtMostCharactersOne', 'useAtMostCharactersOther');
       }
       return formatProblem(value, field.format);
     }
     case 'number':
     case 'integer':
       if (value === null || !Number.isFinite(value)) {
-        return field.kind === 'integer' ? 'Enter a whole number' : 'Enter a number';
+        return field.kind === 'integer' ? t('enterWholeNumber') : t('enterNumber');
       }
-      if (field.kind === 'integer' && !Number.isSafeInteger(value)) return 'Enter a whole number';
+      if (field.kind === 'integer' && !Number.isSafeInteger(value)) return t('enterWholeNumber');
       if (value < (field.minimum ?? -Infinity) || value > (field.maximum ?? Infinity)) {
-        return `Enter ${numberKind(field).toLowerCase()} ${range(field.minimum, field.maximum)}`;
+        return range(field, true);
       }
       return null;
     case 'multi_select': {
       const fewest = field.minItems ?? 0;
       const most = field.maxItems ?? field.options.length;
-      if (value.length < fewest || value.length > most) return `Choose ${count(fewest, most)}`;
+      if (value.length < fewest || value.length > most) return chooseCount(fewest, most);
       return null;
     }
     default:
@@ -355,13 +377,13 @@ function fieldProblem(field, value) {
 function formatProblem(value, format) {
   switch (format) {
     case 'email':
-      return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value) ? null : 'Enter an email address';
+      return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value) ? null : t('enterEmail');
     case 'uri':
-      return uri(value) ? null : 'Enter a full address, such as https://example.com';
+      return uri(value) ? null : t('enterFullAddress');
     case 'date':
-      return calendar(value, false) ? null : 'Enter a date as YYYY-MM-DD';
+      return calendar(value, false) ? null : t('enterDate');
     case 'date-time':
-      return calendar(value, true) ? null : 'Enter a date and time as YYYY-MM-DDThh:mm:ssZ';
+      return calendar(value, true) ? null : t('enterDateTime');
     default:
       return null;
   }
@@ -402,27 +424,38 @@ function calendar(value, time) {
   );
 }
 
-function characters(count) {
-  return `${count} character${count === 1 ? '' : 's'}`;
+/**
+ * The messages for a number field's limits, by kind and by which ends are
+ * set: the hint ("A number from 1 to 10") and the problem ("Enter a whole
+ * number of at least 1").
+ */
+const RANGES = {
+  number: {
+    both: ['numberFromTo', 'enterNumberFromTo'],
+    low: ['numberAtLeast', 'enterNumberAtLeast'],
+    high: ['numberAtMost', 'enterNumberAtMost'],
+  },
+  integer: {
+    both: ['wholeNumberFromTo', 'enterWholeNumberFromTo'],
+    low: ['wholeNumberAtLeast', 'enterWholeNumberAtLeast'],
+    high: ['wholeNumberAtMost', 'enterWholeNumberAtMost'],
+  },
+};
+
+/** A number field's limits as its hint, or with `enter` as what to enter. */
+function range(field, enter) {
+  const low = field.minimum;
+  const high = field.maximum;
+  const ends = low != null && high != null ? 'both' : low != null ? 'low' : 'high';
+  const [hint, problem] = RANGES[field.kind === 'integer' ? 'integer' : 'number'][ends];
+  return t(enter ? problem : hint, { low, high });
 }
 
-function numberKind(field) {
-  return field.kind === 'integer' ? 'A whole number' : 'A number';
-}
-
-/** "from 1 to 10", "of at least 1" or "of at most 10". */
-function range(low, high) {
-  if (low != null && high != null) return `from ${low} to ${high}`;
-  if (low != null) return `of at least ${low}`;
-  return `of at most ${high}`;
-}
-
-/** "1 to 3 options", "at least 2 options", "1 option", … */
-function count(fewest, most) {
-  const options = (n) => (n === 1 ? '1 option' : `${n} options`);
-  if (fewest === most) return options(fewest);
-  if (fewest === 0) return `at most ${options(most)}`;
-  return `${fewest} to ${options(most)}`;
+/** "Choose 1 to 3 options", "Choose at most 2 options", "Choose 1 option", … */
+function chooseCount(fewest, most) {
+  if (fewest === most) return tn(most, 'chooseOptionsOne', 'chooseOptionsOther');
+  if (fewest === 0) return tn(most, 'chooseAtMostOptionsOne', 'chooseAtMostOptionsOther');
+  return tn(most, 'chooseOptionsRangeOne', 'chooseOptionsRangeOther', { low: fewest });
 }
 
 /**
@@ -447,16 +480,29 @@ export function interactionCard(interactions, cx) {
   let actions = [];
   switch (request.kind) {
     case 'service_approval':
-      title = 'Allow this service call?';
-      body = [detail(`${request.toolName} calls ${request.service}.${request.method}`, cx)];
+      title = t('allowServiceCall');
+      body = [
+        detail(
+          t('serviceCallDetail', {
+            tool: request.toolName,
+            call: `${request.service}.${request.method}`,
+          }),
+          cx,
+        ),
+      ];
       actions = decisions(id, busy, cx, (decision) =>
         respond({ kind: 'service_approval', decision }),
       );
       break;
     case 'client_capability': {
       const target = request.target;
-      title = 'Allow this capability?';
-      body = [detail(`${target.toolName} uses ${capability(target)}`, cx)];
+      title = t('allowCapability');
+      body = [
+        detail(
+          t('capabilityDetail', { tool: target.toolName, capability: capability(target) }),
+          cx,
+        ),
+      ];
       actions = decisions(id, busy, cx, (decision) =>
         respond({ kind: 'client_capability', decision }),
       );
@@ -464,19 +510,24 @@ export function interactionCard(interactions, cx) {
     }
     case 'permissions': {
       const permissions = request.request.permissions;
-      title = 'Allow more access?';
+      title = t('allowMoreAccess');
       body = [detail(request.request.reason, cx)];
       if (request.request.command) {
         body.push(command(request.request.command, cx));
       }
       actions = [
         ...SCOPES.map(([scope, label]) =>
-          controlButton(`${id}-${scope}`, label, scope === 'once' ? 'primary' : 'outline', busy, cx)
-            .on_click(() =>
-              respond({ kind: 'permissions', decision: { decision: 'allow', scope, permissions } }),
-            ),
+          controlButton(
+            `${id}-${scope}`,
+            t(label),
+            scope === 'once' ? 'primary' : 'outline',
+            busy,
+            cx,
+          ).on_click(() =>
+            respond({ kind: 'permissions', decision: { decision: 'allow', scope, permissions } }),
+          ),
         ),
-        controlButton(`${id}-deny`, 'Deny', 'outline', busy, cx).on_click(() =>
+        controlButton(`${id}-deny`, t('deny'), 'outline', busy, cx).on_click(() =>
           respond({ kind: 'permissions', decision: { decision: 'deny' } }),
         ),
       ];
@@ -484,7 +535,7 @@ export function interactionCard(interactions, cx) {
     }
     case 'question': {
       const draft = interactions.drafts.get(id) ?? [];
-      title = request.questions.length === 1 ? 'The agent asks' : 'The agent asks a few things';
+      title = request.questions.length === 1 ? t('agentAsks') : t('agentAsksSeveral');
       body = request.questions.map((question, index) =>
         questionPart(id, question, index, draft[index], busy, cx, (answer) =>
           interactions.choose(record, index, answer),
@@ -493,8 +544,8 @@ export function interactionCard(interactions, cx) {
       if (request.questions.length > 1) {
         const complete = request.questions.every((_, index) => draft[index] !== undefined);
         actions = [
-          controlButton(`${id}-submit`, 'Submit', 'primary', busy || !complete, cx).on_click(() =>
-            respond({ kind: 'question', answers: draft }),
+          controlButton(`${id}-submit`, t('submit'), 'primary', busy || !complete, cx).on_click(
+            () => respond({ kind: 'question', answers: draft }),
           ),
         ];
       }
@@ -502,7 +553,7 @@ export function interactionCard(interactions, cx) {
     }
     case 'form': {
       const form = interactions.forms.get(id);
-      title = 'The agent needs some details';
+      title = t('agentNeedsDetails');
       body = [
         requester(request.requester, cx),
         detail(request.message, cx),
@@ -512,25 +563,31 @@ export function interactionCard(interactions, cx) {
       // is named here too.
       const problem = form?.problem ?? null;
       if (problem !== null) {
-        const where = problem.index >= 0 ? `${request.fields[problem.index].label}: ` : '';
-        body.push(text(`${where}${problem.message}`, 'small', m.destructive));
+        const label = problem.index >= 0 ? request.fields[problem.index].label : null;
+        const message =
+          label !== null ? t('fieldProblem', { label, problem: problem.message }) : problem.message;
+        body.push(text(message, 'small', m.destructive));
       }
       actions = [
-        controlButton(`${id}-submit`, 'Submit', 'primary', busy || form === undefined, cx).on_click(
-          () => interactions.submitForm(record),
-        ),
-        controlButton(`${id}-decline`, 'Decline', 'outline', busy, cx).on_click(() =>
+        controlButton(
+          `${id}-submit`,
+          t('submit'),
+          'primary',
+          busy || form === undefined,
+          cx,
+        ).on_click(() => interactions.submitForm(record)),
+        controlButton(`${id}-decline`, t('decline'), 'outline', busy, cx).on_click(() =>
           respond({ kind: 'form', action: 'decline' }),
         ),
-        controlButton(`${id}-cancel`, 'Cancel request', 'outline', busy, cx).on_click(() =>
+        controlButton(`${id}-cancel`, t('cancelRequest'), 'outline', busy, cx).on_click(() =>
           respond({ kind: 'form', action: 'cancel' }),
         ),
       ];
       break;
     }
     default:
-      title = 'The agent is waiting for something the desktop cannot show';
-      body = [detail(`A "${request.kind}" request; answer it in the terminal app (maka).`, cx)];
+      title = t('agentWaitingUnknown');
+      body = [detail(t('answerInTerminal', { kind: request.kind }), cx)];
   }
 
   return column(
@@ -542,7 +599,7 @@ export function interactionCard(interactions, cx) {
           .child(icon('status-waiting', 16, m.warning))
           .child(text(title, 'strong', m.ink).flex_1().min_w_0())
           .when(waiting > 0, (el) =>
-            el.child(text(`${waiting} more waiting`, 'small', m.inkMuted).flex_none()),
+            el.child(text(t('moreWaiting', { count: waiting }), 'small', m.inkMuted).flex_none()),
           ),
       )
       .children(body)
@@ -554,7 +611,7 @@ export function interactionCard(interactions, cx) {
             .items_center()
             .children(actions)
             .child(div().flex_1())
-            .child(text(busy ? 'Answering…' : 'Waiting for your answer', 'small', m.inkMuted)),
+            .child(text(busy ? t('answering') : t('waitingForAnswer'), 'small', m.inkMuted)),
         ),
       ),
   );
@@ -571,7 +628,7 @@ function failureCard(interactions, cx) {
           .items_center()
           .child(icon('status-failed', 16, m.destructive))
           .child(
-            text('The agent is waiting, but its request could not be read', 'strong', m.ink)
+            text(t('requestUnreadable'), 'strong', m.ink)
               .flex_1()
               .min_w_0(),
           ),
@@ -579,7 +636,7 @@ function failureCard(interactions, cx) {
       .child(detail(reason, cx))
       .child(
         h_flex().child(
-          controlButton('interaction-retry', 'Try again', 'primary', false, cx).on_click(() =>
+          controlButton('interaction-retry', t('tryAgain'), 'primary', false, cx).on_click(() =>
             interactions.retry(),
           ),
         ),
@@ -589,8 +646,8 @@ function failureCard(interactions, cx) {
 
 function decisions(id, busy, cx, decide) {
   return [
-    controlButton(`${id}-allow`, 'Allow', 'primary', busy, cx).on_click(() => decide('allow')),
-    controlButton(`${id}-deny`, 'Deny', 'outline', busy, cx).on_click(() => decide('deny')),
+    controlButton(`${id}-allow`, t('allow'), 'primary', busy, cx).on_click(() => decide('allow')),
+    controlButton(`${id}-deny`, t('deny'), 'outline', busy, cx).on_click(() => decide('deny')),
   ];
 }
 
@@ -621,7 +678,9 @@ function frame(cx) {
 
 function capability(target) {
   const scope = target.scope;
-  if (scope.kind === 'browser_origin') return `${target.capability} on ${scope.origin}`;
+  if (scope.kind === 'browser_origin') {
+    return t('capabilityOnOrigin', { capability: target.capability, origin: scope.origin });
+  }
   if (scope.kind === 'mcp_tool') return `${scope.serverId}.${scope.toolName}`;
   return target.capability;
 }
@@ -643,7 +702,7 @@ function command(run, cx) {
     .text_color(m.ink)
     .child(div().child(`$ ${run.command}`))
     .child(
-      div().text_size(12).text_color(m.inkMuted).child(`in ${run.cwd}`),
+      div().text_size(12).text_color(m.inkMuted).child(t('commandIn', { path: run.cwd })),
     );
 }
 
@@ -662,7 +721,7 @@ function requester(who, cx) {
   return h_flex()
     .gap(6)
     .items_center()
-    .child(text(`From ${who.name}`, 'small', m.inkMuted).flex_none())
+    .child(text(t('fromRequester', { name: who.name }), 'small', m.inkMuted).flex_none())
     .when(who.source != null, (el) =>
       el.child(text(who.source, 'small', m.inkDisabled).min_w_0().truncate()),
     );
@@ -694,10 +753,10 @@ function formField(id, form, field, index, busy, cx) {
       break;
     case 'boolean':
       control = choices([
-        optionButton(`${key}-yes`, 'Yes', form.chosen(index) === true, busy, cx).on_click(() =>
+        optionButton(`${key}-yes`, t('yes'), form.chosen(index) === true, busy, cx).on_click(() =>
           form.choose(index, true),
         ),
-        optionButton(`${key}-no`, 'No', form.chosen(index) === false, busy, cx).on_click(() =>
+        optionButton(`${key}-no`, t('no'), form.chosen(index) === false, busy, cx).on_click(() =>
           form.choose(index, false),
         ),
       ]);
@@ -719,7 +778,7 @@ function formField(id, form, field, index, busy, cx) {
       );
       break;
     default:
-      control = text(`${field.kind} fields cannot be filled in here`, 'small', m.inkMuted);
+      control = text(t('fieldKindUnsupported', { kind: field.kind }), 'small', m.inkMuted);
   }
   const problem = form.problem?.index === index ? form.problem.message : null;
   const note = problem ?? ([field.description, fieldHint(field)].filter(Boolean).join(' · ') || null);
@@ -738,7 +797,9 @@ function formField(id, form, field, index, busy, cx) {
             .gap(6)
             .items_center()
             .child(text(field.label, 'label', m.ink).min_w_0().truncate())
-            .when(field.required, (el) => el.child(text('Required', 'small', m.inkMuted).flex_none())),
+            .when(field.required, (el) =>
+              el.child(text(t('required'), 'small', m.inkMuted).flex_none()),
+            ),
         )
         .when(note !== null, (el) =>
           el.child(text(note, 'small', problem !== null ? m.destructive : m.inkMuted)),
@@ -757,20 +818,22 @@ function fieldHint(field) {
     case 'string': {
       const low = field.minLength ?? null;
       const high = field.maxLength ?? null;
-      if (low !== null && high !== null) return `${low} to ${characters(high)}`;
-      if (low !== null) return `At least ${characters(low)}`;
-      if (high !== null) return `At most ${characters(high)}`;
+      if (low !== null && high !== null) {
+        return tn(high, 'charactersRangeOne', 'charactersRangeOther', { low });
+      }
+      if (low !== null) return tn(low, 'atLeastCharactersOne', 'atLeastCharactersOther');
+      if (high !== null) return tn(high, 'atMostCharactersOne', 'atMostCharactersOther');
       return null;
     }
     case 'number':
     case 'integer':
       if (field.minimum == null && field.maximum == null) return null;
-      return `${numberKind(field)} ${range(field.minimum, field.maximum)}`;
+      return range(field, false);
     case 'multi_select': {
       const fewest = field.minItems ?? 0;
       const most = field.maxItems ?? field.options.length;
-      if (fewest === 0 && most === field.options.length) return 'Choose any';
-      return `Choose ${count(fewest, most)}`;
+      if (fewest === 0 && most === field.options.length) return t('chooseAny');
+      return chooseCount(fewest, most);
     }
     default:
       return null;
@@ -793,6 +856,8 @@ function questionPart(id, question, index, chosen, busy, cx, choose) {
               .on_click(() => choose(entry.label)),
           ),
         )
-        .child(option(`${id}-${index}-skip`, 'Skip', chosen === null).on_click(() => choose(null))),
+        .child(
+          option(`${id}-${index}-skip`, t('skip'), chosen === null).on_click(() => choose(null)),
+        ),
     );
 }

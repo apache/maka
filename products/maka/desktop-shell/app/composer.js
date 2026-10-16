@@ -35,6 +35,7 @@ import {
   menuSeparator,
   controlButton,
 } from './theme.js';
+import { t, onLanguageChange } from './locale.js';
 
 export class Composer {
   /**
@@ -47,8 +48,10 @@ export class Composer {
   constructor(hooks, target, start) {
     this.hooks = hooks;
     this.start = start;
-    this.draft = TextareaState.new({ placeholder: 'Ask anything…', rows: 1 });
+    this.draft = TextareaState.new({ placeholder: t('composerPlaceholder'), rows: 1 });
     this.draft.set_auto_grow(1, 8);
+    // The placeholder follows a change of language; the draft lives as long as the app.
+    onLanguageChange(() => this.draft.set_placeholder(t('composerPlaceholder')));
     // Send turns on and off with the draft; redraw only when that flips.
     this.empty = true;
     this.draft.on('change', () => {
@@ -66,7 +69,8 @@ export class Composer {
     });
     /** The default model's choice, or the first offered one, for sessions without their own. */
     this.model = null;
-    this.modelLabel = 'No model';
+    /** That model's name, or null when there is none (the footer then says so). */
+    this.modelLabel = null;
     /** Whether the model list has been read once, so "no model" is known rather than pending. */
     this.loaded = false;
     /** The first page of `settings.models`, used to name a session's own model. */
@@ -94,14 +98,14 @@ export class Composer {
   async loadModel() {
     try {
       const models = await query('settings', 'models', { kind: 'start', query: '' });
-      if (models.kind !== 'ready') throw new Error('the model list is changing; reopen the app');
+      if (models.kind !== 'ready') throw new Error(t('modelListChangingReopen'));
       this.choices = models.choices;
       const fallback =
         models.defaultModel.kind === 'ready' ? models.defaultModel.choice : models.choices[0];
       this.model = fallback?.selection ?? null;
-      this.modelLabel = fallback ? choiceLabel(fallback) : 'No model';
+      this.modelLabel = fallback ? choiceLabel(fallback) : null;
       // No model yet is not an error: the start pane offers Settings.
-      log(`composer: default model ${this.modelLabel}`);
+      log(`composer: default model ${this.modelLabel ?? 'none'}`);
       // A model chosen in the menu is kept as the Host offers it now, with
       // its connection's current revision; one whose connection was removed
       // is dropped, and the task's own model or the default applies again.
@@ -114,7 +118,7 @@ export class Composer {
         }
       }
     } catch (error) {
-      this.hooks.report(`Models: ${error.message}`);
+      this.hooks.report(t('modelsFailed', { value: error.message }));
     } finally {
       this.loaded = true;
     }
@@ -126,8 +130,8 @@ export class Composer {
     const chosen = this.chosen.get(transcript?.id ?? '');
     if (chosen) return choiceLabel(chosen);
     const backend = transcript?.backend ?? null;
-    if (backend?.kind === 'executor') return 'An executor (send from the terminal app)';
-    if (backend?.kind !== 'model') return this.modelLabel;
+    if (backend?.kind === 'executor') return t('executorModel');
+    if (backend?.kind !== 'model') return this.modelLabel ?? t('noModel');
     const choice = this.choices.find((c) => sameModel(c.selection, backend));
     return choice ? choiceLabel(choice) : backend.modelId;
   }
@@ -143,20 +147,20 @@ export class Composer {
       const current = await this.offered(chosen.selection);
       if (current === null) {
         this.chosen.delete(transcript.id);
-        throw new Error(`the model ${choiceLabel(chosen)} is not offered any more`);
+        throw new Error(t('modelNotOffered', { model: choiceLabel(chosen) }));
       }
       return { model: current.selection, thinkingLevel: null };
     }
     const backend = transcript.backend;
     if (backend?.kind === 'executor') {
-      throw new Error('this session runs on an executor, which the desktop cannot start yet');
+      throw new Error(t('executorCannotStart'));
     }
     if (backend?.kind !== 'model') {
-      if (this.model === null) throw new Error('no model is configured');
+      if (this.model === null) throw new Error(t('noModelConfigured'));
       return { model: this.model, thinkingLevel: null };
     }
     const choice = await this.offered(backend);
-    if (!choice) throw new Error(`the session's model ${backend.modelId} is not offered any more`);
+    if (!choice) throw new Error(t('sessionModelNotOffered', { model: backend.modelId }));
     return { model: choice.selection, thinkingLevel: backend.thinkingLevel ?? null };
   }
 
@@ -166,7 +170,7 @@ export class Composer {
    */
   async offered(model) {
     const models = await query('settings', 'models', { kind: 'start', query: model.modelId });
-    if (models.kind !== 'ready') throw new Error('the model list is changing; try again');
+    if (models.kind !== 'ready') throw new Error(t('modelListChanging'));
     return models.choices.find((choice) => sameModel(choice.selection, model)) ?? null;
   }
 
@@ -204,7 +208,7 @@ export class Composer {
         `composer: send ${result.kind} ${result.invocationId ?? ''} message ${result.messageId ?? ''}`,
       );
       if (result.kind === 'rejected')
-        throw new Error(`the Host rejected the message (${result.reason})`);
+        throw new Error(t('hostRejectedMessage', { value: result.reason }));
       if (this.draft.value() === message) {
         // `set_value` sends no change event, so the draft's emptiness is set here.
         this.draft.set_value('');
@@ -213,7 +217,7 @@ export class Composer {
       // The run itself shows up through the watch (`opened`), as in the TUI.
       transcript.addPending(result.messageId, message);
     } catch (error) {
-      this.hooks.report(`Send: ${error.message}`);
+      this.hooks.report(t('sendFailed', { value: error.message }));
     } finally {
       this.sending = false;
       this.hooks.changed();
@@ -232,7 +236,7 @@ export class Composer {
       });
       log(`composer: stop requested=${result.requested}`);
     } catch (error) {
-      this.hooks.report(`Stop: ${error.message}`);
+      this.hooks.report(t('stopFailed', { value: error.message }));
     } finally {
       this.stopping = false;
       this.hooks.changed();
@@ -299,13 +303,13 @@ export function composerPane(composer, transcript, context, cx) {
                     ? actionButton('stop', 'stop', cx)
                         .bg(m.ink)
                         .disabled(composer.stopping)
-                        .tooltip('Stop')
+                        .tooltip(t('stop'))
                         .hover((style) => style.opacity(0.84))
                         .on_click(() => composer.stop(transcript))
                     : actionButton('send', 'send', cx, canSend ? m.onPrimary : m.inkMuted)
                         .bg(canSend ? m.primary : m.wash)
                         .disabled(!canSend)
-                        .tooltip('Send')
+                        .tooltip(t('send'))
                         .when(canSend, (el) => el.hover((style) => style.bg(m.primaryHover)))
                         .on_click(() => composer.send(transcript)),
                 ),
@@ -365,7 +369,7 @@ function modelMenu(composer, transcript, context, cx) {
   }
   if (rows.length > 0) rows.push(menuSeparator(cx));
   rows.push(
-    menuRow('model-add', 'Add connection…', { icon: 'plus' }, cx).on_click(() => {
+    menuRow('model-add', t('addConnectionMenu'), { icon: 'plus' }, cx).on_click(() => {
       composer.menuOpen = false;
       context.addConnection();
     }),
@@ -393,7 +397,7 @@ function modelMenu(composer, transcript, context, cx) {
 function note(context, executor, cx) {
   const m = palette(cx);
   const message =
-    context.notice ?? (executor ? 'This task runs on an executor; send from the terminal app' : null);
+    context.notice ?? (executor ? t('executorNote') : null);
   return h_flex()
     .id('composer-note')
     .flex_1()
@@ -401,7 +405,7 @@ function note(context, executor, cx) {
     .px(8)
     .when(message !== null, (el) =>
       el
-        .tooltip(context.notice !== null ? `${message} (click to dismiss)` : message)
+        .tooltip(context.notice !== null ? t('noticeDismiss', { value: message }) : message)
         .when(context.notice !== null, (el) => el.cursor_pointer().on_click(() => context.dismiss()))
         .child(
           text(message, 'small', context.notice !== null ? m.destructive : m.inkMuted).truncate(),

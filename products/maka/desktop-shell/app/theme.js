@@ -28,6 +28,7 @@
 
 import { div, svg } from 'gpui-kit';
 import { set_theme, h_flex, v_flex, Button, Input } from 'gpui-base';
+import { t, language } from './locale.js';
 
 /** @typedef {Record<string, import('gpui-kit').Color>} Palette */
 
@@ -151,19 +152,55 @@ export function palette(cx) {
   return cx.theme().is_dark ? M.dark : M.light;
 }
 
+const APPEARANCE_KEY = 'maka.appearance';
+/** The appearances Settings offers: the system's, or always light or dark. */
+export const APPEARANCES = ['system', 'light', 'dark'];
+
+function storedAppearance() {
+  try {
+    const value = localStorage.getItem(APPEARANCE_KEY);
+    return APPEARANCES.includes(value) ? value : 'system';
+  } catch {
+    return 'system';
+  }
+}
+
+let preferred = storedAppearance();
+let applied = null;
+
+/** The appearance chosen in Settings: 'system', 'light' or 'dark'. */
+export function appearancePreference() {
+  return preferred;
+}
+
+/** Applies the window's theme for the preference, when it differs from the one drawn. */
+function applyAppearance() {
+  const appearance = preferred === 'system' ? window.appearance() : preferred;
+  if (appearance !== applied) {
+    set_theme({ appearance, tokens: tokensFor(appearance) });
+    applied = appearance;
+  }
+}
+
 /**
- * Sets the theme for the window's appearance and keeps it in step: there is
- * no appearance event, so the appearance is read once a second. Runs for as
- * long as the app; start it from a task (`set_theme` is refused in render).
+ * Keeps the choice and applies it at once. Legal where `set_theme` is: an
+ * event handler or a task.
+ */
+export function setAppearancePreference(next) {
+  if (!APPEARANCES.includes(next)) return;
+  preferred = next;
+  localStorage.setItem(APPEARANCE_KEY, next);
+  applyAppearance();
+}
+
+/**
+ * Applies the chosen appearance and, while the choice is to follow the
+ * system, reads the system's once a second: there is no appearance event.
+ * Runs as a task for the window's life.
  */
 export async function followAppearance(cx) {
-  let applied = null;
   for (;;) {
-    const appearance = window.appearance();
-    if (appearance !== applied) {
-      set_theme({ appearance, tokens: tokensFor(appearance) });
-      applied = appearance;
-    }
+    applyAppearance();
     await cx.sleep(1000);
   }
 }
@@ -382,12 +419,14 @@ export function menuSeparator(cx) {
 }
 
 /**
- * How long ago `at` (ms) was, as the sidebar shows it: now, 11m, 3h, 4d, 2w,
- * then the date ("Sep 3", or with the year when it is not this year).
+ * How long ago `at` (ms) was, as the sidebar shows it: now (刚刚, 剛剛), 11m,
+ * 3h, 4d, 2w in every language, then the date: "Sep 3" ("9/3" in Chinese),
+ * or the year alone when it is not this year, as the native client's
+ * `compact_age` (maka-gpui crates/shared/src/time.rs) writes it.
  */
 export function compactAge(at, now = Date.now()) {
   const seconds = Math.max(0, Math.floor((now - at) / 1000));
-  if (seconds < 60) return 'now';
+  if (seconds < 60) return t('ageNow');
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) return `${minutes}m`;
   const hours = Math.floor(minutes / 60);
@@ -396,10 +435,11 @@ export function compactAge(at, now = Date.now()) {
   if (days < 7) return `${days}d`;
   if (days < 28) return `${Math.floor(days / 7)}w`;
   const date = new Date(at);
-  const month = MONTHS[date.getMonth()];
-  return date.getFullYear() === new Date(now).getFullYear()
-    ? `${month} ${date.getDate()}`
-    : `${month} ${date.getDate()}, ${date.getFullYear()}`;
+  if (date.getFullYear() !== new Date(now).getFullYear()) return String(date.getFullYear());
+  return language() === 'en'
+    ? `${MONTHS[date.getMonth()]} ${date.getDate()}`
+    : `${date.getMonth() + 1}/${date.getDate()}`;
 }
 
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+/** The months as an English date names them; a Chinese one writes the number. */
+export const MONTHS = 'Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec'.split(' ');
