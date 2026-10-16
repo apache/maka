@@ -186,3 +186,12 @@ The bounded source changes adapt the runtime to the adapted Base, add two develo
 - From longbridge/gpui-kit #3547, #3548, #3549 and #3550: a `list` keeps the reader on the item at the top of the view when its item count changes; `with_follow_mode("tail")` makes a `list` follow its end; `on_visible_range_change` reports which items a `list` shows after a frame in which that changed; and `TextareaState.set_submit_on_enter` makes Enter submit without inserting a line break. The next sync replaces them with the upstream versions.
 
 `gpui-shell` 及其 `rquickjs-compat` 兼容层自同一上游版本复制，`upstream.json` 记录每个原始文件；集成测试大多依赖 `gpui-component`，因此未导入。兼容层清单声明 MIT 以对应其替代的 `rquickjs`，源码来自 GPUI Kit 仓库。工作区将两者作为成员，并把 crates.io 的 `rquickjs` 指向本地兼容层，使 LLRT 与 shell 共用同一 QuickJS VM。清单改为显式上游依赖与 lints，默认启用 `gpui-fast` 与 `quickjs`；该版本的 `gpui-component` 无法基于上面改过的 Base 编译，因此移除 `components` 特性及其依赖，由嵌入方注册自己的组件目录。源码改动仅限：链接处理改用 Base 的 `on_link_activation` 并阻止 Base 默认打开 URL，由脚本回调或 shell 自身的 URL 规则决定；两个调用 `on_prepaint` 的辅助函数补上 `IntoElement` 约束；新增仅在设置环境变量时生效的开发开关 `GPUI_SHELL_PASSIVE`（不激活、不抢焦点）与 `GPUI_SHELL_METRICS_LOG`（每秒输出脚本计数）；回移四个尚未合入上游的 PR（longbridge/gpui-kit #3547、#3548、#3549、#3550）：`list` 在条目数变化时让读者停在视口顶部的条目上，`with_follow_mode("tail")` 让 `list` 跟随末尾，`on_visible_range_change` 在可见范围变化的帧之后报告，`TextareaState.set_submit_on_enter` 让 Enter 直接提交、不插入换行。下次同步时以上游版本替换。
+
+## Desktop theme fixes (2026-10-16)
+
+Two fixes found while giving the Maka desktop its own palette, both candidates for upstream pull requests:
+
+- Base's input editor falls back to the palette's `selection` role for its selection, at most 40% opaque, instead of `accent` at 40%. A product that sets `accent` to an opaque fill (Maka uses it for code blocks) otherwise draws a selection that cannot be seen; text views already paint `selection`.
+- The shell's `cx.theme()` writes a translucent color as `#rrggbbaa`. It used to drop the alpha, so a script that drew a border in the `input` or `border` token got it opaque.
+
+为 Maka 桌面端配色时修了两处，均可提交上游 PR：Base 输入框的默认选区改用调色板的 `selection` 角色（不透明度至多 40%），不再用 40% 的 `accent`；产品把 `accent` 设为不透明填充（Maka 用于代码块）时，原选区看不见，而文本视图本来就用 `selection`。shell 的 `cx.theme()` 对半透明颜色输出 `#rrggbbaa`；此前丢弃 alpha，脚本用 `input` 或 `border` 画的边框会变成不透明。

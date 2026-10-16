@@ -372,15 +372,35 @@ fn json_string(value: &str) -> String {
     format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
+/// `#rrggbb`, or `#rrggbbaa` when the color is translucent: a border or a
+/// selection that is drawn at an alpha must reach the script at that alpha.
 fn hex(color: gpui::Hsla) -> String {
     let c = gpui::Rgba::from(color);
     let b = |v: f32| (v.clamp(0., 1.) * 255.).round() as u8;
-    format!("#{:02x}{:02x}{:02x}", b(c.r), b(c.g), b(c.b))
+    if b(c.a) == 255 {
+        format!("#{:02x}{:02x}{:02x}", b(c.r), b(c.g), b(c.b))
+    } else {
+        format!("#{:02x}{:02x}{:02x}{:02x}", b(c.r), b(c.g), b(c.b), b(c.a))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_translucent_color_keeps_its_alpha() {
+        let opaque = gpui::Hsla::from(gpui::rgb(0x0f0f12));
+        assert_eq!(hex(opaque), "#0f0f12");
+        assert_eq!(hex(opaque.alpha(0x29 as f32 / 255.)), "#0f0f1229");
+        let tokens = gpui_base::SemanticThemeTokens::default();
+        let snapshot = ThemeSnapshotCache::default().snapshot(&tokens, ThemeAppearance::Light);
+        // The default selection is drawn at 30%.
+        assert!(
+            snapshot.contains("\"selection\":\"#55a0fc4d\""),
+            "{snapshot}"
+        );
+    }
 
     #[test]
     fn unchanged_theme_snapshot_reuses_its_serialized_storage() {

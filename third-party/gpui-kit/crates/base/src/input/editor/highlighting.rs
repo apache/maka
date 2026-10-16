@@ -142,9 +142,10 @@ impl InputEditorStyle {
         let foreground = or(self.foreground, colors.foreground);
         let mut selection = self.selection;
         if unset(selection) {
-            selection = colors.accent;
+            // The palette's selection role, as text views paint it.
+            selection = colors.selection;
             // A selection must not hide the glyphs it selects.
-            selection.a = 0.4;
+            selection.a = selection.a.min(0.4);
         }
 
         Self {
@@ -218,8 +219,17 @@ mod tests {
     }
 
     #[test]
+    fn a_selection_takes_the_palettes_selection_role() {
+        let tokens = dark();
+        let resolved = InputEditorStyle::default().resolved(&tokens);
+        assert_eq!(resolved.selection, tokens.colors.selection);
+    }
+
+    #[test]
     fn a_selection_stays_translucent_enough_to_read_through() {
-        let resolved = InputEditorStyle::default().resolved(&dark());
+        let mut tokens = dark();
+        tokens.colors.selection = hsla(0.6, 0.5, 0.5, 1.0);
+        let resolved = InputEditorStyle::default().resolved(&tokens);
         assert_eq!(resolved.selection.a, 0.4);
     }
 
