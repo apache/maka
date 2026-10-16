@@ -21,8 +21,10 @@
 
 //! Feasibility probe: the gpui-shell command, built inside this workspace
 //! against the vendored gpui-base and gpui-fast, with a `maka-host` module
-//! that reaches the Host named by `MAKA_HOST_ENDPOINT` and `MAKA_HOST_EPOCH`.
+//! that reaches the Host named by `MAKA_HOST_ENDPOINT` and `MAKA_HOST_EPOCH`,
+//! and a `maka-files` module that reads a file the user picks.
 
+mod files;
 mod maka_host;
 
 fn main() {
@@ -31,6 +33,10 @@ fn main() {
         .and_then(|module| gpui_shell::export_module(module).map_err(|error| error.to_string()));
     if let Err(error) = registered {
         eprintln!("{}: {error}", maka_host::NAME);
+        std::process::exit(1);
+    }
+    if let Err(error) = gpui_shell::export_module(files::module()) {
+        eprintln!("{}: {error}", files::NAME);
         std::process::exit(1);
     }
     gpui_shell::host::main_with_components(gpui_shell::FrozenComponentRegistry::default());
