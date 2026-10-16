@@ -29,10 +29,11 @@
 
 import { View, div } from 'gpui-kit';
 import { v_flex, h_flex } from 'gpui-base';
-import { log, setDebug } from './host.js';
+import { query, operation, log, setDebug } from './host.js';
 import { SessionCatalog, sidebar } from './sessions.js';
 import { Transcript, transcriptPane } from './transcript.js';
-import { Composer, composerPane } from './composer.js';
+import { Composer, composerPane, button } from './composer.js';
+import { interactionCard } from './interactions.js';
 
 export default class MakaDesktop extends View {
   init(_props, cx) {
@@ -41,10 +42,21 @@ export default class MakaDesktop extends View {
     this.cx = cx;
     const hooks = { changed: () => this.cx.notify(), report: (message) => this.report(message) };
     this.hooks = hooks;
-    this.catalog = new SessionCatalog(hooks);
+    this.catalog = new SessionCatalog({
+      ...hooks,
+      changed: () => {
+        // The header shows the catalog's title, which a first message can change.
+        const entry = this.catalog.sessions.find((session) => session.id === this.transcript?.id);
+        if (entry && this.transcript !== null) this.transcript.session = entry;
+        hooks.changed();
+      },
+    });
     this.composer = new Composer(hooks, () => this.transcript);
     /** @type {Transcript | null} */
     this.transcript = null;
+    /** The directories a session can start in when none is selected (`agent.directories`). */
+    this.roots = [];
+    this.creating = false;
     this.error = null;
     cx.spawn(async (cx) => this.start(cx));
   }
@@ -57,6 +69,7 @@ export default class MakaDesktop extends View {
     setDebug(dev?.debug === true);
     log('start');
     this.composer.loadModel();
+    this.loadRoots();
     cx.spawn(async (cx) => this.catalog.run(cx));
     if (typeof dev?.run === 'function') {
       cx.spawn(async (cx) => {
@@ -85,6 +98,51 @@ export default class MakaDesktop extends View {
     await transcript.open();
   }
 
+  async loadRoots() {
+    try {
+      const page = await query('agent', 'directories', { kind: 'roots' });
+      this.roots = page.roots ?? [];
+      this.cx.notify();
+    } catch (error) {
+      this.report(`Directories: ${error.message}`);
+    }
+  }
+
+  /**
+   * Starts a session, as the TUI's "New" does: in the selected session's
+   * workspace, or in `root` when given. The title comes from the first
+   * message.
+   */
+  async newSession(root = null) {
+    const workspace =
+      root !== null
+        ? { kind: 'directory', selection: root.selection }
+        : this.transcript !== null
+          ? { kind: 'session', sessionId: this.transcript.id }
+          : null;
+    if (workspace === null || this.creating) return;
+    this.creating = true;
+    this.cx.notify();
+    try {
+      const created = await operation('agent', 'create', {
+        title: 'New session',
+        automaticTitle: true,
+        labels: [],
+        workspace,
+      });
+      if (created.kind !== 'created') {
+        throw new Error(`the Host rejected it (${JSON.stringify(created.reason)})`);
+      }
+      log(`new session ${created.session.id} in ${workspace.kind}`);
+      await this.select(created.session);
+    } catch (error) {
+      this.report(`New session: ${error.message}`);
+    } finally {
+      this.creating = false;
+      this.cx.notify();
+    }
+  }
+
   report(message) {
     console.error(`maka-desktop: ${message}`);
     this.error = { message, at: new Date() };
@@ -94,19 +152,52 @@ export default class MakaDesktop extends View {
   render(cx) {
     const theme = cx.theme();
     const selectedId = this.transcript?.id ?? null;
+    const card = this.transcript ? interactionCard(this.transcript.interactions, cx) : null;
     return h_flex()
       .size_full()
       .bg(theme.colors.background)
       .text_color(theme.colors.foreground)
-      .child(sidebar(this.catalog, selectedId, (session) => this.select(session), cx))
+      .child(
+        sidebar(
+          this.catalog,
+          selectedId,
+          (session) => this.select(session),
+          { enabled: this.transcript !== null && !this.creating, create: () => this.newSession() },
+          cx,
+        ),
+      )
       .child(
         v_flex()
           .flex_1()
           .min_w_0()
           .h_full()
-          .child(transcriptPane(this.transcript, () => this.transcript?.loadOlder(), cx))
+          .when(this.transcript === null, (el) => el.child(this.startPane(cx)))
+          .when(this.transcript !== null, (el) =>
+            el.child(transcriptPane(this.transcript, () => this.transcript?.loadOlder(), cx)),
+          )
+          .when(card !== null, (el) => el.child(card))
           .child(composerPane(this.composer, this.transcript, cx))
           .child(this.statusLine(cx)),
+      );
+  }
+
+  /** With no session selected: where a new one can start. */
+  startPane(cx) {
+    const theme = cx.theme();
+    return v_flex()
+      .flex_1()
+      .min_h_0()
+      .items_center()
+      .justify_center()
+      .gap(theme.spacing.md)
+      .text_color(theme.colors.muted_foreground)
+      .child('Select a session, or start one in a directory')
+      .children(
+        this.roots.map((root, index) =>
+          button(`root-${index}`, root.name, false, this.creating, cx)
+            .tooltip(root.path)
+            .on_click(() => this.newSession(root)),
+        ),
       );
   }
 

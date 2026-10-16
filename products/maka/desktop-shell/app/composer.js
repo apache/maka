@@ -174,7 +174,8 @@ export function composerPane(composer, transcript, cx) {
     );
 }
 
-function button(id, label, primary, disabled, cx) {
+/** A small button in the app's style; `primary` fills it with the primary color. */
+export function button(id, label, primary, disabled, cx) {
   const theme = cx.theme();
   return Button.new(id)
     .h_8()

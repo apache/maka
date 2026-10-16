@@ -43,6 +43,7 @@
 import { div, list } from 'gpui-kit';
 import { v_flex, h_flex, TextView, Scrollbar } from 'gpui-base';
 import { query, subscribe, next, close, log, readHistory } from './host.js';
+import { Interactions } from './interactions.js';
 
 /** A visible range starting at or above this index counts as "at the top" for paging. */
 const NEAR_TOP = 3;
@@ -143,7 +144,8 @@ export class Transcript {
     this.latestKnown = 0;
     this.watchHandle = null;
     this.watchLast = 0;
-    this.pendingInteractions = 0;
+    /** What the agent is waiting on the user for. */
+    this.interactions = new Interactions(this.id, hooks);
     this.lastOutcome = null;
     this.stats = {
       firstPageMs: 0,
@@ -181,6 +183,7 @@ export class Transcript {
       }
       this.watchHandle = handle;
       this.watchLast = after;
+      this.interactions.refresh();
       const fence = observed.through;
       let position = { kind: 'tail' };
       for (;;) {
@@ -215,6 +218,7 @@ export class Transcript {
   /** Stops the live updates. A pending `next()` resolves with null. */
   async close() {
     this.closed = true;
+    this.interactions.close();
     const handle = this.watchHandle;
     this.watchHandle = null;
     if (handle !== null) await close(handle);
@@ -241,9 +245,8 @@ export class Transcript {
   /** Applies one watch page (results.ts:972-1087). */
   deliver(page) {
     if (page.kind === 'interactions') {
-      this.pendingInteractions = page.pending.entries.length;
+      this.interactions.accept(page.pending);
       this.observeRun();
-      this.hooks.changed();
       return;
     }
     if (page.kind !== 'events') return;
@@ -294,7 +297,7 @@ export class Transcript {
               open.partId === fact.partId,
           );
           if (part) {
-            this.appendLive(part, fact.text);
+            this.appendLive(part, fact.text, event.sequence);
             deltas += 1;
           }
           break;
@@ -309,6 +312,7 @@ export class Transcript {
           canonicalChanged = true;
           break;
         case 'step_ended':
+          this.closeLive(event.sequence, event.invocationId, fact.stepId);
           this.parts = this.parts.filter(
             (open) => open.invocationId !== event.invocationId || open.stepId !== fact.stepId,
           );
@@ -318,6 +322,7 @@ export class Transcript {
           canonicalChanged = true;
           break;
         case 'ended':
+          this.closeLive(event.sequence, event.invocationId);
           this.parts = this.parts.filter((open) => open.invocationId !== event.invocationId);
           if (event.sequence > this.runThrough && this.run?.invocationId === event.invocationId) {
             this.run = null;
@@ -348,9 +353,9 @@ export class Transcript {
     ];
   }
 
-  appendLive(part, text) {
+  appendLive(part, text, sequence) {
     const covered = `${part.messageId}/${part.field}`;
-    if (this.covered.has(covered)) return;
+    if (text === '' || this.covered.has(covered)) return;
     const key = `live/${covered}`;
     const index = this.live.findIndex((row) => row.key === key);
     if (index < 0) {
@@ -360,14 +365,29 @@ export class Transcript {
         covered,
         live: true,
         text,
+        invocationId: part.invocationId,
+        stepId: part.stepId,
+        sequence,
+        closedAt: null,
       };
       this.live = [...this.live, row];
     } else {
       const row = this.live[index];
       const live = this.live.slice();
-      live[index] = { ...row, text: row.text + text };
+      live[index] = { ...row, text: row.text + text, sequence };
       this.live = live;
     }
+  }
+
+  /** Marks the live text of a step, or of a whole run, as finished at `sequence` (messages.ts closeLive). */
+  closeLive(sequence, invocationId, stepId = undefined) {
+    this.live = this.live.map((row) =>
+      row.closedAt === null &&
+      row.invocationId === invocationId &&
+      (stepId === undefined || row.stepId === stepId)
+        ? { ...row, closedAt: sequence }
+        : row,
+    );
   }
 
   /** Re-reads `run` after a run fact; an older answer than the facts already seen is ignored. */
@@ -407,8 +427,10 @@ export class Transcript {
         this.stats.follows += 1;
         const fence = this.latestKnown;
         let position = this.afterPosition();
+        let through = 0;
         for (;;) {
           const { page } = await readHistory(this.historyInput(fence, position));
+          through = page.through;
           if (this.closed) return;
           if (this.rows.length === 0 && this.before === null && position.kind === 'tail') {
             this.olderFence = page.through;
@@ -419,7 +441,14 @@ export class Transcript {
           if (page.after === null) break;
           position = { kind: 'after', cursor: page.after };
         }
-        this.live = this.live.filter((row) => !this.covered.has(row.covered));
+        // History through `through` is read to its end. Text it now holds, and
+        // text whose step closed by then without reaching history, is no longer
+        // live (results.ts history case).
+        this.live = this.live.filter(
+          (row) =>
+            !this.covered.has(row.covered) &&
+            (row.sequence > through || row.closedAt === null || row.closedAt > through),
+        );
         this.pending = this.pending.filter((row) => !this.covered.has(row.covered));
         this.hooks.changed();
       } while (this.followAgain && !this.closed);
@@ -536,18 +565,9 @@ export class Transcript {
   }
 }
 
-/** The transcript pane: header, the measured list, and its scrollbar. */
+/** The selected session's pane: header, the measured list, and its scrollbar. */
 export function transcriptPane(transcript, loadOlder, cx) {
   const theme = cx.theme();
-  if (transcript === null) {
-    return v_flex()
-      .flex_1()
-      .min_h_0()
-      .items_center()
-      .justify_center()
-      .text_color(theme.colors.muted_foreground)
-      .child('Select a session');
-  }
   // One snapshot of the three arrays for this render; the list's callbacks
   // run during later layouts and must agree with the count given here.
   const { rows, pending, live } = transcript;
@@ -610,7 +630,7 @@ export function transcriptPane(transcript, loadOlder, cx) {
 function header(transcript, cx) {
   const theme = cx.theme();
   const state =
-    transcript.pendingInteractions > 0
+    transcript.interactions.entries.length > 0
       ? 'Needs you'
       : transcript.run
         ? 'Working…'

@@ -21,6 +21,7 @@
 
 import { div } from 'gpui-kit';
 import { v_flex, h_flex, Button } from 'gpui-base';
+import { button } from './composer.js';
 import { query, subscribe, next, close, log } from './host.js';
 
 const LIST = { filter: 'all', position: { kind: 'start' } };
@@ -39,6 +40,7 @@ export class SessionCatalog {
     this.state = 'connecting';
     this.revision = null;
     this.handle = null;
+    this.restarting = false;
   }
 
   /**
@@ -56,12 +58,16 @@ export class SessionCatalog {
           if (page === null) break;
           this.apply(page, 'live');
         }
-        log('catalog: the Host ended the subscription');
+        if (!this.restarting) log('catalog: the Host ended the subscription');
       } catch (error) {
         this.hooks.report(`Session list: ${error.message}`);
       } finally {
         if (this.handle !== null) await close(this.handle).catch(() => {});
         this.handle = null;
+      }
+      if (this.restarting) {
+        this.restarting = false;
+        continue;
       }
       this.state = 'offline';
       this.hooks.changed();
@@ -74,7 +80,24 @@ export class SessionCatalog {
     }
   }
 
+  /**
+   * Reopens the subscription at the start. After a change the Host reads the
+   * catalog again from the first id it last sent, and ids are random, so a
+   * new session can sort before that id and fall outside the window; the TUI
+   * likewise reopens its catalog watch after creating a session.
+   */
+  restart() {
+    if (this.handle === null || this.restarting) return;
+    this.restarting = true;
+    close(this.handle).catch(() => {});
+  }
+
   apply(page, state) {
+    if (state === 'live' && page.before !== null) {
+      log('catalog: sessions sort before the window; reopening at the start');
+      this.restart();
+      return;
+    }
     // The catalog answers after every commit; an unchanged revision is the same page.
     if (page.revision === this.revision && state === this.state) return;
     this.revision = page.revision;
@@ -95,8 +118,9 @@ export function needsYou(session) {
  * @param {SessionCatalog} catalog
  * @param {string | null} selectedId
  * @param {(session: object) => void} select
+ * @param {{ enabled: boolean, create: () => void }} create starts a session in the selected one's workspace
  */
-export function sidebar(catalog, selectedId, select, cx) {
+export function sidebar(catalog, selectedId, select, create, cx) {
   const theme = cx.theme();
   const summary =
     catalog.needsYou > 0
@@ -117,7 +141,13 @@ export function sidebar(catalog, selectedId, select, cx) {
         .gap(theme.spacing.sm)
         .items_center()
         .child(div().flex_1().font_weight(600).child('Sessions'))
-        .child(div().text_sm().text_color(theme.colors.muted_foreground).child(summary)),
+        .child(div().text_sm().text_color(theme.colors.muted_foreground).child(summary))
+        .child(
+          button('new-session', 'New', false, !create.enabled, cx)
+            .h_6()
+            .tooltip('New session in this workspace')
+            .on_click(() => create.create()),
+        ),
     )
     .child(
       v_flex()
