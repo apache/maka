@@ -257,6 +257,12 @@ export const MESSAGES = {
     '上一轮运行出错中断了。',
     '上一輪執行出錯中斷了。',
   ],
+  runError: ['Run error: {value}', '运行出错：{value}', '執行出錯：{value}'],
+  contextCompacted: [
+    'Context compressed ({seconds}s)',
+    '上下文已压缩（{seconds}秒）',
+    '上下文已壓縮（{seconds}秒）',
+  ],
   sendAgain: ['Send again', '重新发送', '重新傳送'],
   sendAgainTip: [
     'Send the message that started this turn once more',

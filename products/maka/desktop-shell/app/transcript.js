@@ -75,6 +75,7 @@ function rowFromChunk(chunk) {
     turnId: chunk.turnId,
     tool: chunk.tool,
     timing: chunk.timing ?? null,
+    compaction: chunk.compaction ?? null,
     totalBytes: chunk.totalBytes,
     fragments,
     text: chunk.text,
@@ -789,6 +790,17 @@ function displayItems(transcript) {
       items.push({ key: row.key, kind: 'tool', row, result, open: transcript.expanded.has(row.key) });
     } else if (row.role === 'thinking') {
       items.push({ key: row.key, kind: 'thinking', row, open: transcript.expanded.has(row.key) });
+    } else if (row.role === 'failure') {
+      // A run's interruption and its end can both record the same reason.
+      const previous = items.at(-1);
+      const repeated =
+        previous?.kind === 'failure' &&
+        previous.row.turnId === row.turnId &&
+        previous.row.text === row.text;
+      if (!repeated) items.push({ key: row.key, kind: 'failure', row });
+    } else if (row.role === 'compaction') {
+      // As in the TUI, a checkpoint shows only once it was adopted.
+      if (row.compaction !== null) items.push({ key: row.key, kind: 'compaction', row });
     } else {
       items.push({ key: row.key, kind: row.role === 'user' ? 'user' : 'assistant', row });
     }
@@ -925,6 +937,10 @@ function itemBody(item, transcript, cx) {
       return toolRow(item, transcript, cx);
     case 'footer':
       return turnFooter(item, transcript, cx);
+    case 'failure':
+      return failureRow(item, cx);
+    case 'compaction':
+      return compactionRow(item, cx);
     case 'working':
       return h_flex()
         .h(24)
@@ -935,6 +951,31 @@ function itemBody(item, transcript, cx) {
     default:
       return div();
   }
+}
+
+/** Why a run stopped, as the Host recorded it; the reason itself is not translated. */
+function failureRow(item, cx) {
+  const m = palette(cx);
+  return h_flex()
+    .w_full()
+    .gap(8)
+    .items_start()
+    .child(div().flex_none().pt(2).child(icon('status-failed', 14, m.destructive)))
+    .child(text(t('runError', { value: item.row.text }), 'small', m.ink).flex_1().min_w_0());
+}
+
+/** Where the context was compacted, as the TUI marks it: a rule with the time it took. */
+function compactionRow(item, cx) {
+  const m = palette(cx);
+  const seconds = (item.row.compaction.durationMs / 1000).toFixed(1).replace(/\.0$/, '');
+  const rule = () => div().flex_1().h(1).bg(m.border);
+  return h_flex()
+    .w_full()
+    .gap(12)
+    .items_center()
+    .child(rule())
+    .child(text(t('contextCompacted', { seconds }), 'small', m.inkMuted))
+    .child(rule());
 }
 
 function historyRow(state, transcript, cx) {
