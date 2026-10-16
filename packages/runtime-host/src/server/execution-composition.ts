@@ -3018,6 +3018,7 @@ export async function createExecutionRuntimeHostComposition(
     });
     const externalSessions = new HostExternalSessionCoordinator({
       adapters: createExternalSessionAdapterRegistry(),
+      artifacts: openedArtifactStore,
       admission: sessionAdmission,
       sessions: stores.sessionStore,
       workspaceResolver,
@@ -3028,6 +3029,7 @@ export async function createExecutionRuntimeHostComposition(
         const outcomes = await Promise.allSettled([
           stores.purgeConversationOperationalState(sessionId),
           sessionTodoStore.purgeSessionState(sessionId),
+          openedArtifactStore.purgeSessionArtifacts(sessionId),
           stores.sessionStore.remove(sessionId),
         ]);
         for (const outcome of outcomes) {

@@ -103,6 +103,53 @@ async function listSessions(
 }
 
 describe('CodexSessionAdapter', () => {
+  test('keeps only explicit local image parts associated with their user message', async () => {
+    await withCodexHome(async (codexHome) => {
+      const id = 'codex-image-parts';
+      const content = [
+        JSON.stringify({ type: 'session_meta', payload: { id, cwd: '/workspace', source: 'cli' } }),
+        JSON.stringify({
+          type: 'event_msg',
+          payload: {
+            type: 'item_completed',
+            item: {
+              type: 'UserMessage',
+              id: 'image-user',
+              content: [
+                { type: 'text', text: 'Compare /ordinary/path.png' },
+                { type: 'local_image', path: '/explicit/one.png' },
+                { type: 'local_image', path: '/explicit/two.png' },
+              ],
+            },
+          },
+        }),
+        JSON.stringify({
+          type: 'event_msg',
+          payload: {
+            type: 'item_completed',
+            item: {
+              type: 'UserMessage',
+              id: 'image-only',
+              content: [{ type: 'local_image', path: '/explicit/three.png' }],
+            },
+          },
+        }),
+        '',
+      ].join('\n');
+      await seedRawRollout(codexHome, id, content);
+      const session = await new CodexSessionAdapter({ codexHome }).readSession(id);
+      assert.deepEqual(session.sourceImages, [
+        { messageId: 'image-user', path: '/explicit/one.png' },
+        { messageId: 'image-user', path: '/explicit/two.png' },
+        { messageId: 'image-only', path: '/explicit/three.png' },
+      ]);
+      assert.deepEqual(
+        session.messages.filter((m) => m.type === 'user').map((m) => m.text),
+        ['Compare /ordinary/path.png', '[Image]'],
+      );
+    });
+  });
+
   test('lists active and archived root Sessions from the newest Codex state database', async () => {
     await withCodexHome(async (codexHome) => {
       const activePath = await seedFixtureRollout(codexHome, 'codex-session-1', false);

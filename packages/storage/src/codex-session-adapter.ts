@@ -484,6 +484,7 @@ async function convertCodexRollout(
 
 class CodexRolloutConverter {
   private readonly messages: StoredMessage[] = [];
+  private readonly sourceImages: { messageId: string; path: string }[] = [];
   private readonly failedTurnIds = new Set<string>();
   private activeTurnId: string | undefined;
   private activeTurnIsExplicit = false;
@@ -574,12 +575,30 @@ class CodexRolloutConverter {
           const text = codexCompletedItemText(item) || codexCompletedItemMediaText(item);
           if (text.length === 0) return;
           this.firstUserText ??= text;
+          const id =
+            stringField(item, 'client_id') ??
+            stringField(item, 'id') ??
+            generatedCodexId(this.expectedSessionId, 'user', record.line);
+          if (Array.isArray(item?.content)) {
+            for (const part of item.content) {
+              const image = asRecord(part);
+              if (stringField(image, 'type')?.toLowerCase() !== 'local_image') continue;
+              const path = stringField(image, 'path') ?? '';
+              // Source descriptors share the converted-output budget with messages.
+              this.convertedBytes += Buffer.byteLength(JSON.stringify({ messageId: id, path }));
+              if (this.convertedBytes > this.limits.maxConvertedBytes) {
+                throw new ExternalSessionLimitError(
+                  'converted_bytes',
+                  this.limits.maxConvertedBytes,
+                  'Codex image references exceed the converted Session limit',
+                );
+              }
+              this.sourceImages.push({ messageId: id, path });
+            }
+          }
           this.append({
             type: 'user',
-            id:
-              stringField(item, 'client_id') ??
-              stringField(item, 'id') ??
-              generatedCodexId(this.expectedSessionId, 'user', record.line),
+            id,
             turnId: this.ensureTurnId(record.line),
             ts: this.timestampFor(record),
             ...codexUserContent(text),
@@ -795,6 +814,7 @@ class CodexRolloutConverter {
       sourceSessionId: this.expectedSessionId,
       metadata: { name, cwd: this.metaCwd || this.fallbackCwd },
       messages: this.messages,
+      ...(this.sourceImages.length > 0 ? { sourceImages: this.sourceImages } : {}),
     };
   }
 
