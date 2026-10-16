@@ -191,9 +191,39 @@ export function text(content, style, color) {
   return typeset(div(), style).text_color(color).child(content);
 }
 
-/** One of the icons in `icons/`, tinted. */
+/** One turn of the running glyph, in ms. The native client's spinner turns 0.033 of a turn every 33 ms. */
+const SPIN_MS = 1000;
+
+/** One of the icons in `icons/`, tinted. The running glyph turns, as the native client's does. */
 export function icon(name, size, color) {
-  return svg(`icons/${name}.svg`).flex_none().size(size).text_color(color);
+  const glyph = svg(`icons/${name}.svg`).flex_none().size(size).text_color(color);
+  return name === 'status-running' ? glyph.spin(SPIN_MS) : glyph;
+}
+
+/**
+ * How a markdown reply is drawn: the native client's `message_text_style`
+ * (maka-gpui crates/conversation/src/view.rs): headings 18, 16 and 14 at
+ * 600, 16 between blocks, code blocks on the code fill at 14/20, inline code
+ * on the wash, links in the primary color, table heads 14/600 and cells
+ * padded 12 by 8.5.
+ */
+export function markdownStyle(cx) {
+  const m = palette(cx);
+  return {
+    headings: { default: { text_size: 14, font_weight: 600 }, 1: { text_size: 18 }, 2: { text_size: 16 } },
+    paragraph_gap: 16,
+    foreground: m.ink,
+    muted_foreground: m.inkMuted,
+    link: m.primary,
+    border: m.border,
+    code_background: m.code,
+    inline_code_background: m.wash,
+    code_font_family: 'Menlo',
+    code_font_size: 14,
+    code_block: { bg: m.code, rounded: 10, px: 14, text_size: 14, line_height: '20px' },
+    table_head: { bg: '#00000000', text_color: m.ink, text_size: 14, font_weight: 600 },
+    table_cell: { px: 12, py: 8.5 },
+  };
 }
 
 /**

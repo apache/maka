@@ -44,7 +44,7 @@ import { div, list } from 'gpui-kit';
 import { v_flex, h_flex, TextView, Scrollbar } from 'gpui-base';
 import { query, subscribe, next, close, log, readHistory, readSource } from './host.js';
 import { Interactions } from './interactions.js';
-import { palette, typeset, text, icon, tippedIcon } from './theme.js';
+import { palette, typeset, text, icon, tippedIcon, markdownStyle } from './theme.js';
 
 /** A visible range starting at or above this index counts as "at the top" for paging. */
 const NEAR_TOP = 3;
@@ -889,7 +889,7 @@ function itemBody(item, transcript, cx) {
       return typeset(div(), 'reading')
         .w_full()
         .text_color(m.ink)
-        .child(TextView.markdown(`md-${item.key}`, item.row.text));
+        .child(TextView.markdown(`md-${item.key}`, item.row.text).text_style(markdownStyle(cx)));
     case 'thinking':
       return thinkingRow(item, cx);
     case 'tool':
