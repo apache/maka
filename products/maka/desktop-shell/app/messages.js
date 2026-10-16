@@ -80,6 +80,36 @@ export const MESSAGES = {
   ageNow: ['now', '刚刚', '剛剛'],
 
   // Composer (composer.js)
+  permissionMode: ['Permission mode', '权限模式', '權限模式'],
+  permissionReadOnly: ['Read only', '只读', '只讀'],
+  permissionReadOnlyHint: [
+    'Read and search only; asks before write or network.',
+    '只读搜索，不写文件、不上网；需要时先问你。',
+    '只讀搜尋，不寫檔案、不上網；需要時先問你。',
+  ],
+  permissionAuto: ['Auto', '自动', '自動'],
+  permissionAutoHint: [
+    'Runs inside Maka’s protection; asks before going further.',
+    '保护层内自动执行，越权先问你。',
+    '保護層內自動執行，越權先問你。',
+  ],
+  permissionFullAccess: ['Full access', '完全权限', '完全權限'],
+  permissionFullAccessHint: [
+    'Direct file and network access. Trust-only tasks.',
+    '直接访问文件和网络，仅限可信任务。',
+    '直接存取檔案和網路，僅限可信任務。',
+  ],
+  permissionFailed: [
+    'Couldn’t change the permission mode: {value}',
+    '切换权限模式失败：{value}',
+    '切換權限模式失敗：{value}',
+  ],
+  hostRefused: ['the Host refused ({value})', 'Host 拒绝了（{value}）', 'Host 拒絕了（{value}）'],
+  taskChangedMeanwhile: [
+    'the task changed meanwhile; try again',
+    '任务刚有变化，请再试一次',
+    '任務剛有變化，請再試一次',
+  ],
   composerPlaceholder: ['Ask anything…', '有什么可以帮你？', '有什麼可以幫你？'],
   modelListChangingReopen: [
     'the model list is changing; reopen the app',
@@ -222,7 +252,17 @@ export const MESSAGES = {
   failed: ['Failed', '失败', '失敗'],
   stopped: ['Stopped', '已中止', '已中止'],
   copied: ['Copied', '已复制', '已複製'],
-  copy: ['Copy', '复制', '複製'],
+  turnFailedNote: [
+    'The last run stopped on an error.',
+    '上一轮运行出错中断了。',
+    '上一輪執行出錯中斷了。',
+  ],
+  sendAgain: ['Send again', '重新发送', '重新傳送'],
+  sendAgainTip: [
+    'Send the message that started this turn once more',
+    '把这一轮的消息再发送一次',
+    '把這一輪的訊息再傳送一次',
+  ],
 
   // How long ago, in the transcript (transcript.js relativeTime)
   justNow: ['just now', '刚刚', '剛剛'],

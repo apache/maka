@@ -81,6 +81,74 @@ export class Composer {
     this.menuOpen = false;
     /** sessionId (or '' for a new task) -> the model chosen in the menu, which the next send uses. */
     this.chosen = new Map();
+    /** Whether the permission menu is open. */
+    this.accessOpen = false;
+    /** The permission level picked for a new task, or null for the Host's default. */
+    this.newAccess = null;
+    /** Whether a permission change is under way. */
+    this.changingAccess = false;
+  }
+
+  /**
+   * The permission level `transcript`'s agent runs with, or the one a new
+   * task starts with: the level picked for it, else `defaultAccess`, the
+   * Host's default as far as it is known (null when it is not).
+   */
+  access(transcript, defaultAccess) {
+    if (transcript !== null) return transcript.session.permissions?.access ?? null;
+    return this.newAccess ?? defaultAccess;
+  }
+
+  /**
+   * Sets how much `transcript`'s agent may do before it asks, as the TUI's
+   * sandbox picker does: `agent.metadata` with the session's own title and
+   * labels (so an automatic title stays automatic) and the approvals granted
+   * so far revoked. A stale revision is read again once. With no transcript,
+   * it picks the level the next new task starts with. Resolves to whether the
+   * level is now `access`; a failure has been reported.
+   */
+  async setAccess(transcript, access) {
+    this.accessOpen = false;
+    if (transcript === null) {
+      this.newAccess = access;
+      this.hooks.changed();
+      return true;
+    }
+    if (transcript.session.permissions?.access === access) {
+      this.hooks.changed();
+      return true;
+    }
+    if (this.changingAccess) return false;
+    this.changingAccess = true;
+    this.hooks.changed();
+    try {
+      let session = transcript.session;
+      for (let attempt = 0; ; attempt += 1) {
+        const result = await operation('agent', 'metadata', {
+          sessionId: session.id,
+          expectedRevision: session.revision,
+          title: session.title,
+          labels: [...session.labels],
+          permissions: { settings: { ...session.permissions, access }, revokeGrants: true },
+        });
+        if (result.kind === 'committed') {
+          transcript.session = result.session;
+          log(`composer: ${session.id} runs with ${access}`);
+          return true;
+        }
+        if (result.kind === 'rejected') {
+          throw new Error(t('hostRefused', { value: JSON.stringify(result.reason) }));
+        }
+        if (attempt > 0) throw new Error(t('taskChangedMeanwhile'));
+        session = (await query('agent', 'observe', { sessionId: session.id })).session;
+      }
+    } catch (error) {
+      this.hooks.report(t('permissionFailed', { value: error.message }));
+      return false;
+    } finally {
+      this.changingAccess = false;
+      this.hooks.changed();
+    }
   }
 
   /** Picks the model the next message in `transcript` (or a new task) is sent with. */
@@ -177,10 +245,11 @@ export class Composer {
   /**
    * Sends the draft to the transcript's session, starting a session first
    * when none is selected. The draft is cleared only once the Host accepted
-   * it, and only if it was not edited meanwhile.
+   * it, and only if it was not edited meanwhile. With `again`, sends that
+   * text instead (a failed turn's message) and leaves the draft alone.
    */
-  async send(transcript) {
-    const message = this.draft.value();
+  async send(transcript, again = null) {
+    const message = again ?? this.draft.value();
     if (this.sending || this.model === null || message.trim() === '') return;
     this.sending = true;
     this.hooks.changed();
@@ -194,6 +263,14 @@ export class Composer {
         if (chosen) {
           this.chosen.set(transcript.id, chosen);
           this.chosen.delete('');
+        }
+        // So does a permission level, set before the first message runs; the
+        // next new task starts from the Host's default again. When it cannot
+        // be set, the message is not sent with a level the user did not pick.
+        if (this.newAccess !== null) {
+          const access = this.newAccess;
+          this.newAccess = null;
+          if (!(await this.setAccess(transcript, access))) return;
         }
       }
       const { model, thinkingLevel } = await this.selection(transcript);
@@ -209,7 +286,7 @@ export class Composer {
       );
       if (result.kind === 'rejected')
         throw new Error(t('hostRejectedMessage', { value: result.reason }));
-      if (this.draft.value() === message) {
+      if (again === null && this.draft.value() === message) {
         // `set_value` sends no change event, so the draft's emptiness is set here.
         this.draft.set_value('');
         this.empty = true;
@@ -249,9 +326,11 @@ export class Composer {
  * @param {Composer} composer
  * @param {import("./transcript.js").Transcript | null} transcript
  * @param {{ folder: { name: string, path: string } | null, picker: object | null,
- *   notice: string | null, dismiss: () => void, addConnection: () => void }} context
+ *   defaultAccess: string | null, notice: string | null, dismiss: () => void,
+ *   addConnection: () => void }} context
  *   `folder` is where a new task starts when no task is selected, and `picker`
- *   the chip that chooses it; `notice` is the last error
+ *   the chip that chooses it; `defaultAccess` the permission level new tasks
+ *   get when known; `notice` is the last error
  */
 export function composerPane(composer, transcript, context, cx) {
   const m = palette(cx);
@@ -296,6 +375,7 @@ export function composerPane(composer, transcript, context, cx) {
                 .gap(2)
                 .items_center()
                 .child(modelMenu(composer, transcript, context, cx))
+                .child(permissionMenu(composer, transcript, context, cx))
                 .when(context.picker !== null, (el) => el.child(context.picker))
                 .child(note(context, executor, cx))
                 .child(
@@ -390,6 +470,79 @@ function modelMenu(composer, transcript, context, cx) {
         .overflow_y_scroll()
         .mb(8)
         .children(rows),
+    );
+}
+
+/**
+ * The permission levels, by the Host's access value, with the native
+ * client's names and one-line descriptions: Read only asks before writing or
+ * using the network, Auto works inside the workspace and asks before going
+ * further, Full access reaches files and the network directly.
+ */
+const ACCESS = [
+  ['read_only', 'permissionReadOnly', 'permissionReadOnlyHint'],
+  ['workspace_write', 'permissionAuto', 'permissionAutoHint'],
+  ['danger_full_access', 'permissionFullAccess', 'permissionFullAccessHint'],
+];
+
+/** The permission chip and its menu, which opens upward. */
+function permissionMenu(composer, transcript, context, cx) {
+  const current = composer.access(transcript, context.defaultAccess);
+  const name = ACCESS.find(([access]) => access === current)?.[1] ?? 'permissionMode';
+  return Popover.new('permission-menu')
+    .anchor('bottom_left')
+    .open(composer.accessOpen)
+    .on_open_change((open) => {
+      composer.accessOpen = open;
+      composer.hooks.changed();
+    })
+    .trigger(
+      chip('permission-chip', t(name), cx)
+        .disabled(composer.changingAccess)
+        .tooltip(t('permissionMode')),
+    )
+    .content(
+      menuSurface(cx)
+        .id('permission-menu-rows')
+        .w(340)
+        .mb(8)
+        .children(
+          ACCESS.map(([access, label, hint]) =>
+            accessRow(access, label, hint, access === current, cx).on_click(() =>
+              composer.setAccess(transcript, access),
+            ),
+          ),
+        ),
+    );
+}
+
+/** One level in the permission menu: the check, its name, and what it allows below. */
+function accessRow(access, label, hint, checked, cx) {
+  const m = palette(cx);
+  return Button.new(`permission-${access}`)
+    .w_full()
+    .px(8)
+    .py(6)
+    .gap(8)
+    .items_start()
+    .rounded(6)
+    .hover((style) => style.bg(m.activeRow))
+    .child(
+      div()
+        .w(16)
+        .pt(3)
+        .flex_none()
+        .when(checked, (el) => el.child(icon('check', 14, m.ink))),
+    )
+    .child(
+      v_flex()
+        .flex_1()
+        .min_w_0()
+        .gap(2)
+        .child(typeset(div(), 'body').text_color(m.ink).child(t(label)))
+        .child(
+          text(t(hint), 'small', access === 'danger_full_access' ? m.warning : m.inkMuted),
+        ),
     );
 }
 

@@ -70,8 +70,12 @@ export default class MakaDesktop extends View {
       ...hooks,
       changed: () => {
         // The header shows the catalog's title, which a first message can change.
+        // A page read before a change the app made itself (a permission
+        // level) can arrive after it; an older revision is not taken.
         const entry = this.catalog.sessions.find((session) => session.id === this.transcript?.id);
-        if (entry && this.transcript !== null) this.transcript.session = entry;
+        if (entry && this.transcript !== null && entry.revision >= this.transcript.session.revision) {
+          this.transcript.session = entry;
+        }
         hooks.changed();
       },
     });
@@ -332,6 +336,7 @@ export default class MakaDesktop extends View {
   taskPane(el, cx) {
     const transcript = this.transcript;
     const card = transcript ? interactionCard(transcript.interactions, cx) : null;
+    const failed = transcript !== null && card === null ? transcript.failedTurn() : null;
     const folder = transcript === null ? this.startFolder() : null;
     return el
       .child(this.header(cx))
@@ -341,6 +346,7 @@ export default class MakaDesktop extends View {
         el.child(transcriptPane(transcript, () => transcript.loadOlder(), cx)),
       )
       .when(card !== null, (el) => el.child(card))
+      .when(failed !== null, (el) => el.child(this.failedBar(transcript, failed, cx)))
       .child(
         composerPane(
           this.composer,
@@ -351,6 +357,11 @@ export default class MakaDesktop extends View {
               transcript === null
                 ? folderPicker(this.directories, this.catalog.sessions, this.creating || folder === null, cx)
                 : null,
+            // A session whose permissions were never changed still has the
+            // level the Host gives every new one.
+            defaultAccess:
+              this.catalog.sessions.find((session) => session.boundaryRevision === 0)?.permissions
+                ?.access ?? null,
             notice: this.error?.message ?? null,
             dismiss: () => {
               this.error = null;
@@ -363,6 +374,45 @@ export default class MakaDesktop extends View {
           },
           cx,
         ),
+      );
+  }
+
+  /**
+   * Above the composer when the newest turn failed: says so and offers to
+   * send its message again. The Host cannot pick a failed run up where it
+   * ended yet (`agent.resume` fails while it binds the new run's tools), so
+   * sending again is what gets the work going.
+   */
+  failedBar(transcript, turn, cx) {
+    const m = palette(cx);
+    return h_flex()
+      .flex_none()
+      .w_full()
+      .px(24)
+      .pt(8)
+      .justify_center()
+      .child(
+        h_flex()
+          .w_full()
+          .max_w(720)
+          .py(8)
+          .pl(12)
+          .pr(8)
+          .gap(8)
+          .items_center()
+          .rounded(12)
+          .border_1()
+          .border_color(m.border)
+          .bg(m.plate)
+          .child(icon('status-failed', 16, m.destructive))
+          .child(text(t('turnFailedNote'), 'body', m.ink).flex_1().min_w_0())
+          .when(turn.message !== null, (el) =>
+            el.child(
+              controlButton('send-again', t('sendAgain'), 'outline', this.composer.sending, cx)
+                .tooltip(t('sendAgainTip'))
+                .on_click(() => this.composer.send(transcript, turn.message)),
+            ),
+          ),
       );
   }
 

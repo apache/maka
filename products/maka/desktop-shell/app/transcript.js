@@ -245,6 +245,24 @@ export class Transcript {
     }
   }
 
+  /**
+   * The newest turn when it failed and nothing runs or waits to be sent:
+   * `{ turnId, message }`, with the whole text of the message that started
+   * it, or null as `message` when only part of that text is loaded. Null
+   * otherwise. A stopped turn is left alone: the user stopped it.
+   */
+  failedTurn() {
+    if (!this.ready || this.run !== null || this.pending.length > 0 || this.live.length > 0) {
+      return null;
+    }
+    const last = this.rows.at(-1);
+    if (last?.timing?.finished?.outcome !== 'failed') return null;
+    const start = this.rows.find((row) => row.turnId === last.turnId && row.role === 'user');
+    if (!start) return null;
+    const whole = start.fragments[0]?.offset === 0 && utf8Length(start.text) === start.totalBytes;
+    return { turnId: last.turnId, message: whole ? start.text : null };
+  }
+
   /** Stops the live updates. A pending `next()` resolves with null. */
   async close() {
     this.closed = true;
@@ -600,6 +618,7 @@ export class Transcript {
       return;
     }
     if (key.startsWith('footer/')) {
+      if (!this.view?.items.find((entry) => entry.key === key)?.copies) return;
       const turnId = key.slice('footer/'.length);
       const reply = this.rows
         .filter((row) => row.turnId === turnId && row.role === 'assistant')
@@ -750,8 +769,11 @@ function displayItems(transcript) {
   const calls = new Set();
   const results = new Map();
   const timings = new Map();
+  /** Turns with reply text, the only ones whose footer copies. */
+  const replied = new Set();
   for (const row of rows) {
     if (row.role === 'tool_call') calls.add(row.sequence);
+    if (row.role === 'assistant' && row.text.trim() !== '') replied.add(row.turnId);
     const call = row.tool?.call?.sequence;
     if (row.role === 'tool_result' && call !== undefined) results.set(call, row);
     if (row.timing) timings.set(row.turnId, row.timing);
@@ -773,7 +795,13 @@ function displayItems(transcript) {
     const next = rows[index + 1];
     const finished = timings.get(row.turnId)?.finished ?? null;
     if ((next === undefined || next.turnId !== row.turnId) && finished !== null) {
-      items.push({ key: `footer/${row.turnId}`, kind: 'footer', turnId: row.turnId, finished });
+      items.push({
+        key: `footer/${row.turnId}`,
+        kind: 'footer',
+        turnId: row.turnId,
+        finished,
+        copies: replied.has(row.turnId),
+      });
     }
   });
   for (const row of pending) items.push({ key: row.key, kind: 'user', row });
@@ -1389,6 +1417,12 @@ function lowSurrogate(text, index) {
   return unit >= 0xdc00 && unit <= 0xdfff;
 }
 
+/**
+ * Below a finished turn, as the native client's footer: how it ended when it
+ * did not complete, when, and the copy icon right after when the turn has
+ * reply text. A click anywhere on the row copies the reply (list rows take
+ * one click handler, see click).
+ */
 function turnFooter(item, transcript, cx) {
   const m = palette(cx);
   const outcome = { failed: t('failed'), aborted: t('stopped') }[item.finished.outcome] ?? null;
@@ -1409,14 +1443,18 @@ function turnFooter(item, transcript, cx) {
         m.inkMuted,
       ),
     )
-    .child(div().flex_1())
-    .child(
-      typeset(div(), 'small')
-        .px(6)
-        .rounded(6)
-        .text_color(m.inkMuted)
-        .hover((style) => style.bg(m.wash).text_color(m.ink))
-        .child(copied ? t('copied') : t('copy')),
+    .when(item.copies, (el) =>
+      el.child(
+        h_flex()
+          .h(24)
+          .px(4)
+          .gap(4)
+          .items_center()
+          .rounded(6)
+          .hover((style) => style.bg(m.wash))
+          .child(icon(copied ? 'check' : 'copy', 14, copied ? m.ink : m.inkMuted))
+          .when(copied, (el) => el.child(text(t('copied'), 'small', m.inkMuted))),
+      ),
     );
 }
 
