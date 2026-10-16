@@ -1,0 +1,8 @@
+{
+  "id": "org.apache.maka.desktop",
+  "name": "Maka",
+  "version": "0.1.0",
+  "shell-version": "0.7.3",
+  "entry": "main.js",
+  "window": { "width": 1100, "height": 760 }
+}
