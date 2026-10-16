@@ -647,7 +647,13 @@ test('managed recovery rejects symlinks without following them', async () => {
   );
   const transaction = await onlyTransaction(root);
   await rm(join(transaction, 'next', 'SKILL.md'));
-  await symlink(join(root, 'skills', 'managed', 'SKILL.md'), join(transaction, 'next', 'SKILL.md'));
+  await symlink(
+    process.platform === 'win32'
+      ? join(root, 'skills', 'managed')
+      : join(root, 'skills', 'managed', 'SKILL.md'),
+    join(transaction, 'next', 'SKILL.md'),
+    process.platform === 'win32' ? 'junction' : 'file',
+  );
 
   await assert.rejects(writer(root).recover(), isTransactionError('persistence_failed'));
   assert.deepEqual(await readManaged(root, 'managed'), expected);

@@ -213,7 +213,9 @@ test('request abort stops waiting for shared OAuth resolution without dispatchin
   assert.equal(modelCalls, 0);
 });
 
-test('reconciles a published OAuth lease claim before the next demand', async () => {
+test('reconciles a published OAuth lease claim before the next demand', {
+  skip: process.platform === 'win32' ? 'POSIX directory-sync publication failure only' : false,
+}, async () => {
   await withSeededOAuthCredential(
     'openai-codex',
     expiredTokens('claim-v1', 'account-v1'),
@@ -256,7 +258,9 @@ test('reconciles a published OAuth lease claim before the next demand', async ()
   );
 });
 
-test('reconciles a published OAuth refresh finalization before the next demand', async () => {
+test('reconciles a published OAuth refresh finalization before the next demand', {
+  skip: process.platform === 'win32' ? 'POSIX directory-sync publication failure only' : false,
+}, async () => {
   await withSeededOAuthCredential(
     'openai-codex',
     expiredTokens('finalize-v1', 'account-v1'),
@@ -282,7 +286,9 @@ test('reconciles a published OAuth refresh finalization before the next demand',
   );
 });
 
-test('reconciles a published OAuth lease release before retrying refresh', async () => {
+test('reconciles a published OAuth lease release before retrying refresh', {
+  skip: process.platform === 'win32' ? 'POSIX directory-sync publication failure only' : false,
+}, async () => {
   await withSeededOAuthCredential(
     'openai-codex',
     expiredTokens('release-v1', 'account-v1'),

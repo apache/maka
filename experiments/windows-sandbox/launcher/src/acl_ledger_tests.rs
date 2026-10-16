@@ -342,6 +342,28 @@ mod tests {
     }
 
     #[test]
+    fn long_cache_paths_keep_the_hard_link_admission_check() {
+        let fixture = Fixture::new("long-cache-path");
+        let mut directory = fixture.target.clone();
+        while directory.as_os_str().len() < 320 {
+            directory = directory.join("nested-npm-cache-component");
+        }
+        fs::create_dir_all(&directory).expect("create long directory");
+        let payload = directory.join("payload");
+        fs::write(&payload, "cache bytes").expect("write long-path payload");
+        let request = launch_request(
+            vec![fixture.target_str()],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        collect_roots(&request).expect("single-link long path admits");
+        fs::hard_link(&payload, fixture.target.join("alias")).expect("create long-path hard link");
+        let error = collect_roots(&request).expect_err("long paths still reject hard links");
+        assert!(error.contains("multi-link"), "{error}");
+    }
+
+    #[test]
     fn multi_link_file_root_fails_closed() {
         let fixture = Fixture::new("hardlink-root");
         let original = fixture.target.join("child").join("file.txt");

@@ -73,7 +73,7 @@ unsafe fn serve_once_with_security(
     }
     let mut attributes: SECURITY_ATTRIBUTES = unsafe { zeroed() };
     attributes.nLength = size_of::<SECURITY_ATTRIBUTES>() as u32;
-    attributes.lpSecurityDescriptor = descriptor as *mut c_void;
+    attributes.lpSecurityDescriptor = descriptor;
     attributes.bInheritHandle = 0;
     let pipe_name_wide = wide(pipe_name);
     let pipe = unsafe {
@@ -91,7 +91,7 @@ unsafe fn serve_once_with_security(
             &attributes,
         )
     };
-    unsafe { LocalFree(descriptor as *mut c_void) };
+    unsafe { LocalFree(descriptor) };
     if pipe == INVALID_HANDLE_VALUE {
         return Err(last_error("CreateNamedPipeW"));
     }

@@ -22,15 +22,16 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::iter;
 use std::os::windows::ffi::OsStrExt;
-use std::os::windows::fs::MetadataExt;
+use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, INVALID_HANDLE_VALUE, LocalFree,
-    WAIT_ABANDONED, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, LocalFree, WAIT_ABANDONED,
+    WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1,
@@ -41,9 +42,9 @@ use windows_sys::Win32::Security::{
     OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    BY_HANDLE_FILE_INFORMATION, CreateFileW, FILE_ATTRIBUTE_REPARSE_POINT,
-    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ,
-    FILE_SHARE_WRITE, GetFileInformationByHandle, OPEN_EXISTING,
+    BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
+    FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    GetFileInformationByHandle,
 };
 use windows_sys::Win32::System::Threading::{CreateMutexW, ReleaseMutex, WaitForSingleObject};
 
@@ -270,7 +271,7 @@ impl LedgerLock {
         let descriptor = lock_security_descriptor(&sddl)?;
         let mut attributes: SECURITY_ATTRIBUTES = unsafe { std::mem::zeroed() };
         attributes.nLength = size_of::<SECURITY_ATTRIBUTES>() as u32;
-        attributes.lpSecurityDescriptor = descriptor as *mut std::ffi::c_void;
+        attributes.lpSecurityDescriptor = descriptor;
         attributes.bInheritHandle = 0;
         let name = wide(name);
         let handle = unsafe { CreateMutexW(&attributes, 0, name.as_ptr()) };
@@ -281,15 +282,13 @@ impl LedgerLock {
         } else {
             None
         };
-        unsafe { LocalFree(descriptor as *mut std::ffi::c_void) };
+        unsafe { LocalFree(descriptor) };
         if let Some(error) = create_error {
             return Err(error);
         }
-        if already_exists {
-            if let Err(error) = validate_existing_lock_owner(handle, user_sid) {
-                unsafe { CloseHandle(handle) };
-                return Err(error);
-            }
+        if already_exists && let Err(error) = validate_existing_lock_owner(handle, user_sid) {
+            unsafe { CloseHandle(handle) };
+            return Err(error);
         }
         let wait = unsafe { WaitForSingleObject(handle, timeout_ms) };
         if wait == WAIT_OBJECT_0 || wait == WAIT_ABANDONED {
@@ -353,7 +352,7 @@ fn validate_existing_lock_owner(handle: HANDLE, user_sid: &str) -> Result<(), St
         ));
     }
     let rendered = unsafe { sid_string(owner) };
-    unsafe { LocalFree(descriptor as *mut std::ffi::c_void) };
+    unsafe { LocalFree(descriptor) };
     let rendered = rendered?;
     if rendered.eq_ignore_ascii_case(user_sid)
         || rendered == SYSTEM_SID
@@ -485,27 +484,17 @@ fn reject_aliased_entries(path: &Path) -> Result<fs::Metadata, String> {
 /// grant mutates belongs to the file object shared by every hard link, so a
 /// path-keyed admission that only sees one alias must not grant through it.
 fn reject_multi_link_file(path: &Path) -> Result<(), String> {
-    let wide_path = wide(&path.to_string_lossy());
-    let handle = unsafe {
-        CreateFileW(
-            wide_path.as_ptr(),
-            0,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-            std::ptr::null(),
-            OPEN_EXISTING,
-            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
-            std::ptr::null_mut(),
-        )
-    };
-    if handle == INVALID_HANDLE_VALUE {
-        return Err(last_error(&format!(
-            "CreateFileW(inspect ACL root {})",
-            path.display()
-        )));
-    }
+    // std applies Windows verbatim-path handling for long npm cache paths.
+    // Keep the same metadata-only access and non-following open flags; do not
+    // canonicalize through a reparse point to make a long path readable.
+    let file = OpenOptions::new()
+        .access_mode(0)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+        .map_err(|error| format!("open ACL root {} failed: {error}", path.display()))?;
     let mut information: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
-    let queried = unsafe { GetFileInformationByHandle(handle, &mut information) };
-    unsafe { CloseHandle(handle) };
+    let queried = unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut information) };
     if queried == 0 {
         return Err(last_error(&format!(
             "GetFileInformationByHandle(ACL root {})",
@@ -601,12 +590,13 @@ pub(crate) fn ledger_lease_name(user_sid: &str, request_id: &str) -> String {
 }
 
 fn grant(path: &str, sid: &str, access: &str, recursive: bool) -> Result<(), String> {
+    let path = verbatim_acl_path(path);
     let permission = if recursive {
         format!("*{sid}:(OI)(CI){access}")
     } else {
         format!("*{sid}:{access}")
     };
-    let mut args = vec![path, "/grant", &permission, "/L", "/Q"];
+    let mut args = vec![path.as_str(), "/grant", &permission, "/L", "/Q"];
     if recursive {
         args.push("/T");
     }
@@ -638,12 +628,26 @@ fn remove_grants(ledger: &Ledger) -> Result<(), String> {
 }
 
 fn remove_sid_grants(path: &str, sid: &str, recursive: bool) -> Result<(), String> {
+    let path = verbatim_acl_path(path);
     let principal = format!("*{sid}");
-    let mut args = vec![path, "/remove", &principal, "/L", "/Q"];
+    let mut args = vec![path.as_str(), "/remove", &principal, "/L", "/Q"];
     if recursive {
         args.push("/T");
     }
     run_icacls(&args, "remove")
+}
+
+// Prefix only: canonicalizing here could follow a reparse point between
+// admission and grant. icacls /L and the alias admission checks stay intact.
+fn verbatim_acl_path(path: &str) -> String {
+    let path = path.replace('/', "\\");
+    if path.starts_with(r"\\?\") {
+        path
+    } else if let Some(unc) = path.strip_prefix(r"\\") {
+        format!(r"\\?\UNC\{unc}")
+    } else {
+        format!(r"\\?\{path}")
+    }
 }
 
 /// Preserve an unreadable ledger for inspection instead of letting one corrupt

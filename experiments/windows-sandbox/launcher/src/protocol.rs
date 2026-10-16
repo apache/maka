@@ -131,12 +131,12 @@ impl LaunchRequest {
         validate_roots(&self.write_roots, "writeRoots")?;
         validate_roots(&self.exact_read_roots, "exactReadRoots")?;
         validate_roots(&self.exact_write_roots, "exactWriteRoots")?;
-        if let Some(timeout_ms) = self.timeout_ms {
-            if !(MIN_LAUNCH_TIMEOUT_MS..=MAX_LAUNCH_TIMEOUT_MS).contains(&timeout_ms) {
-                return Err(format!(
-                    "timeoutMs must be between {MIN_LAUNCH_TIMEOUT_MS} and {MAX_LAUNCH_TIMEOUT_MS}"
-                ));
-            }
+        if let Some(timeout_ms) = self.timeout_ms
+            && !(MIN_LAUNCH_TIMEOUT_MS..=MAX_LAUNCH_TIMEOUT_MS).contains(&timeout_ms)
+        {
+            return Err(format!(
+                "timeoutMs must be between {MIN_LAUNCH_TIMEOUT_MS} and {MAX_LAUNCH_TIMEOUT_MS}"
+            ));
         }
         for (name, value) in &self.environment {
             // The CreateProcess environment block is `name=value\0...\0\0`, so

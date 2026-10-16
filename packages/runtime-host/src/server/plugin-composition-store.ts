@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { syncDirectory } from '@maka/storage/stable-storage';
+
 import { randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, rename, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
@@ -90,12 +92,7 @@ export class HostPluginCompositionStore {
       handle = undefined;
       await rename(temporary, this.path);
       published = true;
-      const directoryHandle = await open(directory, 'r');
-      try {
-        await directoryHandle.sync();
-      } finally {
-        await directoryHandle.close();
-      }
+      await syncDirectory(directory);
     } catch (error) {
       if (published) {
         throw new HostPluginCompositionStoreError(
