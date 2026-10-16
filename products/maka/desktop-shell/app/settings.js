@@ -796,7 +796,8 @@ const PAGES = [
 ];
 
 /**
- * The settings navigation, in the sidebar's place.
+ * The settings navigation, in the sidebar's place: the column's height left
+ * under the window strip (main.js).
  * @param {Settings} settings
  * @param {() => void} close
  */
@@ -804,8 +805,8 @@ export function settingsNav(settings, close, cx) {
   const m = palette(cx);
   return v_flex()
     .w(256)
-    .flex_none()
-    .h_full()
+    .flex_1()
+    .min_h_0()
     .bg(m.canvas)
     .text_color(m.ink)
     .px(8)

@@ -19,9 +19,10 @@
 
 // The Maka desktop window: tasks on the canvas at the side, and the plate
 // beside them with the selected task's transcript and the composer, or the
-// start pane for a new task. Settings (settings.js) takes the sidebar and the
-// plate while open. The look follows the native client (theme.js). Every Host call goes through `maka-host`
-// (see host.js); MAKA_HOST_ENDPOINT and MAKA_HOST_EPOCH name the Host.
+// empty state for a new task. Settings (settings.js) takes the sidebar and the
+// plate while open. The look follows the native client (theme.js). Every Host
+// call goes through `maka-host` (see host.js); MAKA_HOST_ENDPOINT and
+// MAKA_HOST_EPOCH name the Host.
 //
 // An optional `dev.js` beside this file (never committed) can turn on the
 // debug log and drive the window without focus:
@@ -36,7 +37,7 @@ import { Transcript, transcriptPane } from './transcript.js';
 import { Composer, composerPane } from './composer.js';
 import { interactionCard } from './interactions.js';
 import { Settings, settingsNav, settingsPage } from './settings.js';
-import { Directories, startPane } from './directories.js';
+import { Directories, folderPicker } from './directories.js';
 import { followAppearance, palette, text, icon, controlButton, ghostButton } from './theme.js';
 
 /**
@@ -73,8 +74,8 @@ export default class MakaDesktop extends View {
         hooks.changed();
       },
     });
-    // With no session selected, sending starts one in the folder the start
-    // pane shows (the first root until a folder is opened).
+    // With no session selected, sending starts one in the folder the
+    // composer's folder chip shows (the first root until one is chosen).
     this.composer = new Composer(
       hooks,
       () => this.transcript,
@@ -87,7 +88,7 @@ export default class MakaDesktop extends View {
     this.settings = new Settings({ ...hooks, modelsChanged: () => this.composer.loadModel() });
     /** @type {Transcript | null} */
     this.transcript = null;
-    /** The folders a session can start in when none is selected. */
+    /** Where a session starts when none is selected, and the menu to choose it. */
     this.directories = new Directories(hooks);
     this.sidebarUi = new SidebarState(() => this.cx.notify());
     this.creating = false;
@@ -243,9 +244,9 @@ export default class MakaDesktop extends View {
     }
   }
 
-  /** Where a session started from the start pane works: the folder shown, or the first root. */
+  /** Where a session started with no task selected works: the chosen folder, or the first root. */
   startFolder() {
-    return this.directories.current() ?? this.directories.roots[0] ?? null;
+    return this.directories.target();
   }
 
   report(message) {
@@ -329,21 +330,7 @@ export default class MakaDesktop extends View {
     return el
       .child(this.header(cx))
       .child(this.connectionStrip(cx))
-      .when(transcript === null, (el) =>
-        el.child(
-          startPane(
-            this.directories,
-            {
-              creating: this.creating,
-              start: (directory) => this.newSession(directory),
-              noModel: this.composer.loaded && this.composer.model === null,
-              // Without a model, a connection is what is missing.
-              openSettings: () => this.settings.show('connections'),
-            },
-            cx,
-          ),
-        ),
-      )
+      .when(transcript === null, (el) => el.child(this.emptyState(cx)))
       .when(transcript !== null, (el) =>
         el.child(transcriptPane(transcript, () => transcript.loadOlder(), cx)),
       )
@@ -354,6 +341,10 @@ export default class MakaDesktop extends View {
           transcript,
           {
             folder: folder === null ? null : { name: folder.name, path: folder.path },
+            picker:
+              transcript === null
+                ? folderPicker(this.directories, this.catalog.sessions, this.creating || folder === null, cx)
+                : null,
             notice: this.error?.message ?? null,
             dismiss: () => {
               this.error = null;
@@ -365,6 +356,47 @@ export default class MakaDesktop extends View {
             },
           },
           cx,
+        ),
+      );
+  }
+
+  /**
+   * The plate's body with no task selected, as the native client's empty
+   * state: one display line centered over the reading column. The composer's
+   * folder chip says where the task will run. Without a model, it also says
+   * that one is missing and opens Settings on the connections.
+   */
+  emptyState(cx) {
+    const m = palette(cx);
+    const noModel = this.composer.loaded && this.composer.model === null;
+    return v_flex()
+      .id('empty-state')
+      .flex_1()
+      .min_h_0()
+      .w_full()
+      .items_center()
+      .justify_center()
+      .px(24)
+      .py(32)
+      .gap(16)
+      .child(text('What should we work on?', 'display', m.ink).max_w(720).text_center())
+      .when(noModel, (el) =>
+        el.child(
+          h_flex()
+            .max_w(720)
+            .px(16)
+            .py(12)
+            .gap(12)
+            .items_center()
+            .rounded(12)
+            .bg(m.warningTint)
+            .child(icon('triangle-alert', 16, m.warning))
+            .child(text('No model is set up yet', 'body', m.ink))
+            .child(
+              controlButton('open-settings', 'Add a model in Settings', 'primary', false, cx).on_click(
+                () => this.settings.show('connections'),
+              ),
+            ),
         ),
       );
   }

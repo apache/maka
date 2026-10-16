@@ -241,12 +241,13 @@ export class Composer {
 }
 
 /**
- * The composer under the transcript or the start pane, in the reading column.
+ * The composer under the transcript or the empty state, in the reading column.
  * @param {Composer} composer
  * @param {import("./transcript.js").Transcript | null} transcript
- * @param {{ folder: { name: string, path: string } | null, notice: string | null,
- *   dismiss: () => void, addConnection: () => void }} context `folder` is where a
- *   new task starts when no task is selected; `notice` is the last error
+ * @param {{ folder: { name: string, path: string } | null, picker: object | null,
+ *   notice: string | null, dismiss: () => void, addConnection: () => void }} context
+ *   `folder` is where a new task starts when no task is selected, and `picker`
+ *   the chip that chooses it; `notice` is the last error
  */
 export function composerPane(composer, transcript, context, cx) {
   const m = palette(cx);
@@ -291,9 +292,7 @@ export function composerPane(composer, transcript, context, cx) {
                 .gap(2)
                 .items_center()
                 .child(modelMenu(composer, transcript, context, cx))
-                .when(transcript === null && context.folder !== null, (el) =>
-                  el.child(folderChip(context.folder, cx)),
-                )
+                .when(context.picker !== null, (el) => el.child(context.picker))
                 .child(note(context, executor, cx))
                 .child(
                   stop
@@ -388,22 +387,6 @@ function modelMenu(composer, transcript, context, cx) {
         .mb(8)
         .children(rows),
     );
-}
-
-/** Where a new task starts: the folder the start pane shows. */
-function folderChip(folder, cx) {
-  const m = palette(cx);
-  return typeset(h_flex(), 'label')
-    .flex_none()
-    .h(28)
-    .px(8)
-    .gap(6)
-    .items_center()
-    .max_w(220)
-    .text_color(m.ink)
-    .tooltip(folder.path)
-    .child(icon('folder', 16, m.inkMuted))
-    .child(div().min_w_0().truncate().child(folder.name || folder.path));
 }
 
 /** The note between the chips and Send: the last error, or why sending is not possible. */

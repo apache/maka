@@ -17,35 +17,122 @@
  * under the License.
  */
 
-// The start pane: where a new session can start. It lists the Host's root
-// directories and walks into their folders through `agent.directories`, as
-// the TUI's directory picker does (plugins/agent/directory-picker): children
-// come 32 at a time, and the folders walked through are kept for going up.
+// Where a new task runs, picked from the composer's folder chip. The menu
+// lists the Host's projects (the Host registers every folder a task starts
+// in) and its root directories; "Choose a folder…" walks into the roots'
+// folders through `agent.directories`, as the TUI's directory picker does
+// (plugins/agent/directory-picker): children come 32 at a time, and the
+// folders walked through are kept for going up.
 
 import { div } from 'gpui-kit';
-import { v_flex, h_flex, Button } from 'gpui-base';
+import { v_flex, h_flex, Button, Popover } from 'gpui-base';
 import { query } from './host.js';
-import { palette, typeset, text, icon, controlButton } from './theme.js';
+import {
+  palette,
+  typeset,
+  text,
+  icon,
+  iconButton,
+  ghostButton,
+  controlButton,
+  menuSurface,
+  menuRow,
+  menuSeparator,
+} from './theme.js';
+
+/** Project pages read for the menu; the Host pages at most 16 projects. */
+const MAX_PROJECT_PAGES = 16;
 
 export class Directories {
   /** @param {{ changed: () => void, report: (message: string) => void }} hooks */
   constructor(hooks) {
     this.hooks = hooks;
     this.roots = [];
+    /** The Host's projects that are not archived, as it lists them. */
+    this.projects = [];
+    /** Where a new task runs, `{ name, path, selection }`; null means the first root. */
+    this.chosen = null;
+    /** Whether the folder menu is open, and whether it shows the folder walk. */
+    this.menuOpen = false;
+    this.browsing = false;
     /** The folders walked into, outermost first; empty while showing the roots. */
     this.path = [];
     this.children = [];
     /** The cursor of the next page of children, or null. */
     this.after = null;
     this.loading = false;
-    /** Why the last listing failed, or null; the pane offers to try again. */
+    /** Why the last listing failed, or null; the walk offers to try again. */
     this.error = null;
     this.reads = 0;
+    this.projectReads = 0;
   }
 
-  /** The folder being shown, or null at the roots. */
+  /** Where a new task runs: the chosen folder, or the first root. */
+  target() {
+    return this.chosen ?? this.roots[0] ?? null;
+  }
+
+  /** The folder the walk shows, or null at the roots. */
   current() {
     return this.path.at(-1) ?? null;
+  }
+
+  /** Opens or closes the menu; it opens on the list of places, reading the projects again. */
+  setMenuOpen(open) {
+    this.menuOpen = open;
+    this.browsing = false;
+    if (open) this.loadProjects();
+    this.hooks.changed();
+  }
+
+  /** Makes `directory` where new tasks run, and closes the menu. */
+  choose(directory) {
+    this.chosen = { name: directory.name, path: directory.path, selection: directory.selection };
+    this.menuOpen = false;
+    this.browsing = false;
+    this.hooks.changed();
+  }
+
+  /** Starts the folder walk: inside the only root, or at the roots when there are several. */
+  browse() {
+    this.browsing = true;
+    this.hooks.changed();
+    return this.roots.length === 1 ? this.open([this.roots[0]]) : this.loadRoots();
+  }
+
+  /**
+   * Reads every page of `agent.projects`. A page answered `changed` means
+   * the list moved between pages, so the read starts over once.
+   */
+  async loadProjects() {
+    const reading = ++this.projectReads;
+    try {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const projects = [];
+        let cursor = null;
+        let changed = false;
+        for (let pages = 0; pages < MAX_PROJECT_PAGES; pages += 1) {
+          const page = await query('agent', 'projects', { kind: 'list', cursor });
+          if (page.kind === 'changed') {
+            changed = true;
+            break;
+          }
+          if (page.kind !== 'projects') throw new Error(`the Host answered ${page.kind}`);
+          projects.push(...page.projects);
+          cursor = page.next ?? null;
+          if (cursor === null) break;
+        }
+        if (changed) continue;
+        if (reading === this.projectReads) {
+          this.projects = projects.filter((project) => !project.archived && project.selection !== null);
+          this.hooks.changed();
+        }
+        return;
+      }
+      throw new Error('the list kept changing');
+    } catch (error) {
+      if (reading === this.projectReads) this.hooks.report(`Projects: ${error.message}`);
+    }
   }
 
   async loadRoots() {
@@ -77,8 +164,18 @@ export class Directories {
     return this.open([...this.path, directory]);
   }
 
+  /** Whether `up()` goes to a folder (or the roots) rather than back to the list of places. */
+  canGoUp() {
+    return this.path.length > 1 || (this.path.length === 1 && this.roots.length > 1);
+  }
+
+  /** One folder up; from the top of the walk, back to the list of places. */
   up() {
-    return this.path.length > 1 ? this.open(this.path.slice(0, -1)) : this.loadRoots();
+    if (this.path.length > 1) return this.open(this.path.slice(0, -1));
+    if (this.canGoUp()) return this.loadRoots();
+    this.browsing = false;
+    this.hooks.changed();
+    return Promise.resolve();
   }
 
   async more() {
@@ -121,166 +218,225 @@ export class Directories {
 }
 
 /**
- * The start pane: the headline, the folder a new task starts in, and its
- * folders in one bordered group.
- * @param {Directories} directories
- * @param {{ creating: boolean, start: (directory: object) => void, noModel: boolean, openSettings: () => void }} actions
+ * `path` as the menu shows it: under a root the Host names `~`, from `~`.
+ * @param {{ name: string, path: string }[]} roots
  */
-export function startPane(directories, actions, cx) {
-  const m = palette(cx);
-  const current = directories.current();
-  const disabled = actions.creating || directories.loading;
-  const entries = current === null ? directories.roots : directories.children;
-  const rows = entries.map((directory, index) =>
-    folderRow(`folder-${index}`, directory.name, directory.path, index > 0, disabled, cx).on_click(
-      () => directories.enter(directory),
-    ),
-  );
-  if (directories.after !== null) {
-    rows.push(
-      typeset(Button.new('folders-more'), 'body')
-        .w_full()
-        .h(44)
-        .px(16)
-        .items_center()
-        .border_t_1()
-        .border_color(m.borderSoft)
-        .text_color(m.inkMuted)
-        .disabled(disabled)
-        .hover((style) => style.bg(m.hover).text_color(m.ink))
-        .on_click(() => directories.more())
-        .child('Show more'),
-    );
+export function shortPath(path, roots) {
+  for (const root of roots) {
+    if (root.name !== '~') continue;
+    if (path === root.path) return '~';
+    if (path.startsWith(`${root.path}/`)) return `~${path.slice(root.path.length)}`;
   }
-  return v_flex()
-    .id('start-pane')
-    .flex_1()
-    .min_h_0()
-    .overflow_y_scrollbar()
-    .items_center()
-    .px(24)
-    .pt(48)
-    .pb(24)
-    .child(
-      v_flex()
-        .w_full()
-        .max_w(720)
-        .gap(16)
-        .child(text('What should we work on?', 'display', m.ink))
-        .when(actions.noModel, (el) =>
-          el.child(
-            h_flex()
-              .px(16)
-              .py(12)
-              .gap(12)
-              .items_center()
-              .rounded(12)
-              .bg(m.warningTint)
-              .child(icon('triangle-alert', 16, m.warning))
-              .child(text('No model is set up yet', 'body', m.ink).flex_1())
-              .child(
-                controlButton('open-settings', 'Add a model in Settings', 'primary', false, cx).on_click(
-                  actions.openSettings,
-                ),
-              ),
-          ),
-        )
-        .child(
-          text(
-            current === null
-              ? `A message written below starts a task in ${directories.roots[0]?.name ?? 'the first folder'}; open a folder to start it there instead.`
-              : 'A message written below starts a task in this folder.',
-            'body',
-            m.inkMuted,
-          ),
-        )
-        .when(current !== null, (el) =>
-          el.child(
-            h_flex()
-              .w_full()
-              .gap(8)
-              .items_center()
-              .child(
-                controlButton('folder-up', 'Up', 'outline', disabled, cx)
-                  .h(28)
-                  .px(8)
-                  .on_click(() => directories.up()),
-              )
-              .child(
-                div()
-                  .flex_1()
-                  .min_w_0()
-                  .truncate()
-                  .text_size(12)
-                  .line_height('20px')
-                  .font_family('Menlo')
-                  .text_color(m.inkMuted)
-                  .child(current.path),
-              )
-              .child(
-                controlButton('folder-start', 'Start a task here', 'primary', disabled, cx).on_click(
-                  () => actions.start(current),
-                ),
-              ),
-          ),
-        )
-        .child(
-          v_flex()
-            .w_full()
-            .rounded(12)
-            .border_1()
-            .border_color(m.border)
-            .bg(m.plate)
-            .overflow_hidden()
-            .when(directories.loading && rows.length === 0, (el) =>
-              el.child(text('Listing…', 'body', m.inkMuted).px(16).py(12)),
-            )
-            .when(!directories.loading && entries.length === 0 && directories.error === null, (el) =>
-              el.child(
-                text(
-                  current === null ? 'The Host offers no folders' : 'No folders inside',
-                  'body',
-                  m.inkMuted,
-                )
-                  .px(16)
-                  .py(12),
-              ),
-            )
-            .when(directories.error !== null, (el) =>
-              el.child(
-                h_flex()
-                  .px(16)
-                  .py(8)
-                  .gap(12)
-                  .items_center()
-                  .child(text(directories.error, 'small', m.destructive).flex_1().min_w_0().truncate())
-                  .child(
-                    controlButton('folders-retry', 'List folders again', 'quiet', false, cx)
-                      .h(28)
-                      .on_click(() => directories.retry()),
-                  ),
-              ),
-            )
-            .children(rows),
-        ),
+  return path;
+}
+
+/**
+ * The places the menu offers, most recently used first: the projects, by
+ * their newest task in `sessions`, then the roots no project already names.
+ * A project in a root's own folder goes by the root's name, as the chip
+ * calls the first root before anything is chosen.
+ */
+export function places(directories, sessions) {
+  const latest = new Map();
+  for (const session of sessions) {
+    const path = session.workspace?.path;
+    if (typeof path === 'string' && !(session.updatedAt <= (latest.get(path) ?? -Infinity))) {
+      latest.set(path, session.updatedAt);
+    }
+  }
+  const rootNames = new Map(directories.roots.map((root) => [root.path, root.name]));
+  const projects = directories.projects
+    .map((project) => ({
+      name: rootNames.get(project.path) ?? project.name,
+      path: project.path ?? '',
+      selection: project.selection,
+      available: project.available,
+    }))
+    .sort(
+      (a, b) =>
+        (latest.get(b.path) ?? -Infinity) - (latest.get(a.path) ?? -Infinity) ||
+        a.name.localeCompare(b.name),
+    );
+  const named = new Set(projects.map((place) => place.path));
+  const roots = directories.roots
+    .filter((root) => !named.has(root.path))
+    .map((root) => ({ ...root, available: true }));
+  return [...projects, ...roots];
+}
+
+/**
+ * The composer's folder chip for a new task, and the menu it opens upward:
+ * the places a task can run, then "Choose a folder…", which turns the menu
+ * into a walk through the Host's folders.
+ * @param {Directories} directories
+ * @param {object[]} sessions the catalog's sessions, to put recent places first
+ * @param {boolean} disabled
+ */
+export function folderPicker(directories, sessions, disabled, cx) {
+  const m = palette(cx);
+  const target = directories.target();
+  const chip = typeset(ghostButton('folder-chip', cx), 'label')
+    .flex_none()
+    .h(28)
+    .px(8)
+    .gap(4)
+    .max_w(260)
+    .disabled(disabled)
+    .tooltip(target?.path ?? 'Choose a folder')
+    .child(icon('folder', 14, m.inkMuted))
+    .child(div().min_w_0().truncate().child(target?.name || target?.path || 'Choose a folder'))
+    .child(icon('chevron-down', 14, m.inkMuted));
+  if (disabled) return chip;
+  return Popover.new('folder-menu')
+    .anchor('bottom_left')
+    .open(directories.menuOpen)
+    .on_open_change((open) => directories.setMenuOpen(open))
+    .trigger(chip)
+    .content(
+      menuSurface(cx)
+        .w(340)
+        .mb(8)
+        .when(!directories.browsing, (el) => el.children(placeRows(directories, sessions, cx)))
+        .when(directories.browsing, (el) => el.children(walkRows(directories, cx))),
     );
 }
 
-/** One 44px folder row: icon, name, and a chevron into it; rows after the first draw a rule above. */
-function folderRow(id, name, path, rule, disabled, cx) {
+function placeRows(directories, sessions, cx) {
+  const target = directories.target();
+  const rows = places(directories, sessions).map((place, index) =>
+    placeRow(`place-${index}`, place, place.path === target?.path, directories.roots, cx).on_click(() =>
+      directories.choose(place),
+    ),
+  );
+  return [
+    v_flex().id('folder-places').max_h(320).overflow_y_scroll().children(rows),
+    ...(rows.length > 0 ? [menuSeparator(cx)] : []),
+    menuRow('folder-browse', 'Choose a folder…', { icon: 'folder-open' }, cx).on_click(() =>
+      directories.browse(),
+    ),
+  ];
+}
+
+/**
+ * A place in the menu: its name over its folder, checked when new tasks run
+ * there. The folder is written from `~` unless that would only repeat the name.
+ */
+function placeRow(id, place, checked, roots, cx) {
   const m = palette(cx);
+  const short = shortPath(place.path, roots);
+  const folder = short === (place.name || place.path) ? place.path : short;
   return typeset(Button.new(id), 'body')
     .w_full()
-    .h(44)
-    .px(16)
-    .gap(12)
+    .px(8)
+    .py(6)
+    .gap(8)
     .items_center()
-    .text_color(m.ink)
-    .disabled(disabled)
-    .when(rule, (el) => el.border_t_1().border_color(m.borderSoft))
-    .hover((style) => style.bg(m.hover))
-    .tooltip(path)
+    .rounded(6)
+    .disabled(!place.available)
+    .when(place.available, (el) => el.hover((style) => style.bg(m.activeRow)))
     .child(icon('folder', 16, m.inkMuted))
-    .child(div().flex_1().min_w_0().truncate().child(name))
-    .child(icon('chevron-right', 16, m.inkMuted));
+    .child(
+      v_flex()
+        .flex_1()
+        .min_w_0()
+        .child(
+          div()
+            .truncate()
+            .text_color(place.available ? m.ink : m.inkDisabled)
+            .child(place.name || place.path),
+        )
+        .child(
+          text(
+            place.available ? folder : 'Folder not found',
+            'small',
+            m.inkMuted,
+          ).truncate(),
+        ),
+    )
+    .when(checked, (el) => el.child(icon('check', 16, m.ink)));
+}
+
+/** The walk: Back and where it is, the folders inside, then Use this folder. */
+function walkRows(directories, cx) {
+  const m = palette(cx);
+  const current = directories.current();
+  const disabled = directories.loading;
+  const entries = current === null ? directories.roots : directories.children;
+  const rows = entries.map((directory, index) =>
+    menuRow(`folder-${index}`, directory.name, { icon: 'folder' }, cx)
+      .disabled(disabled)
+      .tooltip(directory.path)
+      .child(icon('chevron-right', 16, m.inkMuted))
+      .on_click(() => directories.enter(directory)),
+  );
+  if (directories.after !== null) {
+    rows.push(
+      menuRow('folders-more', 'Show more', {}, cx)
+        .disabled(disabled)
+        .text_color(m.inkMuted)
+        .on_click(() => directories.more()),
+    );
+  }
+  let notice = null;
+  if (directories.error !== null) {
+    notice = h_flex()
+      .px(8)
+      .py(6)
+      .gap(8)
+      .items_center()
+      .child(text(directories.error, 'small', m.destructive).flex_1().min_w_0().truncate())
+      .child(
+        controlButton('folders-retry', 'Try again', 'quiet', false, cx)
+          .h(28)
+          .on_click(() => directories.retry()),
+      );
+  } else if (directories.loading && entries.length === 0) {
+    notice = text('Listing…', 'body', m.inkMuted).px(8).py(6);
+  } else if (entries.length === 0) {
+    notice = text(
+      current === null ? 'The Host offers no folders' : 'No folders inside',
+      'body',
+      m.inkMuted,
+    )
+      .px(8)
+      .py(6);
+  }
+  return [
+    h_flex()
+      .h(32)
+      .gap(4)
+      .items_center()
+      .child(
+        iconButton('folder-up', 'chevron-left', cx)
+          .tooltip(directories.canGoUp() ? 'Up' : 'Back')
+          .on_click(() => directories.up()),
+      )
+      .child(
+        div()
+          .flex_1()
+          .min_w_0()
+          .truncate()
+          .text_size(12)
+          .line_height('20px')
+          .font_family('Menlo')
+          .text_color(m.inkMuted)
+          .child(current === null ? 'Folders' : shortPath(current.path, directories.roots)),
+      ),
+    menuSeparator(cx),
+    v_flex()
+      .id('folder-walk')
+      .max_h(280)
+      .overflow_y_scroll()
+      .when(notice !== null, (el) => el.child(notice))
+      .children(rows),
+    menuSeparator(cx),
+    h_flex()
+      .justify_end()
+      .p(4)
+      .child(
+        controlButton('folder-use', 'Use this folder', 'primary', disabled || current === null, cx)
+          .h(28)
+          .on_click(() => directories.choose(current)),
+      ),
+  ];
 }

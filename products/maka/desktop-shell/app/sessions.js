@@ -245,6 +245,7 @@ function groups(sessions, grouping) {
 /**
  * The sidebar: the wordmark, New task, the grouping control, the task groups
  * and the Host's state with the Settings button.
+ * It takes the column's height left under the window strip (main.js).
  * @param {SessionCatalog} catalog
  * @param {SidebarState} ui
  * @param {string | null} selectedId
@@ -256,8 +257,8 @@ export function sidebar(catalog, ui, selectedId, actions, cx) {
   const list = groups(catalog.sessions, ui.grouping);
   return v_flex()
     .w(256)
-    .flex_none()
-    .h_full()
+    .flex_1()
+    .min_h_0()
     .bg(m.canvas)
     .text_color(m.ink)
     .child(
