@@ -117,6 +117,8 @@ export function isArtifactTurnKey(value: unknown): value is string {
   );
 }
 
+import type { ImageDeliveryMetadata } from './image-delivery.js';
+
 export interface ArtifactDescriptor {
   id: string;
   sessionId: string;
@@ -129,6 +131,7 @@ export interface ArtifactDescriptor {
   mimeType?: string;
   source: ArtifactSource;
   summary?: string;
+  imageDelivery?: ImageDeliveryMetadata;
 }
 
 export interface ArtifactRecord extends ArtifactDescriptor {
@@ -137,8 +140,6 @@ export interface ArtifactRecord extends ArtifactDescriptor {
    * filesystem path to renderer code.
    */
   relativePath: string;
-  /** Durable role for artifacts owned by a Deep Research workspace. */
-  deepResearchRole?: import('./deep-research-run.js').DeepResearchArtifactRole;
 }
 
 interface ArtifactSourcePolicy {
@@ -152,6 +153,7 @@ const ARTIFACT_SOURCE_POLICIES = {
   tool_result_projection: { userDeletable: false, userVisible: false, sharedReadable: true },
   tool_result_archive: { userDeletable: false, userVisible: false, sharedReadable: false },
   subagent_writeback: { userDeletable: false, userVisible: true, sharedReadable: false },
+  // Kept so reports saved before Deep Research retirement remain readable.
   deep_research: { userDeletable: false, userVisible: true, sharedReadable: false },
   user_upload: { userDeletable: true, userVisible: false, sharedReadable: true },
   session_effect: { userDeletable: false, userVisible: false, sharedReadable: false },

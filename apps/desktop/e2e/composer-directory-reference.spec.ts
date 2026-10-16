@@ -65,7 +65,7 @@ test('a folder reference is removable, survives send/reload, and leaves project 
   await expect(transcript).not.toContainText('DO_NOT_READ_FILE_CONTENTS');
   await expect(transcript).not.toContainText('deep.txt');
   await expect(chip).toHaveCount(0);
-  await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1, { timeout: 20_000 });
+  await expect(page.locator('.maka-assistant-answer [data-action="copy"]')).toHaveCount(1, { timeout: 20_000 });
 
   const sessions = await page.evaluate(() => window.maka.sessions.list());
   expect(sessions).toHaveLength(1);

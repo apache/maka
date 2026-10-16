@@ -6,7 +6,7 @@ source_language: en
 implementation_status: current
 document_status: current
 translation_status: source-only
-last_verified: 2026-09-04
+last_verified: 2026-10-10
 owners:
   - maka-backend
 ---
@@ -114,7 +114,7 @@ Several rows note that the matched file is absent from current `main`. That is a
 | 20 | `packages/ui/src/astryx-chat-reasoning.tsx:37-73` | [`@astryxdesign/lab`](https://www.npmjs.com/package/@astryxdesign/lab/v/0.1.2-canary.3f9afb0) 0.1.2-canary.3f9afb0, `src/ChatReasoning/ChatReasoning.tsx:181-217` (MIT) | 24% | **True third-party lineage.** The complete file already identifies the ejected Astryx v0.1.9 component, fixed commit, Meta copyright, MIT SPDX identifier, and local modifications. Covered by the new Astryx entry in `LICENSE`. |
 | 21 | `packages/ui/src/inline-rename-input.tsx:9-21` | [`695714420/ClaudeCodeIDE`](https://github.com/695714420/ClaudeCodeIDE) 1.3.0, `src/renderer/components/FileExplorer.tsx:481-493` (license not returned) | 25% | Short React prop declaration plus focus/select effect. The candidate does not establish copying; no attribution. |
 | 22 | `scripts/cu-physical-input-age.swift:8-16` | [`jianzhoujz/input-indicator`](https://github.com/jianzhoujz/input-indicator) v1.1.0, `Sources/DoubaoInputIndicator.swift:352-360` (MIT) | 42% | Enumeration of the public CoreGraphics input event cases needed by the API. No distinctive expression. File is absent from current `main`. |
-| 23 | `packages/ui/src/utils.ts:all` | [`roseratugo/okarin`](https://github.com/roseratugo/okarin) v0.3.13, `apps/desktop/src/lib/utils.ts:all` (`MIT + Commons Clause`; the scanner reported `MIT/Mackerras acknowledgement`) | 100% | **Byte-identical, independently arrived at.** Maka's file is a five-line `clsx` wrapper whose lineage is recorded in this repository: `3bedf3341` created it as the shadcn `cn` helper with `twMerge`, and `51f04793c` (#1853) removed `twMerge` when the Astryx migration dropped Tailwind, leaving the current form. No upstream material was taken, so no attribution is required and the Commons Clause restriction reaches nothing in Maka. |
+| 23 | `packages/ui/src/utils.ts:all` | [`roseratugo/okarin`](https://github.com/roseratugo/okarin) v0.3.13, `apps/desktop/src/lib/utils.ts:all` (`MIT + Commons Clause`; the scanner reported `MIT/Mackerras acknowledgement`) | 100% | **Byte-identical, independently arrived at.** Maka's file began as a five-line `clsx` wrapper whose lineage is recorded in this repository: `3bedf3341` created it as the shadcn `cn` helper with `twMerge`, and `51f04793c` (#1853) removed `twMerge` when the Astryx migration dropped Tailwind. The file has since grown past that five-line form (#4485 added shortcut-platform helpers), but the additions are Maka-authored; no upstream material was taken, so no attribution is required and the Commons Clause restriction reaches nothing in Maka. |
 | 24 | `scripts/apply-dependency-patches.mjs:17-22` | [`walkersutton/cyclemetry`](https://github.com/walkersutton/cyclemetry) v0.2.0, `scripts/release.mjs:4-9` (MIT) | 12% | Standard ESM `fileURLToPath` repository-root calculation. No attribution. |
 | 25 | `scripts/check-astryx-alignment.test.mjs:5-10` | [`naimkatiman/continuous-improvement`](https://github.com/naimkatiman/continuous-improvement) v3.9.1, `test/backfill.test.mjs:10-15` (MIT) | 25% | Standard Node test imports and `new URL('..', import.meta.url)` root calculation. No attribution. File is absent from current `main`. |
 
@@ -130,7 +130,7 @@ The adaptation is established by more than shape equivalence:
 - Union member order matches, including arbitrary sequences such as `CustomPart` appearing second in `AssistantContent`.
 - The upstream choice of `interface` versus `type` is reproduced per declaration. `ToolApprovalRequest` and `ToolApprovalResponse` are the only content-part shapes declared as `type` in the Maka file, matching upstream.
 
-Maka's modifications are the removal of the deprecated `file-*` and `image-*` tool-result content variants, extraction of the inline tool-result content union into `ToolResultContentPart`, inlining of the shared provider aliases, and declaration of the role message shapes as interfaces. Roughly 170 of the file's 418 lines — the tool definition, usage, finish reason, failure, request metadata, and stream contracts — are Maka-authored with no upstream counterpart.
+Maka's modifications are the removal of the deprecated `file-*` and `image-*` tool-result content variants, extraction of the inline tool-result content union into `ToolResultContentPart`, inlining of the shared provider aliases, and declaration of the role message shapes as interfaces. Roughly 170 of the file's 427 lines — the tool definition, usage, finish reason, failure, request metadata, and stream contracts — are Maka-authored with no upstream counterpart.
 
 The material spans two packages. `JSONValue` and the `SharedV4` provider option, provider reference, and file data shapes come from `@ai-sdk/provider`, not from `@ai-sdk/provider-utils`. The first revision of this report named only `provider-utils`; `LICENSE` now names both.
 
@@ -149,8 +149,10 @@ The file now carries the Apache-2.0 §4(b) modification notice that this lineage
 The top-level `LICENSE` now accounts for source material that is directly included or adapted in Maka:
 
 - Apache-2.0 [`@ai-sdk/provider-utils@5.0.11`](https://www.npmjs.com/package/@ai-sdk/provider-utils/v/5.0.11) and [`@ai-sdk/provider@4.0.3`](https://www.npmjs.com/package/@ai-sdk/provider/v/4.0.3), from which `packages/runtime/src/model-protocol.ts` adapts provider-boundary shapes;
-- MIT Astryx at `c9fe4379e9959b9ba5eeff56def34c752223450e` for the ejected `ChatReasoning` source and `110987b4505dc44119b94bed53d92b9840088a61` for theme-neutral v0.4.0 and its generated theme material;
+- MIT Astryx at `c9fe4379e9959b9ba5eeff56def34c752223450e` for the ejected `ChatReasoning` source. The theme pin recorded when this audit ran was `110987b4505dc44119b94bed53d92b9840088a61` for theme-neutral v0.4.0; the regenerated theme material now carries theme-neutral v0.6.3 at `ea888ef33283ea44e37817d36bc8e84a0568bc30`, applied through `patches/@astryxdesign+core+0.6.3.patch` — see the current `LICENSE`;
 - MIT `trycua/cua` at `8c921b2b3bf13494724ead4f0a814d80c56a7e8b`, already recorded by pull request #2676.
+
+Since the audit snapshot, `LICENSE` gained appendices this report predates: the Astryx core 0.6.3 patch above, an `@ai-sdk/code-mode@1.0.79` dependency patch, and Apache-2.0 lineage from `cline/cline` (diff-apply) and `google-gemini/gemini-cli` (editCorrector) reaching `edit-replace.ts` through opencode. The appendix is the authority for the recorded revisions of those entries.
 
 The desktop binary distribution also carries generated production npm notices at `apps/desktop/resources/licenses/npm/THIRD_PARTY_NOTICES.txt`, and the build checks that artifact byte-for-byte.
 
@@ -170,6 +172,8 @@ The SCANOSS table above covers only what its winnowing scanner fingerprints, whi
 - `edit-replace.ts` reuses the escape-normalizing replacer verbatim at the level of expression: the regular expression `/\\(n|t|r|'|"|`|\\|\n|\$)/g` is character-for-character identical and its nine branches appear in the same order, rewritten from a `switch` into an `if` chain. The line-trimmed and whitespace-normalized matchers follow the same upstream structure.
 
 Upstream is MIT, Copyright (c) 2025 opencode. The repository now resolves to `anomalyco/opencode`; the comparison used commit `fc80874`. Because opencode is not an npm dependency, `scripts/generate-third-party-notices.mjs` cannot discover it: that generator walks the npm production dependency trees of `@maka/desktop` and `maka-agent` only. The root `LICENSE` therefore records the fixed source revision, adapted files, upstream lineage, copyright, and MIT permission notice explicitly. No `NOTICE` addition is warranted because upstream ships none and the MIT attribution belongs in `LICENSE`.
+
+> Lineage extension since this audit: opencode's own edit implementation carries Apache-2.0 material from `cline/cline` (diff-apply) and `google-gemini/gemini-cli` (editCorrector), so `edit-replace.ts`'s upstream chain now reaches those two repositories through opencode. The root `LICENSE` appendix records that Apache-2.0 lineage explicitly; see the LICENSE review above.
 
 ### models.dev data snapshot
 
@@ -219,8 +223,8 @@ Pull request #2695 removed the 29 bundled Skills whose individual origins could 
 - **Status:** contributor-confirmed, `origin: independently-authored`, Apache-2.0.
 - **Author:** Haoqing Wang (@hqhq1025), with drafting and implementation assistance from OpenAI Codex.
 - **Inputs:** Maka Computer Use source code, the `maka.cu/2` schema and model-facing tool contract, and Maka Computer Use tests. No third-party Skill bodies were used.
-- **Introduced by:** pull request #2147, commit `2fb83e20b71124bc4a4f2fd4e40f971e415d0ea5`; contributor confirmed on 2026-08-11.
-- **Review:** independently reviewed by Astro-Han in pull request #2676 at commit `3c7683b9793e97cba7d8536f6864da0e38f24c30` on 2026-08-12. That review covers the accuracy of this origin record; it does not make a legal or ASF release determination about implementation inputs (see [Computer Use implementation inputs](#computer-use-implementation-inputs)).
+- **Introduced by:** pull request #2147, commit `2fb83e20b71124bc4a4f2fd4e40f971e415d0ea5` (squash-merged as `bc12cddfc`); contributor confirmed on 2026-08-11.
+- **Review:** independently reviewed by Astro-Han in pull request #2676 at commit `3c7683b9793e97cba7d8536f6864da0e38f24c30` (squash-merged as `c853b1035`) on 2026-08-12. That review covers the accuracy of this origin record; it does not make a legal or ASF release determination about implementation inputs (see [Computer Use implementation inputs](#computer-use-implementation-inputs)).
 
 ### Computer Use implementation inputs
 
@@ -247,16 +251,23 @@ non-text image must match one of these paths; executable and archive magic is
 rejected even if a path is listed here.
 
 - `.github/assets/*.png`: the README hero images rendered from the website, recorded above.
+- `.github/assets/workhub-turn-admission/receipts-*.png`: light/dark Storybook screenshots of Maka's coordination receipts, contributed as visual review evidence in pull request #4993 (commit `a41d3ac4a`).
+- `website/src/assets/incubator.png`: unmodified Apache Incubator logo from `https://www.apache.org/logos/res/incubator/default.png`, used as ASF trademark branding; its origin is also recorded in `website/README.md`. SHA-256: `e7ec2b8078606a77c36c3b9e295409c80dc28266118e32c61548f01cd59c0f0d`.
+- `website/src/assets/social.*.png`: social previews rendered from Maka's own website by `website/scripts/readme-hero.mjs`, using the same copy, styles and licensed fonts as the README heroes.
 - `apps/desktop/assets/icon.png`: the AI-generated application mark recorded above.
 - `apps/desktop/assets/app-icons/*.png`: `mono.png` is the contributor-submitted grayscale derivative of the application mark from pull request #3431; the remaining variants are reproducibly rendered from the Apache-licensed geometry and palette in `scripts/generate-app-icons.py` and byte-checked by `scripts/generate-app-icons.test.mjs`.
 - `apps/desktop/build/*.png`: contributor-submitted DMG artwork from pull request #3817; that contribution records Codex as review and verification assistance, not as the source of the artwork.
 - `apps/desktop/resources/status/*.png`: the status images recorded above and reproducibly rendered by `scripts/generate-cu-status-icons.mjs`.
 - `docs/images/**/*.png`: screenshots of Maka's own user interface committed as review evidence, including pull requests #3584 and #3588.
-- `packages/core/src/__tests__/foreign-session.test.ts`: Apache-licensed source fixture containing a literal NUL, bidi override, and zero-width character to verify imported-session sanitization.
 - `packages/runtime-host/src/protocol/artifact.ts`: Apache-licensed protocol source containing literal C0 and DEL characters in the control-character rejection expression.
-- `packages/storage/src/__tests__/foreign-session-store.test.ts`: Apache-licensed storage fixture containing literal bidi and bell characters to verify durable imported-title sanitization.
 - `packages/storage/src/__tests__/mcp-config-store.test.ts`: Apache-licensed validation fixture containing a literal control character in a rejected MCP tool name.
-- `packages/storage/test-fixtures/v0.1.6-operational-state/runtime.sqlite`: migration fixture created through Maka's public storage APIs at tag `v0.1.6`; its exact origin and SHA-256 are recorded in the adjacent `README.md`.
+- `patches/@xterm+xterm+6.0.0.patch`: MIT-licensed xterm.js patch attributed in root `LICENSE`; upstream context includes literal terminal control characters whose bytes must be preserved for patch application.
+
+### Website build dependency boundary
+
+The private `website` workspace uses Astro's optional sharp image processor while building the static website. The lockfile records external `@img/sharp-libvips-*`, `@img/sharp-win32-*` and `@img/sharp-wasm32` packages containing LGPL-3.0-or-later libvips; their code and binaries are not included in the source archive or the static website output. Install them through the root `npm ci`, then build with `npm --workspace @maka/website run build`.
+
+[ASF Category X policy](https://www.apache.org/legal/resolved.html#prohibited) allows external build tools when they do not affect the product's licensing, but prohibits distributing their source or binaries. A lockfile describes dependency resolution, not the contents of the source archive. The source verifier checks the manifests and payloads actually included; it does not approve external dependencies for runtime use or redistribution. After installation, the candidate workflow checks Desktop and CLI dependency notices through `scripts/generate-third-party-notices.mjs` and the existing shipped dependency closure, including renderer dependencies even when declared as development dependencies. External-tool usage and provenance still require release review.
 
 ## Bootstrap generative tooling
 

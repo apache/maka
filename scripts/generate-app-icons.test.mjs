@@ -70,14 +70,14 @@ test('every shipped id has artwork, and every file is claimed by an id', async (
   }
 });
 
-test('every committed icon is byte-identical to what the generator produces', (t) => {
+test('every committed icon has the scanlines the generator produces', (t) => {
   const runner = python();
   if (!runner) {
     t.skip('no python3 on PATH; run scripts/generate-app-icons.py --check locally');
     return;
   }
   // The WHOLE catalogue, not a sample. A sample only proves the sampled tiles:
-  // any of the other PNGs could be edited byte-wise, or a colourway constant
+  // any of the other PNGs could be edited, or a colourway constant
   // could change without its artwork being regenerated, and the check would
   // still pass. Since the claim being made is that every shipped tile comes
   // out of this script, the check has to cover every shipped tile.
@@ -98,5 +98,43 @@ test('every committed icon is byte-identical to what the generator produces', (t
     result.stdout,
     new RegExp(`all ${expected} icons match`),
     `expected the check to cover all ${expected} generated icons, got: ${result.stdout.trim()}`,
+  );
+});
+
+test('the scanline comparison rejects unknown critical PNG chunks', (t) => {
+  const runner = python();
+  if (!runner) {
+    t.skip('no python3 on PATH');
+    return;
+  }
+  const generatedIcon = APP_ICONS.find((id) => !NOT_GENERATED.has(id));
+  assert.ok(generatedIcon, 'expected at least one generated icon');
+  const program = `
+import importlib.util
+import pathlib
+import struct
+import sys
+import zlib
+
+spec = importlib.util.spec_from_file_location("generate_app_icons", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+png = pathlib.Path(sys.argv[2]).read_bytes()
+after_ihdr = 8 + 12 + struct.unpack(">I", png[8:12])[0]
+tag = b"ABCD"
+chunk = struct.pack(">I", 0) + tag + struct.pack(">I", zlib.crc32(tag) & 0xFFFFFFFF)
+mutated = png[:after_ihdr] + chunk + png[after_ihdr:]
+raise SystemExit(0 if module.committed_scanlines(mutated) is None else 1)
+`;
+  const result = spawnSync(
+    runner,
+    ['-c', program, SCRIPT, fileURLToPath(new URL(`${generatedIcon}.png`, ART))],
+    { encoding: 'utf8' },
+  );
+
+  assert.equal(
+    result.status,
+    0,
+    `unknown critical PNG chunk passed the scanline comparison:\n${result.stdout}${result.stderr}`,
   );
 });

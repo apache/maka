@@ -65,7 +65,7 @@ For the mechanism underneath, see
 Swarm mode is mostly instruction, but not only instruction. Four things follow
 from it:
 
-1. **System prompt.** `AiSdkBackend` appends `renderSwarmModePrompt()`.
+1. **System prompt.** `AiSdkTurn` appends `renderSwarmModePrompt()`.
 2. **Guaranteed tools.** The mode forces `agent_list`, `update_agent_graph`,
    `yield_agent_graph`, `agent_swarm_status` and `agent_output` into the turn's
    tool catalog. Graph mode requires the same set plus `view_agent_graph`; swarm

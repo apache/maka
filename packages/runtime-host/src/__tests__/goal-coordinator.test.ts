@@ -24,6 +24,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { setImmediate as immediate } from 'node:timers/promises';
 import type { GoalAuthorityRecord } from '@maka/core/goal';
+import type { StoredMessage } from '@maka/core/session';
 import { seedInvocation } from '@maka/runtime/test-only/invocation-fixture';
 import type { GoalTurnOutcome } from '@maka/runtime/goal-continuation';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
@@ -442,6 +443,114 @@ test('a retired context read cannot replace the new Goal token baseline', async 
   assert.equal(coordinator.manager.get(session.id)?.tokensAtStart, 120);
   assert.equal(coordinator.manager.get(session.id)?.tokensNow, 120);
   assert.equal(coordinator.manager.get(session.id)?.status, 'max_iterations');
+});
+
+test('the Goal evaluator reads what the last steps said, not empty thinking rows or a cut-off ending', async (t) => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-host-goal-context-'));
+  const capability = await resolveStorageRoot({ path: join(base, 'root'), kind: 'interactive' });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+  const goalStore = await openInteractiveGoalAuthorityForWrite(owner.lease);
+  const prompts: string[] = [];
+  const coordinator = new HostGoalCoordinator({
+    store: goalStore,
+    stores,
+    sessionAdmission: new SessionAdmissionGate(),
+    readSessionMessages: (sessionId) => stores.sessionStore.readMessagesSnapshot(sessionId),
+    executions: {
+      reconcile: async () => assert.fail('No recovery expected'),
+      subscribe: () => () => {},
+    },
+    evaluator: {
+      evaluate: async (prompt) => {
+        prompts.push(prompt);
+        return '{"met":false,"impossible":false,"progress":true,"waiting":false,"reason":"continue"}';
+      },
+      close: async () => {},
+    },
+    admitTurn: () => assert.fail('The one-iteration Goal must stop after evaluation'),
+    acquireResidency: () => ({ release() {} }),
+    onProjectionChanged: () => {},
+    requestDrain: () => assert.fail('No drain expected'),
+  });
+  t.after(async () => {
+    await coordinator.close();
+    await goalStore.close();
+    await stores.sessionStore.close?.();
+    await owner.close();
+    await rm(base, { recursive: true, force: true });
+  });
+  await coordinator.prepareRecovery();
+  const session = await stores.sessionStore.create({
+    cwd: capability.canonicalPath,
+    llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+    llmConnectionSlug: 'fake',
+    model: 'fake-model',
+    permissionMode: 'ask',
+  });
+  const append = (message: StoredMessage) => stores.sessionStore.appendMessage(session.id, message);
+  const turnId = 'goal-context-turn';
+  // Ends in astral characters, so the excerpt's cut falls inside a surrogate pair.
+  const ask = `Migrate the store and keep the suite green. ${'Context. '.repeat(60)}${'🧪'.repeat(125)}.`;
+  await append({ type: 'user', id: 'ask', turnId, ts: 1, text: ask });
+  await append({
+    type: 'assistant',
+    id: 'suite',
+    turnId,
+    ts: 2,
+    text: 'Migrated the store; the suite passes: 42 tests.',
+    modelId: 'fake-model',
+  });
+  // A thinking model's tool-calling steps store an assistant row with no text.
+  for (let step = 0; step < 5; step += 1) {
+    await append({
+      type: 'assistant',
+      id: `step-${step}`,
+      turnId,
+      ts: 3 + step,
+      text: '',
+      thinking: { text: 'Check the next call site.' },
+      modelId: 'fake-model',
+    });
+  }
+  const report = `Done. ${'Updated a call site. '.repeat(40)}Remaining: the rollback test still fails.`;
+  await append({
+    type: 'assistant',
+    id: 'report',
+    turnId,
+    ts: 9,
+    text: report,
+    modelId: 'fake-model',
+  });
+
+  coordinator.manager.create(session.id, 'Migrate the store', { maxIterations: 1 });
+  const turn = coordinator.beginObservedTurn(session.id, turnId);
+  assert.equal(turn.kind, 'registered');
+  if (turn.kind !== 'registered') return;
+  await withTimeout(turn.settle({ kind: 'completed', turnId }), 5_000, 'Goal turn did not settle');
+
+  assert.equal(prompts.length, 1);
+  const context = prompts[0]!
+    .split('--- RECENT CONVERSATION CONTEXT ---\n')[1]!
+    .split('\n\n--- YOUR JUDGMENT')[0]!;
+  const rows = context.split('\n');
+  assert.equal(rows.includes('[assistant]: '), false, 'a step with no text takes no row');
+  assert.deepEqual(
+    rows.map((row) => row.slice(0, row.indexOf(':'))),
+    ['[user]', '[assistant]', '[assistant]'],
+  );
+  assert.ok(rows[0]!.startsWith('[user]: Migrate the store and keep the suite green.'));
+  assert.ok(rows[0]!.endsWith(`${'🧪'.repeat(123)}.`));
+  assert.doesNotMatch(
+    rows[0]!,
+    /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/,
+  );
+  assert.equal(rows[1], '[assistant]: Migrated the store; the suite passes: 42 tests.');
+  const excerpt = rows[2]!.slice('[assistant]: '.length);
+  assert.ok(excerpt.startsWith('Done. Updated a call site.'), 'a long report keeps its opening');
+  assert.ok(excerpt.endsWith('Remaining: the rollback test still fails.'), 'and its ending');
+  assert.ok(excerpt.length <= 500, 'within the budget one row always had');
 });
 
 test('restart settles the durable current Goal execution through Hosted Execution authority', async () => {

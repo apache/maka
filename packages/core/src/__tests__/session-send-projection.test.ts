@@ -62,6 +62,23 @@ describe('projectSessionSendOutcome — exact Connection identity', () => {
     assert.deepEqual(projectSessionSendOutcome(input()), { kind: 'ready' });
   });
 
+  it('does not require a Maka model connection for a plugin executor Session', () => {
+    assert.deepEqual(
+      projectSessionSendOutcome(
+        input({
+          session: {
+            backend: 'plugin-executor',
+            llmConnectionSlug: 'executor:codex',
+            model: 'codex',
+            connectionLocked: false,
+          },
+          connections: [],
+        }),
+      ),
+      { kind: 'ready' },
+    );
+  });
+
   it('blocks a legacy Session until the user explicitly selects an account', () => {
     const current = input();
     assert.deepEqual(

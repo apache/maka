@@ -25,11 +25,33 @@
 - Decision source: [Discussion #3286](https://github.com/apache/maka/discussions/3286#discussioncomment-18135855)
 - Delivery tracker: [Issue #3492](https://github.com/apache/maka/issues/3492)
 
-The one-Session ownership decision remains in force. This change establishes the
-shared Intent, Recall, and deterministic Policy contracts plus a production-model
-adapter, but it does not change the default routing strategy. The default can move
-only after production-path comparative evidence required by the delivery tracker.
-See the [current domain language](../workhub-domain-language.md).
+The one-Session ownership decision remains in force. The October refactor follows
+[issue #5745](https://github.com/apache/maka/issues/5745#issuecomment-5933360159):
+the Coordination Agent interprets intent and chooses task operations directly.
+There is no fresh pre-admission routing-model pass or atomic correction operation.
+The sections below retain the earlier routing and replacement design as history;
+the [current domain language](../workhub-domain-language.md) describes the live
+interface. Historical bound decisions and replacement records remain readable for
+recovery.
+
+## October coordination and configuration refactor
+
+- Independent work can create a Session without an explicit user request to create
+  one. Clear continuations reuse an existing Session; ambiguity uses the existing
+  Host selection interaction, including a new-task option.
+- Delegation carries an instruction to the target Session. That Session owns
+  context preparation and execution, including continuation recovery.
+- New Sessions inherit the canonical WorkHub model and thinking configuration.
+  Reused Sessions retain their model. Unavailable target models return an error.
+- WorkHub execution uses the WorkHub permission setting. The assignment snapshots
+  that setting, and the Runtime scopes it to the execution; the saved target
+  configuration is unchanged. The current WorkHub provisioned mode remains bypass.
+- Stop and delegate are separate operations. A partially successful sequence is
+  explained and retried from durable operation facts. Fresh tools expose no atomic
+  correction operation; existing replacement records retain recovery support.
+- Worker questions return missing information immediately. The Coordinator asks
+  the user and sends the answer as another instruction. Result reading and durable
+  completion notifications remain; suspended-question relaying is removed.
 
 ## Context
 
@@ -317,11 +339,17 @@ lets the stop reach a terminal resolution.
   replacement recovery and direct stop are implemented. Direct
   stop uses durable `delegation_stop_requested` / `delegation_stop_resolved`
   facts, exact Message ownership, and first-claim-wins arbitration with
-  replacement. Its target comes from the shared Session Resolver port, whose
-  first implementation is a temporary exact-name baseline; replacing it changes
-  recall only, because admission revalidates opaque identity and expected state
-  rather than any display name. Named resume uses ordinary Session continuation admission. Pause and
+  replacement. Its target comes from the shared Session Resolver port.
+  Named resume uses ordinary Session continuation admission. Pause and
   pronoun-based stop controls remain later work.
+
+  > **Status (2026-09, verified against `main`):** the Resolver's "temporary
+  > exact-name baseline" above was never implemented. Coordination today is
+  > model-driven: the coordination model discovers candidate Sessions,
+  > admission revalidates opaque identity and expected state (this invariant
+  > is unchanged), and stop/resume proposals travel with explicit durable
+  > targets rather than any display name. The exact-name baseline and the
+  > deferred recall-only replacement plan are historical.
 
 Reevaluate the per-Host decision if supported workflows require one WorkHub
 conversation to coordinate ordinary Sessions on multiple Runtime Hosts, or if Host

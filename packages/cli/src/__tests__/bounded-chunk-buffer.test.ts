@@ -73,4 +73,23 @@ describe('BoundedChunkBuffer', () => {
     assert.deepEqual(buffer.values(), ['a']);
     assert.equal(buffer.droppedChars, 2);
   });
+
+  test('shares a smaller presentation budget without forgetting discarded sequence identities', () => {
+    const buffer = new BoundedChunkBuffer<Chunk & { seq: number }>({
+      maxChars: 20,
+      maxChunks: 10,
+      textOf: (chunk) => chunk.text,
+      withText: (chunk, text) => ({ ...chunk, text }),
+      sequence: (chunk) => chunk.seq,
+    });
+    buffer.append({ seq: 1, text: 'old' });
+    buffer.append({ seq: 2, text: '😀tail' });
+    const prior = buffer.values();
+    buffer.trimTo(5, 1);
+    assert.equal(buffer.charLength, 4);
+    assert.deepEqual(buffer.values(), [{ seq: 2, text: 'tail' }]);
+    assert.notEqual(buffer.values(), prior);
+    assert.equal(buffer.append({ seq: 1, text: 'old' }), false);
+    assert.equal(buffer.droppedChars, 5);
+  });
 });

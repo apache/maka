@@ -22,6 +22,7 @@ import type {
   HistoryCompactSummaryInput,
 } from './ai-sdk-compaction-contract.js';
 import { HistoryCompactSummarizerError } from './history-compact-error.js';
+import { nonEmpty } from './context-budget-helpers.js';
 import {
   canContinueHistoryCompactCheckpointForModel,
   historyCompactCheckpointToModelMessage,
@@ -170,8 +171,7 @@ export function shouldFallbackFromOpenAiCodexHistoryCompaction(
   if (!(error instanceof HistoryCompactSummarizerError)) return false;
   if (error.reason === 'input_too_large' || error.reason === 'invalid_provider_state') return true;
   if (error.reason !== 'provider_error') return false;
-  const diagnostic = providerFailureDiagnostic(error);
-  return diagnostic.errorClass === 'request_rejected' && !diagnostic.retryable;
+  return providerFailureDiagnostic(error).errorClass === 'request_rejected';
 }
 
 function hasAbortCause(error: unknown): boolean {
@@ -340,10 +340,6 @@ function isStreamErrorPart(value: unknown): value is { type: 'error'; error: unk
   return Boolean(
     value && typeof value === 'object' && (value as Record<string, unknown>).type === 'error',
   );
-}
-
-function nonEmpty(value: unknown): value is string {
-  return typeof value === 'string' && value.length > 0;
 }
 
 interface AiSdkModule {

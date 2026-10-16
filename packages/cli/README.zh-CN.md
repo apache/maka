@@ -33,11 +33,11 @@ release commit 中的 [DISCLAIMER-WIP](https://github.com/apache/maka/blob/main/
 [Maka podling 状态页](https://incubator.apache.org/projects/maka.html)。本段仅为中文说明，
 英文免责声明以随包发布的 `DISCLAIMER-WIP` 为准。
 
-> **Beta：**CLI 仍在积极开发中，稳定版发布前，命令和本地数据格式可能发生变化。
+> **Beta**：CLI 仍在积极开发中，稳定版发布前，命令和本地数据格式可能发生变化。
 
 ## 环境要求
 
-- Node.js 22.19.0 或更高版本；
+- Node.js 22.19.0 或更高的 22.x 版本，或 24.0.0 及以上版本（不支持 Node 23）；
 - 使用 TUI 时需要支持交互输入的终端；
 - 执行 Agent Turn 时需要已经配置的模型连接；首次设置目前支持使用 API Key 的供应商。
 
@@ -73,6 +73,11 @@ npm 上有两条 dist-tag，且二者不可互换：
 公开命令只有 `maka`。一次性运行请使用 `npx --yes --package maka-agent@nightly maka`；npm 上与本项目
 无关的 `maka` 包不是本项目。`runtime-host service install` 使用上面的持久全局安装；
 `runtime-host setup` 会从 `npx` 调用的精确 package 创建自己的托管副本。
+
+## 容器
+
+从精确的已发布 npm 版本构建和运行本地 glibc CLI 镜像，并持久化配置，见
+[容器指南](https://github.com/apache/maka/blob/main/packages/cli/container/README.md)。
 
 ## 第一次运行
 

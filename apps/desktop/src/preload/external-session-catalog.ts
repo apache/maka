@@ -34,7 +34,7 @@ export type DesktopHostExternalSessionCatalogItem = Omit<
 
 /** Renderer import state whose Session ids are scoped Desktop Session keys. */
 export type DesktopExternalSessionImportState = Omit<
-  ExternalSessionCatalogItem['importState'],
+  DesktopHostExternalSessionCatalogItem['importState'],
   'importedSessionIds'
 > & {
   /** Values produced by desktopSessionKey for the selected Runtime Host. */

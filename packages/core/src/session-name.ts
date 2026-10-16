@@ -38,7 +38,7 @@
  *      signature alone is not enough.
  *   2. **Unicode sanitize + cap**: delegates to the shared
  *      `sanitizeUnicodeText` helper in `text-sanitize.ts` (the single
- *      source of truth shared with `foreign-session.ts`, #1404). That
+ *      source of truth shared with external Session titles, #1404). That
  *      pipeline is NFC → control/bidi chars → space, zero-width/invisible
  *      chars → removed, whitespace collapse, trim, code-point cap. See its
  *      module doc for the full char-class rationale. Here we pass
@@ -82,7 +82,7 @@ export function normalizeUserSessionName(input: unknown): NormalizeSessionNameRe
   }
   // L2–L9: the shared Unicode pipeline (NFC, control/bidi → space,
   // zero-width removal, whitespace collapse, trim, code-point cap). Lives in
-  // text-sanitize.ts so the session-name and foreign-session surfaces cannot
+  // text-sanitize.ts so native and external Session title surfaces cannot
   // drift apart again (#1404). We pass `truncatedSuffix: ''` to keep this
   // surface's "silently cap at 80, no visible marker" behavior — a session
   // name truncated mid-word should not grow a dangling ellipsis in the

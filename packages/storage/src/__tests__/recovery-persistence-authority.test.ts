@@ -108,7 +108,7 @@ describe('SQLite recovery persistence authority', () => {
       dispatch.ts,
     );
     db.exec(
-      'DROP INDEX runtime_events_by_session_kind; DROP INDEX runtime_events_one_opening_per_invocation; DROP TABLE runtime_legacy_invocation_openings; DROP TABLE runtime_session_event_ordinals; DROP TABLE runtime_partial_segments; DROP TABLE runtime_storage_root_binding; DROP TABLE runtime_managed_mutation_reservations; DROP TABLE runtime_workspace_heads; DROP TABLE runtime_workspace_versions; DROP TABLE runtime_workspace_epochs; DROP TABLE runtime_continuation_claims; DROP TABLE runtime_capabilities; PRAGMA user_version = 4;',
+      'DROP INDEX runtime_events_by_session_kind; DROP INDEX runtime_events_one_opening_per_invocation; DROP INDEX runtime_events_recovery_user_message; DROP INDEX runtime_events_steering_message; DROP INDEX runtime_events_tool_dispatch_operation; DROP INDEX tool_operations_unsettled; DROP TABLE runtime_legacy_invocation_openings; DROP TABLE runtime_session_event_ordinals; DROP TABLE runtime_partial_segments; DROP TABLE runtime_storage_root_binding; DROP TABLE runtime_managed_mutation_reservations; DROP TABLE runtime_workspace_heads; DROP TABLE runtime_workspace_versions; DROP TABLE runtime_workspace_epochs; DROP TABLE runtime_continuation_claims; DROP TABLE runtime_capabilities; PRAGMA user_version = 4;',
     );
     db.close();
 
@@ -204,7 +204,7 @@ describe('SQLite recovery persistence authority', () => {
       2,
     );
     db.exec(
-      'DROP INDEX runtime_events_by_session_kind; DROP INDEX runtime_events_one_opening_per_invocation; DROP TABLE runtime_legacy_invocation_openings; DROP TABLE runtime_session_event_ordinals; DROP TABLE runtime_partial_segments; DROP TABLE runtime_storage_root_binding; DROP TABLE runtime_managed_mutation_reservations; DROP TABLE runtime_workspace_heads; DROP TABLE runtime_workspace_versions; DROP TABLE runtime_workspace_epochs; DROP TABLE runtime_continuation_claims; DROP TABLE runtime_capabilities; PRAGMA user_version = 4;',
+      'DROP INDEX runtime_events_by_session_kind; DROP INDEX runtime_events_one_opening_per_invocation; DROP INDEX runtime_events_recovery_user_message; DROP INDEX runtime_events_steering_message; DROP INDEX runtime_events_tool_dispatch_operation; DROP INDEX tool_operations_unsettled; DROP TABLE runtime_legacy_invocation_openings; DROP TABLE runtime_session_event_ordinals; DROP TABLE runtime_partial_segments; DROP TABLE runtime_storage_root_binding; DROP TABLE runtime_managed_mutation_reservations; DROP TABLE runtime_workspace_heads; DROP TABLE runtime_workspace_versions; DROP TABLE runtime_workspace_epochs; DROP TABLE runtime_continuation_claims; DROP TABLE runtime_capabilities; PRAGMA user_version = 4;',
     );
     db.close();
 
@@ -866,7 +866,7 @@ describe('SQLite recovery persistence authority', () => {
     });
   });
 
-  it('fail-stops a new session tool boundary when another session ledger is corrupt', async () => {
+  it('does not fail-stop a new session tool boundary for unrelated ledger corruption', async () => {
     await withStore(async (store, dbPath) => {
       await prepare(store);
       injectDuplicateCall(dbPath, 3);
@@ -882,11 +882,10 @@ describe('SQLite recovery persistence authority', () => {
       }
       unrelatedCall.content.id = 'provider-call-2';
       unrelatedCall.refs = { toolCallId: 'provider-call-2' };
-      await assert.rejects(
-        store.appendRuntimeEvent('session-2', 'run-2', unrelatedCall),
-        /duplicate_call/,
-      );
-      assert.deepEqual(await store.readImmutableRuntimeEvents('session-2', 'run-2'), []);
+      await store.appendRuntimeEvent('session-2', 'run-2', unrelatedCall);
+      assert.deepEqual(await store.readImmutableRuntimeEvents('session-2', 'run-2'), [
+        unrelatedCall,
+      ]);
     });
   });
 

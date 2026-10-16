@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { type UiCatalog, type UiLocale, lookupCopy } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, lookupCopy, defineShippedUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 import { type PermissionMode } from '@maka/core/permission';
 
@@ -37,7 +37,6 @@ import type { DesktopSessionUpdateFailureCode } from '../../shared/desktop-sessi
 export const STATIC_COMMAND_IDS = [
   'action:new-chat',
   'action:side-chat',
-  'action:new-deep-research',
   'action:new-scheduled-task',
   'action:open-settings',
   'action:keyboard-help',
@@ -51,7 +50,6 @@ export const STATIC_COMMAND_IDS = [
   'nav:daily-review',
   'diag:open-workspace',
   'diag:open-project-folder',
-  'diag:open-skills',
   'diag:export-conversation',
   'diag:save-conversation-file',
   'diag:copy-today-daily-review',
@@ -87,7 +85,6 @@ const STATIC_COMMAND_KEYWORDS: Record<StaticCommandId, readonly string[]> = {
     '任务',
     '追问',
   ],
-  'action:new-deep-research': ['deep', 'research', 'explore', 'readonly', '研究', '深度', '探索', '只读'],
   'action:new-scheduled-task': ['plan', 'task', 'schedule', 'new', 'create', '计划', '提醒', '新建', '创建'],
   'action:open-settings': ['settings', 'preferences', '设置', 'options'],
   'action:keyboard-help': ['shortcuts', 'keyboard', 'help', '快捷键', '帮助'],
@@ -101,7 +98,6 @@ const STATIC_COMMAND_KEYWORDS: Record<StaticCommandId, readonly string[]> = {
   'nav:daily-review': ['daily', 'review', 'today', '每日', '回顾', '今天'],
   'diag:open-workspace': ['workspace', 'folder', 'open', 'finder', '工作区', '文件夹', '目录'],
   'diag:open-project-folder': ['project', 'folder', 'open', 'finder', '项目', '目录', '文件夹'],
-  'diag:open-skills': ['skills', 'folder', 'open', 'finder', '技能', '文件夹'],
   'diag:export-conversation': ['export', 'markdown', 'copy', 'conversation', '导出', '任务', '剪贴板', 'md'],
   'diag:save-conversation-file': [
     'save',
@@ -153,15 +149,12 @@ const STATIC_COMMAND_KEYWORDS: Record<StaticCommandId, readonly string[]> = {
 type ShellCopy = {
   navigation: {
     settings: string;
-    backToWorkHub: string;
   };
   actions: {
     retry: string;
   };
-  paths: Record<'workspace' | 'project' | 'skills', string>;
+  paths: Record<'workspace' | 'project', string>;
   errors: {
-    messageRead: string;
-    messageRefresh: string;
     openPath(path: string): string;
     workspaceUnavailableTitle: string;
     workspaceUnavailableDescription: string;
@@ -185,7 +178,6 @@ type ShellCopy = {
     >;
     responseFailedTitle: string;
     responseFailedFallback: string;
-    refreshFailedTitle: string;
     sessionStartFailedTitle: string;
     sessionStartFailedFallback: string;
   };
@@ -200,6 +192,10 @@ type ShellCopy = {
     projectUpdateFailedFallback: string;
     catalogUnavailable: string;
     retryCatalog: string;
+    archivedProjectTitle: string;
+    archivedProjectDescription: string;
+    archivedProjectRestore: string;
+    archivedProjectCancel: string;
     remoteDirectoryTitle(host: string): string;
     remoteDirectoryBreadcrumbs: string;
     remoteDirectoryHome: string;
@@ -212,7 +208,7 @@ type ShellCopy = {
     remoteDirectoryHideHidden: string;
     runtimeHostReadiness: Record<'connecting' | 'reconnecting' | 'unavailable', string>;
     openFailedTitle(path: string): string;
-    openPathLabels: Record<'workspace' | 'skills' | 'memory' | 'project', string>;
+    openPathLabels: Record<'workspace' | 'memory' | 'project', string>;
     openPathFailures: Record<
       'unknown-key' | 'not-allowed' | 'missing' | 'not-a-directory' | 'open-failed' | 'unknown',
       string
@@ -269,6 +265,17 @@ type ShellCopy = {
     unarchiveFailedTitle: string;
     renameFailedTitle: string;
     deleteFailedTitle: string;
+    /** Toast title when a task cannot be re-filed into another project. */
+    moveFailedTitle: string;
+    /** Why a re-file was refused, keyed by the Host's failure code. */
+    moveFailures: Record<
+      'session_busy' | 'operation_conflict' | 'operation_unavailable' | 'not_found',
+      string
+    >;
+    /** Why the Host refused an archive, keyed by the guard's refusal token. */
+    archiveRefusedDelegation: string;
+    archiveRefusedResult: string;
+    archiveRefusedSubtasks: string;
     currentConversation: string;
     deleteTitle(name: string): string;
     deleteDescription: string;
@@ -292,6 +299,8 @@ type ShellCopy = {
   skillActions: {
     refreshSkillsFailedTitle: string;
     refreshSkillsFallback: string;
+    refreshLocationsFailedTitle: string;
+    refreshLocationsFallback: string;
     refreshSourcesFailedTitle: string;
     refreshSourcesFallback: string;
     refreshBundledFailedTitle: string;
@@ -326,6 +335,12 @@ type ShellCopy = {
     deletedDescription(id: string): string;
     openFailedTitle: string;
     openFallback: string;
+    openLocationFailedTitle: string;
+    openLocationFallback: string;
+    openLocationFailures: Record<
+      'unknown_location' | 'stale_context' | 'missing' | 'blocked_path' | 'read_failed' | 'create_failed' | 'open_failed',
+      string
+    >;
     openFailures: Record<
       'invalid_id' | 'missing' | 'blocked_path' | 'not_file' | 'not_directory' | 'open_failed',
       string
@@ -486,6 +501,13 @@ type ShellCopy = {
     tryAgainLater: string;
     loading: string;
     goToModels: string;
+    /** Banner on a task bound to an unsafe inherited directory. */
+    taskDirectorySuspiciousTitle: string;
+    taskDirectorySuspiciousDescription: string;
+    /** Banner action and task menu item that rebinds to a dedicated directory. */
+    taskDirectoryMoveLabel: string;
+    taskDirectoryMovedTitle: string;
+    taskDirectoryMovedDescription(directory: string): string;
     boundaryUnreadableTitle: string;
     boundaryUnreadableDetail: string;
     boundaryUnreadableRetry: string;
@@ -535,11 +557,6 @@ const ZH_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
     platformHint: { apple: '⌥⌘S', other: 'Ctrl+Alt+S' },
     group: '操作',
   },
-  'action:new-deep-research': {
-    label: '新建深度研究',
-    hint: '只读探索',
-    group: '操作',
-  },
   'action:new-scheduled-task': {
     label: '新建定时任务',
     hint: '打开定时任务表单',
@@ -566,11 +583,6 @@ const ZH_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   },
   'diag:open-project-folder': {
     label: '打开项目目录',
-    hint: 'Finder',
-    group: '诊断',
-  },
-  'diag:open-skills': {
-    label: '打开 Skills 文件夹',
     hint: 'Finder',
     group: '诊断',
   },
@@ -630,11 +642,6 @@ const EN_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
     platformHint: { apple: '⌥⌘S', other: 'Ctrl+Alt+S' },
     group: 'Actions',
   },
-  'action:new-deep-research': {
-    label: 'New deep research',
-    hint: 'Read-only exploration',
-    group: 'Actions',
-  },
   'action:new-scheduled-task': {
     label: 'New scheduled task',
     hint: 'Open the task form',
@@ -665,11 +672,6 @@ const EN_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   },
   'diag:open-project-folder': {
     label: 'Open project folder',
-    hint: 'Finder',
-    group: 'Diagnostics',
-  },
-  'diag:open-skills': {
-    label: 'Open Skills folder',
     hint: 'Finder',
     group: 'Diagnostics',
   },
@@ -757,19 +759,14 @@ const EN_SETTINGS_SECTIONS: Record<SettingsSection, string> = {
   health: 'Health',
   about: 'About',
 };
-
-const SHELL_COPY_BY_LOCALE = {
-  'zh-CN': {
-    navigation: { settings: '设置', backToWorkHub: '返回 WorkHub' },
+const shellCopyByLocaleZhCn: ShellCopy = {
+    navigation: { settings: '设置' },
     actions: { retry: '重试' },
     paths: {
       workspace: '工作区文件夹',
       project: '项目目录',
-      skills: 'Skills 文件夹',
     },
     errors: {
-      messageRead: '任务内容暂时无法读取，请稍后重试。',
-      messageRefresh: '任务内容暂时无法刷新，请稍后重试。',
       openPath: (path: string) => `无法打开${path}，请稍后重试。`,
       workspaceUnavailableTitle: '工作目录不可用',
       workspaceUnavailableDescription: '工作目录不存在或无法访问。请选择有效目录创建新任务。',
@@ -792,7 +789,6 @@ const SHELL_COPY_BY_LOCALE = {
       },
       responseFailedTitle: '响应失败',
       responseFailedFallback: '任务操作失败，请稍后重试。',
-      refreshFailedTitle: '刷新任务失败',
       sessionStartFailedTitle: '开始任务失败',
       sessionStartFailedFallback: '任务暂时无法开始，请稍后重试。',
     },
@@ -807,6 +803,10 @@ const SHELL_COPY_BY_LOCALE = {
       projectUpdateFailedFallback: '暂时无法更新项目，请稍后重试。',
       catalogUnavailable: 'Runtime Host 暂时不可用',
       retryCatalog: '重试加载',
+      archivedProjectTitle: '项目已归档',
+      archivedProjectDescription: '该项目已归档，是否需要恢复？',
+      archivedProjectRestore: '恢复',
+      archivedProjectCancel: '取消',
       remoteDirectoryTitle: (host: string) => `在 ${host} 上添加项目`,
       remoteDirectoryBreadcrumbs: '当前文件夹',
       remoteDirectoryHome: '主目录',
@@ -825,7 +825,6 @@ const SHELL_COPY_BY_LOCALE = {
       openFailedTitle: (path: string) => `无法打开${path}`,
       openPathLabels: {
         workspace: '工作区目录',
-        skills: 'Skills 目录',
         memory: '记忆目录',
         project: '项目目录',
       },
@@ -897,6 +896,16 @@ const SHELL_COPY_BY_LOCALE = {
       unarchiveFailedTitle: '恢复任务失败',
       renameFailedTitle: '重命名任务失败',
       deleteFailedTitle: '删除任务失败',
+      moveFailedTitle: '移动任务失败',
+      moveFailures: {
+        session_busy: '任务正在运行，结束后再移动。',
+        operation_conflict: '该项目当前不可用，无法移入。',
+        operation_unavailable: '当前无法移动这个任务。',
+        not_found: '找不到该项目或任务。',
+      },
+      archiveRefusedDelegation: 'WorkHub 仍在向该任务委派工作。先停止或更换委派，再归档。',
+      archiveRefusedResult: '委派结果还没有送达 WorkHub。请打开 WorkHub 收取结果，或停止该委派。',
+      archiveRefusedSubtasks: '该任务还有进行中的子任务。请等子任务完成或停止它们，再归档该任务。',
       currentConversation: '当前任务',
       deleteTitle: (name: string) => `删除 "${name}"`,
       deleteDescription: '任务和全部消息会从磁盘上永久移除。该操作不可撤销。',
@@ -915,6 +924,8 @@ const SHELL_COPY_BY_LOCALE = {
     skillActions: {
       refreshSkillsFailedTitle: '刷新技能失败',
       refreshSkillsFallback: '刷新技能失败，请稍后重试。',
+      refreshLocationsFailedTitle: '刷新技能位置失败',
+      refreshLocationsFallback: '刷新技能位置失败，请稍后重试。',
       refreshSourcesFailedTitle: '刷新来源库失败',
       refreshSourcesFallback: '刷新来源库失败，请稍后重试。',
       refreshBundledFailedTitle: '刷新内置技能失败',
@@ -949,6 +960,17 @@ const SHELL_COPY_BY_LOCALE = {
       deletedDescription: (id: string) => `${id} 已移除。`,
       openFailedTitle: '无法打开 Skill',
       openFallback: '无法打开 Skill，请稍后重试。',
+      openLocationFailedTitle: '无法打开技能位置',
+      openLocationFallback: '无法打开技能位置，请稍后重试。',
+      openLocationFailures: {
+        unknown_location: '这个技能位置无效。',
+        stale_context: '技能位置已变化，请重试。',
+        missing: '目录不存在。',
+        blocked_path: '技能位置不在允许范围内，已阻止打开。',
+        read_failed: '无法读取技能目录，请检查文件权限。',
+        create_failed: '无法创建技能目录，请检查文件权限。',
+        open_failed: '系统打开目录失败。',
+      },
       openFailures: {
         invalid_id: 'Skill 名称不在允许范围内。',
         missing: '没有找到对应的 SKILL.md。',
@@ -1014,6 +1036,7 @@ const SHELL_COPY_BY_LOCALE = {
       },
       attachmentIngestBlocked: {
         item_too_large: '单个附件超出大小限制。',
+        item_unreadable: '有附件无法读取，可能是文件夹或已被移动。请移除后重新添加。',
         items_invalid: '附件信息无效，请重新选择文件后再发送。',
         count_limit: '一次最多添加 8 个附件。',
         duplicate_source: '附件来源重复，请勿重复添加同一文件。',
@@ -1139,7 +1162,8 @@ const SHELL_COPY_BY_LOCALE = {
         {
           heading: 'Composer 输入',
           rows: [
-            { keys: ['Enter'], description: '发送消息' },
+            { keys: ['Enter'], description: '发送消息（运行中加入下一轮队列）' },
+            { keys: ['⌘', 'Enter'], description: '模型运行中调整方向（Steer）' },
             { keys: ['Shift', 'Enter'], description: '插入换行' },
             { keys: ['Alt', 'Enter'], description: '插入换行（备用）' },
           ],
@@ -1231,6 +1255,12 @@ const SHELL_COPY_BY_LOCALE = {
       tryAgainLater: '请稍后重试。',
       loading: '加载中',
       goToModels: '去模型',
+      taskDirectorySuspiciousTitle: '此任务的工作目录可能混入无关文件',
+      taskDirectorySuspiciousDescription:
+        '任务输出可能混入了无关文件。可将工作目录迁移到此任务的专属目录；旧目录中的文件不会被移动。',
+      taskDirectoryMoveLabel: '迁移到专属任务目录',
+      taskDirectoryMovedTitle: '已迁移任务目录',
+      taskDirectoryMovedDescription: (directory: string) => `此任务现在使用专属目录 ${directory}`,
       boundaryUnreadableTitle: '暂时读不到这个任务的权限',
       boundaryUnreadableDetail: '在读到之前，这里暂时不能输入。可以重试，或先切换到别的任务。',
       boundaryUnreadableRetry: '重试',
@@ -1265,18 +1295,15 @@ const SHELL_COPY_BY_LOCALE = {
       graphHistoryDescription: '请在 Agent Graph 面板的运行轮次菜单中查看历史记录。',
       resizeWorkbar: '调整任务工作栏宽度',
     },
-  },
-  'zh-TW': {
-    navigation: { settings: '設定', backToWorkHub: '返回 WorkHub' },
+  };
+const shellCopyByLocaleZhTw: ShellCopy = {
+    navigation: { settings: '設定' },
     actions: { retry: '重試' },
     paths: {
       workspace: '工作區資料夾',
       project: '專案目錄',
-      skills: 'Skills 資料夾',
     },
     errors: {
-      messageRead: '任務內容暫時無法讀取，請稍後重試。',
-      messageRefresh: '任務內容暫時無法重新整理，請稍後重試。',
       openPath: (path: string) => `無法開啟${path}，請稍後重試。`,
       workspaceUnavailableTitle: '工作目錄不可用',
       workspaceUnavailableDescription: '工作目錄不存在或無法存取。請選擇有效目錄建立新任務。',
@@ -1299,7 +1326,6 @@ const SHELL_COPY_BY_LOCALE = {
       },
       responseFailedTitle: '響應失敗',
       responseFailedFallback: '任務操作失敗，請稍後重試。',
-      refreshFailedTitle: '重新整理任務失敗',
       sessionStartFailedTitle: '開始任務失敗',
       sessionStartFailedFallback: '任務暫時無法開始，請稍後重試。',
     },
@@ -1314,6 +1340,10 @@ const SHELL_COPY_BY_LOCALE = {
       projectUpdateFailedFallback: '暫時無法更新專案，請稍後重試。',
       catalogUnavailable: 'Runtime Host 暫時不可用',
       retryCatalog: '重試載入',
+      archivedProjectTitle: '專案已歸檔',
+      archivedProjectDescription: '該專案已歸檔，是否需要恢復？',
+      archivedProjectRestore: '恢復',
+      archivedProjectCancel: '取消',
       remoteDirectoryTitle: (host: string) => `在 ${host} 上新增專案`,
       remoteDirectoryBreadcrumbs: '目前資料夾',
       remoteDirectoryHome: '主目錄',
@@ -1332,7 +1362,6 @@ const SHELL_COPY_BY_LOCALE = {
       openFailedTitle: (path: string) => `無法開啟${path}`,
       openPathLabels: {
         workspace: '工作區目錄',
-        skills: 'Skills 目錄',
         memory: '記憶目錄',
         project: '專案目錄',
       },
@@ -1404,6 +1433,16 @@ const SHELL_COPY_BY_LOCALE = {
       unarchiveFailedTitle: '恢復任務失敗',
       renameFailedTitle: '重新命名任務失敗',
       deleteFailedTitle: '刪除任務失敗',
+      moveFailedTitle: '移動任務失敗',
+      moveFailures: {
+        session_busy: '任務正在執行，結束後再移動。',
+        operation_conflict: '該專案目前無法使用，無法移入。',
+        operation_unavailable: '目前無法移動這個任務。',
+        not_found: '找不到該專案或任務。',
+      },
+      archiveRefusedDelegation: 'WorkHub 仍在向該任務委派工作。先停止或更換委派，再歸檔。',
+      archiveRefusedResult: '委派結果還沒有送達 WorkHub。請開啟 WorkHub 收取結果，或停止該委派。',
+      archiveRefusedSubtasks: '該任務還有進行中的子任務。請等子任務完成或停止它們，再歸檔該任務。',
       currentConversation: '目前任務',
       deleteTitle: (name: string) => `刪除 "${name}"`,
       deleteDescription: '任務和全部訊息會從磁碟上永久移除。該操作不可撤銷。',
@@ -1422,6 +1461,8 @@ const SHELL_COPY_BY_LOCALE = {
     skillActions: {
       refreshSkillsFailedTitle: '重新整理技能失敗',
       refreshSkillsFallback: '重新整理技能失敗，請稍後重試。',
+      refreshLocationsFailedTitle: '重新整理技能位置失敗',
+      refreshLocationsFallback: '重新整理技能位置失敗，請稍後重試。',
       refreshSourcesFailedTitle: '重新整理來源庫失敗',
       refreshSourcesFallback: '重新整理來源庫失敗，請稍後重試。',
       refreshBundledFailedTitle: '重新整理內建技能失敗',
@@ -1456,6 +1497,17 @@ const SHELL_COPY_BY_LOCALE = {
       deletedDescription: (id: string) => `${id} 已移除。`,
       openFailedTitle: '無法開啟 Skill',
       openFallback: '無法開啟 Skill，請稍後重試。',
+      openLocationFailedTitle: '無法開啟技能位置',
+      openLocationFallback: '無法開啟技能位置，請稍後重試。',
+      openLocationFailures: {
+        unknown_location: '這個技能位置無效。',
+        stale_context: '技能位置已變更，請再試一次。',
+        missing: '目錄不存在。',
+        blocked_path: '技能位置不在允許範圍內，已阻止開啟。',
+        read_failed: '無法讀取技能目錄，請檢查檔案權限。',
+        create_failed: '無法建立技能目錄，請檢查檔案權限。',
+        open_failed: '系統無法開啟目錄。',
+      },
       openFailures: {
         invalid_id: 'Skill 名稱不在允許範圍內。',
         missing: '沒有找到對應的 SKILL.md。',
@@ -1521,6 +1573,7 @@ const SHELL_COPY_BY_LOCALE = {
       },
       attachmentIngestBlocked: {
         item_too_large: '單一附件超出大小限制。',
+        item_unreadable: '有附件無法讀取，可能是資料夾或已被移動。請移除後重新新增。',
         items_invalid: '附件資訊無效，請重新選擇檔案後再傳送。',
         count_limit: '一次最多新增 8 個附件。',
         duplicate_source: '附件來源重複，請勿重複新增同一檔案。',
@@ -1646,7 +1699,8 @@ const SHELL_COPY_BY_LOCALE = {
         {
           heading: 'Composer 輸入',
           rows: [
-            { keys: ['Enter'], description: '傳送訊息' },
+            { keys: ['Enter'], description: '傳送訊息（執行中加入下一輪佇列）' },
+            { keys: ['⌘', 'Enter'], description: '模型執行中調整方向（Steer）' },
             { keys: ['Shift', 'Enter'], description: '插入換行' },
             { keys: ['Alt', 'Enter'], description: '插入換行（備用）' },
           ],
@@ -1738,6 +1792,12 @@ const SHELL_COPY_BY_LOCALE = {
       tryAgainLater: '請稍後重試。',
       loading: '載入中',
       goToModels: '去模型',
+      taskDirectorySuspiciousTitle: '此任務的工作目錄可能混入無關檔案',
+      taskDirectorySuspiciousDescription:
+        '任務輸出可能混入了無關檔案。可將工作目錄遷移至此任務的專屬目錄；舊目錄中的檔案不會被移動。',
+      taskDirectoryMoveLabel: '遷移到專屬任務目錄',
+      taskDirectoryMovedTitle: '已遷移任務目錄',
+      taskDirectoryMovedDescription: (directory: string) => `此任務現在使用專屬目錄 ${directory}`,
       boundaryUnreadableTitle: '暫時讀不到這個任務的權限',
       boundaryUnreadableDetail: '在讀到之前，這裡暫時不能輸入。可以重試，或先切換到別的任務。',
       boundaryUnreadableRetry: '重試',
@@ -1772,18 +1832,15 @@ const SHELL_COPY_BY_LOCALE = {
       graphHistoryDescription: '請在 Agent Graph 面板的執行輪次選單中檢視歷史記錄。',
       resizeWorkbar: '調整任務工作欄寬度',
     },
-  },
-  en: {
-    navigation: { settings: 'Settings', backToWorkHub: 'Back to WorkHub' },
+  };
+const shellCopyByLocaleEn: ShellCopy = {
+    navigation: { settings: 'Settings' },
     actions: { retry: 'Retry' },
     paths: {
       workspace: 'workspace',
       project: 'project folder',
-      skills: 'Skills folder',
     },
     errors: {
-      messageRead: 'Task content is temporarily unavailable. Try again later.',
-      messageRefresh: 'Task content could not be refreshed. Try again later.',
       openPath: (path: string) => `Could not open the ${path}. Try again later.`,
       workspaceUnavailableTitle: 'Working directory unavailable',
       workspaceUnavailableDescription:
@@ -1808,7 +1865,6 @@ const SHELL_COPY_BY_LOCALE = {
       },
       responseFailedTitle: 'Response failed',
       responseFailedFallback: 'The task action failed. Try again later.',
-      refreshFailedTitle: 'Could not refresh task',
       sessionStartFailedTitle: 'Could not start task',
       sessionStartFailedFallback: 'The task could not be started. Try again later.',
     },
@@ -1823,6 +1879,10 @@ const SHELL_COPY_BY_LOCALE = {
       projectUpdateFailedFallback: 'The project could not be updated. Try again later.',
       catalogUnavailable: 'Runtime Hosts unavailable',
       retryCatalog: 'Retry loading',
+      archivedProjectTitle: 'Project archived',
+      archivedProjectDescription: 'This project is archived. Restore it?',
+      archivedProjectRestore: 'Restore',
+      archivedProjectCancel: 'Cancel',
       remoteDirectoryTitle: (host: string) => `Add a project on ${host}`,
       remoteDirectoryBreadcrumbs: 'Current folder',
       remoteDirectoryHome: 'Home',
@@ -1841,7 +1901,6 @@ const SHELL_COPY_BY_LOCALE = {
       openFailedTitle: (path: string) => `Could not open ${path}`,
       openPathLabels: {
         workspace: 'workspace folder',
-        skills: 'Skills folder',
         memory: 'memory folder',
         project: 'project folder',
       },
@@ -1913,6 +1972,19 @@ const SHELL_COPY_BY_LOCALE = {
       unarchiveFailedTitle: 'Could not restore task',
       renameFailedTitle: 'Could not rename task',
       deleteFailedTitle: 'Could not delete task',
+      moveFailedTitle: 'Could not move task',
+      moveFailures: {
+        session_busy: 'A task is running. Wait for it to finish before moving this one.',
+        operation_conflict: 'That project is unavailable right now, so the task cannot move into it.',
+        operation_unavailable: 'This task cannot be moved right now.',
+        not_found: 'That project or task could not be found.',
+      },
+      archiveRefusedDelegation:
+        'WorkHub still delegates work to this task. Stop or replace the delegation, then archive it.',
+      archiveRefusedResult:
+        "WorkHub has not received this task's result yet. Open WorkHub so it can collect it, or stop the delegation.",
+      archiveRefusedSubtasks:
+        'This task has subtasks still in flight. Wait for them to finish or stop them, then archive this task.',
       currentConversation: 'Current task',
       deleteTitle: (name: string) => `Delete "${name}"`,
       deleteDescription:
@@ -1934,6 +2006,8 @@ const SHELL_COPY_BY_LOCALE = {
     skillActions: {
       refreshSkillsFailedTitle: 'Could not refresh Skills',
       refreshSkillsFallback: 'Skills could not be refreshed. Try again later.',
+      refreshLocationsFailedTitle: 'Could not refresh Skill locations',
+      refreshLocationsFallback: 'Skill locations could not be refreshed. Try again later.',
       refreshSourcesFailedTitle: 'Could not refresh Skill sources',
       refreshSourcesFallback: 'Skill sources could not be refreshed. Try again later.',
       refreshBundledFailedTitle: 'Could not refresh built-in Skills',
@@ -1968,6 +2042,17 @@ const SHELL_COPY_BY_LOCALE = {
       deletedDescription: (id: string) => `${id} was removed.`,
       openFailedTitle: 'Could not open Skill',
       openFallback: 'The Skill could not be opened. Try again later.',
+      openLocationFailedTitle: 'Could not open Skill location',
+      openLocationFallback: 'The Skill location could not be opened. Try again later.',
+      openLocationFailures: {
+        unknown_location: 'This Skill location is invalid.',
+        stale_context: 'Skill locations have changed. Try again.',
+        missing: 'The folder does not exist.',
+        blocked_path: 'The Skill location is outside the allowed paths, so opening was blocked.',
+        read_failed: 'The Skill folder could not be read. Check file permissions.',
+        create_failed: 'The Skill folder could not be created. Check file permissions.',
+        open_failed: 'The system could not open the folder.',
+      },
       openFailures: {
         invalid_id: 'The Skill name is not allowed.',
         missing: 'The matching SKILL.md was not found.',
@@ -2034,6 +2119,7 @@ const SHELL_COPY_BY_LOCALE = {
       },
       attachmentIngestBlocked: {
         item_too_large: 'One attachment exceeds the size limit.',
+        item_unreadable: 'An attachment could not be read. It may be a folder or may have moved. Remove it and add it again.',
         items_invalid: 'The attachment list is invalid. Pick the files again and resend.',
         count_limit: 'At most 8 attachments per message.',
         duplicate_source: 'Duplicate attachment source. Do not add the same file twice.',
@@ -2165,7 +2251,8 @@ const SHELL_COPY_BY_LOCALE = {
         {
           heading: 'Composer',
           rows: [
-            { keys: ['Enter'], description: 'Send the message' },
+            { keys: ['Enter'], description: 'Send the message (queue next turn while running)' },
+            { keys: ['⌘', 'Enter'], description: 'Steer the running turn' },
             { keys: ['Shift', 'Enter'], description: 'Insert a line break' },
             {
               keys: ['Alt', 'Enter'],
@@ -2291,6 +2378,12 @@ const SHELL_COPY_BY_LOCALE = {
       tryAgainLater: 'Try again later.',
       loading: 'Loading',
       goToModels: 'Go to Models',
+      taskDirectorySuspiciousTitle: 'This task’s working directory may contain unrelated files',
+      taskDirectorySuspiciousDescription:
+        'Task output may be mixed with unrelated files. You can move it to a dedicated task directory; existing files stay where they are.',
+      taskDirectoryMoveLabel: 'Move to dedicated task directory',
+      taskDirectoryMovedTitle: 'Task directory moved',
+      taskDirectoryMovedDescription: (directory: string) => `This task now uses the dedicated directory ${directory}`,
       boundaryUnreadableTitle: 'Could not read this task’s permissions',
       boundaryUnreadableDetail:
         'Until they can be read, you cannot type here. Try again, or switch to another task.',
@@ -2328,11 +2421,27 @@ const SHELL_COPY_BY_LOCALE = {
       graphHistoryDescription: 'Use the run menu in the Agent Graph panel to inspect history.',
       resizeWorkbar: 'Resize task workbar',
     },
-  },
-} satisfies UiCatalog<ShellCopy>;
+  };
+
+const SHELL_COPY_BY_LOCALE = resolveUiMessageCatalog(defineShippedUiMessageCatalog<ShellCopy>()({ 'zh-CN': shellCopyByLocaleZhCn, 'zh-TW': shellCopyByLocaleZhTw, en: shellCopyByLocaleEn })) satisfies UiCatalog<ShellCopy>;
 
 export function getShellCopy(locale: UiLocale): ShellCopy {
   return SHELL_COPY_BY_LOCALE[locale];
+}
+
+/**
+ * An `app:openPath` failure reason in this locale. Desktop's open-path guard
+ * reports a closed set; any other value reads as `unknown`, so raw text never
+ * reaches the UI.
+ */
+export function openPathFailureCopy(reason: string, locale: UiLocale): string {
+  const copy = getShellCopy(locale).projectActions.openPathFailures;
+  return reason in copy ? copy[reason as keyof typeof copy] : copy.unknown;
+}
+
+/** The folder an open-path action names, for titles such as "无法打开工作区目录". */
+export function openPathActionLabel(key: 'workspace' | 'memory' | 'project', locale: UiLocale): string {
+  return getShellCopy(locale).projectActions.openPathLabels[key];
 }
 
 export function localizedShellErrorMessage(error: unknown, fallback: string, locale: UiLocale): string {

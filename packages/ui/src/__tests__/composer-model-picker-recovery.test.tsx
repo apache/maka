@@ -21,12 +21,120 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { act, createRef } from 'react';
 import { createRoot } from 'react-dom/client';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { parseHTML } from 'linkedom';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { SessionSummary } from '@maka/core/session';
 import { Composer, type ComposerHandle } from '../composer.js';
+import { ThinkingLevelSelector } from '../chat-model-switcher.js';
+import { MakaClientSlotCore, MakaClientSlotProvider } from '../client-plugin-slots.js';
 import { deriveComposerModelSwitchAvailability } from '../composer-helpers.js';
 import { LocaleProvider } from '../locale-context.js';
+
+test('the native model pair remains the model-selection slot fallback', () => {
+  const session = {
+    id: 'codex-session',
+    llmConnectionSlug: 'executor:codex.app-server',
+    model: 'gpt-6-astra',
+  } as SessionSummary;
+  const choice: ChatModelChoice = {
+    connectionId: 'native-connection',
+    connectionSlug: 'native',
+    connectionName: 'Native',
+    providerType: 'openai',
+    providerLabel: 'OpenAI',
+    model: 'native-model',
+    label: 'Native model',
+    isDefault: true,
+    thinkingLevels: ['low', 'high'],
+  };
+  const render = (executor: boolean) => renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <Composer
+        activeSession={session}
+        activeModelConnectionId={choice.connectionId}
+        activeModelConnectionSlug={choice.connectionSlug}
+        activeModel={choice.model}
+        activeModelLabel={choice.label}
+        activeThinkingLevels={choice.thinkingLevels}
+        modelChoices={[choice]}
+        {...(executor
+          ? { executorTarget: { executorId: 'codex.app-server', model: 'gpt-6-astra', thinkingLevel: 'high' } }
+          : {})}
+        onModelChange={() => undefined}
+        onThinkingLevelChange={() => undefined}
+        onSend={() => undefined}
+        onStop={() => undefined}
+      />
+    </LocaleProvider>,
+  );
+
+  const native = render(false);
+  assert.match(native, /maka-composer-options-trigger/u);
+  assert.doesNotMatch(native, /maka-thinking-level-selector/u);
+
+  const detailed = renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <Composer
+        activeSession={session}
+        activeModelConnectionId={choice.connectionId}
+        activeModelConnectionSlug={choice.connectionSlug}
+        activeModel={choice.model}
+        activeModelLabel={choice.label}
+        activeThinkingLevels={choice.thinkingLevels}
+        activeThinkingLevel="high"
+        modelChoices={[{ ...choice, contextWindow: 1_048_576 }]}
+        onModelChange={() => undefined}
+        onThinkingLevelChange={() => undefined}
+        onSend={() => undefined}
+        onStop={() => undefined}
+      />
+    </LocaleProvider>,
+  );
+  assert.match(detailed, /maka-composer-model-label" dir="ltr" title="Native model">Native model</u);
+  assert.match(detailed, /maka-composer-options-details">1M High</u);
+
+  const pluginExecutorWithoutClientContribution = render(true);
+  assert.match(pluginExecutorWithoutClientContribution, /maka-model-switcher-trigger/u);
+  assert.match(pluginExecutorWithoutClientContribution, /maka-thinking-level-selector/u);
+  assert.match(pluginExecutorWithoutClientContribution, /conversation\.composer\.model-selection/u);
+});
+
+test('a client model contribution remains inside the unified executor picker', () => {
+  const core = new MakaClientSlotCore();
+  core.register(
+    { name: 'conversation.composer.model-selection', select: () => ({}) },
+    () => <span>Client model control</span>,
+  );
+  const markup = renderToStaticMarkup(
+    <MakaClientSlotProvider core={core}>
+      <LocaleProvider locale="en">
+        <Composer
+          executorPicker={{
+            catalog: [
+              {
+                id: 'antigravity',
+                displayName: 'Antigravity',
+                readiness: 'ready',
+                models: [{ id: 'fast', name: 'Fast' }],
+                supportsAttachments: false,
+                supportsModelChange: true,
+              },
+            ],
+            onSelect: () => undefined,
+            onSetup: () => undefined,
+            onRetry: () => undefined,
+            onNewTask: () => undefined,
+          }}
+          onSend={() => undefined}
+          onStop={() => undefined}
+        />
+      </LocaleProvider>
+    </MakaClientSlotProvider>,
+  );
+
+  assert.match(markup, /maka-executor-selector/u);
+});
 
 test('model switch availability has one priority-ordered contract', () => {
   assert.deepEqual(
@@ -55,6 +163,10 @@ test('the recovery handle opens the existing exact account-and-model picker', as
   const original = {
     document: globalThis.document,
     window: globalThis.window,
+    Element: globalThis.Element,
+    HTMLElement: globalThis.HTMLElement,
+    HTMLBRElement: globalThis.HTMLBRElement,
+    Node: globalThis.Node,
     matchMedia: globalThis.matchMedia,
     requestAnimationFrame: globalThis.requestAnimationFrame,
     cancelAnimationFrame: globalThis.cancelAnimationFrame,
@@ -63,15 +175,50 @@ test('the recovery handle opens the existing exact account-and-model picker', as
     }).IS_REACT_ACT_ENVIRONMENT,
   };
   const { document, window } = parseHTML('<div id="root"></div>');
-  window.getComputedStyle = () => ({
-    direction: 'ltr',
-    writingMode: 'horizontal-tb',
-    getPropertyValue: () => '',
-  }) as unknown as CSSStyleDeclaration;
+  window.getComputedStyle = () =>
+    new Proxy(
+      { direction: 'ltr', writingMode: 'horizontal-tb', getPropertyValue: () => '' },
+      { get: (target, key) => (key in target ? target[key as keyof typeof target] : '') },
+    ) as unknown as CSSStyleDeclaration;
+  window.matchMedia = () =>
+    ({ matches: false, addEventListener() {}, removeEventListener() {} }) as unknown as MediaQueryList;
+  window.scrollTo = () => {};
+  window.scrollBy = () => {};
+  window.getSelection = () =>
+    ({
+      rangeCount: 0,
+      isCollapsed: true,
+      anchorNode: null,
+      focusNode: null,
+      removeAllRanges() {},
+      addRange() {},
+      getRangeAt: () => {
+        throw new Error('no range');
+      },
+    }) as unknown as Selection;
+  document.createRange = () =>
+    ({
+      selectNodeContents() {},
+      collapse() {},
+      cloneRange() {
+        return this;
+      },
+    }) as unknown as Range;
+  // linkedom has no <dialog> behavior: the bottom sheet needs showModal/close
+  // to mount its panel, so the stubs only toggle the `open` attribute.
+  Object.assign(window.HTMLElement.prototype, {
+    showModal(this: HTMLElement) { this.setAttribute('open', ''); },
+    show(this: HTMLElement) { this.setAttribute('open', ''); },
+    close(this: HTMLElement) { this.removeAttribute('open'); },
+  });
   Object.assign(globalThis, {
     document,
     window,
-    matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
+    Element: window.Element,
+    HTMLElement: window.HTMLElement,
+    HTMLBRElement: window.HTMLBRElement,
+    Node: window.Node,
+    matchMedia: window.matchMedia,
     requestAnimationFrame: () => 1,
     cancelAnimationFrame() {},
     IS_REACT_ACT_ENVIRONMENT: true,
@@ -117,24 +264,40 @@ test('the recovery handle opens the existing exact account-and-model picker', as
         />
       </LocaleProvider>,
     ));
-    assert.match(document.documentElement.innerHTML, /aria-expanded="false"/);
+    assert.equal(
+      document.querySelector('.maka-composer-options-trigger')?.getAttribute('aria-expanded'),
+      'false',
+    );
 
     await act(() => composer.current?.openModelPicker());
 
-    assert.ok(document.querySelector('.maka-model-wheel-viewport'));
-    assert.match(document.documentElement.innerHTML, /GPT-5/);
-    const items = [...document.querySelectorAll<HTMLElement>('.maka-model-wheel-viewport [role="option"]')];
-    assert.equal(items.length, 1, 'the stale legacy target is not a selectable current row');
+    assert.equal(
+      document.querySelector('.maka-composer-options-trigger')?.getAttribute('aria-expanded'),
+      'true',
+    );
+    const openModel = () => {
+      const row = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')]
+        .find((candidate) => candidate.textContent?.includes('Model'));
+      assert.ok(row);
+      return act(() => row.dispatchEvent(new window.Event('click', { bubbles: true })));
+    };
+    await openModel();
+    const items = [...document.querySelectorAll<HTMLElement>('[role="menuitemradio"]')];
+    const gpt = items.find((row) => row.textContent?.includes('GPT-5'));
+    assert.ok(gpt, 'the stale legacy target is not a selectable current row');
+    assert.equal(items.some((row) => row.textContent?.includes('legacy')), false);
 
-    await act(() => items[0]?.dispatchEvent(new window.Event('click', { bubbles: true })));
+    await act(() => gpt.dispatchEvent(new window.Event('click', { bubbles: true })));
 
     assert.deepEqual(selected, {
       llmConnectionId: 'connection-openrouter',
       llmConnectionSlug: 'openrouter',
       model: 'openai/gpt-5',
     });
-    await act(() => document.querySelector('.maka-model-wheel-viewport')?.dispatchEvent(Object.assign(new window.Event('keydown', { bubbles: true }), { key: 'Escape' })));
-    assert.equal(Boolean(document.querySelector('.maka-model-wheel-viewport')), false, 'Escape closes the wheel');
+    assert.equal(
+      document.querySelector('.maka-composer-options-trigger')?.getAttribute('aria-expanded'),
+      'false',
+    );
 
     await act(() => root.render(
       <LocaleProvider locale="en">
@@ -157,13 +320,17 @@ test('the recovery handle opens the existing exact account-and-model picker', as
       </LocaleProvider>,
     ));
     await act(() => composer.current?.openModelPicker());
+    const modelRow = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')]
+      .find((candidate) => candidate.textContent?.includes('Model'));
+    assert.ok(modelRow);
+    await act(() => modelRow.dispatchEvent(new window.Event('click', { bubbles: true })));
 
-    const selectedRadio = document.querySelector<HTMLElement>(
-      '.maka-model-wheel-viewport [role="option"][aria-selected="true"]',
+    const selectedOption = document.querySelector<HTMLElement>(
+      '[role="menuitemradio"][aria-checked="true"]',
     );
-    assert.equal(selectedRadio?.textContent?.includes('GPT-5'), true);
+    assert.equal(selectedOption?.textContent?.includes('GPT-5'), true);
     assert.match(
-      document.querySelector<HTMLElement>('.maka-model-wheel-viewport')?.getAttribute('aria-label') ?? '',
+      document.querySelector<HTMLElement>('.maka-composer-options-trigger')?.textContent ?? '',
       /GPT-5/,
     );
 
@@ -173,26 +340,52 @@ test('the recovery handle opens the existing exact account-and-model picker', as
     await act(() => root.render(
       <LocaleProvider locale="en"><Composer ref={composer}
         activeSession={{ id: 'wheel-session', llmConnectionId: choice.connectionId, llmConnectionSlug: choice.connectionSlug, model: choice.model } as SessionSummary}
-        modelChoices={[choice, second]}
+        pickerPresentation="bottom-sheet" modelChoices={[choice, second]}
         onModelChange={(input) => { selected = input; }} onSend={() => { sends++; }} onStop={() => undefined} />
       </LocaleProvider>,
     ));
     await act(() => composer.current?.openModelPicker());
-    const browseNext = async () => {
-      const wheel = document.querySelector<HTMLElement>('.maka-model-wheel-viewport');
-      assert.ok(wheel);
-      await act(() => wheel.dispatchEvent(Object.assign(new window.Event('keydown', { bubbles: true, cancelable: true }), { key: 'ArrowDown' })));
-      await act(() => wheel.dispatchEvent(new window.Event('scroll')));
-      return wheel;
-    };
-    const wheel = await browseNext();
-    assert.deepEqual(selected, { llmConnectionId: second.connectionId, llmConnectionSlug: second.connectionSlug, model: second.model }, 'keyboard navigation applies the model without confirmation');
-    assert.ok(document.querySelector('.maka-model-wheel-viewport'), 'selection keeps the wheel open');
-    await act(() => wheel.dispatchEvent(Object.assign(new window.Event('keydown', { bubbles: true, cancelable: true }), { key: 'Enter' })));
+    const sheetOptions = [...document.querySelectorAll<HTMLElement>('[role="option"]')];
+    assert.equal(sheetOptions.length, 2, 'the sheet lists both accounts');
+    const secondOption = sheetOptions[1];
+    await act(() => secondOption.dispatchEvent(new window.Event('click', { bubbles: true })));
+    assert.deepEqual(selected, { llmConnectionId: second.connectionId, llmConnectionSlug: second.connectionSlug, model: second.model });
     assert.equal(sends, 0, 'closing the picker must not send the composer draft');
-    assert.equal(Boolean(document.querySelector('.maka-model-wheel-viewport')), false);
   } finally {
     await act(() => root.unmount());
     Object.assign(globalThis, original);
+  }
+});
+
+test('the thinking picker survives levels arriving after mount', async () => {
+  // Thinking levels resolve asynchronously; a picker that mounts variantless
+  // must not change its hook count when they land.
+  const { document, window } = parseHTML('<div id="root"></div>');
+  window.matchMedia = () =>
+    ({ matches: false, addEventListener() {}, removeEventListener() {} }) as unknown as MediaQueryList;
+  Object.assign(globalThis, {
+    document,
+    window,
+    Element: window.Element,
+    HTMLElement: window.HTMLElement,
+    IS_REACT_ACT_ENVIRONMENT: true,
+  });
+  const container = document.querySelector('#root');
+  assert.ok(container);
+  const root = createRoot(container);
+  try {
+    const render = (levels: ('low' | 'high')[]) =>
+      act(() => root.render(
+        <LocaleProvider locale="en"><ThinkingLevelSelector levels={levels} onChange={() => undefined} /></LocaleProvider>,
+      ));
+    await render([]);
+    await render(['low', 'high']);
+    assert.equal(
+      document.querySelector('.maka-thinking-level-selector') !== null,
+      true,
+      'the selector mounts once variants exist',
+    );
+  } finally {
+    await act(() => root.unmount());
   }
 });

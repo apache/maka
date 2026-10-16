@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import type { UiLocale } from '@maka/core/ui-locale';
+
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { ICON_SIZE, ArrowLeft } from '@maka/ui/icons';
 import {
@@ -282,8 +284,8 @@ export function BotChatChannelDetail(props: {
         <MetadataList columns="multi">
           <MetadataListItem label={detailCopy.identity}>{status?.identity?.username ?? status?.identity?.displayName ?? detailCopy.unknownIdentity}</MetadataListItem>
           <MetadataListItem label={detailCopy.connectionType}>{botConnectionLabel(status?.connection ?? 'none', locale)}</MetadataListItem>
-          <MetadataListItem label={detailCopy.lastEvent}>{status?.lastEventAt ? <RelativeTime ts={status.lastEventAt} /> : detailCopy.noneYet}</MetadataListItem>
-          <MetadataListItem label={detailCopy.lastTest}>{channel.lastTestAt ? <RelativeTime ts={channel.lastTestAt} /> : detailCopy.neverTested}</MetadataListItem>
+          <MetadataListItem label={detailCopy.lastEvent}>{status?.lastEventAt ? <RelativeTime ts={status.lastEventAt} className="settingsInlineTime" /> : detailCopy.noneYet}</MetadataListItem>
+          <MetadataListItem label={detailCopy.lastTest}>{channel.lastTestAt ? <RelativeTime ts={channel.lastTestAt} className="settingsInlineTime" /> : detailCopy.neverTested}</MetadataListItem>
         </MetadataList>
         </div>
       </SettingsSection>
@@ -316,18 +318,21 @@ export function BotChatChannelDetail(props: {
         variant="bare"
         title={quickOnboarding && !qrOnlyOnboarding ? detailCopy.setupMethod : detailCopy.connectionSettings}
         description={quickOnboarding ? detailCopy.localCredentials : detailCopy.autosave}
+        // The setup mode is the section's group-level switch: it sits in the
+        // header's trailing slot at content width, like 导入/导出任务's 来源,
+        // instead of as a row of its own between the heading and the callout.
+        action={quickOnboarding && !qrOnlyOnboarding ? (
+          <SegmentedControl
+            value={setupMode}
+            label={detailCopy.setupAria(providerPresentation.label)}
+            size="sm"
+            onChange={(value) => setSetupMode(value as 'quick' | 'manual')}
+          >
+            <SegmentedControlItem value="quick" label={detailCopy.quickRecommended} />
+            <SegmentedControlItem value="manual" label={detailCopy.manual} />
+          </SegmentedControl>
+        ) : undefined}
       >
-      {quickOnboarding && !qrOnlyOnboarding && (
-        <SegmentedControl
-          className="settingsBotSetupModes"
-          value={setupMode}
-          label={detailCopy.setupAria(providerPresentation.label)}
-          onChange={(value) => setSetupMode(value as 'quick' | 'manual')}
-        >
-          <SegmentedControlItem value="quick" label={detailCopy.quickRecommended} />
-          <SegmentedControlItem value="manual" label={detailCopy.manual} />
-        </SegmentedControl>
-      )}
 
       {quickOnboarding && provider !== 'wechat' && setupMode === 'quick' && (
         /* Astryx convergence: the hand-tinted quick-setup plate is an
@@ -656,7 +661,7 @@ function BotAllowedUserIdsField(props: {
   );
 }
 
-function botConnectionLabel(connection: BotStatus['connection'], locale: 'zh-CN' | 'zh-TW' | 'en'): string {
+function botConnectionLabel(connection: BotStatus['connection'], locale: UiLocale): string {
   const copy = getBotSettingsCopy(locale).status;
   switch (connection) {
     case 'polling': return copy.polling;

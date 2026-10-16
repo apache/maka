@@ -57,6 +57,10 @@ const originalGlobals = {
   requestAnimationFrame: globalThis.requestAnimationFrame,
   cancelAnimationFrame: globalThis.cancelAnimationFrame,
   window: globalThis.window,
+  Element: globalThis.Element,
+  HTMLElement: globalThis.HTMLElement,
+  HTMLBRElement: globalThis.HTMLBRElement,
+  Node: globalThis.Node,
 };
 const originalActEnvironment = (globalThis as typeof globalThis & {
   IS_REACT_ACT_ENVIRONMENT?: boolean;
@@ -138,11 +142,17 @@ function harness() {
   };
   document.getSelection = () => selection as unknown as Selection;
   window.getSelection = () => selection as unknown as Selection;
+  window.matchMedia = () =>
+    ({ matches: false, addEventListener() {}, removeEventListener() {} }) as unknown as MediaQueryList;
   Object.defineProperty(document, 'activeElement', { configurable: true, get: () => active });
   Object.assign(globalThis, {
     document,
     window,
-    matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
+    Element: window.Element,
+    HTMLElement: window.HTMLElement,
+    HTMLBRElement: window.HTMLBRElement,
+    Node: window.Node,
+    matchMedia: window.matchMedia,
     requestAnimationFrame: () => 1,
     cancelAnimationFrame() {},
     IS_REACT_ACT_ENVIRONMENT: true,

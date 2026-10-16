@@ -25,6 +25,7 @@ import { chmod, lstat, mkdir, readFile, readdir, unlink, writeFile } from 'node:
 import { createServer, type Server, type Socket } from 'node:net';
 import { basename, dirname, join, posix, relative, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline';
+import { egressAuditCollection, readEgressAuditEvidence } from './egress-audit.js';
 import { decodeJsonObject, type ExperimentCell, type JsonObject } from './experiment.js';
 import {
   BUNDLED_HARNESS_RELAY_ROOT,
@@ -476,13 +477,7 @@ async function startTrial(
         environment: environmentConfig,
         ...(options.egressProxy
           ? {
-              artifacts: [
-                {
-                  source: '/opt/maka-egress-state/hits.jsonl',
-                  destination: EGRESS_AUDIT_DESTINATION,
-                  service: 'maka-eval-mitmproxy',
-                },
-              ],
+              artifacts: egressAuditCollection(),
             }
           : {}),
       })}\n`,
@@ -718,77 +713,11 @@ async function closeServer(server: Server): Promise<void> {
   });
 }
 
-export const EGRESS_AUDIT_DESTINATION = 'egress-hits.jsonl';
-export const EGRESS_AUDIT_ARTIFACT_PATH = `artifacts/${EGRESS_AUDIT_DESTINATION}`;
-
-export function collectEgressAuditArtifact(
-  audit: Buffer | undefined,
-  expected: boolean,
-): {
-  readonly missing: boolean;
-  readonly failureReason: string | null;
-  readonly artifacts: readonly JsonObject[];
-} {
-  if (!expected) return { missing: false, failureReason: null, artifacts: [] };
-  if (audit === undefined) {
-    return {
-      missing: true,
-      failureReason: 'egress audit log missing',
-      artifacts: [{ kind: 'egress-audit-missing', path: EGRESS_AUDIT_ARTIFACT_PATH }],
-    };
-  }
-  const forensics = inspectEgressAudit(audit);
-  return {
-    missing: false,
-    failureReason: null,
-    artifacts: [
-      {
-        kind: 'egress-audit',
-        path: EGRESS_AUDIT_ARTIFACT_PATH,
-        bytes: audit.byteLength,
-        sha256: `sha256:${createHash('sha256').update(audit).digest('hex')}`,
-        truncated: forensics.truncated,
-        policyErrorCount: forensics.policyErrorCount,
-        malformedLineCount: forensics.malformedLineCount,
-      },
-    ],
-  };
-}
-
-function inspectEgressAudit(audit: Buffer): {
-  readonly truncated: boolean;
-  readonly policyErrorCount: number;
-  readonly malformedLineCount: number;
-} {
-  let truncated = false;
-  let policyErrorCount = 0;
-  let malformedLineCount = 0;
-  for (const line of audit.toString('utf8').split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    let record: unknown;
-    try {
-      record = JSON.parse(trimmed);
-    } catch {
-      malformedLineCount += 1;
-      continue;
-    }
-    if (!record || typeof record !== 'object' || Array.isArray(record)) {
-      malformedLineCount += 1;
-      continue;
-    }
-    const ruleId = (record as { ruleId?: unknown }).ruleId;
-    if (ruleId === 'audit_truncated') truncated = true;
-    if (ruleId === 'policy_error') policyErrorCount += 1;
-  }
-  return { truncated, policyErrorCount, malformedLineCount };
-}
-
 async function readVerification(
   state: RelayState,
   cell: ExperimentCell,
   framework: HarnessFramework,
-  expectEgressAudit: boolean,
+  auditRequired: boolean,
 ): Promise<ExecutorVerification> {
   const result = JSON.parse(await readFile(join(state.trialPath, 'result.json'), 'utf8')) as {
     exception_info?: { exception_type?: unknown } | null;
@@ -801,42 +730,29 @@ async function readVerification(
   if (result.exception_info && !subjectException) {
     throw new Error('Trial failed outside subject execution');
   }
-  const egressAuditPath = join(state.trialPath, EGRESS_AUDIT_ARTIFACT_PATH);
-  let egressAudit: Buffer | undefined;
-  try {
-    egressAudit = await readFile(egressAuditPath);
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (expectEgressAudit && code !== 'ENOENT') {
-      return {
-        status: 'infra_failed',
-        score,
-        failureReason: `failed to read egress audit log ${egressAuditPath}${code ? ` (${code})` : ''}`,
-        artifacts: [
-          { kind: 'trial', framework: cell.executor.kind, trialName: state.trialName },
-          ...(await collectedArtifactInventory(state.trialPath, framework)),
-          { kind: 'egress-audit-unreadable', path: EGRESS_AUDIT_ARTIFACT_PATH },
-        ],
-      };
-    }
-  }
-  const audit = collectEgressAuditArtifact(egressAudit, expectEgressAudit);
+  const audit = await readEgressAuditEvidence(state.trialPath, auditRequired);
+  const baseFailure = score === null ? 'verifier produced no reward' : null;
+  const status = verificationStatus(audit.failureReason, score, subjectException);
+  const collectedArtifacts = await collectedArtifactInventory(state.trialPath, framework);
   return {
-    status: audit.failureReason
-      ? 'infra_failed'
-      : score === null
-        ? 'infra_failed'
-        : subjectException
-          ? 'subject_failed'
-          : 'completed',
+    status,
     score,
-    failureReason: audit.failureReason ?? (score === null ? 'verifier produced no reward' : null),
+    failureReason: audit.failureReason ?? baseFailure,
     artifacts: [
       { kind: 'trial', framework: cell.executor.kind, trialName: state.trialName },
-      ...(await collectedArtifactInventory(state.trialPath, framework)),
-      ...audit.artifacts,
+      ...collectedArtifacts,
+      ...Array.from(audit.artifacts),
     ],
   };
+}
+
+function verificationStatus(
+  auditFailure: string | null,
+  score: number | null,
+  subjectException: boolean,
+): ExecutorVerification['status'] {
+  if (auditFailure !== null || score === null) return 'infra_failed';
+  return subjectException ? 'subject_failed' : 'completed';
 }
 
 async function collectedArtifactInventory(

@@ -19,7 +19,7 @@
 
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 39;
+export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 41;
 export const SQLITE_SESSION_MESSAGE_CHUNK_BYTES = 64 * 1024;
 export const SQLITE_SESSION_MESSAGE_CHUNK_MARKER = '{"$maka":"session-message-chunks-v1"}';
 
@@ -37,6 +37,67 @@ export const SQLITE_AGENT_GRAPH_CONTROL_TABLES = [
 ] as const;
 
 const MIGRATIONS: ReadonlyMap<number, string> = new Map([
+  [
+    41,
+    `
+    -- When the Session last entered the archive, owned by the lifecycle
+    -- writer alone. Rows archived before this column existed keep NULL: the
+    -- time they were archived was never recorded, and neither committed_at nor
+    -- activity says when.
+    ALTER TABLE session_metadata ADD COLUMN archived_at INTEGER;
+  `,
+  ],
+  [
+    40,
+    `
+    DROP INDEX agent_graph_supervisor_wakes_by_status;
+    CREATE TABLE agent_graph_supervisor_wakes_v40 (
+      graph_id TEXT NOT NULL,
+      wake_id TEXT NOT NULL,
+      schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+      snapshot_version TEXT NOT NULL,
+      root_session_id TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN (
+        'pending', 'running', 'waiting_permission', 'delivered',
+        'superseded', 'retryable_failed', 'exhausted'
+      )),
+      attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+      current_attempt_id TEXT,
+      current_turn_id TEXT,
+      failure_reason TEXT,
+      created_at INTEGER NOT NULL CHECK (created_at >= 0),
+      updated_at INTEGER NOT NULL CHECK (updated_at >= 0),
+      PRIMARY KEY(graph_id, wake_id)
+    );
+    INSERT INTO agent_graph_supervisor_wakes_v40 SELECT * FROM agent_graph_supervisor_wakes;
+    CREATE TABLE agent_graph_supervisor_wake_attempts_v40 (
+      graph_id TEXT NOT NULL,
+      wake_id TEXT NOT NULL,
+      attempt_id TEXT NOT NULL UNIQUE,
+      turn_id TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN (
+        'running', 'waiting_permission', 'delivered',
+        'superseded', 'retryable_failed'
+      )),
+      failure_reason TEXT,
+      started_at INTEGER NOT NULL CHECK (started_at >= 0),
+      completed_at INTEGER,
+      PRIMARY KEY(graph_id, wake_id, attempt_id),
+      FOREIGN KEY(graph_id, wake_id)
+        REFERENCES agent_graph_supervisor_wakes_v40(graph_id, wake_id)
+        ON DELETE CASCADE
+    );
+    INSERT INTO agent_graph_supervisor_wake_attempts_v40
+      SELECT * FROM agent_graph_supervisor_wake_attempts;
+    DROP TABLE agent_graph_supervisor_wake_attempts;
+    DROP TABLE agent_graph_supervisor_wakes;
+    ALTER TABLE agent_graph_supervisor_wakes_v40 RENAME TO agent_graph_supervisor_wakes;
+    ALTER TABLE agent_graph_supervisor_wake_attempts_v40
+      RENAME TO agent_graph_supervisor_wake_attempts;
+    CREATE INDEX agent_graph_supervisor_wakes_by_status
+      ON agent_graph_supervisor_wakes(status, updated_at, graph_id, wake_id);
+  `,
+  ],
   [
     39,
     `
@@ -1336,14 +1397,16 @@ export function migrateSqliteSessionMetadataDatabase(
     ) {
       const sql = MIGRATIONS.get(version);
       if (!sql) throw new Error(`Missing SQLite session metadata migration ${version}`);
-      // Versions 32, 35, and 37 each add one column, and the post-merge convergence
-      // path can replay them onto a database that already carries the current
-      // table shape. SQLite has no `ADD COLUMN IF NOT EXISTS`, so the guards
-      // live here.
+      // Versions 32, 35, 37, and 41 each add one column, and the post-merge
+      // convergence path can replay them onto a database that already carries
+      // the current table shape. SQLite has no `ADD COLUMN IF NOT EXISTS`, so
+      // the guards live here.
       const columnAlreadyPresent =
         (version === 32 && hasColumn(db, 'message_admissions', 'submitted_intent_json')) ||
         (version === 35 && hasColumn(db, 'message_admissions', 'skill_invocation_json')) ||
-        (version === 37 && hasColumn(db, 'cancelled_message_admissions', 'cancellation_claim_id'));
+        (version === 37 &&
+          hasColumn(db, 'cancelled_message_admissions', 'cancellation_claim_id')) ||
+        (version === 41 && hasColumn(db, 'session_metadata', 'archived_at'));
       if (!columnAlreadyPresent) {
         db.exec(sql);
       }

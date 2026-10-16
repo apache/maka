@@ -20,6 +20,7 @@
 import {
   useCallback,
   useEffect,
+  useEffectEvent,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -27,15 +28,20 @@ import {
   type ComponentProps,
 } from 'react';
 import type { ClientCapabilityResponse } from '@maka/core/client-capability-grant';
+import { useMediaQuery } from '@astryxdesign/core/hooks';
 import type { QuoteRef } from '@maka/core/events';
 import type { InteractionFormResponse } from '@maka/core/interaction';
 import type { SessionSummary } from '@maka/core/session';
-import { Composer, useUiLocale } from '@maka/ui';
+import type { WorkBoardItem, WorkBoardLinkedSession } from '@maka/core/work-board';
+import { useUiLocale, type ToastApi } from '@maka/ui';
 import type { ChatModelChoice } from '@maka/ui';
 import { safeLocalStorageGet, safeLocalStorageSet } from '../../../browser-storage.js';
-import { getDesktopConversationCopy } from '../../../locales/conversation-copy.js';
+import { getDesktopConversationCopy } from '../../../application/contracts/conversation-copy.js';
 import { getShellCopy, localizedShellErrorMessage } from '../../../locales/shell-copy.js';
-import { sideChatTitleFromPrompt } from '../../../side-chat-command.js';
+import { sideChatTitleFromPrompt } from '../../../application/contracts/side-chat-command.js';
+import { desktopSessionKey, parseDesktopSessionKey } from '../../../../shared/runtime-host-identity.js';
+import { useWorkHubWorkspace } from '../../../application/contracts/workhub-workspace/use-workhub-workspace.js';
+import { useWorkHubEnabled } from '../../../application/contracts/workhub-workspace/workhub-enablement.js';
 import { useWorkbarServices } from '../services-context.js';
 import type { WorkbarHostModel } from '../ui/workbar-host.js';
 import { SKIP_SIDE_CHAT_CLOSE_CONFIRMATION_KEY } from '../ui/side-chat-close-confirmation.js';
@@ -47,7 +53,13 @@ import {
   type SessionWorkbarTab,
   type SessionWorkbarTabKind,
 } from '../model/workbar-tabs.js';
-import { workbarToolDefinition } from '../model/workbar-tool-definitions.js';
+import { workbarToolDefinition, workbarToolsForWorkspace } from '../model/workbar-tool-definitions.js';
+import {
+  SHELL_WORKBAR_COMPACT_QUERY,
+  shellRailLayoutPort,
+  shellWorkbarGridRoom,
+} from '../../../application/contracts/shell-layout-contract.js';
+import { SESSION_WORKBAR_MIN_WIDTH } from '../model/workbar-layout.js';
 import {
   consumeCompanionInitialPrompt,
   consumeCompanionQuoteSnapshot,
@@ -77,6 +89,20 @@ export interface WorkbarControllerCommands {
   respondToClientCapability(response: ClientCapabilityResponse): Promise<void>;
   respondToUserForm(sessionId: string, response: InteractionFormResponse): Promise<void>;
   toggleRight(): void;
+  /** The panel-facing toggle: at the compact breakpoint it hides the rail first. */
+  toggleRightPanel(): void;
+  toggleTool(kind: SessionWorkbarTabKind): void;
+  setWorkbarCollapsed(collapsed: boolean): void;
+  /**
+   * Accepts the Session produced by a projected first send that belongs to the
+   * pending Work Board start claim. The claim is owned by one specific
+   * new-task surface instance (its owner token), so a first send from any
+   * other surface—even one reopened on the same Host/project—must not consume
+   * it.
+   */
+  bindNewTaskSessionResolver(
+    surfaceOwnerToken: number,
+  ): (sessionId: string, draftKey?: string) => void;
 }
 
 export interface WorkbarControllerSelectors {
@@ -85,17 +111,28 @@ export interface WorkbarControllerSelectors {
 }
 
 export interface UseWorkbarControllerInput {
+  workHub?: { active: boolean };
   /** Whether the Session workspace (rather than a module page) owns the shell. */
   available: boolean;
   /** Local selection owns layout even while Host creation is pending. */
   layoutSessionId: string | undefined;
+  /** Independent persistent renderers must not overwrite each other’s panel topology. */
   activeSession: SessionSummary | undefined;
   projectId: string | null | undefined;
   projectAliases: readonly string[];
   authoritativeSessionIds: ReadonlySet<string> | undefined;
   shellObscured: boolean;
   modelChoices: readonly ChatModelChoice[];
-  reportError(title: string, description: string, sessionId: string): void;
+  /** Toast surface owned by the shell composition zone. */
+  toastApi: ToastApi;
+  /** The main Composer's Work Board edits: write a new-task draft, then focus it. */
+  composerDraft?: { seedDraft(draftKey: string, text: string): void; focus(): void };
+  openNewTaskSurface?(): number;
+  openSessionInChat?(sessionId: string, turnId?: string): void;
+  resolveWorkBoardTarget?(item: WorkBoardItem):
+    | { ok: true; target: { profileId: string; hostId: string; projectId: string } }
+    | { ok: false; message: string };
+  prepareWorkBoardDraft?(target: { profileId: string; hostId: string; projectId: string }, draft: string): string | undefined;
 }
 
 export interface WorkbarController {
@@ -132,13 +169,37 @@ function nextOrdinal(
 }
 
 export function useWorkbarController(
-  input: UseWorkbarControllerInput,
+  requested: UseWorkbarControllerInput,
 ): WorkbarController {
+  const coordination = useWorkHubWorkspace(useWorkHubEnabled(), requested.authoritativeSessionIds);
+  const workspace = requested.workHub?.active ? 'workhub' : 'session';
+  const activeSessionId = requested.workHub?.active ? coordination.sessionId : requested.activeSession?.id;
+  const input: UseWorkbarControllerInput = requested.workHub?.active ? {
+    ...requested,
+    available: requested.available && Boolean(activeSessionId),
+    layoutSessionId: activeSessionId,
+    activeSession: undefined,
+    projectId: null,
+    projectAliases: [],
+    authoritativeSessionIds: coordination.authoritativeSessionIds,
+  } : { ...requested, authoritativeSessionIds: coordination.authoritativeSessionIds };
   const locale = useUiLocale();
+  // Enforce development-only: the experimental Start-task path must never be
+  // reachable in a production build even if the flag is set, so the gate
+  // requires `DEV` as well as the feature flag.
+  const viteEnv = (
+    import.meta as unknown as {
+      env?: Record<string, string | boolean | undefined>;
+    }
+  ).env;
+  const workBoardStartTaskEnabled =
+    viteEnv?.DEV === true &&
+    viteEnv?.VITE_MAKA_WORK_BOARD_START_TASK === '1' &&
+    Boolean(input.openNewTaskSurface && input.resolveWorkBoardTarget && input.prepareWorkBoardDraft);
   const terminalCopy = getDesktopConversationCopy(locale).terminalPanel;
-  const { browser, sideChat, terminal } = useWorkbarServices();
-  const activeSessionId = input.activeSession?.id;
-  const layout = useWorkbarLayoutState(input.layoutSessionId, input.authoritativeSessionIds);
+  const { browser, sideChat, terminal, workBoard } = useWorkbarServices();
+  const compact = useMediaQuery(SHELL_WORKBAR_COMPACT_QUERY);
+  const layout = useWorkbarLayoutState(input.layoutSessionId, input.authoritativeSessionIds, compact);
   const sideConversations = useSideConversationWorkspace();
   const [pendingSideChatClose, setPendingSideChatClose] = useState<
     Array<{ placement: SessionWorkbarPlacement; tab: SessionWorkbarTab }>
@@ -153,6 +214,19 @@ export function useWorkbarController(
   >(() => new Set());
 
   const activeSessionIdRef = useRef<string | undefined>(undefined);
+  /**
+   * The in-flight Work Board start claim. The surface token and target-scoped
+   * draft key jointly own it; `sessionId` is filled once the first send from
+   * that owner is projected, and is retained across a failed link so a retry
+   * can reuse the same Session instead of creating a duplicate.
+   */
+  const pendingWorkBoardStartRef = useRef<{
+    itemId: string;
+    target: { profileId: string; hostId: string; projectId: string };
+    surfaceOwnerToken: number;
+    draftKey: string;
+    sessionId?: string;
+  } | undefined>(undefined);
   const resourceGenerationRef = useRef(0);
   useLayoutEffect(() => {
     activeSessionIdRef.current = activeSessionId;
@@ -164,6 +238,164 @@ export function useWorkbarController(
     resourceGenerationRef.current += 1;
     return () => { resourceGenerationRef.current += 1; };
   }, []);
+
+  const linkPendingWorkBoardSession = useCallback(
+    (pending: NonNullable<typeof pendingWorkBoardStartRef.current>): Promise<boolean> => {
+      if (!workBoard) {
+        input.toastApi.error(
+          getDesktopConversationCopy(locale).workBoardPanel.actionFailed,
+          'Work Board linking is unavailable in this desktop session.',
+        );
+        return Promise.resolve(false);
+      }
+      if (pending.sessionId === undefined) return Promise.resolve(false);
+      return workBoard
+        .linkSession(pending.itemId, {
+          profileId: pending.target.profileId,
+          hostId: pending.target.hostId,
+          sessionId: pending.sessionId,
+          linkedAt: Date.now(),
+        })
+        .then((result) => {
+          if (result.ok) return true;
+          input.toastApi.error(
+            getDesktopConversationCopy(locale).workBoardPanel.actionFailed,
+            result.message,
+          );
+          return false;
+        })
+        .catch((error) => {
+          input.toastApi.error(
+            getDesktopConversationCopy(locale).workBoardPanel.actionFailed,
+            error instanceof Error ? error.message : String(error),
+          );
+          return false;
+        });
+    },
+    [input, locale, workBoard],
+  );
+
+  /**
+   * Link the claim's Session and only drop the claim once the link succeeds.
+   * On failure the claim (with its `sessionId`) is retained so the next Start
+   * task invocation retries the same Session rather than creating a new one.
+   */
+  const settlePendingWorkBoardLink = useCallback(
+    (pending: NonNullable<typeof pendingWorkBoardStartRef.current>): void => {
+      void linkPendingWorkBoardSession(pending).then((ok) => {
+        if (ok && pendingWorkBoardStartRef.current === pending) {
+          pendingWorkBoardStartRef.current = undefined;
+        }
+      });
+    },
+    [linkPendingWorkBoardSession],
+  );
+
+  const startWorkBoardTask = useCallback(
+    (item: WorkBoardItem) => {
+      const result = input.resolveWorkBoardTarget?.(item);
+      if (!result) {
+        input.toastApi.info(
+          getDesktopConversationCopy(locale).workBoardPanel.actionFailed,
+          'Work Board task start is unavailable.',
+        );
+        return;
+      }
+      if (!result.ok) {
+        input.toastApi.info(getDesktopConversationCopy(locale).workBoardPanel.actionFailed, result.message);
+        return;
+      }
+      const pending = pendingWorkBoardStartRef.current;
+      if (pending) {
+        if (pending.itemId === item.id && pending.sessionId !== undefined) {
+          if (
+            pending.target.profileId === result.target.profileId &&
+            pending.target.hostId === result.target.hostId &&
+            pending.target.projectId === result.target.projectId
+          ) {
+            // A previous link attempt failed for this same item and target:
+            // retry the already-created Session rather than create a duplicate.
+            settlePendingWorkBoardLink(pending);
+            return;
+          }
+        }
+        // A claim without a Session was abandoned, or the item moved to a new
+        // target after link failure. A fresh start replaces either claim.
+        pendingWorkBoardStartRef.current = undefined;
+      }
+      const draft = [item.title, item.notes?.trim()].filter(Boolean).join('\n\n');
+      const draftKey = input.prepareWorkBoardDraft?.(result.target, draft);
+      if (!draftKey) {
+        input.toastApi.info(
+          getDesktopConversationCopy(locale).workBoardPanel.actionFailed,
+          'Work Board task start is unavailable.',
+        );
+        return;
+      }
+      const surfaceOwnerToken = input.openNewTaskSurface?.();
+      if (surfaceOwnerToken === undefined) {
+        input.toastApi.info(
+          getDesktopConversationCopy(locale).workBoardPanel.actionFailed,
+          'Work Board task start is unavailable.',
+        );
+        return;
+      }
+      pendingWorkBoardStartRef.current = {
+        itemId: item.id,
+        target: result.target,
+        surfaceOwnerToken,
+        draftKey,
+      };
+      globalThis.requestAnimationFrame(() => {
+        input.composerDraft?.seedDraft(draftKey, draft);
+        input.composerDraft?.focus();
+      });
+    },
+    [input, locale, settlePendingWorkBoardLink],
+  );
+
+  const openWorkBoardSession = useCallback(
+    (link: WorkBoardLinkedSession) => {
+      input.openSessionInChat?.(
+        desktopSessionKey({ hostId: link.hostId, sessionId: link.sessionId }),
+      );
+    },
+    [input.openSessionInChat],
+  );
+
+  const onNewTaskSessionResolved = useCallback(
+    (sessionId: string, surfaceOwnerToken: number, draftKey: string | undefined) => {
+      const pending = pendingWorkBoardStartRef.current;
+      if (!pending) return;
+      // An older surface can resolve after a later Start has installed a new
+      // claim. Its callback is stale and must not mutate that newer claim.
+      if (surfaceOwnerToken < pending.surfaceOwnerToken) return;
+      // A newer surface abandons the old claim; a Workspace Picker change on
+      // the owning surface does the same. Neither may attach its Session.
+      if (surfaceOwnerToken !== pending.surfaceOwnerToken || draftKey !== pending.draftKey) {
+        pendingWorkBoardStartRef.current = undefined;
+        return;
+      }
+      const linkedSessionId = (() => {
+        try {
+          return parseDesktopSessionKey(sessionId).sessionId;
+        } catch {
+          return sessionId;
+        }
+      })();
+      if (pending.sessionId === undefined) {
+        pending.sessionId = linkedSessionId;
+      }
+      settlePendingWorkBoardLink(pending);
+    },
+    [settlePendingWorkBoardLink],
+  );
+  const bindNewTaskSessionResolver = useCallback(
+    (surfaceOwnerToken: number) =>
+      (sessionId: string, draftKey?: string) =>
+        onNewTaskSessionResolved(sessionId, surfaceOwnerToken, draftKey),
+    [onNewTaskSessionResolved],
+  );
   const respondToClientCapability = useCallback<
     WorkbarControllerCommands['respondToClientCapability']
   >(
@@ -175,14 +407,15 @@ export function useWorkbarController(
       } catch (error) {
         if (activeSessionIdRef.current !== sessionId) return;
         const copy = getShellCopy(locale).chatActions;
-        input.reportError(
+        input.toastApi.error(
           copy.responseFailedTitle,
           localizedShellErrorMessage(error, copy.responseFailedFallback, locale),
-          sessionId,
+          undefined,
+          { sessionId },
         );
       }
     },
-    [input.reportError, locale, sideChat],
+    [input, locale, sideChat],
   );
   const panelsStateRef = useRef(layout.workbarPanelsState);
   useLayoutEffect(() => {
@@ -267,18 +500,42 @@ export function useWorkbarController(
     return () => { disposed = true; clearTimeout(retry); unsubscribeResync(); unsubscribeUpdates(); };
   }, [activeSessionId, terminal, layout.restoreTerminals]);
 
+  /* At the compact breakpoint the conversation keeps its minimum width, so an
+     expanded rail may leave the right Workbar no grid room. Every reveal —
+     the panel toggle below and every tool/artifact/side-chat open path that
+     lands here — applies the same space decision: conceal the rail (a spell
+     the widening window forgets, never a user choice) so the revealed panel
+     can actually paint. Concealing only when the room check fails keeps a
+     reveal beside a narrower rail, or near the top of the compact band, from
+     hiding a sidebar the Workbar never needed. */
+  const concealRailIfNoWorkbarRoom = useCallback((): void => {
+    const rail = shellRailLayoutPort.current;
+    const railState = rail?.getState();
+    if (
+      compact &&
+      rail &&
+      railState &&
+      !railState.collapsed &&
+      shellWorkbarGridRoom(window.innerWidth, railState.width) < SESSION_WORKBAR_MIN_WIDTH
+    ) {
+      rail.setSpaceConcealed(true);
+    }
+  }, [compact]);
+
   const revealPlacement = useCallback(
     (placement: SessionWorkbarPlacement) => {
-      if (placement === 'right') layout.setWorkbarCollapsed(false);
-      else layout.setBottomPanelOpen(true);
+      if (placement === 'right') {
+        concealRailIfNoWorkbarRoom();
+        layout.setWorkbarCollapsed(false);
+      } else layout.setBottomPanelOpen(true);
     },
-    [layout.setBottomPanelOpen, layout.setWorkbarCollapsed],
+    [concealRailIfNoWorkbarRoom, layout.setBottomPanelOpen, layout.setWorkbarCollapsed],
   );
 
   const openNewSideConversation = useCallback(
     (placement: SessionWorkbarPlacement, initialPrompt?: string) => {
       const sourceSessionId = activeSessionIdRef.current;
-      if (!sourceSessionId) return;
+      if (!sourceSessionId || !workbarToolsForWorkspace(workspace).some((tool) => tool.kind === 'side-chat')) return;
       const panel = openCompanionPanel(null, {
         sourceSessionId,
         initialPrompt,
@@ -301,11 +558,13 @@ export function useWorkbarController(
       reserveOrdinal,
       revealPlacement,
       sideConversations,
+      workspace,
     ],
   );
 
   const openTool = useCallback<WorkbarControllerCommands['openTool']>(
     (kind, placement, options = {}) => {
+      if (!workbarToolsForWorkspace(workspace).some((tool) => tool.kind === kind)) return;
       const definition = workbarToolDefinition(kind);
       const targetPlacement = placement ?? definition.defaultPlacement;
       if (definition.singleton) {
@@ -349,14 +608,15 @@ export function useWorkbarController(
               ) {
                 return;
               }
-              input.reportError(
+              input.toastApi.error(
                 terminalCopy.startFailed,
                 localizedShellErrorMessage(
                   error,
                   terminalCopy.startFailed,
                   locale,
                 ),
-                ownerSessionId,
+                undefined,
+                { sessionId: ownerSessionId },
               );
             });
           return;
@@ -366,9 +626,9 @@ export function useWorkbarController(
       }
     },
     [
-      input.reportError,
       layout.openDynamicWorkbarTab,
       layout.openWorkbarTab,
+      input,
       locale,
       openNewSideConversation,
       reserveOrdinal,
@@ -381,7 +641,7 @@ export function useWorkbarController(
   const openSideChatWithQuote = useCallback(
     (quote: QuoteRef) => {
       const sourceSessionId = activeSessionIdRef.current;
-      if (!sourceSessionId) return;
+      if (!sourceSessionId || !workbarToolsForWorkspace(workspace).some((tool) => tool.kind === 'side-chat')) return;
       const activeSideChat = findPreferredSideChatWorkbarTab(
         panelsStateRef.current,
       );
@@ -415,6 +675,7 @@ export function useWorkbarController(
       reserveOrdinal,
       revealPlacement,
       sideConversations,
+      workspace,
     ],
   );
 
@@ -436,10 +697,11 @@ export function useWorkbarController(
         const generation = resourceGenerationRef.current;
         void terminal.stop({ sessionId: ownerSessionId, ref }).catch((error) => {
           if (generation !== resourceGenerationRef.current) return;
-          input.reportError(
+          input.toastApi.error(
             terminalCopy.stopFailed,
             localizedShellErrorMessage(error, terminalCopy.stopFailed, locale),
-            ownerSessionId,
+            undefined,
+            { sessionId: ownerSessionId },
           );
         });
       }
@@ -455,8 +717,47 @@ export function useWorkbarController(
       );
       if (panelIds.size > 0) sideConversations.removePanels(panelIds);
     },
-    [layout.closeWorkbarTabs, sideConversations, terminal, input.reportError, terminalCopy.stopFailed, locale],
+    [layout.closeWorkbarTabs, sideConversations, terminal, input.toastApi, terminalCopy.stopFailed, locale],
   );
+
+  const retireDeletedSessionSideChats = useEffectEvent((sourceSessionId: string) => {
+    const retiredPanelIds = new Set(
+      sideConversations.panels
+        .filter((panel) => panel.sourceSessionId === sourceSessionId)
+        .map((panel) => panel.id),
+    );
+    if (retiredPanelIds.size === 0) return;
+    setPendingSideChatClose((current) => {
+      const retained = current.filter(
+        ({ tab }) =>
+          tab.kind !== 'side-chat' ||
+          !retiredPanelIds.has(tab.id.slice('side-chat:'.length)),
+      );
+      return retained.length === current.length ? current : retained;
+    });
+    for (const placement of ['right', 'bottom'] as const) {
+      const tabs = panelsStateRef.current[placement].tabs.filter(
+        (tab) =>
+          tab.kind === 'side-chat' &&
+          retiredPanelIds.has(tab.id.slice('side-chat:'.length)),
+      );
+      closeTabsWithoutConfirmation(placement, tabs, {
+        preserveVisibility: true,
+      });
+    }
+    // Dropping the quote unmounts QuoteCompanionPanel, which runs the same
+    // durable fork cleanup as an explicit close. An orphan record without a
+    // matching tab must take that path too.
+    sideConversations.removePanels(retiredPanelIds);
+  });
+
+  useEffect(() => sideChat.subscribeSessionChanges((event) => {
+    // A catalog refresh can omit a still-live source temporarily. Only the
+    // Host's committed deletion signal may destroy its ephemeral fork.
+    if (event.reason === 'deleted' && event.sessionId) {
+      retireDeletedSessionSideChats(event.sessionId);
+    }
+  }), [sideChat]);
 
   const closeTabs = useCallback(
     (
@@ -508,35 +809,60 @@ export function useWorkbarController(
     layout.workbarCollapsed,
   ]);
 
+  /* The panel-facing toggle applies the same space decision as every other
+     reveal; the yield effect below guarantees no "open Workbar beside a
+     room-stealing rail" state exists for a click to land on. */
+  const toggleRightPanel = useCallback(() => {
+    concealRailIfNoWorkbarRoom();
+    toggleRight();
+  }, [concealRailIfNoWorkbarRoom, toggleRight]);
+
+  /* Give the rail back when the room it was concealed for is free again: the
+     Workbar closed, or the window widened past the compact breakpoint. The
+     rail's own compact breakpoint (820px) is narrower than the Workbar's
+     (1080px), so this restore — not the rail's setCompact — ends the spell. */
+  useLayoutEffect(() => {
+    if (!compact || layout.workbarCollapsed)
+      shellRailLayoutPort.current?.setSpaceConcealed(false);
+  }, [compact, layout.workbarCollapsed]);
+
+  /* The rail can take the room back too: the user expands it under an open
+     Workbar, drags it wider, or narrows the window until the two no longer
+     fit. The explicit rail action is the later choice and wins, so the
+     Workbar yields — but through `spaceCollapsed`, the same space-decision
+     lane as the rail's `spaceConcealed`: it suppresses the reading without
+     touching the spell or the stored preference, releases when the room
+     returns, and an explicit user collapse/expand clears it. A persisted
+     collapse would leak the squeeze into the preference and never come back.
+     With the rail already hidden there is nothing to yield to: the Workbar
+     draws below its minimum rather than not at all. */
+  useLayoutEffect(() => {
+    if (!compact) return;
+    const rail = shellRailLayoutPort.current;
+    const arbitrateRoom = () => {
+      const railState = rail?.getState();
+      const railStealsRoom = !!(
+        railState &&
+        !railState.collapsed &&
+        shellWorkbarGridRoom(window.innerWidth, railState.width) <
+          SESSION_WORKBAR_MIN_WIDTH
+      );
+      if (railStealsRoom) {
+        if (!layout.workbarCollapsed) layout.setSpaceCollapsed(true);
+      } else if (layout.spaceCollapsed) layout.setSpaceCollapsed(false);
+    };
+    arbitrateRoom();
+    const unsubscribe = rail?.subscribe(arbitrateRoom);
+    window.addEventListener('resize', arbitrateRoom);
+    return () => {
+      unsubscribe?.();
+      window.removeEventListener('resize', arbitrateRoom);
+    };
+  }, [compact, layout.workbarCollapsed, layout.spaceCollapsed, layout.setSpaceCollapsed]);
+
   useLayoutEffect(() => {
     setPendingSideChatClose([]);
   }, [activeSessionId]);
-
-  useLayoutEffect(() => {
-    const stalePanels = sideConversations.panels.filter(
-      (panel) => panel.sourceSessionId !== activeSessionId,
-    );
-    if (stalePanels.length === 0) return;
-    const staleIds = new Set(stalePanels.map((panel) => panel.id));
-    for (const panel of stalePanels) {
-      const tabId = `side-chat:${panel.id}`;
-      const placement = layout.workbarPanelsState.right.tabs.some(
-        (tab) => tab.id === tabId,
-      )
-        ? 'right'
-        : 'bottom';
-      layout.closeWorkbarTabs(placement, [tabId], {
-        preserveVisibility: true,
-      });
-    }
-    sideConversations.removePanels(staleIds);
-  }, [
-    activeSessionId,
-    layout.closeWorkbarTabs,
-    layout.workbarPanelsState,
-    sideConversations.panels,
-    sideConversations.removePanels,
-  ]);
 
   const companionRecoveryStartedRef = useRef(false);
   useLayoutEffect(() => {
@@ -557,6 +883,57 @@ export function useWorkbarController(
     browser.setActiveSession(activeSessionId ?? null);
   }, [activeSessionId, browser]);
 
+  const liveBrowserSessionIdsRef = useRef(new Set<string>());
+  useEffect(
+    () =>
+      browser.subscribeState(({ sessionId, state }) => {
+        const wasLive = liveBrowserSessionIdsRef.current.has(sessionId);
+        if (!state.hasPage) {
+          liveBrowserSessionIdsRef.current.delete(sessionId);
+          return;
+        }
+        if (wasLive) return;
+        liveBrowserSessionIdsRef.current.add(sessionId);
+        if (sessionId === activeSessionIdRef.current) openTool('browser');
+      }),
+    [browser, openTool],
+  );
+
+  const toggleTool = useCallback((kind: SessionWorkbarTabKind) => {
+    if (!workbarToolsForWorkspace(workspace).some((tool) => tool.kind === kind)) return;
+    const activeSideChatTabIds = kind === 'side-chat'
+      ? new Set(
+        sideConversations.panels
+          .filter((panel) => panel.sourceSessionId === activeSessionIdRef.current)
+          .map((panel) => `side-chat:${panel.id}`),
+      )
+      : undefined;
+    const matchesTool = (candidate: SessionWorkbarTab) =>
+      candidate.kind === kind &&
+      (!activeSideChatTabIds || activeSideChatTabIds.has(candidate.id));
+    const panels = panelsStateRef.current;
+    const placements = [panels.focusedPanel, 'right', 'bottom'] as const;
+    for (const placement of placements) {
+      const panel = panels[placement];
+      const tab = panel.tabs.find(
+        (candidate) => candidate.id === panel.activeTabId && matchesTool(candidate),
+      ) ?? panel.tabs.find(matchesTool);
+      if (!tab) continue;
+      const visible = placement === 'right' ? !layout.workbarCollapsed : layout.bottomPanelOpen;
+      if (visible && !panel.launcherOpen && panel.activeTabId === tab.id) {
+        if (placement === 'right') layout.setWorkbarCollapsed(true);
+        else layout.setBottomPanelOpen(false);
+      } else {
+        layout.activateWorkbarTab(placement, tab.id);
+        revealPlacement(placement);
+      }
+      return;
+    }
+    openTool(kind);
+  }, [workspace, sideConversations.panels, layout.workbarCollapsed, layout.bottomPanelOpen,
+    layout.setWorkbarCollapsed, layout.setBottomPanelOpen, layout.activateWorkbarTab,
+    revealPlacement, openTool]);
+
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {
       if (!input.available || input.shellObscured || !activeSessionId) return;
@@ -566,7 +943,7 @@ export function useWorkbarController(
       const key = event.key.toLowerCase();
       if (event.ctrlKey && event.shiftKey && !event.altKey && key === 'g') {
         event.preventDefault();
-        openTool('review');
+        toggleTool('review');
       } else if (
         event.ctrlKey &&
         !event.altKey &&
@@ -574,21 +951,21 @@ export function useWorkbarController(
         (key === '`' || event.code === 'Backquote')
       ) {
         event.preventDefault();
-        openTool('terminal');
+        toggleTool('terminal');
       } else if (primary && !event.altKey && !event.shiftKey && key === 't') {
         event.preventDefault();
-        openTool('browser');
+        toggleTool('browser');
       } else if (primary && !event.altKey && !event.shiftKey && key === 'p') {
         event.preventDefault();
-        openTool('files');
+        toggleTool('files');
       } else if (primary && event.altKey && !event.shiftKey && key === 's') {
         event.preventDefault();
-        openTool('side-chat');
+        toggleTool('side-chat');
       }
     };
     window.addEventListener('keydown', handleShortcut, true);
     return () => window.removeEventListener('keydown', handleShortcut, true);
-  }, [activeSessionId, input.available, input.shellObscured, openTool]);
+  }, [activeSessionId, input.available, input.shellObscured, toggleTool]);
 
   const confirmPendingClose = useCallback(
     (skipFutureConfirmations: boolean) => {
@@ -614,17 +991,25 @@ export function useWorkbarController(
   const commands = useMemo<WorkbarControllerCommands>(
     () => ({
       openTool,
+      toggleTool,
       openSideChatWithQuote,
       respondToClientCapability,
       respondToUserForm: sideChat.respondToUserForm,
       toggleRight,
+      toggleRightPanel,
+      setWorkbarCollapsed: layout.setWorkbarCollapsed,
+      bindNewTaskSessionResolver,
     }),
     [
+      bindNewTaskSessionResolver,
       openSideChatWithQuote,
       openTool,
+      toggleTool,
       respondToClientCapability,
       sideChat.respondToUserForm,
       toggleRight,
+      toggleRightPanel,
+      layout.setWorkbarCollapsed,
     ],
   );
 
@@ -636,6 +1021,7 @@ export function useWorkbarController(
       hiddenSessionIds: hiddenCompanionForkIds,
     },
     host: {
+      workspace: workspace,
       activeId: input.available ? activeSessionId : undefined,
       projectId: input.projectId,
       projectAliases: input.projectAliases,
@@ -647,24 +1033,37 @@ export function useWorkbarController(
       panelsState: layout.workbarPanelsState,
       onActivateTab: layout.activateWorkbarTab,
       onCloseTab: closeTab,
-      onCloseTabs: closeTabs,
       onOpenLauncher: (placement) => {
         layout.openWorkbarLauncher(placement);
         revealPlacement(placement);
       },
       onRequestOpenTab: (placement, kind) => openTool(kind, placement),
+      onToggleRightPanel: toggleRightPanel,
       onDismissPanel: (placement) => {
         if (placement === 'right') layout.setWorkbarCollapsed(true);
         else layout.setBottomPanelOpen(false);
       },
       rightResizable: layout.workbarResizable,
       bottomResizable: layout.bottomPanelResizable,
-      quotes: sideConversations.panels.filter(
-        (panel) => panel.sourceSessionId === activeSessionId,
-      ),
+      // Keep every Side Chat mounted while another main Session is selected.
+      // WorkbarSurface projects only the active Session's tabs, but retaining
+      // the inactive panels preserves their hook state and prevents an ordinary
+      // navigation from running the explicit-dismiss cleanup path.
+      quotes: sideConversations.panels,
       onQuotesConsumed: (snapshot) =>
         sideConversations.updatePanel(snapshot.panelId, (panel) =>
           consumeCompanionQuoteSnapshot(panel, snapshot) ?? panel,
+        ),
+      onRestoreQuotes: (panelId, quotes) =>
+        sideConversations.updatePanel(panelId, (panel) =>
+          quotes.reduce(
+            (current, quote) => stageCompanionQuote(current, {
+              sourceSessionId: panel.sourceSessionId,
+              quote,
+              newId: () => crypto.randomUUID(),
+            }),
+            panel,
+          ),
         ),
       onRemoveQuote: (target) =>
         sideConversations.updatePanel(target.panelId, (panel) =>
@@ -683,7 +1082,12 @@ export function useWorkbarController(
       },
       onActivityStateChange: sideConversations.setActive,
       sourceSession: input.activeSession,
+      onOpenConversation: input.openSessionInChat,
       modelChoices: input.modelChoices,
+      onStartWorkBoardTask: startWorkBoardTask,
+      resolveWorkBoardStartTask: input.resolveWorkBoardTarget,
+      onOpenWorkBoardSession: openWorkBoardSession,
+      workBoardStartTaskEnabled,
       closeConfirmation: {
         key:
           pendingSideChatClose.map(({ tab }) => tab.id).join(':') || 'closed',

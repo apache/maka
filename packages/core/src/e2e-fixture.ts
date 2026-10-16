@@ -23,11 +23,12 @@ import type { UiLocale } from './ui-locale.js';
 
 /** Scenarios that are consumed by a current E2E, audit, or smoke entry point. */
 export type E2eFixtureScenario =
-  | 'settings-models'
+  | 'settings-connections'
   | 'turn-narrative'
   | 'turn-narrative-browser'
   | 'chat-prompt-rail'
   | 'chat-partial-history'
+  | 'chat-large-history'
   | 'settings-data'
   | 'settings-bots-onboarding'
   | 'settings-general'

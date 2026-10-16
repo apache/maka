@@ -23,6 +23,28 @@ import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { LlmConnection } from '@maka/core/llm-connections';
 import { buildSessionRecapMessages, SESSION_RECAP_INSTRUCTION } from '../session-recap.js';
 
+test('session recap drops a repaired Assistant prefix before its provider request', () => {
+  const repairedAssistant = {
+    ...textEvent('repaired-assistant', 'turn-0', 'model', 'Recovered opening answer.'),
+    refs: { storedMessageId: 'stored-assistant' },
+  };
+  const messages = buildSessionRecapMessages({
+    events: [
+      repairedAssistant,
+      textEvent('first-user', 'turn-1', 'user', 'Continue from this question.'),
+    ],
+    connection: connection(),
+    modelId: 'gpt-4',
+  });
+
+  assert.deepEqual(
+    messages.map((message) => message.role),
+    ['user', 'user'],
+  );
+  assert.doesNotMatch(JSON.stringify(messages), /Recovered opening answer/);
+  assert.match(JSON.stringify(messages), /Continue from this question/);
+});
+
 test('session recap bounds its request to the newest complete turns', () => {
   const events: RuntimeEvent[] = [];
   for (let index = 0; index < 20; index += 1) {

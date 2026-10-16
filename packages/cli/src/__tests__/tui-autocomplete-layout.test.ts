@@ -59,11 +59,12 @@ test('an overlay hides the composer cursor and preserves its draft and border co
     const expectedScreenRows = expectedRows.map(plainTerminalOutput);
     assert.deepEqual(actualScreenRows, expectedScreenRows);
 
-    // The real render retains the cursor, IME marker and per-character border colors.
+    // The real render retains the cursor, IME marker and border colors; a run
+    // of border dashes is emitted under one color span, not one per glyph.
     const actualComposerRows = composerRenderSpy.mock.calls.at(-1)?.result;
     const expectedComposerRows = expectedRows
       .slice(1)
-      .map((line) => line.replaceAll('─', borderColor('─')));
+      .map((line) => line.replace(/─+/g, (run) => borderColor(run)));
     assert.deepEqual(actualComposerRows, expectedComposerRows);
   };
 

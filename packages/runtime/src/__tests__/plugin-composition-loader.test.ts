@@ -390,7 +390,8 @@ test('contribution registrations are staged and owned by the entry Fiber', async
 
 test('state replacement restores ordered roots and descendants', async () => {
   const loader = new MakaCompositionLoader();
-  await loader.install(pkg('state', () => undefined));
+  const plugin = () => undefined;
+  await loader.install(Object.freeze({ packageId: 'state', host: plugin, client: plugin }));
   await loader.replaceComposition({
     schemaVersion: 1,
     generation: 41,

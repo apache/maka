@@ -27,11 +27,12 @@
  * whether that exact target looks usable for presentation and readiness checks.
  *
  * The compatibility rules are:
- *   1. The session's own connection must pass `isConnectionReady` with
+ *   1. Plugin executor Sessions do not depend on Maka model connections.
+ *   2. The session's own connection must pass `isConnectionReady` with
  *      the sticky session model.
- *   2. Legacy Sessions without an immutable connection id are blocked until
+ *   3. Legacy Sessions without an immutable connection id are blocked until
  *      the user explicitly selects an account.
- *   3. A missing id, slug mismatch, or unusable exact connection is blocked.
+ *   4. A missing id, slug mismatch, or unusable exact connection is blocked.
  *
  * `lastTestStatus` deliberately plays no part here (E4): telemetry about
  * a past credential test must not gate send, so it must not gate the
@@ -46,8 +47,8 @@ export interface SessionSendProjectionSession {
   /**
    * Session backend kind. `string` (not `PersistedBackendKind`) so legacy
    * on-disk values like `'claude'` are surfaced exactly as the JSONL stored
-   * them; only `'fake'` is special-cased, everything else goes through the
-   * normal connection readiness gate.
+   * them; known backends are handled explicitly and unknown legacy values go
+   * through the normal connection readiness gate.
    */
   backend: string;
   llmConnectionId?: string;
@@ -127,6 +128,7 @@ function ownConnectionBlockReason(
   | 'legacy_connection_identity'
   | 'connection_identity_mismatch'
   | undefined {
+  if (session.backend === 'plugin-executor') return undefined;
   if (session.backend === 'fake') return 'fake_backend';
   if (!session.llmConnectionId) return 'legacy_connection_identity';
   const identified =

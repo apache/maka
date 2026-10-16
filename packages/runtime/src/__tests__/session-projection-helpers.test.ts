@@ -29,6 +29,10 @@ import {
 } from '../session-projection-helpers.js';
 
 describe('session projection helpers', () => {
+  test('labels host shutdown separately from a user stop', () => {
+    assert.equal(normalizeStopSessionSource('host_shutdown'), 'runtime_host.shutdown');
+  });
+
   test('binds WorkHub Stop provenance to one valid action identity', () => {
     assert.equal(
       normalizeStopSessionSource('workhub_direct_stop', 'stop-action'),

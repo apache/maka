@@ -126,7 +126,7 @@ describe('runtime host Windows named-pipe ACL failures', () => {
       '',
     );
     assert.equal(error.code, 'insecure_endpoint_directory');
-    assert.match(error.message, /could not confirm .* within 30000ms and refused the endpoint/);
+    assert.match(error.message, /could not confirm .* within 60000ms and refused the endpoint/);
     assert.match(error.message, /powershell killed with SIGTERM/);
   });
 

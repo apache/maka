@@ -93,6 +93,7 @@ function createPlatform(
     ...(options.tools ? { tools: options.tools } : {}),
     ...(options.systemPrompt ? { systemPrompt: options.systemPrompt } : {}),
     ...(options.commands ? { commands: options.commands } : {}),
+    ...(options.executors ? { executors: options.executors } : {}),
   });
   testPlatformInternals.set(platform, { composition, packages, store });
   return platform;
@@ -684,6 +685,57 @@ test('Plugin Platform query projects scoped Command contributions for clients', 
               name: 'review',
               description: 'Review the current change',
               aliases: ['rv'],
+            },
+          ],
+          nextCursor: null,
+        },
+      },
+    );
+    await platform.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Plugin Platform query projects scoped Executor contributions for clients', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-plugin-executor-inspection-'));
+  try {
+    const platform = createPlatform(join(root, 'control'), {
+      executors: {
+        inspect: () => [
+          {
+            entryId: 'executor-entry',
+            scopeId: 'profile',
+            extensionId: 'executor-package',
+            generation: 4,
+            id: 'codex',
+            displayName: 'Codex',
+            capabilities: { thinking: true, toolActivity: false },
+          },
+        ],
+      },
+    });
+    const coordinator = new HostPluginPlatformCoordinator(platform);
+    await platform.recover();
+
+    assert.deepEqual(
+      await coordinator.handlers['plugin.platform.query'](
+        { view: 'executors', rootId: 'profile' },
+        null as never,
+      ),
+      {
+        ok: true,
+        result: {
+          view: 'executors',
+          items: [
+            {
+              entryId: 'executor-entry',
+              scopeId: 'profile',
+              extensionId: 'executor-package',
+              generation: 4,
+              id: 'codex',
+              displayName: 'Codex',
+              capabilities: { thinking: true, toolActivity: false },
             },
           ],
           nextCursor: null,
@@ -1310,6 +1362,15 @@ test('Plugin Platform recovery removes orphaned bundle import roots', async () =
 });
 
 test('Plugin Platform protocol rejects open and malformed generic composition shapes', () => {
+  assert.equal(operationAllowsRemoteOwner('plugin.client.query'), true);
+  for (const operation of [
+    'plugin.client.remote.call',
+    'plugin.client.remote.stream.open',
+    'plugin.client.remote.stream.next',
+    'plugin.client.remote.stream.close',
+  ] as const) {
+    assert.equal(operationAllowsRemoteOwner(operation), true);
+  }
   for (const operation of [
     'plugin.platform.query',
     'plugin.platform.reconcile',
@@ -1321,6 +1382,49 @@ test('Plugin Platform protocol rejects open and malformed generic composition sh
   ] as const) {
     assert.equal(operationAllowsRemoteOwner(operation), false);
   }
+  assert.equal(
+    decodeRequestFrame({
+      requestId: 'plugin-client-snapshot',
+      operation: 'plugin.client.query',
+      input: { kind: 'snapshot' },
+    }).operation,
+    'plugin.client.query',
+  );
+  assert.equal(
+    decodeRequestFrame({
+      requestId: 'plugin-client-remote',
+      operation: 'plugin.client.remote.call',
+      input: {
+        authorityEpoch: 1,
+        revision: `sha256-${'a'.repeat(64)}`,
+        entryId: 'fixture-ui',
+        extensionId: 'fixture-package',
+        generation: 2,
+        contentDigest: `sha256-${'b'.repeat(64)}`,
+        clientDigest: `sha256-${'c'.repeat(64)}`,
+        method: 'fixture.echo',
+        input: { value: true },
+      },
+    }).operation,
+    'plugin.client.remote.call',
+  );
+  assert.throws(() =>
+    decodeRequestFrame({
+      requestId: 'plugin-client-remote-invalid',
+      operation: 'plugin.client.remote.call',
+      input: {
+        authorityEpoch: 1,
+        revision: `sha256-${'a'.repeat(64)}`,
+        entryId: 'fixture-ui',
+        extensionId: 'fixture-package',
+        generation: 2,
+        contentDigest: `sha256-${'b'.repeat(64)}`,
+        clientDigest: `sha256-${'c'.repeat(64)}`,
+        method: 'fixture.echo',
+        input: undefined,
+      },
+    }),
+  );
   assert.equal(
     decodeRequestFrame({
       requestId: 'plugin-reload',
@@ -1358,6 +1462,20 @@ test('Plugin Platform protocol rejects open and malformed generic composition sh
       input: { view: 'tools', rootId: 'session:one' },
     }).operation,
     'plugin.platform.query',
+  );
+  assert.doesNotThrow(() =>
+    decodeResponseFrame({
+      requestId: 'plugin-client-snapshot',
+      operation: 'plugin.client.query',
+      ok: true,
+      result: {
+        kind: 'snapshot',
+        authorityEpoch: 1,
+        revision: `sha256-${'a'.repeat(64)}`,
+        entries: [],
+        failures: [],
+      },
+    }),
   );
   assert.doesNotThrow(() =>
     decodeResponseFrame({
@@ -2610,3 +2728,41 @@ class FailingClosePackageLoader extends TrustedPluginPackageLoader {
     throw new Error('injected package loader close failure');
   }
 }
+
+test('Host-replaced packages retain config but cannot activate on recovery or later enable', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'native-replaces-plugin-'));
+  const platform = new HostPluginPlatform(join(root, 'control'), {
+    replacedPackages: ['retired-core'],
+  });
+  try {
+    await platform.recover();
+    const source = await writeFixturePackage(root, 'retired-core', 'old-core', {
+      throwOnApply: true,
+      composition: [
+        { type: 'insert', rootId: 'profile', entry: { id: 'old-core', packageId: 'retired-core' } },
+      ],
+    });
+    const result = await platform.installPackage(source);
+    assert.deepEqual(result.failures, []);
+    assert.equal(platform.inspect('profile')[0]?.status, 'disabled');
+    const enabled = await platform.apply({
+      operations: [{ type: 'update', entryId: 'old-core', patch: { disabled: false } }],
+    });
+    assert.deepEqual(enabled.failures, []);
+    assert.equal(platform.inspect('profile')[0]?.status, 'disabled');
+    await platform.close();
+    const again = new HostPluginPlatform(join(root, 'control'), {
+      replacedPackages: ['retired-core'],
+    });
+    try {
+      await again.recover();
+      assert.equal(again.inspect('profile')[0]?.status, 'disabled');
+      assert.deepEqual(again.failures(), []);
+    } finally {
+      await again.close();
+    }
+  } finally {
+    await platform.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});

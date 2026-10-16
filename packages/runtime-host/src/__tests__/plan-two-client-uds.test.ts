@@ -49,6 +49,8 @@ import {
   type SubscriptionFrame,
 } from '../protocol/index.js';
 import { FakeBackend } from '@maka/runtime/test-only/fake-backend';
+import type { BackendSendInput } from '@maka/core/backend-types';
+import type { SessionEvent } from '@maka/core/events';
 import { createExecutionRuntimeHostComposition } from '../server/execution-composition.js';
 import { RuntimeHostKernel, type RuntimeHostCompositionFactory } from '../server/host-kernel.js';
 
@@ -67,9 +69,10 @@ test('two Clients and a restarted production Host share one retry-safe Plan auth
   let host: Awaited<ReturnType<typeof RuntimeHostKernel.start>> | undefined;
   let desktop: RuntimeHostConnection | undefined;
   let tui: RuntimeHostConnection | undefined;
+  const turns = new PlanTurnControl();
   try {
     const setupStores = await openInteractiveExecutionStoresForWrite(owner.lease);
-    const planStore = await openInteractivePlanStoreForWrite(owner.lease);
+    const setupPlanStore = await openInteractivePlanStoreForWrite(owner.lease);
     const session = await setupStores.sessionStore.create({
       cwd: root,
       llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
@@ -78,7 +81,7 @@ test('two Clients and a restarted production Host share one retry-safe Plan auth
       permissionMode: 'explore',
       collaborationMode: 'plan',
     });
-    const submitted = await planStore.submitProposal({
+    const submitted = await setupPlanStore.submitProposal({
       operationId: 'submit-operation',
       sessionId: session.id,
       turnId: 'turn-1',
@@ -93,12 +96,12 @@ test('two Clients and a restarted production Host share one retry-safe Plan auth
     });
     assert.equal(submitted.event.type, 'plan_submitted');
     if (submitted.event.type !== 'plan_submitted') return;
-    planStore.close();
+    setupPlanStore.close();
 
     host = await RuntimeHostKernel.start({
       owner,
       idleGraceMs: 30_000,
-      composition: defineInteractiveRuntimeHostComposition(deterministicBackendComposition),
+      composition: defineInteractiveRuntimeHostComposition(controllableBackendComposition(turns)),
     });
     owner = undefined;
     [desktop, tui] = await Promise.all([connect(root), connect(root)]);
@@ -106,6 +109,7 @@ test('two Clients and a restarted production Host share one retry-safe Plan auth
       sessionId: session.id,
       transcript: { kind: 'none' },
     });
+    await subscription.ready();
 
     const first = await desktop.request('plan.query', {
       kind: 'list_start',
@@ -121,11 +125,22 @@ test('two Clients and a restarted production Host share one retry-safe Plan auth
       expectedStoreVersion: first.storeVersion,
       turnId: 'approve-turn',
     };
-    const started = await tui.request('plan.turn.start', approval);
-    const approved = started.plan;
-    assert.equal(approved.eventType, 'plan_approved');
-    assert.ok(approved.executionId);
-    assert.equal(started.turn.turnId, approval.turnId);
+    // The deterministic backend parks inside `send`, so "the execution is
+    // running" is a barrier the test holds, not a window it hopes to hit before
+    // the Turn settles.
+    turns.hold();
+    const starting = tui.request('plan.turn.start', approval);
+    await turns.dispatched(1);
+    // The Host renders the request the model reads, so let the fake observe what
+    // actually crossed that boundary: the execution and every step identity it
+    // must report through update_plan, with nothing left to infer.
+    const request = turns.texts[0] ?? '';
+    assert.match(request, /^Execute the approved plan execution \S+\.$/m);
+    assert.match(request, /^Steps:$/m);
+    assert.match(request, /^- step-1 \[pending\] Commit once$/m);
+    assert.match(request, /^Use update_plan to keep every step status current\.$/m);
+    assert.doesNotMatch(request, /revision/);
+
     const changed = await withTimeout(
       nextFrameOfKind(subscription, 'subscription.session_domain_changed'),
       2_000,
@@ -134,12 +149,27 @@ test('two Clients and a restarted production Host share one retry-safe Plan auth
     assert.equal(changed.sessionId, session.id);
     assert.equal(changed.domain, 'plan');
 
-    const shared = await tui.request('plan.query', { kind: 'list_start', sessionId: session.id });
-    assert.equal(shared.kind, 'page');
-    if (shared.kind === 'page') {
-      assert.equal(shared.activeExecutionId, approved.executionId);
-      assert.equal(shared.items.filter((item) => item.kind === 'execution').length, 1);
+    const running = await tui.request('plan.query', { kind: 'list_start', sessionId: session.id });
+    assert.equal(running.kind, 'page');
+    if (running.kind === 'page') {
+      assert.equal(
+        running.activeExecutionId,
+        (await starting).plan.executionId,
+        'the approved execution is active while its Turn is still running',
+      );
+      assert.equal(running.items.filter((item) => item.kind === 'execution').length, 1);
     }
+    turns.release();
+    const started = await starting;
+    const approved = started.plan;
+    assert.equal(approved.eventType, 'plan_approved');
+    assert.ok(approved.executionId);
+    assert.equal(started.turn.turnId, approval.turnId);
+    await waitForTerminal(tui, started.turn);
+    // A root Turn that ends without every step reaching a terminal state settles
+    // the execution instead of leaving it active until the next Host start.
+    const settled = await waitForExecutionStatus(tui, session.id, null);
+    assert.equal(executionStatusOf(settled), 'interrupted');
 
     await subscription.close();
     await Promise.all([desktop.close(), tui.close()]);
@@ -154,7 +184,7 @@ test('two Clients and a restarted production Host share one retry-safe Plan auth
     host = await RuntimeHostKernel.start({
       owner,
       idleGraceMs: 30_000,
-      composition: defineInteractiveRuntimeHostComposition(deterministicBackendComposition),
+      composition: defineInteractiveRuntimeHostComposition(controllableBackendComposition(turns)),
     });
     owner = undefined;
     tui = await connect(root);
@@ -163,6 +193,11 @@ test('two Clients and a restarted production Host share one retry-safe Plan auth
     assert.equal(replayed.plan.executionId, approved.executionId);
     assert.equal(replayed.plan.storeVersion, approved.storeVersion);
     assert.equal(replayed.turn.turnId, approval.turnId);
+    // Retrying the approval after the Plan state moved on must reuse the admitted
+    // Turn: re-rendering the request from the current projection would hand the
+    // model a different first message for the same Turn identity.
+    assert.deepEqual(turns.texts, [request], 'the replayed approval must not re-dispatch');
+
     const recovered = await tui.request('plan.query', {
       kind: 'list_start',
       sessionId: session.id,
@@ -197,24 +232,37 @@ test('two Clients and a restarted production Host share one retry-safe Plan auth
       'interrupted',
     );
 
-    const resumed = await tui.request('plan.turn.start', {
+    turns.hold();
+    const resuming = tui.request('plan.turn.start', {
       kind: 'resume_execution',
       sessionId: session.id,
       executionId: execution.execution.executionId,
       turnId: 'resume-turn',
     });
+    await turns.dispatched(2);
+    const resumeRequest = turns.texts[1] ?? '';
+    assert.match(resumeRequest, /^Resume the approved plan execution \S+\.$/m);
+    assert.match(resumeRequest, /^- step-1 \[pending\] Commit once$/m);
+    const resumedRunning = await tui.request('plan.query', {
+      kind: 'list_start',
+      sessionId: session.id,
+    });
+    assert.equal(
+      resumedRunning.kind === 'page' ? resumedRunning.activeExecutionId : undefined,
+      execution.execution.executionId,
+      'a resumed execution is active while its Turn is still running',
+    );
+    turns.release();
+    const resumed = await resuming;
     assert.equal(resumed.plan.eventType, 'plan_execution_resumed');
     assert.equal(resumed.plan.executionId, execution.execution.executionId);
     assert.equal(resumed.turn.turnId, 'resume-turn');
     await waitForTerminal(tui, resumed.turn);
-    const afterResume = await tui.request('plan.query', {
-      kind: 'list_start',
-      sessionId: session.id,
-    });
-    assert.equal(afterResume.kind, 'page');
+    const afterResume = await waitForExecutionStatus(tui, session.id, null);
     assert.equal(
-      afterResume.kind === 'page' ? afterResume.activeExecutionId : undefined,
-      execution.execution.executionId,
+      executionStatusOf(afterResume),
+      'interrupted',
+      'the resumed execution settles when its Turn ends without progress',
     );
   } finally {
     await Promise.allSettled([desktop?.close(), tui?.close()]);
@@ -223,6 +271,35 @@ test('two Clients and a restarted production Host share one retry-safe Plan auth
     await rm(base, { recursive: true, force: true });
   }
 });
+
+type PlanPage = Extract<PlanQueryResult, { kind: 'page' }>;
+
+function executionStatusOf(page: PlanPage): string | undefined {
+  const execution = page.items.find((item) => item.kind === 'execution');
+  return execution?.kind === 'execution' ? execution.execution.status : undefined;
+}
+
+async function waitForExecutionStatus(
+  connection: RuntimeHostConnection,
+  sessionId: string,
+  activeExecutionId: string | null,
+): Promise<PlanPage> {
+  let page: PlanPage | undefined;
+  await waitFor(
+    async () => {
+      const result = await connection.request('plan.query', {
+        kind: 'list_start',
+        sessionId,
+      });
+      if (result.kind !== 'page') return false;
+      page = result;
+      return result.activeExecutionId === activeExecutionId;
+    },
+    { timeoutMs: 5_000, pollMs: 10, message: 'Plan execution did not settle' },
+  );
+  assert.ok(page);
+  return page;
+}
 
 async function connect(rootPath: string): Promise<RuntimeHostConnection> {
   const result = await connectRuntimeHost({ rootPath, protocol: PROTOCOL });
@@ -271,15 +348,68 @@ async function nextFrameOfKind<K extends SubscriptionFrame['kind']>(
   throw new Error(`Session subscription ended before ${kind}`);
 }
 /**
- * The production composition registers no test backend; the deterministic one
- * rides the same `primaryBackendFactory` seam Desktop E2E uses.
+ * Lets a test park the deterministic backend inside `send` so it can observe the
+ * Plan projection while the transition Turn is provably still in flight, then
+ * let the Turn run to its terminal fact. Recording the dispatched text is what
+ * makes the request itself assertable at the real model boundary.
  */
-const deterministicBackendComposition: RuntimeHostCompositionFactory = (context) =>
-  createExecutionRuntimeHostComposition(
-    context,
-    {},
-    { primaryBackendFactory: (backendContext) => new FakeBackend(backendContext) },
-  );
+class PlanTurnControl {
+  readonly texts: string[] = [];
+  #gate: Promise<void> = Promise.resolve();
+  #open: () => void = () => {};
+  #arrivals: Array<() => void> = [];
+
+  hold(): void {
+    this.#gate = new Promise<void>((resolve) => {
+      this.#open = resolve;
+    });
+  }
+
+  release(): void {
+    this.#open();
+    this.#gate = Promise.resolve();
+    this.#open = () => {};
+  }
+
+  waitForTurn(): Promise<void> {
+    return this.#gate;
+  }
+
+  async dispatched(count: number): Promise<void> {
+    while (this.texts.length < count) {
+      await new Promise<void>((resolve) => this.#arrivals.push(resolve));
+    }
+  }
+
+  record(text: string): void {
+    this.texts.push(text);
+    for (const resolve of this.#arrivals.splice(0)) resolve();
+  }
+}
+
+class PlanTurnBackend extends FakeBackend {
+  readonly #control: PlanTurnControl;
+
+  constructor(ctx: { sessionId: string }, control: PlanTurnControl) {
+    super(ctx);
+    this.#control = control;
+  }
+
+  override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+    this.#control.record(input.text);
+    await this.#control.waitForTurn();
+    yield* super.send(input);
+  }
+}
+
+function controllableBackendComposition(control: PlanTurnControl): RuntimeHostCompositionFactory {
+  return (context) =>
+    createExecutionRuntimeHostComposition(
+      context,
+      {},
+      { primaryBackendFactory: (backendContext) => new PlanTurnBackend(backendContext, control) },
+    );
+}
 
 test('Plan queries include their state header when selecting byte-limited continuation pages', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-plan-pages-'));
@@ -316,7 +446,6 @@ test('Plan queries include their state header when selecting byte-limited contin
       root: null as never,
       isSessionActive: () => false,
       refreshContinuity: async () => {},
-      onProjectionChanged: () => {},
       requestDrain: () => assert.fail('query must not drain'),
     });
     const pages: Extract<PlanQueryResult, { kind: 'page' }>[] = [];

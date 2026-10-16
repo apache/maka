@@ -17,7 +17,11 @@
  * under the License.
  */
 
+import type { WorkbarTogglePosition } from '@maka/core/settings';
+import { isNativeSurfaceOccluded, watchNativeSurface, type NativeSurfaceWatch } from '../../../application/contracts/native-surface-occlusion.js';
+import { useWorkHubEnabled } from '../../../application/contracts/workhub-workspace/workhub-enablement.js';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import { Button } from '@astryxdesign/core';
 import { useUiLocale } from '@maka/ui';
 import type { WorkHubPresentationSnapshot } from '../../../../shared/workhub-presentation.js';
@@ -25,23 +29,32 @@ import { useWorkHubServices } from '../services.js';
 import { workHubLiveCopy } from '../locales/workhub-live-copy.js';
 
 /** The main window owns only this landing space; the live view keeps its React owner. */
-export function WorkHubDock({ enabled, visible = true }: { enabled: boolean; visible?: boolean }) {
+export function WorkHubDock({ visible = true, workbar, workbarTogglePosition }: {
+  visible?: boolean;
+  workbar: { bottomOpen: boolean; rightCollapsed: boolean };
+  workbarTogglePosition?: WorkbarTogglePosition;
+}) {
   const { presentation } = useWorkHubServices();
+  const enabled = useWorkHubEnabled();
   const t = workHubLiveCopy[useUiLocale()];
   const element = useRef<HTMLElement>(null);
+  const workbarRef = useRef({
+    placement: workbar.bottomOpen ? 'bottom' as const : 'right' as const,
+    collapsed: workbar.bottomOpen ? false : workbar.rightCollapsed,
+    togglePosition: workbarTogglePosition,
+  });
+  workbarRef.current = {
+    placement: workbar.bottomOpen ? 'bottom' : 'right',
+    collapsed: workbar.bottomOpen ? false : workbar.rightCollapsed,
+    togglePosition: workbarTogglePosition,
+  };
   const [snapshot, setSnapshot] = useState<WorkHubPresentationSnapshot>();
   const [backdrop, setBackdrop] = useState<string>();
+  const backdropImage = useRef<HTMLImageElement>(null);
   const [error, setError] = useState<string>();
-  const previous = useRef({ enabled, visible });
   const needsRecovery = snapshot?.placement === 'docked' && snapshot.rendererCrashed;
   const report = (reason: unknown) =>
     setError(reason instanceof Error ? reason.message : String(reason));
-  useEffect(() => {
-    // Enabling WorkHub also activates its dock. Only subsequent navigation
-    // returns a floating conversation, so a fresh shortcut cannot be undone.
-    if (enabled && previous.current.enabled && visible && !previous.current.visible) void presentation.hide().catch(report);
-    previous.current = { enabled, visible };
-  }, [enabled, presentation, visible]);
   useEffect(() => {
     let active = true;
     const update = (next: WorkHubPresentationSnapshot) => {
@@ -54,54 +67,106 @@ export function WorkHubDock({ enabled, visible = true }: { enabled: boolean; vis
       unsubscribe();
     };
   }, [presentation]);
+  const surface = useRef<NativeSurfaceWatch>(undefined);
   useLayoutEffect(() => {
     const node = element.current;
     if (!node) return;
-    let frame = 0;
     let active = true;
     let revision = 0;
+    let acknowledged = 0;
     let last = '';
     let covered = false;
+    const previews = new Map<HTMLElement, (closing?: boolean) => void>();
+    const document = node.ownerDocument;
+    const view = document.defaultView!;
+    const docked = snapshot?.placement === 'docked';
     const update = () => {
+      for (const [overlay, release] of previews) {
+        if (!overlay.isConnected || !overlay.matches(':popover-open')) release(true);
+      }
       const rect = node.getBoundingClientRect();
-      const docked = snapshot?.placement === 'docked';
-      const occluded = visible && docked && Array.from(document.querySelectorAll(':popover-open:not(:empty), dialog[open]')).some((overlay) => {
-        if (overlay.matches(':modal')) return true;
-        const bounds = overlay.getBoundingClientRect();
-        return bounds.width > 0 && bounds.height > 0 && bounds.left < rect.right && bounds.right > rect.left && bounds.top < rect.bottom && bounds.bottom > rect.top;
-      });
+      const occluded = visible && docked && isNativeSurfaceOccluded(rect, node.ownerDocument);
       const host = {
-        visible: visible && rect.width > 0 && rect.height > 0,
+        visible: enabled && visible && rect.width > 0 && rect.height > 0,
         occluded,
+        workbar: workbarRef.current,
         rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
       };
       const key = JSON.stringify(host);
       if (key !== last) {
         last = key;
-        if (covered !== occluded) ++revision;
+        ++revision;
         covered = occluded;
         const current = revision;
-        if (!occluded) setBackdrop(undefined);
         void presentation.setHost(host).then((image) => {
-          if (active && current === revision && image) setBackdrop(image);
+          if (!active || current !== revision) return;
+          acknowledged = current;
+          if (image) setBackdrop(previous => previous ?? image);
+          if (!occluded) {
+            // Keep the still frame until Main has restored the persistent view.
+            view.requestAnimationFrame(() => {
+              if (active && current === revision && !previews.size) setBackdrop(undefined);
+            });
+          }
         }).catch(report);
       }
-      // Menus animate and the sidebar can move without resizing this node.
-      // Only changed geometry/occlusion crosses IPC.
-      if (visible && docked) frame = requestAnimationFrame(update);
     };
+    const beforeToggle = (event: Event) => {
+      const overlay = event.target;
+      if (!(overlay instanceof view.HTMLElement)) return;
+      previews.get(overlay)?.(true);
+      if ((event as ToggleEvent).newState !== 'open' || !enabled || !visible || !docked || covered ||
+        !overlay.querySelector('.maka-sidebar-hover-card') || isNativeSurfaceOccluded(node.getBoundingClientRect(), document)) return;
+      // Keep Astryx's open/dismiss lifecycle intact, but do not expose a card
+      // over the native view until its replacement frame is decoded.
+      const visibility = overlay.style.visibility;
+      overlay.style.visibility = 'hidden';
+      overlay.setAttribute('data-workhub-preview-pending', '');
+      const release = (closing = false) => {
+        if (previews.get(overlay) !== release) return;
+        if (closing) previews.delete(overlay);
+        overlay.style.visibility = visibility;
+        overlay.removeAttribute('data-workhub-preview-pending');
+        if (closing && !covered && acknowledged === revision && !previews.size) setBackdrop(undefined);
+        surface.current?.refresh();
+      };
+      previews.set(overlay, release);
+      const current = revision;
+      const pending = () => active && current === revision && previews.get(overlay) === release &&
+        overlay.isConnected && overlay.matches(':popover-open');
+      void presentation.captureBackdrop().then(async (image) => {
+        if (!image || !pending()) return;
+        flushSync(() => setBackdrop(image));
+        const frame = backdropImage.current;
+        if (!frame) return;
+        await frame.decode();
+        if (!pending()) return;
+        // Decode makes the pixels available; let Main's renderer paint them
+        // before its next occlusion notification hides the native surface.
+        await new Promise<void>(resolve => view.requestAnimationFrame(() => view.requestAnimationFrame(() => resolve())));
+      }).catch(() => undefined).finally(() => {
+        // The existing capture-optional path remains the fallback on failure.
+        if (active) release(!pending());
+      });
+    };
+    document.addEventListener('beforetoggle', beforeToggle, true);
     update();
+    surface.current = visible && docked ? watchNativeSurface(node, update) : undefined;
     return () => {
       active = false;
-      cancelAnimationFrame(frame);
+      document.removeEventListener('beforetoggle', beforeToggle, true);
+      for (const release of previews.values()) release(true);
+      surface.current?.dispose();
+      surface.current = undefined;
       void presentation
         .setHost({ visible: false, rect: { x: 0, y: 0, width: 0, height: 0 } })
         .catch(() => undefined);
     };
-  }, [presentation, visible, snapshot?.placement]);
+  }, [enabled, presentation, visible, snapshot?.placement]);
+  useEffect(() => surface.current?.refresh(), [workbar.bottomOpen, workbar.rightCollapsed, workbarTogglePosition]);
   return (
-    <section ref={element} className="workHubDock" hidden={!visible} aria-label={t.title}>
-      {backdrop && snapshot?.placement === 'docked' && <img className="workHubDockBackdrop" src={backdrop} alt="" aria-hidden draggable={false} />}
+    <section ref={element} className="workHubDock" data-native-edge={snapshot?.placement === 'docked' && !needsRecovery || undefined} hidden={!visible} aria-label={t.title}>
+      {backdrop && snapshot?.placement === 'docked' && <img ref={backdropImage} className="workHubDockBackdrop" src={backdrop} alt="" aria-hidden draggable={false} />}
       {(snapshot?.placement === 'floating' || needsRecovery) && (
         <div className="workHubDockPlaceholder">
           <h2>{needsRecovery ? t.reloadRequired : t.floating}</h2>

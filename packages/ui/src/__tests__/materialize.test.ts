@@ -19,9 +19,9 @@
 
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import type { StoredMessage } from '@maka/core/session';
+import { decodeCanonicalMessage, type StoredMessage } from '@maka/core/session';
+import { foldTimeline } from '../timeline-fold.js';
 import {
-  materializeChat,
   materializeTools,
   materializeTurns,
   overlayLiveTurn,
@@ -37,6 +37,25 @@ const originalUser = {
   ts: 1,
   text: "request",
 };
+
+test('keeps interrupted and replacement responses distinct live and after reload', () => {
+  const failed = { type: 'assistant', id: 'failed', turnId: 't1', ts: 2, text: 'Partial answer', modelId: 'fixture', interrupted: true };
+  const recovered = { ...failed, id: 'recovered', ts: 3, text: 'Recovered answer', interrupted: undefined };
+  const reloaded = JSON.parse(JSON.stringify([originalUser, failed, recovered])).map(decodeCanonicalMessage);
+  let live = armLiveTurn('t1');
+  for (const message of [failed, recovered]) {
+    live = applyLiveTurnEvent(live, {
+      type: 'text_complete', id: message.id, turnId: 't1', messageId: message.id,
+      ts: message.ts, text: message.text, ...(message.interrupted ? { interrupted: true } : {}),
+    })!;
+  }
+  for (const turn of [materializeTurns(reloaded, 'en')[0], overlayLiveTurn(materializeTurns([originalUser], 'en'), live, 'en')[0]]) {
+    const responses = foldTimeline(turn!.timeline).entries.filter((entry) => entry.kind === 'text');
+    assert.deepEqual(responses.map((entry) => [entry.text, entry.interrupted === true]), [
+      ['Partial answer', true], ['Recovered answer', false],
+    ]);
+  }
+});
 const beforeAssistant = {
   type: "assistant" as const,
   id: "before-steer",
@@ -206,21 +225,61 @@ describe("steering timeline", () => {
   });
 });
 
-describe("materializeChat message metadata", () => {
-  test("renders neutral provider dropping guidance for new and legacy records", () => {
-    const base = {
-      type: "system_note" as const,
-      id: "drop",
-      turnId: "t1",
-      ts: 1,
-      kind: "context_provider_dropping" as const,
-      data: { inputTokens: 98_247, priorInputTokens: 124_832 },
-    };
-    const current = materializeChat([base], "en")[0]?.text;
-    const legacy = materializeChat([{ ...base, data: undefined }], "en")[0]?.text;
-    assert.match(current ?? "", /may have been truncated or rewritten/);
-    assert.match(legacy ?? "", /may have been truncated or rewritten/);
-    assert.doesNotMatch(current ?? "", /Declare a context window|compact first/);
+describe("materializeTurns message metadata", () => {
+  test("carries a renderer Stop abort source into the turn view model", () => {
+    const [turn] = materializeTurns([
+      userMsg("t-stop", 1, "continue the interrupted work"),
+      {
+        type: "turn_state",
+        id: "stop-state",
+        turnId: "t-stop",
+        ts: 2,
+        status: "aborted",
+        abortSource: "renderer.stop_button",
+      },
+    ], "en");
+
+    assert.equal(turn?.status, "aborted");
+    assert.equal(turn?.abortSource, "renderer.stop_button");
+  });
+
+  test("hides a retired provider dropping note that an old session still carries", () => {
+    const turns = materializeTurns([
+      {
+        type: "system_note",
+        id: "drop",
+        turnId: "t1",
+        ts: 1,
+        kind: "context_provider_dropping",
+        data: { inputTokens: 99_398, priorInputTokens: 134_460 },
+      },
+    ], "en");
+    assert.deepEqual(turns.flatMap((turn) => turn.notes), []);
+  });
+
+  test("hides the apply-time compaction boundary note that exists for usage ordering", () => {
+    // The applied row is the selector's compaction-time anchor; the settlement
+    // context_compacted row stays the one users see.
+    const turns = materializeTurns([
+      {
+        type: "system_note",
+        id: "applied",
+        turnId: "t1",
+        ts: 1,
+        kind: "context_compaction_applied",
+      },
+      {
+        type: "system_note",
+        id: "compacted",
+        turnId: "t1",
+        ts: 2,
+        kind: "context_compacted",
+      },
+    ], "en");
+    assert.deepEqual(
+      turns.flatMap((turn) => turn.notes.map((note) => note.id)),
+      ["compacted"],
+    );
   });
 
   test("localizes visible system notes", () => {
@@ -235,12 +294,8 @@ describe("materializeChat message metadata", () => {
     ];
 
     assert.equal(
-      materializeChat(messages, "en")[0]?.text,
+      materializeTurns(messages, "en")[0]?.notes[0]?.text,
       "Earlier context compacted.",
-    );
-    assert.equal(
-      materializeChat(messages, "zh-CN")[0]?.text,
-      "已压缩较早的上下文。",
     );
     assert.equal(
       materializeTurns(messages, "zh-CN")[0]?.notes[0]?.text,
@@ -259,7 +314,6 @@ describe("materializeChat message metadata", () => {
         inlineReferences: [],
       },
     ];
-    assert.deepEqual(materializeChat(messages, "en")[0]?.inlineReferences, []);
     assert.deepEqual(materializeTurns(messages, "en")[0]?.user?.inlineReferences, []);
   });
 
@@ -275,10 +329,6 @@ describe("materializeChat message metadata", () => {
       },
     ];
 
-    assert.deepEqual(materializeChat(messages, "en")[0]?.hostOrigin, {
-      kind: "goal",
-      goalId: "goal-1",
-    });
     assert.deepEqual(materializeTurns(messages, "en")[0]?.user?.hostOrigin, {
       kind: "goal",
       goalId: "goal-1",
@@ -321,6 +371,95 @@ test('retains persisted nested tool activity identity', () => {
     parentToolCallId: 'exec-1',
     parentOperationId: 'exec-operation-1',
   });
+});
+
+test('scopes persisted tool results to their turn when opaque call ids repeat', () => {
+  const turns = materializeTurns([
+    userMsg('turn-1', 1, 'first'),
+    {
+      type: 'tool_call',
+      id: 'call-1',
+      turnId: 'turn-1',
+      ts: 2,
+      toolName: 'Read',
+      args: { path: 'first.txt' },
+    },
+    {
+      type: 'tool_result',
+      id: 'result-1',
+      turnId: 'turn-1',
+      ts: 3,
+      toolUseId: 'call-1',
+      isError: false,
+      outcome: 'success',
+      content: { kind: 'text', text: 'first result' },
+    },
+    userMsg('turn-2', 4, 'second'),
+    {
+      type: 'tool_call',
+      id: 'call-1',
+      turnId: 'turn-2',
+      ts: 5,
+      toolName: 'Read',
+      args: { path: 'second.txt' },
+    },
+    {
+      type: 'tool_result',
+      id: 'result-2',
+      turnId: 'turn-2',
+      ts: 6,
+      toolUseId: 'call-1',
+      isError: true,
+      outcome: 'aborted',
+      content: { kind: 'text', text: 'second result' },
+    },
+  ] satisfies StoredMessage[], 'en');
+
+  assert.deepEqual(
+    turns.map((turn) => ({
+      turnId: turn.turnId,
+      status: turn.tools[0]?.status,
+      result: turn.tools[0]?.result,
+    })),
+    [
+      {
+        turnId: 'turn-1',
+        status: 'completed',
+        result: { kind: 'text', text: 'first result' },
+      },
+      {
+        turnId: 'turn-2',
+        status: 'interrupted',
+        result: { kind: 'text', text: 'second result' },
+      },
+    ],
+  );
+});
+
+test('does not attach a retained old result to a reused call id at a history boundary', () => {
+  const [tool] = materializeTools([
+    {
+      type: 'tool_result',
+      id: 'old-result',
+      turnId: 'turn-old',
+      ts: 1,
+      toolUseId: 'provider-call-1',
+      isError: true,
+      outcome: 'error',
+      content: { kind: 'text', text: 'old failure' },
+    },
+    {
+      type: 'tool_call',
+      id: 'provider-call-1',
+      turnId: 'turn-new',
+      ts: 2,
+      toolName: 'Read',
+      args: { path: 'new.txt' },
+    },
+  ] satisfies StoredMessage[]);
+
+  assert.equal(tool?.result, undefined);
+  assert.notEqual(tool?.status, 'errored');
 });
 
 function shellRunResult(revision: number) {

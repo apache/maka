@@ -18,22 +18,16 @@
  */
 
 export const DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES = 128 * 1024;
-export const DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES = 512 * 1024;
-/** Turns the Main tail cache keeps for the projector and for the tail the Renderer opens with. */
+export const DESKTOP_TRANSCRIPT_TAIL_MAX_BYTES = 512 * 1024;
+/** Turns the Main tail cache keeps for the projector and for tail-only consumers. */
 export const DESKTOP_TRANSCRIPT_TAIL_MAX_TURNS = 10;
-export const DESKTOP_TRANSCRIPT_OVERLAY_CACHE_MAX_BYTES = 16 * 1024 * 1024;
-/**
- * Main rejects a read whose Host epoch moved under it. `ipcRenderer.invoke`
- * carries nothing across but the Error's message, so both sides name the
- * rejection by this code rather than by matching prose.
- */
-export const DESKTOP_TRANSCRIPT_HOST_EPOCH_CHANGED_CODE = 'DESKTOP_TRANSCRIPT_HOST_EPOCH_CHANGED';
+export const DESKTOP_TRANSCRIPT_MESSAGE_MAX_BYTES = 16 * 1024 * 1024;
 export const DESKTOP_TRANSCRIPT_GLOBAL_CACHE_MAX_BYTES = 64 * 1024 * 1024;
+/** Projected message bytes of whole Turns one history read delivers: the first read and each "load earlier". */
+export const DESKTOP_TRANSCRIPT_HISTORY_MAX_BYTES = 64 * 1024 * 1024;
 
 export interface DesktopTranscriptFragment {
-  readonly source: 'durable' | 'overlay';
-  readonly identity: number | string;
-  readonly order: number | null;
+  readonly sequence: number;
   readonly byteOffset: number;
   readonly totalBytes: number;
   readonly data: Uint8Array;
@@ -44,15 +38,14 @@ export interface DesktopTranscriptFragment {
  * cannot be read off durable sequence numbers: they advance by a stride, so
  * only the Host read that produced a row proves what it is contiguous with.
  *
- * - `extends` names the edge a page read started from.
- * - `coversFrom` names the watermark a tail change read forward from; absent
- *   means the batch claims no contiguity and only moves the watermark.
- * - `navigation` appears on the reset answering `loadAround` / `loadLatest`,
- *   which replaces the window outright instead of splicing onto it.
+ * - `reset` starts a replacement of everything the consumer holds.
+ * - `earlierThan` starts earlier history that ends just before that sequence.
+ * - `coversFrom` names the watermark a tail change read forward from.
+ *
+ * One answer spans batches until `ready`; `hasOlder` is final only there.
  */
 export interface DesktopTranscriptBatchPayload {
-  readonly navigation?: number;
-  readonly extends?: DesktopTranscriptExtension;
+  readonly earlierThan?: number;
   readonly coversFrom?: number | null;
   readonly sessionId: string;
   readonly generation: string;
@@ -60,14 +53,14 @@ export interface DesktopTranscriptBatchPayload {
   readonly durableThrough: number | null;
   readonly fragments: readonly DesktopTranscriptFragment[];
   readonly hasOlder?: boolean;
-  readonly hasNewer?: boolean;
+  /**
+   * Whether the oldest Turn in this answer has all its rows in it. A
+   * byte-bounded answer can begin inside a Turn, and no local rule tells the
+   * consumer that it did.
+   */
+  readonly beginsAtTurnBoundary?: boolean;
   readonly reset: boolean;
   readonly ready: boolean;
-}
-
-export interface DesktopTranscriptExtension {
-  readonly direction: 'older' | 'newer';
-  readonly anchor: number | null;
 }
 
 export interface DesktopTranscriptBatch extends DesktopTranscriptBatchPayload {
@@ -81,19 +74,16 @@ export interface DesktopTranscriptOpenResult {
   readonly readThroughMessageId: string | null;
 }
 
-export interface DesktopTranscriptRangeRequest {
-  readonly navigation: number;
-  readonly consumerId: string;
-  readonly sessionId: string;
-  readonly hostEpoch: string;
-  readonly anchorSequence: number | null;
-  readonly maxBytes: number;
-}
+/**
+ * Tail-only consumers get the Main tail cache; history consumers get the
+ * newest whole Turns up to the history budget and may ask for earlier ones.
+ */
+export type DesktopTranscriptOpenMode = 'tail' | 'history';
 
 /**
- * The Renderer reporting that its window now holds every durable row through
+ * The Renderer reporting that it now holds every durable row through
  * `through`. Main cannot derive this: a consumer only proves the Session is
- * open, and a tail change a parked window refuses moves no window.
+ * open, and a change still assembling in the Renderer moves no reader.
  */
 export interface DesktopTranscriptTailAcknowledgement {
   readonly consumerId: string;
@@ -104,10 +94,8 @@ export interface DesktopTranscriptTailAcknowledgement {
 
 export interface DesktopTranscriptHandle extends DesktopTranscriptOpenResult {
   acknowledgeTail(through: number): Promise<void>;
-  loadBefore(anchorSequence: number | null, maxBytes: number, navigation: number): Promise<void>;
-  loadAfter(anchorSequence: number | null, maxBytes: number, navigation: number): Promise<void>;
-  loadAround(sequence: number, maxBytes: number, navigation: number): Promise<void>;
-  loadLatest(navigation: number): Promise<void>;
+  /** One budget of earlier history, continuing in the same answer down to `throughSequence`. */
+  loadEarlier(throughSequence?: number): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -118,8 +106,7 @@ export function assertDesktopTranscriptBatch(value: unknown): DesktopTranscriptB
   const batch = value as Record<string, unknown>;
   if (
     typeof batch.sessionId !== 'string' ||
-    (batch.navigation !== undefined && !isSequence(batch.navigation)) ||
-    !isExtension(batch.extends) ||
+    (batch.earlierThan !== undefined && !isSequence(batch.earlierThan)) ||
     (batch.coversFrom !== undefined && batch.coversFrom !== null && !isSequence(batch.coversFrom)) ||
     !isSequence(batch.deliverySequence) ||
     typeof batch.generation !== 'string' ||
@@ -127,7 +114,8 @@ export function assertDesktopTranscriptBatch(value: unknown): DesktopTranscriptB
     (batch.durableThrough !== null && !isSequence(batch.durableThrough)) ||
     !Array.isArray(batch.fragments) ||
     (batch.hasOlder !== undefined && typeof batch.hasOlder !== 'boolean') ||
-    (batch.hasNewer !== undefined && typeof batch.hasNewer !== 'boolean') ||
+    (batch.beginsAtTurnBoundary !== undefined &&
+      typeof batch.beginsAtTurnBoundary !== 'boolean') ||
     typeof batch.reset !== 'boolean' ||
     typeof batch.ready !== 'boolean'
   ) {
@@ -140,13 +128,7 @@ export function assertDesktopTranscriptBatch(value: unknown): DesktopTranscriptB
       !value ||
       typeof value !== 'object' ||
       Array.isArray(value) ||
-      (fragment.source !== 'durable' && fragment.source !== 'overlay') ||
-      (fragment.source === 'durable'
-        ? !isSequence(fragment.identity)
-        : typeof fragment.identity !== 'string' || fragment.identity.length === 0) ||
-      (fragment.source === 'overlay'
-        ? !isSequence(fragment.order)
-        : fragment.order !== null) ||
+      !isSequence(fragment.sequence) ||
       !isSequence(fragment.byteOffset) ||
       !isSequence(fragment.totalBytes) ||
       (fragment.totalBytes as number) < 1 ||
@@ -172,12 +154,4 @@ export function assertDesktopTranscriptBatch(value: unknown): DesktopTranscriptB
 
 function isSequence(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) >= 0;
-}
-
-function isExtension(value: unknown): boolean {
-  if (value === undefined) return true;
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  const extension = value as Record<string, unknown>;
-  return (extension.direction === 'older' || extension.direction === 'newer') &&
-    (extension.anchor === null || isSequence(extension.anchor));
 }

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { isImageDeliveryMetadata } from '@maka/core/image-delivery';
 import { isAbsolute } from 'node:path';
 import {
   ARTIFACT_KINDS,
@@ -27,7 +28,6 @@ import {
   isArtifactTurnKey,
   isCanonicalArtifactEntityId,
 } from '@maka/core/artifacts';
-import { isDeepResearchArtifactRole } from '@maka/core/deep-research-run';
 
 const ARTIFACT_KIND_SET = new Set<ArtifactKind>(ARTIFACT_KINDS);
 const ARTIFACT_SOURCE_SET = new Set<ArtifactSource>(ARTIFACT_SOURCES);
@@ -43,6 +43,7 @@ const ARTIFACT_RECORD_KEYS = new Set([
   'mimeType',
   'source',
   'summary',
+  'imageDelivery',
   'deepResearchRole',
 ]);
 
@@ -112,7 +113,7 @@ function decodeArtifactRecord(value: unknown, index: number): ArtifactRecord {
     value.sizeBytes < 0 ||
     !isOptionalNonEmptyString(value.mimeType) ||
     !isOptionalNonEmptyString(value.summary) ||
-    (value.deepResearchRole !== undefined && !isDeepResearchArtifactRole(value.deepResearchRole)) ||
+    (value.imageDelivery !== undefined && !isImageDeliveryMetadata(value.imageDelivery)) ||
     typeof value.source !== 'string'
   ) {
     throw invalidMetadataRecord(index);
@@ -122,7 +123,10 @@ function decodeArtifactRecord(value: unknown, index: number): ArtifactRecord {
   if (value.relativePath !== `${value.sessionId}/${value.id}-${value.name}`) {
     throw invalidMetadataRecord(index);
   }
-  return value as unknown as ArtifactRecord;
+  // Old reports carry a workflow role that no longer has a consumer.
+  const record = { ...value };
+  delete record.deepResearchRole;
+  return record as unknown as ArtifactRecord;
 }
 
 function isCompatibleArtifactName(name: string): boolean {

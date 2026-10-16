@@ -1,3 +1,15 @@
+---
+doc_id: workhub-domain-language
+title: "WorkHub domain language"
+language: en
+source_language: en
+implementation_status: current
+document_status: current
+translation_status: source-only
+last_verified: 2026-09-13
+owners:
+  - maka-backend
+---
 <!--
   Licensed to the Apache Software Foundation (ASF) under one
   or more contributor license agreements.  See the NOTICE file
@@ -30,8 +42,10 @@ share one live renderer and the same Host-owned conversation.
 links. It uses the existing Session transcript and recovery substrate. It is hidden
 from the ordinary task list and cannot delegate to itself.
 
-**Ordinary Session** owns delegated execution: workspace, model, permissions,
-tools, artifacts, user interactions, Turn admission, and recovery. WorkHub reads
+**Ordinary Session** owns delegated execution: workspace, model, saved permissions,
+tools, artifacts, context preparation, Turn admission, and recovery. A WorkHub-initiated
+execution uses the WorkHub permission setting without rewriting the saved target
+configuration. WorkHub reads
 its state without copying its execution transcript or acquiring ownership of
 unrelated user work.
 
@@ -50,8 +64,9 @@ stop, or resume it. _Avoid_: routing intent, disposition.
 `answer_here`, `delegate_existing`, `create_new`, or `clarify`. _Avoid_: stop,
 resume, correction.
 
-**Linked operation** changes an existing delegation relationship: `correct`,
-`stop`, or `resume`. It is not a routing disposition.
+**Linked operation** stops or resumes an owned delegation: `stop` or `resume`.
+Steering continues the same Session with an ordinary delegated instruction. Moving
+work uses separate stop and delegation operations, whose outcomes may differ.
 
 **Session Resolver** recalls and ranks bounded existing ordinary Sessions for a
 routing intent. It returns target evidence, never creation or execution authority.
@@ -63,7 +78,7 @@ operation target from a similar display name.
 **Coordination policy** combines intent and resolved evidence into either a routing
 disposition or a linked-operation proposal. Its output remains advisory.
 
-**Bound routing decision** is the Policy result stored with one Coordination root
+**Historical bound routing decision** is the Policy result stored with one Coordination root
 Turn. Recovery reuses it. The main coordination model may explain it or form a
 matching proposal, but cannot replace its candidate or operation. The binding is
 not Action Gate authorization.
@@ -89,8 +104,8 @@ archival or workspace movement requires a new selection. The Gate repeats this
 validation under target admission before a fresh assignment.
 
 Coordination admission permits asking and waiting; it does not admit target
-execution. This interaction works with the default coordination model and does
-not enable the optional pre-admission model-routing experiment. An immutable
+execution. The default coordination Agent chooses the action directly, without a
+pre-admission routing-model pass. Historical immutable
 Host-bound routing decision cannot be replaced by a choice in the same Turn.
 
 **Active-Turn action** names the currently executing coordination Turn. The Host
@@ -103,7 +118,16 @@ supply its own user-originated authority or attachment locators. Model-prepared
 candidate freshness, Session identity, archive/waiting state and existing claims.
 The policy proposes an action; the gate determines whether that exact action can
 be admitted. Creation workspace context comes from Desktop main, outside the model
-proposal. Each target still executes under its own permission boundary.
+proposal. The Coordinator can create independent work without requiring the user
+to explicitly ask for a new Session. New work inherits the canonical WorkHub model
+and thinking configuration. Reuse preserves the target model; an unavailable model
+returns an actionable error instead of opening a configuration repair interaction.
+
+Workers report missing information and return control. The Coordinator asks the
+user in WorkHub, then sends the answer as a new instruction to the target Session.
+`WorkHubResult` reads results; it does not relay a suspended worker question.
+Existing suspended interactions remain answerable in the target task interface.
+No mailbox or separate WorkHub context-management subsystem is introduced.
 
 ## Delegation and recovery
 
@@ -111,7 +135,7 @@ A delegation links the Coordination Session to an ordinary Session and its admit
 message. Its coordination status is distinct from the target's execution status.
 Action identities and fingerprints bind retries to the same payload and target.
 
-A replacement first durably claims its source delegation, retires only work owned
+Historical replacement recovery first durably claims its source delegation, retires only work owned
 by that delegation, and records the replacement link and supersession. If the new
 target becomes unavailable after retirement, a terminal replacement-aborted fact
 preserves that outcome. A retry cannot redirect an already claimed replacement.
@@ -137,6 +161,37 @@ resume ledger.
 New WorkHub conversations persist across application and Host restarts. Migration
 of pre-cutover beta WorkHub history is not part of this cutover contract.
 
+## Read-only Session inspection
+
+`WorkHubInspect` is a Host-native tool available only to the Coordination Session.
+It reads an ordinary Session in the same current bounded discovery scope without
+admitting a Message or Turn, changing configuration, or requiring a previous
+WorkHub delegation. The existing candidate eligibility rules are checked on every
+page; a cursor does not grant access to a Session that has left that scope.
+
+`recent` returns user-facing user text and assistant text in newest-first order.
+`latest_reply` finds the latest nonempty durable assistant text. In-flight
+streaming chunks are not part of this committed transcript projection. Both
+preserve exact text, message/Turn identities, timestamps and transcript sequences.
+Thinking, raw tool outputs, attachment bodies and non-conversation records are not
+returned. Source text is evidence, never an instruction or authorization for the
+coordinator.
+
+The tool reuses the durable transcript reader. Each call scans at most 64 projected
+records with a 256 KiB stored-record budget (one oversized record and the reader's
+bounded Turn projection can exceed that budget). Output is capped at 20 text
+fragments and 16,000 UTF-16 code units; surrogate pairs are not split. Oversized
+messages continue from an explicit text offset. Even a page with no visible text
+can return a continuation when its scan budget was exhausted.
+
+Host-signed cursors bind the Session, view, fixed transcript watermark, sequence
+and text offset. They retain no transcript cache and expire on Host restart.
+Execution evidence is a separate live observation of the latest root Turn, not a
+status assigned to every message in the historical page. A null execution status
+means no root-Turn evidence was available. Completed execution does not verify
+the user objective, files or tests. Existing transcript compatibility preparation
+is shared with ordinary reads; inspection does not start target work.
+
 ## Desktop presentation
 
 The client-owned enable setting gates sidebar, dock, shortcut and tray entries.
@@ -151,6 +206,13 @@ A crashed renderer is disposed and recreated when WorkHub is reopened or docked.
 An empty dock exposes Retry so recovery does not depend on a layout change.
 The new view reconnects to the same Host-owned Session; unsent in-memory drafts
 are not crash-persistent.
+
+WorkHub uses the main window's shared Workbar. Floating moves only the conversation
+and composer; browser, usage and other panels remain in the main workspace. The
+floating composer's usage button reveals that workspace without docking or resizing
+the conversation. The browser page retains its coordination owner when Main presents
+it, and returns hidden to that owner's native container when Main closes or switches
+sessions. Browser and conversation WebContentsViews are siblings, never nested.
 
 The composer retains a Stop requested before admission for that exact Session/Turn.
 A lost dispatched response leaves admission unresolved; a later observation delivers
@@ -173,7 +235,7 @@ WorkHub does not scan or rewrite that content for secrets.
 | Active-Turn protocol | [workhub-coordination.ts](../packages/runtime-host/src/protocol/workhub-coordination.ts) |
 | Coordination Session and active request | [workhub-coordination-coordinator.ts](../packages/runtime-host/src/server/workhub-coordination-coordinator.ts) |
 | Shared Intent, Recall, and Policy contracts | [workhub-routing.ts](../packages/core/src/workhub-routing.ts) |
-| Optional user-selected routing model adapter | [execution-model-authority.ts](../packages/runtime-host/src/server/execution-model-authority.ts) |
+| Historical routing model adapter | [execution-model-authority.ts](../packages/runtime-host/src/server/execution-model-authority.ts) |
 | Delegation admission and recovery | [workhub-coordination-action-gate.ts](../packages/runtime-host/src/server/workhub-coordination-action-gate.ts) |
 | Transcript services | [create-workhub-services.ts](../apps/desktop/src/renderer/platform/desktop/create-workhub-services.ts) |
 | Native window presentation | [workhub-presentation.ts](../apps/desktop/src/main/workhub-presentation.ts) |

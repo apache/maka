@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, defineShippedUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 export type SettingsSharedCopy = {
   modalLabel: string;
@@ -67,7 +67,7 @@ export type SettingsSharedCopy = {
   };
 };
 
-const SETTINGS_SHARED_COPY_BY_LOCALE = {
+const SETTINGS_SHARED_COPY_BY_LOCALE = resolveUiMessageCatalog(defineShippedUiMessageCatalog<SettingsSharedCopy>()({
   'zh-CN': {
     modalLabel: '设置',
     contentLabel: '设置内容',
@@ -92,7 +92,7 @@ const SETTINGS_SHARED_COPY_BY_LOCALE = {
     hideDetails: '收起详情',
     ready: '就绪',
     groups: {
-      memorySources: '记忆',
+      memorySources: '本地记忆',
       memorySourcesHelp: 'Maka 会在任务中记住你确认过的信息，用于之后的回答。',
       memoryDocument: '记忆文件与备份',
       memoryDocumentHelp: '记忆保存在本机 MEMORY.md 里；这里可以直接编辑原文或恢复备份。',
@@ -132,7 +132,7 @@ const SETTINGS_SHARED_COPY_BY_LOCALE = {
     hideDetails: '收起詳情',
     ready: '就緒',
     groups: {
-      memorySources: '記憶',
+      memorySources: '本機記憶',
       memorySourcesHelp: 'Maka 會在任務中記住你確認過的資訊，用於之後的回答。',
       memoryDocument: '記憶檔案與備份',
       memoryDocumentHelp: '記憶儲存在本機 MEMORY.md 裡；這裡可以直接編輯原文或恢復備份。',
@@ -172,7 +172,7 @@ const SETTINGS_SHARED_COPY_BY_LOCALE = {
     hideDetails: 'Hide details',
     ready: 'Ready',
     groups: {
-      memorySources: 'Memory',
+      memorySources: 'Local memory',
       memorySourcesHelp: 'Maka remembers information you confirm in chat and uses it in later answers.',
       memoryDocument: 'Memory file and backups',
       memoryDocumentHelp: 'Memory lives in a local MEMORY.md; edit the raw file or restore a backup here.',
@@ -188,7 +188,7 @@ const SETTINGS_SHARED_COPY_BY_LOCALE = {
       reviewScheduleHelp: 'When the daily review runs, and which model writes it.',
     },
   },
-} satisfies UiCatalog<SettingsSharedCopy>;
+})) satisfies UiCatalog<SettingsSharedCopy>;
 
 export function getSettingsSharedCopy(locale: UiLocale): SettingsSharedCopy {
   return SETTINGS_SHARED_COPY_BY_LOCALE[locale];

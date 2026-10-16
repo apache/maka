@@ -41,27 +41,33 @@ import {
   type SessionWorkbarTab,
   type SessionWorkbarTabKind,
 } from '../model/workbar-tabs.js';
-
 const LAYOUT_PERSIST_DEBOUNCE_MS = 200;
 
 /**
  * Owns the application-level Workbar topology, dimensions and persistence.
  * Right-panel visibility belongs to each Session; topology and sizes stay global.
+ * `compact` is the shell's narrow-window reading; see `withCompact`.
  */
 export function useWorkbarLayoutState(
   activeSessionId: string | undefined,
   authoritativeSessionIds: ReadonlySet<string> | undefined,
+  compact: boolean,
 ) {
   const [state, dispatch] = useReducer(
     reduceWorkbarLayout,
     activeSessionId,
-    loadWorkbarLayout,
+    (sessionId) => loadWorkbarLayout(sessionId, compact),
   );
   // Bind the owner before this render commits. An effect-based mirror would
   // briefly show the previous Session's panel and could overwrite an open
   // action issued by another layout effect in the activation commit.
   if (state.activeSessionId !== activeSessionId) {
     dispatch({ type: 'activate-session', sessionId: activeSessionId });
+  }
+  // Same reason: a window crossing the threshold must not paint one frame of
+  // the other layout.
+  if (state.compact !== compact) {
+    dispatch({ type: 'set-compact', compact });
   }
   useEffect(() => {
     if (authoritativeSessionIds) {
@@ -218,6 +224,13 @@ export function useWorkbarLayoutState(
     },
     [],
   );
+  /* Space suppression, the rail's spaceConcealed counterpart: the controller's
+     room arbitration sets and releases it; user collapse/expand clears it in
+     the reducer. */
+  const setSpaceCollapsed = useCallback(
+    (collapsed: boolean) => dispatch({ type: 'set-space-collapsed', collapsed }),
+    [],
+  );
   const setBottomPanelOpen = useCallback(
     (next: SetStateAction<boolean>) => {
       const open =
@@ -234,6 +247,8 @@ export function useWorkbarLayoutState(
   return {
     workbarCollapsed: isSessionWorkbarCollapsed(state),
     setWorkbarCollapsed,
+    spaceCollapsed: state.spaceCollapsed,
+    setSpaceCollapsed,
     bottomPanelOpen: state.bottomOpen,
     setBottomPanelOpen,
     workbarWidth: state.rightWidth,

@@ -19,41 +19,57 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import {
+  emptyPlanSessionState,
+  type PlanExecution,
+  type PlanExecutionStep,
+  type PlanSessionState,
+  type PlanStore,
+} from '@maka/core/plan';
 import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
 import type { SessionTodoToolStore } from '@maka/runtime/session-todo-tools';
-import type { MakaTool } from '@maka/runtime/tool-runtime';
+import { z } from 'zod';
+import type { MakaTool, MakaToolContext } from '@maka/runtime/tool-runtime';
 import { createInteractiveRunComposer } from '../server/interactive-run-composer.js';
 import type { HostMemoryCoordinator } from '../server/memory-coordinator.js';
 import type { HostSkillCatalogCoordinator } from '../server/skill-catalog-coordinator.js';
+import { WORKHUB_BROWSER_TOOL_NAMES } from './fixtures/workhub-capabilities.js';
 
-test('the interactive tool surface does not expose the retired ExploreAgent tool', () => {
+test('the interactive tool surface does not expose retired tools', () => {
   const composer = createFixtureComposer();
 
   assert.equal(
-    composer.tools.some(({ name }) => name === 'ExploreAgent'),
+    composer.tools.some(({ name }) => name === 'ExploreAgent' || name.startsWith('deep_research_')),
     false,
   );
 });
 
-test('Deep Research keeps standard inspection tools and its durable workspace tools', () => {
-  const tool = (name: string): MakaTool => ({
-    name,
-    description: name,
-    parameters: {},
-    impl: async () => name,
-  });
+test('disabling subagents removes child, Graph and Swarm tools including dynamic contributions', () => {
+  const policy = createDefaultRuntimePolicy();
+  const names = [
+    'agent_spawn',
+    'agent_list',
+    'agent_output',
+    'agent_swarm_status',
+    'view_agent_graph',
+    'update_agent_graph',
+    'yield_agent_graph',
+  ];
+  let additions: MakaTool[] = [];
   const composer = createFixtureComposer({
-    hostTools: [tool('WebSearch')],
-    deepResearch: { tools: [tool('deep_research_status')] },
+    runtimePolicy: {
+      revision: 1,
+      policy: { ...policy, subagents: { enabled: false, presets: [] } },
+    },
+    parentAgentTools: names.map((name) => tool(name)),
+    resolveAdditionalTools: () => additions,
   });
-  const names = new Set(composer.tools.map(({ name }) => name));
-
-  for (const name of ['Read', 'Glob', 'Grep', 'WebSearch', 'deep_research_status']) {
-    assert.equal(names.has(name), true, `expected Deep Research tool ${name}`);
-  }
-  for (const name of ['Write', 'Edit', 'Bash', 'ExploreAgent']) {
-    assert.equal(names.has(name), false, `unexpected Deep Research tool ${name}`);
-  }
+  assert.ok(composer.tools.some((t) => t.name === 'Read'));
+  assert.ok(composer.tools.every((t) => !names.includes(t.name)));
+  additions = [{ ...tool('plugin_delegate'), categoryHint: 'subagent' }, tool('MemoryExtract')];
+  const next = composer.resolveTools!();
+  assert.ok(next.some((t) => t.name === 'MemoryExtract'));
+  assert.ok(next.every((t) => !names.includes(t.name) && t.name !== 'plugin_delegate'));
 });
 
 test('the composer resolves scoped Tool additions without rebuilding the backend', () => {
@@ -114,8 +130,54 @@ test('scoped Tool resolution receives the complete stable Host binding', () => {
   );
 });
 
+test('Full access composes Bash without a boundary declaration and without the widening tool', () => {
+  const bashKeys = (permissionMode: 'bypass' | 'ask' | undefined) => {
+    const composer = createFixtureComposer({
+      builtinTools: unusedManagedShellBuiltinTools(),
+      ...(permissionMode
+        ? {
+            plan: {
+              store: {} as PlanStore,
+              state: emptyPlanSessionState('session'),
+              mode: 'agent' as const,
+              permissionMode,
+            },
+          }
+        : {}),
+    });
+    const tools = composer.resolveTools?.() ?? [];
+    const bash = tools.find(({ name }) => name === 'Bash');
+    assert.ok(bash);
+    return {
+      keys: Object.keys(z.toJSONSchema(bash.parameters as z.ZodTypeAny).properties ?? {}),
+      widening: tools.some(({ name }) => name === 'request_sandbox_boundary'),
+      enforced: bash.description.includes('Enforced by the current session sandbox boundary.'),
+    };
+  };
+  assert.deepEqual(bashKeys('bypass'), {
+    keys: ['command', 'timeout_ms', 'run_in_background', 'pty'],
+    widening: false,
+    enforced: false,
+  });
+  for (const mode of ['ask', undefined] as const) {
+    assert.deepEqual(bashKeys(mode), {
+      keys: [
+        'command',
+        'timeout_ms',
+        'run_in_background',
+        'pty',
+        'boundary_intent',
+        'required_boundary',
+      ],
+      widening: true,
+      enforced: true,
+    });
+  }
+});
+
 test('an explicit tool profile remains an exact ceiling over scoped Tool additions', () => {
   const composer = createFixtureComposer({
+    builtinTools: unusedManagedShellBuiltinTools(),
     toolProfile: 'headless-coding-v1',
     resolveAdditionalTools: () => [tool('Read'), tool('plugin_only')],
   });
@@ -215,20 +277,66 @@ function tool(name: string): MakaTool {
     impl: async () => name,
   };
 }
+test('delegated workers return missing information without opening a human interaction', async () => {
+  let delegated = false;
+  const composer = createFixtureComposer({ returnMissingInformation: () => delegated });
+  const question = composer.tools.find((tool) => tool.name === 'AskUserQuestion')!;
+  const questions = {
+    questions: [
+      { question: 'Which environment should I deploy to?', options: [{ label: 'Staging' }] },
+    ],
+  };
+  // The already resolved tool must observe steering received after backend creation.
+  delegated = true;
+  const result = await question.impl(
+    questions as never,
+    {
+      sessionId: 'worker',
+      turnId: 'turn',
+      runId: 'run',
+      toolCallId: 'question',
+      cwd: '/workspace',
+      abortSignal: new AbortController().signal,
+      emitOutput() {},
+      askUserQuestion: () => assert.fail('worker must return control to coordinator'),
+    } as unknown as MakaToolContext,
+  );
+  assert.equal((result as { status: string }).status, 'missing_information');
+  assert.deepEqual((result as { questions: unknown }).questions, questions);
+  const prompt = await composer.resolveSystemPrompt({
+    sessionId: 'worker',
+    turnId: 'turn',
+    cwd: '/workspace',
+  });
+  assert.match(prompt.text ?? '', /information is missing/u);
+});
+
 test('WorkHub v2 binds control, tasks, attachment reading and user questions while legacy WorkHub stays tool-free', () => {
   const control = tool('mcp__desktop_workhub__control');
   const tasks = tool('mcp__desktop_workhub__tasks');
+  const browserTools = WORKHUB_BROWSER_TOOL_NAMES.map((name) =>
+    tool(`mcp__desktop_browser__${name}`),
+  );
   const clientCapabilities = {
-    tools: [control, tasks, tool('Bash'), tool('mcp__desktop_browser__navigate')],
+    tools: [control, tasks, ...browserTools, tool('Bash')],
     groups: [],
   };
   assert.deepEqual(
     createFixtureComposer({
       toolProfile: 'workhub-coordination-v2',
       clientCapabilities,
+      hostTools: [tool('WorkHubResult'), tool('WorkHubInspect')],
       resolveAdditionalTools: () => [tool('plugin_only'), tool('Read')],
     }).tools.map(({ name }) => name),
-    [control.name, tasks.name, 'Read', 'AskUserQuestion'],
+    [
+      control.name,
+      tasks.name,
+      ...browserTools.map(({ name }) => name),
+      'Read',
+      'AskUserQuestion',
+      'WorkHubResult',
+      'WorkHubInspect',
+    ],
   );
   assert.deepEqual(
     createFixtureComposer({
@@ -256,6 +364,107 @@ test('WorkHub v2 binds control, tasks, attachment reading and user questions whi
   );
 });
 
+test('Plan execution tools are bound only for active agent executions', () => {
+  const activeAgentTools = createFixtureComposer({
+    plan: {
+      store: {} as PlanStore,
+      state: activePlanState(),
+      mode: 'agent',
+    },
+  }).tools.map(({ name }) => name);
+  assert.equal(activeAgentTools.includes('update_plan'), true);
+  assert.equal(activeAgentTools.includes('cancel_plan'), true);
+  assert.equal(activeAgentTools.includes('SubmitPlan'), false);
+
+  const idleAgentTools = createFixtureComposer({
+    plan: {
+      store: {} as PlanStore,
+      state: emptyPlanSessionState('session-1'),
+      mode: 'agent',
+    },
+  }).tools.map(({ name }) => name);
+  assert.equal(idleAgentTools.includes('update_plan'), false);
+  assert.equal(idleAgentTools.includes('cancel_plan'), false);
+  assert.equal(idleAgentTools.includes('SubmitPlan'), false);
+
+  const planModeTools = createFixtureComposer({
+    plan: {
+      store: {} as PlanStore,
+      state: emptyPlanSessionState('session-1'),
+      mode: 'plan',
+    },
+  }).tools.map(({ name }) => name);
+  assert.equal(planModeTools.includes('SubmitPlan'), true);
+  assert.equal(planModeTools.includes('update_plan'), false);
+  assert.equal(planModeTools.includes('cancel_plan'), false);
+});
+
+function planStep(status: PlanExecutionStep['status']): PlanExecutionStep {
+  return {
+    id: 'step-1',
+    title: 'Step one',
+    description: 'Do the first step.',
+    status,
+    updatedAt: 2,
+  };
+}
+
+function activePlanState(
+  overrides: {
+    storeVersion?: number;
+    status?: PlanExecution['status'];
+    step?: PlanExecutionStep;
+  } = {},
+): PlanSessionState {
+  const step = overrides.step ?? planStep('pending');
+  const status = overrides.status ?? 'active';
+  return {
+    schemaVersion: 1,
+    sessionId: 'session-1',
+    storeVersion: overrides.storeVersion ?? 2,
+    proposals: [
+      {
+        planId: 'plan-1',
+        proposalId: 'proposal-1',
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        revision: 1,
+        title: 'Ship the plan request',
+        steps: [{ id: step.id, title: step.title, description: step.description }],
+        status: 'approved',
+        submittedAt: 1,
+      },
+    ],
+    executions: [
+      {
+        executionId: 'execution-1',
+        planId: 'plan-1',
+        proposalId: 'proposal-1',
+        sessionId: 'session-1',
+        status,
+        steps: [step],
+        startedAt: 1,
+        updatedAt: 2,
+      },
+    ],
+    latestProposalId: 'proposal-1',
+    // Only an active execution is the Session's current one; a cancelled or
+    // completed execution must not stay selected.
+    ...(status === 'active' ? { activeExecutionId: 'execution-1' } : {}),
+  };
+}
+
+function unusedManagedShellBuiltinTools(): Parameters<
+  typeof createInteractiveRunComposer
+>[0]['builtinTools'] {
+  const unused = () => Promise.reject(new Error('not used'));
+  return {
+    shellRuns: { runForegroundBash: unused, runBackgroundBash: unused },
+    backgroundTasks: { stopBackgroundTask: unused },
+    ptyControls: { writeStdin: unused },
+  };
+}
+
 function createFixtureComposer(
   overrides: Partial<Parameters<typeof createInteractiveRunComposer>[0]> = {},
 ) {
@@ -276,3 +485,126 @@ function createFixtureComposer(
     ...overrides,
   });
 }
+
+test('WorkHub cannot browse or finish a follow-up before recording its topic', async () => {
+  const names = [
+    'mcp__desktop_workhub__control',
+    'mcp__desktop_workhub__tasks',
+    ...WORKHUB_BROWSER_TOOL_NAMES.map((name) => `mcp__desktop_browser__${name}`),
+    'Read',
+    'AskUserQuestion',
+    'WorkHubResult',
+    'WorkHubInspect',
+  ];
+  const composer = createFixtureComposer({
+    toolProfile: 'workhub-coordination-v2',
+    boundTools: names.map(tool),
+  });
+  const prompt = await composer.resolveSystemPrompt({
+    sessionId: 'workhub',
+    turnId: 'lecture-follow-up',
+    cwd: '/workspace',
+  });
+  assert.equal((prompt as { requireToolCall?: boolean }).requireToolCall, true);
+  const browser = composer.tools.find(
+    ({ name }) => name === `mcp__desktop_browser__${WORKHUB_BROWSER_TOOL_NAMES[0]}`,
+  )!;
+  await assert.rejects(
+    async () => browser.impl({}, { turnId: 'lecture-follow-up' } as MakaToolContext),
+    /topic association/u,
+  );
+});
+
+test('WorkHub topic prerequisite settles only on successful receipts and resets per turn', async () => {
+  const names = [
+    'mcp__desktop_workhub__control',
+    'mcp__desktop_workhub__tasks',
+    ...WORKHUB_BROWSER_TOOL_NAMES.map((name) => `mcp__desktop_browser__${name}`),
+    'Read',
+    'AskUserQuestion',
+    'WorkHubResult',
+    'WorkHubInspect',
+  ];
+  let result: unknown = { isError: true };
+  const tools = names.map((name) => ({ ...tool(name), impl: async () => result }));
+  const composer = createFixtureComposer({
+    toolProfile: 'workhub-coordination-v2',
+    boundTools: tools,
+  });
+  const context = { turnId: 't1' } as MakaToolContext;
+  const prompt = (turnId: string) =>
+    composer.resolveSystemPrompt({ sessionId: 'workhub', turnId, cwd: '/workspace' });
+  const tasks = composer.tools.find(({ name }) => name === 'mcp__desktop_workhub__tasks')!;
+  const args = { request: { operation: 'associate', targetSessionId: 'cs336' } };
+  await tasks.impl(args, context);
+  assert.equal((await prompt('t1')).requireToolCall, true);
+  result = {
+    structuredContent: {
+      operation: 'associate',
+      targetSessionId: 'cs336',
+      targetSessionKey: '["host","cs336"]',
+    },
+  };
+  await tasks.impl(args, context);
+  assert.equal((await prompt('t1')).requireToolCall, undefined);
+  assert.equal((await prompt('t2')).requireToolCall, true);
+  result = {
+    structuredContent: { operation: 'associate', targetSessionId: null, reason: 'unrelated' },
+  };
+  await tasks.impl(
+    { request: { operation: 'associate', targetSessionId: null, reason: 'unrelated' } },
+    { ...context, turnId: 't2' },
+  );
+  assert.equal((await prompt('t2')).requireToolCall, undefined);
+});
+
+test('WorkHub prepared capability execution also enforces and settles topic association', async () => {
+  const names = [
+    'mcp__desktop_workhub__control',
+    'mcp__desktop_workhub__tasks',
+    ...WORKHUB_BROWSER_TOOL_NAMES.map((name) => `mcp__desktop_browser__${name}`),
+    'Read',
+    'AskUserQuestion',
+    'WorkHubResult',
+    'WorkHubInspect',
+  ];
+  const tools = names.map((name) => ({
+    ...tool(name),
+    prepareExecution: async () => ({
+      execute: async () => ({
+        structuredContent: {
+          operation: 'associate',
+          targetSessionId: 'cs336',
+          targetSessionKey: '["host","cs336"]',
+        },
+      }),
+      cancel() {},
+    }),
+  }));
+  const composer = createFixtureComposer({
+    toolProfile: 'workhub-coordination-v2',
+    boundTools: tools,
+  });
+  const context = { turnId: 't' } as MakaToolContext;
+  const browser = composer.tools.find(
+    ({ name }) => name === 'mcp__desktop_browser__browser_navigate',
+  )!;
+  await assert.rejects(browser.prepareExecution!({}, context as never), /topic association/u);
+  const tasks = composer.tools.find(({ name }) => name === 'mcp__desktop_workhub__tasks')!;
+  const prepared = await tasks.prepareExecution!(
+    { request: { operation: 'associate', targetSessionId: 'cs336' } },
+    context as never,
+  );
+  assert.equal(
+    (await composer.resolveSystemPrompt({ sessionId: 'workhub', turnId: 't', cwd: '/workspace' }))
+      .requireToolCall,
+    true,
+  );
+  await prepared.execute(context as never);
+  assert.equal(
+    (await composer.resolveSystemPrompt({ sessionId: 'workhub', turnId: 't', cwd: '/workspace' }))
+      .requireToolCall,
+    undefined,
+  );
+  await browser.prepareExecution!({}, context as never);
+});

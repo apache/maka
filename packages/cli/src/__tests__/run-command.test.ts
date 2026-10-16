@@ -25,6 +25,7 @@ import { fileURLToPath } from 'node:url';
 import type { UserMessageInput } from '@maka/core/runtime-inputs';
 import type { SessionSummary } from '@maka/core/session';
 import { parseMakaRunArgs, runMakaTextCliCore, type MakaRunAdapter } from '../run-command-core.js';
+import type { CreateSessionRequest } from '../session-driver.js';
 
 const fixturePath = fileURLToPath(new URL('./run-command-fixture.js', import.meta.url));
 
@@ -78,14 +79,18 @@ describe('maka run argument parsing', () => {
     );
   });
 
-  test('forwards --max-steps to local and Graph turn inputs', async () => {
+  test('forwards --max-steps and an explicit provider default to local and Graph runs', async () => {
     for (const graph of [false, true]) {
       const messages: UserMessageInput[] = [];
+      const sessions: CreateSessionRequest[] = [];
       const adapter: MakaRunAdapter = {
         listSessions: async () => [],
         createContext: async (input) => ({
           runtime: {
-            createSession: async () => sessionSummary(),
+            createSession: async (request) => {
+              sessions.push(request);
+              return sessionSummary();
+            },
             readExecutionBoundary: async () => ({
               kind: 'managed',
               access: 'writable',
@@ -114,7 +119,7 @@ describe('maka run argument parsing', () => {
       };
 
       const exitCode = await runMakaTextCliCore(
-        ['answer once', '--max-steps', '2', ...(graph ? ['--graph'] : [])],
+        ['answer once', '--max-steps', '2', '--thinking', 'default', ...(graph ? ['--graph'] : [])],
         adapter,
         {
           workspaceRoot: () => process.cwd(),
@@ -130,6 +135,7 @@ describe('maka run argument parsing', () => {
       assert.equal(exitCode, 0);
       assert.equal(messages.length, 1);
       assert.equal(messages[0]?.maxSteps, 2);
+      assert.equal(sessions[0]?.thinkingLevel, null);
     }
   });
 });

@@ -21,10 +21,57 @@
 
 ## Unreleased
 
-## 0.2.0 - Unreleased
+## 0.2.1 - Unreleased
 
 ### Added
 
+- WorkHub can inspect existing conversations, receive delegated task results automatically, and route remote channel conversations through the shared coordinator (#5886, #5595, #6051). Jev-assisted routing is opt-in (#5562).
+- Host storage usage and per-task sizes, archived-task cleanup by age and project, and opt-in archived-task retention (#5832, #5896, #5902, #5961).
+- Agent Graph output previews, session visit navigation with horizontal swipes, clickable terminal links, and a selectable Git comparison branch that persists per Session (#4751, #5688, #5033, #5120).
+- Resume interrupted or manually stopped turns from the Desktop composer, and opt-in next-prompt suggestions (#5206, #5904, #5629).
+- Connect the user's signed-in Chrome through opencli-mcp, and check local preview prerequisites before starting a preview (#5638, #5254).
+- Antigravity ACP plugin execution and restored sessions after restart; ACP operations for Goal, Plan, Artifact and Memory (#5224, #5670, #5734, #5685).
+- Filter usage by model call kind, replay DeepSeek hosted web-search responses, and include selected text in Computer Use snapshot observations (#5709, #5824, #5050).
+
+### Fixed
+
+- Enforce configured sender lists consistently across messaging platforms and preserve stored credentials when settings round-trip masked values (#6074).
+- Keep the composer context gauge from showing stale pre-compaction usage. The gauge returns to its localized Usage label until the provider measures a request after the compaction boundary (#5548).
+- Preserve interrupted tool settlement, session recovery and provider context handling across retries and restarts (#5610, #5621, #5587).
+- Report browser toolbar action failures and distinguish empty Git comparisons from review errors (#5955, #5967).
+- Desktop Edit & resend now keeps a selected message's quotes. Messages that carry attachments still cannot be edited (#5274).
+- Record aborted or usage-less auxiliary model calls as usage-unknown rather than zero (#5890).
+- Stop pipe-mode shell commands when their Runtime Host dies, instead of leaving them running without an owner (#5986).
+- Keep native Anthropic prompt caching effective across steps and turns by placing the cache breakpoint on replayed history (#6041).
+- Update shipped dependencies to clear published advisories in brace-expansion, fast-uri and axios (#5906).
+
+### Changed
+
+- Custom connections now use one provider type with a default API protocol and per-model overrides. Legacy connections migrate while retaining identifiers, credentials and model overrides (#5684).
+- TUI queue and retract shortcuts use Tab and Shift+Left in place of Alt chords (#5910).
+- Manual archiving now refuses a task while a WorkHub delegation or a live linked child task still points at it, instead of hiding it from WorkHub (#5957).
+- Reduced idle and streaming renderer work, paused transcript reads while the shell is covered, and bounded Host framing and storage queries (#5608, #6014, #5356, #5514).
+- Reclaim unused context-offload SQLite pages during Host maintenance; new runtime databases support incremental vacuum (#5855, #6044).
+- Removed the provider-dropping context note because differing upstream token counts could trigger it without evidence of dropped history. Historical sessions containing it still open (#5672).
+
+### Upgrade notes
+
+- Update Desktop, CLI and remote Runtime Hosts together. The Runtime Host compatibility epoch is 217 (176 in the 0.2.0 source release); mismatched peers cannot connect.
+- Back up configuration and workspace data before upgrading if rollback is needed. Custom connection catalogs migrate to schema v3, and new session records include fields older builds cannot decode; 0.2.0 cannot safely reuse data written by 0.2.1.
+- Review every messaging platform's sender list before enabling its channel. A nonempty list now admits only its listed platform user IDs, including WorkHub routing; an empty list retains unrestricted sender access (#6074).
+- Archived-task retention remains opt-in. Enabling it allows permanent deletion of eligible archived tasks; leave it disabled to retain them.
+
+## 0.2.0 - 2026-10-08
+
+### Added
+
+- Added external Session import to the TUI. It lists the Runtime Host's external
+  sources (Claude Code, Codex, OpenCode) and imports one Session as a native
+  Maka Session through the same Host catalog/import path the Desktop App uses,
+  opening the result without sending a model request. Sources with prior imports
+  offer an action to open the most recently imported task or create another
+  independent import. An uncertain result remains visible as a warning while
+  still allowing a user-initiated import again in both Desktop and TUI.
 - Added `/transcript` to browse long TUI sessions without depending on terminal
   scrollback, with line, page, and first/last navigation.
 
@@ -40,6 +87,12 @@
 
 ### Changed
 
+- Imported Sessions replay conversation text only — the user's words and the
+  model's — so an import can no longer publish an empty or partial history. A
+  transcript whose rows convert to nothing is refused before anything is
+  persisted, and a transcript that opens on an assistant reply keeps that turn.
+- Reading a Claude Code transcript for the Session catalog is bounded to a head
+  and tail window instead of reading each transcript to its end.
 - Made typed `request()` the sole direct Runtime Host operation API; removed the 17 forwarding
   aliases from direct and reconnecting connections while preserving status validation,
   subscriptions, capabilities, listeners, lifecycle, and close behavior.
@@ -454,6 +507,9 @@
 
 ### Removed
 
+- Removed the TUI's local foreign-Session scanner, the
+  `<foreign-session-digest>` handoff prompt, the second OpenCode reader, and the
+  `MAKA_IMPORT_*` switches. TUI and Desktop now share one import path.
 - Removed dead storage modules (#2104), consumer-less Desktop IPC bridge surface
   (#2065), and dead shell CSS recipes along with the check-dead-css blind spots
   that hid them (#2070).

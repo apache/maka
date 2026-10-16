@@ -42,6 +42,18 @@ The main integration points are:
 
 Shared execution composition — where `BackendRegistry` and `SessionManager` are constructed — lives in the Runtime Host at [`packages/runtime-host/src/server/execution-composition.ts`](../runtime-host/src/server/execution-composition.ts). Clients, including Desktop, execute Maka through Runtime Host rather than composing Runtime directly.
 
+## Background-task readiness
+
+`Bash` background runs return a durable runtime-task ref and expose the native
+process id when available. A process id published after startup is captured on
+the next task observation, output flush, or finalization.
+`BackgroundTaskHealth` deliberately keeps
+the process lifecycle (`starting`, `running`, or terminal, with timestamps and
+captured output) separate from endpoint readiness. An endpoint is `healthy`
+only after an explicit HTTP(S) probe succeeds; an omitted probe is
+`not_checked`, and a failed or policy-blocked probe is `unknown`. Consumers must
+not infer HTTP readiness from the process status alone.
+
 ## Extension rules
 
 - Add backend behavior behind `AgentBackend` and register it through the existing registry.

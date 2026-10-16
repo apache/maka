@@ -87,7 +87,8 @@ export async function runRuntimeHostInstalledUpdateBootstrap(
       if (!(await stat(coordinatorCliPath)).isFile()) {
         throw new Error('The copied Maka update coordinator has no CLI entry point');
       }
-      return deps.runCoordinator({
+      // The copied entry must outlive the coordinator that is executing it.
+      const exitCode = await deps.runCoordinator({
         coordinatorCliPath,
         rootPath: input.rootPath,
         archivePath,
@@ -102,6 +103,7 @@ export async function runRuntimeHostInstalledUpdateBootstrap(
         allowInterruptActiveTasks: input.allowInterruptActiveTasks,
         ...(input.expectedSource ? { expectedSource: input.expectedSource } : {}),
       });
+      return exitCode;
     } finally {
       await rm(temporaryRoot, { recursive: true, force: true }).catch(() => undefined);
     }

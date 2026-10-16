@@ -39,7 +39,7 @@ includes the canonical work-in-progress disclaimer below directly from the relea
 
 ## Requirements
 
-- Node.js 22.19.0 or newer;
+- Node.js 22.19.0 or newer on the 22 line, or 24.0.0 or newer (Node 23 is not supported);
 - a terminal with interactive input for the TUI;
 - a configured model connection for agent turns; first-run setup currently supports API-key
   providers.
@@ -79,6 +79,12 @@ The public command is `maka`. For a one-off invocation, use
 `npx --yes --package maka-agent@nightly maka`; the unrelated `maka` package on npm is not this project.
 `runtime-host service install` uses the persistent global installation above; `runtime-host setup`
 creates its own managed copy from the exact package invoked by `npx`.
+
+## Container
+
+To build and run a local glibc-based CLI image from an exact published npm version
+with persistent configuration, see the
+[container guide](https://github.com/apache/maka/blob/main/packages/cli/container/README.md).
 
 ## First run
 

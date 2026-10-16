@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useMemo, useState, type ComponentProps } from 'react';
+import { useCallback, useMemo, useRef, useState, type ComponentProps } from 'react';
 import { ChatLayout } from '@astryxdesign/core/Chat';
 import { AstryxLocaleProvider } from './astryx-i18n.js';
 import {
@@ -35,9 +35,18 @@ import { PromptAnchorRailHostContext } from './prompt-anchor-rail.js';
  */
 export type ChatSurfaceLayoutProps = Omit<ComponentProps<typeof ChatLayout>, 'autoScroll'> & {
   scrollToBottomLabel?: string;
-  /** Loads the durable tail after the scroll authority pins to it. */
-  onReturnToTail?(): Promise<void> | void;
 };
+
+function ComposerDockAnchor() {
+  const dockRef = useRef<HTMLElement | null>(null);
+  const setAnchor = useCallback((anchor: HTMLSpanElement | null) => {
+    dockRef.current?.removeAttribute('data-maka-composer-dock');
+    const dock = anchor?.parentElement?.parentElement ?? null;
+    dock?.setAttribute('data-maka-composer-dock', 'true');
+    dockRef.current = dock;
+  }, []);
+  return <span ref={setAnchor} hidden />;
+}
 
 /**
  * Maka's product seam for the Astryx chat page shell.
@@ -59,9 +68,9 @@ export type ChatSurfaceLayoutProps = Omit<ComponentProps<typeof ChatLayout>, 'au
 export function ChatSurfaceLayout({
   className,
   children,
+  composer,
   density = 'balanced',
   scrollToBottomLabel,
-  onReturnToTail,
   ...props
 }: ChatSurfaceLayoutProps) {
   const [railHost, setRailHost] = useState<HTMLDivElement | null>(null);
@@ -81,11 +90,12 @@ export function ChatSurfaceLayout({
   const layout = (
     <ChatLayout
       {...props}
+      composer={<>{composer}<ComposerDockAnchor /></>}
       autoScroll={false}
       // Astryx's default button reads `isScrolledUp`, which stops updating the
       // moment its scroll layer is off. Maka's reads Maka's pin instead.
       scrollButton={props.scrollButton === null ? null
-        : <TranscriptScrollButton onActivate={onReturnToTail} />}
+        : <TranscriptScrollButton />}
       density={density}
       className={cn('maka-chat-layout', className)}
       data-chat-scroll-container="true"

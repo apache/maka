@@ -33,7 +33,7 @@ import { markPersisted } from '@maka/core/persisted-value';
 import {
   type ActiveInteractionRequestEvent,
   type SessionEvent,
-  type ShellRunSnapshotResult,
+  type ShellRunStateResult,
   type ShellRunUpdate,
 } from '@maka/core/events';
 import { isSideConversationSession } from '@maka/core/side-conversation';
@@ -59,10 +59,13 @@ import { isRuntimeHostTerminalTurn as isTerminalTurn } from '@maka/runtime-host/
 import type { DirectRequestOperationKey, RuntimeHostConnection } from '@maka/runtime-host/client';
 import {
   projectSessionCatalogSummary,
+  readRuntimeHostSessionCatalogPage,
   readRuntimeHostResources,
   readRuntimeHostSessions,
+  RuntimeHostSessionCatalogRevisionChangedError,
   RuntimeHostOperationError,
   RuntimeHostRequestInterruptedError,
+  type RuntimeHostSessionCatalogPageCursor,
 } from '@maka/runtime-host/client';
 import {
   InteractionPendingSnapshot,
@@ -76,10 +79,12 @@ import {
   type GoalProjection,
   type SessionContinuitySnapshot,
   type SessionDomainChangedFrame,
+  type TurnResumePlan,
   type TurnResumeParkReason,
 } from '@maka/runtime-host/protocol';
 import { RuntimeHostSessionChannel } from './runtime-host-session-channel.js';
 import type { RuntimeHostSessionChannelOpenResult } from './runtime-host-session-channel.js';
+import { SESSION_CATALOG_MAX_SCAN_PAGES } from './session-catalog-limits.js';
 import {
   getRuntimeHostSession,
   requireRuntimeHostSessionProjection as requireSession,
@@ -95,6 +100,7 @@ import type {
   MakaPreparePromptOptions,
   MakaPreparedSessionTurn,
   MakaSessionDriver,
+  MakaSessionListOptions,
   MakaSessionMoveResult,
   MakaSessionRewindResult,
   MakaSessionSwitchOptions,
@@ -106,6 +112,7 @@ import type {
   SessionResumeAvailability,
 } from './session-driver.js';
 import {
+  MakaSessionCatalogIncompleteError,
   inspectSessionResumeAvailability,
   skillInvocationBlockedMessage,
 } from './session-driver.js';
@@ -118,6 +125,10 @@ import {
 const decodeStoredMessage = (value: unknown): StoredMessage =>
   decodePersistedStoredMessage(markPersisted<StoredMessage>(value));
 const MAX_CATALOG_ATTEMPTS = 3;
+// Sparse cwd or visibility matches must not turn a bounded lookup into a full Host scan.
+const MAX_SESSION_CATALOG_READ_ATTEMPTS = 8;
+const SESSION_CATALOG_READ_RETRY_BASE_DELAY_MS = 8;
+const SESSION_CATALOG_READ_RETRY_MAX_DELAY_MS = 64;
 
 /**
  * The host declined to start a safe-boundary continuation and explained why.
@@ -154,6 +165,8 @@ export interface RuntimeHostMakaSessionDriverInput {
   prospectivePermissionMode?: PermissionMode;
   orchestrationMode?: OrchestrationMode;
   newId?: () => string;
+  /** Prepare client-owned Session capabilities before the Host creates it. */
+  prepareSession?: (sessionId: string) => Promise<void>;
   now?: () => number;
   inspectCwdChanges?: InspectCwdChanges;
   executionLocation?: { readonly kind: 'client_path' } | { readonly kind: 'host' };
@@ -170,8 +183,13 @@ type RuntimeHostSessionDriverConnection = Pick<
 
 export interface RuntimeHostMakaSessionDriver extends MakaSessionDriver {
   createSession(input: CreateSessionRequest): Promise<SessionSummary>;
+  getSessionSummary(sessionId: string): Promise<SessionSummary | undefined>;
   readMessages(): Promise<StoredMessage[]>;
+  getWorkspaceTarget(): WorkspaceTarget | undefined;
   resumeLatest(): AsyncIterable<SessionEvent>;
+  resumeLatestTurn(
+    plan: Extract<TurnResumePlan, { disposition: 'ready' }>,
+  ): Promise<MakaPreparedSessionTurn>;
   subscribePendingInteractions(listener: (pending: InteractionPendingSnapshot) => void): () => void;
   subscribeStartedTurns(listener: (turn: MakaAttachedSessionTurn) => void): () => void;
   subscribeResolvedInteractions(
@@ -200,6 +218,7 @@ export function createRuntimeHostMakaSessionDriver(
 class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   readonly #connection: RuntimeHostSessionDriverConnection;
   readonly #newId: () => string;
+  readonly #prepareSession: ((sessionId: string) => Promise<void>) | undefined;
   readonly #now: () => number;
   readonly #inspectCwdChanges: InspectCwdChanges;
   readonly #executionLocation: NonNullable<RuntimeHostMakaSessionDriverInput['executionLocation']>;
@@ -259,6 +278,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   constructor(input: RuntimeHostMakaSessionDriverInput) {
     this.#connection = input.connection;
     this.#newId = input.newId ?? randomUUID;
+    this.#prepareSession = input.prepareSession;
     this.#now = input.now ?? Date.now;
     this.#inspectCwdChanges = input.inspectCwdChanges ?? inspectGitCwdChanges;
     this.#executionLocation = input.executionLocation ?? { kind: 'client_path' };
@@ -309,22 +329,28 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     if (input.llmConnectionId) this.#llmConnectionId = input.llmConnectionId;
     this.#llmConnectionSlug = input.llmConnectionSlug;
     this.#model = input.model;
-    this.#thinkingLevel = input.thinkingLevel;
+    this.#thinkingLevel = input.thinkingLevel ?? undefined;
     // An omitted mode stays omitted: the Host applies its configured default.
     // Substituting a literal `ask` here would make the CLI a second authority
     // over the starting boundary and silently override that default.
     this.#permissionMode = input.permissionMode;
-    const session = await this.#createSession(input.name ?? DEFAULT_SESSION_NAME);
+    const session = await this.#createSession(
+      input.name ?? DEFAULT_SESSION_NAME,
+      input.thinkingLevel,
+    );
     return projectSessionCatalogSummary(session);
   }
 
-  async listSessions(): Promise<SessionSummary[]> {
-    const sessions = (await readRuntimeHostSessions(this.#connection))
-      .flatMap(representableSession)
-      .filter((session) => !isSideConversationSession(session.labels))
-      .map(projectSessionCatalogSummary);
-    if (this.#executionLocation.kind === 'host') return sessions;
-    return sessions
+  async listSessions(options: MakaSessionListOptions = {}): Promise<SessionSummary[]> {
+    const sessions =
+      options.cwd !== undefined || options.limit !== undefined
+        ? await this.#readBoundedSessionCatalog(options.limit, options.cwd)
+        : (await readRuntimeHostSessions(this.#connection))
+            .flatMap(representableSession)
+            .filter((session) => !isSideConversationSession(session.labels));
+    const summaries = sessions.map(projectSessionCatalogSummary);
+    if (this.#executionLocation.kind === 'host') return summaries;
+    return summaries
       .map((session, index) => ({ session, index }))
       .sort((left, right) => {
         const cwdDelta =
@@ -335,8 +361,102 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       .map(({ session }) => session);
   }
 
-  getSessionResumeAvailability(session: SessionSummary): Promise<SessionResumeAvailability> {
+  async getSessionSummary(sessionId: string): Promise<SessionSummary | undefined> {
+    const projection = await getRuntimeHostSession(this.#connection, sessionId);
+    if (!projection) return undefined;
+    const [session] = representableSession(projection);
+    return session ? projectSessionCatalogSummary(session) : undefined;
+  }
+
+  async #readBoundedSessionCatalog(
+    limit: number | undefined,
+    cwd?: string,
+  ): Promise<SessionCatalogProjection[]> {
+    if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 0)) {
+      throw new Error(`Session catalog limit must be a non-negative safe integer: ${limit}`);
+    }
+    if (limit === 0) return [];
+    for (let attempt = 0; attempt < MAX_SESSION_CATALOG_READ_ATTEMPTS; attempt += 1) {
+      try {
+        const sessions: SessionCatalogProjection[] = [];
+        const cursors = new Set<string>();
+        let cursor: RuntimeHostSessionCatalogPageCursor | undefined;
+        let pagesRead = 0;
+        while (pagesRead < SESSION_CATALOG_MAX_SCAN_PAGES) {
+          const page = await readRuntimeHostSessionCatalogPage(this.#connection, cursor);
+          pagesRead += 1;
+          for (const item of page.sessions) {
+            for (const session of representableSession(item)) {
+              if (
+                (cwd === undefined || session.workspace.hostCwd === cwd) &&
+                !isSideConversationSession(session.labels)
+              ) {
+                sessions.push(session);
+                if (limit !== undefined && sessions.length >= limit) break;
+              }
+            }
+            if (limit !== undefined && sessions.length >= limit) break;
+          }
+          if (!page.nextCursor) {
+            cursor = undefined;
+            break;
+          }
+          cursor = page.nextCursor;
+          if (limit !== undefined && sessions.length >= limit) {
+            throw new MakaSessionCatalogIncompleteError(
+              pagesRead,
+              sessions.map(projectSessionCatalogSummary),
+            );
+          }
+          if (cursors.has(cursor.cursor)) {
+            throw new Error('Runtime Host Session catalog returned a repeated cursor');
+          }
+          cursors.add(cursor.cursor);
+        }
+        if (cursor !== undefined && pagesRead === SESSION_CATALOG_MAX_SCAN_PAGES) {
+          throw new MakaSessionCatalogIncompleteError(
+            pagesRead,
+            sessions.map(projectSessionCatalogSummary),
+          );
+        }
+        return sessions;
+      } catch (error) {
+        if (
+          !(error instanceof RuntimeHostSessionCatalogRevisionChangedError) ||
+          attempt + 1 === MAX_SESSION_CATALOG_READ_ATTEMPTS
+        ) {
+          throw error;
+        }
+        await new Promise<void>((resolve) =>
+          setTimeout(
+            resolve,
+            Math.min(
+              SESSION_CATALOG_READ_RETRY_BASE_DELAY_MS * 2 ** attempt,
+              SESSION_CATALOG_READ_RETRY_MAX_DELAY_MS,
+            ),
+          ),
+        );
+      }
+    }
+    throw new Error('Runtime Host Session catalog could not be read consistently');
+  }
+
+  async getSessionResumeAvailability(session: SessionSummary): Promise<SessionResumeAvailability> {
     return inspectRuntimeHostSessionResumeAvailability(session, this.#executionLocation);
+  }
+
+  async getSessionResumeCandidateAvailability(
+    session: SessionSummary,
+  ): Promise<SessionResumeAvailability> {
+    const availability = await inspectRuntimeHostSessionResumeAvailability(
+      session,
+      this.#executionLocation,
+    );
+    if (!availability.available) return availability;
+    const plan = await this.#request('turn.resume.query', { sessionId: session.id });
+    return plan.disposition === 'ready'
+      ? { available: true }
+      : { available: false, reason: plan.reason };
   }
 
   async preparePrompt(
@@ -355,6 +475,9 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     const events = channel.eventsForTurn(turnId);
     const modelText = options.modelText ?? prompt;
     try {
+      if (options.origin !== undefined && options.origin.kind !== 'cloud_activation') {
+        throw new Error('Runtime Host turn.start only supports cloud activation origins');
+      }
       const startInput = {
         sessionId,
         turnId,
@@ -364,6 +487,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
         },
         ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
         ...(options.maxSteps !== undefined ? { maxSteps: options.maxSteps } : {}),
+        ...(options.origin !== undefined ? { origin: options.origin } : {}),
       };
       const result = await this.#connection.request('turn.start', startInput);
       if (result.kind === 'blocked') {
@@ -390,7 +514,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
 
   async runUserCommand(command: string): Promise<{
     commandId: string;
-    result: ShellRunSnapshotResult;
+    result: ShellRunStateResult;
     takeRacedUpdate(): ShellRunUpdate['result'] | undefined;
   }> {
     const stopGeneration = this.#userCommandStopGeneration;
@@ -495,6 +619,17 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     if (plan.disposition !== 'ready') {
       throw new SafeBoundaryResumeParkedError(plan.reason);
     }
+    const turn = await this.resumeLatestTurn(plan);
+    yield* turn.events;
+  }
+
+  async resumeLatestTurn(
+    plan: Extract<TurnResumePlan, { disposition: 'ready' }>,
+  ): Promise<MakaPreparedSessionTurn> {
+    const sessionId = this.#requireSession('resume');
+    if (plan.sessionId !== sessionId) {
+      throw new Error('Runtime Host resume plan changed Session identity');
+    }
     const channel = await this.#ensureChannel(sessionId);
     const turnId = this.#newId();
     this.#claimedTurnIds.add(turnId);
@@ -507,13 +642,18 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
         sourceRuntimeEventHighWater: plan.sourceRuntimeEventHighWater,
       });
       if (result.kind !== 'started') {
-        channel.failTurn(turnId, new SafeBoundaryResumeParkedError(result.plan.reason));
+        throw new SafeBoundaryResumeParkedError(result.plan.reason);
       }
+      return {
+        sessionId: result.turn.sessionId,
+        turnId: result.turn.turnId,
+        runId: result.turn.runId,
+        events,
+      };
     } catch (error) {
       channel.failTurn(turnId, error);
       throw error;
     }
-    yield* events;
   }
 
   submitMessage(
@@ -1132,6 +1272,10 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     return this.#sessionId;
   }
 
+  getWorkspaceTarget(): WorkspaceTarget | undefined {
+    return this.#workspace.target;
+  }
+
   getGoal(): GoalProjection | null {
     // The session subscription's continuity snapshot carries the goal
     // projection and is folded on every pushed frame, so this read is as
@@ -1294,7 +1438,10 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     }
   }
 
-  async #createSession(name: string): Promise<SessionCatalogProjection> {
+  async #createSession(
+    name: string,
+    thinkingLevel: CreateSessionRequest['thinkingLevel'] = this.#thinkingLevel,
+  ): Promise<SessionCatalogProjection> {
     const workspace = this.#workspace.target;
     if (!workspace) {
       throw new Error('A remote Runtime Host Session requires an explicit Project');
@@ -1303,6 +1450,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     if (!this.#llmConnectionId) {
       throw new Error('Runtime Host Session creation requires an exact Connection identity');
     }
+    await this.#prepareSession?.(sessionId);
     const session = requireSession(
       await this.#request('session.create', {
         sessionId,
@@ -1318,7 +1466,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
         ...(this.#orchestrationMode === 'default'
           ? {}
           : { orchestrationMode: this.#orchestrationMode }),
-        ...(this.#thinkingLevel === undefined ? {} : { thinkingLevel: this.#thinkingLevel }),
+        ...(thinkingLevel === undefined ? {} : { thinkingLevel }),
       }),
     );
     this.#sessionGeneration += 1;
@@ -1482,11 +1630,6 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       sessionId,
       transcript: { kind: 'none' },
     });
-    const draining = (async () => {
-      for await (const _frame of subscription) {
-        // Keep the bounded subscription healthy until turn.stop settles.
-      }
-    })();
     try {
       const turn = subscription.snapshot.rootTurn;
       if (!turn || isTerminalTurn(turn)) return;
@@ -1497,7 +1640,6 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       });
     } finally {
       await subscription.close().catch(() => undefined);
-      await draining.catch(() => undefined);
     }
   }
 
@@ -1717,17 +1859,12 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     owner: { readonly sessionId: string; readonly commandId: string },
   ): Promise<void> {
     if (this.#activeUserCommands.get(ref) !== owner) return;
-    const stopped = await this.#request('runtime.resource.stop', {
+    await this.#request('runtime.resource.stop', {
       sessionId: owner.sessionId,
       ref,
     });
-    this.#publishShellRunUpdate({
-      sessionId: owner.sessionId,
-      ownership: { kind: 'local' },
-      sourceTurnId: owner.commandId,
-      sourceToolCallId: owner.commandId,
-      result: stopped.resource,
-    });
+    this.#activeUserCommands.delete(ref);
+    this.#publishRuntimeResource(owner.sessionId, ref);
   }
 
   #publishShellRunUpdate(update: ShellRunUpdate): void {
@@ -1839,9 +1976,8 @@ function inspectRuntimeHostSessionResumeAvailability(
   if (!summary.cwd) {
     return Promise.resolve({ available: false, reason: 'Missing working directory' });
   }
-  return location.kind === 'host'
-    ? Promise.resolve({ available: true })
-    : inspectSessionResumeAvailability(summary);
+  if (location.kind !== 'host') return inspectSessionResumeAvailability(summary);
+  return Promise.resolve({ available: true });
 }
 
 async function assertSessionResumeAvailable(
@@ -1864,16 +2000,11 @@ async function loadCurrentMessages(
     sessionId,
     transcript: { kind: 'tail', maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES },
   });
-  const draining = (async () => {
-    for await (const _frame of subscription) {
-      // The transcript is pinned to the subscription snapshot. Drain newer
-      // frames only to preserve the bounded transport while the read runs.
-    }
-  })();
+  // This read never declares readiness, so the Host holds every frame instead
+  // of queueing them against a consumer that will not take them.
   try {
     return await subscription.loadTranscript(decodeStoredMessage);
   } finally {
     await subscription.close().catch(() => undefined);
-    await draining.catch(() => undefined);
   }
 }

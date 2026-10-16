@@ -210,11 +210,13 @@ function mapBackendSessionEvent(
     case 'text_complete':
       return {
         ...base,
+        ...(event.interrupted ? { modelVisibility: 'hidden' as const } : {}),
         role: 'model',
         author: 'agent',
         content: {
           kind: 'text',
           text: event.text,
+          ...(event.interrupted ? { interrupted: true } : {}),
           ...(event.providerOptions !== undefined
             ? { providerOptions: structuredClone(event.providerOptions) }
             : {}),
@@ -235,6 +237,7 @@ function mapBackendSessionEvent(
     case 'thinking_complete':
       return {
         ...base,
+        ...(event.interrupted ? { modelVisibility: 'hidden' as const } : {}),
         role: 'model',
         author: 'agent',
         content: {
@@ -360,6 +363,7 @@ function mapBackendSessionEvent(
         name,
         result: event.content,
         ...(event.isError ? { isError: true as const } : {}),
+        ...(event.outcome ? { outcome: event.outcome } : {}),
         ...(event.providerExecuted !== undefined
           ? { providerExecuted: event.providerExecuted }
           : {}),
@@ -483,6 +487,15 @@ function mapBackendSessionEvent(
         author: 'user',
         actions: { formAnswerAccepted: { requestId: event.requestId } },
         refs: { toolCallId: event.toolUseId },
+      };
+
+    case 'context_compaction_applied':
+      return {
+        ...base,
+        role: 'system',
+        author: 'system',
+        modelVisibility: 'hidden',
+        content: { kind: 'system_note', note: event.type },
       };
 
     // ── Steering: a user message injected mid-turn at a step boundary ─────
@@ -676,6 +689,9 @@ function completeRuntimeEvent(
   if (status === 'failed') {
     stateDelta.failureClass =
       memory.failureClass ?? failureClassFromCompleteStopReason(stopReason) ?? 'runtime_error';
+  }
+  if (event.providerStopReason !== undefined) {
+    stateDelta.providerStopReason = event.providerStopReason;
   }
   if (event.contextCompactionOutcome !== undefined) {
     stateDelta.contextCompactionOutcome = event.contextCompactionOutcome;

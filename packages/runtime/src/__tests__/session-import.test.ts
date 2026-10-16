@@ -18,15 +18,24 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
-import { OPERATIONAL_STATE_DATABASE_NAME } from '@maka/storage/operational-state-store';
+import { messageContentDigest } from '@maka/core/events';
+import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
+import {
+  acquireOperationalStateDatabase,
+  OPERATIONAL_STATE_DATABASE_NAME,
+} from '@maka/storage/operational-state-store';
 import { createSessionStore } from '@maka/storage/session-store';
+import { createSqliteRuntimeStore } from '@maka/storage/sqlite-runtime-store';
 import { exportSessionBundle } from '../session-export.js';
 import { importSessionBundle } from '../session-import.js';
+import { RuntimeReadModel } from '../runtime-read-model.js';
+import { seedInvocation } from './invocation-fixture.js';
 
 const CONNECTION_SLUG = 'test-connection';
 const MODEL = 'test-model';
@@ -155,6 +164,502 @@ test('round-trips a Session into another workspace, row for row', async () => {
     await rm(target.root, { recursive: true, force: true });
   }
 });
+
+async function seedCompletedToolCall(workspaceRoot: string, sessionId: string): Promise<void> {
+  const runtime = createSqliteRuntimeStore(join(workspaceRoot, OPERATIONAL_STATE_DATABASE_NAME));
+  const identity = {
+    sessionId,
+    runId: `${sessionId}-run`,
+    invocationId: `${sessionId}-run`,
+    turnId: `${sessionId}-turn`,
+    partial: false,
+  };
+  const operationId = `${sessionId}-operation`;
+  const toolCallId = `${sessionId}-call`;
+  const refs = { operationId, toolCallId };
+  const args = { path: 'notes.txt' };
+  const canonicalArgsHash = canonicalToolArgsHash('Read', args);
+  try {
+    await seedInvocation(runtime, { ...identity, openedAt: 1 });
+    await runtime.appendRuntimeEvent(sessionId, identity.runId, {
+      ...identity,
+      id: `${sessionId}-user`,
+      ts: 2,
+      role: 'user',
+      author: 'user',
+      content: { kind: 'text', text: 'Read my notes' },
+    });
+    await runtime.commitToolPrepared({
+      operationId,
+      journalEventId: `${operationId}_prepared`,
+      runtimeEvent: {
+        ...identity,
+        id: `${sessionId}-call-event`,
+        ts: 3,
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'function_call', id: toolCallId, name: 'Read', args },
+        refs,
+      },
+      dispatchRuntimeEvent: {
+        ...identity,
+        id: `${sessionId}-dispatch`,
+        ts: 4,
+        role: 'system',
+        author: 'system',
+        actions: {
+          toolDispatch: {
+            protocol: 't1_after_preflight_v1',
+            operationId,
+            providerToolCallId: toolCallId,
+            toolName: 'Read',
+            canonicalArgsHash,
+            recoveryMode: 'replay_safe',
+          },
+        },
+        refs,
+      },
+      providerToolCallId: toolCallId,
+      toolName: 'Read',
+      canonicalArgsHash,
+      recoveryMode: 'replay_safe',
+      // Equal commit times and reverse lexical ids make journal order observable.
+      committedAt: 4,
+    });
+    await runtime.commitToolOutcome({
+      operationId,
+      journalEventId: `${operationId}_outcome`,
+      runtimeEvent: {
+        ...identity,
+        id: `${sessionId}-result`,
+        ts: 5,
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id: toolCallId,
+          name: 'Read',
+          result: { kind: 'text', text: 'remember the meeting' },
+        },
+        refs,
+      },
+      committedAt: 4,
+    });
+    await runtime.appendRuntimeEvent(sessionId, identity.runId, {
+      ...identity,
+      id: `${sessionId}-answer`,
+      ts: 6,
+      role: 'model',
+      author: 'agent',
+      content: { kind: 'text', text: 'Your notes say to remember the meeting.' },
+    });
+    await runtime.appendRuntimeEvent(sessionId, identity.runId, {
+      ...identity,
+      id: `${sessionId}-done`,
+      ts: 7,
+      role: 'system',
+      author: 'system',
+      status: 'completed',
+      actions: { endInvocation: true },
+    });
+  } finally {
+    runtime.close();
+  }
+}
+
+async function readToolHistory(workspaceRoot: string, sessionId: string) {
+  const runtime = createSqliteRuntimeStore(join(workspaceRoot, OPERATIONAL_STATE_DATABASE_NAME), {
+    readOnly: true,
+  });
+  try {
+    const messages = await new RuntimeReadModel({ runtimeEventStore: runtime }).getSessionMessages(
+      sessionId,
+    );
+    const journal = await runtime.readToolJournal(`${sessionId}-operation`);
+    const operation = await runtime.readToolOperation(`${sessionId}-operation`);
+    assert.deepEqual(
+      messages
+        .filter((message) => message.type === 'user' || message.type === 'assistant')
+        .map((message) => message.text),
+      ['Read my notes', 'Your notes say to remember the meeting.'],
+    );
+    assert.deepEqual(
+      journal.map((event) => [event.state, event.runtimeEventId]),
+      [
+        ['prepared', `${sessionId}-dispatch`],
+        ['outcome_committed', `${sessionId}-result`],
+      ],
+    );
+    assert.equal(operation?.currentState, 'outcome_committed');
+    assert.equal(operation?.callEventId, `${sessionId}-call-event`);
+    assert.equal(operation?.dispatchEventId, `${sessionId}-dispatch`);
+    assert.equal(operation?.resultEventId, `${sessionId}-result`);
+    return { messages, journal, operation };
+  } finally {
+    runtime.close();
+  }
+}
+
+async function seedQueuedMessages(workspaceRoot: string, sessionId: string): Promise<void> {
+  const store = createSessionStore(workspaceRoot);
+  try {
+    for (const [suffix, text] of [
+      ['z', 'First followup'],
+      ['a', 'Second followup'],
+    ] as const) {
+      const content = { text };
+      await store.commitMessageAdmission({
+        sessionId,
+        turnId: `${sessionId}-${suffix}-turn`,
+        runId: `${sessionId}-${suffix}-run`,
+        messageId: `${sessionId}-${suffix}-message`,
+        content,
+        submittedContentDigest: messageContentDigest(content),
+        submittedPlacement: 'next_turn',
+        placement: 'next_turn',
+        disposition: 'followup',
+        skillInvocation: { loaded: [], failed: [], receipts: [] },
+        admittedAt: 10,
+      });
+    }
+    await store.reorderMessageAdmissions(sessionId, [
+      `${sessionId}-a-message`,
+      `${sessionId}-z-message`,
+    ]);
+  } finally {
+    await store.close?.();
+  }
+}
+
+async function readQueuedMessages(workspaceRoot: string, sessionId: string) {
+  const store = createSessionStore(workspaceRoot);
+  try {
+    return await store.listMessageAdmissions(sessionId);
+  } finally {
+    await store.close?.();
+  }
+}
+
+async function packSession(workspaceRoot: string, sessionId: string, destination: string) {
+  const exported = await exportSessionBundle({ workspaceRoot, sessionId, destination });
+  assert.equal(exported.ok, true, JSON.stringify(exported));
+}
+
+for (const populated of [true, false]) {
+  test(`imports tool journals into a ${populated ? 'populated' : 'fresh'} workspace in order`, async () => {
+    const source = await makeWorkspace('maka-import-journal-source');
+    const target = await makeWorkspace('maka-import-journal-target');
+    try {
+      const sessionId = await createSession(source.workspaceRoot);
+      await seedCompletedToolCall(source.workspaceRoot, sessionId);
+      const expected = await readToolHistory(source.workspaceRoot, sessionId);
+      const existingId = populated
+        ? await createSession(target.workspaceRoot, 'Existing')
+        : undefined;
+      if (existingId) await seedCompletedToolCall(target.workspaceRoot, existingId);
+      const before = existingId
+        ? await readToolHistory(target.workspaceRoot, existingId)
+        : undefined;
+      const bundle = join(source.root, 'tool.maka-session');
+      await packSession(source.workspaceRoot, sessionId, bundle);
+
+      const imported = await importSessionBundle({
+        workspaceRoot: target.workspaceRoot,
+        source: bundle,
+      });
+      assert.equal(imported.ok, true, JSON.stringify(imported));
+      assert.deepEqual(await readToolHistory(target.workspaceRoot, sessionId), expected);
+      assert.deepEqual(
+        readSessionRows(target.workspaceRoot, sessionId),
+        readSessionRows(source.workspaceRoot, sessionId),
+      );
+      if (existingId)
+        assert.deepEqual(await readToolHistory(target.workspaceRoot, existingId), before);
+
+      const repeated = await importSessionBundle({
+        workspaceRoot: target.workspaceRoot,
+        source: bundle,
+      });
+      assert.equal(repeated.ok === false && repeated.reason.kind, 'session_exists');
+      assert.deepEqual(await readToolHistory(target.workspaceRoot, sessionId), expected);
+    } finally {
+      await rm(source.root, { recursive: true, force: true });
+      await rm(target.root, { recursive: true, force: true });
+    }
+  });
+
+  test(`imports queued messages into a ${populated ? 'populated' : 'fresh'} workspace and retains cancellation identity`, async () => {
+    const source = await makeWorkspace('maka-import-queue-source');
+    const target = await makeWorkspace('maka-import-queue-target');
+    try {
+      const sessionId = await createSession(source.workspaceRoot);
+      await seedQueuedMessages(source.workspaceRoot, sessionId);
+      const expected = await readQueuedMessages(source.workspaceRoot, sessionId);
+      const existingId = populated
+        ? await createSession(target.workspaceRoot, 'Existing')
+        : undefined;
+      if (existingId) await seedQueuedMessages(target.workspaceRoot, existingId);
+      const before = existingId
+        ? await readQueuedMessages(target.workspaceRoot, existingId)
+        : undefined;
+      const bundle = join(source.root, 'queue.maka-session');
+      await packSession(source.workspaceRoot, sessionId, bundle);
+
+      const imported = await importSessionBundle({
+        workspaceRoot: target.workspaceRoot,
+        source: bundle,
+      });
+      assert.equal(imported.ok, true, JSON.stringify(imported));
+      const actual = await readQueuedMessages(target.workspaceRoot, sessionId);
+      assert.deepEqual(
+        actual.map((message) => message.content.text),
+        ['Second followup', 'First followup'],
+      );
+      assert.deepEqual(actual, expected);
+      if (existingId)
+        assert.deepEqual(await readQueuedMessages(target.workspaceRoot, existingId), before);
+      const store = createSessionStore(target.workspaceRoot);
+      try {
+        assert.equal(
+          await store.claimMessageAdmissionCancellation(
+            sessionId,
+            `${sessionId}-a-message`,
+            'cancel-import',
+          ),
+          'cancelled_by_claim',
+        );
+      } finally {
+        await store.close?.();
+      }
+      assert.deepEqual(
+        (await readQueuedMessages(target.workspaceRoot, sessionId)).map(
+          (message) => message.content.text,
+        ),
+        ['First followup'],
+      );
+      const reopened = createSessionStore(target.workspaceRoot);
+      try {
+        assert.equal(
+          await reopened.claimMessageAdmissionCancellation(
+            sessionId,
+            `${sessionId}-a-message`,
+            'cancel-import',
+          ),
+          'same_claim',
+        );
+      } finally {
+        await reopened.close?.();
+      }
+    } finally {
+      await rm(source.root, { recursive: true, force: true });
+      await rm(target.root, { recursive: true, force: true });
+    }
+  });
+}
+
+test('imports local sequences in source order even when SQLite scans the bundle backwards', async () => {
+  const source = await makeWorkspace('maka-import-order-source');
+  const target = await makeWorkspace('maka-import-order-target');
+  try {
+    const sessionId = await createSession(source.workspaceRoot);
+    await seedCompletedToolCall(source.workspaceRoot, sessionId);
+    await seedQueuedMessages(source.workspaceRoot, sessionId);
+    const existingId = await createSession(target.workspaceRoot, 'Existing');
+    await seedCompletedToolCall(target.workspaceRoot, existingId);
+    await seedQueuedMessages(target.workspaceRoot, existingId);
+    const bundle = join(source.root, 'order.maka-session');
+    await packSession(source.workspaceRoot, sessionId, bundle);
+
+    // Both keys alias the rowid, so a plain scan of the bundle returns rows in
+    // sequence order however they were written, and the order tests above pass
+    // without the import's ORDER BY. Reversing unordered scans on the
+    // connection the import borrows leaves that ORDER BY as the only thing
+    // keeping source order.
+    const lease = acquireOperationalStateDatabase(await realpath(target.workspaceRoot));
+    try {
+      lease.database.exec('PRAGMA reverse_unordered_selects = ON');
+      const dataVersion = readDataVersion(lease.database);
+      const imported = await importSessionBundle({
+        workspaceRoot: target.workspaceRoot,
+        source: bundle,
+      });
+      assert.equal(imported.ok, true, JSON.stringify(imported));
+      // Unchanged only if the import committed through this same connection.
+      assert.equal(readDataVersion(lease.database), dataVersion);
+    } finally {
+      lease.close();
+    }
+
+    const expected = readLocalSequences(source.workspaceRoot, sessionId);
+    const actual = readLocalSequences(target.workspaceRoot, sessionId);
+    const existing = readLocalSequences(target.workspaceRoot, existingId);
+    for (const key of ['journal', 'admissions'] as const) {
+      assert.deepEqual(
+        actual[key].map((row) => row.id),
+        expected[key].map((row) => row.id),
+        `${key} rows keep source order`,
+      );
+      const floor = Math.max(...existing[key].map((row) => row.seq));
+      assert.ok(
+        actual[key].every((row) => row.seq > floor),
+        `${key} sequences are allocated after the target's own`,
+      );
+    }
+    assert.deepEqual(
+      await readToolHistory(target.workspaceRoot, sessionId),
+      await readToolHistory(source.workspaceRoot, sessionId),
+    );
+  } finally {
+    await rm(source.root, { recursive: true, force: true });
+    await rm(target.root, { recursive: true, force: true });
+  }
+});
+
+function readDataVersion(database: DatabaseSync): number {
+  return (database.prepare('PRAGMA data_version').get() as { data_version: number }).data_version;
+}
+
+function readLocalSequences(workspaceRoot: string, sessionId: string) {
+  const database = openDatabase(workspaceRoot, true);
+  try {
+    return {
+      journal: database
+        .prepare(
+          'SELECT journal_seq AS seq, journal_event_id AS id FROM tool_journal_events WHERE operation_id = ? ORDER BY journal_seq',
+        )
+        .all(`${sessionId}-operation`) as Array<{ seq: number; id: string }>,
+      admissions: database
+        .prepare(
+          'SELECT sequence AS seq, message_id AS id FROM message_admissions WHERE session_id = ? ORDER BY sequence',
+        )
+        .all(sessionId) as Array<{ seq: number; id: string }>,
+    };
+  } finally {
+    database.close();
+  }
+}
+
+test('rolls back reallocated rows after a late identity conflict and allows retry', async () => {
+  const source = await makeWorkspace('maka-import-rollback-source');
+  const target = await makeWorkspace('maka-import-rollback-target');
+  try {
+    const sessionId = await createSession(source.workspaceRoot);
+    await seedCompletedToolCall(source.workspaceRoot, sessionId);
+    await seedQueuedMessages(source.workspaceRoot, sessionId);
+    const existingId = await createSession(target.workspaceRoot, 'Existing');
+    await seedCompletedToolCall(target.workspaceRoot, existingId);
+    await seedQueuedMessages(target.workspaceRoot, existingId);
+    // The same usage identity belongs to different Sessions in the two roots.
+    // Its table merges after admissions and journals, so the conflict must
+    // roll back rows already inserted by both reallocation paths.
+    await seedUsageCall(source.workspaceRoot, sessionId);
+    await seedUsageCall(target.workspaceRoot, existingId);
+    const before = readOperationalRows(target.workspaceRoot);
+    const bundle = join(source.root, 'retry.maka-session');
+    await packSession(source.workspaceRoot, sessionId, bundle);
+
+    const failed = await importSessionBundle({
+      workspaceRoot: target.workspaceRoot,
+      source: bundle,
+    });
+    assert.equal(failed.ok, false);
+    if (failed.ok) assert.fail('expected usage identity conflict');
+    assert.equal(failed.reason.kind, 'io_failed');
+    assert.match(
+      JSON.stringify(failed.reason),
+      /UNIQUE constraint failed: usage_llm_calls.storage_key/,
+    );
+    assert.deepEqual(readOperationalRows(target.workspaceRoot), before);
+
+    const repaired = openDatabase(target.workspaceRoot);
+    try {
+      repaired.prepare('DELETE FROM usage_llm_calls WHERE id = ?').run('shared-call');
+    } finally {
+      repaired.close();
+    }
+    const retried = await importSessionBundle({
+      workspaceRoot: target.workspaceRoot,
+      source: bundle,
+    });
+    assert.equal(retried.ok, true, JSON.stringify(retried));
+    assert.deepEqual(
+      await readToolHistory(target.workspaceRoot, sessionId),
+      await readToolHistory(source.workspaceRoot, sessionId),
+    );
+    assert.deepEqual(
+      await readQueuedMessages(target.workspaceRoot, sessionId),
+      await readQueuedMessages(source.workspaceRoot, sessionId),
+    );
+    assert.deepEqual(
+      readSessionRows(target.workspaceRoot, sessionId),
+      readSessionRows(source.workspaceRoot, sessionId),
+    );
+    // The original Session still has its completed tool result and queue.
+    await readToolHistory(target.workspaceRoot, existingId);
+    assert.deepEqual(
+      (await readQueuedMessages(target.workspaceRoot, existingId)).map(
+        (message) => message.content.text,
+      ),
+      ['Second followup', 'First followup'],
+    );
+  } finally {
+    await rm(source.root, { recursive: true, force: true });
+    await rm(target.root, { recursive: true, force: true });
+  }
+});
+
+async function seedUsageCall(workspaceRoot: string, sessionId: string): Promise<void> {
+  const database = openDatabase(workspaceRoot);
+  try {
+    const record = {
+      id: 'shared-call',
+      sessionId,
+      providerId: 'test-provider',
+      modelId: MODEL,
+      inputTokens: 1,
+      outputTokens: 1,
+      cacheHitInputTokens: 0,
+      cacheMissInputTokens: 1,
+      cachedInputTokens: 0,
+      cacheWriteInputTokens: 0,
+      reasoningTokens: 0,
+      totalTokens: 2,
+      latencyMs: 1,
+      costUsd: 0,
+      status: 'success',
+      startedAt: 1,
+      date: '2026-10-07',
+      ts: 2,
+    };
+    const storageKey = createHash('sha256').update(JSON.stringify(record.id)).digest('hex');
+    database
+      .prepare(
+        'INSERT INTO usage_llm_calls(storage_key, id, ts, record_json, session_id) VALUES (?, ?, ?, ?, ?)',
+      )
+      .run(storageKey, record.id, record.ts, JSON.stringify(record), sessionId);
+  } finally {
+    database.close();
+  }
+}
+
+function readOperationalRows(workspaceRoot: string) {
+  const database = openDatabase(workspaceRoot, true);
+  try {
+    const tables = database
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+      .all() as Array<{ name: string }>;
+    return tables.map(({ name }) => ({
+      name,
+      rows: database
+        .prepare(`SELECT * FROM "${name.replaceAll('"', '""')}"`)
+        .all()
+        .map((row) => JSON.stringify(row))
+        .sort(),
+    }));
+  } finally {
+    database.close();
+  }
+}
 
 test('refuses a Session this workspace already has', async () => {
   const source = await makeWorkspace('maka-import-conflict');

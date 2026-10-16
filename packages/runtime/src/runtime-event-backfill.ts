@@ -163,7 +163,12 @@ export function backfillRuntimeEventsFromStoredMessages(
             id: newId(),
             role: 'model',
             author: 'agent',
-            content: { kind: 'text', text: message.text },
+            ...(message.interrupted ? { modelVisibility: 'hidden' as const } : {}),
+            content: {
+              kind: 'text',
+              text: message.text,
+              ...(message.interrupted ? { interrupted: true } : {}),
+            },
             actions: { stateDelta: recoveryState(now, message) },
             refs: { storedMessageId: message.id },
           });
@@ -173,6 +178,7 @@ export function backfillRuntimeEventsFromStoredMessages(
           for (const part of parts) {
             events.push({
               ...base,
+              ...(message.interrupted ? { modelVisibility: 'hidden' as const } : {}),
               id: newId(),
               role: 'model',
               author: 'agent',
@@ -280,6 +286,7 @@ export function backfillRuntimeEventsFromStoredMessages(
             name: call?.toolName ?? '',
             result: message.content,
             isError: message.isError,
+            ...(message.outcome ? { outcome: message.outcome } : {}),
             ...(message.providerExecuted !== undefined
               ? { providerExecuted: message.providerExecuted }
               : {}),

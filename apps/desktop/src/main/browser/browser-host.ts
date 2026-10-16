@@ -47,6 +47,11 @@ export interface BrowserOriginLease {
   release(): void;
 }
 
+export interface BrowserActionLease {
+  readonly ready: Promise<void>;
+  release(): Promise<void>;
+}
+
 export interface BrowserViewHost {
   /** Read the current real URL without creating or attaching an automation endpoint. */
   currentUrl(sessionId: string): string;
@@ -57,11 +62,10 @@ export interface BrowserViewHost {
    */
   openOriginLease(sessionId: string, approvedUrl: string, kind: BrowserActionKind): BrowserOriginLease;
   /**
-   * The visible-lease gate (see browserActionAllowed): may `sessionId` run a
-   * `kind` action right now? EVERY kind — read, navigate, mutate — requires the
-   * session to be the one the user is currently looking at (mutate also a real
-   * viewport), so the agent can never drive OR read a hidden view after a
-   * conversation switch. Checked before resolveEndpoint so a blocked action
+   * The Host action gate: may `sessionId` run a
+   * `kind` action right now? Ordinary Sessions require a visible conversation
+   * (mutation also needs a viewport). The Host-bound WorkHub coordination
+   * Session alone may operate in the background. Checked before resolveEndpoint so a blocked action
    * creates no view.
    *
    * Resolves async for one case: a mutate on the conversation that IS on screen
@@ -71,6 +75,8 @@ export interface BrowserViewHost {
    * click/type lands without a retry. `signal` cancels that wait.
    */
   canDrive(sessionId: string, kind: BrowserActionKind, opts?: { signal?: AbortSignal }): boolean | Promise<boolean>;
+  /** Hold any background rendering resources only for this admitted action. */
+  beginAction(sessionId: string): BrowserActionLease | undefined;
   /**
    * Resolve (lazily starting) the CDP endpoint for `sessionId`'s OWN view. The
    * view is the session's own, but it may be hidden — canDrive gates whether an
@@ -84,7 +90,7 @@ export interface BrowserViewHost {
    */
   releaseSession(sessionId: string): Promise<void>;
   /**
-   * The conversation is gone (deleted or archived): destroy its view outright —
+   * The page, Session, or owning renderer is gone: destroy its view outright —
    * page, history, automation. A no-op for sessions that never had a view.
    */
   disposeSession(sessionId: string): Promise<void>;

@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { defineShippedUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
+
 import type { UiLocale } from '@maka/core/ui-locale';
 
 interface SessionHoverCardCopy {
@@ -32,7 +34,7 @@ interface SessionHoverCardCopy {
   projectUnavailable: string;
 }
 
-const COPY: Record<UiLocale, SessionHoverCardCopy> = {
+const COPY: Record<UiLocale, SessionHoverCardCopy> = resolveUiMessageCatalog(defineShippedUiMessageCatalog<SessionHoverCardCopy>()({
   'zh-CN': {
     sessionDetailsLabel: (name) => `${name} 任务详情`,
     projectDetailsLabel: (name) => `${name} 项目详情`,
@@ -69,7 +71,7 @@ const COPY: Record<UiLocale, SessionHoverCardCopy> = {
     projectAvailable: 'Directory available',
     projectUnavailable: 'Directory unavailable',
   },
-};
+}));
 
 export function getSessionHoverCardCopy(locale: UiLocale): SessionHoverCardCopy {
   return COPY[locale];

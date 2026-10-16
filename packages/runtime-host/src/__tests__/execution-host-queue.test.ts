@@ -130,6 +130,8 @@ test('subscribed Clients share one canonical queue and ordered root handoff', as
       sessionId: fixture.sessionId,
       transcript: { kind: 'none' },
     });
+    await desktopSubscription.ready();
+    await tuiSubscription.ready();
     const desktopProbe = new SubscriptionProbe(desktopSubscription);
     const tuiProbe = new SubscriptionProbe(tuiSubscription);
     for (const subscription of [desktopSubscription, tuiSubscription]) {
@@ -239,12 +241,12 @@ test('a quote-only queued message survives the wire snapshot, the admission chai
   await withExecutionRoot(async (fixture) => {
     const host = await fixture.startHost();
     const client = await connectClient(fixture.root);
-    const probe = new SubscriptionProbe(
-      await client.openSessionSubscription({
-        sessionId: fixture.sessionId,
-        transcript: { kind: 'none' },
-      }),
-    );
+    const subscription = await client.openSessionSubscription({
+      sessionId: fixture.sessionId,
+      transcript: { kind: 'none' },
+    });
+    await subscription.ready();
+    const probe = new SubscriptionProbe(subscription);
 
     // The root turn occupies the session so the quote-only submit queues as
     // a follow-up instead of opening a successor.
@@ -295,6 +297,7 @@ test('a quote-only queued message survives the wire snapshot, the admission chai
       sessionId: fixture.sessionId,
       transcript: { kind: 'none' },
     });
+    await recoveredSubscription.ready();
     // The restart promotes the queued follow-up into a successor root Turn
     // that runs to completion; the durable user message must carry the
     // quote excerpt — the full submit -> admission -> wire snapshot ->
@@ -499,6 +502,7 @@ test('a Host crash after queue admission recovers the durable successor once', a
       sessionId: fixture.sessionId,
       transcript: { kind: 'none' },
     });
+    await subscription.ready();
     const probe = new SubscriptionProbe(subscription);
     const successor = await probe.waitFor(
       (frame) =>
@@ -634,6 +638,7 @@ test('a killed Host is recovered exactly once before its successor becomes ready
       sessionId: fixture.sessionId,
       transcript: { kind: 'none' },
     });
+    await firstSubscription.ready();
     const firstProbe = new SubscriptionProbe(firstSubscription);
     const turnId = randomUUID();
     const started = requireStartedTurn(
@@ -666,6 +671,7 @@ test('a killed Host is recovered exactly once before its successor becomes ready
       sessionId: fixture.sessionId,
       transcript: { kind: 'none' },
     });
+    await recoveredSubscription.ready();
     const recovered = await second.request('turn.query', {
       sessionId: fixture.sessionId,
       turnId,
@@ -739,6 +745,7 @@ test('graceful Host shutdown stops and drains an active Turn before releasing ow
       sessionId: fixture.sessionId,
       transcript: { kind: 'none' },
     });
+    await subscription.ready();
     const probe = new SubscriptionProbe(subscription);
     const turnId = randomUUID();
     const started = requireStartedTurn(
@@ -788,6 +795,7 @@ test('Host shutdown contains a user-question admission rejected by Interaction d
       sessionId: fixture.sessionId,
       transcript: { kind: 'none' },
     });
+    await subscription.ready();
     const probe = new SubscriptionProbe(subscription);
     const turnId = randomUUID();
     const started = requireStartedTurn(

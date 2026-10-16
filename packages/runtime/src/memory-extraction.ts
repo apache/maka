@@ -63,6 +63,7 @@ import {
   type HistoryCompactCheckpoint,
 } from './history-compact-checkpoint.js';
 import type { ModelMessage, ModelToolSet } from './model-protocol.js';
+import { applyRuntimeEventProviderHistoryBoundary } from './model-history.js';
 import type { MakaTool, MakaToolContext } from './tool-runtime.js';
 
 export const MEMORY_REMEMBER_TOOL_NAME = 'memory_remember';
@@ -239,7 +240,13 @@ export function buildMemoryCompactionSourceContext(
       content: [{ type: 'text', text: renderHistoryCompactCheckpoint(options.previousCheckpoint) }],
     });
   }
-  for (const event of events.slice(afterIndex + 1, boundaryIndex + 1)) {
+  const sourceEvents = events.slice(afterIndex + 1, boundaryIndex + 1);
+  const providerEvents = applyRuntimeEventProviderHistoryBoundary(sourceEvents, {
+    allowRepairedAssistantPrefix:
+      options.previousCheckpoint !== undefined &&
+      isTextHistoryCompactCheckpoint(options.previousCheckpoint),
+  }).events;
+  for (const event of providerEvents) {
     if (event.partial || event.content?.kind !== 'text') continue;
     if (event.role === 'user' && event.author === 'user') {
       push(event.id, { role: 'user', content: [{ type: 'text', text: event.content.text }] });

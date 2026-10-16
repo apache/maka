@@ -181,12 +181,14 @@ function snapshotProvider(provider: ClientCapabilityProvider): ClientCapabilityP
   const call = provider.call?.bind(provider);
   const callService = provider.callService?.bind(provider);
   const close = provider.close?.bind(provider);
+  const currentRegistrationRetired = provider.currentRegistrationRetired?.bind(provider);
   return {
     offers: () => canonical.offers,
     ...(canonical.services === undefined ? {} : { services: () => canonical.services ?? [] }),
     ...(call ? { call } : {}),
     ...(callService ? { callService } : {}),
     ...(close ? { close } : {}),
+    ...(currentRegistrationRetired ? { currentRegistrationRetired } : {}),
   };
 }
 

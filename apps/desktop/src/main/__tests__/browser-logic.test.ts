@@ -27,6 +27,7 @@ import {
   parseNavigable,
   safeExternalUrl,
   viewportBounds,
+  viewportBoundsAtScale,
 } from '../browser/logic.js';
 
 describe('browser logic', () => {
@@ -65,6 +66,20 @@ describe('browser logic', () => {
     assert.equal(viewportBounds({ x: 0, y: 0, width: Infinity, height: 100 }), null);
     assert.equal(viewportBounds({ x: NaN, y: 0, width: 100, height: 100 }), null);
     assert.equal(viewportBounds({ x: 0, y: 0, width: '100' as unknown as number, height: 100 }), null);
+  });
+
+  it('viewportBoundsAtScale converts CSS pixels to DIP without edge seams', () => {
+    assert.deepEqual(
+      viewportBoundsAtScale({ x: 10, y: 20, width: 301, height: 201 }, 1.1),
+      { x: 11, y: 22, width: 331, height: 221 },
+    );
+    assert.deepEqual(
+      viewportBoundsAtScale({ x: 4, y: 8, width: 220, height: 160 }, 1.25),
+      { x: 5, y: 10, width: 275, height: 200 },
+    );
+    assert.equal(viewportBoundsAtScale(null, 1.25), null);
+    assert.equal(viewportBoundsAtScale({ x: 0, y: 0, width: 100, height: 100 }, 0), null);
+    assert.equal(viewportBoundsAtScale({ x: 0, y: 0, width: 100, height: 100 }, NaN), null);
   });
 
   it('browserActionAllowed enforces the visible lease', () => {

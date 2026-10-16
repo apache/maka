@@ -66,6 +66,11 @@ function isDeniedEnvKey(key) {
  */
 export function buildFixtureEnv(userDataDir, homeDir, options = {}) {
   const env = { ...process.env };
+  // One X server per Playwright worker, routed before the denylist strips the
+  // base variable; windows sharing a server contend for its one input focus.
+  if (env.MAKA_E2E_DISPLAY_BASE && env.TEST_PARALLEL_INDEX) {
+    env.DISPLAY = `:${Number(env.MAKA_E2E_DISPLAY_BASE) + Number(env.TEST_PARALLEL_INDEX)}`;
+  }
   for (const key of Object.keys(env)) {
     if (isDeniedEnvKey(key)) delete env[key];
   }

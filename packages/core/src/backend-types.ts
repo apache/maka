@@ -93,6 +93,13 @@ export interface BackendSendInput {
    */
   runtimeContext?: RuntimeEvent[];
   /**
+   * Trusted marker for an explicit client-authored fresh turn. When prior
+   * history contains a sealed dispatched tool with no result, the backend may
+   * project that uncertainty into this request only. Continuations and hosted
+   * automation must never set this.
+   */
+  allowPriorUnknownToolOutcomes?: boolean;
+  /**
    * The invocations `runtimeContext` came from, used only to verify
    * provider-owned replay against the current model route. RuntimeEvents stay
    * the transcript authority; route provenance is read off each opening fact.

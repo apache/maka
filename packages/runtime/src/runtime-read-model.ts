@@ -18,7 +18,10 @@
  */
 
 import type { RuntimeEvent } from '@maka/core/runtime-event';
-import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
+import type {
+  RuntimeEventStore,
+  RuntimeSessionEventSnapshot,
+} from '@maka/core/runtime-event-store';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import type { StoredMessage, TurnRecord } from '@maka/core/session';
 import { deriveTurnRecords } from '@maka/core/session';
@@ -36,10 +39,6 @@ import {
   type RuntimeEventReadModelDiagnostic,
   type RuntimeEventTerminalFact,
 } from './runtime-event-read-model.js';
-import {
-  buildRuntimeEventModelReplayPlan,
-  type RuntimeEventModelReplayPlan,
-} from './model-history.js';
 
 const CANONICAL_PERMISSION_READ_CONCURRENCY = 8;
 
@@ -56,7 +55,6 @@ export interface RuntimeReadModelSessionView {
   invocations: RuntimeInvocationRecord[];
   diagnostics: RuntimeEventReadModelDiagnostic[];
   terminalFacts: RuntimeEventTerminalFact[];
-  replayPlan: RuntimeEventModelReplayPlan;
 }
 
 export class RuntimeReadModelError extends Error {
@@ -83,11 +81,28 @@ export class RuntimeReadModel {
   async getSessionView(sessionId: string): Promise<RuntimeReadModelSessionView> {
     const diagnostics: RuntimeEventReadModelDiagnostic[] = [];
     const inFlightTurnIds = new Set<string>();
+    let snapshot: RuntimeSessionEventSnapshot | undefined;
+    if (this.deps.runtimeEventStore.readSessionRuntimeSnapshot) {
+      try {
+        snapshot = await this.deps.runtimeEventStore.readSessionRuntimeSnapshot(sessionId);
+      } catch (error) {
+        throw new RuntimeReadModelError('RuntimeEvent Session snapshot read failed', [
+          readModelDiagnostic(
+            'unsupported_event',
+            'RuntimeEventStore.readSessionRuntimeSnapshot failed',
+            {
+              error: errorMessage(error),
+            },
+          ),
+        ]);
+      }
+    }
     let invocations: RuntimeInvocationRecord[];
     try {
-      invocations = (await this.deps.runtimeEventStore.listSessionInvocations(sessionId)).filter(
-        (invocation) => isSessionInlineInvocation(invocation.opening),
-      );
+      invocations = (
+        snapshot?.invocations ??
+        (await this.deps.runtimeEventStore.listSessionInvocations(sessionId))
+      ).filter((invocation) => isSessionInlineInvocation(invocation.opening));
     } catch (error) {
       throw new RuntimeReadModelError('RuntimeReadModel could not list Session invocations', [
         readModelDiagnostic(
@@ -104,20 +119,23 @@ export class RuntimeReadModel {
       return this.buildView({ invocations, events: [], diagnostics });
     }
 
-    const durableEventOrdinals = await this.readSessionRuntimeEventOrdinals(sessionId);
-    const durableEventOrdinalById = new Map(
-      durableEventOrdinals.map(({ event, ordinal }) => [event.id, ordinal]),
-    );
+    const durableEventOrdinalById =
+      snapshot?.durableEventOrdinalById ??
+      new Map(
+        (await this.readSessionRuntimeEventOrdinals(sessionId)).map(({ event, ordinal }) => [
+          event.id,
+          ordinal,
+        ]),
+      );
     const ordered: OrderedRuntimeEvent[] = [];
     const terminalFacts: RuntimeEventTerminalFact[] = [];
     for (let runIndex = 0; runIndex < invocations.length; runIndex += 1) {
       const invocation = invocations[runIndex]!;
       let runEvents: RuntimeEvent[];
       try {
-        runEvents = await this.deps.runtimeEventStore.readRuntimeEvents(
-          sessionId,
-          invocation.runId,
-        );
+        runEvents = snapshot
+          ? (snapshot.eventsByRun.get(invocation.runId) ?? [])
+          : await this.deps.runtimeEventStore.readRuntimeEvents(sessionId, invocation.runId);
       } catch (error) {
         throw new RuntimeReadModelError('RuntimeEvent ledger read failed', [
           readModelDiagnostic('unsupported_event', 'RuntimeEventStore.readRuntimeEvents failed', {
@@ -129,8 +147,7 @@ export class RuntimeReadModel {
 
       // No terminal event yet: the invocation is still open, or the process died
       // holding it. Either way its own events are the whole truth about it, read
-      // as a running turn reads — the arriving text presented as settled. No
-      // durable ordinals exist for them yet, so they keep ledger order.
+      // as a running turn reads — the arriving text presented as settled.
       if (!invocation.terminalEvent) {
         inFlightTurnIds.add(invocation.turnId);
         appendOrderedEvents(ordered, activePresentationRuntimeEvents(runEvents), runIndex);
@@ -212,7 +229,6 @@ export class RuntimeReadModel {
       invocations: input.invocations,
       diagnostics,
       terminalFacts: input.terminalFacts ?? [],
-      replayPlan: buildRuntimeEventModelReplayPlan(input.events),
     };
   }
 

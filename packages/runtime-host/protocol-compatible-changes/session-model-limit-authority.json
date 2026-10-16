@@ -1,0 +1,5 @@
+{
+  "epoch": 175,
+  "files": ["packages/runtime-host/src/protocol/session-catalog.ts"],
+  "reason": "Moves the existing 512-byte Session model limit to Core while preserving the protocol decoder's accepted values and wire shape"
+}

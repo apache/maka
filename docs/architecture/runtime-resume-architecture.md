@@ -7,7 +7,7 @@ counterpart: ./runtime-resume-architecture.zh-CN.md
 implementation_status: phase_0_2_and_phase_3a_authority_current
 document_status: current
 translation_status: synced
-last_verified: 2026-09-02
+last_verified: 2026-10-10
 owners:
   - maka-backend
 ---
@@ -38,7 +38,7 @@ Tracking: [Production Write/Edit recovery #4319](https://github.com/apache/maka/
 
 This chapter is for engineers entering Maka Runtime for the first time. The first half builds intuition with an interrupted file write. The second half explains Phases 0–4, Desktop and CLI integration, T1/T2, recovery decisions, workspace checkpoints, and the recommended implementation sequence.
 
-It describes `main` as verified on 2026-07-28:
+It describes `main` as verified on 2026-10-10:
 
 - Phases 0–2 are implemented.
 - Phase 3A recovery-fact atomic write authority and the Resolver are implemented.
@@ -232,7 +232,7 @@ The API and database enforce RuntimeEvent authority:
 | `invocationId` | Which model/tool flow invocation is this? |
 | `operationId` | Which concrete tool side-effect attempt is this? |
 
-A continuation creates fresh `runId`, `invocationId`, and `turnId` values and records:
+A continuation creates fresh `runId`, `invocationId`, and `turnId` values. The legacy header shape recorded the lineage as:
 
 ```text
 continuationSource = {
@@ -242,6 +242,8 @@ continuationSource = {
   sourceRuntimeEventHighWater
 }
 ```
+
+PR B replaced that header field: the live lineage is `AgentRunLineage` (`parentRunId`, `resumedFromRunId`, `parentTurnId`), the validated replay prefix is committed through `continuation_start_v2` with a `replayManifestDigest`, and the uniqueness guarantee lives in the `runtime_continuation_claims` table. `continuationSource` survives only in the legacy run-header decoder.
 
 `providerToolCallId` still pairs provider-native calls and results. `operationId` identifies the Runtime, SQLite, and future external-idempotency attempt. They are not interchangeable.
 
@@ -418,7 +420,7 @@ The invariant is:
 
 > A Run has ended exactly when its terminal RuntimeEvent is durable, and nothing else records that it ended.
 
-There is no second commit for a crash to land between. Desktop also recovers Graph coordination. Automatic continuation is considered only after those repairs and only when the feature flag is enabled.
+There is no second commit for a crash to land between. Desktop also recovers Graph coordination and the supervisor wake. Automatic continuation is considered only after those repairs and only when the feature flag is enabled.
 
 ## Phase 1: create a new execution at a safe boundary
 
@@ -465,7 +467,6 @@ sequenceDiagram
   participant Planner as RuntimeContinuationPlanner
   participant Kernel as RuntimeKernel
   participant Run as New AgentRun
-  participant Kernel as RuntimeKernel
   participant Provider as Model provider
 
   User->>UI: click Safe resume
@@ -481,7 +482,7 @@ sequenceDiagram
   else continue
     SM->>Kernel: resumeSafeBoundaryContinuation
     Kernel->>Kernel: reread and revalidate every boundary
-    Kernel->>Run: create new Run with continuationSource
+    Kernel->>Run: create new Run, commit continuation claim + continuation_start_v2
     Run->>Kernel: return durable continuation-start proof
     Kernel->>Kernel: consume one-shot start proof
     Kernel->>Provider: replay history without duplicate user message
@@ -489,7 +490,51 @@ sequenceDiagram
   end
 ```
 
-CLI/TUI `/resume` uses the same `SessionManager` plan/execute seam. Desktop startup auto-resume also reuses it.
+CLI/TUI `/resume` uses the same `SessionManager` plan/execute seam. Startup
+recovery can reconstruct an already admitted continuation through that seam,
+but it does not automatically select an ordinary failed or cancelled Run.
+
+### A missing tool result is projected only for a fresh user turn
+
+An uncertain tool side effect is not a resumable boundary. If recovery finds a
+durable T1 dispatch without a committed T2 result, it seals the old invocation
+as `outcome_unknown`; it does not invent a durable tool response and does not
+retry the tool. The old Run remains stopped.
+
+When the user later sends a new explicit message, that message starts a new
+Turn. Only provider requests in that fresh Turn receive a temporary history
+projection: the old tool call is paired with an `outcome_unknown` response,
+then the new user message follows. The temporary response is not written to
+the RuntimeEvent ledger or transcript, and nothing about the event is added
+to the request's system prompt, so the provider-stable request prefix is not
+churned on exactly the turns that replay the full history. For example, after
+`Bash("touch marker.txt")` was dispatched but its result was not committed, a
+new request such as “check whether `marker.txt` exists” lets the model inspect
+the current state before deciding what to do; Maka does not decide whether the
+write happened and does not retry it automatically.
+
+Automated triggers such as cloud activation, schedules, Goals, WorkHub results,
+and Agent Graph wakes are not explicit user messages. If such a fresh Turn sees
+an unresolved unknown tool outcome, Runtime rejects it before making a provider
+request; a user must inspect the current state and send a new message.
+
+The unknown is retired once the conversation demonstrably moved on with the
+model informed: a later fresh, lineage-free invocation (an explicit user
+message — not a retry, regenerate, branch, sub-agent, continuation, or
+automated wake) that opened after the crash seal and completed. From the next
+Turn on, the gate no longer fires, automated triggers run normally, and
+compaction is no longer held open for that history. If the explicit Turn fails
+or is stopped, the unknown stays active and is projected again on the next
+explicit message. Retirement is inferred from durable invocation facts already
+in the ledger; no synthetic outcome is ever written.
+
+This projection must not lose the T1 call. If an existing checkpoint or the
+current context budget would hide it, Runtime falls back to the full effective
+history for that request. This is a deliberate fail-closed trade-off: a very
+large unresolved history may exceed the provider's context limit, in which case
+the provider's real error is surfaced rather than dropping the uncertainty or
+claiming success. Compaction that preserves this uncertainty while reducing
+the rest of that history is not implemented here.
 
 ### Current parked-reason boundary
 
@@ -525,7 +570,7 @@ A normal Run creates an initial user RuntimeEvent. A continuation already has a 
 
 This avoids duplicate requests and prevents a completed tool call from running merely because the system created a new Turn.
 
-Multi-generation continuation currently follows `continuationSource` through ancestor Runs and assembles legal segments oldest-first. Planned PR B will replace the current `events.length` high-water and in-process claim with immutable event-seq, domain-separated prefix digest, and a database uniqueness claim.
+Multi-generation continuation follows the durable continuation claim through ancestor Runs and assembles legal segments oldest-first. PR B replaced the former `events.length` high-water and in-process claim with immutable event-seq boundaries, a domain-separated prefix digest, and a SQLite uniqueness claim (`runtime_continuation_claims`).
 
 ## What workspace identity proves
 
@@ -541,19 +586,18 @@ A path move is diagnostic; marker identity mismatch is a hard gate. This proves 
 
 ## Phase 2: SQLite is the durable RuntimeEvent store
 
-A JSONL host without `RuntimeCommitSink` cannot declare the T1 protocol. Only when the host wires the SQLite store as both `RuntimeEventStore` and `RuntimeCommitSink` may the AiSdk tool path declare `t1_after_preflight_v1` on the first Run event.
+A host wires the SQLite store as both `RuntimeEventStore` and `RuntimeCommitSink`, so the AiSdk tool path may declare `t1_after_preflight_v1` on the first Run event.
 
 ```text
 open a RuntimeEvent writer
   → create or migrate runtime.sqlite
-  → batch-idempotently import legacy RuntimeEvent JSONL
   → write RuntimeEvents only to SQLite
 ```
 
-There is no backend-selection flag. Read-only inspection may read a legacy-only
-workspace without creating a database; the first writer performs the one-way
-import. Once `runtime.sqlite` exists, all readers use SQLite and never merge or
-fall back to stale JSONL. JSONL remains for legacy import and explicit export.
+There is no backend-selection flag. The one-time legacy JSONL import has been
+retired with the file-backed store: `runtime-event-persistence` opens the
+SQLite store directly, all readers use SQLite, and nothing merges or falls
+back to stale JSONL.
 
 ## Phase 3A: atomically commit recovery facts
 
@@ -802,7 +846,7 @@ Eval does not resume or reconstruct Runtime execution. It asks Runtime Host to e
 
 ```mermaid
 flowchart TD
-  A["PR A<br/>Recovery persistence authority<br/>complete"] --> B["PR B<br/>Immutable cursor + durable claim"]
+  A["PR A<br/>Recovery persistence authority<br/>complete"] --> B["PR B<br/>Immutable cursor + durable claim<br/>merged"]
   A --> C["PR C<br/>File evidence + finalize-only recovery"]
   B --> E["PR E<br/>Checkpoint contracts"]
   C --> E
@@ -829,9 +873,20 @@ Start with production-shaped red tests, then land core contract, storage constra
 
 ## Feature flags, migration, and rollback
 
-| Flag | Purpose | Rollback meaning |
+| Setting | Purpose | Rollback meaning |
 |---|---|---|
-| `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=1` | Enable Desktop manual/auto resume and CLI `/resume` | May disable visible continuation; does not delete durable facts |
+| unset | Enable explicit Desktop and CLI/TUI resume; keep automated WorkHub and `maka activate` resume disabled | Default product behavior |
+| `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=1` | Also enable automated WorkHub and `maka activate` resume | Preserves the previous full opt-in behavior |
+| `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=0` | Disable explicit and model-driven resume planning | May park reconstruction; does not delete durable facts |
+
+Unknown non-empty values fail closed like `0`. Every enabled entry point still
+uses the same authoritative planner; the policy only controls whether a new
+resume attempt may reach it.
+
+With automated `maka activate` resume enabled, a ready continuation is used
+instead of submitting that activation's new stimulus. If no continuation is
+ready, the stimulus is submitted normally. Callers that need every activation
+stimulus processed should not opt into this legacy resume behavior.
 
 RuntimeEvent migration is unconditional on the first write. Downgrading to a
 reader that does not understand the new schema requires explicit, verified
@@ -897,7 +952,7 @@ Current implementation does not promise:
 
 The two most important follow-ups are:
 
-1. PR B: immutable event-seq high-water, prefix digest, SQLite unique claim, and unified ancestor replay;
+1. PR B has landed: immutable event-seq boundaries, a domain-separated prefix digest, the SQLite unique claim (`runtime_continuation_claims`), and unified ancestor replay through `continuation_start_v2`;
 2. PR C/D: production file evidence/reconciler and one complete host-owner lifecycle.
 
 ## Code-reading map
@@ -932,7 +987,7 @@ The two most important follow-ups are:
 
 1. `apps/desktop/src/main/runtime-host-boot.ts`
 2. `apps/desktop/src/main/runtime-host-session-execution-ipc-main.ts`
-3. `apps/desktop/src/renderer/use-shell-resume.ts`
+3. `apps/desktop/src/renderer/features/conversation/controller/use-shell-resume.ts`
 4. `packages/cli/src/runtime-host-cli-context.ts`
 5. `packages/cli/src/runtime-host-session-driver.ts`
 

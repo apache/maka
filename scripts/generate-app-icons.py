@@ -25,8 +25,8 @@ below, so the provenance of the artwork is the source you are reading.
     python3 scripts/generate-app-icons.py            # rewrite every icon
     python3 scripts/generate-app-icons.py --check    # verify, write nothing
 
-`--check` is what the test harness uses: it re-renders and compares bytes, so
-a change to the geometry that is not reflected in the committed PNGs fails.
+`--check` is what the test harness uses: it re-renders and compares decompressed
+scanlines, so a change to the geometry that is not reflected in the committed PNGs fails.
 The harness passes no names, so every shipped tile is compared, and rendering
 is spread across all cores to keep that affordable.
 
@@ -40,7 +40,6 @@ and the dock scales the canvas without adding padding of its own, so a
 full-bleed tile would sit 24% wider than every neighbour.
 """
 
-import io
 import math
 import os
 import sys
@@ -502,13 +501,45 @@ def write_png_stream(handle, size, raw, height=None, rgb=False):
     def chunk(tag, data):
         return (struct.pack(">I", len(data)) + tag + data
                 + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
-    fh = handle
-    if True:
-        fh.write(b"\x89PNG\r\n\x1a\n")
-        fh.write(chunk(b"IHDR",
+    handle.write(b"\x89PNG\r\n\x1a\n")
+    handle.write(chunk(b"IHDR",
                        struct.pack(">IIBBBBB", size, h, 8, color_type, 0, 0, 0)))
-        fh.write(chunk(b"IDAT", zlib.compress(raw, 9)))
-        fh.write(chunk(b"IEND", b""))
+    handle.write(chunk(b"IDAT", zlib.compress(raw, 9)))
+    handle.write(chunk(b"IEND", b""))
+
+
+def committed_scanlines(png):
+    """Scanlines of a PNG this file wrote, or None if its header differs.
+
+    The check compares these to the fresh render rather than file bytes: IDAT
+    is whatever the running zlib produced, so a runner-image upgrade would
+    otherwise report drift that no one drew.
+    """
+    if png[:8] != b"\x89PNG\r\n\x1a\n":
+        return None
+    pos, chunks = 8, []
+    while pos + 12 <= len(png):
+        length, tag = struct.unpack(">I4s", png[pos:pos + 8])
+        data = png[pos + 8:pos + 8 + length]
+        crc = png[pos + 8 + length:pos + 12 + length]
+        if len(data) != length or crc != struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF):
+            return None
+        chunks.append((tag, data))
+        pos += 12 + length
+    expected = struct.pack(">IIBBBBB", ART_SIZE, ART_SIZE, 8, 6, 0, 0, 0)
+    if (pos != len(png)
+            or [tag for tag, _ in chunks] != [b"IHDR", b"IDAT", b"IEND"]
+            or chunks[0][1] != expected
+            or chunks[2][1] != b""):
+        return None
+    try:
+        decoder = zlib.decompressobj()
+        scanlines = decoder.decompress(chunks[1][1]) + decoder.flush()
+        if not decoder.eof or decoder.unused_data or decoder.unconsumed_tail:
+            return None
+        return scanlines
+    except zlib.error:
+        return None
 
 
 MACOS_MARGIN = 100 / 1024.0
@@ -552,10 +583,8 @@ def main(argv):
     for name, raw in rendered:
         path = os.path.join(dest, name + ".png")
         if check:
-            buffer = io.BytesIO()
-            write_png_stream(buffer, ART_SIZE, raw)
             with open(path, "rb") as handle:
-                if handle.read() != buffer.getvalue():
+                if committed_scanlines(handle.read()) != raw:
                     stale.append(name)
         else:
             write_png(path, ART_SIZE, raw)

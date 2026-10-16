@@ -20,10 +20,16 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
+import { getBuiltinPricing } from '../telemetry/builtin-pricing.js';
 import { computeCost } from '../telemetry/cost.js';
 import { recordLlmCall } from '../telemetry/record-llm-call.js';
 import { recordToolInvocation } from '../telemetry/record-tool-invocation.js';
 import type { PersistedLlmCallRecord, PersistedToolInvocationRecord } from '../telemetry/types.js';
+
+test('Moonshot Global pricing comes from the models.dev snapshot', () => {
+  const pricing = getBuiltinPricing('moonshot-global:kimi-k3');
+  assert.ok(pricing && pricing.inputUsdPer1M > 0 && pricing.outputUsdPer1M > 0);
+});
 
 describe('computeCost', () => {
   test('charges full input price only for cache-miss input', () => {

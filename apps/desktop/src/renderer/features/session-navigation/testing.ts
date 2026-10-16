@@ -18,9 +18,13 @@
  */
 
 import type { SessionNavigationServices } from './ports.js';
+export { createSessionVisitHistory } from './model/session-visit-history.js';
+export { createSessionSwipe } from './model/session-swipe.js';
+export { SessionHistoryNavigation } from './ui/session-history-navigation.js';
 
 export type {
   SessionNavigationPorts,
+  SessionNavigationProjectScope,
   SessionNavigationServices,
   SessionNavigationSession,
   SessionNavigationSessionService,
@@ -37,11 +41,29 @@ export {
   type UseSessionNavigationControllerInput,
 } from './controller/use-session-navigation-controller.js';
 export { useSessionSelection } from './controller/use-session-selection.js';
-export type { SessionNavigationRowActions } from './controller/session-row-actions.js';
+export type {
+  ArchivedPurgeRequest,
+  SessionNavigationRowActions,
+} from './controller/session-row-actions.js';
 export { useSessionNavigationReads } from './controller/use-session-navigation-reads.js';
+export { SessionNavigationProvider } from './ui/session-navigation-provider.js';
 export { sessionMatchesRail } from './model/session-nav-filter.js';
-export { deriveBranchBanner } from './model/branch-banner.js';
+export {
+  archivedAgeThresholdMs,
+  archivedProjectOptions,
+  archivedTaskProjectResolver,
+  archivedTaskRows,
+  availableProjectFilter,
+  isArchivedTaskScopeNarrowed,
+  matchesArchivedTaskQuery,
+  scopeArchivedTasks,
+  UNSCOPED_ARCHIVED_TASKS,
+  type ArchivedTaskScope,
+} from './model/archived-task-scope.js';
+export { ArchivedTaskScope as ArchivedTaskScopeSurface } from './ui/archived-task-scope.js';
 export { deriveSessionRail } from './model/session-rail.js';
+export { deriveSessionNavigationGroups } from './model/session-navigation-groups.js';
+export { sessionMoveTargets } from './model/session-navigation-move-targets.js';
 export { deriveSessionRevisionNavigation } from './model/session-revisions.js';
 export {
   EMPTY_SESSION_SELECTION,
@@ -50,8 +72,8 @@ export {
   type SessionSelection,
 } from './model/session-selection.js';
 export {
-  readSessionListViewMode,
-  writeSessionListViewMode,
+  SESSION_LIST_EXPANDED_DEFAULT_WIDTH,
+  SESSION_LIST_EXPANDED_MIN_WIDTH,
 } from './model/session-list-layout.js';
 export { createSessionRailLayoutStore } from './model/session-rail-layout-store.js';
 
@@ -67,6 +89,12 @@ export function createFakeSessionNavigationServices(
       rename: async () => undefined,
       remove: async () => ({ disposition: 'removed', archivedSubtaskCount: 0 }),
       previewRemoval: async () => 0,
+      previewRemovals: async () => ({
+        archivableSubtaskCount: 0,
+        removedSubtaskCount: 0,
+        worktreeCount: 0,
+      }),
+      moveToProject: async () => ({ ok: true }),
     },
     ...overrides,
   };

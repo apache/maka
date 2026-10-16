@@ -26,6 +26,7 @@ import type {
   TurnSnapshot,
   UsageQueryResult,
 } from '../protocol/index.js';
+import type { RunSettlementCoverage } from '@maka/storage/model-call-ledger';
 import type { ConnectionContext, OperationHandlerMap } from './operation-dispatcher.js';
 
 export interface HostHostedExecutionRunnerInput {
@@ -33,6 +34,14 @@ export interface HostHostedExecutionRunnerInput {
     OperationHandlerMap,
     'session.create' | 'turn.start' | 'turn.query' | 'turn.stop' | 'usage.query'
   >;
+  /**
+   * What the settlement window left unsettled (#5890). Settlement's
+   * incompleteness check reads this window-scoped answer instead of the
+   * `usage.query` coverage: that field is the ledger's public provenance and
+   * must keep counting usage-unknown rows no run owns — a failed auxiliary
+   * Host call is real accounting, not this run's unsettled obligation.
+   */
+  readonly runSettlementCoverage: (from: number, to: number) => Promise<RunSettlementCoverage>;
   readonly context: ConnectionContext;
   readonly requestDrain: () => void;
   readonly waitForExecutionResidencies: () => Promise<void>;
@@ -82,8 +91,10 @@ export class HostHostedExecutionRunner {
       await (signal.aborted
         ? this.input.waitForAllResidencies()
         : this.input.waitForExecutionResidencies());
-      const usage = await this.#readUsage(startedAt, (this.input.now ?? Date.now)());
-      const incompleteUsage = incompleteUsageReason(usage);
+      const settledAt = (this.input.now ?? Date.now)();
+      const usage = await this.#readUsage(startedAt, settledAt);
+      const runCoverage = await this.input.runSettlementCoverage(startedAt, settledAt);
+      const incompleteUsage = incompleteUsageReason(usage, runCoverage);
       if (incompleteUsage) {
         return indeterminate(
           input.executionId,
@@ -160,12 +171,18 @@ export class HostHostedExecutionRunner {
 
 function incompleteUsageReason(
   result: Extract<UsageQueryResult, { kind: 'summary' }>,
+  runCoverage: RunSettlementCoverage,
 ): string | undefined {
-  const { coverage, unreadableRecords, pendingRepairs } = result.provenance;
+  // Unreadable and pending-repair rows stay ledger-wide: damage in the window
+  // is nobody's settled fact. Partial and missing usage are judged against the
+  // same window as the totals this check guards (#5890), so a delegated child
+  // Session cannot settle underneath them — the `no_run` sentinel rows stay
+  // excluded, and the shared coverage field still reports everything.
+  const { unreadableRecords, pendingRepairs } = result.provenance;
   if (unreadableRecords > 0) return 'unreadable_usage_record';
   if (pendingRepairs > 0) return 'pending_usage_repair';
-  if (coverage.usagePartialAttempts > 0) return 'partial_attempt_usage';
-  if (coverage.usageMissingAttempts > 0) return 'missing_attempt_usage';
+  if (runCoverage.usagePartialAttempts > 0) return 'partial_attempt_usage';
+  if (runCoverage.usageMissingAttempts > 0) return 'missing_attempt_usage';
   return undefined;
 }
 

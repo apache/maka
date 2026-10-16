@@ -111,40 +111,26 @@ describe('Workbar feature boundary', () => {
     ]) {
       assert.equal(appShell.includes(forbidden), false, forbidden);
     }
-    assert.equal(
-      appShell.includes('<WorkbarHost model={workbar.host} />'),
-      true,
-    );
+    assert.match(appShell, /<WorkbarHost togglePosition=\{workbarTogglePosition\} \/>/);
   });
 
-  it('projects Work Board project identity through the controller-owned host model', () => {
+  it('owns the Workbar controller below AppShell', () => {
     const appShell = readFileSync(
       join(desktopRoot, 'src', 'renderer', 'app-shell.tsx'),
       'utf8',
     );
-    const controller = readFileSync(
-      join(featureRoot, 'controller', 'use-workbar-controller.ts'),
+    const productionEntry = readFileSync(join(featureRoot, 'index.ts'), 'utf8');
+    const provider = readFileSync(
+      join(featureRoot, 'ui', 'workbar-provider.tsx'),
       'utf8',
     );
-    const host = readFileSync(
-      join(featureRoot, 'ui', 'workbar-host.tsx'),
-      'utf8',
-    );
-
-    assert.equal(appShell.includes('projectId: currentProjectId'), true);
-    assert.equal(
-      appShell.includes('projectAliases: currentProject?.aliases ?? []'),
-      true,
-    );
-    assert.equal(controller.includes('projectId: input.projectId'), true);
-    assert.equal(
-      controller.includes('projectAliases: input.projectAliases'),
-      true,
-    );
-    assert.equal(
-      host.includes('projectAliases={props.projectAliases}'),
-      true,
-    );
+    for (const forbidden of ['useWorkbarController', 'workbar.host', 'model={workbar']) {
+      assert.equal(appShell.includes(forbidden), false, forbidden);
+    }
+    assert.equal(appShell.includes('<WorkbarShellRoot>'), true);
+    assert.equal(appShell.includes('<WorkbarProvider'), true);
+    assert.equal(provider.includes('useWorkbarController(props.input)'), true);
+    assert.equal(productionEntry.includes('useWorkbarController'), false);
   });
 
   it('keeps Quote Companion catalog state and localized scroll copy at the seam', () => {

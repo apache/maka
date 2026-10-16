@@ -18,6 +18,7 @@
  */
 
 import type { SessionEvent } from '@maka/core/events';
+import { createRefreshReadCoordinator } from '@maka/core/refresh-read-coordinator';
 
 /**
  * How full the context is right now, re-asked mid-turn (#4545).
@@ -71,11 +72,12 @@ export interface CtxRefresher {
 
 /**
  * Coalesces a burst of refresh-worthy events into one query, and lets only
- * the latest issued query apply. A query that resolves after a newer one was
- * issued — or after `cancel` retired it — is dropped: the answer a slow read
- * brings back describes an older snapshot than the one already shown, and a
- * torn-down session is not owed an update at all. A failed query leaves the
- * last value standing: it is still the newest answer anyone has.
+ * the latest valid query apply. A query that resolves after a newer one was
+ * issued, after a relevant event invalidated it, or after `cancel` retired it
+ * is dropped: the answer a slow read brings back describes an older snapshot
+ * than the one already shown, and a torn-down session is not owed an update
+ * at all. A failed query leaves the last value standing: it is still the
+ * newest answer anyone has.
  *
  * The scheduler is injected so the policy is testable without a wall clock,
  * and follows the CLI's ticker convention: schedule returns the cancel.
@@ -86,35 +88,20 @@ export function createCtxRefresher<T>(input: {
   delayMs: number;
   schedule: (callback: () => void, delayMs: number) => CancelScheduled;
 }): CtxRefresher {
-  let cancelScheduled: CancelScheduled | undefined;
-  let revision = 0;
-  const dropScheduled = (): void => {
-    cancelScheduled?.();
-    cancelScheduled = undefined;
-  };
-  const run = (): void => {
-    cancelScheduled = undefined;
-    const requestRevision = ++revision;
-    void input.query().then(
-      (result) => {
-        if (requestRevision !== revision) return;
-        input.apply(result);
-      },
-      () => {},
-    );
-  };
+  const coordinator = createRefreshReadCoordinator({
+    read: input.query,
+    apply: input.apply,
+    delayMs: input.delayMs,
+    schedule: input.schedule,
+  });
   return {
     observe(event) {
       if (!isCtxRefreshRelevantEvent(event)) return;
       // Restart rather than stack: the last event of a burst is the one whose
       // snapshot the reader wants, and an earlier timer would read before it.
-      dropScheduled();
-      cancelScheduled = input.schedule(run, input.delayMs);
+      coordinator.observe();
     },
-    cancel() {
-      dropScheduled();
-      revision += 1;
-    },
+    cancel: coordinator.cancel,
   };
 }
 

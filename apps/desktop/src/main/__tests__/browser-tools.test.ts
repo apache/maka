@@ -147,6 +147,7 @@ function install(cfg: FakePageConfig): FakeBrowser {
   const originLeases = new BrowserOriginLeaseTracker(() => browser.url);
   browser.onNavigate = (url) => originLeases.recordNavigation(url);
   const host: BrowserViewHost = {
+    beginAction: () => undefined,
     currentUrl: () => browser.url,
     openOriginLease: (_sessionId, approvedUrl, kind) => {
       const lease = originLeases.open(approvedUrl, kind);
@@ -292,6 +293,7 @@ describe('browser tool execution', () => {
     );
     assert.equal(resolved, 2);
     assert.deepEqual(result, {
+      outcome: 'success',
       content: [
         {
           type: 'text',

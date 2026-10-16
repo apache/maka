@@ -17,10 +17,10 @@
  * under the License.
  */
 
-import { useEffect, useSyncExternalStore } from 'react';
+import { useEffect } from 'react';
 import type { StoredMessage } from '@maka/core/session';
-import type { AppShellSessionUiStateController } from '../model/session-ui-state.js';
-import { selectLiveTurns } from '../model/session-ui-selectors.js';
+import type { SessionUiReads } from '../model/session-ui-reads.js';
+import { useExternalStoreSelector } from '../../../application/contracts/session-catalog/use-external-store-selector.js';
 
 /**
  * Reconciles the live projection against durable messages, and renders nothing.
@@ -35,14 +35,13 @@ import { selectLiveTurns } from '../model/session-ui-selectors.js';
  * it can follow every delta while owning no subtree to rebuild.
  */
 export function LiveTurnReconciler(props: {
-  controller: AppShellSessionUiStateController;
+  readLiveTurns: SessionUiReads['liveTurns'];
   activeId: string | undefined;
   messages: readonly StoredMessage[];
   reconcile: (sessionId: string, messages: readonly StoredMessage[]) => void;
 }): null {
-  const { controller, activeId, messages, reconcile } = props;
-  const getSnapshot = () => selectLiveTurns(controller.getState(), activeId);
-  const liveTurns = useSyncExternalStore(controller.subscribe, getSnapshot, getSnapshot);
+  const { readLiveTurns, activeId, messages, reconcile } = props;
+  const liveTurns = useExternalStoreSelector(readLiveTurns, activeId);
 
   useEffect(() => {
     if (!activeId) return;

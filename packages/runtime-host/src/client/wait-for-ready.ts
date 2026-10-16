@@ -21,7 +21,7 @@ import type { RuntimeHostConnection } from './connection.js';
 
 export async function waitForRuntimeHostReady(
   connection: Pick<RuntimeHostConnection, 'status'>,
-  timeoutMs = 45_000,
+  timeoutMs = 75_000,
   signal?: AbortSignal,
 ): Promise<void> {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 120_000) {

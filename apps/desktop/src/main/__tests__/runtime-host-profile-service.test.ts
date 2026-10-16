@@ -61,6 +61,7 @@ import {
 } from "../runtime-host-profile-service.js";
 
 const ROOT_ID = "a".repeat(64);
+const LOCAL_ROOT_ID = "0".repeat(64);
 const OPERATOR = {
   kind: "node" as const,
   platform: "posix" as const,
@@ -1835,11 +1836,16 @@ function connectingLocal(): RuntimeHostDesktopTargetState {
   return connecting({ profile: LOCAL_RUNTIME_HOST_PROFILE });
 }
 
+function hostIdOf(target: ResolvedRuntimeHostProfile): string {
+  return target.profile.kind === "remote" ? target.profile.rootId : ROOT_ID;
+}
+
 function connecting(target: ResolvedRuntimeHostProfile): RuntimeHostDesktopTargetState {
   return {
     epoch: `epoch-${target.profile.id}`,
     target,
     readiness: "connecting",
+    hostId: target.profile.kind === "remote" ? target.profile.rootId : LOCAL_ROOT_ID,
   };
 }
 
@@ -1848,8 +1854,9 @@ function ready(target: ResolvedRuntimeHostProfile): RuntimeHostDesktopTargetStat
     epoch: `epoch-${target.profile.id}`,
     target,
     readiness: "ready",
+    hostId: hostIdOf(target),
     candidate: {
-      client: { hostId: target.profile.kind === "remote" ? target.profile.rootId : ROOT_ID },
+      client: { hostId: hostIdOf(target) },
     } as never,
   };
 }
@@ -1862,9 +1869,10 @@ function readyWithPeerEndpoint(
     epoch: `epoch-${target.profile.id}`,
     target,
     readiness: "ready",
+    hostId: hostIdOf(target),
     candidate: {
       client: {
-        hostId: target.profile.kind === "remote" ? target.profile.rootId : ROOT_ID,
+        hostId: hostIdOf(target),
         status: async () => ({ peerEndpoint }),
       },
     } as never,
@@ -1900,6 +1908,7 @@ function unavailable(
     epoch: `epoch-${target.profile.id}`,
     target,
     readiness: "unavailable",
+    hostId: hostIdOf(target),
     error,
   };
 }

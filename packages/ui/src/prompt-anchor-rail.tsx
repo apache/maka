@@ -19,6 +19,7 @@
 
 import {
   createContext,
+  useCallback,
   useContext,
   memo,
   useEffect,
@@ -84,32 +85,51 @@ export function observeActivePromptRailVisibility(
 export interface PromptAnchorRailTurn {
   /** Optional host identity color; ordinary Session ticks remain neutral. */
   accentColor?: string;
+  accentBackground?: string;
   highlighted?: boolean;
   turnId: string;
   label: string;
   reply?: string;
+  /** Set on a Turn outside the loaded range: where it starts in the Session. */
   sequence?: number;
 }
 
-export function mergePromptAnchorRailTurns(
-  loadedTurns: ReadonlyArray<{ turnId: string; label: string; reply: string }>,
-  index?: ReadonlyArray<{ turnId: string; sequence: number; label: string }>,
-): PromptAnchorRailTurn[] {
-  if (!index || index.length === 0) {
-    return loadedTurns.map((turn) => ({ ...turn }));
-  }
-  const loadedByTurnId = new Map(loadedTurns.map((turn) => [turn.turnId, turn]));
-  return index.map((landmark) => {
-    const loaded = loadedByTurnId.get(landmark.turnId);
-    return {
-      ...(loaded ?? {
-        turnId: landmark.turnId,
-        label: landmark.label,
-        reply: '',
-      }),
-      sequence: landmark.sequence,
-    };
+/**
+ * The loaded range always reaches the tail, so an indexed Turn it does not
+ * hold is older than every loaded Turn.
+ */
+export function mergePromptAnchorRailTurns<Turn extends PromptAnchorRailTurn>(
+  loadedTurns: readonly Turn[],
+  index: ReadonlyArray<{ turnId: string; sequence: number; label: string }> | undefined,
+  loadedTurnIds: ReadonlySet<string>,
+): ReadonlyArray<Turn | PromptAnchorRailTurn> {
+  if (!index || index.length === 0) return loadedTurns;
+  const older = index
+    .filter((landmark) => !loadedTurnIds.has(landmark.turnId))
+    .map(({ turnId, sequence, label }) => ({ turnId, sequence, label }));
+  return older.length === 0 ? loadedTurns : [...older, ...loadedTurns];
+}
+
+/** Keeps each previous entry that still reads the same, and the previous list when none moved. */
+export function reusePromptAnchorRailTurns(
+  previous: readonly PromptAnchorRailTurn[],
+  next: readonly PromptAnchorRailTurn[],
+): readonly PromptAnchorRailTurn[] {
+  const previousById = new Map(previous.map((turn) => [turn.turnId, turn]));
+  let moved = previous.length !== next.length;
+  const kept = next.map((turn, index) => {
+    const prior = previousById.get(turn.turnId);
+    const entry = prior && shallowEqual(prior, turn) ? prior : turn;
+    if (entry !== previous[index]) moved = true;
+    return entry;
   });
+  return moved ? kept : previous;
+}
+
+function shallowEqual(left: object, right: object): boolean {
+  const leftKeys = Object.keys(left);
+  return leftKeys.length === Object.keys(right).length
+    && leftKeys.every((key) => Object.is(left[key as keyof typeof left], right[key as keyof typeof right]));
 }
 
 export interface PromptAnchorRailProps {
@@ -117,16 +137,7 @@ export interface PromptAnchorRailProps {
   onHighlightTurn?: (turn: PromptAnchorRailTurn | undefined) => void;
   turns: readonly PromptAnchorRailTurn[];
   scrollRef: RefObject<HTMLElement | null>;
-  /** When the indexed Turn is outside the Host's active transcript range. */
-  onNavigateFallback?: (turn: PromptAnchorRailTurn) => void;
-  /**
-   * Stop following the tail, before a jump scrolls.
-   *
-   * A tick is the reader choosing where to look, which outranks the tail. It
-   * has to be said before the scroll, not after: released afterwards, the
-   * release lands on a viewport the pin has already written back to the bottom.
-   */
-  onNavigateStart?: (() => void) | undefined;
+  onNavigateTurn: (turn: PromptAnchorRailTurn) => void;
 }
 
 /**
@@ -160,8 +171,8 @@ export function selectPromptRailTick(input: {
 /** The scroll layout owns the rail's full-width sticky anchor. */
 export const PromptAnchorRailHostContext = createContext<HTMLElement | null>(null);
 
-/** Right-edge rail: bounded prompt landmarks that scroll to `[data-turn-id]`. */
-export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRef, onNavigateFallback, onNavigateStart, onHighlightTurn }: PromptAnchorRailProps): React.ReactElement | null {
+/** Right-edge rail: bounded prompt landmarks for the loaded Turns. */
+export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRef, onNavigateTurn, onHighlightTurn }: PromptAnchorRailProps): React.ReactElement | null {
   const host = useContext(PromptAnchorRailHostContext);
   const copy = getConversationCopy(useUiLocale()).sessions;
   const authority = useTranscriptScrollAuthority();
@@ -235,8 +246,7 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
   useEffect(() => {
     const root = scrollRef.current;
     if (!root) return;
-    // Astryx renders the dock as the scroll container's last child; the
-    // scroll-geometry spec reads it the same way for want of a published hook.
+    // Astryx renders the dock as the scroll container's last child.
     const dock = root.lastElementChild;
     const measure = (): void => {
       setSafeArea((previous) => {
@@ -272,25 +282,15 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
     return observeActivePromptRailVisibility(rail);
   }, [orderedTurnIds, host]);
 
-  function jumpTo(turn: PromptAnchorRailTurn): void {
-    const root = scrollRef.current;
-    const el = root?.querySelector(`[data-turn-id="${CSS.escape(turn.turnId)}"]`);
-    // Before the scroll, not after: the tail has to be released while the
-    // transcript is still where the reader left it, or the release lands after
-    // the next growth has already written the view back to the bottom.
-    onNavigateStart?.();
-    if (el && 'scrollIntoView' in el) {
-      // Instant, whatever the app's scroll-motion policy says. A jump is a
-      // teleport the reader asked for, not a journey — and an animated one
-      // does not survive this surface: traced against a 30-prompt session, the
-      // smooth scroll was cancelled by concurrent content growth and stalled
-      // two pixels from where it started. Landing reliably beats animating
-      // unreliably.
-      (el as HTMLElement).scrollIntoView({ behavior: 'auto', block: 'start' });
-    } else if (!el) {
-      onNavigateFallback?.(turn);
-    }
-  }
+  // Callers pass a fresh highlight handler on every render; ticks get a stable
+  // one so a streaming delta does not re-render all of them.
+  const onHighlightTurnRef = useRef(onHighlightTurn);
+  onHighlightTurnRef.current = onHighlightTurn;
+  const highlightTurn = useCallback((turn: PromptAnchorRailTurn | undefined) => onHighlightTurnRef.current?.(turn), []);
+  const hoverTurn = useCallback((turn: PromptAnchorRailTurn, index: number) => {
+    setHoveredIndex(index);
+    highlightTurn(turn);
+  }, [highlightTurn]);
 
   // A rail is only useful once there are a few prompts to jump between.
   if (railTurns.length < 3 || !host) return null;
@@ -311,60 +311,84 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
         className="maka-prompt-rail"
         aria-label={copy.promptRailAriaLabel}
         ref={railRef}
-        onPointerLeave={() => { setHoveredIndex(null); onHighlightTurn?.(undefined); }}
+        onPointerLeave={() => { setHoveredIndex(null); highlightTurn(undefined); }}
       >
         {railTurns.map((turn, index) => {
           const isActive = turn.turnId === activeRailTurnId;
-          const preview = turn.label.trim() || copy.emptyPrompt;
-          const replyPreview = (turn.reply ?? '').replace(/\s+/g, ' ').trim().slice(0, 140);
           const proximity =
             hoveredIndex === null
               ? HOVER_FALLOFF_TICKS
               : Math.min(Math.abs(index - hoveredIndex), HOVER_FALLOFF_TICKS);
           const scale = (14 + ((HOVER_FALLOFF_TICKS - proximity) * 3)) / 26;
           return (
-            <HoverCard
+            <PromptRailTick
               key={turn.turnId}
-              placement="start"
-              delay={PREVIEW_DELAY_MS}
-              content={
-                <span className="maka-prompt-rail-preview">
-                  <span className="maka-prompt-rail-preview-prompt">{preview}</span>
-                  {replyPreview ? (
-                    <span className="maka-prompt-rail-preview-reply">{replyPreview}</span>
-                  ) : null}
-                </span>
-              }
-            >
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                label={copy.jumpToPrompt(preview)}
-                className="maka-prompt-rail-tick"
-                data-prompt-turn-id={turn.turnId}
-                data-highlighted={turn.highlighted || undefined}
-                data-active={isActive ? 'true' : undefined}
-                aria-current={isActive ? 'true' : undefined}
-                onClick={() => jumpTo(turn)}
-                onPointerEnter={() => { setHoveredIndex(index); onHighlightTurn?.(turn); }}
-                onFocus={() => onHighlightTurn?.(turn)}
-                onBlur={() => onHighlightTurn?.(undefined)}
-                style={
-                  {
-                    color: turn.accentColor,
-                    '--maka-prompt-rail-index': index,
-                    '--maka-prompt-rail-scale': scale,
-                  } as CSSProperties
-                }
-              >
-                <span className="maka-prompt-rail-tick-bar" />
-              </Button>
-            </HoverCard>
+              turn={turn}
+              index={index}
+              isActive={isActive}
+              scale={scale}
+              onNavigate={onNavigateTurn}
+              onHover={hoverTurn}
+              onHighlight={highlightTurn}
+            />
           );
         })}
       </nav>
     </div>
   );
   return createPortal(rail, host);
+});
+
+// Reading-position updates change the active ticks, not every preview. Keep
+// each tick's interaction tree reusable; content and locale changes still render.
+const PromptRailTick = memo(function PromptRailTick({
+  turn, index, isActive, scale, onNavigate, onHover, onHighlight,
+}: {
+  turn: PromptAnchorRailTurn;
+  index: number;
+  isActive: boolean;
+  scale: number;
+  onNavigate(turn: PromptAnchorRailTurn): void;
+  onHover(turn: PromptAnchorRailTurn, index: number): void;
+  onHighlight: PromptAnchorRailProps['onHighlightTurn'];
+}) {
+  const copy = getConversationCopy(useUiLocale()).sessions;
+  const preview = turn.label.trim() || copy.emptyPrompt;
+  const replyPreview = (turn.reply ?? '').replace(/\s+/g, ' ').trim().slice(0, 140);
+  return (
+    <HoverCard
+      placement="start"
+      delay={PREVIEW_DELAY_MS}
+      content={
+        <span className="maka-prompt-rail-preview">
+          <span className="maka-prompt-rail-preview-prompt">{preview}</span>
+          {replyPreview ? <span className="maka-prompt-rail-preview-reply">{replyPreview}</span> : null}
+        </span>
+      }
+    >
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        label={copy.jumpToPrompt(preview)}
+        className="maka-prompt-rail-tick"
+        data-prompt-turn-id={turn.turnId}
+        data-highlighted={turn.highlighted || undefined}
+        data-active={isActive ? 'true' : undefined}
+        aria-current={isActive ? 'true' : undefined}
+        onClick={() => onNavigate(turn)}
+        onPointerEnter={() => onHover(turn, index)}
+        onFocus={() => onHighlight?.(turn)}
+        onBlur={() => onHighlight?.(undefined)}
+        style={{
+          color: turn.accentColor,
+          '--maka-prompt-rail-background': turn.accentBackground,
+          '--maka-prompt-rail-index': index,
+          '--maka-prompt-rail-scale': scale,
+        } as CSSProperties}
+      >
+        <span className="maka-prompt-rail-tick-bar" />
+      </Button>
+    </HoverCard>
+  );
 });

@@ -189,7 +189,9 @@ export interface PlanHistoryCompactionInput {
    * The invocations behind the ordered events, and the route this fold is
    * dispatched on. Together they name the newest reply this route produced,
    * which is the only span a retreat may target: a rejection of a larger one
-   * says nothing about a span another model accepted.
+   * says nothing about a span another model accepted. Handoff counts too: a
+   * predecessor run's reply inside the same logical turn can sit after the
+   * head anchor and still prove a mid_turn retreat.
    */
   invocations?: readonly RuntimeInvocationRecord[];
   acceptedRoute?: { modelId: string; connectionId?: string };
@@ -255,7 +257,12 @@ function acceptedInputBoundary(
   const onRoute = (event: RuntimeEvent | undefined): boolean => {
     if (event?.role !== 'model') return false;
     const opened = invocations.find((candidate) => candidate.runId === event.runId)?.opening.route;
-    if (opened?.provenance !== 'runtime' || opened.modelId !== route.modelId) return false;
+    if (
+      opened?.provenance !== 'runtime' ||
+      opened.backendKind === 'plugin-executor' ||
+      opened.modelId !== route.modelId
+    )
+      return false;
     return opened.llmConnectionId === route.connectionId;
   };
   let index = -1;
@@ -286,6 +293,14 @@ export async function planHistoryCompaction(
   if (phase !== 'standalone' && headAnchorIndex < 0) {
     return { decision: 'fail_open', reason: 'no_safe_completed_span' };
   }
+  // After a retreat the summarizer has already been called and refused, so a
+  // smaller window with nothing safe to fold is that failure, not a pool that
+  // never reached the summarizer (#5790 review).
+  let retreated = false;
+  const noSafeSpan = (): PlanHistoryCompactionResult =>
+    retreated
+      ? { decision: 'fail_open', reason: 'summarizer_failed', diagnosticReason: 'input_too_large' }
+      : { decision: 'fail_open', reason: 'no_safe_completed_span' };
   let maxCoveredCount = input.orderedEvents.length;
   while (maxCoveredCount > 0) {
     const boundary = selectSafeCompactionPrefix(input.orderedEvents, {
@@ -307,9 +322,7 @@ export async function planHistoryCompaction(
         : phase === 'mid_turn'
           ? boundary.ok && boundary.coveredCount > headAnchorIndex && boundary.coveredCount >= 2
           : boundary.ok && boundary.coveredCount > 0 && boundary.coveredCount <= headAnchorIndex;
-    if (!boundary.ok || !hasSafeCoverage) {
-      return { decision: 'fail_open', reason: 'no_safe_completed_span' };
-    }
+    if (!boundary.ok || !hasSafeCoverage) return noSafeSpan();
     const coveredRuntimeEvents = input.orderedEvents.slice(0, boundary.coveredCount);
     const tailRuntimeEvents = input.orderedEvents.slice(boundary.coveredCount);
 
@@ -389,6 +402,7 @@ export async function planHistoryCompaction(
             };
           }
           maxCoveredCount = proven;
+          retreated = true;
           continue;
         }
         return {
@@ -456,7 +470,7 @@ export async function planHistoryCompaction(
       estimatedTokensAfter,
     };
   }
-  return { decision: 'fail_open', reason: 'no_safe_completed_span' };
+  return noSafeSpan();
 }
 
 export interface HistoryCompactionPolicy {

@@ -52,6 +52,51 @@ test('a refresh that removes nothing does not call back', async () => {
   assert.equal(called, false);
 });
 
+// models.dev declares 0 on image/audio/video models, where a token limit does
+// not apply. The wire requires a positive integer when the field is present,
+// so the projection must read 0 as "unknown" and omit the field — carrying 0
+// made every connection catalog query fail its own output validation.
+test('a zero token limit projects as an absent limit', async () => {
+  const upstream = catalog();
+  (upstream.vercel as { models: Record<string, unknown> }).models['kling-v2.5-turbo'] = {
+    name: 'Kling',
+    reasoning: false,
+    tool_call: false,
+    limit: { context: 0, output: 0, input: 0 },
+  };
+
+  const metadata = await fetchModelsDevProjection({
+    fetch: respondWith(JSON.stringify(upstream)),
+    previous: {},
+    onRemovals: () => {},
+  });
+
+  const model = metadata.vercel?.['kling-v2.5-turbo'];
+  assert.equal(model?.contextWindow, undefined);
+  assert.equal(model?.inputLimit, undefined);
+  assert.equal(model?.maxOutputTokens, undefined);
+  assert.equal(metadata.anthropic?.['claude-kept']?.contextWindow, 2_000);
+});
+
+test('a token limit outside the wire domain refuses the whole refresh', async () => {
+  const upstream = catalog();
+  (upstream.vercel as { models: Record<string, unknown> }).models['half-window'] = {
+    name: 'Half Window',
+    reasoning: false,
+    tool_call: false,
+    limit: { context: 131_072.5, output: 100 },
+  };
+
+  await assert.rejects(
+    fetchModelsDevProjection({
+      fetch: respondWith(JSON.stringify(upstream)),
+      previous: {},
+      onRemovals: () => {},
+    }),
+    /vercel\/half-window has an unsupported shape/u,
+  );
+});
+
 test('a declared oversized body is refused instead of drained', async () => {
   let cancelled = false;
   const response = new Response(

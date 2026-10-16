@@ -18,6 +18,7 @@
  */
 
 import { app } from 'electron';
+import { resolveWindowRevealMode } from './window-reveal.js';
 
 // E2E switches must never fire in a packaged build, and must never run against
 // the real user data: a stray MAKA_E2E on a build/dev machine would otherwise
@@ -33,3 +34,9 @@ export const isComputerUseRealModelE2e =
   hasIsolatedE2eProfile &&
   process.env.MAKA_CU_REAL_MODEL_E2E === '1';
 export const isIsolatedE2e = isE2e || isComputerUseRealModelE2e;
+
+export const revealMode = resolveWindowRevealMode(
+  isIsolatedE2e || Boolean(process.env.MAKA_E2E_FIXTURE),
+  process.env.MAKA_E2E_SHOW_WINDOW === '1',
+  app.isPackaged,
+);

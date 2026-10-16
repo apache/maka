@@ -17,14 +17,15 @@
  * under the License.
  */
 
-import { resolveSystemUiLocale, type UiCatalog } from '@maka/core/ui-locale';
+import { resolveSystemUiLocale, defineShippedUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 import {
   DEV_LOSER_EXIT_CODE,
   developmentLaunchResultFile,
   shouldShowLoserDialog,
 } from '@maka/core/dev-single-instance';
-import { app, clipboard, dialog, ipcMain } from 'electron';
+import { app, clipboard, dialog, ipcMain, protocol } from 'electron';
 import { join } from 'node:path';
+import { bootContext } from './boot-context.js';
 import { resolveBuildInfo } from './build-info.js';
 import { resolveUpdateTestUserDataDirectory } from './app-update-test-context.js';
 import { desktopDiagnosticUpdateChannel } from './app-update-attestation.js';
@@ -34,7 +35,6 @@ import {
   createDesktopPreviousMainProcessDiagnosticInput,
   installMainProcessLogCapture,
   formatDesktopDiagnosticReport,
-  createDesktopStartupDiagnosticInput,
   mainProcessLogBuffer,
 } from './main-process-diagnostics.js';
 import {
@@ -43,16 +43,17 @@ import {
   type MainProcessRecoveryJournal,
 } from './main-process-recovery-journal.js';
 import { showFatalStartupError } from './native-diagnostic-dialog.js';
-import { isIsolatedE2e } from './startup-context.js';
+import { isIsolatedE2e, revealMode } from './startup-context.js';
 import { reportDevelopmentLaunchResult } from './dev-single-instance-result.js';
 import { registerPreviousMainProcessDiagnosticsIpc } from './desktop-diagnostics-ipc-main.js';
 import { showBrowserMessageBox } from './browser-message-box.js';
+import { installDesktopStartupBranding } from './desktop-shell-presentation.js';
 import {
-  showDesktopStartupProgress,
-  startupRevealMode,
-  updateDesktopStartupProgress,
-  desktopStartupProgressWindow,
-} from './startup-presentation.js';
+  clientPluginTransport,
+  MAKA_CLIENT_PLUGIN_SCHEME,
+  MAKA_CLIENT_PLUGIN_SCHEME_PRIVILEGES,
+  registerClientPluginProtocol,
+} from './client-plugin-transport.js';
 
 let recoveryJournal: MainProcessRecoveryJournal | undefined;
 installMainProcessLogCapture(mainProcessLogBuffer, () => recoveryJournal?.markDirty());
@@ -66,6 +67,13 @@ installMainProcessLogCapture(mainProcessLogBuffer, () => recoveryJournal?.markDi
 // socket/pipe namespace, and single-instance lock) without touching any
 // path logic. See https://github.com/maka-agent/maka-agent/issues/2252.
 app.setName(app.isPackaged ? 'Maka' : 'Maka Dev');
+
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: MAKA_CLIENT_PLUGIN_SCHEME,
+    privileges: MAKA_CLIENT_PLUGIN_SCHEME_PRIVILEGES,
+  },
+]);
 
 // Electron otherwise quits implicitly when the last BrowserWindow closes.
 // Startup and fatal-recovery surfaces can be the only window, so keep process
@@ -125,7 +133,7 @@ if (!app.requestSingleInstanceLock()) {
               cancelId: 0,
             },
             undefined,
-            { locale, revealMode: startupRevealMode() },
+            { locale, revealMode },
           );
         })
         .catch((error) => {
@@ -203,30 +211,31 @@ if (!app.requestSingleInstanceLock()) {
   // store/db write".
   app
     .whenReady()
-    .then(() => {
+    .then(async () => {
       console.log('[startup] app ready');
-      showDesktopStartupProgress((phase) => {
-        clipboard.writeText(formatDesktopDiagnosticReport(
-          createDesktopStartupDiagnosticInput({
-            title: 'Desktop startup', description: 'Startup phase: ' + phase,
-          }),
-          captureDesktopDiagnosticEnvironment({
-            appVersion: app.getVersion(), buildMode: buildInfo.mode,
-            updateChannel: desktopDiagnosticUpdateChannel({
-              isPackaged: app.isPackaged, appPath: app.getAppPath(),
-            }),
-            buildCommit: buildInfo.commit, locale: app.getLocale(),
-            workspacePath: join(app.getPath('userData'), 'workspaces', 'default'),
-          }),
-          mainProcessLogBuffer.snapshot(),
-          { ok: false, error: 'Runtime Host is not yet available during startup' },
-        ));
-      });
-      return import('./runtime-host-boot.js');
+      installDesktopStartupBranding(revealMode);
+      // Register before constructing the main BrowserWindow. Client Plugin
+      // scripts are requested by the first renderer paint, while the much
+      // heavier Runtime Host module graph is deliberately loaded afterwards.
+      await registerClientPluginProtocol(protocol, clientPluginTransport);
+      // early-window holds the light slice (storage root, settings, window
+      // controller) and fires the renderer load; the heavy Runtime Host
+      // module graph starts only once the window exists — evaluating ~1100
+      // files on the shared main thread would otherwise starve the window's
+      // async prelude and Chromium plumbing.
+      const earlyWindow = await import('./early-window.js');
+      await earlyWindow.firstWindowConstructed;
+      const boot = await import('./runtime-host-boot.js');
+      // Wait until the boot module has synchronously registered every handler
+      // used by the renderer's gated IPC.  Runtime Host reconciliation stays
+      // asynchronous so a slow or unavailable Host cannot block first paint.
+      await boot.runtimeHostBootReady;
+      bootContext.markIpcReady();
+      return boot;
     })
     .catch(async (error: unknown) => {
       console.error('[startup] fatal:', error);
-      updateDesktopStartupProgress('attention');
+      bootContext.failIpcReady(error);
       try {
         // E2E runs must not hang on a modal error box (same reasoning as the
         // fixture-fatal path in runtime-host-boot.ts: print a parseable line and exit fast).
@@ -250,9 +259,9 @@ if (!app.requestSingleInstanceLock()) {
             mainLogs: () => mainProcessLogBuffer.snapshot(),
             writeClipboard: (report) => clipboard.writeText(report),
             showMessageBox: (options) =>
-              showBrowserMessageBox(options, desktopStartupProgressWindow(), {
+              showBrowserMessageBox(options, undefined, {
                 locale,
-                revealMode: startupRevealMode(),
+                revealMode,
               }),
           });
         }
@@ -263,7 +272,12 @@ if (!app.requestSingleInstanceLock()) {
     });
 }
 
-const DEV_SINGLETON_COPY = {
+const DEV_SINGLETON_COPY = resolveUiMessageCatalog(defineShippedUiMessageCatalog<{
+  title: string;
+  message: string;
+  detail(profilePath: string): string;
+  exit: string;
+}>()({
   'zh-CN': {
     title: 'Maka Dev 已在运行',
     message: '另一个 Maka Dev 实例正在使用此开发配置。',
@@ -282,9 +296,4 @@ const DEV_SINGLETON_COPY = {
     detail: (profilePath: string) => `Development profile: ${profilePath}\n\nQuit the running instance, then retry.`,
     exit: 'Exit',
   },
-} satisfies UiCatalog<{
-  title: string;
-  message: string;
-  detail(profilePath: string): string;
-  exit: string;
-}>;
+}));
