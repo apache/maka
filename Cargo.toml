@@ -32,6 +32,8 @@ members = [
     "plugins/workspace/workspace-files/native",
     "plugins/workspace/support",
     "third-party/gpui-kit/crates/base",
+    "third-party/gpui-kit/crates/shell",
+    "third-party/gpui-kit/crates/shell/rquickjs-compat",
     "products/maka/acp",
     "plugins/agent/engine",
     "plugins/agent/native",
@@ -109,6 +111,7 @@ maka-agent-authority = { path = "plugins/agent/authority" }
 maka-web-api = { path = "plugins/workspace/workspace-web/api" }
 maka-agent-api = { path = "plugins/agent/api" }
 gpui-kit = { git = "https://github.com/longbridge/gpui-kit", rev = "c5f8eca4a0759f8c0c7ed624eddfd03f1c93a5f2", default-features = false, features = ["gpui-fast"] }
+gpui-shell = { path = "third-party/gpui-kit/crates/shell", default-features = false, features = ["gpui-fast", "quickjs"] }
 maka-transport = { path = "platform/transport" }
 cua-driver-sdk = { git = "https://github.com/maka-agent/cua", rev = "79c9b58a1b61f66ae966635c464e54cb2c8151d6" }
 cua-driver-contract = { git = "https://github.com/maka-agent/cua", rev = "79c9b58a1b61f66ae966635c464e54cb2c8151d6" }
@@ -195,6 +198,8 @@ opt-level = 0
 image-webp = { path = "third-party/image-webp" }
 sqlx-sqlite = { path = "third-party/sqlx-sqlite" }
 async-io = { path = "third-party/async-io" }
+# gpui-shell and LLRT share one quickjs-jit VM through this facade, as in gpui-kit.
+rquickjs = { path = "third-party/gpui-kit/crates/shell/rquickjs-compat" }
 
 gpui-fast = { path = "third-party/gpui-fast/crates/gpui" }
 gpui-fast-macos = { path = "third-party/gpui-fast/crates/gpui_macos" }

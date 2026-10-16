@@ -1,0 +1,205 @@
+[package]
+name = "gpui-shell"
+description = "A scriptable application runtime for GPUI, built on gpui-base."
+version = "0.7.3"
+keywords = ["desktop", "gpui", "javascript", "runtime"]
+license = "Apache-2.0"
+publish = false
+edition = "2024"
+repository = "https://github.com/longbridge/gpui-kit"
+homepage = "https://gpui-kit.com"
+autoexamples = false
+autobenches = false
+
+[lib]
+name = "gpui_shell"
+path = "src/lib.rs"
+doctest = false
+
+[[bin]]
+name = "gpui-shell"
+path = "src/bin/gpui-shell.rs"
+
+[features]
+gpui-fast = [
+    "dep:gpui-fast",
+    "dep:gpui-fast-platform",
+    "gpui-base/gpui-fast",
+    "gpui-fps/gpui-fast",
+]
+default = ["gpui-fast", "quickjs"]
+quickjs = [
+    "dep:rquickjs",
+    "dep:rquickjs-jit",
+    "dep:quickjs-jit-stdlib",
+    "dep:reqwest",
+    "dep:tungstenite",
+]
+
+[dependencies]
+async-channel = "2.5"
+cap-std = "4.0.3"
+chrono = "0.4.38"
+flate2 = "1.1"
+fs2 = "0.4"
+semver = "1"
+serde_json = "1"
+sha2 = "0.10"
+smallvec = "1"
+smol = "2"
+wait-timeout = "0.2"
+
+[dependencies.anyhow]
+version = "1"
+
+[dependencies.gpui]
+package = "gpui-pre"
+version = "=0.3.9"
+
+[dependencies.gpui-fast]
+package = "gpui-fast"
+version = "0.1.7"
+features = ["windows-manifest-provided-by-host"]
+optional = true
+
+[dependencies.gpui_platform]
+package = "gpui-pre-platform"
+version = "=0.3.9"
+features = ["font-kit", "x11", "wayland", "runtime_shaders"]
+
+[dependencies.gpui-fast-platform]
+package = "gpui-fast-platform"
+version = "0.1.7"
+features = ["font-kit", "x11", "wayland", "runtime_shaders"]
+optional = true
+
+[dependencies.gpui-base]
+path = "../base"
+features = ["inspector"]
+
+[dependencies.gpui-fps]
+git = "https://github.com/longbridge/gpui-kit"
+rev = "c5f8eca4a0759f8c0c7ed624eddfd03f1c93a5f2"
+
+[dependencies.image]
+version = "0.25"
+default-features = false
+features = ["png"]
+
+[dependencies.instant]
+version = "0.1"
+features = ["wasm-bindgen"]
+
+[dependencies.quickjs-jit-stdlib]
+version = "0.12.7"
+git = "https://github.com/longbridge/quickjs-jit"
+rev = "605da483611a3548edb8c33fdff602e3f5f42076"
+optional = true
+
+[dependencies.reqwest]
+package = "gpui-pre-reqwest"
+version = "=0.12.15"
+default-features = false
+features = [
+    "blocking",
+    "charset",
+    "http2",
+    "macos-system-configuration",
+    "multipart",
+    "rustls-tls-native-roots",
+    "socks",
+    "stream",
+]
+optional = true
+
+[dependencies.rquickjs]
+package = "quickjs-jit"
+version = "0.12.11"
+git = "https://github.com/longbridge/quickjs-jit"
+rev = "96593cd7a54440ac060a391b8baea7e9a3cf1393"
+features = ["macro", "loader", "jit-abi"]
+optional = true
+
+[dependencies.rquickjs-jit]
+package = "quickjs-jit-runtime"
+version = "0.12.11"
+git = "https://github.com/longbridge/quickjs-jit"
+rev = "96593cd7a54440ac060a391b8baea7e9a3cf1393"
+features = ["compiler"]
+optional = true
+
+[dependencies.schemars]
+version = "1"
+
+[dependencies.serde]
+version = "1.0.219"
+features = ["derive"]
+
+[dependencies.tar]
+version = "0.4"
+default-features = false
+
+[dependencies.tracing]
+version = "0.1.41"
+
+[dependencies.tungstenite]
+version = "0.29"
+features = ["rustls-tls-webpki-roots", "url"]
+optional = true
+
+[dependencies.usvg]
+version = "0.46"
+default-features = false
+
+[target."cfg(unix)".dependencies]
+libc = "0.2"
+
+[target."cfg(target_os = \"windows\")".dependencies.windows]
+version = "0.58.0"
+features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+]
+
+[dev-dependencies.gpui]
+package = "gpui-pre"
+version = "=0.3.9"
+features = ["test-support"]
+
+[dev-dependencies.gpui-fast]
+package = "gpui-fast"
+version = "0.1.7"
+features = ["windows-manifest-provided-by-host", "test-support"]
+
+[dev-dependencies.gpui-base]
+path = "../base"
+features = ["test-support"]
+
+[lints]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("components"))'] }
+
+[lints.clippy]
+almost_complete_range = "allow"
+arc_with_non_send_sync = "allow"
+borrowed_box = "allow"
+dbg_macro = "deny"
+let_underscore_future = "allow"
+manual_is_multiple_of = "allow"
+map_entry = "allow"
+module_inception = "allow"
+non_canonical_partial_ord_impl = "allow"
+reversed_empty_ranges = "allow"
+single_range_in_vec_init = "allow"
+todo = "deny"
+type_complexity = "allow"
+useless_conversion = "allow"
+
+[lints.clippy.style]
+level = "allow"
+priority = -1
