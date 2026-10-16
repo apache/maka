@@ -97,6 +97,8 @@ export class Settings {
     this.notes = new Map();
     /** { kind: 'add', provider, descriptor } or { kind: 'key', connectionId }, or null. */
     this.form = null;
+    /** The connection whose removal waits for a confirmation, if any. */
+    this.removing = null;
     /** { path, rows, error, done } while an export is being imported. */
     this.importing = null;
 
@@ -413,6 +415,41 @@ export class Settings {
       } finally {
         await this.loadStatuses();
       }
+    });
+  }
+
+  /** Asks before removing a connection: its keys and default model go with it. */
+  askRemove(connection) {
+    if (this.busy !== null) return;
+    this.removing = connection.basis.connectionId;
+    this.hooks.changed();
+  }
+
+  cancelRemove() {
+    this.removing = null;
+    this.hooks.changed();
+  }
+
+  /**
+   * Removes a connection at the revision shown, as the terminal app's
+   * connection form does (settings.remove). The Host removes its keys and,
+   * when it was the default, the default model; tasks that used it are kept.
+   */
+  removeConnection(connection) {
+    const basis = connection.basis;
+    return this.run('Removing the connection…', async () => {
+      this.removing = null;
+      const result = await operation('settings', 'remove', {
+        expected: { connectionId: basis.connectionId, revision: basis.revision },
+      });
+      if (result.kind !== 'committed') throw new Error(describeCatalog(result));
+      this.revision = result.catalogRevision;
+      log(`settings: removed ${connection.slug}`);
+      this.notes.delete(basis.connectionId);
+      if (this.form?.connectionId === basis.connectionId) this.closeForm();
+      await this.loadConnections();
+      await this.loadModels();
+      this.hooks.modelsChanged();
     });
   }
 
@@ -1010,6 +1047,7 @@ function connectionRow(settings, connection, cx) {
   const note = settings.notes.get(id);
   const editing = settings.form?.kind === 'key' && settings.form.connectionId === id;
   const isDefault = settings.defaultTarget?.connectionId === id;
+  const confirming = settings.removing === id;
   return v_flex()
     .w_full()
     .py(10)
@@ -1056,7 +1094,44 @@ function connectionRow(settings, connection, cx) {
               .tooltip('Ask the provider which models it offers and enable them')
               .on_click(() => settings.findModels(connection)),
           ),
+        )
+        .when(connection.editable, (el) =>
+          el.child(
+            button(`remove-${id}`, 'Remove', false, busy || confirming, cx)
+              .h(28)
+              .on_click(() => settings.askRemove(connection)),
+          ),
         ),
+    )
+    .when(confirming, (el) =>
+      el.child(
+        h_flex()
+          .pl(44)
+          .gap(8)
+          .items_center()
+          .child(
+            text(
+              isDefault
+                ? 'Remove this connection, its API keys and the default model? Tasks that used it are kept.'
+                : 'Remove this connection and its API keys? Tasks that used it are kept.',
+              'small',
+              m.ink,
+            )
+              .flex_1()
+              .min_w_0(),
+          )
+          .child(
+            controlButton(`remove-confirm-${id}`, 'Remove', 'outline', busy, cx)
+              .h(28)
+              .text_color(m.destructive)
+              .on_click(() => settings.removeConnection(connection)),
+          )
+          .child(
+            button(`remove-cancel-${id}`, 'Cancel', false, busy, cx)
+              .h(28)
+              .on_click(() => settings.cancelRemove()),
+          ),
+      ),
     )
     .when(note !== undefined, (el) => el.child(text(note, 'small', m.inkMuted).pl(44)))
     .when(editing, (el) =>
