@@ -126,7 +126,7 @@ export function usePricingController(props: {
 
   const [snapshot, setSnapshot] = useState<DesktopPricingSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [editor, setScopeEditor] = usePricingEditorDraft();
   const editorRef = useRef(editor);
   editorRef.current = editor;
@@ -138,7 +138,7 @@ export function usePricingController(props: {
   const [writeState, setWriteState] = useState<PricingWriteState>({ kind: 'idle' });
   const dialogGenerationRef = useRef(0);
   // A remounted view may recover a draft, but never its former mutation base.
-  const [needsReview, setNeedsReview] = useState(editor !== null);
+  const needsReview = editor !== null && mutationBase === null;
   const [pendingMutation, setPendingMutation] = useState<PricingMutation['kind'] | null>(null);
   const [resetTarget, setResetTarget] = useState<PricingOverride | null>(null);
   const saving = pendingMutation === 'upsert';
@@ -171,9 +171,8 @@ export function usePricingController(props: {
     setSnapshot(null);
     setMutationBase(null);
     setLoading(true);
-    setLoadError(null);
+    setLoadFailed(false);
     setWriteState({ kind: 'idle' });
-    setNeedsReview(editor !== null);
     setResetTarget(null);
     setPendingMutation(null);
     guard.finish();
@@ -217,14 +216,14 @@ export function usePricingController(props: {
     const lifecycle = lifecycleRef.current;
     const ticket = ++reloadTicketRef.current;
     setLoading(true);
-    setLoadError(null);
+    setLoadFailed(false);
     // No selected Host: nothing Host-scoped to load. Resolve to an empty state
     // (like the usage stats loader's no-Host path) rather than letting the bridge
     // fall back to a *different* (active) Host than the settings page shows.
     if (!host) {
       if (isCurrent(lifecycle) && ticket === reloadTicketRef.current) {
         setSnapshot(null);
-        setLoadError(null);
+        setLoadFailed(false);
         setWriteState({ kind: 'idle' });
         setLoading(false);
       }
@@ -250,9 +249,9 @@ export function usePricingController(props: {
       } else {
         setSnapshot(next);
       }
-    } catch (error) {
+    } catch {
       if (!isCurrent(lifecycle) || ticket !== reloadTicketRef.current) return;
-      setLoadError(describeError(error));
+      setLoadFailed(true);
     } finally {
       if (isCurrent(lifecycle) && ticket === reloadTicketRef.current) setLoading(false);
     }
@@ -369,14 +368,12 @@ export function usePricingController(props: {
     if (!needsReview || loading || snapshot === null || !props.target?.isCurrent()) return;
     setEditor((current) => current ? reviewedEditorDraft(current, snapshot) : null);
     setMutationBase(snapshot);
-    setNeedsReview(false);
   }
 
   function closeEditor() {
     if (guard.current) return;
     setEditor(null);
     setMutationBase(null);
-    setNeedsReview(false);
     restoreTriggerFocus();
   }
 
@@ -448,7 +445,7 @@ export function usePricingController(props: {
     setLoading(false);
     if ('snapshot' in outcome) {
       setSnapshot(outcome.snapshot);
-      setLoadError(null);
+      setLoadFailed(false);
     }
     // Reconciliation still updates authority after Cancel. Only its original
     // dialog may be closed, reopened for review, or given a conflict notice.
@@ -564,7 +561,7 @@ export function usePricingController(props: {
     copy,
     addButtonRef,
     loading,
-    loadError,
+    loadFailed,
     // A write needs a loaded snapshot as its CAS base; without one (no Host, or
     // a load pending/failed) the Add flow is disabled rather than silently
     // no-opping on save.

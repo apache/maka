@@ -48,9 +48,11 @@ to a thin wrapper).
   its catalog/duplicate validation. A Host change or view remount recovers only
   the scope-owned draft, reloads authority, and requires explicit review of the
   new Host's price before the next save. Recovery errors and Retry stay inside
-  the editor. Review reclassifies Add/Edit against the new Host without changing
-  rate input. A save retains its submitted draft identity, so its result only
-  closes that draft; input typed while saving remains open for a later submit.
+  the editor. A recovered editor without a pinned mutation base is the review
+  state; no separate review flag is stored. Review reclassifies Add/Edit against
+  the new Host without changing rate input. A save retains its submitted draft
+  identity, so its result only closes that draft; input typed while saving remains
+  open for a later submit.
   If reconciliation was temporarily unavailable, it retains that same attempt
   and compares its exact intent with the next successful snapshot via the shared
   pure reconciliation rules in `@maka/runtime-host/protocol`, without replaying it.

@@ -84,16 +84,11 @@ export function registerRuntimeHostPricingIpc(
     "usage:pricing:mutate",
     {
       dispatch: async (_event, base: unknown, mutation: unknown) => {
-        let input: DesktopPricingMutationInput;
         try {
-          input = {
+          const input: DesktopPricingMutationInput = {
             base: decodeDesktopPricingSnapshot(base),
             mutation: decodePricingMutation(mutation),
           };
-        } catch (error) {
-          return { kind: "completed", value: mutateFailure(error) };
-        }
-        try {
           const outcome = await deps.client.applyPricingMutation(input);
           // The adapter could not reload on its own (likely-lost) connection;
           // wait for a replacement Host and reconcile there instead of

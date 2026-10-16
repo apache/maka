@@ -103,7 +103,7 @@ export function PricingEditor(props: {
             size="sm"
             icon={<Plus size={ICON_SIZE.control} aria-hidden="true" />}
             label={copy.add}
-            isDisabled={c.writesBlocked || c.loadError !== null || !c.hasAuthority}
+            isDisabled={c.writesBlocked || c.loadFailed || !c.hasAuthority}
             tooltip={
               c.writesBlocked
                 ? copy.writeBlockedReason
@@ -129,7 +129,7 @@ export function PricingEditor(props: {
       ) : null}
 
       <div aria-live="polite">
-        {c.loadError !== null ? (
+        {c.loadFailed ? (
           <EmptyState
             icon={<BarChart3 />}
             title={copy.loadFailedTitle}
@@ -137,20 +137,11 @@ export function PricingEditor(props: {
             actions={<Button variant="secondary" size="sm" label={copy.retry} onClick={() => void c.reload()} />}
             className="settingsUsageEmpty"
           />
-        ) : c.loading && !c.hasAuthority ? (
-          // Reserve the ready table geometry with skeleton rows so the real
-          // rows land with zero layout shift (DESIGN.md §Loading).
+        ) : c.loading || c.hasAuthority ? (
           <UsageStatsTable
-            ariaLabel={copy.loading}
+            ariaLabel={c.hasAuthority ? copy.tableAria : copy.loading}
             columns={columns}
-            rows={pricingSkeletonRows(columns.length)}
-            empty={{ Icon: BarChart3, title: copy.emptyTitle, body: copy.emptyBody }}
-          />
-        ) : c.hasAuthority ? (
-          <UsageStatsTable
-            ariaLabel={copy.tableAria}
-            columns={columns}
-            rows={rows}
+            rows={c.hasAuthority ? rows : pricingSkeletonRows(columns.length)}
             empty={{ Icon: BarChart3, title: copy.emptyTitle, body: copy.emptyBody }}
           />
         ) : null}
@@ -320,9 +311,6 @@ function PricingEditorDialog(props: {
     [c.catalogRows],
   );
 
-  function close() {
-    if (!c.saving) c.closeEditor();
-  }
   function submit() {
     // Count each explicit submission so repeated Save clicks focus the error
     // immediately; later typing must never consume a deferred focus request.
@@ -348,7 +336,7 @@ function PricingEditorDialog(props: {
       ref={dialogRef}
       isOpen
       onOpenChange={(open) => {
-        if (!open) close();
+        if (!open) c.closeEditor();
       }}
       aria-label={title}
       purpose="form"
@@ -356,7 +344,7 @@ function PricingEditorDialog(props: {
       maxHeight="calc(100dvh - 64px)"
     >
       <Layout
-        header={<DialogHeader title={title} onOpenChange={(open) => { if (!open) close(); }} />}
+        header={<DialogHeader title={title} onOpenChange={(open) => { if (!open) c.closeEditor(); }} />}
         content={
           <LayoutContent padding={4}>
             <VStack as="form" id={formId} gap={3} onSubmit={(event) => { event.preventDefault(); submit(); }}>
@@ -499,7 +487,7 @@ function PricingEditorDialog(props: {
                 <VStack gap={3}>
                   {c.loading ? (
                     <Text role="status" type="body" color="secondary">{copy.loading}</Text>
-                  ) : c.loadError !== null ? (
+                  ) : c.loadFailed ? (
                     <Banner
                       status="error"
                       role="status"
@@ -532,7 +520,7 @@ function PricingEditorDialog(props: {
         footer={
           <LayoutFooter hasDivider>
             <HStack gap={2} justify="end">
-              <Button variant="ghost" label={copy.cancel} isDisabled={c.saving} onClick={close} />
+              <Button variant="ghost" label={copy.cancel} isDisabled={c.saving} onClick={c.closeEditor} />
               <Button
                 variant="primary"
                 type="submit"
@@ -587,25 +575,18 @@ function PricingWriteNotice(props: {
       );
     }
     case 'refresh_failed':
+    case 'reconcile_unavailable': {
+      const committed = writeState.kind === 'refresh_failed';
       return (
         <Banner
           status="warning"
           role="status"
-          title={copy.refreshFailedTitle}
-          description={copy.refreshFailedBody}
+          title={committed ? copy.refreshFailedTitle : copy.reconcileTitle}
+          description={committed ? copy.refreshFailedBody : copy.reconcileBody}
           endContent={<Button variant="secondary" size="sm" label={copy.refresh} isLoading={props.refreshBusy} onClick={props.onRefresh} />}
         />
       );
-    case 'reconcile_unavailable':
-      return (
-        <Banner
-          status="warning"
-          role="status"
-          title={copy.reconcileTitle}
-          description={copy.reconcileBody}
-          endContent={<Button variant="secondary" size="sm" label={copy.refresh} isLoading={props.refreshBusy} onClick={props.onRefresh} />}
-        />
-      );
+    }
     case 'idle':
       return null;
   }
