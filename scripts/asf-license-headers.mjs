@@ -125,6 +125,7 @@ const coveredExtensions = new Map([
   ['.rs', 'block'],
   ['.sh', 'hash'],
   ['.sql', 'block'],
+  ['.svg', 'html'],
   ['.swift', 'block'],
   ['.toml', 'hash'],
   ['.ts', 'block'],
