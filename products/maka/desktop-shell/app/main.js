@@ -628,9 +628,8 @@ export default class MakaDesktop extends View {
 
   /**
    * Above the composer when the newest turn failed: says so and offers to
-   * send its message again. The Host cannot pick a failed run up where it
-   * ended yet (`agent.resume` fails while it binds the new run's tools), so
-   * sending again is what gets the work going.
+   * send its message again. Picking the failed run up where it ended
+   * (`agent.resume`) is not offered yet.
    */
   failedBar(transcript, turn, cx) {
     const m = palette(cx);

@@ -367,15 +367,14 @@ export class Transcript {
   /**
    * The newest turn when it failed and nothing runs or waits to be sent:
    * `{ turnId, message }`, with the whole text of the message that started
-   * it (without the lines history adds for its files: sending again sends
-   * the text alone), or null as `message` when only part of that text is
-   * loaded, it has none, or a WorkHub notice started the turn. Null
-   * otherwise. A stopped turn is left alone: the user stopped it.
+   * it, or null as `message` when only part of that text is loaded, it has
+   * none, it came with files (the files are not at hand to send again), or a
+   * WorkHub notice started the turn. Null otherwise, and while newer history
+   * is still to be read. A stopped turn is left alone: the user stopped it.
    */
   failedTurn() {
-    if (!this.ready || this.run !== null || this.pending.length > 0 || this.live.length > 0) {
-      return null;
-    }
+    if (!this.ready || this.after !== null) return null;
+    if (this.run !== null || this.pending.length > 0 || this.live.length > 0) return null;
     const last = this.rows.at(-1);
     if (last?.timing?.finished?.outcome !== 'failed') return null;
     const start = this.rows.find((row) => row.turnId === last.turnId && row.role === 'user');
@@ -383,7 +382,8 @@ export class Transcript {
     // A turn a WorkHub notice started is WorkHub's to start again, not the user's.
     const notice = WORKHUB_NOTICE_ID.test(start.messageId ?? '');
     const whole = start.fragments[0]?.offset === 0 && utf8Length(start.text) === start.totalBytes;
-    const message = whole && !notice ? ownText(start) : '';
+    const files = (start.attachments ?? []).length > 0;
+    const message = whole && !notice && !files ? ownText(start) : '';
     return { turnId: last.turnId, message: message.trim() !== '' ? message : null };
   }
 
