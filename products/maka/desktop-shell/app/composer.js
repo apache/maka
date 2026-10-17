@@ -37,6 +37,7 @@ import {
   menuLabel,
   menuSeparator,
   controlButton,
+  focusInput,
 } from './theme.js';
 import { t, onLanguageChange } from './locale.js';
 
@@ -66,15 +67,17 @@ const REJECTIONS = {
 
 export class Composer {
   /**
-   * Creates retained input state, so it belongs in the view's `init`.
+   * Creates retained input state and a focus handle, so it belongs in the
+   * view's `init`, whose context it keeps for focusing the draft.
    * @param {{ changed: () => void, report: (message: string) => void }} hooks
    * @param {() => import("./transcript.js").Transcript | null} target the session Enter sends to
    * @param {() => Promise<import("./transcript.js").Transcript | null>} start starts a session
    *   when none is selected, and resolves with it
    */
-  constructor(hooks, target, start) {
+  constructor(hooks, target, start, cx) {
     this.hooks = hooks;
     this.start = start;
+    this.cx = cx;
     this.draft = TextareaState.new({ placeholder: t('composerPlaceholder'), rows: 1 });
     this.draft.set_auto_grow(1, 8);
     // The placeholder follows a change of language; the draft lives as long as the app.
@@ -94,6 +97,16 @@ export class Composer {
     this.draft.on('submit', (event) => {
       if (!event.shift) this.send(target());
     });
+    /** Whether the draft has the keyboard, as its focus events say (Find gives it back). */
+    this.focused = false;
+    this.draft.on('focus', () => {
+      this.focused = true;
+    });
+    this.draft.on('blur', () => {
+      this.focused = false;
+    });
+    /** Around the draft: what the keyboard is moved from to reach it (focusDraft). */
+    this.draftFocus = cx.focus_handle();
     /** The default model's choice, or the first offered one, for sessions without their own. */
     this.model = null;
     /** That model's name, or null when there is none (the footer then says so). */
@@ -131,6 +144,18 @@ export class Composer {
     this.attached = new Map();
     /** Whether the open panel for attachments is up. */
     this.choosing = false;
+  }
+
+  /** Gives the draft the keyboard, as Find does when it closes. */
+  focusDraft() {
+    this.cx.spawn(async (cx) => {
+      await focusInput(
+        this.draftFocus,
+        () => this.focused,
+        () => true,
+        cx,
+      );
+    });
   }
 
   /** The files attached to the draft for `transcript`, or for a new task. */
@@ -641,14 +666,19 @@ export function composerPane(composer, transcript, context, cx) {
             .p(12)
             .gap(6)
             .child(
-              typeset(Textarea.new(composer.draft), 'body')
+              div()
                 .w_full()
-                .px(8)
-                .py(4)
-                .bg('#00000000')
-                .border_0()
-                .text_color(m.ink)
-                .disabled(inactive),
+                .track_focus(composer.draftFocus)
+                .child(
+                  typeset(Textarea.new(composer.draft), 'body')
+                    .w_full()
+                    .px(8)
+                    .py(4)
+                    .bg('#00000000')
+                    .border_0()
+                    .text_color(m.ink)
+                    .disabled(inactive),
+                ),
             )
             .when(files.length > 0, (el) =>
               el.child(attachmentRow(composer, transcript, files, cx)),

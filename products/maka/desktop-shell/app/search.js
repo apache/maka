@@ -47,6 +47,7 @@ import {
   compactAge,
   focusInput,
   escapeHtml,
+  MATCH_FILL,
 } from './theme.js';
 import { t, onLanguageChange } from './locale.js';
 
@@ -62,8 +63,6 @@ const EXCERPT_CHARS = 220;
 const BEFORE_MATCH = 60;
 /** How far a cut moves to fall between two words, in characters. */
 const WORD_SLACK = 16;
-/** The fill behind a match: the native client's find match (maka-gpui crates/shared/src/theme.rs). */
-const MARK = { light: '#FFCE2F59', dark: '#FFCE2F38' };
 
 /** The words of `value` as the Host is asked for them: split on whitespace, as the TUI splits them. */
 function termsOf(value) {
@@ -611,7 +610,7 @@ function resultItems(answer, byId, fill) {
  */
 function resultsList(search, answer, sessions, stale, cx) {
   const byId = new Map(sessions.map((session) => [session.id, session]));
-  const all = resultItems(answer, byId, cx.theme().is_dark ? MARK.dark : MARK.light);
+  const all = resultItems(answer, byId, cx.theme().is_dark ? MATCH_FILL.dark : MATCH_FILL.light);
   const from = search.restoring
     ? Math.max(
         0,

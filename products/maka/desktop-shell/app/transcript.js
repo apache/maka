@@ -48,6 +48,7 @@ import { v_flex, h_flex, TextView, Scrollbar } from 'gpui-base';
 import { query, subscribe, next, close, log, readHistory, readSource } from './host.js';
 import { Interactions } from './interactions.js';
 import { compareRowPositions, rowPositionKey } from './history-position.js';
+import { markedPlain, holdsRow, FOUND_ROW } from './find.js';
 import {
   palette,
   typeset,
@@ -59,6 +60,7 @@ import {
   fileChip,
   escapeHtml,
   MONTHS,
+  MATCH_FILL,
 } from './theme.js';
 import { t, tn, language } from './locale.js';
 
@@ -262,6 +264,19 @@ export class Transcript {
      * rest of the footer by it (see onForkButton).
      */
     this.press = null;
+    /**
+     * Find's selected match, `{ position, field, pattern }`: its row is
+     * tinted, and in a sent message the text `pattern` finds is marked. Null
+     * without one.
+     */
+    this.found = null;
+    /**
+     * The row Find last showed at the top of the list, `{ position, field,
+     * drawn }`, and how many times it did (the list's id counts them; see
+     * reveal).
+     */
+    this.jump = null;
+    this.jumps = 0;
     /** The list items last built from the rows (see displayItems). */
     this.view = null;
     /**
@@ -842,6 +857,30 @@ export class Transcript {
     this.hooks.changed();
   }
 
+  /**
+   * Shows the row at `position` (its `field`, when given; see holdsRow) at
+   * the top of the list, for Find, when it is loaded, and answers whether it
+   * was. A list cannot be scrolled to an item, but a new list opens at its
+   * first item: a list with a new id is drawn from the row's item for one
+   * frame, then whole, and keeps that item at its top (transcriptPane). It
+   * stays there while rows are added, as at an anchor, until the reader
+   * reaches the newest row again. A loaded row that no item shows leaves the
+   * list as it is.
+   */
+  reveal(position, field = null) {
+    const loaded = this.rows.some((row) => compareRowPositions(row.position, position) === 0);
+    if (!this.ready || !loaded) return false;
+    if (!displayItems(this).some((item) => holdsRow(item, position, field))) {
+      log(`transcript "${this.session.title}": no item shows row ${rowPositionKey(position)}`);
+      return true;
+    }
+    this.jumps += 1;
+    this.jump = { position, field, drawn: false };
+    this.anchored = true;
+    this.hooks.changed();
+    return true;
+  }
+
   /** Whether turn footers offer Fork: a task's conversation, not WorkHub's. */
   forks() {
     return this.endpoint === 'agent' && typeof this.hooks.fork === 'function';
@@ -1036,23 +1075,38 @@ function displayItems(transcript) {
     } else if (row.role === 'tool_call' || row.role === 'tool_result') {
       const result =
         row.role === 'tool_call' ? (results.get(rowPositionKey(row.position)) ?? null) : row;
+      // Keyed by its call's position, whether the call is loaded or not: a
+      // result read before its call (a transcript opened at the result) keeps
+      // its key, and so its place at the top of the list, when the call is
+      // read in above it.
+      const call = row.role === 'tool_call' ? row.position : row.tool?.call?.position;
+      const key = call === undefined ? row.key : `tool/${rowPositionKey(call)}`;
       items.push({
-        key: row.key,
+        key,
         kind: 'tool',
         row,
         result,
-        open: transcript.expanded.has(row.key),
+        open: transcript.expanded.has(key),
       });
     } else if (row.role === 'thinking') {
       items.push({ key: row.key, kind: 'thinking', row, open: transcript.expanded.has(row.key) });
     } else if (row.role === 'failure') {
-      // A run's interruption and its end can both record the same reason.
+      // A run's interruption and its end can both record the same reason:
+      // one item shows both, keyed by the later row so that its key stays
+      // when the earlier one is read in after it. `also` lists the rows it
+      // stands for besides its own (holdsRow).
       const previous = items.at(-1);
       const repeated =
         previous?.kind === 'failure' &&
         previous.row.turnId === row.turnId &&
         previous.row.text === row.text;
-      if (!repeated) items.push({ key: row.key, kind: 'failure', row });
+      const item = { key: row.key, kind: 'failure', row };
+      if (repeated) {
+        item.also = [previous.row.position, ...(previous.also ?? [])];
+        items[items.length - 1] = item;
+      } else {
+        items.push(item);
+      }
     } else if (row.role === 'compaction') {
       // As in the TUI, a checkpoint shows only once it was adopted.
       if (row.compaction !== null) items.push({ key: row.key, kind: 'compaction', row });
@@ -1119,9 +1173,19 @@ export function transcriptPane(transcript, loadOlder, cx, empty = null) {
   const m = palette(cx);
   // One snapshot for this render; the list's callbacks run during later
   // layouts and must agree with the count given here.
-  const items = displayItems(transcript);
+  const all = displayItems(transcript);
+  // After Find showed a row: the items from it on for one frame (reveal).
+  const jump = transcript.jump;
+  const from =
+    jump === null || jump.drawn
+      ? 0
+      : Math.max(
+          0,
+          all.findIndex((item) => holdsRow(item, jump.position, jump.field)),
+        );
+  const items = from > 0 ? all.slice(from) : all;
   const hasRows = transcript.rows.length + transcript.pending.length + transcript.live.length > 0;
-  const id = `transcript-${transcript.id}`;
+  const id = `transcript-${transcript.id}${transcript.jumps > 0 ? `-${transcript.jumps}` : ''}`;
   return (
     v_flex()
       .id(`${id}-area`)
@@ -1158,10 +1222,17 @@ export function transcriptPane(transcript, loadOlder, cx, empty = null) {
               .scroll_to_end(transcript.scrollToEnd)
               // Reported after the frame, however the range changed: a
               // wheel, a scrollbar drag, or rows that do not fill the view.
+              // The range is of the items drawn, which start at `from`.
               .on_visible_range_change((range, shown) => {
-                log(`transcript: showing ${range.start}..${range.end} of ${shown}`);
-                transcript.showing(range, shown);
-                if (range.start < NEAR_TOP && transcript.before !== null) loadOlder();
+                const start = range.start + from;
+                const end = range.end + from;
+                log(`transcript: showing ${start}..${end} of ${shown + from}`);
+                if (jump !== null && !jump.drawn) {
+                  jump.drawn = true;
+                  if (from > 0) transcript.hooks.changed();
+                }
+                transcript.showing({ start, end }, shown + from);
+                if (start < NEAR_TOP && transcript.before !== null) loadOlder();
               })
               .on_item_click((key, cx) => transcript.click(key, cx)),
           )
@@ -1172,6 +1243,14 @@ export function transcriptPane(transcript, loadOlder, cx, empty = null) {
 
 /** One item of the transcript list, in the reading column; called from layout for each visible item. */
 function transcriptItem(item, transcript, cx) {
+  const found = transcript.found;
+  const hit = found !== null && holdsRow(item, found.position, found.field);
+  const body = itemBody(item, transcript, cx, hit ? found.pattern : null);
+  const dark = cx.theme().is_dark;
+  // Find's match: the row tinted, reaching 8 past the column on each side
+  // and 8 above and below the row (16 for a sent message, which has 16
+  // above it already), taken from the space after it where there is some.
+  const below = item.kind === 'user' ? 16 : 8;
   return h_flex()
     .w_full()
     .px(COLUMN_GUTTER)
@@ -1180,18 +1259,39 @@ function transcriptItem(item, transcript, cx) {
       v_flex()
         .w_full()
         .max_w(COLUMN_WIDTH)
-        .pb(item.gap)
-        .child(itemBody(item, transcript, cx)),
+        .pb(hit ? Math.max(0, item.gap - below) : item.gap)
+        .child(
+          hit
+            ? div()
+                .mx(-8)
+                .px(8)
+                .when(item.kind !== 'user', (el) => el.pt(8))
+                .pb(below)
+                .rounded(8)
+                .bg(dark ? FOUND_ROW.dark : FOUND_ROW.light)
+                .child(body)
+            : body,
+        ),
     );
 }
 
-function itemBody(item, transcript, cx) {
+/**
+ * An item's content; `pattern`, when given, finds the text to mark in a sent
+ * message (Find). Replies are markdown, which marks inserted into it can
+ * change, so they get only the row's tint.
+ */
+function itemBody(item, transcript, cx, pattern = null) {
   const m = palette(cx);
+  const fill = cx.theme().is_dark ? MATCH_FILL.dark : MATCH_FILL.light;
   switch (item.kind) {
     case 'history':
       return historyRow(item.state, transcript, cx);
     case 'user':
-      return userMessage(item.row, cx);
+      return userMessage(
+        item.row,
+        cx,
+        pattern === null ? null : (own) => markedPlain(own, pattern, fill),
+      );
     case 'assistant':
       return markdownText(`md-${item.key}`, item.row.text, cx);
     case 'thinking':
@@ -1242,9 +1342,10 @@ function plainHtml(value) {
 /**
  * A message the user sent: its files right-aligned above the bubble with its
  * text, which can be selected and copied as a reply's can. A message of files
- * alone has no bubble.
+ * alone has no bubble. `marked`, when given, makes the text's HTML with
+ * Find's matches marked.
  */
-function userMessage(row, cx) {
+function userMessage(row, cx, marked = null) {
   const m = palette(cx);
   const files = row.attachments ?? [];
   const own = ownText(row);
@@ -1274,7 +1375,10 @@ function userMessage(row, cx) {
           .bg(m.bubble)
           .text_color(m.ink)
           .child(
-            TextView.html(`sent-${row.key}`, plainHtml(own)).text_style({
+            TextView.html(
+              marked === null ? `sent-${row.key}` : `sent-${row.key}-found`,
+              marked === null ? plainHtml(own) : `<pre>\n${marked(own)}</pre>`,
+            ).text_style({
               paragraph_gap: 0,
               foreground: m.ink,
             }),

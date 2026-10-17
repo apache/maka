@@ -40,6 +40,7 @@ import { SessionCatalog, SidebarState, sidebar } from './sessions.js';
 import { Transcript, transcriptPane } from './transcript.js';
 import { Composer, composerPane } from './composer.js';
 import { ContextUse, contextControl } from './context.js';
+import { Find, findBar } from './find.js';
 import { interactionCard } from './interactions.js';
 import { Settings, settingsNav, settingsPage } from './settings.js';
 import { Directories, folderPicker } from './directories.js';
@@ -90,6 +91,7 @@ const SHORTCUTS = [
   { keystroke: 'secondary-]', action: 'maka.forward' },
   { keystroke: 'secondary-,', action: 'maka.settings' },
   { keystroke: 'secondary-shift-f', action: 'maka.search' },
+  { keystroke: 'secondary-f', action: 'maka.find' },
   { keystroke: 'secondary-.', action: 'maka.stop' },
   { keystroke: 'f2', action: 'maka.rename-task' },
   { keystroke: 'ctrl-shift-g', action: 'maka.toggle-changes' },
@@ -141,9 +143,24 @@ export default class MakaDesktop extends View {
         const folder = this.startFolder();
         return folder === null ? Promise.resolve(null) : this.newSession(folder);
       },
+      cx,
     );
     // The composer's context use follows the conversation the composer serves.
     this.contextUse = new ContextUse(hooks, this.composer);
+    // Find in the conversation the window shows: a row it selects is shown
+    // in place when loaded, else the conversation opens again at it.
+    this.find = new Find(
+      {
+        changed: hooks.changed,
+        report,
+        reveal: (transcript, position, field) => this.reveal(transcript, position, field),
+        giveBack: (toComposer) => {
+          if (toComposer) this.composer.focusDraft();
+          else this.rootFocus.focus();
+        },
+      },
+      cx,
+    );
     // A model added or chosen in Settings is what the composer sends with next,
     // and the subagents Settings reads or saves are what WorkHub's hint goes by.
     this.settings = new Settings({
@@ -278,13 +295,34 @@ export default class MakaDesktop extends View {
   }
 
   /**
-   * Tells the Workbar what the window shows now, and the composer's context
-   * use which conversation the composer serves; cheap when nothing they
-   * follow changed.
+   * Tells the Workbar and Find what the window shows now, and the
+   * composer's context use which conversation the composer serves; cheap
+   * when nothing they follow changed.
    */
   syncWorkbar() {
     this.workbar.follow(this.workbarTarget());
     this.contextUse.follow(this.current());
+    this.find.follow(this.workbarTarget());
+  }
+
+  /** ⌘F: Find over the conversation the window shows, if it shows one. */
+  startFind() {
+    const transcript = this.workbarTarget();
+    if (transcript === null) return;
+    this.find.show(transcript, this.composer.focused);
+  }
+
+  /**
+   * Shows Find's row at `position` (its `field`): in place when the
+   * transcript has it loaded, else by opening the conversation again at that
+   * row, as a Search passage opens its task (Find follows the conversation
+   * it opens).
+   */
+  reveal(transcript, position, field) {
+    if (transcript.reveal(position, field)) return;
+    log(`find: row ${rowPositionKey(position)} is not loaded; opening the conversation at it`);
+    if (transcript.endpoint === 'coordinator') this.workhub.attach(transcript.session, position);
+    else this.select(transcript.session, false, position);
   }
 
   /** Records a move from the current place, for Back. */
@@ -520,6 +558,7 @@ export default class MakaDesktop extends View {
       .on_action('maka.forward', () => this.go(1))
       .on_action('maka.settings', () => this.settings.show())
       .on_action('maka.search', () => this.startSearch())
+      .on_action('maka.find', () => this.startFind())
       .on_action('maka.rename-task', () => this.renameSelected())
       .on_action('maka.toggle-changes', () => this.workbar.toggle('changes'))
       .on_action('maka.toggle-files', () => this.workbar.toggle('files'))
@@ -798,7 +837,10 @@ export default class MakaDesktop extends View {
     const card = transcript ? interactionCard(transcript.interactions, cx) : null;
     const failed = transcript !== null && card === null ? transcript.failedTurn() : null;
     const bar = card === null && failed === null ? view.bar : null;
+    const finding =
+      this.find.open && transcript !== null && this.find.transcript?.id === transcript.id;
     return el
+      .when(finding, (el) => el.child(findBar(this.find, cx)))
       .when(transcript === null, (el) => el.child(view.empty))
       .when(transcript !== null, (el) =>
         el.child(transcriptPane(transcript, () => transcript.loadOlder(), cx, view.hint)),

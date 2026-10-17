@@ -414,6 +414,12 @@ export function escapeHtml(value) {
     .replace(/'/g, '&#39;');
 }
 
+/**
+ * The fill behind a match that Search or Find marks in text: the native
+ * client's find match (maka-gpui crates/shared/src/theme.rs).
+ */
+export const MATCH_FILL = { light: '#FFCE2F59', dark: '#FFCE2F38' };
+
 /** A 32px text field: plate fill, the strong border, the accent ring when focused. */
 export function textField(state, cx) {
   const m = palette(cx);

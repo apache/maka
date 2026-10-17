@@ -1303,6 +1303,24 @@ export const MESSAGES = {
   searchFailed: ['Couldn’t search: {value}', '搜索失败：{value}', '搜尋失敗：{value}'],
   searchClear: ['Clear', '清除', '清除'],
 
+  // Find in the conversation shown (find.js, ⌘F)
+  findPlaceholder: ['Find in this conversation', '在此对话中查找', '在此對話中尋找'],
+  findCount: ['{index} of {count}', '第 {index} 个，共 {count} 个', '第 {index} 個，共 {count} 個'],
+  findNoResults: ['No results', '无结果', '沒有結果'],
+  findTooLong: ['Too long', '过长', '過長'],
+  findError: ['Failed', '失败', '失敗'],
+  findPrevious: ['Previous match (⇧↩)', '上一个（⇧↩）', '上一個（⇧↩）'],
+  findNext: ['Next match (↩)', '下一个（↩）', '下一個（↩）'],
+  findMatchCase: ['Match case', '区分大小写', '區分大小寫'],
+  findWholeWord: ['Match whole word', '全字匹配', '全字相符'],
+  findClose: ['Close (Esc)', '关闭（Esc）', '關閉（Esc）'],
+  findFailed: ['Find failed: {value}', '查找失败：{value}', '尋找失敗：{value}'],
+  findNotReady: [
+    'the Host did not finish preparing the search',
+    'Host 没有完成搜索的准备',
+    'Host 沒有完成搜尋的準備',
+  ],
+
   // WorkHub: setup and the conversation (workhub.js, main.js)
   workhubChat: ['Chat', '对话', '對話'],
   workhubTasks: ['Tasks', '任务', '任務'],
