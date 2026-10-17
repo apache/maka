@@ -161,9 +161,38 @@ WorkHub 显式开启附件副本的验证式复用。存储层在 Artifact 写�
 
 ### 这条边界不改变什么
 
-SQLite 与现有本地文件仍是 live commit 和普通原地重启的权威。这里不引入 schema migration、checkpoint I/O 或逐消息打包。#2370 的 Repository Head 表示已发布 checkpoint，不是 metadata revision 或 event ordinal，更不能覆盖较新的 live commit。
+SQLite 与现有本地文件仍是 live commit 和普通原地重启的权威。持久化边界不引入 schema migration 或逐消息打包。下述显式 checkpoint 发布是独立的可选能力，关闭时不访问 Repository。#2370 的 Repository Head 表示已发布 checkpoint，不是 metadata revision 或 event ordinal，更不能覆盖较新的 live commit。
 
-Host checkpoint 发布和受限的精确 checkpoint 恢复属于后续修改。尤其是，分别恢复各 Session 的 checkpoint，并不能建立一致的跨 Session WorkHub 委派。当前边界整理不启用这种恢复，也不重做 WorkHub、Memory 检索或跨 Host ownership。
+受限的精确 checkpoint 恢复仍属后续工作。分别恢复各 Session 的 checkpoint，并不能建立一致的跨 Session WorkHub 委派。发布能力不启用这种恢复，也不重做 WorkHub、Memory 检索或跨 Host ownership。
+
+### 显式 Host checkpoint 发布
+
+可信装配层可以在 `ExecutionRuntimeHostCompositionDependencies` 中提供 `checkpointPublication`，再调用 `composition.sessionCheckpoints.publish({ sessionId, requestId })`。这是服务管理入口，不是协议端点、模型工具、UI 操作或每轮自动钩子。未配置时明确返回 `unsupported`，不创建 checkpoint 目录。当前独立 Memory 参考后端同样返回不支持，绝不偷偷导出 Local 数据库。
+
+启用需提供明确的 Bundle 配额和 `HostCheckpointWorkspaceAuthority`。后者必须能在完整私有复制期间排除该工作目录的所有写入者，包括外部进程。本改动不为任意开发目录提供虚假的一致性保证；没有离线、冻结或快照能力的 Workspace adapter 时应保持关闭。Windows 还需既有的私有暂存目录 ACL 验证能力。首版支持普通、无子 Agent 关系、非共享工作目录的 Session；活跃执行、待处理消息/Tool/审批/边界请求，以及活跃或 orphaned shell 均拒绝。
+
+macOS 部署前可在仓库根目录以普通用户运行 `node packages/runtime-host/scripts/macos-checkpoint-capability-probe.mjs`，需已安装 Xcode 命令行工具。这个可选诊断会编译原生探针、自建一次性 128 MiB APFS 镜像，检查文件系统能力和探针自身的 entitlement，并尝试创建／删除快照。不接受项目路径、不请求提权、不添加 entitlement，也不在 Host 启动或 CI 中自动运行。退出码 2 表示当前不可用，1 表示探针或清理错误，0 也仅证明创建／删除成功，不证明挂载、稳定读取、发布签名资格或生产 adapter 可用。正常结束清理测试资源；中断或清理失败时须检查操作前输出的确切临时路径。此诊断不提供普通目录的 macOS authority 实现。
+
+复制阶段依次取得 Host Session admission、Runtime mutation lane、选定 provider 的快照排他边界和可信 Workspace fence。日常存储操作在排他区间外仍可并发。Local 导出按与导入相同的顺序取得 Artifact 写锁和根级 context-value mutation gate，覆盖数据库及其载荷的私有复制，排除 Artifact 清理与 context GC。状态和工作目录全部复制后才释放 live fence；打包和发布只读取私有副本。保留过滤、Secret 确认和大小/路径配额。取消是协作式的，不会在复制仍运行时提前释放排他。
+
+可信装配层必须提供稳定的绝对路径 `checkpointPublication.directory`，作为独立的持久 checkpoint 目录。它不能与 live StateRoot、Host control directory 或 Session workspace 重叠或相互包含，符号链接别名同样检查。目录中 `repository/`、`operations/` 保存持久对象、身份与收据，`cleanup/` 保存持久暂存归属，`staging/`、`bundles/` 保存可恢复的临时载荷；整体不是可随意丢弃的缓存。不自动退回账号主目录或控制目录。这样即使 control directory 按 #5429 的提议放入 StateRoot，也不会违反 snapshot 源目录与 staging 不重叠约束；本改动不实现该 PR 的 Root 格式迁移。更换控制缓存不能丢失 checkpoint 对象与收据。
+
+使用过旧 `<controlDirectory>/session-checkpoints-v1/` 布局的预发布部署，需要显式离线迁移并验收后才能启用新配置；不会自动迁移或清理旧目录，也不支持直接搬动活跃或尚未协调的 staging 租约。须保留旧对象及收据身份，先在原路径协调旧 staging 归属。配置位置需保持稳定，指向一个空目录会创建独立发布 authority，而不是延续旧收据身份。首次持久化专用 authority UUID，每个 Session 绑定独立 Repository UUID，不用路径或 `hostEpoch` 充当身份；恢复 staging 前先检查 Root 绑定。有界 journal 保存 request/commit 身份、预期 revision、固定 Manifest 和结果，不是另一份可写 Head；CAS 前预留收据容量，达到配额时明确失败，不静默遗忘幂等身份。可选元数据初始化失败时，发布能力明确报错，不阻止日常 Host 恢复。发布本身不证明后续激活所需的跨 Session 依赖闭包完整，包括 WorkHub 关联。
+
+provider 快照隔离门也覆盖事件等待提交、来源冷却时间延长、派发预留及完成。checkpoint 保留选定 Session 的等待记录及其引用来源的冷却/派发预留事实，排除无关来源；普通 Session 导出/导入仍不携带等待及来源 authority。保存等待事实不等于允许启动第二个观察者或重复交付结果；精确恢复必须在后续 PR3 协调 ownership 和交付，本次不启用。
+
+启用时，初始化先取得 staging cleanup 的进程生命周期 owner，再恢复持久化租约，完成后才开放发布。因此即使重启后不再 capture，或仅重放已提交收据，也会清理崩溃 owner 遗留的私有副本。删除前仍验证归属；恢复失败时保留无法安全删除的暂存并禁用发布，不阻止日常 live-state 恢复。
+
+- 先验证并发布 Bundle，再验证并发布 Manifest，最后 create/CAS Head。
+- 中断的 capture 标记为 `aborted`，重新取样必须使用新请求身份。
+- `prepared` 请求只能重试原固定 checkpoint，其他新请求需等待它协调完成。
+- 创建回执丢失时严格核对原绑定和确切 checkpoint；普通 commit 复用原 Repository commit 身份。
+- 确定的 CAS 冲突记录为 `conflicted`，不将旧快照自动重挂到新 Head。
+- `committed` 收据返回原提交版本，即便 live state 或 Head 已继续推进。`stagingCleanup: pending_recovery` 记录快照暂存清理失败，`bundleCleanup` 表示最近一次临时归档包清理结果，均不把已完成发布冒充失败。终态请求在清理成功前保留归档清理责任，后续请求继续协调，不删除 prepared 输入或不可变对象。
+
+测试覆盖真实 Host capture/codec 检查性解包、待处理消息/Secret/共享目录拒绝、后端选择、完整复制排他、独立进程 Repository 竞争，以及私有复制后、更新 Head 前后强杀真实 Host。启动清理在任何新 capture 或收据重放之前验证；无效暂存归属必须阻止删除和发布，但不阻塞 live-state 恢复。测试中的检查性解包不等于 PR3 的 Runtime 激活，也不证明完整 WorkHub 的恢复安全。
+
+可选的 [checkpoint 性能基线](session-checkpoint-performance.md) 将整个存储根的写入冻结窗口与打包／发布分开测量，记录可复现夹具及 RSS／磁盘测量的局限；不承诺零影响，也不启用自动 checkpoint。
 
 ## 5. Root admission 与执行结果
 

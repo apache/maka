@@ -58,6 +58,21 @@ for (const mode of ['portable', 'snapshot'] as const) {
         } as const;
         await source.stores.sessionStore.appendMessage(selected.id, message);
         const record = waiting(selected.id, 'shared-wait');
+        const sourceKey = {
+          providerId: record.resource.providerId,
+          connectionId: record.resource.connectionId,
+        };
+        await source.stores.eventWaitStore.reserveSourceDispatch({
+          ...sourceKey,
+          token: 'source-dispatch',
+          observedAt: 10,
+          until: 50,
+        });
+        await source.stores.eventWaitStore.extendSourceCooldown({
+          ...sourceKey,
+          observedAt: 11,
+          until: 90,
+        });
         let result = await source.stores.eventWaitStore.commit(commit(record));
         if (status === 'resolved') {
           result = await source.stores.eventWaitStore.commit(
@@ -112,6 +127,10 @@ for (const mode of ['portable', 'snapshot'] as const) {
         assert.deepEqual(exported.sessionIds, [selected.id]);
         const bundleRows = readWaitRows(bundleRoot);
         assert.deepEqual(bundleRows, mode === 'portable' ? [] : sourceRows);
+        assert.deepEqual(
+          readSourceRows(bundleRoot),
+          mode === 'portable' ? [] : readSourceRows(source.root),
+        );
         assert.deepEqual(readWaitRows(source.root), sourceRows);
         assert.deepEqual(await source.stores.eventWaitStore.read(identity(record)), sourceSnapshot);
 
@@ -128,6 +147,12 @@ for (const mode of ['portable', 'snapshot'] as const) {
           { items: [], nextCursor: null },
         );
         assert.equal(await target.stores.eventWaitStore.read(identity(record)), null);
+        assert.equal(await target.stores.eventWaitStore.readSourceCooldown(sourceKey), null);
+        assert.deepEqual(
+          readSourceRows(target.root),
+          [],
+          'import must not activate source dispatch reservations',
+        );
         assert.deepEqual(await target.stores.eventWaitStore.listPending({ limit: 200 }), {
           items: [targetCommit.snapshot],
           nextCursor: null,
@@ -207,6 +232,18 @@ function readWaitRows(root: string) {
     );
     return database
       .prepare('SELECT * FROM workflow_event_waits ORDER BY wait_id')
+      .all()
+      .map((row) => ({ ...row }));
+  } finally {
+    database.close();
+  }
+}
+
+function readSourceRows(root: string) {
+  const database = new DatabaseSync(join(root, 'runtime.sqlite'), { readOnly: true });
+  try {
+    return database
+      .prepare('SELECT * FROM workflow_event_wait_source_cooldowns ORDER BY source_key')
       .all()
       .map((row) => ({ ...row }));
   } finally {

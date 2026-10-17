@@ -342,46 +342,51 @@ export async function exportSessionBundleState(
   return withOfflineContextSnapshot(
     input.stateRoot,
     (contextLocked) =>
-      withBundleArtifactWriterLock(input.stateRoot, input.lease, async (stateRoot) => {
-        const destinationRoot = resolve(input.destinationRoot);
-        await assertDestinationMissing(destinationRoot);
-        const stagingRoot = `${destinationRoot}.${process.pid}.${randomUUID()}.tmp`;
-        try {
-          await mkdir(stagingRoot, { recursive: true, mode: 0o700 });
-          // Take the private copy BEFORE anything is read. `lease.backup()` is
-          // what freezes the content; every decision after this -- schema, the
-          // subtree, the artifact list, quiescence, the manifest -- is made
-          // against this one file, so the bundle cannot describe two moments.
-          const databasePath = resolveInside(stagingRoot, OPERATIONAL_STATE_DATABASE_NAME);
-          await backupOperationalState(stateRoot, databasePath);
-          const plan = await planSessionBundleExport({ ...input, stateRoot, databasePath });
-          for (const entry of plan.entries) {
-            if (entry.source === 'context_snapshot' || entry.source === 'filtered_runtime_sqlite') {
-              continue;
+      withBundleArtifactWriterLock(input.stateRoot, input.lease, async (stateRoot) =>
+        runWithContextValueMutation(stateRoot, async () => {
+          const destinationRoot = resolve(input.destinationRoot);
+          await assertDestinationMissing(destinationRoot);
+          const stagingRoot = `${destinationRoot}.${process.pid}.${randomUUID()}.tmp`;
+          try {
+            await mkdir(stagingRoot, { recursive: true, mode: 0o700 });
+            // Take the private copy BEFORE anything is read. `lease.backup()` is
+            // what freezes the content; every decision after this -- schema, the
+            // subtree, the artifact list, quiescence, the manifest -- is made
+            // against this one file, so the bundle cannot describe two moments.
+            const databasePath = resolveInside(stagingRoot, OPERATIONAL_STATE_DATABASE_NAME);
+            await backupOperationalState(stateRoot, databasePath);
+            const plan = await planSessionBundleExport({ ...input, stateRoot, databasePath });
+            for (const entry of plan.entries) {
+              if (
+                entry.source === 'context_snapshot' ||
+                entry.source === 'filtered_runtime_sqlite'
+              ) {
+                continue;
+              }
+              const destination = resolveInside(stagingRoot, entry.relativePath);
+              if (entry.kind === 'directory') {
+                await mkdir(destination, { recursive: true });
+                continue;
+              }
+              await mkdir(dirname(destination), { recursive: true });
+              await copyArtifactFile(plan.stateRoot, entry.relativePath, destination);
             }
-            const destination = resolveInside(stagingRoot, entry.relativePath);
-            if (entry.kind === 'directory') {
-              await mkdir(destination, { recursive: true });
-              continue;
-            }
-            await mkdir(dirname(destination), { recursive: true });
-            await copyArtifactFile(plan.stateRoot, entry.relativePath, destination);
+            await filterBackedUpDatabase(databasePath, plan.sessionIds, {
+              omitDiagnostics: input.omitDiagnostics === true,
+              requireQuiescent: input.requireQuiescent === true,
+              omitEventWaits: input.omitEventWaits === true,
+            });
+            await copyContextSnapshot(stateRoot, stagingRoot, contextLocked, plan.sessionIds);
+            await validateContextSnapshot(stagingRoot);
+            await mkdir(dirname(plan.destinationRoot), { recursive: true });
+            await rename(stagingRoot, plan.destinationRoot);
+            return plan;
+          } catch (error) {
+            await rm(stagingRoot, { recursive: true, force: true }).catch(() => {});
+            throw error;
           }
-          await filterBackedUpDatabase(databasePath, plan.sessionIds, {
-            omitDiagnostics: input.omitDiagnostics === true,
-            requireQuiescent: input.requireQuiescent === true,
-            omitEventWaits: input.omitEventWaits === true,
-          });
-          await copyContextSnapshot(stateRoot, stagingRoot, contextLocked, plan.sessionIds);
-          await validateContextSnapshot(stagingRoot);
-          await mkdir(dirname(plan.destinationRoot), { recursive: true });
-          await rename(stagingRoot, plan.destinationRoot);
-          return plan;
-        } catch (error) {
-          await rm(stagingRoot, { recursive: true, force: true }).catch(() => {});
-          throw error;
-        }
-      }),
+        }),
+      ),
     input.lease ? { lease: input.lease } : {},
   );
 }
@@ -513,6 +518,20 @@ async function filterBackedUpDatabase(
       .all() as Array<{ name?: unknown }>;
     for (const row of tables) {
       if (typeof row.name !== 'string' || PORTABLE_GLOBAL_TABLES.has(row.name)) continue;
+      if (row.name === EVENT_WAIT_SOURCE_TABLE && !options.omitEventWaits) {
+        // A checkpoint must retain the source throttle/reservation constraining
+        // its waits, not merely their cursors. Select by Session explicitly so
+        // this is independent of SQLite's table iteration order. Unrelated
+        // sources are not part of this checkpoint's closure.
+        database
+          .prepare(`DELETE FROM ${EVENT_WAIT_SOURCE_TABLE} WHERE source_key NOT IN (
+          SELECT json_array(json_extract(record_json, '$.resource.providerId'),
+            json_extract(record_json, '$.resource.connectionId'))
+          FROM ${EVENT_WAIT_TABLE} WHERE session_id IN (${sessionIds.map(() => '?').join(', ')})
+        )`)
+          .run(...sessionIds);
+        continue;
+      }
       if (options.omitEventWaits && row.name === EVENT_WAIT_TABLE) {
         // Keep the schema while leaving root-owned wait authority behind.
         database.exec(`DELETE FROM ${quoteIdentifier(row.name)}`);
@@ -703,6 +722,7 @@ const LOCAL_SEQUENCE_COLUMNS = new Map([
 ]);
 
 const EVENT_WAIT_TABLE = 'workflow_event_waits';
+const EVENT_WAIT_SOURCE_TABLE = 'workflow_event_wait_source_cooldowns';
 
 const PORTABLE_GLOBAL_TABLES = new Set([
   'operational_schema_migrations',
@@ -1327,7 +1347,8 @@ export function listSessionBundleMergeTables(target: DatabaseSync): SessionBundl
       TRIGGER_MAINTAINED_TABLES.has(name) ||
       // Older bundles and snapshots can contain wait rows. Import is a
       // Session transfer, so it must independently refuse to copy them.
-      name === EVENT_WAIT_TABLE
+      name === EVENT_WAIT_TABLE ||
+      name === EVENT_WAIT_SOURCE_TABLE
     ) {
       continue;
     }
