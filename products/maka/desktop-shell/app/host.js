@@ -63,6 +63,26 @@ export async function operation(endpoint, method, input, attachments) {
 }
 
 /**
+ * Every model the Host offers that matches `search`, read page by page:
+ * `{ choices, defaultModel }`. When the list changes between pages it is read
+ * again from the start, once; null when it changed again.
+ */
+export async function readModels(search = '') {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    let page = await query('settings', 'models', { kind: 'start', query: search });
+    if (page.kind !== 'ready') continue;
+    const { revision, defaultModel } = page;
+    const choices = [...page.choices];
+    while (page.kind === 'ready' && (page.next ?? null) !== null) {
+      page = await query('settings', 'models', { kind: 'continue', revision, cursor: page.next });
+      if (page.kind === 'ready') choices.push(...page.choices);
+    }
+    if (page.kind === 'ready') return { choices, defaultModel };
+  }
+  return null;
+}
+
+/**
  * Reads one `history` page of an Agent endpoint (`agent`, or WorkHub's
  * `coordinator`), asking again with the same fence and position while the
  * Host answers `preparing` (as the TUI does,

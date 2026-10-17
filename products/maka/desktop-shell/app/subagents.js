@@ -37,7 +37,7 @@ import {
   Textarea,
   TextareaState,
 } from 'gpui-base';
-import { query, operation, log } from './host.js';
+import { query, operation, log, readModels } from './host.js';
 import { WORKER } from './workhub.js';
 import { group, settingRow, button, choiceLabel } from './settings.js';
 import {
@@ -431,12 +431,11 @@ function presetOf(entry) {
   };
 }
 
-/** The first page of models the Host offers, read as the composer reads it, once more when it changed meanwhile. */
+/** Every model the Host offers, as the composer reads them. */
 async function offeredModels() {
-  let page = await query('settings', 'models', { kind: 'start', query: '' });
-  if (page.kind !== 'ready') page = await query('settings', 'models', { kind: 'start', query: '' });
-  if (page.kind !== 'ready') throw new Error(t('modelListKeptChanging'));
-  return page.choices;
+  const models = await readModels();
+  if (models === null) throw new Error(t('modelListKeptChanging'));
+  return models.choices;
 }
 
 /**

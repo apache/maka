@@ -23,7 +23,7 @@
 import { div } from 'gpui-kit';
 import { v_flex, h_flex, Button, Textarea, TextareaState, Popover } from 'gpui-base';
 import { chooseFiles, release } from 'maka-files';
-import { query, operation, log } from './host.js';
+import { query, operation, log, readModels } from './host.js';
 import {
   palette,
   typeset,
@@ -310,8 +310,8 @@ export class Composer {
    */
   async loadModel() {
     try {
-      const models = await query('settings', 'models', { kind: 'start', query: '' });
-      if (models.kind !== 'ready') throw new Error(t('modelListChangingReopen'));
+      const models = await readModels();
+      if (models === null) throw new Error(t('modelListChangingReopen'));
       this.choices = models.choices;
       const fallback =
         models.defaultModel.kind === 'ready' ? models.defaultModel.choice : models.choices[0];
@@ -382,8 +382,8 @@ export class Composer {
    * id), with its connection's current revision, or null when it offers none.
    */
   async offered(model) {
-    const models = await query('settings', 'models', { kind: 'start', query: model.modelId });
-    if (models.kind !== 'ready') throw new Error(t('modelListChanging'));
+    const models = await readModels(model.modelId);
+    if (models === null) throw new Error(t('modelListChanging'));
     return models.choices.find((choice) => sameModel(choice.selection, model)) ?? null;
   }
 
