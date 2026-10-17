@@ -44,8 +44,8 @@ async function checkpoint(f: any, session: string, id: string, complete: boolean
   });
 }
 
-test('one group uses one Agent; independent checkpoints, numbers and complete=false continuation', async (t) => {
-  const f = await fixture();
+test('one group uses one Agent without a legacy timeout; independent checkpoints and continuation', async (t) => {
+  const f = await fixture({ runTimeoutMs: 10 });
   t.after(() => f.close());
   const sessions = new Set();
   let turns = 0;
@@ -54,6 +54,7 @@ test('one group uses one Agent; independent checkpoints, numbers and complete=fa
     sessions.add(session);
     turns++;
     const list = members(prompt);
+    await sleep(30);
     if (turns === 1) {
       ids = list.map((x: any) => x.indexId);
       assert.deepEqual(

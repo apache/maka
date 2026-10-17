@@ -372,6 +372,7 @@ export interface InteractiveRunComposerFactoryInput
   > {
   readonly clientCapabilities: HostClientCapabilityCoordinator;
   readonly resolveTavilyWebSearchReadiness: () => Promise<boolean>;
+  readonly resolveToolCeiling?: (sessionId: string) => readonly MakaTool[] | undefined;
   readonly resolveRootTools?: (sessionId: string) => Promise<readonly MakaTool[]>;
   readonly resolvePluginTools?: (
     sessionId: string,
@@ -478,6 +479,7 @@ export function createInteractiveRunComposerFactory(
             backendContext.abortSignal,
           )
         : false;
+      const nativeCeiling = input.resolveToolCeiling?.(backendContext.sessionId);
       const candidateHostTools = [...(input.hostTools ?? []), ...rootTools];
       const toolSurface = routeInteractiveRunToolSurface({
         runtimePolicy,
@@ -502,8 +504,8 @@ export function createInteractiveRunComposerFactory(
         ...(isSideConversationSession(backendContext.header.labels)
           ? { sideConversation: true }
           : {}),
-        ...(boundTools ? { boundTools } : {}),
-        ...(!boundTools && backendContext.header.toolProfile
+        ...((nativeCeiling ?? boundTools) ? { boundTools: nativeCeiling ?? boundTools } : {}),
+        ...(!nativeCeiling && !boundTools && backendContext.header.toolProfile
           ? { toolProfile: backendContext.header.toolProfile }
           : {}),
         ...(clientCapabilities ? { clientCapabilities } : {}),

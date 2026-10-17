@@ -63,7 +63,7 @@ export async function fixture(options: any = {}) {
     list: async () => [],
     read: async (id: string, caller: any) =>
       caller.invocation?.sessionId === id && workers.has(id)
-        ? { session: { id, cwd: root }, messages: [] }
+        ? { session: { id, cwd: root }, messages: workers.get(id).transcript ?? [] }
         : undefined,
     search: async () => ({ items: [] }),
     historyList: async () =>
@@ -103,6 +103,10 @@ export async function fixture(options: any = {}) {
       return { id, sessionId: id, root: false };
     },
     resume: async ({ sessionId }: any) => ({ id: sessionId, sessionId, root: false }),
+    messageExecution: async (id: string, messageId: string) => ({
+      messageId,
+      state: workers.get(id)?.executions?.get(messageId) ?? 'not_admitted',
+    }),
     inbox: async () => [],
     transcript: async (id: string) => workers.get(id)?.transcript ?? [],
     snapshot: async (id: string) => ({
@@ -128,12 +132,20 @@ export async function fixture(options: any = {}) {
         signal?.removeEventListener('abort', onAbort);
       }
     },
-    followup: async (id: string, prompt: string) => {
+    followup: async (
+      id: string,
+      prompt: string,
+      _invocation: unknown,
+      options?: { messageId: string },
+    ) => {
       const w = workers.get(id),
         turnId = randomUUID();
+      const messageId = options?.messageId ?? randomUUID();
+      (w.executions ??= new Map()).set(messageId, 'pending');
       w.status = queued ? 'idle' : 'running';
       w.task = (async () => {
         await beforeRun?.(prompt);
+        w.executions.set(messageId, 'owned');
         w.status = 'running';
         (w.transcript ??= []).push({ role: 'user', text: prompt });
         const invoke = (name: string, input: any) => invokeAs(id, name, input, turnId);
@@ -163,15 +175,29 @@ export async function fixture(options: any = {}) {
             notes: 'Fixture index built',
             complete: true,
           });
-        } else
-          await runner({
-            id,
-            prompt,
-            turnId,
-            invoke,
-            finish: () =>
-              turns.evaluate({ sessionId: id, turnId, signal: new AbortController().signal }),
-          });
+        } else {
+          // Model the real runtime finish boundary: a Sleep tool return alone
+          // is not completion, and arrivals can require another model step.
+          let currentPrompt = prompt;
+          for (;;) {
+            await runner({
+              id,
+              prompt: currentPrompt,
+              turnId,
+              invoke,
+              finish: () =>
+                turns.evaluate({ sessionId: id, turnId, signal: new AbortController().signal }),
+            });
+            if (!prompt.startsWith('Inbox 有新消息')) break;
+            const decision = await turns.evaluate({
+              sessionId: id,
+              turnId,
+              signal: new AbortController().signal,
+            });
+            if (decision.allow) break;
+            currentPrompt = `${prompt}\n${decision.feedback}`;
+          }
+        }
       })().finally(() => {
         w.status = w.endStatus ?? 'idle';
       });
@@ -179,14 +205,26 @@ export async function fixture(options: any = {}) {
       return { disposition: queued ? 'followup' : 'turn_started', turnId };
     },
   });
-  const native = await nativeFixture(Main, ctx, root, {
-    'memory-network': { tickMs: 60000, runTimeoutMs: 5000 },
-    'proactive-matters': { tickMs: 20 },
-    'index-initiative': {
-      tickMs: options.tickMs ?? 10,
-      runTimeoutMs: options.runTimeoutMs ?? 5000,
+  const native = await nativeFixture(
+    Main,
+    ctx,
+    root,
+    {
+      'memory-network': { tickMs: 60000, runTimeoutMs: 5000 },
+      'proactive-matters': { tickMs: 20 },
+      'index-initiative': {
+        tickMs: options.tickMs ?? 10,
+        runTimeoutMs: options.runTimeoutMs ?? 5000,
+      },
     },
-  });
+    {},
+    {
+      appendConversation: async (id: string, message: any) => {
+        const history = (workers.get(id).transcript ??= []);
+        if (!history.some((row: any) => row.id === message.id)) history.push(message);
+      },
+    },
+  );
   ({ tools, prompts, turns } = native);
   const platform = native.platform;
   if (options.matters)
@@ -209,6 +247,7 @@ export async function fixture(options: any = {}) {
     sessions,
     invokeAs,
     remote: native.remote,
+    send: (id: string, text: string) => native.send('owner', id, { text }),
     cancels: () => cancels,
     invoke: (name: string, input: any = {}) => invokeAs('owner', name, input),
     setIndexRunner: (fn: any) => {

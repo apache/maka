@@ -237,6 +237,8 @@ test('ordinary Plan mode excludes every mutating Matter tool, including activati
     'MatterDelegationRecover',
     'MatterFeedbackRetry',
     'MatterAdopt',
+    'MatterAskBot',
+    'MatterReply',
     'MatterTaskMessage',
     'MatterTaskControl',
   ];

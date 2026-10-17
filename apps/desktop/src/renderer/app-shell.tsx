@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { MemoryOriginalHost, PersonalAssistantEntry, createInternalUriDispatcher } from './features/personal-assistant/index.js';
+import { PersonalAssistantChatLayout, MemoryOriginalHost, PersonalAssistantEntry, createInternalUriDispatcher } from './features/personal-assistant/index.js';
 import { WorkHubControlOverlay, WorkHubDock, WorkHubMainNavigation } from './features/workhub';
 import { WorkHubEnablementWatch } from './application/contracts/workhub-workspace/workhub-enablement.js';
 import { RuntimeHostHandoffOverlay } from './features/runtime-host-management/index.js';
@@ -39,7 +39,6 @@ import { isLinkedSubagentSession } from '@maka/core/session';
 import { resolveUiLocale } from '@maka/core/ui-locale';
 import { hasSettledInitialOnboarding } from '@maka/core/onboarding-milestone';
 import {
-  ChatSurfaceLayout,
   type ComposerHandle,
   MakaUriContext,
   AstryxLocaleProvider,
@@ -1305,13 +1304,13 @@ function AppShellContent({
                 onOpenUsage={() => commands.toggleTool('inspector')} onToggleWorkbar={commands.toggleRightPanel}
                 onOpenWorkHub={openWorkHub} onOpenSession={(sessionId) => { closeSettings(); openSession(sessionId); }} />
               <WorkHubDock workbar={selectors} workbarTogglePosition={workbarTogglePosition} visible={workHubActive && sessionsSelected && !shellObscured} />
-              <ChatSurfaceLayout
-                data-session-history-surface="true"
+              <PersonalAssistantChatLayout
+                session={activeSessionForView}
                 // ChatView positions this transcript: switching conversations,
                 // following the tail and the moves the reader asks for are one
                 // authority there, and the composer never remounts for any of
                 // them — its contenteditable DOM carries the live draft.
-                data-maka-onboarding={showOnboardingHero ? 'true' : undefined}
+                onboarding={showOnboardingHero}
                 scrollToBottomLabel={
                   desktopConversationCopy.actions.scrollMainToBottom
                 }
@@ -1475,7 +1474,7 @@ function AppShellContent({
                   />
 
                 ) : null}
-              </ChatSurfaceLayout>
+              </PersonalAssistantChatLayout>
             </Conversation.ConversationHomeSurface>
             {/* Collapse hides the Workbar surface without unmounting its tools. */}
             <WorkbarHost togglePosition={workbarTogglePosition} />

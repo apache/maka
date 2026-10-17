@@ -309,8 +309,7 @@ export async function withBrowserPage<T>(
 ): Promise<T> {
   if (opts?.abort?.aborted) throw new BrowserActionCanceledError(label);
   const kind: TakeoverMode = opts?.takeover ?? 'observe';
-  // The Host admits visible ordinary Sessions and the background-authorized
-  // WorkHub coordination Session. Runs BEFORE acquire, so a vetoed
+  // The Host admits renderer-owned Sessions even with hidden browser panels. Runs BEFORE acquire, so a vetoed
   // background action creates no view and opens no connection. For a mutate whose
   // viewport is briefly absent (a permission modal just closed), canDrive waits
   // out the renderer's strip restore so the first approved click/type lands;

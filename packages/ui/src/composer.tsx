@@ -41,6 +41,7 @@ import {
   ICON_SIZE,
   ArrowUp,
   CircleGauge,
+  Settings,
   FileText,
   ListTodo,
   MessageSquareQuote,
@@ -62,6 +63,7 @@ import {
   ThinkingLevelSelector,
 } from './chat-model-switcher.js';
 import { ComposerOptionsMenu } from './composer-options-menu.js';
+import { assistantChatCopy } from './assistant-chat-copy.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 import { type ChatModelChoice, exactModelChoiceValue } from './chat-model-helpers.js';
@@ -310,6 +312,8 @@ export const Composer = forwardRef<
   {
     disabled?: boolean;
     placeholder?: string;
+    /** Keep configuration available in a disclosure for conversational surfaces. */
+    compactControls?: boolean;
     /**
      * Prevent submission while leaving the draft and recovery controls usable.
      * Hosts use this for configuration failures that the model picker can fix.
@@ -2510,6 +2514,7 @@ export const Composer = forwardRef<
                   </DropdownMenu>
                 </span>
               ) : null}
+              <ComposerConfiguration compact={props.compactControls} label={assistantChatCopy(locale).chatOptions}>
               {props.onPermissionModeChange ? (
                 <PermissionModeSelect
                   appearance="icon"
@@ -2683,6 +2688,7 @@ export const Composer = forwardRef<
                   }}
                 />
               </MakaClientSessionScope>
+              </ComposerConfiguration>
               {nextPrompt.text ? <kbd className="maka-composer-next-prompt-key" aria-hidden="true">Tab</kbd> : null}
               {props.footerAccessory}
             </div>
@@ -2821,4 +2827,14 @@ function ExecutorModelPickerBoundary(props: {
       {props.children}
     </ExecutorModelPicker>
   ) : props.children;
+}
+
+function ComposerConfiguration({ compact, label, children }: { compact?: boolean; label: string; children: ReactNode }) {
+  if (!compact) return <>{children}</>;
+  return (
+    <details className="maka-composer-configuration">
+      <summary aria-label={label} title={label}><Settings size={ICON_SIZE.control} aria-hidden="true" /></summary>
+      <div className="maka-composer-configuration-panel">{children}</div>
+    </details>
+  );
 }

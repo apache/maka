@@ -251,3 +251,24 @@ test('prepended Turns do not release a pinned transcript', async () => {
   assert.equal(view.authority.getSnapshot().pinned, true);
   assert.equal(view.anchors.at(-1), undefined);
 });
+
+test('activity remains visible with an empty transcript and removing it restores earlier history', async () => {
+  const view = harness();
+  const props = { messages: [], hasEarlierHistory: true, onLoadEarlierHistory: () => {} };
+  await view.render({ ...props, activityContent: createElement('div', { role: 'status' }, 'Typing…') });
+  assert.match(dom!.container.textContent ?? '', /Typing…/);
+  assert.ok(view.loadButton());
+  await view.render(props);
+  assert.doesNotMatch(dom!.container.textContent ?? '', /Typing…/);
+  assert.ok(view.loadButton());
+});
+
+test('activity renders before a session exists and does not remove the empty hero afterward', async () => {
+  const view = harness();
+  const props = { activeSession: undefined, messages: [], emptyOverride: createElement('p', null, 'Empty hero') };
+  await view.render({ ...props, activityContent: createElement('div', { role: 'status' }, 'Typing…') });
+  assert.match(dom!.container.textContent ?? '', /Typing…/);
+  assert.doesNotMatch(dom!.container.textContent ?? '', /Empty hero/);
+  await view.render(props);
+  assert.match(dom!.container.textContent ?? '', /Empty hero/);
+});

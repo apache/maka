@@ -87,7 +87,17 @@ export interface PluginAgentRuntime {
   get(id: string, initiator: PluginAgentInvocation): Promise<PluginAgentDescriptor | undefined>;
   list(initiator: PluginAgentInvocation): Promise<readonly PluginAgentDescriptor[]>;
   roots(initiator: PluginAgentInvocation): Promise<readonly PluginAgentDescriptor[]>;
-  followup(id: string, message: unknown, initiator: PluginAgentInvocation): Promise<unknown>;
+  followup(
+    id: string,
+    message: unknown,
+    initiator: PluginAgentInvocation,
+    options?: { messageId: string },
+  ): Promise<unknown>;
+  messageExecution?(
+    id: string,
+    messageId: string,
+    initiator: PluginAgentInvocation,
+  ): Promise<unknown>;
   steer(id: string, message: unknown, initiator: PluginAgentInvocation): Promise<unknown>;
   inject(id: string, message: unknown, initiator: PluginAgentInvocation): Promise<unknown>;
   cancel(id: string, initiator: PluginAgentInvocation): Promise<unknown>;
@@ -110,7 +120,8 @@ export interface PluginAgent {
   readonly root: boolean;
   readonly status?: string;
   readonly ownerId?: string;
-  followup(message: unknown): Promise<unknown>;
+  followup(message: unknown, options?: { messageId: string }): Promise<unknown>;
+  messageExecution(messageId: string): Promise<unknown>;
   steer(message: unknown): Promise<unknown>;
   inject(message: unknown): Promise<unknown>;
   cancel(): Promise<unknown>;
@@ -237,7 +248,14 @@ export class PluginAgentService extends Service {
     return Object.freeze({
       ...descriptor,
       id,
-      followup: (message: unknown) => service.runtime().followup(id, message, invocation),
+      followup: (message: unknown, options?: { messageId: string }) =>
+        service.runtime().followup(id, message, invocation, options),
+      messageExecution: async (messageId: string) => {
+        const runtime = service.runtime();
+        if (!runtime.messageExecution)
+          throw new Error('Runtime message execution query unavailable');
+        return runtime.messageExecution(id, messageId, invocation);
+      },
       steer: (message: unknown) => service.runtime().steer(id, message, invocation),
       inject: (message: unknown) => service.runtime().inject(id, message, invocation),
       cancel: () => service.runtime().cancel(id, invocation),

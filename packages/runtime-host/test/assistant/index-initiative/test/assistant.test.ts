@@ -52,8 +52,7 @@ test('first open binds one ordinary chat without import, indexing, model calls o
       { sessionId: 'owner', turnId: 'first-chat', cwd: f.root },
       undefined,
     );
-    assert.match(prompt.text, /正常回应用户/);
-    assert.match(prompt.text, /没有索引也正常交流/);
+    assert.doesNotMatch(prompt.text ?? '', /正常回应用户/); // Chat is a transport, not an executing Agent.
   } finally {
     await f.close();
   }
@@ -221,13 +220,17 @@ test('actual heartbeat ignores obsolete saved instructions and the configuration
     await until(async () => prompts.length === 1 && !(await f.invoke('InitiativeStatus')).active);
     assert.ok(prompts[0].includes(PROACTIVE_TASK));
     assert.ok(!prompts[0].includes(obsolete));
-    // Old callers' extra arguments are stripped; enable only configures cadence.
-    const configured = await f.invoke('InitiativeEnable', {
-      instructions: obsolete,
-      intervalMinutes: 60,
-    });
+    // Enable no longer silently accepts a cadence or obsolete prompt override.
+    await assert.rejects(
+      f.invoke('InitiativeEnable', {
+        instructions: obsolete,
+        intervalMinutes: 60,
+      }),
+    );
+    const configured = await f.invoke('InitiativeConfigure', { intervalMinutes: 60 });
     assert.equal(Object.hasOwn(configured, 'instructions'), false);
     assert.equal(configured.intervalMs, 3600000);
+    await f.invoke('InitiativeEnable', {});
     await f.remote('assistant.control', { action: 'enable', intervalMinutes: 60 });
     await until(async () => prompts.length === 2 && !(await f.invoke('InitiativeStatus')).active);
     assert.ok(prompts[1].includes(PROACTIVE_TASK));

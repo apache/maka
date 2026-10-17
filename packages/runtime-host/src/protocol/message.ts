@@ -124,6 +124,7 @@ export type TurnMessageSubmitResult = {
     }
   | { readonly disposition: 'turn_started'; readonly turnId: string }
   | { readonly disposition: 'blocked' }
+  | { readonly disposition: 'inbox' }
 );
 
 export interface TurnMessageQueryInput {
@@ -151,6 +152,7 @@ export interface TurnMessageExecutionQueryResult {
 
 export type TurnMessageExecutionResolution =
   | { readonly messageId: string; readonly state: 'pending' }
+  | { readonly messageId: string; readonly state: 'inbox' }
   | { readonly messageId: string; readonly state: 'cancelled' }
   | { readonly messageId: string; readonly state: 'not_admitted' }
   | {
@@ -335,6 +337,13 @@ function decodeTurnMessageExecutionQueryResult(value: unknown): TurnMessageExecu
   }
   const resolutions = record.resolutions.map((value): TurnMessageExecutionResolution => {
     const resolution = requireRecord(value, 'turn.message.execution.query resolution');
+    if (resolution.state === 'inbox') {
+      assertExactKeys(resolution, 'turn.message.execution.query inbox resolution', [
+        'messageId',
+        'state',
+      ]);
+      return { messageId: requireEntityId(resolution.messageId, 'messageId'), state: 'inbox' };
+    }
     if (resolution.state === 'pending') {
       assertExactKeys(resolution, 'turn.message.execution.query pending resolution', [
         'messageId',
@@ -389,6 +398,13 @@ function decodeTurnMessageExecutionQueryResult(value: unknown): TurnMessageExecu
 
 function decodeTurnMessageSubmitResult(value: unknown): TurnMessageSubmitResult {
   const record = requireRecord(value, 'turn.message.submit result');
+  if (record.disposition === 'inbox') {
+    assertExactKeys(record, 'turn.message.submit inbox result', ['disposition', 'skillInvocation']);
+    return {
+      disposition: 'inbox',
+      skillInvocation: decodeSubmitSkillInvocation(record.skillInvocation),
+    };
+  }
   if (record.disposition === 'turn_started') {
     assertExactKeys(record, 'turn.message.submit turn_started result', [
       'disposition',

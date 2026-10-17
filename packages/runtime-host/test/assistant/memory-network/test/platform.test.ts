@@ -518,7 +518,7 @@ test('a stopped worker is not restarted by false or by the maintenance timer', a
   assert.match(result.maintenance.lastError, /aborted/);
 });
 
-test('a timeout after false cancels the active turn without immediately continuing it', async (t) => {
+test('legacy runTimeoutMs does not cancel index work or its continuation', async (t) => {
   const f = await fixture({ runTimeoutMs: 30 });
   t.after(() => f.close());
   let calls = 0;
@@ -531,18 +531,17 @@ test('a timeout after false cancels the active turn without immediately continui
       rangeId: s.range.rangeId,
       expectedRevision: s.index.revision,
       notes: 'Still working in this turn',
-      complete: false,
+      complete: calls === 2,
     });
     await new Promise((r) => setTimeout(r, 100));
   });
   const result = await create(f);
-  assert.equal(calls, 1);
-  assert.equal(f.cancellations(), 1);
-  assert.equal(result.coverage.cursor, null);
-  assert.match(result.maintenance.lastError, /timeout/i);
+  assert.equal(calls, 2);
+  assert.equal(f.cancellations(), 0);
+  assert.equal(result.range.completed, true);
 });
 
-test('each continuation receives a fresh per-turn timeout', async (t) => {
+test('continuations complete without a wall-clock budget', async (t) => {
   const f = await fixture({ runTimeoutMs: 90 });
   t.after(() => f.close());
   let calls = 0;
@@ -702,4 +701,34 @@ test('background creation returns progress before indexing completes and status 
     await new Promise((r) => setTimeout(r, 10));
   }
   assert.fail('background completion missing');
+});
+
+test('shutdown still cancels index work with no wall-clock deadline', {
+  timeout: 5000,
+}, async () => {
+  const f = await fixture();
+  let started = false;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  f.setWorkerRunner(async () => {
+    started = true;
+    await gate;
+  });
+  try {
+    const range = await f.invoke('MemoryRange', {});
+    await f.invoke('MemoryIndexCreate', {
+      name: 'Shutdown',
+      instructions: 'Organize history',
+      cursor: range.to,
+      background: true,
+    });
+    for (let i = 0; !started && i < 100; i++) await new Promise((r) => setTimeout(r, 10));
+    assert.equal(started, true);
+    await f.close();
+    assert.equal(f.cancellations(), 1);
+  } finally {
+    release();
+  }
 });

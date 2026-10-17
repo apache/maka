@@ -35,12 +35,18 @@ test('unified entry + background index + timed task + parent feedback run togeth
   try {
     await f.remote('assistant.bind', { sessionId: 'owner' });
     f.setRunner(async ({ id, prompt, invoke }: any) => {
-      if (id === 'owner') {
-        feedback.push(prompt);
-        // Controlled model reply. This test validates admission/wiring, not recommendation quality.
-        f.workers
-          .get(id)
-          .transcript.push({ type: 'assistant', text: '已核对，验收通过。', ts: Date.now() });
+      if (prompt.startsWith('Inbox 有新消息')) {
+        const inbox = await invoke('InboxCheck', {});
+        for (const row of inbox.items) {
+          const message = row;
+          feedback.push(message.content);
+          if (JSON.parse(message.content).status === 'completed')
+            await invoke('SendUser', {
+              messageId: 'acceptance-complete',
+              messages: [{ text: '已核对，验收通过。' }],
+            });
+        }
+        await invoke('Sleep', {});
         return;
       }
       try {
@@ -102,7 +108,11 @@ test('unified entry + background index + timed task + parent feedback run togeth
         .get('owner')
         .transcript.some((m: any) => m.type === 'assistant' && m.text === '已核对，验收通过。'),
     );
-    assert.equal(f.workers.size, 3, 'one native assistant, one index worker, one independent task');
+    assert.equal(
+      f.workers.size,
+      4,
+      'one visible chat, one Bot, one index worker, one independent task',
+    );
   } finally {
     await f.close();
   }
@@ -130,7 +140,10 @@ test('master switch stops concurrent index, durable task and proactive runs with
     });
     await until(() => [...f.workers.values()].filter((w) => w.status === 'running').length >= 2);
     await f.remote('assistant.control', { action: 'enable', intervalMinutes: 30 });
-    await until(() => f.workers.get('owner').status === 'running');
+    await until(
+      async () =>
+        f.workers.get((await f.invoke('InitiativeStatus')).discoverySession)?.status === 'running',
+    );
     const count = f.workers.size;
     await f.remote('assistant.set-enabled', { enabled: false });
     assert.ok(f.cancels() >= 3, 'all three active kinds receive runtime cancellation');
@@ -143,6 +156,79 @@ test('master switch stops concurrent index, durable task and proactive runs with
     assert.deepEqual(await f.remote('assistant.enablement'), { enabled: false });
   } finally {
     release();
+    await f.close();
+  }
+});
+
+test('Bot delegates for the visible owner and delivers task completion through SendUser', async () => {
+  const f = await fixture({ matters: true });
+  let task: any, failure: unknown;
+  try {
+    await f.remote('assistant.bind', { sessionId: 'owner' });
+    await f.invoke('InitiativeConfigure', { intervalMinutes: 360 });
+    const schedule = await f.invoke('InitiativeEnable', {});
+    f.setRunner(async ({ prompt, invoke }: any) => {
+      try {
+        if (prompt.startsWith('Inbox 有新消息')) {
+          const inbox = await invoke('InboxCheck', {});
+          for (const row of inbox.items) {
+            if (row.type === 'user_message') {
+              task = await invoke('MatterDelegate', {
+                taskKey: 'bot-delegated',
+                title: '检查验收',
+                request: '只读检查验收结果，告诉用户结论。',
+              });
+              assert.deepEqual(task.effect, { target: 'task', action: 'delegate', id: task.id });
+              const discovery = await invoke('InitiativeStatus', {});
+              assert.equal(discovery.intervalMs, schedule.intervalMs);
+              assert.equal(discovery.nextAt, schedule.nextAt);
+              const owned = await invoke('MatterTasks', {});
+              assert.ok(JSON.stringify(owned).includes(task.id));
+            } else if (row.type === 'task_update') {
+              const report = JSON.parse(row.content);
+              if (report.status === 'completed')
+                await invoke('SendUser', {
+                  messageId: 'delegated-result',
+                  messages: [{ text: '验收结果已经核对完成。' }],
+                });
+            }
+          }
+          await invoke('Sleep', {});
+          return;
+        }
+        const workspace = JSON.parse(
+          prompt.split('Matter workspace (paths and host metadata):\n')[1],
+        );
+        const state = await invoke('MatterRead', { activationId: workspace.activationId });
+        await invoke('MatterWriteFile', { path: state.files.draft, content: '验收通过' });
+        await invoke('MatterSettle', {
+          expectedRevision: state.revision,
+          stateFile: state.files.draft,
+          disposition: 'complete',
+          reason: '核对完成',
+          summary: '验收通过',
+          update: '验收通过',
+        });
+      } catch (error) {
+        failure = error;
+        throw error;
+      }
+    });
+    await f.send('delegate-request', '请检查验收结果');
+    await until(
+      () =>
+        failure ||
+        f.workers
+          .get('owner')
+          .transcript?.some(
+            (m: any) => m.type === 'assistant' && m.text === '验收结果已经核对完成。',
+          ),
+    );
+    if (failure) throw failure;
+    const tasks = await f.invoke('MatterTasks', {});
+    assert.ok(JSON.stringify(tasks).includes(task.id), 'delegation remains owned by visible chat');
+    assert.equal(f.workers.size, 3, 'chat, Bot and task worker only');
+  } finally {
     await f.close();
   }
 });

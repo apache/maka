@@ -32,12 +32,73 @@ export class MemoryController {
   private ticking?: Promise<void>;
   private scans = new Map<string, { scope: string; promise: Promise<void> }>();
   private sourceReads = new Map<string, Promise<void>>();
+  private runAborts = new Map<string, AbortController>();
   private runs = new Map<string, Promise<any>>();
   constructor(
     readonly ctx: any,
     readonly store: CorpusStore,
     readonly config: any = {},
-  ) {}
+  ) {
+    store.db.exec(`CREATE TABLE IF NOT EXISTS memory_notifications(
+      id TEXT PRIMARY KEY, owner TEXT NOT NULL, payload TEXT NOT NULL, delivered INTEGER NOT NULL DEFAULT 0)`);
+  }
+  private flushNotifications() {
+    if (!this.ctx.bot) return;
+    for (const row of this.store.db
+      .prepare('SELECT * FROM memory_notifications WHERE delivered=0 ORDER BY rowid')
+      .all()) {
+      try {
+        if (this.ctx.bot.post(String(row.owner), JSON.parse(String(row.payload))))
+          this.store.db
+            .prepare('UPDATE memory_notifications SET delivered=1 WHERE id=?')
+            .run(row.id);
+      } catch {
+        // Keep the same immutable inbox identity for retry after a delivery failure.
+      }
+    }
+  }
+  private reportRun(ids: string[], runId: string, stopped = false) {
+    if (this.abort.signal.aborted) return;
+    const owners = new Set(ids.map((id) => this.store.worker(id)?.ownerSessionId).filter(Boolean));
+    for (const owner of owners) {
+      const indexes = ids
+        .filter((id) => this.store.worker(id)?.ownerSessionId === owner)
+        .map((id) => {
+          const worker = this.store.worker(id),
+            work = this.store.work(id);
+          return {
+            indexId: id,
+            name: this.store.index(id).name,
+            status: stopped
+              ? 'stopped'
+              : worker.lastError
+                ? 'failed'
+                : work?.completed
+                  ? 'completed'
+                  : 'incomplete',
+            error: worker.lastError ?? null,
+            rangeId: work?.id ?? null,
+            coveredCursor: this.store.boundary(id),
+            nextCheckAt: worker.nextCheckAt ?? null,
+          };
+        });
+      const id = `memory:${runId}:${owner}`;
+      const payload = {
+        id,
+        type: 'system_event',
+        source: 'memory-network',
+        content: {
+          indexes,
+          notice:
+            '索引后台作业反馈，不是新的用户要求。按需用 MemoryIndexRead 核对；恢复使用已有索引，勿重复创建。',
+        },
+      };
+      this.store.db
+        .prepare('INSERT OR IGNORE INTO memory_notifications(id,owner,payload) VALUES(?,?,?)')
+        .run(id, owner, JSON.stringify(payload));
+    }
+    this.flushNotifications();
+  }
   hidden() {
     return new Set(
       this.store.db
@@ -604,19 +665,97 @@ export class MemoryController {
       throw error;
     }
   }
-  /** Refresh observations only; never begin a work range or dispatch an indexing Agent. */
+  /** One observation batch shares source I/O, but retains each index's own coverage. */
+  async observeMany(indexIds: string[]) {
+    const indexes = indexIds.map((id) => this.store.index(id));
+    const before = new Map<string, Promise<string[]>>();
+    const refreshed = new Map<
+      string,
+      Promise<{ allowed: string[]; checkedAt: number; error?: unknown }>
+    >();
+    const sourcesOf = (index: (typeof indexes)[number]) => index.sources ?? ['maka'];
+    const visibility = (source: string) => {
+      let result = before.get(source);
+      if (!result) {
+        result = this.visible([source]);
+        before.set(source, result);
+      }
+      return result;
+    };
+    const refresh = (source: string) => {
+      let result = refreshed.get(source);
+      if (!result) {
+        result = (async () => {
+          const members = indexes.filter((index) => sourcesOf(index).includes(source));
+          const sessions = members.some((index) => !index.sessions?.length)
+            ? []
+            : [...new Set(members.flatMap((index) => index.sessions))];
+          const checkedAt = Date.now();
+          let error: unknown;
+          try {
+            await this.sync([source], sessions);
+          } catch (failure) {
+            error = failure;
+          }
+          // Recheck permissions after I/O, once per source rather than per index.
+          return { allowed: await this.visible([source]), checkedAt, error };
+        })();
+        // Retain completed promises until this batch ends as well as in-flight ones.
+        refreshed.set(source, result);
+      }
+      return result;
+    };
+    return Promise.allSettled(
+      indexes.map(async (index) => {
+        const sources = [...new Set(sourcesOf(index))];
+        const initial = (await Promise.all(sources.map(visibility))).flat();
+        this.store.assertIndexVisible(index.id, initial);
+        const checkedAt = Date.now();
+        this.store.saveWorker(index.id, {
+          ...this.store.worker(index.id),
+          lastCheckAttemptAt: checkedAt,
+        });
+        try {
+          const settled = await Promise.allSettled(sources.map(refresh));
+          const results = settled.map((result) => {
+            if (result.status === 'rejected') throw result.reason;
+            return result.value;
+          });
+          const allowed = [...new Set(results.flatMap((result) => result.allowed))];
+          this.store.assertIndexVisible(index.id, allowed);
+          const failed = results.find((result) => result.error !== undefined);
+          if (failed) {
+            this.store.saveWorker(index.id, {
+              ...this.store.worker(index.id),
+              lastCheckError: String(failed.error),
+            });
+          } else {
+            const cursor = this.store.capture(sources, allowed, index.sessions);
+            const observedAt = Math.min(checkedAt, ...results.map((result) => result.checkedAt));
+            this.store.recordCheck(cursor.id, observedAt);
+            this.store.saveWorker(index.id, {
+              ...this.store.worker(index.id),
+              latestCursor: cursor.id,
+              lastCheckedAt: observedAt,
+              lastCheckError: undefined,
+            });
+          }
+          return allowed;
+        } catch (error) {
+          this.store.saveWorker(index.id, {
+            ...this.store.worker(index.id),
+            lastCheckError: String(error),
+          });
+          throw error;
+        }
+      }),
+    );
+  }
+  /** Refresh observations only; never dispatch an indexing Agent. */
   async observe(indexId: string) {
-    const index = this.store.index(indexId);
-    this.store.assertIndexVisible(indexId, await this.indexVisible(indexId));
-    try {
-      await this.capture(index.sources ?? ['maka'], index.sessions, indexId);
-    } catch {
-      // capture records the failure and preserves the last successful observation.
-      // Recheck visibility below: source failure must never bypass the caller's permissions.
-    }
-    const allowed = await this.indexVisible(indexId);
-    this.store.assertIndexVisible(indexId, allowed);
-    return allowed;
+    const [result] = await this.observeMany([indexId]);
+    if (result.status === 'rejected') throw result.reason;
+    return result.value;
   }
   interval(indexId: string) {
     return this.store.worker(indexId)?.intervalMs ?? this.config.intervalMs ?? 43200000;
@@ -689,7 +828,21 @@ export class MemoryController {
         ' 游标、增量数量和状态只负责定位覆盖范围及读取位置，不是价值或推荐条件；没有增量不代表存量信息没有值得调查或交流的内容，不应据此停止调查。',
     };
   }
-  control(indexId: string, action: 'pause' | 'resume' | 'configure', intervalMs?: number) {
+  async control(
+    indexId: string,
+    action: 'pause' | 'resume' | 'configure' | 'stop',
+    intervalMs?: number,
+  ) {
+    if (action === 'stop') {
+      this.assertOwner();
+      const members: string[] = this.store.worker(indexId)?.groupIndexIds ?? [indexId];
+      for (const id of members) await this.control(id, 'pause');
+      const running = members.find((id) => this.runs.has(id));
+      const run = running ? this.runs.get(running) : undefined;
+      if (running) this.runAborts.get(running)?.abort(Error('Index organizing stopped by user'));
+      await run;
+      return;
+    }
     this.assertOwner();
     const w = this.store.worker(indexId);
     if (!w) throw Error('Index has no maintenance worker');
@@ -831,6 +984,7 @@ export class MemoryController {
     if (this.ticking || !this.owned || this.abort.signal.aborted)
       return this.ticking ?? Promise.resolve();
     this.ticking = (async () => {
+      this.flushNotifications();
       for (const index of this.store.list()) {
         if (
           this.abort.signal.aborted ||
@@ -881,10 +1035,13 @@ export class MemoryController {
         retry: { tool: 'MemoryIndexMaintain', indexId },
       };
     }
+    const runId = randomUUID();
+    const cancellation = new AbortController();
+    const signal = AbortSignal.any([this.abort.signal, cancellation.signal]);
     const run = Promise.resolve()
       .then(() =>
         this.inOwner<any>(indexId, () =>
-          selected.length > 1 ? this.runGroup(selected) : this.run(selected[0]),
+          selected.length > 1 ? this.runGroup(selected, signal) : this.run(selected[0], signal),
         ),
       )
       .catch((error) => {
@@ -898,11 +1055,23 @@ export class MemoryController {
         return { status: 'failed', indexId, error: String(error) };
       })
       .finally(() => {
-        for (const id of selected) this.runs.delete(id);
+        for (const id of selected) {
+          this.runs.delete(id);
+          this.runAborts.delete(id);
+          if (cancellation.signal.aborted)
+            this.store.saveWorker(id, {
+              ...this.store.worker(id),
+              nextCheckAt: null,
+              lastError: null,
+              startStatus: 'stopped',
+            });
+        }
+        this.reportRun(selected, runId, cancellation.signal.aborted);
       });
     for (const id of selected) {
       this.store.saveWorker(id, { ...this.store.worker(id), startStatus: 'started' });
       this.runs.set(id, run);
+      this.runAborts.set(id, cancellation);
     }
     return { status: 'started', indexId, members: selected };
   }
@@ -945,14 +1114,13 @@ export class MemoryController {
   private timeContext() {
     return `Current UTC: ${new Date().toISOString()}. Reevaluate the user's criterion against current time, including rolling windows, even when the source delta is empty. Read existing entries and revisit older originals as needed; remove or revise expired entries and links as required by the criterion. No full rescan or content rewrite is required when the index remains valid. Source cursor capture time is not the current time.`;
   }
-  private async runGroup(ids: string[]) {
+  private async runGroup(ids: string[], signal: AbortSignal) {
     const resuming = ids.some((id) => {
       const w = this.store.work(id);
       return w && !w.completed;
     });
     const pending: { id: string; work: any; visible: string[] }[] = [];
-    let agent: any,
-      signal = this.abort.signal;
+    let agent: any;
     try {
       for (const id of ids) {
         if (resuming && this.store.work(id)?.completed) continue;
@@ -981,10 +1149,7 @@ export class MemoryController {
           this.assertOwner();
           const remaining = pending.filter((x) => !this.store.work(x.id)?.completed);
           if (!remaining.length) break;
-          signal = AbortSignal.any([
-            this.abort.signal,
-            AbortSignal.timeout(this.config.runTimeoutMs ?? 600000),
-          ]);
+
           await agent.whenIdle(signal);
           signal.throwIfAborted();
           const before = remaining.map(
@@ -1063,9 +1228,9 @@ export class MemoryController {
       callerSignal.removeEventListener('abort', onAbort);
     }
   }
-  private async run(indexId: string) {
+  private async run(indexId: string, signal: AbortSignal) {
     let agent: any;
-    let signal = this.abort.signal;
+
     try {
       const index = this.store.index(indexId);
       this.store.saveWorker(indexId, {
@@ -1093,11 +1258,8 @@ Exact range: ${JSON.stringify(this.store.describe(work.from, work.to, visible))}
 Range ID: ${work.id}. Update existing entries and links when new evidence changes earlier conclusions; revisit old originals as needed. Save entries with original links. Choose tools and message types yourself. Only set MemoryIndexCheckpoint complete=true when this range is finished; otherwise save progress with complete=false to continue.`;
       for (;;) {
         this.assertOwner();
-        // A continuation gets its own existing per-turn timeout, not the previous turn's remainder.
-        signal = AbortSignal.any([
-          this.abort.signal,
-          AbortSignal.timeout(this.config.runTimeoutMs ?? 600000),
-        ]);
+        // Index work has no wall-clock deadline; lifecycle shutdown still cancels it.
+
         await agent.whenIdle(signal);
         signal.throwIfAborted();
         const before = this.store.latestCheckpoint(indexId, work.id, agent.sessionId)?.id ?? 0;

@@ -47,6 +47,7 @@
 @import "./styles/onboarding.css" layer(components);
 @import "./styles/module-pages.css" layer(components);
 @import "./features/personal-assistant/personal-assistant.css" layer(components);
+@import "./features/personal-assistant/original-reader.css";
 @import "./styles/settings/select.css" layer(components);
 @import "./styles/model-switcher.css" layer(components);
 @import "./styles/chat-header.css" layer(components);
