@@ -25,7 +25,6 @@ import {
 } from '../../application/contracts/session-catalog/assistant-session-visibility.js';
 import { SideNavItem } from '@astryxdesign/core/SideNav';
 import { PersonalAssistantAvatar, useAssistantAvatar } from './avatar.js';
-export { PersonalAssistantAvatar, useAssistantAvatar } from './avatar.js';
 import { Switch } from '@maka/ui';
 import { usePersonalAssistantServices, type AssistantHost as DesktopRuntimeHostRef } from './services.js';
 export { createPersonalAssistantServices, PersonalAssistantServicesProvider, type PersonalAssistantPort } from './services.js';
@@ -464,4 +463,3 @@ function PersonalAssistantStatusSettings({
 export { createInternalUriDispatcher } from './internal-uri.js';
 
 export { PersonalAssistantChatPresentation, PersonalAssistantChatLayout, PersonalAssistantComposer } from './chat-presentation.js';
-export { PersonalAssistantTyping } from './typing.js';
