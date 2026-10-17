@@ -32,6 +32,7 @@ export async function publishBotConversationMessage(
   stores: ExecutionStoresWriter<'interactive'>,
   header: SessionHeader,
   message: StoredMessage,
+  assertAvailable: () => void = () => {},
 ) {
   if (message.type !== 'user' && message.type !== 'assistant')
     throw Error('Expected conversation text');
@@ -116,6 +117,9 @@ export async function publishBotConversationMessage(
       actions: { endInvocation: true },
     },
   ];
+  // Reads above can yield while the assistant is being disabled. Fence the
+  // first durable write; the outbox retains accepted input for later replay.
+  assertAvailable();
   await stores.runtimeEventStore.importConversationCopyRuntimeEvents(header.id, [
     { runId, events },
   ]);

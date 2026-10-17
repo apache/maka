@@ -69,6 +69,7 @@ apps/desktop/src/renderer/features/overlays/ui/overlays-context.tsx
 apps/desktop/src/renderer/features/overlays/ui/overlays-root.tsx
 apps/desktop/src/renderer/features/overlays/ui/search-modal-host.tsx
 apps/desktop/src/renderer/features/personal-assistant/avatar.tsx
+apps/desktop/src/renderer/features/personal-assistant/chat-presentation.tsx
 apps/desktop/src/renderer/features/personal-assistant/original-reader.css
 apps/desktop/src/renderer/features/personal-assistant/original-reader.tsx
 apps/desktop/src/renderer/features/personal-assistant/personal-assistant.css

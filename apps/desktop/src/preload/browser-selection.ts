@@ -62,12 +62,15 @@ export function createBrowserSelectionCoordinator(
   return {
     setActiveSession(sessionId: string | null): void {
       generation += 1;
+      // Revoke the previous owner before asynchronous Host identity resolution.
+      current = undefined;
+      sink.hide(documentId, generation);
       if (!sessionId) {
-        current = undefined;
-        sink.hide(documentId, generation);
         return;
       }
 
+      // Main admits only strictly newer generations; show follows the revoke.
+      generation += 1;
       const selection = {
         generation,
         sessionId,

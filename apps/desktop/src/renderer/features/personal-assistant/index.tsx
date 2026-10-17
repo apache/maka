@@ -462,3 +462,6 @@ function PersonalAssistantStatusSettings({
 }
 
 export { createInternalUriDispatcher } from './internal-uri.js';
+
+export { PersonalAssistantChatPresentation, PersonalAssistantChatLayout, PersonalAssistantComposer } from './chat-presentation.js';
+export { PersonalAssistantTyping } from './typing.js';

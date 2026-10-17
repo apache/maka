@@ -76,7 +76,7 @@ import { fingerprintAgentGraphRunnableIntent } from '@maka/runtime/stream-graph-
 import type { AgentGraphRunnableIntent } from '@maka/runtime/stream-graph-readiness';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
-import { createSqliteRuntimeStore } from '@maka/storage/sqlite-runtime-store';
+import { SqliteRuntimeStore, createSqliteRuntimeStore } from '@maka/storage/sqlite-runtime-store';
 import { createSessionStore } from '@maka/storage/session-store';
 import {
   LONG_TERM_MEMORY_DATABASE_NAME,
@@ -5347,4 +5347,98 @@ test('production Host loads visible remote media independently of agent sandbox 
     syncBuiltinESMExports();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
+});
+
+test('disabling during Bot publication fences the uncommitted message and permits later replay', {
+  timeout: 20000,
+}, async (t) => {
+  const entered = deferred<void>();
+  const release = deferred<void>();
+  let target = '';
+  let paused = false;
+  const read = SqliteRuntimeStore.prototype.readRuntimeEvents;
+  t.mock.method(
+    SqliteRuntimeStore.prototype,
+    'readRuntimeEvents',
+    async function (this: SqliteRuntimeStore, sessionId: string, runId: string) {
+      const result = await read.call(this, sessionId, runId);
+      if (sessionId === target && runId.startsWith('assistant-message-') && !paused) {
+        paused = true;
+        entered.resolve();
+        await release.promise;
+      }
+      return result;
+    },
+  );
+  await withCompositionRoot(async ({ root, owner }) => {
+    const { composition, manager } = await createCapturedExecutionComposition(owner, {
+      primaryBackendFactory: (context) => new FakeBackend(context),
+    });
+    const caller: ConnectionContext = {
+      hostEpoch: 'execution-composition-test',
+      connectionId: 'client',
+      principal: 'local_owner',
+      principalKind: 'local_owner',
+      acquireResidency: () => new HostResidencyRegistry().acquire('disable-race'),
+    };
+    const call = (method: any, input: any = {}) =>
+      composition.handlers['personal-assistant.call']({ method, input }, caller);
+    try {
+      assert.equal((await call('assistant.set-enabled', { enabled: true })).ok, true);
+      const chat = await manager.createSession({
+        cwd: root,
+        llmConnectionId: FAKE_CONNECTION_ID,
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'ask',
+        labels: ['personal-assistant'],
+      });
+      assert.equal((await call('assistant.bind', { sessionId: chat.id })).ok, true);
+      target = chat.id;
+      const messageId = randomUUID();
+      const submit = () =>
+        composition.handlers['turn.message.submit'](
+          {
+            originHostEpoch: 'execution-composition-test',
+            sessionId: chat.id,
+            messageId,
+            content: { text: 'Keep this accepted request for later.' },
+            placement: 'current_turn',
+          },
+          caller,
+        );
+      const pending = submit();
+      await entered.promise;
+      let stopped = false;
+      const disable = call('assistant.set-enabled', { enabled: false }).then((result) => {
+        stopped = true;
+        return result;
+      });
+      await pollFor(async () =>
+        JSON.stringify(await call('assistant.enablement')).includes('"enabled":false'),
+      );
+      assert.equal(stopped, false, 'disable drains in-flight publication before returning');
+      release.resolve();
+      await pending;
+      assert.equal((await disable).ok, true);
+      const sessionStore = createSessionStore(root);
+      assert.equal(
+        (await sessionStore.readMessages(chat.id)).filter((row) => row.id === messageId).length,
+        0,
+      );
+      assert.equal((await submit()).ok, false, 'disabled assistant rejects new admission');
+      assert.equal((await call('assistant.set-enabled', { enabled: true })).ok, true);
+      await submit();
+      await pollFor(async () =>
+        (await sessionStore.readMessages(chat.id)).some((row) => row.id === messageId),
+      );
+      assert.equal(
+        (await sessionStore.readMessages(chat.id)).filter((row) => row.id === messageId).length,
+        1,
+      );
+    } finally {
+      release.resolve();
+      await composition.close();
+    }
+  });
 });

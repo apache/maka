@@ -474,8 +474,11 @@ export async function createExecutionRuntimeHostComposition(
         },
         appendConversation: async (sessionId, message) => {
           await sessionAdmission.run(sessionId, async (lease) => {
-            if (!personalAssistant.isConversation(sessionId) || !personalAssistant.enabled)
-              throw Error('Assistant conversation is unavailable');
+            const assertAvailable = () => {
+              if (!personalAssistant.isConversation(sessionId) || !personalAssistant.enabled)
+                throw Error('Assistant conversation is unavailable');
+            };
+            assertAvailable();
             const header = await stores.sessionStore.readHeaderSnapshot(sessionId);
             const existing = (await stores.sessionStore.readMessagesSnapshot(sessionId)).find(
               (row) => row.id === message.id,
@@ -494,7 +497,8 @@ export async function createExecutionRuntimeHostComposition(
               '../assistant/bot/conversation.js'
             );
             await requireSessionManager(manager).ensureTranscriptLedgerForRead(sessionId);
-            await publishBotConversationMessage(stores, header, message);
+            await publishBotConversationMessage(stores, header, message, assertAvailable);
+            assertAvailable();
             if (!existing) await stores.sessionStore.appendMessages(sessionId, [message]);
             await continuityCoordinator.refreshCanonical(sessionId, lease);
           });

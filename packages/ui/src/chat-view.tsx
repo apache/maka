@@ -836,7 +836,7 @@ export function ChatView(props: {
     // content here too — otherwise the first question stays invisible for the
     // whole fork round trip (#4654). Once the fork commits `activeSession`
     // arrives and the full transcript below takes over.
-    const hasOptimisticContent = tail !== null;
+    const hasOptimisticContent = tail !== null || !!props.activityContent;
     const emptyContent = props.emptyOverride ?? (
       <EmptyChatHero onPromptSuggestion={props.onPromptSuggestion} userLabel={props.userLabel} />
     );
@@ -883,9 +883,9 @@ export function ChatView(props: {
                 </>
               ) : null}
               {tail}
+              {props.activityContent}
             </>
           ) : null}
-          {props.activityContent}
         </ChatMessageList>
       </section>
     );
@@ -897,7 +897,8 @@ export function ChatView(props: {
     && transientMessages.length === 0
     && !streamingActive
     && !hasVisibleConversationItem
-    && !hasLiveCompactionRow;
+    && !hasLiveCompactionRow
+    && !props.activityContent;
   const emptyContent = props.messageLoading
     ? (
         <div className="maka-chat-message-loading">
@@ -1086,6 +1087,7 @@ export function ChatView(props: {
                 </Virtualizer>
               </div>
               {tail}
+              {props.activityContent}
               {conversationItemPlacement.orphan && (
                 <Fragment key={conversationItemPlacement.orphan.id}>
                   {conversationItemPlacement.orphan.content}
@@ -1093,7 +1095,6 @@ export function ChatView(props: {
               )}
             </>
           )}
-          {props.activityContent}
         </ChatMessageList>
         {quoteAnnotation && annotationAnchor
           ? annotationLayer.render(

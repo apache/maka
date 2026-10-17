@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { createBrowserSelectionCoordinator } from '../../preload/browser-selection.js';
 import { EventEmitter } from 'node:events';
 import { registerHooks } from 'node:module';
 import test from 'node:test';
@@ -369,6 +370,25 @@ test('browser IPC isolates owned renderer documents and their native parents', a
     await hiddenLease.ready;
     await hiddenLease.release();
     assert.equal(mainController.viewports.at(-1), null, 'automation does not open the panel');
+    // Exercise preload + IPC together: an unresolved replacement must not
+    // leave the old hidden Session authorized.
+    let resolveNext!: (value: { scope: typeof scope; sessionId: string }) => void;
+    const next = new Promise<{ scope: typeof scope; sessionId: string }>((resolve) => { resolveNext = resolve; });
+    const selection = createBrowserSelectionCoordinator(() => next, {
+      show: (doc, generation, session) => emit('browser:active-session', main, session.scope, session.sessionId, doc, generation + 10),
+      hide: (doc, generation) => emit('browser:hide-active-session', main, doc, generation + 10),
+      capturePage: async () => undefined,
+      setViewport: () => {},
+    }, 'main-document');
+    selection.setActiveSession('replacement');
+    for (const kind of ['observe', 'navigate', 'mutate'] as const)
+      assert.equal(await browserViewHost().canDrive(mainKey, kind), false);
+    let clicked = false;
+    await assert.rejects(withBrowserPage(mainKey, 'click', async () => { clicked = true; }));
+    assert.equal(clicked, false);
+    resolveNext({ scope, sessionId: 'replacement' });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(await browserViewHost().canDrive(mainKey, 'observe'), false);
     assert.doesNotThrow(() => main.destroy());
     await new Promise<void>((resolve) => setImmediate(resolve));
     assert.equal(mainController.disposed, true, 'closing Main still releases its owned browser page');

@@ -21,7 +21,6 @@ import { useEffect, useRef, useState } from 'react';
 import { Button } from '@astryxdesign/core/Button';
 import { usePersonalAssistantServices, type PersonalAssistantPort } from './services.js';
 import { originalHost } from './navigation.js';
-import './original-reader.css';
 
 const OPEN_ORIGINAL = 'personal-assistant-open-original';
 type OriginalSelection = { sessionId: string; ref: string };
