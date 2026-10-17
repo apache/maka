@@ -218,6 +218,14 @@ export class Transcript {
     // Live state from observe and watch.
     this.run = null;
     this.runThrough = 0;
+    /**
+     * How many runs ended while this was open: an `ended` fact newer than
+     * what `run` was last set from, or an observation that found no run
+     * where there was one. A run that opened and ended in one watch page
+     * counts too, though `run` never showed it (the Workbar reads the
+     * status on each).
+     */
+    this.runsEnded = 0;
     this.latestKnown = 0;
     this.watchHandle = null;
     this.watchLast = 0;
@@ -499,6 +507,7 @@ export class Transcript {
         case 'ended':
           this.closeLive(event.sequence, event.invocationId);
           this.parts = this.parts.filter((open) => open.invocationId !== event.invocationId);
+          if (event.sequence > this.runThrough) this.runsEnded += 1;
           if (event.sequence > this.runThrough && this.run?.invocationId === event.invocationId) {
             this.run = null;
             this.runThrough = event.sequence;
@@ -582,7 +591,9 @@ export class Transcript {
     // The model the TUI would send with: the session's own, else the one the owner remembers.
     this.backend = observed.session.backend ?? observed.rememberedBackend ?? null;
     if (observed.through >= this.runThrough) {
-      this.run = observed.run ?? null;
+      const run = observed.run ?? null;
+      if (this.run !== null && run === null) this.runsEnded += 1;
+      this.run = run;
       this.runThrough = observed.through;
     }
   }
