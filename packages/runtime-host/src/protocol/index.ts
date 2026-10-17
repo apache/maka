@@ -89,6 +89,10 @@ export * from './external-session.js';
 export * from './message.js';
 export * from './queue-mutation.js';
 export * from './operations.js';
+// Turn-level admission limits are protocol truth surfaces consume too: the TUI
+// stages recovered quotes on resubmits and must respect the same cap the Host
+// enforces in decodeMessageAdmissionContent (#5265 review).
+export { TURN_MESSAGE_QUOTE_MAX_COUNT } from './turn.js';
 export * from './runtime-resource.js';
 export * from './session-continuity.js';
 export * from './session-catalog-change.js';

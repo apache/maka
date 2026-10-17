@@ -94,6 +94,8 @@ export const ALLOWED_VISIBLE_LITERALS = {
     'Side conversations are unavailable on this runtime.',
     'Side conversation opened.',
     'Side conversation kept open — the editor draft was kept.',
+    'Side conversation kept open — the staged quotes were kept.',
+    'Some recovered quotes exceed the per-message quote limit; the overflow was added to the draft as quoted text.',
     'Side conversation closed; cleanup will be retried on the next launch.',
     '↑↓ move · type to answer · Enter select · Esc unanswered · Ctrl+C stop',
     'Other: type your answer…',
