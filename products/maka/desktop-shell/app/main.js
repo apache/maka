@@ -39,6 +39,7 @@ import { rowPositionKey } from './history-position.js';
 import { SessionCatalog, SidebarState, sidebar } from './sessions.js';
 import { Transcript, transcriptPane } from './transcript.js';
 import { Composer, composerPane } from './composer.js';
+import { ContextUse, contextControl } from './context.js';
 import { interactionCard } from './interactions.js';
 import { Settings, settingsNav, settingsPage } from './settings.js';
 import { Directories, folderPicker } from './directories.js';
@@ -131,6 +132,8 @@ export default class MakaDesktop extends View {
         return folder === null ? Promise.resolve(null) : this.newSession(folder);
       },
     );
+    // The composer's context use follows the conversation the composer serves.
+    this.contextUse = new ContextUse(hooks, this.composer);
     // A model added or chosen in Settings is what the composer sends with next,
     // and the subagents Settings reads or saves are what WorkHub's hint goes by.
     this.settings = new Settings({
@@ -256,9 +259,14 @@ export default class MakaDesktop extends View {
     return this.transcript;
   }
 
-  /** Tells the Workbar what the window shows now; cheap when nothing it follows changed. */
+  /**
+   * Tells the Workbar what the window shows now, and the composer's context
+   * use which conversation the composer serves; cheap when nothing they
+   * follow changed.
+   */
   syncWorkbar() {
     this.workbar.follow(this.workbarTarget());
+    this.contextUse.follow(this.current());
   }
 
   /** Records a move from the current place, for Back. */
@@ -705,6 +713,7 @@ export default class MakaDesktop extends View {
           {
             folder: view.folder,
             picker: view.picker,
+            usage: transcript === null ? null : contextControl(this.contextUse, cx),
             // A session whose permissions were never changed still has the
             // level the Host gives every new one.
             defaultAccess:

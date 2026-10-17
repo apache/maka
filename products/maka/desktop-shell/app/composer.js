@@ -603,11 +603,12 @@ export class Composer {
  * @param {Composer} composer
  * @param {import("./transcript.js").Transcript | null} transcript
  * @param {{ folder: { name: string, path: string } | null, picker: object | null,
- *   defaultAccess: string | null, notice: string | null, dismiss: () => void,
- *   addConnection: () => void }} context
+ *   usage: object | null, defaultAccess: string | null, notice: string | null,
+ *   dismiss: () => void, addConnection: () => void }} context
  *   `folder` is where a new task starts when no task is selected, and `picker`
- *   the chip that chooses it; `defaultAccess` the permission level new tasks
- *   get when known; `notice` is the last error
+ *   the chip that chooses it; `usage` the context use before Send (context.js),
+ *   or null; `defaultAccess` the permission level new tasks get when known;
+ *   `notice` is the last error
  */
 export function composerPane(composer, transcript, context, cx) {
   const m = palette(cx);
@@ -668,6 +669,7 @@ export function composerPane(composer, transcript, context, cx) {
                 .child(permissionMenu(composer, transcript, context, cx))
                 .when(context.picker !== null, (el) => el.child(context.picker))
                 .child(note(context, executor, cx))
+                .when(context.usage !== null, (el) => el.child(context.usage))
                 .child(
                   stop
                     ? actionButton('stop', 'stop', cx)

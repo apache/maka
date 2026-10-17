@@ -219,6 +219,108 @@ export const MESSAGES = {
   attachmentClosed: ['the Host is closing', 'Host 正在关闭', 'Host 正在關閉'],
   attachmentArchived: ['the task is archived', '任务已归档', '任務已封存'],
 
+  // Context use and Compact, in the composer (context.js). The confirmation
+  // copies the TUI's (plugins/agent/agent-screen/compact.ts).
+  contextUseTip: ['Context use', '上下文用量', '上下文用量'],
+  contextTokens: ['{count} tokens', '{count} tokens', '{count} tokens'],
+  contextUsed: [
+    '{used} of {limit} tokens ({percent})',
+    '已用 {used} / {limit} tokens（{percent}）',
+    '已用 {used} / {limit} tokens（{percent}）',
+  ],
+  contextEstimated: ['estimated', '估算', '估算'],
+  contextSystem: ['System', '系统', '系統'],
+  contextUser: ['Messages you sent', '你发送的消息', '你傳送的訊息'],
+  contextAssistant: ['Replies', '回复', '回覆'],
+  contextTool: ['Tool results', '工具结果', '工具結果'],
+  contextToolSchemas: ['Tool definitions', '工具定义', '工具定義'],
+  contextMessagesOne: ['{count} message', '{count} 条消息', '{count} 則訊息'],
+  contextMessagesOther: ['{count} messages', '{count} 条消息', '{count} 則訊息'],
+  contextToolCallsOne: ['{count} tool call', '{count} 次工具调用', '{count} 次工具呼叫'],
+  contextToolCallsOther: ['{count} tool calls', '{count} 次工具调用', '{count} 次工具呼叫'],
+  contextToolsOne: ['{count} tool', '{count} 个工具', '{count} 個工具'],
+  contextToolsOther: ['{count} tools', '{count} 个工具', '{count} 個工具'],
+  contextRequested: [
+    'These numbers are from a request the model has not answered yet.',
+    '这些数字来自模型尚未回复的请求。',
+    '這些數字來自模型尚未回覆的請求。',
+  ],
+  contextInterrupted: [
+    'These numbers are from a request that was interrupted.',
+    '这些数字来自一次被中断的请求。',
+    '這些數字來自一次被中斷的請求。',
+  ],
+  contextCompactedSince: [
+    'The conversation was compacted after this request. The next request will show the new size.',
+    '此请求之后对话已被压缩，下一次请求会显示新的用量。',
+    '此請求之後對話已被壓縮，下一次請求會顯示新的用量。',
+  ],
+  compact: ['Compact', '压缩', '壓縮'],
+  compactTip: [
+    'Summarize the conversation so far to free up context',
+    '总结目前的对话，以腾出上下文空间',
+    '總結目前的對話，以騰出上下文空間',
+  ],
+  compactUnavailable: [
+    'Compact is available while nothing runs in this task',
+    '任务中没有运行时才能压缩',
+    '任務中沒有執行時才能壓縮',
+  ],
+  compactTitle: ['Compact context', '压缩上下文', '壓縮上下文'],
+  compactHelp: [
+    'This prompt applies to this compression only.',
+    '此提示词仅用于本次压缩。',
+    '此提示詞僅用於本次壓縮。',
+  ],
+  compactLoading: ['Loading prompt…', '正在加载提示词…', '正在載入提示詞…'],
+  compactConfirm: ['Compact', '开始压缩', '開始壓縮'],
+  compactFailed: ['Compact: {value}', '压缩失败：{value}', '壓縮失敗：{value}'],
+  compactRejected: [
+    'The Host did not start the compaction ({value}).',
+    'Host 没有开始压缩（{value}）。',
+    'Host 沒有開始壓縮（{value}）。',
+  ],
+  compactBusy: [
+    'Something is running in this task. Compact when it ends.',
+    '这个任务正在运行，结束后再压缩。',
+    '這個任務正在執行，結束後再壓縮。',
+  ],
+  compactClosed: [
+    'The Host is closing, so the conversation cannot be compacted.',
+    'Host 正在关闭，无法压缩对话。',
+    'Host 正在關閉，無法壓縮對話。',
+  ],
+  compactUnknown: [
+    'The Host did not answer, so the conversation may or may not be compacting. Compact comes back once this task shows a run, or after you open the task again.',
+    'Host 没有回应，对话可能正在压缩，也可能没有。任务显示出运行后，或重新打开任务后，才能再次压缩。',
+    'Host 沒有回應，對話可能正在壓縮，也可能沒有。任務顯示出執行後，或重新開啟任務後，才能再次壓縮。',
+  ],
+  compactAwaiting: [
+    'Waiting for this task to show whether the last Compact started',
+    '正在等待任务显示上次压缩是否已开始',
+    '正在等待任務顯示上次壓縮是否已開始',
+  ],
+  compactPromptPlaceholder: [
+    'Leave empty to use the default prompt',
+    '留空则使用默认提示词',
+    '留空則使用預設提示詞',
+  ],
+  compactArchived: [
+    'This task is archived, so it cannot be compacted.',
+    '这个任务已归档，无法压缩。',
+    '這個任務已封存，無法壓縮。',
+  ],
+  compactBackendUnavailable: [
+    'The model for this task is not available, so it cannot be compacted.',
+    '这个任务的模型不可用，无法压缩。',
+    '這個任務的模型無法使用，無法壓縮。',
+  ],
+  compactWorkspaceChanged: [
+    "The task's folder changed, so it cannot be compacted.",
+    '任务的文件夹已变化，无法压缩。',
+    '任務的資料夾已變化，無法壓縮。',
+  ],
+
   // Folder picker (directories.js)
   choose: ['Choose', '选择', '選擇'],
   chooseFolderFailed: [
