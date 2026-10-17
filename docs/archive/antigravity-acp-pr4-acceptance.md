@@ -22,6 +22,57 @@
 PR 4 follows [issue #5103](https://github.com/apache/maka/issues/5103).
 This record separates controlled protocol fixtures from official Agent results.
 
+## Issue #5103 Desktop reacceptance and cancellation repair, 2026-10-17
+
+The baseline was main `d14cec5719352f77d324e1065e0c1943c33772c7` (including
+#5823). The cancellation repair was tested at `98b586fd1`. Environment: macOS
+15.6 arm64, Node.js 24.19.0, official Antigravity ACP 1.1.1, two disposable
+projects and one isolated Desktop profile. The existing official Google login
+was verified in Settings; no fresh credential-entry flow is claimed.
+
+On the baseline, Settings program selection/check/login, shared A/B catalog
+availability, both real task prompts, distinct external Sessions, confirmed idle
+model/mode changes, coding and three passing Node tests, tool output/file diffs,
+permission choices, a structured question and a follow-up all passed. Project B
+used `gemini-3.8-flash-high`/`default`; A began with
+`gemini-3.8-flash-low`/`auto_edit`, then confirmed
+`gemini-3.8-flash-medium`/`default`. A production executor query separately
+confirmed that A and B shared one candidate snapshot.
+
+That run exposed a blocker: a stopped response remained visible live but became
+empty after normal Desktop restart. The repair closes streamed text as an
+interrupted completion before cancellation/failure seals the ledger, and retains
+the existing interrupted marker during event decoding. It adds no new wire field.
+Previously missing canonical text is not reconstructed by this change.
+
+On the repaired build, a real streamed response was stopped after text appeared.
+Its 6,580 characters were stored once, with `interrupted: true`, hidden model
+visibility and an aborted terminal state. Two normal Cmd-Q/reopen/explicit-restore
+cycles retained the identical text hash, a usable Copy action and the interrupted
+response marker. The same external Session fingerprint and Medium/Default
+configuration survived both cycles. A no-file-access recall prompt, which omitted
+the answer, returned the original A code. Restoring B separately returned its
+original B code and retained High/Default. No raw external Session ID or credential
+was recorded in the acceptance artifacts.
+
+Four new production SessionManager → SQLite-close/reopen → transcript regressions
+failed on the baseline and pass with the repair. They cover successful cancellation,
+cancellation throwing, a provider failure result and a transport exception, including
+updates drained after Stop. A Core decoding regression preserves the interrupted
+marker. The focused backend/service/Core/reopen suite passed 66 tests.
+
+The repaired build passed all 13 workspace suites: 16,243 JavaScript tests,
+16,205 passed, 38 skipped, zero failed or cancelled. The Python evaluation
+suite also passed (94 tests, 13 skipped). Full build, typecheck, lint, formatting,
+ASF headers, locale hygiene, 168 renderer architecture tests and both Desktop/UI
+knip checks passed. Standards and spec reviews reported no findings.
+
+This evidence resolves the cancellation blocker and supplements the earlier
+controlled catalog/invalidation, attachment-validation and ACP server-path tests.
+It does not claim a fresh Google authorization flow or a new manual run of every
+keyboard, attachment and narrow-window case. Closing #5103 still requires this
+repair to be integrated and the tracking checklist to be updated.
+
 ## P3 stable-directory and invalidation follow-up, 2026-10-02
 
 Tested implementation commit: `4fefdc1e7fae53bcc2e8412c03be5eadd9e0de4b`.

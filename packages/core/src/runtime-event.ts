@@ -1038,6 +1038,7 @@ export function decodeRuntimeEvent(value: unknown): RuntimeEvent {
       content: {
         kind: 'text',
         ...normalizeMessageContent(value.content as unknown as MessageContent),
+        ...(value.content.interrupted === true ? { interrupted: true as const } : {}),
         ...(value.content.origin !== undefined
           ? { origin: decodeTurnOrigin(value.content.origin) }
           : {}),
