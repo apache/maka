@@ -25,9 +25,22 @@ import {
 } from '@maka/core/event-wait';
 import {
   eventWaitPage,
+  eventWaitSourceKey,
+  EVENT_WAIT_PAGE_LIMIT,
   normalizeEventWaitCommit,
   validateEventWaitPage,
   validateEventWaitRead,
+  validateEventWaitStatusPage,
+  validateEventWaitObservationList,
+  validateEventWaitSource,
+  validateEventWaitSourceCooldown,
+  validateEventWaitSourceDispatch,
+  type EventWaitSource,
+  type ExtendEventWaitSourceCooldownInput,
+  type ReserveEventWaitSourceDispatchInput,
+  type CompleteEventWaitSourceDispatchInput,
+  type ListEventWaitsByStatusInput,
+  type ListEventWaitsForObservationInput,
   type CommitEventWaitInput,
   type CommitEventWaitResult,
   type EventWaitAuthorityRepository,
@@ -90,6 +103,140 @@ class SqliteEventWaitAuthority implements EventWaitAuthorityRepository {
         input.limit,
       ),
     );
+  }
+  listByStatus(input: ListEventWaitsByStatusInput): EventWaitPage {
+    this.#assertOpen();
+    validateEventWaitStatusPage(input);
+    return this.#database.transaction('read', () =>
+      eventWaitPage(
+        this.#database.database
+          .prepare(
+            'SELECT * FROM workflow_event_waits WHERE status = ? AND wait_id > ? ORDER BY wait_id LIMIT ?',
+          )
+          .all(input.status, input.afterWaitId ?? '', input.limit + 1)
+          .map(readRow),
+        input.limit,
+      ),
+    );
+  }
+  listForObservation(input: ListEventWaitsForObservationInput): readonly EventWaitSnapshot[] {
+    this.#assertOpen();
+    validateEventWaitObservationList(input);
+    const index = input.scan
+      ? 'workflow_event_waits_by_status'
+      : 'workflow_event_waits_observation_order';
+    const order = input.scan
+      ? 'w.wait_id'
+      : "COALESCE(json_extract(w.record_json, '$.observation.lastAttemptAt'), 0), w.wait_id";
+    return this.#database.transaction('read', () =>
+      this.#database.database
+        .prepare(`SELECT w.* FROM workflow_event_waits AS w
+          INDEXED BY ${index}
+          LEFT JOIN workflow_event_wait_source_cooldowns AS c
+            ON c.source_key = json_array(json_extract(w.record_json, '$.resource.providerId'),
+              json_extract(w.record_json, '$.resource.connectionId'))
+          WHERE w.status = 'waiting' AND w.deadline_at > ? AND w.wait_id > ?
+            AND COALESCE(MAX(c.until_ms, c.dispatch_until_ms), 0) <= ?
+            AND w.wait_id NOT IN (SELECT value FROM json_each(?))
+            AND json_array(json_extract(w.record_json, '$.resource.providerId'),
+              json_extract(w.record_json, '$.resource.connectionId'))
+              NOT IN (SELECT value FROM json_each(?))
+            AND CASE
+              WHEN json_type(w.record_json, '$.observation') IS NULL
+                THEN json_extract(w.record_json, '$.createdAt')
+              WHEN w.wait_id IN (SELECT value FROM json_each(?))
+                THEN json_extract(w.record_json, '$.observation.nextObserveAt')
+              ELSE json_extract(w.record_json, '$.observation.nextPollAt')
+            END <= ?
+          ORDER BY ${order} LIMIT ?`)
+        .all(
+          input.now,
+          input.scan?.afterWaitId ?? '',
+          input.now,
+          JSON.stringify(input.excludedWaitIds ?? []),
+          JSON.stringify((input.excludedSources ?? []).map(eventWaitSourceKey)),
+          JSON.stringify(input.dirtyWaitIds ?? []),
+          input.now,
+          input.limit,
+        )
+        .map(readRow),
+    );
+  }
+  readSourceCooldown(input: EventWaitSource): number | null {
+    this.#assertOpen();
+    validateEventWaitSource(input);
+    return this.#database.transaction('read', () => {
+      const row = this.#database.database
+        .prepare(`SELECT MAX(until_ms, dispatch_until_ms) AS until_ms
+          FROM workflow_event_wait_source_cooldowns WHERE source_key = ?`)
+        .get(eventWaitSourceKey(input));
+      if (!row) return null;
+      if (
+        typeof row.until_ms !== 'number' ||
+        !Number.isSafeInteger(row.until_ms) ||
+        row.until_ms < 0
+      )
+        throw new Error('Corrupt event wait source cooldown');
+      return row.until_ms;
+    });
+  }
+  extendSourceCooldown(input: ExtendEventWaitSourceCooldownInput): number {
+    this.#assertOpen();
+    validateEventWaitSourceCooldown(input);
+    return this.#database.transaction('write', () => {
+      const db = this.#database.database;
+      // Bounded expiry cleanup; active limits have no Session foreign key.
+      db.prepare(`DELETE FROM workflow_event_wait_source_cooldowns WHERE source_key IN (
+        SELECT source_key FROM workflow_event_wait_source_cooldowns
+        WHERE MAX(until_ms, dispatch_until_ms) <= ?
+        ORDER BY MAX(until_ms, dispatch_until_ms), source_key LIMIT ?
+      )`).run(input.observedAt, EVENT_WAIT_PAGE_LIMIT);
+      const row = db
+        .prepare(`INSERT INTO workflow_event_wait_source_cooldowns(source_key, until_ms)
+        VALUES (?, ?) ON CONFLICT(source_key) DO UPDATE SET until_ms = MAX(until_ms, excluded.until_ms)
+        RETURNING until_ms`)
+        .get(eventWaitSourceKey(input), input.until)!;
+      return Number(row.until_ms);
+    });
+  }
+  reserveSourceDispatch(input: ReserveEventWaitSourceDispatchInput): boolean {
+    this.#assertOpen();
+    validateEventWaitSourceDispatch(input);
+    return this.#database.transaction('write', () => {
+      this.#database.database
+        .prepare(`DELETE FROM workflow_event_wait_source_cooldowns
+        WHERE source_key IN (SELECT source_key FROM workflow_event_wait_source_cooldowns
+          WHERE MAX(until_ms, dispatch_until_ms) <= ?
+          ORDER BY MAX(until_ms, dispatch_until_ms), source_key LIMIT ?)
+      `)
+        .run(input.observedAt, EVENT_WAIT_PAGE_LIMIT);
+      const row = this.#database.database
+        .prepare(`INSERT INTO workflow_event_wait_source_cooldowns
+          (source_key, until_ms, dispatch_token, dispatch_until_ms) VALUES (?, 0, ?, ?)
+          ON CONFLICT(source_key) DO UPDATE SET
+            dispatch_token = excluded.dispatch_token,
+            dispatch_until_ms = MAX(dispatch_until_ms, excluded.dispatch_until_ms)
+          WHERE dispatch_token = excluded.dispatch_token OR MAX(until_ms, dispatch_until_ms) <= ?
+          RETURNING source_key`)
+        .get(eventWaitSourceKey(input), input.token, input.until, input.observedAt);
+      return row !== undefined;
+    });
+  }
+  completeSourceDispatch(input: CompleteEventWaitSourceDispatchInput): number {
+    this.#assertOpen();
+    validateEventWaitSourceDispatch(input, true);
+    return this.#database.transaction('write', () => {
+      const db = this.#database.database;
+      const key = eventWaitSourceKey(input);
+      db.prepare(`UPDATE workflow_event_wait_source_cooldowns
+        SET until_ms = MAX(until_ms, ?), dispatch_token = NULL, dispatch_until_ms = 0
+        WHERE source_key = ? AND dispatch_token = ?`).run(input.until, key, input.token);
+      const row = db
+        .prepare(`SELECT MAX(until_ms, dispatch_until_ms) AS until_ms
+        FROM workflow_event_wait_source_cooldowns WHERE source_key = ?`)
+        .get(key);
+      return row ? Number(row.until_ms) : 0;
+    });
   }
   commit(raw: CommitEventWaitInput): CommitEventWaitResult {
     this.#assertOpen();

@@ -20,7 +20,6 @@
 import { copyFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { ExecutorCatalogEntry } from '@maka/core/executor-catalog';
 import type { RuntimePolicySnapshot } from '@maka/core/runtime-policy';
 import type { MakaCompositionOperation } from '@maka/runtime/plugin-runtime';
 import { extensionPackageDirectoryContentDigest } from './extension-bundle.js';
@@ -34,29 +33,6 @@ const ANTIGRAVITY_ENTRY_ID = 'antigravity-acp';
 const STAGING_DIRECTORY = 'builtin-plugin-staging-v1';
 const RUNTIME_ENTRY = 'plugin.mjs';
 const COMPOSITION_PATCH = 'maka.composition.json';
-
-// Built-in setup entries remain discoverable before their Plugin is installed.
-// Registered Plugins replace these placeholders with their live catalogs.
-const BUILTIN_EXTERNAL_AGENT_CATALOG: readonly ExecutorCatalogEntry[] = Object.freeze([
-  Object.freeze({
-    id: ANTIGRAVITY_ENTRY_ID,
-    displayName: 'Antigravity',
-    readiness: 'unavailable' as const,
-    models: Object.freeze([]),
-    supportsAttachments: false,
-    supportsModelChange: false,
-  }),
-]);
-
-export function withBuiltinExternalAgentCatalog(
-  catalog: readonly ExecutorCatalogEntry[],
-): readonly ExecutorCatalogEntry[] {
-  const registered = new Set(catalog.map((entry) => entry.id));
-  return [
-    ...catalog,
-    ...BUILTIN_EXTERNAL_AGENT_CATALOG.filter((entry) => !registered.has(entry.id)),
-  ];
-}
 
 export interface BuiltinExternalAgentPluginEntries {
   readonly acpRuntime: string;

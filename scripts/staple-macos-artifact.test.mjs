@@ -18,8 +18,66 @@
  */
 
 import assert from 'node:assert/strict';
+import childProcess from 'node:child_process';
+import { EventEmitter } from 'node:events';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
 import test from 'node:test';
+import { resolveDesktopBuilderConfig } from '../apps/desktop/electron-builder.config.mjs';
 import { stapleMacosArtifact } from './staple-macos-artifact.mjs';
+
+const require = createRequire(import.meta.url);
+const { MacTargetHelper } = require('app-builder-lib/out/mac/MacTargetHelper.js');
+
+test('electron-builder recovers a lost app ticket without submitting notarization again', async (t) => {
+  const environment = {
+    APPLE_ID: 'notarization@example.invalid',
+    APPLE_APP_SPECIFIC_PASSWORD: 'fixture',
+    APPLE_TEAM_ID: 'fixture',
+  };
+  for (const [name, value] of Object.entries(environment)) {
+    const previous = process.env[name];
+    process.env[name] = value;
+    t.after(() => {
+      if (previous === undefined) delete process.env[name];
+      else process.env[name] = previous;
+    });
+  }
+
+  const operations = [];
+  t.mock.method(childProcess, 'spawn', (command, args) => {
+    assert.ok(['codesign', 'ditto', 'xcrun'].includes(command), command);
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    queueMicrotask(() => {
+      let code = 0;
+      let output = '';
+      if (args[0] === 'notarytool' && args[1] === 'submit') {
+        operations.push('submit');
+        output = JSON.stringify({ status: 'Accepted' });
+      } else if (args[0] === 'stapler') {
+        operations.push('staple');
+        if (operations.length === 2) {
+          code = 68;
+          output = networkFailure().stdout;
+        }
+      }
+      child.stdout.emit('data', output);
+      child.emit('exit', code);
+    });
+    return child;
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+
+  const config = resolveDesktopBuilderConfig({});
+  const helper = new MacTargetHelper({ platformSpecificBuildOptions: config.mac });
+  await helper.notarizeIfProvided('/release/Maka snapshot.app');
+  assert.deepEqual(operations, ['submit', 'staple', 'staple']);
+});
 
 const networkFailure = () =>
   Object.assign(new Error('stapler failed'), {

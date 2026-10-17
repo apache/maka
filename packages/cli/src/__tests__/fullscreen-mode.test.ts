@@ -25,7 +25,13 @@ import type { spawn as SpawnFn } from 'node:child_process';
 // TuiAltScreen's doRender builds every frame, so rendering one here exercises
 // the exact composition path the fullscreen trial uses.
 import { renderLayoutFrame } from '@earendil-works/pi-tui/dist/layout.js';
-import { VStack, type Component, type Terminal } from '@earendil-works/pi-tui';
+import {
+  Editor,
+  TuiAltScreen,
+  VStack,
+  type Component,
+  type Terminal,
+} from '@earendil-works/pi-tui';
 import { UI_LOCALES, type UiLocale } from '@maka/core/ui-locale';
 import { createMakaPiTranscriptState } from '../pi-transcript.js';
 import {
@@ -47,7 +53,9 @@ import {
   type UnreadOutputFeed,
   type TranscriptWindowSnapshot,
 } from '../fullscreen-mode.js';
-import { stripAnsi } from '../tui-ansi.js';
+import { editorTheme, stripAnsi } from '../tui-ansi.js';
+import { MakaAutocompleteAboveEditorComponent } from '../tui-autocomplete-layout.js';
+import { FakeTerminal } from './tui-terminal-mock.js';
 
 function fakeTerminal(rows: number): Terminal {
   return { rows, columns: 80 } as Terminal;
@@ -574,6 +582,62 @@ describe('fullscreen layout frame', () => {
       'the status line holds the last screen row',
     );
     assert.match(lines.at(-2) ?? '', /╰/, 'the composer stays fully drawn above the status line');
+  });
+
+  test('keeps the real multiline editor frame and status visible while optional chrome yields (#6082)', (t) => {
+    for (let rows = 8; rows <= 20; rows += 1) {
+      const terminal = new FakeTerminal(80, rows);
+      const tui = new TuiAltScreen(terminal);
+      t.after(() => tui.stop());
+      const editor = new Editor(tui, editorTheme());
+      editor.setText('draft one\ndraft two\ndraft three\ndraft four');
+      const composer = new MakaAutocompleteAboveEditorComponent(editor);
+      const expectedEditor = composer.render(80).map(stripAnsi);
+      assert.equal(composer.minimumViewportRows(), 6);
+      const state = createMakaPiTranscriptState();
+      const chrome = new MakaFullscreenChromeComponent(
+        state,
+        new MakaActivityStripComponent(() => ({
+          title: 'Maka',
+          cwd: '/repo',
+          model: 'model',
+          connectionSlug: 'provider',
+          permissionMode: 'ask',
+          turnElapsedMs: 1_000,
+        })),
+        makePendingQueue(state),
+        composer,
+        { invalidate() {}, render: () => ['STATUS-SENTINEL'] },
+        terminal,
+        memoryFeed(5),
+        (text) => text,
+        'en',
+      );
+      const root = new VStack([
+        {
+          component: { invalidate() {}, render: () => ['TRANSCRIPT-SENTINEL'] },
+          basis: 0,
+          grow: 1,
+          minSize: 1,
+        },
+        { component: chrome, basis: 'auto', shrink: 1, minSize: 1 },
+      ]);
+      const lines = renderLayoutFrame(root, 80, rows, () => {}).lines.map(stripAnsi);
+      if (rows === 8) t.diagnostic(`8-row production frame:\n${lines.join('\n')}`);
+      assert.equal(lines.length, rows);
+      assert.equal(lines[0]?.trim(), 'TRANSCRIPT-SENTINEL', `${rows} rows reserves the transcript`);
+      assert.equal(
+        lines.at(-1)?.trim(),
+        'STATUS-SENTINEL',
+        `${rows} rows keeps the status visible`,
+      );
+      assert.deepEqual(
+        lines.slice(-7, -1).map((line) => line.trimEnd()),
+        expectedEditor.map((line) => line.trimEnd()),
+        `${rows} rows keeps both borders and all four draft lines`,
+      );
+      assert.ok(chrome.render(80).length <= rows - 1, `${rows} rows fits the actual chrome output`);
+    }
   });
 
   test('keeps the composer anchored at the bottom of the viewport', () => {

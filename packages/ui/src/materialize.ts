@@ -1143,6 +1143,44 @@ function chatItemFromContent(
       ? { inlineReferences: content.inlineReferences }
       : {}),
     ...(hostOrigin ? { hostOrigin } : {}),
+    ...projectImportedCodexQuotes(content),
+  };
+}
+
+/** Display only: persisted quotes would duplicate the context already in model-facing text. */
+function projectImportedCodexQuotes(content: MessageContent): Pick<ChatItem, 'text' | 'quotes'> | undefined {
+  const display = content.displayText;
+  if (display === undefined || content.quotes !== undefined || content.inlineReferences !== undefined) return undefined;
+  const text = content.text.replace(/\r\n/g, '\n');
+  const reply = /^\n*<send_user_message_question_reply>\n([\s\S]*)\n<\/send_user_message_question_reply>\n*$/.exec(text);
+  const match = reply ?? /^\n*# Response annotations:\n[^\n]+\n<response-annotations>\n([\s\S]*?)\n<\/response-annotations>(?:\n|$)/.exec(text);
+  if (!match) return undefined;
+  let entries: unknown;
+  try {
+    entries = JSON.parse(match[1]!);
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(entries) || entries.length === 0) return undefined;
+  const quotes: QuoteRef[] = [];
+  for (const entry of entries) {
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return undefined;
+    const quote = reply ? entry.question : entry.text;
+    const comment = reply ? entry.answer : entry.annotation;
+    if (
+      typeof quote !== 'string' || quote.length === 0 ||
+      (reply ? typeof comment !== 'string' : comment !== undefined && typeof comment !== 'string')
+    ) return undefined;
+    // Codex message IDs are not Maka turn IDs; do not invent local provenance.
+    quotes.push({ text: quote, ...(comment !== undefined ? { comment } : {}) });
+  }
+  // Only replace the exact display prefix produced by the Codex importer, not quoted user prose.
+  const prefix = quotes.map(({ text, comment }) => `“${text}”${comment ? `\n${comment}` : ''}`).join('\n\n');
+  if (display !== prefix && (reply || !display.startsWith(`${prefix}\n\n`))) return undefined;
+  return {
+    quotes,
+    text: [...quotes.flatMap((quote) => quote.comment ? [quote.comment] : []), display.slice(prefix.length + 2)]
+      .filter(Boolean).join('\n\n'),
   };
 }
 

@@ -35,6 +35,7 @@
     "test:startup-correctness": "node scripts/test-startup-correctness.mjs",
     "format": "biome format --write .",
     "format:check": "biome format .",
+    "check:artifact-budget": "npm --workspace @maka/desktop run check:artifact-budget",
     "check:e2e-budget": "npm --workspace @maka/desktop run check:e2e-budget",
     "check:renderer-architecture": "npm --workspace @maka/desktop run check:architecture --",
     "typecheck": "npm run typecheck --workspaces --if-present",
@@ -83,7 +84,7 @@
     "check:runtime-host-peer-dependencies": "node scripts/generate-runtime-host-peer-dependencies.mjs --check",
     "generate:runtime-host-peer-notices": "node scripts/generate-runtime-host-peer-notices.mjs",
     "check:runtime-host-peer-notices": "node scripts/generate-runtime-host-peer-notices.mjs --check",
-    "check:release": "npm run check:stale && npm run check:third-party-notices && npm run check:cli-third-party-notices && npm run check:model-metadata && npm run check:product-release-identity && npm run check:asf-npm && node --test scripts/staple-macos-artifact.test.mjs scripts/product-nightly.test.mjs scripts/desktop-release-targets.test.mjs scripts/verify-linux-harness.test.mjs scripts/desktop-nightly.test.mjs scripts/desktop-nightly-stage.test.mjs scripts/desktop-nightly-release.test.mjs scripts/desktop-nightly-workflow-policy.test.mjs scripts/audit-shipped-dependencies.test.mjs scripts/product-release.test.mjs scripts/product-release-authority.test.mjs scripts/release-cli-file-policy.test.mjs scripts/release-cli-artifact-policy.test.mjs scripts/release-cli-eval-support.test.mjs scripts/release-cli-publication.test.mjs scripts/release-cli-runtime-host-diagnostics.test.mjs scripts/qualify-released-cli-state-root.test.mjs scripts/release-cli-workflow-policy.test.mjs scripts/verify-packaged-app.test.mjs scripts/macos-update-archive.test.mjs scripts/third-party-closure.test.mjs scripts/generate-third-party-notices.test.mjs scripts/source-legal-inventory.test.mjs scripts/sync-model-metadata.test.mjs scripts/prepare-windows-upgrade-baseline.test.mjs scripts/windows-package-source-closure.test.mjs",
+    "check:release": "npm run check:stale && npm run check:third-party-notices && npm run check:cli-third-party-notices && npm run check:model-metadata && npm run check:product-release-identity && npm run check:asf-npm && node --test --test-concurrency=1 scripts/staple-macos-artifact.test.mjs scripts/product-nightly.test.mjs scripts/desktop-release-targets.test.mjs scripts/verify-linux-harness.test.mjs scripts/desktop-nightly.test.mjs scripts/desktop-nightly-stage.test.mjs scripts/desktop-nightly-release.test.mjs scripts/desktop-nightly-workflow-policy.test.mjs scripts/audit-shipped-dependencies.test.mjs scripts/product-release.test.mjs scripts/product-release-authority.test.mjs scripts/release-cli-file-policy.test.mjs scripts/release-cli-artifact-policy.test.mjs scripts/release-cli-eval-support.test.mjs scripts/release-cli-publication.test.mjs scripts/release-cli-runtime-host-diagnostics.test.mjs scripts/qualify-released-cli-state-root.test.mjs scripts/release-cli-workflow-policy.test.mjs scripts/verify-packaged-app.test.mjs scripts/macos-update-archive.test.mjs scripts/third-party-closure.test.mjs scripts/generate-third-party-notices.test.mjs scripts/source-legal-inventory.test.mjs scripts/sync-model-metadata.test.mjs scripts/prepare-windows-upgrade-baseline.test.mjs scripts/windows-package-source-closure.test.mjs",
     "package:macos-arm64": "node scripts/package-macos.mjs arm64",
     "package:macos-x64": "node scripts/package-macos.mjs x64",
     "verify:macos": "node scripts/verify-macos-dmg.mjs",
@@ -140,6 +141,9 @@
     "tree-sitter-javascript@0.25.0": true
   },
   "overrides": {
+    "app-builder-lib": {
+      "@electron/notarize@2.5.0": "3.1.2"
+    },
     "@ai-sdk/code-mode": {
       "run": "2.1.4"
     },

@@ -153,11 +153,30 @@
 
 .maka-executor-picker-panel {
   display: grid;
-  grid-template-columns: minmax(150px, 0.7fr) minmax(260px, 1.3fr);
-  width: 100%;
+  grid-template-columns: 52px minmax(0, 1fr);
+  width: calc(min(420px, 92vw) - 2 * var(--space-3));
   height: min(320px, calc(70vh - 56px));
   min-height: 240px;
   overflow: hidden;
+}
+
+.maka-executor-picker-panel[data-layout='single'] {
+  width: calc(min(340px, 92vw) - 2 * var(--space-3));
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+
+.maka-executor-picker-panel[data-layout='single'] .maka-executor-picker-models {
+  padding-left: 0;
+}
+
+.maka-executor-picker-footer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin-top: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: var(--border-width-hairline) solid var(--border);
 }
 
 .maka-executor-picker-rail,
@@ -172,10 +191,93 @@
   gap: var(--space-1);
   padding: var(--space-1) var(--space-2) var(--space-1) 0;
   border-right: var(--border-width-hairline) solid var(--border);
+  overflow: hidden;
+}
+
+.maka-executor-picker-agents {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-height: 0;
   overflow-y: auto;
 }
 
-.maka-executor-picker-panel .maka-executor-picker-entry,
+.maka-executor-picker-native-entry {
+  margin-bottom: var(--space-2);
+}
+
+.maka-executor-picker-rail-manage {
+  margin-top: auto;
+}
+
+.maka-executor-picker-rail-item[data-active='true']::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  top: var(--space-2);
+  bottom: var(--space-2);
+  width: 3px;
+  border-radius: var(--radius-element);
+  background: var(--accent);
+  pointer-events: none;
+}
+
+.maka-executor-picker-mark {
+  display: flex;
+  position: relative;
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+}
+
+.maka-executor-picker-mark > svg,
+.maka-executor-picker-mark > img,
+.maka-executor-picker-mark > .providerAssetMask {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.maka-executor-picker-mark .maka-executor-picker-status-dot {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+}
+
+/* sky.png has transparent padding: align its visible mark with the 24px Agent logos. */
+.maka-executor-picker-mark > .maka-executor-brand-mark-native {
+  transform: scale(1.25);
+}
+
+.maka-executor-picker-rail-item {
+  display: flex;
+  position: relative;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-element);
+}
+
+.maka-executor-picker-agent-status {
+  position: absolute;
+  right: 1px;
+  bottom: 1px;
+  width: 14px;
+  height: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--background);
+  pointer-events: none;
+}
+
+.maka-executor-picker-footer .maka-executor-picker-entry,
 .maka-executor-picker-panel .maka-executor-picker-model {
   height: auto;
   min-height: 28px;
@@ -193,8 +295,9 @@
   min-width: 0;
 }
 
-.maka-executor-picker-entry[data-active='true'],
-.maka-executor-picker-model[aria-selected='true'] {
+.maka-executor-picker-rail-item[data-active='true'],
+.maka-executor-picker-model[aria-selected='true'],
+.maka-executor-picker-model[data-highlighted='true'] {
   background: var(--muted);
 }
 
@@ -202,10 +305,6 @@
   color: var(--muted-foreground);
   font-size: 11px;
   line-height: 1.35;
-}
-
-.maka-executor-picker-manage {
-  margin-top: auto;
 }
 
 .maka-executor-picker-models {
@@ -261,22 +360,21 @@
 }
 
 .maka-executor-picker-readiness {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  overflow-y: auto;
+}
+
+.maka-executor-picker-readiness-loading {
   display: flex;
   flex: 1 1 auto;
-  align-items: flex-start;
-  gap: var(--space-2);
-  min-width: 0;
-  padding-top: var(--space-1);
-}
-
-.maka-executor-picker-readiness {
   flex-direction: column;
-}
-
-@media (max-width: 640px) {
-  .maka-executor-picker-panel {
-    grid-template-columns: minmax(120px, 0.8fr) minmax(180px, 1.2fr);
-  }
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  color: var(--muted-foreground);
+  text-align: center;
 }
 
 .maka-executor-notice {

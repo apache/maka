@@ -30,37 +30,13 @@ import { Context } from '@maka/runtime/plugin-kernel';
 import {
   HostBuiltinExternalAgentPluginCoordinator,
   resolveBuiltinExternalAgentPluginEntries,
-  withBuiltinExternalAgentCatalog,
 } from '../server/builtin-external-agent-plugins.js';
 import { HostPluginPlatform } from '../server/plugin-platform.js';
 import { HostPluginDataRuntime } from '../server/plugin-data-runtime.js';
 
-test('built-in setup entries fill missing catalog items without replacing live providers', () => {
-  const other = {
-    id: 'another-executor',
-    displayName: 'Another executor',
-    readiness: 'ready' as const,
-    models: [{ id: 'another-model', name: 'Another model' }],
-    supportsAttachments: false,
-    supportsModelChange: true,
-  };
-  const [placeholder] = withBuiltinExternalAgentCatalog([]);
-  assert.deepEqual(placeholder, {
-    id: 'antigravity-acp',
-    displayName: 'Antigravity',
-    readiness: 'unavailable',
-    models: [],
-    supportsAttachments: false,
-    supportsModelChange: false,
-  });
-  assert.deepEqual(withBuiltinExternalAgentCatalog([other]), [other, placeholder]);
-  const live = { ...placeholder!, readiness: 'ready' as const, models: other.models };
-  assert.deepEqual(withBuiltinExternalAgentCatalog([other, live]), [other, live]);
-});
-
 test('built-in ACP packages load their production bundles and follow RuntimePolicy', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-builtin-acp-plugins-'));
-  let policy = configuredPolicy('/opt/antigravity/agy_acp_server.par');
+  let policy = createDefaultRuntimePolicy();
   try {
     const first = createPlatform(join(root, 'control'));
     await first.platform.recover();
@@ -72,6 +48,11 @@ test('built-in ACP packages load their production bundles and follow RuntimePoli
     });
 
     await coordinator.recover();
+    assert.deepEqual(first.platform.inspectExecutors('profile'), []);
+    assert.deepEqual(await first.platform.packageProjections(), []);
+
+    policy = configuredPolicy('/opt/antigravity/agy_acp_server.par');
+    await coordinator.reconcile();
     assert.deepEqual(
       first.platform.inspectExecutors('profile').map(({ id, entryId, extensionId }) => ({
         id,

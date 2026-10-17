@@ -17,8 +17,8 @@
  * under the License.
  */
 
-import { createContext, useState, type KeyboardEvent, type ReactNode } from 'react';
-import { Button, TextInput } from '@astryxdesign/core';
+import { createContext, useId, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { Button, EmptyState, TextInput, isImeKeyEvent, useCombobox } from '@astryxdesign/core';
 import { useUiLocale } from './locale-context.js';
 import { getSharedUiCopy } from './shared-ui-copy.js';
 
@@ -48,24 +48,35 @@ export function ModelPickerPanel(props: {
   const copy = getSharedUiCopy(locale).modelPicker;
   const searchPlaceholder = props.searchPlaceholder ?? copy.searchPlaceholder;
   const [query, setQuery] = useState('');
+  const searchRef = useRef<HTMLInputElement>(null);
+  const listboxId = useId();
   const normalized = query.trim().toLocaleLowerCase(locale);
   const options = props.options.filter((option) => !normalized || (
     [option.label, option.detail, option.description, option.group].join(' ').toLocaleLowerCase(locale).includes(normalized)
   ));
-  const navigate = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
-    const rows = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('button[role="option"]')]
-      .filter((row) => !row.disabled && row.getAttribute('aria-disabled') !== 'true');
-    if (rows.length === 0) return;
-    const index = rows.indexOf(event.target as HTMLButtonElement);
-    const next = event.key === 'Home' ? 0 : event.key === 'End' ? rows.length - 1
-      : (index + (event.key === 'ArrowDown' ? 1 : -1) + rows.length) % rows.length;
-    event.preventDefault();
-    rows[next]?.focus();
+  const combobox = useCombobox({
+    selectableItems: options,
+    value: props.value,
+    isDisabled: props.disabled,
+    isOpen: true,
+    hasSearch: true,
+    listboxId,
+    onOpen: () => {},
+    // The selection owner closes only after a successful async commit.
+    onClose: () => {},
+    onSelect: (value) => void props.onSelect(value),
+  });
+  const navigate = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (isImeKeyEvent(event.nativeEvent)) return;
+    // Home/End edit the query; Escape and Tab belong to the selector surface.
+    if (['ArrowDown', 'ArrowUp', 'PageUp', 'PageDown', 'Enter'].includes(event.key)) {
+      combobox.onKeyDown(event);
+    }
   };
   return (
     <>
       <TextInput
+        ref={searchRef}
         className="maka-executor-picker-search"
         label={searchPlaceholder}
         isLabelHidden
@@ -73,9 +84,17 @@ export function ModelPickerPanel(props: {
         width="100%"
         value={query}
         placeholder={searchPlaceholder}
-        onChange={setQuery}
+        role="combobox"
+        aria-expanded="true"
+        aria-controls={listboxId}
+        aria-autocomplete="list"
+        aria-activedescendant={options[combobox.highlightedIndex] ? combobox.getItemId(combobox.highlightedIndex) : undefined}
+        onChange={(value) => { setQuery(value); combobox.setHighlightedIndex(-1); }}
+        onKeyDown={navigate}
+        // Portalled input clicks must not reach ChatComposer's click-to-focus body.
+        onClick={(event) => event.stopPropagation()}
       />
-      <div className="maka-executor-picker-model-list" role="listbox" aria-label={searchPlaceholder} onKeyDown={navigate}>
+      <div id={listboxId} className="maka-executor-picker-model-list" role="listbox" aria-label={searchPlaceholder} hidden={options.length === 0}>
         {options.map((option, index) => (
           <div key={option.value} className="maka-executor-picker-option">
             {option.group && option.group !== options[index - 1]?.group ? (
@@ -86,12 +105,16 @@ export function ModelPickerPanel(props: {
               variant="ghost"
               size="sm"
               role="option"
+              id={combobox.getItemId(index)}
+              tabIndex={-1}
+              data-highlighted={combobox.highlightedIndex === index ? 'true' : undefined}
+              onMouseEnter={() => combobox.onItemMouseEnter(option, index)}
               icon={props.renderOption ? undefined : option.icon}
               aria-selected={props.value === option.value}
               className="maka-executor-picker-model"
               isDisabled={props.disabled || option.disabled}
               tooltip={props.disabledReason ?? option.description}
-              onClick={() => void props.onSelect(option.value)}
+              onClick={() => combobox.onItemSelect(option)}
             >
               {props.renderOption ? props.renderOption(option) : (
                 <span className="maka-executor-picker-label">
@@ -102,8 +125,22 @@ export function ModelPickerPanel(props: {
             </Button>
           </div>
         ))}
-        {options.length === 0 ? <span role="status">{normalized ? copy.noResults : copy.empty}</span> : null}
       </div>
+      {options.length === 0 && <EmptyState
+        isCompact
+        title={normalized ? copy.noResults : copy.empty}
+        actions={normalized ? <Button
+          label={copy.clearSearch}
+          variant="ghost"
+          size="sm"
+          onClick={(event) => {
+            event.stopPropagation();
+            setQuery('');
+            combobox.setHighlightedIndex(-1);
+            searchRef.current?.focus();
+          }}
+        /> : undefined}
+      />}
     </>
   );
 }

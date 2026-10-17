@@ -105,6 +105,7 @@ import {
   type DesktopTranscriptBatch,
   type DesktopTranscriptHandle,
   type DesktopTranscriptOpenMode,
+  type DesktopTranscriptPosition,
   type DesktopTranscriptOpenResult,
 } from './transcript-contract.js';
 import {
@@ -2803,6 +2804,7 @@ const makaBridge = {
       registerCancellation?: (cancel: () => void) => void,
       mode: DesktopTranscriptOpenMode = 'history',
       resumeFrom?: number,
+      position?: DesktopTranscriptPosition,
     ): Promise<DesktopTranscriptHandle> {
       const consumerId = crypto.randomUUID();
       const channel = `sessions:transcript:${consumerId}`;
@@ -2864,6 +2866,7 @@ const makaBridge = {
             consumerId,
             mode,
             resumeFrom ?? null,
+            position ?? null,
           ) as Promise<RuntimeHostObservationIpcResult<DesktopTranscriptOpenResult>>,
         };
       });
@@ -2902,6 +2905,7 @@ const makaBridge = {
               ...cachedIdentity, sessionId, readThroughMessageId: null,
               acknowledgeTail: unavailable,
               loadEarlier: unavailable,
+              loadNewer: unavailable,
               close: async () => {},
             };
           }
@@ -2938,6 +2942,9 @@ const makaBridge = {
             consumerId,
             throughSequence ?? null,
           ) as Promise<void>,
+        loadNewer: () => invokeWhenReady(
+          'sessions:transcript:load-newer', consumerScope, consumerId,
+        ) as Promise<void>,
         async close() {
           if (closed) return;
           requestClose();

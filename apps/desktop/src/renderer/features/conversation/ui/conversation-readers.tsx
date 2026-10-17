@@ -35,6 +35,7 @@ import { useAppShellTurnPresentation } from '../../../application/contracts/turn
 import { getShellCopy } from '../../../locales/shell-copy.js';
 import { composerTurnGates, desktopComposerSlashCommands } from '../model/composer-turn-gates.js';
 import { executorComposerProps } from '../model/executor-composer.js';
+import { ExecutorBrandMark } from './executor-brand-marks.js';
 import type { LatestRequestUsage } from '../../../application/contracts/session-inspector/latest-request-usage.js';
 import { liveTurnFlags } from '../model/live-turn-flags.js';
 
@@ -48,6 +49,7 @@ type ChatProps = ComponentProps<typeof ChatView>;
 type TranscriptProps = Pick<ChatProps,
   'onStreamingSettled' | 'messages' | 'transientMessages' | 'messageLoading' | 'messageLoadError' | 'messageLoadRetryPending' |
   'onRetryMessages' | 'hasEarlierHistory' | 'onLoadEarlierHistory' | 'transcriptTurnIndex' |
+  'hasLaterHistory' | 'onLoadLaterHistory' | 'onLoadLatestHistory' |
   'onLoadTranscriptTurn' | 'restoreTargetTurn' | 'onReadingAnchorChange' | 'viewportNavigation' |
   'deriveTurnPresentation' | 'safeResumeAction'
 > & {
@@ -96,7 +98,10 @@ export function ConversationTranscriptRegion<P extends object>(
     onRetryMessages: sessionId ? () => { void commands.retryMessages(sessionId); } : undefined,
     viewportNavigation: workspace.ui.transcriptViewportNavigation,
     hasEarlierHistory: view.range?.sessionId === sessionId ? view.range?.hasOlder : undefined,
+    hasLaterHistory: view.range?.sessionId === sessionId ? view.range?.hasNewer : undefined,
     onLoadEarlierHistory: () => readingCommands.current?.loadEarlier(),
+    onLoadLaterHistory: () => readingCommands.current?.loadNewer(),
+    onLoadLatestHistory: () => readingCommands.current?.showLatest(),
     transcriptTurnIndex: view.turnIndex?.sessionId === sessionId ? view.turnIndex?.turns : undefined,
     onLoadTranscriptTurn: (turn) => readingCommands.current?.loadEarlier(turn.sequence),
     restoreTargetTurn: transcriptRestoreTarget(sessionId ? workspace.ui.transcriptReadingAnchorBySessionRef.current[sessionId] : undefined, load.unavailableTranscriptRestore),
@@ -139,7 +144,7 @@ type ComposerProps = SubmissionProps & TurnGatedProps & {
 type ComposerGateInputs = {
   /** The displayed Session's catalog row: whether it has arrived, and its status. */
   sessionState: { loaded: boolean; status: SessionStatus | undefined };
-  executorComposer: Omit<Parameters<typeof executorComposerProps>[1], 'activeId' | 'turnActive' | 'sendPending'> & {
+  executorComposer: Omit<Parameters<typeof executorComposerProps>[1], 'activeId' | 'turnActive' | 'sendPending' | 'renderExecutorMark'> & {
     selection: Parameters<typeof executorComposerProps>[0];
   };
 };
@@ -181,7 +186,7 @@ export function ConversationComposerRegion<P extends object>(
   const stopPending = useSessionUiRead(workspace.ui.reads, 'stop', activeId);
   const draft = submission.revisionDraft;
   const editing = draft !== null && activeId === draft.draftSessionId;
-  const gates = presentation as ComposerPickGates;
+  const gates = presentation as ComposerPickGates & Pick<UiComposerProps, 'renderProviderMark'>;
   const owned: OwnedComposerProps & ComposerPickGates = {
     composerRef,
     // Picking and sending staged context share the shell's single availability input.
@@ -201,6 +206,7 @@ export function ConversationComposerRegion<P extends object>(
     }),
     // Executor changes and sends stay locked until the pending send's Host admission settles.
     ...executorComposerProps(executor, {
+      renderExecutorMark: (entry) => <ExecutorBrandMark entry={entry} renderProviderMark={gates.renderProviderMark} />,
       ...executorInput, activeId, turnActive: turn.turnActive, sendPending: submission.newTaskSendPending,
     }),
     onSend: submission.onSend,

@@ -189,6 +189,8 @@ import { HostExternalSessionCoordinator } from './external-session-coordinator.j
 import { boundedFailureDiagnostic } from './failure-diagnostic.js';
 import { HostSessionBundleCoordinator } from './session-bundle-coordinator.js';
 import { HostGoalCoordinator } from './goal-coordinator.js';
+import { readGoalFormEvidence, unreadGoalFormToolResponses } from './goal-form-evidence.js';
+import { recentGoalToolReferences } from './goal-evaluation-context.js';
 import { HostGoalExecutionCoordinator } from './goal-execution-coordinator.js';
 import { HostHostedExecutionCoordinator } from './hosted-execution-coordinator.js';
 import { HostHostedExecutionRunner } from './hosted-execution-runner.js';
@@ -234,10 +236,7 @@ import {
 } from './project-directory-authority.js';
 import { HostProjectCatalogCoordinator } from './project-catalog-coordinator.js';
 import { HostProjectMembershipGate } from './project-membership-gate.js';
-import {
-  HostBuiltinExternalAgentPluginCoordinator,
-  withBuiltinExternalAgentCatalog,
-} from './builtin-external-agent-plugins.js';
+import { HostBuiltinExternalAgentPluginCoordinator } from './builtin-external-agent-plugins.js';
 import { HostPluginPlatformCoordinator } from './plugin-platform-coordinator.js';
 import { HostPluginPlatform } from './plugin-platform.js';
 import { RootAdmissionOwner } from './root-admission-owner.js';
@@ -445,8 +444,7 @@ export async function createExecutionRuntimeHostComposition(
             ...(header.executorConfig ? { configuration: header.executorConfig } : {}),
           });
         }
-        const catalog = await pluginExecutors.catalog({ cwd: input.cwd, refresh: input.refresh });
-        return withBuiltinExternalAgentCatalog(catalog);
+        return pluginExecutors.catalog({ cwd: input.cwd, refresh: input.refresh });
       },
     );
 
@@ -2469,7 +2467,23 @@ export async function createExecutionRuntimeHostComposition(
     goal = new HostGoalCoordinator({
       store: openedGoalStore,
       stores,
-      readSessionMessages: (sessionId) => requireSessionManager(manager).getMessages(sessionId),
+      readSessionContext: async (sessionId) => {
+        const { messages, events } =
+          await requireSessionManager(manager).readConversationCopySnapshot(sessionId);
+        const formAnswers = await readGoalFormEvidence(sessionId, events, (requestId) =>
+          stores.interactionStore.readInteraction(requestId),
+        );
+        return {
+          messages,
+          formAnswers,
+          unreadFormTools: unreadGoalFormToolResponses(
+            sessionId,
+            events,
+            formAnswers,
+            recentGoalToolReferences(messages),
+          ),
+        };
+      },
       executions: coordinator,
       sessionAdmission,
       evaluator: createHostGoalEvaluator({
