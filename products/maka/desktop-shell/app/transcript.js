@@ -56,6 +56,7 @@ import {
   markdownStyle,
   byteSize,
   fileChip,
+  escapeHtml,
   MONTHS,
 } from './theme.js';
 import { t, tn, language } from './locale.js';
@@ -1087,8 +1088,23 @@ export function markdownText(id, source, cx) {
 }
 
 /**
+ * `value` as HTML that reads as the plain text it is: escaped, one
+ * paragraph per line (TextView merges the text around a `<br>` into one
+ * line), blank lines kept, and the spaces HTML would fold or trim (runs, and
+ * one starting a line) written as non-breaking ones.
+ */
+function plainHtml(value) {
+  return value
+    .replace(/\t/g, '    ')
+    .split(/\r?\n/)
+    .map((line) => `<p>${escapeHtml(line).replace(/ (?= )|^ /g, '&nbsp;') || '&nbsp;'}</p>`)
+    .join('');
+}
+
+/**
  * A message the user sent: its files right-aligned above the bubble with its
- * text. A message of files alone has no bubble.
+ * text, which can be selected and copied as a reply's can. A message of files
+ * alone has no bubble.
  */
 function userMessage(row, cx) {
   const m = palette(cx);
@@ -1119,7 +1135,12 @@ function userMessage(row, cx) {
           .rounded(28)
           .bg(m.bubble)
           .text_color(m.ink)
-          .child(own),
+          .child(
+            TextView.html(`sent-${row.key}`, plainHtml(own)).text_style({
+              paragraph_gap: 0,
+              foreground: m.ink,
+            }),
+          ),
       ),
     );
 }
@@ -1330,6 +1351,15 @@ const TOOL_KINDS = {
  */
 const NAMED_TOOLS = {
   workhub_tasks: ['workhubName', 'workhub'],
+  // The workspace tools by the names the model calls them, for a call the
+  // Host rejected before binding it to its contract (no `presentation`).
+  Read: ['toolRead', 'tool-read'],
+  Write: ['toolWrite', 'tool-edit'],
+  Edit: ['toolEdit', 'tool-edit'],
+  ApplyPatch: ['toolPatch', 'tool-edit'],
+  Glob: ['toolGlob', 'tool-search'],
+  Grep: ['toolGrep', 'tool-search'],
+  Shell: ['toolRun', 'tool-terminal'],
 };
 
 /** The message that names each state of a tool call (see toolStatus). */
@@ -1338,6 +1368,7 @@ const TOOL_STATES = {
   done: 'toolStateDone',
   failed: 'toolStateFailed',
   stopped: 'toolStateStopped',
+  notRun: 'toolStateNotRun',
 };
 
 /** The longest value a tool row reads whole; past it, the start and the end. */
@@ -1365,11 +1396,16 @@ function toolIcon(name) {
 }
 
 /**
- * The tool call's state: running, done, failed or stopped, with its icon and
- * color. `reportedFailure` is a result whose own `kind` says it failed.
+ * The tool call's state: running, done, failed, stopped or not run, with its
+ * icon and color. `reportedFailure` is a result whose own `kind` says it
+ * failed. A call the Host rejected never ran (its result is the reason: the
+ * input was invalid, policy denied it, another call in the same step had to
+ * run alone, ...): the model is told and goes on, so it is not drawn as a
+ * failure.
  */
 function toolStatus(row, result, reportedFailure, m) {
   if (result !== null) {
+    if (result.tool?.result?.settlement === 'rejected') return ['notRun', 'status-stopped', m.inkMuted];
     if (
       reportedFailure ||
       result.tool?.result?.isError ||
@@ -1377,7 +1413,6 @@ function toolStatus(row, result, reportedFailure, m) {
     ) {
       return ['failed', 'status-failed', m.destructive];
     }
-    if (result.tool?.result?.settlement === 'rejected') return ['stopped', 'status-stopped', m.inkMuted];
     return ['done', 'status-done', m.inkMuted];
   }
   if (row.tool?.call?.pending) return ['running', 'status-running', m.primary];
@@ -1654,7 +1689,7 @@ function toolRow(item, transcript, cx) {
             .child(summary),
         )
         .child(tippedIcon(statusIcon, 14, statusColor, t(TOOL_STATES[status])))
-        .when(item.open || status === 'failed', (el) =>
+        .when(item.open || status === 'failed' || status === 'notRun', (el) =>
           el.child(icon(item.open ? 'chevron-down' : 'chevron-right', 14, m.inkMuted)),
         ),
     )

@@ -288,6 +288,7 @@ export const MESSAGES = {
   toolStateDone: ['done', '已完成', '已完成'],
   toolStateFailed: ['failed', '失败', '失敗'],
   toolStateStopped: ['stopped', '已中止', '已中止'],
+  toolStateNotRun: ['not run', '未执行', '未執行'],
   runningInBackground: ['Running in the background', '正在后台运行', '正在背景執行'],
   outputStdout: ['stdout', 'stdout', 'stdout'],
   outputStderr: ['stderr', 'stderr', 'stderr'],

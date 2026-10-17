@@ -389,6 +389,16 @@ export function controlButton(id, label, kind, disabled, cx) {
   }
 }
 
+/** `value` with the characters HTML reads as markup written as entities, for `TextView.html`. */
+export function escapeHtml(value) {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 /** A 32px text field: plate fill, the strong border, the accent ring when focused. */
 export function textField(state, cx) {
   const m = palette(cx);

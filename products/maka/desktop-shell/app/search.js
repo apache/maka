@@ -45,6 +45,7 @@ import {
   pill,
   compactAge,
   focusInput,
+  escapeHtml,
 } from './theme.js';
 import { t, onLanguageChange } from './locale.js';
 
@@ -414,15 +415,6 @@ function matcher(terms) {
     .sort((a, b) => b.length - a.length)
     .map((term) => term.replace(/[\\^$.*+?()[\]{}|/]/g, '\\$&'));
   return new RegExp(escaped.join('|'), 'giu');
-}
-
-function escapeHtml(value) {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
 }
 
 /** Whether the UTF-16 unit at `index` is the second half of a surrogate pair. */
