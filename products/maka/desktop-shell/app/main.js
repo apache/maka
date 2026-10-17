@@ -20,10 +20,12 @@
 // The Maka desktop window: tasks on the canvas at the side, and the plate
 // beside them with the selected task's transcript and the composer, or the
 // empty state for a new task, or WorkHub (workhub.js), whose conversation is
-// drawn as a task's, or the Search page (search.js). Settings (settings.js)
-// takes the sidebar and the plate while open. The look follows the native
-// client (theme.js). Every Host call goes through `maka-host` (see host.js);
-// MAKA_HOST_ENDPOINT and MAKA_HOST_EPOCH name the Host.
+// drawn as a task's, or the Search page (search.js). Beside a conversation
+// the Workbar (workbar.js) can show its folder's changes and files, on a
+// plate of its own. Settings (settings.js) takes the sidebar and the plate
+// while open. The look follows the native client (theme.js). Every Host
+// call goes through `maka-host` (see host.js); MAKA_HOST_ENDPOINT and
+// MAKA_HOST_EPOCH name the Host.
 //
 // An optional `dev.js` beside this file (never committed) can turn on the
 // debug log and drive the window without focus:
@@ -31,7 +33,7 @@
 //   export default { debug: true, run: async ({ app, cx, log }) => { ... } };
 
 import { View, div } from 'gpui-kit';
-import { v_flex, h_flex } from 'gpui-base';
+import { v_flex, h_flex, h_resizable, resizable_panel } from 'gpui-base';
 import { query, operation, log, setDebug } from './host.js';
 import { SessionCatalog, SidebarState, sidebar } from './sessions.js';
 import { Transcript, transcriptPane } from './transcript.js';
@@ -42,6 +44,7 @@ import { Directories, folderPicker } from './directories.js';
 import { WorkHub, workhubTabs, workhubBody, chatHint } from './workhub.js';
 import { Search, searchPage } from './search.js';
 import { usable } from './subagents.js';
+import { Workbar, WORKBAR_WIDTH, workbarPane, workbarButton } from './workbar.js';
 import { followAppearance, palette, text, icon, controlButton, ghostButton } from './theme.js';
 import { t, onLanguageChange } from './locale.js';
 
@@ -52,6 +55,18 @@ import { t, onLanguageChange } from './locale.js';
  * clearance from the plate's edge, as the native client's title bar does.
  */
 const LIGHTS_END = 80;
+
+/** The sidebar's width, beside the plate. */
+const SIDEBAR_WIDTH = 256;
+
+/** The narrowest the conversation's plate gets while the Workbar's divider is dragged. */
+const CONVERSATION_MIN = 420;
+
+/**
+ * The narrowest it gets in a window too narrow for both plates at their
+ * usual minimums (960 wide with the sidebar leaves them 696).
+ */
+const CONVERSATION_FLOOR = 320;
 
 /** WorkHub and the Search page as places in the Back and Forward lists, beside session ids. */
 const WORKHUB = 'workhub';
@@ -67,6 +82,8 @@ const SHORTCUTS = [
   { keystroke: 'secondary-shift-f', action: 'maka.search' },
   { keystroke: 'secondary-.', action: 'maka.stop' },
   { keystroke: 'f2', action: 'maka.rename-task' },
+  { keystroke: 'ctrl-shift-g', action: 'maka.toggle-changes' },
+  { keystroke: 'secondary-p', action: 'maka.toggle-files' },
 ];
 
 export default class MakaDesktop extends View {
@@ -74,7 +91,17 @@ export default class MakaDesktop extends View {
     // The context `init` receives may be held across awaits; the Host loops
     // below notify through it.
     this.cx = cx;
-    const hooks = { changed: () => this.cx.notify(), report: (message) => this.report(message) };
+    const report = (message) => this.report(message);
+    // Its own changes only redraw; everything else may change the
+    // conversation it serves, so it is told (syncWorkbar) before each frame.
+    this.workbar = new Workbar({ changed: () => this.cx.notify(), report }, cx);
+    const hooks = {
+      changed: () => {
+        this.syncWorkbar();
+        this.cx.notify();
+      },
+      report,
+    };
     this.hooks = hooks;
     this.catalog = new SessionCatalog({
       ...hooks,
@@ -216,6 +243,23 @@ export default class MakaDesktop extends View {
     return this.workhub.open ? this.workhub.transcript : this.transcript;
   }
 
+  /**
+   * The conversation the Workbar serves: the selected task's, or WorkHub's
+   * while its conversation shows; none on the start pane, Search, Settings
+   * or WorkHub's tasks.
+   */
+  workbarTarget() {
+    if (this.settings.open) return null;
+    if (this.workhub.open) return this.workhub.chat();
+    if (this.search.open) return null;
+    return this.transcript;
+  }
+
+  /** Tells the Workbar what the window shows now; cheap when nothing it follows changed. */
+  syncWorkbar() {
+    this.workbar.follow(this.workbarTarget());
+  }
+
   /** Records a move from the current place, for Back. */
   visit(next) {
     const current = this.place();
@@ -277,6 +321,7 @@ export default class MakaDesktop extends View {
     const leaving = this.workhub.hide();
     this.search.hide();
     log(`select "${session.title}"${anchor === null ? '' : ` at row ${anchor}`}`);
+    this.syncWorkbar();
     this.cx.notify();
     if (previous !== null) await previous.close();
     await leaving;
@@ -291,6 +336,7 @@ export default class MakaDesktop extends View {
     this.transcript = null;
     const leaving = this.workhub.hide();
     this.search.hide();
+    this.syncWorkbar();
     this.cx.notify();
     if (previous !== null) await previous.close();
     await leaving;
@@ -306,6 +352,7 @@ export default class MakaDesktop extends View {
     this.search.hide();
     log('open WorkHub');
     const showing = this.workhub.show();
+    this.syncWorkbar();
     this.cx.notify();
     if (previous !== null) await previous.close();
     await showing;
@@ -324,6 +371,7 @@ export default class MakaDesktop extends View {
     const leaving = this.workhub.hide();
     this.search.show();
     log('open Search');
+    this.syncWorkbar();
     this.cx.notify();
     if (previous !== null) await previous.close();
     await leaving;
@@ -423,6 +471,15 @@ export default class MakaDesktop extends View {
     // Settings keep their navigation in the sidebar's place even while the
     // sidebar is hidden: it is the only way between their pages.
     const column = settings || !this.sidebarHidden;
+    const plate = v_flex()
+      .size_full()
+      .rounded(12)
+      .bg(m.plate)
+      .overflow_hidden()
+      .when(settings, (el) => el.child(settingsPage(this.settings, cx)))
+      .when(!settings && this.workhub.open, (el) => this.workhubPane(el, cx))
+      .when(!settings && this.search.open, (el) => this.searchPane(el, cx))
+      .when(!settings && !this.workhub.open && !this.search.open, (el) => this.taskPane(el, cx));
     return h_flex()
       .size_full()
       .items_start()
@@ -437,6 +494,8 @@ export default class MakaDesktop extends View {
       .on_action('maka.settings', () => this.settings.show())
       .on_action('maka.search', () => this.startSearch())
       .on_action('maka.rename-task', () => this.renameSelected())
+      .on_action('maka.toggle-changes', () => this.workbar.toggle('changes'))
+      .on_action('maka.toggle-files', () => this.workbar.toggle('files'))
       .on_action('maka.stop', () => {
         const current = this.current();
         if (current !== null) this.composer.stop(current);
@@ -444,7 +503,7 @@ export default class MakaDesktop extends View {
       .when(column, (el) =>
         el.child(
           v_flex()
-            .w(256)
+            .w(SIDEBAR_WIDTH)
             .flex_none()
             .h_full()
             .child(this.chromeStrip(!settings, cx))
@@ -479,20 +538,60 @@ export default class MakaDesktop extends View {
           .py(8)
           .pr(8)
           .when(!column, (el) => el.pl(8))
-          .child(
-            v_flex()
-              .size_full()
-              .rounded(12)
-              .bg(m.plate)
-              .overflow_hidden()
-              .when(settings, (el) => el.child(settingsPage(this.settings, cx)))
-              .when(!settings && this.workhub.open, (el) => this.workhubPane(el, cx))
-              .when(!settings && this.search.open, (el) => this.searchPane(el, cx))
-              .when(!settings && !this.workhub.open && !this.search.open, (el) =>
-                this.taskPane(el, cx),
-              ),
-          ),
+          .child(this.withWorkbar(plate, column, cx)),
       );
+  }
+
+  /**
+   * The conversation's plate, with the Workbar's to its right while it
+   * shows: two panels whose divider drags, in the middle of the 8 between
+   * them. The width it is dragged to is kept (Workbar.resized), and the
+   * conversation keeps at least CONVERSATION_MIN, less in a narrow window
+   * (see workbarSplit). `column` says whether the sidebar's column shows.
+   */
+  withWorkbar(plate, column, cx) {
+    if (!this.workbar.shown()) return plate;
+    // Each panel holds half the gap, so the divider sits in its middle.
+    const gap = 4;
+    const { conversation, workbar } = this.workbarSplit(column, gap);
+    return h_resizable('workbar-split')
+      .size_full()
+      .on_resize((sizes) => this.workbar.resized(sizes[1] - gap))
+      .child(
+        resizable_panel()
+          .size_range(conversation + gap)
+          .pr(gap)
+          .child(plate),
+      )
+      .child(
+        resizable_panel()
+          .size(workbar + gap)
+          .size_range(WORKBAR_WIDTH.min + gap, WORKBAR_WIDTH.max + gap)
+          .pl(gap)
+          .child(workbarPane(this.workbar, cx)),
+      );
+  }
+
+  /**
+   * The conversation's least width and the Workbar's width to start from,
+   * for the width the window leaves the two plates. The panels never shrink
+   * below their least widths, so in a window too narrow for
+   * CONVERSATION_MIN beside the Workbar's least width the conversation gets
+   * what is left, down to CONVERSATION_FLOOR, and the Workbar's kept width
+   * is cut to what fits: both always stay in the window, and the first
+   * frame too.
+   */
+  workbarSplit(column, gap) {
+    const shared = window.viewport_size().width - (column ? SIDEBAR_WIDTH : 8) - 8;
+    const conversation = Math.min(
+      CONVERSATION_MIN,
+      Math.max(CONVERSATION_FLOOR, shared - WORKBAR_WIDTH.min - 2 * gap),
+    );
+    const workbar = Math.max(
+      WORKBAR_WIDTH.min,
+      Math.min(this.workbar.width, shared - conversation - 2 * gap),
+    );
+    return { shared, conversation, workbar };
   }
 
   /** The plate's content for a task or a new one: header, connection strip, then the conversation. */
@@ -709,11 +808,13 @@ export default class MakaDesktop extends View {
    * The plate's 48px header: `title`, and what its conversation is doing
    * (`state`, or null). `controls`, when given, sit in the middle of the
    * plate, with the state after them. With the sidebar hidden it also
-   * carries the window controls, clear of the traffic lights.
+   * carries the window controls, clear of the traffic lights. Beside a
+   * conversation the Workbar's button ends it.
    */
   header(title, state, controls, cx) {
     const m = palette(cx);
     const hidden = this.sidebarHidden;
+    const toggle = this.workbarTarget() === null ? null : workbarButton(this.workbar, cx);
     // The parts around the buttons move the window; the buttons are outside
     // them, so a press on one never starts a move.
     const side = () =>
@@ -750,7 +851,8 @@ export default class MakaDesktop extends View {
             .justify_end()
             .when(stateText !== null, (el) => el.child(stateText)),
         ),
-      );
+      )
+      .when(toggle !== null, (el) => el.child(toggle.ml(8)));
   }
 
   /**

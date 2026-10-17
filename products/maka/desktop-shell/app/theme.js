@@ -65,6 +65,10 @@ export const M = {
     warning: '#AB3900',
     warningTint: '#AB39003D',
     destructive: '#C90000',
+    // A diff's added and removed rows: success and destructive at 12%
+    // opacity (18% in dark).
+    addedTint: '#007A111F',
+    removedTint: '#C900001F',
     scrim: '#00000033',
     dockRing: '#0F0F1214',
   },
@@ -96,6 +100,8 @@ export const M = {
     warning: '#E26C00',
     warningTint: '#E26C003D',
     destructive: '#FF6367',
+    addedTint: '#2799362E',
+    removedTint: '#FF63672E',
     scrim: '#00000080',
     dockRing: '#EEEEF11A',
   },

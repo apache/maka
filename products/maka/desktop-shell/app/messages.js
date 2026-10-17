@@ -1175,4 +1175,105 @@ export const MESSAGES = {
   workhubNoticeEndedUntitled: ['A task ended', '一个任务已结束', '一個任務已結束'],
   workhubNoticeGraph: ['A task graph has new results', '任务图有新结果', '任務圖有新結果'],
   workhubNoticeView: ['View', '查看', '查看'],
+
+  // Workbar: its header and the button that opens it (workbar.js, main.js)
+  workbarChanges: ['Changes', '改动', '變更'],
+  workbarFiles: ['Files', '文件', '檔案'],
+  workbarChangesTip: ['Changes ({shortcut})', '改动（{shortcut}）', '變更（{shortcut}）'],
+  workbarRefresh: ['Refresh', '刷新', '重新整理'],
+
+  // Workbar: Changes (changes.js)
+  changesStaged: ['Staged', '已暂存', '已暫存'],
+  changesWorktree: ['Changes', '改动', '變更'],
+  changesUntracked: ['Untracked', '未跟踪', '未追蹤'],
+  changesReading: ['Reading changes…', '正在读取改动…', '正在讀取變更…'],
+  changesFailed: [
+    "Couldn't read the changes: {value}",
+    '读取改动失败：{value}',
+    '讀取變更失敗：{value}',
+  ],
+  changesNotRepository: [
+    'This folder is not a Git repository',
+    '此文件夹不是 Git 仓库',
+    '此資料夾不是 Git 儲存庫',
+  ],
+  changesNone: ['No changes', '没有改动', '沒有變更'],
+  changesNoCommits: ['No commits yet', '还没有提交', '還沒有提交'],
+  changesFilesOne: ['{count} file changed', '{count} 个文件有改动', '{count} 個檔案有變更'],
+  changesFilesOther: ['{count} files changed', '{count} 个文件有改动', '{count} 個檔案有變更'],
+  changesTruncated: [
+    'Only the first {count} changes are listed',
+    '仅列出前 {count} 项改动',
+    '僅列出前 {count} 項變更',
+  ],
+  diffUnstaged: ['Unstaged', '未暂存', '未暫存'],
+  diffBack: ['Back to the list (Esc)', '返回列表（Esc）', '返回列表（Esc）'],
+  diffPrevious: ['Previous file ([)', '上一个文件（[）', '上一個檔案（[）'],
+  diffNext: ['Next file (])', '下一个文件（]）', '下一個檔案（]）'],
+  diffReading: ['Reading the diff…', '正在读取差异…', '正在讀取差異…'],
+  diffFailed: ["Couldn't read the diff: {value}", '读取差异失败：{value}', '讀取差異失敗：{value}'],
+  diffBinary: ['Binary file', '二进制文件', '二進位檔案'],
+  diffTooLarge: [
+    'This diff is too large to show',
+    '这个差异太大，无法显示',
+    '這個差異太大，無法顯示',
+  ],
+  diffUnchanged: ['No differences', '没有差异', '沒有差異'],
+  diffUnsupported: ['This change cannot be shown', '无法显示这个改动', '無法顯示這個變更'],
+  diffNotRepository: [
+    'The folder is no longer a Git repository',
+    '此文件夹已不是 Git 仓库',
+    '此資料夾已不是 Git 儲存庫',
+  ],
+  diffGone: [
+    'This file no longer has changes here',
+    '这个文件在这里已没有改动',
+    '這個檔案在這裡已沒有變更',
+  ],
+
+  // Workbar: Files (files.js)
+  filesEmpty: ['Empty folder', '空文件夹', '空資料夾'],
+  filesTooManyOpen: [
+    'Too many folders are open. Collapse others first.',
+    '打开的文件夹太多，请先收起其他文件夹。',
+    '開啟的資料夾太多，請先收合其他資料夾。',
+  ],
+  filesLink: ['link', '链接', '連結'],
+  filesSpecial: ['special file', '特殊文件', '特殊檔案'],
+  filesWatchEnded: [
+    'The Host stopped watching this folder',
+    'Host 已停止监视此文件夹',
+    'Host 已停止監視此資料夾',
+  ],
+  filesFolderGone: ['The folder is no longer there', '文件夹已不存在', '資料夾已不存在'],
+  filesFolderReplaced: [
+    'The folder kept changing while it was read',
+    '读取时文件夹一直在变化',
+    '讀取時資料夾一直在變化',
+  ],
+  filesOpen: ['Open', '打开', '開啟'],
+  filesReveal: ['Reveal in Finder', '在访达中显示', '在 Finder 中顯示'],
+  filesCopyPath: ['Copy path', '复制路径', '複製路徑'],
+  filesCopyRelativePath: ['Copy relative path', '复制相对路径', '複製相對路徑'],
+  filesShowChanges: ['Show changes', '查看改动', '查看變更'],
+  filesPathRefused: [
+    '{path} is not a path in the folder',
+    '{path} 不是此文件夹中的路径',
+    '{path} 不是此資料夾中的路徑',
+  ],
+  filesOpenFailed: [
+    "Couldn't open {name}: {value}",
+    '无法打开 {name}：{value}',
+    '無法開啟 {name}：{value}',
+  ],
+  filesRevealFailed: [
+    "Couldn't show {name} in Finder: {value}",
+    '无法在访达中显示 {name}：{value}',
+    '無法在 Finder 中顯示 {name}：{value}',
+  ],
+  filesCopyFailed: [
+    "Couldn't copy the path: {value}",
+    '无法复制路径：{value}',
+    '無法複製路徑：{value}',
+  ],
 };
