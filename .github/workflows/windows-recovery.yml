@@ -73,6 +73,7 @@ on:
       - 'packages/runtime-host/src/__tests__/skill-catalog-repository.test.ts'
       - 'packages/runtime-host/src/__tests__/skill-catalog-transaction.test.ts'
       - 'packages/runtime-host/src/__tests__/skill-catalog-two-client-uds.test.ts'
+      - 'packages/runtime-host/src/__tests__/ssh-operator-activation.test.ts'
       - 'packages/runtime-host/src/assistant/proactive-matters/files.ts'
       - 'packages/runtime-host/src/client/client-instance-identity.ts'
       - 'packages/runtime-host/src/client/host-profile.ts'
@@ -219,6 +220,13 @@ jobs:
         run: |
           node.exe --test packages/runtime-host/dist/__tests__/control-endpoint.test.js
           ./scripts/windows-runtime-host-local-ipc-trust.ps1
+
+      # The POSIX command execution case in this suite requires a POSIX host.
+      - name: Verify Windows SSH operator arguments and activation
+        shell: pwsh
+        run: >-
+          node.exe --test --test-name-pattern="Windows SSH operator|SSH activation"
+          packages/runtime-host/dist/__tests__/ssh-operator-activation.test.js
 
       - name: Verify Skill catalog on Windows
         shell: pwsh
