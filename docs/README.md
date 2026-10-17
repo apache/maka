@@ -58,6 +58,8 @@ This page is the authority map for Maka documentation. Code and contract tests r
 - [WorkHub domain language](./workhub-domain-language.md)
 - [WorkHub Coordination Session ADR](./architecture/workhub-coordination-session-adr.md)
 - [Runtime resume architecture](./architecture/runtime-resume-architecture.md) ([中文](./architecture/runtime-resume-architecture.zh-CN.md))
+- [Runtime history compaction and checkpoint projection](./architecture/llm-compaction-events-log-projection-draft.md) ([中文](./architecture/llm-compaction-events-log-projection-draft.zh-CN.md))
+- [Local Runtime execution persistence boundary](./architecture/local-runtime-execution-persistence.md)
 - [Runtime PDF rejection recovery](./architecture/runtime-pdf-rejection-recovery.md)
 - [Runtime Host architecture](./architecture/runtime-host-architecture.md) ([中文](./architecture/runtime-host-architecture.zh-CN.md))
 - [Peer Mesh architecture](./architecture/peer-mesh-architecture.md) ([中文](./architecture/peer-mesh-architecture.zh-CN.md))
