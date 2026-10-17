@@ -76,6 +76,7 @@ type RuntimeHostSessionDomainClient = RuntimeHostShellRunsClient &
 
 export interface RuntimeHostSessionDomainsIpcDeps {
   terminalCloses: import('./terminal-close-intents.js').TerminalCloseIntents;
+  canUseSession?: (target: import('./runtime-host-session-observer.js').RuntimeHostSessionObserverTarget, sessionId: string) => boolean | Promise<boolean>;
   client: RuntimeHostSessionDomainClient;
   emitModeChanged(sessionId: string): void;
   sessionObserver: Pick<RuntimeHostSessionObserver, 'observe' | 'unobserve'>;
@@ -106,7 +107,7 @@ export function registerRuntimeHostSessionDomainsIpc(
   const now = deps.now ?? Date.now;
   const shellRuns = registerRuntimeHostShellRunsIpc(
     { client: deps.client, newId, sessionObserver: deps.sessionObserver,
-      terminalCloses: deps.terminalCloses },
+      terminalCloses: deps.terminalCloses, canUseSession: deps.canUseSession },
     ipcMain,
   );
   const shellRunQueries = registerRuntimeHostShellRunQueriesIpc(

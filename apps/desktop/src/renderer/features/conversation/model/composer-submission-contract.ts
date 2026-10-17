@@ -36,6 +36,7 @@ export interface ComposerSurfaceOwner {
 
 /** Commands only: the shell gets no draft, pending flag or setter through this handle. */
 export interface ComposerSubmissionCommands {
+  hasPendingEdit(sessionIds: readonly string[]): boolean;
   beginEditUserMessage(turnId: string): void;
   handleTurnFooterAction(turnId: string, actionId: TurnFooterActionMeta['id']): Promise<void>;
   /** Drops the pending Turn-footer marks of one retired Session. */

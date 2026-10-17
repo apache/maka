@@ -45,6 +45,7 @@ export interface ComposerStagingSubmission {
 
 /** Commands only: there is deliberately no subscription or controller getter. */
 export interface ComposerStagingCommands {
+  hasPendingContext(sessionIds: readonly string[]): boolean;
   captureSubmission(): ComposerStagingSubmission;
   /** Live plate reads for the revision lifecycle, assembled beside the hooks
    *  that own the buckets (see RevisionStagedContext). */

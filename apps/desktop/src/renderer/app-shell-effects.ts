@@ -65,17 +65,14 @@ export function useAppShellHostEffects() {
 }
 
 export function useAppShellPersistenceEffects(options: {
-  navigationState: NavigationState;
+  navigationState?: NavigationState;
   themePalette: ThemePalette;
   themePref: ThemePreference;
 }) {
   // Keep <html class="dark"> in sync with the active preference. The Settings
   // modal also calls applyTheme on local change so the effect is immediate,
   // but this keeps the listener for 'auto' alive at the app level.
-  useEffect(() => {
-    const unsubscribe = applyTheme(options.themePref);
-    return unsubscribe;
-  }, [options.themePref]);
+  useEffect(() => applyTheme(options.themePref), [options.themePref]);
 
   // PR-THEME-APPLY-AND-DONE-POLISH-0 (WAWQAQ msg `dec85e5b`): re-apply the
   // palette data attribute whenever the persisted setting changes, so
@@ -90,7 +87,7 @@ export function useAppShellPersistenceEffects(options: {
   // Strict localStorage availability check — Vite dev sometimes runs through
   // a worker where it isn't defined.
   useEffect(() => {
-    safeLocalStorageSet('maka-nav-selection-v1', JSON.stringify(options.navigationState));
+    if (options.navigationState) safeLocalStorageSet('maka-nav-selection-v1', JSON.stringify(options.navigationState));
   }, [options.navigationState]);
 }
 

@@ -421,6 +421,24 @@ describe('useWorkbarController', () => {
     assert.equal(controller().host.rightCollapsed, false);
   });
 
+  it('keeps topology and dimensions window-wide during ordinary Session switching', async () => {
+    const { root } = installReactRenderer();
+    const services = createFakeWorkbarServices();
+    const show = (id: string) => renderController(root, services, input(session(id)));
+    await act(async () => show('a'));
+    await act(async () => controller().commands.openTool('files'));
+    await act(async () => show('b'));
+    await act(async () => controller().commands.openTool('inspector', 'bottom'));
+    await act(async () => controller().host.rightResizable._onResizeStart());
+    await act(async () => controller().host.rightResizable._onResizeMove(50));
+    const panels = controller().host.panelsState;
+    const width = controller().host.rightWidth;
+    await act(async () => show('a'));
+    assert.deepEqual(controller().host.panelsState, panels);
+    assert.equal(controller().host.rightWidth, width);
+    assert.equal(controller().host.bottomOpen, true);
+  });
+
   function fakeRail(width = 260) {
     const listeners = new Set<() => void>();
     return {

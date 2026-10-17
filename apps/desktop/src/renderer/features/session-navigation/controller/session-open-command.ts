@@ -17,6 +17,9 @@
  * under the License.
  */
 
+import type { ProjectRowActions } from '@maka/ui';
+import type { SessionSummary } from '@maka/core/session';
+
 export type SessionNavigationSearchTarget = {
   sessionId: string;
   turnId: string;
@@ -50,5 +53,55 @@ export function createSessionOpenCommand(deps: SessionOpenCommandDeps) {
     deps.setSearchTarget(
       turnId ? { sessionId, turnId, sequence, nonce: ++nextNavigation } : null,
     );
+  };
+}
+
+/** Window routing and rail/new-task navigation share the same local surface commands. */
+export function createSessionNavigationCommands<Owner>(deps: Omit<SessionOpenCommandDeps, 'exitWorkHub'> & {
+  setWorkHubActive(value: boolean): void;
+  closeSettings(): void;
+  window: {
+    openSession(navigation: { sessionId: string; turnId?: string; sequence?: number }, activate: () => void): boolean;
+    requestNewTask(activate: () => void): void;
+    bootstrap(refresh: () => Promise<SessionSummary[]>, revision: () => number, open: (id: string) => void): Promise<void>;
+  };
+  newTask: { prepare(): void; start(): Owner; resetPlanMode(): void; focus(): void };
+  projects: {
+    selectProject(key: string): boolean;
+    renameProject(key: string, name: string): Promise<void>;
+    archiveProject(key: string): Promise<void>;
+    restoreProject(key: string): Promise<void>;
+    relinkProject(key: string): Promise<void>;
+  };
+  hasProjects: boolean;
+  refreshSessions(): Promise<SessionSummary[]>;
+  readSelectionRevision(): number;
+}) {
+  const exitWorkHub = () => deps.setWorkHubActive(false);
+  const enableWorkHub = () => { deps.setWorkHubActive(true); deps.selectSessionSurface(); };
+  const openWorkHub = () => { deps.closeSettings(); deps.selectSessionSurface(); deps.setWorkHubActive(true); };
+  const openLocalSession = createSessionOpenCommand({ ...deps, exitWorkHub });
+  const openSession = (sessionId: string, turnId?: string, sequence?: number) =>
+    deps.window.openSession({ sessionId, turnId, sequence }, () => openLocalSession(sessionId, turnId, sequence));
+  const clearLocal = () => { deps.selectSessionSurface(); deps.setSearchTarget(null); };
+  const openNewTaskSurface = () => {
+    deps.newTask.prepare();
+    const owner = deps.newTask.start();
+    deps.newTask.resetPlanMode();
+    clearLocal();
+    requestAnimationFrame(deps.newTask.focus);
+    return owner;
+  };
+  const projectRowActions: ProjectRowActions | undefined = deps.hasProjects ? {
+    onNew: (key) => { if (deps.projects.selectProject(key)) openNewTaskSurface(); },
+    onRename: deps.projects.renameProject,
+    onArchive: deps.projects.archiveProject,
+    onRestore: deps.projects.restoreProject,
+    onRelink: deps.projects.relinkProject,
+  } : undefined;
+  return { openSession, clearLocal, openNewTaskSurface, projectRowActions, exitWorkHub, enableWorkHub, openWorkHub,
+    openLocal: (navigation: { sessionId: string; turnId?: string; sequence?: number }) => openLocalSession(navigation.sessionId, navigation.turnId, navigation.sequence),
+    createSession: async () => { deps.window.requestNewTask(openNewTaskSurface); },
+    bootstrapSessions: () => deps.window.bootstrap(deps.refreshSessions, deps.readSelectionRevision, openSession),
   };
 }

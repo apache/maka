@@ -78,7 +78,7 @@ import { QuoteCommentPanel } from './quote-comment-panel.js';
 import { DirectoryReferenceChip } from './directory-reference-chip.js';
 import { FolderOpen } from './icons.js';
 import { WorkspacePicker, type WorkspacePickerModel } from './workspace-picker.js';
-import { useComposerDraft, type ComposerDraftPersistence, type ComposerDraftRecovery } from './use-composer-draft.js';
+import { useComposerDraft, type ComposerDraftPersistence, type ComposerDraftRecovery, type ComposerDraftSnapshot } from './use-composer-draft.js';
 import { useComposerHistory } from './use-composer-history.js';
 import {
   composerWireText,
@@ -260,6 +260,10 @@ function attachmentExtensionLabel(name: string): string | null {
  * only one a user ever reads: one short, action-oriented line.
  */
 export interface ComposerHandle {
+  /** In-flight imports and frontend sends must finish before moving the editor. */
+  hasPendingAction(): boolean;
+  captureDrafts(keys: readonly string[]): ComposerDraftSnapshot[];
+  restoreDrafts(drafts: readonly ComposerDraftSnapshot[]): void;
   /** Replace the input text, leaving focus on the input with the caret at the end. */
   setText(text: string, references?: readonly InlineReference[]): void;
   /** Append a prompt/context fragment after the existing draft instead of replacing it. */
@@ -637,6 +641,9 @@ export const Composer = forwardRef<
   const [pendingImportAction, setPendingImportAction] = useState<ComposerImportActionId | null>(null);
   const composerMountedRef = useMountedRef();
   const sendPendingRef = useRef(false);
+  const pendingComposerSendsRef = useRef(new Set<Promise<void>>());
+  const pendingSessionReferencesRef = useRef(props.pendingSessionReferences);
+  useLayoutEffect(() => { pendingSessionReferencesRef.current = props.pendingSessionReferences; }, [props.pendingSessionReferences]);
   const compositionActiveRef = useRef(false);
   const plainTextPasteInputActiveRef = useRef(false);
   const importActionOwnerRef = useRef<ChatInputActionOwner<ComposerImportActionId> | null>(null);
@@ -926,6 +933,9 @@ export const Composer = forwardRef<
   // draft hook's swap effect can reset history navigation even though the
   // history hook is created one line below it.
   const {
+    hasPendingRecovery,
+    captureDrafts,
+    restoreDrafts,
     saveCurrentDraft,
     clearDraft,
     setDraft,
@@ -1384,6 +1394,10 @@ export const Composer = forwardRef<
   useImperativeHandle(
     ref,
     () => ({
+      hasPendingAction: () => pendingComposerSendsRef.current.size > 0 || Boolean(importActionOwnerRef.current?.pending)
+        || Boolean(pendingSessionReferencesRef.current?.length) || hasPendingRecovery(),
+      captureDrafts,
+      restoreDrafts,
       setText(nextText: string, references?: readonly InlineReference[]) {
         resetPromptHistoryNavigation();
         // Focus first: the controlled update that follows restores the caret to
@@ -1456,7 +1470,14 @@ export const Composer = forwardRef<
   // disabled state, send/stop toggle) as text.
   const hasStagedContext = hasComposerStagedContext(props);
 
-  async function sendCurrent(followUpMode?: FollowUpMode) {
+  function sendCurrent(followUpMode?: FollowUpMode): Promise<void> {
+    const pending = performSend(followUpMode);
+    pendingComposerSendsRef.current.add(pending);
+    void pending.finally(() => pendingComposerSendsRef.current.delete(pending)).catch(() => {});
+    return pending;
+  }
+
+  async function performSend(followUpMode?: FollowUpMode) {
     if (
       props.disabled
       || props.sendBlocked

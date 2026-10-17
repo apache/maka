@@ -27,6 +27,7 @@ export function createComposerStagingCommands(): ComposerStagingCommands {
     return binding.current;
   };
   const commands: ComposerStagingCommands = {
+    hasPendingContext: (ids) => requireOwner().hasPendingContext(ids),
     captureSubmission: () => requireOwner().captureSubmission(),
     stagedContext: () => requireOwner().stagedContext(),
     addQuote: (quote) => requireOwner().addQuote(quote),

@@ -24,7 +24,6 @@ import { RuntimeHostHandoffOverlay } from './features/runtime-host-management/in
 import { ArchiveRetentionNotices } from './features/storage-usage/index.js';
 import {
   useCallback,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -34,19 +33,17 @@ import {
 import type { QuoteRef } from '@maka/core/events';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { UiLocale, UiLocalePreference } from '@maka/core/ui-locale';
-import { collapseSessionRevisions } from '@maka/core/session-revisions';
 import { isLinkedSubagentSession } from '@maka/core/session';
 import { resolveUiLocale } from '@maka/core/ui-locale';
 import { hasSettledInitialOnboarding } from '@maka/core/onboarding-milestone';
 import {
   ChatSurfaceLayout,
   type ComposerHandle,
+  type NavSelection,
   MakaUriContext,
   AstryxLocaleProvider,
   LocaleProvider,
   type ToastDiagnosticTarget,
-  type NavSelection,
-  type ProjectRowActions,
   SessionListPanel,
   TitlebarSessionIdentity,
   type TurnFooterActionMeta,
@@ -60,12 +57,14 @@ import { deriveWorkspaceReadinessRecovery } from './workspace-readiness-recovery
 import { AgentGraphPanel } from './agent-graph-panel';
 import { ChatComposerRegion } from './chat-composer-region';
 import { WorkbarHost, WorkbarProvider, WorkbarShellRoot, type WorkbarShellProjection } from './features/workbar';
+import { SessionWindowRoot, SessionWindowBinding, SessionWindowEmptyState, type SessionWindowProjection } from './features/session-windows/index.js';
 import { AppUpdateProvider } from './features/app-update/index.js';
 import * as Goals from './features/goals';
 import * as ModuleHub from './features/module-hub';
 import {
   SessionNavigationProvider,
-  createSessionOpenCommand,
+  SessionNavigationCommands,
+  createSessionNavigationCommands,
   sessionRailLayoutStore,
   useSessionNavigationReads,
   type SessionNavigationPorts,
@@ -159,8 +158,10 @@ export function AppShell() {
           <ErrorBoundary locale={uiLocale}>
             <AppUpdateProvider>
               <RuntimeHostHandoffOverlay />
-              <WorkHubControlOverlay />
-              <TaskEntry.TaskEntryRoot>
+              <SessionWindowRoot>
+                {(sessionWindow) => <>
+                {!sessionWindow.standalone && <WorkHubControlOverlay />}
+                <TaskEntry.TaskEntryRoot>
                 {(taskEntry) => (
                   <Overlays.OverlaysRoot>
                     {(overlays) => (
@@ -168,13 +169,13 @@ export function AppShell() {
                         {(sharedSessionDialog) => (
                           <WorkbarShellRoot>
                             {(workbar) => (
-                              <Conversation.ConversationProvider>
+                              <Conversation.ConversationProvider automaticSelection={false}>
                                 <OnboardingProjectionRoot>
                                   {(onboarding) => (
                                     <Diagnostics.ManualDiagnosticReportConsumer>
                                       {(copyManualDiagnosticReport) => (
                                         <AppShellContent
-                                          {...{ taskEntry, overlays, sharedSessionDialog, workbar, onboarding, copyManualDiagnosticReport, uiLocale, setUiLocaleOverride, setUiLocalePreference }}
+                                          {...{ sessionWindow, taskEntry, overlays, sharedSessionDialog, workbar, onboarding, copyManualDiagnosticReport, uiLocale, setUiLocaleOverride, setUiLocalePreference }}
                                         />
                                       )}
                                     </Diagnostics.ManualDiagnosticReportConsumer>
@@ -188,7 +189,8 @@ export function AppShell() {
                     )}
                   </Overlays.OverlaysRoot>
                 )}
-              </TaskEntry.TaskEntryRoot>
+              </TaskEntry.TaskEntryRoot></>}
+              </SessionWindowRoot>
             </AppUpdateProvider>
           </ErrorBoundary>
         </Diagnostics.DiagnosticReportToastProvider>
@@ -209,6 +211,7 @@ export function AppShell() {
 const SESSION_RAIL = <SessionListPanel />;
 
 function AppShellContent({
+  sessionWindow,
   taskEntry,
   overlays,
   sharedSessionDialog,
@@ -219,6 +222,7 @@ function AppShellContent({
   setUiLocaleOverride,
   setUiLocalePreference,
 }: {
+  sessionWindow: SessionWindowProjection;
   taskEntry: TaskEntryShellProjection;
   overlays: OverlaysShellProjection;
   sharedSessionDialog: SessionCollaborationDialogProjection;
@@ -241,7 +245,7 @@ function AppShellContent({
     refreshChangedSession,
     activeId,
     activeIdRef,
-    bootstrapSelectionLease,
+    readSelectionRevision,
     setActiveId,
     startNewSession,
     clearOwnedSessionState,
@@ -264,19 +268,16 @@ function AppShellContent({
   const sessionCount = authoritativeSessionIds?.size ?? 0;
 
   const {
-    openHelp,
     closePalette,
     openSearch,
     setSearchScrollTarget,
-    openSettings,
-    openSettingsSection,
     openProjectSettings,
     openProviderCatalog,
     openConnectionDetail,
-    openExternalAgentSettings,
     openProviderCreate,
     setSettingsProfileId,
   } = overlays.commands;
+  const { openHelp, openSettings, openSettingsSection, openExternalAgentSettings } = sessionWindow.mainActions(overlays.commands);
   const { searchScrollTarget } = overlays.selectors;
   const settingsOpen = overlays.selectors.settings.open;
 
@@ -298,16 +299,17 @@ function AppShellContent({
   const composerStaging = useMemo(Conversation.createComposerStagingCommands, []);
   const composerSubmission = useMemo(Conversation.createComposerSubmissionCommands, []);
   const [petCompletionNonce, setPetCompletionNonce] = useState(0);
-  const [navigationState, setNavigationState] = useState(readNavigationState);
+  const [navigationState, setNavigationState] = useState(() => readNavigationState(!sessionWindow.standalone));
   const navSelection = navigationState.selection;
   const sessionsSelected = navSelection.section === 'sessions';
   const setNavSelection = useCallback<Dispatch<SetStateAction<NavSelection>>>((nextSelection) => {
+    if (sessionWindow.standalone) return;
     setNavigationState((current) => selectNavigation(
       current,
       typeof nextSelection === 'function' ? nextSelection(current.selection) : nextSelection,
     ));
-  }, []);
-  const navSelectionRef = useRef<NavSelection>(navSelection);
+  }, [sessionWindow.standalone]);
+  const navSelectionRef = useRef(navSelection);
   // Navigation only: whether WorkHub is enabled at all is the client switch
   // the WorkHub enablement authority owns (see WorkHubEnablementWatch below).
   const [workHubActive, setWorkHubActive] = useState(false);
@@ -555,16 +557,6 @@ function AppShellContent({
     return setOrchestrationMode('default');
   }
 
-  const openSessionInChatRef = useRef<
-    (sessionId: string, turnId?: string, sequence?: number) => void
-  >(() => undefined);
-  const openSessionInChat = useCallback(
-    (sessionId: string, turnId?: string, sequence?: number): void => {
-      openSessionInChatRef.current(sessionId, turnId, sequence);
-    },
-    [],
-  );
-
   /** 技能页 使用: jump to the chat view and seed the composer with a skill
    *  invocation. Same human-in-the-loop rule as maka://compose — we never
    *  auto-send; the user finishes the sentence and presses Enter.
@@ -583,12 +575,6 @@ function AppShellContent({
     },
     [shellCopy],
   );
-  const openWorkHub = useCallback(() => {
-    overlays.commands.closeSettings();
-    setNavSelection({ section: 'sessions' });
-    setWorkHubActive(true);
-  }, [overlays.commands, setNavSelection]);
-
   // Transient placeholder while the real SessionSummary loads, so the composer
   // does not flash a value the session never had.
   const activeSessionForView = activeSession ?? (activeId
@@ -727,39 +713,6 @@ function AppShellContent({
   };
   const taskSubmissionHardBlocked =
     !activeId && !taskEntry.selectors.target;
-  const openNewTaskSurface = useCallback(() => {
-    composerStaging.resetImageNotice(NEW_TASK_PENDING_KEY);
-    const ownerToken = startNewSession();
-    // Only Plan resets: a new task starts out of Plan, in whatever
-    // orchestration the last one was set to.
-    sessionSettingIntent.commands.setNewTaskPlanMode(false);
-    setNavSelection({ section: 'sessions' });
-    setSearchScrollTarget(null);
-    // New-task affordances reset to the empty-state composer; move focus
-    // there so the user can start typing immediately.
-    window.requestAnimationFrame(() => composerEditing.focus());
-    return ownerToken;
-  }, [composerEditing, composerStaging, sessionSettingIntent.commands, setNavSelection, setSearchScrollTarget, startNewSession]);
-
-  const createSession = useCallback(async () => {
-    openNewTaskSurface();
-  }, [openNewTaskSurface]);
-
-  // Stable, because the rail's Project rows carry it: a fresh identity here
-  // rebuilt the whole list on every AppShell commit (#4109).
-  const projectRowActions = useMemo<ProjectRowActions | undefined>(
-    () => taskEntry.selectors.projectScopes.length === 0 ? undefined : {
-      onNew: (key) => {
-        if (taskEntry.commands.selectProject(key)) openNewTaskSurface();
-      },
-      onRename: taskEntry.commands.renameProject,
-      onArchive: taskEntry.commands.archiveProject,
-      onRestore: taskEntry.commands.restoreProject,
-      onRelink: taskEntry.commands.relinkProject,
-    },
-    [openNewTaskSurface, taskEntry.commands, taskEntry.selectors.projectScopes.length],
-  );
-
   // Composer mention popups: `/` uses Runtime's session/project-aware,
   // host-compatible projection; `@` uses workspace file search. Keep the
   // resolved project path as a refresh key for new-chat project changes. Only
@@ -782,25 +735,27 @@ function AppShellContent({
 
   const hasModalOpen = overlays.selectors.anyModalOpen || sharedSessionDialog.isOpen;
   const shellObscured = hasModalOpen || settingsOpen;
-  const exitWorkHub = useCallback(() => setWorkHubActive(false), []);
-  const openSession = useMemo(
-    () =>
-      createSessionOpenCommand({
-        activateSession: setActiveId,
-        exitWorkHub,
-        selectSessionSurface: () => setNavSelection({ section: 'sessions' }),
-        setSearchTarget: setSearchScrollTarget,
-      }),
-    [exitWorkHub, setNavSelection, setActiveId, setSearchScrollTarget],
+  const { openSession, openLocal, clearLocal, openNewTaskSurface, createSession, projectRowActions, bootstrapSessions, exitWorkHub, enableWorkHub, openWorkHub } = useMemo(
+    () => createSessionNavigationCommands({
+      window: sessionWindow,
+      activateSession: setActiveId, setWorkHubActive, closeSettings: overlays.commands.closeSettings,
+      selectSessionSurface: () => setNavSelection({ section: 'sessions' }), setSearchTarget: setSearchScrollTarget,
+      newTask: { prepare: () => composerStaging.resetImageNotice(NEW_TASK_PENDING_KEY), start: startNewSession,
+        resetPlanMode: () => sessionSettingIntent.commands.setNewTaskPlanMode(false), focus: composerEditing.focus },
+      projects: taskEntry.commands, hasProjects: taskEntry.selectors.projectScopes.length > 0,
+      refreshSessions, readSelectionRevision,
+    }),
+    [sessionWindow.openSession, sessionWindow.requestNewTask, sessionWindow.bootstrap, setActiveId, overlays.commands.closeSettings, setNavSelection,
+      setSearchScrollTarget, composerStaging, startNewSession, sessionSettingIntent.commands, composerEditing.focus,
+      taskEntry.commands, taskEntry.selectors.projectScopes.length, refreshSessions, readSelectionRevision],
   );
-  useLayoutEffect(() => {
-    openSessionInChatRef.current = openSession;
-  }, [openSession]);
+  const openSessionInChat = openSession;
   const sessionNavigationCommandsRef = useRef<SessionNavigationRowActions | null>(null);
   // Built inline: the rail reads these through a ref published on commit, so
   // their identity carries no information and this object never has to be
   // held still by hand (#4109).
   const sessionNavigationPorts: SessionNavigationPorts = {
+    openInNewWindow: sessionWindow.openInNewWindow,
     sessionsRef,
     acquireAutomaticQueryBlock: sessionCatalogController.acquireAutomaticQueryBlock,
     clearSessionRendererState,
@@ -820,9 +775,9 @@ function AppShellContent({
     if (!activeParentSession) return undefined;
     return {
       name: activeParentSession.name,
-      onOpen: () => openSessionInChatRef.current(activeParentSession.id),
+      onOpen: () => openSessionInChat(activeParentSession.id),
     };
-  }, [activeParentSession]);
+  }, [activeParentSession, openSessionInChat]);
   const archivedTasksBridge = useMemo<ArchivedTasksBridge>(
     () => ({
       catalog: sessionCatalogController,
@@ -880,7 +835,7 @@ function AppShellContent({
     toastApi,
   });
   useAppShellPersistenceEffects({
-    navigationState,
+    navigationState: sessionWindow.standalone ? undefined : navigationState,
     themePalette,
     themePref,
   });
@@ -921,12 +876,6 @@ function AppShellContent({
   /** …and it was the new-chat surface, which by definition has no session. */
   function isNewChatSendSurfaceActive(owner: ComposerImportOwner): boolean {
     return owner.sessionId === undefined && isComposerImportOwnerActive(owner);
-  }
-
-  async function bootstrapSessions() {
-    const next = await refreshSessions();
-    bootstrapSelectionLease.reconcile(collapseSessionRevisions(next));
-    bootstrapSelectionLease.release();
   }
 
   const dispatchMakaUri = createInternalUriDispatcher(ownerActiveId, openSettingsSection, composerEditing);
@@ -994,6 +943,7 @@ function AppShellContent({
   // `ConversationHomeSurface` reads for the displayed Session.
   const homeSurfaceEligible = sessionsSelected && transcriptEmpty;
   const commandOptions: AppShellCommandListOptions = {
+    standalone: sessionWindow.standalone,
     uiLocale,
     activeId,
     activePermissionMode,
@@ -1142,9 +1092,10 @@ function AppShellContent({
     <WorkbarProvider
       bridge={bridge}
       input={{
-        workHub: { active: workHubActive },
+        workHub: sessionWindow.standalone ? undefined : { active: workHubActive },
         available: sessionsSelected && (workHubActive || Boolean(activeHostSession)),
         layoutSessionId: activeId,
+        persistLayout: !sessionWindow.standalone,
         activeSession: activeHostSession,
         projectId: currentProjectId,
         projectAliases: currentProject?.aliases ?? [],
@@ -1153,7 +1104,7 @@ function AppShellContent({
         modelChoices: chatModelChoices,
         toastApi,
         composerDraft: composerEditing,
-        openNewTaskSurface,
+        openNewTaskSurface: sessionWindow.standalone ? undefined : openNewTaskSurface,
         openSessionInChat,
         resolveWorkBoardTarget,
         prepareWorkBoardDraft,
@@ -1162,6 +1113,7 @@ function AppShellContent({
     <div
       className="appFrame agents-layout-root"
       data-agents-page
+      {...sessionWindow.frameProps}
       data-maka-content-ready={!isOnboardingLoading || undefined}
       /* The single writer for sidebar state in the DOM. It sits on the frame,
          above both the chrome strip and the shell, so every rule that keys on
@@ -1169,20 +1121,25 @@ function AppShellContent({
          Copies on the shell and the detail panel bought nothing — one had no
          readers at all — and three writers of the same value is three chances
          for them to disagree. */
-      data-sidebar-state={sessionListCollapsed ? 'collapsed' : 'expanded'}
+      data-sidebar-state={sessionWindow.standalone || sessionListCollapsed ? 'collapsed' : 'expanded'}
       /* The frame is the shared owner for dimensions consumed by both shell
          columns and titlebar chrome. CSS clears the titlebar reserve when the
          responsive layout moves the workbar below the conversation. */
       style={appShellFrameStyle({
-        sessionListCollapsed,
+        sessionListCollapsed: sessionWindow.standalone || sessionListCollapsed,
         sessionListWidth,
       })}
     >
-      <ArchiveRetentionNotices navigation={overlays.commands} />
+      <Conversation.ConversationWindowState>{(conversation) => <SessionWindowBinding conversation={conversation} window={sessionWindow} staging={composerStaging} submission={composerSubmission} workbar={commands}
+        openLocal={openLocal}
+        clearLocal={clearLocal} />
+      }</Conversation.ConversationWindowState>
+      {sessionWindow.standalone && <SessionNavigationCommands ports={sessionNavigationPorts} commandsRef={sessionNavigationCommandsRef} />}
+      {!sessionWindow.standalone && <ArchiveRetentionNotices navigation={overlays.commands} />}
       <Diagnostics.PreviousMainProcessInterruptionNotice ready={appearanceHydrated} />
       <ShellLifecycleSubscriptions {...shellLifecycle} />
       <OnboardingConnectionSeed seed={defaultHostConnections.seedSnapshot} refresh={() => void defaultHostConnections.refreshConnections()} />
-      <WorkHubEnablementWatch onEnabled={() => { setWorkHubActive(true); setNavSelection({ section: 'sessions' }); }} onDisabled={exitWorkHub} />
+      {!sessionWindow.standalone && <WorkHubEnablementWatch onEnabled={enableWorkHub} onDisabled={exitWorkHub} />}
       <Conversation.ConversationLifecycle
         refreshSessions={refreshSessions}
         onExecutionBoundaryChanged={reloadActiveExecutionBoundary}
@@ -1199,6 +1156,7 @@ function AppShellContent({
         modalOpen={hasModalOpen}
         settingsOpen={settingsOpen}
         sidebarCollapsed={sessionListCollapsed}
+        {...sessionWindow.titlebarProps}
         onToggleSidebar={() => sessionSideNavHandleRef.current?.getCollapseState()?.toggle()}
         onOpenSearchModal={openSearch}
         workbar={{ togglePosition: workbarTogglePosition }}
@@ -1245,7 +1203,7 @@ function AppShellContent({
         mobileNav={{ breakpoint: 'none', hasToggle: false }}
         aria-hidden={shellObscured}
         inert={shellObscured}
-        sideNav={
+        sideNav={sessionWindow.standalone ? undefined :
           <ModuleHub.ModuleHubScheduledTasksBoundary
             render={(scheduledTasks) => (
               <SessionNavigationProvider
@@ -1301,10 +1259,11 @@ function AppShellContent({
               inert={switchingSession || undefined}
               aria-busy={switchingSession || undefined}>
               <ModuleHub.ModuleHubHost />
-              <WorkHubMainNavigation workbarReady={workHubActive && selectors.ready}
+              {!sessionWindow.standalone && <><WorkHubMainNavigation workbarReady={workHubActive && selectors.ready}
                 onOpenUsage={() => commands.toggleTool('inspector')} onToggleWorkbar={commands.toggleRightPanel}
                 onOpenWorkHub={openWorkHub} onOpenSession={(sessionId) => { closeSettings(); openSession(sessionId); }} />
-              <WorkHubDock workbar={selectors} workbarTogglePosition={workbarTogglePosition} visible={workHubActive && sessionsSelected && !shellObscured} />
+              <WorkHubDock workbar={selectors} workbarTogglePosition={workbarTogglePosition} visible={workHubActive && sessionsSelected && !shellObscured} /></>}
+              {sessionWindow.standalone && !activeId && <SessionWindowEmptyState />}
               <ChatSurfaceLayout
                 data-session-history-surface="true"
                 // ChatView positions this transcript: switching conversations,
@@ -1315,7 +1274,7 @@ function AppShellContent({
                 scrollToBottomLabel={
                   desktopConversationCopy.actions.scrollMainToBottom
                 }
-                hidden={workHubActive || !sessionsSelected}
+                hidden={workHubActive || !sessionsSelected || (sessionWindow.standalone && !activeId)}
                 composer={
                   <>
                     {ownerActiveId ? (
@@ -1346,14 +1305,12 @@ function AppShellContent({
                           >
                             {(guest) => (
                               <Conversation.ConversationComposerRegion surface={ChatComposerRegion}
-                  workspacePicker={workspacePicker}
-                  guest={guest}
+                  {...{ workspacePicker, guest }}
                   active={sessionsSelected}
                   onboardingComposerHidden={
                     onboardingComposerHidden
                   }
-                  boundaryUnreadableNotice={boundaryUnreadableNotice}
-                  activeId={activeId}
+                  {...{ boundaryUnreadableNotice, activeId }}
                   newTaskDraftKey={currentNewTaskDraftKey}
                   respondToClientCapability={commands.respondToClientCapability}
                   directoryPickerEnabled={Boolean(canStageComposerContext && directoryHostId)}
@@ -1363,7 +1320,7 @@ function AppShellContent({
                   onDeleteQueuedEntry={activeId ? queueSurface.deleteQueuedEntry : undefined}
                   onReorderQueuedEntries={activeId ? queueSurface.reorderQueuedEntries : undefined}
                   contextPickEnabled={canStageComposerContext}
-                  executorComposer={{ selection: executor, taskSubmissionHardBlocked, connectionCount: connections.length, onSetup: openExternalAgentSettings, onNewTask: openNewTaskSurface }}
+                  executorComposer={{ selection: executor, taskSubmissionHardBlocked, connectionCount: connections.length, onSetup: openExternalAgentSettings, onNewTask: createSession }}
                   activeSession={activeSessionForView}
                   {...{ executorTarget, onExecutorTargetChange }}
                   usageModel={activeModel}
@@ -1409,8 +1366,7 @@ function AppShellContent({
                   <Conversation.ConversationTranscriptRegion surface={ChatMessageSurface}
                 visible={!shellObscured}
                 activeSession={activeSessionForView}
-                userLabel={userLabel}
-                memoryActive={memoryActive}
+                {...{ userLabel, memoryActive }}
                 onOpenMemorySettings={sharedSessionActive ? undefined : () => openSettingsSection('memory')}
                 onTurnFooterAction={sharedSessionActive ? undefined : composerSubmission.handleTurnFooterAction}
                 onEditUserMessage={sharedSessionActive ? undefined : composerSubmission.beginEditUserMessage}
@@ -1448,12 +1404,9 @@ function AppShellContent({
                       }
                     : undefined
                 }
-                sessionHealthNotice={sessionHealthNotice}
-                taskDirectoryNotice={taskDirectoryNotice}
+                {...{ sessionHealthNotice, taskDirectoryNotice }}
                 localInteractionAvailable={activeBoundarySurface.localInteractionAvailable}
-                workspaceReadinessRecovery={workspaceReadinessRecovery}
-                showOnboardingHero={showOnboardingHero}
-                onboardingState={onboardingState}
+                {...{ workspaceReadinessRecovery, showOnboardingHero, onboardingState }}
                 onOpenSettings={openSettingsSection}
                 onOpenConnectionDetail={openConnectionDetail}
                 onAddProvider={openProviderCreate}
@@ -1495,14 +1448,7 @@ function AppShellContent({
       <TaskEntry.TaskEntryHost />
       <RuntimeHostSshTerminalDialog />
       <AppShellOverlays
-        closeSettings={closeSettings}
-        themePref={themePref}
-        setThemePref={setThemePref}
-        themePalette={themePalette}
-        setThemePalette={setThemePalette}
-        setUiLocalePreference={setUiLocalePreference}
-        uiLocaleUpdateGate={uiLocaleUpdateGate}
-        setUserLabel={setUserLabel}
+        {...{ closeSettings, themePref, setThemePref, themePalette, setThemePalette, setUiLocalePreference, uiLocaleUpdateGate, setUserLabel }}
         refreshChatDefaults={() => {
           void taskEntry.commands.refresh().catch(() => undefined);
         }}

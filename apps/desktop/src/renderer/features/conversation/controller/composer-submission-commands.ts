@@ -27,6 +27,7 @@ export function createComposerSubmissionCommands(): ComposerSubmissionCommands {
     return binding.current;
   };
   const commands: ComposerSubmissionCommands = {
+    hasPendingEdit: (ids) => requireOwner().hasPendingEdit(ids),
     beginEditUserMessage: (turnId) => requireOwner().beginEditUserMessage(turnId),
     handleTurnFooterAction: (turnId, actionId) => requireOwner().handleTurnFooterAction(turnId, actionId),
     // Cleanup only: with no owner mounted there is nothing pending to drop.

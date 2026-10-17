@@ -425,6 +425,12 @@ export function useComposerAttachments(options: {
     }
   }
 
+  const pendingImports = useRef(0);
+  async function importing(operation: () => Promise<void>): Promise<void> {
+    pendingImports.current += 1;
+    try { await operation(); } finally { pendingImports.current -= 1; }
+  }
+
   async function pickAttachments(): Promise<void> {
     if (!lifecycle.mounted) return;
     try {
@@ -640,6 +646,9 @@ export function useComposerAttachments(options: {
    * is cancelled, under both the source and the branch child keys (#5274
    * review). */
   return {
+    hasPendingContextFor: (keys: readonly string[]) => pendingImports.current > 0 || keys.some((key) =>
+      selectPending(pendingStateRef.current.attachments, key).length > 0 ||
+      Object.entries(pendingStateRef.current.directories).some(([owner, entries]) => owner.startsWith(`${key}:`) && entries.length > 0)),
     pendingAttachments,
     pendingDirectories,
     submittableAttachments: pendingAttachments.length ? pendingAttachments : undefined,
@@ -654,11 +663,11 @@ export function useComposerAttachments(options: {
       pendingDirectories,
       onRemoveDirectory: removeDirectory,
       onPickDirectory: pendingDirectories.length < DIRECTORY_REFERENCE_MAX_COUNT
-        ? pickDirectory
+        ? () => importing(pickDirectory)
         : undefined,
     },
-    pickAttachments,
-    attachFilePaths,
+    pickAttachments: () => importing(pickAttachments),
+    attachFilePaths: (files: File[]) => importing(() => attachFilePaths(files)),
     restoreAttachments,
     restoreMessageContext,
     restoreDirectories,

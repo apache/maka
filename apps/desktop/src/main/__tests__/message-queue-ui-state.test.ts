@@ -997,6 +997,7 @@ test('editing a queued message retracts it and restores its content under the ow
         },
       }), children: createElement(Probe) }) })})));
   surface.composer.current = {
+    hasPendingAction: () => false, captureDrafts: () => [], restoreDrafts() {},
     setText() {}, appendText() {}, getText: () => '', clearDraft() {},
     setDraft: (key, text) => { restoredDrafts.push([key, text]); },
     getDraft: () => '',

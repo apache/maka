@@ -18,6 +18,8 @@
  */
 
 import type { ReactNode } from 'react';
+import { SessionWindowServicesProvider } from '../features/session-windows/index.js';
+import { createDesktopSessionWindowServices } from '../platform/desktop/create-session-window-services.js';
 import { WorkHubServicesProvider } from '../features/workhub';
 import { createDesktopWorkHubServices } from '../platform/desktop/create-workhub-services';
 import {
@@ -102,6 +104,7 @@ export function createDesktopFeatureServices() {
     // service — it is created once with the other app singletons and read
     // through `useSessionCatalogController` so providers below do not need it
     // drilled through the shell.
+    sessionWindows: createDesktopSessionWindowServices(),
     sessionCatalog: createSessionCatalogController(createDesktopSessionCatalogSource()),
     // Client-global, like the catalog: the shell, Workbar, the rail and the
     // WorkHub dock all follow the same switch.
@@ -142,6 +145,7 @@ export function DesktopFeatureServicesProvider(props: {
   readonly children?: ReactNode;
 }) {
   return (
+    <SessionWindowServicesProvider value={props.services.sessionWindows}>
     <SessionCatalogContext.Provider value={props.services.sessionCatalog}>
     <PersonalAssistantServicesProvider value={props.services.personalAssistant}>
     <AssistantSessionVisibilityProvider value={props.services.assistantSessionVisibility}>
@@ -201,5 +205,6 @@ export function DesktopFeatureServicesProvider(props: {
     </AssistantSessionVisibilityProvider>
     </PersonalAssistantServicesProvider>
     </SessionCatalogContext.Provider>
+    </SessionWindowServicesProvider>
   );
 }

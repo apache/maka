@@ -38,7 +38,7 @@ export function installDesktopShellPresentation(
     isPackaged: app.isPackaged,
     dispatch: (command) => {
       if (deps.mainWindowController.hasOpenWindows()) {
-        deps.mainWindowController.send('window:command', { id: command });
+        deps.mainWindowController.sendCommand('window:command', { id: command });
       } else {
         deps.focusOrCreateWindow();
       }

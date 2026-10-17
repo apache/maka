@@ -50,7 +50,17 @@ export interface ComposerDraftRecovery extends DraftMutationGuard {
   restore(text: string, references: readonly InlineReference[], replacesMessageId: string): void;
 }
 
+export interface ComposerDraftSnapshot {
+  readonly draftKey: string;
+  readonly text: string;
+  readonly references: readonly InlineReference[];
+  readonly replacesMessageId?: string;
+}
+
 export interface ComposerDraftApi {
+  hasPendingRecovery(): boolean;
+  captureDrafts(keys: readonly string[]): ComposerDraftSnapshot[];
+  restoreDrafts(drafts: readonly ComposerDraftSnapshot[]): void;
   /** Remember the current (or given) value; persist ordinary drafts when configured. */
   saveCurrentDraft(value?: string): void;
   /** Clear one session's draft; the active key's draft is the input itself. */
@@ -207,6 +217,32 @@ export function useComposerDraft(input: {
   });
 
   return {
+    hasPendingRecovery: mutations.hasPending,
+    captureDrafts: (keys) => keys.map((key) => {
+      const text = getDraft(key);
+      const retained = new Map<string, string>();
+      rememberComposerDraft(retained, key, text);
+      if (text.trim() && retained.get(key) !== text) throw new Error('Send or shorten this draft before moving the task; it exceeds the existing draft cache limit.');
+      return { draftKey: key, text,
+        references: structuredClone(activeDraftKeyRef.current === key ? input.references?.read() ?? [] : referencesByKey.current.get(key) ?? []),
+        ...(replacementsByKey.current.has(key) ? { replacesMessageId: replacementsByKey.current.get(key)! } : {}),
+      };
+    }),
+    restoreDrafts: (drafts) => {
+      // Refuse an adoption that would evict another task's unsent text. Reuse
+      // the existing cache policy without enlarging it or adding persistence.
+      const before = new Map(draftStoreRef.current);
+      const active = activeDraftKeyRef.current;
+      if (active && input.text.getValue().trim()) before.set(active, input.text.getValue());
+      const retained = new Map(before);
+      for (const draft of drafts) rememberComposerDraft(retained, draft.draftKey, draft.text);
+      const incoming = new Set(drafts.map((draft) => draft.draftKey));
+      if (drafts.some((draft) => draft.replacesMessageId || (draft.text.trim() && retained.get(draft.draftKey) !== draft.text)) ||
+          [...before].some(([key, text]) => !incoming.has(key) && retained.get(key) !== text)) {
+        throw new Error('Send or clear drafts before moving this task; the existing draft cache is full.');
+      }
+      for (const draft of drafts) setDraft(draft.draftKey, draft.text, draft.references);
+    },
     saveCurrentDraft,
     clearDraft,
     setDraft,

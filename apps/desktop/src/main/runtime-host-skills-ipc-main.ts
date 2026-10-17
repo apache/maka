@@ -238,7 +238,7 @@ export function registerRuntimeHostSkillsIpc(
     },
   );
 
-  deps.ipcMain.handle("skills:sources:importLocalFile", async () => {
+  deps.ipcMain.handle("skills:sources:importLocalFile", async (event) => {
     if (deps.allowLocalPaths === false) {
       throw new Error("Local Skill import is unavailable for a remote Runtime Host");
     }
@@ -251,7 +251,7 @@ export function registerRuntimeHostSkillsIpc(
         { name: "Skill Markdown", extensions: ["md"] },
         { name: copy.allFiles, extensions: ["*"] },
       ],
-    });
+    }, event.sender);
     if (result.canceled || result.filePaths.length === 0) {
       return { ok: false as const, reason: "cancelled" as const };
     }

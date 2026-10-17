@@ -38,8 +38,8 @@ export function useConversationQueueCommands() {
   if (!value) throw new Error('ConversationProvider is required');
   return value;
 }
-export function ConversationProvider({ children }: { children: ReactNode }) {
-  const controller = useConversationController();
+export function ConversationProvider({ children, automaticSelection = true }: { children: ReactNode; automaticSelection?: boolean }) {
+  const controller = useConversationController(automaticSelection);
   const { workspace } = controller;
   const [context] = useState(controller);
   const composer = useSyncExternalStore(workspace.composer.subscribe, workspace.composer.getSnapshot);

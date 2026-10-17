@@ -61,6 +61,7 @@ import type { Command } from './features/overlays/index.js';
  * the palette itself pure presentation.
  */
 export function buildCommandList(args: {
+  allowGlobalNavigation?: boolean;
   locale: UiLocale;
   activeSessionId: string | undefined;
   themePref: ThemePreference;
@@ -165,7 +166,7 @@ export function buildCommandList(args: {
           },
         ]
       : []),
-    ...(args.onStartScheduledTask
+    ...(args.allowGlobalNavigation !== false && args.onStartScheduledTask
       ? [
           {
           id: 'action:new-scheduled-task',
@@ -225,7 +226,7 @@ export function buildCommandList(args: {
   // PR-CMD-PALETTE-ENRICH-0: app module jumps. Lets ⌘K →
   // "每日回顾" / "技能" / "计划" switch app modules without an
   // extra mouse click. Cheap to ship — pure callback wiring.
-  if (args.onSelectModule) {
+  if (args.allowGlobalNavigation !== false && args.onSelectModule) {
     const select = args.onSelectModule;
     cmds.push({
       id: 'nav:sessions',
@@ -287,7 +288,7 @@ export function buildCommandList(args: {
   // command surface, not just navigation). Each is gated on the matching
   // host callback being provided so the palette stays useful even when
   // some IPC entry isn't wired up.
-  if (args.onOpenWorkspace) {
+  if (args.allowGlobalNavigation !== false && args.onOpenWorkspace) {
     cmds.push({
       id: 'diag:open-workspace',
       kind: 'action',

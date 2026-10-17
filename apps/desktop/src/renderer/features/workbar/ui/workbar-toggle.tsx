@@ -22,7 +22,7 @@ import { Icon } from '@astryxdesign/core/Icon';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
 import { IconButton, useUiLocale } from '@maka/ui';
 import { PanelRightClose, PanelRightOpen } from '@maka/ui/icons';
-import { getShellCopy } from '../../../locales/shell-copy';
+import { getShellCopy } from '../../../locales/shell-copy.js';
 import type { WorkbarHostModel } from './workbar-host';
 import { useWorkbarHostModel } from './workbar-provider.js';
 

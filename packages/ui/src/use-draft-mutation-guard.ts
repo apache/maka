@@ -32,6 +32,7 @@ export function useDraftMutationGuard() {
   const guards = useMemo(() => {
     const claims = new Map<string | undefined, Set<symbol>>();
     return {
+      hasPending: () => claims.size > 0,
       changed(key: string | undefined): void { claims.delete(key); },
       clear(): void { claims.clear(); },
       capture(key: string | undefined): DraftMutationGuard {

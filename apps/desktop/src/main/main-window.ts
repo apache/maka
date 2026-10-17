@@ -18,7 +18,7 @@
  */
 
 import { MAIN_WINDOW_DROP_GUARD_SCRIPT } from './main-window-drop-guard.js';
-import { app, BrowserWindow, dialog, nativeTheme, screen, shell, type View, webFrameMain } from 'electron';
+import { app, BrowserWindow, dialog, nativeTheme, screen, shell, webFrameMain } from 'electron';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { appIconForTheme, type AppSettings } from '@maka/core/settings';
@@ -40,6 +40,8 @@ import { isDarkAppearance, isThemePreference, toNativeThemeSource } from './them
 import { createWindowRevealGate, type WindowRevealMode } from './window-reveal.js';
 import { createWindowsMaximizeRendererSync } from './windows-maximize-renderer-sync.js';
 import { auxiliaryWindowRegistry } from './auxiliary-window-registry.js';
+import { workspaceWindowRegistry } from './workspace-window-registry.js';
+import type { SessionWindowContext } from '../shared/session-window-contract.js';
 import {
   parseDesktopSessionResourceKey,
 } from '../shared/runtime-host-identity.js';
@@ -48,15 +50,15 @@ type SettingsReader = {
   get(): Promise<AppSettings>;
 };
 
-export interface MainWindowController {
+export interface WorkspaceWindowController {
   createWindow(signal: AbortSignal): Promise<void>;
   /**
    * Reload only the crashed main Renderer, preserving the Desktop process,
    * Runtime Host, background services, and current BrowserWindow.
    */
   reloadMainRenderer(): Promise<boolean>;
-  send(channel: string, ...args: unknown[]): void;
-  isMainRenderer(contents: Electron.WebContents): boolean;
+  isRenderer(contents: Electron.WebContents): boolean;
+  reveal(): void;
   // PR-SHOW-AFTER-FIRST-COMMIT: reveal the hidden window after the renderer's
   // first React commit. Idempotent + e2e-fixture-safe (see notifyRendererReady).
   notifyRendererReady(
@@ -66,10 +68,6 @@ export interface MainWindowController {
   setTitlebarControlsVisible(sender: Electron.WebContents, visible: unknown): void;
   setThemeSource(sender: Electron.WebContents, themePref: unknown): void;
   setTitleBarOverlayTheme(sender: Electron.WebContents, theme: unknown): void;
-  showOpenDialog(options: Electron.OpenDialogOptions): Promise<Electron.OpenDialogReturnValue>;
-  showSaveDialog(options: Electron.SaveDialogOptions): Promise<Electron.SaveDialogReturnValue>;
-  getBrowserViews(parentForSession: (sessionId: string) => Electron.View | undefined): BrowserViewManager<BrowserViewController>;
-  disposeBrowserViews(): Promise<void>;
   hasOpenWindows(): boolean;
   focus(): void;
   /**
@@ -102,7 +100,7 @@ interface MainWindowControllerDeps {
   // main.ts computes this from the same isE2e gate that also guards userData
   // and the fake backend, so main-window.ts owns no env policy of its own.
   revealMode: WindowRevealMode;
-  onClose?: () => void;
+  onClose?: (event: Electron.Event) => void;
   onClosed?: () => void;
   onRendererProcessGone: (details: Electron.RenderProcessGoneDetails) => void | Promise<void>;
   // Fires right after `new BrowserWindow` — main.ts defers the heavy Runtime
@@ -111,14 +109,12 @@ interface MainWindowControllerDeps {
   onWindowConstructed?: () => void;
 }
 
-let mainWindow: BrowserWindow | null = null;
-let browserViews: BrowserViewManager<BrowserViewController> | undefined;
 
 /** Broadcast once to each live owned renderer, even if the main window is closed.
  * Returns whether at least one IPC send was issued, not a renderer acknowledgment. */
 export function safeSendToRenderer(channel: string, ...args: unknown[]): boolean {
   const recipients = new Set(auxiliaryWindowRegistry.renderers());
-  if (mainWindow && !mainWindow.isDestroyed()) recipients.add(mainWindow.webContents);
+  for (const entry of workspaceWindowRegistry.entries()) recipients.add(entry.window.webContents);
   let emitted = false;
   for (const contents of recipients) {
     if (!contents.isDestroyed()) {
@@ -169,64 +165,29 @@ const titleBarOverlayOptions = (
   height: TITLEBAR_OVERLAY_HEIGHT,
 });
 
+type WorkspaceWindowInput =
+  | { readonly kind: 'main' }
+  | Omit<Extract<SessionWindowContext, { kind: 'session' }>, 'windowId'>;
+
+export interface MainWindowController extends Omit<WorkspaceWindowController, 'isRenderer' | 'reveal'> {
+  readonly registry: typeof workspaceWindowRegistry;
+  createSessionWindow(context: Extract<WorkspaceWindowInput, { kind: 'session' }>, signal: AbortSignal): Promise<WorkspaceWindowController>;
+  isMainRenderer(contents: Electron.WebContents): boolean;
+  isWorkspaceRenderer(contents: Electron.WebContents): boolean;
+  browserWindowFor(sender: Electron.WebContents): BrowserWindow | undefined;
+  send(channel: string, ...args: unknown[]): void;
+  sendCommand(channel: string, ...args: unknown[]): boolean;
+  showOpenDialog(options: Electron.OpenDialogOptions, sender?: Electron.WebContents): Promise<Electron.OpenDialogReturnValue>;
+  showSaveDialog(options: Electron.SaveDialogOptions, sender?: Electron.WebContents): Promise<Electron.SaveDialogReturnValue>;
+  getBrowserViews(parentForSession: (sessionId: string) => Electron.View | undefined): BrowserViewManager<BrowserViewController>;
+  disposeBrowserViews(): Promise<void>;
+}
+
+/** Application-scoped service. Every workspace uses the same window implementation. */
 export function createMainWindowController(deps: MainWindowControllerDeps): MainWindowController {
-  const { workspaceRoot, e2eFixture, settingsStore } = deps;
+  const main = createWorkspaceWindowController(deps, { kind: 'main' });
+  let browserViews: BrowserViewManager<BrowserViewController> | undefined;
   const liveBrowserScopes = new Map<string, { hostId: string; targetEpoch: string }>();
-
-  // PR-SHOW-AFTER-FIRST-COMMIT: windows launched hidden (`hidden` covers
-  // e2e-fixture capture and E2E — see main.ts) must never be revealed;
-  // e2e-fixture captures run on the hidden window and E2E drives it headless.
-  // A run that asked for a visible window is `inactive`: it reveals, but never
-  // activates the app. The fallback timer, the renderer-ready IPC, and focus()
-  // all route their show() through this mode via the reveal gate below.
-  const revealMode: WindowRevealMode = deps.revealMode;
-  // ChatGPT Pro review P2: focus() (second-instance / activate) used to call
-  // mainWindow.show() directly, bypassing the reveal gate — re-launching or
-  // clicking the dock icon before the first paint would flash the bare
-  // vibrancy window anyway. The gate defers those focus requests until
-  // markReady.
-  const revealGate = createWindowRevealGate(revealMode);
-  let showFallbackTimer: NodeJS.Timeout | undefined;
-  let rendererRecoveryReadiness:
-    | {
-        readonly contents: Electron.WebContents;
-        listener?: (frame: MainRendererFrameIdentity) => boolean;
-      }
-    | undefined;
-  let mainWindowShutdownSignal: AbortSignal | undefined;
-  const clearShowFallbackTimer = (): void => {
-    if (showFallbackTimer) {
-      clearTimeout(showFallbackTimer);
-      showFallbackTimer = undefined;
-    }
-  };
-  const armShowFallbackTimer = (target: BrowserWindow): void => {
-    clearShowFallbackTimer();
-    if (revealMode === 'hidden' || target.isDestroyed() || target.isVisible()) return;
-    showFallbackTimer = setTimeout(() => {
-      showFallbackTimer = undefined;
-      if (!target.isDestroyed()) revealGate.markReady(target);
-    }, SHOW_FALLBACK_TIMEOUT_MS);
-  };
-
-  const observeRendererProcess = (target: BrowserWindow, signal: AbortSignal): void => {
-    observeMainRendererProcessGone({
-      source: target.webContents,
-      shutdownSignal: signal,
-      onUnexpectedExit: (details) => {
-        console.error(
-          `[renderer] main Renderer process exited unexpectedly: reason=${details.reason} exitCode=${details.exitCode}`,
-        );
-        void Promise.resolve()
-          .then(() => deps.onRendererProcessGone(details))
-          .catch((error) => {
-            console.error('[renderer] failed to handle main Renderer process exit:', error);
-            app.quit();
-          });
-      },
-    });
-  };
-
   function getBrowserViews(
     parentForSession: (sessionId: string) => Electron.View | undefined,
   ): BrowserViewManager<BrowserViewController> {
@@ -279,7 +240,146 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
     await browserViews?.disposeAll();
   }
 
-  async function createWindow(signal: AbortSignal): Promise<void> {
+  function resolveDialogParent(sender?: Electron.WebContents): BrowserWindow | undefined {
+    if (!sender) return workspaceWindowRegistry.active()?.window;
+    const workspace = workspaceWindowRegistry.forSender(sender);
+    if (workspace) return workspace.window;
+    if (!auxiliaryWindowRegistry.rendererParent(sender)) return undefined;
+    const parent = BrowserWindow.fromWebContents(sender);
+    return parent && !parent.isDestroyed() ? parent : undefined;
+  }
+
+  return {
+    ...main,
+    registry: workspaceWindowRegistry,
+    async createSessionWindow(context, signal) {
+      if (context.kind !== 'session') throw new Error('A session window requires session context');
+      let controller: WorkspaceWindowController;
+      controller = createWorkspaceWindowController({
+        ...deps,
+        onWindowConstructed: undefined,
+        onClose: undefined,
+        onRendererProcessGone: async () => {
+          // A failed isolated surface must not terminate the other windows or Host.
+          if (!await controller.reloadMainRenderer()) controller.browserWindow()?.destroy();
+        },
+      }, context);
+      try {
+        await controller.createWindow(signal);
+        if (!controller.browserWindow()) throw new Error('Session window creation was cancelled');
+        return controller;
+      } catch (error) {
+        controller.browserWindow()?.destroy();
+        throw error;
+      }
+    },
+    isMainRenderer: (contents) => main.isRenderer(contents),
+    isWorkspaceRenderer: (contents) => workspaceWindowRegistry.forSender(contents) !== undefined,
+    browserWindowFor: (sender) => workspaceWindowRegistry.forSender(sender)?.window,
+    send: safeSendToRenderer,
+    sendCommand: (channel, ...args) => workspaceWindowRegistry.sendCommand(channel, ...args),
+    hasOpenWindows: () => workspaceWindowRegistry.entries().length > 0,
+    notifyRendererReady(sender, frame) {
+      workspaceWindowRegistry.forSender(sender)?.controller.notifyRendererReady(sender, frame);
+    },
+    setTitlebarControlsVisible(sender, visible) {
+      workspaceWindowRegistry.forSender(sender)?.controller.setTitlebarControlsVisible(sender, visible);
+    },
+    setThemeSource(sender, theme) {
+      workspaceWindowRegistry.forSender(sender)?.controller.setThemeSource(sender, theme);
+    },
+    setTitleBarOverlayTheme(sender, theme) {
+      workspaceWindowRegistry.forSender(sender)?.controller.setTitleBarOverlayTheme(sender, theme);
+    },
+    showOpenDialog(options, sender) {
+      const parent = resolveDialogParent(sender);
+      if (sender && !parent) return Promise.resolve({ canceled: true, filePaths: [] });
+      return parent ? dialog.showOpenDialog(parent, options) : dialog.showOpenDialog(options);
+    },
+    showSaveDialog(options, sender) {
+      const parent = resolveDialogParent(sender);
+      if (sender && !parent) return Promise.resolve({ canceled: true, filePath: '' });
+      return parent ? dialog.showSaveDialog(parent, options) : dialog.showSaveDialog(options);
+    },
+    getBrowserViews,
+    disposeBrowserViews,
+    isFocused: () => workspaceWindowRegistry.focused() !== undefined,
+  };
+}
+
+function createWorkspaceWindowController(
+  deps: MainWindowControllerDeps,
+  context: WorkspaceWindowInput,
+): WorkspaceWindowController {
+  let mainWindow: BrowserWindow | null = null;
+  let creatingWindow: Promise<void> | undefined;
+  let handoffReady = context.kind === 'main';
+  const { workspaceRoot, e2eFixture, settingsStore } = deps;
+
+  // PR-SHOW-AFTER-FIRST-COMMIT: windows launched hidden (`hidden` covers
+  // e2e-fixture capture and E2E — see main.ts) must never be revealed;
+  // e2e-fixture captures run on the hidden window and E2E drives it headless.
+  // A run that asked for a visible window is `inactive`: it reveals, but never
+  // activates the app. The fallback timer, the renderer-ready IPC, and focus()
+  // all route their show() through this mode via the reveal gate below.
+  const revealMode: WindowRevealMode = deps.revealMode;
+  // ChatGPT Pro review P2: focus() (second-instance / activate) used to call
+  // mainWindow.show() directly, bypassing the reveal gate — re-launching or
+  // clicking the dock icon before the first paint would flash the bare
+  // vibrancy window anyway. The gate defers those focus requests until
+  // markReady.
+  const revealGate = createWindowRevealGate(revealMode);
+  let showFallbackTimer: NodeJS.Timeout | undefined;
+  let rendererRecoveryReadiness:
+    | {
+        readonly contents: Electron.WebContents;
+        listener?: (frame: MainRendererFrameIdentity) => boolean;
+      }
+    | undefined;
+  let mainWindowShutdownSignal: AbortSignal | undefined;
+  const clearShowFallbackTimer = (): void => {
+    if (showFallbackTimer) {
+      clearTimeout(showFallbackTimer);
+      showFallbackTimer = undefined;
+    }
+  };
+  const armShowFallbackTimer = (target: BrowserWindow): void => {
+    clearShowFallbackTimer();
+    if (!handoffReady || revealMode === 'hidden' || target.isDestroyed() || target.isVisible()) return;
+    showFallbackTimer = setTimeout(() => {
+      showFallbackTimer = undefined;
+      if (!target.isDestroyed()) revealGate.markReady(target);
+    }, SHOW_FALLBACK_TIMEOUT_MS);
+  };
+
+  const observeRendererProcess = (target: BrowserWindow, signal: AbortSignal): void => {
+    observeMainRendererProcessGone({
+      source: target.webContents,
+      shutdownSignal: signal,
+      onUnexpectedExit: (details) => {
+        console.error(
+          `[renderer] main Renderer process exited unexpectedly: reason=${details.reason} exitCode=${details.exitCode}`,
+        );
+        void Promise.resolve()
+          .then(() => deps.onRendererProcessGone(details))
+          .catch((error) => {
+            console.error('[renderer] failed to handle workspace Renderer process exit:', error);
+            if (!target.isDestroyed()) target.destroy();
+          });
+      },
+    });
+  };
+
+  function createWindow(signal: AbortSignal): Promise<void> {
+    if (creatingWindow) return creatingWindow;
+    if (mainWindow && !mainWindow.isDestroyed()) return Promise.resolve();
+    const operation = createWindowNow(signal);
+    creatingWindow = operation;
+    void operation.finally(() => { if (creatingWindow === operation) creatingWindow = undefined; }).catch(() => undefined);
+    return operation;
+  }
+
+  async function createWindowNow(signal: AbortSignal): Promise<void> {
     if (signal.aborted) return;
     // Restore previously-saved bounds when available; first launch and
     // legacy installs both fall back to the default 1240x820 frame. After
@@ -294,10 +394,14 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
     // persisted pref), which is why it cannot leave the critical path.
     const [, savedBounds, persistedAppearance] = await Promise.all([
       mkdir(workspaceRoot, { recursive: true }),
-      e2eFixture ? Promise.resolve(defaults) : readSavedBounds(workspaceRoot, defaults),
+      e2eFixture || context.kind === 'session' ? Promise.resolve(defaults) : readSavedBounds(workspaceRoot, defaults),
       settingsStore.get().then((settings) => settings.appearance),
     ]);
-    const bounds = clampBoundsToVisibleDisplay(savedBounds);
+    // Sample the main window after async preparation so a move to another
+    // display while settings load is reflected in the new session window.
+    const bounds = context.kind === 'session'
+      ? sessionWindowBounds(defaults)
+      : clampBoundsToVisibleDisplay(savedBounds);
     const persistedTheme = persistedAppearance?.theme ?? 'auto';
     // Quit cleanup permanently closes process-scoped stores. Re-check after
     // asynchronous preparation so an in-flight request cannot attach a new
@@ -389,8 +493,10 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
       // window below the restore minimum. Shares SAFE_MIN_WIDTH and
       // SAFE_MIN_HEIGHT with sanitizeBounds so the resize floor and the restore
       // floor can't drift apart (locked by window-state.test.ts).
-      minWidth: SAFE_MIN_WIDTH,
-      minHeight: SAFE_MIN_HEIGHT,
+      // A session window must still fit when the display's work area is
+      // smaller than the usual resize floor.
+      minWidth: context.kind === 'session' ? Math.min(SAFE_MIN_WIDTH, bounds.width) : SAFE_MIN_WIDTH,
+      minHeight: context.kind === 'session' ? Math.min(SAFE_MIN_HEIGHT, bounds.height) : SAFE_MIN_HEIGHT,
       backgroundColor: initialBg,
       // The window stays hidden until `ready-to-show`, so the first visible
       // frame is already the launch surface — showing it at construction
@@ -425,6 +531,7 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
     );
     mainWindowShutdownSignal = signal;
     observeRendererProcess(mainWindow, signal);
+    workspaceWindowRegistry.register({ context: { ...context, windowId: String(mainWindow.id) }, window: mainWindow, controller });
     deps.onWindowConstructed?.();
     // The designed `.maka-preload` surface is the loading UI: reveal on the
     // first painted frame instead of waiting out the whole React mount.
@@ -433,7 +540,7 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
     // as no-op backstops.
     mainWindow.once('ready-to-show', () => {
       clearShowFallbackTimer();
-      revealGate.markReady(mainWindow);
+      if (handoffReady) revealGate.markReady(mainWindow);
     });
     installMainWindowPermissionPolicy(mainWindow.webContents, rendererEntry.url);
 
@@ -493,7 +600,7 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
     // doesn't write the file on every frame; flush on close.
     let saveTimer: NodeJS.Timeout | undefined;
     const scheduleSave = () => {
-      if (!mainWindow) return;
+      if (!mainWindow || context.kind !== 'main') return;
       if (saveTimer) clearTimeout(saveTimer);
       saveTimer = setTimeout(() => {
         if (!mainWindow) return;
@@ -512,17 +619,18 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
     mainWindow.on('move', scheduleSave);
     mainWindow.on('maximize', handleWindowGeometryChange);
     mainWindow.on('unmaximize', scheduleSave);
-    mainWindow.on('close', () => {
+    mainWindow.on('close', (event) => {
+      deps.onClose?.(event);
+      if (event.defaultPrevented) return;
       clearShowFallbackTimer();
-      deps.onClose?.();
       if (saveTimer) clearTimeout(saveTimer);
-      if (!mainWindow) return;
+      if (!mainWindow || context.kind !== 'main') return;
       const final: SavedBounds = mainWindow.isMaximized()
         ? { ...mainWindow.getNormalBounds(), isMaximized: true }
         : { ...mainWindow.getBounds(), isMaximized: false };
       void writeSavedBounds(workspaceRoot, final);
     });
-    mainWindow.once('closed', () => deps.onClosed?.());
+    mainWindow.once('closed', () => { mainWindow = null; deps.onClosed?.(); });
 
     // Dev-server cache hygiene (issue #4775) — see main-renderer-dev-cache.ts
     // for why a stale immutable dep-chunk graph must never survive into a new
@@ -540,13 +648,17 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
     // remain hidden for their whole lifecycle.
     armShowFallbackTimer(mainWindow);
     if (process.env.MAKA_REAL_WINDOW_SMOKE === '1') {
-      emitRealWindowSmokeDiagnostic('after-load');
-      setTimeout(() => emitRealWindowSmokeDiagnostic('settled-1000ms'), 1000);
+      emitRealWindowSmokeDiagnostic(mainWindow, 'after-load');
+      setTimeout(() => emitRealWindowSmokeDiagnostic(mainWindow, 'settled-1000ms'), 1000);
     }
   }
 
-  return {
+  const controller: WorkspaceWindowController = {
     createWindow,
+    reveal() {
+      handoffReady = true;
+      if (mainWindow && !mainWindow.isDestroyed()) revealGate.markReady(mainWindow);
+    },
     async reloadMainRenderer() {
       const target = mainWindow;
       const signal = mainWindowShutdownSignal;
@@ -558,6 +670,7 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
         signal.aborted
       ) return false;
       clearShowFallbackTimer();
+      if (context.kind === 'session') handoffReady = false;
       revealGate.reset();
       target.hide();
       const contents = target.webContents;
@@ -609,8 +722,7 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
         }
       }
     },
-    send: safeSendToRenderer,
-    isMainRenderer: (contents) => !!mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents === contents,
+    isRenderer: (contents) => !!mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents === contents,
     notifyRendererReady(sender, senderFrame) {
       if (!mainWindow || mainWindow.isDestroyed() || sender !== mainWindow.webContents) return;
       const recovery = rendererRecoveryReadiness;
@@ -626,7 +738,7 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
       // e2e-fixture windows. markReady also flushes a focus request that
       // arrived while the window was still hidden (second-instance/activate).
       clearShowFallbackTimer();
-      revealGate.markReady(mainWindow);
+      if (handoffReady) revealGate.markReady(mainWindow);
     },
     setTitlebarControlsVisible(sender, visible) {
       const target = BrowserWindow.fromWebContents(sender);
@@ -649,18 +761,6 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
       if (!isTitleBarOverlayTheme(theme)) return;
       mainWindow.setTitleBarOverlay(titleBarOverlayOptions(theme.isDark, theme.backgroundColor));
     },
-    showOpenDialog(options) {
-      return mainWindow
-        ? dialog.showOpenDialog(mainWindow, options)
-        : dialog.showOpenDialog(options);
-    },
-    showSaveDialog(options) {
-      return mainWindow
-        ? dialog.showSaveDialog(mainWindow, options)
-        : dialog.showSaveDialog(options);
-    },
-    getBrowserViews,
-    disposeBrowserViews,
     hasOpenWindows() {
       return mainWindow !== null && !mainWindow.isDestroyed();
     },
@@ -706,6 +806,7 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
       return !!mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused();
     },
   };
+  return controller;
 }
 
 function rendererFrameIdentity(frame: Electron.WebFrameMain): MainRendererFrameIdentity {
@@ -749,6 +850,22 @@ function clampBoundsToVisibleDisplay(bounds: SavedBounds): SavedBounds {
   return { width: bounds.width, height: bounds.height, isMaximized: bounds.isMaximized };
 }
 
+/** Place new session windows near main, using Electron's DIP coordinates. */
+function sessionWindowBounds(defaults: SavedBounds): SavedBounds {
+  const anchor = workspaceWindowRegistry.main()?.controller.windowBounds();
+  const area = (anchor ? screen.getDisplayMatching(anchor) : screen.getPrimaryDisplay()).workArea;
+  const width = Math.min(defaults.width, area.width);
+  const height = Math.min(defaults.height, area.height);
+  const x = anchor ? anchor.x + 32 : area.x + Math.round((area.width - width) / 2);
+  const y = anchor ? anchor.y + 32 : area.y + Math.round((area.height - height) / 2);
+  return {
+    width,
+    height,
+    x: Math.max(area.x, Math.min(x, area.x + area.width - width)),
+    y: Math.max(area.y, Math.min(y, area.y + area.height - height)),
+  };
+}
+
 function e2eFixtureWindowBounds(
   e2eFixture: E2eFixture | null,
   defaults: SavedBounds,
@@ -767,8 +884,7 @@ function e2eFixtureWindowBounds(
   return defaults;
 }
 
-function emitRealWindowSmokeDiagnostic(stage: string): void {
-  const target = mainWindow;
+function emitRealWindowSmokeDiagnostic(target: BrowserWindow | null, stage: string): void {
   if (!target) {
     console.log(`[real-window-smoke] diagnostic ${JSON.stringify({ stage, windowExists: false })}`);
     return;

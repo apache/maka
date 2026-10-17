@@ -12,7 +12,7 @@
         "src/overlay/permission-overlay-preload.ts",
         "src/overlay/pip.ts",
         "src/overlay/pip-preload.ts",
-        "src/main/**/*.test.ts",
+        "src/main/**/*.test.{ts,tsx}",
         "e2e/**/*.spec.ts",
         ".storybook/preview.@(ts|tsx)",
         ".storybook/node-crypto-boundary.ts",

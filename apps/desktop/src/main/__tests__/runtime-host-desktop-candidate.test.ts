@@ -1265,6 +1265,7 @@ test('does not release or report a Revision the Host retained during cleanup', a
     createSessionCopyCleanup: ({ removeSession }) => {
       removeSessionCopy = removeSession;
       return {
+        adopt: async () => {},
         ownCreation: (_creation, operation) => operation(),
         rejectCreation: async () => undefined,
         cleanup: async () => undefined,
@@ -1644,6 +1645,7 @@ function deps(
     completeDesktopInteractionTurn() {},
     notifyRun: async () => {},
     createSessionCopyCleanup: () => ({
+      adopt: async () => {},
       ownCreation: (_creation, operation) => operation(),
       rejectCreation: async () => undefined,
       cleanup: async () => undefined,

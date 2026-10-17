@@ -36,6 +36,7 @@ import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 import {
   createFakeSessionNavigationServices,
   createSessionOpenCommand,
+  createSessionNavigationCommands,
   deriveSessionRail,
   sessionMatchesRail,
   SessionNavigationProvider,
@@ -715,6 +716,78 @@ describe('SessionNavigationProvider selection', () => {
     entry?.onSelect();
     assert.deepEqual(opened, ['workhub']);
     await act(async () => root.unmount());
+  });
+});
+
+describe('window-aware session navigation commands', () => {
+  function harness() {
+    const calls: string[] = [];
+    const targets: unknown[] = [];
+    const routes: unknown[] = [];
+    const window = {
+      owns: true,
+      openSession(navigation: { sessionId: string }, activate: () => void) {
+        routes.push(navigation);
+        if (!window.owns) return false;
+        activate(); return true;
+      },
+      requestNewTask(activate: () => void) { activate(); },
+      async bootstrap(refresh: () => Promise<unknown[]>, revision: () => number, open: (id: string) => void) {
+        await refresh(); assert.equal(revision(), 7); open('a');
+      },
+    };
+    const commands = createSessionNavigationCommands({
+      window,
+      activateSession: (id) => calls.push(`activate:${id}`),
+      setWorkHubActive: (active) => calls.push(`workhub:${active}`),
+      selectSessionSurface: () => calls.push('sessions'),
+      closeSettings: () => calls.push('close-settings'),
+      setSearchTarget: (target) => targets.push(target),
+      newTask: { prepare: () => calls.push('prepare'), start: () => { calls.push('start'); return 'owner'; },
+        resetPlanMode: () => calls.push('reset-plan'), focus: () => calls.push('focus') },
+      projects: { selectProject: (key) => key === 'available', renameProject: async () => {}, archiveProject: async () => {},
+        restoreProject: async () => {}, relinkProject: async () => {} },
+      hasProjects: true,
+      refreshSessions: async () => { calls.push('refresh'); return []; },
+      readSelectionRevision: () => 7,
+    });
+    return { calls, targets, routes, window, commands };
+  }
+
+  it('routes foreign navigation without changing the local selection or search, including startup', async () => {
+    const h = harness(); h.window.owns = false;
+    assert.equal(h.commands.openSession('a', 'turn', 4), false);
+    assert.deepEqual(h.calls, []); assert.deepEqual(h.targets, []);
+    assert.deepEqual(h.routes, [{ sessionId: 'a', turnId: 'turn', sequence: 4 }]);
+    await h.commands.bootstrapSessions();
+    assert.deepEqual(h.calls, ['refresh']);
+    h.window.owns = true;
+    assert.equal(h.commands.openSession('a', 'turn', 4), true);
+    assert.deepEqual(h.calls, ['refresh', 'workhub:false', 'sessions', 'activate:a']);
+    assert.deepEqual({ ...h.targets[0] as object, nonce: 0 }, { sessionId: 'a', turnId: 'turn', sequence: 4, nonce: 0 });
+    h.commands.openLocal({ sessionId: 'child' });
+    assert.deepEqual(h.calls.slice(-3), ['workhub:false', 'sessions', 'activate:child']);
+    assert.equal(h.targets.at(-1), null);
+  });
+
+  it('retains new-task setup, project availability and WorkHub navigation order', async (t) => {
+    installReactRenderer();
+    const frames: FrameRequestCallback[] = [];
+    t.mock.method(globalThis, 'requestAnimationFrame', (callback: FrameRequestCallback) => { frames.push(callback); return 1; });
+    const h = harness();
+    h.commands.projectRowActions!.onNew('missing'); assert.deepEqual(h.calls, []);
+    assert.equal(h.commands.openNewTaskSurface(), 'owner');
+    assert.deepEqual(h.calls, ['prepare', 'start', 'reset-plan', 'sessions']);
+    assert.deepEqual(h.targets, [null]); frames.shift()!(0); assert.equal(h.calls.at(-1), 'focus');
+    h.calls.length = 0;
+    await h.commands.createSession();
+    assert.deepEqual(h.calls, ['prepare', 'start', 'reset-plan', 'sessions']);
+    h.calls.length = 0;
+    h.commands.projectRowActions!.onNew('available');
+    assert.deepEqual(h.calls, ['prepare', 'start', 'reset-plan', 'sessions']);
+    h.calls.length = 0;
+    h.commands.openWorkHub(); h.commands.exitWorkHub(); h.commands.enableWorkHub();
+    assert.deepEqual(h.calls, ['close-settings', 'sessions', 'workhub:true', 'workhub:false', 'workhub:true', 'sessions']);
   });
 });
 

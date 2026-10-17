@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { sideConversationHasContent } from '../tools/side-chat/side-conversation-readiness.js';
 import {
   useCallback,
   useEffect,
@@ -80,6 +81,7 @@ interface OpenToolOptions {
 }
 
 export interface WorkbarControllerCommands {
+  hasSessionContent(sessionIds: readonly string[]): boolean;
   openTool(
     kind: SessionWorkbarTabKind,
     placement?: SessionWorkbarPlacement,
@@ -112,6 +114,7 @@ export interface WorkbarControllerSelectors {
 
 export interface UseWorkbarControllerInput {
   workHub?: { active: boolean };
+  persistLayout?: boolean;
   /** Whether the Session workspace (rather than a module page) owns the shell. */
   available: boolean;
   /** Local selection owns layout even while Host creation is pending. */
@@ -171,7 +174,7 @@ function nextOrdinal(
 export function useWorkbarController(
   requested: UseWorkbarControllerInput,
 ): WorkbarController {
-  const coordination = useWorkHubWorkspace(useWorkHubEnabled(), requested.authoritativeSessionIds);
+  const coordination = useWorkHubWorkspace(useWorkHubEnabled() && requested.workHub !== undefined, requested.authoritativeSessionIds);
   const workspace = requested.workHub?.active ? 'workhub' : 'session';
   const activeSessionId = requested.workHub?.active ? coordination.sessionId : requested.activeSession?.id;
   const input: UseWorkbarControllerInput = requested.workHub?.active ? {
@@ -199,8 +202,10 @@ export function useWorkbarController(
   const terminalCopy = getDesktopConversationCopy(locale).terminalPanel;
   const { browser, sideChat, terminal, workBoard } = useWorkbarServices();
   const compact = useMediaQuery(SHELL_WORKBAR_COMPACT_QUERY);
-  const layout = useWorkbarLayoutState(input.layoutSessionId, input.authoritativeSessionIds, compact);
+  const layout = useWorkbarLayoutState(input.layoutSessionId, input.authoritativeSessionIds, compact, input.persistLayout);
   const sideConversations = useSideConversationWorkspace();
+  const sidePanels = useRef(sideConversations.panels);
+  sidePanels.current = sideConversations.panels;
   const [pendingSideChatClose, setPendingSideChatClose] = useState<
     Array<{ placement: SessionWorkbarPlacement; tab: SessionWorkbarTab }>
   >([]);
@@ -990,6 +995,7 @@ export function useWorkbarController(
 
   const commands = useMemo<WorkbarControllerCommands>(
     () => ({
+      hasSessionContent: (ids) => sidePanels.current.some((panel) => ids.includes(panel.sourceSessionId) && sideConversationHasContent(panel.id)),
       openTool,
       toggleTool,
       openSideChatWithQuote,

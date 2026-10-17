@@ -282,3 +282,71 @@ for (const active of [true, false]) {
     }
   });
 }
+
+
+test('window handoff snapshots active and inactive drafts with references', async () => {
+  const originals = { document: globalThis.document, window: globalThis.window, IS_REACT_ACT_ENVIRONMENT: (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT };
+  const { document, window } = parseHTML('<div id="root"></div>');
+  Object.assign(globalThis, { document, window, IS_REACT_ACT_ENVIRONMENT: true });
+  const root = createRoot(document.querySelector('#root')!);
+  let value = '';
+  let references: readonly InlineReference[] = [];
+  let draft!: ComposerDraftApi;
+  function Probe({ draftKey }: { draftKey: string }) {
+    draft = useComposerDraft({ text: { getValue: () => value, setValue: (next) => { value = next; } }, draftKey,
+      onDraftKeyChange() {}, hasPendingContext: true,
+      references: { read: () => references, write: (next) => { references = next; } } });
+    return null;
+  }
+  try {
+    await act(() => root.render(<Probe draftKey="a" />));
+    const reference: InlineReference = { kind: 'workspace_file', value: '@file.ts', label: 'file.ts', start: 0 };
+    draft.appendDraft('a', '@file.ts\ntext', [reference]);
+    draft.setDraft('child', 'child unsent text');
+    draft.setDraft('unrelated', 'B keeps working');
+    // Capture the live editor even when no blur/save has fired yet.
+    value += ' typed right before opening';
+    const saved = draft.captureDrafts(['a', 'child']);
+    assert.equal(saved[0]!.text, '@file.ts\ntext typed right before opening');
+    assert.deepEqual(saved[0]!.references, [reference]);
+    draft.clearDraft('a'); draft.clearDraft('child');
+    assert.equal(draft.getDraft('unrelated'), 'B keeps working');
+    await act(() => root.render(null));
+    value = ''; references = [];
+    await act(() => root.render(<Probe draftKey="child" />));
+    draft.restoreDrafts(saved);
+    assert.equal(value, 'child unsent text');
+    assert.equal(draft.getDraft('a'), saved[0]!.text);
+    await act(() => root.render(<Probe draftKey="a" />));
+    assert.equal(value, saved[0]!.text);
+    assert.deepEqual(references, [reference]);
+  } finally {
+    await act(() => root.unmount());
+    Object.assign(globalThis, originals);
+  }
+});
+
+
+test('handoff refuses draft-cache loss before changing existing text or references', async () => {
+  const originals = { document: globalThis.document, window: globalThis.window, IS_REACT_ACT_ENVIRONMENT: (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT };
+  const { document, window } = parseHTML('<div id="root"></div>');
+  Object.assign(globalThis, { document, window, IS_REACT_ACT_ENVIRONMENT: true });
+  const root = createRoot(document.querySelector('#root')!);
+  let value = ''; let draft!: ComposerDraftApi;
+  function Probe() {
+    draft = useComposerDraft({ text: { getValue: () => value, setValue: (next) => { value = next; } }, draftKey: 'b', onDraftKeyChange() {} });
+    return null;
+  }
+  try {
+    await act(() => root.render(<Probe />));
+    value = 'x'.repeat(120_001);
+    assert.throws(() => draft.captureDrafts(['b']), /existing draft cache/);
+    assert.equal(value.length, 120_001);
+    value = 'keep B';
+    for (let i = 0; i < 32; i++) draft.setDraft(`existing-${i}`, `draft ${i}`);
+    assert.throws(() => draft.restoreDrafts([{ draftKey: 'a', text: 'incoming A', references: [] }]), /cache is full/);
+    assert.equal(value, 'keep B'); assert.equal(draft.getDraft('existing-0'), 'draft 0'); assert.equal(draft.getDraft('a'), '');
+    assert.throws(() => draft.restoreDrafts([{ draftKey: 'a', text: 'edit', references: [], replacesMessageId: 'old' }]), /cache is full/);
+    assert.equal(draft.getDraft('a'), '');
+  } finally { await act(() => root.unmount()); Object.assign(globalThis, originals); }
+});

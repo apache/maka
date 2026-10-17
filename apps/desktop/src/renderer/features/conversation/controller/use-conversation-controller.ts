@@ -29,14 +29,14 @@ import { renderConversationMarkdown } from '../model/conversation-markdown.js';
 import { useConversationServices } from '../services.js';
 
 /** Constructed only by ConversationProvider; mutable publication never leaves it. */
-export function useConversationController() {
+export function useConversationController(automaticSelection = true) {
   const catalog = useSessionCatalogController();
   const services = useConversationServices();
   const locale = useUiLocale();
   const toast = useToast();
   const feedback = useRef({ locale, toast });
   useLayoutEffect(() => { feedback.current = { locale, toast }; }, [locale, toast]);
-  const [workspace] = useState(() => createConversationWorkspace(catalog, services.observation));
+  const [workspace] = useState(() => createConversationWorkspace(catalog, services.observation, automaticSelection));
   const interactionHydration = useRef<{ sessionId: string } | null>(null);
   const events = useRef<import('../model/session-events.js').AppShellSessionEventHandlers>(null);
   const readingCommands = useRef<import('./transcript-reading-position-controller.js').TranscriptReadingPositionCommands>(null);
