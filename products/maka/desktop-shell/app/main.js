@@ -73,6 +73,9 @@ const SIDEBAR_WIDTH = 256;
 /** The narrowest the conversation's plate gets while the Workbar's divider is dragged. */
 const CONVERSATION_MIN = 420;
 
+/** The space between the conversation's plate and the Workbar's, split between the two panels. */
+const SPLIT_GAP = 4;
+
 /**
  * The narrowest it gets in a window too narrow for both plates at their
  * usual minimums (960 wide with the sidebar leaves them 696).
@@ -618,7 +621,7 @@ export default class MakaDesktop extends View {
   withWorkbar(plate, column, cx) {
     if (!this.workbar.shown()) return plate;
     // Each panel holds half the gap, so the divider sits in its middle.
-    const gap = 4;
+    const gap = SPLIT_GAP;
     const { conversation, workbar } = this.workbarSplit(column, gap);
     return h_resizable('workbar-split')
       .size_full()
@@ -658,6 +661,17 @@ export default class MakaDesktop extends View {
       Math.min(this.workbar.width, shared - conversation - 2 * gap),
     );
     return { shared, conversation, workbar };
+  }
+
+  /**
+   * Whether the conversation's plate can be narrower than CONVERSATION_MIN:
+   * beside the Workbar in a narrow window (see workbarSplit).
+   */
+  narrowConversation() {
+    return (
+      this.workbar.shown() &&
+      this.workbarSplit(!this.sidebarHidden, SPLIT_GAP).conversation < CONVERSATION_MIN
+    );
   }
 
   /** The plate's content for a task or a new one: header, connection strip, then the conversation. */
@@ -855,7 +869,10 @@ export default class MakaDesktop extends View {
           {
             folder: view.folder,
             picker: view.picker,
-            usage: transcript === null ? null : contextControl(this.contextUse, cx),
+            usage:
+              transcript === null
+                ? null
+                : contextControl(this.contextUse, cx, this.narrowConversation()),
             // A session whose permissions were never changed still has the
             // level the Host gives every new one.
             defaultAccess:

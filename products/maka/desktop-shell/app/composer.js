@@ -695,7 +695,12 @@ export function composerPane(composer, transcript, context, cx) {
                     cx,
                   ),
                 )
-                .child(modelMenu(composer, transcript, context, cx))
+                // The model's chip gives way first where the row is short of room.
+                .child(
+                  div()
+                    .min_w_0()
+                    .child(modelMenu(composer, transcript, context, cx)),
+                )
                 .child(permissionMenu(composer, transcript, context, cx))
                 .when(context.picker !== null, (el) => el.child(context.picker))
                 .child(note(context, executor, cx))

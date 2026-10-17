@@ -305,6 +305,7 @@ export const MESSAGES = {
   // Context use and Compact, in the composer (context.js). The confirmation
   // copies the TUI's (plugins/agent/agent-screen/compact.ts).
   contextUseTip: ['Context use', '上下文用量', '上下文用量'],
+  contextUseShare: ['Context use: {value}', '上下文用量：{value}', '上下文用量：{value}'],
   contextTokens: ['{count} tokens', '{count} tokens', '{count} tokens'],
   contextUsed: [
     '{used} of {limit} tokens ({percent})',

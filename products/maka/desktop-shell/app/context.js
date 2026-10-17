@@ -355,9 +355,11 @@ function ring(share, color, track) {
 /**
  * The composer's context control, before Send: the ring and the percentage
  * of the limit (the token count alone without a limit), opening the
- * popover. Null while the conversation has no request to show.
+ * popover. `narrow` leaves the percentage to the tooltip where the
+ * conversation's plate can be too narrow for the composer's row. Null while
+ * the conversation has no request to show.
  */
-export function contextControl(use, cx) {
+export function contextControl(use, cx, narrow = false) {
   const shown = contextUse(use.request);
   if (use.transcript === null || shown === null) return null;
   const m = palette(cx);
@@ -366,6 +368,7 @@ export function contextControl(use, cx) {
     shown.share === null
       ? t('contextTokens', { count: grouped(shown.used) })
       : percent(shown.share);
+  const ringOnly = narrow && shown.share !== null;
   return Popover.new('context-use')
     .anchor('bottom_right')
     .open(use.open)
@@ -377,9 +380,9 @@ export function contextControl(use, cx) {
         .gap(6)
         .rounded(8)
         .when(use.open, (el) => el.bg(m.selected))
-        .tooltip(t('contextUseTip'))
+        .tooltip(ringOnly ? t('contextUseShare', { value: label }) : t('contextUseTip'))
         .when(shown.share !== null, (el) => el.child(ring(shown.share, color, m.border)))
-        .child(text(label, 'small', color)),
+        .when(!ringOnly, (el) => el.child(text(label, 'small', color))),
     )
     .content(
       menuSurface(cx)
