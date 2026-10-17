@@ -32,6 +32,8 @@ name: Windows recovery
 # regression this lane has caught that no other lane could have. That second
 # group is generated rather than curated, because a hand-picked list cannot be
 # shown to be complete and this one has to be.
+# The CLI project-root parser is also included: node:path.isAbsolute has native
+# Windows behavior without a win32 literal in the caller.
 #
 # What is deliberately absent is the portable rest of those workspaces. Every
 # source directory in the closure used to be here, which put this lane on 118 of
@@ -65,7 +67,17 @@ on:
       # `process.platform === 'win32'`. Generated, not curated:
       # `scripts/windows-package-source-closure.test.mjs` recomputes this set
       # from the dist tests the steps run and fails on any difference in either
-      # direction.
+      # direction, including the CLI's native path parser described above.
+      - 'packages/cli/src/__tests__/runtime-host-service-manager.test.ts'
+      - 'packages/cli/src/runtime-host-cli-installation.ts'
+      - 'packages/cli/src/runtime-host-cli.ts'
+      - 'packages/cli/src/runtime-host-lifecycle-transaction.ts'
+      - 'packages/cli/src/runtime-host-managed-deployment.ts'
+      - 'packages/cli/src/runtime-host-package-deployment.ts'
+      - 'packages/cli/src/runtime-host-peer-artifact.ts'
+      - 'packages/cli/src/runtime-host-service-management-command.ts'
+      - 'packages/cli/src/runtime-host-update-command.ts'
+      - 'packages/cli/src/runtime-host-windows-task-launcher-artifact.ts'
       - 'packages/core/src/diagnostic-log.ts'
       - 'packages/runtime-host/src/__tests__/control-endpoint.test.ts'
       - 'packages/runtime-host/src/__tests__/fixtures/endpoint-hygiene.ts'
@@ -132,6 +144,7 @@ on:
       - 'packages/storage/src/session-bundle-file-service.ts'
       - 'packages/storage/src/sqlite-long-term-memory-store.ts'
       - 'packages/storage/src/stable-storage.ts'
+      - 'packages/storage/src/workspace-root.ts'
       - '.github/workflows/windows-recovery.yml'
   # Unfiltered on purpose: required_status_checks is `strict: false`, so a pull
   # request goes green against a stale base and only the merged result proves
@@ -198,6 +211,14 @@ jobs:
             Write-Error 'Managed dependency ADS gate did not run exactly three passing Windows tests'
             exit 1
           }
+
+      # The remaining service-manager tests exercise POSIX service backends.
+      - name: Verify native Runtime Host project-root parsing
+        shell: pwsh
+        run: >-
+          node.exe --test
+          --test-name-pattern="uses native Host paths consistently|parses the bounded managed service"
+          packages/cli/dist/__tests__/runtime-host-service-manager.test.js
 
       - name: Verify root initialization replacement race
         shell: pwsh
