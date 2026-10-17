@@ -355,7 +355,7 @@ export class WorkHub {
   async readTitle(taskId) {
     try {
       const task = await query('workhub', 'task', { taskId, cursor: null });
-      this.titles.set(taskId, task.title);
+      this.titles.set(taskId, task.title ?? null);
       this.hooks.changed();
     } catch (error) {
       log(`workhub: reading the title of ${taskId} failed: ${error.message}`);

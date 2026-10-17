@@ -566,8 +566,7 @@ export default class MakaDesktop extends View {
 
   /**
    * Whether WorkHub has no subagent to delegate with: its subagents and the
-   * models have been read, and none is enabled with a model the Host offers
-   * at its connection's current revision.
+   * models have been read, and none is enabled with a model the Host offers.
    */
   workhubNeedsSubagent() {
     const presets = this.workhub.presets;
