@@ -121,6 +121,9 @@ export async function publishAcpPromptAttachments(
     }
     const bytes = await readPromptAttachment(attachment.ref.absolutePath, options.assertActive);
     options.assertActive();
+
+    const mimeType = resolveAttachmentMimeType(bytes, attachment.mimeType, attachment.name);
+
     const uploadId = randomUUID();
     const identity = { sessionId: options.sessionId, uploadId };
     let opened = false;
@@ -129,7 +132,7 @@ export async function publishAcpPromptAttachments(
         kind: 'begin',
         ...identity,
         name: attachment.name,
-        mimeType: resolveAttachmentMimeType(bytes, attachment.mimeType, attachment.name),
+        mimeType,
         totalBytes: bytes.length,
         contentSha256: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
       });
