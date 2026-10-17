@@ -231,7 +231,9 @@ export class Subagents {
 
   /** Whether the draft is a preset the Host has, which can be removed. */
   stored() {
-    return this.draft !== null && (this.snapshot?.entries ?? []).some((e) => e.id === this.draft.id);
+    return (
+      this.draft !== null && (this.snapshot?.entries ?? []).some((e) => e.id === this.draft.id)
+    );
   }
 
   /** Picks the draft's model. Its thinking level belongs to the model it was set for. */
@@ -239,7 +241,8 @@ export class Subagents {
     const draft = this.draft;
     this.menuOpen = false;
     if (draft === null) return;
-    if (draft.model === null || !sameModel(draft.model, choice.selection)) draft.thinkingLevel = null;
+    if (draft.model === null || !sameModel(draft.model, choice.selection))
+      draft.thinkingLevel = null;
     draft.model = selectionOf(choice.selection);
     log(`subagents: ${draft.id} uses ${choiceLabel(choice)}`);
     this.hooks.changed();
@@ -348,7 +351,9 @@ export class Subagents {
           this.hooks.presetsChanged(result.snapshot);
           break;
         case 'conflict':
-          log(`subagents: ${draft.id} conflicted; read again at revision ${result.snapshot.revision}`);
+          log(
+            `subagents: ${draft.id} conflicted; read again at revision ${result.snapshot.revision}`,
+          );
           this.snapshot = result.snapshot;
           // A new preset whose id was taken meanwhile gets another.
           if (this.creating && this.stored()) draft.id = this.freeId();
@@ -605,7 +610,9 @@ function modelRow(subagents, cx) {
   return v_flex()
     .w_full()
     .child(settingRow(t('subagentModel'), null, modelMenu(subagents, cx), cx))
-    .when(state !== 'ready', (el) => el.child(text(modelNote(state), 'small', m.destructive).pb(8)));
+    .when(state !== 'ready', (el) =>
+      el.child(text(modelNote(state), 'small', m.destructive).pb(8)),
+    );
 }
 
 /** The model button and the menu it opens below: models by connection, the draft's checked. */
@@ -785,7 +792,12 @@ function switchRow(id, title, help, on, disabled, set, cx) {
         .when(!on, (el) =>
           el.px(1).justify_start().bg(m.sunken).border_1().border_color(m.borderStrong),
         )
-        .child(div().size(16).rounded(8).bg(on ? m.plate : m.inkMuted)),
+        .child(
+          div()
+            .size(16)
+            .rounded(8)
+            .bg(on ? m.plate : m.inkMuted),
+        ),
     );
 }
 

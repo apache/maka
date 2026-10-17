@@ -247,7 +247,11 @@ export function icon(name, size, color) {
 export function markdownStyle(cx) {
   const m = palette(cx);
   return {
-    headings: { default: { text_size: 14, font_weight: 600 }, 1: { text_size: 18 }, 2: { text_size: 16 } },
+    headings: {
+      default: { text_size: 14, font_weight: 600 },
+      1: { text_size: 18 },
+      2: { text_size: 16 },
+    },
     paragraph_gap: 16,
     foreground: m.ink,
     muted_foreground: m.inkMuted,
@@ -268,7 +272,10 @@ export function markdownStyle(cx) {
  * own, so the tooltip sits on a div around it.
  */
 export function tippedIcon(name, size, color, tip) {
-  return div().flex_none().child(icon(name, size, color)).tooltip(tip);
+  return div()
+    .flex_none()
+    .child(icon(name, size, color))
+    .tooltip(tip);
 }
 
 /** A size in bytes as people read it: "50 bytes", "25 KB", "1.5 MB". */
@@ -320,7 +327,9 @@ export function fileChip(file, cx) {
     .child(
       v_flex()
         .min_w_0()
-        .child(typeset(div(), 'body').line_height('18px').text_color(m.ink).truncate().child(file.name))
+        .child(
+          typeset(div(), 'body').line_height('18px').text_color(m.ink).truncate().child(file.name),
+        )
         .child(text(byteSize(file.bytes), 'small', m.inkMuted).line_height('16px')),
     );
 }
@@ -482,9 +491,7 @@ export function segmentedControl(id, choices, current, choose, cx) {
       .rounded(8)
       .text_color(selected ? m.ink : m.inkMuted)
       .when(selected, (el) =>
-        dark
-          ? el.bg(m.activeRow).border_1().border_color(m.border)
-          : el.bg(m.plate).shadow_xs(),
+        dark ? el.bg(m.activeRow).border_1().border_color(m.border) : el.bg(m.plate).shadow_xs(),
       )
       .when(!selected, (el) => el.hover((style) => style.text_color(m.ink)))
       .on_click(() => choose(value))

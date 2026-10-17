@@ -28,7 +28,16 @@ import { div } from 'gpui-kit';
 import { v_flex, Button, Popover } from 'gpui-base';
 import { chooseFolder } from 'maka-files';
 import { query, log } from './host.js';
-import { palette, typeset, text, icon, ghostButton, menuSurface, menuRow, menuSeparator } from './theme.js';
+import {
+  palette,
+  typeset,
+  text,
+  icon,
+  ghostButton,
+  menuSurface,
+  menuRow,
+  menuSeparator,
+} from './theme.js';
 import { t } from './locale.js';
 
 /** Project pages read for the menu; the Host pages at most 16 projects. */
@@ -107,7 +116,9 @@ export class Directories {
   async find(path) {
     const trimmed = path.length > 1 ? path.replace(/\/+$/, '') : path;
     const root = this.roots
-      .filter((root) => trimmed === root.path || trimmed.startsWith(`${root.path.replace(/\/$/, '')}/`))
+      .filter(
+        (root) => trimmed === root.path || trimmed.startsWith(`${root.path.replace(/\/$/, '')}/`),
+      )
       .sort((a, b) => b.path.length - a.path.length)[0];
     if (root === undefined) {
       const offered = this.roots.map((root) => root.path).join(', ');
@@ -166,7 +177,9 @@ export class Directories {
         }
         if (changed) continue;
         if (reading === this.projectReads) {
-          this.projects = projects.filter((project) => !project.archived && project.selection !== null);
+          this.projects = projects.filter(
+            (project) => !project.archived && project.selection !== null,
+          );
           this.hooks.changed();
         }
         return;
@@ -259,7 +272,12 @@ export function folderPicker(directories, sessions, disabled, cx) {
     .disabled(disabled)
     .tooltip(target?.path ?? t('chooseFolder'))
     .child(icon('folder', 14, m.inkMuted))
-    .child(div().min_w_0().truncate().child(target?.name || target?.path || t('chooseFolder')))
+    .child(
+      div()
+        .min_w_0()
+        .truncate()
+        .child(target?.name || target?.path || t('chooseFolder')),
+    )
     .child(icon('chevron-down', 14, m.inkMuted));
   if (disabled) return chip;
   return Popover.new('folder-menu')
@@ -268,15 +286,18 @@ export function folderPicker(directories, sessions, disabled, cx) {
     .on_open_change((open) => directories.setMenuOpen(open))
     .trigger(chip)
     .content(
-      menuSurface(cx).w(340).mb(8).children(placeRows(directories, sessions, cx)),
+      menuSurface(cx)
+        .w(340)
+        .mb(8)
+        .children(placeRows(directories, sessions, cx)),
     );
 }
 
 function placeRows(directories, sessions, cx) {
   const target = directories.target();
   const rows = places(directories, sessions).map((place, index) =>
-    placeRow(`place-${index}`, place, place.path === target?.path, directories.roots, cx).on_click(() =>
-      directories.choose(place),
+    placeRow(`place-${index}`, place, place.path === target?.path, directories.roots, cx).on_click(
+      () => directories.choose(place),
     ),
   );
   return [

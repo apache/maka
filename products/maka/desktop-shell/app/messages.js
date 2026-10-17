@@ -783,7 +783,7 @@ export const MESSAGES = {
     '已归档的任务会保留历史记录。恢复后会重新出现在侧栏。',
     '已封存的任務會保留歷史紀錄。還原後會重新出現在側欄。',
   ],
-  backToApp:['Back to app', '返回应用', '返回應用'],
+  backToApp: ['Back to app', '返回应用', '返回應用'],
   importFromExport: ['Import from Maka export…', '从 Maka 导出文件导入…', '從 Maka 匯出檔案匯入…'],
   importFromExportTip: [
     'Read the API keys from a settings file exported by the old Maka app',
@@ -1156,7 +1156,11 @@ export const MESSAGES = {
     '读取回复失败：{value}',
     '讀取回覆失敗：{value}',
   ],
-  workhubNoticeCompleted: ['Task "{title}" completed', '任务「{title}」已完成', '任務「{title}」已完成'],
+  workhubNoticeCompleted: [
+    'Task "{title}" completed',
+    '任务「{title}」已完成',
+    '任務「{title}」已完成',
+  ],
   workhubNoticeCompletedUntitled: ['A task completed', '一个任务已完成', '一個任務已完成'],
   workhubNoticeFailed: ['Task "{title}" failed', '任务「{title}」失败了', '任務「{title}」失敗了'],
   workhubNoticeFailedUntitled: ['A task failed', '一个任务失败了', '一個任務失敗了'],

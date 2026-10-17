@@ -539,12 +539,21 @@ export function composerPane(composer, transcript, context, cx) {
                 .text_color(m.ink)
                 .disabled(inactive),
             )
-            .when(files.length > 0, (el) => el.child(attachmentRow(composer, transcript, files, cx)))
+            .when(files.length > 0, (el) =>
+              el.child(attachmentRow(composer, transcript, files, cx)),
+            )
             .child(
               h_flex()
                 .gap(2)
                 .items_center()
-                .child(attachButton(composer, transcript, !inactive && composer.canAttach(transcript), cx))
+                .child(
+                  attachButton(
+                    composer,
+                    transcript,
+                    !inactive && composer.canAttach(transcript),
+                    cx,
+                  ),
+                )
                 .child(modelMenu(composer, transcript, context, cx))
                 .child(permissionMenu(composer, transcript, context, cx))
                 .when(context.picker !== null, (el) => el.child(context.picker))
@@ -628,7 +637,9 @@ function chip(id, label, cx) {
 function modelMenu(composer, transcript, context, cx) {
   const current = composer.label(transcript);
   const chosen = composer.chosen.get(transcript?.id ?? '');
-  const selected = chosen?.selection ?? (transcript?.backend?.kind === 'model' ? transcript.backend : composer.model);
+  const selected =
+    chosen?.selection ??
+    (transcript?.backend?.kind === 'model' ? transcript.backend : composer.model);
   const byConnection = new Map();
   for (const choice of composer.choices) {
     const name = choice.connectionName ?? '';
@@ -742,17 +753,14 @@ function accessRow(access, label, hint, checked, cx) {
         .min_w_0()
         .gap(2)
         .child(typeset(div(), 'body').text_color(m.ink).child(t(label)))
-        .child(
-          text(t(hint), 'small', access === 'danger_full_access' ? m.warning : m.inkMuted),
-        ),
+        .child(text(t(hint), 'small', access === 'danger_full_access' ? m.warning : m.inkMuted)),
     );
 }
 
 /** The note between the chips and Send: the last error, or why sending is not possible. */
 function note(context, executor, cx) {
   const m = palette(cx);
-  const message =
-    context.notice ?? (executor ? t('executorNote') : null);
+  const message = context.notice ?? (executor ? t('executorNote') : null);
   return h_flex()
     .id('composer-note')
     .flex_1()
@@ -761,7 +769,9 @@ function note(context, executor, cx) {
     .when(message !== null, (el) =>
       el
         .tooltip(context.notice !== null ? t('noticeDismiss', { value: message }) : message)
-        .when(context.notice !== null, (el) => el.cursor_pointer().on_click(() => context.dismiss()))
+        .when(context.notice !== null, (el) =>
+          el.cursor_pointer().on_click(() => context.dismiss()),
+        )
         .child(
           text(message, 'small', context.notice !== null ? m.destructive : m.inkMuted).truncate(),
         ),

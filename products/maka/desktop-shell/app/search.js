@@ -166,7 +166,9 @@ export class Search {
       );
       if (!current) return;
       this.field.set_selected_range({ start: 0, end: this.field.value().length });
-      log(`search: the field ${this.focused ? 'has the keyboard' : 'was given the keyboard (no focus event yet)'}`);
+      log(
+        `search: the field ${this.focused ? 'has the keyboard' : 'was given the keyboard (no focus event yet)'}`,
+      );
     });
   }
 
@@ -241,7 +243,8 @@ export class Search {
     const keys = this.shown()?.results ?? [];
     if (keys.length === 0) return;
     const at = keys.indexOf(this.cursor);
-    const index = at < 0 ? (step > 0 ? 0 : keys.length - 1) : Math.max(0, Math.min(keys.length - 1, at + step));
+    const index =
+      at < 0 ? (step > 0 ? 0 : keys.length - 1) : Math.max(0, Math.min(keys.length - 1, at + step));
     this.cursor = keys[index];
     this.hooks.changed();
   }
@@ -547,7 +550,12 @@ function searchField(search, cx) {
     .h(36)
     .track_focus(search.fieldFocus)
     .on_key_down((event) => search.key(event))
-    .child(textField(search.field, cx).h(36).pl(36).pr(typed ? 36 : 12))
+    .child(
+      textField(search.field, cx)
+        .h(36)
+        .pl(36)
+        .pr(typed ? 36 : 12),
+    )
     .child(icon('search', 16, m.inkMuted).absolute().left(12).top(10))
     .when(typed, (el) =>
       el.child(
@@ -598,7 +606,12 @@ function resultItems(answer, byId, fill) {
 function resultsList(search, answer, sessions, stale, cx) {
   const byId = new Map(sessions.map((session) => [session.id, session]));
   const all = resultItems(answer, byId, cx.theme().is_dark ? MARK.dark : MARK.light);
-  const from = search.restoring ? Math.max(0, all.findIndex((item) => item.key === search.top)) : 0;
+  const from = search.restoring
+    ? Math.max(
+        0,
+        all.findIndex((item) => item.key === search.top),
+      )
+    : 0;
   const items = from > 0 ? all.slice(from) : all;
   const id = `search-results-${answer.serial}`;
   return v_flex()

@@ -36,7 +36,10 @@
       "!website/**",
       // Verbatim Deno sources; tests verify their exact bytes.
       "!platform/js-runtime/third-party/deno-telemetry/telemetry.ts",
-      "!platform/js-runtime/third-party/deno-telemetry/util.ts"
+      "!platform/js-runtime/third-party/deno-telemetry/util.ts",
+      // Verbatim gpui-kit source; third-party/gpui-kit/upstream.json records
+      // its hash.
+      "!third-party/gpui-kit/crates/shell/component-inventory.json"
     ]
   },
   // Formatter enabled together with the one-time whole-tree baseline commit

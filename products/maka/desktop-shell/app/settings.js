@@ -236,9 +236,9 @@ export class Settings {
       [...names]
         .filter((name) => !this.descriptors.has(name))
         .map((name) =>
-          this.descriptor(
-            this.connections.find((c) => c.provider.name === name).provider,
-          ).catch(() => null),
+          this.descriptor(this.connections.find((c) => c.provider.name === name).provider).catch(
+            () => null,
+          ),
         ),
     );
   }
@@ -270,7 +270,8 @@ export class Settings {
     try {
       const search = this.modelQuery.value().trim();
       let page = await query('settings', 'models', { kind: 'start', query: search });
-      if (page.kind !== 'ready') page = await query('settings', 'models', { kind: 'start', query: search });
+      if (page.kind !== 'ready')
+        page = await query('settings', 'models', { kind: 'start', query: search });
       if (read !== this.modelReads) return;
       if (page.kind !== 'ready') throw new Error(t('modelListKeptChanging'));
       this.models = {
@@ -563,7 +564,11 @@ export class Settings {
     const current = status.kind === 'status' ? status.status : null;
     const expectedCredential =
       current?.configured && current.credentialId !== null && current.revision !== null
-        ? { locator: current.locator, credentialId: current.credentialId, revision: current.revision }
+        ? {
+            locator: current.locator,
+            credentialId: current.credentialId,
+            revision: current.revision,
+          }
         : null;
     const result = await operation(
       'settings',
@@ -788,13 +793,17 @@ function takesKey(descriptor) {
 }
 
 function showsEndpoint(descriptor) {
-  const defaults = isObject(descriptor.configurationDefaults) ? descriptor.configurationDefaults : {};
+  const defaults = isObject(descriptor.configurationDefaults)
+    ? descriptor.configurationDefaults
+    : {};
   return typeof defaults.baseUrl === 'string' || descriptor.customEndpoint === true;
 }
 
 /** The provider's default configuration, with the endpoint when it differs from the default. */
 function configurationFor(descriptor, endpoint) {
-  const defaults = isObject(descriptor.configurationDefaults) ? descriptor.configurationDefaults : {};
+  const defaults = isObject(descriptor.configurationDefaults)
+    ? descriptor.configurationDefaults
+    : {};
   if (endpoint === '') return { ...defaults };
   const trim = (url) => url.replace(/\/+$/, '');
   return typeof defaults.baseUrl === 'string' && trim(defaults.baseUrl) === trim(endpoint)
@@ -998,23 +1007,23 @@ export function group(title, description, end, rows, cx) {
   const m = palette(cx);
   return v_flex()
     .w_full()
-    .when(title !== null, (el) => el.child(
-      h_flex()
-        .gap(12)
-        .pb(8)
-        .items_end()
-        .child(
-          v_flex()
-            .flex_1()
-            .min_w_0()
-            .child(text(title, 'heading', m.ink))
-            .when(description !== null, (el) => el.child(text(description, 'small', m.inkMuted))),
-        )
-        .when(end !== null, (el) => el.child(end)),
-    ))
-    .children(
-      rows.map((row) => div().w_full().border_t_1().border_color(m.borderSoft).child(row)),
-    );
+    .when(title !== null, (el) =>
+      el.child(
+        h_flex()
+          .gap(12)
+          .pb(8)
+          .items_end()
+          .child(
+            v_flex()
+              .flex_1()
+              .min_w_0()
+              .child(text(title, 'heading', m.ink))
+              .when(description !== null, (el) => el.child(text(description, 'small', m.inkMuted))),
+          )
+          .when(end !== null, (el) => el.child(end)),
+      ),
+    )
+    .children(rows.map((row) => div().w_full().border_t_1().border_color(m.borderSoft).child(row)));
 }
 
 /**
@@ -1341,13 +1350,11 @@ function addForm(settings, cx) {
             .flex_wrap()
             .gap(8)
             .children(
-              matches
-                .slice(0, PROVIDER_ROWS)
-                .map((provider) =>
-                  button(`provider-${provider.identity.name}`, provider.label, false, busy, cx)
-                    .h(28)
-                    .on_click(() => settings.chooseProvider(provider)),
-                ),
+              matches.slice(0, PROVIDER_ROWS).map((provider) =>
+                button(`provider-${provider.identity.name}`, provider.label, false, busy, cx)
+                  .h(28)
+                  .on_click(() => settings.chooseProvider(provider)),
+              ),
             ),
         )
         .when(matches.length > PROVIDER_ROWS, (el) =>
@@ -1449,8 +1456,13 @@ function importPanel(settings, cx) {
       )
       .when(!plan.done && ready > 0, (el) =>
         el.child(
-          button('import-run', tn(ready, 'importKeysOne', 'importKeysOther'), true, busy, cx)
-            .on_click(() => settings.runImport()),
+          button(
+            'import-run',
+            tn(ready, 'importKeysOne', 'importKeysOther'),
+            true,
+            busy,
+            cx,
+          ).on_click(() => settings.runImport()),
         ),
       ),
   );

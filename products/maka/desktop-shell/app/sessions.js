@@ -429,7 +429,9 @@ export class SidebarState {
     );
     if (!current) return;
     this.name.set_selected_range({ start: 0, end: this.name.value().length });
-    log(`sessions: the name field ${renaming.focused ? 'has the keyboard' : 'was given the keyboard (no focus event yet)'}`);
+    log(
+      `sessions: the name field ${renaming.focused ? 'has the keyboard' : 'was given the keyboard (no focus event yet)'}`,
+    );
   }
 
   /**
@@ -673,8 +675,11 @@ function groupingControl(ui, cx) {
 function taskGroup(group, ui, selectedId, actions, cx) {
   const m = palette(cx);
   const folded = ui.folded.has(group.key);
-  const shown =
-    folded ? [] : ui.expanded.has(group.key) ? group.sessions : group.sessions.slice(0, GROUP_ROWS);
+  const shown = folded
+    ? []
+    : ui.expanded.has(group.key)
+      ? group.sessions
+      : group.sessions.slice(0, GROUP_ROWS);
   const hidden = folded ? 0 : group.sessions.length - shown.length;
   const id = slug(group.key);
   return v_flex()

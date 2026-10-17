@@ -224,7 +224,13 @@ function archivedRow(archived, session, cx) {
               .on_click(() => archived.restore(session)),
           )
           .child(
-            controlButton(`archived-delete-${session.id}`, t('deleteTask'), 'outline', busy || confirming, cx)
+            controlButton(
+              `archived-delete-${session.id}`,
+              t('deleteTask'),
+              'outline',
+              busy || confirming,
+              cx,
+            )
               .h(28)
               .text_color(m.destructive)
               .on_click(() => archived.askRemove(session)),
@@ -247,7 +253,13 @@ function archivedRow(archived, session, cx) {
               .child(text(t('deleteTaskHelp'), 'small', m.inkMuted)),
           )
           .child(
-            controlButton(`archived-delete-confirm-${session.id}`, t('deleteAction'), 'primary', busy, cx)
+            controlButton(
+              `archived-delete-confirm-${session.id}`,
+              t('deleteAction'),
+              'primary',
+              busy,
+              cx,
+            )
               .h(28)
               .bg(m.destructive)
               .when(!busy, (el) => el.hover((style) => style.bg(m.destructive).opacity(0.84)))

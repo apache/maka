@@ -561,8 +561,13 @@ export class WorkHub {
         log(`workhub: the reply of ${selected.entry.taskId} changed`);
         selected.more = null;
       } else {
-        const before = selected.more?.invocationId === cursor.invocationId ? selected.more.text : '';
-        selected.more = { invocationId: cursor.invocationId, text: before + page.text, next: page.next };
+        const before =
+          selected.more?.invocationId === cursor.invocationId ? selected.more.text : '';
+        selected.more = {
+          invocationId: cursor.invocationId,
+          text: before + page.text,
+          next: page.next,
+        };
       }
     } catch (error) {
       selected.problem = t('workhubReadMoreFailed', { value: error.message });
@@ -822,7 +827,8 @@ function setup(workhub, cx) {
   const busy = workhub.choosing || workhub.settingUp || workhub.loading;
   const folder = pending ? workhub.folderOf(coordinator.workspace) : null;
   const problem =
-    workhub.setupProblem ?? (coordinator.kind === 'rejected' ? rejection(coordinator.reason) : null);
+    workhub.setupProblem ??
+    (coordinator.kind === 'rejected' ? rejection(coordinator.reason) : null);
   const label = workhub.settingUp
     ? t('workhubSettingUp')
     : pending
@@ -846,14 +852,24 @@ function setup(workhub, cx) {
       .child(text(t('workhubName'), 'display', m.ink).mb(4))
       .child(text(t('workhubIntro'), 'body', m.inkMuted).text_center())
       .child(
-        text(pending ? t('workhubSetupPending') : t('workhubFolderNote'), 'body', m.inkMuted)
-          .text_center(),
+        text(
+          pending ? t('workhubSetupPending') : t('workhubFolderNote'),
+          'body',
+          m.inkMuted,
+        ).text_center(),
       )
       .when(folder !== null, (el) =>
-        el.child(text(t('workhubSetupFolder', { path: folder }), 'small', m.inkMuted).text_center()),
+        el.child(
+          text(t('workhubSetupFolder', { path: folder }), 'small', m.inkMuted).text_center(),
+        ),
       )
       .when(problem !== null, (el) =>
-        el.child(div().w_full().mt(8).child(warning(t('workhubNotSetUp'), problem, null, cx))),
+        el.child(
+          div()
+            .w_full()
+            .mt(8)
+            .child(warning(t('workhubNotSetUp'), problem, null, cx)),
+        ),
       )
       .child(div().mt(16).child(action)),
   );
@@ -895,7 +911,9 @@ function taskList(workhub, cx) {
         );
   if (page === null) {
     return centered(
-      stopped !== null ? div().w_full().max_w(720).child(stopped) : loadingLine(t('loadingTasks'), cx),
+      stopped !== null
+        ? div().w_full().max_w(720).child(stopped)
+        : loadingLine(t('loadingTasks'), cx),
     );
   }
   const next = page.after;
@@ -956,7 +974,13 @@ function taskRow(workhub, entry, cx) {
     .hover((style) => style.bg(m.hover))
     .on_click(() => workhub.showTask(entry))
     .child(statusGlyph(mark, 16, cx))
-    .child(div().flex_1().min_w_0().truncate().child(entry.title || t('workhubUntitled')))
+    .child(
+      div()
+        .flex_1()
+        .min_w_0()
+        .truncate()
+        .child(entry.title || t('workhubUntitled')),
+    )
     .child(text(words, 'small', m.inkMuted).flex_none());
 }
 
@@ -1012,9 +1036,13 @@ function taskDetail(workhub, actions, cx) {
           )
           .when(sessionId !== null, (el) =>
             el.child(
-              controlButton('workhub-open-session', t('workhubOpenSession'), 'primary', false, cx).on_click(
-                () => actions.openSession(sessionId),
-              ),
+              controlButton(
+                'workhub-open-session',
+                t('workhubOpenSession'),
+                'primary',
+                false,
+                cx,
+              ).on_click(() => actions.openSession(sessionId)),
             ),
           ),
       )
@@ -1027,12 +1055,20 @@ function taskDetail(workhub, actions, cx) {
       .when(answer?.next != null, (el) =>
         el.child(
           h_flex().child(
-            controlButton('workhub-read-more', t('workhubReadMore'), 'outline', selected.reading, cx)
+            controlButton(
+              'workhub-read-more',
+              t('workhubReadMore'),
+              'outline',
+              selected.reading,
+              cx,
+            )
               .h(28)
               .on_click(() => workhub.readMore()),
           ),
         ),
       )
-      .when(selected.problem !== null, (el) => el.child(text(selected.problem, 'small', m.destructive))),
+      .when(selected.problem !== null, (el) =>
+        el.child(text(selected.problem, 'small', m.destructive)),
+      ),
   );
 }

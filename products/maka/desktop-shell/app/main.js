@@ -83,7 +83,11 @@ export default class MakaDesktop extends View {
         // A page read before a change the app made itself (a permission
         // level) can arrive after it; an older revision is not taken.
         const entry = this.catalog.sessions.find((session) => session.id === this.transcript?.id);
-        if (entry && this.transcript !== null && entry.revision >= this.transcript.session.revision) {
+        if (
+          entry &&
+          this.transcript !== null &&
+          entry.revision >= this.transcript.session.revision
+        ) {
           this.transcript.session = entry;
         }
         hooks.changed();
@@ -114,7 +118,8 @@ export default class MakaDesktop extends View {
     // A result opens its task as the sidebar does; the session the Host
     // answered with gives way to the catalog's entry, which is fresher.
     // Archived tasks, which the catalog does not list, open too.
-    const listed = (session) => this.catalog.sessions.find((entry) => entry.id === session.id) ?? session;
+    const listed = (session) =>
+      this.catalog.sessions.find((entry) => entry.id === session.id) ?? session;
     this.search = new Search(
       {
         changed: hooks.changed,
@@ -506,7 +511,12 @@ export default class MakaDesktop extends View {
         folder: folder === null ? null : { name: folder.name, path: folder.path },
         picker:
           transcript === null
-            ? folderPicker(this.directories, this.catalog.sessions, this.creating || folder === null, cx)
+            ? folderPicker(
+                this.directories,
+                this.catalog.sessions,
+                this.creating || folder === null,
+                cx,
+              )
             : null,
       },
       cx,
@@ -522,10 +532,14 @@ export default class MakaDesktop extends View {
     const workhub = this.workhub;
     const chat = workhub.chat();
     el = el
-      .child(this.header(t('workhubName'), runState(workhub.transcript), workhubTabs(workhub, cx), cx))
+      .child(
+        this.header(t('workhubName'), runState(workhub.transcript), workhubTabs(workhub, cx), cx),
+      )
       .child(this.connectionStrip(cx));
     if (chat === null) {
-      return el.child(workhubBody(workhub, { openSession: (sessionId) => this.openSession(sessionId) }, cx));
+      return el.child(
+        workhubBody(workhub, { openSession: (sessionId) => this.openSession(sessionId) }, cx),
+      );
     }
     // Its folder was fixed when it was set up.
     return this.conversation(
@@ -681,9 +695,13 @@ export default class MakaDesktop extends View {
             .child(icon('triangle-alert', 16, m.warning))
             .child(text(t('noModelYet'), 'body', m.ink))
             .child(
-              controlButton('open-settings', t('addModelInSettings'), 'primary', false, cx).on_click(
-                () => this.settings.show('connections'),
-              ),
+              controlButton(
+                'open-settings',
+                t('addModelInSettings'),
+                'primary',
+                false,
+                cx,
+              ).on_click(() => this.settings.show('connections')),
             ),
         ),
       );
@@ -729,9 +747,11 @@ export default class MakaDesktop extends View {
       .items_center()
       .child(leading)
       .when(controls !== null, (el) =>
-        el
-          .child(controls)
-          .child(side().justify_end().when(stateText !== null, (el) => el.child(stateText))),
+        el.child(controls).child(
+          side()
+            .justify_end()
+            .when(stateText !== null, (el) => el.child(stateText)),
+        ),
       );
   }
 

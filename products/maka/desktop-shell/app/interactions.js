@@ -96,7 +96,10 @@ export class Interactions {
     this.records.set(requestId, null);
     this.failures.delete(requestId);
     try {
-      const record = await query(this.endpoint, 'interaction', { sessionId: this.sessionId, requestId });
+      const record = await query(this.endpoint, 'interaction', {
+        sessionId: this.sessionId,
+        requestId,
+      });
       if (this.closed || !this.entries.some((entry) => entry.requestId === requestId)) return;
       this.adopt(record);
     } catch (error) {
@@ -304,9 +307,19 @@ class FormDraft {
         this.problem = { index, message: problem };
         return null;
       }
-      Object.defineProperty(values, field.name, { value: parsed, enumerable: true, configurable: true, writable: true });
+      Object.defineProperty(values, field.name, {
+        value: parsed,
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
     }
-    const answer = { kind: 'form_answer', action: 'accept', values, committedAt: Number.MAX_SAFE_INTEGER };
+    const answer = {
+      kind: 'form_answer',
+      action: 'accept',
+      values,
+      committedAt: Number.MAX_SAFE_INTEGER,
+    };
     if (utf8Length(JSON.stringify(answer)) > 8192) {
       this.problem = { index: -1, message: t('answersTooLong') };
       return null;
@@ -403,14 +416,19 @@ function uri(value) {
   const scheme = /^([a-zA-Z][a-zA-Z0-9+.-]*):(.*)$/s.exec(trimmed);
   if (scheme === null) return false;
   if (!/^(?:https?|wss?|ftp)$/i.test(scheme[1])) return true;
-  const web = /^\/\/(?:[^\/?#@]*@)?(\[[0-9a-fA-F:.]+\]|[^\s\/?#:@\[\]]+)(?::(\d*))?(?:[\/?#].*)?$/s.exec(scheme[2]);
+  const web =
+    /^\/\/(?:[^\/?#@]*@)?(\[[0-9a-fA-F:.]+\]|[^\s\/?#:@\[\]]+)(?::(\d*))?(?:[\/?#].*)?$/s.exec(
+      scheme[2],
+    );
   return web !== null && (web[2] === undefined || web[2] === '' || Number(web[2]) <= 65535);
 }
 
 /** Whether `value` is a real calendar date (and time), as the Host checks it. */
 function calendar(value, time) {
   const match = time
-    ? /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](\d{2}):(\d{2}))$/.exec(value)
+    ? /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](\d{2}):(\d{2}))$/.exec(
+        value,
+      )
     : /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
   if (match === null) return false;
   const n = (index) => Number(match[index] ?? 0);
@@ -629,11 +647,7 @@ function failureCard(interactions, cx) {
           .gap(8)
           .items_center()
           .child(icon('status-failed', 16, m.destructive))
-          .child(
-            text(t('requestUnreadable'), 'strong', m.ink)
-              .flex_1()
-              .min_w_0(),
-          ),
+          .child(text(t('requestUnreadable'), 'strong', m.ink).flex_1().min_w_0()),
       )
       .child(detail(reason, cx))
       .child(
@@ -655,13 +669,7 @@ function decisions(id, busy, cx, decide) {
 
 /** The reading column the card sits in, above the composer. */
 function column(card) {
-  return h_flex()
-    .flex_none()
-    .w_full()
-    .px(24)
-    .pt(8)
-    .justify_center()
-    .child(card);
+  return h_flex().flex_none().w_full().px(24).pt(8).justify_center().child(card);
 }
 
 /** The card's box. */
@@ -704,7 +712,10 @@ function command(run, cx) {
     .text_color(m.ink)
     .child(div().child(`$ ${run.command}`))
     .child(
-      div().text_size(12).text_color(m.inkMuted).child(t('commandIn', { path: run.cwd })),
+      div()
+        .text_size(12)
+        .text_color(m.inkMuted)
+        .child(t('commandIn', { path: run.cwd })),
     );
 }
 
@@ -751,7 +762,9 @@ function formField(id, form, field, index, busy, cx) {
     case 'string':
     case 'number':
     case 'integer':
-      control = div().w(280).child(textField(form.state(index), cx));
+      control = div()
+        .w(280)
+        .child(textField(form.state(index), cx));
       break;
     case 'boolean':
       control = choices([
@@ -766,16 +779,26 @@ function formField(id, form, field, index, busy, cx) {
     case 'single_select':
       control = choices(
         field.options.map((entry, choice) =>
-          optionButton(`${key}-${choice}`, entry.label, form.chosen(index) === entry.value, busy, cx)
-            .on_click(() => form.choose(index, entry.value)),
+          optionButton(
+            `${key}-${choice}`,
+            entry.label,
+            form.chosen(index) === entry.value,
+            busy,
+            cx,
+          ).on_click(() => form.choose(index, entry.value)),
         ),
       );
       break;
     case 'multi_select':
       control = choices(
         field.options.map((entry, choice) =>
-          optionButton(`${key}-${choice}`, entry.label, form.chosen(index).includes(entry.value), busy, cx)
-            .on_click(() => form.toggle(index, entry.value)),
+          optionButton(
+            `${key}-${choice}`,
+            entry.label,
+            form.chosen(index).includes(entry.value),
+            busy,
+            cx,
+          ).on_click(() => form.toggle(index, entry.value)),
         ),
       );
       break;
@@ -783,7 +806,8 @@ function formField(id, form, field, index, busy, cx) {
       control = text(t('fieldKindUnsupported', { kind: field.kind }), 'small', m.inkMuted);
   }
   const problem = form.problem?.index === index ? form.problem.message : null;
-  const note = problem ?? ([field.description, fieldHint(field)].filter(Boolean).join(' · ') || null);
+  const note =
+    problem ?? ([field.description, fieldHint(field)].filter(Boolean).join(' · ') || null);
   return h_flex()
     .w_full()
     .py(8)

@@ -287,7 +287,10 @@ export class Transcript {
       }
       let position = { kind: 'tail' };
       while (anchored === null) {
-        const { page, calls } = await readHistory(this.historyInput(fence, position), this.endpoint);
+        const { page, calls } = await readHistory(
+          this.historyInput(fence, position),
+          this.endpoint,
+        );
         this.stats.tailCalls += calls;
         if (this.closed) return;
         if (page.chunks.length === 0 && page.before !== null) {
@@ -329,9 +332,13 @@ export class Transcript {
       const { page, calls } = await readHistory(this.historyInput(fence, position), this.endpoint);
       this.stats.tailCalls += calls;
       if (page.chunks.length > 0) return page;
-      log(`transcript "${this.session.title}": nothing at row ${this.anchor}; opening at the newest`);
+      log(
+        `transcript "${this.session.title}": nothing at row ${this.anchor}; opening at the newest`,
+      );
     } catch (error) {
-      log(`transcript "${this.session.title}": reading at row ${this.anchor} failed: ${error.message}; opening at the newest`);
+      log(
+        `transcript "${this.session.title}": reading at row ${this.anchor} failed: ${error.message}; opening at the newest`,
+      );
     }
     this.anchored = false;
     return null;
@@ -344,7 +351,13 @@ export class Transcript {
    */
   showing(range, count) {
     this.visible = { start: range.start, end: range.end, count };
-    if (this.anchored && this.ready && !this.following && this.after === null && range.end >= count) {
+    if (
+      this.anchored &&
+      this.ready &&
+      !this.following &&
+      this.after === null &&
+      range.end >= count
+    ) {
       this.anchored = false;
       log(`transcript "${this.session.title}": the newest row is on screen; following it again`);
       this.hooks.changed();
@@ -777,7 +790,13 @@ export class Transcript {
     const key = `${sequence}/${field}/${path.join('/')}`;
     if (this.sources.has(key)) {
       const known = this.sources.get(key);
-      if (ends && known !== null && !known.complete && known.failed === undefined && known.tail === undefined) {
+      if (
+        ends &&
+        known !== null &&
+        !known.complete &&
+        known.failed === undefined &&
+        known.tail === undefined
+      ) {
         this.readRest(key, sequence, field, path, known);
       }
       return known;
@@ -786,7 +805,12 @@ export class Transcript {
     this.excerpt(sequence, field, path, { kind: 'start' }).then(
       (source) => {
         const complete = source.offset === 0 && utf8Length(source.text) === source.totalBytes;
-        const read = { text: source.text, complete, totalBytes: source.totalBytes, tail: undefined };
+        const read = {
+          text: source.text,
+          complete,
+          totalBytes: source.totalBytes,
+          tail: undefined,
+        };
         this.sources.set(key, read);
         if (ends && !complete) this.readRest(key, sequence, field, path, read);
         if (!this.closed) this.hooks.changed();
@@ -911,7 +935,13 @@ function displayItems(transcript) {
       // Drawn with its call.
     } else if (row.role === 'tool_call' || row.role === 'tool_result') {
       const result = row.role === 'tool_call' ? (results.get(row.sequence) ?? null) : row;
-      items.push({ key: row.key, kind: 'tool', row, result, open: transcript.expanded.has(row.key) });
+      items.push({
+        key: row.key,
+        kind: 'tool',
+        row,
+        result,
+        open: transcript.expanded.has(row.key),
+      });
     } else if (row.role === 'thinking') {
       items.push({ key: row.key, kind: 'thinking', row, open: transcript.expanded.has(row.key) });
     } else if (row.role === 'failure') {
@@ -946,7 +976,13 @@ function displayItems(transcript) {
   for (const row of live) {
     items.push(
       row.role === 'thinking'
-        ? { key: row.key, kind: 'thinking', row, open: transcript.expanded.has(row.key), streaming: true }
+        ? {
+            key: row.key,
+            kind: 'thinking',
+            row,
+            open: transcript.expanded.has(row.key),
+            streaming: true,
+          }
         : { key: row.key, kind: 'assistant', row },
     );
   }
@@ -1152,8 +1188,17 @@ function failureRow(item, cx) {
     .w_full()
     .gap(8)
     .items_start()
-    .child(div().flex_none().pt(2).child(icon('status-failed', 14, m.destructive)))
-    .child(text(t('runError', { value: item.row.text }), 'small', m.ink).flex_1().min_w_0());
+    .child(
+      div()
+        .flex_none()
+        .pt(2)
+        .child(icon('status-failed', 14, m.destructive)),
+    )
+    .child(
+      text(t('runError', { value: item.row.text }), 'small', m.ink)
+        .flex_1()
+        .min_w_0(),
+    );
 }
 
 /**
@@ -1190,7 +1235,8 @@ function workhubNotice(row) {
         ? 'cancelled'
         : status.kind === 'rejected'
           ? 'rejected'
-          : work.kind === 'delivered' && ['completed', 'failed', 'cancelled'].includes(work.execution?.state)
+          : work.kind === 'delivered' &&
+              ['completed', 'failed', 'cancelled'].includes(work.execution?.state)
             ? work.execution.state
             : null;
   } catch {
@@ -1319,9 +1365,7 @@ function thinkingRow(item, cx) {
         .child(icon(item.open ? 'chevron-down' : 'chevron-right', 14, m.inkMuted)),
     )
     .when(item.open, (el) =>
-      el.child(
-        text(item.row.text, 'body', m.inkMuted).pl(38).pr(12).pt(2).pb(8),
-      ),
+      el.child(text(item.row.text, 'body', m.inkMuted).pl(38).pr(12).pt(2).pb(8)),
     );
 }
 
@@ -1405,7 +1449,8 @@ function toolIcon(name) {
  */
 function toolStatus(row, result, reportedFailure, m) {
   if (result !== null) {
-    if (result.tool?.result?.settlement === 'rejected') return ['notRun', 'status-stopped', m.inkMuted];
+    if (result.tool?.result?.settlement === 'rejected')
+      return ['notRun', 'status-stopped', m.inkMuted];
     if (
       reportedFailure ||
       result.tool?.result?.isError ||
@@ -1476,7 +1521,11 @@ function outputParts(tool, kind, status, transcript) {
     // (tool-details/index.ts:281-292); its output comes with a later call.
     const state = transcript.source(sequence, 'result', ['value', 'status']);
     if (state === null) return [{ label: null, source: null, format: 'text' }];
-    if (method === 'execute' && state.failed === undefined && ['starting', 'running'].includes(state.text)) {
+    if (
+      method === 'execute' &&
+      state.failed === undefined &&
+      ['starting', 'running'].includes(state.text)
+    ) {
       return [{ note: t('runningInBackground') }];
     }
     const mode = transcript.source(sequence, 'result', ['value', 'output', 'mode']);
@@ -1489,14 +1538,25 @@ function outputParts(tool, kind, status, transcript) {
       return ['stdout', 'stderr'].map((stream) => {
         const cut = flag(`${stream}Truncated`);
         const label = stream === 'stdout' ? t('outputStdout') : t('outputStderr');
-        return { label, source: read(['value', 'output', stream]), format: 'text', cut, midLine: cut };
+        return {
+          label,
+          source: read(['value', 'output', stream]),
+          format: 'text',
+          cut,
+          midLine: cut,
+        };
       });
     }
     // A terminal's lines above the screen, then the screen, as the TUI shows
     // both. They are whole lines; the flag says some earlier ones are gone.
     if (mode.failed === undefined && mode.text === 'pty') {
       return [
-        { label: t('outputScrollback'), source: read(['value', 'output', 'scrollback']), format: 'text', cut: flag('truncated') },
+        {
+          label: t('outputScrollback'),
+          source: read(['value', 'output', 'scrollback']),
+          format: 'text',
+          cut: flag('truncated'),
+        },
         { label: t('outputScreen'), source: read(['value', 'output', 'screen']), format: 'text' },
       ];
     }
@@ -1529,7 +1589,9 @@ function partText(part) {
   if (part.format === 'lines') {
     const value = parsed(part.source);
     if (Array.isArray(value)) {
-      const lines = value.map((entry) => (typeof entry === 'string' ? entry : JSON.stringify(entry)));
+      const lines = value.map((entry) =>
+        typeof entry === 'string' ? entry : JSON.stringify(entry),
+      );
       return { text: lines.join('\n'), cut: false };
     }
   }
@@ -1584,13 +1646,17 @@ function resultText(source) {
   if (typeof value === 'string') return value;
   const output = value?.output;
   if (output?.mode === 'pipes') {
-    return [output.stdout, output.stderr].filter((part) => typeof part === 'string' && part !== '').join('\n');
+    return [output.stdout, output.stderr]
+      .filter((part) => typeof part === 'string' && part !== '')
+      .join('\n');
   }
   if (output?.mode === 'pty') return output.screen ?? output.scrollback ?? '';
   if (typeof value?.content === 'string') return value.content;
   const found = value?.files ?? value?.matches;
   if (Array.isArray(found)) {
-    return found.map((entry) => (typeof entry === 'string' ? entry : JSON.stringify(entry))).join('\n');
+    return found
+      .map((entry) => (typeof entry === 'string' ? entry : JSON.stringify(entry)))
+      .join('\n');
   }
   return JSON.stringify(value, null, 2);
 }
@@ -1608,13 +1674,17 @@ function toolRow(item, transcript, cx) {
   const tool = (result ?? row).tool ?? row.tool;
   const kind = TOOL_KINDS[tool?.call?.presentation] ?? null;
   const own =
-    kind === null && Object.hasOwn(NAMED_TOOLS, tool?.call?.name ?? '') ? NAMED_TOOLS[tool.call.name] : null;
+    kind === null && Object.hasOwn(NAMED_TOOLS, tool?.call?.name ?? '')
+      ? NAMED_TOOLS[tool.call.name]
+      : null;
   const name =
     kind !== null ? t(kind[0]) : own !== null ? t(own[0]) : (tool?.call?.name ?? t('toolUnnamed'));
   // A contract's result says in its `kind` whether it failed, as the TUI
   // reads it (tool-details/index.ts:257, 268, 325).
   const outcome =
-    kind !== null && tool?.result ? transcript.source(tool.result.sequence, 'result', ['kind']) : null;
+    kind !== null && tool?.result
+      ? transcript.source(tool.result.sequence, 'result', ['kind'])
+      : null;
   const [status, statusIcon, statusColor] = toolStatus(row, result, outcome?.text === 'failed', m);
   const summary = toolSummary(tool, kind, transcript);
   // Opened, a call shows its output, after its arguments when the header
@@ -1622,16 +1692,28 @@ function toolRow(item, transcript, cx) {
   // another call's.
   const parts = [];
   if (item.open && tool?.call && kind === null) {
-    parts.push({ label: null, source: transcript.source(tool.call.sequence, 'arguments', [], true), format: 'arguments' });
+    parts.push({
+      label: null,
+      source: transcript.source(tool.call.sequence, 'arguments', [], true),
+      format: 'arguments',
+    });
   } else if (item.open && tool?.call?.title) {
-    parts.push({ label: null, source: transcript.source(tool.call.sequence, 'arguments', kind[2], true), format: 'text' });
+    parts.push({
+      label: null,
+      source: transcript.source(tool.call.sequence, 'arguments', kind[2], true),
+      format: 'text',
+    });
   }
   if (item.open && tool?.result) parts.push(...outputParts(tool, kind, outcome, transcript));
   const blocks = parts
-    .filter((part) => part.note === undefined && part.source !== null && part.source.failed === undefined)
+    .filter(
+      (part) => part.note === undefined && part.source !== null && part.source.failed === undefined,
+    )
     .map((part) => {
       const shown =
-        part.format === 'arguments' ? { text: argumentsText(part.source), cut: false } : partText(part);
+        part.format === 'arguments'
+          ? { text: argumentsText(part.source), cut: false }
+          : partText(part);
       return { label: part.label, cut: shown.cut, content: shown.text };
     })
     .filter((block) => block.content.trim() !== '');
@@ -1652,63 +1734,65 @@ function toolRow(item, transcript, cx) {
           ? t('running')
           : t('noOutput'));
   const ring = !(item.first && item.last && !item.open);
-  return v_flex()
-    .w_full()
-    // One ring around the group: each row draws its sides, the first the top
-    // edge, the last the bottom one, and the top edge of the others divides.
-    .when(ring, (el) =>
-      el
-        .bg(m.plate)
-        .border_x_1()
-        .border_t_1()
-        .border_color(m.border)
-        .when(item.first, (el) => el.rounded_t(12))
-        .when(item.last, (el) => el.border_b_1().rounded_b(12)),
-    )
-    .child(
-      h_flex()
-        .w_full()
-        .h(36)
-        .px(12)
-        .gap(10)
-        .items_center()
-        .rounded(ring ? 0 : 10)
-        .hover((style) => style.bg(m.hover))
-        .child(icon(kind?.[1] ?? own?.[1] ?? toolIcon(name), 16, m.inkMuted))
-        .child(text(name, 'label', m.ink).flex_none().min_w(84).max_w(200).truncate())
-        .child(
-          div()
-            .flex_1()
-            .min_w_0()
-            .truncate()
-            .when(tool?.call?.title != null, (el) => typeset(el, 'small'))
-            .when(tool?.call?.title == null, (el) =>
-              el.text_size(12).line_height('20px').font_family('Menlo'),
-            )
-            .text_color(m.inkMuted)
-            .child(summary),
-        )
-        .child(tippedIcon(statusIcon, 14, statusColor, t(TOOL_STATES[status])))
-        .when(item.open || status === 'failed' || status === 'notRun', (el) =>
-          el.child(icon(item.open ? 'chevron-down' : 'chevron-right', 14, m.inkMuted)),
-        ),
-    )
-    .when(item.open, (el) =>
-      el.child(
-        v_flex()
-          .pl(38)
-          .pr(12)
-          .pt(2)
-          .pb(12)
-          .gap(8)
-          .children(
-            blocks.map((block, index) =>
-              codeBlock(`${item.key}/output/${index}`, caption(block), block.content, m),
-            ),
+  return (
+    v_flex()
+      .w_full()
+      // One ring around the group: each row draws its sides, the first the top
+      // edge, the last the bottom one, and the top edge of the others divides.
+      .when(ring, (el) =>
+        el
+          .bg(m.plate)
+          .border_x_1()
+          .border_t_1()
+          .border_color(m.border)
+          .when(item.first, (el) => el.rounded_t(12))
+          .when(item.last, (el) => el.border_b_1().rounded_b(12)),
+      )
+      .child(
+        h_flex()
+          .w_full()
+          .h(36)
+          .px(12)
+          .gap(10)
+          .items_center()
+          .rounded(ring ? 0 : 10)
+          .hover((style) => style.bg(m.hover))
+          .child(icon(kind?.[1] ?? own?.[1] ?? toolIcon(name), 16, m.inkMuted))
+          .child(text(name, 'label', m.ink).flex_none().min_w(84).max_w(200).truncate())
+          .child(
+            div()
+              .flex_1()
+              .min_w_0()
+              .truncate()
+              .when(tool?.call?.title != null, (el) => typeset(el, 'small'))
+              .when(tool?.call?.title == null, (el) =>
+                el.text_size(12).line_height('20px').font_family('Menlo'),
+              )
+              .text_color(m.inkMuted)
+              .child(summary),
           )
-          .when(blocks.length === 0, (el) => el.child(text(note, 'small', m.inkMuted))),
-      ),
-    );
+          .child(tippedIcon(statusIcon, 14, statusColor, t(TOOL_STATES[status])))
+          .when(item.open || status === 'failed' || status === 'notRun', (el) =>
+            el.child(icon(item.open ? 'chevron-down' : 'chevron-right', 14, m.inkMuted)),
+          ),
+      )
+      .when(item.open, (el) =>
+        el.child(
+          v_flex()
+            .pl(38)
+            .pr(12)
+            .pt(2)
+            .pb(12)
+            .gap(8)
+            .children(
+              blocks.map((block, index) =>
+                codeBlock(`${item.key}/output/${index}`, caption(block), block.content, m),
+              ),
+            )
+            .when(blocks.length === 0, (el) => el.child(text(note, 'small', m.inkMuted))),
+        ),
+      )
+  );
 }
 
 /**
