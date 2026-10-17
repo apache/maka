@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, type TestContext } from 'node:test';
@@ -173,6 +173,36 @@ test('re-adding an archived project reports the archived project instead of fail
     catalog.close();
     await rm(base, { recursive: true, force: true });
   }
+});
+
+test('dropped directories are validated before registration and archived projects require restoration', async (t) => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-project-drop-'));
+  const regularFile = join(base, 'notes.txt');
+  await writeFile(regularFile, 'not a directory');
+  const catalog = createProjectCatalog(join(base, 'storage'), { createId: () => 'project-drop' });
+  t.after(async () => {
+    catalog.close();
+    await rm(base, { recursive: true, force: true });
+  });
+  const service = createProjectManagementService({
+    capabilities: LOCAL_CAPABILITIES,
+    catalog: managementCatalog(catalog),
+    chooseDirectory: unexpected,
+    selection: { currentSelection: unexpected, setSelection: () => assert.fail('drop must not change Host selection') },
+  });
+
+  assert.deepEqual(await service.addDroppedDirectory(regularFile), { ok: false, reason: 'not-directory' });
+  for (const invalidPath of ['', 'relative', null, {}]) {
+    await assert.rejects(service.addDroppedDirectory(invalidPath), TypeError);
+  }
+  await assert.rejects(service.addDroppedDirectory(join(base, 'missing')), { code: 'ENOENT' });
+  assert.deepEqual(await catalog.list(), []);
+  const added = await service.addDroppedDirectory(base);
+  assert.equal(added.ok && added.project.preferredPath, await realpath(base));
+  await catalog.archive('project-drop');
+  assert.deepEqual(await service.addDroppedDirectory(base), {
+    ok: false, reason: 'archived', projectId: 'project-drop',
+  });
 });
 
 test('can register a draft Project without changing the Host selection', async () => {
@@ -383,6 +413,7 @@ test('does not expose Client directory actions for a remote Host', async () => {
   });
 
   await assert.rejects(() => service.add(), /registered on the Host/);
+  await assert.rejects(() => service.addDroppedDirectory(tmpdir()), /registered on the Host/);
   await assert.rejects(() => service.relink('remote'), /registered on the Host/);
   await assert.rejects(() => service.select(null), /requires a Project/);
   assert.equal(await service.pathFor('remote'), null);

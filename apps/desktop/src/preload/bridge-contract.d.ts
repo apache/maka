@@ -1040,6 +1040,11 @@ export interface MakaBridge {
       | { ok: false; reason: 'cancelled' }
       | { ok: false; reason: 'archived'; projectId: string }
     >;
+    addDroppedProject(host: DesktopNewTaskHostRef, file: File): Promise<
+      | { ok: true; project: ProjectRecord }
+      | { ok: false; reason: 'not-directory' }
+      | { ok: false; reason: 'archived'; projectId: string }
+    >;
     restoreProject(host: DesktopNewTaskHostRef, projectId: string): Promise<
       { ok: true; project: ProjectRecord } | { ok: false; reason: 'cancelled' }
     >;

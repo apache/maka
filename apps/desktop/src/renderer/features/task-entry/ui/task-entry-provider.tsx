@@ -80,6 +80,7 @@ const EMPTY_CONTROLLER: TaskEntryController = {
     async restoreProject() {},
     async relinkProject() {},
     addProject() {},
+    async addDroppedProjectFolders() {},
     openNewProject() {},
     async chooseProjectForProfile() {},
     openSessionWorkspaceRecovery() {},
@@ -107,6 +108,7 @@ const EMPTY_CONTROLLER: TaskEntryController = {
     usesDefaultHost: true,
     workspacePicker: EMPTY_WORKSPACE_PICKER,
     canAddProject: false,
+    canDropProjectFolders: false,
     projectScopes: [],
   },
 };
@@ -141,6 +143,7 @@ function createTaskEntryOwner(): TaskEntryOwner & {
       relinkProject: (projectKey: string) =>
         current.commands.relinkProject(projectKey),
       addProject: (name?: string) => current.commands.addProject(name),
+      addDroppedProjectFolders: (files: File[]) => current.commands.addDroppedProjectFolders(files),
       openNewProject: () => current.commands.openNewProject(),
       chooseProjectForProfile: (profileId: string) =>
         current.commands.chooseProjectForProfile(profileId),
@@ -270,6 +273,7 @@ function sameShellSelectors(
     previous.defaultProfileId === next.defaultProfileId &&
     previous.usesDefaultHost === next.usesDefaultHost &&
     previous.canAddProject === next.canAddProject &&
+    previous.canDropProjectFolders === next.canDropProjectFolders &&
     sameProjectScopes(previous.projectScopes, next.projectScopes)
   );
 }

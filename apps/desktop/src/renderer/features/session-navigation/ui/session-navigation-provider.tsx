@@ -89,6 +89,7 @@ export interface SessionNavigationChromeInput {
    * the heading then carries no ＋ at all.
    */
   onNewProject?: () => void;
+  onDropProjectFolders?: (files: File[]) => Promise<void>;
 }
 
 export interface SessionNavigationProviderProps extends SessionNavigationChromeInput {
@@ -284,6 +285,7 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
       moveDropGroupKeys,
       moveTargets,
       onNewProject: props.onNewProject,
+      onDropProjectFolders: props.onDropProjectFolders,
     }),
     [
       controller.layout.viewMode,
@@ -294,6 +296,7 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
       controller.selectors.worktreeSessionIds,
       props.onSelectSession,
       props.onNewProject,
+      props.onDropProjectFolders,
       moveDropGroupKeys,
       moveTargets,
       openRowId,
