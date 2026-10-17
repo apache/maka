@@ -45,6 +45,7 @@ export type MakaCliCommand =
   | { kind: 'activate'; args: string[] }
   | { kind: 'session-export'; args: string[] }
   | { kind: 'session-import'; args: string[] }
+  | { kind: 'session-export-markdown'; args: string[] }
   | { kind: 'eval'; args: string[] }
   | { kind: 'acp' }
   | RuntimeHostCliCommand
@@ -90,6 +91,9 @@ export function parseMakaCliArgs(
     return argv[1] === '--help' || argv[1] === '-h'
       ? { kind: 'help', text: sessionBundleHelpText(cliCommand, first) }
       : { kind: first, args: argv.slice(1) };
+  }
+  if (first === 'session-export-markdown') {
+    return { kind: first, args: argv.slice(1) };
   }
   if (first === 'eval') return { kind: 'eval', args: argv.slice(1) };
   if (first === 'update') return parseRuntimeHostInstalledUpdateCommand(argv.slice(1), cliCommand);
@@ -150,6 +154,7 @@ function helpText(cliCommand: string): string {
         ['eval ...', 'Run one declarative multi-arm experiment'],
         ['session-export ...', 'Write a Session bundle to a file'],
         ['session-import ...', 'Read a Session bundle back into a workspace'],
+        ['session-export-markdown ...', 'Write a full Session transcript as Markdown'],
         ['update ...', 'Update this npm-global CLI and its local Runtime Host'],
         ['runtime-host ...', 'Serve and manage a Runtime Host'],
       ] as const
@@ -227,6 +232,12 @@ export async function runMakaCli(
     case 'session-import': {
       const { runMakaSessionImportCli } = await import('./session-import-command.js');
       return runMakaSessionImportCli(command.args);
+    }
+    case 'session-export-markdown': {
+      const { runMakaSessionExportMarkdownCli } = await import(
+        './session-export-markdown-command.js'
+      );
+      return runMakaSessionExportMarkdownCli(command.args);
     }
     case 'eval': {
       const { configureInstalledEvalBundle } = await import('./eval-bundle-path.js');
