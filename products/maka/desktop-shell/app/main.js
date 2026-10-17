@@ -33,7 +33,7 @@
 //   export default { debug: true, run: async ({ app, cx, log }) => { ... } };
 
 import { View, div } from 'gpui-kit';
-import { v_flex, h_flex, h_resizable, resizable_panel } from 'gpui-base';
+import { v_flex, h_flex, h_resizable, resizable_panel, Button } from 'gpui-base';
 import { query, operation, log, setDebug } from './host.js';
 import { rowPositionKey } from './history-position.js';
 import { SessionCatalog, SidebarState, sidebar } from './sessions.js';
@@ -47,7 +47,15 @@ import { WorkHub, workhubTabs, workhubBody, chatHint } from './workhub.js';
 import { Search, searchPage } from './search.js';
 import { usable } from './subagents.js';
 import { Workbar, WORKBAR_WIDTH, workbarPane, workbarButton } from './workbar.js';
-import { followAppearance, palette, text, icon, controlButton, ghostButton } from './theme.js';
+import {
+  followAppearance,
+  palette,
+  typeset,
+  text,
+  icon,
+  controlButton,
+  ghostButton,
+} from './theme.js';
 import { t, onLanguageChange } from './locale.js';
 
 /**
@@ -103,6 +111,8 @@ export default class MakaDesktop extends View {
         this.cx.notify();
       },
       report,
+      // A turn footer's Fork: the sidebar's fork, through that turn.
+      fork: (session, turnId) => this.sidebarUi.fork(session, turnId),
     };
     this.hooks = hooks;
     this.catalog = new SessionCatalog({
@@ -171,10 +181,18 @@ export default class MakaDesktop extends View {
         archived: (sessionId) => {
           if (this.transcript?.id === sessionId) this.home();
         },
+        forked: (session) => this.select(session),
         focusRoot: () => this.rootFocus.focus(),
       },
       cx,
     );
+    /**
+     * id -> what the header of a fork names its source by when the sidebar
+     * does not list it (an archived task): `{ session }` as `agent.observe`
+     * read it, `{ gone: true }` when the Host has no such task, `{ failed:
+     * true }` when it could not be read, or null while it is read.
+     */
+    this.forkSources = new Map();
     this.creating = false;
     this.error = null;
     this.sidebarHidden = false;
@@ -609,7 +627,15 @@ export default class MakaDesktop extends View {
     const folder = transcript === null ? this.startFolder() : null;
     return this.conversation(
       el
-        .child(this.header(transcript?.session.title ?? '', runState(transcript), null, cx))
+        .child(
+          this.header(
+            transcript?.session.title ?? '',
+            runState(transcript),
+            null,
+            cx,
+            this.forkOrigin(transcript, cx),
+          ),
+        )
         .child(this.connectionStrip(cx)),
       transcript,
       {
@@ -629,6 +655,80 @@ export default class MakaDesktop extends View {
       },
       cx,
     );
+  }
+
+  /**
+   * After the header's title on a task forked from another: "Forked from" and
+   * the source's title, muted, opening the source. The title is the
+   * sidebar's, else what `agent.observe` reads once (an archived source); a
+   * source the Host no longer has is named as deleted, without a link.
+   * Null for a task that is not a fork, and while the source is read.
+   */
+  forkOrigin(transcript, cx) {
+    const sessionId = transcript?.session.branch?.sessionId ?? null;
+    if (sessionId === null) return null;
+    const m = palette(cx);
+    const source = this.forkSource(sessionId);
+    if (source === null) return null;
+    if (source.gone === true) {
+      return text(t('forkedFromRemoved'), 'small', m.inkMuted).flex_none();
+    }
+    const label =
+      source.session === undefined
+        ? t('forkedFromUnknown')
+        : t('forkedFrom', { title: source.session.title });
+    return typeset(Button.new('forked-from'), 'small')
+      .flex_initial()
+      .min_w_0()
+      .max_w(360)
+      .h(24)
+      .px(6)
+      .items_center()
+      .rounded(6)
+      .text_color(m.inkMuted)
+      .hover((style) => style.bg(m.hover))
+      .tooltip(label)
+      .on_click(() => this.openForkSource(sessionId))
+      .child(div().min_w_0().truncate().child(label));
+  }
+
+  /**
+   * The source of a fork, as forkSources keeps it: the sidebar's entry when
+   * it lists the task, else the cached read, else null after starting it.
+   */
+  forkSource(sessionId) {
+    const listed = this.catalog.sessions.find((entry) => entry.id === sessionId);
+    if (listed !== undefined) return { session: listed };
+    if (this.forkSources.has(sessionId)) return this.forkSources.get(sessionId);
+    this.forkSources.set(sessionId, null);
+    query('agent', 'observe', { sessionId }).then(
+      (observed) => {
+        this.forkSources.set(sessionId, { session: observed.session });
+        this.cx.notify();
+      },
+      (error) => {
+        log(`fork source ${sessionId}: ${error.message}`);
+        const gone = error.message.includes('session_unavailable');
+        this.forkSources.set(sessionId, gone ? { gone: true } : { failed: true });
+        this.cx.notify();
+      },
+    );
+    return null;
+  }
+
+  /** The header's "Forked from": opens the source, archived or not. */
+  async openForkSource(sessionId) {
+    const known = this.forkSource(sessionId)?.session;
+    if (known !== undefined) {
+      await this.select(known);
+      return;
+    }
+    try {
+      const observed = await query('agent', 'observe', { sessionId });
+      await this.select(observed.session);
+    } catch (error) {
+      this.report(t('forkSourceFailed', { value: error.message }));
+    }
   }
 
   /**
@@ -837,11 +937,12 @@ export default class MakaDesktop extends View {
   /**
    * The plate's 48px header: `title`, and what its conversation is doing
    * (`state`, or null). `controls`, when given, sit in the middle of the
-   * plate, with the state after them. With the sidebar hidden it also
-   * carries the window controls, clear of the traffic lights. Beside a
-   * conversation the Workbar's button ends it.
+   * plate, with the state after them; `origin`, when given, right after the
+   * title (a fork's source). With the sidebar hidden it also carries the
+   * window controls, clear of the traffic lights. Beside a conversation the
+   * Workbar's button ends it.
    */
-  header(title, state, controls, cx) {
+  header(title, state, controls, cx, origin = null) {
     const m = palette(cx);
     const hidden = this.sidebarHidden;
     const toggle = this.workbarTarget() === null ? null : workbarButton(this.workbar, cx);
@@ -864,10 +965,33 @@ export default class MakaDesktop extends View {
           .child(dragArea().w(8).h_full()),
       )
       .when(!hidden, (el) => el.child(dragArea().w(20).h_full()))
-      .child(
-        side()
-          .child(text(title, 'strong', m.ink).flex_1().min_w_0().truncate())
-          .when(controls === null && stateText !== null, (el) => el.child(stateText)),
+      .when(origin === null, (el) =>
+        el.child(
+          side()
+            .child(text(title, 'strong', m.ink).flex_1().min_w_0().truncate())
+            .when(controls === null && stateText !== null, (el) => el.child(stateText)),
+        ),
+      )
+      // The origin is a button, so it stands between two parts that move the
+      // window: the title's, as wide as the title, and the rest.
+      .when(origin !== null, (el) =>
+        el
+          .child(
+            h_flex()
+              .flex_initial()
+              .min_w_0()
+              .h_full()
+              .items_center()
+              .window_control_area('drag')
+              .child(text(title, 'strong', m.ink).min_w_0().truncate()),
+          )
+          .child(origin.ml(8))
+          .child(
+            side()
+              .min_w(12)
+              .justify_end()
+              .when(controls === null && stateText !== null, (el) => el.child(stateText)),
+          ),
       );
     return h_flex()
       .flex_none()

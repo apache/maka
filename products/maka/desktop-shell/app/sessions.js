@@ -243,6 +243,66 @@ export async function changeSession(session, action) {
   }
 }
 
+/** Why the Host did not fork a task (`AgentRejection`), in words. */
+const FORK_REJECTED = {
+  title_invalid: 'forkTitleInvalid',
+  labels_invalid: 'forkLabelsInvalid',
+  tools_unavailable: 'forkToolsUnavailable',
+  busy: 'forkBusy',
+  workspace_unavailable: 'forkWorkspaceUnavailable',
+  session_unavailable: 'forkSessionUnavailable',
+  history_unavailable: 'forkHistoryUnavailable',
+  managed_session: 'forkManagedSession',
+  closed: 'forkClosed',
+};
+
+/**
+ * The title of a fork of a task titled `title`: the title and a suffix
+ * that says it is a fork, the title shortened so both fit in what the Host
+ * takes.
+ */
+export function forkTitle(title) {
+  const suffix = t('forkSuffix');
+  const room = MAX_TITLE - [...suffix].length;
+  return [...title].slice(0, room).join('').trimEnd() + suffix;
+}
+
+/**
+ * Forks `session` (`agent.fork`) into a new task titled `title`: all of its
+ * history, or the history through the turn `turnId`. A revision conflict
+ * reads the session again and tries once more, as a rename does. Resolves
+ * with the new session. A refusal throws a whole sentence (`error.whole`);
+ * so does a call that got no answer, since the fork may have been made, and
+ * it is not sent again.
+ */
+export async function forkSession(session, turnId, title) {
+  let current = session;
+  for (let attempt = 0; ; attempt += 1) {
+    let result;
+    try {
+      result = await operation('agent', 'fork', {
+        sessionId: current.id,
+        expectedRevision: current.revision,
+        turnId,
+        title,
+        labels: [],
+      });
+    } catch (error) {
+      log(`sessions: fork of ${current.id} got no answer: ${error.message}`);
+      throw whole(t('forkUnknown'));
+    }
+    if (result.kind === 'forked') return result.session;
+    if (result.kind === 'rejected') {
+      throw whole(t(FORK_REJECTED[result.reason] ?? 'forkRejected', { value: result.reason }));
+    }
+    if (result.kind !== 'revision_conflict') {
+      throw new Error(t('unexpectedAnswer', { value: result.kind }));
+    }
+    if (attempt > 0) throw new Error(t('taskChangedMeanwhile'));
+    current = (await query('agent', 'observe', { sessionId: current.id })).session;
+  }
+}
+
 function whole(message) {
   const error = new Error(message);
   error.whole = true;
@@ -273,10 +333,11 @@ export class SidebarState {
    * view's `init`, whose context it keeps for the waits below.
    * @param {{ changed: () => void, report: (message: string) => void,
    *   renamed: (session: object) => void, archived: (sessionId: string) => void,
-   *   focusRoot: () => void }} hooks
+   *   forked: (session: object) => void, focusRoot: () => void }} hooks
    *   `renamed` gets the session as the Host committed the new title,
-   *   `archived` the id of a task the Host archived, and `focusRoot` gives
-   *   the keyboard back to the window after a rename ends from it
+   *   `archived` the id of a task the Host archived, `forked` the new task a
+   *   fork made, and `focusRoot` gives the keyboard back to the window after
+   *   a rename ends from it
    */
   constructor(hooks, cx) {
     this.hooks = hooks;
@@ -307,6 +368,8 @@ export class SidebarState {
      * drops it, or lists it again at a later revision (restored).
      */
     this.archiving = new Map();
+    /** Ids of the tasks the Host is forking. */
+    this.forking = new Set();
     this.name = InputState.new({ placeholder: t('renameTask') });
     onLanguageChange(() => this.name.set_placeholder(t('renameTask')));
     // Enter saves; leaving the field saves too, as Finder does. Escape is
@@ -489,6 +552,34 @@ export class SidebarState {
     cx.write_to_clipboard(session.id);
     log(`sessions: copied the id of ${session.id}`);
     this.changed();
+  }
+
+  /**
+   * Forks the task: all of its history (the menu), or through the turn
+   * `turnId` (a turn's footer). The new task is selected once the Host made
+   * it (`forked`).
+   */
+  async fork(session, turnId = null) {
+    this.menu = null;
+    if (this.forking.has(session.id)) {
+      this.changed();
+      return;
+    }
+    this.forking.add(session.id);
+    this.changed();
+    try {
+      const forked = await forkSession(session, turnId, forkTitle(this.title(session)));
+      log(
+        `sessions: forked ${session.id}${turnId === null ? '' : ` through ${turnId}`} as ${forked.id}`,
+      );
+      this.hooks.forked(forked);
+    } catch (error) {
+      log(`sessions: forking ${session.id} failed: ${error.message}`);
+      this.hooks.report(changeFailure(error, (value) => t('forkFailed', { value })));
+    } finally {
+      this.forking.delete(session.id);
+      this.changed();
+    }
   }
 
   /**
@@ -788,8 +879,9 @@ function taskRow(session, selected, ui, select, cx) {
 }
 
 /**
- * The "…" button and the menu it opens: Rename (F2), Copy task ID, then
- * Archive, which only an idle task offers. The button's press opens the
+ * The "…" button and the menu it opens: Rename (F2), Fork, Copy task ID,
+ * then Archive. Fork and Archive are offered only for an idle task (the
+ * Host does not copy the whole history of a task while it runs). The button's press opens the
  * menu and goes no further, so the row under it is not selected; the menu
  * hangs 8 under the row with its end on the row's end, as the native
  * client's does (the button sits 8 in from the row's end and 6 above its
@@ -818,6 +910,16 @@ function taskMenu(session, ui, cx) {
           menuRow('task-rename', t('renameTask'), { icon: 'tool-edit', detail: 'F2' }, cx).on_click(
             () => ui.startRename(session),
           ),
+        )
+        .child(
+          menuRow(
+            'task-fork',
+            t('forkTask'),
+            { icon: 'fork', disabled: !idle || ui.forking.has(session.id) },
+            cx,
+          )
+            .when(!idle, (el) => el.tooltip(t('forkWhileRunning')))
+            .on_click(() => ui.fork(session)),
         )
         .child(
           menuRow('task-copy-id', t('copyTaskId'), { icon: 'copy' }, cx).on_click((_, cx) =>

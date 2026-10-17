@@ -66,6 +66,11 @@ import { t, tn, language } from './locale.js';
 const NEAR_TOP = 3;
 /** How many rows back to look for a tool call when its result arrives. */
 const TOOL_PAIR_WINDOW = 64;
+/** The reading column: at most this wide, with this much on each side (transcriptItem). */
+const COLUMN_WIDTH = 720;
+const COLUMN_GUTTER = 24;
+/** The footer's Fork button, square at the end of the column (turnFooter). */
+const FORK_BUTTON = 24;
 
 const FIELD_ORDER = { thinking: 0, body: 1 };
 
@@ -251,6 +256,12 @@ export class Transcript {
     this.olderError = null;
     /** The footer whose turn was just copied, for two seconds. */
     this.copied = null;
+    /**
+     * Where the last left press in the transcript was, `{ x, width }` against
+     * the list: the click that follows tells a footer's Fork button from the
+     * rest of the footer by it (see onForkButton).
+     */
+    this.press = null;
     /** The list items last built from the rows (see displayItems). */
     this.view = null;
     /**
@@ -796,8 +807,12 @@ export class Transcript {
       return;
     }
     if (key.startsWith('footer/')) {
-      if (!this.view?.items.find((entry) => entry.key === key)?.copies) return;
       const turnId = key.slice('footer/'.length);
+      if (this.forks() && this.onForkButton()) {
+        this.hooks.fork(this.session, turnId);
+        return;
+      }
+      if (!this.view?.items.find((entry) => entry.key === key)?.copies) return;
       const reply = this.rows
         .filter((row) => row.turnId === turnId && row.role === 'assistant')
         .map((row) => row.text)
@@ -825,6 +840,32 @@ export class Transcript {
     if (!this.expanded.delete(key)) this.expanded.add(key);
     this.expandedVersion += 1;
     this.hooks.changed();
+  }
+
+  /** Whether turn footers offer Fork: a task's conversation, not WorkHub's. */
+  forks() {
+    return this.endpoint === 'agent' && typeof this.hooks.fork === 'function';
+  }
+
+  /** A left press in the transcript, from the area around the list. */
+  pressed(event) {
+    const { local_position: at, bounds } = event;
+    this.press = at && bounds ? { x: at.x, width: bounds.width } : null;
+  }
+
+  /**
+   * Whether the press before a footer's click was on its Fork button, the
+   * last FORK_BUTTON of the reading column. List rows take one click
+   * handler for the whole list, so the press's place tells the button from
+   * the rest of the footer, which copies.
+   */
+  onForkButton() {
+    const press = this.press;
+    this.press = null;
+    if (press === null) return false;
+    const column = Math.min(COLUMN_WIDTH, press.width - 2 * COLUMN_GUTTER);
+    const end = (press.width + column) / 2;
+    return press.x >= end - FORK_BUTTON && press.x <= end;
   }
 
   /**
@@ -1081,60 +1122,64 @@ export function transcriptPane(transcript, loadOlder, cx, empty = null) {
   const items = displayItems(transcript);
   const hasRows = transcript.rows.length + transcript.pending.length + transcript.live.length > 0;
   const id = `transcript-${transcript.id}`;
-  return v_flex()
-    .id(`${id}-area`)
-    .relative()
-    .flex_1()
-    .min_h_0()
-    .when(!transcript.ready || !hasRows, (el) =>
-      el
-        .items_center()
-        .justify_center()
-        .child(
-          transcript.ready && empty !== null
-            ? empty
-            : text(transcript.ready ? t('noMessagesYet') : t('loading'), 'body', m.inkMuted),
-        ),
-    )
-    .when(transcript.ready && hasRows, (el) =>
-      el
-        .child(
-          list(
-            id,
-            items.length,
-            (index) => items[index].key,
-            (index, cx) => transcriptItem(items[index], transcript, cx),
+  return (
+    v_flex()
+      .id(`${id}-area`)
+      .relative()
+      .flex_1()
+      .min_h_0()
+      // A footer's click comes on release; the press before it says where it was.
+      .on_mouse_down('left', (event) => transcript.pressed(event))
+      .when(!transcript.ready || !hasRows, (el) =>
+        el
+          .items_center()
+          .justify_center()
+          .child(
+            transcript.ready && empty !== null
+              ? empty
+              : text(transcript.ready ? t('noMessagesYet') : t('loading'), 'body', m.inkMuted),
+          ),
+      )
+      .when(transcript.ready && hasRows, (el) =>
+        el
+          .child(
+            list(
+              id,
+              items.length,
+              (index) => items[index].key,
+              (index, cx) => transcriptItem(items[index], transcript, cx),
+            )
+              // Opens at the newest row and stays there while a reply
+              // streams, until the reader scrolls up. Opened at an anchor, it
+              // opens at its top, the anchor's row, and keeps the reader's top
+              // row in place as pages are put above and added below, until the
+              // reader reaches the newest row or sends (Transcript.showing).
+              .with_follow_mode(transcript.anchored ? 'normal' : 'tail')
+              .scroll_to_end(transcript.scrollToEnd)
+              // Reported after the frame, however the range changed: a
+              // wheel, a scrollbar drag, or rows that do not fill the view.
+              .on_visible_range_change((range, shown) => {
+                log(`transcript: showing ${range.start}..${range.end} of ${shown}`);
+                transcript.showing(range, shown);
+                if (range.start < NEAR_TOP && transcript.before !== null) loadOlder();
+              })
+              .on_item_click((key, cx) => transcript.click(key, cx)),
           )
-            // Opens at the newest row and stays there while a reply
-            // streams, until the reader scrolls up. Opened at an anchor, it
-            // opens at its top, the anchor's row, and keeps the reader's top
-            // row in place as pages are put above and added below, until the
-            // reader reaches the newest row or sends (Transcript.showing).
-            .with_follow_mode(transcript.anchored ? 'normal' : 'tail')
-            .scroll_to_end(transcript.scrollToEnd)
-            // Reported after the frame, however the range changed: a
-            // wheel, a scrollbar drag, or rows that do not fill the view.
-            .on_visible_range_change((range, shown) => {
-              log(`transcript: showing ${range.start}..${range.end} of ${shown}`);
-              transcript.showing(range, shown);
-              if (range.start < NEAR_TOP && transcript.before !== null) loadOlder();
-            })
-            .on_item_click((key, cx) => transcript.click(key, cx)),
-        )
-        .child(Scrollbar.vertical(id).absolute().inset_0()),
-    );
+          .child(Scrollbar.vertical(id).absolute().inset_0()),
+      )
+  );
 }
 
 /** One item of the transcript list, in the reading column; called from layout for each visible item. */
 function transcriptItem(item, transcript, cx) {
   return h_flex()
     .w_full()
-    .px(24)
+    .px(COLUMN_GUTTER)
     .justify_center()
     .child(
       v_flex()
         .w_full()
-        .max_w(720)
+        .max_w(COLUMN_WIDTH)
         .pb(item.gap)
         .child(itemBody(item, transcript, cx)),
     );
@@ -1928,14 +1973,16 @@ function lowSurrogate(text, index) {
 /**
  * Below a finished turn, as the native client's footer: how it ended when it
  * did not complete, when, and the copy icon right after when the turn has
- * reply text. A click anywhere on the row copies the reply (list rows take
- * one click handler, see click).
+ * reply text; in a task's conversation, Fork at the end of the row. A click
+ * on Fork forks the task through this turn, anywhere else on the row it
+ * copies the reply (list rows take one click handler, see click).
  */
 function turnFooter(item, transcript, cx) {
   const m = palette(cx);
   const outcome = { failed: t('failed'), aborted: t('stopped') }[item.finished.outcome] ?? null;
   const copied = transcript.copied === item.key;
   return h_flex()
+    .w_full()
     .h(24)
     .gap(4)
     .items_center()
@@ -1962,6 +2009,20 @@ function turnFooter(item, transcript, cx) {
           .hover((style) => style.bg(m.wash))
           .child(icon(copied ? 'check' : 'copy', 14, copied ? m.ink : m.inkMuted))
           .when(copied, (el) => el.child(text(t('copied'), 'small', m.inkMuted))),
+      ),
+    )
+    .when(transcript.forks(), (el) =>
+      el.child(div().flex_1()).child(
+        h_flex()
+          .id(`fork-${item.turnId}`)
+          .flex_none()
+          .size(FORK_BUTTON)
+          .items_center()
+          .justify_center()
+          .rounded(6)
+          .hover((style) => style.bg(m.wash))
+          .tooltip(t('forkFromHere'))
+          .child(icon('fork', 14, m.inkMuted)),
       ),
     );
 }

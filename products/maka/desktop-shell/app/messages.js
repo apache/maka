@@ -100,6 +100,89 @@ export const MESSAGES = {
     '請先停止此任務並處理佇列訊息，再封存或刪除。',
   ],
 
+  // Forking a task: the menu, a turn's footer (transcript.js) and the header
+  // of a fork (main.js).
+  forkTask: ['Fork', '分叉', '分岔'],
+  forkFromHere: [
+    'Fork from here: a new task with the history up to this turn',
+    '从这里分叉：用到这一轮为止的历史新建任务',
+    '從這裡分岔：用到這一輪為止的歷史新建任務',
+  ],
+  forkSuffix: [' (fork)', '（分叉）', '（分岔）'],
+  forkedFrom: ['Forked from {title}', '分叉自 {title}', '分岔自 {title}'],
+  forkedFromRemoved: [
+    'Forked from a task that was deleted',
+    '分叉自一个已删除的任务',
+    '分岔自一個已刪除的任務',
+  ],
+  forkedFromUnknown: ['Forked from another task', '分叉自另一个任务', '分岔自另一個任務'],
+  forkSourceFailed: [
+    'Couldn’t open the task this one was forked from: {value}',
+    '无法打开此任务分叉自的任务：{value}',
+    '無法開啟此任務分岔自的任務：{value}',
+  ],
+  forkFailed: ['Couldn’t fork the task: {value}', '分叉任务失败：{value}', '分岔任務失敗：{value}'],
+  forkUnknown: [
+    'The Host did not answer the fork, so it may or may not have been made. Check the task list before forking again.',
+    'Host 没有回应分叉请求，分叉可能已经创建，也可能没有。再次分叉前请先查看任务列表。',
+    'Host 沒有回應分岔請求，分岔可能已經建立，也可能沒有。再次分岔前請先查看任務列表。',
+  ],
+  forkRejected: [
+    'The Host did not fork the task ({value}).',
+    'Host 没有分叉此任务（{value}）。',
+    'Host 沒有分岔此任務（{value}）。',
+  ],
+  forkTitleInvalid: [
+    'The Host did not accept the title for the fork.',
+    'Host 不接受分叉任务的标题。',
+    'Host 不接受分岔任務的標題。',
+  ],
+  forkLabelsInvalid: [
+    'The Host did not accept the labels for the fork.',
+    'Host 不接受分叉任务的标签。',
+    'Host 不接受分岔任務的標籤。',
+  ],
+  forkToolsUnavailable: [
+    'The tools of this task are not available, so it cannot be forked.',
+    '此任务的工具不可用，无法分叉。',
+    '此任務的工具無法使用，無法分岔。',
+  ],
+  forkBusy: [
+    'Something is running in this task. Fork it when it ends.',
+    '此任务正在运行，结束后再分叉。',
+    '此任務正在執行，結束後再分岔。',
+  ],
+  forkWorkspaceUnavailable: [
+    'The folder of this task is not available, so it cannot be forked.',
+    '此任务的文件夹不可用，无法分叉。',
+    '此任務的資料夾無法使用，無法分岔。',
+  ],
+  forkSessionUnavailable: [
+    'This task is no longer available, so it cannot be forked.',
+    '此任务已不可用，无法分叉。',
+    '此任務已無法使用，無法分岔。',
+  ],
+  forkHistoryUnavailable: [
+    'The history of this task cannot be copied now. If something is running, fork it when it ends.',
+    '此任务的历史现在无法复制。如果任务正在运行，请在结束后再分叉。',
+    '此任務的歷史現在無法複製。如果任務正在執行，請在結束後再分岔。',
+  ],
+  forkWhileRunning: [
+    'A task can be forked whole while nothing runs in it; a finished turn can be forked from its footer.',
+    '任务中没有运行时才能整体分叉；已结束的一轮可以从它下方分叉。',
+    '任務中沒有執行時才能整體分岔；已結束的一輪可以從它下方分岔。',
+  ],
+  forkManagedSession: [
+    'WorkHub manages this task, so it cannot be forked.',
+    '此任务由 WorkHub 管理，无法分叉。',
+    '此任務由 WorkHub 管理，無法分岔。',
+  ],
+  forkClosed: [
+    'The Host is closing, so the task cannot be forked.',
+    'Host 正在关闭，无法分叉任务。',
+    'Host 正在關閉，無法分岔任務。',
+  ],
+
   // Ages in lists (theme.js)
   ageNow: ['now', '刚刚', '剛剛'],
 
