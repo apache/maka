@@ -489,6 +489,10 @@ async function createExecutionStoresForWrite(
         run(async () => persistence.eventWaitStore.reserveSourceDispatch(input)),
       completeSourceDispatch: (input) =>
         run(async () => persistence.eventWaitStore.completeSourceDispatch(input)),
+      registerGoalWait: (input) =>
+        run(async () => persistence.eventWaitStore.registerGoalWait(input)),
+      settleGoalWait: (input) => run(async () => persistence.eventWaitStore.settleGoalWait(input)),
+      queueGoalWait: (input) => run(async () => persistence.eventWaitStore.queueGoalWait(input)),
       commit: (input) => run(async () => persistence.eventWaitStore.commit(input)),
       close: () => {},
     });

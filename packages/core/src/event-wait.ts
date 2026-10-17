@@ -67,6 +67,16 @@ export type EventWaitJsonValue =
   | readonly EventWaitJsonValue[]
   | { readonly [key: string]: EventWaitJsonValue };
 
+export type EventWaitDelivery =
+  | {
+      readonly kind: 'admitted';
+      readonly turnId: string;
+      readonly runId: string;
+      readonly userMessageId: string;
+      readonly at: number;
+    }
+  | { readonly kind: 'suppressed'; readonly at: number; readonly reason: string };
+
 export interface EventWaitBase {
   readonly schemaVersion: 1;
   readonly waitId: string;
@@ -90,6 +100,7 @@ export interface EventWaitBase {
   readonly updatedAt: number;
   readonly deadlineAt: number;
   readonly observation?: EventWaitObservation;
+  readonly delivery?: EventWaitDelivery;
 }
 
 export interface EventWaitResolution {
@@ -303,7 +314,9 @@ export function decodeEventWaitRecord(value: unknown): EventWaitRecord {
       'status',
       ...lifecycleKeys,
     ],
-    root.status === 'cancelled' ? ['priorResolution', 'observation'] : ['observation'],
+    root.status === 'cancelled'
+      ? ['priorResolution', 'observation', 'delivery']
+      : ['observation', 'delivery'],
   );
   if (r.schemaVersion !== EVENT_WAIT_SCHEMA_VERSION) invalid('schemaVersion');
   const lease = shape(r.goalControlLease, ['goalId', 'generation']);
@@ -360,6 +373,36 @@ export function decodeEventWaitRecord(value: unknown): EventWaitRecord {
     if (result < base.createdAt || result > upper) invalid('lifecycle time');
     return result;
   };
+  if (r.delivery !== undefined) {
+    const d = object(r.delivery, 'delivery');
+    if (r.status === 'waiting') invalid('delivery before resolution');
+    const terminalAt =
+      r.status === 'resolved' ? r.resolvedAt : r.status === 'expired' ? r.expiredAt : r.cancelledAt;
+    if (time(d.at) < time(terminalAt)) invalid('delivery before terminal fact');
+    if (d.kind === 'admitted') {
+      shape(d, ['kind', 'turnId', 'runId', 'userMessageId', 'at']);
+      if (r.status !== 'resolved' && r.status !== 'expired') invalid('admission without result');
+      Object.assign(base, {
+        delivery: {
+          kind: 'admitted',
+          turnId: id(d.turnId, 'delivery turn'),
+          runId: id(d.runId, 'delivery run'),
+          userMessageId: id(d.userMessageId, 'delivery message'),
+          at: time(d.at),
+        },
+      });
+    } else {
+      shape(d, ['kind', 'at', 'reason']);
+      if (d.kind !== 'suppressed') invalid('delivery kind');
+      Object.assign(base, {
+        delivery: {
+          kind: 'suppressed',
+          at: time(d.at),
+          reason: text(d.reason, 'delivery reason', EVENT_WAIT_LIMITS.reasonBytes),
+        },
+      });
+    }
+  }
   if (Object.hasOwn(r, 'observation')) {
     const x = shape(r.observation, [
       'schemaVersion',
@@ -481,6 +524,15 @@ export function assertEventWaitTransition(previous: EventWaitRecord, next: Event
   const b = decodeEventWaitRecord(next);
   const same = (x: unknown, y: unknown) => JSON.stringify(x) === JSON.stringify(y);
   if (same(a, b)) return;
+  if (a.delivery) invalid('immutable delivery');
+  if (b.delivery) {
+    const { delivery: _delivery, updatedAt: _updatedAt, ...rest } = b;
+    const { updatedAt: _previousTime, ...prior } = a;
+    if (same(rest, prior) && b.updatedAt >= a.updatedAt) return;
+    const { delivery: _acknowledgement, ...observation } = b;
+    assertEventWaitTransition(a, observation);
+    return;
+  }
   for (const field of [
     'schemaVersion',
     'waitId',

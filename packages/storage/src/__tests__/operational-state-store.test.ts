@@ -213,6 +213,7 @@ test('workflow 12 upgrade adds wait storage atomically and preserves every relea
         [
           'workflow_event_waits_by_session',
           'workflow_event_waits_by_status',
+          'workflow_event_waits_delivery',
           'workflow_event_waits_observation_order',
           'workflow_event_waits_one_active_session',
           'workflow_event_waits_pending',

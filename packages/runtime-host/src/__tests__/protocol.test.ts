@@ -137,6 +137,10 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 220);
   });
 
+  test('rejects epoch-224 peers predating event-wait transcript origins', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 224);
+  });
+
   test('publishes a new compatibility epoch for Artifact invalidation frames', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 196);
   });

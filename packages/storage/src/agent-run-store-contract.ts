@@ -68,6 +68,7 @@ import {
   isTurnOrchestrationSource,
   type TurnOrchestration,
 } from '@maka/core/orchestration';
+import { decodeEventWaitProvenance } from '@maka/core/event-wait-delivery';
 import { validateGenericToolLedgerAppend } from '@maka/core/tool-ledger-scanner';
 
 export const SAFE_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
@@ -1243,13 +1244,23 @@ export function normalizeRootExecutionDescriptor(value: unknown): RootExecutionD
   }
   if (value.kind === 'goal') {
     if (
-      !hasExactKeys(value, ['kind', 'goalId']) ||
+      !hasExactKeys(value, [
+        'kind',
+        'goalId',
+        ...(value.eventWait === undefined ? [] : ['eventWait']),
+      ]) ||
       typeof value.goalId !== 'string' ||
       !isSafeId(value.goalId)
     ) {
       throw new Error('Invalid root execution descriptor');
     }
-    return Object.freeze({ kind: 'goal', goalId: value.goalId });
+    return Object.freeze({
+      kind: 'goal',
+      goalId: value.goalId,
+      ...(value.eventWait === undefined
+        ? {}
+        : { eventWait: decodeEventWaitProvenance(value.eventWait) }),
+    });
   }
   if (value.kind === 'agent_graph_supervisor_wake') {
     if (

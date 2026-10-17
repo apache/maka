@@ -17,6 +17,18 @@
  * under the License.
  */
 
+import {
+  readGoalWaitRootExecution,
+  readCompletedGoalWaitExecution,
+  registerGoalWait,
+  settleGoalWait,
+  queueGoalWait,
+} from '../event-wait-bridge.js';
+import { createMemoryRuntimeStore } from './memory-execution-runtime.js';
+import type { GoalAuthoritySnapshot } from '../goal-authority.js';
+import type { RootTurnAdmission } from '../agent-run-store-contract.js';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
+import { assertMemoryBridgeSession, writeMemoryBridge } from './memory-event-wait-bridge.js';
 import { assertEventWaitTransition } from '@maka/core/event-wait';
 import type { SessionHeaderSnapshot } from '../session-store-contract.js';
 import {
@@ -68,6 +80,7 @@ export function deleteMemoryEventWaits(state: MemoryState, sessionId: string): v
 export function createMemoryEventWaitAuthority(
   authority: MemoryExecutionAuthority,
 ): EventWaitAuthorityRepository {
+  const runtime = createMemoryRuntimeStore(authority);
   let closed = false;
   const check = () => {
     if (closed) throw new Error('Memory event wait authority is closed');
@@ -106,6 +119,7 @@ export function createMemoryEventWaitAuthority(
           [...rows<EventWaitSnapshot>(s, 'eventWaits').values()]
             .filter(
               (v) =>
+                !v.record.delivery &&
                 (v.record.status === 'waiting' || v.record.status === 'resolved') &&
                 v.record.waitId > (input.afterWaitId ?? ''),
             )
@@ -123,7 +137,9 @@ export function createMemoryEventWaitAuthority(
           [...rows<EventWaitSnapshot>(s, 'eventWaits').values()]
             .filter(
               (v) =>
-                v.record.status === input.status && v.record.waitId > (input.afterWaitId ?? ''),
+                (!input.deliveryOutstanding || !v.record.delivery) &&
+                v.record.status === input.status &&
+                v.record.waitId > (input.afterWaitId ?? ''),
             )
             .sort(compare)
             .slice(0, input.limit + 1),
@@ -245,15 +261,21 @@ export function createMemoryEventWaitAuthority(
             actualAuthorityRevision: current?.authorityRevision ?? null,
           };
         if (current) {
+          if (!equal(current.record.delivery, input.record.delivery))
+            throw new Error('Delivery requires joint Goal admission');
           assertEventWaitTransition(current.record, input.record);
           if (equal(current.record, input.record)) return { kind: 'committed', snapshot: current };
         } else if (input.record.status !== 'waiting')
           throw new TypeError('Event waits must be created waiting');
-        if (input.record.status === 'waiting' || input.record.status === 'resolved') {
+        if (
+          !input.record.delivery &&
+          (input.record.status === 'waiting' || input.record.status === 'resolved')
+        ) {
           for (const other of table.values()) {
             if (
               other.record.sessionId === input.sessionId &&
               other.record.waitId !== input.waitId &&
+              !other.record.delivery &&
               (other.record.status === 'waiting' || other.record.status === 'resolved')
             )
               return { kind: 'active_wait_conflict', waitId: other.record.waitId };
@@ -265,6 +287,103 @@ export function createMemoryEventWaitAuthority(
         const snapshot = { authorityRevision, record: input.record };
         table.set(input.waitId, snapshot);
         return { kind: 'committed', snapshot };
+      });
+    },
+    async registerGoalWait(input) {
+      check();
+      const logicalSource = await readGoalWaitRootExecution(
+        runtime,
+        input,
+        authority.read((s) =>
+          rows<RootTurnAdmission>(s, 'rootAdmissions').get(
+            JSON.stringify([input.record.sessionId, input.record.sourceTurnId]),
+          ),
+        ),
+      );
+      const completedExecution = await readCompletedGoalWaitExecution(
+        runtime,
+        authority.read(
+          (s) =>
+            rows<GoalAuthoritySnapshot>(s, 'goals').get(input.record.sessionId)?.record
+              .currentExecution,
+        ),
+        logicalSource,
+      );
+      check();
+      return authority.write('eventWait.registerGoal', (s) => {
+        const r = input.record;
+        assertMemoryBridgeSession(s, r.sessionId);
+        const old = rows<EventWaitSnapshot>(s, 'eventWaits').get(r.waitId) ?? null;
+        if (
+          !old &&
+          [...rows<RuntimeEvent[]>(s, 'runtimeEvents').values()]
+            .flat()
+            .some(
+              (e) =>
+                e.sessionId === r.sessionId &&
+                e.runId === input.sourceExecution.runId &&
+                (e.actions?.endInvocation === true ||
+                  (e.status && ['completed', 'failed', 'cancelled', 'aborted'].includes(e.status))),
+            )
+        )
+          throw new Error('Source already ended');
+        if (
+          !old &&
+          [...rows<EventWaitSnapshot>(s, 'eventWaits').values()].some(
+            (w) =>
+              w.record.sessionId === r.sessionId &&
+              !w.record.delivery &&
+              ['waiting', 'resolved'].includes(w.record.status),
+          )
+        )
+          throw new Error('Session already has an active wait');
+        return writeMemoryBridge(
+          s,
+          registerGoalWait(
+            input,
+            rows<GoalAuthoritySnapshot>(s, 'goals').get(r.sessionId) ?? null,
+            old,
+            rows<RootTurnAdmission>(s, 'rootAdmissions').get(
+              JSON.stringify([r.sessionId, r.sourceTurnId]),
+            ),
+            logicalSource,
+            completedExecution,
+          ),
+        );
+      });
+    },
+    settleGoalWait(input) {
+      check();
+      return authority.write('eventWait.settleGoal', (s) => {
+        assertMemoryBridgeSession(s, input.sessionId);
+        const wait = rows<EventWaitSnapshot>(s, 'eventWaits').get(input.waitId);
+        if (!wait) throw new Error('Wait missing');
+        return writeMemoryBridge(
+          s,
+          settleGoalWait(
+            input,
+            rows<GoalAuthoritySnapshot>(s, 'goals').get(input.sessionId) ?? null,
+            wait,
+            [...rows<RuntimeEvent[]>(s, 'runtimeEvents').values()].flat(),
+          ),
+        );
+      });
+    },
+    queueGoalWait(input) {
+      check();
+      return authority.write('eventWait.queueGoal', (s) => {
+        assertMemoryBridgeSession(s, input.sessionId);
+        const wait = rows<EventWaitSnapshot>(s, 'eventWaits').get(input.waitId);
+        if (!wait) throw new Error('Wait missing');
+        return writeMemoryBridge(
+          s,
+          queueGoalWait(
+            input,
+            rows<GoalAuthoritySnapshot>(s, 'goals').get(input.sessionId) ?? null,
+            wait,
+            [...rows<RuntimeEvent[]>(s, 'runtimeEvents').values()].flat(),
+          ),
+        );
       });
     },
     close() {

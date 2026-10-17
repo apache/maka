@@ -33,6 +33,7 @@
  * projection, or ledger logic lives here. Those arrive in later nodes.
  */
 
+import { decodeEventWaitProvenance, type EventWaitProvenance } from './event-wait-delivery.js';
 import { isWorkHubActionReceipt, type WorkHubActionReceipt } from './workhub-action-result.js';
 import { isToolCallOutcome } from './tool-result-status.js';
 import { isModelRetryDecision, type ModelRetryDecision } from './model-failure.js';
@@ -313,7 +314,7 @@ export type RuntimeInvocationRootAuthority =
   | { kind: 'user' }
   | { kind: 'context_compact' }
   | { kind: 'scheduled_task'; scheduledTaskId: string }
-  | { kind: 'goal'; goalId: string }
+  | { kind: 'goal'; goalId: string; eventWait?: EventWaitProvenance }
   | { kind: 'agent_graph_supervisor_wake'; wakeId: string; attemptId: string }
   | { kind: 'legacy_automation'; legacyAutomationId: string };
 
@@ -859,7 +860,7 @@ const INVOCATION_ROOT_SHAPES = {
   >()(['kind', 'scheduledTaskId'], []),
   goal: defineObjectShape<Extract<RuntimeInvocationRootAuthority, { kind: 'goal' }>>()(
     ['kind', 'goalId'],
-    [],
+    ['eventWait'],
   ),
   agent_graph_supervisor_wake: defineObjectShape<
     Extract<RuntimeInvocationRootAuthority, { kind: 'agent_graph_supervisor_wake' }>
@@ -1238,7 +1239,11 @@ function isRuntimeInvocationRootAuthority(value: unknown): value is RuntimeInvoc
         isNonEmptyString(value.scheduledTaskId)
       );
     case 'goal':
-      return hasExactShape(value, INVOCATION_ROOT_SHAPES.goal) && isNonEmptyString(value.goalId);
+      return (
+        hasExactShape(value, INVOCATION_ROOT_SHAPES.goal) &&
+        isNonEmptyString(value.goalId) &&
+        isEventWaitProvenance(value.eventWait)
+      );
     case 'agent_graph_supervisor_wake':
       return (
         hasExactShape(value, INVOCATION_ROOT_SHAPES.agent_graph_supervisor_wake) &&
@@ -1642,4 +1647,14 @@ let __runtimeEventSeq = 0;
 export function createRuntimeEventId(prefix = 'rt-event'): string {
   __runtimeEventSeq += 1;
   return `${prefix}_${Date.now().toString(36)}_${__runtimeEventSeq.toString(36)}`;
+}
+
+function isEventWaitProvenance(value: unknown): boolean {
+  if (value === undefined) return true;
+  try {
+    decodeEventWaitProvenance(value);
+    return true;
+  } catch {
+    return false;
+  }
 }

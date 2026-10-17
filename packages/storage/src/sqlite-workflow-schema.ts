@@ -19,8 +19,8 @@
 
 import type { DatabaseSync } from 'node:sqlite';
 
-// v14 adds observation indexes and source cooldowns with crash-safe dispatch reservations.
-export const SQLITE_WORKFLOW_SCHEMA_VERSION = 14;
+// v15 excludes acknowledged deliveries from active wait ownership and delivery scans.
+export const SQLITE_WORKFLOW_SCHEMA_VERSION = 15;
 
 const RELEASED_WORKFLOW_PROJECTION_TABLES = [
   {
@@ -42,6 +42,9 @@ const RELEASED_WORKFLOW_PROJECTION_TABLES = [
 
 export function migrateSqliteWorkflowDatabase(db: DatabaseSync): void {
   retireReleasedWorkflowProjections(db);
+  db.exec(
+    'DROP INDEX IF EXISTS workflow_event_waits_one_active_session; DROP INDEX IF EXISTS workflow_event_waits_pending',
+  );
   db.exec(`
     DROP INDEX IF EXISTS workflow_plan_reminders_order;
     DROP TABLE IF EXISTS workflow_plan_reminders;
@@ -165,9 +168,11 @@ export function migrateSqliteWorkflowDatabase(db: DatabaseSync): void {
       ON workflow_event_waits(COALESCE(json_extract(record_json, '$.observation.lastAttemptAt'), 0), wait_id)
       WHERE status = 'waiting';
     CREATE INDEX IF NOT EXISTS workflow_event_waits_pending
-      ON workflow_event_waits(wait_id) WHERE status IN ('waiting', 'resolved');
+      ON workflow_event_waits(wait_id) WHERE status IN ('waiting', 'resolved') AND json_extract(record_json, '$.delivery') IS NULL;
     CREATE UNIQUE INDEX IF NOT EXISTS workflow_event_waits_one_active_session
-      ON workflow_event_waits(session_id) WHERE status IN ('waiting', 'resolved');
+      ON workflow_event_waits(session_id) WHERE status IN ('waiting', 'resolved') AND json_extract(record_json, '$.delivery') IS NULL;
+
+    CREATE INDEX IF NOT EXISTS workflow_event_waits_delivery ON workflow_event_waits(status, wait_id) WHERE status IN ('resolved', 'expired') AND json_extract(record_json, '$.delivery') IS NULL;
 
     CREATE TABLE IF NOT EXISTS workflow_event_wait_source_cooldowns (
       source_key TEXT PRIMARY KEY,

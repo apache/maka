@@ -169,6 +169,8 @@ export class HostEventWaitManager {
   readonly #clock: EventWaitClock;
   readonly #policy: EventWaitObservationPolicy;
   readonly #flights = new Map<string, Flight>();
+  /** Registration/delivery authorization shares observation capacity and source facts. */
+  readonly #accessFlights = new Set<Flight>();
   readonly #subscriptions = new Map<string, Subscription>();
   readonly #cooldowns = new Map<string, number>();
   /** Dispatch preparation is serialized per source, independently of in-flight reads. */
@@ -223,6 +225,74 @@ export class HostEventWaitManager {
     this.#options.adapters.validate(record);
   }
 
+  /** Bounded source access outside observation; no wait attempt or work Turn is charged. */
+  async checkSourceAccess(
+    wait: EventWaitRecord,
+    parent: AbortSignal,
+    authorize: HostEventWaitManagerOptions['authorize'],
+  ): Promise<EventWaitObservationAccess> {
+    const unknown = { kind: 'unknown' as const, reason: 'authorization_unavailable' };
+    const source = sourceKey(wait);
+    const occupied = this.#occupiedFlights();
+    if (
+      this.#closed ||
+      parent.aborted ||
+      this.#pendingCooldowns.size >= this.#policy.maxSourceCooldowns ||
+      this.#sourceCooldown(source) > this.#clock.now() ||
+      occupied.size >= this.#policy.maxConcurrent ||
+      [...occupied].filter((f) => f.source === source).length >= this.#policy.maxPerSource
+    )
+      return unknown;
+    const flight: Flight = {
+      controller: new AbortController(),
+      source,
+      sessionId: wait.sessionId,
+      waitId: wait.waitId,
+      claimed: false,
+      cooldownUntil: 0,
+      retryAfterUntil: 0,
+      task: Promise.resolve(),
+    };
+    this.#accessFlights.add(flight);
+    const abort = () => flight.controller.abort();
+    parent.addEventListener('abort', abort, { once: true });
+    const task = (async () => {
+      const cooldown = await this.#store.readSourceCooldown({
+        providerId: wait.resource.providerId,
+        connectionId: wait.resource.connectionId,
+      });
+      if (
+        this.#closed ||
+        flight.controller.signal.aborted ||
+        Math.max(cooldown ?? 0, this.#sourceCooldown(source)) > this.#clock.now()
+      )
+        return unknown;
+      try {
+        // Expired waits still need delivery authorization, so the source deadline
+        // does not bound this separate request. #call retains the request timeout.
+        return (
+          (await this.#tryAuthorize(wait, flight, Number.MAX_SAFE_INTEGER, authorize))?.access ??
+          unknown
+        );
+      } catch (error) {
+        if (error instanceof SourceCooldownWriteError || error instanceof StorageRootAuthorityError)
+          throw error;
+        return unknown;
+      }
+    })();
+    flight.task = task.then(
+      () => undefined,
+      () => undefined,
+    );
+    try {
+      return await task;
+    } finally {
+      parent.removeEventListener('abort', abort);
+      this.#accessFlights.delete(flight);
+      // #call retains interrupted requests in #lingering until late facts settle.
+    }
+  }
+
   start(): Promise<void> {
     if (this.#closed) return Promise.reject(new Error('Event wait manager is closed'));
     return (this.#start ??= this.#recover());
@@ -264,7 +334,11 @@ export class HostEventWaitManager {
   #occupiedFlights(): Set<Flight> {
     // One observation owns one slot even while its interrupted request and checkpoint
     // persistence overlap. Keep that slot until both the flight and its late work retire.
-    return new Set([...this.#flights.values(), ...this.#lingering.values()]);
+    return new Set([
+      ...this.#flights.values(),
+      ...this.#accessFlights,
+      ...this.#lingering.values(),
+    ]);
   }
 
   async #scanPage(): Promise<void> {
@@ -600,6 +674,8 @@ export class HostEventWaitManager {
   async #tryAuthorize(
     r: EventWaitRecord,
     flight: Flight,
+    deadline = r.deadlineAt,
+    authorize = this.#options.authorize,
   ): Promise<{ access: EventWaitObservationAccess } | null> {
     const recordCooldown = async (checked: { access: EventWaitObservationAccess } | null) => {
       if (!checked || this.#closed) return;
@@ -611,12 +687,12 @@ export class HostEventWaitManager {
     };
     const checked = await this.#call<{ access: EventWaitObservationAccess } | null>(
       flight,
-      r.deadlineAt,
+      deadline,
       (signal) => {
         // Recheck at actual dispatch; cooldown can change after the timer wakes or
         // before #call invokes this callback. Active flights retain it across cache eviction.
         if (flight.retryAfterUntil > this.#clock.now()) return Promise.resolve(null);
-        return this.#options.authorize(r, signal).then((access) => ({ access }));
+        return authorize(structuredClone(r), signal).then((access) => ({ access }));
       },
       recordCooldown,
     );
@@ -870,15 +946,30 @@ export class HostEventWaitManager {
     )
       throw new TypeError('Invalid retry delay');
     const now = Math.max(r.updatedAt, this.#clock.now());
+    // Registration and delivery authorization may have no observation checkpoint.
+    // Validate the prospective fields without writing an attempt or changing the wait.
+    const observation = r.observation ?? {
+      schemaVersion: 1,
+      attempts: 1,
+      lastAttemptAt: now,
+      lastObservedAt: now,
+      nextObserveAt: now,
+      nextPollAt: now,
+      consecutiveErrors: 0,
+      outcome: 'checking',
+      cursor: null,
+      eventKey: null,
+      reason: null,
+    };
     decodeEventWaitRecord({
       ...r,
       updatedAt: now,
       observation: {
-        ...r.observation!,
+        ...observation,
         outcome: result.kind,
         lastObservedAt: now,
-        cursor: result.cursor ?? r.observation!.cursor,
-        eventKey: result.eventKey ?? r.observation!.eventKey,
+        cursor: result.cursor ?? observation.cursor,
+        eventKey: result.eventKey ?? observation.eventKey,
         reason: result.kind === 'unknown' ? result.reason : null,
       },
       ...(result.kind === 'pending' || result.kind === 'unknown'
@@ -1268,7 +1359,7 @@ export class HostEventWaitManager {
 
   #cool(source: string, until: number, owner?: Flight): void {
     // Prepared reads retain new source facts even if their cache entry is evicted.
-    for (const flight of this.#flights.values()) {
+    for (const flight of this.#occupiedFlights()) {
       if (flight.source === source && flight !== owner) {
         flight.cooldownUntil = Math.max(flight.cooldownUntil, until);
         // An owner marks ordinary read spacing. Source-reported Retry-After has no
@@ -1316,6 +1407,7 @@ export class HostEventWaitManager {
     this.#timer?.();
     this.#timer = undefined;
     for (const flight of this.#flights.values()) flight.controller.abort();
+    for (const flight of this.#accessFlights) flight.controller.abort();
     for (const waitId of this.#subscriptions.keys()) this.#detach(waitId);
     this.#close = (async () => {
       let cancelTimer: (() => void) | undefined;
@@ -1325,6 +1417,7 @@ export class HostEventWaitManager {
             this.#start,
             this.#scan,
             ...[...this.#flights.values()].map((v) => v.task),
+            ...[...this.#accessFlights].map((v) => v.task),
             ...this.#lateResults,
           ]),
           new Promise<void>((resolve) => {

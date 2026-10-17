@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { decodeGoalAuthorityRecord } from '@maka/core/goal';
 import {
   copyFile,
   link,
@@ -555,6 +556,7 @@ async function filterBackedUpDatabase(
         database.exec(`DELETE FROM ${quoteIdentifier(row.name)}`);
       }
     }
+    if (options.omitEventWaits) stripPortableGoalWaits(database);
     // Operational rows that describe a REQUEST rather than the conversation.
     // None of them reach the model, and in a real Session they are the large
     // majority of this table. The two record kinds that do decide what the
@@ -1376,6 +1378,7 @@ function mergeAttachedBundle(target: DatabaseSync): string[] {
              AND session_id IN (SELECT session_id FROM bundle.session_metadata)`,
         )
         .run(Date.now());
+      stripPortableGoalWaits(target, true);
       const violation = target.prepare('PRAGMA foreign_key_check').get();
       if (violation) {
         throw new SessionBundleImportError(
@@ -1733,5 +1736,36 @@ function countContextRefs(databasePath: string, sessionIds: readonly string[]): 
     return Number(row.count ?? 0);
   } finally {
     database.close();
+  }
+}
+
+function stripPortableGoalWaits(database: DatabaseSync, importedOnly = false): void {
+  const scope = importedOnly
+    ? 'AND session_id IN (SELECT session_id FROM bundle.session_metadata)'
+    : '';
+  for (const row of database
+    .prepare(
+      `SELECT session_id, record_json FROM workflow_goal_authority WHERE (json_type(record_json, '$.activeEventWait') IS NOT NULL OR json_type(record_json, '$.pendingContinuation.eventWait') IS NOT NULL) ${scope}`,
+    )
+    .all()) {
+    const old = decodeGoalAuthorityRecord(JSON.parse(String(row.record_json)));
+    const { activeEventWait: _gate, ...base } = old;
+    const record = decodeGoalAuthorityRecord({
+      ...base,
+      currentExecution: null,
+      pendingContinuation: null,
+      controlLease: { ...base.controlLease, generation: base.controlLease.generation + 1 },
+      goal: {
+        ...base.goal,
+        revision: base.goal.revision + 1,
+        status: 'paused',
+        lastReason: 'Event waits do not transfer between State Roots.',
+      },
+    });
+    database
+      .prepare(
+        'UPDATE workflow_goal_authority SET authority_revision = authority_revision + 1, goal_revision = ?, status = ?, record_json = ? WHERE session_id = ?',
+      )
+      .run(record.goal.revision, record.goal.status, JSON.stringify(record), row.session_id);
   }
 }

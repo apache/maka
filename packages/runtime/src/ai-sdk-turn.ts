@@ -23,6 +23,7 @@
  * construction and cross-turn routing remain in AiSdkBackend.
  */
 
+import { EVENT_WAIT_TOOL_NAME, isEventWaitYieldReceipt } from './event-wait-tool.js';
 import type {
   AbortEvent,
   CompleteEvent,
@@ -2182,6 +2183,13 @@ export class AiSdkTurn {
               await loadDurableTurnEvents();
             }
             const toolsByName = new Map(providerTools.map((tool) => [tool.name, tool]));
+            // A wait controls the lifetime of the whole Turn. Refuse the entire
+            // mixed step before dispatch, rather than letting the first call win
+            // the ordinary exclusive-step gate and leaving a registered orphan.
+            const mixedEventWait =
+              returnedToolCalls.length > 1 &&
+              toolsByName.has(EVENT_WAIT_TOOL_NAME) &&
+              returnedToolCalls.some((call) => call.toolName === EVENT_WAIT_TOOL_NAME);
             const settlementOutcomes = await Promise.allSettled(
               returnedToolCalls.map(async (toolCall) => {
                 if (toolCall.providerExecuted) {
@@ -2196,17 +2204,20 @@ export class AiSdkTurn {
                 if (deniedBoundaryRequest) {
                   toolRuntime.forceSandboxBoundaryFinalization();
                 }
-                const blockedToolCall = sandboxBoundaryFinalizationStep || deniedBoundaryRequest;
+                const blockedToolCall =
+                  mixedEventWait || sandboxBoundaryFinalizationStep || deniedBoundaryRequest;
                 const requestedTool = blockedToolCall
                   ? undefined
                   : toolsByName.get(toolCall.toolName);
                 const tool = requestedTool ?? toolsByName.get(INVALID_TOOL_NAME);
                 if (!tool) throw new Error('Runtime invalid-tool fallback is unavailable');
-                const unavailableError = sandboxBoundaryFinalizationStep
-                  ? 'Sandbox boundary finalization does not permit tool execution.'
-                  : deniedBoundaryRequest
-                    ? SANDBOX_BOUNDARY_DENIED_FOR_TURN
-                    : 'returned tool is unavailable';
+                const unavailableError = mixedEventWait
+                  ? 'WaitForEvent requires a step containing exactly one tool call. No tools in this mixed step ran.'
+                  : sandboxBoundaryFinalizationStep
+                    ? 'Sandbox boundary finalization does not permit tool execution.'
+                    : deniedBoundaryRequest
+                      ? SANDBOX_BOUNDARY_DENIED_FOR_TURN
+                      : 'returned tool is unavailable';
                 return await toolRuntime.settleToolCall({
                   tool,
                   turnId,
@@ -2254,6 +2265,14 @@ export class AiSdkTurn {
                 !settlement.providerError
               )
                 toolRequestedFinish = true;
+              if (
+                returnedToolCalls.length === 1 &&
+                !settlement.providerError &&
+                isEventWaitYieldReceipt(settlement.result)
+              ) {
+                this.loopStopReason = 'event_wait';
+                this.loopStopRequested = true;
+              }
               if (isPlanToolResult(settlement.result)) {
                 this.handlePlanToolResult(settlement.result, queue);
               }

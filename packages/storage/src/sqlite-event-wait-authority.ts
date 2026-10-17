@@ -17,6 +17,27 @@
  * under the License.
  */
 
+import {
+  registerGoalWait,
+  readGoalWaitRootExecution,
+  readCompletedGoalWaitExecution,
+  type GoalWaitRuntimeReader,
+  settleGoalWait,
+  queueGoalWait,
+  type RegisterGoalWaitInput,
+  type SettleGoalWaitInput,
+  type QueueGoalWaitInput,
+  type GoalWaitSnapshot,
+} from './event-wait-bridge.js';
+import {
+  readBridgeGoal,
+  readBridgeWait,
+  readBridgeTermination,
+  writeBridgeSnapshot,
+  assertBridgeSession,
+} from './sqlite-event-wait-bridge.js';
+import { createWorkspaceRuntimeStore } from './runtime-event-persistence.js';
+import { normalizeRootTurnAdmission } from './agent-run-store-contract.js';
 import { isDeepStrictEqual } from 'node:util';
 import {
   assertEventWaitTransition,
@@ -57,9 +78,22 @@ import {
 
 class SqliteEventWaitAuthority implements EventWaitAuthorityRepository {
   readonly #database: OperationalStateDatabaseLease;
+  readonly #runtime: GoalWaitRuntimeReader;
+  readonly #closeRuntime?: () => void;
   #closed = false;
-  constructor(root: string) {
+  constructor(root: string, runtime?: GoalWaitRuntimeReader) {
     this.#database = acquireOperationalStateDatabase(root);
+    try {
+      if (runtime) this.#runtime = runtime;
+      else {
+        const owned = createWorkspaceRuntimeStore(root);
+        this.#runtime = owned;
+        this.#closeRuntime = () => owned.close();
+      }
+    } catch (error) {
+      this.#database.close();
+      throw error;
+    }
   }
   #assertOpen(): void {
     if (this.#closed) throw new Error('SQLite event wait authority is closed');
@@ -96,7 +130,7 @@ class SqliteEventWaitAuthority implements EventWaitAuthorityRepository {
       eventWaitPage(
         this.#database.database
           .prepare(
-            "SELECT * FROM workflow_event_waits WHERE status IN ('waiting', 'resolved') AND wait_id > ? ORDER BY wait_id LIMIT ?",
+            "SELECT * FROM workflow_event_waits WHERE status IN ('waiting', 'resolved') AND json_extract(record_json, '$.delivery') IS NULL AND wait_id > ? ORDER BY wait_id LIMIT ?",
           )
           .all(input.afterWaitId ?? '', input.limit + 1)
           .map(readRow),
@@ -111,7 +145,7 @@ class SqliteEventWaitAuthority implements EventWaitAuthorityRepository {
       eventWaitPage(
         this.#database.database
           .prepare(
-            'SELECT * FROM workflow_event_waits WHERE status = ? AND wait_id > ? ORDER BY wait_id LIMIT ?',
+            `SELECT * FROM workflow_event_waits WHERE status = ? ${input.deliveryOutstanding ? "AND json_extract(record_json, '$.delivery') IS NULL" : ''} AND wait_id > ? ORDER BY wait_id LIMIT ?`,
           )
           .all(input.status, input.afterWaitId ?? '', input.limit + 1)
           .map(readRow),
@@ -262,15 +296,20 @@ class SqliteEventWaitAuthority implements EventWaitAuthorityRepository {
           actualAuthorityRevision: current?.authorityRevision ?? null,
         };
       if (current) {
+        if (!isDeepStrictEqual(current.record.delivery, input.record.delivery))
+          throw new Error('Delivery requires joint Goal admission');
         assertEventWaitTransition(current.record, input.record);
         if (isDeepStrictEqual(current.record, input.record))
           return { kind: 'committed', snapshot: current };
       } else if (input.record.status !== 'waiting')
         throw new TypeError('Event waits must be created waiting');
-      if (input.record.status === 'waiting' || input.record.status === 'resolved') {
+      if (
+        !input.record.delivery &&
+        (input.record.status === 'waiting' || input.record.status === 'resolved')
+      ) {
         const other = db
           .prepare(
-            "SELECT wait_id FROM workflow_event_waits WHERE session_id = ? AND status IN ('waiting', 'resolved') AND wait_id <> ?",
+            "SELECT wait_id FROM workflow_event_waits WHERE session_id = ? AND status IN ('waiting', 'resolved') AND json_extract(record_json, '$.delivery') IS NULL AND wait_id <> ?",
           )
           .get(input.sessionId, input.waitId);
         if (other) return { kind: 'active_wait_conflict', waitId: String(other.wait_id) };
@@ -293,13 +332,107 @@ class SqliteEventWaitAuthority implements EventWaitAuthorityRepository {
       return { kind: 'committed', snapshot: { authorityRevision, record: r } };
     });
   }
+  async registerGoalWait(input: RegisterGoalWaitInput): Promise<GoalWaitSnapshot> {
+    this.#assertOpen();
+    const r = input.record;
+    const readSource = () => {
+      const row = this.#database.database
+        .prepare(
+          'SELECT record_json FROM core_root_turn_admissions WHERE session_id = ? AND turn_id = ?',
+        )
+        .get(r.sessionId, r.sourceTurnId);
+      return row
+        ? normalizeRootTurnAdmission(
+            JSON.parse(String(row.record_json)),
+            r.sessionId,
+            r.sourceTurnId,
+          )
+        : undefined;
+    };
+    const logicalSource = await readGoalWaitRootExecution(
+      this.#runtime,
+      input,
+      this.#database.transaction('read', readSource),
+    );
+    const completedExecution = await readCompletedGoalWaitExecution(
+      this.#runtime,
+      this.#database.transaction(
+        'read',
+        () => readBridgeGoal(this.#database.database, r.sessionId)?.record.currentExecution,
+      ),
+      logicalSource,
+    );
+    this.#assertOpen();
+    return this.#database.transaction('write', () => {
+      const db = this.#database.database;
+      assertBridgeSession(db, r.sessionId);
+      const old = readBridgeWait(db, r.sessionId, r.waitId);
+      if (
+        !old &&
+        db
+          .prepare(
+            "SELECT 1 FROM runtime_events WHERE session_id = ? AND run_id = ? AND (json_extract(payload_json, '$.actions.endInvocation') = 1 OR json_extract(payload_json, '$.status') IN ('completed', 'failed', 'cancelled', 'aborted')) LIMIT 1",
+          )
+          .get(r.sessionId, input.sourceExecution.runId)
+      )
+        throw new Error('Source already ended');
+      return writeBridgeSnapshot(
+        db,
+        registerGoalWait(
+          input,
+          readBridgeGoal(db, r.sessionId),
+          old,
+          readSource(),
+          logicalSource,
+          completedExecution,
+        ),
+      );
+    });
+  }
+  settleGoalWait(input: SettleGoalWaitInput): GoalWaitSnapshot {
+    return this.#updateGoalWait(input, 'settle');
+  }
+  queueGoalWait(input: QueueGoalWaitInput): GoalWaitSnapshot {
+    return this.#updateGoalWait(input, 'queue');
+  }
+  #updateGoalWait(
+    input: SettleGoalWaitInput | QueueGoalWaitInput,
+    operation: 'settle' | 'queue',
+  ): GoalWaitSnapshot {
+    this.#assertOpen();
+    return this.#database.transaction('write', () => {
+      const db = this.#database.database;
+      assertBridgeSession(db, input.sessionId);
+      const goal = readBridgeGoal(db, input.sessionId),
+        wait = readBridgeWait(db, input.sessionId, input.waitId);
+      if (!wait || !goal?.record.activeEventWait) throw new Error('Wait gate missing');
+      const events = readBridgeTermination(
+        db,
+        input.sessionId,
+        goal.record.activeEventWait.sourceExecution.runId,
+      );
+      return writeBridgeSnapshot(
+        db,
+        operation === 'settle'
+          ? settleGoalWait(input as SettleGoalWaitInput, goal, wait, events)
+          : queueGoalWait(input as QueueGoalWaitInput, goal, wait, events),
+      );
+    });
+  }
   close(): void {
     this.#closed = true;
-    this.#database.close();
+    try {
+      this.#closeRuntime?.();
+    } finally {
+      this.#database.close();
+    }
   }
 }
-export function createSqliteEventWaitAuthority(root: string): EventWaitAuthorityRepository {
-  return new SqliteEventWaitAuthority(root);
+export function createSqliteEventWaitAuthority(
+  root: string,
+  runtime?: GoalWaitRuntimeReader,
+): EventWaitAuthorityRepository {
+  return new SqliteEventWaitAuthority(root, runtime);
 }
 function readRow(value: unknown): EventWaitSnapshot {
   if (!value || typeof value !== 'object') throw new Error('Corrupt event wait row');
