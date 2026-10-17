@@ -25,7 +25,7 @@ import {
 
 export type DesktopRuntimeHostManagementBridge = Pick<
   MakaBridge,
-  'runtimeHostManagement' | 'runtimeHostPeerMesh' | 'runtimeHostProfiles' | 'runtimeHostHandoff'
+  'runtimeHostManagement' | 'runtimeHostPeerMesh' | 'runtimeHostProfiles' | 'runtimeHostHandoff' | 'appWindow'
 >;
 
 export function createDesktopRuntimeHostManagementServices(
@@ -84,6 +84,14 @@ export function createDesktopRuntimeHostManagementServices(
       subscribe: (handler) => bridge.runtimeHostHandoff.subscribe(handler),
       decide: (revision, action) => bridge.runtimeHostHandoff.decide(revision, action),
       copyText: (value) => navigator.clipboard.writeText(value),
+    },
+    storageUpgrade: {
+      current: () => bridge.appWindow?.getStorageUpgradeStatus?.() ?? Promise.resolve({ active: false }),
+      subscribe: (handler) => bridge.appWindow?.subscribeStorageUpgrade?.(handler) ?? (() => {}),
+      schedule: (callback, delayMs) => {
+        const timer = window.setTimeout(callback, delayMs);
+        return () => window.clearTimeout(timer);
+      },
     },
   };
 }

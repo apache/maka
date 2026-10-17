@@ -100,6 +100,7 @@ export interface ConnectOrSpawnRuntimeHostInput {
   closeOnLauncherExit?: boolean;
   /** Candidate-exit sink forwarded to the launcher; the embedder owns the sink. */
   onExit?: (details: CandidateExitDetails) => void;
+  onHostStatus?: (status: import('../protocol/host-status.js').HostStatusResult) => void;
 }
 
 interface ConnectOrSpawnRuntimeHostDependencies {
@@ -413,6 +414,7 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
         connectTimeoutMs: input.connectTimeoutMs,
         handshakeTimeoutMs: input.handshakeTimeoutMs,
         electionDeadline: deadline,
+        ...(input.onHostStatus ? { onHostStatus: input.onHostStatus } : {}),
       });
       const observed = recordElectionResult(result, observations);
       if (result.kind === 'unavailable' && result.connectionFailure) {

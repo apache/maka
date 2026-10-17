@@ -43,6 +43,7 @@ import {
   type HostLifecycleState,
   type HostRegistration,
   type HostStatusResult,
+  type HostStorageUpgradePhase,
   type RequestFrame,
 } from '../protocol/index.js';
 import type { RuntimeHostMessageTransport } from '../transport/message-transport.js';
@@ -121,6 +122,9 @@ export interface RuntimeHostCompositionContext {
   /** Irreversible fail-stop latch; normal residency still uses acquireResidency(). */
   retainUntilProcessExit(): void;
   requestDrain(): void;
+  /** Aborted before composition exists, including launcher loss during an upgrade. */
+  startupSignal?: AbortSignal;
+  reportStorageUpgrade?(phase: Exclude<HostStorageUpgradePhase, 'opening'> | undefined): void;
   sessionAccessAuthority?: Pick<
     RuntimeHostAccessAuthority,
     | 'activeSessionGrant'
@@ -168,6 +172,7 @@ interface RuntimeHostKernelCommonOptions {
   handshakeTimeoutMs?: number;
   shutdownGraceMs?: number;
   composition: RuntimeHostCompositionSource;
+  startupSignal?: AbortSignal;
   listenerSetFactory?: RuntimeHostListenerSetFactory;
   accessAuthority?: RuntimeHostAccessAuthority;
   peerMesh?: PeerMeshNode;
@@ -221,6 +226,8 @@ export class RuntimeHostKernel {
   readonly #shutdownGraceMs: number;
   #listeners: RuntimeHostListenerSet | undefined;
   #state: HostLifecycleState = 'starting';
+  #storageUpgradePhase?: HostStorageUpgradePhase;
+  readonly #startupAbort = new AbortController();
   #hasAcceptedConnection = false;
   #activeOperations = 0;
   #activeCommandOperations = 0;
@@ -350,6 +357,7 @@ export class RuntimeHostKernel {
   #requestDrain(): void {
     if (!this.#shutdownRequested) {
       this.#shutdownRequested = true;
+      this.#startupAbort.abort(new Error('Runtime Host startup was cancelled'));
       this.#cancelIdle();
       this.#cancelInitialConnectionDeadline();
       this.#armShutdownDeadline();
@@ -378,6 +386,11 @@ export class RuntimeHostKernel {
     // earlier would drive #closeResources past an undefined startup await and
     // let shutdown complete without closing the composition created below.
     this.#armInitialConnectionDeadline();
+    const cancelStartup = () => {
+      void this.close({ reason: 'retirement' }).catch(() => undefined);
+    };
+    this.#options.startupSignal?.addEventListener('abort', cancelStartup, { once: true });
+    if (this.#options.startupSignal?.aborted) cancelStartup();
     const compositionStartup = (async () => {
       try {
         this.#composition = await this.#options.composition.create({
@@ -386,6 +399,14 @@ export class RuntimeHostKernel {
           acquireResidency: (label, kind) => this.#acquireResidency(label, kind),
           retainUntilProcessExit: () => this.#retainUntilProcessExit(),
           requestDrain: () => this.#requestDrain(),
+          startupSignal: this.#startupAbort.signal,
+          reportStorageUpgrade: (phase) => {
+            if (!this.#shutdownRequested) {
+              this.#storageUpgradePhase =
+                phase ?? (this.#storageUpgradePhase ? 'opening' : undefined);
+              this.#state = phase ? 'upgrading_storage' : 'recovering';
+            }
+          },
           ...(this.#options.accessAuthority
             ? { sessionAccessAuthority: this.#options.accessAuthority }
             : {}),
@@ -398,6 +419,7 @@ export class RuntimeHostKernel {
         this.#operationHandlers = this.#createOperationHandlers(this.#composition.handlers);
         await this.#composition.recover();
       } finally {
+        this.#options.startupSignal?.removeEventListener('abort', cancelStartup);
         settleCompositionStartup();
       }
     })();
@@ -407,6 +429,7 @@ export class RuntimeHostKernel {
       return;
     }
     this.#state = 'ready';
+    this.#storageUpgradePhase = undefined;
     await this.#publishRegistration();
     if (!this.#shutdownRequested) this.#composition?.startMaintenance?.();
     this.#scheduleIdleIfNeeded();
@@ -885,6 +908,10 @@ export class RuntimeHostKernel {
       compositionId: this.compositionDescriptor.id,
       compositionRevision: this.compositionDescriptor.revision,
       state: this.#state,
+      ...((this.#state === 'upgrading_storage' || this.#state === 'recovering') &&
+      this.#storageUpgradePhase
+        ? { storageUpgradePhase: this.#storageUpgradePhase }
+        : {}),
       connections: this.#acceptedTransports.size,
       activeOperations: this.#activeOperations,
       activeResidencies: this.#residencies.activeCount,

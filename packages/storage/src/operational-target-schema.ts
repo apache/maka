@@ -18,6 +18,7 @@
  */
 
 import { DatabaseSync } from 'node:sqlite';
+import { migrateColdStorageDatabase } from './cold-storage-schema.js';
 import { migrateSqliteArtifactDatabase } from './sqlite-artifact-schema.js';
 import { migrateSqliteCoreExecutionDatabase } from './sqlite-core-execution-schema.js';
 import { migrateSqliteRuntimeDatabase } from './sqlite-runtime-schema.js';
@@ -72,6 +73,7 @@ function buildOperationalTargetSchema(): ReadonlyMap<string, string> {
     migrateSqliteWorkflowDatabase(database);
     migrateSqliteUsageDatabase(database);
     migrateSqliteArtifactDatabase(database);
+    migrateColdStorageDatabase(database, 0);
     ensureOperationalSchemaRegistry(database);
     return readSchema(database);
   } finally {

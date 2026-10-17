@@ -1013,6 +1013,25 @@ const notifyRun = createRunNotifier({
 });
 
 const sessionCopyOwnerProcessId = randomUUID();
+let localStorageUpgrade: import('../shared/runtime-host-identity.js').DesktopStorageUpgradeStatus = { active: false };
+let storageUpgradeSettled = Promise.resolve();
+let settleStorageUpgrade = () => {};
+function reportLocalStorageUpgrade(status: import('../shared/runtime-host-identity.js').DesktopStorageUpgradeStatus): void {
+  if (status.active === localStorageUpgrade.active && status.phase === localStorageUpgrade.phase) return;
+  if (status.active && !localStorageUpgrade.active) storageUpgradeSettled = new Promise<void>((resolve) => { settleStorageUpgrade = resolve; });
+  if (!status.active) settleStorageUpgrade();
+  localStorageUpgrade = status;
+  mainWindowController.send('app:storageUpgradeChanged', status);
+}
+async function waitThroughStorageUpgrade<T>(work: () => Promise<T>): Promise<T> {
+  while (true) {
+    try { return await work(); }
+    catch (error) {
+      if (!localStorageUpgrade.active) throw error;
+      await storageUpgradeSettled;
+    }
+  }
+}
 function runtimeHostTargetEvent(
   state: RuntimeHostDesktopTargetState,
 ): DesktopRuntimeHostProfileChangedEvent {
@@ -1034,6 +1053,8 @@ const createLocalRuntimeHostManager = () => createRuntimeHostDesktopManager(
     clientInstanceId: runtimeHostClientInstanceId,
     generation: runtimeHostGeneration,
     candidateLaunchBarrier: runtimeHostCandidateLaunchBarrier,
+    onHostStatus: (status) => reportLocalStorageUpgrade(status.storageUpgradePhase
+      ? { active: true, phase: status.storageUpgradePhase } : { active: false }),
     ...(runtimeHostPeerClient ? { peerClient: runtimeHostPeerClient } : {}),
     // The Desktop E2E composition lives behind its own entry module, which
     // release packaging drops: picking it here is what keeps FakeBackend and
@@ -1316,6 +1337,7 @@ const createLocalRuntimeHostManager = () => createRuntimeHostDesktopManager(
     resolveLocalHostReplacement: (registration, signal) =>
       localRuntimeHostRemoteAccess.resolveConflictingHostReplacement(registration, signal),
     onFatalError: (error) => {
+      reportLocalStorageUpgrade({ active: false });
       // The target was already marked unavailable by the state machine; the
       // app stays up and the recovery affordance offers the retry.
       console.error("[runtime-host] fatal:", error);
@@ -1352,17 +1374,17 @@ void runtimeHostStart.catch((error: unknown) =>
 // it, and it rejects an epoch the manager has not activated yet. Only the
 // manager knows when a candidate is fully assembled.
 const readinessManager = runtimeHostManager;
-ipcMain.handle('runtime-host:awaitReady', (_event, value: unknown) =>
-  readinessManager.waitUntilReadyForScope(
-    requireDesktopTargetScope(value),
-    AbortSignal.timeout(RUNTIME_HOST_TARGET_READY_TIMEOUT_MS),
-  ),
-);
+ipcMain.handle('runtime-host:awaitReady', (_event, value: unknown) => {
+  const scope = requireDesktopTargetScope(value);
+  const wait = () => readinessManager.waitUntilReadyForScope(scope, AbortSignal.timeout(RUNTIME_HOST_TARGET_READY_TIMEOUT_MS));
+  return scope.hostId === readinessManager.entries().find((entry) => entry.target.profile.id === 'local')?.hostId
+    ? waitThroughStorageUpgrade(wait) : wait();
+});
 // Runtime Host is the only schema-migration authority for its State Root.
 // Work Board remains a Desktop-owned table, but it opens only while a ready
 // Host has verified the schema — including a Local Host that only becomes
 // ready after a retry.
-const resolveWorkBoardStore = async () => {
+const resolveWorkBoardStore = () => waitThroughStorageUpgrade(async () => {
   const deadline = Date.now() + WORK_BOARD_HOST_READY_TIMEOUT_MS;
   const waitForStart = Math.max(1, deadline - Date.now());
   let startTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1384,7 +1406,7 @@ const resolveWorkBoardStore = async () => {
   const remaining = Math.max(1, deadline - Date.now());
   await manager.waitUntilReady('local', undefined, AbortSignal.timeout(remaining));
   return createWorkBoardStore(workspaceRoot, { schemaMigration: 'require_current' });
-};
+});
 const registerDesktopWorkBoard = (): boolean => {
   if (workBoardIpc) {
     // A first Work Board read can fail while the Local Host is unavailable.
@@ -1932,6 +1954,7 @@ function registerPersistentClientIpc(): void {
     mainWindowController,
     e2eFixture,
     updateService,
+    getStorageUpgradeStatus: () => localStorageUpgrade,
   });
   registerAppIconIpc({
     ipcMain,

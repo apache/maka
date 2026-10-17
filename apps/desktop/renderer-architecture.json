@@ -429,7 +429,7 @@
     },
     "src/renderer/features/runtime-host-management/index.ts": {
       "appShell": [
-        "RuntimeHostHandoffOverlay"
+        "RuntimeHostLifecycleOverlay"
       ],
       "composition": [
         "RuntimeHostManagementServicesProvider"

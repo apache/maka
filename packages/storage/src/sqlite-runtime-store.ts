@@ -40,6 +40,12 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname } from 'node:path';
 import type { DatabaseSync, SQLInputValue } from 'node:sqlite';
+import {
+  decodeRuntimePayloadJson,
+  parseRuntimePayloadJson,
+  runtimePayloadBytesSql,
+  RUNTIME_PAYLOAD_PREFIX,
+} from './runtime-payload-codec.js';
 import { isDeepStrictEqual } from 'node:util';
 import { assertHandoffClaimSource } from '@maka/core/runtime-handoff';
 import {
@@ -171,6 +177,7 @@ import {
   assertFoldedSearchTerm,
   recallFoldedMatchClause,
   registerRecallFoldFunction,
+  RECALL_ENCODED_MATCH_FUNCTION,
 } from './recall-fold.js';
 import { immutableSteeringMessageId, isRuntimeStorageSafeId } from './runtime-event-invariants.js';
 import { assertNoReservedWorkspaceAuthorityAppend } from './runtime-event-authority.js';
@@ -784,6 +791,16 @@ export class SqliteRuntimeStore
     return this.readTransaction(() => this.transcriptQuery().turns(sessionId, request));
   }
 
+  /** Consume each prompt inside the snapshot, retaining only the bounded caller projection. */
+  async projectTranscriptTurns<T>(
+    sessionId: string,
+    request: RuntimeTranscriptTurnsRequest,
+    project: (turn: RuntimeTranscriptTurn) => T,
+  ): Promise<T[]> {
+    assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
+    return this.readTransaction(() => this.transcriptQuery().turns(sessionId, request, project));
+  }
+
   async readTranscriptTurnCrossing(sessionId: string, ordinal: number): Promise<boolean> {
     assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
     return this.readTransaction(() => this.transcriptQuery().crossing(sessionId, ordinal));
@@ -1280,7 +1297,7 @@ export class SqliteRuntimeStore
         const measured = this.db
           .prepare(
             `
-              SELECT event_seq, length(CAST(payload_json AS BLOB)) AS stored_bytes
+              SELECT event_seq, ${runtimePayloadBytesSql('payload_json')} AS stored_bytes
               FROM runtime_events
               WHERE session_id = ? AND run_id = ? AND event_seq > ?
               ORDER BY event_seq ASC, event_id ASC
@@ -1395,7 +1412,7 @@ export class SqliteRuntimeStore
       .prepare(`
         SELECT stored_bytes
         FROM (
-          SELECT length(CAST(payload_json AS BLOB)) AS stored_bytes
+          SELECT ${runtimePayloadBytesSql('payload_json')} AS stored_bytes
           FROM runtime_events
           WHERE session_id = ? AND run_id = ?
           UNION ALL
@@ -1616,8 +1633,8 @@ export class SqliteRuntimeStore
     const cursor = this.db
       .prepare(`
         SELECT event_id, session_id, invocation_id, run_id, turn_id, event_seq,
-          length(CAST(payload_json AS BLOB)) AS stored_bytes,
-          CASE WHEN length(CAST(payload_json AS BLOB)) <= ? THEN payload_json END AS payload_json
+          ${runtimePayloadBytesSql('payload_json')} AS stored_bytes,
+          CASE WHEN ${runtimePayloadBytesSql('payload_json')} <= ? THEN payload_json END AS payload_json
         FROM runtime_events
         WHERE session_id = ? AND run_id = ?
           AND (? IS NULL OR event_seq <= ?)
@@ -1981,7 +1998,7 @@ export class SqliteRuntimeStore
         const rows = this.db
           .prepare(`
             SELECT event_id, session_id,
-                   length(CAST(payload_json AS BLOB)) AS stored_bytes
+                   ${runtimePayloadBytesSql('payload_json')} AS stored_bytes
               FROM runtime_events
              WHERE event_id IN (${placeholders})
           `)
@@ -2060,7 +2077,7 @@ export class SqliteRuntimeStore
       const rows = this.db
         .prepare(`
           SELECT event_id, session_id, invocation_id, run_id, turn_id, payload_json,
-                 length(CAST(payload_json AS BLOB)) AS stored_bytes
+                 ${runtimePayloadBytesSql('payload_json')} AS stored_bytes
             FROM runtime_events
            WHERE event_id IN (${placeholders})
         `)
@@ -2121,14 +2138,16 @@ export class SqliteRuntimeStore
         SELECT DISTINCT session_id
           FROM runtime_events
          WHERE session_id IN (${sessions})
-           AND (${recallFoldedMatchClause('payload_json', terms.length)})
+           AND CASE WHEN substr(payload_json, 1, ${RUNTIME_PAYLOAD_PREFIX.length}) = '${RUNTIME_PAYLOAD_PREFIX}'
+             THEN ${RECALL_ENCODED_MATCH_FUNCTION}(payload_json, ${terms.map(() => '?').join(', ')})
+             ELSE (${recallFoldedMatchClause('payload_json', terms.length)}) END
         UNION
         SELECT DISTINCT session_id
           FROM runtime_partial_snapshots
          WHERE session_id IN (${sessions})
         `,
       )
-      .all(...sessionIds, ...terms, ...sessionIds) as Array<{ session_id?: unknown }>;
+      .all(...sessionIds, ...terms, ...terms, ...sessionIds) as Array<{ session_id?: unknown }>;
     return rows.map((row) => {
       if (typeof row.session_id !== 'string') throw new Error('Invalid recall candidate row');
       return row.session_id;
@@ -5027,7 +5046,7 @@ export class SqliteRuntimeStore
     `)
       .get(eventId) as RuntimeEventStorageRow | undefined;
     if (row) decodeRuntimeEventStorageRow(row);
-    return row?.payload_json;
+    return row ? decodeRuntimePayloadJson(row.payload_json) : undefined;
   }
 
   private readRequiredRuntimeEvent(eventId: string): RuntimeEvent {
@@ -5713,7 +5732,7 @@ function decodeRuntimePartialStorageRow(row: RuntimePartialStorageRow): RuntimeE
 }
 
 function decodeStoredRuntimeEvent(storedJson: string): RuntimeEvent {
-  return decodeRuntimeEvent(JSON.parse(storedJson));
+  return decodeRuntimeEvent(parseRuntimePayloadJson(storedJson));
 }
 
 function decodeContinuationClaimRow(row: ContinuationClaimStorageRow): ContinuationClaimV1 {

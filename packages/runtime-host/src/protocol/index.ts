@@ -69,6 +69,7 @@ import { isCanonicalRuntimeHostWebSocketPath } from './websocket-path.js';
 import { INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID } from '../composition-identity.js';
 
 export * from './access-authority.js';
+export type { HostStorageUpgradePhase } from './host-status.js';
 export * from './artifact-change.js';
 export * from './agent-graph.js';
 export * from './interaction.js';
@@ -107,7 +108,8 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 222 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 223 as const;
+// 223: Explicit storage-upgrade lifecycle state with a separate readiness budget.
 // 222: Built-in personal assistant operations and the Host-owned default-off
 // master switch require matching Client and Host support.
 // 221: Epoch-220 peers do not support `artifact.image.resolve` or its image

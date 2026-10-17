@@ -69,6 +69,7 @@ export async function runExecutionCandidateEntry(
     result = await startExecutionRuntimeHostCandidate(
       {
         ...(hooks.overrideOptions ? hooks.overrideOptions(options) : options),
+        ...(launchOwnerGuard ? { startupSignal: launchOwnerGuard.startupSignal } : {}),
         ...(launchOwnerGuard?.admission
           ? { initialClientAdmission: launchOwnerGuard.admission }
           : {}),
@@ -82,6 +83,7 @@ export async function runExecutionCandidateEntry(
       },
     );
   } catch (error) {
+    if (launchOwnerGuard?.startupSignal.aborted) process.exit(0);
     const failure = classifyCandidateStartupFailure(error);
     const logs = runtimeHostLogBuffer.snapshot();
     console.error('[runtime-host] startup failed:', error);

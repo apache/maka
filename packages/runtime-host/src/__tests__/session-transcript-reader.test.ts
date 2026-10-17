@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import {
   seedInvocation,
@@ -40,6 +41,8 @@ import { createLedgerArchiveResourceReader } from '@maka/runtime/ledger-tool-res
 import { readToolResultArchiveResource } from '@maka/runtime/tool-result-archive-resource';
 import { readPageSchema } from '@maka/runtime/read-page';
 import { openToolResultArchiveEvidenceReader } from '@maka/storage/tool-result-archive-evidence';
+import { ColdRuntimeStorage, COLD_STORAGE_AGE_MS } from '@maka/storage/cold-runtime-storage';
+import { TranscriptStorageWorker } from '../server/transcript-storage-worker-client.js';
 import { foldTurnContribution } from '@maka/storage/session-message-projection';
 import type { SessionTurnContribution } from '@maka/storage/execution-stores';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
@@ -311,6 +314,66 @@ for (const coordination of [false, true])
         stores,
         canonicalPermissionOutcomes: { readPermissionOutcome: async () => undefined },
       });
+      const worker = new TranscriptStorageWorker({
+        databasePath: join(capability.canonicalPath, 'runtime.sqlite'),
+        permissions: async () => new Map(),
+      });
+      const workerRead = createSessionTranscriptReader({
+        stores,
+        storageWorker: worker,
+        canonicalPermissionOutcomes: { readPermissionOutcome: async () => undefined },
+      });
+      try {
+        const throughSequence = await read.readDurableHighWater(session.id);
+        const request = {
+          direction: 'older' as const,
+          throughSequence,
+          maxBytes: 1024 * 1024,
+          maxMessages: 256,
+        };
+        const baseline = await read.readDurablePage(session.id, request);
+        assert.deepEqual(await workerRead.readDurablePage(session.id, request), baseline);
+        const cold = await ColdRuntimeStorage.open({
+          lease: owner.lease,
+          codec: worker.codec,
+          canRun: () => !worker.reading,
+          isProtected: (id) => worker.isProtected(id),
+        });
+        try {
+          const db = new DatabaseSync(join(capability.canonicalPath, 'runtime.sqlite'));
+          try {
+            db.prepare('UPDATE session_content_activity SET last_content_write_at = ?').run(
+              Date.now() - COLD_STORAGE_AGE_MS - 1,
+            );
+          } finally {
+            db.close();
+          }
+          await cold.setEnabled(true);
+          let changed = 0;
+          for (;;) {
+            const result = await cold.compressBatch();
+            changed += result.changed;
+            if (!result.hasMore) break;
+          }
+          assert.ok(changed >= resultCount, 'complete large tool outputs must be encoded');
+          assert.deepEqual(await workerRead.readDurablePage(session.id, request), baseline);
+          assert.deepEqual(
+            await workerRead.readDurableTurnContributions(session.id, throughSequence, 0, 64),
+            await read.readDurableTurnContributions(session.id, throughSequence, 0, 64),
+          );
+          assert.deepEqual(
+            await workerRead.readDurableTurnLandmarks(session.id, {
+              maxLandmarks: 3,
+              turnId: null,
+            }),
+            await read.readDurableTurnLandmarks(session.id, { maxLandmarks: 3, turnId: null }),
+          );
+        } finally {
+          cold.close();
+        }
+      } finally {
+        await worker.close();
+      }
       const messages: StoredMessage[] = [];
       for (let position: number | null = 0; position !== null; ) {
         const running: Awaited<ReturnType<typeof read.readDurableRecords>> =

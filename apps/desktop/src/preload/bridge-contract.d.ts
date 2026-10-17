@@ -1917,6 +1917,8 @@ export interface MakaBridge {
      */
   };
   appWindow: {
+    getStorageUpgradeStatus?(): Promise<import('../shared/runtime-host-identity.js').DesktopStorageUpgradeStatus>;
+    subscribeStorageUpgrade?(handler: (status: import('../shared/runtime-host-identity.js').DesktopStorageUpgradeStatus) => void): () => void;
     popupMenu(input: import('../shared/native-menu.js').NativeMenuRequest): Promise<string | null>;
     setTitlebarControlsVisible(visible: boolean): Promise<void>;
     setThemeSource(themePref: ThemePreference): Promise<void>;

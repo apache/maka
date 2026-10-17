@@ -48,6 +48,8 @@ const SQLITE_BACKED_ENTRYPOINTS = [
   './agent-graph-control-store',
   './agent-run-store',
   './artifact-stores',
+  // Cold maintenance and its read-only transcript worker own their SQLite boundary.
+  './cold-runtime-storage',
   './daily-review-authority',
   './execution-stores',
   './git-worktree-child-executor',
@@ -63,6 +65,8 @@ const SQLITE_BACKED_ENTRYPOINTS = [
   // Snapshot staging cleanup persists a lease through Session-copy cleanup.
   './quiescent-session-snapshot',
   './runtime-event-persistence',
+  // Startup conversion opens the operational authority before business stores.
+  './runtime-storage-upgrade',
   './scheduled-task-store',
   './session-bundle-policy',
   './session-copy-cleanup',

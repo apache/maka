@@ -34,7 +34,13 @@ import {
   type SignedPeerReachabilityLeaseV1,
 } from '../peer-reachability/model.js';
 
-export type HostLifecycleState = 'starting' | 'containing' | 'recovering' | 'ready' | 'draining';
+export type HostLifecycleState =
+  | 'starting'
+  | 'containing'
+  | 'recovering'
+  | 'upgrading_storage'
+  | 'ready'
+  | 'draining';
 export type HostStatusInput = Record<string, never>;
 export type HostDiagnosticsInput = Record<string, never>;
 export interface HostActivitySnapshot {
@@ -76,11 +82,14 @@ export interface HostStatusResult {
   compositionId: string;
   compositionRevision: string;
   state: HostLifecycleState;
+  storageUpgradePhase?: HostStorageUpgradePhase;
   connections: number;
   activeOperations: number;
   activeResidencies: number;
   peerEndpoint?: HostPeerEndpoint;
 }
+
+export type HostStorageUpgradePhase = 'preparing' | 'rebuilding' | 'verifying' | 'opening';
 
 export type HostPeerEndpoint = SignedPeerReachabilityLeaseV1;
 
@@ -145,6 +154,7 @@ function decodeHostStatusResult(value: unknown): HostStatusResult {
     'activeOperations',
     'activeResidencies',
     ...(valueRecord.peerEndpoint === undefined ? [] : ['peerEndpoint']),
+    ...(valueRecord.storageUpgradePhase === undefined ? [] : ['storageUpgradePhase']),
   ]);
   return decodeHostStatusFields(record);
 }
@@ -165,6 +175,7 @@ function decodeHostDiagnosticsResult(value: unknown): HostDiagnosticsResult {
     'activeOperations',
     'activeResidencies',
     ...(valueRecord.peerEndpoint === undefined ? [] : ['peerEndpoint']),
+    ...(valueRecord.storageUpgradePhase === undefined ? [] : ['storageUpgradePhase']),
     'upgradeBlockingActivity',
     'compositionModules',
     'residencies',
@@ -324,6 +335,9 @@ function decodeHostStatusFields(record: Record<string, unknown>): HostStatusResu
       128,
     ),
     state: requireHostLifecycleState(record.state),
+    ...(record.storageUpgradePhase === undefined
+      ? {}
+      : { storageUpgradePhase: requireStorageUpgradePhase(record.storageUpgradePhase) }),
     connections: requireCount(record.connections, 'connections'),
     activeOperations: requireCount(record.activeOperations, 'activeOperations'),
     activeResidencies: requireCount(record.activeResidencies, 'activeResidencies'),
@@ -331,6 +345,17 @@ function decodeHostStatusFields(record: Record<string, unknown>): HostStatusResu
       ? {}
       : { peerEndpoint: decodeHostPeerEndpoint(record.peerEndpoint) }),
   };
+}
+
+function requireStorageUpgradePhase(value: unknown): HostStorageUpgradePhase {
+  if (
+    value === 'preparing' ||
+    value === 'rebuilding' ||
+    value === 'verifying' ||
+    value === 'opening'
+  )
+    return value;
+  throw invalidProtocolFrame('Invalid Runtime Host storage upgrade phase');
 }
 
 function decodeHostPeerEndpoint(value: unknown): HostPeerEndpoint {
@@ -365,6 +390,7 @@ export function requireHostLifecycleState(value: unknown): HostLifecycleState {
     value === 'starting' ||
     value === 'containing' ||
     value === 'recovering' ||
+    value === 'upgrading_storage' ||
     value === 'ready' ||
     value === 'draining'
   ) {

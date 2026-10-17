@@ -710,6 +710,11 @@ function connectionDetailBridge(overrides: Partial<ConnectionsBridge>): Connecti
 function managementServices(): RuntimeHostManagementServices {
   return {
     supportsWsl: false,
+    storageUpgrade: {
+      current: async () => ({ active: false }),
+      subscribe: () => () => {},
+      schedule: unexpectedCall,
+    },
     profilePairing: { retry: unexpectedCall, discard: unexpectedCall },
     connectionCodes: {
       create: unexpectedCall, importCode: unexpectedCall,

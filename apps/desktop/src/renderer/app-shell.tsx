@@ -20,7 +20,7 @@
 import { MemoryOriginalHost, PersonalAssistantEntry, createInternalUriDispatcher } from './features/personal-assistant/index.js';
 import { WorkHubControlOverlay, WorkHubDock, WorkHubMainNavigation } from './features/workhub';
 import { WorkHubEnablementWatch } from './application/contracts/workhub-workspace/workhub-enablement.js';
-import { RuntimeHostHandoffOverlay } from './features/runtime-host-management/index.js';
+import { RuntimeHostLifecycleOverlay } from './features/runtime-host-management/index.js';
 import { ArchiveRetentionNotices } from './features/storage-usage/index.js';
 import {
   useCallback,
@@ -158,7 +158,7 @@ export function AppShell() {
         <Diagnostics.DiagnosticReportToastProvider>
           <ErrorBoundary locale={uiLocale}>
             <AppUpdateProvider>
-              <RuntimeHostHandoffOverlay />
+              <RuntimeHostLifecycleOverlay />
               <WorkHubControlOverlay />
               <TaskEntry.TaskEntryRoot>
                 {(taskEntry) => (

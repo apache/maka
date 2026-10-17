@@ -3886,6 +3886,14 @@ const makaBridge = {
     },
   },
   appWindow: {
+    getStorageUpgradeStatus(): Promise<import('../shared/runtime-host-identity.js').DesktopStorageUpgradeStatus> {
+      return invokeWhenReady('app:storageUpgradeStatus');
+    },
+    subscribeStorageUpgrade(handler: (status: import('../shared/runtime-host-identity.js').DesktopStorageUpgradeStatus) => void): () => void {
+      const listener = (_event: Electron.IpcRendererEvent, status: import('../shared/runtime-host-identity.js').DesktopStorageUpgradeStatus) => handler(status);
+      ipcRenderer.on('app:storageUpgradeChanged', listener);
+      return () => ipcRenderer.off('app:storageUpgradeChanged', listener);
+    },
     popupMenu(input: import('../shared/native-menu.js').NativeMenuRequest): Promise<string | null> {
       return invokeWhenReady('window:popupMenu', input);
     },

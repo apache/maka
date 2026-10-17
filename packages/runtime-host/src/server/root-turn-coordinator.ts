@@ -345,6 +345,9 @@ interface HostAgentGraphEpochAuthority {
 }
 
 export class RootTurnCoordinator implements HostedExecutionAuthority {
+  get hasActiveExecutions(): boolean {
+    return this.#executions.size > 0;
+  }
   readonly handlers: Pick<TurnOperationHandlerMap, 'turn.resume.query' | 'turn.resume.start'> = {
     'turn.resume.query': (input, context) => this.queryTurnResume(input, context),
     'turn.resume.start': (input, context) => this.startTurnResume(input, context),

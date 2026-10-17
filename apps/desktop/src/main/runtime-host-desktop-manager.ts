@@ -1704,7 +1704,11 @@ function withRuntimeHostTarget(
   profileTarget: DesktopRuntimeHostCandidateStartInput['profileTarget'],
 ): DesktopRuntimeHostCandidateStartInput {
   const { profileTarget: _previousProfileTarget, ...base } = input;
-  return profileTarget ? { ...base, profileTarget } : base;
+  if (!profileTarget) return base;
+  // The base callback observes Local startup. Remote join observers are
+  // supplied explicitly by enable()/mountGuest().
+  const { onHostStatus: _localStartupStatus, ...remote } = base;
+  return { ...remote, profileTarget };
 }
 
 function isSessionGuestProfile(

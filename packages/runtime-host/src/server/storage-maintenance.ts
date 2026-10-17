@@ -19,6 +19,7 @@
 
 import type { InteractiveArtifactStoreWriter } from '@maka/storage/artifact-stores';
 import type { InteractiveContextOffloadWriter } from '@maka/storage/context-offload-store';
+import type { ColdRuntimeStorage } from '@maka/storage/cold-runtime-storage';
 
 const ACTIVE_DELAY_MS = 100;
 const IDLE_DELAY_MS = 60_000;
@@ -39,6 +40,7 @@ interface MaintenanceLane {
   timer?: ReturnType<typeof setTimeout>;
   pending?: Promise<void>;
   failures: number;
+  readonly activeDelayMs?: () => number;
 }
 
 /** Physical cleanup is optional work, admitted only after the Host publishes Ready. */
@@ -53,6 +55,7 @@ export class HostStorageMaintenance {
     contextOffload?: Pick<InteractiveContextOffloadWriter, 'collectGarbage' | 'reclaimFreePages'>;
     /** The opt-in archived-task retention sweep; true while candidates remain. */
     retention?: { sweep(): Promise<boolean> };
+    coldStorage?: Pick<ColdRuntimeStorage, 'compressBatch' | 'reclaimFreePages'>;
     onError: (name: string, error: unknown) => void;
   }) {
     this.#onError = input.onError;
@@ -115,6 +118,35 @@ export class HostStorageMaintenance {
         idleDelay: RETENTION_IDLE_DELAY_MS,
         run: () => retention.sweep(),
       });
+    if (input.coldStorage) {
+      const cold = input.coldStorage;
+      let inputBytes = 0;
+      this.#lanes.push({
+        name: 'cold runtime compression',
+        failures: 0,
+        activeDelay: ACTIVE_DELAY_MS,
+        idleDelay: IDLE_DELAY_MS,
+        run: async () => {
+          const result = await cold.compressBatch({ maxItems: 16, maxBytes: 1024 * 1024 });
+          inputBytes = result.inputBytes;
+          if (result.failures > 0)
+            this.#report(
+              'cold runtime compression',
+              new Error(`${result.failures} records failed verification; original bytes retained`),
+            );
+          return result.hasMore;
+        },
+        // Large records are supported, then charged against the same average input budget.
+        activeDelayMs: () => Math.max(1000, Math.ceil((inputBytes / (1024 * 1024)) * 1000)),
+      });
+      this.#lanes.push({
+        name: 'runtime page reclamation',
+        failures: 0,
+        activeDelay: 1000,
+        idleDelay: IDLE_DELAY_MS,
+        run: async () => (await cold.reclaimFreePages({ maxPages: MAX_VACUUM_PAGES })).hasMore,
+      });
+    }
   }
 
   start(): void {
@@ -147,7 +179,7 @@ export class HostStorageMaintenance {
     try {
       const more = await lane.run();
       lane.failures = 0;
-      delay = more ? lane.activeDelay : lane.idleDelay;
+      delay = more ? (lane.activeDelayMs?.() ?? lane.activeDelay) : lane.idleDelay;
     } catch (error) {
       lane.failures = Math.min(lane.failures + 1, 7);
       delay = Math.min(lane.idleDelay, 1000 * 2 ** (lane.failures - 1));

@@ -41,6 +41,7 @@ export interface InteractiveRuntimeHostCandidateOptions {
   initialClientAdmission?: {
     isClientAdmitted(clientInstanceId: string): boolean;
   };
+  startupSignal?: AbortSignal;
 }
 
 export interface InteractiveRuntimeHostCandidateDependencies {
@@ -104,6 +105,7 @@ export async function startInteractiveRuntimeHostCandidate(
         handshakeTimeoutMs: options.handshakeTimeoutMs,
         generation: options.generation,
         composition,
+        ...(options.startupSignal ? { startupSignal: options.startupSignal } : {}),
         ...(options.initialClientAdmission
           ? { initialClientAdmission: options.initialClientAdmission }
           : {}),

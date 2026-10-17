@@ -66,7 +66,10 @@ import { buildToolsForAgentDefinition } from '@maka/runtime/agent-catalog';
 import { listRecallHistorySessions } from '@maka/core/recall';
 import { toolAvailabilityConnectorNames } from '@maka/runtime/tool-availability';
 import { buildRecallTools, type RecallToolDeps } from '@maka/runtime/recall-tools';
-import { RECALL_SYNTHETIC_TEXT_PATTERNS } from '@maka/runtime/recall-candidates';
+import {
+  RECALL_SYNTHETIC_TEXT_PATTERNS,
+  listRecallCandidateSessions,
+} from '@maka/runtime/recall-candidates';
 import { createRecallMaterialFetch } from './recall-material-fetch.js';
 import { HostRecallCoordinator } from './recall-coordinator.js';
 import { buildBuiltinTools } from '@maka/runtime/builtin-tools';
@@ -144,6 +147,7 @@ import { runWithStorageRootLease } from '@maka/storage/root-authority';
 import { createInteractiveContextOffloadReader } from '@maka/storage/context-offload-store';
 import { observeInteractivePlanStoreWriter } from '@maka/storage/plan-authority';
 import { openStorageWriterComposition } from '@maka/storage/storage-writer-composition';
+import { upgradeRuntimeStorageAtStartup } from '@maka/storage/runtime-storage-upgrade';
 import type { RuntimePolicyStoresWriter } from '@maka/storage/runtime-policy-stores';
 import { resolveWorkspaceIdentity } from '@maka/storage/workspace-identity';
 import { CanonicalSessionProjectionReader } from './canonical-session-projection.js';
@@ -258,6 +262,9 @@ import { HostSessionRetirementCoordinator } from './session-retirement-coordinat
 import { HostStorageMaintenance } from './storage-maintenance.js';
 import { HostStorageUsageCoordinator } from './storage-usage-coordinator.js';
 import { HostArchiveRetentionCoordinator } from './archive-retention-coordinator.js';
+import { ColdRuntimeStorage } from '@maka/storage/cold-runtime-storage';
+import { TranscriptStorageWorker } from './transcript-storage-worker-client.js';
+import { readCanonicalPermissionOutcomes } from './session-transcript-reader.js';
 import { HostSessionRevisionCoordinator } from './session-revision-coordinator.js';
 import { HostSessionEffectCoordinator } from './session-effect-coordinator.js';
 import { SessionContinuityCoordinator } from './session-continuity-coordinator.js';
@@ -325,6 +332,8 @@ export interface CreateExecutionRuntimeHostCompositionOptions {
   readonly skillHomeDirectory?: string;
   readonly projectDirectoryRoots?: readonly PublishedProjectDirectoryRoot[];
   readonly imageArchiveLimits?: import('@maka/core/image-delivery').ImageArchiveLimits;
+  /** Reader-first rollout: absent preserves the durable policy, whose initial value is disabled. */
+  readonly coldStorageWriterEnabled?: boolean;
 }
 
 export interface ExecutionRuntimeHostCompositionDependencies {
@@ -348,6 +357,15 @@ export async function createExecutionRuntimeHostComposition(
   options: CreateExecutionRuntimeHostCompositionOptions = {},
   dependencies: ExecutionRuntimeHostCompositionDependencies = {},
 ): Promise<ExecutionRuntimeHostComposition> {
+  if (!dependencies.executionPersistenceProvider) {
+    const upgrade = await upgradeRuntimeStorageAtStartup(context.owner.lease, {
+      signal: context.startupSignal,
+      onPhase: (phase) => context.reportStorageUpgrade?.(phase),
+    });
+    if (upgrade.kind === 'deferred')
+      console.warn(`[runtime-host] storage conversion deferred: ${upgrade.reason}`);
+  }
+  context.startupSignal?.throwIfAborted();
   const storage = await openStorageWriterComposition(context.owner.lease, {
     executionProvider: dependencies.executionPersistenceProvider,
     contextOffloadLimits: CONTEXT_OFFLOAD_LIMITS,
@@ -380,6 +398,9 @@ export async function createExecutionRuntimeHostComposition(
   let unsubscribeTranscriptChanges: (() => void) | undefined;
   let unsubscribeRuntimeEventCommits: (() => void) | undefined;
   let transcriptReader: SessionTranscriptReader | undefined;
+  let storageWorker: TranscriptStorageWorker | undefined;
+  let compressionWorker: TranscriptStorageWorker | undefined;
+  let coldStorage: ColdRuntimeStorage | undefined;
   let unsubscribeUsageChanges: (() => void) | undefined;
   let workspaceExecution: RuntimeHostWorkspaceExecutionComposition | undefined;
   let goalExecutions: HostGoalExecutionCoordinator | undefined;
@@ -863,9 +884,23 @@ export async function createExecutionRuntimeHostComposition(
         // sends recall back to reading transcripts, which yields the same
         // answer. Returning a partial candidate set instead would break the
         // superset contract and silently drop matches.
-        const candidates = await requireSessionManager(manager)
-          .listRecallCandidateSessions(sessionIds, terms)
-          .catch(() => undefined);
+        // Full-corpus searches share the maintenance worker so they cannot
+        // hold up interactive transcript pages. Queued searches precede codec work.
+        const searchWorker = compressionWorker ?? storageWorker;
+        const candidates = await (searchWorker
+          ? listRecallCandidateSessions(
+              {
+                transcripts: stores.sessionStore,
+                ledger: {
+                  listSessionsWithRuntimeEventText: (ids, foldedTerms) =>
+                    searchWorker.readRecallCandidates(ids, foldedTerms),
+                },
+              },
+              sessionIds,
+              terms,
+            )
+          : requireSessionManager(manager).listRecallCandidateSessions(sessionIds, terms)
+        ).catch(() => undefined);
         if (abortSignal?.aborted || !candidates) return null;
         return candidates;
       },
@@ -1111,9 +1146,16 @@ export async function createExecutionRuntimeHostComposition(
     const canonicalPermissionOutcomes = new HostCanonicalPermissionOutcomeReader({
       store: stores.interactionStore,
     });
+    if (!dependencies.executionPersistenceProvider) {
+      storageWorker = new TranscriptStorageWorker({
+        databasePath: join(context.owner.capability.canonicalPath, 'runtime.sqlite'),
+        permissions: (ids) => readCanonicalPermissionOutcomes(ids, canonicalPermissionOutcomes),
+      });
+    }
     transcriptReader = createSessionTranscriptReader({
       stores,
       canonicalPermissionOutcomes,
+      storageWorker,
       ensureTranscriptLedger: (sessionId) =>
         requireSessionManager(manager).ensureTranscriptLedgerForRead(sessionId),
     });
@@ -3165,18 +3207,50 @@ export async function createExecutionRuntimeHostComposition(
       catalog: stores.sessionStore,
       retirement: sessionRetirement,
     });
+    if (storageWorker) {
+      // Separate heaps and queues: a foreground read never waits behind a
+      // non-preemptible zstd operation on a large record. Both workers are lazy.
+      compressionWorker = new TranscriptStorageWorker({
+        databasePath: join(context.owner.capability.canonicalPath, 'runtime.sqlite'),
+        permissions: async () => new Map(),
+      });
+      coldStorage = await ColdRuntimeStorage.open({
+        lease: context.owner.lease,
+        codec: compressionWorker.codec,
+        canRun: () =>
+          !draining &&
+          !storageWorker!.reading &&
+          !compressionWorker!.reading &&
+          !rootCoordinator?.hasActiveExecutions &&
+          !hostedExecutions.hasActiveExecutions,
+        isProtected: (sessionId) =>
+          storageWorker!.isProtected(sessionId) || compressionWorker!.isProtected(sessionId),
+      });
+      if (options.coldStorageWriterEnabled !== undefined)
+        await coldStorage.setEnabled(options.coldStorageWriterEnabled);
+    }
     const storageMaintenance = new HostStorageMaintenance({
       artifacts: openedArtifactStore,
       contextOffload: openedContextOffloadStore,
       retention: archiveRetention,
+      coldStorage,
       onError: (name, error) =>
         console.error(`[runtime-host] ${name} will retry: ${generalizedErrorMessage(error)}`),
     });
     domainModules = [
       createRuntimeHostDomainModule({
         id: 'storage-maintenance',
-        drain: [() => storageMaintenance.beginDrain()],
-        close: [() => storageMaintenance.close()],
+        drain: [() => storageMaintenance.beginDrain(), () => coldStorage?.beginDrain()],
+        close: [
+          async () => {
+            await storageMaintenance.close();
+            try {
+              await Promise.all([storageWorker?.close(), compressionWorker?.close()]);
+            } finally {
+              coldStorage?.close();
+            }
+          },
+        ],
       }),
       createRuntimeHostDomainModule({
         id: 'storage-usage',
@@ -3663,6 +3737,12 @@ export async function createExecutionRuntimeHostComposition(
     }
     try {
       await memoryExtraction?.close();
+    } catch (closeError) {
+      errors.push(closeError);
+    }
+    try {
+      await Promise.all([storageWorker?.close(), compressionWorker?.close()]);
+      coldStorage?.close();
     } catch (closeError) {
       errors.push(closeError);
     }

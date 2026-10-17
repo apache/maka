@@ -2230,6 +2230,17 @@ describe('Runtime Host bootstrap protocol', () => {
       },
     };
     assert.deepEqual(HOST_BOOTSTRAP_OPERATION_SPECS['host.status'].decodeOutput(status), status);
+    const upgrading = { ...status, state: 'upgrading_storage', storageUpgradePhase: 'rebuilding' };
+    assert.deepEqual(
+      HOST_BOOTSTRAP_OPERATION_SPECS['host.status'].decodeOutput(upgrading),
+      upgrading,
+    );
+    assert.throws(() =>
+      HOST_BOOTSTRAP_OPERATION_SPECS['host.status'].decodeOutput({
+        ...upgrading,
+        storageUpgradePhase: 'unsupported',
+      }),
+    );
     assert.throws(() =>
       HOST_BOOTSTRAP_OPERATION_SPECS['host.status'].decodeOutput({
         ...status,

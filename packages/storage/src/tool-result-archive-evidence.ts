@@ -32,14 +32,16 @@ import { decodeRuntimeEvent } from '@maka/core/runtime-event';
 import { decodeAgentRunEvent } from '@maka/core/agent-run';
 
 import { MODEL_PROJECTION_TARGET_SQL as TARGET } from './sqlite-core-execution-schema.js';
+import {
+  decodeRuntimeEvidenceJson,
+  runtimeEvidenceSql,
+  runtimeEvidenceBytesSql,
+} from './runtime-payload-codec.js';
 const TRANSITIONS = 'core_agent_run_events INDEXED BY core_model_projection_target';
 const KIND = "event_type = 'model_projection_transition_recorded'";
 // SQLite may parse the containing JSON, but only these reconstruction fields
 // cross into JS or count toward the evidence budget. Raw tool bytes never do.
-const EVENT_EVIDENCE = `CASE WHEN json_valid(payload_json) THEN json_extract(payload_json,
-  '$.id', '$.sessionId', '$.runId', '$.invocationId', '$.turnId', '$.ts', '$.partial',
-  '$.author', '$.role', '$.content.kind', '$.content.id', '$.content.name',
-  '$.content.modelProjection', '$.content.providerExecuted') END`;
+const EVENT_EVIDENCE = runtimeEvidenceSql('payload_json');
 
 /** Reader-first foundation; no archive writer or fallback is activated by opening it. */
 export async function openToolResultArchiveEvidenceReader(
@@ -70,7 +72,7 @@ export async function openToolResultArchiveEvidenceReader(
             const { sessionId, runtimeEventId } = accepted;
             const eventSize = db
               .prepare(
-                `SELECT length(CAST(${EVENT_EVIDENCE} AS BLOB)) AS bytes FROM runtime_events WHERE event_id = ? AND session_id = ?`,
+                `SELECT ${runtimeEvidenceBytesSql('payload_json', MAX_BYTES)} AS bytes FROM runtime_events WHERE event_id = ? AND session_id = ?`,
               )
               .get(runtimeEventId, sessionId);
             if (!eventSize) return { ok: false, reason: 'not_found' };
@@ -91,7 +93,7 @@ export async function openToolResultArchiveEvidenceReader(
             if (sizes.length > MAX_TRANSITIONS) return { ok: false, reason: 'too_large' };
             let bytes = Number(eventSize.bytes);
             for (const row of sizes) bytes += Number(row.bytes);
-            if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > MAX_BYTES)
+            if (!Number.isSafeInteger(bytes) || bytes < 1 || bytes > MAX_BYTES)
               return { ok: false, reason: 'too_large' };
             const raw = db
               .prepare(
@@ -115,7 +117,7 @@ export async function openToolResultArchiveEvidenceReader(
                 name,
                 modelProjection,
                 providerExecuted,
-              ] = JSON.parse(String(raw?.evidence_json));
+              ] = JSON.parse(decodeRuntimeEvidenceJson(String(raw?.evidence_json), MAX_BYTES));
               event = decodeRuntimeEvent({
                 id,
                 sessionId,

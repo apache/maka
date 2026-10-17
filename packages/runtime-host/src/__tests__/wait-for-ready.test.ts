@@ -21,6 +21,43 @@ import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { waitForRuntimeHostReady } from '../client/wait-for-ready.js';
+import type { HostStatusResult } from '../protocol/host-status.js';
+
+const status = (state: HostStatusResult['state']): HostStatusResult => ({
+  hostEpoch: 'epoch',
+  compositionId: 'interactive',
+  compositionRevision: '3',
+  state,
+  connections: 1,
+  activeOperations: 0,
+  activeResidencies: 0,
+});
+
+test('storage conversion can outlast the ordinary readiness budget', async () => {
+  let probes = 0;
+  const started = Date.now();
+  await waitForRuntimeHostReady(
+    { status: async () => status(++probes === 1 ? 'upgrading_storage' : 'ready') },
+    50,
+  );
+  assert.ok(Date.now() - started >= 200);
+});
+
+test('ordinary recovery retains its bounded readiness budget', async () => {
+  await assert.rejects(
+    waitForRuntimeHostReady({ status: async () => status('recovering') }, 30),
+    /deadline/,
+  );
+});
+
+test('storage conversion also has a finite readiness budget', async () => {
+  await assert.rejects(
+    waitForRuntimeHostReady({ status: async () => status('upgrading_storage') }, 50, undefined, {
+      storageUpgradeTimeoutMs: 30,
+    }),
+    /deadline/,
+  );
+});
 
 test('stops a pending ready probe when its reconnect attempt is cancelled', async () => {
   const started = deferred();

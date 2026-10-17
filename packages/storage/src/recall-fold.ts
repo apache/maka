@@ -18,6 +18,7 @@
  */
 
 import type { DatabaseSync } from 'node:sqlite';
+import { decodeRuntimePayloadJson } from './runtime-payload-codec.js';
 
 /**
  * Recall folds text as NFC + Unicode lowercase; SQLite's `lower()` folds ASCII
@@ -38,6 +39,7 @@ import type { DatabaseSync } from 'node:sqlite';
  * (`hasJsonEscapedCharacter` in core `recall.ts`).
  */
 export const RECALL_FOLD_UNSTABLE_FUNCTION = 'maka_recall_fold_unstable';
+export const RECALL_ENCODED_MATCH_FUNCTION = 'maka_recall_encoded_match';
 
 const ASCII_ONLY_PATTERN = /^[\u0000-\u007f]*$/u;
 const ASCII_UPPERCASE_PATTERN = /[A-Z]/gu;
@@ -53,6 +55,18 @@ export function isRecallFoldUnstable(value: string): boolean {
 export function registerRecallFoldFunction(db: DatabaseSync): void {
   db.function(RECALL_FOLD_UNSTABLE_FUNCTION, { deterministic: true, directOnly: true }, (value) =>
     typeof value === 'string' && isRecallFoldUnstable(value) ? 1 : 0,
+  );
+  db.function(
+    RECALL_ENCODED_MATCH_FUNCTION,
+    { deterministic: true, directOnly: true, varargs: true },
+    (value, ...terms) => {
+      if (typeof value !== 'string' || terms.some((term) => typeof term !== 'string'))
+        throw new Error('Invalid encoded recall candidate');
+      const original = decodeRuntimePayloadJson(value);
+      if (isRecallFoldUnstable(original)) return 1;
+      const folded = original.toLowerCase();
+      return terms.some((term) => folded.includes(term as string)) ? 1 : 0;
+    },
   );
 }
 

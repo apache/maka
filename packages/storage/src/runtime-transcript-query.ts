@@ -18,6 +18,11 @@
  */
 
 import type { DatabaseSync } from 'node:sqlite';
+import {
+  parseRuntimePayloadJson,
+  runtimePayloadBytesSql,
+  RUNTIME_PAYLOAD_MAX_BYTES,
+} from './runtime-payload-codec.js';
 import { decodeRuntimeEvent, type RuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 
@@ -317,7 +322,17 @@ export class RuntimeTranscriptQuery {
     );
   }
 
-  turns(sessionId: string, request: RuntimeTranscriptTurnsRequest): RuntimeTranscriptTurn[] {
+  turns(sessionId: string, request: RuntimeTranscriptTurnsRequest): RuntimeTranscriptTurn[];
+  turns<T>(
+    sessionId: string,
+    request: RuntimeTranscriptTurnsRequest,
+    project: (turn: RuntimeTranscriptTurn) => T,
+  ): T[];
+  turns<T>(
+    sessionId: string,
+    request: RuntimeTranscriptTurnsRequest,
+    project?: (turn: RuntimeTranscriptTurn) => T,
+  ): (RuntimeTranscriptTurn | T)[] {
     let rows: Array<{ turn_id: string; first_ordinal: number; last_ordinal: number }>;
     if ('turnId' in request) {
       rows = this.db
@@ -363,14 +378,20 @@ export class RuntimeTranscriptQuery {
         ORDER BY pe.event_seq LIMIT 1
       `)
         .get(sessionId, row.first_ordinal) as { ordinal: number; event_id: string } | undefined;
-      return {
+      const turn = {
         turnId: row.turn_id,
         firstOrdinal: row.first_ordinal,
         lastOrdinal: row.last_ordinal,
         ...(prompt
-          ? { prompt: { ordinal: prompt.ordinal, event: this.event(prompt.event_id) } }
+          ? {
+              prompt: {
+                ordinal: prompt.ordinal,
+                event: this.event(prompt.event_id, project ? RUNTIME_PAYLOAD_MAX_BYTES : undefined),
+              },
+            }
           : {}),
       };
+      return project ? project(turn) : turn;
     });
   }
 
@@ -387,14 +408,17 @@ export class RuntimeTranscriptQuery {
     );
   }
 
-  private event(eventId: string): RuntimeEvent {
+  private event(eventId: string, maxBytes?: number): RuntimeEvent {
     const row = this.db
       .prepare(`
-      SELECT event_id, session_id, invocation_id, run_id, turn_id, payload_json
+      SELECT event_id, session_id, invocation_id, run_id, turn_id,
+        CASE WHEN ${runtimePayloadBytesSql('payload_json')} <= ? THEN payload_json END AS payload_json
       FROM runtime_events WHERE event_id = ?
     `)
-      .get(eventId) as StoredEventRow | undefined;
+      .get(maxBytes ?? Number.MAX_SAFE_INTEGER, eventId) as StoredEventRow | undefined;
     if (!row) throw new Error(`Transcript RuntimeEvent ${eventId} is missing`);
+    if (row.payload_json === null)
+      throw new RuntimeTranscriptOversizedTurnError('Transcript prompt exceeds its byte limit');
     return decodeStoredEvent(row);
   }
 
@@ -412,8 +436,8 @@ export class RuntimeTranscriptQuery {
     const cursor = this.db
       .prepare(`
       SELECT o.ordinal, e.event_id, e.session_id, e.invocation_id, e.run_id, e.turn_id,
-        length(CAST(e.payload_json AS BLOB)) AS stored_bytes,
-        CASE WHEN length(CAST(e.payload_json AS BLOB)) <= ? THEN e.payload_json END AS payload_json
+        ${runtimePayloadBytesSql('e.payload_json')} AS stored_bytes,
+        CASE WHEN ${runtimePayloadBytesSql('e.payload_json')} <= ? THEN e.payload_json END AS payload_json
       FROM runtime_events e JOIN runtime_session_event_ordinals o ON o.event_id = e.event_id
       WHERE e.invocation_id = ? AND o.ordinal <= ? ORDER BY e.event_seq
     `)
@@ -460,7 +484,7 @@ type StoredEventRow = {
 };
 
 function decodeStoredEvent(row: StoredEventRow): RuntimeEvent {
-  const event = decodeRuntimeEvent(JSON.parse(row.payload_json));
+  const event = decodeRuntimeEvent(parseRuntimePayloadJson(row.payload_json));
   if (
     event.id !== row.event_id ||
     event.sessionId !== row.session_id ||
