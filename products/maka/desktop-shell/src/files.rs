@@ -33,9 +33,15 @@
 //! here too the choice in the panel is the permission. `maka-host` reads a
 //! registered file when a mutation names its handle as an attachment (the
 //! `file` of `agent.uploadAttachment`), and `release` forgets it.
+//!
+//! `open` and `reveal` hand a path in a task's folder to the system: open it
+//! with its default application, or show it in the file manager, as the
+//! Files tool's menu offers. They read nothing and answer nothing about the
+//! file; the path must be absolute and exist as an entry, which is checked
+//! off the main thread.
 use gpui_shell::{
     HostArguments, HostError, HostModule, HostObject, HostResult, HostValue,
-    gpui::{PathPromptOptions, SharedString},
+    gpui::{App, PathPromptOptions, SharedString},
 };
 use sha2::{Digest as _, Sha256};
 use std::{
@@ -99,6 +105,17 @@ export function chooseFiles(): Promise<ChosenFile[]>;
 
 /** Forgets registered files. A handle that is not registered is ignored. */
 export function release(handles: string[]): void;
+
+/**
+ * Opens the file or folder at `path` with the system's default application.
+ * Rejects when `path` is not absolute, has a `..` component, or does not
+ * exist as an entry (a link counts, even one whose target is gone). Whether
+ * the application then opened it is not reported.
+ */
+export function open(path: string): Promise<void>;
+
+/** Shows the file or folder at `path` in the file manager. Rejects as `open` does. */
+export function reveal(path: string): Promise<void>;
 "#;
 
 pub fn module() -> HostModule {
@@ -191,6 +208,81 @@ pub fn module() -> HostModule {
             }
             Ok(HostValue::Null)
         })
+        .async_function("open", |arguments| {
+            hand_over(arguments, "open", |cx, path| cx.open_with_system(path))
+        })
+        .async_function("reveal", |arguments| {
+            hand_over(arguments, "reveal", |cx, path| cx.reveal_path(path))
+        })
+}
+
+/// `open` and `reveal` (`function`): checks the path's shape here, then, in
+/// a task on the application, that it exists (on a background thread, so a
+/// slow disk does not hold up the window) and hands it to `hand`. The
+/// returned future answers when that is done.
+fn hand_over(
+    arguments: &HostArguments,
+    function: &'static str,
+    hand: fn(&App, &Path),
+) -> Result<impl Future<Output = HostResult> + Send + use<>, HostError> {
+    let path = absolute_path(arguments, function)?;
+    let (answer, answered) = tokio::sync::oneshot::channel();
+    gpui_shell::with_current_app(|cx| {
+        cx.spawn(async move |cx| {
+            let probe = path.clone();
+            let found = cx
+                .background_executor()
+                .spawn(async move { exists(&probe) })
+                .await;
+            let result = found.map(|()| {
+                cx.update(|cx| hand(cx, &path));
+                HostValue::Null
+            });
+            let _ = answer.send(result);
+        })
+        .detach();
+    })
+    .ok_or_else(|| HostError::new(format!("{function} must be called from the application")))?;
+    Ok(async move {
+        answered
+            .await
+            .map_err(|_| HostError::new(format!("{function} stopped before it finished")))?
+    })
+}
+
+/// The path `open` or `reveal` (`function`) was given: absolute and without
+/// a `..` component. The system opens whatever a path resolves to, so one
+/// that climbs out of a folder is refused rather than resolved here.
+fn absolute_path(arguments: &HostArguments, function: &str) -> Result<PathBuf, HostError> {
+    let path = arguments
+        .get(0)
+        .and_then(HostValue::as_str)
+        .map(PathBuf::from)
+        .ok_or_else(|| HostError::new(format!("{function}(path) needs a path")))?;
+    if !path.is_absolute() {
+        return Err(HostError::new(format!(
+            "{function}: {} is not an absolute path",
+            path.display()
+        )));
+    }
+    if path
+        .components()
+        .any(|component| component == std::path::Component::ParentDir)
+    {
+        return Err(HostError::new(format!(
+            "{function}: {} has a .. component",
+            path.display()
+        )));
+    }
+    Ok(path)
+}
+
+/// Whether `path` exists as an entry. A link counts as itself, even one
+/// whose target is gone: it is not followed.
+fn exists(path: &Path) -> Result<(), HostError> {
+    std::fs::symlink_metadata(path)
+        .map(|_| ())
+        .map_err(|error| HostError::new(format!("{}: {error}", path.display())))
 }
 
 /// A file the user chose to attach: where it is, and its size and digest
@@ -464,9 +556,59 @@ mod tests {
         module.validate().unwrap();
         assert_eq!(
             module.function_names(),
-            ["chooseFiles", "chooseFolder", "openText", "release"]
+            [
+                "chooseFiles",
+                "chooseFolder",
+                "open",
+                "openText",
+                "release",
+                "reveal"
+            ]
         );
         assert!(!module.is_async("release"));
+        assert!(module.is_async("open"));
+        assert!(module.is_async("reveal"));
+    }
+
+    #[test]
+    fn open_and_reveal_take_an_absolute_existing_path_only() {
+        let directory = std::env::temp_dir().join(format!("maka-files-open-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let file = directory.join("a.txt");
+        std::fs::write(&file, "a").unwrap();
+        let begin = |function: &str, path: &str| match module()
+            .begin(function, &arguments(vec![HostValue::from(path)]))
+        {
+            Ok(_) => panic!("{function}({path}) began"),
+            Err(error) => error.message().to_owned(),
+        };
+        for function in ["open", "reveal"] {
+            assert!(begin(function, "a.txt").contains("not an absolute path"));
+            let up = format!("{}/../a.txt", directory.join("sub").display());
+            assert!(begin(function, &up).contains(".. component"));
+            // A path that passes is handed to the application, which a test
+            // does not have.
+            assert!(
+                begin(function, &file.to_string_lossy())
+                    .contains("must be called from the application")
+            );
+            assert!(module().begin(function, &arguments(vec![])).is_err());
+        }
+        // Whether it exists is checked in the application's task.
+        assert!(exists(&file).is_ok());
+        #[cfg(unix)]
+        {
+            let link = directory.join("gone");
+            std::os::unix::fs::symlink(directory.join("missing"), &link).unwrap();
+            assert!(exists(&link).is_ok(), "a dangling link exists as an entry");
+        }
+        assert!(
+            exists(&directory.join("missing"))
+                .unwrap_err()
+                .message()
+                .contains("missing")
+        );
+        std::fs::remove_dir_all(&directory).unwrap();
     }
 
     #[test]
