@@ -2019,7 +2019,7 @@ function registerPersistentClientIpc(): void {
     }),
   );
   registerDesktopDiagnosticsIpc({ ipcMain, ...desktopDiagnostics });
-  ipcMain.handle('directories:pick', async () => {
+  ipcMain.handle('directories:pick', async (event) => {
     const local = runtimeHostManager?.entries().find(
       (state) => state.target.profile.kind === 'local',
     );
@@ -2028,7 +2028,7 @@ function registerPersistentClientIpc(): void {
     const result = await mainWindowController.showOpenDialog({
       title: nativeFileDialogCopy(await desktopLocale.resolve()).referenceFolder,
       properties: ['openDirectory'],
-    });
+    }, event.sender);
     if (result.canceled || !result.filePaths[0]) return { ok: false, reason: 'cancelled' };
     return { ok: true, reference: { hostId, path: result.filePaths[0] } };
   });
@@ -2036,7 +2036,7 @@ function registerPersistentClientIpc(): void {
     const result = await mainWindowController.showOpenDialog({
       title: nativeFileDialogCopy(await desktopLocale.resolve()).addAttachments,
       properties: ["openFile", "multiSelections"],
-    });
+    }, event.sender);
     if (result.canceled || !result.filePaths[0])
       return { ok: false, reason: "cancelled" };
     const { stat } = await import("node:fs/promises");
@@ -2163,7 +2163,9 @@ async function prepareRuntimeHostDesktopQuit(): Promise<'ready' | 'cancelled'> {
       return dialog.decisions[response] === 'quit';
     },
   });
-  if (preparation === 'ready') mainWindowController.browserWindow()?.destroy();
+  if (preparation === 'ready') {
+    for (const entry of mainWindowController.registry.entries()) entry.window.destroy();
+  }
   return preparation;
 }
 
