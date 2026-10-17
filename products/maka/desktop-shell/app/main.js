@@ -727,21 +727,35 @@ export default class MakaDesktop extends View {
 
   /**
    * Above the composer when the newest turn failed: says so and offers to
-   * send its message again. Picking the failed run up where it ended
-   * (`agent.resume`) is not offered yet.
+   * continue the failed run where it stopped (`agent.resume`), unless the
+   * Host said it will not, and to send the turn's message again when there
+   * is one to send.
    */
   failedBar(transcript, turn, cx) {
     const m = palette(cx);
-    return composerBar(
-      icon('status-failed', 16, m.destructive),
-      t('turnFailedNote'),
-      turn.message === null
-        ? null
-        : controlButton('send-again', t('sendAgain'), 'outline', this.composer.sending, cx)
-            .tooltip(t('sendAgainTip'))
-            .on_click(() => this.composer.send(transcript, turn.message)),
-      cx,
-    );
+    const busy = this.composer.sending || this.composer.resuming;
+    const buttons = [];
+    if (this.composer.offersContinue(transcript, turn.turnId)) {
+      buttons.push(
+        controlButton(
+          'continue-run',
+          t('continueRun'),
+          'primary',
+          busy || this.composer.awaitingResume(transcript),
+          cx,
+        )
+          .tooltip(t('continueRunTip'))
+          .on_click(() => this.composer.resume(transcript, turn.turnId)),
+      );
+    }
+    if (turn.message !== null) {
+      buttons.push(
+        controlButton('send-again', t('sendAgain'), 'outline', busy, cx)
+          .tooltip(t('sendAgainTip'))
+          .on_click(() => this.composer.send(transcript, turn.message)),
+      );
+    }
+    return composerBar(icon('status-failed', 16, m.destructive), t('turnFailedNote'), buttons, cx);
   }
 
   /**
@@ -753,9 +767,15 @@ export default class MakaDesktop extends View {
     return composerBar(
       icon('triangle-alert', 16, m.warning),
       t('workhubNeedsSubagent'),
-      controlButton('workhub-subagents', t('workhubSetUpSubagents'), 'outline', false, cx).on_click(
-        () => this.settings.show('subagents'),
-      ),
+      [
+        controlButton(
+          'workhub-subagents',
+          t('workhubSetUpSubagents'),
+          'outline',
+          false,
+          cx,
+        ).on_click(() => this.settings.show('subagents')),
+      ],
       cx,
     );
   }
@@ -972,8 +992,8 @@ function runState(transcript) {
   return transcript.run ? t('working') : null;
 }
 
-/** A bar above the composer, in its column: a glyph, a line, and a button at its end, or none. */
-function composerBar(glyph, words, button, cx) {
+/** A bar above the composer, in its column: a glyph, a line, and the buttons at its end. */
+function composerBar(glyph, words, buttons, cx) {
   const m = palette(cx);
   return h_flex()
     .flex_none()
@@ -996,7 +1016,7 @@ function composerBar(glyph, words, button, cx) {
         .bg(m.plate)
         .child(glyph)
         .child(text(words, 'body', m.ink).flex_1().min_w_0())
-        .when(button !== null, (el) => el.child(button)),
+        .children(buttons),
     );
 }
 

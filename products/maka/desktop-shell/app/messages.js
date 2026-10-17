@@ -328,6 +328,73 @@ export const MESSAGES = {
     '把这一轮的消息再发送一次',
     '把這一輪的訊息再傳送一次',
   ],
+  continueRun: ['Continue', '继续', '繼續'],
+  continueRunTip: [
+    'Continue the failed run from where it stopped',
+    '从失败的运行中断处继续',
+    '從失敗的執行中斷處繼續',
+  ],
+  resumeFailed: ['Continue: {value}', '继续失败：{value}', '繼續失敗：{value}'],
+  resumeParked: [
+    'The Host did not continue the run ({value}).',
+    'Host 没有继续这次运行（{value}）。',
+    'Host 沒有繼續這次執行（{value}）。',
+  ],
+  resumeClosed: [
+    'The Host is closing, so the run cannot continue.',
+    'Host 正在关闭，无法继续运行。',
+    'Host 正在關閉，無法繼續執行。',
+  ],
+  resumeUnknown: [
+    'The Host did not answer, so the run may or may not have continued. Continue comes back once this task shows a run, or after you open the task again.',
+    'Host 没有回应，运行可能已经继续，也可能没有。任务显示出运行后，或重新打开任务后，才能再次继续。',
+    'Host 沒有回應，執行可能已經繼續，也可能沒有。任務顯示出執行後，或重新開啟任務後，才能再次繼續。',
+  ],
+  resumeArchived: [
+    'This task is archived, so the run cannot continue.',
+    '这个任务已归档，无法继续运行。',
+    '這個任務已封存，無法繼續執行。',
+  ],
+  resumeBusy: [
+    'Another run is going in this task. Try again when it ends.',
+    '这个任务正有一次运行在进行，结束后再试。',
+    '這個任務正有一次執行在進行，結束後再試。',
+  ],
+  resumeSourceMissing: [
+    'The failed run could not be found.',
+    '找不到失败的那次运行。',
+    '找不到失敗的那次執行。',
+  ],
+  resumeSourceChanged: [
+    'The failed run changed since it was read. Try again.',
+    '失败的运行在读取后有了变化，请再试一次。',
+    '失敗的執行在讀取後有了變化，請再試一次。',
+  ],
+  resumeNotResumable: [
+    'This run cannot be continued. Send the message again instead.',
+    '这次运行无法继续，请改为重新发送消息。',
+    '這次執行無法繼續，請改為重新傳送訊息。',
+  ],
+  resumeSourceUnreadable: [
+    'The failed run could not be read, so it cannot continue.',
+    '无法读取失败的运行，因此不能继续。',
+    '無法讀取失敗的執行，因此不能繼續。',
+  ],
+  resumeAlreadyContinued: [
+    'This run was already continued.',
+    '这次运行已经继续过了。',
+    '這次執行已經繼續過了。',
+  ],
+  resumeWorkspaceChanged: [
+    "The task's folder changed since the run, so it cannot continue.",
+    '任务的文件夹在运行后有了变化，无法继续。',
+    '任務的資料夾在執行後有了變化，無法繼續。',
+  ],
+  resumeSafetyCheckFailed: [
+    'The Host could not confirm it is safe to continue this run.',
+    'Host 无法确认继续这次运行是安全的。',
+    'Host 無法確認繼續這次執行是安全的。',
+  ],
 
   // How long ago, in the transcript (transcript.js relativeTime)
   justNow: ['just now', '刚刚', '剛剛'],

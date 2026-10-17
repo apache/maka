@@ -232,6 +232,10 @@ export class Transcript {
      * status on each).
      */
     this.runsEnded = 0;
+    /** turnId -> the invocation id of its run, from the watch's `opened` and `ended` facts. */
+    this.invocations = new Map();
+    /** Turns whose failed run the Host will not continue: Continue is not offered for them. */
+    this.noContinue = new Set();
     this.latestKnown = 0;
     this.watchHandle = null;
     this.watchLast = 0;
@@ -386,8 +390,10 @@ export class Transcript {
    * `{ turnId, message }`, with the whole text of the message that started
    * it, or null as `message` when only part of that text is loaded, it has
    * none, it came with files (the files are not at hand to send again), or a
-   * WorkHub notice started the turn. Null otherwise, and while newer history
-   * is still to be read. A stopped turn is left alone: the user stopped it.
+   * WorkHub notice started the turn. A turn whose message is not loaded, or
+   * that a continued run started (it has no message of its own), has a null
+   * `message` too. Null otherwise, and while newer history is still to be
+   * read. A stopped turn is left alone: the user stopped it.
    */
   failedTurn() {
     if (!this.ready || this.after !== null) return null;
@@ -395,13 +401,35 @@ export class Transcript {
     const last = this.rows.at(-1);
     if (last?.timing?.finished?.outcome !== 'failed') return null;
     const start = this.rows.find((row) => row.turnId === last.turnId && row.role === 'user');
-    if (!start) return null;
+    if (!start) return { turnId: last.turnId, message: null };
     // A turn a WorkHub notice started is WorkHub's to start again, not the user's.
     const notice = originOf(start) !== null;
     const whole = start.fragments[0]?.offset === 0 && utf8Length(start.text) === start.totalBytes;
     const files = (start.attachments ?? []).length > 0;
     const message = whole && !notice && !files ? ownText(start) : '';
     return { turnId: last.turnId, message: message.trim() !== '' ? message : null };
+  }
+
+  /**
+   * The invocation id of the run that failed `turnId`, for `agent.resume`:
+   * from the watch when the run ended while this was open, else from the
+   * newest execution entries of `agent.diagnostics` (a few pages at most).
+   * Null when neither has it.
+   */
+  async failedRun(turnId) {
+    const seen = this.invocations.get(turnId);
+    if (seen !== undefined) return seen;
+    let position = { kind: 'latest' };
+    for (let pages = 0; pages < 4; pages += 1) {
+      const page = await query(this.endpoint, 'diagnostics', { sessionId: this.id, position });
+      const entry = page.entries.find(
+        (each) => each.detail?.kind === 'execution' && each.detail.invocation?.turn_id === turnId,
+      );
+      if (entry) return entry.detail.invocation.invocation_id;
+      if (page.nextBefore === null || page.nextBefore === undefined) return null;
+      position = { kind: 'before', through: page.through, sequence: page.nextBefore };
+    }
+    return null;
   }
 
   /** Stops the live updates. A pending `next()` resolves with null. */
@@ -448,6 +476,7 @@ export class Transcript {
       const fact = event.fact;
       switch (fact.kind) {
         case 'opened':
+          if (event.turnId) this.invocations.set(event.turnId, event.invocationId);
           if (event.sequence > this.runThrough) {
             this.run = { invocationId: event.invocationId, turnId: event.turnId, state: 'running' };
             this.runThrough = event.sequence;
@@ -511,6 +540,7 @@ export class Transcript {
           canonicalChanged = true;
           break;
         case 'ended':
+          if (event.turnId) this.invocations.set(event.turnId, event.invocationId);
           this.closeLive(event.sequence, event.invocationId);
           this.parts = this.parts.filter((open) => open.invocationId !== event.invocationId);
           if (event.sequence > this.runThrough) this.runsEnded += 1;
