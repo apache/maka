@@ -31,6 +31,7 @@ import type { UsageRange, UsageSettings, UsageStats, UsageScreenQuery, UsageScre
 export interface UsageServices {
   /** Host-scoped usage stats for a range (`null` = no Host / not loaded yet). */
   loadUsageStats(range: UsageRange, query?: UsageScreenQuery): Promise<UsageStats | Extract<UsageScreenFailure, {kind: 'screen_response_too_large'}> | null>;
+  loadUsageHeatmap(input: Extract<UsageScreenRequest, {kind: 'heatmap'}>): Promise<UsageScreenResult>;
   loadUsageActivity?(input: Extract<UsageScreenRequest, {kind: 'activity'}>): Promise<UsageScreenResult>;
   /**
    * Persist a usage display-preferences patch and resolve with the reconciled

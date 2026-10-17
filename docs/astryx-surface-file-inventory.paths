@@ -110,6 +110,7 @@ apps/desktop/src/renderer/features/task-entry/ui/task-entry-host.tsx
 apps/desktop/src/renderer/features/task-entry/ui/task-entry-provider.tsx
 apps/desktop/src/renderer/features/usage/services-context.tsx
 apps/desktop/src/renderer/features/usage/ui/metric-card.tsx
+apps/desktop/src/renderer/features/usage/ui/usage-activity-heatmap.tsx
 apps/desktop/src/renderer/features/usage/ui/usage-settings-view.tsx
 apps/desktop/src/renderer/features/usage/ui/usage-stats-table.tsx
 apps/desktop/src/renderer/features/workbar/services-context.tsx

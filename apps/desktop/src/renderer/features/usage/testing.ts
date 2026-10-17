@@ -18,3 +18,12 @@
  */
 
 export {useUsageStats} from './services-context.js';
+export { UsageActivityHeatmap } from './ui/usage-activity-heatmap.js';
+export {
+  buildUsageActivityWeeks,
+  mondayIndex,
+  usageActivityFocusIndex,
+  usageActivityLevel,
+  usageActivityThresholds,
+  type UsageActivityDay,
+} from './ui/usage-activity-model.js';

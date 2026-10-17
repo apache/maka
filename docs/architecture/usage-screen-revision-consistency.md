@@ -20,10 +20,12 @@
 # Revision-consistent Settings Usage
 
 Implements [#4058](https://github.com/apache/maka/issues/4058) using the contract
-reviewed in [#5023](https://github.com/apache/maka/pull/5023). A complete screen
-comes from one synchronous SQLite read transaction. Continuation checks the
-revision and selects its page in another single read transaction. No transaction
-spans an await, and Host holds no per-reader dataset.
+reviewed in [#5023](https://github.com/apache/maka/pull/5023). Summary, breakdowns,
+pricing, and the first activity page come from one synchronous SQLite read
+transaction. The annual heatmap loads afterward in a separate request bound to
+that screen's revision. Both heatmap and activity continuation check the revision
+inside their own read transaction. No transaction spans an await, and Host holds
+no per-reader dataset.
 
 ## Selected mechanisms
 
@@ -80,7 +82,7 @@ change, or second accounting authority are introduced.
 
 ## Wire and Desktop behavior
 
-`usage.query` gains `screen` and `activity` request/result variants. Complete
+`usage.query` has `screen`, `heatmap`, and `activity` request/result variants. Complete
 breakdowns are limited to 100 groups each, pricing to 128 entries, each collection
 to 48 KiB, and activity pages to 100 rows/48 KiB including navigation metadata.
 Storage selects 50 activity rows plus one look-ahead and at most one sentinel
@@ -103,7 +105,23 @@ bound to that retained snapshot, but its raw range/search/status metadata is not
 displayed as a separate row.
 
 Desktop's existing Settings `settings:usageStats` IPC now returns the complete
-screen; `usage:activity` requests a single continuation. The Session Inspector's
+summary, breakdowns, pricing, and first page; `usage:activity` requests a single
+continuation. The renderer installs this result before requesting
+the heatmap variant through the existing `settings.usageStats` bridge and a
+separate `usage:heatmap` IPC. That request
+contains the local calendar day boundaries, fixed cutoff, and displayed screen
+revision. A revision mismatch returns `revision_changed` before annual aggregation;
+the heatmap does not run projection repair or silently switch to newer data.
+Annual output is bounded to 366 days and 48 KiB and cached by revision and range.
+Its cache is published only after the enclosing transaction commits.
+
+While the heatmap is pending, the rest of the page is usable. Loading, failure,
+and stale notices stay in the heatmap section; a failure never discards ready
+totals or records. Refresh reloads the screen and then its matching heatmap.
+Filter/range changes and Host replacement fence late annual responses as well
+as late screen/page responses. Exploring daily cells remains local.
+
+The Session Inspector's
 separate `usage:summary` API keeps its existing contract. No activity drain loop
 or activity-derived breakdown remains in the Settings adapter. The existing table
 pagination shows numbered pages from the initial response. Selecting an unloaded
@@ -132,6 +150,8 @@ supersession, late pages, stale/error retention, fixed ranges, and Host changes.
 Storybook exercises the production Settings frame in stale and capacity states.
 
 This change sets no scan/latency/admission budget or arbitrary-history availability
-guarantee. SQL aggregation can still scan/group historical rows. Continuous Usage
+guarantee. SQL aggregation can still scan/group historical rows. The annual scan
+remains synchronous inside Host, but runs only after the other sections have
+been delivered to the renderer. Continuous Usage
 writes can interrupt pagination, and a complete screen exceeding wire capacity
 cannot be displayed without a separate segmented-read design.

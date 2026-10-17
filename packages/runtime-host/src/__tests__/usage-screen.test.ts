@@ -22,7 +22,7 @@ import { test } from 'node:test';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import type { UsageScreen, UsageScreenQuery } from '@maka/core/settings';
+import type { UsageScreen, UsageScreenQuery, UsageHeatmap } from '@maka/core/settings';
 import { EMPTY_USAGE_PROVENANCE } from '@maka/core/usage-ledger-merge';
 import {
   resolveStorageRoot,
@@ -37,17 +37,24 @@ import {
   decodeUsageScreenRequest,
   assertUsageScreenResult,
   usageScreenCapacity,
+  finalizeUsageScreenResult,
+  usageScreenMessageBytes,
   USAGE_SCREEN_SECTION_MAX_BYTES,
 } from '../protocol/usage-screen.js';
 import {
   encodeProtocolMessage,
   decodeHostFrame,
+  decodeClientFrame,
   RUNTIME_HOST_MAX_MESSAGE_BYTES,
 } from '../protocol/index.js';
 import { HostUsagePricingCoordinator } from '../server/usage-pricing-coordinator.js';
 import { RuntimePolicyActivationGate } from '../server/runtime-policy-activation-gate.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
-const query: UsageScreenQuery = { range: { from: 0, to: 1000 }, search: '', status: 'all' };
+const query: UsageScreenQuery = {
+  range: { from: 0, to: 1000 },
+  search: '',
+  status: 'all',
+};
 function screen(): UsageScreen {
   return {
     activityTotal: 151,
@@ -125,6 +132,111 @@ test('strict screen codecs reject malformed requests, unknown fields, wrong-quer
       },
     ),
   );
+});
+
+const heatmapRange = { dayStarts: [0], to: 1000 };
+function emptyHeatmap(): UsageHeatmap {
+  return {
+    days: [{ start: 0, tokens: 0, successfulRequests: 0 }],
+    through: 1000,
+    hasIncompleteUsage: false,
+  };
+}
+
+test('heatmap codecs require an independent bounded range and revision', () => {
+  const request = { kind: 'heatmap', range: heatmapRange, revision: 'r' };
+  assert.deepEqual(decodeUsageScreenRequest(request), request);
+  assert.deepEqual(
+    decodeClientFrame({ requestId: 'heatmap', operation: 'usage.query', input: request }),
+    { requestId: 'heatmap', operation: 'usage.query', input: request },
+  );
+  for (const range of [
+    undefined,
+    { dayStarts: [], to: 1000 },
+    { dayStarts: [0], to: 1000, extra: true },
+    { dayStarts: [-1], to: 1000 },
+    { dayStarts: [0, 0], to: 1000 },
+    { dayStarts: [86_400_000, 0], to: 86_401_000 },
+    { dayStarts: [0], to: -1 },
+    { dayStarts: [0], to: Number.POSITIVE_INFINITY },
+    {
+      dayStarts: Array.from({ length: 367 }, (_, index) => index * 86_400_000),
+      to: 367 * 86_400_000,
+    },
+  ])
+    assert.throws(() => decodeUsageScreenRequest({ ...request, range }));
+  assert.throws(() => decodeUsageScreenRequest({ ...request, revision: '' }));
+  assert.throws(() => decodeUsageScreenRequest({ ...request, query }));
+  assert.throws(() =>
+    decodeUsageScreenRequest({ kind: 'screen', query: { ...query, heatmap: heatmapRange } }),
+  );
+});
+
+test('heatmap results reject malformed daily aggregates and correlate exact range and revision', () => {
+  const heatmap = emptyHeatmap();
+  for (const value of [
+    undefined,
+    { ...heatmap, days: [] },
+    { ...heatmap, days: [...heatmap.days, ...heatmap.days] },
+    { ...heatmap, through: -1 },
+    { ...heatmap, hasIncompleteUsage: 'false' },
+    { ...heatmap, extra: true },
+    ...[
+      { start: -1 },
+      { tokens: -1 },
+      { tokens: 0.5 },
+      { tokens: Number.NaN },
+      { successfulRequests: -1 },
+      { successfulRequests: Number.MAX_SAFE_INTEGER + 1 },
+      { extra: true },
+    ].map((fields) => ({ ...heatmap, days: [{ ...heatmap.days[0], ...fields }] })),
+  ])
+    assert.throws(() =>
+      decodeUsageScreenResult({ kind: 'heatmap', revision: 'r', heatmap: value }),
+    );
+  const input = { kind: 'heatmap' as const, revision: 'r', range: heatmapRange };
+  const result = { kind: 'heatmap' as const, revision: 'r', heatmap: emptyHeatmap() };
+  assert.doesNotThrow(() => assertUsageScreenResult(input, result));
+  assert.doesNotThrow(() => assertUsageScreenResult(input, { kind: 'revision_changed' }));
+  assert.throws(() => assertUsageScreenResult(input, { ...result, revision: 'other' }));
+  assert.throws(() => assertUsageScreenResult(input, { kind: 'screen', screen: screen() }));
+  assert.throws(() => assertUsageScreenResult({ kind: 'screen', query }, result));
+  result.heatmap.through++;
+  assert.throws(() => assertUsageScreenResult(input, result));
+  result.heatmap.through--;
+  result.heatmap.days[0]!.start++;
+  assert.throws(() => assertUsageScreenResult(input, result));
+});
+
+test('a complete independent 366-day heatmap is bounded, measured and never truncated', () => {
+  const dayStarts = Array.from({ length: 366 }, (_, index) => index * 86_400_000);
+  const range = { dayStarts, to: dayStarts.at(-1)! + 1000 };
+  const result = {
+    kind: 'heatmap' as const,
+    revision: 'r',
+    heatmap: {
+      days: dayStarts.map((start) => ({
+        start,
+        tokens: Number.MAX_SAFE_INTEGER,
+        successfulRequests: Number.MAX_SAFE_INTEGER,
+      })),
+      through: range.to,
+      hasIncompleteUsage: true,
+    },
+  };
+  assert.doesNotThrow(() => decodeUsageScreenRequest({ kind: 'heatmap', revision: 'r', range }));
+  assert.doesNotThrow(() => decodeUsageScreenResult(result));
+  assert.equal(usageScreenCapacity(result), undefined);
+  const frame = { requestId: 'heatmap', operation: 'usage.query', ok: true, result };
+  assert.deepEqual(decodeHostFrame(frame), frame);
+  assert.equal(usageScreenMessageBytes(frame.requestId, result), bytes(frame));
+  finalizeUsageScreenResult(result);
+  assert.equal(usageScreenMessageBytes(frame.requestId, result), bytes(frame));
+  const over = structuredClone(result);
+  over.heatmap.days.push({ start: 366 * 86_400_000, tokens: 0, successfulRequests: 0 });
+  const failure = { kind: 'screen_response_too_large', section: 'heatmap' };
+  assert.deepEqual(usageScreenCapacity(over), failure);
+  assert.deepEqual(decodeUsageScreenResult(failure), failure);
 });
 
 test('screen and activity codecs accept the persisted fractional timestamp domain', () => {
@@ -280,7 +392,7 @@ test('activity byte budget includes cursor metadata and complete screen fits a w
     kind: 'screen_response_too_large',
     section: 'activity_page',
   });
-  // Valid sections cannot collectively reach 640 KiB: five 48 KiB sections plus
+  // Valid sections cannot collectively reach 640 KiB: six 48 KiB sections plus
   // bounded scalar metadata are smaller. The total guard still rejects corrupt
   // oversized metadata, independently of a future section-limit increase.
   const huge = { ...screen(), query: { ...query, search: 'x'.repeat(640 * 1024) } };
@@ -339,12 +451,36 @@ test('real Host returns bounded failures, stays usable, and fences a replacement
     assert.doesNotThrow(() => decodeUsageScreenResult(loaded.result));
     const value = loaded.result.screen;
     assert.ok(Object.isFrozen(value.byTool[0]));
+    assert.equal('heatmap' in value, false);
+    const heatmapInput = {
+      kind: 'heatmap' as const,
+      range: heatmapRange,
+      revision: value.revision,
+    };
+    const annual = await host.handlers['usage.query'](heatmapInput, context);
+    assert.ok(annual.ok && annual.result.kind === 'heatmap');
+    assert.deepEqual(
+      annual.result.heatmap,
+      emptyHeatmap(),
+      'tool calls do not populate model usage',
+    );
+    assert.equal(annual.result.revision, value.revision);
+    assert.ok(Object.isFrozen(annual.result.heatmap.days[0]));
+    assertUsageScreenResult(heatmapInput, annual.result);
+    assert.deepEqual(await coordinator().handlers['usage.query'](heatmapInput, context), {
+      ok: true,
+      result: { kind: 'revision_changed' },
+    });
     const filtered = await host.handlers['usage.query'](
       { kind: 'screen', query: { ...query, search: 'tool' } },
       context,
     );
     assert.ok(filtered.ok && filtered.result.kind === 'screen');
     assert.deepEqual(filtered.result.screen.byTool, value.byTool);
+    const repeated = await host.handlers['usage.query'](heatmapInput, context);
+    assert.ok(repeated.ok && repeated.result.kind === 'heatmap');
+    assert.deepEqual(repeated.result.heatmap, annual.result.heatmap);
+    assert.notEqual(repeated.result.heatmap.days[0], annual.result.heatmap.days[0]);
     assert.notEqual(filtered.result.screen.byTool[0], value.byTool[0]);
     assert.equal(filtered.result.screen.revision, value.revision);
     assert.ok(value.nextCursor);

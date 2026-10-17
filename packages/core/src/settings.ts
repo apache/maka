@@ -46,6 +46,10 @@ import {
 import { normalizeSubagentSettings, type SubagentSettings } from './subagent-settings.js';
 import { isPetPackId } from './pet.js';
 
+export { resolveUsageHeatmapRange, isUsageHeatmapRange } from './usage-heatmap.js';
+export type { UsageHeatmapRange, UsageHeatmap } from './usage-heatmap.js';
+import type { UsageHeatmapRange, UsageHeatmap } from './usage-heatmap.js';
+
 export { UI_LOCALE_PREFERENCES, isUiLocalePreference } from './ui-locale.js';
 export type { UiLocalePreference } from './ui-locale.js';
 export type {
@@ -733,6 +737,7 @@ export type UsageScreenFailure =
         | 'model_breakdown'
         | 'tool_breakdown'
         | 'pricing'
+        | 'heatmap'
         | 'activity_page'
         | 'screen'
         | 'message';
@@ -740,6 +745,7 @@ export type UsageScreenFailure =
 
 export type UsageScreenRequest =
   | { kind: 'screen'; query: UsageScreenQuery }
+  | { kind: 'heatmap'; range: UsageHeatmapRange; revision: string }
   | {
       kind: 'activity';
       query: UsageScreenQuery;
@@ -750,6 +756,7 @@ export type UsageScreenRequest =
 
 export type UsageScreenResult =
   | { kind: 'screen'; screen: UsageScreen }
+  | { kind: 'heatmap'; revision: string; heatmap: UsageHeatmap }
   | { kind: 'activity'; page: UsageActivityPage }
   | UsageScreenFailure;
 

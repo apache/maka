@@ -57,6 +57,7 @@ import {
   type UsageSettingsCopy,
 } from '../../../locales/settings-usage-copy.js';
 import { MetricCard } from './metric-card.js';
+import { UsageActivityHeatmap } from './usage-activity-heatmap.js';
 import { UsageStatsTable } from './usage-stats-table.js';
 import { useActionGuard } from '../controller/action-guard.js';
 import { useOptimisticSettingsDraft } from '../controller/optimistic-settings-draft.js';
@@ -126,6 +127,7 @@ export function UsageSettingsView(props: {
   // A retained complete result stays bound to its original query until replacement.
   const {
     stats,
+    heatmap,
     reload,
     targetKey,
     state,
@@ -372,6 +374,8 @@ export function UsageSettingsView(props: {
           />
         </div>
       </div>
+
+      <UsageActivityHeatmap state={heatmap} onRefresh={() => void refresh()} refreshing={refreshing} />
 
       <div className="settingsUsageBreakdown">
         <div className="settingsUsageTabsBar">

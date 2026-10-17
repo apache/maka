@@ -361,7 +361,8 @@ export const USAGE_PRICING_OPERATION_SPECS = {
 
 export function decodeUsageQueryInput(value: unknown): UsageQueryInput {
   const input = requireRecord(value, 'usage query input');
-  if (input.kind === 'screen' || input.kind === 'activity') return decodeUsageScreenRequest(value);
+  if (input.kind === 'screen' || input.kind === 'activity' || input.kind === 'heatmap')
+    return decodeUsageScreenRequest(value);
   if (input.kind === 'summary') {
     const exact = requireExactRecord(input, 'usage summary input', ['kind', 'query']);
     return { kind: 'summary', query: decodeLlmUsageQuery(exact.query) };
@@ -411,7 +412,7 @@ export function decodeUsageQueryInput(value: unknown): UsageQueryInput {
 export function decodeUsageQueryResult(value: unknown): UsageQueryResult {
   const result = requireRecord(value, 'usage query result');
   if (
-    ['screen', 'activity', 'revision_changed', 'screen_response_too_large'].includes(
+    ['screen', 'activity', 'heatmap', 'revision_changed', 'screen_response_too_large'].includes(
       String(result.kind),
     )
   )
@@ -628,10 +629,11 @@ export function decodePricingMutateResult(value: unknown): PricingMutateResult {
 }
 
 function assertUsageQueryOutputForInput(input: UsageQueryInput, output: UsageQueryResult): void {
-  if (input.kind === 'screen' || input.kind === 'activity') {
+  if (input.kind === 'screen' || input.kind === 'activity' || input.kind === 'heatmap') {
     if (
       output.kind !== 'screen' &&
       output.kind !== 'activity' &&
+      output.kind !== 'heatmap' &&
       output.kind !== 'revision_changed' &&
       output.kind !== 'screen_response_too_large'
     )
@@ -641,6 +643,7 @@ function assertUsageQueryOutputForInput(input: UsageQueryInput, output: UsageQue
   if (
     output.kind === 'screen' ||
     output.kind === 'activity' ||
+    output.kind === 'heatmap' ||
     output.kind === 'revision_changed' ||
     output.kind === 'screen_response_too_large'
   )
