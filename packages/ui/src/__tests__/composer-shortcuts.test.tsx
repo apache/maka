@@ -23,8 +23,10 @@ import { act, createRef } from 'react';
 import { createRoot } from 'react-dom/client';
 
 import { parseHTML } from 'linkedom';
+import type { SessionSummary } from '@maka/core/session';
 import { Composer, type ComposerHandle, type ComposerSendMetadata } from '../composer.js';
 import { LocaleProvider } from '../locale-context.js';
+import { ComposerPromptSuggestionProvider, type ComposerPromptSuggestionService } from '../prompt-suggestion.js';
 
 
 const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
@@ -46,9 +48,10 @@ afterEach(async () => {
   else Reflect.deleteProperty(globalThis, 'navigator');
 });
 
-async function harness(platform = 'MacIntel', streaming = true, overrides: Partial<Parameters<typeof Composer>[0]> = {}) {
+async function harness(platform = 'MacIntel', streaming = true, overrides: Partial<Parameters<typeof Composer>[0]> = {}, suggestionService?: ComposerPromptSuggestionService) {
   const { document, window } = parseHTML('<div id="root"></div>');
   window.getComputedStyle = () => ({ direction: 'ltr', writingMode: 'horizontal-tb', getPropertyValue: () => '' }) as unknown as CSSStyleDeclaration;
+  window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} }) as unknown as MediaQueryList;
   window.getSelection = () => null;
   document.getSelection = () => null;
   const setAttribute = window.Element.prototype.setAttribute;
@@ -72,15 +75,22 @@ async function harness(platform = 'MacIntel', streaming = true, overrides: Parti
     await act(() => root.unmount());
     window.Element.prototype.setAttribute = setAttribute;
   };
-  await act(() => root.render(
-    <LocaleProvider locale="en">
-      <Composer ref={ref} streaming={streaming} onSend={(text, metadata) => { sends.push({ text, metadata }); }} onStop={() => undefined} {...overrides} />
-    </LocaleProvider>,
-  ));
+  let currentProps = { streaming, ...overrides };
+  async function render(patch: Partial<Parameters<typeof Composer>[0]> = {}) {
+    currentProps = { ...currentProps, ...patch };
+    await act(async () => root.render(
+      <LocaleProvider locale="en">
+        <ComposerPromptSuggestionProvider service={suggestionService}>
+          <Composer ref={ref} onSend={(text, metadata) => { sends.push({ text, metadata }); }} onStop={() => undefined} {...currentProps} />
+        </ComposerPromptSuggestionProvider>
+      </LocaleProvider>,
+    ));
+  }
+  await render();
   const editor = document.querySelector<HTMLElement>('[contenteditable="true"]')!;
   assert.ok(editor);
   return {
-    sends, lineBreaks, editor, ref,
+    sends, lineBreaks, editor, ref, render,
     async draft(text = 'adjust the current task') { await act(() => ref.current!.setText(text)); },
     async press(init: KeyboardEventInit = {}) {
       const event = new KeyEvent('keydown', { bubbles: true, cancelable: true, ...init });
@@ -178,4 +188,92 @@ test('steering supports staged context and coalesces repeated keys while admissi
   await h.press({ metaKey: true });
   assert.deepEqual(calls, [{ followUpMode: 'steer' }]);
   await act(async () => finish(true));
+});
+
+const suggestedPrompt = 'Add callback tests and verify the result.';
+async function promptSuggestionHarness() {
+  const h = await harness('MacIntel', true, {
+    activeSession: { id: 'suggestion-session' } as SessionSummary,
+  }, {
+    enabled: true,
+    setEnabled() {},
+    generate: async () => suggestedPrompt,
+  });
+  // Native insertion and Undo are covered in Chromium; exercise the fallback here.
+  document.execCommand = () => false;
+  await h.render({ streaming: false });
+  const offer = () => document.querySelector('.maka-composer-next-prompt');
+  assert.equal(offer()?.textContent, suggestedPrompt);
+  return { ...h, offer };
+}
+
+for (const key of ['ArrowRight', 'Tab']) {
+  test(`${key} accepts the next prompt into the draft and waits for an explicit send`, async () => {
+    const h = await promptSuggestionHarness();
+    const event = await h.press({ key });
+    assert.equal(event.defaultPrevented, true);
+    assert.equal(h.ref.current!.getText(), suggestedPrompt);
+    assert.equal(h.offer(), null);
+    assert.deepEqual(h.sends, []);
+    await h.press();
+    assert.deepEqual(h.sends, [{ text: suggestedPrompt, metadata: undefined }]);
+  });
+
+  test(`${key} keeps native behavior when the live draft changes before the suggestion render retires`, async () => {
+    const h = await promptSuggestionHarness();
+    const draft = 'Keep the draft that just arrived';
+    const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+    await act(() => {
+      // The imperative write updates the live ref immediately. React has not
+      // committed the render that removes the old offer when the key arrives.
+      h.ref.current!.setText(draft);
+      assert.ok(h.offer());
+      h.editor.dispatchEvent(event);
+    });
+    assert.equal(event.defaultPrevented, false);
+    assert.equal(h.ref.current!.getText(), draft);
+    assert.equal(h.offer(), null);
+    assert.deepEqual(h.sends, []);
+  });
+}
+
+for (const modifier of ['shiftKey', 'altKey', 'ctrlKey', 'metaKey'] as const) {
+  test(`${modifier}+Right Arrow retains its native behavior while a suggestion is visible`, async () => {
+    const h = await promptSuggestionHarness();
+    const event = await h.press({ key: 'ArrowRight', [modifier]: true });
+    assert.equal(event.defaultPrevented, false);
+    assert.equal(h.ref.current!.getText(), '');
+    assert.ok(h.offer());
+    assert.deepEqual(h.sends, []);
+  });
+}
+
+test('Right Arrow leaves an open trigger menu and IME keystrokes alone', async () => {
+  const h = await promptSuggestionHarness();
+  h.editor.setAttribute('aria-expanded', 'true');
+  await h.press({ key: 'ArrowRight' });
+  assert.equal(h.ref.current!.getText(), '');
+  assert.ok(h.offer());
+  h.editor.setAttribute('aria-expanded', 'false');
+  await h.press({ key: 'ArrowRight', isComposing: true });
+  assert.equal(h.ref.current!.getText(), '');
+  assert.ok(h.offer());
+  assert.deepEqual(h.sends, []);
+});
+
+test('Right Arrow cannot restore an escaped suggestion or overwrite a started draft', async () => {
+  const h = await promptSuggestionHarness();
+  await h.press({ key: 'Escape' });
+  await h.press({ key: 'ArrowRight' });
+  assert.equal(h.ref.current!.getText(), '');
+  assert.equal(h.offer(), null);
+  await h.render({ streaming: true });
+  await h.render({ streaming: false });
+  assert.ok(h.offer());
+  await h.draft('A different next step');
+  const event = await h.press({ key: 'ArrowRight' });
+  assert.equal(event.defaultPrevented, false);
+  assert.equal(h.ref.current!.getText(), 'A different next step');
+  assert.equal(h.offer(), null);
+  assert.deepEqual(h.sends, []);
 });

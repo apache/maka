@@ -698,13 +698,33 @@ export const NextPromptSuggestion: Story = {
     const offered = metrics(suggestion()!.querySelector('.maka-composer-next-prompt-text')!);
     const text = suggestion()!.textContent;
     expect(input).toHaveTextContent('');
-    await userEvent.keyboard('{Tab}');
+    expect(canvasElement.querySelector('.maka-composer-next-prompt-key')).toHaveTextContent('→ 或 Tab 接受建议');
+    await userEvent.keyboard('{ArrowRight}');
     await waitFor(() => expect(input).toHaveTextContent(text!));
     expect(metrics(input)).toEqual(offered);
+    expect(document.activeElement).toBe(input);
+    const selection = window.getSelection()!;
+    expect(selection.isCollapsed).toBe(true);
+    const beforeCaret = document.createRange();
+    beforeCaret.selectNodeContents(input);
+    beforeCaret.setEnd(selection.anchorNode!, selection.anchorOffset);
+    expect(beforeCaret.toString()).toBe(text);
     expect(writes.answer).toHaveBeenCalledTimes(1);
     await userEvent.keyboard('{Enter}');
     await waitFor(() => expect(writes.answer).toHaveBeenCalledTimes(2));
     expect(writes.answer.mock.calls[1][1].text).toBe(text);
+    await waitFor(() => expect(suggestion()).not.toBeNull());
+    await userEvent.keyboard('{Tab}');
+    await waitFor(() => expect(input).toHaveTextContent(text!));
+    expect(writes.answer).toHaveBeenCalledTimes(2);
+    // Undo uses the browser's native editing transaction, which the DOM shim
+    // cannot exercise. Dismissed/accepted suggestions do not reappear on Undo.
+    expect(document.execCommand('undo')).toBe(true);
+    await waitFor(() => expect(input).toHaveTextContent(''));
+    expect(suggestion()).toBeNull();
+    expect(writes.answer).toHaveBeenCalledTimes(2);
+    await userEvent.type(input, '请检查并发回调。');
+    await userEvent.keyboard('{Enter}');
     await waitFor(() => expect(suggestion()).not.toBeNull());
     await userEvent.keyboard('{Escape}');
     expect(suggestion()).toBeNull();
