@@ -47,6 +47,7 @@ import {
   ghostButton,
   controlButton,
   segmentedControl,
+  compactAge,
 } from './theme.js';
 import { t } from './locale.js';
 
@@ -56,9 +57,6 @@ import { t } from './locale.js';
  * composition.ts). The name is internal and never shown.
  */
 export const WORKER = 'worker';
-
-/** The most pages of tasks read to find the titles notices name (16 tasks a page). */
-const NAME_PAGES = 32;
 
 /** Why the Host did not set WorkHub up (`AgentRejection`), in words. */
 const REJECTIONS = {
@@ -102,20 +100,15 @@ export class WorkHub {
     this.page = null;
     /**
      * The cursor the page is read from: null for the first page. The Host
-     * pages tasks by id, 16 at a time, not by time.
+     * pages tasks 16 at a time, the most recently accepted first.
      */
     this.pageAfter = null;
     /** taskId -> the task as `watchTask` last sent it. */
     this.tasks = new Map();
     /** taskId -> its entry, for every task a page listed: notices in the conversation name them. */
     this.entries = new Map();
-    /**
-     * Tasks a notice named that no page had listed, each looked for once;
-     * those still looked for; and whether the pages are being read for them.
-     */
-    this.unnamed = new Set();
-    this.wanted = new Set();
-    this.naming = false;
+    /** taskId -> the title of a task a notice named and no page listed; null while it is read, or when that failed. */
+    this.titles = new Map();
     /**
      * The task whose detail shows, or null for the list: `{ entry, more,
      * reading, problem }`, `more` being the reply's pages read after its
@@ -345,66 +338,37 @@ export class WorkHub {
   }
 
   /**
-   * The title of the task `taskId` as a page listed it, or null. A task no
-   * page has listed is looked for once, in the pages from the first: the
-   * Host pages tasks by id, so a task that just ended can be on any of them,
-   * and `workhub.task` does not say a task's title.
+   * The title of the task `taskId`, as a page listed it or as `workhub.task`
+   * says it, which is read once for a task no page has listed; null until
+   * then.
    */
   titleOf(taskId) {
     const entry = this.entries.get(taskId);
     if (entry !== undefined) return entry.title;
-    if (!this.unnamed.has(taskId)) {
-      this.unnamed.add(taskId);
-      this.wanted.add(taskId);
-      this.readNames();
+    if (!this.titles.has(taskId)) {
+      this.titles.set(taskId, null);
+      this.readTitle(taskId);
     }
-    return null;
+    return this.titles.get(taskId);
   }
 
-  /**
-   * Reads the pages of tasks, from the first, until every task looked for is
-   * listed or the pages end (at most NAME_PAGES of them). A task asked for
-   * while a pass runs gets a pass of its own; one a whole pass did not find
-   * stays untitled.
-   */
-  async readNames() {
-    if (this.naming) return;
-    this.naming = true;
+  async readTitle(taskId) {
     try {
-      while (this.wanted.size > 0) {
-        const looking = new Set(this.wanted);
-        let after = null;
-        for (let pages = 0; pages < NAME_PAGES; pages += 1) {
-          const page = await query('workhub', 'tasks', { after });
-          for (const entry of page.entries) {
-            this.entries.set(entry.taskId, entry);
-            this.wanted.delete(entry.taskId);
-            looking.delete(entry.taskId);
-          }
-          if (looking.size === 0 || page.after === null) break;
-          after = page.after;
-        }
-        for (const taskId of looking) {
-          this.wanted.delete(taskId);
-          log(`workhub: no page lists ${taskId}`);
-        }
-        this.hooks.changed();
-      }
+      const task = await query('workhub', 'task', { taskId, cursor: null });
+      this.titles.set(taskId, task.title);
+      this.hooks.changed();
     } catch (error) {
-      this.wanted.clear();
-      log(`workhub: reading task titles failed: ${error.message}`);
-    } finally {
-      this.naming = false;
+      log(`workhub: reading the title of ${taskId} failed: ${error.message}`);
     }
   }
 
-  /**
-   * Shows the detail of the task `taskId` in the Tasks tab, as a notice in
-   * the conversation asks; a task no page listed yet shows untitled until one
-   * does.
-   */
+  /** Shows the detail of the task `taskId` in the Tasks tab, as a notice in the conversation asks. */
   openTask(taskId, worker) {
-    const entry = this.entries.get(taskId) ?? { taskId, worker: worker ?? WORKER, title: '' };
+    const entry = this.entries.get(taskId) ?? {
+      taskId,
+      worker: worker ?? WORKER,
+      title: this.titles.get(taskId) ?? '',
+    };
     this.showTab('tasks');
     this.showTask(entry);
   }
@@ -891,8 +855,8 @@ function readingColumn(id, child) {
 }
 
 /**
- * The page of tasks: a row for each, in the Host's order (by id, not by
- * time), with the buttons to the next page and back to the first. Above
+ * The page of tasks: a row for each, the most recently accepted first, with
+ * the buttons to the next page and back to the first. Above
  * them, when the updates stopped, a line saying so with Retry.
  */
 function taskList(workhub, cx) {
@@ -959,7 +923,7 @@ function taskList(workhub, cx) {
   );
 }
 
-/** One task in the list: how it stands, its title, and its status in words. */
+/** One task in the list: how it stands, its title, its status in words, and when it was accepted. */
 function taskRow(workhub, entry, cx) {
   const m = palette(cx);
   const [words, mark] = listedStatus(workhub, entry.taskId);
@@ -981,7 +945,8 @@ function taskRow(workhub, entry, cx) {
         .truncate()
         .child(entry.title || t('workhubUntitled')),
     )
-    .child(text(words, 'small', m.inkMuted).flex_none());
+    .child(text(words, 'small', m.inkMuted).flex_none())
+    .child(text(compactAge(entry.acceptedAt), 'small', m.inkMuted).flex_none());
 }
 
 /**

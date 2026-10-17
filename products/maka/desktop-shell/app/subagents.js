@@ -165,20 +165,10 @@ export class Subagents {
     }
   }
 
-  /**
-   * Opens a copy of `entry` in the editor. A model the Host offers at
-   * another revision of its connection is the same model: the draft takes
-   * the current revision at once, so saving repairs the preset.
-   */
+  /** Opens a copy of `entry` in the editor. */
   edit(entry) {
     if (!this.ready()) return;
-    const draft = { ...entry, tools: [...entry.tools], model: { ...entry.model } };
-    const offered = this.choices.find((choice) => sameModel(choice.selection, draft.model));
-    if (offered !== undefined && offered.selection.revision !== draft.model.revision) {
-      log(`subagents: ${entry.id} takes its model's current revision`);
-      draft.model = selectionOf(offered.selection);
-    }
-    this.open(draft, false);
+    this.open({ ...entry, tools: [...entry.tools], model: { ...entry.model } }, false);
   }
 
   /** Opens a new preset for the worker, with the first `agent-N` id no entry uses. */
@@ -243,7 +233,7 @@ export class Subagents {
     if (draft === null) return;
     if (draft.model === null || !sameModel(draft.model, choice.selection))
       draft.thinkingLevel = null;
-    draft.model = selectionOf(choice.selection);
+    draft.model = targetOf(choice.selection);
     log(`subagents: ${draft.id} uses ${choiceLabel(choice)}`);
     this.hooks.changed();
   }
@@ -379,27 +369,16 @@ export class Subagents {
 
 /**
  * Whether WorkHub can delegate with `entry`: it is enabled, for the worker,
- * and its model is offered among `choices` at the same connection revision,
- * as the Host checks a selection when a task runs.
+ * and its model is among the `choices` the Host offers, as the Host checks
+ * a preset when it accepts a task.
  */
 export function usable(entry, choices) {
-  return entry.enabled && entry.worker === WORKER && modelState(entry.model, choices) === 'ready';
+  return entry.enabled && entry.worker === WORKER && offered(entry.model, choices);
 }
 
-/**
- * How the Host offers `model` now: 'ready' at its revision, 'stale' at another
- * revision of its connection (a key set, models found or turned off), or
- * 'missing'.
- */
-function modelState(model, choices) {
-  const choice = choices.find((c) => sameModel(c.selection, model));
-  if (choice === undefined) return 'missing';
-  return choice.selection.revision === model.revision ? 'ready' : 'stale';
-}
-
-/** What a preset whose model is not ready should do about it. */
-function modelNote(state) {
-  return state === 'stale' ? t('subagentModelChanged') : t('subagentModelUnavailable');
+/** Whether the Host offers `model` (a connection and a model id) now. */
+function offered(model, choices) {
+  return choices.some((c) => sameModel(c.selection, model));
 }
 
 /** A model by the name the Host offers it under, or by its id when it is not offered. */
@@ -412,8 +391,13 @@ function sameModel(a, b) {
   return a.connectionId === b.connectionId && a.modelId === b.modelId;
 }
 
-function selectionOf(model) {
-  return { connectionId: model.connectionId, revision: model.revision, modelId: model.modelId };
+/**
+ * The connection and model id a preset names. The Host takes the
+ * connection's current revision when it accepts a task, so a preset outlives
+ * edits to its connection.
+ */
+function targetOf(model) {
+  return { connectionId: model.connectionId, modelId: model.modelId };
 }
 
 /** A preset with exactly the keys the Host takes (`WorkHubPreset` refuses others). */
@@ -425,7 +409,7 @@ function presetOf(entry) {
     description: entry.description,
     worker: entry.worker,
     tools: [...entry.tools],
-    model: selectionOf(entry.model),
+    model: targetOf(entry.model),
     thinkingLevel: entry.thinkingLevel ?? null,
     enabled: entry.enabled,
   };
@@ -499,7 +483,7 @@ function presetList(subagents, cx) {
  */
 function presetRow(subagents, entry, cx) {
   const m = palette(cx);
-  const state = modelState(entry.model, subagents.choices);
+  const ready = offered(entry.model, subagents.choices);
   const facts = [
     modelName(entry.model, subagents.choices),
     entry.tools.length === 0
@@ -519,8 +503,8 @@ function presetRow(subagents, entry, cx) {
         .min_w_0()
         .child(typeset(div(), 'label').text_color(m.ink).truncate().child(entry.name))
         .child(text(facts.join(' · '), 'small', m.inkMuted).truncate())
-        .when(state !== 'ready', (el) =>
-          el.child(text(modelNote(state), 'small', m.destructive).truncate()),
+        .when(!ready, (el) =>
+          el.child(text(t('subagentModelUnavailable'), 'small', m.destructive).truncate()),
         ),
     )
     .child(
@@ -605,12 +589,12 @@ function editor(subagents, cx) {
 function modelRow(subagents, cx) {
   const m = palette(cx);
   const model = subagents.draft.model;
-  const state = model === null ? 'ready' : modelState(model, subagents.choices);
+  const ready = model === null || offered(model, subagents.choices);
   return v_flex()
     .w_full()
     .child(settingRow(t('subagentModel'), null, modelMenu(subagents, cx), cx))
-    .when(state !== 'ready', (el) =>
-      el.child(text(modelNote(state), 'small', m.destructive).pb(8)),
+    .when(!ready, (el) =>
+      el.child(text(t('subagentModelUnavailable'), 'small', m.destructive).pb(8)),
     );
 }
 

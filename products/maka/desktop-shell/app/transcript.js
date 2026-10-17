@@ -90,6 +90,8 @@ function rowFromChunk(chunk) {
     tool: chunk.tool,
     timing: chunk.timing ?? null,
     compaction: chunk.compaction ?? null,
+    // What posted a user message that is not the user's (a WorkHub notice).
+    origin: chunk.origin ?? null,
     // A user message's files, on its first fragment only.
     attachments: chunk.attachments ?? [],
     totalBytes: chunk.totalBytes,
@@ -107,6 +109,7 @@ function withFragment(row, chunk) {
     ...row,
     tool: chunk.tool ?? row.tool,
     timing: chunk.timing ?? row.timing,
+    origin: chunk.origin ?? row.origin,
     attachments: chunk.attachments ?? row.attachments,
     fragments,
     text: textOf(fragments),
@@ -380,7 +383,7 @@ export class Transcript {
     const start = this.rows.find((row) => row.turnId === last.turnId && row.role === 'user');
     if (!start) return null;
     // A turn a WorkHub notice started is WorkHub's to start again, not the user's.
-    const notice = WORKHUB_NOTICE_ID.test(start.messageId ?? '');
+    const notice = start.origin !== null;
     const whole = start.fragments[0]?.offset === 0 && utf8Length(start.text) === start.totalBytes;
     const files = (start.attachments ?? []).length > 0;
     const message = whole && !notice && !files ? ownText(start) : '';
@@ -955,7 +958,7 @@ function displayItems(transcript) {
     } else if (row.role === 'compaction') {
       // As in the TUI, a checkpoint shows only once it was adopted.
       if (row.compaction !== null) items.push({ key: row.key, kind: 'compaction', row });
-    } else if (row.role === 'user' && WORKHUB_NOTICE_ID.test(row.messageId ?? '')) {
+    } else if (row.role === 'user' && row.origin !== null) {
       items.push({ key: row.key, kind: 'notice', row, notice: workhubNotice(row) });
     } else {
       items.push({ key: row.key, kind: row.role === 'user' ? 'user' : 'assistant', row });
@@ -1197,28 +1200,26 @@ function failureRow(item, cx) {
     );
 }
 
-/**
- * The message id of a WorkHub notice: when a task ends, WorkHub posts a
- * message into the coordinator's conversation as `m_<identity>`, the identity
- * being `wh_` and a SHA-256 (plugins/agent/native/src/workhub/tasks/
- * notifications.rs, owner/notifications.rs). The user's own messages there
- * have the session's id after `m_`, which goes on with `_` and more hex.
- * History marks nothing else about it, so the id is what tells it apart.
- */
-const WORKHUB_NOTICE_ID = /^m_wh_[0-9a-f]{64}$/;
-const WORKHUB_NOTICE_TEXT = /^WorkHub task (wt_[0-9a-f]{64}) has ended\./;
 const WORKHUB_NOTICE_OBSERVATION = '\n\nOriginal worker observation:\n';
 
 /**
- * What a WorkHub notice says, from its text: `{ taskId, worker, outcome }`,
- * the outcome being 'completed', 'failed', 'cancelled', 'rejected' or null
- * when the observation cannot be read (the text is not all loaded, or its
- * form changed). The text is the Host's fixed English, for the coordinator's
- * model; the row says it in the user's words.
+ * What a WorkHub notice says: `{ graph, taskId, worker, outcome }`. History
+ * gives the message's origin, a task (`taskId`) or a task graph (`graph`,
+ * which says the graph has new results). A task's notice text ends with the
+ * task as JSON, from which come its worker and its outcome: 'completed',
+ * 'failed', 'cancelled', 'rejected', or null when it cannot be read (the
+ * text is not all loaded, or its form changed). The text is the Host's fixed
+ * English, for the coordinator's model; the row says it in the user's words.
  */
 function workhubNotice(row) {
-  const found = WORKHUB_NOTICE_TEXT.exec(row.text);
-  const notice = { taskId: found?.[1] ?? null, worker: null, outcome: null };
+  const ofTask = row.origin.kind === 'workhub_task';
+  const notice = {
+    graph: row.origin.kind === 'workhub_graph',
+    taskId: ofTask ? row.origin.taskId : null,
+    worker: null,
+    outcome: null,
+  };
+  if (!ofTask) return notice;
   const at = row.text.indexOf(WORKHUB_NOTICE_OBSERVATION);
   if (at < 0) return notice;
   try {
@@ -1254,16 +1255,21 @@ const NOTICE_OUTCOMES = {
 };
 const NOTICE_ENDED = ['workhubNoticeEnded', 'workhubNoticeEndedUntitled', 'workhub', false];
 
+/** A task graph's notice: its words and glyph, as NOTICE_OUTCOMES gives them. */
+const NOTICE_GRAPH = ['workhubNoticeGraph', 'workhubNoticeGraph', 'workhub', false];
+
 /**
  * A WorkHub notice in the coordinator's conversation: which task ended and
- * how, and View; a click on the row shows the task in WorkHub's Tasks tab
- * (`Transcript.click`). The title comes from WorkHub (`hooks.taskTitle`),
- * which knows the tasks it listed.
+ * how, and View, or that a task graph has new results; a click on a task's
+ * row shows the task in WorkHub's Tasks tab (`Transcript.click`). The title
+ * comes from WorkHub (`hooks.taskTitle`).
  */
 function noticeRow(item, transcript, cx) {
   const m = palette(cx);
-  const { taskId, outcome } = item.notice;
-  const [titled, untitled, glyph, alarm] = NOTICE_OUTCOMES[outcome] ?? NOTICE_ENDED;
+  const { graph, taskId, outcome } = item.notice;
+  const [titled, untitled, glyph, alarm] = graph
+    ? NOTICE_GRAPH
+    : (NOTICE_OUTCOMES[outcome] ?? NOTICE_ENDED);
   const title = taskId === null ? '' : (transcript.hooks.taskTitle?.(taskId) ?? '');
   const open = taskId !== null && typeof transcript.hooks.openTask === 'function';
   return h_flex()

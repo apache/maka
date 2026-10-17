@@ -926,11 +926,6 @@ export const MESSAGES = {
     '从干净仓库的提交开始。修改保留在独立 worktree 中，可交付为不可变补丁。',
     '從乾淨儲存庫的提交開始。修改保留在獨立 worktree 中，可交付為不可變修補檔。',
   ],
-  subagentModelChanged: [
-    "The model's connection changed; open and save it again",
-    '模型连接已更新，请打开后重新保存',
-    '模型連線已更新，請開啟後重新儲存',
-  ],
   subagentModelUnavailable: [
     'This model is not available; choose another',
     '该模型当前不可用，请重新选择',
@@ -1178,5 +1173,6 @@ export const MESSAGES = {
   workhubNoticeRejectedUntitled: ['A task was rejected', '一个任务被拒绝', '一個任務被拒絕'],
   workhubNoticeEnded: ['Task "{title}" ended', '任务「{title}」已结束', '任務「{title}」已結束'],
   workhubNoticeEndedUntitled: ['A task ended', '一个任务已结束', '一個任務已結束'],
+  workhubNoticeGraph: ['A task graph has new results', '任务图有新结果', '任務圖有新結果'],
   workhubNoticeView: ['View', '查看', '查看'],
 };
