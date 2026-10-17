@@ -230,6 +230,7 @@ function AppShellContent({
   setUiLocalePreference: Dispatch<SetStateAction<UiLocalePreference>>;
 }) {
   const toastApi = useToast();
+  const { selectedHost } = taskEntry.selectors;
   const {
     renderCompleteConversation,
     refreshMessages,
@@ -292,7 +293,7 @@ function AppShellContent({
     ? (activeSession?.profileKind === 'local'
         ? activeSession.runtimeHostId
         : undefined)
-    : (taskEntry.selectors.selectedHost?.kind === 'local'
+    : (selectedHost?.kind === 'local'
         ? taskEntry.selectors.target?.hostId
         : undefined);
   const composerStaging = useMemo(Conversation.createComposerStagingCommands, []);
@@ -319,12 +320,10 @@ function AppShellContent({
     sessionId: ownerActiveId,
     disabled: sharedSessionActive,
   });
-  const newTaskHost = taskEntry.selectors.selectedHost
-    ? {
-        profileId: taskEntry.selectors.selectedHost.profileId,
-        hostId: taskEntry.selectors.selectedHost.hostId,
-      }
-    : undefined;
+  const newTaskHost = selectedHost && {
+    profileId: selectedHost.profileId,
+    hostId: selectedHost.hostId,
+  };
   const newTaskConnections = useShellConnections({
     toastApi,
     uiLocale,
@@ -413,7 +412,7 @@ function AppShellContent({
    */
   const newSessionPermissionMode =
     newTaskSettings.permissionChoice ??
-    taskEntry.selectors.selectedHost?.chatDefaults.permissionMode ??
+    selectedHost?.chatDefaults.permissionMode ??
     'bypass';
   // Persisted composer defaults seed the empty-state model, project path, and
   // recent workspace history so the home view is populated before the async
@@ -454,7 +453,7 @@ function AppShellContent({
     : taskEntry.selectors.selectedProfileId;
   const composerProfileName = activeId
     ? activeSession?.profileName
-    : taskEntry.selectors.selectedHost?.name;
+    : selectedHost?.name;
   const modelSettingsOwnsComposerHost =
     composerProfileId !== undefined &&
     composerProfileId === taskEntry.selectors.defaultProfileId;
@@ -1275,6 +1274,11 @@ function AppShellContent({
                 onNewProject={
                   taskEntry.selectors.canAddProject
                     ? taskEntry.commands.openNewProject
+                    : undefined
+                }
+                onDropProjectFolders={
+                  taskEntry.selectors.canDropProjectFolders
+                    ? taskEntry.commands.addDroppedProjectFolders
                     : undefined
                 }
               >

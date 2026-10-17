@@ -6,7 +6,7 @@ Generated against `@astryxdesign/core@0.6.3` (195 component exports).
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 341 files — blocker 0, reimplementation 0, polish 5, aligned 336.
+**Totals:** 342 files — blocker 0, reimplementation 0, polish 5, aligned 337.
 
 ## Exclusions (explicit)
 
@@ -337,6 +337,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `packages/ui/src/primitives/module-page.tsx` | primitive | Dialog, DialogHeader, HStack, Heading, Layout, LayoutContent, LayoutFooter, LayoutHeader, ListItem, StackItem, Text, VStack | aligned — uses Astryx (Dialog, DialogHeader, HStack, Heading, Layout, LayoutContent, LayoutFooter, LayoutHeader) | aligned |
 | `packages/ui/src/primitives/stat-tile.tsx` | primitive | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/progress-card.tsx` | ui-composition | IconButton | aligned — uses Astryx (IconButton) | aligned |
+| `packages/ui/src/project-folder-drop-zone.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/prompt-anchor-rail.tsx` | ui-composition | Button, HoverCard | aligned — uses Astryx (Button, HoverCard) | aligned |
 | `packages/ui/src/prompt-suggestion.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/provider-retry-notice.tsx` | ui-composition | Banner | aligned — uses Astryx (Banner) | aligned |

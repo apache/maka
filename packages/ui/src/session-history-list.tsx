@@ -31,6 +31,7 @@ import {
   type RefObject,
 } from 'react';
 import { useMountedRef } from './use-mounted-ref.js';
+import { ProjectFolderDropZone } from './project-folder-drop-zone.js';
 import type { ProjectRecord } from '@maka/core/project';
 import type { SessionSummary } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
@@ -423,15 +424,17 @@ export function SessionHistoryList() {
   // extra information for anyone hearing it. It is scroll content and a key
   // handler, nothing an assistive tech user needs to be told about separately.
   return (
-    <div
-      ref={listRef}
-      className="maka-session-list"
-      onKeyDown={handleListKeyDown}
-      onClickCapture={handleListClickCapture}
-      onContextMenu={handleListContextMenu}
-    >
-      <SessionListGroups groups={groups} />
-    </div>
+    <ProjectFolderDropZone>
+      <div
+        ref={listRef}
+        className="maka-session-list"
+        onKeyDown={handleListKeyDown}
+        onClickCapture={handleListClickCapture}
+        onContextMenu={handleListContextMenu}
+      >
+        <SessionListGroups groups={groups} />
+      </div>
+    </ProjectFolderDropZone>
   );
 }
 

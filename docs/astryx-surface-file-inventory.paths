@@ -306,6 +306,7 @@ packages/ui/src/primitives/chat.tsx
 packages/ui/src/primitives/module-page.tsx
 packages/ui/src/primitives/stat-tile.tsx
 packages/ui/src/progress-card.tsx
+packages/ui/src/project-folder-drop-zone.tsx
 packages/ui/src/prompt-anchor-rail.tsx
 packages/ui/src/prompt-suggestion.tsx
 packages/ui/src/provider-retry-notice.tsx

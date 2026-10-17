@@ -53,6 +53,10 @@
       "tests": 2,
       "electron": "Code Mode reads back Host settings through IPC; opening Settings commits a pending title rename to the Host, with workbar hide/restore asserted in that same Session."
     },
+    "sidebar-folder-drop.spec.ts": {
+      "tests": 1,
+      "electron": "native directory drag input must retain its filesystem-backed File through Electron contextBridge and webUtils.getPathForFile before main and the Host can register the project"
+    },
     "sidebar-project-reload.spec.ts": {
       "tests": 1,
       "electron": "rail grouping has to be rebuilt from persisted project state after a renderer reload"

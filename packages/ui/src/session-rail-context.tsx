@@ -103,6 +103,8 @@ export interface SessionRailData {
    * heading, and absent when the shell has no host that can make one.
    */
   onNewProject?: () => void;
+  /** Register local folders dropped onto the project list. */
+  onDropProjectFolders?: (files: File[]) => void | Promise<void>;
   /** Opaque Project ids whose Host can choose a replacement client directory. */
   relinkableProjectIds?: ReadonlySet<string>;
 }
