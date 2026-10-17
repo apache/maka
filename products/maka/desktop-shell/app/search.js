@@ -412,9 +412,14 @@ function groupsOf(passages) {
   return [...byTask.values()];
 }
 
-/** One RegExp that finds any of `terms`, the longer first, as the Host matches them: literally, in any case. */
+/**
+ * One RegExp that finds any of `terms`, the longer first, as the Host matches
+ * them: literally, in any case, composed (NFC) as the Host composes the terms
+ * and the excerpts it returns.
+ */
 function matcher(terms) {
-  const escaped = [...terms]
+  const escaped = terms
+    .map((term) => term.normalize('NFC'))
     .sort((a, b) => b.length - a.length)
     .map((term) => term.replace(/[\\^$.*+?()[\]{}|/]/g, '\\$&'));
   return new RegExp(escaped.join('|'), 'giu');
