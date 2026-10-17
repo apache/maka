@@ -875,7 +875,7 @@ export function useTaskEntryController(
           (selectedHost.capabilities.chooseClientDirectory ||
             selectedHost.capabilities.chooseHostDirectory),
       ),
-      canDropProjectFolders: Boolean(localHost?.capabilities.chooseClientDirectory),
+      canDropProjectFolders: !pending && Boolean(localHost?.capabilities.chooseClientDirectory),
       projectScopes,
     },
   }), [
@@ -883,6 +883,7 @@ export function useTaskEntryController(
     addSelectedProject,
     addDroppedProjectFolders,
     localHost,
+    pending,
     newProjectDialog,
     openNewProject,
     addSessionWorkspace,

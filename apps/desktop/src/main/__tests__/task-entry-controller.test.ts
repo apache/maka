@@ -238,6 +238,7 @@ it('adds a folder batch locally with one error, archived recovery, and a shared 
   }));
   const { target, draftKey } = controller().selectors;
   assert.equal(target?.profileId, 'remote');
+  assert.equal(controller().selectors.canDropProjectFolders, true);
   let batch: Promise<void>;
   await act(async () => {
     batch = controller().commands.addDroppedProjectFolders(
@@ -247,7 +248,9 @@ it('adds a folder batch locally with one error, archived recovery, and a shared 
     controller().commands.addProject();
   });
   assert.equal(controller().host.directoryHost, undefined, 'Picker shares the batch lock');
+  assert.equal(controller().selectors.canDropProjectFolders, false);
   await act(async () => { confirmation.resolve(true); await batch; });
+  assert.equal(controller().selectors.canDropProjectFolders, true);
   assert.deepEqual(calls, ['notes.txt', 'archived', 'confirm', 'restore:local:existing', 'unreadable', 'last']);
   assert.deepEqual([controller().selectors.target, controller().selectors.draftKey], [target, draftKey]);
   const copy = getShellCopy('en').projectActions;
@@ -637,10 +640,12 @@ describe('useTaskEntryController', () => {
     });
     assert.equal(addCalls, 1);
     assert.equal(controller().selectors.workspacePicker.pending, true);
+    assert.equal(controller().selectors.canDropProjectFolders, false);
 
     await act(async () => added.resolve({ ok: true, project: project('project-b') }));
     assert.equal(controller().selectors.target?.projectId, 'project-b');
     assert.equal(controller().selectors.workspacePicker.pending, false);
+    assert.equal(controller().selectors.canDropProjectFolders, true);
   });
 
   it('prompts to restore an archived Project and selects it through the Desktop adapter after confirmation', async () => {
