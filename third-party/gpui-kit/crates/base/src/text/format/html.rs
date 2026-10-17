@@ -768,6 +768,8 @@ mod tests {
             // The parser drops only the line feed right after `<pre>`.
             ("<pre>\none</pre>", "one"),
             ("<pre>\n\none</pre>", "\none"),
+            // A comment is left out, and the line feed after it kept.
+            ("<pre><!-- note -->\none</pre>", "\none"),
         ] {
             let document = super::parse(html, 0, &mut cx).unwrap();
             let BlockNode::Paragraph(paragraph) = &document.blocks[0] else {
