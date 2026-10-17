@@ -625,6 +625,28 @@ describe('SQLite workflow stores', () => {
           }),
           /projection item limit/,
         );
+        await assert.rejects(
+          store.submitProposal({
+            sessionId: SESSION_ID,
+            turnId: 'turn-4',
+            title: 'Multi-line step title',
+            steps: [{ id: 'step-1', title: 'Reject\nthe input', description: 'Multi-line title' }],
+          }),
+          /Plan step title must be a single line/,
+        );
+        // A form feed ends a line for a renderer even though it is not `\n`, so
+        // it must be refused here rather than rendered as a split step.
+        await assert.rejects(
+          store.submitProposal({
+            sessionId: SESSION_ID,
+            turnId: 'turn-5',
+            title: 'Form feed step title',
+            steps: [
+              { id: 'step-1', title: 'Reject\u000cthe input', description: 'Form feed title' },
+            ],
+          }),
+          /Plan step title must be a single line/,
+        );
         assert.equal((await store.readState(SESSION_ID)).storeVersion, 0);
       } finally {
         store.close();

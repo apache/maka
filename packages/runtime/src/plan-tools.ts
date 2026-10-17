@@ -35,6 +35,7 @@ import {
   isCanonicalPlanEntityId,
   isPlanProposalLifecycleAdmissible,
   isPlanTextWithinLimit,
+  planTextHasLineBreak,
 } from '@maka/core/plan';
 
 import type { MakaTool } from './tool-runtime.js';
@@ -61,11 +62,18 @@ const plainTextSchema = (label: string) =>
       message: `${label} must be plain text without Markdown formatting`,
     });
 
+// A step title is rendered on one line, so the model is told about a break here
+// rather than after the write, where the store would reject it.
+const singleLinePlainTextSchema = (label: string) =>
+  plainTextSchema(label).refine((value) => !planTextHasLineBreak(value), {
+    message: `${label} must be a single line`,
+  });
+
 const stepDefinitionSchema = z.object({
   id: z.string().trim().refine(isCanonicalPlanEntityId, {
     message: 'Plan step id must be a canonical entity id',
   }),
-  title: plainTextSchema('Plan step title').max(PLAN_STEP_TITLE_MAX_CHARS),
+  title: singleLinePlainTextSchema('Plan step title').max(PLAN_STEP_TITLE_MAX_CHARS),
   description: plainTextSchema('Plan step description'),
   files: z.array(boundedTextSchema('Plan step file')).max(PLAN_MAX_FILES_PER_STEP).optional(),
   complexity: z.enum(['low', 'medium', 'high']).optional(),

@@ -24,6 +24,7 @@ import type { MessageContent } from '@maka/core/events';
 import {
   PlanConflictError,
   planUserControlMutationInput,
+  singleLinePlanText,
   type PlanEvent,
   type PlanExecution,
   type PlanMutationResult,
@@ -462,7 +463,12 @@ function renderExecutionRequest(
     planTurnLine(kind, execution.executionId),
     '',
     'Steps:',
-    ...execution.steps.map((step) => `- ${step.id} [${step.status}] ${step.title}`),
+    // One line per step is what the model reads, and a Plan persisted before the
+    // single-line rule can still carry a break in a title: flatten it here rather
+    // than letting one step read as two.
+    ...execution.steps.map(
+      (step) => `- ${step.id} [${step.status}] ${singleLinePlanText(step.title)}`,
+    ),
     '',
     'Use update_plan to keep every step status current.',
   ].join('\n');
