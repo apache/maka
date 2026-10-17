@@ -18,19 +18,28 @@
  */
 
 import { z } from 'zod';
+import {
+  isFileMutationObservation,
+  type FileMutationObservation,
+} from '@maka/core/file-mutation-evidence';
 import { readContinuationSchema, readPageSchema } from '../read-page.js';
 import { validateSandboxBoundaryExpansion } from '@maka/core/sandbox-boundary';
 import { GREP_MAX_LINES, GREP_MAX_LINES_PER_FILE, GREP_MAX_MATCH_BYTES } from '../grep-search.js';
 
-// v12 adds chat image reads with a bounded payload and no model dimension limit.
-// Older workers cannot satisfy this read policy and must be rejected at the handshake.
-export const FILESYSTEM_WORKER_PROTOCOL_VERSION = 12 as const;
+// v13 adds Write/Edit preparation and guarded execution to v12 chat image reads.
+// Older workers must be rejected rather than silently discard mutation guards.
+export const FILESYSTEM_WORKER_PROTOCOL_VERSION = 13 as const;
 
 /** The single authority on which operation kinds are writes. Shared by the
  * client (permission/identity decisions) and the worker (operation guards) so
  * the set cannot drift. */
 export function operationAccess(kind: FilesystemWorkerOperation['kind']): 'read' | 'write' {
-  return kind === 'write' || kind === 'apply_patch' || kind === 'edit' || kind === 'format_json'
+  return kind === 'write' ||
+    kind === 'prepare_write' ||
+    kind === 'prepare_edit' ||
+    kind === 'apply_patch' ||
+    kind === 'edit' ||
+    kind === 'format_json'
     ? 'write'
     : 'read';
 }
@@ -112,7 +121,25 @@ export const FilesystemWorkerOperationSchema = z.union([
       continuation: readContinuationSchema.optional(),
     })
     .strict(),
-  z.object({ kind: z.literal('write'), cwd, path, content: z.string() }).strict(),
+  z
+    .object({
+      kind: z.literal('write'),
+      cwd,
+      path,
+      content: z.string(),
+      observation: z.custom<FileMutationObservation>(isFileMutationObservation).optional(),
+    })
+    .strict(),
+  z.object({ kind: z.literal('prepare_write'), cwd, path, content: z.string() }).strict(),
+  z
+    .object({
+      kind: z.literal('prepare_edit'),
+      cwd,
+      path,
+      oldString: z.string(),
+      newString: z.string(),
+    })
+    .strict(),
   z
     .object({
       kind: z.literal('apply_patch'),
@@ -130,6 +157,7 @@ export const FilesystemWorkerOperationSchema = z.union([
       path,
       oldString: z.string(),
       newString: z.string(),
+      observation: z.custom<FileMutationObservation>(isFileMutationObservation).optional(),
     })
     .strict(),
   z
@@ -170,10 +198,20 @@ export const FilesystemWorkerRequestSchema = z
     operation: FilesystemWorkerOperationSchema,
     operationBoundary: OperationBoundarySchema,
     expectedTarget: FilesystemWorkerTargetSchema,
+    hostDirectories: z
+      .object({ workspace: FilesystemTargetIdentitySchema, parent: FilesystemTargetIdentitySchema })
+      .strict()
+      .optional(),
   })
   .strict();
 
 export const FilesystemWorkerResultSchema = z.discriminatedUnion('kind', [
+  z
+    .object({
+      kind: z.enum(['prepare_write', 'prepare_edit']),
+      observation: z.custom<FileMutationObservation>(isFileMutationObservation).optional(),
+    })
+    .strict(),
   readPageSchema.extend({ kind: z.literal('read') }).strict(),
   z
     .object({

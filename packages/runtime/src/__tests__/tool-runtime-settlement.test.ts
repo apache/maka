@@ -188,6 +188,72 @@ describe('ToolRuntime settlement', () => {
     assert.deepEqual(settlement.result, { ok: true });
   });
 
+  for (const failureAt of ['publication', 'execution'] as const) {
+    it(`keeps prepared cleanup ownership when ${failureAt} fails after T1`, async () => {
+      const order: string[] = [];
+      const clientTool: MakaTool = {
+        name: 'client_browser',
+        description: 'client browser',
+        parameters: {},
+        hostAdmission: 'client_capability',
+        prepareExecution: async () => {
+          order.push('prepare');
+          return {
+            execute: () => {
+              order.push('execute');
+              try {
+                throw new Error('execution failed');
+              } finally {
+                order.push('release');
+              }
+            },
+            cancel: () => {
+              order.push('cancel');
+            },
+          };
+        },
+        impl: () => assert.fail('Prepared work must not use the direct implementation'),
+      };
+      const runtime = makeRuntime({
+        readExecutionBoundary: async () => createBypassExecutionBoundary(0),
+        runId: 'run-1',
+        invocationId: 'invocation-1',
+        runtimeCommitSink: {
+          commitToolPrepared: async () => {
+            order.push('T1');
+            return { created: true, runtimeEventSeq: 1 };
+          },
+          commitToolOutcome: async () => ({ created: true, runtimeEventSeq: 2 }),
+        },
+      });
+      const settlement = await runtime.settleToolCall({
+        tool: clientTool,
+        turnId: 'turn-1',
+        stepId: 'step-1',
+        toolCallId: `call-${failureAt}-failure`,
+        input: {},
+        abortSignal: new AbortController().signal,
+        eventSink: {
+          push: (event) => {
+            if (failureAt === 'publication' && event.type === 'tool_start')
+              throw new Error('publication failed');
+          },
+          pushAndWaitUntilConsumed: async () => undefined,
+        },
+      });
+      assert.deepEqual(
+        order,
+        failureAt === 'publication'
+          ? ['prepare', 'T1', 'cancel']
+          : ['prepare', 'T1', 'execute', 'release'],
+      );
+      assert.match(
+        String((settlement.result as { error?: unknown }).error),
+        new RegExp(`${failureAt} failed`, 'u'),
+      );
+    });
+  }
+
   it('cancels prepared Client Capability work when T1 fails', async () => {
     const order: string[] = [];
     const clientTool: MakaTool = {

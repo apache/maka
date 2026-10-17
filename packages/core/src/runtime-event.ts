@@ -34,6 +34,7 @@
  */
 
 import { isWorkHubActionReceipt, type WorkHubActionReceipt } from './workhub-action-result.js';
+import { isFileMutationEvidence, type FileMutationEvidence } from './file-mutation-evidence.js';
 import { isToolCallOutcome } from './tool-result-status.js';
 import { isModelRetryDecision, type ModelRetryDecision } from './model-failure.js';
 
@@ -445,6 +446,8 @@ export interface RuntimeEventToolDispatch {
   recoveryMode: ToolRecoveryMode;
   /** T1-frozen managed workspace mutation identity. */
   managedMutation?: RuntimeEventManagedWorkspaceMutationV2;
+  /** Trusted pre-dispatch observation; does not by itself authorize replay. */
+  fileMutationEvidence?: FileMutationEvidence;
 }
 
 /**
@@ -913,7 +916,7 @@ const RUNTIME_TOOL_DISPATCH_SHAPE = defineObjectShape<RuntimeEventToolDispatch>(
     'canonicalArgsHash',
     'recoveryMode',
   ],
-  ['managedMutation', 'resultProjectionVersion'],
+  ['managedMutation', 'resultProjectionVersion', 'fileMutationEvidence'],
 );
 const RUNTIME_MANAGED_WORKSPACE_MUTATION_SHAPE =
   defineObjectShape<RuntimeEventManagedWorkspaceMutationV2>()(
@@ -1032,6 +1035,27 @@ export function decodeRuntimeEvent(value: unknown): RuntimeEvent {
     throw new Error('Invalid RuntimeEvent schema');
   }
   runtimeHandoffPause(value as unknown as RuntimeEvent);
+  const event = value as unknown as RuntimeEvent;
+  const dispatch = event.actions?.toolDispatch;
+  if (dispatch?.fileMutationEvidence) {
+    const binding = dispatch.fileMutationEvidence.binding;
+    if (
+      dispatch.toolName !==
+        (dispatch.fileMutationEvidence.observation.result.kind === 'write' ? 'Write' : 'Edit') ||
+      dispatch.managedMutation !== undefined ||
+      dispatch.recoveryMode !== 'never_auto_retry' ||
+      binding.sessionId !== event.sessionId ||
+      binding.invocationId !== event.invocationId ||
+      binding.runId !== event.runId ||
+      binding.turnId !== event.turnId ||
+      binding.dispatchEventId !== event.id ||
+      binding.operationId !== dispatch.operationId ||
+      binding.providerToolCallId !== dispatch.providerToolCallId ||
+      binding.canonicalArgsHash !== dispatch.canonicalArgsHash
+    ) {
+      throw new Error('File Write evidence does not match its dispatch');
+    }
+  }
   if (isRecord(value.content) && value.content.kind === 'text') {
     return {
       ...value,
@@ -1438,7 +1462,8 @@ function isRuntimeToolDispatch(value: unknown): value is RuntimeEventToolDispatc
       value.recoveryMode === 'outcome_unknown' ||
       value.recoveryMode === 'never_auto_retry') &&
     (value.managedMutation === undefined ||
-      isRuntimeManagedWorkspaceMutation(value.managedMutation))
+      isRuntimeManagedWorkspaceMutation(value.managedMutation)) &&
+    (value.fileMutationEvidence === undefined || isFileMutationEvidence(value.fileMutationEvidence))
   );
 }
 

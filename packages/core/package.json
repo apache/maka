@@ -18,6 +18,7 @@
     "./runtime-logical-execution": "./dist/runtime-logical-execution.js",
     "./runtime-event": "./dist/runtime-event.js",
     "./tool-args-identity": "./dist/tool-args-identity.js",
+    "./file-mutation-evidence": "./dist/file-mutation-evidence.js",
     "./tool-ledger-scanner": "./dist/tool-ledger-scanner.js",
     "./tool-recovery-fact": "./dist/tool-recovery-fact.js",
     "./tool-recovery-bundle": "./dist/tool-recovery-bundle.js",

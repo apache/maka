@@ -17,10 +17,16 @@
  * under the License.
  */
 
+import {
+  bindFileMutationEvidence,
+  isFileMutationEvidence,
+} from '@maka/core/file-mutation-evidence';
+import { prepareFileMutation } from '../file-mutation-evidence.js';
+import { decodeRuntimeEvent } from '@maka/core/runtime-event';
 import assert from 'node:assert/strict';
 import { readToolResultPage } from '../read-page.js';
 import { createLedgerArchiveResourceReader } from '../ledger-tool-result-archive-reader.js';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -4208,5 +4214,144 @@ function invocationOpenedEvent(run: SeededRun = {}): RuntimeEvent {
     run: identity,
     openedAt: run.openedAt ?? 1,
     opening: invocationOpening(run),
+  });
+}
+
+for (const kind of ['write', 'edit'] as const) {
+  test(`conversation copy rebinds ${kind} evidence without changing its historical observation`, async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-file-evidence-copy-'));
+    const runStore = createSqliteAgentRunStore(root);
+    const runtimeEventStore = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
+    try {
+      await runStore.ready?.();
+      const path = join(root, 'notes.txt');
+      await writeFile(path, 'before');
+      const mutation =
+        kind === 'write'
+          ? { kind, content: 'after' }
+          : { kind, oldString: 'before', newString: 'after' };
+      const observation = await prepareFileMutation(root, path, mutation);
+      assert.ok(observation);
+      const toolName = kind === 'write' ? 'Write' : 'Edit';
+      const args =
+        kind === 'write'
+          ? { path, content: 'after' }
+          : { path, old_string: 'before', new_string: 'after' };
+      const dispatch = runtimeEvent({
+        id: 'event-dispatch',
+        ts: 3,
+        actions: {
+          toolDispatch: {
+            protocol: 't1_after_preflight_v1',
+            operationId: 'operation-1',
+            providerToolCallId: 'provider-call-1',
+            toolName,
+            canonicalArgsHash: canonicalToolArgsHash(toolName, args),
+            recoveryMode: 'never_auto_retry',
+          },
+        },
+        refs: { operationId: 'operation-1', toolCallId: 'provider-call-1' },
+      });
+      const fact = dispatch.actions!.toolDispatch!;
+      fact.fileMutationEvidence = bindFileMutationEvidence(observation, {
+        sessionId: dispatch.sessionId,
+        invocationId: dispatch.invocationId,
+        runId: dispatch.runId,
+        turnId: dispatch.turnId,
+        operationId: fact.operationId,
+        dispatchEventId: dispatch.id,
+        providerToolCallId: fact.providerToolCallId,
+        canonicalArgsHash: fact.canonicalArgsHash,
+      });
+      const sourceEvidence = structuredClone(fact.fileMutationEvidence);
+      const events = [
+        invocationOpenedEvent({
+          runId: 'run-source',
+          invocationId: 'invocation-source',
+          turnId: 'turn-1',
+          cwd: root,
+        }),
+        runtimeEvent({
+          id: 'event-user',
+          role: 'user',
+          author: 'user',
+          content: { kind: 'text', text: 'copy files' },
+        }),
+        runtimeEvent({
+          id: 'event-call',
+          ts: 2,
+          role: 'model',
+          author: 'agent',
+          content: {
+            kind: 'function_call',
+            id: 'provider-call-1',
+            name: toolName,
+            args,
+          },
+        }),
+        dispatch,
+        runtimeEvent({
+          id: 'event-outcome',
+          ts: 4,
+          role: 'tool',
+          author: 'tool',
+          content: {
+            kind: 'function_response',
+            id: 'provider-call-1',
+            name: toolName,
+            result: { kind: 'text', text: 'ok' },
+            isError: false,
+          },
+          refs: { operationId: 'operation-1', toolCallId: 'provider-call-1' },
+        }),
+        runtimeEvent({ id: 'event-terminal', ts: 5, status: 'completed' }),
+      ];
+      await runtimeEventStore.importConversationCopyRuntimeEvents('session-source', [
+        { runId: 'run-source', events },
+      ]);
+      const source = await new RuntimeReadModel({ runtimeEventStore }).getSessionView(
+        'session-source',
+      );
+      await cloneConversationRuntimeLedger({
+        plan: await prepareTestCopyPlan(source, source.messages, runStore, runtimeEventStore),
+        copiedMessages: source.messages,
+        referenceMap: {
+          sourceSessionId: 'session-source',
+          targetSessionId: 'session-target',
+          artifactIds: new Map(),
+          relativePaths: new Map(),
+        },
+        runStore,
+        runtimeEventStore,
+        newId: () => crypto.randomUUID(),
+      });
+      const [run] = await runtimeEventStore.listSessionInvocations('session-target');
+      assert.ok(run);
+      const copied = await runtimeEventStore.readRuntimeEvents('session-target', run.runId);
+      const target = copied.find((event) => event.actions?.toolDispatch)!;
+      const evidence = target.actions!.toolDispatch!.fileMutationEvidence!;
+      assert.ok(isFileMutationEvidence(evidence));
+      assert.deepEqual(evidence.observation, sourceEvidence.observation);
+      assert.notEqual(evidence.digest, sourceEvidence.digest);
+      assert.equal(evidence.binding.sessionId, 'session-target');
+      assert.equal(evidence.binding.runId, run.runId);
+      assert.equal(evidence.binding.invocationId, target.invocationId);
+      assert.equal(evidence.binding.dispatchEventId, target.id);
+      assert.equal(evidence.binding.operationId, target.actions!.toolDispatch!.operationId);
+      assert.notEqual(evidence.binding.operationId, sourceEvidence.binding.operationId);
+      assert.equal(target.actions!.toolDispatch!.recoveryMode, 'never_auto_retry');
+      assert.doesNotThrow(() => decodeRuntimeEvent(target));
+      await runtimeEventStore.rebuildToolProjectionsFromRuntimeEvents();
+      assert.deepEqual(
+        (await runtimeEventStore.readRuntimeEvents('session-source', 'run-source')).find(
+          (event) => event.actions?.toolDispatch,
+        )!.actions!.toolDispatch!.fileMutationEvidence,
+        sourceEvidence,
+      );
+    } finally {
+      runtimeEventStore.close();
+      runStore.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
   });
 }

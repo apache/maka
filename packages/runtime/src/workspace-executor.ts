@@ -19,6 +19,8 @@
 
 import { promises as fs } from 'node:fs';
 import { exec } from 'node:child_process';
+import type { FileMutationObservation, FileMutation } from '@maka/core/file-mutation-evidence';
+import { prepareFileMutation, executePreparedFileMutation } from './file-mutation-evidence.js';
 import { globFiles } from './glob-search.js';
 import { isAbsolute, resolve } from 'node:path';
 import {
@@ -163,6 +165,22 @@ export interface WorkspaceReadModifyWriteResult {
 
 export interface WorkspaceReadModifyWriteExecutor {
   readModifyWrite(input: WorkspaceReadModifyWriteInput): Promise<WorkspaceReadModifyWriteResult>;
+}
+
+export interface WorkspacePreparedMutationExecutor {
+  prepareMutation(input: {
+    cwd: string;
+    path: string;
+    mutation: FileMutation;
+    scope: WorkspacePathScope;
+  }): Promise<FileMutationObservation | undefined>;
+  executePreparedMutation(input: {
+    cwd: string;
+    path: string;
+    mutation: FileMutation;
+    scope: WorkspacePathScope;
+    observation: FileMutationObservation;
+  }): Promise<FileMutationObservation['result']>;
 }
 
 /**
@@ -349,6 +367,24 @@ export class LocalWorkspaceExecutor implements WorkspaceExecutor {
       path: input.path,
       bytes: Buffer.byteLength(input.content, 'utf8'),
     };
+  }
+
+  async prepareMutation(
+    input: Parameters<WorkspacePreparedMutationExecutor['prepareMutation']>[0],
+  ): Promise<FileMutationObservation | undefined> {
+    const cwd = await fs.realpath(input.cwd);
+    const { path } = await canonicalPathInScope(cwd, input.path, 'Write', input.scope);
+    // Match the local executor's binary/image result policy.
+    if (isSupportedImagePath(path)) return undefined;
+    return prepareFileMutation(cwd, path, input.mutation);
+  }
+
+  async executePreparedMutation(
+    input: Parameters<WorkspacePreparedMutationExecutor['executePreparedMutation']>[0],
+  ): Promise<FileMutationObservation['result']> {
+    const cwd = await fs.realpath(input.cwd);
+    const { path } = await canonicalPathInScope(cwd, input.path, 'Write', input.scope);
+    return executePreparedFileMutation(cwd, path, input.mutation, input.observation);
   }
 
   async readModifyWrite(
