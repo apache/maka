@@ -35,6 +35,7 @@ import {
   type SubscriptionFrame,
 } from '@maka/runtime-host/protocol';
 import { resolveRuntimeHostCliTarget } from '../runtime-host-cli-context.js';
+import { RunQuestionAvailable } from '../run-session-result.js';
 import { createRuntimeHostRunContext, runRuntimeHostTextCli } from '../runtime-host-run-command.js';
 import type { RuntimeHostMakaSessionDriver } from '../runtime-host-session-driver.js';
 import type { MakaRunContextInput, MakaRunOutcome } from '../run-command-core.js';
@@ -548,7 +549,7 @@ describe('Runtime Host maka run adapter', () => {
     );
 
     assert.equal(exitCode, 1);
-    assert.equal(stderr.join(''), 'maka run: Agent Graph final Turn failed\n');
+    assert.equal(stderr.join(''), 'maka run: Turn failed\n');
   });
 
   test('waits for Host-started graph supervisor Turns before returning', async () => {
@@ -903,7 +904,7 @@ describe('Runtime Host maka run adapter', () => {
     assert.deepEqual(fixture.graphStops, [session.id, session.id]);
   });
 
-  test('fails and stops instead of waiting for an interactive question', async () => {
+  test('returns an AskUser handoff without stopping its Host Turn', async () => {
     const fixture = runFixture({
       turnEvents: questionEvents('turn-1'),
       pendingInteractions: [pendingQuestion('turn-1')],
@@ -923,11 +924,75 @@ describe('Runtime Host maka run adapter', () => {
           text: 'ask me something',
         }),
       ),
-      new Error('interactive user questions are unavailable in non-interactive mode'),
+      RunQuestionAvailable,
     );
-    assert.deepEqual(fixture.exactTurnStops, [
-      { sessionId: session.id, turnId: 'turn-1', runId: 'run-1' },
-    ]);
+    assert.deepEqual(fixture.exactTurnStops, []);
+  });
+
+  test('public run returns questions with exit 0 and keeps the original Turn waiting', async () => {
+    const fixture = runFixture({
+      turnEvents: questionEvents('turn-1'),
+      pendingInteractions: [pendingQuestion('turn-1')],
+      pendingAfterTurnStarts: true,
+    });
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const code = await runFixtureCommand(
+      fixture,
+      ['ask something'],
+      (text) => stdout.push(text),
+      (text) => stderr.push(text),
+    );
+    assert.equal(code, 0, stderr.join(''));
+    assert.equal(JSON.parse(stdout.join('')).status, 'needs_input');
+    assert.equal(JSON.parse(stdout.join('')).sessionId, 'session-created');
+    assert.ok(JSON.parse(stdout.join('')).questions.length);
+    assert.deepEqual(fixture.exactTurnStops, []);
+    assert.deepEqual(stderr, []);
+  });
+
+  test('no-wait returns after admission instead of consuming the event stream', async () => {
+    const fixture = runFixture({
+      turnEvents: (async function* (): AsyncIterable<SessionEvent> {
+        throw new Error('no-wait must not consume events');
+      })(),
+    });
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const code = await runFixtureCommand(
+      fixture,
+      ['execute in background', '--no-wait'],
+      (text) => stdout.push(text),
+      (text) => stderr.push(text),
+    );
+    assert.equal(code, 0, stderr.join(''));
+    assert.deepEqual(JSON.parse(stdout.join('')), {
+      sessionId: 'session-created',
+      status: 'running',
+      submission: 'started',
+    });
+    assert.deepEqual(fixture.exactTurnStops, []);
+  });
+
+  test('preserves the concrete provider failure stored with a Turn', async () => {
+    const messages = structuredClone(graphMessages());
+    const terminal = messages.find(
+      (message) => message.type === 'turn_state' && message.turnId === 'turn-2',
+    );
+    assert.ok(terminal && terminal.type === 'turn_state');
+    terminal.status = 'failed';
+    terminal.errorClass = 'quota_exhausted';
+    terminal.failureMessage = 'Selected provider has no remaining quota';
+    const fixture = runFixture({ graph: true, finalMessages: messages });
+    const stderr: string[] = [];
+    const code = await runFixtureCommand(
+      fixture,
+      ['execute', '--graph'],
+      () => {},
+      (text) => stderr.push(text),
+    );
+    assert.equal(code, 1);
+    assert.match(stderr.join(''), /Selected provider has no remaining quota/);
   });
 
   test('fails and stops instead of dropping an interactive form', async () => {

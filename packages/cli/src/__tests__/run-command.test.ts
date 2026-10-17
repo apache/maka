@@ -39,6 +39,108 @@ describe('maka run argument parsing', () => {
     assert.equal(parseMakaRunArgs(['x', '--max-steps', '1.5']).kind, 'error');
   });
 
+  test('parses session controls while preserving the legacy resume selector', () => {
+    const parsed = parseMakaRunArgs(['--session', 'session-1', '--resume', '--wait', '--json']);
+    assert.equal(parsed.kind, 'run');
+    if (parsed.kind !== 'run') return;
+    assert.equal(parsed.options.sessionId, 'session-1');
+    assert.equal(parsed.options.resumeExecution, true);
+    assert.equal(parsed.options.resumeId, undefined);
+    assert.deepEqual(parseMakaRunArgs(['--session', 'session-1', '--answer', '["Yes",null]']), {
+      kind: 'run',
+      options: { stdinPrompt: false, sessionId: 'session-1', answers: ['Yes', null] },
+    });
+    for (const [flag, decision] of [
+      ['--approve', 'allow'],
+      ['--deny', 'deny'],
+    ] as const) {
+      const parsedDecision = parseMakaRunArgs(['--session', 's', flag, '--wait', '--json']);
+      assert.equal(parsedDecision.kind, 'run');
+      if (parsedDecision.kind === 'run')
+        assert.equal(parsedDecision.options.sandboxDecision, decision);
+    }
+    for (const args of [
+      ['--status'],
+      ['--stop'],
+      ['--approve'],
+      ['--deny'],
+      ['--session', 's', '--approve', '--deny'],
+      ['--session', 's', '--approve', '--answer', '["Yes"]'],
+      ['--session', 's', '--approve', '--yolo'],
+      ['--session', 's', '--deny', '--yolo'],
+      ['--session', 's', '--approve', 'prompt'],
+      ['--session', 's', '--stop', '--wait'],
+      ['--session', 's', '--stop', '--no-wait'],
+      ['--session', 's', '--stop', '--answer', '["Yes"]'],
+      ['--session', 's', '--answer', 'yes'],
+      ['--session', 's', '--answer', '[1]'],
+      ['--session', 's', '--status', '--result'],
+      ['--session', 's', 'x', '--queue', '--steer'],
+      ['x', '--wait', '--no-wait'],
+      ['--session', 's', '--queue'],
+      ['--session', 's', '--resume', 'extra'],
+      ['x', '--graph', '--no-wait'],
+    ])
+      assert.equal(parseMakaRunArgs(args).kind, 'error', args.join(' '));
+  });
+
+  test('session queries bypass prompt/stdin and model execution preparation', async () => {
+    const stdout: string[] = [];
+    const exit = await runMakaTextCliCore(
+      ['--session', 's', '--status'],
+      {
+        listSessions: async () => {
+          throw new Error('must not list model-compatible Sessions');
+        },
+        createContext: async () => {
+          throw new Error('provider is out of quota');
+        },
+        runSession: async (options) => ({ sessionId: options.sessionId!, status: 'running' }),
+      },
+      {
+        stdinIsTTY: () => false,
+        readStdin: async () => {
+          throw new Error('must not read stdin');
+        },
+        writeStdout: (text) => stdout.push(text),
+      },
+    );
+    assert.equal(exit, 0);
+    assert.deepEqual(JSON.parse(stdout.join('')), { sessionId: 's', status: 'running' });
+  });
+
+  test('successful status and stop operations do not inherit the child failure exit code', async () => {
+    for (const [flags, expected] of [
+      [[], 0],
+      [['--status'], 0],
+      [['--stop'], 0],
+      [['--result'], 1],
+      [['--wait'], 1],
+      [['--approve'], 1],
+      [['--deny'], 1],
+    ] as const) {
+      const exit = await runMakaTextCliCore(
+        ['--session', 's', ...flags],
+        {
+          createContext: async () => {
+            throw new Error('must not prepare execution');
+          },
+          listSessions: async () => [],
+          runSession: async () => ({ sessionId: 's', status: 'failed' }),
+        },
+        {
+          stdinIsTTY: () => false,
+          readStdin: async () => {
+            throw new Error('must not read stdin');
+          },
+          writeStdout: () => {},
+          writeStderr: () => {},
+        },
+      );
+      assert.equal(exit, expected, flags.join(' '));
+    }
+  });
+
   test('accepts only the explicit non-interactive sandbox bypass flag', () => {
     assert.deepEqual(parseMakaRunArgs(['run tools', '--yolo']), {
       kind: 'run',

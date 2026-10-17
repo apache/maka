@@ -17,6 +17,11 @@
  * under the License.
  */
 
+import {
+  RunQuestionAvailable,
+  RunSessionInterrupted,
+  type MakaRunSessionResult,
+} from './run-session-result.js';
 import { randomUUID } from 'node:crypto';
 import { realpath, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
@@ -32,6 +37,17 @@ import { sessionEventSandboxBoundaryFailureReason } from './sandbox-boundary-fai
 import { resolveMakaWorkspaceRoot } from './workspace-root.js';
 
 export interface MakaRunOptions {
+  sessionId?: string;
+  wait?: true;
+  noWait?: true;
+  json?: true;
+  status?: true;
+  result?: true;
+  resumeExecution?: true;
+  stop?: true;
+  sandboxDecision?: 'allow' | 'deny';
+  placement?: 'current_turn' | 'next_turn';
+  answers?: readonly (string | null)[];
   prompt?: string;
   stdinPrompt: boolean;
   cwd?: string;
@@ -78,13 +94,15 @@ export interface MakaRunContext {
 
 export interface MakaRunOutcome {
   outcomeId: string;
-  status: 'completed' | 'failed';
+  status: 'completed' | 'failed' | 'running';
   finalOutput?: string;
   failure?: { class: string; message?: string };
   sandboxBoundary: 'none' | 'unresolved';
 }
 
 export interface MakaRunContextInput {
+  noWait?: boolean;
+  allowDetach?: boolean;
   workspaceRoot: string;
   cwd: string;
   requestedConnectionSlug?: string;
@@ -99,6 +117,7 @@ export interface MakaRunContextInput {
 }
 
 export interface MakaRunDeps {
+  runSession?(options: MakaRunOptions, env: MakaRunEnvironmentDeps): Promise<MakaRunSessionResult>;
   createContext(input: MakaRunContextInput): Promise<MakaRunContext>;
   listSessions(workspaceRoot: string, hostProfileId?: string): Promise<SessionSummary[]>;
   workspaceRoot(): string;
@@ -114,10 +133,12 @@ export interface MakaRunDeps {
   newId(): string;
 }
 
-export type MakaRunAdapter = Pick<MakaRunDeps, 'createContext' | 'listSessions'>;
+export type MakaRunAdapter = Pick<MakaRunDeps, 'createContext' | 'listSessions' | 'runSession'>;
 export type MakaRunEnvironmentDeps = Omit<MakaRunDeps, keyof MakaRunAdapter>;
 
 const VALUE_FLAGS = new Set([
+  'session',
+  'answer',
   'cwd',
   'connection',
   'model',
@@ -130,13 +151,29 @@ const VALUE_FLAGS = new Set([
 ]);
 
 const REPEATABLE_VALUE_FLAGS = new Set<string>();
-const BOOLEAN_FLAGS = new Set(['continue', 'yolo', 'graph']);
+const BOOLEAN_FLAGS = new Set([
+  'continue',
+  'yolo',
+  'graph',
+  'wait',
+  'no-wait',
+  'json',
+  'status',
+  'result',
+  'queue',
+  'steer',
+  'stop',
+  'approve',
+  'deny',
+]);
 
 export function parseMakaRunArgs(argv: readonly string[]): ParseMakaRunArgsResult {
   const positional: string[] = [];
   const flags = new Map<string, string>();
   const booleanFlags = new Set<string>();
   let literal = false;
+  const optionArgs = argv.includes('--') ? argv.slice(0, argv.indexOf('--')) : argv;
+  const selectsSession = optionArgs.includes('--session');
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]!;
     if (!literal && (arg === '--help' || arg === '-h')) return { kind: 'help' };
@@ -146,7 +183,7 @@ export function parseMakaRunArgs(argv: readonly string[]): ParseMakaRunArgsResul
     }
     if (!literal && arg.startsWith('--')) {
       const name = arg.slice(2);
-      if (BOOLEAN_FLAGS.has(name)) {
+      if (BOOLEAN_FLAGS.has(name) || (name === 'resume' && selectsSession)) {
         if (booleanFlags.has(name)) return { kind: 'error', message: `option repeated: ${arg}` };
         booleanFlags.add(name);
         continue;
@@ -171,6 +208,76 @@ export function parseMakaRunArgs(argv: readonly string[]): ParseMakaRunArgsResul
 
   if (positional.length > 1) {
     return { kind: 'error', message: 'maka run accepts at most one positional prompt' };
+  }
+  const sessionId = flags.get('session');
+  const resumeExecution = booleanFlags.has('resume');
+  if (sessionId !== undefined && !sessionId.trim())
+    return { kind: 'error', message: '--session requires a non-empty Session ID' };
+  if (booleanFlags.has('wait') && booleanFlags.has('no-wait')) {
+    return { kind: 'error', message: '--wait and --no-wait cannot be used together' };
+  }
+  if (booleanFlags.has('queue') && booleanFlags.has('steer')) {
+    return { kind: 'error', message: '--queue and --steer cannot be used together' };
+  }
+  const actions =
+    Number(booleanFlags.has('status')) +
+    Number(booleanFlags.has('result')) +
+    Number(flags.has('answer')) +
+    Number(resumeExecution) +
+    Number(booleanFlags.has('stop')) +
+    Number(booleanFlags.has('approve')) +
+    Number(booleanFlags.has('deny'));
+  if (actions > 1)
+    return {
+      kind: 'error',
+      message: 'choose one of --status, --result, --answer, --approve, --deny, --resume or --stop',
+    };
+  if ((booleanFlags.has('approve') || booleanFlags.has('deny')) && booleanFlags.has('yolo'))
+    return {
+      kind: 'error',
+      message:
+        '--approve/--deny answer only the current sandbox request; do not combine with --yolo',
+    };
+  if (!sessionId && (actions || booleanFlags.has('queue') || booleanFlags.has('steer'))) {
+    return { kind: 'error', message: 'session operations require --session <session-id>' };
+  }
+  if (sessionId && (booleanFlags.has('continue') || flags.has('project'))) {
+    return {
+      kind: 'error',
+      message: '--session cannot be combined with --continue or --project',
+    };
+  }
+  if (actions && positional.length)
+    return { kind: 'error', message: 'session actions do not accept a prompt' };
+  if ((booleanFlags.has('queue') || booleanFlags.has('steer')) && (!positional.length || actions)) {
+    return { kind: 'error', message: '--queue and --steer require a prompt' };
+  }
+  if (
+    (booleanFlags.has('status') || booleanFlags.has('result') || booleanFlags.has('stop')) &&
+    (booleanFlags.has('wait') || booleanFlags.has('no-wait'))
+  ) {
+    return { kind: 'error', message: '--status, --result and --stop do not accept wait options' };
+  }
+  if (booleanFlags.has('graph') && booleanFlags.has('no-wait')) {
+    return { kind: 'error', message: '--graph must wait for its final result' };
+  }
+  let answers: (string | null)[] | undefined;
+  if (flags.has('answer')) {
+    try {
+      const value: unknown = JSON.parse(flags.get('answer')!);
+      if (
+        !Array.isArray(value) ||
+        value.length === 0 ||
+        value.some((v) => v !== null && typeof v !== 'string')
+      )
+        throw new Error();
+      answers = value;
+    } catch {
+      return {
+        kind: 'error',
+        message: '--answer expects a JSON array of strings or null, e.g. ["Yes"]',
+      };
+    }
   }
   const prompt = positional[0];
   const timeout = flags.get('timeout');
@@ -205,6 +312,25 @@ export function parseMakaRunArgs(argv: readonly string[]): ParseMakaRunArgsResul
   return {
     kind: 'run',
     options: {
+      ...(sessionId !== undefined ? { sessionId } : {}),
+      ...(booleanFlags.has('wait') ? { wait: true as const } : {}),
+      ...(booleanFlags.has('no-wait') ? { noWait: true as const } : {}),
+      ...(booleanFlags.has('json') ? { json: true as const } : {}),
+      ...(booleanFlags.has('status') ? { status: true as const } : {}),
+      ...(booleanFlags.has('result') ? { result: true as const } : {}),
+      ...(resumeExecution ? { resumeExecution: true as const } : {}),
+      ...(booleanFlags.has('stop') ? { stop: true as const } : {}),
+      ...(booleanFlags.has('approve')
+        ? { sandboxDecision: 'allow' as const }
+        : booleanFlags.has('deny')
+          ? { sandboxDecision: 'deny' as const }
+          : {}),
+      ...(answers ? { answers } : {}),
+      ...(booleanFlags.has('steer')
+        ? { placement: 'current_turn' as const }
+        : booleanFlags.has('queue')
+          ? { placement: 'next_turn' as const }
+          : {}),
       ...(prompt !== undefined && prompt !== '-' ? { prompt } : {}),
       stdinPrompt: prompt === '-',
       ...(flags.get('cwd') !== undefined ? { cwd: flags.get('cwd') } : {}),
@@ -237,6 +363,30 @@ export async function runMakaTextCliCore(
   if (parsed.kind === 'error') {
     deps.writeStderr(`maka run: ${parsed.message}\n\n${makaRunHelpText(deps.cliCommand())}\n`);
     return 2;
+  }
+
+  if (parsed.options.sessionId) {
+    try {
+      if (!deps.runSession)
+        throw new Error('Session operations are unavailable in this CLI runtime');
+      const options = { ...parsed.options };
+      // Queries and answers must not block reading an unrelated stdin stream.
+      if (options.prompt !== undefined || options.stdinPrompt)
+        options.prompt = await resolveRunPrompt(options, deps);
+      const result = await deps.runSession(options, deps);
+      writeSessionResult(result, deps, options.json === true);
+      const returnsTaskOutcome =
+        options.prompt !== undefined ||
+        options.answers !== undefined ||
+        options.resumeExecution ||
+        options.sandboxDecision !== undefined ||
+        options.wait ||
+        options.result;
+      return result.status === 'failed' && returnsTaskOutcome ? 1 : 0;
+    } catch (error) {
+      deps.writeStderr(`maka run: ${errorMessage(error)}\n`);
+      return error instanceof RunSessionInterrupted ? 130 : 1;
+    }
   }
 
   let prompt: string;
@@ -279,6 +429,7 @@ export async function runMakaTextCliCore(
   let context: MakaRunContext;
   try {
     context = await deps.createContext({
+      ...(parsed.options.noWait ? { noWait: true } : {}),
       workspaceRoot,
       cwd: selection.cwd,
       ...(selection.kind === 'existing' || parsed.options.connection
@@ -351,6 +502,7 @@ export async function runMakaTextCliCore(
   let interrupted = false;
   let timedOut = false;
   let streamFailed = false;
+  let question: RunQuestionAvailable | undefined;
   let stopPromise: Promise<void> | undefined;
   let resolveStopSignal: (() => void) | undefined;
   const stopSignal = new Promise<void>((resolve) => {
@@ -416,10 +568,11 @@ export async function runMakaTextCliCore(
     }
     await stopPromise;
   } catch (error) {
-    streamFailed = true;
+    question = error instanceof RunQuestionAvailable ? error : undefined;
+    streamFailed = !question;
     graphActivity?.release();
     await stopPromise?.catch(() => undefined);
-    if (!interrupted && !timedOut) {
+    if (!interrupted && !timedOut && !question) {
       deps.writeStderr(`maka run: ${errorMessage(error)}\n`);
     }
   } finally {
@@ -433,19 +586,45 @@ export async function runMakaTextCliCore(
     deps.writeStderr(`maka run: timed out after ${parsed.options.timeoutMs}ms\n`);
     return 1;
   }
+  if (question) {
+    writeSessionResult(question.result(), deps, true);
+    return 0;
+  }
   if (streamFailed) return 1;
   if (boundaryFailure) return 1;
   if (!outcome) {
     deps.writeStderr('maka run: runtime produced no outcome\n');
     return 1;
   }
+  if (outcome.status === 'running') {
+    writeSessionResult(
+      { sessionId: session.id, status: 'running', submission: 'started' },
+      deps,
+      true,
+    );
+    return 0;
+  }
   if (outcome.status !== 'completed' || outcome.finalOutput === undefined) {
     const detail = outcome.failure?.message ?? outcome.failure?.class ?? 'runtime failure';
     deps.writeStderr(`maka run: ${detail}\n`);
     return 1;
   }
-  deps.writeStdout(withTrailingNewline(outcome.finalOutput));
+  writeSessionResult(
+    { sessionId: session.id, status: 'completed', finalOutput: outcome.finalOutput },
+    deps,
+    parsed.options.json === true,
+  );
   return 0;
+}
+
+export function writeSessionResult(
+  result: MakaRunSessionResult,
+  deps: Pick<MakaRunDeps, 'writeStdout' | 'writeStderr'>,
+  json: boolean,
+): void {
+  if (json || result.status !== 'completed') deps.writeStdout(`${JSON.stringify(result)}\n`);
+  else deps.writeStdout(withTrailingNewline(result.finalOutput ?? ''));
+  if (result.status === 'failed' && result.error) deps.writeStderr(`maka run: ${result.error}\n`);
 }
 
 async function resolveRunPrompt(options: MakaRunOptions, deps: MakaRunDeps): Promise<string> {
@@ -483,11 +662,29 @@ function makaRunHelpText(cliCommand: string): string {
     '  --thinking <level>        off|on|minimal|low|medium|high|xhigh|max|default',
     '  --timeout <seconds>       Invocation timeout',
     '  --max-steps <count>       Tool-step cap',
-    '  --yolo                    Give this task full access to your files and network',
-    '  --resume <session-id>     Continue an explicit compatible task',
+    '  --yolo                    Grant full access; Session controls otherwise inherit saved access',
+    '  --session <session-id>    Select a Session (without a prompt: show its status)',
+    '  --wait                    Wait for this message/current Turn; return input/approval early',
+    '  --no-wait                 Submit and return (Host-owned execution only)',
+    '  --status                  Read current Session status without executing',
+    '  --result                  Read the latest Turn result without waiting',
+    '  --stop                    Request stop for the current Turn (no --yolo needed)',
+    '  --answer <json-array>     Answer the current AskUser, e.g. ["Yes",null]',
+    '  --approve                 Approve the single pending sandbox expansion',
+    '  --deny                    Deny the single pending sandbox expansion',
+    '  --queue                   Queue this prompt as its own next Turn (default)',
+    '  --steer                   Add this prompt to the current execution',
+    '  --json                    Return a structured result, including the Session ID',
+    '  --session <id> --resume   Safely resume stopped execution',
+    '  --resume <session-id>     Legacy Session selector (prefer --session)',
     '  --continue                Continue the latest compatible task for cwd',
     '  --graph                   Run this turn in Graph Mode and wait for graph completion',
     '  -h, --help                Show help',
+    '',
+    'Session controls inherit saved permissions; --yolo explicitly grants full access.',
+    '--status reports the execution boundary; a read-only prompt does not restrict permissions.',
+    'Legacy --resume <id> still requires --yolo for a full-access Session.',
+    '--approve/--deny decide a sandbox request without changing the Session to full access.',
   ].join('\n');
 }
 
