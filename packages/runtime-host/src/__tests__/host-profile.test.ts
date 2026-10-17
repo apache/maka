@@ -39,6 +39,7 @@ import {
   RUNTIME_HOST_PLAINTEXT_ACKNOWLEDGEMENT,
   RuntimeHostProfileConnectionError,
   sameRemoteRuntimeHostProfileTarget,
+  sameResolvedRuntimeHostProfileTarget,
   type RemoteRuntimeHostProfile,
   type RuntimeHostProfileCredential,
   type RuntimeHostProfileCredentialStore,
@@ -68,6 +69,57 @@ afterEach(async () => {
 });
 
 describe('Runtime Host profiles', () => {
+  test('WSL Node recovery persists only the current operator binding', async () => {
+    const catalog = createFileRuntimeHostProfileCatalog(await profilePath(), memoryCredentials());
+    const profile = decodeEnvironmentRuntimeHostProfile({
+      id: 'ubuntu',
+      name: 'Ubuntu',
+      kind: 'environment',
+      provider: { kind: 'wsl', distribution: 'Ubuntu' },
+      rootId: ROOT_A,
+      operator: OPERATOR,
+    });
+    await catalog.create(profile);
+    const replacement = { ...OPERATOR, nodePath: '/new/node' };
+    assert.equal(
+      sameResolvedRuntimeHostProfileTarget(
+        { profile },
+        { profile: { ...profile, operator: replacement } },
+      ),
+      true,
+    );
+    assert.equal(
+      sameResolvedRuntimeHostProfileTarget(
+        { profile },
+        {
+          profile: { ...profile, operator: { ...replacement, modulePath: '/other/operator.mjs' } },
+        },
+      ),
+      false,
+    );
+    assert.equal(await catalog.updateEnvironmentOperatorIfCurrent(profile, replacement), true);
+    assert.deepEqual((await catalog.resolve('ubuntu')).profile, {
+      ...profile,
+      operator: replacement,
+    });
+    assert.equal(
+      await catalog.updateEnvironmentOperatorIfCurrent(profile, {
+        ...OPERATOR,
+        nodePath: '/stale/node',
+      }),
+      false,
+    );
+    await catalog.remove('ubuntu');
+    assert.equal(
+      await catalog.updateEnvironmentOperatorIfCurrent(
+        { ...profile, operator: replacement },
+        OPERATOR,
+      ),
+      false,
+    );
+    assert.equal((await catalog.read()).profiles.length, 0);
+  });
+
   test('persists WSL environments without projecting a remote credential', async () => {
     const path = await profilePath();
     const catalog = createFileRuntimeHostProfileCatalog(path, memoryCredentials());

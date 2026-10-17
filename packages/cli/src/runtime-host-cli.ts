@@ -62,6 +62,12 @@ export interface RuntimeHostExpectedHost {
 
 export type RuntimeHostCliCommand =
   | {
+      kind: 'runtime-host-wsl-node-repair';
+      rootId: string;
+      expectedNodePath: string;
+      expectedModulePath: string;
+    }
+  | {
       kind: 'runtime-host-managed-activate';
       rootId: string;
       framed: true;
@@ -398,6 +404,7 @@ export function parseRuntimeHostCommand(
   if ((argv[1] === '--help' || argv[1] === '-h') && isRuntimeHostHelpTopic(argv[0])) {
     return { kind: 'help', text: runtimeHostCommandHelpText(cliCommand, argv[0]) };
   }
+  if (argv[0] === 'repair-wsl-node') return parseWslNodeRepair(argv.slice(1));
   if (argv[0] === 'activate' || argv[0] === 'connect') {
     return parseManagedRootFramedCommand(argv[0], argv.slice(1));
   }
@@ -415,6 +422,35 @@ export function parseRuntimeHostCommand(
   }
   if (argv[0] === 'profile') return parseProfileCommand(argv.slice(1));
   return error(`Unexpected runtime-host command: ${argv[0]}`);
+}
+
+function parseWslNodeRepair(argv: string[]): RuntimeHostCliCommand {
+  const values = new Map<string, string>();
+  for (let i = 0; i < argv.length; i += 2) {
+    const key = argv[i]!;
+    const value = argv[i + 1];
+    if (
+      !['--root-id', '--expected-node-path', '--expected-module-path'].includes(key) ||
+      values.has(key) ||
+      value === undefined
+    )
+      return error('Invalid repair-wsl-node options');
+    values.set(key, value);
+  }
+  const rootId = values.get('--root-id');
+  const expectedNodePath = values.get('--expected-node-path');
+  const expectedModulePath = values.get('--expected-module-path');
+  if (
+    !rootId ||
+    !/^[a-f0-9]{64}$/u.test(rootId) ||
+    !expectedNodePath ||
+    !expectedModulePath ||
+    !isSafeAbsolutePath(expectedNodePath) ||
+    !isSafeAbsolutePath(expectedModulePath)
+  ) {
+    return error('repair-wsl-node requires a root identity and absolute Node and operator paths');
+  }
+  return { kind: 'runtime-host-wsl-node-repair', rootId, expectedNodePath, expectedModulePath };
 }
 
 function parseManagedRootFramedCommand(

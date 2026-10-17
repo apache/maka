@@ -55,6 +55,7 @@ import {
   LOCAL_RUNTIME_HOST_PROFILE,
   loadOrCreateRuntimeHostClientInstanceId,
   listRuntimeHostWslDistributions,
+  resolveRuntimeHostWslNodeOperator,
   runtimeHostProfileAccess,
   RuntimeHostProfileConnectionError,
 } from "@maka/runtime-host/client";
@@ -221,6 +222,7 @@ import {
   createDesktopRuntimeHostSshTerminal,
 } from "./runtime-host-ssh-terminal.js";
 import {
+  recoverDesktopRuntimeHostWslNode,
   runDesktopRuntimeHostWslManagement,
   runDesktopRuntimeHostWslSetup,
 } from './runtime-host-wsl-controller.js';
@@ -396,6 +398,23 @@ const runtimeHostSetupPackage = createRuntimeHostSetupPackageResolver({
   appPath: app.getAppPath(),
   environment: process.env,
 });
+const recoverMissingWslNode: import('@maka/runtime-host/client').RuntimeHostWslNodeRecovery = async (input) => {
+  const repair: import('@maka/runtime-host/client').RuntimeHostWslNodeRecovery = async (target) => {
+    const setupPackage = await runtimeHostSetupPackage.resolve('none', target.signal);
+    const recovered = await recoverDesktopRuntimeHostWslNode({ ...target, setupPackage });
+    await runtimeHostProfileService.recordRecoveredWslNode(target, recovered);
+    return recovered.operator;
+  };
+  // An existing manager may still hold the pre-repair profile snapshot.
+  const current = (await runtimeHostProfileCatalog.read()).profiles.find((profile) =>
+    profile.kind === 'environment' && profile.rootId === input.rootId &&
+    profile.provider.distribution === input.distribution && profile.operator.kind === 'node' &&
+    input.operator.kind === 'node' && profile.operator.modulePath === input.operator.modulePath);
+  if (current?.kind === 'environment') {
+    return resolveRuntimeHostWslNodeOperator({ ...input, operator: current.operator }, repair);
+  }
+  return repair(input);
+};
 const localRuntimeHostOperator = createDesktopRuntimeHostLocalOperator();
 const localRuntimeHostRemoteAccess = createDesktopLocalRuntimeHostRemoteAccess({
   ipcMain,
@@ -638,7 +657,7 @@ const runtimeHostManagement = createDesktopRuntimeHostManagement({
   ipcMain,
   profiles: runtimeHostProfileService,
   runServiceManagement: runtimeHostSshTerminal.runServiceManagement,
-  runWslManagement: runDesktopRuntimeHostWslManagement,
+  runWslManagement: (input) => runDesktopRuntimeHostWslManagement({ ...input, recoverMissingNode: recoverMissingWslNode }),
   runPeerManagement: runtimeHostSshTerminal.runPeerManagement,
   directPeerClientAvailable: runtimeHostDirectPeerAvailable,
   runUpdate: runtimeHostSshTerminal.runUpdate,
@@ -1048,6 +1067,7 @@ const createLocalRuntimeHostManager = () => createRuntimeHostDesktopManager(
     ipcMain,
     workspaceRoot,
     attachmentApprovals,
+    recoverMissingWslNode,
     stat: (path) => import("node:fs/promises").then(({ stat }) => stat(path)),
     resizeImage: resizeImageForAttachment,
     mainWindowController,
@@ -1309,6 +1329,7 @@ const createLocalRuntimeHostManager = () => createRuntimeHostDesktopManager(
     recoverLocalHost: (signal) => localRuntimeHostRemoteAccess.recoverBeforeLocalHostStart(signal),
     resolveStartupRepair: (error, signal) => localRuntimeHostRemoteAccess.resolveStartupRepair(error, signal),
     resolveWslHostHandoff: async (profile, error, signal) => resolveDesktopWslHostHandoff(profile, error, signal, {
+      status: (input) => runDesktopRuntimeHostWslManagement({ ...input, recoverMissingNode: recoverMissingWslNode }),
       locale: await desktopLocale.resolve(),
       resolveBinding: (profileId) => runtimeHostProfileService.resolveManagedService(profileId),
       resolvePackage: (packageSignal) => runtimeHostSetupPackage.resolve('none', packageSignal),

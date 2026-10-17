@@ -23,6 +23,9 @@ import {
   normalizeRuntimeHostWslDistribution,
   resolveSystemRuntimeHostWslExecutable,
   type RuntimeHostWslProcessFactory,
+  type RuntimeHostWslNodeRecovery,
+  type RuntimeHostWslNodeRecoveryInput,
+  resolveRuntimeHostWslNodeOperator,
 } from '@maka/runtime-host/client';
 import {
   decodeRuntimeHostSetupFrame,
@@ -61,6 +64,7 @@ export interface DesktopRuntimeHostWslManagementInput {
   readonly distribution: string;
   readonly operator: RuntimeHostPosixOperatorCommand;
   readonly action: 'status' | 'configure';
+  readonly recoverMissingNode?: RuntimeHostWslNodeRecovery;
   readonly expectedTarget: {
     readonly serviceId: string;
     readonly rootPath: string;
@@ -91,7 +95,12 @@ export async function runDesktopRuntimeHostWslManagement(
 ): Promise<RuntimeHostManagementTerminalFrame> {
   input.signal?.throwIfAborted();
   const distribution = normalizeRuntimeHostWslDistribution(input.distribution);
-  const operator = decodeRuntimeHostPosixOperatorCommand(input.operator);
+  const operator = input.recoverMissingNode
+    ? await resolveRuntimeHostWslNodeOperator({ ...input, rootId: input.expectedTarget.rootId }, input.recoverMissingNode, {
+        wslExecutable: overrides.wslExecutable,
+        processFactory: (executable, args) => (overrides.processFactory ?? spawnWslManagement)(executable, args, process.env),
+      })
+    : decodeRuntimeHostPosixOperatorCommand(input.operator);
   const invocation = runtimeHostOperatorInvocation(operator, [
     input.action,
     '--framed',
@@ -151,6 +160,36 @@ export async function runDesktopRuntimeHostWslManagement(
     throw new Error('WSL Runtime Host returned an unrelated management result');
   }
   return terminal;
+}
+
+/** Uses the same login-shell/npx bootstrap as initial WSL onboarding, without installing a Host package. */
+export async function recoverDesktopRuntimeHostWslNode(
+  input: RuntimeHostWslNodeRecoveryInput & { readonly setupPackage: DesktopRuntimeHostSetupPackage },
+  overrides: { readonly processFactory?: RuntimeHostWslProcessFactory; readonly wslExecutable?: string } = {},
+): Promise<RuntimeHostWslSetupCompleteFrame> {
+  input.signal?.throwIfAborted();
+  const operator = decodeRuntimeHostPosixOperatorCommand(input.operator);
+  if (operator.kind !== 'node') throw new Error('WSL Node recovery requires a Node operator');
+  const distribution = normalizeRuntimeHostWslDistribution(input.distribution);
+  const processFactory = overrides.processFactory ?? spawnWsl;
+  const executable = overrides.wslExecutable ?? resolveSystemRuntimeHostWslExecutable();
+  const setupPackage = await resolveWslPackageSpecifier(input.setupPackage, distribution, executable, processFactory);
+  const args = ['npx', '--yes', '--package', setupPackage.specifier, 'maka', 'runtime-host', 'repair-wsl-node',
+    '--root-id', input.rootId, '--expected-node-path', operator.nodePath, '--expected-module-path', operator.modulePath];
+  const command = `maka_prefix=$(mktemp -d) || exit 1; trap 'rm -rf -- "$maka_prefix"' EXIT; cd "$maka_prefix" || exit 1; ${args.map(quotePosix).join(' ')}`;
+  const child = processFactory(executable, ['--distribution', distribution, '--exec', '/bin/sh', '-lc', runtimeHostWslLoginCommand(command)]);
+  return runWslFramedProcess({
+    child, signal: input.signal, prefix: RUNTIME_HOST_SETUP_FRAME_PREFIX,
+    decode: decodeRuntimeHostSetupFrame, label: 'WSL Node recovery',
+    onFrame: (frame) => {
+      if (frame.kind === 'error') throw new Error(frame.error.message);
+      if (frame.kind !== 'existing_environment' || frame.operator.kind !== 'node' ||
+          frame.operator.platform !== 'posix' || frame.rootId !== input.rootId ||
+          frame.operator.modulePath !== operator.modulePath) throw new Error('WSL Node recovery returned a different deployment');
+      return { ...frame, operator: createRuntimeHostOperatorCommand({ platform: 'posix',
+        nodePath: frame.operator.nodePath, modulePath: frame.operator.modulePath }) };
+    },
+  });
 }
 
 export interface DesktopRuntimeHostWslSetupInput {

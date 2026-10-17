@@ -188,6 +188,12 @@ export async function runMakaCli(
     clientDataRoot: dataRoots.clientDataRoot,
   });
   switch (command.kind) {
+    case 'runtime-host-wsl-node-repair': {
+      const { runRuntimeHostWslNodeRepairCli } = await import(
+        './runtime-host-wsl-node-recovery.js'
+      );
+      return runRuntimeHostWslNodeRepairCli(command);
+    }
     case 'runtime-host-managed-activate': {
       const { runRuntimeHostManagedActivationCli } = await import(
         './runtime-host-activation-command.js'
