@@ -465,3 +465,74 @@ describe('review hardening: detached socket close events', () => {
     assert.equal(bridge.hasReconnectTimer(), false);
   });
 });
+
+describe('GatewayBridgeBase retired socket events', () => {
+  it('ignores an open event after stop instead of restoring running state', async () => {
+    const { bridge, fake } = await startBridge();
+    fake.emit('open', {});
+    await bridge.stop();
+    const stopped = bridge.getStatus();
+    fake.emit('open', {});
+    assert.deepEqual(bridge.getStatus(), stopped);
+    assert.equal(bridge.isRunning(), false);
+  });
+
+  it('ignores late messages without dispatching or restarting heartbeat timers', async () => {
+    const { bridge, fake } = await startBridge();
+    await bridge.stop();
+    const stopped = bridge.getStatus();
+    try {
+      receiveReady(fake);
+      sendFrame(fake, { op: 10, d: { heartbeat_interval: HELLO_INTERVAL_MS } });
+      sendFrame(fake, { op: 0, t: 'MESSAGE_CREATE', s: 13, d: { id: 'late-message' } });
+      await settle();
+      assert.deepEqual(bridge.getStatus(), stopped);
+      assert.deepEqual(bridge.getSessionState(), { sessionId: null, seq: null });
+      assert.deepEqual(bridge.dispatches, []);
+      assert.equal(bridge.identifyCalls, 0);
+      assert.equal(bridge.hasHeartbeatTimers(), false);
+    } finally {
+      await bridge.stop();
+    }
+  });
+
+  it('ignores the previous socket after restart while accepting the current socket', async () => {
+    class FreshSocketGateway extends TestGatewayBridge {
+      readonly sockets: FakeWebSocket[] = [];
+      protected override createWebSocket(): WebSocket {
+        const socket = new FakeWebSocket();
+        this.sockets.push(socket);
+        return socket as unknown as WebSocket;
+      }
+    }
+    const bridge = new FreshSocketGateway('discord', botSettings());
+    try {
+      await bridge.start();
+      const retired = bridge.sockets[0]!;
+      await bridge.stop();
+      await bridge.start();
+      const current = bridge.sockets[1]!;
+      retired.emit('open', {});
+      assert.equal(bridge.isRunning(), false);
+      current.emit('open', {});
+      sendFrame(current, { op: 0, t: 'READY', s: 20, d: { session_id: 'current-session' } });
+      const currentStatus = bridge.getStatus();
+      retired.emit('open', {});
+      receiveReady(retired);
+      sendFrame(retired, { op: 0, t: 'MESSAGE_CREATE', s: 21, d: { id: 'late-message' } });
+      assert.deepEqual(bridge.getStatus(), currentStatus);
+      assert.deepEqual(bridge.getSessionState(), { sessionId: 'current-session', seq: 20 });
+      assert.deepEqual(bridge.dispatches, [
+        { type: 'READY', d: { session_id: 'current-session' } },
+      ]);
+      sendFrame(current, { op: 0, t: 'MESSAGE_CREATE', s: 22, d: { id: 'current-message' } });
+      assert.equal(bridge.isRunning(), true);
+      assert.deepEqual(bridge.dispatches.at(-1), {
+        type: 'MESSAGE_CREATE',
+        d: { id: 'current-message' },
+      });
+    } finally {
+      await bridge.stop();
+    }
+  });
+});
