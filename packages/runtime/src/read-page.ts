@@ -100,8 +100,12 @@ export function resolveReadInput(input: ReadInput): {
   }
 }
 
-function digestText(content: string): string {
+export function readTextDigest(content: string): string {
   return createHash('sha256').update(content).digest('hex').slice(0, 32);
+}
+
+export function readContinuationPath(path: string, position: number, digest: string): string {
+  return `${CONTINUATION_PREFIX}${Buffer.from(path).toString('base64url')}?at=${position}&sha=${digest}`;
 }
 
 export function readPage(
@@ -111,7 +115,7 @@ export function readPage(
   continuation?: z.infer<typeof readContinuationSchema>,
 ): ReadPage {
   const resolved = continuation ? { path: input.path, ...continuation } : resolveReadInput(input);
-  if (resolved.digest && digestText(content) !== resolved.digest) {
+  if (resolved.digest && readTextDigest(content) !== resolved.digest) {
     throw new Error(
       'The content changed since the previous page. This continuation cannot be used. Read the original path again to start from the current content.',
     );
@@ -176,7 +180,7 @@ export function readPage(
       const remaining = input.limit === undefined ? undefined : input.limit - returnedLines;
       const position = partialLine ? stop : stop + 1;
       next = {
-        path: `${CONTINUATION_PREFIX}${Buffer.from(resolved.path).toString('base64url')}?at=${position}&sha=${(digest ??= digestText(content))}`,
+        path: readContinuationPath(resolved.path, position, (digest ??= readTextDigest(content))),
         ...(remaining === undefined ? {} : { limit: remaining }),
       };
     }
@@ -270,6 +274,16 @@ export function readToolResultPage(
   input: ReadInput,
   maxBytes = READ_PAGE_MAX_BYTES,
 ): ReadPage {
+  const metadata = readToolResultMetadata(serialized);
+  const page = readPage(
+    readableToolResult(serialized),
+    input,
+    maxBytes - (metadata ? Buffer.byteLength(JSON.stringify(metadata)) + 16 : 0),
+  );
+  return metadata ? { ...page, metadata } : page;
+}
+
+export function readToolResultMetadata(serialized: string): Record<string, unknown> | undefined {
   let metadata: Record<string, unknown> | undefined;
   try {
     const value = JSON.parse(serialized);
@@ -287,10 +301,5 @@ export function readToolResultPage(
   } catch {
     /* Text has no separate execution metadata. */
   }
-  const page = readPage(
-    readableToolResult(serialized),
-    input,
-    maxBytes - (metadata ? Buffer.byteLength(JSON.stringify(metadata)) + 16 : 0),
-  );
-  return metadata ? { ...page, metadata } : page;
+  return metadata;
 }
