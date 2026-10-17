@@ -69,6 +69,7 @@ async function fixture(t: TestContext, workName: string | ((id: string) => strin
   const projectFrame = async (frame: SubscriptionFrame) => {
     const nextRead = Math.max(1, events.nextCount) + 1;
     events.push(frame);
+    // The bridge reads its next frame only after reconciliation has finished.
     await t.waitFor(() => assert.ok(events.nextCount >= nextRead));
   };
   return {
@@ -250,6 +251,25 @@ test('direct-answer topic receipts survive paging and label a delayed answer wit
       assert.equal(f.sends.length, 1, 'already delivered answers are not resent');
     } finally { await f.close(); }
   }
+});
+
+test('the latest WeChat follow-up carries its associated work heading without a newer request', async (t) => {
+  const f = await fixture(t, 'CS336');
+  try {
+    await f.bridge.handle({ ...message('wechat-owner', '刚才到第几讲内容了?'), platform: 'wechat' });
+    const turnId = f.starts[0]!.turnId;
+    const call: StoredMessage = { type: 'tool_call', id: 'associate-current', turnId, ts: 1, toolName: 'mcp__desktop_workhub__tasks', args: { request: { operation: 'associate', targetSessionId: 'cs336' } } };
+    await f.transcript([call], false);
+    await f.restart();
+    await f.transcript([call,
+      { type: 'tool_result', id: 'topic-current', turnId, ts: 2, toolUseId: call.id, isError: false, content: { kind: 'json', value: { structuredContent: { operation: 'associate', targetSessionId: 'cs336', targetSessionKey: JSON.stringify(['host', 'cs336']), targetSessionName: 'CS336' } } } },
+      { type: 'assistant', id: 'answer-current', turnId, ts: 3, text: '刚到第 2 讲。', modelId: 'test' },
+    ]);
+    assert.deepEqual(f.sends, [{ chat: 'wechat-owner', text: '[CS336]\n刚到第 2 讲。' }]);
+    assert.equal(f.starts.length, 1, 'association does not dispatch work');
+    await f.restart();
+    assert.equal(f.sends.length, 1, 'already delivered answers are not resent');
+  } finally { await f.close(); }
 });
 
 function association(turnId: string, id: string, targetSessionId: string | null, reason = 'unrelated'): [StoredMessage, StoredMessage] {

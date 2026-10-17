@@ -27,6 +27,7 @@ import {
   compatibleProtocolFilesBetween,
   COMPATIBLE_CHANGE_DIR,
   EPOCH_FILE,
+  PROTOCOL_DIR,
   epochAtRevision,
   evaluateEpochCheck,
   evaluateStagedEpochCheck,
@@ -525,4 +526,60 @@ test('offers a paste-ready declaration when a protocol change has no epoch to sh
     files: ['packages/runtime-host/src/protocol/codec.ts'],
     reason: '<why the wire cannot observe this change>',
   });
+});
+
+test('a staged merge preserves historical declarations and checks against the incoming parent', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'maka-protocol-epoch-merge-'));
+  const epochPath = join(repo, EPOCH_FILE);
+  const historical = `${COMPATIBLE_CHANGE_DIR}historical.json`;
+  const current = `${COMPATIBLE_CHANGE_DIR}feature.json`;
+  const feature = `${PROTOCOL_DIR}feature.ts`;
+  const runGit = (...args) => execFileSync('git', args, { cwd: repo, encoding: 'utf8' });
+  const runInFixture = (file, args, options) =>
+    execFileSync(file, args, { ...options, cwd: repo, encoding: 'utf8' });
+  const declaration = (epoch, files) =>
+    JSON.stringify({ epoch, files, reason: 'Pure helper only' });
+  try {
+    runGit('init', '--initial-branch=main');
+    runGit('config', 'user.email', 'epoch-guard@example.invalid');
+    runGit('config', 'user.name', 'Epoch Guard Test');
+    runGit('config', 'commit.gpgSign', 'false');
+    mkdirSync(dirname(epochPath), { recursive: true });
+    mkdirSync(join(repo, COMPATIBLE_CHANGE_DIR), { recursive: true });
+    writeFileSync(epochPath, 'export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 27 as const;\n');
+    writeFileSync(join(repo, historical), declaration(27, [EPOCH_FILE]));
+    runGit('add', '.');
+    runGit('commit', '-m', 'base');
+    runGit('checkout', '-b', 'feature');
+    writeFileSync(epochPath, 'export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 28 as const;\n');
+    writeFileSync(join(repo, feature), 'export const feature = 1;\n');
+    writeFileSync(join(repo, historical), declaration(28, [EPOCH_FILE]));
+    runGit('add', '.');
+    runGit('commit', '-m', 'feature with an incorrectly repinned historical declaration');
+    runGit('checkout', 'main');
+    writeFileSync(epochPath, 'export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 28 as const;\n');
+    runGit('add', '.');
+    runGit('commit', '-m', 'independent epoch bump');
+    runGit('checkout', 'feature');
+    runGit('merge', '--no-commit', 'main');
+    runGit('restore', '--source=main', '--staged', '--worktree', '--', historical);
+
+    // Restoring main's metadata must not ask us to rewrite its epoch again.
+    // It also must not authorize the feature's protocol addition at main's epoch.
+    const undeclared = evaluateStagedEpochCheck(runInFixture);
+    assert.equal(undeclared.ok, false);
+    assert.match(undeclared.reason, /feature\.ts/);
+    writeFileSync(join(repo, current), declaration(28, [feature]));
+    runGit('add', '.');
+    assert.equal(evaluateStagedEpochCheck(runInFixture).ok, true);
+
+    // Editing a declaration already present on the incoming branch grants no
+    // exemption, just as in the final CI merge-result check.
+    runGit('rm', '-f', current);
+    writeFileSync(join(repo, historical), declaration(28, [feature]));
+    runGit('add', '.');
+    assert.equal(evaluateStagedEpochCheck(runInFixture).ok, false);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
 });
