@@ -61,6 +61,9 @@ on:
       - 'scripts/clean-build.mjs'
       - 'scripts/clean-paths.mjs'
       - 'scripts/windows-runtime-host-local-ipc-trust.ps1'
+      # The desktop launcher executes cmd.exe with native console code pages.
+      - 'apps/desktop/src/main/opencli-chrome.ts'
+      - 'apps/desktop/src/main/__tests__/opencli-chrome.test.ts'
       # Every file in the import closure of the suites below that branches on
       # `process.platform === 'win32'`. Generated, not curated:
       # `scripts/windows-package-source-closure.test.mjs` recomputes this set
@@ -183,6 +186,10 @@ jobs:
 
       - name: Build test artifacts
         run: npm.cmd run build:test
+
+      - name: Verify Windows opencli launchers
+        shell: pwsh
+        run: node.exe --test apps/desktop/dist/main/__tests__/opencli-chrome.test.js
 
       - name: Verify managed dependency alternate streams
         shell: pwsh
