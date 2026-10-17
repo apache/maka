@@ -1124,17 +1124,13 @@ export function markdownText(id, source, cx) {
 }
 
 /**
- * `value` as HTML that reads as the plain text it is: escaped, one
- * paragraph per line (TextView merges the text around a `<br>` into one
- * line), blank lines kept, and the spaces HTML would fold or trim (runs, and
- * one starting a line) written as non-breaking ones.
+ * `value` as HTML that reads as the plain text it is: escaped, in a `<pre>`
+ * so its spaces, tabs and line breaks stay as they are and a copy gives back
+ * the text sent. The line feed after `<pre>` is the one HTML drops there, so
+ * a message that starts with a blank line keeps it.
  */
 function plainHtml(value) {
-  return value
-    .replace(/\t/g, '    ')
-    .split(/\r?\n/)
-    .map((line) => `<p>${escapeHtml(line).replace(/ (?= )|^ /g, '&nbsp;') || '&nbsp;'}</p>`)
-    .join('');
+  return `<pre>\n${escapeHtml(value)}</pre>`;
 }
 
 /**

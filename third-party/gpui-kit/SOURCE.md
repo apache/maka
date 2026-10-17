@@ -220,3 +220,11 @@ One addition to the script API of `gpui-shell`, a candidate for an upstream pull
 - `InputState` and `TextareaState` gain `set_placeholder(text)`, which calls gpui-base's `set_placeholder` on the live state. A placeholder could be set only by `new({ placeholder })`, so an application that changes its language while running had to rebuild every field, with its listeners, to translate the text an empty field shows.
 
 为 `gpui-shell` 的脚本 API 新增一项，可提交上游 PR：`InputState` 与 `TextareaState` 新增 `set_placeholder(text)`，在存活的状态上调用 gpui-base 的 `set_placeholder`。此前占位文字只能在 `new({ placeholder })` 时设定，应用在运行中切换语言时，必须连同监听器重建每个输入框，才能翻译空输入框显示的文字。
+
+## `<pre>` text kept as text (2026-10-17)
+
+One fix to Base's HTML minifier, submitted upstream as longbridge/gpui-kit#3570:
+
+- `TextView::html` minifies the HTML and parses the result again. The text of a `<pre>` or `<textarea>` skips whitespace collapsing, and the minifier wrote it as it was decoded, so escaped markup such as `&lt;b&gt;` came back as an element and an `&amp;` as a bare `&`. That text is now escaped with the function the collapsing path uses. The parser also drops a line feed right after `<pre>` or `<textarea>`, so text that starts the element with a line feed is written with one more in front of it, and a leading blank line survives the second parse.
+
+为 Base 的 HTML minifier 修了一处，已提交上游 longbridge/gpui-kit#3570：`TextView::html` 先压缩 HTML 再重新解析。`<pre>` 与 `<textarea>` 中的文本不折叠空白，minifier 原样写出解码后的文本，因此 `&lt;b&gt;` 这类转义标记会变回元素，`&amp;` 变回单独的 `&`。现在这段文本用折叠路径的同一函数转义。解析器还会丢掉紧跟 `<pre>` 或 `<textarea>` 的换行，因此以换行开头的首段文本会在前面多写一个换行，开头的空行在第二次解析后得以保留。
