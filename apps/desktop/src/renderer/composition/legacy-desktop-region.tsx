@@ -19,6 +19,11 @@
 
 import { AppShell as LegacyAppShell } from '../app-shell';
 import { WorkHubRoot, WorkHubSurfaceSwitch } from '../features/workhub';
-export function AppShell() {
-  return <WorkHubSurfaceSwitch main={<LegacyAppShell />} workhub={<WorkHubRoot />} />;
+
+type RenderProviderMark = NonNullable<import('@maka/ui').ComposerProps['renderProviderMark']>;
+
+export function AppShell({ renderProviderMark }: { renderProviderMark: RenderProviderMark }) {
+  return <WorkHubSurfaceSwitch main={<LegacyAppShell />} workhub={
+    <WorkHubRoot renderProviderMark={renderProviderMark} />
+  } />;
 }
