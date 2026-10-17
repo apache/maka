@@ -19,8 +19,9 @@
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
-//! Feasibility probe: the gpui-shell command, built inside this workspace
-//! against the vendored gpui-base and gpui-fast, with a `maka-host` module
+//! The Maka desktop: the gpui-shell command, built inside this workspace
+//! against the vendored gpui-base and gpui-fast, that runs the scripts in
+//! `app/` (`maka-desktop-shell run --dir app`). It adds a `maka-host` module
 //! that reaches the Host named by `MAKA_HOST_ENDPOINT` and `MAKA_HOST_EPOCH`,
 //! a `maka-files` module for the file or folder the user picks, a
 //! `maka-locale` module with the language the system asks for, and the
