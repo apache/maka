@@ -19,6 +19,9 @@
 
 # Runtime Resume Phase 3–4 实施路线
 
+> **2026-10-16 退役说明：** 本文涉及工具专属 reconciliation、recovery bundle 写入及其后续 PR 的内容保留为历史设计，不再是当前实施要求。没有生产工具提供完整的 reconciliation 合同，公开 bundle writer 和预设工具恢复能力已清理。已有 recovery facts 仍保留读取、复制与投影重建兼容。当前合同是结束旧执行、保留未知事实、禁止自动重放，由新的明确用户轮检查现状；详见[当前恢复架构](./runtime-resume-architecture.zh-CN.md#未知结果与历史-recovery-bundle)。
+
+
 > 路线更新（2026-08-29）：旧 Git executable managed-workspace path 已删除，后续 workspace 主线从
 > **Gitoxide data plane** 重新建立 production admission。本文保留 Recovery/Continuation 已落地协议与旧路线的历史论证；
 > 新实现不再以通用 per-file checkpoint、native manifest、CAS object store 或旧 Git CLI owner 为前置。

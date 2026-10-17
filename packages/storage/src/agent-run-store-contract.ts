@@ -503,7 +503,7 @@ export function assertNoReservedToolLedgerFact(event: RuntimeEvent): void {
   const validation = validateGenericToolLedgerAppend(event);
   if (validation.ok) return;
   if (validation.code === 'reserved_recovery_fact') {
-    throw new Error('Tool recovery facts require the atomic recovery bundle writer');
+    throw new Error('Historical tool recovery facts are read-only');
   }
   if (validation.code === 'reserved_tool_boundary_fact') {
     throw new Error('Durable tool facts require the atomic tool boundary writer');
