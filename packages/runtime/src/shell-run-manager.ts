@@ -224,6 +224,8 @@ interface LivePipeShellRun extends LiveShellRunBase {
 interface LivePtyShellRun extends LiveShellRunBase {
   mode: 'pty';
   driver: PtyProcessDriver;
+  /** A client terminal's interactive shell; termination also hangs it up after SIGTERM. */
+  interactiveShell: boolean;
   collector: PtyScreenCollector;
   rawBuffer: string;
   rawSequence: number;
@@ -719,6 +721,9 @@ export class ShellRunProcessManager
     if (mode === 'pty' && (input.argv || input.fdInputs)) {
       throw new Error('PTY Bash does not support transformed argv or inherited fd inputs');
     }
+    if (mode === 'pipes' && input.interactiveShell) {
+      throw new Error('An interactive shell requires PTY Bash');
+    }
     const slotReservation = this.reserveSlot(mode);
     try {
       const shellRunId = this.input.newId();
@@ -919,6 +924,7 @@ export class ShellRunProcessManager
       ...this.createLiveBase(input, startingRecord, 'pty', timeoutMs, slotReservation),
       mode: 'pty',
       driver,
+      interactiveShell: input.interactiveShell === true,
       collector,
       rawBuffer: '',
       rawSequence: 0,
@@ -1503,6 +1509,19 @@ export class ShellRunProcessManager
     if (applied && cause) live.lifecycleCause ??= cause;
     lifecycle.initialSignal.resolve(applied);
     if (live.rootExited || live.finalizeOnce) return;
+
+    // A client terminal's interactive shell ignores SIGTERM. Hang up the shell
+    // alone, as closing a terminal window does, so it exits now rather than at
+    // the SIGKILL after the grace. Its group has had SIGTERM; signalling the
+    // group once the shell is gone could reach a reused process group ID.
+    // Windows has no hang-up, and taskkill above has already ended the tree.
+    if (live.mode === 'pty' && live.interactiveShell && process.platform !== 'win32') {
+      try {
+        live.driver.kill('SIGHUP');
+      } catch {
+        // The shell may have exited since the check; the grace below still applies.
+      }
+    }
 
     if ((await live.nativeRootExit.wait(this.killGraceMs)) !== 'delay') return;
     const forced = await this.signalProcessTree(live, 'SIGKILL');

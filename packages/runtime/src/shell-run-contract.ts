@@ -99,6 +99,15 @@ export interface ShellRunBashInput {
   /** Binary payloads exposed to pipe-mode children on inherited descriptors. */
   fdInputs?: readonly ChildFdInput[];
   pty?: boolean;
+  /**
+   * The PTY runs an interactive shell a client opened as a terminal. Stopping
+   * it sends SIGTERM to the process tree as for any run, then hangs up the
+   * shell process alone, as closing a terminal window does: interactive shells
+   * ignore SIGTERM and would survive until the SIGKILL after the grace. Other
+   * runs are not hung up, because a program may treat SIGHUP as a reload.
+   * Requires `pty`.
+   */
+  interactiveShell?: boolean;
   timeoutMs?: number;
   abortSignal?: AbortSignal;
   emitOutput: (stream: 'stdout' | 'stderr', chunk: string) => void;

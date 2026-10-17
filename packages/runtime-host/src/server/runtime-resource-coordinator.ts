@@ -463,6 +463,8 @@ export class HostRuntimeResourceCoordinator
             command,
             env,
             pty: input.command === undefined,
+            // Stopping the terminal hangs up its shell, which ignores SIGTERM.
+            ...(input.command === undefined ? { interactiveShell: true } : {}),
             emitOutput: () => undefined,
             shell,
             onCompletion: complete,
