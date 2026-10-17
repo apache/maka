@@ -182,6 +182,6 @@
   },
   "dependencies": {
     "intl-messageformat": "11.2.15",
-    "marked": "18.0.11"
+    "marked": "18.1.1"
   }
 }
