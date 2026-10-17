@@ -234,10 +234,7 @@ import {
 } from './project-directory-authority.js';
 import { HostProjectCatalogCoordinator } from './project-catalog-coordinator.js';
 import { HostProjectMembershipGate } from './project-membership-gate.js';
-import {
-  HostBuiltinExternalAgentPluginCoordinator,
-  withBuiltinExternalAgentCatalog,
-} from './builtin-external-agent-plugins.js';
+import { HostBuiltinExternalAgentPluginCoordinator } from './builtin-external-agent-plugins.js';
 import { HostPluginPlatformCoordinator } from './plugin-platform-coordinator.js';
 import { HostPluginPlatform } from './plugin-platform.js';
 import { RootAdmissionOwner } from './root-admission-owner.js';
@@ -445,8 +442,7 @@ export async function createExecutionRuntimeHostComposition(
             ...(header.executorConfig ? { configuration: header.executorConfig } : {}),
           });
         }
-        const catalog = await pluginExecutors.catalog({ cwd: input.cwd, refresh: input.refresh });
-        return withBuiltinExternalAgentCatalog(catalog);
+        return pluginExecutors.catalog({ cwd: input.cwd, refresh: input.refresh });
       },
     );
 

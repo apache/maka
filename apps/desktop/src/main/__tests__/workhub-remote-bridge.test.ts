@@ -18,7 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import test, { type TestContext } from 'node:test';
 import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -31,7 +31,7 @@ import { AsyncFrameQueue, runtimeHostSessionFixture } from './runtime-host-sessi
 
 type Deps = Parameters<typeof createWorkHubRemoteBridge>[0];
 const message = (chatId: string, text: string, sourceMessageId = text): BotIncomingMessage => ({ platform: 'qq', chatId, userId: 'owner', userName: 'Owner', isGroup: false, text, sourceMessageId, receivedAt: 1 });
-async function fixture(workName: string | ((id: string) => string) = 'SQL 入门') {
+async function fixture(t: TestContext, workName: string | ((id: string) => string) = 'SQL 入门') {
   const directory = await mkdtemp(join(tmpdir(), 'workhub-remote-'));
   const sends: { chat: string; text: string }[] = [];
   const starts: { turnId: string; text: string }[] = [];
@@ -66,13 +66,17 @@ async function fixture(workName: string | ((id: string) => string) = 'SQL 入门
   const deps: Deps = { client, statePath: join(directory, 'routes.json'), readMode: async () => mode,
     botRegistry: { sendMessage: async (_platform, chat, text) => { sends.push({ chat, text }); return 'sent'; } }, onError: (error) => { errors.push(error); } };
   let bridge = createWorkHubRemoteBridge(deps);
-  const tick = async () => { for (let i = 0; i < 30; i++) await new Promise((resolve) => setTimeout(resolve, 2)); };
+  const projectFrame = async (frame: SubscriptionFrame) => {
+    const nextRead = Math.max(1, events.nextCount) + 1;
+    events.push(frame);
+    await t.waitFor(() => assert.ok(events.nextCount >= nextRead));
+  };
   return {
     sends, starts, answers, errors, get bridge() { return bridge; },
     setBusy(value: boolean) { busy = value; },
     setMode(value: typeof mode) { mode = value; },
-    async project(value: InteractionPendingSnapshot[]) { pending = value; events.push({ kind: 'subscription.session_projection', snapshot: snapshot() } as SubscriptionFrame); await tick(); },
-    async transcript(value: StoredMessage[], done = true) { rows = value; completed = done; events.push({ kind: 'subscription.transcript_advanced', throughSequence: rows.length - 1 } as SubscriptionFrame); await tick(); },
+    async project(value: InteractionPendingSnapshot[]) { pending = value; await projectFrame({ kind: 'subscription.session_projection', snapshot: snapshot() } as SubscriptionFrame); },
+    async transcript(value: StoredMessage[], done = true) { rows = value; completed = done; await projectFrame({ kind: 'subscription.transcript_advanced', throughSequence: rows.length - 1 } as SubscriptionFrame); },
     async recoverLegacy(value: StoredMessage[]) {
       await bridge.close();
       rows = value;
@@ -84,17 +88,17 @@ async function fixture(workName: string | ((id: string) => string) = 'SQL 入门
       await writeFile(deps.statePath, JSON.stringify(state));
       events = new AsyncFrameQueue();
       bridge = createWorkHubRemoteBridge(deps);
-      await tick();
+      await projectFrame({ kind: 'subscription.session_projection', snapshot: snapshot() } as SubscriptionFrame);
     },
-    async restart() { await bridge.close(); events = new AsyncFrameQueue(); bridge = createWorkHubRemoteBridge(deps); await tick(); },
+    async restart() { await bridge.close(); events = new AsyncFrameQueue(); bridge = createWorkHubRemoteBridge(deps); await projectFrame({ kind: 'subscription.session_projection', snapshot: snapshot() } as SubscriptionFrame); },
     async close() { await bridge.close(); await rm(directory, { recursive: true, force: true }); assert.deepEqual(errors, []); },
   };
 }
 function question(turnId: string): InteractionPendingSnapshot {
   return { schemaVersion: 1, revision: 1, status: 'pending', outcome: null, sessionId, turnId, runId: 'run', interactionId: 'question-1', request: { kind: 'question', toolUseId: 'ask', questions: ['项目', '范围', '测试'].map((question) => ({ question, options: ['甲', '乙', '丙'].map((label) => ({ label })) })) } };
 }
-test('all chats use one WorkHub; questions route to their source and survive restart', async () => {
-  const f = await fixture();
+test('all chats use one WorkHub; questions route to their source and survive restart', async (t) => {
+  const f = await fixture(t);
   try {
     assert.equal(await f.bridge.handle(message('one', '修改 Maka')), true);
     const turnId = f.starts[0]!.turnId;
@@ -114,8 +118,8 @@ test('all chats use one WorkHub; questions route to their source and survive res
     assert.equal(f.starts.length, 2, 'answers resume the interaction instead of starting a new Turn');
   } finally { await f.close(); }
 });
-test('delegated asynchronous result returns to original chat after restart, never the last chat', async () => {
-  const f = await fixture();
+test('delegated asynchronous result returns to original chat after restart, never the last chat', async (t) => {
+  const f = await fixture(t);
   try {
     await f.bridge.handle(message('one', '实现功能'));
     const firstTurn = f.starts[0]!.turnId;
@@ -132,14 +136,14 @@ test('delegated asynchronous result returns to original chat after restart, neve
     assert.equal(f.sends.length, 1);
   } finally { await f.close(); }
 });
-test('task setting leaves the existing Bot Session route in charge', async () => {
-  const f = await fixture();
+test('task setting leaves the existing Bot Session route in charge', async (t) => {
+  const f = await fixture(t);
   try { f.setMode('task'); assert.equal(await f.bridge.handle(message('one', 'hello')), false); assert.equal(f.starts.length, 0); }
   finally { await f.close(); }
 });
 
-test('busy WorkHub queues messages durably and dispatches after restart without changing their source', async () => {
-  const f = await fixture();
+test('busy WorkHub queues messages durably and dispatches after restart without changing their source', async (t) => {
+  const f = await fixture(t);
   try {
     f.setBusy(true);
     await f.bridge.handle(message('one', '先做这个'));
@@ -148,8 +152,6 @@ test('busy WorkHub queues messages durably and dispatches after restart without 
     assert.equal(f.sends.length, 2);
     f.setBusy(false);
     await f.restart();
-    assert.equal(f.starts.length, 1);
-    await f.project([]);
     assert.equal(f.starts.length, 2);
     assert.ok(f.starts[0]!.text.includes('先做这个'));
     assert.ok(f.starts[1]!.text.includes('再做那个'));
@@ -157,8 +159,8 @@ test('busy WorkHub queues messages durably and dispatches after restart without 
     assert.equal(f.starts.length, 2, 'same incoming source message is not admitted twice');
   } finally { await f.close(); }
 });
-test('nxt resumes the recent-work picker in its source chat without queuing a new turn', async () => {
-  const f = await fixture();
+test('nxt resumes the recent-work picker in its source chat without queuing a new turn', async (t) => {
+  const f = await fixture(t);
   try {
     await f.bridge.handle(message('one', 'wn'));
     const pending: InteractionPendingSnapshot = {
@@ -172,8 +174,8 @@ test('nxt resumes the recent-work picker in its source chat without queuing a ne
   } finally { await f.close(); }
 });
 
-test('runtime transcript tool calls route delegated feedback without legacy assignment rows', async () => {
-  const f = await fixture();
+test('runtime transcript tool calls route delegated feedback without legacy assignment rows', async (t) => {
+  const f = await fixture(t);
   try {
     await f.bridge.handle(message('one', '检查 SQL'));
     const firstTurn = f.starts[0]!.turnId;
@@ -192,8 +194,8 @@ test('runtime transcript tool calls route delegated feedback without legacy assi
   } finally { await f.close(); }
 });
 
-test('legacy cursor recovery delivers missed feedback without repeating the original receipt', async () => {
-  const f = await fixture();
+test('legacy cursor recovery delivers missed feedback without repeating the original receipt', async (t) => {
+  const f = await fixture(t);
   try {
     await f.bridge.handle(message('one', '检查 SQL'));
     const turnId = f.starts[0]!.turnId;
@@ -211,8 +213,8 @@ test('legacy cursor recovery delivers missed feedback without repeating the orig
   } finally { await f.close(); }
 });
 
-test('delayed feedback keeps its own work heading after a newer request in the same chat', async () => {
-  const f = await fixture();
+test('delayed feedback keeps its own work heading after a newer request in the same chat', async (t) => {
+  const f = await fixture(t);
   try {
     await f.bridge.handle(message('one', '检查 SQL'));
     const turnId = f.starts[0]!.turnId;
@@ -228,42 +230,26 @@ test('delayed feedback keeps its own work heading after a newer request in the s
   } finally { await f.close(); }
 });
 
-test('direct-answer topic receipts survive paging and label a delayed answer without delegation', async () => {
-  const f = await fixture();
-  try {
-    await f.bridge.handle(message('one', 'SQL 第一题是什么？'));
-    const turnId = f.starts[0]!.turnId;
-    const call: StoredMessage = { type: 'tool_call', id: 'associate', turnId, ts: 1, toolName: 'mcp__desktop_workhub__tasks', args: { request: { operation: 'associate', targetSessionId: 'sql' } } };
-    await f.transcript([call]);
-    await f.bridge.handle(message('one', '再看看 CS336'));
-    await f.restart();
-    await f.transcript([call,
-      { type: 'tool_result', id: 'topic', turnId, ts: 2, toolUseId: call.id, isError: false, content: { kind: 'json', value: { structuredContent: { operation: 'associate', targetSessionId: 'sql', targetSessionKey: JSON.stringify(['host', 'sql']), targetSessionName: 'SQL 入门' } } } },
-      { type: 'assistant', id: 'answer', turnId, ts: 3, text: '查询评分不低于 9 的电影。', modelId: 'test' },
-    ]);
-    assert.deepEqual(f.sends, [{ chat: 'one', text: '[SQL 入门]\n查询评分不低于 9 的电影。' }]);
-    assert.equal(f.starts.length, 2);
-  } finally { await f.close(); }
-});
-
-
-test('the latest WeChat follow-up carries its associated work heading without a newer request', async () => {
-  const f = await fixture('CS336');
-  try {
-    await f.bridge.handle({ ...message('wechat-owner', '刚才到第几讲内容了?'), platform: 'wechat' });
-    const turnId = f.starts[0]!.turnId;
-    const call: StoredMessage = { type: 'tool_call', id: 'associate-current', turnId, ts: 1, toolName: 'mcp__desktop_workhub__tasks', args: { request: { operation: 'associate', targetSessionId: 'cs336' } } };
-    await f.transcript([call], false);
-    await f.restart();
-    await f.transcript([call,
-      { type: 'tool_result', id: 'topic-current', turnId, ts: 2, toolUseId: call.id, isError: false, content: { kind: 'json', value: { structuredContent: { operation: 'associate', targetSessionId: 'cs336', targetSessionKey: JSON.stringify(['host', 'cs336']), targetSessionName: 'CS336' } } } },
-      { type: 'assistant', id: 'answer-current', turnId, ts: 3, text: '刚到第 2 讲。', modelId: 'test' },
-    ]);
-    assert.deepEqual(f.sends, [{ chat: 'wechat-owner', text: '[CS336]\n刚到第 2 讲。' }]);
-    assert.equal(f.starts.length, 1, 'association does not dispatch work');
-    await f.restart();
-    assert.equal(f.sends.length, 1, 'already delivered answers are not resent');
-  } finally { await f.close(); }
+test('direct-answer topic receipts survive paging and label a delayed answer without delegation', async (t) => {
+  for (const newerRequest of [false, true]) {
+    const f = await fixture(t);
+    try {
+      await f.bridge.handle(message('one', 'SQL 第一题是什么？'));
+      const turnId = f.starts[0]!.turnId;
+      const call: StoredMessage = { type: 'tool_call', id: 'associate', turnId, ts: 1, toolName: 'mcp__desktop_workhub__tasks', args: { request: { operation: 'associate', targetSessionId: 'sql' } } };
+      await f.transcript([call], false);
+      if (newerRequest) await f.bridge.handle(message('one', '再看看 CS336'));
+      await f.restart();
+      await f.transcript([call,
+        { type: 'tool_result', id: 'topic', turnId, ts: 2, toolUseId: call.id, isError: false, content: { kind: 'json', value: { structuredContent: { operation: 'associate', targetSessionId: 'sql', targetSessionKey: JSON.stringify(['host', 'sql']), targetSessionName: 'SQL 入门' } } } },
+        { type: 'assistant', id: 'answer', turnId, ts: 3, text: '查询评分不低于 9 的电影。', modelId: 'test' },
+      ]);
+      assert.deepEqual(f.sends, [{ chat: 'one', text: '[SQL 入门]\n查询评分不低于 9 的电影。' }]);
+      assert.equal(f.starts.length, newerRequest ? 2 : 1);
+      await f.restart();
+      assert.equal(f.sends.length, 1, 'already delivered answers are not resent');
+    } finally { await f.close(); }
+  }
 });
 
 function association(turnId: string, id: string, targetSessionId: string | null, reason = 'unrelated'): [StoredMessage, StoredMessage] {
@@ -276,8 +262,8 @@ function association(turnId: string, id: string, targetSessionId: string | null,
 }
 
 for (const reason of ['unrelated', 'overview', 'ambiguous']) {
-  test(`a same-turn ${reason} correction clears the remote heading across restart`, async () => {
-    const f = await fixture();
+  test(`a same-turn ${reason} correction clears the remote heading across restart`, async (t) => {
+    const f = await fixture(t);
     try {
       await f.bridge.handle(message('one', '这不是 SQL 的问题'));
       const turnId = f.starts[0]!.turnId;
@@ -300,8 +286,8 @@ for (const reason of ['unrelated', 'overview', 'ambiguous']) {
 }
 
 for (const invalid of ['error', 'wrapped-error', 'target', 'turn', 'call', 'reason', 'missing-reason']) {
-  test(`a ${invalid} clearing receipt cannot erase the current remote heading`, async () => {
-    const f = await fixture();
+  test(`a ${invalid} clearing receipt cannot erase the current remote heading`, async (t) => {
+    const f = await fixture(t);
     try {
       await f.bridge.handle(message('one', 'SQL 问题'));
       const turnId = f.starts[0]!.turnId;
@@ -325,8 +311,8 @@ for (const invalid of ['error', 'wrapped-error', 'target', 'turn', 'call', 'reas
 }
 
 for (const chat of ['one', 'two']) {
-  test(`a clearing receipt cannot cross turns in chat ${chat}`, async () => {
-    const f = await fixture();
+  test(`a clearing receipt cannot cross turns in chat ${chat}`, async (t) => {
+    const f = await fixture(t);
     try {
       await f.bridge.handle(message('one', 'SQL 问题'));
       await f.bridge.handle(message(chat, '另一个 SQL 问题'));
@@ -347,13 +333,13 @@ for (const chat of ['one', 'two']) {
 }
 
 test('a same-turn topic switch uses the corrected work heading', async (t) => {
-  const f = await fixture((id) => id === 'cs336' ? 'CS336' : 'SQL 入门');
+  const f = await fixture(t, (id) => id === 'cs336' ? 'CS336' : 'SQL 入门');
   try {
     await f.bridge.handle(message('one', '其实是 CS336'));
     const turnId = f.starts[0]!.turnId;
     await f.transcript([...association(turnId, 'initial', 'sql'), ...association(turnId, 'switch', 'cs336'),
       { type: 'assistant', id: 'answer', turnId, ts: 3, text: '课程回答。', modelId: 'test' },
     ]);
-    await t.waitFor(() => assert.deepEqual(f.sends, [{ chat: 'one', text: '[CS336]\n课程回答。' }]));
+    assert.deepEqual(f.sends, [{ chat: 'one', text: '[CS336]\n课程回答。' }]);
   } finally { await f.close(); }
 });

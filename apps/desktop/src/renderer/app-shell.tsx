@@ -273,6 +273,7 @@ function AppShellContent({
     openProjectSettings,
     openProviderCatalog,
     openConnectionDetail,
+    openExternalAgentSettings,
     openProviderCreate,
     setSettingsProfileId,
   } = overlays.commands;
@@ -1362,7 +1363,7 @@ function AppShellContent({
                   onDeleteQueuedEntry={activeId ? queueSurface.deleteQueuedEntry : undefined}
                   onReorderQueuedEntries={activeId ? queueSurface.reorderQueuedEntries : undefined}
                   contextPickEnabled={canStageComposerContext}
-                  executorComposer={{ selection: executor, taskSubmissionHardBlocked, connectionCount: connections.length, onSetup: () => openSettingsSection('external-agents'), onNewTask: openNewTaskSurface }}
+                  executorComposer={{ selection: executor, taskSubmissionHardBlocked, connectionCount: connections.length, onSetup: openExternalAgentSettings, onNewTask: openNewTaskSurface }}
                   activeSession={activeSessionForView}
                   {...{ executorTarget, onExecutorTargetChange }}
                   usageModel={activeModel}

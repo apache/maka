@@ -41,6 +41,7 @@ apps/desktop/src/renderer/features/conversation/ui/composer-submission-provider.
 apps/desktop/src/renderer/features/conversation/ui/conversation-lifecycle.tsx
 apps/desktop/src/renderer/features/conversation/ui/conversation-provider.tsx
 apps/desktop/src/renderer/features/conversation/ui/conversation-readers.tsx
+apps/desktop/src/renderer/features/conversation/ui/executor-brand-marks.tsx
 apps/desktop/src/renderer/features/conversation/ui/plan-panels.tsx
 apps/desktop/src/renderer/features/conversation/ui/plan-provider.tsx
 apps/desktop/src/renderer/features/conversation/ui/plan-surfaces.tsx

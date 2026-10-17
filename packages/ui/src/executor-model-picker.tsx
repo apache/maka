@@ -17,23 +17,29 @@
  * under the License.
  */
 
-import { useEffect, useState, type ReactNode } from 'react';
-import { Button, Popover } from '@astryxdesign/core';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { Button, ComplexSelector, type ComplexSelectorHandle, EmptyState, Popover, Spinner, Stack, StatusDot } from '@astryxdesign/core';
+import { Selector } from '@astryxdesign/core/Selector';
 import type {
   ExecutorCatalogEntry,
   ExecutorConfiguration,
   ExecutorSelection,
+  ExecutorReadiness,
 } from '@maka/core/executor-catalog';
 export type { ExecutorSelection } from '@maka/core/executor-catalog';
 import type { ProviderType } from '@maka/core/llm-connections';
 import { type UiLocale, defineShippedUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
-import { Settings, ICON_SIZE } from './icons.js';
+import { AlertCircle, Bot, History, KeyRound, RefreshCcw, Settings, ICON_SIZE } from './icons.js';
+import { MakaWordmark } from './maka-wordmark.js';
 import { ModelPickerPanel, ModelPickerPanelContext } from './model-picker-panel.js';
 import { ComposerModelLabel } from './composer-model-label.js';
-import { providerMarkIcon } from './model-picker-internals.js';
+import { providerMarkIcon, renderChatModelPickerOption } from './model-picker-internals.js';
 import { executorModelGroup, highestExecutorModelVariant } from './executor-model-presentation.js';
 import { ThinkingLevelSelector } from './chat-model-switcher.js';
 import { useUiLocale } from './locale-context.js';
+import { getSharedUiCopy } from './shared-ui-copy.js';
+import { getConversationCopy } from './conversation-copy.js';
+import { dotForStatus, type StatusSemantic } from './status-vocabulary.js';
 
 export interface ExecutorModelPickerProps {
   catalog: readonly ExecutorCatalogEntry[];
@@ -42,6 +48,7 @@ export interface ExecutorModelPickerProps {
   nativeThinkingControl?: ReactNode;
   onPendingChange?(pending: boolean): void;
   renderProviderMark?(type: ProviderType): ReactNode;
+  renderExecutorMark?(entry?: ExecutorCatalogEntry): ReactNode;
   children?: ReactNode;
   presentation?: 'popover' | 'bottom-sheet' | 'wheel';
   isReadOnly?: boolean;
@@ -50,7 +57,7 @@ export interface ExecutorModelPickerProps {
   loading?: boolean;
   error?: string;
   onSelect(selection: ExecutorSelection | undefined): void | Promise<void>;
-  onSetup(): void;
+  onSetup(executorId?: string): void;
   onRetry(): void;
   onNewTask(): void;
   onRestore?(): void | Promise<void>;
@@ -62,8 +69,10 @@ interface ExecutorCopy {
   search: string;
   searchModes: string;
   manage: string;
+  signIn: string;
   default: string;
   loading: string;
+  refreshing: string;
   unavailable: string;
   authentication_required: string;
   history_only: string;
@@ -89,8 +98,10 @@ const EXECUTOR_COPY = resolveUiMessageCatalog(defineShippedUiMessageCatalog<Exec
     search: 'Search models',
     searchModes: 'Search modes',
     manage: 'Manage external agents',
+    signIn: 'Go to sign in',
     default: 'Agent default',
     loading: 'Loading agents and models…',
+    refreshing: 'Updating status…',
     unavailable: 'Unavailable. Check setup and retry.',
     authentication_required: 'Sign in from External Agents settings.',
     history_only:
@@ -116,8 +127,10 @@ const EXECUTOR_COPY = resolveUiMessageCatalog(defineShippedUiMessageCatalog<Exec
     search: '搜索模型',
     searchModes: '搜索模式',
     manage: '管理外部 Agent',
+    signIn: '前往登录',
     default: 'Agent 默认',
     loading: '正在读取执行者与模型…',
+    refreshing: '正在更新状态…',
     unavailable: '当前不可用，请检查设置后重试。',
     authentication_required: '需要登录，请前往外部 Agent 设置。',
     history_only: '外部进程已丢失。历史仍可阅读，请新建任务继续。',
@@ -141,8 +154,10 @@ const EXECUTOR_COPY = resolveUiMessageCatalog(defineShippedUiMessageCatalog<Exec
     search: '搜尋模型',
     searchModes: '搜尋模式',
     manage: '管理外部 Agent',
+    signIn: '前往登入',
     default: 'Agent 預設',
     loading: '正在讀取執行者與模型…',
+    refreshing: '正在更新狀態…',
     unavailable: '目前無法使用，請檢查設定後重試。',
     authentication_required: '需要登入，請前往外部 Agent 設定。',
     history_only: '外部程序已遺失。歷史仍可閱讀，請建立新任務繼續。',
@@ -168,23 +183,31 @@ export function executorCopy(locale: UiLocale): ExecutorCopy {
 
 const NATIVE = '__maka_native__';
 
+const READINESS_STATUS: Record<Exclude<ExecutorReadiness, 'ready'>, StatusSemantic> = {
+  authentication_required: 'attention',
+  restorable: 'attention',
+  restoring: 'active',
+  unavailable: 'error',
+  restore_failed: 'error',
+  history_only: 'error',
+  history_gap: 'error',
+};
+
 /** Browsing is local; choosing a model commits executor and configuration together. */
 export function ExecutorModelPicker(props: ExecutorModelPickerProps) {
   const locale = useUiLocale();
   const copy = executorCopy(locale);
   const selected = props.catalog.find((entry) => entry.id === props.selection?.executorId);
-  const [open, setOpen] = useState(false);
+  const selector = useRef<ComplexSelectorHandle>(null);
   const [selecting, setSelecting] = useState(false);
   const [modePending, setModePending] = useState(false);
   const configurationPending = selecting || modePending;
   const [selectionFailed, setSelectionFailed] = useState(false);
   const [browsedId, setBrowsedId] = useState(props.selection?.executorId ?? NATIVE);
-  useEffect(() => {
-    if (!open) {
-      setBrowsedId(props.selection?.executorId ?? NATIVE);
-      setSelectionFailed(false);
-    }
-  }, [open, props.selection?.executorId]);
+  const onOpenChange = () => {
+    setBrowsedId(props.selection?.executorId ?? NATIVE);
+    setSelectionFailed(false);
+  };
   useEffect(() => { props.onPendingChange?.(configurationPending); }, [configurationPending, props.onPendingChange]);
   useEffect(() => () => props.onPendingChange?.(false), [props.onPendingChange]);
   const browsed = props.catalog.find((entry) => entry.id === browsedId);
@@ -200,7 +223,8 @@ export function ExecutorModelPicker(props: ExecutorModelPickerProps) {
   const selectedModel = props.selection?.configuration.model ?? selected?.currentModel;
   const selectedGroup = selected && executorModelGroup(selected, selectedModel);
   const currentGroup = browsed && executorModelGroup(browsed, currentModel);
-  const triggerLabel = props.selection
+  const modelLabel = selectedGroup?.name ?? selected?.models.find(model => model.id === selectedModel)?.name ?? selectedModel ?? copy.default;
+  const triggerLabel = props.fixed && props.selection ? modelLabel : props.selection
     ? `${selected?.displayName ?? props.selection.executorId} · ${
         selectedGroup?.name ?? selected?.models.find(model => model.id === selectedModel)?.name ?? selectedModel ?? copy.default
       }`
@@ -212,7 +236,7 @@ export function ExecutorModelPicker(props: ExecutorModelPickerProps) {
     setSelectionFailed(false);
     try {
       await props.onSelect({ executorId: entry.id, configuration });
-      setOpen(false);
+      selector.current?.close();
     } catch {
       // Keep the surface open so the owner's error state can explain the failed commit.
       setSelectionFailed(true);
@@ -225,11 +249,15 @@ export function ExecutorModelPicker(props: ExecutorModelPickerProps) {
     setSelectionFailed(false);
   };
   const openSetup = () => {
-    setOpen(false);
+    selector.current?.close();
     props.onSetup();
   };
+  const openSignIn = (executorId: string) => {
+    selector.current?.close();
+    props.onSetup(executorId);
+  };
   const openNewTask = () => {
-    setOpen(false);
+    selector.current?.close();
     props.onNewTask();
   };
   const restore = () => {
@@ -239,73 +267,135 @@ export function ExecutorModelPicker(props: ExecutorModelPickerProps) {
     }
   };
   const lockedTo = props.fixed ? props.selection?.executorId ?? NATIVE : undefined;
+  // Configured agents stay visible regardless of discovery/authentication state.
+  // A selected executor also keeps its recovery surface if it is no longer registered.
+  const showExecutorRail = !props.fixed && (props.catalog.length > 0 || !!props.selection);
+  const loadingStatus = props.loading && !showExecutorRail ? (
+    <span className="maka-executor-picker-entry-status" role="status">{copy.loading}</span>
+  ) : null;
+  const manageButton = (
+    <Button
+      label={copy.manage}
+      variant="ghost"
+      size={showExecutorRail ? 'lg' : 'sm'}
+      icon={showExecutorRail
+        ? <span className="maka-executor-picker-mark" aria-hidden="true"><Settings size={24} /></span>
+        : <Settings size={ICON_SIZE.control} aria-hidden="true" />}
+      isIconOnly={showExecutorRail}
+      tooltip={showExecutorRail ? copy.manage : undefined}
+      className="maka-executor-picker-entry maka-executor-picker-manage"
+      onClick={openSetup}
+    />
+  );
+  const retryButton = (browsed?.readiness === 'unavailable' || (props.error && !browsed)) ? (
+    <Button
+      label={copy.retry}
+      variant="primary"
+      size="sm"
+      icon={<RefreshCcw size={ICON_SIZE.control} aria-hidden="true" />}
+      isLoading={props.loading}
+      onClick={props.onRetry}
+    />
+  ) : null;
   return (
     <>
-      <Popover
-        label={copy.title}
+      {props.fixed && selected?.readiness === 'ready' ? (
+        // Selector portals still bubble through the Composer's click-to-focus body.
+        <Stack direction="horizontal" gap={0} className="maka-model-picker-root" onClick={(event) => event.stopPropagation()}>
+        <Selector
+          label={`${getConversationCopy(locale).model.switchAriaLabel}: ${modelLabel}`}
+          isLabelHidden
+          options={selected.models.flatMap((model) => {
+            const group = executorModelGroup(selected, model.id);
+            if (group && selected.models.find(candidate => group.variants.some(variant => variant.modelId === candidate.id))?.id !== model.id) return [];
+            return [{
+              value: group ? `group:${group.id}` : `model:${model.id}`,
+              label: group?.name ?? model.name,
+              icon: providerMarkIcon(model.providerType, props.renderProviderMark),
+            }];
+          })}
+          value={selectedGroup ? `group:${selectedGroup.id}` : `model:${selectedModel}`}
+          hasSearch
+          searchPlaceholder={getSharedUiCopy(locale).modelPicker.searchPlaceholder}
+          emptyText={<span className="modelPickerChatOption">{getSharedUiCopy(locale).modelPicker.empty}</span>}
+          emptySearchText={<span className="modelPickerChatOption">{getSharedUiCopy(locale).modelPicker.noResults}</span>}
+          variant="ghost"
+          size="sm"
+          placement="above"
+          presentation={props.presentation === 'wheel' ? 'popover' : props.presentation}
+          isReadOnly={props.isReadOnly}
+          isDisabled={props.disabled || configurationPending || !selected.supportsModelChange}
+          placeholder={modelLabel}
+          className="maka-model-switcher-trigger maka-executor-selector"
+          renderOption={renderChatModelPickerOption}
+          renderValue={(option) => <ComposerModelLabel text={option.label ?? option.value} />}
+          onChange={(value) => {
+            const group = selected.modelGroups?.find(candidate => `group:${candidate.id}` === value);
+            const model = group ? highestExecutorModelVariant(group) : value.slice('model:'.length);
+            if (model !== undefined) void chooseModel({ model }, selected);
+          }}
+        />
+        </Stack>
+      ) : <ComplexSelector
+        label={triggerLabel}
+        isLabelHidden
+        value={props.selection}
+        triggerLabel={<ComposerModelLabel text={triggerLabel} />}
+        variant="ghost"
+        size="sm"
         placement="above"
-        width="min(620px, 92vw)"
-        isOpen={open}
-        onOpenChange={setOpen}
-        isEnabled={!props.disabled && !props.isReadOnly && !modePending}
-        content={
-          <div className="maka-executor-picker-panel">
-            <nav className="maka-executor-picker-rail" aria-label={copy.title}>
+        handleRef={selector}
+        onOpenChange={onOpenChange}
+        isDisabled={props.disabled || props.isReadOnly || modePending}
+        className="maka-model-switcher-trigger maka-executor-selector"
+      >
+        {() => (
+          <div className="maka-executor-picker-panel" data-layout={showExecutorRail ? 'split' : 'single'}>
+            {showExecutorRail && <nav className="maka-executor-picker-rail" aria-label={copy.title}>
+              <div className="maka-executor-picker-rail-item maka-executor-picker-native-entry" data-active={browsedId === NATIVE ? 'true' : undefined}>
               <Button
                 label="Maka"
                 variant="ghost"
-                size="sm"
+                size="lg"
+                isIconOnly
+                tooltip="Maka"
+                icon={<span className="maka-executor-picker-mark" aria-hidden="true">{props.renderExecutorMark?.() ?? <MakaWordmark width={24} />}</span>}
                 className="maka-executor-picker-entry"
-                data-active={browsedId === NATIVE ? 'true' : undefined}
+                aria-pressed={browsedId === NATIVE}
                 isDisabled={lockedTo !== undefined && lockedTo !== NATIVE}
                 onClick={() => browse(NATIVE)}
               />
+              </div>
+              <div className="maka-executor-picker-agents">
               {props.catalog.map((entry) => (
+                <div key={entry.id} className="maka-executor-picker-rail-item maka-executor-picker-agent-item" data-active={browsedId === entry.id ? 'true' : undefined}>
                 <Button
-                  key={entry.id}
                   label={entry.displayName}
                   variant="ghost"
-                  size="sm"
+                  size="lg"
+                  isIconOnly
+                  tooltip={props.loading ? `${entry.displayName} · ${copy.refreshing}` : entry.readiness === 'ready' ? entry.displayName : `${entry.displayName} · ${copy[entry.readiness]}`}
+                  aria-description={props.loading ? copy.refreshing : entry.readiness === 'ready' ? undefined : copy[entry.readiness]}
                   className="maka-executor-picker-entry"
-                  data-active={browsedId === entry.id ? 'true' : undefined}
+                  aria-pressed={browsedId === entry.id}
                   isDisabled={lockedTo !== undefined && lockedTo !== entry.id}
                   onClick={() => browse(entry.id)}
-                >
-                  <span className="maka-executor-picker-label">
-                    <span>{entry.displayName}</span>
-                    {entry.readiness !== 'ready' ? (
-                      <span className="maka-executor-picker-entry-status">
-                        {copy[entry.readiness]}
-                      </span>
-                    ) : null}
-                  </span>
-                </Button>
-              ))}
-              {props.loading ? (
-                <span className="maka-executor-picker-entry-status" role="status">{copy.loading}</span>
-              ) : null}
-              <Button
-                label={copy.manage}
-                variant="ghost"
-                size="sm"
-                icon={<Settings size={ICON_SIZE.control} aria-hidden="true" />}
-                className="maka-executor-picker-entry maka-executor-picker-manage"
-                onClick={openSetup}
-              />
-              {(props.error || browsed?.readiness === 'unavailable' || browsed?.readiness === 'ready' || browsed?.readiness === 'authentication_required') && (
-                <Button
-                  label={copy.retry}
-                  variant="ghost"
-                  size="sm"
-                  className="maka-executor-picker-entry"
-                  isDisabled={props.loading}
-                  onClick={props.onRetry}
+                  icon={
+                    <span className="maka-executor-picker-mark" aria-hidden="true">
+                      {props.renderExecutorMark?.(entry) ?? <Bot size={24} />}
+                      {!props.loading && entry.readiness !== 'ready' && <StatusDot className="maka-executor-picker-status-dot" variant={dotForStatus(READINESS_STATUS[entry.readiness])} label={copy[entry.readiness]} />}
+                    </span>
+                  }
                 />
-              )}
-            </nav>
+                {props.loading && <span className="maka-executor-picker-agent-status" role="status" aria-label={`${entry.displayName} · ${copy.refreshing}`}><Spinner size="sm" /></span>}
+                </div>
+              ))}
+              </div>
+              <div className="maka-executor-picker-rail-item maka-executor-picker-rail-manage">{manageButton}</div>
+            </nav>}
             <section className="maka-executor-picker-models" aria-live="polite">
               {browsedId === NATIVE ? (
-                <ModelPickerPanelContext.Provider value={{ onSelected: () => setOpen(false) }}>
+                <ModelPickerPanelContext.Provider value={{ onSelected: () => selector.current?.close() }}>
                   <div className="maka-executor-picker-native">{props.children}</div>
                 </ModelPickerPanelContext.Provider>
               ) : browsed?.readiness === 'ready' ? (
@@ -342,36 +432,45 @@ export function ExecutorModelPicker(props: ExecutorModelPickerProps) {
                   {selectionFailed ? <span role="alert">{copy.selectionFailed}</span> : null}
                 </>
               ) : props.loading && !browsed ? (
-                <div className="maka-executor-picker-readiness" role="status">
+                <div className="maka-executor-picker-readiness-loading" role="status">
+                  <Spinner size="lg" />
                   <p>{copy.loading}</p>
                 </div>
               ) : (
-                <div className="maka-executor-picker-readiness">
-                  <p>{browsed ? copy[browsed.readiness] : copy.unavailable}</p>
-                  {browsed?.readiness === 'restorable' || browsed?.readiness === 'restore_failed' ? (
-                    <Button label={copy.restore} variant="ghost" size="sm" isDisabled={configurationPending || !props.onRestore} onClick={restore} />
+                <EmptyState
+                  className="maka-executor-picker-readiness"
+                  title={browsed?.displayName ?? copy.title}
+                  description={browsed ? copy[browsed.readiness] : copy.unavailable}
+                  icon={browsed?.readiness === 'authentication_required'
+                    ? <KeyRound size={ICON_SIZE.empty} />
+                    : browsed?.readiness === 'restoring'
+                      ? <Spinner size="lg" />
+                      : browsed?.readiness === 'restorable' || browsed?.readiness === 'restore_failed' || browsed?.readiness === 'history_only' || browsed?.readiness === 'history_gap'
+                        ? <History size={ICON_SIZE.empty} />
+                        : <AlertCircle size={ICON_SIZE.empty} />}
+                  actions={browsed?.readiness === 'restorable' || browsed?.readiness === 'restore_failed' ? (
+                    <Button label={copy.restore} variant="primary" size="sm" isDisabled={configurationPending || !props.onRestore} onClick={restore} />
                   ) : browsed?.readiness === 'history_only' || browsed?.readiness === 'history_gap' ? (
-                    <Button label={copy.newTask} variant="ghost" size="sm" onClick={openNewTask} />
-                  ) : browsed?.readiness === 'restoring' ? null : (
-                    <Button label={copy.manage} variant="ghost" size="sm" onClick={openSetup} />
+                    <Button label={copy.newTask} variant="primary" size="sm" onClick={openNewTask} />
+                  ) : browsed?.readiness === 'restoring' ? undefined : browsed?.readiness === 'authentication_required' ? (
+                    <Button label={copy.signIn} variant="primary" size="sm" onClick={() => openSignIn(browsed.id)} />
+                  ) : retryButton ?? (
+                    <Button label={copy.manage} variant="secondary" size="sm" onClick={openSetup} />
                   )}
-                </div>
+                />
               )}
             </section>
+            {!props.fixed && !showExecutorRail && (
+              <div className="maka-executor-picker-footer">
+                {loadingStatus}
+                {manageButton}
+                {retryButton}
+              </div>
+            )}
           </div>
-        }
-      >
-        <Button
-          label={triggerLabel}
-          variant="ghost"
-          size="sm"
-          isDisabled={props.disabled || props.isReadOnly || modePending}
-          tooltip={props.fixed ? copy.fixed : undefined}
-          className="maka-model-switcher-trigger maka-executor-selector"
-        >
-          <ComposerModelLabel text={triggerLabel} />
-        </Button>
-      </Popover>
+        )}
+      </ComplexSelector>}
+      {props.fixed && selected?.readiness === 'ready' && selectionFailed ? <span role="alert">{copy.selectionFailed}</span> : null}
       {props.selection ? <ExecutorThinkingLevelSelector {...props} disabled={props.disabled || configurationPending} /> : props.nativeThinkingControl}
       <ExecutorModeSelector {...props} disabled={props.disabled || selecting} onPendingChange={setModePending} />
       {(selectedUnavailable || selectedInvalid || props.error) && (
@@ -381,16 +480,18 @@ export function ExecutorModelPicker(props: ExecutorModelPickerProps) {
             <Button label={copy.restore} variant="ghost" size="sm" isDisabled={configurationPending || !props.onRestore} onClick={restore} />
           ) : selected?.readiness === 'history_only' || selected?.readiness === 'history_gap' ? (
             <Button label={copy.newTask} variant="ghost" size="sm" onClick={openNewTask} />
-          ) : selected?.readiness === 'restoring' ? null : (
+          ) : selected?.readiness === 'restoring' ? null : selected?.readiness === 'authentication_required' ? (
+            <Button label={copy.signIn} variant="ghost" size="sm" onClick={() => openSignIn(selected.id)} />
+          ) : (
             <>
               <Button label={copy.manage} variant="ghost" size="sm" onClick={openSetup} />
-              <Button
+              {(selectedUnavailable || (props.error && !selected)) && <Button
                 label={copy.retry}
                 variant="ghost"
                 size="sm"
                 isDisabled={props.loading}
                 onClick={props.onRetry}
-              />
+              />}
             </>
           )}
         </span>
