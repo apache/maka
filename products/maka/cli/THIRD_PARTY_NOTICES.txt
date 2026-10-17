@@ -1009,6 +1009,7 @@ hashbrown@0.14.5 (MIT OR Apache-2.0); authors declared by package: Amanieu d'Ant
 hashbrown@0.15.5 (MIT OR Apache-2.0); authors declared by package: Amanieu d'Antras <amanieu@gmail.com>
 hashbrown@0.16.1 (MIT OR Apache-2.0); authors declared by package: Amanieu d'Antras <amanieu@gmail.com>
 hashbrown@0.17.1 (MIT OR Apache-2.0)
+hdrhistogram@7.6.0 (MIT/Apache-2.0); authors declared by package: Jon Gjengset <jon@thesquareplanet.com>, Marshall Pierce <marshall@mpierce.org>
 heapless@0.7.17 (MIT OR Apache-2.0); authors declared by package: Jorge Aparicio <jorge@japaric.io>, Per Lindgren <per.lindgren@ltu.se>, Emil Fresk <emil.fresk@gmail.com>
 heapless@0.8.0 (MIT OR Apache-2.0); authors declared by package: Jorge Aparicio <jorge@japaric.io>, Per Lindgren <per.lindgren@ltu.se>, Emil Fresk <emil.fresk@gmail.com>
 heapless@0.9.3 (MIT OR Apache-2.0); authors declared by package: Jorge Aparicio <jorge@japaric.io>, Per Lindgren <per.lindgren@ltu.se>, Emil Fresk <emil.fresk@gmail.com>
@@ -1283,6 +1284,7 @@ https://crates.io/api/v1/crates/hashbrown/0.14.5/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/hashbrown/0.15.5/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/hashbrown/0.16.1/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/hashbrown/0.17.1/download :: LICENSE-APACHE
+https://crates.io/api/v1/crates/hdrhistogram/7.6.0/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/heapless/0.7.17/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/heapless/0.8.0/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/heapless/0.9.3/download :: LICENSE-APACHE
@@ -1956,6 +1958,7 @@ crypto-common@0.2.2 (MIT OR Apache-2.0); authors declared by package: RustCrypto
 ctr@0.9.2 (MIT OR Apache-2.0); authors declared by package: RustCrypto Developers
 der@0.7.10 (Apache-2.0 OR MIT); authors declared by package: RustCrypto Developers
 der@0.8.2 (Apache-2.0 OR MIT); authors declared by package: RustCrypto Developers
+der_derive@0.8.0 (Apache-2.0 OR MIT); authors declared by package: RustCrypto Developers
 digest@0.10.7 (MIT OR Apache-2.0); authors declared by package: RustCrypto Developers
 digest@0.11.3 (MIT OR Apache-2.0); authors declared by package: RustCrypto Developers
 ed448-goldilocks@0.14.0-pre.15 (Apache-2.0 OR MIT); authors declared by package: RustCrypto Developers
@@ -1984,6 +1987,7 @@ p521@0.13.3 (Apache-2.0 OR MIT); authors declared by package: RustCrypto Develop
 password-hash@0.6.1 (MIT OR Apache-2.0); authors declared by package: RustCrypto Developers
 pbkdf2@0.12.2 (MIT OR Apache-2.0); authors declared by package: RustCrypto Developers
 pem-rfc7468@0.7.0 (Apache-2.0 OR MIT); authors declared by package: RustCrypto Developers
+pem-rfc7468@1.0.0 (Apache-2.0 OR MIT); authors declared by package: RustCrypto Developers
 phc@0.6.1 (Apache-2.0 OR MIT); authors declared by package: RustCrypto Developers
 pkcs1@0.7.5 (Apache-2.0 OR MIT); authors declared by package: RustCrypto Developers
 pkcs8@0.10.2 (Apache-2.0 OR MIT); authors declared by package: RustCrypto Developers
@@ -2041,6 +2045,7 @@ https://crates.io/api/v1/crates/crypto-common/0.2.2/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/ctr/0.9.2/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/der/0.7.10/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/der/0.8.2/download :: LICENSE-APACHE
+https://crates.io/api/v1/crates/der_derive/0.8.0/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/digest/0.10.7/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/digest/0.11.3/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/ed448-goldilocks/0.14.0-pre.15/download :: LICENSE-APACHE
@@ -2069,6 +2074,7 @@ https://crates.io/api/v1/crates/p521/0.13.3/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/password-hash/0.6.1/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/pbkdf2/0.12.2/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/pem-rfc7468/0.7.0/download :: LICENSE-APACHE
+https://crates.io/api/v1/crates/pem-rfc7468/1.0.0/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/phc/0.6.1/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/pkcs1/0.7.5/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/pkcs8/0.10.2/download :: LICENSE-APACHE
@@ -9962,8 +9968,10 @@ DEALINGS IN THE SOFTWARE.
 ================================================================================
 
 cpufeatures@0.2.17 (MIT OR Apache-2.0); authors declared by package: RustCrypto Developers
+der_derive@0.8.0 (Apache-2.0 OR MIT); authors declared by package: RustCrypto Developers
 
 https://crates.io/api/v1/crates/cpufeatures/0.2.17/download :: LICENSE-MIT
+https://crates.io/api/v1/crates/der_derive/0.8.0/download :: LICENSE-MIT
 
 Copyright (c) 2020-2025 The RustCrypto Project Developers
 
@@ -18993,6 +19001,34 @@ DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 
+hdrhistogram@7.6.0 (MIT/Apache-2.0); authors declared by package: Jon Gjengset <jon@thesquareplanet.com>, Marshall Pierce <marshall@mpierce.org>
+
+https://crates.io/api/v1/crates/hdrhistogram/7.6.0/download :: LICENSE-MIT
+
+The MIT License (MIT)
+
+Copyright (c) 2016 Jon Gjengset
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+================================================================================
+
 hex@0.4.3 (MIT OR Apache-2.0); authors declared by package: KokaKiwi <kokakiwi@kokakiwi.net>
 
 https://crates.io/api/v1/crates/hex/0.4.3/download :: LICENSE-MIT
@@ -26729,6 +26765,38 @@ https://crates.io/api/v1/crates/pbkdf2/0.12.2/download :: LICENSE-MIT
 
 Copyright (c) 2017 Artyom Pavlov
 Copyright (c) 2018-2023 The RustCrypto Project Developers
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+================================================================================
+
+pem-rfc7468@1.0.0 (Apache-2.0 OR MIT); authors declared by package: RustCrypto Developers
+
+https://crates.io/api/v1/crates/pem-rfc7468/1.0.0/download :: LICENSE-MIT
+
+Copyright (c) 2021-2025 The RustCrypto Project Developers
 
 Permission is hereby granted, free of charge, to any
 person obtaining a copy of this software and associated
