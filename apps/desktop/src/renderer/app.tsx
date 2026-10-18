@@ -22,7 +22,6 @@ import { Theme } from '@astryxdesign/core/theme';
 import { makaTheme } from './astryx-theme/maka';
 import { AppShell } from './composition/legacy-desktop-region';
 import { useAstryxThemeMode } from './astryx-theme-mode';
-import { ProviderBrandMark } from './settings/provider-brand-marks';
 
 export function App() {
   // The launch overlay (`#maka-preload` in index.html) retires on its own once
@@ -52,7 +51,7 @@ export function App() {
   return (
     <StrictMode>
       <Theme theme={makaTheme} mode={astryxMode}>
-        <AppShell renderProviderMark={(type) => <ProviderBrandMark type={type} />} />
+        <AppShell />
       </Theme>
     </StrictMode>
   );

@@ -112,7 +112,6 @@
     "src/renderer/settings/projects-settings-page.tsx",
     "src/renderer/settings/provider-add-form.tsx",
     "src/renderer/settings/provider-add-submission.ts",
-    "src/renderer/settings/provider-brand-marks.tsx",
     "src/renderer/settings/provider-catalog-page.tsx",
     "src/renderer/settings/provider-connection-detail.tsx",
     "src/renderer/settings/provider-connection-status.ts",
@@ -333,8 +332,12 @@
       ]
     },
     "src/renderer/features/connection-settings/index.ts": {
+      "appShell": [
+        "ProviderBrandMark"
+      ],
       "composition": [
-        "ConnectionSettingsServicesProvider"
+        "ConnectionSettingsServicesProvider",
+        "ProviderBrandMark"
       ]
     },
     "src/renderer/features/conversation/index.ts": {
@@ -653,7 +656,7 @@
         "nonTriviaTokens": 858
       },
       "src/renderer/app-shell.tsx": {
-        "importDeclarations": 34,
+        "importDeclarations": 33,
         "bridgePaths": {},
         "environmentCapabilities": {
           "window.requestAnimationFrame": 3
@@ -700,6 +703,7 @@
           "./desktop-execution-boundary-surface": 1,
           "./error-boundary": 1,
           "./features/app-update/index.js": 1,
+          "./features/connection-settings/index.js": 1,
           "./features/conversation": 1,
           "./features/conversation/index.js": 1,
           "./features/diagnostics/index.js": 1,
@@ -722,7 +726,6 @@
           "./pending-session-view": 1,
           "./platform/desktop/default-runtime-host-operation.js": 1,
           "./scroll-motion-policy": 1,
-          "./settings/provider-brand-marks": 1,
           "./settings/runtime-host-ssh-terminal-dialog.js": 1,
           "./shell/detail-panel": 1,
           "./shell/frame-style": 1,
@@ -742,7 +745,7 @@
           "@maka/ui": 1,
           "react": 1
         },
-        "importSpecifiers": 43,
+        "importSpecifiers": 42,
         "nonTriviaTokens": 7276
       },
       "src/renderer/use-app-shell-session-list.ts": {
@@ -2007,6 +2010,7 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
+          "../features/connection-settings/index.js": 1,
           "../features/jev-settings": 1,
           "../features/network-proxy/index.js": 1,
           "../features/personal-assistant/index.js": 1,
@@ -2016,7 +2020,6 @@
           "../locales/shell-copy.js": 1,
           "./password-input": 1,
           "./personalization-settings-section": 1,
-          "./provider-brand-marks": 1,
           "./runtime-host-settings-target.js": 1,
           "./settings-error-copy": 1,
           "./settings-section": 1,
@@ -2382,42 +2385,6 @@
           "@maka/core/llm-connections": 1
         }
       },
-      "src/renderer/settings/provider-brand-marks.tsx": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "../assets/provider-brands/alibabacloud.svg": 1,
-          "../assets/provider-brands/cerebras.svg": 1,
-          "../assets/provider-brands/cloudflare.svg": 1,
-          "../assets/provider-brands/cohere.svg": 1,
-          "../assets/provider-brands/deepinfra.svg": 1,
-          "../assets/provider-brands/fireworks.svg": 1,
-          "../assets/provider-brands/groq.svg": 1,
-          "../assets/provider-brands/huggingface.svg": 1,
-          "../assets/provider-brands/hunyuan.svg": 1,
-          "../assets/provider-brands/lmstudio.svg": 1,
-          "../assets/provider-brands/localai.svg": 1,
-          "../assets/provider-brands/mistral.svg": 1,
-          "../assets/provider-brands/nvidia.svg": 1,
-          "../assets/provider-brands/opencode.svg": 1,
-          "../assets/provider-brands/openrouter.svg": 1,
-          "../assets/provider-brands/stepfun.svg": 1,
-          "../assets/provider-brands/tencentcloud.svg": 1,
-          "../assets/provider-brands/together.svg": 1,
-          "../assets/provider-brands/vercel.svg": 1,
-          "../assets/provider-brands/volcengine.svg": 1,
-          "../assets/provider-brands/xai.svg": 1,
-          "../assets/provider-brands/xiaomimimo.svg": 1,
-          "../assets/provider-brands/zai.svg": 1,
-          "../assets/provider-brands/zenmux.svg": 1,
-          "../features/connection-settings": 1,
-          "simple-icons": 1
-        }
-      },
       "src/renderer/settings/provider-catalog-page.tsx": {
         "bridgePaths": {},
         "environmentCapabilities": {},
@@ -2503,7 +2470,7 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
-          "./provider-brand-marks": 1,
+          "../features/connection-settings/index.js": 1,
           "./provider-display-copy": 1
         }
       },
@@ -3588,7 +3555,7 @@
   },
   "rootDebt": {
     "src/renderer/app.tsx": {
-      "importDeclarations": 6,
+      "importDeclarations": 5,
       "bridgePaths": {
         "window.maka.appWindow.notifyRendererReady": 1
       },
@@ -3607,12 +3574,11 @@
         "./astryx-theme-mode": 1,
         "./astryx-theme/maka": 1,
         "./composition/legacy-desktop-region": 1,
-        "./settings/provider-brand-marks": 1,
         "@astryxdesign/core/theme": 1,
         "react": 1
       },
-      "importSpecifiers": 7,
-      "nonTriviaTokens": 196
+      "importSpecifiers": 6,
+      "nonTriviaTokens": 172
     },
     "src/renderer/main.tsx": {
       "importDeclarations": 7,

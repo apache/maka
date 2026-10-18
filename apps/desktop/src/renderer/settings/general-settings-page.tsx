@@ -58,7 +58,7 @@ import {
   useUiLocale,
   Banner,
 } from "@maka/ui";
-import { ProviderBrandMark } from "./provider-brand-marks";
+import { ProviderBrandMark } from "../features/connection-settings/index.js";
 import { PasswordInput } from "./password-input";
 import { settingsActionErrorMessage } from "./settings-error-copy";
 import { useActionGuard, useKeyedActionGuard } from "./use-action-guard";
