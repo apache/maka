@@ -46,11 +46,13 @@ export function renderConversationMarkdown(
       intentSeparator: copy.intentSeparator,
     },
     includeToolResults: false,
+    // The clipboard export has always set its exported-at line in italics;
+    // keep that shape on the shared renderer (#6036 review).
     exportedAtLine: (isoTimestamp) =>
-      copy.exported(
+      `*${copy.exported(
         new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short' }).format(
           new Date(isoTimestamp),
         ),
-      ),
+      )}*`,
   });
 }

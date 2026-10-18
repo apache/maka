@@ -82,8 +82,9 @@ export interface RenderConversationMarkdownOptions {
 /**
  * Serialize stored rows to a Markdown document. One section per turn: a
  * `## {copy.you}` header per user message (steering included, in stored
- * order), lazy `### {copy.toolCalls}` blocks carrying each call's redacted
- * intent/arguments and result, and `## {copy.assistant}` for the answer.
+ * order), lazy `### {copy.toolCalls}` blocks carrying each call's bulleted,
+ * redacted intent/arguments and its nested result, and `## {copy.assistant}`
+ * for the answer.
  */
 export function renderConversationMarkdown(
   sessionName: string,
@@ -120,8 +121,12 @@ export function renderConversationMarkdown(
     let assistantTexts: string[] = [];
     let assistantThinkings: string[] = [];
     const flushAssistant = (): void => {
-      inToolRun = false;
+      // Only an emitted answer breaks a tool run: consecutive calls (and their
+      // results) share one section, while an answer in between opens the next
+      // one (#6036 review — resetting before this check gave every call its
+      // own heading and regressed the Desktop clipboard export).
       if (assistantTexts.length === 0 && assistantThinkings.length === 0) return;
+      inToolRun = false;
       emit(`## ${options.copy.assistant}\n\n`);
       if (options.includeThinking) {
         const thinking = assistantThinkings.join('\n\n');
@@ -150,7 +155,9 @@ export function renderConversationMarkdown(
           inToolRun = true;
         }
         const intent = message.intent ? redact(message.intent) : undefined;
-        let row = `\`${message.toolName}\`${intent ? `${options.copy.intentSeparator}${intent}` : ''}`;
+        // The bulleted row is part of the clipboard shape the Desktop export
+        // shipped with, and the indented result rows below nest under it.
+        let row = `- \`${message.toolName}\`${intent ? `${options.copy.intentSeparator}${intent}` : ''}`;
         if (options.includeToolArguments) {
           const args = redact(safeJsonCompact(message.args));
           if (args.length > 0) row += `${options.copy.intentSeparator}args: ${args}`;
