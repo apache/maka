@@ -134,6 +134,8 @@ const TUI_COPY_RESOURCES_REWIND_EN = {
     'Some recovered quotes exceed the per-message quote limit; the overflow was added to the draft as quoted text.',
   quotesSizeOverflow:
     'Some recovered quotes are past the single-message size budget and were added to the draft as quoted text; trim or split the draft if it still exceeds the message size limit.',
+  sideCloseKeptDraft: 'Side conversation kept open — the editor draft was kept.',
+  sideCloseKeptQuotes: 'Side conversation kept open — the staged quotes were kept.',
   unsupportedAttachments:
     'Cannot rewind to this turn: it carries attachments, and the TUI cannot restore those into the replacement prompt yet. Rewind to an earlier plain-text turn instead.',
   unsupportedDirectoryReferences:
@@ -1405,6 +1407,8 @@ export const TUI_COPY_RESOURCES = {
           '部分恢复的引用超过单条消息的引用数量上限；超出部分已以引用文本形式加入草稿。',
         quotesSizeOverflow:
           '部分恢复的引用超出单条消息的大小预算，已以引用文本形式加入草稿；若草稿仍超过消息大小上限，请删减或分段发送。',
+        sideCloseKeptDraft: '侧聊保持打开——输入框草稿已保留。',
+        sideCloseKeptQuotes: '侧聊保持打开——暂存的引用已保留。',
         unsupportedAttachments:
           '无法回退到这一轮：它携带附件，TUI 暂时无法把它们还原进替换 prompt。请改为回退到更早的纯文本轮次。',
         unsupportedDirectoryReferences:
@@ -1432,6 +1436,8 @@ export const TUI_COPY_RESOURCES = {
           '部分恢復的引用超過單則訊息的引用數量上限；超出部分已以引用文字形式加入草稿。',
         quotesSizeOverflow:
           '部分恢復的引用超出單則訊息的大小預算，已以引用文字形式加入草稿；若草稿仍超過訊息大小上限，請刪減或分段傳送。',
+        sideCloseKeptDraft: '側聊保持開啟——輸入框草稿已保留。',
+        sideCloseKeptQuotes: '側聊保持開啟——暫存的引用已保留。',
         unsupportedAttachments:
           '無法回退到這一輪：它攜帶附件，TUI 暫時無法把它們還原進替換 prompt。請改為回退到更早的純文字輪次。',
         unsupportedDirectoryReferences:

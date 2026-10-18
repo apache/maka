@@ -446,6 +446,8 @@ interface TuiRewindCopy {
   readonly quotesListHeading: string;
   readonly quotesCountOverflow: string;
   readonly quotesSizeOverflow: string;
+  readonly sideCloseKeptDraft: string;
+  readonly sideCloseKeptQuotes: string;
   readonly unsupportedAttachments: string;
   readonly unsupportedDirectoryReferences: string;
   readonly pickerHint: string;
@@ -2626,8 +2628,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         kind: 'notice',
         level: 'info',
         text: keptDraft
-          ? 'Side conversation kept open — the editor draft was kept.'
-          : 'Side conversation kept open — the staged quotes were kept.',
+          ? TUI_REWIND_COPY[locale].sideCloseKeptDraft
+          : TUI_REWIND_COPY[locale].sideCloseKeptQuotes,
       });
       requestRender();
       return;
