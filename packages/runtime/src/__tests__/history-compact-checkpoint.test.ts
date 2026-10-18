@@ -237,7 +237,7 @@ describe('history compact checkpoint', () => {
         'connection-a',
         'gpt-5.3-codex',
       ),
-      false,
+      true,
     );
   });
 
