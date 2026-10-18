@@ -29,6 +29,7 @@ apps/desktop/src/renderer/features/connection-settings/connection-default-action
 apps/desktop/src/renderer/features/connection-settings/generic-provider-mark.tsx
 apps/desktop/src/renderer/features/connection-settings/onboarding-step-form.tsx
 apps/desktop/src/renderer/features/connection-settings/provider-add-model-dialog.tsx
+apps/desktop/src/renderer/features/connection-settings/provider-brand-marks.tsx
 apps/desktop/src/renderer/features/connection-settings/provider-capability-editor.tsx
 apps/desktop/src/renderer/features/connection-settings/provider-endpoint-field.tsx
 apps/desktop/src/renderer/features/connection-settings/services-context.tsx
@@ -164,7 +165,6 @@ apps/desktop/src/renderer/settings/permission-center-page.tsx
 apps/desktop/src/renderer/settings/personalization-settings-section.tsx
 apps/desktop/src/renderer/settings/projects-settings-page.tsx
 apps/desktop/src/renderer/settings/provider-add-form.tsx
-apps/desktop/src/renderer/settings/provider-brand-marks.tsx
 apps/desktop/src/renderer/settings/provider-catalog-page.tsx
 apps/desktop/src/renderer/settings/provider-connection-detail.tsx
 apps/desktop/src/renderer/settings/provider-display.tsx
