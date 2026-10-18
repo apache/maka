@@ -368,24 +368,26 @@ export class DesktopSessionLocalService {
       .map((target) => {
         const connection = this.#observeCatalogConnection(target);
         const fresh = this.#catalogFresh.get(target.partition);
-        const authoritative = !this.#closed && !!target.client && fresh?.connection === connection;
+        const live = !this.#closed && !!target.client && fresh?.connection === connection;
         const sessions = this.store
           .sessions(target.partition)
           .map((session) =>
             this.store.creation(target.partition, session.id)
               ? { ...session, localState: 'pending' as const }
-              : authoritative
+              : live
                 ? session
                 : { ...session, runningTurnIds: undefined, backgroundActivity: undefined, backgroundActivityVersion: undefined, localState: 'cached' as const },
           );
         if (
           target.client &&
-          (!authoritative || !fresh ||
+          (!live || !fresh ||
             fresh.invalidationVersion !== connection.invalidationVersion ||
             Date.now() - fresh.at > 5000)
         )
           this.#refreshCatalog(target, connection);
-        return { scope: target.scope, sessions, authoritative };
+        // A live snapshot still carries observed activity, but cannot prove
+        // absence after a Host change until the catalog catches up.
+        return { scope: target.scope, sessions, authoritative: live && fresh.invalidationVersion === connection.invalidationVersion };
       });
   }
 
@@ -450,7 +452,8 @@ export class DesktopSessionLocalService {
           locallyInvalidated = true;
           return;
         }
-        this.store.saveCatalog(target.partition, sessions.map(toDesktopHostSessionSummary));
+        const removed = this.store.saveCatalog(target.partition, sessions.map(toDesktopHostSessionSummary));
+        for (const sessionId of removed) this.#snapshots.delete(`${target.partition}:${sessionId}`);
         // Publish successful observations even under continuous Host events.
         // The captured version keeps this observation dirty if another change
         // arrived while reading, so one trailing refresh can converge.
@@ -504,6 +507,11 @@ export class DesktopSessionLocalService {
     this.#drainCatalogRefreshes();
   }
 
+  removeSession(target: DesktopSessionLocalTarget, sessionId: string): void {
+    this.#snapshots.delete(`${target.partition}:${sessionId}`);
+    this.store.removeSession(target.partition, sessionId);
+  }
+
   cacheTranscript(scope: DesktopTargetScope, snapshot: DesktopTranscriptReplicaSnapshot): void {
     if (this.#closed) return;
     let target: DesktopSessionLocalTarget;
@@ -527,11 +535,10 @@ export class DesktopSessionLocalService {
     const pending = this.#snapshots.has(key);
     this.#snapshots.set(key, { target, snapshot });
     if (pending) return;
-    const revision = this.store.revision;
     setImmediate(() => {
       const latest = this.#snapshots.get(key);
       this.#snapshots.delete(key);
-      if (!latest || !this.#current(latest.target) || revision !== this.store.revision) return;
+      if (!latest || !this.#current(latest.target)) return;
       try {
         this.store.saveTranscript(latest.target.partition, latest.snapshot);
       } catch (error) {
@@ -952,7 +959,7 @@ export function registerDesktopSessionLocalIpc(deps: {
         .some((record) => record.intent.originHostEpoch)
     )
       throw new Error('Session has a dispatched message');
-    service.store.removeSession(target.partition, sessionId);
+    service.removeSession(target, sessionId);
     deps.changed(target.scope, sessionId);
     return true;
   });

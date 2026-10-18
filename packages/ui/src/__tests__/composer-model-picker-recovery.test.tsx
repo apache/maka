@@ -70,8 +70,29 @@ test('the native model pair remains the model-selection slot fallback', () => {
   );
 
   const native = render(false);
-  assert.match(native, /maka-model-switcher-trigger/u);
-  assert.match(native, /maka-thinking-level-selector/u);
+  assert.match(native, /maka-composer-options-trigger/u);
+  assert.doesNotMatch(native, /maka-thinking-level-selector/u);
+
+  const detailed = renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <Composer
+        activeSession={session}
+        activeModelConnectionId={choice.connectionId}
+        activeModelConnectionSlug={choice.connectionSlug}
+        activeModel={choice.model}
+        activeModelLabel={choice.label}
+        activeThinkingLevels={choice.thinkingLevels}
+        activeThinkingLevel="high"
+        modelChoices={[{ ...choice, contextWindow: 1_048_576 }]}
+        onModelChange={() => undefined}
+        onThinkingLevelChange={() => undefined}
+        onSend={() => undefined}
+        onStop={() => undefined}
+      />
+    </LocaleProvider>,
+  );
+  assert.match(detailed, /maka-composer-model-label" dir="ltr" title="Native model">Native model</u);
+  assert.match(detailed, /maka-composer-options-details">1M High</u);
 
   const pluginExecutorWithoutClientContribution = render(true);
   assert.match(pluginExecutorWithoutClientContribution, /maka-model-switcher-trigger/u);
@@ -243,23 +264,40 @@ test('the recovery handle opens the existing exact account-and-model picker', as
         />
       </LocaleProvider>,
     ));
-    assert.match(document.documentElement.innerHTML, /aria-expanded="false"[^>]*aria-haspopup="listbox"/);
+    assert.equal(
+      document.querySelector('.maka-composer-options-trigger')?.getAttribute('aria-expanded'),
+      'false',
+    );
 
     await act(() => composer.current?.openModelPicker());
 
-    assert.match(document.documentElement.innerHTML, /aria-expanded="true"[^>]*aria-haspopup="listbox"/);
-    assert.match(document.documentElement.innerHTML, /GPT-5/);
-    const items = [...document.querySelectorAll<HTMLElement>('[role="option"]')];
-    assert.equal(items.length, 1, 'the stale legacy target is not a selectable current row');
+    assert.equal(
+      document.querySelector('.maka-composer-options-trigger')?.getAttribute('aria-expanded'),
+      'true',
+    );
+    const openModel = () => {
+      const row = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')]
+        .find((candidate) => candidate.textContent?.includes('Model'));
+      assert.ok(row);
+      return act(() => row.dispatchEvent(new window.Event('click', { bubbles: true })));
+    };
+    await openModel();
+    const items = [...document.querySelectorAll<HTMLElement>('[role="menuitemradio"]')];
+    const gpt = items.find((row) => row.textContent?.includes('GPT-5'));
+    assert.ok(gpt, 'the stale legacy target is not a selectable current row');
+    assert.equal(items.some((row) => row.textContent?.includes('legacy')), false);
 
-    await act(() => items[0]?.dispatchEvent(new window.Event('click', { bubbles: true })));
+    await act(() => gpt.dispatchEvent(new window.Event('click', { bubbles: true })));
 
     assert.deepEqual(selected, {
       llmConnectionId: 'connection-openrouter',
       llmConnectionSlug: 'openrouter',
       model: 'openai/gpt-5',
     });
-    assert.match(document.documentElement.innerHTML, /aria-expanded="false"[^>]*aria-haspopup="listbox"/);
+    assert.equal(
+      document.querySelector('.maka-composer-options-trigger')?.getAttribute('aria-expanded'),
+      'false',
+    );
 
     await act(() => root.render(
       <LocaleProvider locale="en">
@@ -282,13 +320,17 @@ test('the recovery handle opens the existing exact account-and-model picker', as
       </LocaleProvider>,
     ));
     await act(() => composer.current?.openModelPicker());
+    const modelRow = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')]
+      .find((candidate) => candidate.textContent?.includes('Model'));
+    assert.ok(modelRow);
+    await act(() => modelRow.dispatchEvent(new window.Event('click', { bubbles: true })));
 
     const selectedOption = document.querySelector<HTMLElement>(
-      '[role="option"][aria-selected="true"]',
+      '[role="menuitemradio"][aria-checked="true"]',
     );
     assert.equal(selectedOption?.textContent?.includes('GPT-5'), true);
     assert.match(
-      document.querySelector<HTMLElement>('.maka-model-switcher-trigger')?.textContent ?? '',
+      document.querySelector<HTMLElement>('.maka-composer-options-trigger')?.textContent ?? '',
       /GPT-5/,
     );
 

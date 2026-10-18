@@ -199,6 +199,7 @@ export type ExecutionRuntimeEventWriter = DurableRuntimeEventStore &
       runId: string,
       events: readonly RuntimeEvent[],
     ): Promise<void>;
+    readSessionHistoryRevision(sessionId: string): Promise<string>;
     readSessionRuntimeEventEntries(sessionId: string): Promise<SessionRuntimeEventEntry[]>;
     /** Called once per Session after each write that committed RuntimeEvents to it. */
     subscribeRuntimeEventCommits(listener: (sessionId: string) => void): () => void;
@@ -296,6 +297,7 @@ export interface ExecutionRuntimeEventReader {
   ): Promise<BoundedEvidenceReadResult<RuntimeEvent>>;
   readImmutableRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]>;
   readSessionRuntimeEvents(sessionId: string): Promise<RuntimeEvent[]>;
+  readSessionHistoryRevision(sessionId: string): Promise<string>;
   /** Session-wide events with the ordinal that fixes their transcript order. */
   readSessionRuntimeEventEntries(
     sessionId: string,
@@ -456,9 +458,19 @@ async function createExecutionStoresForWrite(
     );
     if (
       !persistence.eventWaitStore ||
-      ['read', 'listSession', 'listPending', 'commit', 'close'].some(
-        (name) => typeof Reflect.get(persistence.eventWaitStore, name) !== 'function',
-      )
+      [
+        'read',
+        'listSession',
+        'listPending',
+        'listByStatus',
+        'listForObservation',
+        'readSourceCooldown',
+        'extendSourceCooldown',
+        'reserveSourceDispatch',
+        'completeSourceDispatch',
+        'commit',
+        'close',
+      ].some((name) => typeof Reflect.get(persistence.eventWaitStore, name) !== 'function')
     ) {
       throw new TypeError('Execution persistence requires an eventWaitStore');
     }
@@ -466,6 +478,17 @@ async function createExecutionStoresForWrite(
       read: (input) => run(async () => persistence.eventWaitStore.read(input)),
       listSession: (input) => run(async () => persistence.eventWaitStore.listSession(input)),
       listPending: (input) => run(async () => persistence.eventWaitStore.listPending(input)),
+      listByStatus: (input) => run(async () => persistence.eventWaitStore.listByStatus(input)),
+      listForObservation: (input) =>
+        run(async () => persistence.eventWaitStore.listForObservation(input)),
+      readSourceCooldown: (input) =>
+        run(async () => persistence.eventWaitStore.readSourceCooldown(input)),
+      extendSourceCooldown: (input) =>
+        run(async () => persistence.eventWaitStore.extendSourceCooldown(input)),
+      reserveSourceDispatch: (input) =>
+        run(async () => persistence.eventWaitStore.reserveSourceDispatch(input)),
+      completeSourceDispatch: (input) =>
+        run(async () => persistence.eventWaitStore.completeSourceDispatch(input)),
       commit: (input) => run(async () => persistence.eventWaitStore.commit(input)),
       close: () => {},
     });
@@ -831,6 +854,8 @@ async function createExecutionStoresForWrite(
         run(() => runtimeEventStore.readInvocation(sessionId, invocationId)),
       readSessionRuntimeEvents: (sessionId) =>
         run(() => runtimeEventStore.readSessionRuntimeEvents(sessionId)),
+      readSessionHistoryRevision: (sessionId: string) =>
+        run(() => runtimeEventStore.readSessionHistoryRevision(sessionId)),
       readSessionRuntimeEventEntries: (sessionId) =>
         run(() => runtimeEventStore.readSessionRuntimeEventEntries(sessionId)),
       listSessionsWithRuntimeEventText: (sessionIds, terms) =>
@@ -994,6 +1019,8 @@ async function openExecutionStoresForRead<K extends StorageRootKind, E extends o
         run(() => runtimeEventStore.readInvocation(sessionId, invocationId)),
       readSessionRuntimeEvents: (sessionId) =>
         run(() => runtimeEventStore.readSessionRuntimeEvents(sessionId)),
+      readSessionHistoryRevision: (sessionId: string) =>
+        run(() => runtimeEventStore.readSessionHistoryRevision(sessionId)),
       readSessionRuntimeEventEntries: (sessionId) =>
         run(() => runtimeEventStore.readSessionRuntimeEventEntries(sessionId)),
       listSessionsWithRuntimeEventText: (sessionIds, terms) =>

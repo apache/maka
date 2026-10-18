@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { PersonalAssistantSettings } from '../features/personal-assistant/index.js';
 import type { UsageScreenQuery, UsageScreenRequest } from '@maka/core/settings';
 
 import {
@@ -177,7 +178,7 @@ type SettingsSurfaceProps = {
   uiLocaleUpdateGate: UiLocaleUpdateGate;
   onUserLabelChange?(label: string): void;
   onDefaultPermissionModeChange(mode: ChatDefaultPermissionMode): void;
-  request?: { readonly section?: SettingsSection; readonly profileId?: string };
+  request?: { readonly section?: SettingsSection; readonly profileId?: string; readonly externalAgentId?: string };
   openProviderCatalog?: boolean;
   initialConnectionSlug?: string;
   initialCreateProviderType?: ProviderType;
@@ -929,6 +930,7 @@ function SettingsSurfaceContent(
                   ))}
                 </SideNavSection>
               ))}
+              <SideNavItem label="个人助手" isSelected={section === "personal-assistant"} onClick={() => setSection("personal-assistant")} />
               <MakaClientSlotOutlet
                 name="settings.navigation"
                 owner={{
@@ -1088,6 +1090,7 @@ function SettingsSurfaceContent(
                             onRemoteHostAdded={props.onRemoteHostAdded}
                             openProviderCatalog={providerCatalogRequested}
                             initialConnectionSlug={props.initialConnectionSlug}
+                            initialExternalAgentId={props.request?.externalAgentId}
                             initialCreateProviderType={createProviderRequest}
                             onInitialCreateProviderConsumed={() => {
                               setCreateProviderRequest(undefined);
@@ -1152,6 +1155,7 @@ function SettingsPageBody(props: {
   initialConnectionSlug?: string;
   initialCreateProviderType?: ProviderType;
   onInitialCreateProviderConsumed?(): void;
+  initialExternalAgentId?: string;
   onInitialProviderCatalogConsumed?(): void;
 }) {
   const locale = useUiLocale();
@@ -1179,7 +1183,7 @@ function SettingsPageBody(props: {
         </SettingsPage>
       );
     case 'external-agents':
-      return <ExternalAgentsSettingsPage settings={props.settings} onUpdate={props.onUpdateSettings} />;
+      return <ExternalAgentsSettingsPage settings={props.settings} onUpdate={props.onUpdateSettings} initialExecutorId={props.initialExternalAgentId} />;
     case 'subagents':
       return (
         <SubagentSettingsPage
@@ -1300,6 +1304,8 @@ function SettingsPageBody(props: {
           onReloadSettings={props.onReloadSettings}
         />
       );
+    case 'personal-assistant':
+      return <PersonalAssistantSettings key={`${props.runtimeHost?.profileId}:${props.runtimeHost?.hostId}`} host={props.runtimeHost} onOpenSession={props.onOpenSession} />;
     case 'daily-review':
       return <DailyReviewSettingsPage connections={props.connections} />;
     case 'search':

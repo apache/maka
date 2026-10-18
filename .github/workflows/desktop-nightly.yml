@@ -174,7 +174,7 @@ jobs:
             --key-id "$APPLE_API_KEY_ID" \
             --issuer "$APPLE_API_ISSUER" \
             --wait
-          xcrun stapler staple "$DMG_PATH"
+          node scripts/staple-macos-artifact.mjs "$DMG_PATH"
           npm run verify:macos -- "${{ matrix.arch }}"
 
       - name: Package the Windows Nightly

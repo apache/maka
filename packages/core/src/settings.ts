@@ -466,6 +466,8 @@ export function normalizeTerminalFontSize(value: unknown): number {
 export type WorkbarTogglePosition = 'titlebar' | 'edge';
 
 export interface AppearanceSettings {
+  /** Show personal-assistant index workers and delegated tasks in session navigation. */
+  showAssistantBackgroundSessions?: boolean;
   /** Where the desktop exposes the Workbar expand/collapse control. */
   workbarTogglePosition?: WorkbarTogglePosition;
   theme: ThemePreference;
@@ -856,6 +858,7 @@ export function createDefaultSettings(): AppSettings {
       activeTab: 'requests',
     },
     appearance: {
+      showAssistantBackgroundSessions: false,
       workbarTogglePosition: 'titlebar',
       theme: 'auto',
       palette: 'default',
@@ -1050,6 +1053,7 @@ export function normalizeSettings(input: unknown): AppSettings {
     // position; UI density is no longer a product setting.
     appearance: {
       ...appearanceWithoutLegacyFields,
+      showAssistantBackgroundSessions: base.appearance.showAssistantBackgroundSessions === true,
       workbarTogglePosition: base.appearance.workbarTogglePosition === 'edge' ? 'edge' : 'titlebar',
       palette: isThemePalette(base.appearance.palette) ? base.appearance.palette : 'default',
       // Same fail-closed rule as `palette` above, for the same reason: an

@@ -97,16 +97,19 @@ for (const phase of ['connecting', 'seeding'] as const) {
   }
 }
 
-test('transcript history IPC forwards open mode, load-earlier, and read-turn to the registry', async () => {
+test('transcript history IPC forwards window intent and both page directions to the registry', async () => {
   const ipc = ipcHarness();
   const observations = new RuntimeHostSessionObservationRegistry();
   const calls: unknown[] = [];
-  observations.openTranscript = async (sessionId, consumerId, target, mode) => {
-    calls.push({ command: 'open', sessionId, consumerId, targetId: target.id, mode });
+  observations.openTranscript = async (sessionId, consumerId, target, mode, _resumeFrom, position) => {
+    calls.push({ command: 'open', sessionId, consumerId, targetId: target.id, mode, position });
     return { sessionId, generation: 'generation-1', hostEpoch: 'host-1', readThroughMessageId: null };
   };
   observations.loadEarlierTranscript = async (consumerId, targetId) => {
     calls.push({ command: 'earlier', consumerId, targetId });
+  };
+  observations.loadNewerTranscript = async (consumerId, targetId) => {
+    calls.push({ command: 'newer', consumerId, targetId });
   };
   const turn = [{ type: 'user', id: 'message-1', turnId: 'turn-1', ts: 1, text: 'hello' }];
   observations.readTranscriptTurn = async (sessionId, turnId) => {
@@ -115,13 +118,15 @@ test('transcript history IPC forwards open mode, load-earlier, and read-turn to 
   };
   registerRuntimeHostSessionObservationIpc({ observations, resolveSideConversation: async () => false }, ipc);
 
-  await ipc.invoke('sessions:transcript:open', 'shared-session', 'guest-consumer', 'history');
+  await ipc.invoke('sessions:transcript:open', 'shared-session', 'guest-consumer', 'history', undefined, { turnId: 'turn-1' });
   await ipc.invoke('sessions:transcript:load-earlier', 'guest-consumer');
+  await ipc.invoke('sessions:transcript:load-newer', 'guest-consumer');
   assert.deepEqual(await ipc.invoke('sessions:transcript:read-turn', 'shared-session', 'turn-1'), turn);
   assert.equal(ipc.reconnectableChannels.has('sessions:transcript:read-turn'), true);
   assert.deepEqual(calls, [
-    { command: 'open', sessionId: 'shared-session', consumerId: 'guest-consumer', targetId: 9, mode: 'history' },
+    { command: 'open', sessionId: 'shared-session', consumerId: 'guest-consumer', targetId: 9, mode: 'history', position: { turnId: 'turn-1' } },
     { command: 'earlier', consumerId: 'guest-consumer', targetId: 9 },
+    { command: 'newer', consumerId: 'guest-consumer', targetId: 9 },
     { command: 'read-turn', sessionId: 'shared-session', turnId: 'turn-1' },
   ]);
   await assert.rejects(
@@ -129,7 +134,11 @@ test('transcript history IPC forwards open mode, load-earlier, and read-turn to 
     /Invalid Desktop transcript open mode/,
   );
   await assert.rejects(ipc.invoke('sessions:transcript:load-earlier', ''), /Transcript consumer/);
-  assert.equal(calls.length, 3);
+  await assert.rejects(ipc.invoke('sessions:transcript:load-newer', ''), /Transcript consumer/);
+  for (const position of [{ turnId: '' }, { sequence: -1 }, { sequence: 20, throughSequence: 10 }]) {
+    await assert.rejects(ipc.invoke('sessions:transcript:open', 'shared-session', 'bad', 'history', undefined, position), /Invalid/);
+  }
+  assert.equal(calls.length, 4);
 });
 
 test('treats pending Session observation teardown as IPC cancellation', async () => {

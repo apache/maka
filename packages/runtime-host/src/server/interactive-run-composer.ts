@@ -82,6 +82,15 @@ import { shouldResolveHostTavilyWebSearchReadiness } from './web-search-tool.js'
 
 const INTERACTIVE_RUN_COMPOSER_ID = 'maka.interactive';
 const INTERACTIVE_RUN_COMPOSER_REVISION = '1';
+const AGENT_COLLABORATION_TOOLS = new Set([
+  'agent_spawn',
+  'agent_list',
+  'agent_output',
+  'agent_swarm_status',
+  'view_agent_graph',
+  'update_agent_graph',
+  'yield_agent_graph',
+]);
 import { createWorkHubTopicGate } from './workhub-topic-gate.js';
 
 const CHILD_INSTRUCTION_BOUNDARY = [
@@ -211,9 +220,13 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
     // capabilities must be included by the authority that constructs that
     // list. The ceiling is also an exact wire contract: no deferred search
     // groups inside it, so the bound tools stay fully visible.
-    const resolved = topicGate
-      ? selectedTools.map((tool) => topicGate.wrap(tool))
-      : [...selectedTools];
+    const permitted =
+      input.runtimePolicy.policy.subagents.enabled === false
+        ? selectedTools.filter(
+            (tool) => tool.categoryHint !== 'subagent' && !AGENT_COLLABORATION_TOOLS.has(tool.name),
+          )
+        : [...selectedTools];
+    const resolved = topicGate ? permitted.map((tool) => topicGate.wrap(tool)) : permitted;
     assertUniqueToolNames(resolved);
     return Object.freeze(resolved);
   };

@@ -37,14 +37,13 @@ export interface MakaRunOptions {
   cwd?: string;
   connection?: string;
   model?: string;
-  thinking?: ThinkingLevel;
+  thinking?: ThinkingLevel | null;
   timeoutMs?: number;
   maxSteps?: number;
   yolo?: boolean;
   resumeId?: string;
   continueLatest?: boolean;
   graph?: true;
-  thinkingDefaultExplicit?: boolean;
   hostProfileId?: string;
   projectId?: string;
 }
@@ -211,14 +210,13 @@ export function parseMakaRunArgs(argv: readonly string[]): ParseMakaRunArgsResul
       ...(flags.get('cwd') !== undefined ? { cwd: flags.get('cwd') } : {}),
       ...(flags.get('connection') !== undefined ? { connection: flags.get('connection') } : {}),
       ...(flags.get('model') !== undefined ? { model: flags.get('model') } : {}),
-      ...(thinking !== undefined && thinking !== 'default' ? { thinking } : {}),
+      ...(thinking !== undefined ? { thinking: thinking === 'default' ? null : thinking } : {}),
       ...(timeoutSeconds !== undefined ? { timeoutMs: Math.ceil(timeoutSeconds * 1_000) } : {}),
       ...(parsedMaxSteps !== undefined ? { maxSteps: parsedMaxSteps } : {}),
       ...(booleanFlags.has('yolo') ? { yolo: true } : {}),
       ...(resumeId !== undefined ? { resumeId } : {}),
       ...(continueLatest ? { continueLatest: true } : {}),
       ...(graph ? { graph: true as const } : {}),
-      ...(thinking === 'default' ? { thinkingDefaultExplicit: true } : {}),
       ...(flags.get('host') !== undefined ? { hostProfileId: flags.get('host') } : {}),
       ...(flags.get('project') !== undefined ? { projectId: flags.get('project') } : {}),
     },
@@ -261,11 +259,8 @@ export async function runMakaTextCliCore(
           ? { explicitConnection: parsed.options.connection }
           : {}),
         ...(parsed.options.model !== undefined ? { explicitModel: parsed.options.model } : {}),
-        thinkingSpecified:
-          parsed.options.thinking !== undefined || parsed.options.thinkingDefaultExplicit === true,
-        ...(parsed.options.thinking !== undefined
-          ? { explicitThinking: parsed.options.thinking }
-          : {}),
+        thinkingSpecified: parsed.options.thinking !== undefined,
+        ...(parsed.options.thinking != null ? { explicitThinking: parsed.options.thinking } : {}),
       },
       {
         canonicalizeDirectory: canonicalDirectory,
@@ -485,7 +480,7 @@ function makaRunHelpText(cliCommand: string): string {
     '  --host <profile-id>       Connect through a saved Runtime Host profile',
     '  --project <project-id>    Select an existing Project on a remote Host',
     '  --model <id>              Model to use',
-    '  --thinking <level>        off|minimal|low|medium|high|xhigh|max|default',
+    '  --thinking <level>        off|on|minimal|low|medium|high|xhigh|max|default',
     '  --timeout <seconds>       Invocation timeout',
     '  --max-steps <count>       Tool-step cap',
     '  --yolo                    Give this task full access to your files and network',

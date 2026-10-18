@@ -63,6 +63,11 @@ export interface TranscriptLayout {
   reveal(turnId: string, options: { align: 'start' | 'center'; smooth: boolean }): void;
   /** The list knows its viewport; until then it renders no Turns. */
   measured(): boolean;
+  /** Upward reader input near the beginning; true while earlier history is available. */
+  readEarlier?(): boolean;
+  hasNewer?(): boolean;
+  readNewer?(): boolean;
+  readLatest?(): void;
 }
 
 /** How a list of Turns changed: where Turns were added, if anywhere but in place. */
@@ -150,7 +155,6 @@ function reachesTranscript(event: Event, root: HTMLElement, direction: 'up' | 'd
 export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
   let root: HTMLElement | null = null;
   let pinned = true;
-  let awayFromTail = false;
   // Geometry belongs to a known input operation, never the other way around.
   // scrollend also covers smooth keyboard scrolling and touchpad inertia.
   let gesture: { top: number; direction?: 'up' | 'down' } | undefined;
@@ -169,7 +173,7 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
     framesLeft: number;
     frame?: number;
   } | undefined;
-  let snapshot: TranscriptScrollSnapshot = { pinned, positioning: false, awayFromTail, readingTurnId };
+  let snapshot: TranscriptScrollSnapshot = { pinned, positioning: false, awayFromTail: false, readingTurnId };
   const listeners = new Set<() => void>();
   const distanceToTail = (): number =>
     root ? root.scrollHeight - root.scrollTop - root.clientHeight : 0;
@@ -181,6 +185,7 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
     return turnId;
   };
   const publish = (): void => {
+    const awayFromTail = layout?.hasNewer?.() === true || distanceToTail() > BUTTON_THRESHOLD_PX;
     const next = positioning !== undefined;
     if (snapshot.pinned === pinned && snapshot.positioning === next
       && snapshot.awayFromTail === awayFromTail && snapshot.readingTurnId === readingTurnId) return;
@@ -195,7 +200,6 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
   const writeToTail = (): void => {
     if (!root) return;
     root.scrollTop = root.scrollHeight;
-    awayFromTail = false;
     publish();
   };
   /** Puts the Turn in place once; `false` while it is not in the list. */
@@ -251,11 +255,25 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
       layout = nextLayout;
       const previousOverflowAnchor = target.style.overflowAnchor;
       target.style.overflowAnchor = 'none';
+      const readEarlier = (): void => {
+        if (!positioning && target.scrollTop <= target.clientHeight && layout?.readEarlier?.()) {
+          pinned = false;
+          readingTurnId = readTurn();
+        }
+      };
+      const readNewer = (): void => {
+        if (!positioning && distanceToTail() <= target.clientHeight && layout?.readNewer?.()) {
+          pinned = false;
+          readingTurnId = readTurn();
+        }
+      };
       const begin = (event: Event, direction: 'up' | 'down'): void => {
         if (event.defaultPrevented || !reachesTranscript(event, target, direction)) return;
         endPositioning();
         const remaining = direction === 'up' ? target.scrollTop : distanceToTail();
         gesture = { top: gesture?.top ?? target.scrollTop, direction };
+        if (direction === 'up') readEarlier();
+        else readNewer();
         // An edge gesture produces no scroll and therefore no scrollend. A
         // passive wheel can arrive after the threaded scroll it caused, already
         // at the top edge; that input did move the reader.
@@ -327,7 +345,6 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
         onScrollEnd();
       };
       const onScroll = (): void => {
-        awayFromTail = distanceToTail() > BUTTON_THRESHOLD_PX;
         readingTurnId = readTurn();
         if (gesture) {
           const delta = target.scrollTop - gesture.top;
@@ -342,6 +359,8 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
             if ((delta < 0 ? 'up' : 'down') === direction) {
               gesture.direction = direction;
               pinned = false;
+              if (direction === 'up') readEarlier();
+              else readNewer();
             }
           }
         }
@@ -359,7 +378,7 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
           if (gesture !== ended || ended.top !== top || pointer !== undefined || touchHeld) return;
           // Input that can scroll and observed reader movement already release
           // the pin. Settling an unmoved edge gesture must not release it too.
-          pinned = pinned || (ended.direction === 'down' && distanceToTail() <= PIN_THRESHOLD_PX);
+          pinned = pinned || (ended.direction === 'down' && !layout?.hasNewer?.() && distanceToTail() <= PIN_THRESHOLD_PX);
           gesture = undefined;
           publish();
           if (pinned) writeToTail();
@@ -385,7 +404,6 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
       const box = new ResizeObserver(() => {
         if (pinned && !gesture) writeToTail();
         else if (positioning) place();
-        awayFromTail = distanceToTail() > BUTTON_THRESHOLD_PX;
         readingTurnId = readTurn();
         publish();
       });
@@ -428,6 +446,7 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
       };
     },
     pinToTail() {
+      if (layout?.hasNewer?.()) layout.readLatest?.();
       endPositioning();
       gesture = undefined;
       pointer = undefined;
@@ -440,7 +459,6 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
       endPositioning();
       gesture = undefined;
       pinned = false;
-      awayFromTail = distanceToTail() > BUTTON_THRESHOLD_PX;
       publish();
     },
     navigate(navigation) {
@@ -469,6 +487,7 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
       navigation.arrival?.then(settled, settled);
     },
     turnsChanged(change) {
+      publish();
       if (change === 'same' || change === 'append') {
         settle();
         return;

@@ -47,6 +47,8 @@ import { createAttachmentApprovalRegistry } from '../attachment-approval.js';
 import { parseDesktopSlashCommand } from '../../renderer/application/contracts/desktop-slash-command.js';
 import { projectLocalMessageDraft } from '../../preload/session-local-draft.js';
 import type { DesktopLocalMessageDraft } from '../../shared/session-local-contract.js';
+import { createRuntimeHostSessionCatalogRefresher, resolveRuntimeHostSessionCatalog } from '../../preload/runtime-host-session-catalog.js';
+import type { DesktopSessionSummary } from '../../preload/bridge-contract.js';
 
 const accepted: TurnMessageSubmitResult = {
   disposition: 'turn_started',
@@ -134,6 +136,43 @@ async function waitFor(predicate: () => boolean): Promise<void> {
   }
   assert.fail('Local state did not settle');
 }
+
+test('a pending Owner catalog refresh cannot erase a newly admitted fork', async (t) => {
+  const db = await database(t);
+  const pending = deferred<SessionCatalogProjection[]>();
+  let reads = 0;
+  const target: DesktopSessionLocalTarget = {
+    partition: 'authority', profileId: 'profile', scope: { hostId: 'root-host', targetEpoch: 'target' },
+    client: { ...client('epoch'), listSessions: () => ++reads === 1 ? Promise.resolve([swarmCatalogSession()]) : pending.promise },
+  };
+  const service = new DesktopSessionLocalService(db.store, {
+    targets: () => [target], changed() {}, onError: (error) => assert.fail(String(error)),
+  });
+  db.beforeClose.push(() => service.close());
+  service.catalog();
+  await waitFor(() => db.store.sessions('authority').length === 1);
+  let current = { sessions: [] as DesktopSessionSummary[], completeHostIds: [] as string[] };
+  const refresher = createRuntimeHostSessionCatalogRefresher({
+    currentCatalog: () => current,
+    commitCatalog: (catalog) => { current = catalog; },
+    listCatalog: () => {
+      const [catalog] = service.catalog();
+      return resolveRuntimeHostSessionCatalog(current.sessions, Promise.resolve({
+        sessions: catalog!.sessions.map((summary) => ({ ...summary, runtimeHostId: 'root-host', profileId: 'profile' }) as DesktopSessionSummary),
+        completeHostIds: catalog!.authoritative ? ['root-host'] : [],
+      }), () => ['profile'], Promise.resolve([]));
+    },
+  });
+  await refresher.refresh();
+  const fork = { ...swarmCatalogSession(), id: 'fork' };
+  refresher.admit({ ...fork, runtimeHostId: 'root-host', profileId: 'profile' } as unknown as DesktopSessionSummary);
+  service.changed(target.scope);
+  assert.deepEqual((await refresher.refresh()).sessions.map(({ id }) => id).sort(), ['fork', 'root']);
+  pending.resolve([swarmCatalogSession(), fork]);
+  await waitFor(() => db.store.sessions('authority').length === 2);
+  assert.equal(service.catalog()[0]?.authoritative, true);
+  assert.deepEqual((await refresher.refresh()).sessions.map(({ id }) => id).sort(), ['fork', 'root']);
+});
 
 test('local acceptance survives restart with attachment bytes and an immutable dispatch epoch', async (t) => {
   const db = await database(t);
@@ -446,12 +485,12 @@ for (const staleResult of ['running', 'removed', 'failed'] as const) {
     await waitFor(() => db.store.sessions('authority').length === 1);
     await nextTurn();
     service.changed(target.scope);
-    assert.equal(service.catalog()[0]?.authoritative, true);
+    assert.equal(service.catalog()[0]?.authoritative, false);
     assert.equal(service.catalog()[0]?.sessions[0]?.backgroundActivity, 'running');
     assert.equal(reads, 2);
     const revision = db.store.revision;
 
-    // Further Host changes dirty the observation without revoking its authority.
+    // Further Host changes retain observed activity without proving absence.
     service.changed(target.scope);
     service.changed(target.scope);
     service.catalog();
@@ -469,7 +508,7 @@ for (const staleResult of ['running', 'removed', 'failed'] as const) {
       assert.equal(service.catalog()[0]?.sessions[0]?.backgroundActivity, undefined);
     } else {
       assert.ok(db.store.revision > revision, 'successful dirty reads must make progress');
-      assert.equal(service.catalog()[0]?.authoritative, true);
+      assert.equal(service.catalog()[0]?.authoritative, false);
       assert.equal(db.store.sessions('authority').length, staleResult === 'removed' ? 0 : 1);
     }
     current.resolve([swarmCatalogSession('idle')]);
@@ -511,7 +550,7 @@ test('continuous Owner invalidations cannot starve successful catalog observatio
     pending[index]!.resolve([swarmCatalogSession(activity)]);
     await waitFor(() => pending.length === index + 2);
     const catalog = service.catalog()[0]!;
-    assert.equal(catalog.authoritative, true, 'publish before notifications become quiet');
+    assert.equal(catalog.authoritative, false, 'a dirty observation cannot prove Session absence');
     assert.equal(catalog.sessions[0]?.backgroundActivity, activity);
     assert.equal(notifications, index + 1);
   }
@@ -545,7 +584,7 @@ test('a queued Owner refresh clears stale activity as soon as a slot is free wit
   })).concat(third);
   service.changed(third.scope);
   const queued = service.catalog()[2]!;
-  assert.equal(queued.authoritative, true);
+  assert.equal(queued.authoritative, false);
   assert.equal(queued.sessions[0]?.backgroundActivity, 'running');
   assert.equal(reads, 1, 'the third partition must wait for a slot');
   first.resolve([]);
@@ -644,7 +683,7 @@ test('continuous fast Owner invalidations cannot fence a slower partition catalo
     reads.get('slow')![index + 1]!.resolve([swarmCatalogSession(activity)]);
     await waitFor(() => reads.get('slow')!.length === index + 3);
     const catalog = service.catalog()[0]!;
-    assert.equal(catalog.authoritative, true);
+    assert.equal(catalog.authoritative, false);
     assert.equal(catalog.sessions[0]?.backgroundActivity, activity,
       'a successful slow observation must publish while another authority remains busy');
   }
@@ -1454,7 +1493,7 @@ test('cache restoration expires independently of the outbox', async (t) => {
 
 test('durable Host evidence retires delivery independently of cache admission and submit ACK order', async (t) => {
   for (const ackFirst of [false, true]) {
-    for (const cacheLoss of ['quota', 'revision', 'coalescing']) {
+    for (const cacheLoss of ['quota', 'coalescing']) {
       await t.test(`ackFirst=${ackFirst}, cacheLoss=${cacheLoss}`, async (t) => {
         const db = await database(t);
         const response = deferred<TurnMessageSubmitResult>();
@@ -1499,7 +1538,6 @@ test('durable Host evidence retires delivery independently of cache admission an
           beginsAtTurnBoundary: true,
         };
         service.cacheTranscript(target.scope, snapshot);
-        if (cacheLoss === 'revision') db.store.enqueue('other-authority', intent('other-message'));
         if (cacheLoss === 'coalescing')
           service.cacheTranscript(target.scope, { ...snapshot, durable: [], hasOlder: true });
         await nextTurn();
@@ -1967,6 +2005,82 @@ test('durable cancellation proof retires an old Host epoch without crossing auth
   assert.ok(db.store.get('authority', 'never-dispatched'));
   assert.ok(db.store.get('authority', 'other-session'));
   assert.ok(db.store.get('other-authority', 'cancelled'));
+});
+
+test('catalog updates preserve the latest coalesced transcript cache write', async (t) => {
+  const db = await database(t);
+  const target: DesktopSessionLocalTarget = {
+    partition: 'authority', profileId: 'profile', scope: { hostId: 'root', targetEpoch: 'target' },
+  };
+  const service = new DesktopSessionLocalService(db.store, { targets: () => [target], changed() {}, onError: assert.fail });
+  db.beforeClose.push(() => service.close());
+  const snapshot: DesktopTranscriptReplicaSnapshot = {
+    sessionId: 'session-1', generation: 'generation', hostEpoch: 'epoch', durableThrough: 1,
+    durable: [{ sequence: 1, message: { type: 'user', id: 'user', turnId: 'turn-1', ts: 1, text: 'question' } }],
+    hasOlder: false, beginsAtTurnBoundary: true,
+  };
+  service.cacheTranscript(target.scope, snapshot);
+  service.cacheTranscript(target.scope, {
+    ...snapshot, durableThrough: 2,
+    durable: [...snapshot.durable, { sequence: 2, message: { type: 'assistant', id: 'answer', turnId: 'turn-1', ts: 2, text: 'cached answer', modelId: 'test' } }],
+  });
+  db.store.saveSession('authority', { id: 'session-1', name: 'Renamed' } as DesktopSessionSummaryInput);
+  await nextTurn();
+  service.close();
+  db.reopen();
+  assert.equal(db.store.transcript('authority', 'session-1')?.snapshot.durable.at(-1)?.message.id, 'answer');
+});
+
+test('catalog reconciliation cancels only removed Sessions pending cache writes across restart', async (t) => {
+  const db = await database(t);
+  const listed = deferred<SessionCatalogProjection[]>();
+  const target: DesktopSessionLocalTarget = {
+    partition: 'authority', profileId: 'profile', scope: { hostId: 'root', targetEpoch: 'target' },
+    client: { ...client('epoch'), listSessions: () => listed.promise },
+  };
+  const service = new DesktopSessionLocalService(db.store, { targets: () => [target], changed() {}, onError: assert.fail });
+  db.beforeClose.push(() => service.close());
+  for (const id of ['removed', 'retained'])
+    db.store.saveSession('authority', { id, name: id } as DesktopSessionSummaryInput);
+  service.catalog();
+  for (const id of ['removed', 'retained']) {
+    service.cacheTranscript(target.scope, {
+      sessionId: id, generation: 'generation', hostEpoch: 'epoch', durableThrough: 1,
+      durable: [{ sequence: 1, message: { type: 'assistant', id: `answer-${id}`, turnId: 'turn-1', ts: 1, text: `cached ${id}`, modelId: 'test' } }],
+      hasOlder: false, beginsAtTurnBoundary: true,
+    });
+  }
+  listed.resolve([{ ...swarmCatalogSession(), id: 'retained', name: 'Retained' }]);
+  await nextTurn();
+  assert.deepEqual(db.store.sessions('authority').map(({ id }) => id), ['retained']);
+  assert.equal(service.readTranscript(target, 'removed'), null);
+  assert.ok(service.readTranscript(target, 'retained'));
+  service.close();
+  db.reopen();
+  assert.equal(db.store.transcript('authority', 'removed'), undefined);
+  assert.equal(db.store.transcript('authority', 'retained')?.snapshot.durable[0]?.message.id, 'answer-retained');
+});
+
+test('Session removal and authority purge cancel pending transcript cache writes', async (t) => {
+  for (const removal of ['session', 'authority']) {
+    const db = await database(t);
+    const target: DesktopSessionLocalTarget = {
+      partition: 'authority', profileId: 'profile', scope: { hostId: 'root', targetEpoch: 'target' },
+    };
+    const service = new DesktopSessionLocalService(db.store, { targets: () => [target], changed() {}, onError: assert.fail });
+    db.beforeClose.push(() => service.close());
+    service.cacheTranscript(target.scope, {
+      sessionId: 'session-1', generation: 'generation', hostEpoch: 'epoch', durableThrough: 1,
+      durable: [{ sequence: 1, message: { type: 'user', id: 'user', turnId: 'turn-1', ts: 1, text: 'removed history' } }],
+      hasOlder: false, beginsAtTurnBoundary: true,
+    });
+    if (removal === 'session') service.removeSession(target, 'session-1');
+    else service.purge(target);
+    await nextTurn();
+    service.close();
+    db.reopen();
+    assert.equal(db.store.transcript('authority', 'session-1'), undefined);
+  }
 });
 
 test('cancellation cleanup preserves an already scheduled canonical transcript cache write', async (t) => {

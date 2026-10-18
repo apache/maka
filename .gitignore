@@ -52,4 +52,9 @@ release/asf/
 # Astro type generation
 .astro
 perf-results/
+
+# Local build/test leftovers from the retired core assistant plugins.
+/scripts/plugins/index-initiative/
+/scripts/plugins/memory-network/
+/scripts/plugins/proactive-matters/
 artifacts/startup-correctness/

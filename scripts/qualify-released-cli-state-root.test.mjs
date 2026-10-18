@@ -331,6 +331,16 @@ test('starts the liveness window after the real Runtime Host is ready', {
   }
 });
 
+test('reports startup output when a Runtime Host never reaches Ready', async () => {
+  await assert.rejects(
+    runRuntimeHostFixture(`
+      console.error('fixture startup blocked');
+      setInterval(() => undefined, 1000);
+    `),
+    /did not publish Ready within 1000 ms:.*fixture startup blocked/su,
+  );
+});
+
 test('rejects a Runtime Host that exits cleanly after Ready', async () => {
   await assert.rejects(
     runRuntimeHostFixture(

@@ -139,9 +139,9 @@ test('workflow 12 upgrade adds wait storage atomically and preserves every relea
     const released = new DatabaseSync(databasePath);
     let before: ReturnType<typeof readOperationalDatabaseSnapshot>;
     try {
-      // These are the only structural differences from the released workflow-12
-      // builder: its Goal authority and every other table already match v13.
+      // Remove the wait and source-limit additions to reconstruct workflow-12.
       released.exec('DROP TABLE workflow_event_waits');
+      released.exec('DROP TABLE workflow_event_wait_source_cooldowns');
       released
         .prepare("UPDATE operational_schema_migrations SET version = 12 WHERE scope = 'workflow'")
         .run();
@@ -167,12 +167,17 @@ test('workflow 12 upgrade adds wait storage atomically and preserves every relea
     try {
       const after = readOperationalDatabaseSnapshot(migrated.database);
       assert.deepEqual(
-        after.schema.filter(({ tbl_name }) => tbl_name !== 'workflow_event_waits'),
+        after.schema.filter(
+          ({ tbl_name }) =>
+            !['workflow_event_waits', 'workflow_event_wait_source_cooldowns'].includes(tbl_name),
+        ),
         before.schema,
       );
       const oldRows = { ...after.rows };
       assert.deepEqual(oldRows.workflow_event_waits, []);
       delete oldRows.workflow_event_waits;
+      assert.deepEqual(oldRows.workflow_event_wait_source_cooldowns, []);
+      delete oldRows.workflow_event_wait_source_cooldowns;
       oldRows.operational_schema_migrations = before.rows.operational_schema_migrations;
       assert.deepEqual(oldRows, before.rows);
       assert.equal(after.runtimeVersion, before.runtimeVersion);
@@ -190,6 +195,8 @@ test('workflow 12 upgrade adds wait storage atomically and preserves every relea
           .map(({ name }) => name),
         [
           'workflow_event_waits_by_session',
+          'workflow_event_waits_by_status',
+          'workflow_event_waits_observation_order',
           'workflow_event_waits_one_active_session',
           'workflow_event_waits_pending',
           'workflow_event_waits',

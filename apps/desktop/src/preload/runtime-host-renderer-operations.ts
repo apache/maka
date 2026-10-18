@@ -36,6 +36,7 @@ export const RENDERER_RUNTIME_HOST_QUERY_OPERATIONS = [
 
 export const RENDERER_RUNTIME_HOST_COMMAND_OPERATIONS = [
   'daily-review.mutate',
+  'personal-assistant.call',
   'scheduled-task.mutate',
   // The only writer of the retention setting. The Host stamps its time and
   // fences it by revision; agent settings and config import never reach it.

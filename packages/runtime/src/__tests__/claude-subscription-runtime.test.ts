@@ -133,7 +133,6 @@ describe('Claude subscription runtime wiring', () => {
         store: false,
         textVerbosity: 'medium',
         reasoningSummary: 'auto',
-        reasoningEffort: 'medium',
         parallelToolCalls: true,
       },
     });

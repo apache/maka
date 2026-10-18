@@ -168,7 +168,7 @@ const MAX_IMPLEMENTATION_CHILD_REQUESTS =
 const HEADLESS_CODING_V1_PROMPT_HASH =
   'sha256:e490f6055478bf8cdcef1aa85217de623f0954120a692358dbba2065ba6710fc';
 const HEADLESS_CODING_V1_TOOLS_HASH =
-  'sha256:b4fd61c4eeec3ed41f22d36b61c800331e6c18a9704f5b7806acafea919945b0';
+  'sha256:1c225493cbb6c72bb34e2e7a669cec45aa27bfef73dab2f2df05dfb6bb7c1dae';
 const execFileAsync = promisify(execFile);
 test('backend creation resolves a bound Session by immutable Connection identity', async () => {
   let observedRef: unknown;
@@ -2631,6 +2631,8 @@ test('hosted execution freezes the headless coding provider wire contract', asyn
     assert.match(instructions ?? '', /^Active model: deepseek-v4-flash$/mu);
     assert.ok(Array.isArray(tools));
     assert.equal(stableHash(instructions), HEADLESS_CODING_V1_PROMPT_HASH);
+    // Preserve optional tool arguments on the provider wire as well as the dispatch schema.
+    assert.ok(tools.every((tool: { strict?: boolean }) => tool.strict === false));
     assert.equal(stableHash(tools), HEADLESS_CODING_V1_TOOLS_HASH);
     assert.deepEqual(responsesToolNames(request?.body), [
       'Bash',
@@ -2948,6 +2950,7 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     // must never see WebSearch in the effective root tool surface. Non-direct
     // bound tools stay deferred behind tool_search until activated, except
     // request_sandbox_boundary which stays visible in sandboxed Sessions.
+    // The personal assistant is default-off, so its tools must stay absent.
     assert.deepEqual(toolNames(request?.body), [
       'AskUserQuestion',
       'Bash',
