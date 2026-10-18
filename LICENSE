@@ -218,7 +218,9 @@ License: Apache-2.0
 These patches modify the execution time policy and its SDK forwarding. The
 Apache License, Version 2.0 above applies. The generated run Worker includes
 embedded third-party code; its upstream notices and license texts are retained
-in patches/run-2.1.4-notices.md.
+in patches/run-2.1.4-notices.md. The patch carries no WebAssembly binary:
+postinstall substitutes the unchanged payload from the installed run package
+for `__MAKA_RUN_WASM_BASE64__` before applying the patch.
 
 Vercel AI SDK
 
