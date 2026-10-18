@@ -66,7 +66,12 @@ export function mutate(
 ): Promise<unknown>;
 /** Opens a subscription and resolves with a handle once the Host answers Subscribed. */
 export function subscribe(endpoint: string, method: string, input?: unknown): Promise<number>;
-/** Pulls one item; resolves with its value, or null when the subscription ended. */
+/**
+ * Pulls one item and resolves with its value. When the subscription ends,
+ * its final result comes once as the last value if it is not null (a method
+ * that finishes with an outcome, such as a refused `terminal.acquire`), and
+ * every pull after that resolves with null.
+ */
 export function next(subscription: number): Promise<unknown | null>;
 /** Closes a subscription. */
 export function close(subscription: number): Promise<void>;
@@ -304,9 +309,45 @@ impl Target {
 
 struct Subscription {
     call: tokio::sync::Mutex<LocalCall>,
-    /// Cancelled by `close` or when the Host ends the stream; a pending pull
-    /// then resolves with null instead of holding the call.
+    /// Cancelled by `close`, when the Host ends the stream, or once its final
+    /// result has been given; a pending or later pull then resolves with null
+    /// instead of holding the call.
     ended: CancellationToken,
+}
+
+/// What one pull gives the script.
+#[derive(Debug, PartialEq)]
+enum Pulled {
+    /// An item; the subscription goes on.
+    Item(Value),
+    /// The final result, when it is not null: the last value the script
+    /// pulls. A method that finishes with an outcome (`{ kind: 'failed',
+    /// message }`) says there why it ended.
+    Last(Value),
+    /// The end, with nothing more to say: null.
+    End,
+}
+
+fn pulled(reply: Result<Reply, String>) -> Result<Pulled, String> {
+    match reply? {
+        Reply::Item { value } => Ok(Pulled::Item(value)),
+        Reply::Finished {
+            result: Ok(value),
+            cleanup,
+        } => {
+            cleanup?;
+            Ok(if value.is_null() {
+                Pulled::End
+            } else {
+                Pulled::Last(value)
+            })
+        }
+        Reply::Finished {
+            result: Err(error), ..
+        }
+        | Reply::Aborted { reason: error, .. } => Err(error),
+        other => Err(format!("the Host answered a pull with {}", kind(&other))),
+    }
 }
 
 /// Open subscriptions by script handle. Handles start at 1 and are not reused.
@@ -505,25 +546,26 @@ impl Bridge {
         let mut call = subscription.call.lock().await;
         let reply = tokio::select! {
             biased;
-            () = subscription.ended.cancelled() => return Ok(Value::Null),
+            () = subscription.ended.cancelled() => {
+                // Closed, or ended after its final result was given.
+                self.subscriptions().remove(handle);
+                return Ok(Value::Null);
+            }
             reply = call.pull() => reply,
         };
-        if let Ok(Reply::Item { value }) = reply {
-            return Ok(value);
-        }
-        self.subscriptions().remove(handle);
-        subscription.ended.cancel();
-        match reply {
-            Ok(Reply::Finished {
-                result: Ok(_),
-                cleanup,
-            }) => cleanup.map(|()| Value::Null),
-            Ok(Reply::Finished {
-                result: Err(error), ..
-            })
-            | Ok(Reply::Aborted { reason: error, .. })
-            | Err(error) => Err(error),
-            Ok(other) => Err(format!("the Host answered a pull with {}", kind(&other))),
+        match pulled(reply) {
+            Ok(Pulled::Item(value)) => Ok(value),
+            Ok(Pulled::Last(value)) => {
+                // Still listed, so the pull after it resolves with null
+                // rather than finding no subscription.
+                subscription.ended.cancel();
+                Ok(value)
+            }
+            ended => {
+                self.subscriptions().remove(handle);
+                subscription.ended.cancel();
+                ended.map(|_| Value::Null)
+            }
         }
     }
 
@@ -923,6 +965,60 @@ mod tests {
         );
         assert_eq!(files[1].get("bytes"), Some(&HostValue::Number(0.0)));
         std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn a_final_result_is_the_last_item_and_null_ends() {
+        let item = json!({ "kind": "data", "sequence": 3 });
+        assert_eq!(
+            pulled(Ok(Reply::Item {
+                value: item.clone()
+            })),
+            Ok(Pulled::Item(item))
+        );
+        // A refused `terminal.acquire` finishes with its outcome: the script
+        // reads why, once.
+        let refused = json!({
+            "kind": "failed",
+            "message": "Terminal already has a connected controller",
+        });
+        assert_eq!(
+            pulled(Ok(Reply::Finished {
+                result: Ok(refused.clone()),
+                cleanup: Ok(()),
+            })),
+            Ok(Pulled::Last(refused))
+        );
+        assert_eq!(
+            pulled(Ok(Reply::Finished {
+                result: Ok(Value::Null),
+                cleanup: Ok(()),
+            })),
+            Ok(Pulled::End)
+        );
+        assert_eq!(
+            pulled(Ok(Reply::Finished {
+                result: Ok(json!({ "kind": "completed" })),
+                cleanup: Err("cleanup failed".into()),
+            })),
+            Err("cleanup failed".into())
+        );
+        assert_eq!(
+            pulled(Ok(Reply::Finished {
+                result: Err("agent_observation_closed".into()),
+                cleanup: Ok(()),
+            })),
+            Err("agent_observation_closed".into())
+        );
+        assert_eq!(
+            pulled(Ok(Reply::Aborted {
+                reason: "gone".into(),
+                cleanup: Ok(()),
+            })),
+            Err("gone".into())
+        );
+        assert_eq!(pulled(Err("lost".into())), Err("lost".into()));
+        assert!(pulled(Ok(Reply::Subscribed)).is_err());
     }
 
     #[test]
