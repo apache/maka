@@ -1454,6 +1454,7 @@ export const MESSAGES = {
   // Workbar: its header and the button that opens it (workbar.js, main.js)
   workbarChanges: ['Changes', '改动', '變更'],
   workbarFiles: ['Files', '文件', '檔案'],
+  workbarTerminal: ['Terminal', '终端', '終端'],
   workbarChangesTip: ['Changes ({shortcut})', '改动（{shortcut}）', '變更（{shortcut}）'],
   workbarRefresh: ['Refresh', '刷新', '重新整理'],
 
@@ -1562,5 +1563,88 @@ export const MESSAGES = {
     "Couldn't copy the path: {value}",
     '无法复制路径：{value}',
     '無法複製路徑：{value}',
+  ],
+
+  // Workbar: Terminal (terminal.js). The TUI's terminal panel
+  // (plugins/shared/locale-messages.ts) words the shared ones.
+  terminalNew: ['New terminal', '新建终端', '新增終端'],
+  terminalEmpty: ['No terminals in this conversation', '当前会话没有终端', '目前對話沒有終端'],
+  terminalLoading: ['Loading terminals…', '正在读取终端…', '正在讀取終端…'],
+  terminalShell: ['Shell', 'Shell', 'Shell'],
+  terminalAgent: ['Agent', 'Agent', 'Agent'],
+  terminalStop: ['Stop', '停止', '停止'],
+  terminalStopTitle: ['Stop “{name}”?', '停止“{name}”？', '停止「{name}」？'],
+  terminalStopBody: ['This ends the process.', '这会结束进程。', '這會結束程序。'],
+  terminalStopAgentBody: [
+    'The agent started this process. Stopping it ends the process.',
+    '这个进程由 Agent 启动。停止会结束进程。',
+    '這個程序由 Agent 啟動。停止會結束程序。',
+  ],
+  terminalStopFailed: [
+    "Couldn't stop the terminal: {value}",
+    '无法停止终端：{value}',
+    '無法停止終端：{value}',
+  ],
+  terminalStartFailed: [
+    "Couldn't start a terminal: {value}",
+    '无法新建终端：{value}',
+    '無法新增終端：{value}',
+  ],
+  terminalNotListed: ["it didn't appear in the list", '它没有出现在列表中', '它沒有出現在列表中'],
+  terminalBottom: ['Jump to bottom', '回到底部', '回到底部'],
+  terminalFailed: [
+    "Couldn't read the terminal: {value}",
+    '读取终端失败：{value}',
+    '讀取終端失敗：{value}',
+  ],
+  terminalListFailed: [
+    "Couldn't list the terminals: {value}",
+    '无法列出终端：{value}',
+    '無法列出終端：{value}',
+  ],
+  terminalWatchEnded: [
+    'The Host stopped sending this output',
+    'Host 已停止发送此输出',
+    'Host 已停止傳送此輸出',
+  ],
+  terminalViewOnly: ['View only: {value}', '只读：{value}', '唯讀：{value}'],
+  terminalRetry: ['Try again', '重试', '重試'],
+  terminalTaken: [
+    'another client is controlling it',
+    '另一个客户端正在控制它',
+    '另一個用戶端正在控制它',
+  ],
+  terminalLeaseLost: ['the Host ended the control', 'Host 已结束控制', 'Host 已結束控制'],
+  terminalTyping: [
+    "You're typing into the agent's terminal. The agent can't type into it until you release it.",
+    '你正在 Agent 的终端中输入。在你释放之前，Agent 无法在其中输入。',
+    '你正在 Agent 的終端中輸入。在你釋放之前，Agent 無法在其中輸入。',
+  ],
+  terminalRelease: ['Release', '释放', '釋放'],
+  terminalEnded: ['This terminal has ended', '此终端已结束', '此終端已結束'],
+  terminalExited: [
+    'This terminal has ended (exit code {code})',
+    '此终端已结束（退出码 {code}）',
+    '此終端已結束（結束代碼 {code}）',
+  ],
+  terminalEndedWith: [
+    'This terminal has ended: {value}',
+    '此终端已结束：{value}',
+    '此終端已結束：{value}',
+  ],
+  terminalNotLive: [
+    'The Host no longer keeps this output. This is its last screen.',
+    'Host 已不再保留此输出，这是最后的画面。',
+    'Host 已不再保留此輸出，這是最後的畫面。',
+  ],
+  terminalPipes: [
+    'This task runs without a terminal. Its output is read only.',
+    '此任务不在终端中运行，输出只能读取。',
+    '此任務不在終端中執行，輸出只能讀取。',
+  ],
+  terminalOtherConversation: [
+    'This task belongs to another conversation and is read only.',
+    '此任务属于另一个会话，只能读取。',
+    '此任務屬於另一個對話，只能讀取。',
   ],
 };

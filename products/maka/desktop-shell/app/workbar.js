@@ -18,10 +18,11 @@
  */
 
 // The Workbar: a plate to the right of the conversation with its tools,
-// Changes (changes.js) and Files (files.js), one shown at a time. It serves
-// the conversation the window shows, a task's or WorkHub's, and nothing
-// else: main.js tells it which (`follow`) whenever the window changed, and
-// everything it opened for the one before closes then.
+// Changes (changes.js), Files (files.js) and Terminal (terminal.js), one
+// shown at a time. It serves the conversation the window shows, a task's or
+// WorkHub's, and nothing else: main.js tells it which (`follow`) whenever
+// the window changed, and everything it opened for the one before closes
+// then.
 //
 // Whether it is open, the tool it shows and its width are the window's, not
 // a task's, and are kept in localStorage so a restart keeps them.
@@ -31,11 +32,12 @@ import { v_flex, h_flex } from 'gpui-base';
 import { log } from './host.js';
 import { Changes, changesBody } from './changes.js';
 import { FileTree, filesBody } from './files.js';
+import { Terminals, terminalBody } from './terminal.js';
 import { palette, text, icon, ghostButton, iconButton, segmentedControl } from './theme.js';
 import { t } from './locale.js';
 
 const STORAGE_KEY = 'maka.workbar';
-const TOOLS = ['changes', 'files'];
+const TOOLS = ['changes', 'files', 'terminal'];
 
 /** The Workbar's width: at first, and the range a drag keeps it in. */
 export const WORKBAR_WIDTH = { initial: 420, min: 320, max: 720 };
@@ -69,16 +71,17 @@ export class Workbar {
     this.cx = cx;
     const state = stored();
     this.open = state.open;
-    /** 'changes' or 'files'. */
+    /** 'changes', 'files' or 'terminal'. */
     this.tool = state.tool;
     this.width = state.width;
     /** On the Workbar's plate: a press inside gives it the keyboard, for Escape, Enter, [ and ]. */
     this.focus = cx.focus_handle();
     /** The conversation it serves (a Transcript), or null where there is none. */
     this.transcript = null;
-    /** Its Changes and Files, made with it. */
+    /** Its Changes, Files and Terminals, made with it. */
     this.changes = null;
     this.files = null;
+    this.terminals = null;
     /** How many runs of the conversation had ended, and its rows, when last looked at (see follow). */
     this.runsEnded = 0;
     this.rows = null;
@@ -108,20 +111,24 @@ export class Workbar {
    * is closed. After that the status is read again when a run ends (the
    * transcript counts them, so a run that opened and ended between two
    * looks counts too) and, while Changes shows, at most every 2 s while a
-   * run adds rows. Files watches only while it shows. Called whenever the
-   * window changed, so it does nothing unless something it looks at did.
+   * run adds rows. Files and Terminal watch only while they show. Called
+   * whenever the window changed, so it does nothing unless something it
+   * looks at did.
    */
   follow(transcript) {
     if (transcript !== this.transcript) {
       this.changes?.close();
       this.files?.close();
+      this.terminals?.close();
       this.transcript = transcript;
       this.changes = null;
       this.files = null;
+      this.terminals = null;
       if (transcript !== null) {
         log(`workbar: following ${transcript.id} (${transcript.endpoint})`);
         this.changes = new Changes(transcript, this.hooks, this.cx);
         this.files = new FileTree(transcript, this.hooks, this.cx);
+        this.terminals = new Terminals(transcript, this.hooks, this.cx);
         this.runsEnded = transcript.runsEnded;
         this.rows = transcript.rows;
         this.changes.refresh();
@@ -132,6 +139,8 @@ export class Workbar {
     this.changes.showing = showingChanges;
     if (this.open && this.tool === 'files') this.files.show();
     else this.files.hide();
+    if (this.open && this.tool === 'terminal') this.terminals.show();
+    else this.terminals.hide();
     if (transcript.runsEnded !== this.runsEnded) {
       log('workbar: a run ended; reading the status');
       this.changes.refresh();
@@ -171,7 +180,10 @@ export class Workbar {
     this.changedState();
   }
 
-  /** Keeps what changed, reads the status when Changes shows, and opens or closes Files' watches. */
+  /**
+   * Keeps what changed, reads the status when Changes shows, and opens or
+   * closes Files' and Terminal's subscriptions.
+   */
   changedState() {
     log(`workbar: ${this.open ? `showing ${this.tool}` : 'closed'}`);
     this.save();
@@ -260,11 +272,12 @@ export function workbarPane(workbar, cx) {
             [
               ['changes', t('workbarChanges')],
               ['files', t('workbarFiles')],
+              ['terminal', t('workbarTerminal')],
             ],
             workbar.tool,
             (tool) => workbar.choose(tool),
             cx,
-          ).w(168),
+          ).w(216),
         )
         // The space between moves the window, as the plate header's does.
         .child(div().flex_1().h_full().window_control_area('drag'))
@@ -292,5 +305,8 @@ export function workbarPane(workbar, cx) {
       el.child(
         filesBody(workbar.files, changes, { showChanges: (b64) => workbar.showChanges(b64) }, cx),
       ),
+    )
+    .when(workbar.terminals !== null && workbar.tool === 'terminal', (el) =>
+      el.child(terminalBody(workbar.terminals, cx)),
     );
 }

@@ -21,11 +21,11 @@
 // beside them with the selected task's transcript and the composer, or the
 // empty state for a new task, or WorkHub (workhub.js), whose conversation is
 // drawn as a task's, or the Search page (search.js). Beside a conversation
-// the Workbar (workbar.js) can show its folder's changes and files, on a
-// plate of its own. Settings (settings.js) takes the sidebar and the plate
-// while open. The look follows the native client (theme.js). Every Host
-// call goes through `maka-host` (see host.js); MAKA_HOST_ENDPOINT and
-// MAKA_HOST_EPOCH name the Host.
+// the Workbar (workbar.js) can show its folder's changes, its files and its
+// terminals, on a plate of its own. Settings (settings.js) takes the sidebar
+// and the plate while open. The look follows the native client (theme.js).
+// Every Host call goes through `maka-host` (see host.js);
+// MAKA_HOST_ENDPOINT and MAKA_HOST_EPOCH name the Host.
 //
 // An optional `dev.js` beside this file (never committed) can turn on the
 // debug log and drive the window without focus:
@@ -86,19 +86,32 @@ const CONVERSATION_FLOOR = 320;
 const WORKHUB = 'workhub';
 const SEARCH = 'search';
 
-/** The application's shortcuts, as the native client binds them. */
+/**
+ * Outside a focused terminal (the Workbar's: `maka-desktop`'s Terminal
+ * declares this key context). Its program gets every key without the
+ * platform's command key, so a shortcut without one is not bound inside it;
+ * elsewhere than macOS the command key is Ctrl, which the program needs too.
+ */
+const OUTSIDE_TERMINAL = '!MakaTerminal';
+const COMMAND_OUTSIDE_TERMINAL = process.platform === 'macos' ? undefined : OUTSIDE_TERMINAL;
+
+/**
+ * The application's shortcuts, as the native client binds them. Ctrl-`
+ * works in the terminal too: it hides it.
+ */
 const SHORTCUTS = [
-  { keystroke: 'secondary-n', action: 'maka.new-task' },
-  { keystroke: 'secondary-b', action: 'maka.toggle-sidebar' },
-  { keystroke: 'secondary-[', action: 'maka.back' },
-  { keystroke: 'secondary-]', action: 'maka.forward' },
-  { keystroke: 'secondary-,', action: 'maka.settings' },
-  { keystroke: 'secondary-shift-f', action: 'maka.search' },
-  { keystroke: 'secondary-f', action: 'maka.find' },
-  { keystroke: 'secondary-.', action: 'maka.stop' },
-  { keystroke: 'f2', action: 'maka.rename-task' },
-  { keystroke: 'ctrl-shift-g', action: 'maka.toggle-changes' },
-  { keystroke: 'secondary-p', action: 'maka.toggle-files' },
+  { keystroke: 'secondary-n', action: 'maka.new-task', context: COMMAND_OUTSIDE_TERMINAL },
+  { keystroke: 'secondary-b', action: 'maka.toggle-sidebar', context: COMMAND_OUTSIDE_TERMINAL },
+  { keystroke: 'secondary-[', action: 'maka.back', context: COMMAND_OUTSIDE_TERMINAL },
+  { keystroke: 'secondary-]', action: 'maka.forward', context: COMMAND_OUTSIDE_TERMINAL },
+  { keystroke: 'secondary-,', action: 'maka.settings', context: COMMAND_OUTSIDE_TERMINAL },
+  { keystroke: 'secondary-shift-f', action: 'maka.search', context: COMMAND_OUTSIDE_TERMINAL },
+  { keystroke: 'secondary-f', action: 'maka.find', context: COMMAND_OUTSIDE_TERMINAL },
+  { keystroke: 'secondary-.', action: 'maka.stop', context: COMMAND_OUTSIDE_TERMINAL },
+  { keystroke: 'f2', action: 'maka.rename-task', context: OUTSIDE_TERMINAL },
+  { keystroke: 'ctrl-shift-g', action: 'maka.toggle-changes', context: OUTSIDE_TERMINAL },
+  { keystroke: 'secondary-p', action: 'maka.toggle-files', context: COMMAND_OUTSIDE_TERMINAL },
+  { keystroke: 'ctrl-`', action: 'maka.toggle-terminal' },
 ];
 
 export default class MakaDesktop extends View {
@@ -573,6 +586,7 @@ export default class MakaDesktop extends View {
       .on_action('maka.rename-task', () => this.renameSelected())
       .on_action('maka.toggle-changes', () => this.workbar.toggle('changes'))
       .on_action('maka.toggle-files', () => this.workbar.toggle('files'))
+      .on_action('maka.toggle-terminal', () => this.workbar.toggle('terminal'))
       .on_action('maka.stop', () => {
         const current = this.current();
         if (current !== null) this.composer.stop(current);

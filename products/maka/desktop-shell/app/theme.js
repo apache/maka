@@ -158,6 +158,72 @@ export function palette(cx) {
   return cx.theme().is_dark ? M.dark : M.light;
 }
 
+/**
+ * A terminal's colours (terminal.js), light and dark: the native client's
+ * for its default palette (maka-gpui crates/shared/src/palette.rs
+ * `resolve_terminal`). The six hues are one oklch lightness that reads on the
+ * code fill (0.48 light, 0.74 dark; their bright forms 0.56 and 0.82), black,
+ * white and their bright forms are the ink mixed into the plate, the default
+ * ink and cursor are the ink on the code fill, and the selection is the
+ * accent at 30%. xterm's order: black, red, green, yellow, blue, magenta,
+ * cyan, white, then the bright ones.
+ */
+export const TERMINAL = {
+  light: {
+    ansi: [
+      '#0F0F12',
+      '#A92321',
+      '#02721C',
+      '#7F5500',
+      '#0E5CAF',
+      '#88358E',
+      '#006F76',
+      '#818081',
+      '#646365',
+      '#C44039',
+      '#2B8A36',
+      '#976C00',
+      '#2D74CA',
+      '#A14DA7',
+      '#00878E',
+      '#9F9E9F',
+    ],
+    foreground: M.light.ink,
+    background: M.light.code,
+    cursor: M.light.ink,
+    selection: '#57A3EF4D',
+  },
+  dark: {
+    ansi: [
+      '#454547',
+      '#FF7A6E',
+      '#68C36D',
+      '#D0A43A',
+      '#65ADFF',
+      '#DD84E2',
+      '#3EBFC6',
+      '#BEBEC0',
+      '#6E6E71',
+      '#FF9487',
+      '#81DD85',
+      '#EBBD57',
+      '#7EC7FF',
+      '#F89EFD',
+      '#5DDAE0',
+      '#EEEEF1',
+    ],
+    foreground: M.dark.ink,
+    background: M.dark.code,
+    cursor: M.dark.ink,
+    selection: '#58B0FF4D',
+  },
+};
+
+/** The terminal colours for the theme now in effect. */
+export function terminalColors(cx) {
+  return cx.theme().is_dark ? TERMINAL.dark : TERMINAL.light;
+}
+
 const APPEARANCE_KEY = 'maka.appearance';
 /** The appearances Settings offers: the system's, or always light or dark. */
 export const APPEARANCES = ['system', 'light', 'dark'];
