@@ -878,6 +878,106 @@ test('file export carries grandchildren under the subagent story', async () => {
   });
 });
 
+test('the subagent export keeps breadth-first order when ids sort past a sibling', async () => {
+  await withWorkspace('transcript-export-bfs-order', async (workspaceRoot) => {
+    const store = createSessionStore(workspaceRoot);
+    const parent = await store.create({
+      cwd: workspaceRoot,
+      llmConnectionSlug: CONNECTION_SLUG,
+      model: MODEL,
+      permissionMode: 'ask',
+      name: 'Main',
+    });
+    await writeMessages(workspaceRoot, parent.id, [
+      userMessage('u1', 'turn-1', 1, 'fan out'),
+      assistantMessage({ id: 'a1', turnId: 'turn-1', ts: 2, text: 'Delegated.' }),
+    ]);
+    const subagentInput = (name: string, slug: string, parentSessionId: string) =>
+      ({
+        cwd: workspaceRoot,
+        llmConnectionSlug: CONNECTION_SLUG,
+        model: MODEL,
+        permissionMode: 'ask',
+        name,
+        subagentParent: {
+          kind: 'subagent',
+          parentSessionId,
+          spawnedBy: { parentRunId: 'run-1', parentTurnId: 'turn-1', toolCallId: `tc-${slug}` },
+          lifecycle: 'foreground',
+        },
+        subagentRuntime: {
+          schemaVersion: 1,
+          definitionVersion: 1,
+          agentId: 'local-read',
+          agentName: 'Local Read',
+          profile: 'local_read',
+          systemPrompt: 'Read the assigned workspace task.',
+          toolNames: ['Read'],
+          categoryPolicy: { read: 'allow' },
+        },
+        subagentSpawn: {
+          schemaVersion: 1,
+          requestFingerprint: `${'f'.repeat(64 - String(slug.length).length)}${slug.length}`,
+          initialTurnId: `sub-turn-${slug}`,
+          initialRunId: `sub-run-${slug}`,
+        },
+      }) as Parameters<typeof store.createSubagent>[0];
+    const first = await store.createSubagent(subagentInput('Alpha', 'alpha', parent.id));
+    const second = await store.createSubagent(subagentInput('Beta', 'beta', parent.id));
+    const grand = await store.createSubagent(subagentInput('Grand', 'grand', first.header.id));
+    for (const [session, text] of [
+      [first.header.id, 'alpha scouted'],
+      [second.header.id, 'beta scouted'],
+      [grand.header.id, 'grand scouted'],
+    ] as const) {
+      await writeMessages(workspaceRoot, session, [
+        userMessage(`u-${text}`, 'turn-1', 3, text),
+        assistantMessage({ id: `a-${text}`, turnId: 'turn-1', ts: 4, text: 'done.' }),
+      ]);
+    }
+    const headers = await store.listHeaders();
+    // The export must walk the tree level by level (breadth-first). Ids are
+    // random, so the stored header order cannot be trusted to visit a parent
+    // before its grandchildren: pin the worst case — the grandchild sorts
+    // between its parent and the parent's sibling (#6036 review).
+    const grandHeader = headers.find((header) => header.id === grand.header.id)!;
+    const firstHeader = headers.find((header) => header.id === first.header.id)!;
+    const secondHeader = headers.find((header) => header.id === second.header.id)!;
+    const ordered = [firstHeader, grandHeader, secondHeader];
+
+    const outPath = join(workspaceRoot, 'bfs.md');
+    const result = await exportSessionTranscriptMarkdownToFile({
+      sources: {
+        openSessionStore: () => ({
+          readHeaderSnapshot: (id) => store.readHeaderSnapshot(id),
+          readMessagesSnapshot: (id) => store.readMessagesSnapshot(id),
+          listHeaders: async () => ordered,
+          close: async () => {},
+        }),
+        openRuntimeEventLedger: sources.openRuntimeEventLedger,
+      },
+      workspaceRoot,
+      sessionId: parent.id,
+      outPath,
+      now: () => 0,
+    });
+    await store.close?.();
+    assert.ok(result.ok, JSON.stringify(result));
+    assert.equal(result.subagentSessions, 3);
+    const file = await readFile(outPath, 'utf8');
+    const order = ['# Alpha', '# Beta', '# Grand'].map((heading) => file.indexOf(heading));
+    assert.ok(
+      order.every((index) => index >= 0),
+      file,
+    );
+    assert.deepEqual(
+      order,
+      [...order].sort((a, b) => a - b),
+      'the sibling must render before the deeper grandchild',
+    );
+  });
+});
+
 test('chunks reach the file while the export is still running', async () => {
   await withWorkspace('transcript-export-streaming', async (workspaceRoot) => {
     const sessionId = await createSession(workspaceRoot, 'Streamed');

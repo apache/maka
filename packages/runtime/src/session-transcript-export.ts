@@ -272,10 +272,15 @@ export async function exportSessionTranscriptMarkdownToFile(
     const exportedIds = new Set<string>([input.sessionId]);
     let frontier = [input.sessionId];
     while (frontier.length > 0) {
+      // A level is only its previous level's children: testing against the
+      // ids exported so far lets a grandchild that sorts after its parent in
+      // `listHeaders()` jump ahead of its parent's later siblings (#6036
+      // review).
+      const frontierIds = new Set(frontier);
       const nextFrontier: string[] = [];
       for (const header of headers) {
         const parentId = header.subagentParent?.parentSessionId;
-        if (parentId === undefined || exportedIds.has(header.id) || !exportedIds.has(parentId)) {
+        if (parentId === undefined || exportedIds.has(header.id) || !frontierIds.has(parentId)) {
           continue;
         }
         exportedIds.add(header.id);
