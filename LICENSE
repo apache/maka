@@ -242,7 +242,7 @@ License, Version 2.0 above applies to the adapted material.
 The pinned versions are the ones present when the adaptation was made. The
 adapted declarations are unchanged through @ai-sdk/provider-utils 5.0.25 and
 @ai-sdk/provider 4.0.7, the versions recorded by the code origin audit. Maka
-also redistributes a patch against @ai-sdk/provider-utils 5.0.40; that patch
+also redistributes a patch against @ai-sdk/provider-utils 5.0.51; that patch
 modifies Apache-2.0 source and is covered by the license reproduced above.
 
 Astryx
@@ -624,6 +624,9 @@ License: MIT
 adaptations of this component.
 The following MIT License applies to that material:
 
+Maka-authored modifications are licensed under the Apache License, Version 2.0
+reproduced above; the upstream portions retain the MIT terms below.
+
 MIT License
 
 Copyright (c) 2025 Cua AI, Inc.
@@ -811,8 +814,7 @@ Desktop renderer vendored source assets
 
 The source archive includes third-party SVG paths and source assets from
 Lobe Icons (MIT), LocalAI (MIT), Simple Icons (CC0-1.0), TDesign Icons (MIT),
-MingCute (Apache-2.0), Allogo (MIT), Ant Design Icons (MIT), and Semi Design
-(MIT), used by the desktop renderer. Their file-by-file inventory, immutable upstream revisions,
+MingCute (Apache-2.0), and Allogo (MIT), used by the desktop renderer. Their file-by-file inventory, immutable upstream revisions,
 copyright notices, and license texts are in:
 
   apps/desktop/src/renderer/public/THIRD_PARTY_LICENSES.txt
