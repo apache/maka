@@ -186,6 +186,25 @@ describe('maka session-export-markdown', () => {
     );
   });
 
+  test('maps an export failure with no structured reason to a clean exit 1', async () => {
+    const workspaceRoot = await makeWorkspace();
+    const sessionId = await seedSession(workspaceRoot);
+    // A destination directory that does not exist makes the exclusive open
+    // fail with ENOENT — an error the exporter cannot map to a structured
+    // reason. The command must still exit cleanly with the message on stderr
+    // instead of letting the rejection crash the process (#6036 review).
+    const destination = join(workspaceRoot, 'absent-dir', 'out.md');
+    const exit = await runMakaSessionExportMarkdownCli([
+      '--workspace-root',
+      workspaceRoot,
+      '--session',
+      sessionId,
+      '--out',
+      destination,
+    ]);
+    assert.equal(exit, 1);
+  });
+
   test('prints usage to stdout and exits 0 for --help', async () => {
     const exit = await runMakaSessionExportMarkdownCli(['--help']);
     assert.equal(exit, 0);

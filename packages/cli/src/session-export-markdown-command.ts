@@ -113,13 +113,22 @@ export async function runMakaSessionExportMarkdownCli(args: string[]): Promise<n
   // The exporter opens the destination with exclusive creation, so a file that
   // appears after startup — or a dangling symlink — lands on
   // `destination_exists` instead of being truncated or followed.
-  const result = await exportSessionTranscriptMarkdownToFile({
-    workspaceRoot: parsed.workspaceRoot,
-    sessionId: parsed.sessionId,
-    outPath: parsed.destination,
-    includeThinking: parsed.includeThinking,
-    sources,
-  });
+  let result: Awaited<ReturnType<typeof exportSessionTranscriptMarkdownToFile>>;
+  try {
+    result = await exportSessionTranscriptMarkdownToFile({
+      workspaceRoot: parsed.workspaceRoot,
+      sessionId: parsed.sessionId,
+      outPath: parsed.destination,
+      includeThinking: parsed.includeThinking,
+      sources,
+    });
+  } catch (error) {
+    // A failure with no structured reason — a destination open error other
+    // than EEXIST, ENOSPC mid-write — must still exit cleanly with the
+    // message on stderr instead of crashing the process (#6036 review).
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    return 1;
+  }
   if (!result.ok) {
     process.stderr.write(`${JSON.stringify(result.reason)}\n`);
     return FAILURE_EXIT_CODES[result.reason.kind] ?? 1;
