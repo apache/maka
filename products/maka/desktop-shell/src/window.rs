@@ -29,10 +29,16 @@ use gpui_shell::gpui::{
     px, size,
 };
 
-/// The components the window opener is registered through. Maka adds no
-/// components; the registry only carries the opener.
+/// Maka's components (`maka-desktop`'s `Terminal`), the bindings they need,
+/// and the window opener.
 pub fn components() -> Result<gpui_shell::FrozenComponentRegistry, gpui_shell::RegistryError> {
-    gpui_shell::ComponentRegistry::new(gpui_shell::COMPONENT_REGISTRY_API_VERSION, "maka-desktop")?
+    let mut registry = gpui_shell::ComponentRegistry::new(
+        gpui_shell::COMPONENT_REGISTRY_API_VERSION,
+        "maka-desktop",
+    )?;
+    crate::terminal::register(&mut registry)?;
+    registry
+        .with_initializer(crate::terminal::init)
         .with_window_opener(open)
         .freeze()
 }

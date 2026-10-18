@@ -8882,6 +8882,10 @@ dependencies = [
 name = "maka-desktop-shell"
 version = "0.2.0"
 dependencies = [
+ "alacritty_terminal",
+ "async-channel",
+ "base64 0.22.1",
+ "futures-lite",
  "gpui-shell",
  "hex",
  "maka-capabilities",

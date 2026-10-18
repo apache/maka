@@ -24,12 +24,14 @@
 //! `app/` (`maka-desktop-shell run --dir app`). It adds a `maka-host` module
 //! that reaches the Host named by `MAKA_HOST_ENDPOINT` and `MAKA_HOST_EPOCH`,
 //! a `maka-files` module for the file or folder the user picks, a
-//! `maka-locale` module with the language the system asks for, and the
-//! window Maka opens in (`window`).
+//! `maka-locale` module with the language the system asks for, the
+//! Workbar's terminal (`maka-desktop`'s `Terminal`), and the window Maka
+//! opens in (`window`).
 
 mod files;
 mod locale;
 mod maka_host;
+mod terminal;
 mod window;
 
 fn main() {
