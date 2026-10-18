@@ -219,3 +219,96 @@ test('copied external conversation is host-authored and retry cannot erase its p
   });
   assert.equal(events.find((e) => e.refs?.storedMessageId === 'human').author, 'user');
 });
+
+test('failed startup binding retries once for concurrent callers and caches success', async (t) => {
+  const dir = await directory(t);
+  const store = new InitiativeStore(dir, 'host');
+  let attempts = 0;
+  let resolve!: (rows: any[]) => void;
+  const retry = new Promise<any[]>((done) => {
+    resolve = done;
+  });
+  const controller = new InitiativeController(
+    {
+      sessionQuery: {
+        list: () => {
+          attempts++;
+          return attempts === 1 ? Promise.reject(Error('temporary lookup failure')) : retry;
+        },
+      },
+    },
+    store,
+    { tickMs: 60000 },
+  );
+  controller.start();
+  t.after(async () => {
+    await controller.close();
+    store.close();
+  });
+  await assert.rejects(controller.bindingReady, /temporary lookup failure/);
+  assert.equal(store.get(), null);
+  const binding = controller.bindingReady;
+  assert.equal(controller.bindingReady, binding, 'concurrent calls share the same retry');
+  const configured = controller.configure(
+    { intervalMinutes: 60 },
+    { sessionId: 'assistant', cwd: '/wrong' },
+  );
+  const enabled = controller.enable({}, { sessionId: 'assistant', cwd: '/wrong' });
+  assert.equal(attempts, 2);
+  resolve([{ id: 'assistant', cwd: dir, labels: ['personal-assistant'] }]);
+  await Promise.all([binding, configured, enabled]);
+  assert.equal(store.get().sessionId, 'assistant');
+  assert.equal(store.get().cwd, dir);
+  assert.equal(controller.bindingReady, binding, 'success stays cached');
+  await controller.bindingReady;
+  assert.equal(attempts, 2);
+  await assert.rejects(
+    controller.configure({ intervalMinutes: 2 }, { sessionId: 'other' }),
+    /Only the assistant/,
+  );
+});
+
+test('assistant.bind recovers from startup lookup failure without a Host restart', async (t) => {
+  const dir = await directory(t);
+  const apis = new Map<string, any>();
+  const closers: any[] = [];
+  const starters: any[] = [];
+  let attempts = 0;
+  let rejectStartup!: (error: Error) => void;
+  const startup = new Promise<any[]>((_resolve, reject) => {
+    rejectStartup = reject;
+  });
+  await initializeInitiative(
+    {
+      bot: new AssistantBotBridge(),
+      systemPrompt: { section() {}, context() {} },
+      turns: { beforeFinish() {} },
+      tools: { register() {} },
+      api: { register: (name: string, handler: any) => apis.set(name, handler) },
+      onClose: (fn: any) => closers.push(fn),
+      onStart: (fn: any) => starters.push(fn),
+      sessionQuery: {
+        list: () => (++attempts === 1 ? startup : Promise.resolve([])),
+        read: async () => ({ session: { cwd: dir } }),
+      },
+      agents: { withInvocation: (_call: any, fn: any) => fn() },
+      backgroundSessions: { register() {} },
+    } as any,
+    dir,
+  );
+  const stop = starters[0]();
+  t.after(async () => {
+    await stop();
+    for (const close of closers.reverse()) close();
+  });
+  const bind = apis.get('assistant.bind');
+  const first = bind({ sessionId: 'assistant' });
+  rejectStartup(Error('temporary session lookup failure'));
+  await assert.rejects(first, /temporary session lookup failure/);
+  const result = await bind({ sessionId: 'assistant' });
+  assert.equal(result.sessionId, 'assistant');
+  assert.equal(result.cwd, dir);
+  assert.equal(attempts, 2);
+  assert.deepEqual(await bind({ sessionId: 'assistant' }), result);
+  assert.equal(attempts, 2);
+});

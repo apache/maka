@@ -33,7 +33,15 @@ export class InitiativeController {
   private activeAgent?: any;
   ticking?: Promise<void>;
   enabling = false;
-  bindingReady: Promise<void> = Promise.resolve();
+  private bindingResolution?: Promise<void>;
+  get bindingReady(): Promise<void> {
+    // Share in-flight work and successful resolution, but let the next caller
+    // retry a failed startup lookup without restarting the Host.
+    return (this.bindingResolution ??= this.resolveBinding().catch((error) => {
+      this.bindingResolution = undefined;
+      throw error;
+    }));
+  }
   constructor(
     readonly ctx: any,
     readonly store: InitiativeStore,
@@ -47,8 +55,7 @@ export class InitiativeController {
       this.owned = owned;
     };
     acquire();
-    this.bindingReady = this.resolveBinding();
-    // Callers await this same promise and receive the resolution error, not a new owner.
+    // Observe startup failure; API callers can retry the lookup later.
     void this.bindingReady.catch(() => {});
     this.heartbeat = setInterval(acquire, 10000);
     this.heartbeat.unref?.();
