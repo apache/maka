@@ -85,6 +85,11 @@ test('availability reports the synthetic connector only when Runtime generates i
     [],
   );
   assert.deepEqual(toolAvailabilityConnectorNames([tool('Read')], {}), []);
+  const direct = { ...tool('MemoryExtract'), discovery: 'direct' as const };
+  assert.deepEqual(toolAvailabilityConnectorNames([direct], {}), []);
+  assert.deepEqual(toolAvailabilityConnectorNames([direct, tool('docs_read')], {}), [
+    TOOL_SEARCH_NAME,
+  ]);
 });
 
 function runtime() {
@@ -478,6 +483,18 @@ describe('ToolAvailabilityRuntime — search activation', () => {
     assert.deepEqual(plan.activeTools, ['Read', TOOL_SEARCH_NAME]);
     assert.match(searchTool(plan).description, /- future_tool/);
     assert.ok(plan.gating?.gatedNames.has('future_tool'));
+  });
+
+  test('a contributed direct tool is visible on the first step without search', () => {
+    const plan = new ToolAvailabilityRuntime(
+      [{ ...tool('extract'), discovery: 'direct' }, tool('other_plugin_tool')],
+      {},
+      invalid,
+    ).prepare(new Map());
+    assert.ok(plan.activeTools.includes('extract'));
+    assert.ok(plan.providerTools.some((candidate) => candidate.name === 'extract'));
+    assert.ok(!plan.gating?.gatedNames.has('extract'));
+    assert.ok(plan.gating?.gatedNames.has('other_plugin_tool'));
   });
 
   test('omitting availability keeps an explicit binding fully visible', () => {

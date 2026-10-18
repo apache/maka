@@ -25,9 +25,8 @@ import {
   type GoalCurrentExecution,
   type GoalPendingContinuation,
   type GoalState as DurableGoalState,
-  type GoalTextLimit,
 } from '@maka/core/goal';
-import { userFacingText, type StoredMessage } from '@maka/core/session';
+import { type StoredMessage } from '@maka/core/session';
 import {
   GoalContinuationCoordinator,
   type GoalSessionCloseOperation,
@@ -37,10 +36,7 @@ import {
 } from '@maka/runtime/goal-continuation';
 import {
   GoalManager,
-  GOAL_REASON_TEXT_LIMIT,
   TERMINAL_GOAL_STATUSES,
-  isGoalTextWithinLimit,
-  truncateGoalText,
   type GoalCheckpoint,
   type GoalControlLease,
   type GoalState,
@@ -73,14 +69,20 @@ import {
 import { waitForHostedExecutionTerminal } from './hosted-execution-wait.js';
 import { SessionAdmissionGate } from './session-admission-gate.js';
 import { goalTurnOutcomeFromHostedExecution } from './goal-execution-coordinator.js';
+import { buildGoalEvaluationContext } from './goal-evaluation-context.js';
+import type { GoalFormAnswer, GoalFormToolReference } from './goal-form-evidence.js';
 
 type GoalStores = Pick<ExecutionStoresWriter<'interactive'>, 'sessionStore' | 'agentRunStore'>;
 
 export interface HostGoalCoordinatorOptions {
   readonly store: InteractiveGoalAuthorityWriter;
   readonly stores: GoalStores;
-  /** The Session transcript as its ledger projects it; the Goal reads its tail. */
-  readonly readSessionMessages: (sessionId: string) => Promise<readonly StoredMessage[]>;
+  /** Evidence from one canonical Session transcript snapshot. */
+  readonly readSessionContext: (sessionId: string) => Promise<{
+    readonly messages: readonly StoredMessage[];
+    readonly formAnswers?: readonly GoalFormAnswer[];
+    readonly unreadFormTools?: readonly GoalFormToolReference[];
+  }>;
   readonly sessionAdmission: SessionAdmissionGate;
   readonly evaluator: GoalEvaluatorResource;
   readonly executions: Pick<HostedExecutionAuthority, 'reconcile' | 'subscribe'>;
@@ -173,11 +175,12 @@ export class HostGoalCoordinator {
       evaluator: options.evaluator,
       getRecentContext: async (sessionId) => {
         const controlLease = this.manager.getControlLease(sessionId);
-        const messages = await options.readSessionMessages(sessionId);
+        const { messages, formAnswers, unreadFormTools } =
+          await options.readSessionContext(sessionId);
         if (controlLease && this.manager.matchesControlLease(sessionId, controlLease)) {
           tokenCache.set(sessionId, tokenCount(messages));
         }
-        return recentContext(messages);
+        return buildGoalEvaluationContext(messages, formAnswers, unreadFormTools);
       },
       getTokenCount: (sessionId) => tokenCache.get(sessionId) ?? 0,
       admitTurn: options.admitTurn,
@@ -747,56 +750,6 @@ export class HostGoalCoordinator {
     retained?.release();
     this.#residencies.delete(goal.sessionId);
   }
-}
-
-function recentContext(messages: readonly StoredMessage[]): string {
-  return messages
-    .flatMap((message) => {
-      if (message.type !== 'user' && message.type !== 'assistant') return [];
-      const text = message.type === 'user' ? userFacingText(message) : message.text;
-      // A step that only thought or called a tool stores an assistant row with
-      // no text: it would take one of the six places and tell the evaluator nothing.
-      return /\S/.test(text) ? [{ type: message.type, text }] : [];
-    })
-    .slice(-6)
-    .map(({ type, text }) => `[${type}]: ${evaluatorExcerpt(text)}`)
-    .join('\n');
-}
-
-const EXCERPT_GAP = ' … ';
-const EXCERPT_END_LIMIT: GoalTextLimit = Object.freeze({
-  codeUnits: Math.floor((GOAL_REASON_TEXT_LIMIT.codeUnits - EXCERPT_GAP.length) / 2),
-  utf8Bytes: Math.floor(
-    (GOAL_REASON_TEXT_LIMIT.utf8Bytes - Buffer.byteLength(EXCERPT_GAP, 'utf8')) / 2,
-  ),
-});
-
-/**
- * One message within the budget each context row has always had. A longer one
- * keeps its opening and its end, since a report usually closes with what is
- * verified and what remains.
- */
-function evaluatorExcerpt(text: string): string {
-  if (isGoalTextWithinLimit(text, GOAL_REASON_TEXT_LIMIT)) return text;
-  return `${truncateGoalText(text, EXCERPT_END_LIMIT)}${EXCERPT_GAP}${goalTextTail(text, EXCERPT_END_LIMIT)}`;
-}
-
-/** The longest end of `text` within `limit`, never splitting a surrogate pair. */
-function goalTextTail(text: string, limit: GoalTextLimit): string {
-  // One code unit more than can fit: a pair cut by this slice leaves a lone
-  // half at the front, which the walk below always stops before.
-  const characters = Array.from(text.slice(-(limit.codeUnits + 1)));
-  let start = characters.length;
-  let codeUnits = 0;
-  let utf8Bytes = 0;
-  while (start > 0) {
-    const character = characters[start - 1]!;
-    codeUnits += character.length;
-    utf8Bytes += Buffer.byteLength(character, 'utf8');
-    if (codeUnits > limit.codeUnits || utf8Bytes > limit.utf8Bytes) break;
-    start -= 1;
-  }
-  return characters.slice(start).join('');
 }
 
 function tokenCount(messages: readonly StoredMessage[]): number {

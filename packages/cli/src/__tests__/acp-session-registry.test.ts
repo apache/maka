@@ -82,6 +82,7 @@ const DEFAULT_CONFIG_OPTIONS: Array<Extract<SessionConfigOption, { type: 'select
     options: [
       { value: 'default', name: 'Default' },
       { value: 'off', name: 'Off' },
+      { value: 'on', name: 'On' },
       { value: 'minimal', name: 'Minimal' },
       { value: 'low', name: 'Low' },
       { value: 'medium', name: 'Medium' },

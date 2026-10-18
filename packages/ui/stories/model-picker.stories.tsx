@@ -206,19 +206,29 @@ const ANTIGRAVITY_CATALOG: readonly ExecutorCatalogEntry[] = [{
 
 // Real path: new task → composer footer model trigger. The ready catalog is a
 // fixture using model IDs observed from official ACP 1.1.1; no Agent runs here.
-function ExecutorPickerFrame({ loading }: { loading: boolean }) {
-  const [selection, setSelection] = useState<ExecutorSelection>();
+function ExecutorPickerFrame({ loading, existing = false }: { loading: boolean; existing?: boolean }) {
+  const [selection, setSelection] = useState<ExecutorSelection | undefined>(existing
+    ? { executorId: 'antigravity-acp', configuration: { model: 'gemini-3.8-flash-high' } }
+    : undefined);
   return <div style={{ width: 780, maxWidth: '100%', marginTop: 360 }}>
     <Composer
       executorPicker={{
         catalog: loading ? [] : ANTIGRAVITY_CATALOG,
         loading,
+        fixed: existing,
         selection,
         onSelect: setSelection,
         onSetup: () => {},
         onRetry: () => {},
         onNewTask: () => {},
       }}
+      activeSession={existing ? {
+        id: 'storybook-external-session', name: 'External session',
+        isFlagged: false, isArchived: false, labels: [], hasUnread: false,
+        status: 'active', backend: 'plugin-executor', connectionLocked: true, llmConnectionSlug: '',
+        model: selection?.configuration.model ?? '', permissionMode: 'ask',
+      } : undefined}
+      renderProviderMark={providerMark}
       modelChoices={CHOICES}
       newChatModel={{ llmConnectionId: 'connection-openai-main', llmConnectionSlug: 'openai-main', model: 'gpt-5' }}
       onPickNewChatModel={() => {}}
@@ -228,25 +238,80 @@ function ExecutorPickerFrame({ loading }: { loading: boolean }) {
   </div>;
 }
 
+// Real path: new-task composer → model picker while external discovery is pending.
 export const ExecutorCatalogLoading: Story = {
   render: () => <ExecutorPickerFrame loading />,
   play: async () => {
     const body = within(document.body);
-    await userEvent.click(await body.findByRole('button', { name: /选择模型|Select model/ }));
-    await waitFor(() => expect(body.getByText(/正在读取执行者与模型|Loading agents and models/)).toBeVisible());
+    await userEvent.click(await body.findByRole('button', { name: /选择模型|選擇模型|Choose model/ }));
+    await waitFor(() => expect(body.getByText(/正在读取执行者与模型|正在讀取執行者與模型|Loading agents and models/)).toBeVisible());
   },
 };
 
+// Real path: new-task composer → model picker → native or external model search
+// with no matches → clear search; the Composer owns click-to-focus behavior.
 export const ExecutorCatalogReady: Story = {
   render: () => <ExecutorPickerFrame loading={false} />,
   play: async () => {
     const body = within(document.body);
-    await userEvent.click(await body.findByRole('button', { name: /选择模型|Select model/ }));
+    await userEvent.click(await body.findByRole('button', { name: /选择模型|選擇模型|Choose model/ }));
+    const recoverSearch = async () => {
+      const search = await body.findByRole('combobox');
+      const count = body.getAllByRole('option').length;
+      await userEvent.click(search);
+      await userEvent.type(search, 'no-such-model-6103');
+      const title = await body.findByRole('heading', { name: /没有匹配的模型|沒有符合的模型|No matching models/ });
+      const empty = title.closest<HTMLElement>('[role="status"]')!;
+      await expect(empty).toHaveClass('astryx-empty-state');
+      await expect(empty).toHaveTextContent(/没有匹配的模型|沒有符合的模型|No matching models/);
+      await expect(body.queryAllByRole('option')).toHaveLength(0);
+      const clear = within(empty).getByRole('button', { name: /清除搜索|清除搜尋|Clear search/ });
+      await expect(clear.closest('[role="listbox"]')).toBeNull();
+      await userEvent.click(clear);
+      await waitFor(() => expect(search).toHaveValue(''));
+      // Browser focus catches the composer's parent click handler reclaiming it.
+      await expect(search).toHaveFocus();
+      await expect(body.getAllByRole('option')).toHaveLength(count);
+      await expect(empty).not.toBeInTheDocument();
+      await userEvent.keyboard('{ArrowDown}');
+      await expect(search).toHaveAttribute('aria-activedescendant', expect.stringMatching(/item-0$/));
+    };
+    await recoverSearch();
     await userEvent.click(await body.findByRole('button', { name: 'Antigravity' }));
+    await recoverSearch();
     // Selecting the entry mounts the thinking control beside the trigger, so
     // the footer reflows and the panel's group view lands a frame later.
     await waitFor(() => expect(body.getByText('Gemini 3.8 Flash')).toBeVisible());
     await waitFor(() => expect(body.getByText('Gemini 3.1 Pro')).toBeVisible());
+  },
+};
+
+// Real path: existing external Agent conversation → composer model trigger.
+// Reuse the real Composer frame to check search focus and native popup geometry.
+export const ExistingExecutorConversation: Story = {
+  render: () => <ExecutorPickerFrame loading={false} existing />,
+  play: async () => {
+    const body = within(document.body);
+    const trigger = await body.findByRole('button', { name: /Gemini 3.8 Flash/ });
+    await userEvent.click(trigger);
+    const search = await body.findByRole('combobox', { expanded: true });
+    await userEvent.click(search);
+    await userEvent.type(search, 'Pro');
+    await expect(search).toHaveFocus();
+    await expect(body.getAllByRole('option')).toHaveLength(1);
+    await userEvent.keyboard('{ArrowDown}{Enter}');
+    await waitFor(() => expect(trigger).toHaveTextContent('Gemini 3.1 Pro'));
+    await userEvent.click(trigger);
+    await waitFor(() => expect(body.getAllByRole('option')).toHaveLength(2));
+    await expect(document.querySelector('.maka-executor-picker-rail')).toBeNull();
+    const popup = document.querySelector<HTMLElement>('.astryx-selector-popup')!;
+    await expect(popup.getBoundingClientRect().width).toBeLessThanOrEqual(340);
+    for (const row of body.getAllByRole('option')) {
+      await expect(row.querySelector('.modelPickerChatOption')).not.toBeNull();
+    }
+    await userEvent.keyboard('{Escape}');
+    await waitFor(() => expect(trigger).toHaveFocus());
+    await userEvent.click(trigger);
   },
 };
 

@@ -64,6 +64,27 @@ const PREFIX_PROOF_TEST_BUDGET = {
 };
 
 describe('SqliteRuntimeStore', () => {
+  it('history revision tracks durable append identity without using event time', async () => {
+    await withStore(async (store) => {
+      const first = functionCallEvent({
+        id: 'history-one',
+        content: { kind: 'text', text: 'first' },
+        ts: 100,
+      });
+      assert.equal(await store.readSessionHistoryRevision(first.sessionId), 'empty');
+      await store.appendRuntimeEvent(first.sessionId, first.runId, first);
+      const revision = await store.readSessionHistoryRevision(first.sessionId);
+      await store.appendRuntimeEvent(first.sessionId, first.runId, first);
+      assert.equal(await store.readSessionHistoryRevision(first.sessionId), revision);
+      await store.appendRuntimeEvent(first.sessionId, first.runId, {
+        ...first,
+        id: 'history-late',
+        ts: 1,
+      });
+      assert.notEqual(await store.readSessionHistoryRevision(first.sessionId), revision);
+    });
+  });
+
   it('leaves an existing NONE auto-vacuum database unchanged', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-sqlite-runtime-existing-none-'));
     const dbPath = join(root, 'runtime.sqlite');

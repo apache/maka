@@ -213,6 +213,7 @@ const TUI_COPY_RESOURCES_PICKERS_EN = {
   addAccount: 'add account',
   thinkingLevels: {
     off: 'Off',
+    on: 'On',
     minimal: 'Minimal',
     low: 'Low',
     medium: 'Medium',
@@ -1023,6 +1024,7 @@ export const TUI_COPY_RESOURCES = {
         addAccount: '添加账号',
         thinkingLevels: {
           off: '关',
+          on: '开',
           minimal: '最小',
           low: '低',
           medium: '中',
@@ -1149,6 +1151,7 @@ export const TUI_COPY_RESOURCES = {
         addAccount: '新增帳號',
         thinkingLevels: {
           off: '關',
+          on: '開',
           minimal: '最小',
           low: '低',
           medium: '中',

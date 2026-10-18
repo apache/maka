@@ -64,6 +64,8 @@
     "./context-offload": "./dist/context-offload.js",
     "./tool-result-archive-evidence": "./dist/tool-result-archive-evidence.js",
     "./attachments": "./dist/attachments.js",
+    "./image-delivery": "./dist/image-delivery.js",
+    "./image-markdown": "./dist/image-markdown.js",
     "./artifacts": "./dist/artifacts.js",
     "./pet": "./dist/pet.js",
     "./skill-invocation": "./dist/skill-invocation.js",
@@ -179,6 +181,7 @@
     "test:dist": "node --test \"dist/**/*.test.js\""
   },
   "dependencies": {
-    "intl-messageformat": "11.2.15"
+    "intl-messageformat": "11.2.15",
+    "marked": "18.0.11"
   }
 }

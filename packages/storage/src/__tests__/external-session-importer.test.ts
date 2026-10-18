@@ -60,7 +60,14 @@ describe('ExternalSessionImporter', () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-external-session-import-'));
     const sessions = createSessionStore(root);
     const messages: StoredMessage[] = [
-      { type: 'user', id: 'user-1', turnId: 'turn-1', ts: 10, text: 'fix the parser' },
+      {
+        type: 'user',
+        id: 'user-1',
+        turnId: 'turn-1',
+        ts: 10,
+        text: 'fix the parser',
+        displayText: 'Fix the parser (display)',
+      },
       {
         type: 'assistant',
         id: 'assistant-1',

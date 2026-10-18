@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { createAssistantSessionVisibility, AssistantSessionVisibilityProvider } from '../src/renderer/application/contracts/session-catalog/assistant-session-visibility.js';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { useEffect, useState } from 'react';
 import type {
@@ -58,6 +59,11 @@ type SearchModalDeps = NonNullable<Parameters<typeof SearchModal>[0]['deps']>;
 
 const noop = () => undefined;
 const noopNavigate = (_sessionId: string, _turnId?: string) => undefined;
+const assistantVisibility = createAssistantSessionVisibility({
+  read: async () => false,
+  write: async () => undefined,
+  subscribeChanges: () => () => undefined,
+});
 const EMPTY_HIDDEN_SESSIONS: ReadonlySet<string> = new Set();
 
 function passage(
@@ -209,6 +215,7 @@ function CommandPaletteFrame(props: { commands: Command[] }) {
         position: 'relative',
       }}
     >
+      <AssistantSessionVisibilityProvider value={assistantVisibility}>
       <OverlaysServicesProvider services={storyOverlayServices}>
         <OverlaysRoot>
           {(overlays) => (
@@ -225,6 +232,7 @@ function CommandPaletteFrame(props: { commands: Command[] }) {
           )}
         </OverlaysRoot>
       </OverlaysServicesProvider>
+      </AssistantSessionVisibilityProvider>
     </div>
   );
 }

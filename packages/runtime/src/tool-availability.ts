@@ -134,16 +134,20 @@ function compareExactString(left: string, right: string): number {
 }
 
 function searchableToolNames(
-  tools: readonly Pick<MakaTool, 'name'>[],
+  tools: readonly Pick<MakaTool, 'name' | 'discovery'>[],
   config: ToolAvailabilityConfig | undefined,
 ): Set<string> {
   if (config === undefined) return new Set();
-  return new Set(tools.map(({ name }) => name).filter((name) => !DIRECT_TOOL_NAMES.has(name)));
+  return new Set(
+    tools
+      .filter((tool) => !DIRECT_TOOL_NAMES.has(tool.name) && tool.discovery !== 'direct')
+      .map(({ name }) => name),
+  );
 }
 
 /** Returns the synthetic connector names injected by ToolAvailabilityRuntime. */
 export function toolAvailabilityConnectorNames(
-  tools: readonly Pick<MakaTool, 'name'>[],
+  tools: readonly Pick<MakaTool, 'name' | 'discovery'>[],
   config: ToolAvailabilityConfig | undefined,
 ): string[] {
   return searchableToolNames(tools, config).size > 0 ? [TOOL_SEARCH_NAME] : [];

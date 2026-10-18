@@ -105,6 +105,7 @@ import {
   type DesktopTranscriptBatch,
   type DesktopTranscriptHandle,
   type DesktopTranscriptOpenMode,
+  type DesktopTranscriptPosition,
   type DesktopTranscriptOpenResult,
 } from './transcript-contract.js';
 import {
@@ -1251,8 +1252,8 @@ const runtimeHost: MakaBridge['runtimeHost'] = {
       OperationOutput<typeof operation>
     >;
   },
-  command(operation, input) {
-    return invokeActiveRuntimeHost('runtime-host:command', operation, input) as Promise<
+  command(operation, input, host) {
+    return (host ? invokeSelectedRuntimeHost(host, 'runtime-host:command', operation, input) : invokeActiveRuntimeHost('runtime-host:command', operation, input)) as Promise<
       OperationOutput<typeof operation>
     >;
   },
@@ -2803,6 +2804,7 @@ const makaBridge = {
       registerCancellation?: (cancel: () => void) => void,
       mode: DesktopTranscriptOpenMode = 'history',
       resumeFrom?: number,
+      position?: DesktopTranscriptPosition,
     ): Promise<DesktopTranscriptHandle> {
       const consumerId = crypto.randomUUID();
       const channel = `sessions:transcript:${consumerId}`;
@@ -2864,6 +2866,7 @@ const makaBridge = {
             consumerId,
             mode,
             resumeFrom ?? null,
+            position ?? null,
           ) as Promise<RuntimeHostObservationIpcResult<DesktopTranscriptOpenResult>>,
         };
       });
@@ -2902,6 +2905,7 @@ const makaBridge = {
               ...cachedIdentity, sessionId, readThroughMessageId: null,
               acknowledgeTail: unavailable,
               loadEarlier: unavailable,
+              loadNewer: unavailable,
               close: async () => {},
             };
           }
@@ -2938,6 +2942,9 @@ const makaBridge = {
             consumerId,
             throughSequence ?? null,
           ) as Promise<void>,
+        loadNewer: () => invokeWhenReady(
+          'sessions:transcript:load-newer', consumerScope, consumerId,
+        ) as Promise<void>,
         async close() {
           if (closed) return;
           requestClose();
@@ -3422,6 +3429,7 @@ const makaBridge = {
     },
   },
   attachments: {
+    resolveImageDelivery: (sessionId, request) => invokeSessionRuntimeHost('attachments:resolveImage', sessionId, request),
     pickDirectory: () => invokeWhenReady('directories:pick'),
     // The renderer hands over the dropped or pasted File objects, never paths:
     // only a File backed by something the user dropped or pasted has a path,

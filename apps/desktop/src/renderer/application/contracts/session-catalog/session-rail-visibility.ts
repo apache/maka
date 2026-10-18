@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { ASSISTANT_BACKGROUND_SESSION_LABEL } from '@maka/core/session';
 import type { SessionSummary } from '@maka/core/session';
 import { isSideConversationSession } from '@maka/core/side-conversation';
 import type { SessionCatalogState } from './session-catalog-state.js';
@@ -33,17 +34,21 @@ import type { DesktopSessionSummary } from '../../../../shared/desktop-session-p
  * last two values were a destination that moved to Settings and a value nothing
  * ever selected, which left one branch reachable — this one.
  */
-export function sessionMatchesRail(session: SessionSummary): boolean {
-  return !session.isArchived && !isSideConversationSession(session.labels);
+export function sessionMatchesRail(session: SessionSummary, entryLabels?: ReadonlySet<string>, showAssistantBackgroundSessions = false): boolean {
+  return (showAssistantBackgroundSessions || !session.labels?.includes(ASSISTANT_BACKGROUND_SESSION_LABEL))
+    && !session.labels?.includes('personal-assistant') && !session.isArchived && !isSideConversationSession(session.labels)
+    && !session.labels?.some(label => entryLabels?.has(label));
 }
 
 /** The command palette lists the rail's membership minus its hidden rows. */
 export const selectPaletteSessions = (
   state: SessionCatalogState,
   hiddenSessionIds: ReadonlySet<string>,
+  entryLabels?: ReadonlySet<string>,
+  showAssistantBackgroundSessions = false,
 ) =>
   state.sessions.filter(
-    (session) => sessionMatchesRail(session) && !hiddenSessionIds.has(session.id),
+    (session) => sessionMatchesRail(session, entryLabels, showAssistantBackgroundSessions) && !hiddenSessionIds.has(session.id),
   );
 
 const EMPTY_PALETTE_SESSIONS: readonly DesktopSessionSummary[] = [];

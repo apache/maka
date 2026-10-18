@@ -58,6 +58,7 @@ interface ChatMessageSurfaceProps extends Omit<
   | 'pendingQuotes'
   | 'onQuoteAnnotationSubmit'
   | 'onReadAttachmentBytes'
+  | 'onResolveImageDelivery'
 > {
   /**
    * #1985: the live projection and the shell-run records are the only session

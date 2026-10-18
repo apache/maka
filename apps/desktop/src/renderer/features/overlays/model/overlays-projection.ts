@@ -39,6 +39,7 @@ export interface OverlaysCommands {
   openProjectSettings(profileId: string): void;
   openProviderCatalog(): void;
   openConnectionDetail(slug: string): void;
+  openExternalAgentSettings(executorId?: string): void;
   openProviderCreate(providerType: ProviderType): void;
   setSettingsProfileId(profileId: string | undefined): void;
   closeSettings(): void;

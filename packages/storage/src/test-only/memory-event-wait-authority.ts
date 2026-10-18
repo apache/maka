@@ -23,9 +23,16 @@ import {
   type EventWaitAuthorityRepository,
   type EventWaitSnapshot,
   eventWaitPage,
+  eventWaitSourceKey,
+  EVENT_WAIT_PAGE_LIMIT,
   normalizeEventWaitCommit,
   validateEventWaitRead,
   validateEventWaitPage,
+  validateEventWaitStatusPage,
+  validateEventWaitObservationList,
+  validateEventWaitSource,
+  validateEventWaitSourceCooldown,
+  validateEventWaitSourceDispatch,
 } from '../event-wait-authority.js';
 import {
   type MemoryExecutionAuthority,
@@ -33,6 +40,24 @@ import {
   rows,
   equal,
 } from './memory-execution-state.js';
+
+interface SourceCooldown {
+  until: number;
+  dispatchToken: string | null;
+  dispatchUntil: number;
+}
+const effectiveCooldown = (value: SourceCooldown): number =>
+  Math.max(value.until, value.dispatchUntil);
+function cleanSourceCooldowns(table: Map<string, SourceCooldown>, observedAt: number): void {
+  const expired = [...table.entries()]
+    .filter(([, value]) => effectiveCooldown(value) <= observedAt)
+    .sort(
+      ([a, av], [b, bv]) =>
+        effectiveCooldown(av) - effectiveCooldown(bv) || (a < b ? -1 : a > b ? 1 : 0),
+    )
+    .slice(0, EVENT_WAIT_PAGE_LIMIT);
+  for (const [key] of expired) table.delete(key);
+}
 
 export function deleteMemoryEventWaits(state: MemoryState, sessionId: string): void {
   const table = rows<EventWaitSnapshot>(state, 'eventWaits');
@@ -89,6 +114,119 @@ export function createMemoryEventWaitAuthority(
           input.limit,
         ),
       );
+    },
+    listByStatus(input) {
+      check();
+      validateEventWaitStatusPage(input);
+      return authority.read((s) =>
+        eventWaitPage(
+          [...rows<EventWaitSnapshot>(s, 'eventWaits').values()]
+            .filter(
+              (v) =>
+                v.record.status === input.status && v.record.waitId > (input.afterWaitId ?? ''),
+            )
+            .sort(compare)
+            .slice(0, input.limit + 1),
+          input.limit,
+        ),
+      );
+    },
+    listForObservation(input) {
+      check();
+      validateEventWaitObservationList(input);
+      return authority.read((s) => {
+        const dirty = new Set(input.dirtyWaitIds);
+        const excludedWaits = new Set(input.excludedWaitIds);
+        const excludedSources = new Set((input.excludedSources ?? []).map(eventWaitSourceKey));
+        const cooldowns = rows<SourceCooldown>(s, 'eventWaitSourceCooldowns');
+        return [...rows<EventWaitSnapshot>(s, 'eventWaits').values()]
+          .filter(({ record }) => {
+            if (
+              record.status !== 'waiting' ||
+              record.deadlineAt <= input.now ||
+              record.waitId <= (input.scan?.afterWaitId ?? '') ||
+              excludedWaits.has(record.waitId)
+            )
+              return false;
+            const source = eventWaitSourceKey(record.resource);
+            if (excludedSources.has(source)) return false;
+            const cooldown = cooldowns.get(source);
+            if (cooldown && effectiveCooldown(cooldown) > input.now) return false;
+            const due = record.observation
+              ? dirty.has(record.waitId)
+                ? record.observation.nextObserveAt
+                : record.observation.nextPollAt
+              : record.createdAt;
+            return due <= input.now;
+          })
+          .sort(
+            input.scan
+              ? compare
+              : (a, b) =>
+                  (a.record.observation?.lastAttemptAt ?? 0) -
+                    (b.record.observation?.lastAttemptAt ?? 0) || compare(a, b),
+          )
+          .slice(0, input.limit);
+      });
+    },
+    readSourceCooldown(input) {
+      check();
+      validateEventWaitSource(input);
+      return authority.read((s) => {
+        const value = rows<SourceCooldown>(s, 'eventWaitSourceCooldowns').get(
+          eventWaitSourceKey(input),
+        );
+        return value ? effectiveCooldown(value) : null;
+      });
+    },
+    extendSourceCooldown(input) {
+      check();
+      validateEventWaitSourceCooldown(input);
+      return authority.write('eventWait.extendSourceCooldown', (s) => {
+        const table = rows<SourceCooldown>(s, 'eventWaitSourceCooldowns');
+        cleanSourceCooldowns(table, input.observedAt);
+        const key = eventWaitSourceKey(input);
+        const current = table.get(key) ?? { until: 0, dispatchToken: null, dispatchUntil: 0 };
+        const next = { ...current, until: Math.max(current.until, input.until) };
+        table.set(key, next);
+        return next.until;
+      });
+    },
+    reserveSourceDispatch(input) {
+      check();
+      validateEventWaitSourceDispatch(input);
+      return authority.write('eventWait.reserveSourceDispatch', (s) => {
+        const table = rows<SourceCooldown>(s, 'eventWaitSourceCooldowns');
+        cleanSourceCooldowns(table, input.observedAt);
+        const key = eventWaitSourceKey(input);
+        const current = table.get(key) ?? { until: 0, dispatchToken: null, dispatchUntil: 0 };
+        if (current.dispatchToken !== input.token && effectiveCooldown(current) > input.observedAt)
+          return false;
+        table.set(key, {
+          ...current,
+          dispatchToken: input.token,
+          dispatchUntil: Math.max(current.dispatchUntil, input.until),
+        });
+        return true;
+      });
+    },
+    completeSourceDispatch(input) {
+      check();
+      validateEventWaitSourceDispatch(input, true);
+      return authority.write('eventWait.completeSourceDispatch', (s) => {
+        const table = rows<SourceCooldown>(s, 'eventWaitSourceCooldowns');
+        const key = eventWaitSourceKey(input);
+        const current = table.get(key);
+        if (!current) return 0;
+        if (current.dispatchToken !== input.token) return effectiveCooldown(current);
+        const next = {
+          until: Math.max(current.until, input.until),
+          dispatchToken: null,
+          dispatchUntil: 0,
+        };
+        table.set(key, next);
+        return effectiveCooldown(next);
+      });
     },
     commit(raw) {
       check();

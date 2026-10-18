@@ -90,6 +90,7 @@ function request(
   switch (operation) {
     case 'context.diagnostics.query':
       return client.request(operation, HOST_OPERATION_SPECS[operation].decodeInput(value));
+    case 'personal-assistant.call':
     case 'daily-review.mutate':
       return client.request(operation, HOST_OPERATION_SPECS[operation].decodeInput(value));
     case 'daily-review.query':

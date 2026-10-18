@@ -685,7 +685,7 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
   goal = new HostGoalCoordinator({
     store: goalStore,
     stores,
-    readSessionMessages: (sessionId) => manager.getMessages(sessionId),
+    readSessionContext: async (sessionId) => ({ messages: await manager.getMessages(sessionId) }),
     executions: rootCoordinator,
     sessionAdmission: admission,
     evaluator: {
