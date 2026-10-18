@@ -1244,3 +1244,22 @@
 }
 
 .maka-choice-hint { margin: 8px 0; }
+
+/* Model-authored assistant message preview; never truncate the summary. */
+.maka-message-summary-preview { overflow-wrap: anywhere; }
+.maka-message-summary-body {
+  --maka-summary-body-color: color-mix(in srgb, var(--foreground) 65%, var(--background) 35%);
+  color: var(--maka-summary-body-color);
+}
+.maka-message-summary-body .astryx-markdown {
+  --foreground: var(--maka-summary-body-color);
+  --_item-label-color: var(--maka-summary-body-color);
+  /* Headings, table cells and quotes use Astryx semantic text tokens. */
+  --color-text-primary: var(--maka-summary-body-color);
+  --color-text-secondary: var(--maka-summary-body-color);
+  color: var(--maka-summary-body-color);
+}
+.maka-message-summary-body:not([hidden]) { padding-top: 12px; }
+.maka-message-summary-body[hidden] { display: none; }
+.maka-message-summary-toggle { margin-top: 8px; }
+.maka-message-summary-toggle[aria-expanded='true'] svg { transform: rotate(180deg); }

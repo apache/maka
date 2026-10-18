@@ -2850,3 +2850,24 @@ test('Coordination receipts materialize as host facts, never assistant output', 
     false,
   );
 });
+
+test('assistant authored summary survives canonical decoding, ledger backfill and projection', () => {
+  const message = decodeCanonicalMessage({
+    type: 'assistant',
+    id: 'summary-message',
+    turnId,
+    ts,
+    text: 'Complete original body with evidence',
+    summary: 'A distinct short preview',
+    modelId: 'fixture',
+  });
+  const { events } = backfillRuntimeEventsFromStoredMessages({
+    run: { sessionId, runId, turnId, invocationId },
+    messages: [message],
+  });
+  const projected = projectRuntimeEventsToStoredMessages(events, { invocations: [invocation] });
+  const assistant = projected.messages.find((row) => row.type === 'assistant');
+  assert.equal(assistant?.text, 'Complete original body with evidence');
+  assert.equal(assistant?.summary, 'A distinct short preview');
+  assert.throws(() => decodeCanonicalMessage({ ...message, summary: 123 }));
+});

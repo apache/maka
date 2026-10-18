@@ -150,6 +150,19 @@ export function taskDelivery(ctx: any, db: any, store: any, controller: any) {
         const m = store.get(n.matter).matter;
         const cwd = store.binding(m.sessionId);
         if (!cwd) continue;
+        if (
+          ctx.bot?.post(n.owner, {
+            id: n.id,
+            type: 'task_update',
+            source: m.sessionId,
+            taskId: m.id,
+            content: JSON.parse(n.payload ?? '{}'),
+          })
+        ) {
+          // Receipt is durable mailbox acceptance, never a claim that the user was told.
+          update(n.id, 'admitted');
+          continue;
+        }
         const agent = await ctx.agents.withInvocation(
           {
             sessionId: n.owner,

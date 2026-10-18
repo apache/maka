@@ -341,6 +341,7 @@ export type TurnTimelineItem =
     }
   | {
       kind: "text";
+      summary?: string;
       interrupted?: true;
       text: string;
       messageId: string;
@@ -1077,6 +1078,7 @@ function buildTurnTimeline(
             raw.push({
               kind: "text",
               text: message.text,
+              ...(message.summary !== undefined ? { summary: message.summary } : {}),
               ...(message.interrupted ? { interrupted: true } : {}),
               messageId: rowId,
               ts: message.ts,
@@ -1101,6 +1103,7 @@ function buildTurnTimeline(
           raw.push({
             kind: "text",
             text: message.text,
+              ...(message.summary !== undefined ? { summary: message.summary } : {}),
             ...(message.interrupted ? { interrupted: true } : {}),
             messageId: rowId,
             ts: message.ts,

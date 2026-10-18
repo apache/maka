@@ -139,6 +139,48 @@ test('a plugin can reject natural turn finish and continue the same model loop',
   assert.equal(events.filter((event) => event.type === 'complete').length, 1);
 });
 
+for (const scenario of ['complete', 'veto', 'failure', 'ordinary'] as const) {
+  test(`exclusive tool completion: ${scenario}`, async () => {
+    const durable = durableTurnHarness(`finish-tool-${scenario}`, 'Handle the inbox.');
+    const { model, callCount } = countingToolLoopModel(2);
+    let executions = 0;
+    let checks = 0;
+    const backend = createBackend({
+      connection: connection(),
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [
+        {
+          name: 'Read',
+          description: 'test completion request',
+          parameters: z.object({ path: z.string() }),
+          executionSemantics: 'exclusive_step',
+          finishTurnOnSuccess: scenario !== 'ordinary',
+          impl: () => {
+            executions++;
+            if (scenario === 'failure' && executions === 1) throw Error('temporary failure');
+            return { sleeping: true };
+          },
+        },
+      ],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      beforeTurnFinish: async () => {
+        checks++;
+        return scenario === 'veto' && checks === 1
+          ? { allow: false, feedback: 'New inbox input arrived; read it before sleeping.' }
+          : { allow: true };
+      },
+    });
+    const events = await drainDurably(backend.send(durable.input()), durable);
+    assert.equal(callCount(), scenario === 'complete' ? 1 : scenario === 'ordinary' ? 3 : 2);
+    assert.equal(events.filter((event) => event.type === 'complete').length, 1);
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+    if (scenario === 'veto')
+      assert.match(JSON.stringify(model.doStreamCalls[1]?.prompt), /New inbox input arrived/);
+    if (scenario === 'failure') assert.equal(checks, 1, 'failed tool cannot request completion');
+  });
+}
+
 for (const terminal of ['gateway', 'eof', 'other'] as const) {
   test(`recovers ${terminal} SSE with one failed attempt and no repeated tool effects`, async () => {
     const durable = durableTurnHarness('turn-tb4', 'do the work', { runId: 'run-tb4' });

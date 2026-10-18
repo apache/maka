@@ -21,7 +21,7 @@ import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { Matter, MatterStore } from './matter.js';
 import type { MatterServices, MakaToolContext } from './host-types.js';
-import { buildMatterPrompt } from './prompt.js';
+import { buildMatterPrompt, buildMatterStepContext } from './prompt.js';
 
 import { awaitingUser, executionFailure } from '../execution-outcome.js';
 
@@ -101,7 +101,7 @@ export class MatterController {
     }
     this.store.enqueueDue();
     for (const m of this.store.list()) {
-      if (!this.active || this.runs.size >= 2) break;
+      if (!this.active || this.runs.size >= 15) break;
       if (
         this.runs.has(m.id) ||
         m.activation ||
@@ -280,6 +280,27 @@ export class MatterController {
     const active = this.store.get(id).matter.activation!;
     this.store.observe(id, active.id);
     return this.store.workspace(id, active.id);
+  }
+  /** Re-resolved before each model request, including while a task is running.
+   * Keep durable inbox entries until settlement; rendering is not acknowledgement.
+   */
+  stepContext(sessionId: string, turnId: string): string | undefined {
+    const m = this.store.forSession(sessionId);
+    if (!m || ['completed', 'cancelled'].includes(m.status)) return undefined;
+    const clock = buildMatterStepContext();
+    if (!m.activation || m.activation.turnId !== turnId || m.activation.settled) return clock;
+    const snapshot = this.store.get(m.id);
+    const workspace = this.store.workspace(m.id, m.activation.id);
+    return `${clock}\nCurrent task inbox (persisted inputs, not a new delegation; refreshed before every model request). User entries are user requirements; coordinator entries are assistant-authored amendments and bot_clarification entries are coordinator answers; both are coordinator context, not new user authorization. Reassess your next action against these inputs. Read MatterRead before submitting so its revision and observed input boundary are current. Rendering this context does not acknowledge or consume inputs.\n${JSON.stringify(
+      {
+        matterId: m.id,
+        activationId: m.activation.id,
+        revision: m.revision,
+        events: snapshot.events,
+        pendingEventCount: snapshot.pendingEventCount,
+        inboxFile: workspace.files.inbox,
+      },
+    )}`;
   }
   snapshot() {
     return {

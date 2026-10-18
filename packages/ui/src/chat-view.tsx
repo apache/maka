@@ -175,6 +175,8 @@ export function ChatView(props: {
   /** Imperative handle for host-driven transcript gestures. */
   handleRef?: Ref<ChatViewHandle>;
   messages: StoredMessage[];
+  /** Optional visual identity for assistant messages. */
+  assistantAvatar?: ReactNode;
   transientMessages?: readonly TransientUserMessageProjection[];
   messageLoading?: boolean;
   liveTurns?: readonly LiveTurnProjection[];
@@ -208,6 +210,8 @@ export function ChatView(props: {
    * the regular prompt-suggestion hero shows.
    */
   emptyOverride?: ReactNode;
+  /** Ephemeral host-owned activity, outside the durable conversation. */
+  activityContent?: ReactNode;
   /** Optional host-owned identity beside a turn; absent for ordinary transcripts. */
   turnDecorations?: ReadonlyMap<string, { header?: ReactNode; context?: ReactNode; accentColor?: string; messageRail?: ReactNode }>;
   /** Session-owned records anchored after a durable conversation turn. */
@@ -832,7 +836,7 @@ export function ChatView(props: {
     // content here too — otherwise the first question stays invisible for the
     // whole fork round trip (#4654). Once the fork commits `activeSession`
     // arrives and the full transcript below takes over.
-    const hasOptimisticContent = tail !== null;
+    const hasOptimisticContent = tail !== null || !!props.activityContent;
     const emptyContent = props.emptyOverride ?? (
       <EmptyChatHero onPromptSuggestion={props.onPromptSuggestion} userLabel={props.userLabel} />
     );
@@ -879,6 +883,7 @@ export function ChatView(props: {
                 </>
               ) : null}
               {tail}
+              {props.activityContent}
             </>
           ) : null}
         </ChatMessageList>
@@ -892,7 +897,8 @@ export function ChatView(props: {
     && transientMessages.length === 0
     && !streamingActive
     && !hasVisibleConversationItem
-    && !hasLiveCompactionRow;
+    && !hasLiveCompactionRow
+    && !props.activityContent;
   const emptyContent = props.messageLoading
     ? (
         <div className="maka-chat-message-loading">
@@ -1024,8 +1030,8 @@ export function ChatView(props: {
                           paddingBlockEnd: index < turns.length - 1
                             ? turns[index + 1]?.user?.hostOrigin?.kind === 'workhub_result'
                               ? 0
-                              : 'var(--space-10)'
-                            : tailTransientMessages.length > 0 ? 'calc(var(--space-10) - var(--spacing-4))' : undefined,
+                              : 'var(--maka-turn-gap, var(--space-10))'
+                            : tailTransientMessages.length > 0 ? 'max(0px, calc(var(--maka-turn-gap, var(--space-10)) - var(--spacing-4)))' : undefined,
                           ...(decoration?.accentColor
                             ? { '--maka-turn-accent': decoration.accentColor } as CSSProperties : undefined),
                         }}
@@ -1033,6 +1039,7 @@ export function ChatView(props: {
                         <TurnView
                           turn={turn}
                           activityObserved={turn.turnId === props.activeTurn?.turnId}
+                          assistantAvatar={props.assistantAvatar}
                           messageHeader={decoration?.header}
                           turnContext={decoration?.context}
                           messageRail={decoration?.messageRail}
@@ -1080,6 +1087,7 @@ export function ChatView(props: {
                 </Virtualizer>
               </div>
               {tail}
+              {props.activityContent}
               {conversationItemPlacement.orphan && (
                 <Fragment key={conversationItemPlacement.orphan.id}>
                   {conversationItemPlacement.orphan.content}

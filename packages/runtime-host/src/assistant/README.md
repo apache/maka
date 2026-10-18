@@ -19,7 +19,7 @@
 
 # Native personal assistant
 
-The Runtime Host owns three built-in services: memory indexes, durable Matters, and the ordinary personal-assistant conversation with optional proactive heartbeats. They do not install extension packages, register Plugin fibers, or depend on desktop plugin slots. Feishu remains an independently authorized source plugin.
+The Runtime Host owns three built-in services: memory indexes, durable Matters, and an Inbox-driven personal-assistant Bot with independent proactive exploration. They do not install extension packages, register Plugin fibers, or depend on desktop plugin slots. Feishu remains an independently authorized source plugin.
 
 `service.ts` owns tools, prompt contributions, the Matter finish check, the fixed desktop API, scheduler startup and shutdown. `execution-composition.ts` recovers its state after source plugins, and starts schedulers after execution recovery. Shared Host agent, model, history and source adapters retain invocation identity and permissions; using these adapters does not install a plugin.
 
@@ -49,8 +49,65 @@ Index reads expose shared usage guidance. `MemoryIndexContent` defaults to direc
 
 ## Proactive instructions
 
-Heartbeats always use `PROACTIVE_TASK` from code. `InitiativeEnable` configures cadence only; there is no custom prompt setting. New bindings do not save instructions, and recovery removes the obsolete `state.instructions` field while preserving the conversation and scheduling state. After updating and restarting the Host, existing bindings use the current product prompt automatically. The ordinary chat role and heartbeat scheduler are unchanged.
+Heartbeats always use `PROACTIVE_TASK` from code. `InitiativeEnable` configures cadence only; there is no custom prompt setting. New bindings do not save instructions, and recovery removes the obsolete `state.instructions` field while preserving the conversation and scheduling state. After updating and restarting the Host, existing bindings use the current product prompt automatically. The discovery scheduler retains its cadence. Exploration runs in a separate background Session, reports findings through `DiscoveryReport`, and never writes directly to the user conversation.
 
 ## Verification
 
 Run `npm run build --workspace @maka/runtime-host`, `npm run test:assistant --workspace @maka/runtime-host`, and the native service/platform tests in `dist/__tests__`. The behavioral tests now start the native service directly. Their external-source test still installs the real Feishu source plugin. Mock models are used; no paid model test is started. The assistant suite is also part of the Host's normal `test:dist` command.
+
+## Assistant Bot
+
+The visible assistant Session is a conversation transport. User messages enter a durable Inbox and are projected to its transcript without starting a model Turn there. A separate background Bot Session owns the ordinary Agent loop. All ordinary model text and tool activity stay in that worker; only `SendUser` publishes assistant chat messages. The existing WorkHub is unchanged.
+
+`InboxCheck` delivers new message bodies in batches (default 50 messages, at most 100 and 24,000 content characters). Long bodies carry an explicit `nextOffset` for `InboxRead`; `hasMore` describes further messages. `InboxList` and `InboxRead` remain optional, non-consuming history reads. There is no pending/processed state or `InboxUpdate`: receiving mail does not mean completing a task or notifying the user. `SendUser({messageId, messages: [...]})` sends an ordered batch of independent chat bubbles in one tool call, without ending the loop. The whole batch is registered atomically before delivery; retries reuse `messageId` and identical content, skip delivered bubbles, and resume the remainder in order. Changing or extending a committed batch is rejected. The model chooses natural conversational boundaries; there is no punctuation splitter or artificial typing delay. `Sleep` explicitly requests suspension, with no requirement to respond or act on received mail. A finish check prevents sleeping past undelivered messages, including arrivals during execution or between Sleep and completion. Normal final text alone does not end the Bot loop. There is no added round timeout or wake-count limit.
+
+The delivery cursor is committed at an accepted Sleep boundary; successive checks in a live loop return only new batches, and retrying the same tool call returns the same batch. An interrupted loop can replay messages since the last accepted Sleep (at-least-once delivery), rather than lose input before its tool result reaches durable history. Previously delivered history does not repeatedly wake the Bot. Existing mail and worker history are retained; the obsolete SQLite `processed` column, if present, is ignored.
+
+User input, discovery findings, task reports, and actionable system events have distinct source types. Identity, source and timestamp are supplied by the Host. Worker reports are evidence, not user instructions. Bot tools have a Host-enforced coordination ceiling: Inbox, messaging, task control and memory/context reads; no shell, editing or browser execution tools. Matter delegation remains owned by the visible conversation, so existing tasks and recovery controls remain available. Investigation and execution go to independent Matters. The Bot directly creates indexes and groups, configures maintenance, adds sources, and starts background maintenance; it does not delegate a Matter to supervise an index worker. Memory tools retain the visible conversation owner for permissions and feedback. Index workers keep ownership of writes and checkpoints. `MemoryIndexControl stop` cancels the shared organizing job and disables maintenance for all its members, retaining content and progress; `pause` only disables scheduled continuation. Index job completion and failure are persisted in a notification outbox and delivered to the owner Bot with stable IDs; undelivered notifications retry after restart. Inbox acceptance is not proof of user notification.
+
+Sleep/wake metadata, the worker Session identity, Inbox and outgoing messages survive restart. Visible messages use stable IDs; a publication retry reconciles against the canonical conversation before appending again. Task feedback uses durable Inbox acceptance instead of inferring delivery from arbitrary assistant final text. Acceptance does not claim the user was notified. Model errors retain mail and appear in assistant Settings; a new input retries the worker. This version has a single loop and does not implement priority/preemption.
+
+The message protocol has an explicit `inbox` admission receipt without a fabricated model Turn ID. Direct `turn.start` on a bound conversation is rejected. Attachment ownership is checked before admission. Explicit turn orchestration / skill selection belongs to a delegated execution, and is rejected at this conversation transport rather than silently discarded.
+
+
+The Bot can change its local identity with `AssistantSetAvatar({emoji, background?})`.
+The avatar can be one emoji or an image, plus an optional `#RRGGBB` background.
+`AssistantSetAvatar({image: "/path/to/avatar.png"})` also accepts HTTP(S) image URLs.
+Generated and found images use the same setter; generation/search uses existing tools or delegated tasks.
+PNG, JPEG, WebP and GIF are accepted up to 2 MiB, through the existing Session filesystem
+boundary or Host public-network image loader. Markup and arbitrary URI schemes are rejected.
+Validated bytes and metadata are saved atomically in the Bot database, independent of the
+original file or URL. Only the Bot worker can write it. Reads never wake a model.
+`assistant.avatar` returns lightweight metadata; `assistant.avatar-image` transfers bounded
+chunks only when the image changes. Image bytes never appear in tool results/model context.
+The desktop entry and assistant messages share the avatar, displayed as a rounded square.
+This tool changes appearance only and does not send a message.
+
+运行中的持续任务在每次模型请求前获得当前任务 Inbox 的动态上下文（用户追加要求和 Bot 澄清），同时刷新任务文件，不依赖 Recall。渲染上下文不会确认或消费输入；仍由 MatterRead 和提交检查维护观察边界，收尾时才消费已处理事件。已发出的模型请求或已执行的工具不会被追溯撤销；取消仍使用任务控制接口。
+
+
+### Bot operation boundaries
+
+The Bot coordinates work, configuration and notifications. Reuse an existing task or
+index job when it already owns the requested outcome and reports progress. Create a
+separate task only when additional investigation, recovery or follow-up is needed.
+A request to notify the user when one issue resolves does not authorize changing the
+assistant-wide discovery schedule.
+
+- `InitiativeEnable({})` enables the saved discovery schedule, retaining its interval.
+  Repeating it on an enabled schedule leaves the next wake unchanged. First setup
+  defaults to 30 minutes. Extra arguments are rejected rather than silently ignored.
+- `InitiativeConfigure({intervalMinutes})` explicitly changes that schedule and
+  preserves its enabled/paused state. `InitiativeControl` pauses/resumes it or requests
+  one general exploration. These operations create no goal-specific task.
+- `MemoryIndexControl` configures a particular index's maintenance;
+  `MemoryIndexMaintain` runs one organizing round. Shared-job stop semantics remain
+  unchanged.
+- `MatterDelegate` creates concrete work; `MatterTasks` reads progress;
+  `MatterTaskMessage` appends requirements; `MatterTaskControl` changes that task.
+  Appending a requirement saves it for a subsequent model request, not proof of compliance.
+
+Mutation receipts identify their target and action. Discovery receipts also return
+before/after schedule values. The desktop settings API retains its existing combined
+enable-and-configure operation; the model-facing tools separate these intents.
+The discovery exploration prompt and Inbox/Sleep loop are unchanged.

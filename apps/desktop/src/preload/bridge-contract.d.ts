@@ -1282,7 +1282,7 @@ export interface MakaBridge {
     ): Promise<
       | {
           ok: true;
-          disposition: 'turn_started' | 'steering' | 'followup' | 'locally_saved';
+          disposition: 'turn_started' | 'steering' | 'followup' | 'locally_saved' | 'inbox';
           turnId?: string;
           attachments: import('@maka/core/events').AttachmentRef[];
           inlineReferences: import('@maka/core/events').InlineReference[];

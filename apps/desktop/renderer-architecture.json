@@ -422,6 +422,7 @@
     "src/renderer/features/personal-assistant/index.tsx": {
       "appShell": [
         "MemoryOriginalHost",
+        "PersonalAssistantChatLayout",
         "PersonalAssistantEntry",
         "createInternalUriDispatcher"
       ],
@@ -746,7 +747,7 @@
           "react": 1
         },
         "importSpecifiers": 42,
-        "nonTriviaTokens": 7276
+        "nonTriviaTokens": 7274
       },
       "src/renderer/use-app-shell-session-list.ts": {
         "importDeclarations": 3,
@@ -922,6 +923,7 @@
           "./application/contracts/session-inspector/latest-request-usage.js": 1,
           "./composer-mentions.js": 1,
           "./features/conversation/index.js": 1,
+          "./features/personal-assistant/index.js": 1,
           "@maka/ui": 1,
           "react": 1
         }
@@ -941,6 +943,7 @@
           "./application/contracts/session-catalog/use-external-store-selector.js": 1,
           "./chat-recovery-notice": 1,
           "./features/conversation/index.js": 1,
+          "./features/personal-assistant/index.js": 1,
           "./locales/shell-copy": 1,
           "./onboarding-hero": 1,
           "@maka/ui": 1,

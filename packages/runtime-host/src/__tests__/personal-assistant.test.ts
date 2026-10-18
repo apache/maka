@@ -95,7 +95,9 @@ test('native tools and APIs initialize without installing any plugin or invoking
   await assert.rejects(f.service.call('assistant.binding', {}), /not ready/);
   f.service.start();
   f.service.start();
-  assert.deepEqual(await f.service.call('assistant.binding', {}), { state: null });
+  const initialBinding: any = await f.service.call('assistant.binding', {});
+  assert.equal(initialBinding.state, null);
+  assert.equal(initialBinding.bot.working, false);
   const status: any = await f.service.call('assistant.status', {});
   assert.equal(status.readiness.memory, true);
   assert.equal(status.readiness.tasks, true);

@@ -69,9 +69,12 @@ apps/desktop/src/renderer/features/overlays/ui/keyboard-help-modal.tsx
 apps/desktop/src/renderer/features/overlays/ui/overlays-context.tsx
 apps/desktop/src/renderer/features/overlays/ui/overlays-root.tsx
 apps/desktop/src/renderer/features/overlays/ui/search-modal-host.tsx
+apps/desktop/src/renderer/features/personal-assistant/avatar.tsx
+apps/desktop/src/renderer/features/personal-assistant/chat-presentation.tsx
 apps/desktop/src/renderer/features/personal-assistant/original-reader.css
 apps/desktop/src/renderer/features/personal-assistant/original-reader.tsx
 apps/desktop/src/renderer/features/personal-assistant/personal-assistant.css
+apps/desktop/src/renderer/features/personal-assistant/typing.tsx
 apps/desktop/src/renderer/features/runtime-host-management/services-context.tsx
 apps/desktop/src/renderer/features/runtime-host-management/ui/peer-mesh-peer-id-button.tsx
 apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-add-computer-menu.tsx
@@ -293,6 +296,7 @@ packages/ui/src/markdown-image.tsx
 packages/ui/src/markdown-math.tsx
 packages/ui/src/markdown.tsx
 packages/ui/src/mermaid-diagram.tsx
+packages/ui/src/message-summary.tsx
 packages/ui/src/model-picker-internals.tsx
 packages/ui/src/model-picker-panel.tsx
 packages/ui/src/model-picker.tsx

@@ -63,9 +63,9 @@ export interface BrowserViewHost {
   openOriginLease(sessionId: string, approvedUrl: string, kind: BrowserActionKind): BrowserOriginLease;
   /**
    * The Host action gate: may `sessionId` run a
-   * `kind` action right now? Ordinary Sessions require a visible conversation
-   * (mutation also needs a viewport). The Host-bound WorkHub coordination
-   * Session alone may operate in the background. Checked before resolveEndpoint so a blocked action
+   * `kind` action right now? Renderer-owned Sessions on a live Host may operate with a hidden
+   * browser panel, using a background action lease for rendering and input.
+   * Session selection and renderer ownership still apply. Checked before resolveEndpoint so a blocked action
    * creates no view.
    *
    * Resolves async for one case: a mutate on the conversation that IS on screen

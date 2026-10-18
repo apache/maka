@@ -246,7 +246,7 @@ export function createChatActions<Owner extends ComposerSurfaceOwner>(deps: {
       id: messageId,
       text: input.displayText ?? skillFeedback.skillInvocationDisplayText(input.command.text, result.skillInvocation),
       attachments: [...result.attachments],
-      transientPlacement: result.disposition !== 'turn_started' && placement === 'next_turn' ? 'follow_up' : 'transcript',
+      transientPlacement: result.disposition !== 'turn_started' && result.disposition !== 'inbox' && placement === 'next_turn' ? 'follow_up' : 'transcript',
       ...(result.turnId ? { hostTurnId: result.turnId } : {}),
       ...copiedArray('directoryReferences', directoryReferences),
       ...copiedArray('quotes', input.quotes ?? []),

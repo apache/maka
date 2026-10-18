@@ -327,6 +327,12 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
         sessionId,
         turnId,
         text: formatBotMessageForSession({ ...message, text }),
+        origin: {
+          kind: 'external_connector',
+          connectorId: message.platform,
+          // BotMessageEvent calls the connector sender identity userId.
+          ...(message.userId ? { senderId: message.userId } : {}),
+        },
         onReplySnapshot: (snapshot) => replyStream?.update(snapshot),
       });
       // PR-BOT-TYPING-INDICATOR-0 (external bot research): keep "Maka 正在
