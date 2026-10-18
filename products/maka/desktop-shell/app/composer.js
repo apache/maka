@@ -584,11 +584,16 @@ export class Composer {
 
   /**
    * Whether the failed bar offers Continue for `turnId`: not for a run the
-   * Host will not continue, nor in a task an executor runs, where the
-   * composer starts no runs (selection).
+   * Host will not continue or a failure a fork copied from its source
+   * (ownFailure), nor in a task an executor runs, where the composer starts
+   * no runs (selection).
    */
   offersContinue(transcript, turnId) {
-    return !transcript.noContinue.has(turnId) && transcript.backend?.kind !== 'executor';
+    return (
+      transcript.backend?.kind !== 'executor' &&
+      !transcript.noContinue.has(turnId) &&
+      transcript.ownFailure(turnId)
+    );
   }
 
   /**

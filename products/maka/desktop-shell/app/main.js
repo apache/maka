@@ -210,7 +210,8 @@ export default class MakaDesktop extends View {
      * id -> what the header of a fork names its source by when the sidebar
      * does not list it (an archived task): `{ session }` as `agent.observe`
      * read it, `{ gone: true }` when the Host has no such task, `{ failed:
-     * true }` when it could not be read, or null while it is read.
+     * true }` when it could not be read, until a task is opened again (select),
+     * or null while it is read.
      */
     this.forkSources = new Map();
     this.creating = false;
@@ -386,6 +387,9 @@ export default class MakaDesktop extends View {
     const previous = this.transcript;
     const transcript = new Transcript(session, this.hooks, 'agent', { anchor });
     this.transcript = transcript;
+    for (const [id, source] of this.forkSources) {
+      if (source?.failed === true) this.forkSources.delete(id);
+    }
     const leaving = this.workhub.hide();
     this.search.hide();
     log(`select "${session.title}"${anchor === null ? '' : ` at row ${rowPositionKey(anchor)}`}`);

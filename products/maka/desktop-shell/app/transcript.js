@@ -243,6 +243,8 @@ export class Transcript {
     this.invocations = new Map();
     /** Turns whose failed run the Host will not continue: Continue is not offered for them. */
     this.noContinue = new Set();
+    /** turnId -> 'reading', 'read' or 'unknown': ownFailure's reads in a fork of all history. */
+    this.probes = new Map();
     this.latestKnown = 0;
     this.watchHandle = null;
     this.watchLast = 0;
@@ -456,6 +458,40 @@ export class Transcript {
       position = { kind: 'before', through: page.through, sequence: page.nextBefore };
     }
     return null;
+  }
+
+  /**
+   * Whether the run that failed `turnId` is this task's own, the only kind
+   * `agent.resume` continues. In a fork the newest turn can be a failure
+   * copied from the source, whose runs the fork's diagnostics do not list.
+   * A fork through a turn copied that turn and none after it. In a fork of
+   * all history this reads failedRun once, and is false while it reads: a
+   * run it finds is kept in `invocations`, a turn it does not goes to
+   * `noContinue`, and when the read fails this is true, so Continue can ask.
+   */
+  ownFailure(turnId) {
+    const branch = this.session.branch ?? null;
+    if (branch === null || this.invocations.has(turnId)) return true;
+    if ((branch.turnId ?? null) !== null) return branch.turnId !== turnId;
+    if (!this.probes.has(turnId)) {
+      this.probes.set(turnId, 'reading');
+      this.failedRun(turnId).then(
+        (invocationId) => {
+          if (invocationId === null) this.noContinue.add(turnId);
+          else this.invocations.set(turnId, invocationId);
+          this.probes.set(turnId, 'read');
+          if (!this.closed) this.hooks.changed();
+        },
+        (error) => {
+          log(
+            `transcript "${this.session.title}": finding the failed run failed: ${error.message}`,
+          );
+          this.probes.set(turnId, 'unknown');
+          if (!this.closed) this.hooks.changed();
+        },
+      );
+    }
+    return this.probes.get(turnId) === 'unknown';
   }
 
   /** Stops the live updates. A pending `next()` resolves with null. */
