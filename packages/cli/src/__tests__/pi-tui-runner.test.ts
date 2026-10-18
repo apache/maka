@@ -9652,560 +9652,365 @@ Slug openai-work<cursor>
     ]);
   });
 
-  test('blocks Shift+Left for the entire in-progress switch window, not just its drain', async () => {
-    const terminal = new FakeTerminal();
-    const driver = new RetractingQuotesDriver([{ turnId: 'turn-1', label: 'first question' }]);
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'claude-sonnet-4-5',
-      connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
-      terminal,
-    });
-
-    terminal.input('/rewind');
-    terminal.input('\r');
-    await waitFor(() => plainTerminalOutput(terminal.output()).includes('first question'));
-    terminal.input('\r');
-    await waitFor(() => plainTerminalOutput(terminal.output()).includes('quotes:1'));
-
-    driver.startBlockingTurn();
-    await waitFor(() => terminal.progressStates.at(-1) === true);
-    terminal.input('queued resend');
-    terminal.input('\r');
-    await waitFor(() => driver.submittedQuotes.length === 1);
-
-    // End the turn: the runner is idle while the Host still holds the queued
-    // message and the quote riding it.
-    driver.turnGate.resolve();
-    await waitFor(() => terminal.progressStates.at(-1) === false);
-
-    // Park the idle `/session` INSIDE the driver's switch, before it re-keys:
-    // the real driver spends this window stopping user commands and opening
-    // the target Session channel, and Shift+Left stays live throughout (#5265
-    // review).
-    driver.switchGate = deferred<void>();
-    driver.retractGate = deferred<void>();
-    terminal.input('/session session-other');
-    terminal.input('\r');
-    await waitFor(() => driver.eventLog.some((entry) => entry.startsWith('switch-start:')));
-
-    // Shift+Left in that window must not send a retraction for the old Session:
-    // the Host would remove the queued entries while the driver re-keys, and
-    // the switched-session fence would then discard what the Host removed.
-    terminal.input('\x1b[1;2D'); // Shift+Left
-    await delay(50);
-    assert.equal(
-      driver.retractCalls,
-      0,
-      'no queue.retract may cross while the switch is still re-keying',
-    );
-
-    // Re-key while a retraction response would still be pending, then let any
-    // response land: the queued entries must survive untouched either way.
-    driver.switchGate.resolve();
-    await waitFor(() => driver.getSessionId() === 'session-other');
-    driver.retractGate.resolve();
-    await delay(30);
-    assert.equal(driver.queuedRows.length, 1, 'the queued entry stays on the Host queue');
-    assert.ok(
-      !driver.eventLog.some((entry) => entry.startsWith('retract-done:')),
-      'no retraction completed: ' + driver.eventLog.join(','),
-    );
-
-    exitMaka(terminal);
-    await Promise.race([
-      run,
-      delay(CLOSE_BUDGET_MS).then(() => {
-        throw new Error('TUI did not close during test cleanup');
-      }),
-    ]);
-  });
-
-  test('blocks Shift+Left while a side conversation is still opening', async () => {
-    const terminal = new FakeTerminal();
-    const driver = new RetractingSideConversationDriver([
-      { turnId: 'turn-1', label: 'first question' },
-    ]);
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'claude-sonnet-4-5',
-      connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
-      terminal,
-    });
-
-    terminal.input('/rewind');
-    terminal.input('\r');
-    await waitFor(() => plainTerminalOutput(terminal.output()).includes('first question'));
-    terminal.input('\r');
-    await waitFor(() => plainTerminalOutput(terminal.output()).includes('quotes:1'));
-
-    driver.startBlockingTurn();
-    await waitFor(() => terminal.progressStates.at(-1) === true);
-    terminal.input('queued resend');
-    terminal.input('\r');
-    await waitFor(() => driver.submittedQuotes.length === 1);
-
-    // End the turn: the runner is idle while the Host still holds the queued
-    // message and the quote riding it.
-    driver.turnGate.resolve();
-    await waitFor(() => terminal.progressStates.at(-1) === false);
-
-    // Park `/side` inside the driver's open, before it re-keys onto the side
-    // Session: the real driver spends this window forking the parent and
-    // switching onto the fork, and Shift+Left stays live throughout (#5265
-    // review).
-    driver.openGate = deferred<void>();
-    terminal.input('/side');
-    terminal.input('\r');
-    await waitFor(() => driver.eventLog.some((entry) => entry.startsWith('open-start:')));
-
-    // Shift+Left in that window must not send a retraction for the parent
-    // Session: the Host would remove its queued entries while the driver
-    // re-keys, and the side-session fence would then discard what the Host
-    // removed.
-    terminal.input('\x1b[1;2D'); // Shift+Left
-    await delay(50);
-    assert.equal(
-      driver.retractCalls,
-      0,
-      'no queue.retract may cross while the side open is still re-keying',
-    );
-
-    // Let the open land: the queued entry must survive untouched either way.
-    driver.openGate.resolve();
-    await waitFor(() => driver.getSessionId() === 'side-1');
-    await delay(30);
-    assert.equal(driver.queuedRows.length, 1, 'the queued entry stays on the Host queue');
-    assert.ok(
-      !driver.eventLog.some((entry) => entry.startsWith('retract-done:')),
-      'no retraction completed: ' + driver.eventLog.join(','),
-    );
-
-    exitMaka(terminal);
-    await Promise.race([
-      run,
-      delay(CLOSE_BUDGET_MS).then(() => {
-        throw new Error('TUI did not close during test cleanup');
-      }),
-    ]);
-  });
-
-  test('blocks Shift+Left while a side conversation is still closing', async () => {
-    const terminal = new FakeTerminal();
-    const driver = new RetractingSideConversationDriver([
-      { turnId: 'turn-1', label: 'first question' },
-    ]);
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'claude-sonnet-4-5',
-      connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
-      terminal,
-    });
-
-    terminal.input('/rewind');
-    terminal.input('\r');
-    await waitFor(() => plainTerminalOutput(terminal.output()).includes('first question'));
-    terminal.input('\r');
-    await waitFor(() => plainTerminalOutput(terminal.output()).includes('quotes:1'));
-
-    driver.startBlockingTurn();
-    await waitFor(() => terminal.progressStates.at(-1) === true);
-    terminal.input('queued resend');
-    terminal.input('\r');
-    await waitFor(() => driver.submittedQuotes.length === 1);
-
-    driver.turnGate.resolve();
-    await waitFor(() => terminal.progressStates.at(-1) === false);
-
-    // Open for real (ungated), then park the close inside the driver's re-key
-    // back onto the parent: the real close spends this window switching onto
-    // the parent Session before it tears the side copy down (#5265 review).
-    terminal.input('/side');
-    terminal.input('\r');
-    await waitFor(() => driver.getSessionId() === 'side-1');
-    await waitFor(() => terminal.progressStates.at(-1) === false);
-
-    driver.closeGate = deferred<void>();
-    terminal.input('\x03');
-    await waitFor(() => driver.eventLog.some((entry) => entry.startsWith('close-start:')));
-
-    // Shift+Left in that window would retract the parent's queued entry under the
-    // side Session's identity; the close's fence would then discard the
-    // returned text and quotes while the entries are gone from the Host.
-    terminal.input('\x1b[1;2D'); // Shift+Left
-    await delay(50);
-    assert.equal(
-      driver.retractCalls,
-      0,
-      'no queue.retract may cross while the side close is still re-keying',
-    );
-
-    // Let the close land: the queued entry must survive untouched either way.
-    driver.closeGate.resolve();
-    await waitFor(() => driver.getSessionId() === 'session-branch');
-    await waitFor(() => driver.closedSides.length === 1);
-    await delay(30);
-    assert.equal(driver.queuedRows.length, 1, 'the queued entry stays on the Host queue');
-    assert.ok(
-      !driver.eventLog.some((entry) => entry.startsWith('retract-done:')),
-      'no retraction completed: ' + driver.eventLog.join(','),
-    );
-
-    exitMaka(terminal);
-    await Promise.race([
-      run,
-      delay(CLOSE_BUDGET_MS).then(() => {
-        throw new Error('TUI did not close during test cleanup');
-      }),
-    ]);
-  });
-
-  test('drains a retraction started before an idle side conversation opens', async () => {
-    const terminal = new FakeTerminal();
-    const driver = new RetractingSideConversationDriver([
-      { turnId: 'turn-1', label: 'first question' },
-    ]);
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'claude-sonnet-4-5',
-      connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
-      terminal,
-    });
-    try {
-      terminal.input('/rewind');
-      terminal.input('\r');
-      await waitFor(() => plainTerminalOutput(terminal.output()).includes('first question'));
-      terminal.input('\r');
-      await waitFor(() => plainTerminalOutput(terminal.output()).includes('quotes:1'));
-
+  test('drains a pending retraction before a navigation re-keys', async () => {
+    // Every navigation re-key removes the queue entries a pending retraction
+    // was asked for: the Host answers it while the driver still points at the
+    // asking session, so a response landing after the re-key would be
+    // discarded by the target-session fence (#5265 review). Each entry path
+    // drains the retraction inside its switch window first.
+    const queueOntoBlockingTurn = async (
+      driver: RetractingSideConversationDriver,
+      terminal: FakeTerminal,
+      text = 'queued resend',
+    ) => {
       driver.startBlockingTurn();
       await waitFor(() => terminal.progressStates.at(-1) === true);
-      terminal.input('queued resend');
-      terminal.input('\r');
-      await waitFor(() => driver.submittedQuotes.length === 1);
-
-      // End the turn: the runner is idle while the Host still holds the queued
-      // message and the quote riding it.
-      driver.turnGate.resolve();
-      await waitFor(() => terminal.progressStates.at(-1) === false);
-
-      // The Shift+Left retraction is held on the Host call when `/side` arrives:
-      // the open must drain it inside its switch window. The Host removes the
-      // parent's queued entries as the retraction resolves, so a response
-      // landing after the re-key onto the side Session would be discarded by
-      // the side-session fence (#5265 review).
-      driver.retractGate = deferred<void>();
-      terminal.input('\x1b[1;2D'); // Shift+Left
-      await waitFor(() => driver.retractCalls === 1);
-      terminal.input('/side');
-      terminal.input('\r');
-      await Promise.race([
-        waitFor(() => driver.eventLog.some((entry) => entry.startsWith('open-start:'))),
-        delay(50),
-      ]);
-      assert.ok(
-        !driver.eventLog.some((entry) => entry.startsWith('open-start:')),
-        'the side open parks behind the pending retraction: ' + driver.eventLog.join(','),
-      );
-
-      driver.retractGate.resolve();
-      await waitFor(() => driver.getSessionId() === 'side-1');
-
-      const retractDone = driver.eventLog.findIndex((entry) => entry.startsWith('retract-done:'));
-      const openDone = driver.eventLog.findIndex((entry) => entry.startsWith('open:side-1'));
-      assert.ok(retractDone !== -1, 'the retraction completed');
-      assert.ok(
-        openDone !== -1 && retractDone < openDone,
-        'the side open re-keys only after the retraction lands: ' + driver.eventLog.join(','),
-      );
-      assert.equal(
-        editorInputText(terminal) ?? '',
-        '',
-        'the side editor must open on the side draft, not the recovered parent text',
-      );
-      assert.deepEqual(driver.retractedQuoteLoads.at(-1), [
-        { text: 'a large pasted excerpt', label: 'earlier turn', sourceTurnId: 'turn-0' },
-      ]);
-
-      // Closing again returns to the parent, whose draft owns the recovered
-      // text: it was captured while the drain's restore was still in the
-      // editor, and the side view never sees it (#5265 review).
-      terminal.input('\x03');
-      await waitFor(() => driver.getSessionId() === 'session-branch');
-      assert.equal(driver.closedSides.length, 1);
-      // The editor restore lands after the driver re-keys, so wait for the
-      // content itself rather than asserting behind the session-id wait.
-      await waitFor(
-        () => editorInputText(terminal)?.includes('queued resend') === true,
-        'the recovered parent text must survive the side round trip in the parent draft',
-      );
-    } finally {
-      exitMaka(terminal);
-      await Promise.race([
-        run,
-        delay(CLOSE_BUDGET_MS).then(() => {
-          throw new Error('TUI did not close during test cleanup');
-        }),
-      ]);
-    }
-  });
-
-  test('drains a retraction started before a mid-turn side conversation opens', async () => {
-    const terminal = new FakeTerminal();
-    const driver = new RetractingSideConversationDriver([
-      { turnId: 'turn-1', label: 'first question' },
-    ]);
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'claude-sonnet-4-5',
-      connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
-      terminal,
-    });
-    try {
-      terminal.input('/rewind');
-      terminal.input('\r');
-      await waitFor(() => plainTerminalOutput(terminal.output()).includes('first question'));
-      terminal.input('\r');
-      await waitFor(() => plainTerminalOutput(terminal.output()).includes('quotes:1'));
-
-      driver.startBlockingTurn();
-      await waitFor(() => terminal.progressStates.at(-1) === true);
-      terminal.input('queued resend');
-      terminal.input('\r');
-      await waitFor(() => driver.submittedQuotes.length === 1);
-
-      // Same reachable order as the idle open, with the Turn still running:
-      // Shift+Left parks on the Host call and the mid-turn `/side` detaches behind
-      // it. The detach re-keys onto the side Session, so the open must drain
-      // the retraction first or its response is fenced away (#5265 review).
-      driver.retractGate = deferred<void>();
-      terminal.input('\x1b[1;2D'); // Shift+Left
-      await waitFor(() => driver.retractCalls === 1);
-      terminal.input('/side');
-      terminal.input('\r');
-      await Promise.race([
-        waitFor(() => driver.eventLog.some((entry) => entry.startsWith('open-start:'))),
-        delay(50),
-      ]);
-      assert.ok(
-        !driver.eventLog.some((entry) => entry.startsWith('open-start:')),
-        'the mid-turn side open parks behind the pending retraction: ' + driver.eventLog.join(','),
-      );
-
-      driver.retractGate.resolve();
-      await waitFor(() => driver.getSessionId() === 'side-1');
-
-      const retractDone = driver.eventLog.findIndex((entry) => entry.startsWith('retract-done:'));
-      const openDone = driver.eventLog.findIndex((entry) => entry.startsWith('open:side-1'));
-      assert.ok(retractDone !== -1, 'the retraction completed');
-      assert.ok(
-        openDone !== -1 && retractDone < openDone,
-        'the mid-turn side open re-keys only after the retraction lands: ' +
-          driver.eventLog.join(','),
-      );
-      assert.equal(
-        editorInputText(terminal) ?? '',
-        '',
-        'the mid-turn side editor must open on the side draft, not the recovered parent text',
-      );
-      assert.deepEqual(driver.retractedQuoteLoads.at(-1), [
-        { text: 'a large pasted excerpt', label: 'earlier turn', sourceTurnId: 'turn-0' },
-      ]);
-    } finally {
-      driver.turnGate.resolve();
-      exitMaka(terminal);
-      await Promise.race([
-        run,
-        delay(CLOSE_BUDGET_MS).then(() => {
-          throw new Error('TUI did not close during test cleanup');
-        }),
-      ]);
-    }
-  });
-
-  test('drains a retraction started before a side conversation closes', async () => {
-    const terminal = new FakeTerminal();
-    const driver = new RetractingSideConversationDriver([
-      { turnId: 'turn-1', label: 'first question' },
-    ]);
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'claude-sonnet-4-5',
-      connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
-      terminal,
-    });
-    try {
-      terminal.input('/rewind');
-      terminal.input('\r');
-      await waitFor(() => plainTerminalOutput(terminal.output()).includes('first question'));
-      terminal.input('\r');
-      await waitFor(() => plainTerminalOutput(terminal.output()).includes('quotes:1'));
-
-      // Open for real, then run a side Turn and queue onto it, and leave the
-      // runner idle with the entry still on the side Session's Host queue.
-      terminal.input('/side');
-      terminal.input('\r');
-      await waitFor(() => driver.getSessionId() === 'side-1');
-      await waitFor(() => terminal.progressStates.at(-1) === false);
-      driver.startBlockingTurn();
-      await waitFor(() => terminal.progressStates.at(-1) === true);
-      terminal.input('side follow-up');
+      terminal.input(text);
       terminal.input('\r');
       await waitFor(() => driver.queuedRows.length === 1);
+    };
+    const endTurn = async (
+      driver: RetractingSideConversationDriver,
+      terminal: FakeTerminal,
+    ): Promise<void> => {
       driver.turnGate.resolve();
       await waitFor(() => terminal.progressStates.at(-1) === false);
-
-      // The Shift+Left retraction is held on the Host call when the close arrives:
-      // the close must drain it before re-keying onto the parent, or the
-      // close's session fence discards the response for entries the Host
-      // already removed (#5265 review).
-      driver.retractGate = deferred<void>();
-      terminal.input('\x1b[1;2D'); // Shift+Left
-      await waitFor(() => driver.retractCalls === 1);
-      terminal.input('\x03');
-      await Promise.race([
-        waitFor(() => driver.eventLog.some((entry) => entry.startsWith('close-start:'))),
-        delay(50),
+    };
+    const assertDrainedBefore = (
+      driver: RetractingSideConversationDriver,
+      rekeyMarker: string,
+      label: string,
+    ) => {
+      const retractDone = driver.eventLog.findIndex((entry) => entry.startsWith('retract-done:'));
+      const rekeyDone = driver.eventLog.findIndex((entry) => entry.startsWith(rekeyMarker));
+      assert.ok(retractDone !== -1, `${label}: the retraction completed`);
+      assert.ok(
+        rekeyDone !== -1 && retractDone < rekeyDone,
+        `${label}: the re-key happens only after the retraction lands: ${driver.eventLog.join(',')}`,
+      );
+    };
+    const cases: Array<{
+      name: string;
+      setup: (driver: RetractingSideConversationDriver, terminal: FakeTerminal) => Promise<void>;
+      park: (driver: RetractingSideConversationDriver, terminal: FakeTerminal) => Promise<void>;
+      expect: (driver: RetractingSideConversationDriver, terminal: FakeTerminal) => Promise<void>;
+    }> = [
+      {
+        name: 'an idle side conversation opens',
+        setup: async (driver, terminal) => {
+          await queueOntoBlockingTurn(driver, terminal);
+          await endTurn(driver, terminal);
+        },
+        park: async (driver, terminal) => {
+          terminal.input('/side');
+          terminal.input('\r');
+          await Promise.race([
+            waitFor(() => driver.eventLog.some((entry) => entry.startsWith('open-start:'))),
+            delay(50),
+          ]);
+          assert.ok(
+            !driver.eventLog.some((entry) => entry.startsWith('open-start:')),
+            'the side open parks behind the pending retraction: ' + driver.eventLog.join(','),
+          );
+        },
+        expect: async (driver, terminal) => {
+          await waitFor(() => driver.getSessionId() === 'side-1');
+          assertDrainedBefore(driver, 'open:side-1', 'the side open');
+          assert.equal(
+            driver.retractedTexts.at(-1),
+            'queued resend',
+            'the retraction lands with the payload it was asked for',
+          );
+          assert.equal(
+            editorInputText(terminal) ?? '',
+            '',
+            'the side editor opens on the side draft, not the recovered parent text',
+          );
+          // Closing again returns to the parent, whose draft owns the recovered
+          // text: it was captured while the drain's restore was still in the
+          // editor, and the side view never sees it.
+          terminal.input('\x03');
+          await waitFor(() => driver.getSessionId() === 'session-1');
+          assert.equal(driver.closedSides.length, 1);
+          await waitFor(
+            () => editorInputText(terminal)?.includes('queued resend') === true,
+            'the recovered parent text must survive the side round trip in the parent draft',
+          );
+        },
+      },
+      {
+        name: 'a mid-turn side conversation opens',
+        setup: async (driver, terminal) => {
+          // Same reachable order as the idle open, with the Turn still running:
+          // Shift+Left parks on the Host call and the mid-turn `/side` detaches
+          // behind it (#5265 review).
+          await queueOntoBlockingTurn(driver, terminal);
+        },
+        park: async (driver, terminal) => {
+          terminal.input('/side');
+          terminal.input('\r');
+          await Promise.race([
+            waitFor(() => driver.eventLog.some((entry) => entry.startsWith('open-start:'))),
+            delay(50),
+          ]);
+          assert.ok(
+            !driver.eventLog.some((entry) => entry.startsWith('open-start:')),
+            'the mid-turn side open parks behind the pending retraction: ' +
+              driver.eventLog.join(','),
+          );
+        },
+        expect: async (driver, terminal) => {
+          await waitFor(() => driver.getSessionId() === 'side-1');
+          assertDrainedBefore(driver, 'open:side-1', 'the mid-turn side open');
+          assert.equal(
+            driver.retractedTexts.at(-1),
+            'queued resend',
+            'the retraction lands with the payload it was asked for',
+          );
+          assert.equal(
+            editorInputText(terminal) ?? '',
+            '',
+            'the mid-turn side editor opens on the side draft, not the recovered parent text',
+          );
+          driver.turnGate.resolve();
+        },
+      },
+      {
+        name: 'a side conversation closes',
+        setup: async (driver, terminal) => {
+          // Open for real, then run a side Turn and queue onto it, and leave
+          // the runner idle with the entry still on the side Session's Host
+          // queue.
+          terminal.input('/side');
+          terminal.input('\r');
+          await waitFor(() => driver.getSessionId() === 'side-1');
+          await waitFor(() => terminal.progressStates.at(-1) === false);
+          await queueOntoBlockingTurn(driver, terminal, 'side follow-up');
+          await endTurn(driver, terminal);
+        },
+        park: async (driver, terminal) => {
+          terminal.input('\x03');
+          await Promise.race([
+            waitFor(() => driver.eventLog.some((entry) => entry.startsWith('close-start:'))),
+            delay(50),
+          ]);
+          assert.ok(
+            !driver.eventLog.some((entry) => entry.startsWith('close-start:')),
+            'the side close parks behind the pending retraction: ' + driver.eventLog.join(','),
+          );
+        },
+        expect: async (driver, terminal) => {
+          await waitFor(() => driver.eventLog.some((entry) => entry.startsWith('retract-done:')));
+          // The close was admitted against an empty draft, so the text the
+          // drain restored must abort it: closing here would overwrite the
+          // recovered side message with the parent draft and lose it.
+          await waitFor(() =>
+            plainTerminalOutput(terminal.output()).includes('Side conversation kept open'),
+          );
+          assert.equal(
+            driver.closedSides.length,
+            0,
+            'the close must not proceed once the drain restored a draft',
+          );
+          assert.ok(
+            !driver.eventLog.some((entry) => entry.startsWith('close:')),
+            'no close re-key may happen after the drain restored text: ' +
+              driver.eventLog.join(','),
+          );
+          assert.equal(driver.getSessionId(), 'side-1');
+          assert.ok(
+            editorInputText(terminal)?.includes('side follow-up') === true,
+            'the recovered side text stays visible in the side editor',
+          );
+        },
+      },
+      {
+        name: 'a rewind branches',
+        setup: async (driver, terminal) => {
+          await queueOntoBlockingTurn(driver, terminal);
+          await endTurn(driver, terminal);
+        },
+        park: async (driver, terminal) => {
+          terminal.input('/rewind');
+          terminal.input('\r');
+          await waitFor(() => plainTerminalOutput(terminal.output()).includes('first question'));
+          terminal.input('\r');
+          await Promise.race([waitFor(() => driver.rewound.length === 1), delay(50)]);
+          assert.equal(
+            driver.rewound.length,
+            0,
+            'the rewind parks behind the pending retraction instead of branching under it',
+          );
+        },
+        expect: async (driver, terminal) => {
+          await waitFor(() => driver.rewound.length === 1);
+          await waitFor(() => driver.getSessionId() === 'session-branch');
+          const retractDone = driver.eventLog.findIndex((entry) =>
+            entry.startsWith('retract-done:'),
+          );
+          assert.ok(retractDone !== -1, 'the retraction completed before the branch landed');
+          assert.ok(
+            editorInputText(terminal)?.includes('queued resend') === true,
+            'the retracted text must survive the rewind instead of being discarded by the branch fence',
+          );
+        },
+      },
+    ];
+    for (const c of cases) {
+      const terminal = new FakeTerminal();
+      const driver = new RetractingSideConversationDriver([
+        { turnId: 'turn-1', label: 'first question' },
       ]);
-      assert.ok(
-        !driver.eventLog.some((entry) => entry.startsWith('close-start:')),
-        'the side close parks behind the pending retraction: ' + driver.eventLog.join(','),
-      );
-
-      driver.retractGate.resolve();
-      await waitFor(() => driver.eventLog.some((entry) => entry.startsWith('retract-done:')));
-
-      // The close was admitted against an empty draft, so the text the drain
-      // restored must abort it: closing here would overwrite the recovered
-      // side message with the parent draft and lose it (#5265 review).
-      await waitFor(() =>
-        plainTerminalOutput(terminal.output()).includes('Side conversation kept open'),
-      );
-      assert.equal(
-        driver.closedSides.length,
-        0,
-        'the close must not proceed once the drain restored a draft',
-      );
-      assert.ok(
-        !driver.eventLog.some((entry) => entry.startsWith('close:')),
-        'no close re-key may happen after the drain restored text: ' + driver.eventLog.join(','),
-      );
-      assert.equal(driver.getSessionId(), 'side-1');
-      assert.ok(
-        editorInputText(terminal)?.includes('side follow-up') === true,
-        'the recovered side text stays visible in the side editor',
-      );
-    } finally {
-      exitMaka(terminal);
-      await Promise.race([
-        run,
-        delay(CLOSE_BUDGET_MS).then(() => {
-          throw new Error('TUI did not close during test cleanup');
-        }),
-      ]);
+      const run = runMakaPiTui({
+        title: 'Maka',
+        driver,
+        cwd: '/repo',
+        model: 'claude-sonnet-4-5',
+        connectionSlug: 'claude-subscription',
+        permissionMode: 'ask',
+        terminal,
+      });
+      try {
+        await c.setup(driver, terminal);
+        // Hold the retraction on the Host call, then start the navigation: the
+        // retraction must resolve while the driver still points at the asking
+        // session.
+        driver.retractGate = deferred<void>();
+        terminal.input('\x1b[1;2D'); // Shift+Left
+        await waitFor(() => driver.retractCalls === 1);
+        await c.park(driver, terminal);
+        driver.retractGate?.resolve();
+        await c.expect(driver, terminal);
+      } finally {
+        exitMaka(terminal);
+        await Promise.race([
+          run,
+          delay(CLOSE_BUDGET_MS).then(() => {
+            throw new Error('TUI did not close during test cleanup');
+          }),
+        ]);
+      }
     }
   });
 
-  test('drains a retraction started before a rewind branches', async () => {
-    const terminal = new FakeTerminal();
-    const driver = new PerRewindBranchRetractingDriver([
-      { turnId: 'turn-1', label: 'first question' },
-    ]);
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'claude-sonnet-4-5',
-      connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
-      terminal,
-    });
-    try {
-      terminal.input('/rewind');
-      terminal.input('\r');
-      await waitFor(() => plainTerminalOutput(terminal.output()).includes('first question'));
-      terminal.input('\r');
-      await waitFor(() => plainTerminalOutput(terminal.output()).includes('quotes:1'));
-
-      driver.startBlockingTurn();
-      await waitFor(() => terminal.progressStates.at(-1) === true);
-      terminal.input('queued resend');
-      terminal.input('\r');
-      await waitFor(() => driver.submittedQuotes.length === 1);
-      // The first rewind staged its own quote and the queued submit rode it.
-      assert.deepEqual(driver.submittedQuotes[0], [
-        { text: 'excerpt from rewind 1', label: 'earlier turn', sourceTurnId: 'turn-0' },
+  test('blocks Shift+Left while a navigation re-key is still in flight', async () => {
+    // Every navigation re-key — an idle /session, a side open, a side close —
+    // spends asynchronous Host work between holding the switch window and
+    // adopting the target Session. Shift+Left inside that window would address
+    // the session being left: the Host removes its queued entries while the
+    // driver re-keys, and the switched-session fence would then discard what
+    // the Host removed. The window blocks new retractions instead (#5265
+    // review).
+    const cases: Array<{
+      name: string;
+      park: (driver: RetractingSideConversationDriver, terminal: FakeTerminal) => Promise<void>;
+      release: (driver: RetractingSideConversationDriver) => Promise<void>;
+    }> = [
+      {
+        name: 'an in-progress /session switch',
+        park: async (driver, terminal) => {
+          // Park the idle /session INSIDE the driver's switch, before it
+          // re-keys: the real driver spends this window stopping user commands
+          // and opening the target Session channel.
+          driver.switchGate = deferred<void>();
+          terminal.input('/session session-other');
+          terminal.input('\r');
+          await waitFor(() => driver.eventLog.some((entry) => entry.startsWith('switch-start:')));
+        },
+        release: async (driver) => {
+          driver.switchGate?.resolve();
+          await waitFor(() => driver.getSessionId() === 'session-other');
+        },
+      },
+      {
+        name: 'an in-progress side conversation open',
+        park: async (driver, terminal) => {
+          driver.openGate = deferred<void>();
+          terminal.input('/side');
+          terminal.input('\r');
+          await waitFor(() => driver.eventLog.some((entry) => entry.startsWith('open-start:')));
+        },
+        release: async (driver) => {
+          driver.openGate?.resolve();
+          await waitFor(() => driver.getSessionId() === 'side-1');
+        },
+      },
+      {
+        name: 'an in-progress side conversation close',
+        park: async (driver, terminal) => {
+          // Open for real (ungated) first: the close then parks inside the
+          // driver's re-key back onto the parent.
+          terminal.input('/side');
+          terminal.input('\r');
+          await waitFor(() => driver.getSessionId() === 'side-1');
+          await waitFor(() => terminal.progressStates.at(-1) === false);
+          driver.closeGate = deferred<void>();
+          terminal.input('\x03');
+          await waitFor(() => driver.eventLog.some((entry) => entry.startsWith('close-start:')));
+        },
+        release: async (driver) => {
+          driver.closeGate?.resolve();
+          await waitFor(() => driver.getSessionId() === 'session-1');
+          await waitFor(() => driver.closedSides.length === 1);
+        },
+      },
+    ];
+    for (const c of cases) {
+      const terminal = new FakeTerminal();
+      const driver = new RetractingSideConversationDriver([
+        { turnId: 'turn-1', label: 'first question' },
       ]);
+      const run = runMakaPiTui({
+        title: 'Maka',
+        driver,
+        cwd: '/repo',
+        model: 'claude-sonnet-4-5',
+        connectionSlug: 'claude-subscription',
+        permissionMode: 'ask',
+        terminal,
+      });
+      try {
+        driver.startBlockingTurn();
+        await waitFor(() => terminal.progressStates.at(-1) === true);
+        terminal.input('queued resend');
+        terminal.input('\r');
+        await waitFor(() => driver.queuedRows.length === 1);
+        // End the turn: the runner is idle while the Host still holds the
+        // queued message.
+        driver.turnGate.resolve();
+        await waitFor(() => terminal.progressStates.at(-1) === false);
 
-      driver.turnGate.resolve();
-      await waitFor(() => terminal.progressStates.at(-1) === false);
+        await c.park(driver, terminal);
+        terminal.input('\x1b[1;2D'); // Shift+Left inside the re-key window
+        await delay(50);
+        assert.equal(
+          driver.retractCalls,
+          0,
+          `${c.name}: no queue.retract may cross while the driver is still re-keying`,
+        );
 
-      // The Shift+Left retraction is held on the Host call when a second rewind is
-      // selected: each rewind branches onto a fresh Session, so the pending
-      // retraction crosses a re-key and the branch-switch fence would discard
-      // what the Host already removed from the first branch's queue (#5265
-      // review).
-      driver.retractGate = deferred<void>();
-      terminal.input('\x1b[1;2D'); // Shift+Left
-      await waitFor(() => driver.retractCalls === 1);
-
-      terminal.input('/rewind');
-      terminal.input('\r');
-      await waitFor(() => driver.pickerOpens === 2);
-      terminal.input('\r');
-      await Promise.race([waitFor(() => driver.rewound.length === 2), delay(50)]);
-      assert.equal(
-        driver.rewound.length,
-        1,
-        'the rewind parks behind the pending retraction instead of branching under it',
-      );
-
-      driver.retractGate.resolve();
-      await waitFor(() => driver.rewound.length === 2);
-      await waitFor(() => driver.getSessionId() === 'session-branch-2');
-      assert.ok(
-        editorInputText(terminal)?.includes('queued resend') === true,
-        'the retracted text must survive the rewind instead of being discarded by the branch fence',
-      );
-
-      // Resubmitting pins whose quotes the replacement carries: the second
-      // rewind's own quote replaced the retracted message's quote — rewind
-      // quotes are a replacement, not an accumulation (#5109, #5265 review).
-      // Distinct quotes per rewind are what makes the replacement visible.
-      terminal.input('\r');
-      await waitFor(() => driver.submittedQuotes.length === 2);
-      assert.deepEqual(driver.submittedQuotes[1], [
-        { text: 'excerpt from rewind 2', label: 'earlier turn', sourceTurnId: 'turn-0' },
-      ]);
-    } finally {
-      exitMaka(terminal);
-      await Promise.race([
-        run,
-        delay(CLOSE_BUDGET_MS).then(() => {
-          throw new Error('TUI did not close during test cleanup');
-        }),
-      ]);
+        await c.release(driver);
+        await delay(30);
+        assert.equal(
+          driver.queuedRows.length,
+          1,
+          `${c.name}: the queued entry stays on the Host queue`,
+        );
+        assert.ok(
+          !driver.eventLog.some((entry) => entry.startsWith('retract-done:')),
+          `${c.name}: no retraction completed: ${driver.eventLog.join(',')}`,
+        );
+      } finally {
+        exitMaka(terminal);
+        await Promise.race([
+          run,
+          delay(CLOSE_BUDGET_MS).then(() => {
+            throw new Error('TUI did not close during test cleanup');
+          }),
+        ]);
+      }
     }
   });
-
   test('carries retraction-restored quotes through a side conversation round trip', async () => {
     const terminal = new FakeTerminal();
     const driver = new RetractingSideConversationDriver([
@@ -16289,6 +16094,9 @@ class MidTurnQuotesDriver extends QuotedRewindDriver {
 class RetractingQuotesDriver extends MidTurnQuotesDriver {
   readonly queuedRows: Array<{ messageId: string; text: string; quotes: readonly QuoteRef[] }> = [];
   readonly retractedQuoteLoads: Array<readonly QuoteRef[]> = [];
+  /** The joined text each retraction returned, the seam main's fencing tests
+   * assert drain ordering against (#5265 review). */
+  readonly retractedTexts: string[] = [];
   readonly eventLog: string[] = [];
   retractGate: ReturnType<typeof deferred<void>> | undefined = undefined;
   enqueueGate: ReturnType<typeof deferred<void>> | undefined = undefined;
@@ -16343,6 +16151,7 @@ class RetractingQuotesDriver extends MidTurnQuotesDriver {
     };
     this.queuedRows.length = 0;
     this.retractedQuoteLoads.push(quotes);
+    this.retractedTexts.push(retracted.text);
     this.eventLog.push(`retract-done:${this.sessionId}`);
     return retracted;
   }
