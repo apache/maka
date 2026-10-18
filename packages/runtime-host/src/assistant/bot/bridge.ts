@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { TurnOrigin } from '@maka/core/turn-origin';
 import type { MessageContent } from '@maka/core/events';
 import type { InboxInput } from './store.js';
 
@@ -25,7 +26,11 @@ export interface BotEndpoint {
   worker(): string | undefined;
   status(): unknown;
   hasUserMessage(id: string): boolean;
-  receive(id: string, content: MessageContent): Promise<void>;
+  receive(
+    id: string,
+    content: MessageContent,
+    origin?: Extract<TurnOrigin, { kind: 'external_connector' }>,
+  ): Promise<void>;
   post(input: InboxInput): void;
 }
 /** In-process routing only; durable mailbox and wake state belong to the Bot. */
@@ -49,9 +54,14 @@ export class AssistantBotBridge {
   ownerFor(id: string) {
     return this.isWorker(id) ? this.endpoint?.owner() : undefined;
   }
-  async receive(sessionId: string, id: string, content: MessageContent) {
+  async receive(
+    sessionId: string,
+    id: string,
+    content: MessageContent,
+    origin?: Extract<TurnOrigin, { kind: 'external_connector' }>,
+  ) {
     if (!this.isConversation(sessionId)) return false;
-    await this.endpoint!.receive(id, content);
+    await this.endpoint!.receive(id, content, origin);
     return true;
   }
   post(owner: string, input: InboxInput) {

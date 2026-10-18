@@ -60,13 +60,14 @@ export async function initializeInitiative(
       if (!state?.active || state.discoverySession !== call.sessionId)
         throw Error('Not the active exploration worker');
       const id = `discovery:${state.active.id}:${call.toolCallId}`;
-      ctx.bot.post(state.sessionId, {
+      const reported = ctx.bot.post(state.sessionId, {
         id,
         type: 'discovery',
         source: call.sessionId,
         content: input.text,
       });
-      return { reported: true, sentToUser: false };
+      if (!reported) throw Error('Bot did not accept the discovery report');
+      return { reported, sentToUser: false };
     },
   });
   ctx.tools.register({

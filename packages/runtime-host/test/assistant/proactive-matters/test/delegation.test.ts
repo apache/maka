@@ -57,7 +57,10 @@ test('delegate retries reuse child; wait and user amendment stay independent of 
         const m = (await f.remote('matters.list')).matters.find((m: any) => m.sessionId === id);
         const v = await f.invoke('MatterRead', { activationId: m.activation.id }, turn, id);
         const inbox = await f.invoke('MatterReadFile', { path: v.files.inbox }, turn, id);
-        if (runs === 2) assert.match(JSON.stringify(inbox), /只验证测试环境/);
+        if (runs === 2) {
+          assert.match(JSON.stringify(inbox), /只验证测试环境/);
+          assert.match(JSON.stringify(inbox), /coordinator/);
+        }
         await f.invoke(
           'MatterWriteFile',
           {

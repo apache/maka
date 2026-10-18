@@ -33,6 +33,7 @@ export class InitiativeController {
   private activeAgent?: any;
   ticking?: Promise<void>;
   enabling = false;
+  bindingReady: Promise<void> = Promise.resolve();
   constructor(
     readonly ctx: any,
     readonly store: InitiativeStore,
@@ -46,11 +47,26 @@ export class InitiativeController {
       this.owned = owned;
     };
     acquire();
+    this.bindingReady = this.resolveBinding();
+    // Callers await this same promise and receive the resolution error, not a new owner.
+    void this.bindingReady.catch(() => {});
     this.heartbeat = setInterval(acquire, 10000);
     this.heartbeat.unref?.();
     this.timer = setInterval(() => void this.tick(), this.config.tickMs);
     this.timer.unref?.();
     void this.tick();
+  }
+  private async resolveBinding() {
+    if (this.store.get() || !this.owned) return;
+    const matches = (await this.ctx.sessionQuery.list()).filter((s: any) =>
+      s.labels?.includes('personal-assistant'),
+    );
+    if (matches.length > 1) throw Error('Multiple assistant conversations found');
+    if (!matches.length) return; // First creation is resolved by assistant.bind.
+    const session = matches[0];
+    if (!session.cwd) throw Error('Assistant conversation has no Host cwd');
+    this.ready();
+    this.store.bind({ sessionId: session.id, cwd: session.cwd });
   }
   ready() {
     this.abort.signal.throwIfAborted();
@@ -160,16 +176,17 @@ export class InitiativeController {
     }
   }
   async enable(input: any, call: any) {
+    await this.bindingReady;
     this.ready();
     if (this.enabling) throw Error('Initiative configuration is already in progress');
     this.enabling = true;
     try {
       const old = this.store.get();
-      if (old && old.sessionId !== call.sessionId)
+      if (!old || old.sessionId !== call.sessionId)
         throw Error('Only the assistant conversation may configure heartbeats');
       if (old?.enabled && input.intervalMinutes === undefined) return old;
       const s = this.store.configure(
-        { sessionId: call.sessionId, cwd: call.cwd },
+        { sessionId: old.sessionId, cwd: old.cwd },
         input.intervalMinutes === undefined
           ? (old?.intervalMs ?? 1800000)
           : input.intervalMinutes * 60000,
@@ -181,12 +198,13 @@ export class InitiativeController {
     }
   }
   async configure(input: { intervalMinutes: number }, call: any) {
+    await this.bindingReady;
     this.ready();
     const old = this.store.get();
-    if (old && old.sessionId !== call.sessionId)
+    if (!old || old.sessionId !== call.sessionId)
       throw Error('Only the assistant conversation may configure heartbeats');
     return this.store.configure(
-      { sessionId: call.sessionId, cwd: call.cwd },
+      { sessionId: old.sessionId, cwd: old.cwd },
       input.intervalMinutes * 60000,
       old?.enabled ?? false,
     );

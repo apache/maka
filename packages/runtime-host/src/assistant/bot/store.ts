@@ -186,19 +186,15 @@ export class BotStore {
   /** Register the whole batch before delivery. Retries cannot extend or reorder a committed batch. */
   queueVisibleBatch(
     batchId: string,
-    texts: readonly (string | { summary?: string; text: string })[],
+    texts: readonly { summary?: string; text: string }[],
   ): string[] {
     return this.transaction(() => {
       const serialize = (items: typeof texts) =>
         JSON.stringify(
-          items.map((entry) =>
-            typeof entry === 'string'
-              ? entry
-              : {
-                  text: entry.text,
-                  ...(entry.summary !== undefined ? { summary: entry.summary } : {}),
-                },
-          ),
+          items.map((entry) => ({
+            text: entry.text,
+            ...(entry.summary !== undefined ? { summary: entry.summary } : {}),
+          })),
         );
       const payload = serialize(texts);
       const old = this.db.prepare('SELECT payload FROM outbox_batches WHERE id=?').get(batchId);
@@ -214,8 +210,8 @@ export class BotStore {
         throw Error('Message ID already belongs to a single message');
       const timestamp = Date.now();
       const ids = texts.map((entry, index) => {
-        const text = typeof entry === 'string' ? entry : entry.text;
-        const summary = typeof entry === 'string' ? undefined : entry.summary;
+        const text = entry.text;
+        const summary = entry.summary;
         const suffix = texts.length === 1 ? batchId : JSON.stringify([batchId, index]);
         const id = texts.length === 1 ? legacyId : `bot-batch-message:${suffix}`;
         this.queueVisible({

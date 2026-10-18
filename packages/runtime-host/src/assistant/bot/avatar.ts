@@ -61,7 +61,7 @@ export function initializeAvatar(
   });
   register(
     'AssistantSetAvatar',
-    '更换你自己的头像，入口和聊天消息同步显示，重启后保留。image 填生成或找到的图片的本地路径或 HTTP(S) 图片网址（PNG/JPEG/WebP/GIF，最多 2 MiB），不要传 base64。也可用 emoji 填一个 emoji；两者选一。background 可填 #RRGGBB。图片会保存副本；此工具只设置头像，生成或找图使用已有工具，必要时委派任务。不会发送消息。',
+    '更换你自己的头像，入口和聊天消息同步显示，重启后保留。image 填生成或找到的图片的当前工具会话工作目录内的本地路径或公网 HTTP(S) 图片网址（PNG/JPEG/WebP/GIF，最多 2 MiB），不要传 base64。也可用 emoji 填一个 emoji；两者选一。background 可填 #RRGGBB。图片会保存副本；此工具只设置头像，生成或找图使用已有工具，必要时委派任务。不会发送消息。',
     z
       .object({
         emoji: assistantEmojiSchema.optional(),

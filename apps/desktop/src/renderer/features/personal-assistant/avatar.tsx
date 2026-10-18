@@ -18,8 +18,11 @@
  */
 
 import { useEffect, useState } from 'react';
+import { useUiLocale } from '@maka/ui';
+import { getPersonalAssistantChatCopy } from './chat-copy.js';
 import { DEFAULT_ASSISTANT_AVATAR, assistantAvatarSchema, type AssistantAvatar } from '@maka/runtime-host/protocol';
 import { usePersonalAssistantServices } from './services.js';
+import { disconnectedAvatarState } from './chat-behavior.js';
 import { originalHost } from './navigation.js';
 
 type AvatarView = AssistantAvatar & { imageUrl?: string };
@@ -57,7 +60,7 @@ export function useAssistantAvatar(enabled: boolean, sessionId?: string) {
           ? old : { scope: sessionId, avatar });
       } catch {
         // A disconnected Host must not display another Host's identity.
-        if (live) setState({ scope: sessionId, avatar: DEFAULT_ASSISTANT_AVATAR });
+        if (live) setState((old) => disconnectedAvatarState(old, sessionId, DEFAULT_ASSISTANT_AVATAR));
       } finally {
         if (live) timer = setTimeout(refresh, 3000);
       }
@@ -69,7 +72,8 @@ export function useAssistantAvatar(enabled: boolean, sessionId?: string) {
 }
 
 export function PersonalAssistantAvatar({ avatar }: { avatar: AvatarView }) {
-  return <span className="personal-assistant-avatar" role="img" aria-label="个人助手头像"
+  const copy = getPersonalAssistantChatCopy(useUiLocale());
+  return <span className="personal-assistant-avatar" role="img" aria-label={copy.avatarLabel}
     style={{ backgroundColor: avatar.background }}>
     {avatar.imageUrl ? <img src={avatar.imageUrl} alt="" draggable={false} /> : avatar.emoji}
   </span>;

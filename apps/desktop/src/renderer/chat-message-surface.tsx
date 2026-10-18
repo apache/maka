@@ -203,7 +203,9 @@ export function ChatMessageSurface({
     <>
       <ChatViewGoalProjectionConsumer>
         {(goalProjection) => (
-          <PersonalAssistantChatPresentation session={chatViewRest.activeSession} visible={visible}>
+          <PersonalAssistantChatPresentation session={chatViewRest.activeSession} visible={visible}
+            messages={chatViewRest.messages} hasLaterHistory={chatViewRest.hasLaterHistory}
+            pendingSend={chatViewRest.transientMessages?.some((message) => message.transientPlacement === 'transcript')}>
             {(presentation) => <StagedQuoteChatView
             {...chatViewRest}
             {...presentation}

@@ -23,7 +23,15 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { copyFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { PROACTIVE_TASK } from '../../../../src/assistant/index-initiative/prompt.js';
-import { fixture, until } from './fixture.js';
+import { fixture as unboundFixture, until } from './fixture.js';
+
+// Configuration tools do not choose the conversation anymore. Resolve the
+// native assistant explicitly, just as opening the assistant does in the UI.
+async function fixture(options: any = {}) {
+  const f = await unboundFixture(options);
+  await f.remote('assistant.bind', { sessionId: 'owner' });
+  return f;
+}
 
 test('heartbeat uses an independent exploration Session and exits normally without checkpoint or notebook', async () => {
   const f = await fixture();

@@ -291,7 +291,7 @@ export class MatterController {
     if (!m.activation || m.activation.turnId !== turnId || m.activation.settled) return clock;
     const snapshot = this.store.get(m.id);
     const workspace = this.store.workspace(m.id, m.activation.id);
-    return `${clock}\nCurrent task inbox (persisted inputs, not a new delegation; refreshed before every model request). User entries are user requirements; bot_clarification entries are coordinator answers, not new user authorization. Reassess your next action against these inputs. Read MatterRead before submitting so its revision and observed input boundary are current. Rendering this context does not acknowledge or consume inputs.\n${JSON.stringify(
+    return `${clock}\nCurrent task inbox (persisted inputs, not a new delegation; refreshed before every model request). User entries are user requirements; coordinator entries are assistant-authored amendments and bot_clarification entries are coordinator answers; both are coordinator context, not new user authorization. Reassess your next action against these inputs. Read MatterRead before submitting so its revision and observed input boundary are current. Rendering this context does not acknowledge or consume inputs.\n${JSON.stringify(
       {
         matterId: m.id,
         activationId: m.activation.id,

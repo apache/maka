@@ -310,7 +310,7 @@ export function registerDelegation(
       if (['completed', 'cancelled'].includes(m.status)) throw Error('Matter has ended');
       store.ingest(m.id, {
         key: `delegate:${call.sessionId}:${call.turnId}:${call.toolCallId}`,
-        source: 'user',
+        source: 'coordinator',
         text: input.text,
       });
       void controller.tick();

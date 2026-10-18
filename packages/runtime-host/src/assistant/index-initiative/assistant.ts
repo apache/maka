@@ -196,6 +196,7 @@ export function registerAssistant(
   ctx.api.register('assistant.binding', () => ({ state: store.get(), bot: ctx.bot.status() }));
   ctx.api.register('assistant.status', summary);
   ctx.api.register('assistant.bind', async (input: any) => {
+    await controller.bindingReady;
     const { sessionId } = z.object({ sessionId: z.string().min(1).max(300) }).parse(input);
     controller.ready();
     if (store.get()) return store.get();

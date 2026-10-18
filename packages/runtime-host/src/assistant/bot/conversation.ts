@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { isDeepStrictEqual } from 'node:util';
 import { createHash } from 'node:crypto';
 import { DEFAULT_TOOL_MODE } from '@maka/core/tool-mode';
 import { buildInvocationOpenedEvent } from '@maka/core/runtime-invocation';
@@ -48,6 +49,11 @@ export async function publishBotConversationMessage(
     if (
       text?.content?.kind !== 'text' ||
       text.content.text !== message.text ||
+      !isDeepStrictEqual(
+        text.content.origin,
+        message.type === 'user' ? message.origin : undefined,
+      ) ||
+      text.author !== (message.type === 'user' ? (message.origin ? 'host' : 'user') : 'agent') ||
       text.content.summary !== (message.type === 'assistant' ? message.summary : undefined)
     )
       throw Error('Assistant conversation ledger identity conflict');

@@ -17,7 +17,10 @@
  * under the License.
  */
 
-import { createContext, useContext, useMemo, type ComponentProps, type ReactNode } from 'react';
+import { createContext, useContext, useMemo, useEffect, useRef, type ComponentProps, type ReactNode } from 'react';
+import type { StoredMessage } from '@maka/core/session';
+import { getPersonalAssistantChatCopy } from './chat-copy.js';
+import { hasPendingAssistantReply, dismissComposerConfiguration } from './chat-behavior.js';
 import { ChatSurfaceLayout, Composer, useUiLocale } from '@maka/ui';
 import { PersonalAssistantAvatar, useAssistantAvatar } from './avatar.js';
 import { PersonalAssistantTyping } from './typing.js';
@@ -26,16 +29,19 @@ type Session = { id: string; labels?: readonly string[] };
 function assistantChatClassName(session?: Session) {
   return session?.labels?.includes('personal-assistant') ? 'personal-assistant-chat' : undefined;
 }
-function assistantComposerProps(session: Session | undefined, locale: string) {
+function assistantComposerProps(session: Session | undefined, locale: Parameters<typeof getPersonalAssistantChatCopy>[0]) {
   return assistantChatClassName(session) ? {
     compactControls: true,
-    placeholder: ({ 'zh-CN': '聊点什么…', 'zh-TW': '聊點什麼…' } as Record<string, string>)[locale] ?? 'Send a message…',
+    placeholder: getPersonalAssistantChatCopy(locale).placeholder,
   } : {};
 }
 
-export function PersonalAssistantChatPresentation({ session, visible, children }: {
+export function PersonalAssistantChatPresentation({ session, visible, messages, hasLaterHistory, pendingSend, children }: {
   session?: Session;
   visible: boolean;
+  messages: readonly StoredMessage[];
+  hasLaterHistory?: boolean;
+  pendingSend?: boolean;
   children(props: { assistantAvatar?: ReactNode; activityContent?: ReactNode }): ReactNode;
 }) {
   const enabled = !!assistantChatClassName(session);
@@ -43,7 +49,7 @@ export function PersonalAssistantChatPresentation({ session, visible, children }
   const assistantAvatar = useMemo(() => enabled ? <PersonalAssistantAvatar avatar={avatar} /> : undefined, [enabled, avatar]);
   return children({
     assistantAvatar,
-    activityContent: enabled && visible && session ? <PersonalAssistantTyping key={session.id} sessionId={session.id} avatar={assistantAvatar} /> : undefined,
+    activityContent: enabled && visible && session && !hasLaterHistory && (pendingSend || hasPendingAssistantReply(messages)) ? <PersonalAssistantTyping key={session.id} sessionId={session.id} avatar={assistantAvatar} /> : undefined,
   });
 }
 
@@ -56,5 +62,21 @@ export function PersonalAssistantChatLayout({ session, onboarding, ...props }: C
 export function PersonalAssistantComposer(props: ComponentProps<typeof Composer>) {
   const session = useContext(AssistantChatContext);
   const locale = useUiLocale();
-  return <Composer {...props} {...assistantComposerProps(session, locale)} />;
+  const root = useRef<HTMLDivElement>(null);
+  const compact = !!assistantChatClassName(session);
+  useEffect(() => {
+    const element = root.current;
+    if (!compact || !element) return;
+    const dismiss = (event: Event) => dismissComposerConfiguration(element, event);
+    const document = element.ownerDocument;
+    document.addEventListener('pointerdown', dismiss, true);
+    document.addEventListener('keydown', dismiss);
+    return () => {
+      document.removeEventListener('pointerdown', dismiss, true);
+      document.removeEventListener('keydown', dismiss);
+    };
+  }, [compact]);
+  return <div ref={root} style={{ display: 'contents' }}>
+    <Composer {...props} {...assistantComposerProps(session, locale)} />
+  </div>;
 }

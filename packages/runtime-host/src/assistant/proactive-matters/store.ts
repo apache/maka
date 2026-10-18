@@ -468,9 +468,13 @@ class SqliteMatterStore implements MatterStore {
   ): boolean {
     return this.transaction(() => {
       const m = this.read(id);
-      if (input.source !== 'user' && input.source !== 'bot_clarification')
+      if (
+        input.source !== 'user' &&
+        input.source !== 'coordinator' &&
+        input.source !== 'bot_clarification'
+      )
         throw new Error(
-          'External event subscriptions are not supported; only user input, Bot clarification and scheduled time',
+          'External event subscriptions are not supported; only user input, coordinator amendments, Bot clarification and scheduled time',
         );
       if (terminal(m)) return false;
       // User input or coordinator clarification can interrupt retry backoff, never a user pause.

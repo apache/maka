@@ -22,7 +22,8 @@ import { PersonalAssistantService, ASSISTANT_LEGACY_PACKAGES } from '../assistan
 import { createAssistantMessageReader } from './session-transcript-reader.js';
 import { createImageFileReader } from '@maka/runtime/image-file-reader';
 import { ChatImageDeliveryService } from './chat-image-delivery.js';
-import { downloadChatImage, localImagePath, ImageSourceError } from './chat-image-source.js';
+import { downloadChatImage, ImageSourceError } from './chat-image-source.js';
+import { readAvatarImageSource } from './avatar-image-source.js';
 import { createWorkHubResultRuntime } from './workhub-result-runtime.js';
 import { createWorkHubInspectionTool } from './workhub-inspection-tool.js';
 import { copyWorkHubAttachmentsToTarget } from './workhub-message-attachments.js';
@@ -466,12 +467,12 @@ export async function createExecutionRuntimeHostComposition(
           if (failures.length)
             throw new AggregateError(failures, 'Failed to stop assistant sessions');
         },
-        readAvatarImage: async (sessionId, source, signal) => {
-          const path = localImagePath(source);
-          return path === undefined
-            ? downloadImage(source, signal)
-            : readLocalImage(sessionId, path, signal);
-        },
+        readAvatarImage: (sessionId, source, signal) =>
+          readAvatarImageSource(source, signal, {
+            workspace: async () => (await stores.sessionStore.readHeaderSnapshot(sessionId)).cwd,
+            readLocal: (path, boundedSignal) => readLocalImage(sessionId, path, boundedSignal),
+            download: downloadImage,
+          }),
         appendConversation: async (sessionId, message) => {
           await sessionAdmission.run(sessionId, async (lease) => {
             const assertAvailable = () => {
@@ -3489,8 +3490,17 @@ export async function createExecutionRuntimeHostComposition(
               };
             },
             'turn.message.submit': async (input, connection) => {
-              if (!personalAssistant.isConversation(input.sessionId))
+              if (!personalAssistant.isConversation(input.sessionId)) {
+                if (input.externalSource)
+                  return {
+                    ok: false,
+                    error: {
+                      code: 'operation_unavailable',
+                      message: 'External connector input requires the assistant Inbox',
+                    },
+                  };
                 return messages.handlers['turn.message.submit'](input, connection);
+              }
               if (input.originHostEpoch !== context.hostEpoch)
                 return {
                   ok: false,
@@ -3521,6 +3531,7 @@ export async function createExecutionRuntimeHostComposition(
                     input.sessionId,
                     input.messageId,
                     input.content,
+                    input.externalSource,
                   ))
                 )
                   throw Error('Assistant is stopping; message was not admitted');

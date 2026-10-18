@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { TurnOrigin } from '@maka/core/turn-origin';
 import type { MessageContent } from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
 import { AssistantBotBridge } from './bot/bridge.js';
@@ -457,9 +458,14 @@ export class PersonalAssistantService {
       ? this.runtime!.tools.filter((tool) => BOT_TOOLS.has(tool.name))
       : undefined;
   }
-  async receiveUser(sessionId: string, id: string, content: MessageContent) {
+  async receiveUser(
+    sessionId: string,
+    id: string,
+    content: MessageContent,
+    origin?: Extract<TurnOrigin, { kind: 'external_connector' }>,
+  ) {
     if (!this.enabled || this.draining) return false;
-    return this.runtime!.bot.receive(sessionId, id, content);
+    return this.runtime!.bot.receive(sessionId, id, content, origin);
   }
   async beforeFinish(context: TurnFinishContext): Promise<TurnFinishDecision> {
     return this.enabled ? this.runtime!.beforeFinish(context) : { allow: true };

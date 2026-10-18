@@ -18,11 +18,14 @@
  */
 
 import { useEffect, useState, type ReactNode } from 'react';
+import { useUiLocale } from '@maka/ui';
+import { getPersonalAssistantChatCopy } from './chat-copy.js';
 import { usePersonalAssistantServices } from './services.js';
 import { originalHost } from './navigation.js';
 
 /** Only the visible assistant polls its lightweight binding, never memory or task refresh. */
 export function PersonalAssistantTyping({ sessionId, avatar }: { sessionId: string; avatar: ReactNode }) {
+  const copy = getPersonalAssistantChatCopy(useUiLocale());
   const services = usePersonalAssistantServices();
   const [working, setWorking] = useState(false);
   useEffect(() => {
@@ -44,7 +47,7 @@ export function PersonalAssistantTyping({ sessionId, avatar }: { sessionId: stri
   }, [sessionId, services]);
   if (!working) return null;
   return (
-    <div className="personal-assistant-typing" role="status" aria-label="正在输入">
+    <div className="personal-assistant-typing" role="status" aria-label={copy.typingLabel}>
       {avatar}
       <div className="personal-assistant-typing-bubble" aria-hidden="true">
         <span /><span /><span />

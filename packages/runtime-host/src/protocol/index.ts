@@ -107,8 +107,12 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-// 223: Assistant conversation message admission can return an Inbox receipt without a model Turn.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 223 as const;
+// 224: Assistant conversation admission supports Inbox receipts without a model Turn,
+// inbox execution-query resolutions, external connector provenance and message summaries.
+// Also adds assistant.avatar/assistant.avatar-image and the bot block on assistant.binding.
+// 223 is used by the distinct protocol changes in open PRs #6115 and #6091;
+// re-check against main at merge time (the protocol epoch gate remains authoritative).
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 224 as const;
 // 222: Built-in personal assistant operations and the Host-owned default-off
 // master switch require matching Client and Host support.
 // 221: Epoch-220 peers do not support `artifact.image.resolve` or its image

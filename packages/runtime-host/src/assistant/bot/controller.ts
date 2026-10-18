@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { TurnOrigin } from '@maka/core/turn-origin';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { ASSISTANT_BACKGROUND_SESSION_LABEL } from '@maka/core/session';
@@ -90,13 +91,23 @@ export class BotController {
     this.store.post(input);
     this.tick();
   }
-  async receive(id: string, content: MessageContent) {
+  async receive(
+    id: string,
+    content: MessageContent,
+    origin?: Extract<TurnOrigin, { kind: 'external_connector' }>,
+  ) {
     this.ready();
     this.store.post(
-      { id, type: 'user_message', source: 'user', content },
+      {
+        id,
+        type: 'user_message',
+        source: origin ? 'external_connector' : 'user',
+        content: origin ? { ...content, origin } : content,
+      },
       {
         ...content,
         type: 'user',
+        ...(origin ? { origin } : {}),
         id,
         turnId: `assistant-input:${id}`,
         ts: Date.now(),
