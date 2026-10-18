@@ -99,6 +99,24 @@ const CHILD_INSTRUCTION_BOUNDARY = [
   'The child does not implicitly inherit local Memory or personalization context; required background must be included explicitly in the task.',
 ].join(' ');
 
+/**
+ * Host-authoritative creation guidance. The catalog may be empty (or every
+ * entry may be filtered out), so this fragment must not depend on catalog
+ * contents; otherwise the model has to guess a data directory.
+ */
+function buildSkillCreationPromptFragment(
+  workspaceSkillDirectory: string | undefined,
+): string | undefined {
+  if (!workspaceSkillDirectory) return undefined;
+  return [
+    '## Local Skill creation',
+    `The Host installs a default workspace Skill at \`${workspaceSkillDirectory}/<skill-id>/SKILL.md\`.`,
+    `- Write the new Skill directly to \`${workspaceSkillDirectory}/<skill-id>/SKILL.md\`; do not guess another Maka data directory.`,
+    '- Read that exact SKILL.md back and verify its content before reporting success.',
+    '- If the user explicitly asks for a project-level, user-level, or managed-source Skill, follow that scope and its authoritative path instead.',
+  ].join('\n');
+}
+
 export interface InteractiveRunComposerInput {
   readonly runtimePolicy: RuntimePolicySnapshot;
   readonly skills: HostSkillCatalogCoordinator;
@@ -279,9 +297,13 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
         const workspaceInstructions = promptState.policy.workspaceInstructions.enabled
           ? await buildWorkspaceInstructionsPromptFragment(context.cwd)
           : undefined;
+        // Guidance is independent of catalog contents so an empty catalog still
+        // names the authoritative directory instead of leaving it to be guessed.
+        const skillCreation = buildSkillCreationPromptFragment(inventory.workspaceSkillDirectory);
         const text = childInstruction
           ? joinFragments([
               skills.text,
+              skillCreation,
               workspaceInstructions,
               CHILD_INSTRUCTION_BOUNDARY,
               childInstruction,
@@ -289,6 +311,7 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
           : assembleMainSessionSystemPrompt([
               buildPersonalizationPromptFragment(promptState.policy.personalization).text,
               skills.text,
+              skillCreation,
               workspaceInstructions,
               promptState.memory,
               input.plan?.mode === 'plan'
