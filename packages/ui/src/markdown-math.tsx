@@ -69,6 +69,7 @@ type PendingLinkScan =
   | {
       kind: 'label';
       labelState: LabelScanState;
+      ref: boolean;
       speculativeSafeSourceEnd: number;
       speculativeSafeTextEnd: number;
     }
@@ -120,7 +121,7 @@ export function prepareMarkdownMath(
         const translated = translateMarkdownMath(source.slice(specSourceStart), {
           startsAtLineStart: specSourceStart === 0 || source[specSourceStart - 1] === '\n',
           priorTextChar: cache.text[specTextStart - 1],
-          allowDisplayMath: false,
+          allowDisplayMath: !(pending.kind === 'label' && pending.ref),
           leadingBackslashes: countPrecedingBackslashes(source, specSourceStart),
           linePrefix,
         });
@@ -158,6 +159,7 @@ export function prepareMarkdownMath(
         pendingToSet = {
           kind: 'label',
           labelState: info.labelState,
+          ref: info.ref,
           speculativeSafeSourceEnd: 0,
           speculativeSafeTextEnd: 0,
         };
@@ -379,7 +381,13 @@ function translateMarkdownMath(
         canMarkSafe = false;
       }
       if (link.pendingInfo !== undefined) {
-        allowDisplayMath = false;
+        // Only unclosed labels/identifiers keep display math suppressed while
+        // they remain pending; an unclosed inline tail does not, because its
+        // destination is copied verbatim and following prose must keep normal
+        // display-math handling.
+        if (link.pendingInfo.kind === 'label' && link.pendingInfo.ref) {
+          allowDisplayMath = false;
+        }
       }
     }
     if (link?.kind === 'match') {
@@ -827,6 +835,7 @@ type PendingLinkInfo =
   | {
       kind: 'label';
       labelState: LabelScanState;
+      ref: boolean;
     }
   | {
       kind: 'tail';
@@ -876,7 +885,7 @@ function readMarkdownLink(
     return {
       kind: 'pending',
       end: source.length,
-      pendingInfo: { kind: 'label', labelState: firstScan.state },
+      pendingInfo: { kind: 'label', labelState: firstScan.state, ref: false },
     };
   }
   if (firstScan.kind === 'invalid') return { kind: 'pending', end: firstScan.end };
@@ -908,7 +917,7 @@ function readMarkdownLink(
       return {
         kind: 'pending',
         end: source.length,
-        pendingInfo: { kind: 'label', labelState: refScan.state },
+        pendingInfo: { kind: 'label', labelState: refScan.state, ref: true },
       };
     }
     if (refScan.kind === 'invalid') return match(refScan.end);
@@ -1070,6 +1079,7 @@ type TailScanState = {
   depth: number;
   escapeNext: boolean;
   allowNewlines: boolean;
+  checkBlank: boolean;
 };
 
 function initialTailScanState(from: number, allowNewlines = true): TailScanState {
@@ -1079,6 +1089,7 @@ function initialTailScanState(from: number, allowNewlines = true): TailScanState
     depth: 1,
     escapeNext: false,
     allowNewlines,
+    checkBlank: false,
   };
 }
 
@@ -1089,6 +1100,21 @@ type TailScanResult =
 
 function scanInlineTail(source: string, st: TailScanState): TailScanResult {
   while (st.index < source.length) {
+    if (st.checkBlank) {
+      st.checkBlank = false;
+      if (st.index + 1 >= source.length) {
+        st.checkBlank = true;
+        return { kind: 'pending', state: st };
+      }
+      if (source[st.index + 1] === '\\n') {
+        return { kind: 'invalid', end: st.index };
+      }
+      st.index++;
+      if (st.index >= source.length) {
+        return { kind: 'pending', state: st };
+      }
+      continue;
+    }
     if (st.index - st.from >= MAX_LINK_TAIL_LENGTH) {
       return { kind: 'invalid', end: findInvalidLinkBoundary(source, st.index) };
     }
@@ -1105,8 +1131,19 @@ function scanInlineTail(source: string, st: TailScanState): TailScanResult {
     if (!st.allowNewlines && (ch === '\n' || ch === '\r')) {
       return { kind: 'invalid', end: st.index };
     }
-    if (ch === '\n' && source[st.index + 1] === '\n') {
-      return { kind: 'invalid', end: st.index };
+    if (ch === '\n') {
+      if (st.index + 1 >= source.length) {
+        st.checkBlank = true;
+        return { kind: 'pending', state: st };
+      }
+      if (source[st.index + 1] === '\n') {
+        return { kind: 'invalid', end: st.index };
+      }
+      if (st.index > 0 && source[st.index - 1] === '\n') {
+        return { kind: 'invalid', end: st.index };
+      }
+      st.index++;
+      continue;
     }
     if (ch === '\\') {
       if (st.index + 1 >= source.length) {
