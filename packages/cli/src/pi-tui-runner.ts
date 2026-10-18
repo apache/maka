@@ -87,7 +87,11 @@ import type {
   ExternalSessionCatalogItem,
   TurnResumeParkReason,
 } from '@maka/runtime-host/protocol';
-import { TURN_MESSAGE_QUOTE_MAX_COUNT } from '@maka/runtime-host/protocol';
+import {
+  TURN_MESSAGE_CONTENT_MAX_BYTES,
+  TURN_MESSAGE_QUOTE_MAX_COUNT,
+  TURN_MESSAGE_TEXT_MAX_BYTES,
+} from '@maka/runtime-host/protocol';
 import type { AgentGraphEpochDirectory } from '@maka/runtime-host/client';
 import { MakaSkillHighlightEditor } from './skill-highlight-editor.js';
 import { parseGraphCommand, type ParsedGraphCommand } from '@maka/core/graph-command';
@@ -440,6 +444,8 @@ interface TuiRewindCopy {
   readonly quotesNone: string;
   readonly quotesUsage: string;
   readonly quotesListHeading: string;
+  readonly quotesCountOverflow: string;
+  readonly quotesSizeOverflow: string;
   readonly unsupportedAttachments: string;
   readonly unsupportedDirectoryReferences: string;
   readonly pickerHint: string;
@@ -1585,15 +1591,49 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       .join('\n>\n');
   };
 
+  // Admission also bounds one Message by encoded size: the text alone
+  // (TURN_MESSAGE_TEXT_MAX_BYTES) and the whole content serialized
+  // (TURN_MESSAGE_CONTENT_MAX_BYTES). The driver builds a TUI submit's
+  // content as exactly `{ text, quotes? }` (runtime-host-session-driver
+  // `#submitMessage`), so measuring that shape here measures what admission
+  // will measure (#5265 review).
+  const fitsSingleMessageAdmission = (
+    text: string,
+    quotes: MakaRetractedMessages['quotes'],
+  ): boolean => {
+    if (Buffer.byteLength(text, 'utf8') > TURN_MESSAGE_TEXT_MAX_BYTES) return false;
+    const content = { text, ...(quotes.length > 0 ? { quotes: [...quotes] } : {}) };
+    return Buffer.byteLength(JSON.stringify(content), 'utf8') <= TURN_MESSAGE_CONTENT_MAX_BYTES;
+  };
+
   const acceptRetraction = (retracted: MakaRetractedMessages) => {
     for (const messageId of retracted.messageIds) removeTransientUserMessage(messageId);
-    const stageable = retracted.quotes.slice(0, TURN_MESSAGE_QUOTE_MAX_COUNT);
-    const overflow = retracted.quotes.slice(TURN_MESSAGE_QUOTE_MAX_COUNT);
-    refillEditorFromQueues(
+    const countOverflow = retracted.quotes.slice(TURN_MESSAGE_QUOTE_MAX_COUNT);
+    let stageable = retracted.quotes.slice(0, TURN_MESSAGE_QUOTE_MAX_COUNT);
+    let overflow = countOverflow;
+    let restoredDraft =
       overflow.length > 0
         ? `${retracted.text}\n\n${formatQuoteOverflow(overflow)}`
-        : retracted.text,
-    );
+        : retracted.text;
+    // Budget the staging by encoded size too: two ~28 KB large-paste quotes
+    // are each admissible on their own queue entry but fold into one candidate
+    // past the content limit, and an unstagedable staging would make every
+    // retry fail while `/quotes clear` is the only way out (#5265 review).
+    // Demote staged quotes into the draft — newest first, matching the count
+    // cap's prefix preference — until the projected resubmit fits. The bytes
+    // move between the structured and the quoted-text lanes, so an aggregate
+    // that cannot fit one Message at all ends up entirely in the draft: the
+    // failure stays visible and the excerpts editable, instead of a silent
+    // staged trap.
+    let sizeOverflow = false;
+    while (stageable.length > 0 && !fitsSingleMessageAdmission(restoredDraft, stageable)) {
+      sizeOverflow = true;
+      const demoted = stageable[stageable.length - 1];
+      stageable = stageable.slice(0, -1);
+      if (demoted !== undefined) overflow = [demoted, ...overflow];
+      restoredDraft = `${retracted.text}\n\n${formatQuoteOverflow(overflow)}`;
+    }
+    refillEditorFromQueues(restoredDraft);
     // The Host returns the full MessageContent with a retraction: quotes that
     // rode a queued or steered message come back with it and restage here, so
     // the re-edited retry does not go out without them (#5109 review). They
@@ -1606,7 +1646,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       state.entries.push({
         kind: 'notice',
         level: 'info',
-        text: 'Some recovered quotes exceed the per-message quote limit; the overflow was added to the draft as quoted text.',
+        text: sizeOverflow
+          ? TUI_REWIND_COPY[locale].quotesSizeOverflow
+          : TUI_REWIND_COPY[locale].quotesCountOverflow,
       });
     }
   };

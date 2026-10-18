@@ -45,6 +45,10 @@ import type {
   ExternalSessionCatalogItem,
   TurnMessageSubmitResult,
 } from '@maka/runtime-host/protocol';
+import {
+  TURN_MESSAGE_CONTENT_MAX_BYTES,
+  TURN_MESSAGE_TEXT_MAX_BYTES,
+} from '@maka/runtime-host/protocol';
 import { SessionActivityRegistry } from '@maka/runtime/goal-turn-lifecycle';
 import { type ContextDiagnostics } from '@maka/runtime/context-diagnostics';
 import type { GoalProjection, TurnResumeParkReason } from '@maka/runtime-host/protocol';
@@ -9042,6 +9046,124 @@ Slug openai-work<cursor>
     ]);
   });
 
+  test('keeps staging quotes whose aggregate stays within the encoded content budget', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new AdmissionEnforcingRetractingDriver([]);
+    // Two ~25 KiB large-paste QuoteRefs: each queued message is admissible on
+    // its own and the joined candidate still fits the encoded-content budget,
+    // so the budget must not demote them — only past-budget aggregates demote
+    // (liugddx review of 90ae756fd).
+    const excerpt = 'a'.repeat(25 * 1024);
+    driver.queuedRows.push(
+      { messageId: 'm-1', text: 'first batch', quotes: [{ text: excerpt, label: 'q1' }] },
+      { messageId: 'm-2', text: 'second batch', quotes: [{ text: excerpt, label: 'q2' }] },
+    );
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('\x1b[1;2D'); // Shift+Left retracts both entries.
+    await waitFor(() => driver.retractCalls === 1);
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('quotes:2'));
+    await waitFor(() => editorInputText(terminal)?.includes('first batch') === true);
+
+    // The resubmit carries both staged quotes and the real admission accepts it.
+    terminal.input('\r');
+    await waitFor(() => driver.submittedQuotes.length === 1);
+    assert.equal(driver.submittedQuotes[0]?.length, 2);
+    await waitFor(() => driver.queuedRows.length === 0);
+    await delay(50);
+    assert.ok(
+      !plainTerminalOutput(terminal.output()).includes('exceeds byte limit'),
+      'an aggregate within the encoded budget must submit cleanly',
+    );
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
+  test('degrades recovered quotes past the single-message size budget into the draft', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new AdmissionEnforcingRetractingDriver([]);
+    // Two ~28 KiB large-paste QuoteRefs, each admissible on its own queued
+    // message: folded into one candidate the encoded content crosses the
+    // Host's content limit, and no staging split can fit it — the recovery
+    // must degrade to visible draft text instead of restaging a set every
+    // retry of which the Host rejects (liugddx review of 90ae756fd).
+    const excerpt = 'a'.repeat(28 * 1024);
+    driver.queuedRows.push(
+      { messageId: 'm-1', text: 'first batch', quotes: [{ text: excerpt, label: 'q1' }] },
+      { messageId: 'm-2', text: 'second batch', quotes: [{ text: excerpt, label: 'q2' }] },
+    );
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('\x1b[1;2D'); // Shift+Left retracts both entries.
+    await waitFor(() => driver.retractCalls === 1);
+    // Nothing restages as a staged set, the notice names the size policy, and
+    // both excerpts survive as quoted text in the restored draft.
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes('past the single-message size budget'),
+    );
+    assert.ok(
+      !plainTerminalOutput(terminal.output()).includes('quotes:2'),
+      'an aggregate past the encoded budget must not restage as a staged set',
+    );
+
+    // The resubmit is now bounded by the text limit — visible and editable in
+    // the draft — and the recovery reached it whole: both excerpts, quoted.
+    terminal.input('\r');
+    await waitFor(() => driver.submittedQuotes.length === 1);
+    assert.equal(driver.submittedQuotes[0], undefined);
+    assert.ok(
+      driver.submittedTexts[0]?.includes('first batch') &&
+        driver.submittedTexts[0]?.includes('second batch'),
+      'the recovered texts ride the restored draft',
+    );
+    assert.ok(
+      driver.submittedTexts[0]?.includes(`[q1] ${'a'.repeat(64)}`) &&
+        driver.submittedTexts[0]?.includes(`[q2] ${'a'.repeat(64)}`),
+      'the excerpts are preserved as quoted text in the draft',
+    );
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('exceeds byte limit'));
+    // A retried attempt (recall the draft, submit again) rides no quotes either:
+    // the failed submit must not resurrect a staging the Host rejects again.
+    terminal.input('\x1b[A'); // recall the draft from history
+    terminal.input('\r');
+    await waitFor(() => driver.submittedQuotes.length === 2);
+    assert.equal(driver.submittedQuotes[1], undefined);
+    assert.ok(
+      driver.submittedTexts[1]?.includes('second batch'),
+      'the recalled draft still carries the recovery',
+    );
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
   test('does not retract the switched-to queue when enqueues settle after a switch', async () => {
     const terminal = new FakeTerminal();
     const driver = new RetractingQuotesDriver([{ turnId: 'turn-1', label: 'first question' }]);
@@ -10011,6 +10133,7 @@ Slug openai-work<cursor>
       }
     }
   });
+
   test('carries retraction-restored quotes through a side conversation round trip', async () => {
     const terminal = new FakeTerminal();
     const driver = new RetractingSideConversationDriver([
@@ -16167,6 +16290,46 @@ class RetractingQuotesDriver extends MidTurnQuotesDriver {
     this.eventLog.push(`switch:${sessionId}`);
     this.sessionId = sessionId;
     return super.switchSession(sessionId);
+  }
+}
+
+/**
+ * Mirrors the Host's `turn.message.submit` admission for the limits a TUI
+ * submit can cross — text bytes, encoded content bytes
+ * (`packages/runtime-host/src/protocol/turn.ts`) and the quote count — so a
+ * recovery payload past the single-message budget is rejected the way the real
+ * Host rejects it, instead of a fake that admits anything (#5265 review).
+ */
+class AdmissionEnforcingRetractingDriver extends RetractingQuotesDriver {
+  /** Every dispatch's text, recorded before admission rejects or accepts it. */
+  readonly submittedTexts: string[] = [];
+
+  override submitMessage(
+    text: string,
+    options: MakaSubmitMessageOptions,
+  ): Promise<TurnMessageSubmitResult | undefined> {
+    this.submittedTexts.push(text);
+    // The driver builds a TUI submit's content as exactly `{ text, quotes? }`
+    // (runtime-host-session-driver `#submitMessage`), so measuring that shape
+    // measures what admission will measure.
+    const content = {
+      text,
+      ...(options.quotes?.length ? { quotes: [...options.quotes] } : {}),
+    };
+    const textTooBig = Buffer.byteLength(content.text, 'utf8') > TURN_MESSAGE_TEXT_MAX_BYTES;
+    const contentTooBig =
+      Buffer.byteLength(JSON.stringify(content), 'utf8') > TURN_MESSAGE_CONTENT_MAX_BYTES;
+    if (textTooBig || contentTooBig) {
+      // The dispatch reached the Host before admission rejected it, so the
+      // submit attempt is recorded with the quotes it tried to carry.
+      this.submittedQuotes.push(options.quotes);
+      return Promise.reject(
+        new Error(
+          textTooBig ? 'Message text exceeds byte limit' : 'Message content exceeds byte limit',
+        ),
+      );
+    }
+    return super.submitMessage(text, options);
   }
 }
 

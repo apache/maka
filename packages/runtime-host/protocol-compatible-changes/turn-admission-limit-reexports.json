@@ -1,0 +1,5 @@
+{
+  "epoch": 222,
+  "files": ["packages/runtime-host/src/protocol/index.ts"],
+  "reason": "Re-exports the existing TURN_MESSAGE_QUOTE_MAX_COUNT, TURN_MESSAGE_TEXT_MAX_BYTES and TURN_MESSAGE_CONTENT_MAX_BYTES constants from the protocol index so the TUI stages recovered quotes against the same count and encoded-byte budgets the admission decoder enforces (#5265 review). Re-exporting constants is not a wire change: no message shape, field, key, error code, or accepted value changes."
+}
