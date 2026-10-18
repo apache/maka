@@ -144,6 +144,10 @@ export function renderConversationMarkdown(
     for (const message of turnMessages) {
       if (message.type === 'user') {
         flushAssistant();
+        // Unlike an empty answer, user text always breaks the section: a call
+        // after a steering message must reopen `### Tool calls` instead of
+        // continuing a run that the `## You` block already interrupted.
+        inToolRun = false;
         // The user typed it, they own it: no redaction pass on user text.
         emit(`## ${options.copy.you}\n\n${userFacingText(message)}\n\n`);
         continue;

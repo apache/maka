@@ -130,6 +130,26 @@ test('emits rows in stored order inside a turn — steering lands where it was s
   );
 });
 
+test('a steering message closes the tool run, so a later call reopens the section', () => {
+  // The `## You` block interrupts the tool section: a call stored after it
+  // must open a fresh `### Tool calls` block instead of hanging as a bare
+  // bullet under the user message (#6036 review).
+  const markdown = render([
+    userMessage('u1', 't1', 1, 'open the file'),
+    toolCallMessage({ id: 'c1', turnId: 't1', ts: 2, toolName: 'read_file' }),
+    userMessage('u2', 't1', 3, 'STOP, do this instead'),
+    toolCallMessage({ id: 'c2', turnId: 't1', ts: 4, toolName: 'write_file' }),
+  ]);
+  const you = markdown.indexOf('## You\n\nSTOP, do this instead');
+  assert.ok(you >= 0, markdown);
+  const headings = [...markdown.matchAll(/^### Tool calls$/gm)]
+    .map((match) => match.index)
+    .filter((index): index is number => index !== undefined);
+  assert.equal(headings.length, 2, markdown);
+  assert.ok(headings[1]! > you, 'the second tool run opens after the steering message');
+  assert.ok(markdown.indexOf('`write_file`') > headings[1]!, 'the call renders under it');
+});
+
 test('reused provider tool-call ids bind each result to its own turn', () => {
   const markdown = render([
     toolCallMessage({ id: 'c-shared', turnId: 't1', ts: 1, toolName: 'run' }),
