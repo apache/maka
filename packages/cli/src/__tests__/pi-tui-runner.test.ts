@@ -9164,6 +9164,109 @@ Slug openai-work<cursor>
     ]);
   });
 
+  test('keeps staged quotes structured when the recovered text alone is past the text budget', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new AdmissionEnforcingRetractingDriver([]);
+    // Two ~30 KiB queued texts join past the text limit on their own: no
+    // staging split can fit that aggregate, and demoting a quote cannot fix a
+    // text-lane overflow — it only strips quotes that would still ride a
+    // resubmit as structured refs once the user trims the draft text
+    // (Astro-Han review of 5c6dac6e8).
+    const queuedText = 'b'.repeat(30 * 1024);
+    driver.queuedRows.push(
+      { messageId: 'm-1', text: queuedText, quotes: [{ text: 'excerpt one', label: 'q1' }] },
+      { messageId: 'm-2', text: queuedText, quotes: [{ text: 'excerpt two', label: 'q2' }] },
+    );
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('\x1b[1;2D'); // Shift+Left retracts both entries.
+    await waitFor(() => driver.retractCalls === 1);
+    // The quotes survive as a staged set — a text-only overflow demotes
+    // nothing — and never degrade into the draft as quoted text.
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('quotes:2'));
+    assert.ok(
+      !plainTerminalOutput(terminal.output()).includes('[q1] excerpt one'),
+      'a text-only overflow must not demote staged quotes into the draft',
+    );
+
+    // The oversized draft still fails visibly in the real admission, and the
+    // staged quotes ride the rejected submit intact for a trimmed retry.
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('exceeds byte limit'));
+    assert.equal(driver.submittedQuotes[0]?.length, 2);
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
+  test('budgets staged quotes against the draft text the refill will append', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new AdmissionEnforcingRetractingDriver([]);
+    // The first rewind parks a ~25 KiB draft in the editor. Measuring the
+    // second recovery's restored text alone hides that the refill prepends it
+    // to that parked draft: the projection must measure the text the editor
+    // will actually hold, or a staged set survives that every resubmit of
+    // which the Host rejects (Astro-Han review of 5c6dac6e8).
+    const parkedDraft = 'c'.repeat(25 * 1024);
+    driver.queuedRows.push({ messageId: 'm-1', text: parkedDraft, quotes: [] });
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('\x1b[1;2D'); // Shift+Left parks the first recovery as the draft.
+    await waitFor(() => driver.retractCalls === 1);
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('cccc'));
+
+    driver.queuedRows.push({
+      messageId: 'm-2',
+      text: 'd'.repeat(30 * 1024),
+      quotes: [{ text: 'e'.repeat(23 * 1024), label: 'big' }],
+    });
+    terminal.input('\x1b[1;2D'); // The second retraction lands on the parked draft.
+    await waitFor(() => driver.retractCalls === 2);
+    // Recovered text + parked draft is already past the text limit, so no
+    // demotion can fit the aggregate: the quote stays structured for a
+    // resubmit after the user trims the draft.
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('quotes:1'));
+    assert.ok(
+      !plainTerminalOutput(terminal.output()).includes('[big] '),
+      'the projection must not hide the parked draft from the budget',
+    );
+
+    // The oversized draft fails visibly in the real admission and the staged
+    // quote rides the rejected submit intact.
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('exceeds byte limit'));
+    assert.equal(driver.submittedQuotes[0]?.length, 1);
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
   test('does not retract the switched-to queue when enqueues settle after a switch', async () => {
     const terminal = new FakeTerminal();
     const driver = new RetractingQuotesDriver([{ turnId: 'turn-1', label: 'first question' }]);

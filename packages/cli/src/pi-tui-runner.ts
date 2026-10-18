@@ -1627,8 +1627,25 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // that cannot fit one Message at all ends up entirely in the draft: the
     // failure stays visible and the excerpts editable, instead of a silent
     // staged trap.
+    // The projection measures the text the editor will actually hold, since
+    // the refill below prepends the recovered text to any current draft — a
+    // parked draft rides the resubmit's text lane too (#5265 review).
+    const parkedDraft = editor.getText();
+    const projectedDraft = (): string => {
+      if (!restoredDraft) return parkedDraft;
+      return parkedDraft ? `${restoredDraft}\n\n${parkedDraft}` : restoredDraft;
+    };
     let sizeOverflow = false;
-    while (stageable.length > 0 && !fitsSingleMessageAdmission(restoredDraft, stageable)) {
+    // Demoting moves quote bytes into the text lane, so it can only answer an
+    // encoded-content overflow: once the projected text alone is past the
+    // text limit no demotion can fit the aggregate, and demoting would only
+    // strip quotes that still ride a resubmit as structured refs once the
+    // user trims the draft text (#5265 review).
+    while (
+      stageable.length > 0 &&
+      Buffer.byteLength(projectedDraft(), 'utf8') <= TURN_MESSAGE_TEXT_MAX_BYTES &&
+      !fitsSingleMessageAdmission(projectedDraft(), stageable)
+    ) {
       sizeOverflow = true;
       const demoted = stageable[stageable.length - 1];
       stageable = stageable.slice(0, -1);
