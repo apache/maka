@@ -29,6 +29,10 @@ import {
 } from '../../renderer/features/session-settings/index.js';
 import type { DesktopSessionSummary } from '../../shared/desktop-session-projection.js';
 import { createSessionCatalogController } from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
+import {
+  useSessionSettingsSettlement,
+  type SessionSettingsSettlement,
+} from '../../renderer/application/contracts/session-settings-settlement.js';
 
 const model = { llmConnectionId: 'connection', llmConnectionSlug: 'openai', model: 'next' };
 const session = (id: string) => ({ id, revision: 1, permissionMode: 'ask', ...model } as DesktopSessionSummary);
@@ -72,7 +76,8 @@ async function mount(options: {
   let frameRenders = 0;
   const errors: unknown[] = [];
   const service = options.services ?? services();
-  function Frame() { frameRenders += 1; return null; }
+  let settlement: SessionSettingsSettlement | undefined;
+  function Frame() { frameRenders += 1; settlement = useSessionSettingsSettlement(); return null; }
   function Shell() {
     renders += 1;
     snapshot = useSessionSettingIntent(selected);
@@ -107,6 +112,7 @@ async function mount(options: {
     current: () => snapshot,
     renders: () => renders,
     frameRenders: () => frameRenders,
+    settlement: () => settlement,
     select: async (id: string | undefined) => {
       selected = id;
       owner = { sessionId: selected };
@@ -300,5 +306,43 @@ test('Plan discard remains bound to the requested Session while the user switche
   assert.equal(result, true);
   assert.deepEqual(writes, [['a', 'proposal-a']]);
   assert.equal(h.current().overlay.planMode, undefined);
+  await act(() => h.root.unmount());
+});
+
+test('#4695: the provider lets a submission wait for an in-flight Plan write', async () => {
+  const write = deferred<DesktopSessionSummary>();
+  const h = await mount({ services: services({ setCollaborationMode: () => write.promise }) });
+  const settlement = h.settlement();
+  assert.ok(settlement, 'Session Settings must publish its settlement to the subtree');
+  assert.equal(await settlement.settled('a'), true, 'nothing pending');
+
+  let planWrite!: Promise<boolean>;
+  await act(() => { planWrite = h.current().commands.setPlanMode('a', true); });
+  assert.equal(h.current().overlay.planMode, true, 'the Composer already shows Plan');
+  let settled: boolean | undefined;
+  const waiting = settlement.settled('a').then((value) => { settled = value; });
+  await act(async () => { await Promise.resolve(); });
+  assert.equal(settled, undefined, 'a send must wait while Plan is still committing');
+
+  await act(async () => {
+    write.resolve({ ...session('a'), collaborationMode: 'plan', revision: 2 });
+    await planWrite;
+    await waiting;
+  });
+  assert.equal(settled, true);
+  assert.equal(h.settlement(), settlement, 'the settlement port is stable across renders');
+  await act(() => h.root.unmount());
+});
+
+test('#4695: a failed Plan write settles false and rolls the control back', async () => {
+  const write = deferred<DesktopSessionSummary>();
+  const h = await mount({ services: services({ setCollaborationMode: () => write.promise }) });
+  await act(() => { void h.current().commands.setPlanMode('a', true); });
+  const waiting = h.settlement()!.settled('a');
+  let result = true;
+  await act(async () => { write.reject(new Error('Host unavailable')); result = await waiting; });
+  assert.equal(result, false);
+  assert.equal(h.current().overlay.planMode, undefined);
+  assert.deepEqual(h.errors, [['a', 'failed', 'failed']]);
   await act(() => h.root.unmount());
 });

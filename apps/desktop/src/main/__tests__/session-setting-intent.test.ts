@@ -162,6 +162,79 @@ test('rapid requests share the worker and settle only after the latest value com
   assert.equal(await latest, true);
 });
 
+function mountLatestIntentHarness(write: (sessionId: string, value: string) => Promise<boolean>) {
+  const { document, window } = parseHTML('<div id="root"></div>');
+  Object.assign(globalThis, {
+    document,
+    window,
+    HTMLElement: window.HTMLElement,
+    Node: window.Node,
+    IS_REACT_ACT_ENVIRONMENT: true,
+  });
+  const container = document.querySelector('#root');
+  assert.ok(container);
+  const root = createRoot(container);
+  mountedRoot = root;
+  const handle: { controller?: SessionSettingIntentController<string> } = {};
+  return {
+    handle,
+    render: () => act(async () => {
+      root.render(createElement(LatestIntentHarness, {
+        capture: (next) => {
+          handle.controller = next;
+        },
+        write,
+      }));
+    }),
+  };
+}
+
+test('#4695: settled waits for an in-flight write and reports its commit', async () => {
+  const write = deferred<boolean>();
+  const mounted = mountLatestIntentHarness(() => write.promise);
+  await mounted.render();
+  const controller = () => mounted.handle.controller!;
+
+  assert.equal(await controller().settled('session-1'), true, 'nothing pending settles at once');
+
+  await act(async () => {
+    void controller().request('setting', 'session-1', 'plan');
+  });
+  let settled: boolean | undefined;
+  const waiting = controller().settled('session-1').then((value) => {
+    settled = value;
+  });
+  // Another Session's pending write must not hold this Session's submission.
+  assert.equal(await controller().settled('session-2'), true);
+  await Promise.resolve();
+  assert.equal(settled, undefined, 'a send must not proceed while the write is in flight');
+
+  await act(async () => {
+    write.resolve(true);
+    await waiting;
+  });
+  assert.equal(settled, true);
+});
+
+test('#4695: settled reports false when the in-flight write does not commit', async () => {
+  const write = deferred<boolean>();
+  const mounted = mountLatestIntentHarness(() => write.promise);
+  await mounted.render();
+  const controller = () => mounted.handle.controller!;
+
+  await act(async () => {
+    void controller().request('setting', 'session-1', 'plan');
+  });
+  const waiting = controller().settled('session-1');
+  await act(async () => {
+    write.resolve(false);
+    await waiting;
+  });
+  assert.equal(await waiting, false);
+  // The failed intent is retired, so a later send is not blocked forever.
+  assert.equal(await controller().settled('session-1'), true);
+});
+
 function Harness({
   catalog,
   catalogValue,

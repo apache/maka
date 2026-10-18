@@ -116,6 +116,11 @@ export function createChatActions<Owner extends ComposerSurfaceOwner>(deps: {
   captureComposerImportOwner: () => Owner;
   captureSelection: () => () => boolean;
   checkTaskSubmissionReadiness: () => Promise<boolean>;
+  /**
+   * Waits for the Session's in-flight setting writes; false when one did not
+   * commit. Omitted only by tests that do not exercise mode changes.
+   */
+  awaitSessionSettings?: (sessionId: string) => Promise<boolean>;
   isNewChatSendSurfaceActive: (owner: Owner) => boolean;
   /** The shell's one answer to "is this owner still the surface the user is
    *  looking at". Both halves matter — the section AND the session id — which
@@ -176,6 +181,7 @@ export function createChatActions<Owner extends ComposerSurfaceOwner>(deps: {
     captureComposerImportOwner,
     captureSelection,
     checkTaskSubmissionReadiness,
+    awaitSessionSettings,
     isNewChatSendSurfaceActive,
     isShellSurfaceOwnerActive,
     refreshSessions,
@@ -276,6 +282,19 @@ export function createChatActions<Owner extends ComposerSurfaceOwner>(deps: {
       (!initialSessionId && !isNewChatSendSurfaceActive(sendOwner))
     ) {
       return false;
+    }
+    // #4695: the Composer shows a Plan (or model, permission, orchestration)
+    // change as soon as it is requested, but the Host only admits the turn
+    // under the committed value. Wait for the write so the turn runs in the
+    // mode the user sees; if it failed, the write path has already rolled the
+    // control back and reported why, so keep the draft instead of sending.
+    if (initialSessionId && awaitSessionSettings) {
+      if (
+        !(await awaitSessionSettings(initialSessionId)) || !selectionIsCurrent() ||
+        !isShellSurfaceOwnerActive(sendOwner)
+      ) {
+        return false;
+      }
     }
     let optimisticSessionId: string | undefined;
     const messageId = crypto.randomUUID();

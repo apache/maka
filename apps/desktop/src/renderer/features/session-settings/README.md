@@ -70,6 +70,11 @@ a new-task change does not replace the Session overlay it returns.
   Session, even if navigation changes meanwhile. The Runtime leaves Plan as
   part of abandoning; orchestration is preserved.
 - Failed writes retain the existing rollback and active-Session error behavior.
+- `settled(sessionId)` waits for the Session's in-flight writes on every
+  channel and reports whether they committed. The provider publishes it through
+  `application/contracts/session-settings-settlement.ts`, so a send into an
+  existing Session runs under the mode the Composer shows, or keeps its draft
+  when a write failed (#4695).
 
 `index.ts` exports the owner and the shell read; `testing.ts` exposes the
 controller and Plan policy to tests. `controllerOwners` enforces the production

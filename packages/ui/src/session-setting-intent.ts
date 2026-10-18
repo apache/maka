@@ -84,6 +84,13 @@ export interface SessionSettingIntentController<Values extends object> {
     value: Values[Channel],
   ): Promise<boolean>;
   clear(sessionId: string): void;
+  /**
+   * Resolves once no write for `sessionId` is in flight on any channel: true
+   * when every write that was pending committed, false when one failed, was
+   * cleared or the owner unmounted. A submission that must run under the mode
+   * the user sees awaits this instead of reading an optimistic overlay.
+   */
+  settled(sessionId: string): Promise<boolean>;
 }
 
 type AnyIntent = SettingIntent<unknown>;
@@ -308,5 +315,21 @@ export function useSessionSettingIntent<Values extends object>(
     }
   }, [setOverlay]);
 
-  return { overlayByChannel, request, clear };
+  const settled = useCallback(async (sessionId: string): Promise<boolean> => {
+    let succeeded = true;
+    // A write can start while an earlier one is awaited, so re-read until idle.
+    for (;;) {
+      if (!mountedRef.current) return false;
+      const pending: Promise<boolean>[] = [];
+      for (const intents of intentsRef.current.values()) {
+        const intent = intents.get(sessionId);
+        if (intent?.inFlight) pending.push(intent.completion);
+      }
+      if (pending.length === 0) return succeeded && mountedRef.current;
+      const results = await Promise.all(pending);
+      if (results.includes(false)) succeeded = false;
+    }
+  }, []);
+
+  return { overlayByChannel, request, clear, settled };
 }

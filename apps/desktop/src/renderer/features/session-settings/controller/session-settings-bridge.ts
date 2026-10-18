@@ -46,6 +46,8 @@ export function createSessionSettingsBridge() {
   };
   const commands: SessionSettingsCommands = {
     clear: (id) => controller?.clear(id),
+    // Without a controller no write can be in flight.
+    settled: (id) => controller?.settled(id) ?? Promise.resolve(true),
     setSessionModel: (id, model) => controller?.setSessionModel(id, model) ?? Promise.resolve(false),
     setSessionThinkingLevel: (id, level) => controller?.setSessionThinkingLevel(id, level) ?? Promise.resolve(false),
     setSessionExecutor: (id, target) => controller?.setSessionExecutor(id, target) ?? Promise.resolve(false),
