@@ -17,9 +17,9 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 |---|---:|
 | windows-backend-gap | 27 |
 | portable-candidate | 57 |
-| platform-contract | 49 |
+| platform-contract | 50 |
 
-Total Windows-excluded declarations: **133**
+Total Windows-excluded declarations: **134**
 
 ## Inventory
 
@@ -88,6 +88,7 @@ Total Windows-excluded declarations: **133**
 | platform-contract | `packages/runtime/src/__tests__/filesystem-worker-smoke.test.ts` macOS filesystem worker smoke | `process.platform !== 'darwin'` |
 | platform-contract | `packages/runtime/src/__tests__/glob-search.test.ts` both Glob paths report permission failures and recover after permissions are restored | `process.platform === 'win32' \|\| process.getuid?.() === 0` |
 | platform-contract | `packages/runtime/src/__tests__/image-file.test.ts` chat reads reject FIFOs without waiting for a writer | `process.platform === 'win32'` |
+| platform-contract | `packages/runtime/src/__tests__/macos-command-paths.test.ts` Apple signer validation | `process.platform !== 'darwin'` |
 | portable-candidate | `packages/runtime/src/__tests__/node-pty-write-lifecycle.test.ts` does not carry queued Unix PTY writes past native exit | `process.platform === 'win32' ? 'Unix PTY file-descriptor lifecycle only' : false` |
 | platform-contract | `packages/runtime/src/__tests__/owned-child-process.test.ts` POSIX cancellation delivers SIGTERM exactly once to the owned command | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |
 | platform-contract | `packages/runtime/src/__tests__/owned-child-process.test.ts` supervisor mirrors a command that dies from ${signal} | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |
