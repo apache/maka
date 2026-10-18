@@ -788,7 +788,223 @@ test('file export streams the string form and appends subagent sessions', async 
     assert.ok(file.includes(stringForm.ok ? stringForm.markdown : ''));
     assert.ok(file.includes('# Scout'));
     assert.ok(file.includes('scout the repo'));
+    // The child renders under its own title once: the renderer already emits
+    // the document head, so a second manual title would duplicate it (#6036
+    // review).
+    assert.equal((file.match(/# Scout/g) ?? []).length, 1, file);
   });
+});
+
+test('file export carries grandchildren under the subagent story', async () => {
+  await withWorkspace('transcript-export-grandchild', async (workspaceRoot) => {
+    const store = createSessionStore(workspaceRoot);
+    const parent = await store.create({
+      cwd: workspaceRoot,
+      llmConnectionSlug: CONNECTION_SLUG,
+      model: MODEL,
+      permissionMode: 'ask',
+      name: 'Main',
+    });
+    await writeMessages(workspaceRoot, parent.id, [
+      userMessage('u1', 'turn-1', 1, 'fan out'),
+      assistantMessage({ id: 'a1', turnId: 'turn-1', ts: 2, text: 'Delegated.' }),
+    ]);
+    const subagentInput = (name: string, slug: string, parentSessionId: string) =>
+      ({
+        cwd: workspaceRoot,
+        llmConnectionSlug: CONNECTION_SLUG,
+        model: MODEL,
+        permissionMode: 'ask',
+        name,
+        subagentParent: {
+          kind: 'subagent',
+          parentSessionId,
+          spawnedBy: { parentRunId: 'run-1', parentTurnId: 'turn-1', toolCallId: `tc-${slug}` },
+          lifecycle: 'foreground',
+        },
+        subagentRuntime: {
+          schemaVersion: 1,
+          definitionVersion: 1,
+          agentId: 'local-read',
+          agentName: 'Local Read',
+          profile: 'local_read',
+          systemPrompt: 'Read the assigned workspace task.',
+          toolNames: ['Read'],
+          categoryPolicy: { read: 'allow' },
+        },
+        subagentSpawn: {
+          schemaVersion: 1,
+          requestFingerprint: `${'f'.repeat(64 - String(slug.length).length)}${slug.length}`,
+          initialTurnId: `sub-turn-${slug}`,
+          initialRunId: `sub-run-${slug}`,
+        },
+      }) as Parameters<typeof store.createSubagent>[0];
+    const child = await store.createSubagent(subagentInput('Scout', 'scout', parent.id));
+    const grandchild = await store.createSubagent(
+      subagentInput('Deep Scout', 'deep-scout', child.header.id),
+    );
+    await writeMessages(workspaceRoot, child.header.id, [
+      userMessage('su1', 'sub-turn-scout', 3, 'scout the repo'),
+      assistantMessage({ id: 'sa1', turnId: 'sub-turn-scout', ts: 4, text: 'Scouted.' }),
+    ]);
+    await writeMessages(workspaceRoot, grandchild.header.id, [
+      userMessage('gu1', 'sub-turn-deep-scout', 5, 'scout the archives'),
+      assistantMessage({
+        id: 'ga1',
+        turnId: 'sub-turn-deep-scout',
+        ts: 6,
+        text: 'Archives scouted.',
+      }),
+    ]);
+    await store.close?.();
+
+    const outPath = join(workspaceRoot, 'transcript.md');
+    const result = await exportSessionTranscriptMarkdownToFile({
+      sources,
+      workspaceRoot,
+      sessionId: parent.id,
+      outPath,
+      now: () => 0,
+    });
+    assert.ok(result.ok, JSON.stringify(result));
+    // A grandchild's parent is a subagent, not the main session: a single-level
+    // filter would silently drop it from the debugging export (#6036 review).
+    assert.equal(result.subagentSessions, 2);
+    const file = await readFile(outPath, 'utf8');
+    assert.ok(file.includes('# Scout'));
+    assert.ok(file.includes('scout the repo'));
+    assert.ok(file.includes('# Deep Scout'));
+    assert.ok(file.includes('scout the archives'));
+  });
+});
+
+test('chunks reach the file while the export is still running', async () => {
+  await withWorkspace('transcript-export-streaming', async (workspaceRoot) => {
+    const sessionId = await createSession(workspaceRoot, 'Streamed');
+    await writeMessages(workspaceRoot, sessionId, [
+      userMessage('u1', 'turn-1', 1, 'stream me'),
+      assistantMessage({ id: 'a1', turnId: 'turn-1', ts: 2, text: 'Streamed.' }),
+    ]);
+    const outPath = join(workspaceRoot, 'streamed.md');
+    // `listHeaders` runs after the main session has been rendered and written;
+    // holding it open suspends the export at a point where every main-session
+    // chunk must already be on disk. A joined-string implementation writes
+    // nothing until the whole document exists, so this pins the streaming
+    // property the scale test names (#6036 review).
+    let release: () => void = () => {};
+    const listHeadersGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const realStore = sources.openSessionStore(workspaceRoot);
+    const gatedSources: SessionTranscriptExportSources = {
+      openSessionStore: () => ({
+        readHeaderSnapshot: (id) => realStore.readHeaderSnapshot(id),
+        readMessagesSnapshot: (id) => realStore.readMessagesSnapshot(id),
+        listHeaders: () => listHeadersGate.then(() => []),
+        close: async () => {
+          await realStore.close?.();
+        },
+      }),
+      openRuntimeEventLedger: sources.openRuntimeEventLedger,
+    };
+    const running = exportSessionTranscriptMarkdownToFile({
+      sources: gatedSources,
+      workspaceRoot,
+      sessionId,
+      outPath,
+      now: () => 0,
+    });
+    let sizeWhileRunning = 0;
+    for (let waited = 0; waited < 10_000; waited += 10) {
+      sizeWhileRunning = (await stat(outPath).catch(() => null))?.size ?? 0;
+      if (sizeWhileRunning > 0) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.ok(
+      sizeWhileRunning > 0,
+      'main-session chunks must reach the file before the export resolves',
+    );
+    release();
+    const result = await running;
+    assert.ok(result.ok, JSON.stringify(result));
+  });
+});
+
+test('a failure mid-stream removes the partial file so the retry is not blocked', async () => {
+  await withWorkspace('transcript-export-partial', async (workspaceRoot) => {
+    const sessionId = await createSession(workspaceRoot, 'Partial');
+    await writeMessages(workspaceRoot, sessionId, [
+      userMessage('u1', 'turn-1', 1, 'export me'),
+      assistantMessage({ id: 'a1', turnId: 'turn-1', ts: 2, text: 'Done.' }),
+    ]);
+
+    const outPath = join(workspaceRoot, 'partial.md');
+    const realStore = sources.openSessionStore(workspaceRoot);
+    const failingSources: SessionTranscriptExportSources = {
+      openSessionStore: () => ({
+        readHeaderSnapshot: (id) => realStore.readHeaderSnapshot(id),
+        readMessagesSnapshot: (id) => realStore.readMessagesSnapshot(id),
+        // `listHeaders` runs after the main session has been streamed to the
+        // file: the exact post-open failure window liugddx flagged (#6036
+        // review).
+        listHeaders: () => {
+          throw new Error('ledger exploded mid-export');
+        },
+        close: async () => {
+          await realStore.close?.();
+        },
+      }),
+      openRuntimeEventLedger: sources.openRuntimeEventLedger,
+    };
+    await assert.rejects(
+      exportSessionTranscriptMarkdownToFile({
+        sources: failingSources,
+        workspaceRoot,
+        sessionId,
+        outPath,
+        now: () => 0,
+      }),
+      /ledger exploded mid-export/,
+    );
+    // The partial file must not survive the failure: it would block every
+    // retry with `destination_exists` (#6036 review).
+    await assert.rejects(stat(outPath), { code: 'ENOENT' });
+
+    // And the retry to the same path succeeds.
+    const retry = await exportSessionTranscriptMarkdownToFile({
+      sources,
+      workspaceRoot,
+      sessionId,
+      outPath,
+      now: () => 0,
+    });
+    assert.ok(retry.ok, JSON.stringify(retry));
+    assert.ok((await readFile(outPath, 'utf8')).includes('Done.'));
+  });
+});
+
+test('the string renderer honors includeToolArguments', () => {
+  const call = toolCallMessage({
+    id: 'c1',
+    turnId: 'turn-1',
+    ts: 2,
+    toolName: 'run',
+    args: { path: '/tmp/x' },
+  });
+  const byDefault = renderSessionTranscriptMarkdown(
+    'Args',
+    [userMessage('u1', 'turn-1', 1, 'run'), call],
+    { now: () => 0 },
+  );
+  assert.ok(byDefault.includes('args:'), 'arguments stay on by default');
+  const quiet = renderSessionTranscriptMarkdown(
+    'Args',
+    [userMessage('u1', 'turn-1', 1, 'run'), call],
+    { now: () => 0, includeToolArguments: false },
+  );
+  // The option is declared on RenderSessionTranscriptMarkdownOptions; handing
+  // it in must not be silently ignored (#6036 review).
+  assert.ok(!quiet.includes('args:'), quiet);
 });
 
 test('file export memory stays bounded on a 1,000-turn session', { timeout: 180_000 }, async () => {

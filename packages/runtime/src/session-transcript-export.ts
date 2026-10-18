@@ -40,7 +40,7 @@
  * already on disk.
  */
 
-import { openSync, writeSync, closeSync } from 'node:fs';
+import { closeSync, openSync, unlinkSync, writeSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
 import type { SessionHeader, StoredMessage } from '@maka/core/session';
@@ -197,6 +197,9 @@ export async function exportSessionTranscriptMarkdownToFile(
   // Declared at function scope so the finally can close it no matter where the
   // export stops.
   let handle: number | undefined;
+  // Flipped once the last chunk has been written: a failure before that leaves
+  // a partial file behind, and the finally removes it (#6036 review).
+  let exportCompleted = false;
   try {
     let sessionName: string;
     try {
@@ -214,8 +217,10 @@ export async function exportSessionTranscriptMarkdownToFile(
     // Exclusive creation, aligned with the bundle exporter: an existing path
     // is never overwritten, and opening at write time closes the stat/open
     // window the friendly precheck cannot (#6036 review). Every failure that
-    // can be known before writing happens above — a failed export never
-    // leaves an empty file behind.
+    // can be known before writing happens above; any failure after this open
+    // (a throw from `listHeaders`, ENOSPC mid-write) removes the partial file
+    // in the finally below, so a retry is never blocked by
+    // `destination_exists`.
     try {
       handle = openSync(input.outPath, 'wx');
     } catch (error) {
@@ -258,34 +263,52 @@ export async function exportSessionTranscriptMarkdownToFile(
     });
 
     let subagentSessions = 0;
-    for (const header of await store.listHeaders()) {
-      if (header.subagentParent?.parentSessionId !== input.sessionId) continue;
-      subagentSessions += 1;
-      emit(`\n\n# ${header.name}\n\n`);
-      try {
-        const childMessages = await readSessionMessages(
-          input.sources,
-          input.workspaceRoot,
-          header.id,
-          () => store.readMessagesSnapshot(header.id),
-        );
-        renderConversationMarkdown(header.name, childMessages, {
-          copy: {
-            you: 'You',
-            assistant: 'Maka',
-            toolCalls: 'Tool calls',
-            thinking: 'Thinking',
-            intentSeparator: ' — ',
-          },
-          ...renderOptions,
-        });
-      } catch {
-        // A child that no longer projects (deleted mid-export, unreadable
-        // ledger) must not lose the rest of the document.
-        emit(`[subagent session ${header.id} could not be rendered]\n\n`);
+    const headers = await store.listHeaders();
+    // The export carries the whole story: every descendant of the main
+    // session, not only its direct children — a grandchild's parent is itself
+    // a subagent, so a single-level filter silently drops it (#6036 review).
+    // Breadth-first keeps shallower sessions ahead of deeper ones, each level
+    // in stored order.
+    const exportedIds = new Set<string>([input.sessionId]);
+    let frontier = [input.sessionId];
+    while (frontier.length > 0) {
+      const nextFrontier: string[] = [];
+      for (const header of headers) {
+        const parentId = header.subagentParent?.parentSessionId;
+        if (parentId === undefined || exportedIds.has(header.id) || !exportedIds.has(parentId)) {
+          continue;
+        }
+        exportedIds.add(header.id);
+        nextFrontier.push(header.id);
+        subagentSessions += 1;
+        try {
+          const childMessages = await readSessionMessages(
+            input.sources,
+            input.workspaceRoot,
+            header.id,
+            () => store.readMessagesSnapshot(header.id),
+          );
+          // The renderer emits the child document's own head, title included.
+          renderConversationMarkdown(header.name, childMessages, {
+            copy: {
+              you: 'You',
+              assistant: 'Maka',
+              toolCalls: 'Tool calls',
+              thinking: 'Thinking',
+              intentSeparator: ' — ',
+            },
+            ...renderOptions,
+          });
+        } catch {
+          // A child that no longer projects (deleted mid-export, unreadable
+          // ledger) must not lose the rest of the document.
+          emit(`[subagent session ${header.id} could not be rendered]\n\n`);
+        }
       }
+      frontier = nextFrontier;
     }
 
+    exportCompleted = true;
     return {
       ok: true,
       outPath: input.outPath,
@@ -296,6 +319,18 @@ export async function exportSessionTranscriptMarkdownToFile(
   } finally {
     if (handle !== undefined) closeSync(handle);
     await store.close?.();
+    // A failure after exclusive creation leaves a partial file that would
+    // block the retry with `destination_exists` (#6036 review). Close before
+    // unlinking — an open handle blocks removal on Windows — and keep the
+    // unlink best-effort: the original failure is the one worth reporting.
+    if (!exportCompleted && handle !== undefined) {
+      try {
+        unlinkSync(input.outPath);
+      } catch {
+        // The export's own error carries the diagnosis; a stale partial file
+        // is reported by the next export's `destination_exists` instead.
+      }
+    }
   }
 }
 
@@ -350,7 +385,7 @@ export function renderSessionTranscriptMarkdown(
     },
     includeThinking: options.includeThinking,
     includeToolResults: true,
-    includeToolArguments: true,
+    includeToolArguments: options.includeToolArguments ?? true,
     now: options.now,
   });
 }
