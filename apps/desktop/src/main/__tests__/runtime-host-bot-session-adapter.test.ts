@@ -22,6 +22,8 @@ import test from 'node:test';
 import { RuntimeHostOperationError } from '@maka/runtime-host/client';
 import {
   SESSION_CONTINUITY_SCHEMA_VERSION,
+  type InteractionPendingSnapshot,
+  type InteractionRequest,
   type SessionCatalogProjection,
   type SessionContinuitySnapshot,
   type SubscriptionFrame,
@@ -358,7 +360,74 @@ test('projects Host interaction and failure outcomes into the Bot reply contract
   assert.deepEqual(failed, { kind: 'errored', reason: 'model_unavailable' });
 });
 
-async function runProjectedTurn(rootTurn: TurnSnapshot) {
+test('carries pending approval details and answers only one-time decisions', async () => {
+  const request: InteractionRequest = {
+    kind: 'sandbox_boundary',
+    expansion: { network: { enabled: true } },
+    justification: 'Fetch a dependency needed by the task',
+  };
+  const pending: InteractionPendingSnapshot = {
+    schemaVersion: 1,
+    interactionId: 'interaction-1',
+    sessionId: 'bot-session-1',
+    turnId: 'turn-1',
+    runId: 'run-1',
+    revision: 1,
+    request,
+    status: 'pending',
+    outcome: null,
+  };
+  const suspended = await runProjectedTurn({
+    ...runningTurn('bot-session-1', 'turn-1'),
+    status: 'waiting_for_user',
+  }, [pending]);
+  assert.deepEqual(suspended, {
+    kind: 'suspended',
+    pendingApprovals: [{ interactionId: 'interaction-1', turnId: 'turn-1', request }],
+  });
+
+  let answerInput: unknown;
+  const events = new AsyncFrameQueue();
+  events.push(deltaFrame(1, 'bot-session-1', 'turn-1', 0, 'continued'));
+  events.push(projectionFrame(2, {
+    ...runningTurn('bot-session-1', 'turn-1'),
+    status: 'completed',
+    terminalEventId: 'terminal-1',
+  }));
+  const adapter = createRuntimeHostBotSessionAdapter({
+    client: botClient({
+      openSession: async () => runtimeHostSessionFixture({
+        snapshot: continuitySnapshot(runningTurn('bot-session-1', 'turn-1')),
+        events,
+        async close() { events.end(); },
+      }),
+      answerInteraction: async (input) => {
+        answerInput = input;
+        return {} as never;
+      },
+    }),
+    resolveCreateTarget: hostPathCreateTarget,
+    emitSessionsChanged() {},
+  });
+  const continuation = await adapter.respondToApproval?.({
+    sessionId: 'bot-session-1',
+    interactionId: 'interaction-1',
+    turnId: 'turn-1',
+    request,
+    decision: 'allow',
+  });
+  assert.deepEqual(answerInput, {
+    sessionId: 'bot-session-1',
+    interactionId: 'interaction-1',
+    answer: { kind: 'sandbox_boundary', decision: 'allow' },
+  });
+  assert.deepEqual(continuation, { kind: 'completed', text: 'continued' });
+});
+
+async function runProjectedTurn(
+  rootTurn: TurnSnapshot,
+  pending: readonly InteractionPendingSnapshot[] = [],
+) {
   const events = new AsyncFrameQueue();
   const adapter = createRuntimeHostBotSessionAdapter({
     client: botClient({
@@ -370,7 +439,7 @@ async function runProjectedTurn(rootTurn: TurnSnapshot) {
         },
       }),
       startTurn: async () => {
-        events.push(projectionFrame(1, rootTurn));
+        events.push(projectionFrame(1, rootTurn, pending));
         return startedTurn(runningTurn(rootTurn.sessionId, rootTurn.turnId));
       },
     }),
@@ -393,6 +462,7 @@ function botClient(overrides: Partial<BotClient>): BotClient {
     getSession: unexpected,
     openSession: unexpected,
     startTurn: unexpected,
+    answerInteraction: unexpected,
     updateSessionConfiguration: unexpected,
     ...overrides,
   };
@@ -446,7 +516,10 @@ function startedTurn(turn: TurnSnapshot) {
   };
 }
 
-function continuitySnapshot(rootTurn: TurnSnapshot | null): SessionContinuitySnapshot {
+function continuitySnapshot(
+  rootTurn: TurnSnapshot | null,
+  pending: readonly InteractionPendingSnapshot[] = [],
+): SessionContinuitySnapshot {
   return {
     schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
     session: {
@@ -460,17 +533,21 @@ function continuitySnapshot(rootTurn: TurnSnapshot | null): SessionContinuitySna
     rootTurn,
     goal: null,
     queue: { hostEpoch: 'host-1', queueRevision: 0, steering: [], followup: [] },
-    interactions: { pending: [] },
+    interactions: { pending },
   };
 }
 
-function projectionFrame(sequence: number, rootTurn: TurnSnapshot): SubscriptionFrame {
+function projectionFrame(
+  sequence: number,
+  rootTurn: TurnSnapshot,
+  pending: readonly InteractionPendingSnapshot[] = [],
+): SubscriptionFrame {
   return {
     kind: 'subscription.session_projection',
     hostEpoch: 'host-1',
     subscriptionId: 'subscription-1',
     sequence,
-    snapshot: continuitySnapshot(rootTurn),
+    snapshot: continuitySnapshot(rootTurn, pending),
   };
 }
 
