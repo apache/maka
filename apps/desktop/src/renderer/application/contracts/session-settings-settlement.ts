@@ -28,6 +28,18 @@ import { createContext, useContext } from 'react';
 export interface SessionSettingsSettlement {
   /** True when every pending write committed (or none was pending). */
   settled(sessionId: string): Promise<boolean>;
+  /**
+   * Starts observing one submission attempt at the user's submit, so writes
+   * that fail while it prepares (reference loading, revision copy) still
+   * stop it. The caller must `release()` it when the attempt ends.
+   */
+  beginSettlement(sessionId: string): SessionSendSettlement;
+}
+
+/** One submission attempt's view of its Session's setting writes. */
+export interface SessionSendSettlement {
+  settled(): Promise<boolean>;
+  release(): void;
 }
 
 const SessionSettingsSettlementContext = createContext<SessionSettingsSettlement | undefined>(undefined);

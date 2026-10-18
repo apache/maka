@@ -235,6 +235,100 @@ test('#4695: settled reports false when the in-flight write does not commit', as
   assert.equal(await controller().settled('session-1'), true);
 });
 
+type TwoChannelController = ReturnType<typeof useSessionSettingIntent<{ plan: string; orchestration: string }>>;
+
+function mountTwoChannels() {
+  const { document, window } = parseHTML('<div id="root"></div>');
+  Object.assign(globalThis, {
+    document,
+    window,
+    HTMLElement: window.HTMLElement,
+    Node: window.Node,
+    IS_REACT_ACT_ENVIRONMENT: true,
+  });
+  const container = document.querySelector('#root');
+  assert.ok(container);
+  const root = createRoot(container);
+  mountedRoot = root;
+  const writes = { plan: [] as Array<ReturnType<typeof deferred<boolean>>>, orchestration: [] as Array<ReturnType<typeof deferred<boolean>>> };
+  const handle: { controller?: TwoChannelController } = {};
+  function TwoChannelHarness() {
+    const writer = (channel: 'plan' | 'orchestration') => () => {
+      const result = deferred<boolean>();
+      writes[channel].push(result);
+      return result.promise;
+    };
+    handle.controller = useSessionSettingIntent<{ plan: string; orchestration: string }>({
+      catalog: { revision: () => 0, subscribeChanged: () => () => {} },
+      refreshCatalog: async () => {},
+      channels: {
+        plan: { write: writer('plan'), onWriteError: () => {} },
+        orchestration: { write: writer('orchestration'), onWriteError: () => {} },
+      },
+    });
+    return null;
+  }
+  return {
+    root,
+    writes,
+    controller: () => handle.controller!,
+    render: () => act(async () => { root.render(createElement(TwoChannelHarness)); }),
+  };
+}
+
+test('#4695 review: a write that starts and fails while a send waits still stops it', async () => {
+  const h = mountTwoChannels();
+  await h.render();
+  await act(async () => { void h.controller().request('orchestration', 'session-1', 'swarm'); });
+  const waiting = h.controller().settled('session-1');
+  // Plan is requested while the send waits on orchestration, and fails first.
+  await act(async () => { void h.controller().request('plan', 'session-1', 'plan'); });
+  await act(async () => { h.writes.plan[0]!.resolve(false); await Promise.resolve(); });
+  await act(async () => { h.writes.orchestration[0]!.resolve(true); });
+  assert.equal(await waiting, false);
+});
+
+test('#4695 review: a settlement begun at submit sees a failure that lands before it is awaited', async () => {
+  const h = mountTwoChannels();
+  await h.render();
+  await act(async () => { void h.controller().request('plan', 'session-1', 'plan'); });
+  const settlement = h.controller().beginSettlement('session-1');
+  // The Composer is still loading a Session reference when Plan fails.
+  await act(async () => { h.writes.plan[0]!.resolve(false); await Promise.resolve(); });
+  assert.equal(await settlement.settled(), false);
+  settlement.release();
+  // The attempt is over: a later explicit retry is not blocked by it.
+  assert.equal(await h.controller().settled('session-1'), true);
+});
+
+test('#4695 review: a released settlement ignores later writes', async () => {
+  const h = mountTwoChannels();
+  await h.render();
+  const settlement = h.controller().beginSettlement('session-1');
+  settlement.release();
+  await act(async () => { void h.controller().request('plan', 'session-1', 'plan'); });
+  await act(async () => { h.writes.plan[0]!.resolve(false); await Promise.resolve(); });
+  assert.equal(await settlement.settled(), true);
+});
+
+for (const ending of ['rejected', 'cleared', 'unmounted'] as const) {
+  test(`#4695 review: settled resolves false, without hanging, when the write is ${ending} mid-wait`, async () => {
+    const h = mountTwoChannels();
+    await h.render();
+    await act(async () => { void h.controller().request('plan', 'session-1', 'plan'); });
+    const controller = h.controller();
+    const waiting = controller.settled('session-1');
+    await act(async () => {
+      if (ending === 'rejected') h.writes.plan[0]!.resolve(false);
+      if (ending === 'cleared') controller.clear('session-1');
+      if (ending === 'unmounted') h.root.unmount();
+    });
+    assert.equal(await waiting, false);
+    if (ending === 'unmounted') mountedRoot = undefined;
+    else assert.equal(await h.controller().settled('session-1'), true);
+  });
+}
+
 function Harness({
   catalog,
   catalogValue,

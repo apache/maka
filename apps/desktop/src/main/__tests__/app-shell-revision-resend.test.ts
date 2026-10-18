@@ -477,3 +477,38 @@ test('submit releases attachment ownership when sending throws', async () => {
     world.restoreWindow();
   }
 });
+
+// #4695 review: an edit-and-resend copies the source Session's settings, so
+// the Plan write the user saw at submit must settle before that copy.
+for (const outcome of [true, false]) {
+  test(`#4695: a revision waits for the submit's setting writes before copying (${outcome ? 'committed' : 'failed'})`, async () => {
+    const world = await mountRevisionWorld();
+    try {
+      const events: string[] = [];
+      let settle!: (ok: boolean) => void;
+      const settlement = { settled: () => new Promise<boolean>((resolve) => { settle = resolve; }) };
+      const onSend = createRevisionAwareOnSend({
+        ...world.ports,
+        revisionDraftRef: { current: { draftSessionId: SESSION_1, sourceSessionId: SESSION_1 } as never },
+        activeIdRef: { current: SESSION_1 },
+        prepareRevisionSend: async () => { events.push('copy'); return true; },
+        setNewTaskSendPending: () => {},
+        send: async () => { events.push('send'); return true; },
+      });
+      const sent = onSend('edited message', undefined, undefined, settlement);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      assert.deepEqual(events, [], 'nothing may copy or send while the Plan write is pending');
+      settle(outcome);
+      const result = await sent;
+      if (outcome) {
+        assert.notEqual(result, false);
+        assert.deepEqual(events, ['copy', 'send']);
+      } else {
+        assert.equal(result, false, 'a failed setting write keeps the draft');
+        assert.deepEqual(events, [], 'no copy is made from a failed Plan attempt');
+      }
+    } finally {
+      world.restoreWindow();
+    }
+  });
+}

@@ -46,6 +46,11 @@ import { renderTranscriptMarkup } from './transcript-test-dom.js';
 import { createSessionCatalogController, SessionCatalogContext } from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
 import type { DesktopSessionSummary } from '../../shared/desktop-session-projection.js';
 import type { DesktopLocalMessageDraft } from '../../shared/session-local-contract.js';
+import {
+  SessionSettingsSettlementProvider,
+  type SessionSendSettlement,
+  type SessionSettingsSettlement,
+} from '../../renderer/application/contracts/session-settings-settlement.js';
 
 const saved = Object.fromEntries([
   'window', 'document', 'Element', 'HTMLBRElement', 'sessionStorage', 'HTMLElement', 'HTMLIFrameElement', 'Event', 'Node', 'CSS',
@@ -80,8 +85,14 @@ const recoverySession = (id: string): DesktopSessionSummary => ({
 });
 
 async function mount(options: {
-  onSend?: (text: string, metadata?: ComposerSendMetadata, staging?: ComposerStagingSubmission) => Promise<boolean | void>;
+  onSend?: (
+    text: string,
+    metadata?: ComposerSendMetadata,
+    staging?: ComposerStagingSubmission,
+    settlement?: SessionSendSettlement,
+  ) => Promise<boolean | void>;
   waitForSessionReference?: () => Promise<boolean>;
+  sessionSettings?: SessionSettingsSettlement;
   releaseRecoveryAttachments?: (ids: readonly string[]) => Promise<void>;
 } = {}) {
   const { window, document } = parseHTML('<html><body><div id="root"></div></body></html>');
@@ -158,9 +169,12 @@ async function mount(options: {
       children: createElement(LocaleProvider, { locale: 'en', children:
         createElement(ComposerStagingFixture, { commands, draftKey, directoryHostId: hostId, conversationServices, children:
           createElement(PlanServicesProvider, { services: planServices, children:
-            createElement(PlanProvider, { session: undefined, children: createElement(Fragment, null,
-              createElement(StagingProbe), createElement(Frame, { draftKey, visible }),
-            ) }),
+            createElement(PlanProvider, { session: undefined, children: createElement(SessionSettingsSettlementProvider, {
+              value: options.sessionSettings,
+              children: createElement(Fragment, null,
+                createElement(StagingProbe), createElement(Frame, { draftKey, visible }),
+              ),
+            }) }),
           }),
         }),
       }),
@@ -867,4 +881,40 @@ test('Desktop backs the attachment port with the bridge reader; AppShell no long
   assert.equal(createDesktopComposerStagingServices(bridge).readBytes, readBytes);
   const shell = readFileSync(fileURLToPath(new URL('../../../src/renderer/app-shell.tsx', import.meta.url)), 'utf8');
   assert.deepEqual(shell.split('\n').filter((line) => /\battachments\s*\.\s*readBytes\b|\bonReadAttachmentBytes\b/.test(line)), []);
+});
+
+test('#4695 review: StagedComposer begins the setting settlement at submit, before Session references load', async () => {
+  const events: string[] = [];
+  let finishReference!: (ready: boolean) => void;
+  const reference = new Promise<boolean>((resolve) => { finishReference = resolve; });
+  const begun: SessionSendSettlement[] = [];
+  const received: Array<SessionSendSettlement | undefined> = [];
+  const view = await mount({
+    waitForSessionReference: () => { events.push('wait-reference'); return reference; },
+    sessionSettings: {
+      settled: async () => true,
+      beginSettlement: (sessionId) => {
+        events.push(`begin:${sessionId}`);
+        const settlement = { settled: async () => false, release: () => { events.push('release'); } };
+        begun.push(settlement);
+        return settlement;
+      },
+    },
+    onSend: async (_text, _metadata, _staging, settlement) => {
+      events.push('send');
+      received.push(settlement);
+      return false;
+    },
+  });
+  await act(() => { view.composer.current!.appendDraft('draft-a', 'start by submitting a plan', []); });
+  await act(() => {
+    const form = view.container.querySelector('form');
+    assert.ok(form);
+    form.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+  });
+  // A Plan write that fails while the reference loads lands inside this attempt.
+  assert.deepEqual(events, ['begin:draft-a', 'wait-reference']);
+  await act(async () => { finishReference(true); await Promise.resolve(); });
+  assert.deepEqual(events, ['begin:draft-a', 'wait-reference', 'send', 'release']);
+  assert.equal(received[0], begun[0], 'the submit\'s own settlement reaches onSend');
 });

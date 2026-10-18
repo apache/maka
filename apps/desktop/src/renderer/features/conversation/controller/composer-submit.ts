@@ -79,6 +79,11 @@ export interface RevisionSendShellCopy {
  * tests must call it rather than re-implementing its ordering.
  */
 export interface RevisionSendPorts<TDraft extends RevisionDraftIdentity> {
+  /**
+   * #4695: the Session's setting writes observed since the user's submit.
+   * Settled before a revision copies the Session or the send starts.
+   */
+  sendSettlement?: { settled(): Promise<boolean> };
   shellCopy: RevisionSendShellCopy;
   toastApi: {
     info(title: string, description?: string): void;
@@ -172,14 +177,23 @@ export function createStagedFollowUp(ports: {
  */
 export function createRevisionAwareOnSend<TDraft extends RevisionDraftIdentity>(
   ports: RevisionAwareOnSendPorts<TDraft>,
-): (text: string, metadata?: ComposerSendMetadata, captured?: ComposerStagingSubmission) => Promise<boolean | void> {
-  return (text, metadata, captured) => {
+): (
+  text: string,
+  metadata?: ComposerSendMetadata,
+  captured?: ComposerStagingSubmission,
+  settlement?: { settled(): Promise<boolean> },
+) => Promise<boolean | void> {
+  return (text, metadata, captured, settlement) => {
     const staging = captured ?? ports.captureStaging();
     return composerSend({
       pending: staging.submittableAttachments,
       retainAttachments: staging.retainAttachments,
       setPending: ports.setNewTaskSendPending,
-      send: (value, context) => revisionAwareSend({ ...ports, captureStaging: () => staging }, value, context),
+      send: (value, context) => revisionAwareSend({
+        ...ports,
+        captureStaging: () => staging,
+        ...(settlement ? { sendSettlement: settlement } : {}),
+      }, value, context),
     })(text, metadata);
   };
 }
@@ -219,6 +233,13 @@ export async function revisionAwareSend<TDraft extends RevisionDraftIdentity>(
     }, staging);
     if (queued) delete ports.retractedWorkspaceReferencesRef.current[sessionId];
     return queued;
+  }
+  // #4695: settle before a revision copies the source Session's settings and
+  // before the send reads them; a failed write keeps the draft.
+  if (ports.sendSettlement) {
+    if (!(await ports.sendSettlement.settled()) || ports.activeIdRef.current !== sessionId) {
+      return false;
+    }
   }
   if (revisionSend && revision) {
     const actionCopy = ports.revisionUnavailableCopy;
