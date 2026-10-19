@@ -1021,7 +1021,7 @@ export class MemoryController {
     this.ticking = (async () => {
       this.flushNotifications();
       const schedule = this.schedule();
-      if (this.runs.size || Date.now() < (schedule.retryAt ?? 0)) return;
+      if (this.runs.size) return;
       if (!schedule.remainingIds?.length) {
         if (Date.now() < schedule.nextCheckAt) return;
         schedule.remainingIds = this.store
@@ -1032,6 +1032,7 @@ export class MemoryController {
           )
           .map((index) => index.id);
         schedule.ranges = {};
+        schedule.retryAt = null;
         schedule.nextCheckAt = Date.now() + schedule.intervalMs;
         this.saveSchedule(schedule);
       }
@@ -1062,7 +1063,7 @@ export class MemoryController {
               lastError: String(error),
               ...this.retryState(id),
             });
-          this.saveSchedule({ ...schedule, retryAt: Date.now() + (this.config.retryMs ?? 60000) });
+          this.finishScheduledMembers(selected);
           this.reportRun(selected, randomUUID());
           return;
         }
@@ -1077,6 +1078,18 @@ export class MemoryController {
       this.ticking = undefined;
     });
     return this.ticking;
+  }
+  private finishScheduledMembers(ids: string[]) {
+    const schedule = this.schedule();
+    const attempted = new Set(ids);
+    // Failure ends this attempt, not the shared clock. Retain each index's work
+    // and checkpoint for the next round, without holding healthy indexes back.
+    this.saveSchedule({
+      ...schedule,
+      remainingIds: (schedule.remainingIds ?? []).filter((id: string) => !attempted.has(id)),
+      retryAt: null,
+    });
+    for (const id of ids) this.store.saveWorker(id, { ...this.store.worker(id), retryAt: null });
   }
   launch(indexId: string, scheduled = false, scheduledMembers?: string[], sessionId?: string) {
     this.assertOwner();
@@ -1133,32 +1146,7 @@ export class MemoryController {
               startStatus: 'stopped',
             });
         }
-        if (scheduled) {
-          const schedule = this.schedule();
-          const unfinished = selected.filter(
-            (id) =>
-              this.enabled(id) &&
-              (this.store.work(id)?.id !== schedule.ranges?.[id] ||
-                !this.store.work(id)?.completed),
-          );
-          this.saveSchedule({
-            ...schedule,
-            remainingIds: (schedule.remainingIds ?? []).filter(
-              (id: string) => !selected.includes(id) || unfinished.includes(id),
-            ),
-            retryAt: unfinished.length
-              ? Date.now() +
-                Math.min(
-                  ...unfinished.map((id) =>
-                    Math.max(
-                      1,
-                      (this.store.worker(id)?.retryAt ?? Date.now() + 60000) - Date.now(),
-                    ),
-                  ),
-                )
-              : null,
-          });
-        }
+        if (scheduled) this.finishScheduledMembers(selected);
         this.reportRun(selected, runId, cancellation.signal.aborted);
       });
     for (const id of selected) {
@@ -1218,6 +1206,7 @@ export class MemoryController {
       return w && !w.completed;
     });
     const pending: { id: string; work: any; visible: string[] }[] = [];
+    const failed = new Set<string>();
     let agent: any;
     try {
       const needsRange = ids.filter((id) => {
@@ -1235,33 +1224,44 @@ export class MemoryController {
           (scheduled ? this.schedule().ranges?.[id] === this.store.work(id)?.id : resuming)
         )
           continue;
-        const existing = this.store.work(id);
-        const result = observations.has(id) ? observed[observations.get(id)!] : undefined;
-        if (result?.status === 'rejected') throw result.reason;
-        if (result && this.store.worker(id)?.lastCheckError)
-          throw Error(this.store.worker(id).lastCheckError);
-        const cursor = this.store.cursor(
-          existing && !existing.completed ? existing.to : this.store.worker(id).latestCursor,
-        );
-        const visible = await this.indexVisible(id);
-        const work = this.store.work(id);
-        pending.push({
-          id,
-          work: work && !work.completed ? work : this.store.begin(id, cursor.id, visible),
-          visible,
-        });
-        if (scheduled) {
-          const schedule = this.schedule();
-          this.saveSchedule({
-            ...schedule,
-            ranges: { ...schedule.ranges, [id]: pending.at(-1)!.work.id },
+        try {
+          const existing = this.store.work(id);
+          const result = observations.has(id) ? observed[observations.get(id)!] : undefined;
+          if (result?.status === 'rejected') throw result.reason;
+          if (result && this.store.worker(id)?.lastCheckError)
+            throw Error(this.store.worker(id).lastCheckError);
+          const cursor = this.store.cursor(
+            existing && !existing.completed ? existing.to : this.store.worker(id).latestCursor,
+          );
+          const visible = await this.indexVisible(id);
+          const work = this.store.work(id);
+          pending.push({
+            id,
+            work: work && !work.completed ? work : this.store.begin(id, cursor.id, visible),
+            visible,
+          });
+          if (scheduled) {
+            const schedule = this.schedule();
+            this.saveSchedule({
+              ...schedule,
+              ranges: { ...schedule.ranges, [id]: pending.at(-1)!.work.id },
+            });
+          }
+          this.store.saveWorker(id, {
+            ...this.store.worker(id),
+            lastAttempt: Date.now(),
+            lastError: null,
+          });
+        } catch (error) {
+          if (signal.aborted) throw error;
+          failed.add(id);
+          this.store.saveWorker(id, {
+            ...this.store.worker(id),
+            lastAttempt: Date.now(),
+            lastError: String(error),
+            ...this.retryState(id),
           });
         }
-        this.store.saveWorker(id, {
-          ...this.store.worker(id),
-          lastAttempt: Date.now(),
-          lastError: null,
-        });
       }
       if (pending.length) {
         agent = await this.ctx.agents.resume({
@@ -1304,7 +1304,7 @@ export class MemoryController {
             throw Error('Group stopped without checkpoint; retry retained work');
         }
       }
-      for (const id of ids)
+      for (const id of ids.filter((id) => !failed.has(id)))
         this.store.saveWorker(id, {
           ...this.store.worker(id),
           lastSuccess: pending.some((x) => x.id === id)
@@ -1317,6 +1317,7 @@ export class MemoryController {
     } catch (error) {
       if (signal.aborted) await agent?.cancel().catch(() => {});
       for (const id of ids) {
+        if (failed.has(id)) continue;
         const work = this.store.work(id);
         const completed =
           work?.completed && pending.some((x) => x.id === id && x.work.id === work.id);
@@ -1329,7 +1330,15 @@ export class MemoryController {
       }
     }
     const members = await Promise.all(
-      ids.map(async (id) => this.summary(id, await this.indexVisible(id), false)),
+      ids.map(async (id) => {
+        try {
+          return this.summary(id, await this.indexVisible(id), false);
+        } catch (error) {
+          // A member's access failure must not overwrite the other members' results.
+          this.store.saveWorker(id, { ...this.store.worker(id), lastError: String(error) });
+          return { indexId: id, status: 'failed', error: String(error) };
+        }
+      }),
     );
     return scheduled && ids.length === 1
       ? { ...members[0], backgroundFinished: true }
