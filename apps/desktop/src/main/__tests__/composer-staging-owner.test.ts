@@ -242,6 +242,7 @@ test('StagedComposer keeps the submitted recovery attachment while waiting for S
   });
   const submissions: Array<{ sources: unknown[]; replaces?: string }> = [];
   onSend = createRevisionAwareOnSend({
+    captureSubmitSurface: () => () => true,
     shellCopy: {
       sideChatUnavailableTitle: '', sideChatUnavailableDescription: '',
       sideChatContextPendingTitle: '', sideChatContextPendingDescription: '',
@@ -663,6 +664,7 @@ for (const accepted of [true, false]) {
     const sendResult = new Promise<boolean>((done) => { resolve = done; });
     let sentQuotes: readonly { text: string; comment?: string }[] | undefined;
     const ports: RevisionSendPorts<{ sourceSessionId: string; draftSessionId: string }> = {
+      captureSubmitSurface: () => () => true,
       shellCopy: {
         sideChatUnavailableTitle: '', sideChatUnavailableDescription: '',
         sideChatContextPendingTitle: '', sideChatContextPendingDescription: '',

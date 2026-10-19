@@ -93,9 +93,10 @@ export interface RevisionSendPorts<TDraft extends RevisionDraftIdentity> {
   /**
    * Captures the surface and selection this submit came from; the returned
    * check says whether the user is still on it. Navigation keeps the Session
-   * id, so the id alone cannot answer that (#1433).
+   * id, so the id alone cannot answer that (#1433). Required so the
+   * production wiring cannot be dropped silently.
    */
-  captureSubmitSurface?: () => () => boolean;
+  captureSubmitSurface: () => () => boolean;
   shellCopy: RevisionSendShellCopy;
   toastApi: {
     info(title: string, description?: string): void;
@@ -251,11 +252,11 @@ export async function revisionAwareSend<TDraft extends RevisionDraftIdentity>(
   // that starts a turn runs under those settings, so local commands skip it.
   const settlement = startsTurn(slashCommand) ? ports.sendSettlement : undefined;
   if (settlement) {
-    const surfaceIsCurrent = ports.captureSubmitSurface?.();
+    const surfaceIsCurrent = ports.captureSubmitSurface();
     if (
       !(await settlement.settled()) ||
       ports.activeIdRef.current !== sessionId ||
-      (surfaceIsCurrent && !surfaceIsCurrent())
+      !surfaceIsCurrent()
     ) {
       return false;
     }

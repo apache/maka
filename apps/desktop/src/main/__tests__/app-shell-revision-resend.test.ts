@@ -239,6 +239,7 @@ async function mountRevisionWorld(): Promise<RevisionWorld> {
   let pendingSend: Promise<boolean | void> | undefined;
   const sendPendingFlags: boolean[] = [];
   const ports: RevisionSendPorts<TurnRevisionDraft> = {
+    captureSubmitSurface: () => () => true,
     shellCopy: {
       sideChatUnavailableTitle: '',
       sideChatUnavailableDescription: '',
