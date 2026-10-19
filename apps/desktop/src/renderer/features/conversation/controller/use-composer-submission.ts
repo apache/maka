@@ -169,6 +169,15 @@ export function useComposerSubmission<Owner extends ComposerSurfaceOwner>(input:
     captureStaging: staging.captureSubmission,
     prepareRevisionSend: revision.prepareRevisionSend,
     send: chat.send,
+    // The same owner and selection checks `chat.send` applies, captured before
+    // the submit waits on setting writes.
+    captureSubmitSurface: () => {
+      const owner = shell.captureOwner();
+      const selectionIsCurrent = commands.captureSelection();
+      const hadSession = Boolean(activeIdRef.current);
+      return () => selectionIsCurrent() &&
+        (hadSession ? shell.isOwnerActive(owner) : shell.isNewChatOwnerActive(owner));
+    },
     completeRevisionCopyAttempt: completeTurnRevisionCopyAttempt,
     parseSlashCommand: parseDesktopSlashCommand,
     mergeWorkspaceReferences,

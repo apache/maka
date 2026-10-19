@@ -311,6 +311,29 @@ test('#4695 review: a released settlement ignores later writes', async () => {
   assert.equal(await settlement.settled(), true);
 });
 
+test('#4695 review: a write that throws settles false and does not block a retry', async () => {
+  const { document, window } = parseHTML('<div id="root"></div>');
+  Object.assign(globalThis, { document, window, HTMLElement: window.HTMLElement, Node: window.Node, IS_REACT_ACT_ENVIRONMENT: true });
+  const container = document.querySelector('#root');
+  assert.ok(container);
+  const root = createRoot(container);
+  mountedRoot = root;
+  let fail!: (error: Error) => void;
+  const write = new Promise<boolean>((_resolve, reject) => { fail = reject; });
+  const mounted = { controller: undefined as SessionSettingIntentController<string> | undefined };
+  await act(async () => {
+    root.render(createElement(LatestIntentHarness, {
+      capture: (next) => { mounted.controller = next; },
+      write: () => write,
+    }));
+  });
+  await act(async () => { void mounted.controller!.request('setting', 'session-1', 'plan'); });
+  const waiting = mounted.controller!.settled('session-1');
+  await act(async () => { fail(new Error('Host unavailable')); await waiting.catch(() => {}); });
+  assert.equal(await waiting, false);
+  assert.equal(await mounted.controller!.settled('session-1'), true);
+});
+
 for (const ending of ['rejected', 'cleared', 'unmounted'] as const) {
   test(`#4695 review: settled resolves false, without hanging, when the write is ${ending} mid-wait`, async () => {
     const h = mountTwoChannels();

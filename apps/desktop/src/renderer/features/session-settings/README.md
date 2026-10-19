@@ -73,9 +73,11 @@ a new-task change does not replace the Session overlay it returns.
 - `beginSettlement(sessionId)` observes one submission attempt: the Session's
   writes in flight when the user submits and every write requested before the
   attempt is released, so a write that starts and fails mid-wait still counts.
-  `StagedComposer` begins it at submit, before Session references load, and
-  the send settles it before an edit-and-resend copies the Session. A failed
-  write keeps the draft. `settled(sessionId)` is the begin-await-release
+  `StagedComposer` begins it at submit, before Session references load. A
+  submit that starts a turn settles it before an edit-and-resend copies the
+  Session and again after the copy, and re-checks the surface and selection it
+  was submitted from, since navigation keeps the Session id. A failed write
+  keeps the draft; local slash commands do not wait. `settled(sessionId)` is the begin-await-release
   shorthand the send path keeps as a fallback. The provider publishes both
   through `application/contracts/session-settings-settlement.ts` (#4695).
 

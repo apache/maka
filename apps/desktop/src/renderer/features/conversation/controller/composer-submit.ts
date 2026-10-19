@@ -41,6 +41,12 @@ export type ComposerSlashCommand =
   | { kind: 'graph'; command: ParsedGraphCommand }
   | { kind: 'swarm'; command: ParsedSwarmCommand };
 
+/** Whether a submit starts a turn, which the Host runs under the Session's settings. */
+function startsTurn(command: ComposerSlashCommand | null): boolean {
+  if (!command) return true;
+  return (command.kind === 'swarm' || command.kind === 'graph') && command.command.kind === 'run_once';
+}
+
 export interface RevisionDraftIdentity {
   sourceSessionId: string;
   draftSessionId: string;
@@ -84,6 +90,12 @@ export interface RevisionSendPorts<TDraft extends RevisionDraftIdentity> {
    * Settled before a revision copies the Session or the send starts.
    */
   sendSettlement?: { settled(): Promise<boolean> };
+  /**
+   * Captures the surface and selection this submit came from; the returned
+   * check says whether the user is still on it. Navigation keeps the Session
+   * id, so the id alone cannot answer that (#1433).
+   */
+  captureSubmitSurface?: () => () => boolean;
   shellCopy: RevisionSendShellCopy;
   toastApi: {
     info(title: string, description?: string): void;
@@ -235,9 +247,16 @@ export async function revisionAwareSend<TDraft extends RevisionDraftIdentity>(
     return queued;
   }
   // #4695: settle before a revision copies the source Session's settings and
-  // before the send reads them; a failed write keeps the draft.
-  if (ports.sendSettlement) {
-    if (!(await ports.sendSettlement.settled()) || ports.activeIdRef.current !== sessionId) {
+  // before the send reads them; a failed write keeps the draft. Only a submit
+  // that starts a turn runs under those settings, so local commands skip it.
+  const settlement = startsTurn(slashCommand) ? ports.sendSettlement : undefined;
+  if (settlement) {
+    const surfaceIsCurrent = ports.captureSubmitSurface?.();
+    if (
+      !(await settlement.settled()) ||
+      ports.activeIdRef.current !== sessionId ||
+      (surfaceIsCurrent && !surfaceIsCurrent())
+    ) {
       return false;
     }
   }
@@ -250,6 +269,9 @@ export async function revisionAwareSend<TDraft extends RevisionDraftIdentity>(
     // The attachments / mixed-context refusals live inside the revision
     // lifecycle (prepareRevisionSend), which toasts and stops the send.
     if (!(await ports.prepareRevisionSend(text))) return false;
+    // A source write can still fail while the copy is prepared. The child
+    // stays prepared, so an explicit retry sends into it like any refusal.
+    if (settlement && !(await settlement.settled())) return false;
   }
   if (slashCommand?.kind === 'compact') {
     const compactSessionId = ports.activeIdRef.current;
