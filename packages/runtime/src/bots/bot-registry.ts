@@ -19,6 +19,7 @@
 
 import { EventEmitter } from 'node:events';
 import {
+  resolveBotMessageHandling,
   type BotChannelSettings,
   type BotChatSettings,
   type BotProvider,
@@ -139,7 +140,12 @@ export class BotRegistry {
 
   private async applySettingsNow(settings: BotChatSettings): Promise<void> {
     await Promise.all(
-      BOT_PROVIDERS.map((provider) => this.reconcileOne(provider, settings.channels[provider])),
+      BOT_PROVIDERS.map((provider) =>
+        this.reconcileOne(provider, {
+          ...settings.channels[provider],
+          messageHandling: resolveBotMessageHandling(settings, provider),
+        }),
+      ),
     );
   }
 

@@ -419,8 +419,8 @@
     "src/renderer/features/personal-assistant/index.tsx": {
       "appShell": [
         "MemoryOriginalHost",
-        "PersonalAssistantChatLayout",
         "PersonalAssistantEntry",
+        "PersonalAssistantTaskLayout",
         "createInternalUriDispatcher"
       ],
       "composition": [

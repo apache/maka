@@ -351,7 +351,7 @@ export class FeishuBotBridge extends BaseBotAdapter implements SendCapable {
         const receivedAt = Date.now();
         const event = feishuMessageToEvent(message, receivedAt);
         if (!event || this.channel !== channel) return;
-        const assistant = (this.settings.messageHandling ?? 'assistant') === 'assistant';
+        const assistant = this.settings.messageHandling === 'assistant';
         if (
           assistant &&
           (event.isGroup ||

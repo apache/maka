@@ -53,6 +53,7 @@ async function fixture() {
   const settings = {
     ...createDefaultBotChannel('feishu'),
     enabled: true,
+    messageHandling: 'assistant' as const,
     appId: 'app',
     appSecret: 'secret',
     allowedUserIds: ['ou_owner'],
