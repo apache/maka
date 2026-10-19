@@ -37,6 +37,7 @@
 - Render imported Codex user context without raw envelopes, scope WorkHub tool lookups to the owning turn, and include tool and human evidence in Goal context (#6117, #6096, #6087).
 - Keep fullscreen editing usable on short terminals, mask fine-grained GitHub tokens, and align connection URL validation with the Host (#6085, #6062, #6098).
 - Restore image attachments in Codex imports and preserve running tool state when reconnecting (#6118, #6145).
+- Invalidate deleted Artifact previews, allow new projects without a custom name, and keep conversations centered with classic scrollbars (#5394, #6073, #6102).
 - Resolve linked-worktree read boundaries through the common Git directory, and initialize vacuum mode when databases are created concurrently (#6105, #6136).
 - Preserve Windows browser launcher paths and SSH operator arguments, and validate project roots for the target platform (#6121, #6123, #6122).
 - Source patches no longer include the unchanged QuickJS WebAssembly binary; installation reuses it from the pinned npm dependency. Source verification also rejects Base64-encoded WASM.
