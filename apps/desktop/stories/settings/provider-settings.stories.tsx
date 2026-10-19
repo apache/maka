@@ -995,7 +995,7 @@ export const ModelParameterSave: Story = {
     expect(patch()).toHaveTextContent(/^(自动|自動|Automatic)/);
     await userEvent.click(patch());
     await userEvent.click(await body.findByRole('option', { name: /^(启用|啟用|Enabled)$/ }));
-    const save = body.getByRole('button', { name: /^(保存|儲存|Save)$/i });
+    const save = within(body.getByRole('dialog')).getByRole('button', { name: /^(保存|儲存|Save)$/i });
     await userEvent.clear(field);
     await userEvent.type(field, '1MB');
     expect(save).toBeDisabled();
@@ -1020,7 +1020,7 @@ export const ModelParameterSave: Story = {
     await userEvent.click(await body.findByRole('option', { name: /^(自动|自動|Automatic)/ }));
     await userEvent.click(vision());
     await userEvent.click(await body.findByRole('option', { name: /^(自动|自動|Model information)/i }));
-    await userEvent.click(body.getByRole('button', { name: /^(保存|儲存|Save)$/i }));
+    await userEvent.click(within(body.getByRole('dialog')).getByRole('button', { name: /^(保存|儲存|Save)$/i }));
     await waitFor(() => expect(configure).toHaveFocus());
     await userEvent.click(configure);
     expect(vision()).toHaveTextContent(/^(自动|自動|Model information)/i);
@@ -1030,7 +1030,7 @@ export const ModelParameterSave: Story = {
     const editable = body.getByRole('textbox', { name: /^(上下文窗口|上下文視窗|Context window)$/i });
     await userEvent.clear(editable);
     await userEvent.type(editable, '256K');
-    await userEvent.click(body.getByRole('button', { name: /^(取消|Cancel)$/i }));
+    await userEvent.click(within(body.getByRole('dialog')).getByRole('button', { name: /^(取消|Cancel)$/i }));
     await waitFor(() => expect(configure).toHaveFocus());
     await userEvent.click(configure);
     expect(await body.findByRole('textbox', { name: /^(上下文窗口|上下文視窗|Context window)$/i })).toHaveValue('128000');
