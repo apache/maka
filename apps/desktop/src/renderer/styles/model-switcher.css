@@ -20,6 +20,7 @@
 /* Model + thinking sit as one left-footer pair after permission. */
 .maka-model-selection-controls {
   display: inline-flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-1);
   min-width: 0;
@@ -139,6 +140,7 @@
 
 .maka-executor-notice {
   display: flex;
+  flex-basis: 100%;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-1);

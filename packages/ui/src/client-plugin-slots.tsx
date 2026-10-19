@@ -66,9 +66,7 @@ import {
   Tooltip,
   VStack,
 } from '@astryxdesign/core';
-import type { ChatModelChoice } from '@maka/core/chat-model-choice';
-import type { ProviderType } from '@maka/core/llm-connections';
-import { ModelWheelPicker } from './model-wheel-picker.js';
+import type { ComposerModelContribution } from './composer-model-picker.js';
 
 /** Stable owner props for a frame-wide overlay contribution. */
 export interface MakaClientShellOverlayProps {}
@@ -121,39 +119,12 @@ export interface MakaClientComposerToolbarProps {
   readonly onExecutorTargetChange?: (target: MakaClientExecutorTarget) => void | Promise<void>;
 }
 
-/** Stable owner props for replacing the Composer's complete model-selection pair. */
+/** Supplies model data to the Composer-owned picker. */
 export interface MakaClientComposerModelSelectionProps {
-  readonly disabled: boolean;
-  readonly streaming: boolean;
-  readonly hasSession: boolean;
-  readonly presentation?: 'popover' | 'bottom-sheet' | 'wheel';
-  readonly isReadOnly?: boolean;
-  readonly purpose?: 'session' | 'new-work-default';
-  readonly modelChoices: readonly ChatModelChoice[];
-  readonly activeModel?: string;
-  readonly activeModelLabel?: string;
-  readonly activeModelConnectionId?: string;
-  readonly activeModelConnectionSlug?: string;
-  readonly activeProviderType?: ProviderType;
-  readonly renderProviderMark?: (type: ProviderType) => ReactNode;
-  readonly newChatModel?: {
-    readonly llmConnectionId: string;
-    readonly llmConnectionSlug: string;
-    readonly model: string;
-  };
+  readonly hasModels: boolean;
+  readonly fixedExecutorId?: string;
   readonly executorTarget?: MakaClientExecutorTarget;
-  readonly onNativeModelChange?: (target: {
-    readonly llmConnectionId: string;
-    readonly llmConnectionSlug: string;
-    readonly model: string;
-  }) => void | Promise<void>;
-  /**
-   * Renders the Maka-owned thinking control for the selected native model.
-   * A contribution replacing the complete model-selection pair must use this
-   * instead of copying native model capability and mutation semantics.
-   */
-  readonly renderNativeThinkingControl: () => ReactNode;
-  readonly onExecutorTargetChange?: (target: MakaClientExecutorTarget) => void | Promise<void>;
+  readonly renderPicker?: (contribution?: ComposerModelContribution) => ReactNode;
 }
 
 export interface MakaClientExecutorTarget {
@@ -1042,7 +1013,6 @@ export {
   LayoutFooter,
   LayoutHeader,
   LayoutPanel,
-  ModelWheelPicker,
   NumberInput,
   RadioList,
   RadioListItem,
@@ -1089,7 +1059,6 @@ export const MakaClientPluginSdkModule = Object.freeze({
   LayoutFooter,
   LayoutHeader,
   LayoutPanel,
-  ModelWheelPicker,
   MakaClientSlotFragment: Fragment,
   MakaClientSlotOutlet,
   NumberInput,

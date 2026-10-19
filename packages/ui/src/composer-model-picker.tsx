@@ -33,6 +33,21 @@ import { useUiLocale } from './locale-context.js';
 import { getSharedUiCopy } from './shared-ui-copy.js';
 import { getConversationCopy } from './conversation-copy.js';
 import { usePendingSelection } from './use-pending-selection.js';
+import type { MakaClientExecutorTarget } from './client-plugin-slots.js';
+
+export interface ComposerModelContribution {
+  readonly id: string;
+  readonly label: string;
+  readonly models: readonly {
+    readonly id: string;
+    readonly label: string;
+    readonly thinkingLevels: readonly ThinkingLevel[];
+    readonly defaultThinkingLevel?: ThinkingLevel;
+  }[];
+  readonly loading: boolean;
+  readonly error?: string;
+  onLoad(): void;
+}
 
 export interface ComposerExecutorPicker {
   catalog: readonly ExecutorCatalogEntry[];
@@ -183,6 +198,9 @@ export function ComposerModelPicker(props: {
   onNativeChange?(choice: { llmConnectionId: string; llmConnectionSlug: string; model: string }): void | Promise<void>;
   renderThinkingControl?(pending: boolean): ReactNode;
   executor?: ComposerExecutorPicker;
+  contribution?: ComposerModelContribution;
+  executorTarget?: MakaClientExecutorTarget;
+  onExecutorTargetChange?(target: MakaClientExecutorTarget): void | Promise<void>;
   presentation?: 'popover' | 'bottom-sheet';
   disabled?: boolean;
   disabledReason?: string;
@@ -200,13 +218,18 @@ export function ComposerModelPicker(props: {
   const searchCopy = getSharedUiCopy(locale).modelPicker;
   const copy = executorCopy(locale);
   const executor = props.executor;
-  const selected = executor?.catalog.find(entry => entry.id === executor.selection?.executorId);
+  const contribution = props.contribution;
+  const contributed = contribution?.id === props.executorTarget?.executorId ? contribution : undefined;
+  const contributedModel = contributed?.models.find(model => model.id === props.executorTarget?.model);
+  const selected = !contributed ? executor?.catalog.find(entry => entry.id === executor.selection?.executorId) : undefined;
   const selectedModel = executor?.selection?.configuration.model ?? selected?.currentModel;
   const group = selected && executorModelGroup(selected, selectedModel);
-  const label = executor?.selection
+  const modelLabel = contributed ? contributedModel?.label ?? props.executorTarget?.model ?? copy.default : executor?.selection
     ? group?.name ?? selected?.models.find(model => model.id === selectedModel)?.name ?? selectedModel ?? copy.default
     : props.label;
-  const authoritative = executor?.selection
+  const label = !executor?.fixed && (contributed || executor?.selection)
+    ? `${contributed?.label ?? selected?.displayName ?? executor?.selection?.executorId} · ${modelLabel}` : modelLabel;
+  const authoritative = contributed ? JSON.stringify([contributed.id, props.executorTarget?.model ?? '']) : executor?.selection
     ? selected ? externalValue(selected, selectedModel) : JSON.stringify([executor.selection.executorId, selectedModel ?? ''])
     : props.value ?? (props.choices.length === 0 && !executor ? '__maka_model_display__' : '');
   const [pending, setPending] = useState(false);
@@ -214,6 +237,7 @@ export function ComposerModelPicker(props: {
   const [acknowledged, setAcknowledged] = useState(false);
   const [reopen, setReopen] = useState(false);
   useEffect(() => { if (reopen) setReopen(false); }, [reopen]);
+  useEffect(() => { if (props.openNonce) contribution?.onLoad(); }, [props.openNonce, contribution?.onLoad]);
   useEffect(() => { props.onPendingChange?.(pending); }, [pending, props.onPendingChange]);
   useEffect(() => () => props.onPendingChange?.(false), [props.onPendingChange]);
   const disabled = props.disabled || executor?.disabled || pending;
@@ -233,7 +257,16 @@ export function ComposerModelPicker(props: {
       llmConnectionId: choice.connectionId, llmConnectionSlug: choice.connectionSlug, model: choice.model,
     }));
   }
+  if (contribution && (!executor?.fixed || contributed)) {
+    options.push({ type: 'section', title: contribution.label, options: contribution.models.map(model => {
+      const value = JSON.stringify([contribution.id, model.id]);
+      actions.set(value, () => props.onExecutorTargetChange?.({ executorId: contribution.id, model: model.id,
+        ...(model.defaultThinkingLevel ? { thinkingLevel: model.defaultThinkingLevel } : {}) }));
+      return { value, label: model.label };
+    }) });
+  }
   for (const entry of executor?.catalog ?? []) {
+    if (entry.id === contribution?.id) continue;
     if (executor?.fixed && entry.id !== executor.selection?.executorId) continue;
     options.push({
       type: 'section',
@@ -257,13 +290,13 @@ export function ComposerModelPicker(props: {
   if (authoritative && !actions.has(authoritative) && !props.hideUnavailableCurrentOption) {
     options.unshift({ value: authoritative, label, disabled: true });
   }
-  const noticeShown = props.hasConversationHistory && !executor?.selection && !acknowledged;
+  const noticeShown = props.hasConversationHistory && !props.executorTarget && !executor?.selection && !acknowledged;
   if (noticeShown) options.unshift({ value: WARNING, label: modelCopy.switchWarning, description: modelCopy.switchWarningDismiss });
   const selection = usePendingSelection(authoritative, value => {
     const action = actions.get(value);
     if (action) return commit(action);
   });
-  const unavailable = !!executor?.selection && (selected ? selected.readiness !== 'ready' : !executor.loading);
+  const unavailable = !contributed && !!executor?.selection && (selected ? selected.readiness !== 'ready' : !executor.loading);
   const invalid = !!selected && selected.readiness === 'ready' && (
     (!!selectedModel && !selected.models.some(model => model.id === selectedModel)) ||
     (!!executor?.selection?.configuration.mode && !selected.modes?.some(mode => mode.id === executor.selection?.configuration.mode))
@@ -274,9 +307,14 @@ export function ComposerModelPicker(props: {
     executor?.onSelect({ executorId: executor.selection!.executorId, configuration: executor.fixed || (configuration.model !== undefined && configuration.model !== selectedModel)
       ? configuration : { ...executor.selection!.configuration, ...configuration } });
   const mode = executor?.selection?.configuration.mode ?? selected?.currentMode;
+  const recoveryEntries = executor?.selection
+    ? selected && selected.readiness !== 'ready' ? [selected] : []
+    : executor?.catalog.filter(entry => entry.readiness === 'authentication_required' || entry.readiness === 'unavailable') ?? [];
   return <>
     {/* Keep portaled search clicks from focusing the composer editor. */}
-    <Stack direction="horizontal" className="maka-model-picker-root" onClick={event => event.stopPropagation()}>
+    <Stack direction="horizontal" className="maka-model-picker-root"
+      onClick={event => { event.stopPropagation(); contribution?.onLoad(); }}
+      onKeyDownCapture={event => { if (['Enter', ' ', 'ArrowDown', 'ArrowUp'].includes(event.key)) contribution?.onLoad(); }}>
       <Selector
         key={String(props.openNonce ?? 0) + ':' + String(acknowledged)}
         label={props.sessionId ? modelCopy.switchAriaLabel + ': ' + label : modelCopy.newChatAriaLabel(label)}
@@ -290,12 +328,13 @@ export function ComposerModelPicker(props: {
         variant="ghost" size="sm" placement="above"
         presentation={props.presentation}
         isReadOnly={props.isReadOnly || displayOnly}
+        isLoading={executor?.loading || contribution?.loading}
         isDisabled={disabled || entryDisabled}
         disabledMessage={props.disabledReason}
         isDefaultOpen={!!props.openNonce || reopen}
         placeholder={label}
         className="maka-model-switcher-trigger"
-        renderValue={option => <ComposerModelLabel text={option.label ?? option.value} />}
+        renderValue={() => <ComposerModelLabel text={label} />}
         renderOption={option => option.value === WARNING
           ? <SelectorOption className="modelPickerOption modelPickerChatOption modelPickerSwitchNotice" label={<span>{option.label}</span>} description={option.description} />
           : renderChatModelPickerOption(option)}
@@ -305,7 +344,16 @@ export function ComposerModelPicker(props: {
         }}
       />
     </Stack>
-    {executor?.selection ? group && <ThinkingLevelSelector
+    {contributed ? <ThinkingLevelSelector
+      levels={contributedModel?.thinkingLevels ?? []}
+      current={props.executorTarget?.thinkingLevel}
+      presentation={props.presentation}
+      isReadOnly={props.isReadOnly}
+      disabled={disabled}
+      onChange={thinkingLevel => commit(() => props.onExecutorTargetChange?.({
+        executorId: contributed.id, model: props.executorTarget?.model, ...(thinkingLevel ? { thinkingLevel } : {}),
+      }))}
+    /> : executor?.selection ? group && <ThinkingLevelSelector
       levels={group.variants.map(variant => variant.level)}
       current={group.variants.find(variant => variant.modelId === selectedModel)?.level}
       includeDefault={false}
@@ -334,18 +382,23 @@ export function ComposerModelPicker(props: {
     {!executor && !actions.size && props.onOpenSettings && <Button
       label={modelCopy.configureTitle} variant="ghost" size="sm"
       icon={<Settings size={ICON_SIZE.control} />} onClick={props.onOpenSettings} />}
-    {(unavailable || invalid || failed || executor?.error) && <span className="maka-executor-notice" role="status">
-      {failed ? copy.selectionFailed : unavailable ? selected ? copy[selected.readiness as Exclude<typeof selected.readiness, 'ready'>] : copy.unavailable : invalid ? copy.invalid : copy.selectionFailed}
-      {executor && (selected?.readiness === 'restorable' || selected?.readiness === 'restore_failed') ? <Button
+    {recoveryEntries.map(entry => <span key={entry.id} className="maka-executor-notice" role="status">
+      {entry.displayName + ': ' + copy[entry.readiness as Exclude<typeof entry.readiness, 'ready'>]}
+      {executor && (entry.readiness === 'restorable' || entry.readiness === 'restore_failed') ? <Button
         label={copy.restore} variant="ghost" size="sm" isDisabled={pending || !executor.onRestore}
         onClick={() => { if (executor.onRestore) void commit(executor.onRestore); }} />
-        : executor && (selected?.readiness === 'history_only' || selected?.readiness === 'history_gap') ? <Button
+        : executor && (entry.readiness === 'history_only' || entry.readiness === 'history_gap') ? <Button
           label={copy.newTask} variant="ghost" size="sm" onClick={executor.onNewTask} />
-        : executor && selected?.readiness === 'authentication_required' ? <Button
-          label={copy.signIn} variant="ghost" size="sm" onClick={() => executor.onSetup(selected.id)} />
-        : executor && selected?.readiness !== 'restoring' ? <Button
+        : executor && entry.readiness === 'authentication_required' ? <Button
+          label={copy.signIn} variant="ghost" size="sm" onClick={() => executor.onSetup(entry.id)} />
+        : executor && entry.readiness !== 'restoring' ? <Button
           label={copy.retry} variant="ghost" size="sm" isLoading={executor.loading} onClick={executor.onRetry} />
         : null}
+    </span>)}
+    {(failed || invalid || executor?.error || (unavailable && !selected) || contribution?.error) && <span className="maka-executor-notice" role="status">
+      {contribution?.error ? contribution.label + ': ' + copy.unavailable : unavailable && !selected ? copy.unavailable : invalid ? copy.invalid : copy.selectionFailed}
+      {contribution?.error && <Button label={copy.retry} variant="ghost" size="sm" isLoading={contribution.loading} onClick={contribution.onLoad} />}
+      {executor && !contribution?.error && <Button label={copy.retry} variant="ghost" size="sm" isLoading={executor.loading} onClick={executor.onRetry} />}
     </span>}
   </>;
 }

@@ -28,6 +28,10 @@ import { Composer } from '../src/composer.js';
 import { ModelPicker } from '../src/model-picker.js';
 import { modelChoiceValue, modelMenuGroups, type ChatModelChoice } from '../src/chat-model-helpers.js';
 import { useUiLocale } from '../src/locale-context.js';
+import * as React from 'react';
+import codexClient from '../../../scripts/plugins/codex-app-server-executor/client.js?raw';
+import { MakaClientPluginSdkModule, MakaClientSlotCore, MakaClientSlotProvider } from '../src/client-plugin-slots.js';
+import type { MakaClientPluginContext } from '../src/client-plugin-runtime.js';
 
 const meta = {
   title: 'Product/Model Picker',
@@ -68,10 +72,25 @@ function PickerFrame(props: {
   external?: boolean;
   choices?: ChatModelChoice[];
   catalog?: readonly ExecutorCatalogEntry[];
+  plugin?: boolean;
 }) {
   const choices = props.choices ?? CHOICES;
   const [choice, setChoice] = useState(choices[0]!);
   const [thinking, setThinking] = useState<ThinkingLevel | undefined>('high');
+  const [target, setTarget] = useState<import('../src/client-plugin-slots.js').MakaClientExecutorTarget>();
+  const [core] = useState(() => {
+    const slots = new MakaClientSlotCore();
+    if (props.plugin) {
+      let factory!: (require: (id: string) => unknown) => { apply(context: { slots: MakaClientSlotCore; remote: MakaClientPluginContext['remote'] }): void };
+      new Function('window', codexClient)({ __MakaModuleLoader__: { load: (entry: { factory: typeof factory }) => { factory = entry.factory; } } });
+      factory(id => {
+        if (id === 'react') return React;
+        if (id === '@maka/ui/client-plugin') return MakaClientPluginSdkModule;
+        throw new Error(`Unknown client module: ${id}`);
+      }).apply({ slots, remote: { call: async () => [{ model: 'gpt-6-astra', displayName: 'GPT-6 Astra', defaultReasoningEffort: 'high', supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'high' }] }] } as unknown as MakaClientPluginContext['remote'] });
+    }
+    return slots;
+  });
   const [selection, setSelection] = useState<ExecutorSelection | undefined>(props.external
     ? { executorId: 'antigravity', configuration: { model: 'flash-high' } } : undefined);
   const session = props.existing ? {
@@ -82,7 +101,7 @@ function PickerFrame(props: {
     const next = choices.find(item => item.connectionId === target.llmConnectionId && item.model === target.model);
     if (next) { setChoice(next); setThinking(undefined); }
   };
-  return <div style={{ width: 680, maxWidth: '100%', marginTop: 380 }}>
+  return <MakaClientSlotProvider core={core}><div style={{ width: 680, maxWidth: '100%', marginTop: 380 }}>
     <Composer
       activeSession={session}
       modelLabel={choice.label} activeModelLabel={choice.label} activeModel={choice.model}
@@ -93,14 +112,15 @@ function PickerFrame(props: {
       newChatThinkingLevels={choice.thinkingLevels} newChatThinkingLevel={thinking}
       onThinkingLevelChange={setThinking} onNewChatThinkingLevelChange={setThinking}
       onModelChange={pick} onPickNewChatModel={pick}
+      executorTarget={target} onExecutorTargetChange={props.plugin ? next => { setSelection(undefined); setTarget(next); } : undefined}
       executorPicker={!props.existing || props.external ? {
         catalog: props.catalog ?? CATALOG, selection, fixed: props.existing,
-        onSelect: setSelection, onSetup: () => undefined, onRetry: () => undefined, onNewTask: () => undefined,
+        onSelect: next => { setSelection(next); setTarget(undefined); }, onSetup: () => undefined, onRetry: () => undefined, onNewTask: () => undefined,
       } : undefined}
       renderProviderMark={brand}
       onSend={() => undefined} onStop={() => undefined}
     />
-  </div>;
+  </div></MakaClientSlotProvider>;
 }
 
 async function openModels(canvasElement: HTMLElement) {
@@ -131,6 +151,34 @@ export const ExecutorCatalogReady: Story = {
     await userEvent.click(await page.findByRole('option', { name: /Gemini 3.8 Flash/ }));
     await waitFor(() => expect(canvasElement.querySelector('.maka-model-switcher-trigger')).toHaveTextContent('Gemini 3.8 Flash'));
     await expect(canvasElement.querySelector('.maka-thinking-level-selector')).toHaveTextContent(/High|高/);
+    await openModels(canvasElement);
+  },
+};
+
+// Real path: a new task with the Codex extension enabled and an ACP Agent configured.
+export const CodexAndAcp: Story = {
+  render: () => <PickerFrame plugin />,
+  play: async ({ canvasElement }) => {
+    const page = await openModels(canvasElement);
+    await expect(await page.findByRole('group', { name: 'Codex' })).toBeVisible();
+    await expect(page.getByRole('group', { name: 'Antigravity' })).toBeVisible();
+    await expect(page.getByRole('group', { name: 'OpenAI' })).toBeVisible();
+    await expect(canvasElement.querySelectorAll('.maka-model-switcher-trigger')).toHaveLength(1);
+    await userEvent.click(within(page.getByRole('group', { name: 'Codex' })).getByRole('option', { name: 'GPT-6 Astra' }));
+    await waitFor(() => expect(canvasElement.querySelector('.maka-model-switcher-trigger')).toHaveTextContent('Codex · GPT-6 Astra'));
+    await expect(canvasElement.querySelector('.maka-thinking-level-selector')).toHaveTextContent(/High|高/);
+    await openModels(canvasElement);
+  },
+};
+
+// Real path: a new task discovers an ACP Agent that requires sign-in, before any selection.
+export const UnselectedUnavailableAgentNarrow: Story = {
+  render: () => <PickerFrame catalog={[{ ...CATALOG[0]!, readiness: 'authentication_required' }]} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByRole('button', { name: /Go to sign in|前往登录/ })).toBeVisible();
+    const label = canvasElement.querySelector<HTMLElement>('.maka-composer-model-label')!;
+    await waitFor(() => expect(label.scrollWidth).toBeLessThanOrEqual(label.clientWidth + 1));
     await openModels(canvasElement);
   },
 };
