@@ -28,7 +28,8 @@ export function executorComposerProps(
     sendPending?: boolean;
     taskSubmissionHardBlocked: boolean;
     connectionCount: number;
-    onSetup(): void;
+    renderExecutorMark?: NonNullable<ComposerProps['executorPicker']>['renderExecutorMark'];
+    onSetup(executorId?: string): void;
     onNewTask(): void;
   },
 ): Pick<ComposerProps, 'executorPicker' | 'sendBlocked' | 'noModelConnection'> {
@@ -38,6 +39,7 @@ export function executorComposerProps(
       !fixed || executor.selection
         ? {
             catalog: executor.catalog,
+            renderExecutorMark: input.renderExecutorMark,
             selection: executor.selection,
             fixed,
             disabled: executor.changing || !!input.sendPending || (fixed && input.turnActive),

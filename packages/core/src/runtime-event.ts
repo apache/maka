@@ -179,6 +179,8 @@ export function isTerminalRuntimeEventStatus(value: unknown): boolean {
 // ============================================================================
 
 export interface RuntimeEventTextContent extends MessageContent {
+  /** Model-authored collapsed preview, independent of the full text. */
+  summary?: string;
   kind: 'text';
   /** Failed response fragment retained for display, never for model replay. */
   interrupted?: true;
@@ -733,6 +735,7 @@ const RUNTIME_EVENT_SHAPE = defineObjectShape<RuntimeEvent>()(
 const TEXT_CONTENT_SHAPE = defineObjectShape<RuntimeEventTextContent>()(
   ['kind', 'text'],
   [
+    'summary',
     'displayText',
     'interrupted',
     'origin',
@@ -1038,6 +1041,7 @@ export function decodeRuntimeEvent(value: unknown): RuntimeEvent {
       content: {
         kind: 'text',
         ...normalizeMessageContent(value.content as unknown as MessageContent),
+        ...(value.content.summary !== undefined ? { summary: value.content.summary } : {}),
         ...(value.content.origin !== undefined
           ? { origin: decodeTurnOrigin(value.content.origin) }
           : {}),
@@ -1068,6 +1072,7 @@ function isRuntimeEventContent(value: unknown): value is RuntimeEventContent {
     case 'text':
       if (
         !hasExactShape(value, TEXT_CONTENT_SHAPE) ||
+        (value.summary !== undefined && typeof value.summary !== 'string') ||
         (value.origin !== undefined && !isTurnOrigin(value.origin)) ||
         (value.steering !== undefined && value.steering !== true) ||
         (value.interrupted !== undefined && value.interrupted !== true) ||

@@ -25,7 +25,7 @@ import { MessageCache } from '../../../../../../scripts/plugins/feishu-source/sr
 import { MessageSync } from '../../../../../../scripts/plugins/feishu-source/src/message-sync.js';
 import { SyncSchedule } from '../../../../../../scripts/plugins/feishu-source/src/sync-schedule.js';
 
-test('source sync → stale index → fresh original → ordinary heartbeat reply → independent task feedback → incremental maintenance', async () => {
+test('source sync → stale index → fresh original → discovery Inbox → Bot reply → independent task feedback → incremental maintenance', async () => {
   const cwd = process.cwd();
 
   let f: any;
@@ -125,18 +125,32 @@ test('source sync → stale index → fresh original → ordinary heartbeat repl
       visible: string[] = [];
     f.setRunner(async ({ id: sessionId, prompt, invoke }: any) => {
       try {
-        if (sessionId === 'owner') {
-          if (prompt.startsWith('Runtime heartbeat')) {
-            const index = await invoke('MemoryIndexRead', { indexId: id });
-            assert.equal(index.freshness.coveredCursor, boundary);
-            const q = await invoke('MemorySourceQuery', { source, query: {} });
-            const original = await invoke('MemoryOriginal', { ref: q.items[0].ref });
-            assert.equal(original.content.body.content, body);
-            visible.push('演示验收和离线材料都已确认，可以准备演示。');
-          } else visible.push('已核对最新原文，委派任务完成。');
-          f.workers
-            .get('owner')
-            .transcript.push({ type: 'assistant', text: visible.at(-1), ts: Date.now() });
+        if (prompt.startsWith('Runtime heartbeat')) {
+          assert.notEqual(sessionId, 'owner');
+          const index = await invoke('MemoryIndexRead', { indexId: id });
+          assert.equal(index.freshness.coveredCursor, boundary);
+          const q = await invoke('MemorySourceQuery', { source, query: {} });
+          const original = await invoke('MemoryOriginal', { ref: q.items[0].ref });
+          assert.equal(original.content.body.content, body);
+          await invoke('DiscoveryReport', { text: '演示验收和离线材料都已确认，可以准备演示。' });
+          return;
+        }
+        if (prompt.startsWith('Inbox 有新消息')) {
+          const inbox = await invoke('InboxCheck', {});
+          for (const row of inbox.items) {
+            const entry = JSON.parse(row.content);
+            const text =
+              row.type === 'discovery'
+                ? entry
+                : entry.status === 'completed'
+                  ? '已核对最新原文，委派任务完成。'
+                  : undefined;
+            if (text) {
+              await invoke('SendUser', { messageId: row.id, messages: [{ text }] });
+              visible.push(text);
+            }
+          }
+          await invoke('Sleep', {});
           return;
         }
         const context = JSON.parse(

@@ -24,7 +24,7 @@ import { z } from 'zod';
 import { createMatterStore } from './store.js';
 import { MatterController } from './controller.js';
 import { buildMatterTools } from './tools.js';
-import { MATTER_INSTRUCTIONS, buildMatterStepContext } from './prompt.js';
+import { MATTER_INSTRUCTIONS } from './prompt.js';
 
 const startInput = z.object({
   title: z.string().trim().min(1).max(120),
@@ -132,12 +132,7 @@ export async function initializeMatters(
   ctx.systemPrompt.context({
     name: 'proactive-matters.clock',
     order: 800,
-    text: ({ sessionId }: any) => {
-      const m = store.forSession(sessionId);
-      return m && !['completed', 'cancelled'].includes(m.status)
-        ? buildMatterStepContext()
-        : undefined;
-    },
+    text: ({ sessionId, turnId }: any) => controller.stepContext(sessionId, turnId),
   });
 
   // Internal service operations. Desktop protocol exposes only the assistant's owner-bound API.

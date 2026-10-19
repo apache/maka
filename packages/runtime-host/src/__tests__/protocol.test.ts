@@ -1715,7 +1715,7 @@ describe('Runtime Host bootstrap protocol', () => {
     });
   });
 
-  test('allows only cloud activation as an external-message origin on turn.start', () => {
+  test('allows only cloud activation and external connector origins on turn.start', () => {
     const start = {
       requestId: 'activation-start',
       operation: 'turn.start' as const,
@@ -1736,6 +1736,16 @@ describe('Runtime Host bootstrap protocol', () => {
       isInvalidFrame,
     );
     for (const origin of [
+      { kind: 'external_connector', connectorId: 'telegram' },
+      { kind: 'external_connector', connectorId: 'telegram', senderId: 'sender-1' },
+    ]) {
+      const frame = { ...start, input: { ...start.input, origin } };
+      assert.deepEqual(decodeClientFrame(frame), frame);
+    }
+    for (const origin of [
+      { kind: 'external_connector', connectorId: '' },
+      { kind: 'external_connector', connectorId: 'telegram', senderId: '' },
+      { kind: 'external_connector', connectorId: 'telegram', extra: true },
       { kind: 'goal', goalId: 'goal-1' },
       { kind: 'scheduled_task', scheduledTaskId: 'task-1' },
       { kind: 'agent_graph', graphId: 'graph-1', wakeId: 'wake-1', attemptId: 'attempt-1' },

@@ -20,12 +20,51 @@
 import { z } from 'zod';
 import { defineOperation } from './operation-spec.js';
 import { requireEncodedByteLimit } from './codec.js';
+/** Persisted avatar metadata. Image bytes travel separately, never in model context. */
+export const assistantEmojiSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(32)
+  .refine(
+    (value) =>
+      [...new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(value)].length === 1 &&
+      /[\p{Extended_Pictographic}\p{Regional_Indicator}]/u.test(value),
+    'Use one emoji for the avatar',
+  );
+export const assistantAvatarSchema = z
+  .object({
+    emoji: assistantEmojiSchema.optional(),
+    image: z
+      .object({
+        id: z.string().regex(/^[a-f0-9]{64}$/),
+        mimeType: z.enum(['image/png', 'image/jpeg', 'image/webp', 'image/gif']),
+        length: z
+          .number()
+          .int()
+          .positive()
+          .max(3 * 1024 * 1024),
+      })
+      .strict()
+      .optional(),
+    background: z
+      .string()
+      .regex(/^#[0-9a-fA-F]{6}$/)
+      .default('#E5EDFF'),
+  })
+  .strict()
+  .refine((value) => Boolean(value.emoji) !== Boolean(value.image), 'Provide an emoji or image');
+export type AssistantAvatar = z.infer<typeof assistantAvatarSchema>;
+export const DEFAULT_ASSISTANT_AVATAR: AssistantAvatar = { emoji: '🤖', background: '#E5EDFF' };
+
 const request = z
   .object({
     method: z.enum([
       'assistant.enablement',
       'assistant.set-enabled',
       'assistant.binding',
+      'assistant.avatar',
+      'assistant.avatar-image',
       'assistant.original',
       'assistant.status',
       'assistant.bind',

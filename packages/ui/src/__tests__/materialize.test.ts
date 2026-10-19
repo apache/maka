@@ -983,3 +983,12 @@ describe("live tool status over persisted", () => {
     );
   });
 });
+
+test('assistant previews survive materialization without replacing the full text', () => {
+  const message: StoredMessage = { type: 'assistant', id: 'summary', turnId: 'summary-turn', ts: 1,
+    text: 'Full body, not truncated.', summary: 'An independently authored preview.', modelId: 'assistant-bot' };
+  const turn = materializeTurns([message], 'en')[0];
+  const item = turn.timeline.find((row) => row.kind === 'text');
+  assert.equal(item?.kind === 'text' && item.summary, message.summary);
+  assert.equal(item?.kind === 'text' && item.text, message.text);
+});

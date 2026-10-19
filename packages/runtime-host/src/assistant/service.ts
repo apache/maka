@@ -17,6 +17,11 @@
  * under the License.
  */
 
+import type { TurnOrigin } from '@maka/core/turn-origin';
+import type { MessageContent } from '@maka/core/events';
+import type { StoredMessage } from '@maka/core/session';
+import { AssistantBotBridge } from './bot/bridge.js';
+import { BOT_TOOLS, BOT_DELEGATION_TOOLS } from './bot/capabilities.js';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join, isAbsolute } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
@@ -52,6 +57,12 @@ export interface AssistantDependencies {
   llm: PluginLlmService;
   sessionQuery: PluginSessionQueryService;
   sources: PluginSourceService;
+  readAvatarImage?(
+    sessionId: string,
+    source: string,
+    signal: AbortSignal,
+  ): Promise<{ bytes: Uint8Array; mimeType: string }>;
+  appendConversation?(sessionId: string, message: StoredMessage): Promise<void>;
   stopSessions(): Promise<void>;
   markBackgroundSessions(sessionIds: readonly string[]): Promise<void>;
   resolveTools(sessionId: string, core: readonly MakaTool[]): { tools: readonly MakaTool[] };
@@ -59,6 +70,7 @@ export interface AssistantDependencies {
 
 export interface AssistantModuleServices
   extends Omit<AssistantDependencies, 'resolveTools' | 'stopSessions'> {
+  bot: AssistantBotBridge;
   backgroundSessions: { register(read: () => readonly string[]): void };
   onClose(dispose: Dispose): void;
   onStart(start: () => Dispose): void;
@@ -76,6 +88,7 @@ export interface AssistantModuleServices
 
 class AssistantRuntime {
   readonly tools: MakaTool[] = [];
+  readonly bot = new AssistantBotBridge();
   private readonly sections: PluginSystemPromptSection[] = [];
   private readonly contexts: PluginSystemPromptSection[] = [];
   private readonly checks: TurnFinishCheck[] = [];
@@ -100,6 +113,7 @@ class AssistantRuntime {
     const settings = await this.loadSettings(legacy, entries);
     const backgroundSessions: (() => readonly string[])[] = [];
     const services: AssistantModuleServices = {
+      bot: this.bot,
       backgroundSessions: { register: (read) => backgroundSessions.push(read) },
       ...this.dependencies,
       onClose: (dispose: Dispose) => this.disposers.push(dispose),
@@ -114,6 +128,9 @@ class AssistantRuntime {
               if (this.closing) throw Error('Personal assistant is shutting down');
               const scoped = {
                 ...call,
+                ...(BOT_DELEGATION_TOOLS.has(tool.name) && this.bot.ownerFor(call.sessionId)
+                  ? { sessionId: this.bot.ownerFor(call.sessionId)! }
+                  : {}),
                 abortSignal: AbortSignal.any([
                   this.abort.signal,
                   ...(call.abortSignal ? [call.abortSignal] : []),
@@ -429,6 +446,26 @@ export class PersonalAssistantService {
     return this.enabled
       ? this.runtime!.prompt(context, baseText)
       : { text: baseText, contexts: [], sourceRevision: undefined };
+  }
+  isConversation(sessionId: string) {
+    return this.enabled && this.runtime!.bot.isConversation(sessionId);
+  }
+  hasInboxMessage(sessionId: string, id: string) {
+    return this.enabled && this.runtime!.bot.hasUserMessage(sessionId, id);
+  }
+  toolCeiling(sessionId: string): readonly MakaTool[] | undefined {
+    return this.enabled && this.runtime!.bot.isWorker(sessionId)
+      ? this.runtime!.tools.filter((tool) => BOT_TOOLS.has(tool.name))
+      : undefined;
+  }
+  async receiveUser(
+    sessionId: string,
+    id: string,
+    content: MessageContent,
+    origin?: Extract<TurnOrigin, { kind: 'external_connector' }>,
+  ) {
+    if (!this.enabled || this.draining) return false;
+    return this.runtime!.bot.receive(sessionId, id, content, origin);
   }
   async beforeFinish(context: TurnFinishContext): Promise<TurnFinishDecision> {
     return this.enabled ? this.runtime!.beforeFinish(context) : { allow: true };

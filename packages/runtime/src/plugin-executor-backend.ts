@@ -44,6 +44,12 @@ interface ActiveExecution {
   readonly settled: Promise<void>;
 }
 
+/**
+ * Whether the provider settled a terminal result, and whether it was published.
+ * Only a settled result may be acknowledged or abandoned.
+ */
+type ExecutionSettlement = 'published' | 'rejected' | 'unsettled';
+
 export interface PluginExecutorBackendInput {
   readonly sessionId: string;
   readonly cwd: string;
@@ -99,8 +105,8 @@ export class PluginExecutorBackend implements AgentBackend {
         yield event;
         queue.ackConsumed();
       }
-      const returnedResult = await producer;
-      if (returnedResult) {
+      const settlement = await producer;
+      if (settlement === 'published') {
         // The Runtime Kernel requests the next item only after onSessionEvent
         // resolves. Reaching this point means its terminal event was accepted.
         // The Plugin decides whether its external execution actually settled;
@@ -116,9 +122,12 @@ export class PluginExecutorBackend implements AgentBackend {
     } finally {
       queue.noteConsumerDetached();
       abort.abort(new Error('Plugin executor event consumer detached'));
-      const returnedResult = await producer.catch(() => false);
+      // A settled result that was not acknowledged is abandoned, including one
+      // the Runtime rejected before publishing it. A provider failure before
+      // settlement is neither acknowledged nor abandoned.
+      const settlement = await producer.catch((): ExecutionSettlement => 'unsettled');
       if (
-        returnedResult &&
+        settlement !== 'unsettled' &&
         this.#binding.acknowledgeExecution &&
         !acknowledged &&
         this.#binding.abandonExecution
@@ -153,7 +162,7 @@ export class PluginExecutorBackend implements AgentBackend {
     messageId: string,
     signal: AbortSignal,
     queue: AsyncEventQueue<SessionEvent>,
-  ): Promise<boolean> {
+  ): Promise<ExecutionSettlement> {
     const turnId = input.turnId;
     let thinkingText = '';
     const toolUseIds = new Map<string, string>();
@@ -161,6 +170,7 @@ export class PluginExecutorBackend implements AgentBackend {
     let result: PluginExecutorResult | undefined;
     let failure: unknown;
     let failed = false;
+    let settled = false;
     try {
       result = await this.#binding.execute(
         {
@@ -180,6 +190,9 @@ export class PluginExecutorBackend implements AgentBackend {
         },
         {
           signal,
+          onSettled: () => {
+            settled = true;
+          },
           onEvent: (event) => {
             if (event.type === 'thinking_delta') thinkingText += event.text;
             this.#publishOutputEvent(
@@ -212,7 +225,7 @@ export class PluginExecutorBackend implements AgentBackend {
           false,
           queue,
         );
-      return false;
+      return settled ? 'rejected' : 'unsettled';
     }
     if (result === undefined) {
       this.#publishFailure(
@@ -222,10 +235,10 @@ export class PluginExecutorBackend implements AgentBackend {
         false,
         queue,
       );
-      return false;
+      return settled ? 'rejected' : 'unsettled';
     }
     this.#publishResult(turnId, messageId, result, queue);
-    return true;
+    return 'published';
   }
 
   async #requestPermission(

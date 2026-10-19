@@ -146,7 +146,10 @@ export function runtimeHostSshOperatorRemoteCommand(
   if (operator.kind !== 'node') throw new Error('Windows Runtime Host operator must use Node');
   const payload = Buffer.from(
     JSON.stringify({
-      ...invocation,
+      executable: invocation.executable,
+      // ProcessStartInfo bypasses Windows PowerShell 5.1's lossy native argument
+      // binder. Encode the argv using the Windows C runtime quoting rules.
+      argumentLine: invocation.args.map(quoteWindowsArgument).join(' '),
       environment,
       modulePath: operator.modulePath,
       deploymentRoot: win32.dirname(operator.modulePath),
@@ -155,15 +158,20 @@ export function runtimeHostSshOperatorRemoteCommand(
     'utf8',
   ).toString('base64');
   const script = [
+    `$ProgressPreference='SilentlyContinue'`,
     `$p=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payload}'))|ConvertFrom-Json`,
     `if($p.missingOperatorIsSuccess -and -not (Test-Path -LiteralPath $p.modulePath -PathType Leaf)){if(-not (Test-Path -LiteralPath $p.deploymentRoot)){exit 0}else{exit 1}}`,
     `foreach($e in $p.environment.psobject.Properties){[Environment]::SetEnvironmentVariable($e.Name,[string]$e.Value,'Process')}`,
     `$code=1`,
-    `try{& ([string]$p.executable) @($p.args|ForEach-Object {[string]$_});$code=if($null -eq $LASTEXITCODE){1}else{$LASTEXITCODE}}catch{$code=1}`,
+    `try{$start=New-Object System.Diagnostics.ProcessStartInfo;$start.FileName=[string]$p.executable;$start.Arguments=[string]$p.argumentLine;$start.UseShellExecute=$false;$child=[System.Diagnostics.Process]::Start($start);try{$child.WaitForExit();$code=$child.ExitCode}finally{$child.Dispose()}}catch{$code=1}`,
     `exit $code`,
   ].join(';');
   const encoded = Buffer.from(script, 'utf16le').toString('base64');
   return `powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand ${encoded}`;
+}
+
+function quoteWindowsArgument(value: string): string {
+  return `"${value.replace(/(\\*)"/gu, '$1$1\\"').replace(/(\\+)$/u, '$1$1')}"`;
 }
 
 async function waitForActivation(

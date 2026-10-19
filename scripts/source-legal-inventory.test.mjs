@@ -52,6 +52,18 @@ test('mixed-origin DeepSeek profile carries both scopes without a whole-file ASF
   assert.doesNotMatch(profile, /Licensed to the Apache Software Foundation \(ASF\)/);
 });
 
+test('mixed-origin cursor files retain the upstream MIT scope without a whole-file ASF claim', async () => {
+  for (const name of ['palette.ts', 'cursor-engine.ts']) {
+    const contents = await readFile(
+      join(root, 'apps/desktop/src/renderer/computer-use-overlay/engine', name),
+      'utf8',
+    );
+    assert.match(contents, /Copyright \(c\) 2025 Cua AI, Inc\./);
+    assert.match(contents, /MIT License/);
+    assert.doesNotMatch(contents, /Licensed to the Apache Software Foundation \(ASF\)/);
+  }
+});
+
 test('PawWork browser provenance is pinned to the confirmed transfer boundary', async () => {
   const audit = await readFile(join(root, 'docs/code-origin-audit.md'), 'utf8');
   const section = audit

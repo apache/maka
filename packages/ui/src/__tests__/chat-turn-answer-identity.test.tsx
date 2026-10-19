@@ -1049,3 +1049,30 @@ test('WorkHub feedback is a system notice without a user message bubble', async 
   assert.ok(container.querySelector('[role="status"][aria-label="Task result update · Order summary"]'));
   assert.ok(container.textContent.includes('the answer'));
 });
+
+
+test('assistant Inbox receipt renders the user message without a fake completed reply', async () => {
+  const { container, root } = domRoot();
+  const turn = { ...turnWith([]), turnId: 'assistant-input:receipt-1',
+    status: 'completed' as const, statusSource: 'recorded' as const };
+  await act(() => root.render(<LocaleProvider locale="zh-CN"><TurnView turn={turn} /></LocaleProvider>));
+  assert.match(container.textContent ?? '', /ask/);
+  assert.doesNotMatch(container.textContent ?? '', /Completed|已完成|Copy answer/i);
+});
+
+
+test('host avatar appears on assistant messages and can change without changing the conversation', async () => {
+  const { container, root } = domRoot();
+  const turn = { ...turnWith([{ ...ANSWER, live: false }]), status: 'completed' as const };
+  const render = (emoji?: string) => act(() => root.render(<LocaleProvider locale="en"><TurnView
+    turn={turn} assistantAvatar={emoji ? <span role="img" aria-label="Assistant avatar">{emoji}</span> : undefined}
+  /></LocaleProvider>));
+  await render('🤖');
+  assert.equal(container.querySelector('.maka-assistant-answer [role="img"]')?.textContent, '🤖');
+  assert.equal(container.querySelector('.maka-user-message [role="img"]'), null);
+  await render('🦊');
+  assert.equal(container.querySelector('.maka-assistant-answer [role="img"]')?.textContent, '🦊');
+  assert.ok(container.textContent.includes('the answer'));
+  await render();
+  assert.equal(container.querySelector('[aria-label="Assistant avatar"]'), null);
+});

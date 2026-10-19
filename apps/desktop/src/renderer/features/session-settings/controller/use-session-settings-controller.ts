@@ -135,6 +135,8 @@ export function useSessionSettingsController<Owner extends { sessionId?: string 
 
   return {
     clear: intent.clear,
+    settled: intent.settled,
+    beginSettlement: intent.beginSettlement,
     overlays: intent.overlayByChannel,
     newTask,
     setSessionModel: (sessionId: string, modelTarget: SessionModelTarget) =>

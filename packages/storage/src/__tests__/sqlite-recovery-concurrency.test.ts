@@ -236,6 +236,7 @@ describe('SQLite recovery authority multi-process races', () => {
               .user_version,
             SQLITE_RUNTIME_SCHEMA_VERSION,
           );
+          assert.equal(database.prepare('PRAGMA auto_vacuum').get()?.auto_vacuum, 2);
         } finally {
           database.close();
         }

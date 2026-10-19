@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { BotStore } from '../assistant/bot/store.js';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
@@ -75,7 +76,7 @@ import { fingerprintAgentGraphRunnableIntent } from '@maka/runtime/stream-graph-
 import type { AgentGraphRunnableIntent } from '@maka/runtime/stream-graph-readiness';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
-import { createSqliteRuntimeStore } from '@maka/storage/sqlite-runtime-store';
+import { SqliteRuntimeStore, createSqliteRuntimeStore } from '@maka/storage/sqlite-runtime-store';
 import { createSessionStore } from '@maka/storage/session-store';
 import {
   LONG_TERM_MEMORY_DATABASE_NAME,
@@ -110,6 +111,7 @@ import {
   RUNTIME_HOST_PROTOCOL_VERSION,
   type ClientCapabilityHostFrame,
 } from '../protocol/index.js';
+import { PersonalAssistantService } from '../assistant/service.js';
 import { RootTurnCoordinator } from '../server/root-turn-coordinator.js';
 import { HostWorkHubResultCoordinator } from '../server/workhub-result-coordinator.js';
 import { readLedgerMessages } from './fixtures/ledger-transcript.js';
@@ -168,6 +170,200 @@ test('Plugin Agent background messages cannot race Root Turn startup recovery', 
         runtime.followup(initiator.sessionId, 'continue unfinished index', initiator),
         /not ready for Plugin Agent messages/,
       );
+    } finally {
+      await composition.close();
+    }
+  });
+});
+
+test('assistant messages enter a durable Inbox through real Host admission without running the visible chat', {
+  timeout: 20000,
+}, async (t) => {
+  let assistant!: PersonalAssistantService;
+  let mailbox!: BotStore;
+  const delivered = BotStore.prototype.delivered;
+  t.mock.method(BotStore.prototype, 'delivered', function (this: BotStore, id: string) {
+    mailbox = this;
+    return delivered.call(this, id);
+  });
+  const recover = PersonalAssistantService.prototype.recover;
+  t.mock.method(
+    PersonalAssistantService.prototype,
+    'recover',
+    function (this: PersonalAssistantService, ...args: Parameters<typeof recover>) {
+      assistant = this;
+      return recover.apply(this, args);
+    },
+  );
+  await withCompositionRoot(async ({ root, owner }) => {
+    const executed = new Set<string>();
+    const { composition, manager } = await createCapturedExecutionComposition(owner, {
+      primaryBackendFactory: (context) =>
+        new (class extends FakeBackend {
+          override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+            executed.add(context.sessionId);
+            yield* super.send({ ...input, text: FAKE_HOLD_OPEN_PROMPT });
+          }
+        })(context),
+    });
+    const residencies = new HostResidencyRegistry();
+    const caller: ConnectionContext = {
+      hostEpoch: 'execution-composition-test',
+      connectionId: 'client',
+      principal: 'local_owner',
+      principalKind: 'local_owner',
+      acquireResidency: () => residencies.acquire('assistant-test'),
+    };
+    try {
+      const enabled = await composition.handlers['personal-assistant.call'](
+        { method: 'assistant.set-enabled', input: { enabled: true } },
+        caller,
+      );
+      assert.equal(enabled.ok, true);
+      const chat = await manager.createSession({
+        cwd: root,
+        llmConnectionId: FAKE_CONNECTION_ID,
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'ask',
+        labels: ['personal-assistant'],
+      });
+      const bound = await composition.handlers['personal-assistant.call'](
+        { method: 'assistant.bind', input: { sessionId: chat.id } },
+        caller,
+      );
+      assert.equal(bound.ok, true, JSON.stringify(bound));
+      const frames: any[] = [];
+      composition.continuity!.attachConnection('client', {
+        send: async (frame) => {
+          frames.push(frame);
+        },
+      });
+      const opened = await composition.handlers['subscription.open'](
+        { sessionId: chat.id, transcript: { kind: 'tail', maxBytes: 64000 } },
+        caller,
+      );
+      assert.ok(opened.ok, JSON.stringify(opened));
+      if (!opened.ok) return;
+      await composition.handlers['subscription.ready'](
+        { subscriptionId: opened.result.subscriptionId },
+        caller,
+      );
+      const messageId = randomUUID();
+      const submit = () =>
+        composition.handlers['turn.message.submit'](
+          {
+            originHostEpoch: 'execution-composition-test',
+            sessionId: chat.id,
+            messageId,
+            content: { text: '帮我安排一下，先别直接执行。', inlineReferences: [] },
+            placement: 'current_turn',
+          },
+          caller,
+        );
+      const first = await submit();
+      assert.equal(first.ok, true, JSON.stringify(first));
+      if (first.ok) assert.equal(first.result.disposition, 'inbox');
+      assert.deepEqual(await submit(), first);
+      // Canonical legacy conversation storage remains usable without a model Turn.
+      const sessionStore = createSessionStore(root);
+      const messages = await sessionStore.readMessages(chat.id);
+      assert.equal(messages.filter((row) => row.id === messageId).length, 1);
+      // Crash window: canonical history committed, outbox acknowledgement did not.
+      mailbox.db.prepare('UPDATE outbox SET delivered=0 WHERE id=?').run(messageId);
+      await assistant.receiveUser(chat.id, messageId, {
+        text: '帮我安排一下，先别直接执行。',
+        inlineReferences: [],
+      });
+      assert.equal(mailbox.pendingVisible().length, 0);
+      assert.equal(
+        (await sessionStore.readMessages(chat.id)).filter((row) => row.id === messageId).length,
+        1,
+      );
+      // Semantic changes must still be rejected rather than silently treated as replay.
+      const row = mailbox.db.prepare('SELECT payload FROM outbox WHERE id=?').get(messageId)!;
+      const altered = { ...JSON.parse(String(row.payload)), text: 'different content' };
+      mailbox.db
+        .prepare('UPDATE outbox SET payload=?, delivered=0 WHERE id=?')
+        .run(JSON.stringify(altered), messageId);
+      await assert.rejects(
+        assistant.receiveUser(chat.id, messageId, {
+          text: '帮我安排一下，先别直接执行。',
+          inlineReferences: [],
+        }),
+        /Assistant message identity conflict/,
+      );
+      mailbox.db
+        .prepare('UPDATE outbox SET payload=?, delivered=0 WHERE id=?')
+        .run(String(row.payload), messageId);
+      await assistant.receiveUser(chat.id, messageId, {
+        text: '帮我安排一下，先别直接执行。',
+        inlineReferences: [],
+      });
+      const proof = await composition.handlers['turn.message.execution.query'](
+        { sessionId: chat.id, messageIds: [messageId] },
+        caller,
+      );
+      assert.deepEqual(proof, {
+        ok: true,
+        result: { resolutions: [{ messageId, state: 'inbox' }] },
+      });
+      let worker: string | undefined;
+      await pollFor(async () => {
+        worker = ((await assistant.call('assistant.status', { includeMemory: false })) as any).bot
+          ?.sessionId;
+        return !!worker && executed.has(worker);
+      });
+      const send = assistant.tools.find((tool) => tool.name === 'SendUser')!;
+      const call = {
+        sessionId: worker!,
+        turnId: randomUUID(),
+        toolCallId: randomUUID(),
+        cwd: root,
+        abortSignal: new AbortController().signal,
+        emitOutput() {},
+      };
+      await send.impl(
+        { messageId: 'host-reply', messages: [{ summary: '已接手', text: '好的，我来安排。' }] },
+        call,
+      );
+      await send.impl(
+        { messageId: 'host-reply', messages: [{ summary: '已接手', text: '好的，我来安排。' }] },
+        call,
+      );
+      const replies = (await sessionStore.readMessages(chat.id)).filter(
+        (row) => row.type === 'assistant',
+      );
+      assert.equal(replies.length, 1);
+      assert.equal(replies[0].text, '好的，我来安排。');
+      assert.equal(replies[0].summary, '已接手');
+      // Both visible directions are published in the canonical continuity snapshot.
+      await pollFor(() =>
+        frames.some((frame) => frame.kind === 'subscription.transcript_advanced'),
+      );
+      const continuity = await composition.handlers['subscription.open'](
+        { sessionId: chat.id, transcript: { kind: 'tail', maxBytes: 64000 } },
+        caller,
+      );
+      assert.equal(continuity.ok, true, JSON.stringify(continuity));
+      if (continuity.ok) {
+        const parts = continuity.result.transcript!.durable.fragments;
+        assert.match(
+          parts.map((part) => Buffer.from(part.data, 'base64').toString('utf8')).join(''),
+          /好的，我来安排/,
+        );
+        assert.match(
+          parts.map((part) => Buffer.from(part.data, 'base64').toString('utf8')).join(''),
+          /已接手/,
+        );
+      }
+      assert.equal(executed.has(chat.id), false);
+      const direct = await composition.handlers['turn.start'](
+        { sessionId: chat.id, turnId: randomUUID(), content: { text: 'bypass inbox' } },
+        caller,
+      );
+      assert.equal(direct.ok, false);
+      assert.match(JSON.stringify(direct), /Inbox/);
     } finally {
       await composition.close();
     }
@@ -299,7 +495,25 @@ test('Plugin Agent snapshot exposes pending interaction without losing ownership
       assert.equal(header.model, parent.model);
       assert.equal(header.permissionMode, parent.permissionMode);
       assert.equal(header.thinkingLevel, parent.thinkingLevel);
-      await runtime.followup(child.sessionId, FAKE_ASK_USER_QUESTION_PROMPT, invocation);
+      const wakeId = randomUUID();
+      assert.deepEqual(await runtime.messageExecution!(child.sessionId, wakeId, invocation), {
+        messageId: wakeId,
+        state: 'not_admitted',
+      });
+      await runtime.followup(child.sessionId, FAKE_ASK_USER_QUESTION_PROMPT, invocation, {
+        messageId: wakeId,
+      });
+      assert.equal(
+        ((await runtime.messageExecution!(child.sessionId, wakeId, invocation)) as any).state,
+        'owned',
+      );
+      await assert.rejects(
+        runtime.messageExecution!(child.sessionId, wakeId, {
+          ...invocation,
+          sessionId: randomUUID(),
+        }),
+        /ownership tree/,
+      );
       await waitFor(
         async () =>
           ((await runtime.snapshot(child.sessionId, invocation)) as any).agent.status ===
@@ -5133,4 +5347,98 @@ test('production Host loads visible remote media independently of agent sandbox 
     syncBuiltinESMExports();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
+});
+
+test('disabling during Bot publication fences the uncommitted message and permits later replay', {
+  timeout: 20000,
+}, async (t) => {
+  const entered = deferred<void>();
+  const release = deferred<void>();
+  let target = '';
+  let paused = false;
+  const read = SqliteRuntimeStore.prototype.readRuntimeEvents;
+  t.mock.method(
+    SqliteRuntimeStore.prototype,
+    'readRuntimeEvents',
+    async function (this: SqliteRuntimeStore, sessionId: string, runId: string) {
+      const result = await read.call(this, sessionId, runId);
+      if (sessionId === target && runId.startsWith('assistant-message-') && !paused) {
+        paused = true;
+        entered.resolve();
+        await release.promise;
+      }
+      return result;
+    },
+  );
+  await withCompositionRoot(async ({ root, owner }) => {
+    const { composition, manager } = await createCapturedExecutionComposition(owner, {
+      primaryBackendFactory: (context) => new FakeBackend(context),
+    });
+    const caller: ConnectionContext = {
+      hostEpoch: 'execution-composition-test',
+      connectionId: 'client',
+      principal: 'local_owner',
+      principalKind: 'local_owner',
+      acquireResidency: () => new HostResidencyRegistry().acquire('disable-race'),
+    };
+    const call = (method: any, input: any = {}) =>
+      composition.handlers['personal-assistant.call']({ method, input }, caller);
+    try {
+      assert.equal((await call('assistant.set-enabled', { enabled: true })).ok, true);
+      const chat = await manager.createSession({
+        cwd: root,
+        llmConnectionId: FAKE_CONNECTION_ID,
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'ask',
+        labels: ['personal-assistant'],
+      });
+      assert.equal((await call('assistant.bind', { sessionId: chat.id })).ok, true);
+      target = chat.id;
+      const messageId = randomUUID();
+      const submit = () =>
+        composition.handlers['turn.message.submit'](
+          {
+            originHostEpoch: 'execution-composition-test',
+            sessionId: chat.id,
+            messageId,
+            content: { text: 'Keep this accepted request for later.' },
+            placement: 'current_turn',
+          },
+          caller,
+        );
+      const pending = submit();
+      await entered.promise;
+      let stopped = false;
+      const disable = call('assistant.set-enabled', { enabled: false }).then((result) => {
+        stopped = true;
+        return result;
+      });
+      await pollFor(async () =>
+        JSON.stringify(await call('assistant.enablement')).includes('"enabled":false'),
+      );
+      assert.equal(stopped, false, 'disable drains in-flight publication before returning');
+      release.resolve();
+      await pending;
+      assert.equal((await disable).ok, true);
+      const sessionStore = createSessionStore(root);
+      assert.equal(
+        (await sessionStore.readMessages(chat.id)).filter((row) => row.id === messageId).length,
+        0,
+      );
+      assert.equal((await submit()).ok, false, 'disabled assistant rejects new admission');
+      assert.equal((await call('assistant.set-enabled', { enabled: true })).ok, true);
+      await submit();
+      await pollFor(async () =>
+        (await sessionStore.readMessages(chat.id)).some((row) => row.id === messageId),
+      );
+      assert.equal(
+        (await sessionStore.readMessages(chat.id)).filter((row) => row.id === messageId).length,
+        1,
+      );
+    } finally {
+      release.resolve();
+      await composition.close();
+    }
+  });
 });

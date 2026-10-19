@@ -452,7 +452,8 @@ export class DesktopSessionLocalService {
           locallyInvalidated = true;
           return;
         }
-        this.store.saveCatalog(target.partition, sessions.map(toDesktopHostSessionSummary));
+        const removed = this.store.saveCatalog(target.partition, sessions.map(toDesktopHostSessionSummary));
+        for (const sessionId of removed) this.#snapshots.delete(`${target.partition}:${sessionId}`);
         // Publish successful observations even under continuous Host events.
         // The captured version keeps this observation dirty if another change
         // arrived while reading, so one trailing refresh can converge.
@@ -506,6 +507,11 @@ export class DesktopSessionLocalService {
     this.#drainCatalogRefreshes();
   }
 
+  removeSession(target: DesktopSessionLocalTarget, sessionId: string): void {
+    this.#snapshots.delete(`${target.partition}:${sessionId}`);
+    this.store.removeSession(target.partition, sessionId);
+  }
+
   cacheTranscript(scope: DesktopTargetScope, snapshot: DesktopTranscriptReplicaSnapshot): void {
     if (this.#closed) return;
     let target: DesktopSessionLocalTarget;
@@ -529,11 +535,10 @@ export class DesktopSessionLocalService {
     const pending = this.#snapshots.has(key);
     this.#snapshots.set(key, { target, snapshot });
     if (pending) return;
-    const revision = this.store.revision;
     setImmediate(() => {
       const latest = this.#snapshots.get(key);
       this.#snapshots.delete(key);
-      if (!latest || !this.#current(latest.target) || revision !== this.store.revision) return;
+      if (!latest || !this.#current(latest.target)) return;
       try {
         this.store.saveTranscript(latest.target.partition, latest.snapshot);
       } catch (error) {
@@ -793,6 +798,8 @@ export class DesktopSessionLocalService {
         },
         error: undefined,
       });
+    } else if (resolution?.state === 'inbox') {
+      this.store.update({ ...current, state: 'accepted', result: { disposition: 'inbox', skillInvocation: EMPTY_SKILL_INVOCATION }, error: undefined });
     } else if (resolution?.state === 'pending') {
       // The Host durably holds a queued admission for it. Delivery succeeded;
       // the Host queue owns the ordering, so this local copy yields.
@@ -954,7 +961,7 @@ export function registerDesktopSessionLocalIpc(deps: {
         .some((record) => record.intent.originHostEpoch)
     )
       throw new Error('Session has a dispatched message');
-    service.store.removeSession(target.partition, sessionId);
+    service.removeSession(target, sessionId);
     deps.changed(target.scope, sessionId);
     return true;
   });

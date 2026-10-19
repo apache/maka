@@ -208,6 +208,8 @@ export interface MakaTool<P = any, R = unknown> {
   recoveryMode?: ToolRecoveryMode;
   /** Step-level admission contract. Exclusive tools cannot share an assistant step. */
   executionSemantics?: 'parallel' | 'exclusive_step';
+  /** Trusted exclusive tool requests normal completion after durable success; finish guards still apply. */
+  finishTurnOnSuccess?: boolean;
   /** Nested CodeMode admission. Ordinary tools are nestable by default. */
   nesting?: 'nestable' | 'direct_only';
   /** Optional permission/persistence projection derived from isolated execution args. */

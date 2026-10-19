@@ -25,6 +25,7 @@ import { activeHostTurn } from '../../../application/contracts/session-execution
 import { getDesktopConversationCopy } from '../../../application/contracts/conversation-copy.js';
 import { parseDesktopSlashCommand } from '../../../application/contracts/desktop-slash-command.js';
 import { catalogWatchedRowsUsable } from '../../../application/contracts/session-catalog/catalog-row-watch.js';
+import { useSessionSettingsSettlement } from '../../../application/contracts/session-settings-settlement.js';
 import { useStableActions } from '../../../application/contracts/use-stable-actions.js';
 import { getShellCopy, localizedShellErrorMessage } from '../../../locales/shell-copy.js';
 import type {
@@ -69,6 +70,7 @@ export function useComposerSubmission<Owner extends ComposerSurfaceOwner>(input:
   const services = useComposerSubmissionServices();
   const { workspace, commands } = useConversationOwner();
   const queue = useConversationQueueCommands();
+  const sessionSettings = useSessionSettingsSettlement();
   const composerRef = queue.composer;
   const uiLocale = useUiLocale();
   const toastApi = useToast();
@@ -109,6 +111,7 @@ export function useComposerSubmission<Owner extends ComposerSurfaceOwner>(input:
     captureSelection: commands.captureSelection,
     checkTaskSubmissionReadiness: async () =>
       !sharedSessionActive && (!!activeIdRef.current || !!newTask.target),
+    awaitSessionSettings: sessionSettings?.settled,
     isNewChatSendSurfaceActive: shell.isNewChatOwnerActive,
     isShellSurfaceOwnerActive: shell.isOwnerActive,
     refreshSessions: shell.refreshSessions,
@@ -166,6 +169,15 @@ export function useComposerSubmission<Owner extends ComposerSurfaceOwner>(input:
     captureStaging: staging.captureSubmission,
     prepareRevisionSend: revision.prepareRevisionSend,
     send: chat.send,
+    // The same owner and selection checks `chat.send` applies, captured before
+    // the submit waits on setting writes.
+    captureSubmitSurface: () => {
+      const owner = shell.captureOwner();
+      const selectionIsCurrent = commands.captureSelection();
+      const hadSession = Boolean(activeIdRef.current);
+      return () => selectionIsCurrent() &&
+        (hadSession ? shell.isOwnerActive(owner) : shell.isNewChatOwnerActive(owner));
+    },
     completeRevisionCopyAttempt: completeTurnRevisionCopyAttempt,
     parseSlashCommand: parseDesktopSlashCommand,
     mergeWorkspaceReferences,

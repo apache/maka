@@ -191,6 +191,21 @@ describe('ASF source release verification', () => {
     }
   });
 
+  test('rejects WASM encoded inside a textual dependency patch', async () => {
+    const wasm = Buffer.from([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
+    const fixture = createFixtureCandidate({
+      'patches/worker.patch': `+const wasm = "${wasm.toString('base64')}";\n`,
+    });
+    try {
+      await assert.rejects(
+        () => verifySourceCandidate({ archivePath: fixture.archivePath }),
+        /Compiled artifact.*worker\.patch.*Base64 WASM/,
+      );
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
   test('rejects compiled artifacts regardless of their file extension', async () => {
     const formats = new Map([
       ['ELF', Buffer.from([0x7f, 0x45, 0x4c, 0x46])],
