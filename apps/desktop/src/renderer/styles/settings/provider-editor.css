@@ -44,6 +44,27 @@
   color: var(--muted-foreground);
 }
 
+/* The model rows of a provider connection, in their own scroll viewport.
+ * Settings → 模型 → a connection expands every chat-capable model into the
+ * page, so a large catalog made the page itself hundreds of rows tall: the
+ * filter scrolled away while browsing, and the advanced request settings
+ * below sat under the whole list.
+ *
+ * `max-height`, not `height`: a small catalog, a filtered-down list and the
+ * empty-result row are as tall as their content, with no blank box reserved
+ * under them. The bound tracks the window — 60vh keeps the surrounding
+ * section visible in a short window, and the 32rem cap stops the list from
+ * eating a tall one.
+ *
+ * `overscroll-behavior` is deliberately left at `auto`: once the list is
+ * scrolled to its end the wheel carries on down the settings page, so the
+ * viewport cannot swallow the gesture of a user heading for the sections
+ * below it. */
+.providerModelRowsViewport {
+  max-height: min(32rem, 60vh);
+  overflow-y: auto;
+}
+
 .providerEndpointField {
   display: grid;
   gap: 6px;

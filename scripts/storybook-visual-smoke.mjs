@@ -240,6 +240,13 @@ export function storyViewport(storyId) {
   // The progress card also uses viewport-relative picker sizing inside its
   // native 360px WebContents; a narrow wrapper alone does not reproduce that.
   if (storyId === 'product-workhub--progress-model-picker') return { width: 360, height: 900 };
+  // A short, narrow window is the case the model-row viewport's 60vh bound
+  // exists for: at 900px tall the 32rem cap wins instead, and the story would
+  // never exercise the branch that keeps the settings around the list on
+  // screen. Narrow as well, so the rows' container query runs here too.
+  if (storyId === 'product-settings-providers--large-connection-detail-short-window') {
+    return { width: 480, height: 800 };
+  }
   return storyId.includes('narrow') ? NARROW_RENDER_VIEWPORT : RENDER_VIEWPORT;
 }
 

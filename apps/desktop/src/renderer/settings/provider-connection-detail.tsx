@@ -693,27 +693,46 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
               label={copy.noModelsMatch}
               end={<Button variant="ghost" size="sm" label={copy.cancel} onClick={() => setModelFilter('')} />}
             />
-          ) : visibleModelRows.map(({ id, entry }) => {
-            const label = entry?.displayName?.trim() || id;
-            const rowLabel = entry?.isDefault ? (
-              <HStack gap={2} vAlign="center">
-                <span>{label}</span>
-                <Badge variant="neutral" label={providerCopy.panel.default} />
-              </HStack>
-            ) : label;
-            return (
-                <SettingsRow key={id} label={rowLabel} end={<>
-                  {/* Astryx tooltips resolve a portal on mount, causing a style recalculation per model row. */}
-                  <span title={copy.declareCapabilities}>
-                    <IconButton variant="ghost" size="sm" icon={<Icon icon="wrench" size="sm" />}
-                      label={copy.declareCapabilitiesAria(label)}
-                      isDisabled={allActionsBusy} onClick={() => openRow({ model: id })} />
-                  </span>
-                  {modelEnableSwitch(id, label)}
-                </>} />
+          ) : (
+            /* The rows get their own viewport so a large catalog stops
+               stretching the page: a provider with hundreds of models used to
+               push the filter above it out of view and bury the advanced
+               request settings below under the whole list. The filter, the
+               model count and the section actions stay outside this element,
+               so they hold still while the rows scroll.
 
-            );
-          })}
+               A second `.settingsRows` rather than a bare div: the row
+               styling in rows.css is written as `.settingsRows > …`, so the
+               rows keep their edge-to-edge track, their hover wash and the
+               460px container query inside the viewport too.
+
+               `max-height` only, so a short or filtered-down list is as tall
+               as its rows instead of reserving an empty box, and no
+               `overscroll-behavior`: a wheel that reaches the end of the list
+               should carry on down the page rather than stop dead. */
+            <div className="settingsRows providerModelRowsViewport">
+              {visibleModelRows.map(({ id, entry }) => {
+                const label = entry?.displayName?.trim() || id;
+                const rowLabel = entry?.isDefault ? (
+                  <HStack gap={2} vAlign="center">
+                    <span>{label}</span>
+                    <Badge variant="neutral" label={providerCopy.panel.default} />
+                  </HStack>
+                ) : label;
+                return (
+                  <SettingsRow key={id} label={rowLabel} end={<>
+                    {/* Astryx tooltips resolve a portal on mount, causing a style recalculation per model row. */}
+                    <span title={copy.declareCapabilities}>
+                      <IconButton variant="ghost" size="sm" icon={<Icon icon="wrench" size="sm" />}
+                        label={copy.declareCapabilitiesAria(label)}
+                        isDisabled={allActionsBusy} onClick={() => openRow({ model: id })} />
+                    </span>
+                    {modelEnableSwitch(id, label)}
+                  </>} />
+                );
+              })}
+            </div>
+          )}
         </SettingsSection>
       )}
       <ModelParametersDialog

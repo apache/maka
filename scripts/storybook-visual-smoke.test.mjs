@@ -27,6 +27,7 @@ import {
   jobLabel,
   rescuedRenderSummary,
   storyUrl,
+  storyViewport,
 } from './storybook-visual-smoke.mjs';
 
 const REFERENCE_STORY_ID = 'product-shell-official-appshell--native-conversation';
@@ -277,4 +278,20 @@ test('WorkHub suggestion geometry runs at both widths in both themes', () => {
       ['dark', 720],
     ],
   );
+});
+
+test('the provider model-row viewport story runs in a short window', () => {
+  const shortWindow = storyViewport(
+    'product-settings-providers--large-connection-detail-short-window',
+  );
+  assert.deepEqual(shortWindow, { width: 480, height: 800 });
+  // The height is what the story is for: the rows are capped at
+  // min(32rem, 60vh), and only under ~853px tall does 60vh become the
+  // smaller of the two. At the default 900px the cap would win and the
+  // story would assert the same thing twice.
+  assert.ok(shortWindow.height * 0.6 < 32 * 16);
+  assert.deepEqual(storyViewport('product-settings-providers--large-connection-detail'), {
+    width: 1280,
+    height: 900,
+  });
 });
