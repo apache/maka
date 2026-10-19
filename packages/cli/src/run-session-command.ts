@@ -550,13 +550,13 @@ class SessionRunObserver {
   }
 
   async result(turnId: string): Promise<MakaRunSessionResult | undefined> {
-    const classifier = new TurnOutcomeClassifier(turnId, { recoverStoredRetries: true });
+    const classifier = new TurnOutcomeClassifier(turnId);
     await this.#channel.replayTranscript(async (messages: readonly StoredMessage[]) => {
       acceptStoredTurn(classifier, messages, turnId);
     }, this.#signal);
     const outcome = classifier.outcome('pending');
     if (!outcome) return undefined;
-    if (outcome.status === 'completed' && outcome.sandboxBoundary === 'none') {
+    if (outcome.status === 'completed') {
       return {
         sessionId: this.#sessionId,
         status: 'completed',
@@ -566,10 +566,7 @@ class SessionRunObserver {
     return {
       sessionId: this.#sessionId,
       status: 'failed',
-      error:
-        outcome.sandboxBoundary === 'unresolved'
-          ? 'Turn encountered an unresolved sandbox boundary'
-          : (outcome.failure?.message ?? outcome.failure?.class ?? 'Turn failed'),
+      error: outcome.failure?.message ?? outcome.failure?.class ?? 'Turn failed',
     };
   }
 

@@ -22,6 +22,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { RuntimeHostOperationError } from '@maka/runtime-host/client';
 import type { UserMessageInput } from '@maka/core/runtime-inputs';
 import type { SessionSummary } from '@maka/core/session';
 import { parseMakaRunArgs, runMakaTextCliCore, type MakaRunAdapter } from '../run-command-core.js';
@@ -243,6 +244,32 @@ describe('maka run argument parsing', () => {
     assert.equal(parseMakaRunArgs(['check', '--model', 'm', '--model', 'other']).kind, 'error');
   });
 
+  test('usage errors honor explicit --json but not a literal prompt after --', async () => {
+    for (const [args, json] of [
+      [['--bogus', '--json'], true],
+      [['--bogus', '--', '--json'], false],
+    ] as const) {
+      const stdout: string[] = [];
+      const stderr: string[] = [];
+      const exit = await runMakaTextCliCore(
+        args,
+        {
+          listSessions: async () => assert.fail('no Host calls'),
+          createContext: async () => assert.fail('no execution'),
+        },
+        { writeStdout: (text) => stdout.push(text), writeStderr: (text) => stderr.push(text) },
+      );
+      assert.equal(exit, 2);
+      if (json) {
+        assert.deepEqual(JSON.parse(stdout.join('')), { error: 'unknown option: --bogus' });
+        assert.deepEqual(stderr, []);
+      } else {
+        assert.deepEqual(stdout, []);
+        assert.match(stderr.join(''), /unknown option: --bogus/);
+      }
+    }
+  });
+
   test('recap prints text or JSON without reading stdin or returning the Turn failure code', async () => {
     for (const json of [false, true]) {
       const stdout: string[] = [];
@@ -287,8 +314,103 @@ describe('maka run argument parsing', () => {
       { writeStdout: (text) => stdout.push(text), writeStderr: (text) => stderr.push(text) },
     );
     assert.equal(exit, 1);
-    assert.deepEqual(stdout, []);
-    assert.match(stderr.join(''), /Session recap failed: provider/);
+    assert.deepEqual(JSON.parse(stdout.join('')), {
+      sessionId: 's',
+      error: 'Session recap failed: provider',
+    });
+    assert.deepEqual(stderr, []);
+  });
+
+  test('operation errors use JSON only when explicitly requested and never invent Turn state', async () => {
+    for (const flags of [[], ['--status'], ['--no-wait', 'hello'], ['--json']]) {
+      const stdout: string[] = [];
+      const stderr: string[] = [];
+      const exit = await runMakaTextCliCore(
+        ['--session', 's', ...flags],
+        {
+          listSessions: async () => [],
+          createContext: async () => assert.fail('must not start execution'),
+          runSession: async () => {
+            throw new RuntimeHostOperationError(
+              'session.configuration.update',
+              'operation_conflict',
+              'Session is busy',
+            );
+          },
+        },
+        {
+          stdinIsTTY: () => true,
+          writeStdout: (text) => stdout.push(text),
+          writeStderr: (text) => stderr.push(text),
+        },
+      );
+      assert.equal(exit, 1);
+      if (flags.includes('--json')) {
+        assert.deepEqual(JSON.parse(stdout.join('')), {
+          sessionId: 's',
+          error: 'Session is busy',
+          code: 'operation_conflict',
+        });
+        assert.deepEqual(stderr, []);
+      } else {
+        assert.deepEqual(stdout, []);
+        assert.equal(stderr.join(''), 'maka run: Session is busy\n');
+      }
+    }
+  });
+
+  test('terminal errors use text by default and JSON only with --json', async () => {
+    for (const json of [false, true]) {
+      const stdout: string[] = [];
+      const stderr: string[] = [];
+      const result = { sessionId: 's', status: 'failed' as const, error: 'Insufficient credits' };
+      const exit = await runMakaTextCliCore(
+        ['--session', 's', '--wait', ...(json ? ['--json'] : [])],
+        {
+          listSessions: async () => [],
+          createContext: async () => assert.fail('no execution'),
+          runSession: async () => result,
+        },
+        { writeStdout: (text) => stdout.push(text), writeStderr: (text) => stderr.push(text) },
+      );
+      assert.equal(exit, 1);
+      if (json) {
+        assert.deepEqual(JSON.parse(stdout.join('')), result);
+        assert.deepEqual(stderr, []);
+      } else {
+        assert.deepEqual(stdout, []);
+        assert.equal(stderr.join(''), 'maka run: Insufficient credits\n');
+      }
+    }
+  });
+
+  test('JSON startup errors preserve Host codes without a fabricated Session status', async () => {
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const exit = await runMakaTextCliCore(
+      ['hello', '--json'],
+      {
+        listSessions: async () => [],
+        createContext: async () => {
+          throw new RuntimeHostOperationError(
+            'session.create',
+            'operation_unavailable',
+            'No default model',
+          );
+        },
+      },
+      {
+        stdinIsTTY: () => true,
+        writeStdout: (text) => stdout.push(text),
+        writeStderr: (text) => stderr.push(text),
+      },
+    );
+    assert.equal(exit, 2);
+    assert.deepEqual(JSON.parse(stdout.join('')), {
+      error: 'No default model',
+      code: 'operation_unavailable',
+    });
+    assert.deepEqual(stderr, []);
   });
 
   test('completed status and stop receipts remain visible without --json', async () => {
@@ -472,6 +594,13 @@ describe('maka run process contract', () => {
     assert.match(result.stderr, /sandbox boundary expansion is unavailable/);
     assert.doesNotMatch(result.stderr, /not denied/);
     assert.equal(result.stdout, '');
+  });
+
+  test('a failed tool does not override a completed blocking Turn', async () => {
+    const result = await runFixture(['hello'], { scenario: 'sandbox-tool-error' });
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, 'prompt=hello\n');
+    assert.equal(result.stderr, '');
   });
 
   test('returns exit 130 on SIGINT', async () => {

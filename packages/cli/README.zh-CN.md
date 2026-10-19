@@ -143,8 +143,14 @@ maka run --session "$session" --resume --json
 | `--recap` | 摘要文本 | 独立摘要生成成功 |
 
 在 wait、result、recap 上加 `--json` 可统一为结构化结果。`status` 表示生命周期，
-`finalOutput` 是任务答案，`recap` 是进展，`submission` 是接收回执。CLI 错误写入 stderr，
-此时 stdout 可能为空。远程 Host 的每次调用都应携带相同的 `--host <profile-id>`。
+`finalOutput` 是任务答案，`recap` 是进展，`submission` 是接收回执。
+远程 Host 的每次调用都应携带相同的 `--host <profile-id>`。
+
+拒绝审批会将决定反馈给模型，同一个 Turn 可以在现有权限内继续或说明阻碍。工具失败本身不会
+覆盖 Runtime 的终态。wait 等到 Turn 结束或下一次交互时返回；`--deny --no-wait` 只提交决定。
+错误默认以简短文本输出到 stderr；显式 `--json` 才向 stdout 输出结构化错误，保留原始信息和
+Host 已提供的 `code`。操作失败不代表 Session 已失败。
+
 `--session` 继承已保存的设置，并允许持久更新模型、连接和 thinking。工作目录、timeout 和
 Graph 覆盖仍需使用旧选择器 `--resume <id>`；与 `--session` 组合时会在连接前拒绝。
 

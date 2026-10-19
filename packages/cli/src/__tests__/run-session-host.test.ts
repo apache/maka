@@ -519,19 +519,16 @@ test('real Host keeps AskUser alive across CLI processes and returns the origina
       );
       assert.equal(decisionRequests, 0);
       const decided = await cli(root, '--session', sessionId, flag, '--wait', '--json');
-      assert.equal(decided.code, decision === 'allow' ? 0 : 1, decided.stderr);
-      assert.equal(
-        JSON.parse(decided.stdout).status,
-        decision === 'allow' ? 'completed' : 'failed',
-        decided.stdout,
-      );
+      assert.equal(decided.code, 0, decided.stderr);
+      assert.equal(JSON.parse(decided.stdout).status, 'completed');
+      const status = await cli(root, '--session', sessionId, '--status');
+      assert.equal(JSON.parse(status.stdout).status, JSON.parse(decided.stdout).status);
       const savedResult = await cli(root, '--session', sessionId, '--result', '--json');
       assert.deepEqual(JSON.parse(savedResult.stdout), JSON.parse(decided.stdout));
-      if (decision === 'allow')
-        assert.match(
-          JSON.parse(decided.stdout).finalOutput,
-          new RegExp(`Fake sandbox boundary decision: ${decision}`),
-        );
+      assert.match(
+        JSON.parse(decided.stdout).finalOutput,
+        new RegExp(`Fake sandbox boundary decision: ${decision}`),
+      );
       const resumedTurn = await probe.request('turn.query', {
         sessionId,
         turnId: pendingTurn.turnId,
@@ -543,7 +540,7 @@ test('real Host keeps AskUser alive across CLI processes and returns the origina
       if (decision === 'deny') assert.deepEqual(boundaryAfter, boundaryBefore);
       const duplicateDecision = await cli(root, '--session', sessionId, flag, '--wait', '--json');
       assert.equal(duplicateDecision.code, 1);
-      assert.match(duplicateDecision.stderr, /found 0/);
+      assert.match(JSON.parse(duplicateDecision.stdout).error, /found 0/);
     }
     // Session controls inherit saved full access without another elevation flag or config write.
     await updateRuntimeHostSession(

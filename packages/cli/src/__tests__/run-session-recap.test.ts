@@ -307,8 +307,11 @@ test('external CLI combines queries and persists model changes before explicit c
   emptyResponse = true;
   const failed = await cli('--recap', '--json').result;
   assert.equal(failed.code, 1);
-  assert.equal(failed.stdout, '');
-  assert.match(failed.stderr, /Session recap failed: empty_response/);
+  assert.deepEqual(JSON.parse(failed.stdout), {
+    sessionId,
+    error: 'Session recap failed: empty_response',
+  });
+  assert.equal(failed.stderr, '');
   assert.equal((await readSnapshot()).snapshot.rootTurn?.status, 'running');
   emptyResponse = false;
   requestArrived = deferred<void>();
@@ -318,7 +321,8 @@ test('external CLI combines queries and persists model changes before explicit c
   interrupted.child.kill('SIGINT');
   const cancelled = await interrupted.result;
   assert.equal(cancelled.code, 130, cancelled.stderr);
-  assert.equal(cancelled.stdout, '');
+  assert.match(JSON.parse(cancelled.stdout).error, /observation interrupted/);
+  assert.equal(cancelled.stderr, '');
   assert.equal((await readSnapshot()).snapshot.rootTurn?.status, 'running');
   releaseResponse.resolve();
   await cli('--stop', '--json').result;
@@ -329,8 +333,14 @@ test('external CLI combines queries and persists model changes before explicit c
   assert.equal(stopped.code, 0, stopped.stderr);
   assert.equal(JSON.parse(stopped.stdout).status, 'failed');
   assert.equal(JSON.parse(stopped.stdout).recap, recapText);
-  const invalidModel = await cli('--model', 'missing-model').result;
+  const invalidModel = await cli('--model', 'missing-model', '--json').result;
   assert.equal(invalidModel.code, 1);
+  assert.deepEqual(JSON.parse(invalidModel.stdout), {
+    sessionId,
+    error: 'Session model is not enabled',
+    code: 'invalid_request',
+  });
+  assert.equal(invalidModel.stderr, '');
   const thinking = await cli('--thinking', 'high').result;
   assert.equal(thinking.code, 0, thinking.stderr);
   assert.equal(JSON.parse(thinking.stdout).configuration.thinking, 'high');

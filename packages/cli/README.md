@@ -153,9 +153,14 @@ accepted; conflicting values and incompatible actions still produce a usage erro
 | Model settings without an action | JSON with `configuration` | Settings saved; execution is unchanged |
 | `--recap` | Summary text | Independent summary generated |
 
+Rejecting an approval informs the model and lets the same Turn continue within existing permissions
+or explain the blocker. A tool failure alone does not override the Runtime terminal status. Waits
+return at Turn completion or the next interaction; `--deny --no-wait` only submits the decision.
+
 Use `--json` on waits, results, and recaps for uniform structured results. `status` is the lifecycle;
-`finalOutput` is the task answer; `recap` is progress; `submission` is an admission receipt. CLI errors
-go to stderr and can leave stdout empty. For a remote Host, repeat the same `--host <profile-id>`
+`finalOutput` is the task answer; `recap` is progress; `submission` is an admission receipt. Errors are brief text on stderr by default. Explicit `--json` returns structured errors on stdout,
+including the original message and Host `code` when available. An operation error does not assert
+that the Session failed. For a remote Host, repeat the same `--host <profile-id>`
 on every call. `--session` inherits saved settings and accepts persistent model/connection/thinking updates.
 Workspace, timeout, and Graph overrides still require legacy `--resume <id>` and are rejected
 before connecting when combined with `--session`.

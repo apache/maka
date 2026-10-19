@@ -23,9 +23,11 @@ Read the section relevant to the current handoff or control action.
 
 ## Output and exit codes
 
-Without `--json`, completed answers and recaps print text; receipts, status (including `--status --recap`), and pending interactions print JSON. `--json` also structures final answers and recaps. CLI errors go to stderr and can leave stdout empty.
+Without `--json`, completed answers and recaps print text; receipts, status (including `--status --recap`), and pending interactions print JSON. `--json` also structures final answers and recaps. Errors are brief text on stderr by default. Explicit `--json` returns structured errors on stdout; operation errors preserve the original message and any Host `code`, without asserting a Turn status.
 
 `finalOutput`/`error` describe a task outcome; status-only queries can omit them. `recap` summarizes recorded evidence and cannot see unreturned tool results or unrecorded work. `submission` (`started`, `queued`, `steering`, `inbox`) is admission only. `queued` counts follow-up plus steering messages, not position, and admission can omit it until the projection catches up. Status also reports `executionBoundary` and any Host-published `providerRetry`; silence alone does not prove a stall.
+
+A denied approval returns the decision to the model; the same Turn can continue within existing permissions or explain its blocker. A failed tool or rejected expansion does not itself make the Turn fail. Wait returns at Turn completion or the next interaction; `--deny --no-wait` only submits the decision.
 
 Successful status, stop, and recap calls exit 0 even when the observed task failed. Wait/result reflect task failure through their exit code. A failed observer alone does not establish worker failure; inspect status/result before retrying.
 
