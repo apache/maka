@@ -18,6 +18,7 @@
  */
 
 import { useEffect, useState } from 'react';
+import { Button } from '@astryxdesign/core/Button';
 import { useUiLocale } from '@maka/ui';
 import { ChevronLeft, ChevronRight, Minus, ChevronDown, ArrowLeft } from '@maka/ui/icons';
 import { usePersonalAssistantServices } from './services.js';
@@ -50,16 +51,16 @@ export function PersonalAssistantTaskFloat({ sessionId }: { sessionId: string })
   if (!tasks.length && !offline) return null;
   const time = (task: FloatTask) => task.updatedAt ? new Intl.DateTimeFormat(locale, { hour: '2-digit', minute: '2-digit' }).format(task.updatedAt) : '—';
   return <aside className={`assistant-task-float${expanded ? '' : ' is-collapsed'}`} aria-label={copy.tasks}>
-    {!expanded ? <button className="assistant-task-pill" onClick={() => setExpanded(true)} aria-label={`${copy.expand}: ${countText}`}><span className="assistant-task-brand">m</span><span>{countText}</span><ChevronDown size={14} /></button> : <>
-      <header><span className="assistant-task-brand">m</span><strong>Maka</strong><button onClick={() => setExpanded(false)} aria-label={copy.collapse} title={copy.collapse}><Minus size={15} /></button></header>
+    {!expanded ? <Button variant="ghost" className="assistant-task-pill" onClick={() => setExpanded(true)} aria-label={`${copy.expand}: ${countText}`} label={countText} icon={<span className="assistant-task-brand">m</span>} endContent={<ChevronDown size={14} />} /> : <>
+      <header><span className="assistant-task-brand">m</span><strong>Maka</strong><Button variant="ghost" size="sm" isIconOnly label={copy.collapse} onClick={() => setExpanded(false)} tooltip={copy.collapse} icon={<Minus size={15} />} /></header>
       <div className="assistant-task-counts" role="status">{countText}</div>
       <div className="assistant-task-list">
-        {offline ? <p className="assistant-task-empty">{copy.offline}</p> : selected ? <div className="assistant-task-detail"><button className="assistant-task-back" onClick={() => setSelectedId(null)}><ArrowLeft size={12} />{copy.back}</button><strong>{selected.title}</strong><small>{copy.phase[selected.phase]} · {time(selected)}</small><p>{selected.progress}</p></div> : !visibleTasks.length ? <p className="assistant-task-empty">{copy.empty}</p> : visibleTasks.slice(currentPage * 3, currentPage * 3 + 3).map(task => <button key={task.id} className="assistant-task-row" onClick={() => setSelectedId(task.id)}>
+        {offline ? <p className="assistant-task-empty">{copy.offline}</p> : selected ? <div className="assistant-task-detail"><Button variant="ghost" size="sm" className="assistant-task-back" onClick={() => setSelectedId(null)} label={copy.back} icon={<ArrowLeft size={12} />} /><strong>{selected.title}</strong><small>{copy.phase[selected.phase]} · {time(selected)}</small><p>{selected.progress}</p></div> : !visibleTasks.length ? <p className="assistant-task-empty">{copy.empty}</p> : visibleTasks.slice(currentPage * 3, currentPage * 3 + 3).map(task => <Button variant="ghost" label={`${task.title} · ${copy.phase[task.phase]}`} key={task.id} className="assistant-task-row" onClick={() => setSelectedId(task.id)}>
           <span className="assistant-task-heading"><strong title={task.title}>{task.title}</strong><time dateTime={task.updatedAt ? new Date(task.updatedAt).toISOString() : undefined} title={task.updatedAt ? `${copy.updated}: ${new Date(task.updatedAt).toLocaleString(locale)}` : copy.unknown}>{time(task)}</time></span>
           <span className={`assistant-task-progress is-${task.phase}`}><i aria-hidden="true" /><span title={`${copy.phase[task.phase]}${task.progress ? ` · ${task.progress}` : ''}`}><b>{copy.phase[task.phase]}</b>{task.progress ? ` · ${task.progress}` : ''}</span></span>
-        </button>)}
+        </Button>)}
       </div>
-      {!selected && <footer><button className="assistant-task-completed-toggle" aria-pressed={showArchived} onClick={() => { setShowArchived(!showArchived); setPage(0); setSelectedId(null); }}>{showArchived ? copy.hideArchived : copy.showArchived}</button><nav aria-label={copy.tasks}><button aria-label={copy.previous} disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}><ChevronLeft size={13} /></button><span>{currentPage + 1}/{pages}</span><button aria-label={copy.next} disabled={currentPage >= pages - 1} onClick={() => setPage(currentPage + 1)}><ChevronRight size={13} /></button></nav></footer>}
+      {!selected && <footer><Button variant="ghost" size="sm" label={showArchived ? copy.hideArchived : copy.showArchived} className="assistant-task-completed-toggle" aria-pressed={showArchived} onClick={() => { setShowArchived(!showArchived); setPage(0); setSelectedId(null); }} /><nav aria-label={copy.tasks}><Button variant="ghost" size="sm" isIconOnly label={copy.previous} isDisabled={currentPage === 0} onClick={() => setPage(currentPage - 1)} icon={<ChevronLeft size={13} />} /><span>{currentPage + 1}/{pages}</span><Button variant="ghost" size="sm" isIconOnly label={copy.next} isDisabled={currentPage >= pages - 1} onClick={() => setPage(currentPage + 1)} icon={<ChevronRight size={13} />} /></nav></footer>}
     </>}
   </aside>;
 }

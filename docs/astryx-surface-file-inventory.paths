@@ -73,6 +73,9 @@ apps/desktop/src/renderer/features/personal-assistant/chat-presentation.tsx
 apps/desktop/src/renderer/features/personal-assistant/original-reader.css
 apps/desktop/src/renderer/features/personal-assistant/original-reader.tsx
 apps/desktop/src/renderer/features/personal-assistant/personal-assistant.css
+apps/desktop/src/renderer/features/personal-assistant/task-float.css
+apps/desktop/src/renderer/features/personal-assistant/task-float.tsx
+apps/desktop/src/renderer/features/personal-assistant/task-layout.tsx
 apps/desktop/src/renderer/features/personal-assistant/typing.tsx
 apps/desktop/src/renderer/features/runtime-host-management/services-context.tsx
 apps/desktop/src/renderer/features/runtime-host-management/ui/peer-mesh-peer-id-button.tsx
