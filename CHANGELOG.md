@@ -45,6 +45,7 @@
 
 ### Changed
 
+- Use one Composer model selector for native models and external agents, with shared search and thinking controls (#6158).
 - Bound transcript work on session switches and Read line-index memory; allow providers to own reasoning defaults (#5712, #5461, #6092).
 - Use dedicated directories for projectless tasks and preserve distinct titles for branched sessions (#5966, #4994).
 - Improve Computer Use cursor positioning and visibility; recover interrupted macOS notarization and validation requests and native Windows PTY exit codes (#5051, #5052, #6125, #6101, #6097, #6094).
