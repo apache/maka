@@ -62,6 +62,8 @@ import {
   type DesktopConnectionOnboardingIdentity,
 } from '../features/connection-settings';
 import {
+  SettingsNavigationGuard,
+  type SettingsNavigate,
   RuntimeHostSettingsGenerationBoundary,
   SettingsEntryRow,
   SettingsSection,
@@ -129,18 +131,22 @@ type ProvidersPanelProps = {
 
 export function ProvidersPanel(props: ProvidersPanelProps) {
   return (
-    <ConnectionSaveUncertaintyObserver store={props.apiKeyOnboardingBridge?.saveUncertainty}>
-      {(hasOnboardingUncertainty) => (
-        <ProvidersPanelContent
-          {...props}
-          hasOnboardingUncertainty={hasOnboardingUncertainty}
-        />
-      )}
-    </ConnectionSaveUncertaintyObserver>
+    <SettingsNavigationGuard>{(navigate) => (
+      <ConnectionSaveUncertaintyObserver store={props.apiKeyOnboardingBridge?.saveUncertainty}>
+        {(hasOnboardingUncertainty) => (
+          <ProvidersPanelContent
+            {...props}
+            navigate={navigate}
+            hasOnboardingUncertainty={hasOnboardingUncertainty}
+          />
+        )}
+      </ConnectionSaveUncertaintyObserver>
+    )}</SettingsNavigationGuard>
   );
 }
 
-function ProvidersPanelContent({ bridge, apiKeyOnboardingBridge, initialPage = 'connections', initialConnectionSlug, initialCreateProviderType, onInitialCatalogConsumed, onInitialCreateProviderConsumed, hasOnboardingUncertainty }: ProvidersPanelProps & {
+function ProvidersPanelContent({ bridge, apiKeyOnboardingBridge, initialPage = 'connections', initialConnectionSlug, initialCreateProviderType, onInitialCatalogConsumed, onInitialCreateProviderConsumed, hasOnboardingUncertainty, navigate }: ProvidersPanelProps & {
+  navigate: SettingsNavigate;
   hasOnboardingUncertainty: boolean;
 }) {
   const reportHostError = useRuntimeHostSettingsErrorReporter();
@@ -269,7 +275,7 @@ function ProvidersPanelContent({ bridge, apiKeyOnboardingBridge, initialPage = '
   }
 
   function goToList() {
-    setRoute({ kind: 'list' });
+    void navigate(() => setRoute({ kind: 'list' }));
   }
 
   function openDetail(connection: ProjectedLlmConnection) {

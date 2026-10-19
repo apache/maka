@@ -171,6 +171,7 @@ const zhCopy = {
   detail: {
     delete: '删除', cancel: '取消', deleteUnused: '不再需要，删除连接',
     deleteFailed: '删除模型连接失败', credentialReadFailed: '读取模型凭据状态失败', refreshFailed: '刷新模型连接失败',
+    modelSelection: '模型选择', modelsUnsaved: '有未保存的模型选择', modelsSaved: '模型选择已保存', discardModels: '放弃模型选择修改？', discardModelsHelp: '离开将放弃未保存的选择。你也可以取消并返回保存。', discardModelsConfirm: '放弃修改',
     saveFailed: '保存模型连接失败', saveModelsFailed: '保存启用模型失败',
     modelKey: '模型密钥', pasteModelKey: '粘贴模型密钥', getModelKey: '获取模型密钥', saving: '保存中…',
     advancedRequest: '高级请求设置', advancedRequestHelp: '为这个连接的 HTTP 请求添加请求头和额外 JSON 请求体。请求头值作为凭据保存在本机。',
@@ -384,6 +385,7 @@ const zhTwCopy = {
     deviceCode: '登入碼：',
     delete: '刪除', cancel: '取消', deleteUnused: '不再需要，刪除連線',
     deleteFailed: '刪除模型連線失敗', credentialReadFailed: '讀取模型憑據狀態失敗', refreshFailed: '重新整理模型連線失敗',
+    modelSelection: '模型選擇', modelsUnsaved: '有未儲存的模型選擇', modelsSaved: '模型選擇已儲存', discardModels: '放棄模型選擇修改？', discardModelsHelp: '離開將放棄未儲存的選擇。你也可以取消並返回儲存。', discardModelsConfirm: '放棄修改',
     saveFailed: '儲存模型連線失敗', saveModelsFailed: '儲存啟用模型失敗',
     modelKey: '模型金鑰', pasteModelKey: '貼上模型金鑰', getModelKey: '取得模型金鑰', saving: '儲存中…',
     advancedRequest: '高階請求設定', advancedRequestHelp: '為這個連線的 HTTP 請求新增請求頭和額外 JSON 請求體。請求頭值作為憑據儲存在本機。',
@@ -597,6 +599,7 @@ const enCopy: ProviderSettingsCopy = {
   detail: {
     delete: 'Delete', cancel: 'Cancel', deleteUnused: 'Delete unused connection',
     deleteFailed: 'Failed to delete model connection', credentialReadFailed: 'Failed to read model credential status', refreshFailed: 'Failed to refresh model connection',
+    modelSelection: 'Model selection', modelsUnsaved: 'Unsaved model selection', modelsSaved: 'Model selection saved', discardModels: 'Discard model selection changes?', discardModelsHelp: 'Leaving discards your unsaved selection. You can cancel and return to save it.', discardModelsConfirm: 'Discard changes',
     saveFailed: 'Failed to save model connection', saveModelsFailed: 'Failed to save enabled models',
     modelKey: 'Model key', pasteModelKey: 'Paste model key', getModelKey: 'Get model key', saving: 'Saving…',
     advancedRequest: 'Advanced request settings', advancedRequestHelp: 'Add HTTP headers and extra JSON request-body fields for this connection. Header values stay in the local credential vault.',

@@ -850,6 +850,29 @@ export const LargeConnectionDetail: Story = {
     await waitFor(() => {
       expect(canvasElement.querySelectorAll('button[aria-label*="Fixture model"]').length).toBe(444);
     }, { timeout: 20_000 });
+    const canvas = within(canvasElement);
+    const second = canvas.getByRole('switch', { name: /Fixture model 002$/ });
+    const third = canvas.getByRole('switch', { name: /Fixture model 003$/ });
+    await userEvent.click(second);
+    await userEvent.click(third);
+    expect(second).toBeChecked();
+    expect(third).toBeChecked();
+    const bar = canvasElement.querySelector<HTMLElement>('.providerModelsSaveBar')!;
+    const save = within(bar).getByRole('button', { name: /^(保存|儲存|Save)$/ });
+    expect(save).toBeEnabled();
+    const pane = canvasElement.querySelector<HTMLElement>('.settingsMainPane')!;
+    // The production pane is the sole scroll owner. Save stays on screen at
+    // the top, middle and end of a hundreds-of-models catalog.
+    for (const top of [0, pane.scrollHeight / 2, pane.scrollHeight]) {
+      pane.scrollTop = top;
+      await waitFor(() => {
+        const rect = bar.getBoundingClientRect();
+        const viewport = pane.getBoundingClientRect();
+        expect(rect.top).toBeGreaterThanOrEqual(viewport.top);
+        expect(rect.bottom).toBeLessThanOrEqual(viewport.bottom + 1);
+        expect(rect.height).toBeGreaterThan(0);
+      });
+    }
   },
 };
 

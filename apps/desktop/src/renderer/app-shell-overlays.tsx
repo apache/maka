@@ -17,7 +17,8 @@
  * under the License.
  */
 
-import { lazy, Suspense, useLayoutEffect, useRef, type ReactNode } from 'react';
+import { SettingsNavigationGuard, SettingsDismissal } from './application/contracts/settings-presentation/index.js';
+import { lazy, Suspense, type ReactNode } from 'react';
 import type { ThemePalette, ThemePreference } from '@maka/core/settings';
 import type { DesktopSessionSummary } from '../preload/bridge-contract.js';
 import type { UiLocalePreference } from '@maka/core/ui-locale';
@@ -55,23 +56,13 @@ export function SettingsOverlay({ onClose, children }: {
   onClose(): void;
   children: ReactNode;
 }) {
-  const closeRef = useRef(onClose);
-  useLayoutEffect(() => {
-    closeRef.current = onClose;
-  });
-  useLayoutEffect(() => {
-    function onKeyDown(event: KeyboardEvent) {
-      if (
-        event.key.toLowerCase() !== 'escape' || event.defaultPrevented ||
-        event.ctrlKey || event.metaKey || event.altKey
-      ) return;
-      event.preventDefault();
-      closeRef.current();
-    }
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, []);
-  return <Suspense fallback={<SettingsModalFallback />}>{children}</Suspense>;
+  return (
+    <SettingsNavigationGuard>
+      <SettingsDismissal onClose={onClose}>
+        <Suspense fallback={<SettingsModalFallback />}>{children}</Suspense>
+      </SettingsDismissal>
+    </SettingsNavigationGuard>
+  );
 }
 
 /**

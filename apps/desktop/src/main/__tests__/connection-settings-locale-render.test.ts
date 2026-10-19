@@ -36,7 +36,25 @@ import type { ConnectionsBridge } from '../../renderer/features/connection-setti
 import type { RuntimeHostManagementServices } from '../../renderer/features/runtime-host-management/index.js';
 
 // Keep renderer implementations and their asset imports out of the main compilation graph.
+interface DetailController {
+  enabledModelIds: string[];
+  hasEnabledModelChanges: boolean;
+  savingEnabledModels: boolean;
+  updateEnabledModels(id: string): void;
+  saveEnabledModels(): Promise<boolean>;
+  cancelEnabledModels(): void;
+  addDeclaredModel(id: string, profile: Record<string, never>): Promise<boolean>;
+}
 interface RenderModules {
+  SettingsNavigationGuard: ComponentType<{ children: ReactNode | ((navigate: (action: () => void) => Promise<void>) => ReactNode) }>;
+  SettingsDismissal: ComponentType<{ onClose(): void; children: ReactNode }>;
+  useConnectionDetail(props: {
+    bridge: ConnectionsBridge;
+    connection: ProjectedLlmConnection;
+    isDefault: boolean;
+    onChanged(): Promise<void>;
+    onDeleted(): Promise<void>;
+  }): DetailController;
   ProvidersPanel: ComponentType<{
     bridge: ConnectionsBridge;
     initialConnectionSlug?: string;
@@ -101,6 +119,8 @@ before(async () => {
   await build({
     stdin: {
       contents: [
+        "export { SettingsNavigationGuard, SettingsDismissal } from './application/contracts/settings-presentation/index';",
+        "export { useConnectionDetail } from './settings/use-connection-detail';",
         "export { ProvidersPanel } from './settings/providers-panel';",
         "export { ConnectionDetail } from './settings/provider-connection-detail';",
         "export { RuntimeHostSettingsTarget } from './settings/runtime-host-settings-target';",
@@ -663,6 +683,211 @@ async function clickText(container: ParentNode, label: string) {
   assert.ok(button, `missing button: ${label}`);
   await act(async () => button.click());
 }
+
+async function modelDraftHarness(options: {
+  update: ConnectionsBridge['update'];
+  onChanged?: () => Promise<void>;
+}) {
+  const renderer = installRenderer();
+  let connection = relayConnection();
+  let controller!: DetailController;
+  const bridge = connectionDetailBridge({ hasSecret: async () => true, update: options.update });
+  function Probe() {
+    controller = components.useConnectionDetail({
+      bridge, connection, isDefault: true,
+      onChanged: options.onChanged ?? (async () => {}), onDeleted: async () => {},
+    });
+    return null;
+  }
+  const render = () => renderer.render('en', createElement(components.RuntimeHostSettingsTarget, {
+    host: { profileId: 'local', hostId: 'host-local' }, children: createElement(Probe),
+  }));
+  await render();
+  return {
+    get controller() { return controller; },
+    async refresh(next: ProjectedLlmConnection) { connection = next; await render(); },
+  };
+}
+
+test('model selection batches rapid edits into one explicit save and locks only during save/refresh', async () => {
+  const writes: string[][] = [];
+  const write = deferred<ProjectedLlmConnection>();
+  const refresh = deferred<void>();
+  let refreshCount = 0;
+  const harness = await modelDraftHarness({
+    update: async (_identity, patch) => { writes.push(patch.enabledModelIds!); return write.promise; },
+    onChanged: () => { refreshCount += 1; return refresh.promise; },
+  });
+  const original = relayConnection().defaultModel;
+  await act(async () => {
+    // Calls intentionally share one React batch: no closure may lose a click.
+    harness.controller.updateEnabledModels('model-a');
+    harness.controller.updateEnabledModels('model-b');
+    harness.controller.updateEnabledModels(original);
+  });
+  assert.deepEqual(harness.controller.enabledModelIds, ['model-a', 'model-b']);
+  assert.equal(harness.controller.hasEnabledModelChanges, true);
+  assert.deepEqual(writes, []);
+  let pending!: Promise<boolean>;
+  await act(async () => { pending = harness.controller.saveEnabledModels(); });
+  assert.deepEqual(writes, [['model-a', 'model-b']]);
+  await act(async () => {
+    harness.controller.updateEnabledModels('ignored-during-save');
+    assert.equal(await harness.controller.saveEnabledModels(), false);
+  });
+  assert.deepEqual(harness.controller.enabledModelIds, ['model-a', 'model-b']);
+  const confirmed = { ...relayConnection(), defaultModel: 'model-a', enabledModelIds: ['model-a', 'model-b'] };
+  await act(async () => { write.resolve(confirmed); });
+  assert.equal(refreshCount, 1);
+  assert.equal(harness.controller.savingEnabledModels, true);
+  assert.equal(harness.controller.hasEnabledModelChanges, false);
+  await act(async () => { refresh.resolve(); assert.equal(await pending, true); });
+  await harness.refresh(confirmed);
+  assert.deepEqual(harness.controller.enabledModelIds, ['model-a', 'model-b']);
+  assert.equal(harness.controller.savingEnabledModels, false);
+});
+
+test('model selection survives external refresh and failed save, then cancels to the latest snapshot', async () => {
+  const harness = await modelDraftHarness({ update: async () => { throw new Error('Host unavailable'); } });
+  await act(async () => { harness.controller.updateEnabledModels('model-a'); });
+  const refreshed = { ...relayConnection(), defaultModel: 'external-model', enabledModelIds: ['external-model'] };
+  await harness.refresh(refreshed);
+  assert.deepEqual(harness.controller.enabledModelIds, [relayConnection().defaultModel, 'model-a']);
+  await act(async () => { assert.equal(await harness.controller.saveEnabledModels(), false); });
+  assert.deepEqual(harness.controller.enabledModelIds, [relayConnection().defaultModel, 'model-a']);
+  assert.equal(harness.controller.hasEnabledModelChanges, true);
+  await act(async () => { harness.controller.cancelEnabledModels(); });
+  assert.deepEqual(harness.controller.enabledModelIds, ['external-model']);
+  assert.equal(harness.controller.hasEnabledModelChanges, false);
+});
+
+test('successful model save remains acknowledged if the subsequent refresh fails', async () => {
+  const confirmed = { ...relayConnection(), enabledModelIds: ['model-a'], defaultModel: 'model-a' };
+  const harness = await modelDraftHarness({
+    update: async () => confirmed,
+    onChanged: async () => { throw new Error('refresh unavailable'); },
+  });
+  await act(async () => {
+    harness.controller.updateEnabledModels(relayConnection().defaultModel);
+    harness.controller.updateEnabledModels('model-a');
+  });
+  await act(async () => { assert.equal(await harness.controller.saveEnabledModels(), true); });
+  assert.deepEqual(harness.controller.enabledModelIds, ['model-a']);
+  assert.equal(harness.controller.hasEnabledModelChanges, false);
+});
+
+test('toggling a model back restores the clean selection and a connection switch isolates drafts', async () => {
+  const writes: unknown[] = [];
+  const harness = await modelDraftHarness({ update: async (...args) => { writes.push(args); return relayConnection(); } });
+  await act(async () => {
+    harness.controller.updateEnabledModels('model-a');
+    harness.controller.updateEnabledModels('model-a');
+  });
+  assert.equal(harness.controller.hasEnabledModelChanges, false);
+  await act(async () => { assert.equal(await harness.controller.saveEnabledModels(), true); });
+  assert.deepEqual(writes, []);
+  await act(async () => { harness.controller.updateEnabledModels('model-a'); });
+  await harness.refresh({ ...relayConnection(), connectionId: 'another-connection', defaultModel: 'another-model', enabledModelIds: ['another-model'] });
+  assert.deepEqual(harness.controller.enabledModelIds, ['another-model']);
+  assert.equal(harness.controller.hasEnabledModelChanges, false);
+});
+
+test('adding a custom model preserves an existing selection draft without persisting it', async () => {
+  const original = relayConnection();
+  const confirmed = { ...original, enabledModelIds: [original.defaultModel, 'custom-model'] };
+  const writes: Parameters<ConnectionsBridge['update']>[1][] = [];
+  const harness = await modelDraftHarness({
+    update: async (_identity, patch) => { writes.push(patch); return confirmed; },
+  });
+  await act(async () => {
+    harness.controller.updateEnabledModels(original.defaultModel);
+    harness.controller.updateEnabledModels('model-a');
+  });
+  await act(async () => { assert.equal(await harness.controller.addDeclaredModel('custom-model', {}), true); });
+  assert.deepEqual(writes, [{ modelOverride: { modelId: 'custom-model', expected: null, value: {}, enable: true } }]);
+  assert.deepEqual(harness.controller.enabledModelIds, ['model-a', 'custom-model']);
+  assert.equal(harness.controller.hasEnabledModelChanges, true);
+  await harness.refresh(confirmed);
+  assert.deepEqual(harness.controller.enabledModelIds, ['model-a', 'custom-model']);
+  await act(async () => { harness.controller.cancelEnabledModels(); });
+  assert.deepEqual(harness.controller.enabledModelIds, [original.defaultModel, 'custom-model']);
+});
+
+test('adding a custom model acknowledges its selection even if catalog refresh fails', async () => {
+  const original = relayConnection();
+  const confirmed = { ...original, enabledModelIds: [original.defaultModel, 'custom-model'] };
+  const harness = await modelDraftHarness({
+    update: async () => confirmed,
+    onChanged: async () => { throw new Error('refresh unavailable'); },
+  });
+  await act(async () => { assert.equal(await harness.controller.addDeclaredModel('custom-model', {}), true); });
+  assert.deepEqual(harness.controller.enabledModelIds, [original.defaultModel, 'custom-model']);
+  assert.equal(harness.controller.hasEnabledModelChanges, false);
+});
+
+test('provider detail protects an unsaved selection on Back and saves only from the footer', async () => {
+  const harness = installRenderer();
+  // Toast confirmation advances its mount/close phases on animation frames.
+  Object.assign(window, {
+    requestAnimationFrame: (callback: FrameRequestCallback) => { queueMicrotask(() => callback(0)); return 1; },
+    cancelAnimationFrame() {},
+  });
+  let connection = relayConnection();
+  const writes: string[][] = [];
+  const bridge = connectionDetailBridge({
+    hasSecret: async () => true,
+    getSnapshot: async () => ({ connections: [connection], defaultConnection: connection.slug, chatModelChoices: [] }),
+    update: async (_identity, patch) => {
+      writes.push(patch.enabledModelIds!);
+      connection = { ...connection, defaultModel: '', enabledModelIds: patch.enabledModelIds! };
+      return connection;
+    },
+  });
+  let closed = 0;
+  let navigated = 0;
+  await harness.render('en', createElement(components.SettingsNavigationGuard, {
+    children: (navigate) => createElement(components.SettingsDismissal, {
+      onClose: () => { closed += 1; },
+      children: createElement('div', null,
+        createElement('button', { onClick: () => void navigate(() => { navigated += 1; }) }, 'Other section'),
+        providersPanel(bridge, connection.slug)),
+    }),
+  }));
+  const toggle = async () => {
+    const input = harness.document.querySelector<HTMLInputElement>('input[role="switch"]');
+    assert.ok(input);
+    const key = Object.keys(input).find((candidate) => candidate.startsWith('__reactProps$'));
+    assert.ok(key);
+    const props = (input as unknown as Record<string, unknown>)[key] as {
+      onChange(event: { target: { checked: boolean }; defaultPrevented: boolean }): void;
+    };
+    await act(async () => props.onChange({ target: { checked: false }, defaultPrevented: false }));
+  };
+  await toggle();
+  assert.deepEqual(writes, []);
+  assert.match(harness.document.querySelector('.providerModelsSaveBar')!.textContent!, /Unsaved model selection/);
+  const back = harness.document.querySelector<HTMLButtonElement>('button[aria-label="Back to model connections"]');
+  assert.ok(back);
+  await act(async () => back.click());
+  assert.match(harness.document.querySelector('dialog[open]')!.textContent!, /Discard model selection changes/);
+  await clickText(harness.document.querySelector('dialog[open]')!, 'Cancel');
+  assert.ok(harness.document.querySelector('[data-maka-contract="connection-detail"]'));
+  await clickText(harness.document, 'Other section');
+  assert.equal(navigated, 0);
+  await clickText(harness.document.querySelector('dialog[open]')!, 'Cancel');
+  const escape = new Event('keydown', { bubbles: true, cancelable: true });
+  Object.defineProperty(escape, 'key', { value: 'Escape' });
+  await act(async () => { window.dispatchEvent(escape); });
+  assert.equal(closed, 0);
+  await clickText(harness.document.querySelector('dialog[open]')!, 'Cancel');
+  const bar = harness.document.querySelector('.providerModelsSaveBar')!;
+  await clickText(bar, 'Save');
+  assert.deepEqual(writes, [[]]);
+  await toggle();
+  await act(async () => back.click());
+  await clickText(harness.document.querySelector('dialog[open]')!, 'Discard changes');
+  assert.equal(harness.document.querySelector('[data-maka-contract="connection-detail"]'), null);
+});
 
 function relayConnection(): ProjectedLlmConnection {
   const modelId = 'gpt-5.6-sol-joybuilder';
