@@ -1840,7 +1840,7 @@ export const NewChatComposer: Story = {
     await expect(card.getBoundingClientRect().height).toBe(initialCardHeight);
 
     const projectPicker = canvasElement.querySelector<HTMLElement>('.maka-workspace-picker')!;
-    const modelPicker = canvasElement.querySelector<HTMLElement>('.maka-new-chat-model-selector')!;
+    const modelPicker = canvasElement.querySelector<HTMLElement>('.maka-model-switcher-trigger')!;
     await expect(getComputedStyle(projectPicker).borderRadius).toBe(getComputedStyle(modelPicker).borderRadius);
     await expect(projectPicker.querySelector('.maka-workspace-picker-chevron svg')).not.toBeNull();
 
@@ -4661,7 +4661,7 @@ export const NarrowComposerFooter: Story = {
 
     const send = within(card).getByRole('button', { name: '发送' });
     const contextGauge = within(card).queryByRole('button', { name: '打开用量追踪' });
-    const modelMenu = card.querySelector<HTMLElement>('.maka-composer-options-trigger');
+    const modelMenu = card.querySelector<HTMLElement>('.maka-model-switcher-trigger');
     if (!modelMenu) throw new Error('composer model menu is missing');
     await waitFor(() => {
       const cardBox = card.getBoundingClientRect();

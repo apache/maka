@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { executorCopy, ExecutorModelPicker, type ExecutorModelPickerProps } from './executor-model-picker.js';
+import { executorCopy, ComposerModelPicker, ThinkingLevelSelector, type ComposerExecutorPicker } from './composer-model-picker.js';
 import { usePromptSuggestion } from './prompt-suggestion.js';
 import {
   forwardRef,
@@ -56,13 +56,6 @@ import {
   Upload,
   Workflow,
 } from './icons.js';
-import {
-  ChatModelSwitcher,
-  ModelChipStatic,
-  NewChatModelPicker,
-  ThinkingLevelSelector,
-} from './chat-model-switcher.js';
-import { ComposerOptionsMenu } from './composer-options-menu.js';
 import { assistantChatCopy } from './assistant-chat-copy.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
@@ -422,9 +415,9 @@ export const Composer = forwardRef<
     activeModelLabel?: string;
     activeProviderType?: ProviderType;
     modelChoices?: ChatModelChoice[];
-    executorPicker?: Omit<ExecutorModelPickerProps, 'children' | 'presentation' | 'isReadOnly'>;
-    /** Model-picker surface; 'wheel' is the collapsed WorkHub's inline picker, and any non-popover surface drops the thinking picker to a bottom sheet. */
-    pickerPresentation?: 'popover' | 'bottom-sheet' | 'wheel';
+    executorPicker?: ComposerExecutorPicker;
+    /** Compact WorkHub uses the same selector in a bottom sheet. */
+    pickerPresentation?: 'popover' | 'bottom-sheet';
     /** Distinguishes the active Session model from defaults applied only to newly created WorkHub Sessions. */
     modelSelectionPurpose?: 'session' | 'new-work-default';
     /**
@@ -631,12 +624,7 @@ export const Composer = forwardRef<
     });
   const modelSwitchAvailabilityRef = useRef(modelSwitchAvailability);
   modelSwitchAvailabilityRef.current = modelSwitchAvailability;
-  // Any non-popover model surface means a window too small for an anchored
-  // popup; the thinking picker has no wheel, so it drops to a bottom sheet.
-  const thinkingPresentation =
-    props.pickerPresentation && props.pickerPresentation !== 'popover'
-      ? 'bottom-sheet'
-      : 'popover';
+  const thinkingPresentation = props.pickerPresentation;
   useLayoutEffect(() => setModelPickerNonce(0), [props.activeSession?.id]);
   const [pendingImportAction, setPendingImportAction] = useState<ComposerImportActionId | null>(null);
   const composerMountedRef = useMountedRef();
@@ -1898,7 +1886,7 @@ export const Composer = forwardRef<
       ? props.onModelChange?.(target)
       : props.onPickNewChatModel?.(target));
   };
-  const renderNativeThinkingControl = (): ReactNode =>
+  const renderNativeThinkingControl = (pending = false): ReactNode =>
     props.activeSession ? (
       <ThinkingLevelSelector
         levels={props.activeThinkingLevels ?? []}
@@ -1906,54 +1894,19 @@ export const Composer = forwardRef<
         presentation={thinkingPresentation}
         isReadOnly={props.pickersReadOnly}
         onChange={props.onThinkingLevelChange}
-        disabled={!modelSwitchAvailability.available}
+        disabled={pending || !modelSwitchAvailability.available}
         disabledReason={thinkingSwitcherDisabledReason}
       />
     ) : (
       <ThinkingLevelSelector
         levels={props.newChatThinkingLevels ?? []}
         current={props.newChatThinkingLevel}
+        disabled={pending}
         presentation={thinkingPresentation}
         isReadOnly={props.pickersReadOnly}
         onChange={props.onNewChatThinkingLevelChange}
       />
     );
-  // Phase 1 of #5787: only an open native Session uses the unified menu. The
-  // new-task composer keeps its pickers until executor selection joins the menu.
-  const optionsSession = props.activeSession;
-  const optionsConnectionId = props.activeModelConnectionId ?? optionsSession?.llmConnectionId;
-  const unifiedModelOptions =
-    optionsSession !== undefined &&
-    (props.pickerPresentation === undefined || props.pickerPresentation === 'popover') &&
-    !props.executorTarget &&
-    (props.modelChoices?.length ?? 0) > 0 &&
-    Boolean(props.onModelChange);
-  const renderComposerOptions = (): ReactNode => optionsSession ? (
-    <ComposerOptionsMenu
-      // A pick still settling belongs to the Session it was made in.
-      key={optionsSession.id}
-      label={props.activeModelLabel?.trim() || modelChipLabel}
-      disabled={!modelSwitchAvailability.available}
-      disabledReason={modelSwitcherDisabledReason}
-      isReadOnly={props.pickersReadOnly}
-      openNonce={modelPickerNonce}
-      choices={props.modelChoices ?? []}
-      currentModelValue={optionsConnectionId
-        ? exactModelChoiceValue(
-            optionsConnectionId,
-            props.activeModelConnectionSlug ?? optionsSession.llmConnectionSlug,
-            props.activeModel ?? optionsSession.model,
-          )
-        : undefined}
-      onModelChange={onNativeModelChange}
-      thinkingLevels={props.activeThinkingLevels}
-      thinkingLevel={props.activeThinkingLevel}
-      onThinkingLevelChange={props.onThinkingLevelChange}
-      hasConversationHistory={props.modelSwitchHasHistory}
-      sessionId={optionsSession.id}
-      renderProviderMark={props.renderProviderMark}
-    />
-  ) : null;
 
   return (
     <>
@@ -2529,105 +2482,60 @@ export const Composer = forwardRef<
                   disabledReason={(executorNativeDisabledReason ?? props.permissionModeDisabledReason)}
                 />
               ) : null}
-              {/* Model + thinking sit left after permission (adjacent pair), not
-                  in the send cluster. Thinking is its own menu, only when the
-                  active/new-chat model offers levels. Mid-turn the pair stays
-                  mounted — `modelSwitcherDisabledReason` carries the lock and
-                  its explanation, so the footer never reflows when a turn
-                  starts or ends. */}
               <div className="maka-model-selection-controls">
                 <MakaClientSessionScope sessionId={props.activeSession?.id}>
-                  <ExecutorModelPickerBoundary
-                    picker={props.executorPicker}
-                    presentation={props.pickerPresentation}
-                    isReadOnly={props.pickersReadOnly}
-                    nativeLabel={modelChipLabel}
-                    renderProviderMark={props.renderProviderMark}
-                    nativeThinkingControl={!props.executorTarget ? renderNativeThinkingControl() : null}
-                    scopeKey={props.activeSession?.id ?? activeDraftKey()}
-                    onPendingChange={setExecutorModelPending}
-                  >
-                    <MakaClientSlotOutlet
-                      name="conversation.composer.model-selection"
-                      owner={{
-                        disabled: props.disabled === true,
-                        streaming: props.streaming === true,
-                        hasSession: props.activeSession !== undefined,
-                        presentation: props.pickerPresentation,
-                        isReadOnly: props.pickersReadOnly,
-                        purpose: props.modelSelectionPurpose,
-                        modelChoices: props.modelChoices ?? [],
-                        activeModel: props.activeModel,
-                        activeModelLabel: props.activeModelLabel,
-                        activeModelConnectionId: props.activeModelConnectionId,
-                        activeModelConnectionSlug: props.activeModelConnectionSlug,
-                        activeProviderType: props.activeProviderType,
-                        renderProviderMark: props.renderProviderMark,
-                        newChatModel: props.newChatModel,
-                        executorTarget: props.executorTarget,
-                        onNativeModelChange,
-                        // The shared executor panel owns model browsing only; native
-                        // thinking stays mounted beside its trigger in the footer.
-                        renderNativeThinkingControl: props.executorPicker ? () => null : renderNativeThinkingControl,
-                        onExecutorTargetChange: props.onExecutorTargetChange,
-                      }}
-                      options={{
-                        fallback: unifiedModelOptions && !props.executorPicker ? (
-                          renderComposerOptions()
-                        ) : (
-                          <>
-                            {props.activeSession ? (
-                              <ChatModelSwitcher
-                                presentation={props.pickerPresentation}
-                                isReadOnly={props.pickersReadOnly}
-                                activeSession={props.activeSession}
-                                activeModelConnectionId={props.activeModelConnectionId}
-                                activeModelConnectionSlug={props.activeModelConnectionSlug}
-                                activeModel={props.activeModel}
-                                activeModelLabel={props.activeModelLabel}
-                                currentProviderType={props.activeProviderType}
-                                choices={props.modelChoices ?? []}
-                                hasConversationHistory={props.modelSwitchHasHistory}
-                                availability={modelSwitchAvailability}
-                                disabledReason={modelSwitcherDisabledReason}
-                                openNonce={modelPickerNonce}
-                                hideUnavailableCurrentOption={props.hideUnavailableCurrentModel}
-                                renderProviderMark={props.renderProviderMark}
-                                onChange={props.onModelChange ? onNativeModelChange : undefined}
-                              />
-                            ) : props.onPickNewChatModel &&
-                              (props.modelChoices?.length ?? 0) > 0 ? (
-                              <NewChatModelPicker
-                                label={modelChipLabel}
-                                presentation={props.pickerPresentation}
-                                isReadOnly={props.pickersReadOnly}
-                                choices={props.modelChoices ?? []}
-                                currentValue={
-                                  props.newChatModel && !props.executorPicker?.selection
-                                    ? exactModelChoiceValue(
-                                        props.newChatModel.llmConnectionId,
-                                        props.newChatModel.llmConnectionSlug,
-                                        props.newChatModel.model,
-                                      )
-                                    : undefined
-                                }
-                                currentProviderType={props.newChatProviderType}
-                                renderProviderMark={props.renderProviderMark}
-                                onPick={onNativeModelChange}
-                              />
-                            ) : (
-                              <ModelChipStatic
-                                label={modelChipLabel}
-                                onOpenSettings={props.onOpenModelSettings}
-                                showUnavailableStatus={props.showStaticModelUnavailableStatus}
-                              />
-                            )}
-                            {!props.executorPicker && renderNativeThinkingControl()}
-                          </>
-                        ),
-                      }}
-                    />
-                  </ExecutorModelPickerBoundary>
+                  <MakaClientSlotOutlet
+                    name="conversation.composer.model-selection"
+                    owner={{
+                      disabled: props.disabled === true,
+                      streaming: props.streaming === true,
+                      hasSession: props.activeSession !== undefined,
+                      presentation: props.pickerPresentation,
+                      isReadOnly: props.pickersReadOnly,
+                      purpose: props.modelSelectionPurpose,
+                      modelChoices: props.modelChoices ?? [],
+                      activeModel: props.activeModel,
+                      activeModelLabel: props.activeModelLabel,
+                      activeModelConnectionId: props.activeModelConnectionId,
+                      activeModelConnectionSlug: props.activeModelConnectionSlug,
+                      activeProviderType: props.activeProviderType,
+                      renderProviderMark: props.renderProviderMark,
+                      newChatModel: props.newChatModel,
+                      executorTarget: props.executorTarget,
+                      onNativeModelChange,
+                      renderNativeThinkingControl,
+                      onExecutorTargetChange: props.onExecutorTargetChange,
+                    }}
+                    options={{ fallback: <ComposerModelPicker
+                      key={props.activeSession?.id ?? activeDraftKey()}
+                      label={props.activeModelLabel?.trim() || modelChipLabel}
+                      sessionId={props.activeSession?.id}
+                      choices={props.modelChoices ?? []}
+                      value={props.activeSession
+                        ? (props.activeModelConnectionId ?? props.activeSession.llmConnectionId)
+                          ? exactModelChoiceValue(
+                            (props.activeModelConnectionId ?? props.activeSession.llmConnectionId)!,
+                            props.activeModelConnectionSlug ?? props.activeSession.llmConnectionSlug,
+                            props.activeModel ?? props.activeSession.model,
+                          ) : undefined
+                        : props.newChatModel ? exactModelChoiceValue(
+                          props.newChatModel.llmConnectionId, props.newChatModel.llmConnectionSlug, props.newChatModel.model,
+                        ) : undefined}
+                      onNativeChange={props.onModelChange || props.onPickNewChatModel ? onNativeModelChange : undefined}
+                      renderThinkingControl={!props.executorTarget ? renderNativeThinkingControl : undefined}
+                      executor={props.executorPicker}
+                      presentation={props.pickerPresentation}
+                      isReadOnly={props.pickersReadOnly}
+                      disabled={props.activeSession ? !modelSwitchAvailability.available : undefined}
+                      disabledReason={modelSwitcherDisabledReason}
+                      openNonce={modelPickerNonce}
+                      hasConversationHistory={props.modelSwitchHasHistory}
+                      hideUnavailableCurrentOption={props.hideUnavailableCurrentModel}
+                      renderProviderMark={props.renderProviderMark}
+                      onOpenSettings={props.onOpenModelSettings}
+                      onPendingChange={setExecutorModelPending}
+                    /> }}
+                  />
                 </MakaClientSessionScope>
                 {props.contextUsage ? <ContextUsageAction {...props.contextUsage} /> : null}
               </div>
@@ -2801,33 +2709,6 @@ function ContextUsageAction(props: {
 }
 
 export type ComposerProps = ComponentProps<typeof Composer>;
-
-function ExecutorModelPickerBoundary(props: {
-  picker?: ComposerProps['executorPicker'];
-  presentation?: ExecutorModelPickerProps['presentation'];
-  isReadOnly?: boolean;
-  nativeLabel?: string;
-  renderProviderMark?: ComposerProps['renderProviderMark'];
-  nativeThinkingControl?: ReactNode;
-  scopeKey?: string;
-  onPendingChange?(pending: boolean): void;
-  children: ReactNode;
-}) {
-  return props.picker ? (
-    <ExecutorModelPicker
-      key={props.scopeKey}
-      {...props.picker}
-      presentation={props.presentation}
-      isReadOnly={props.isReadOnly}
-      nativeLabel={props.nativeLabel}
-      renderProviderMark={props.renderProviderMark}
-      nativeThinkingControl={props.nativeThinkingControl}
-      onPendingChange={props.onPendingChange}
-    >
-      {props.children}
-    </ExecutorModelPicker>
-  ) : props.children;
-}
 
 function ComposerConfiguration({ compact, label, children }: { compact?: boolean; label: string; children: ReactNode }) {
   if (!compact) return <>{children}</>;

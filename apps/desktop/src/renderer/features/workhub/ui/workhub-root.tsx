@@ -374,7 +374,7 @@ export function WorkHubRoot() {
               activeModelConnectionId={newWorkNativeModel?.llmConnectionId}
               activeModelConnectionSlug={newWorkNativeModel?.llmConnectionSlug}
               modelChoices={controller.choices}
-              pickerPresentation={showConversation ? 'popover' : 'wheel'}
+              pickerPresentation={showConversation ? 'popover' : 'bottom-sheet'}
               modelSelectionPurpose="session"
               pickersReadOnly={Boolean(controller.activeQuestion || controller.activeForm || controller.configuringModel)}
               maxInputRows={progress && !editingProgress ? 1 : showConversation ? undefined : 6}
