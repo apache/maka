@@ -5442,3 +5442,458 @@ test('disabling during Bot publication fences the uncommitted message and permit
     }
   });
 });
+
+test('remote tools use a dedicated context and real target filesystem without model execution', async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    let modelCalls = 0;
+    const { composition, manager } = await createCapturedExecutionComposition(owner, {
+      primaryBackendFactory: (ctx) => {
+        modelCalls++;
+        return new FakeBackend(ctx);
+      },
+    });
+    const caller: ConnectionContext = {
+      hostEpoch: 'execution-composition-test',
+      connectionId: 'remote-client',
+      principal: 'remote-owner',
+      principalKind: 'remote_owner',
+      acquireResidency: () => new HostResidencyRegistry().acquire('remote-test'),
+    };
+    const request = async (input: any) => {
+      const result = await composition.handlers['remote.tools'](
+        'contextId' in input
+          ? { ...input, origin: { hostId: 'other-host', sessionId: 'main-bot' } }
+          : input,
+        caller,
+      );
+      assert.equal(result.ok, true, JSON.stringify(result));
+      return (result as any).result.value;
+    };
+    try {
+      const template = await manager.createSession({
+        cwd: root,
+        llmConnectionId: FAKE_CONNECTION_ID,
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'bypass',
+      });
+      await writeFile(join(root, 'remote-evidence.txt'), 'ONLY THIS HOST');
+      const opened = await request({
+        action: 'open',
+        originHost: 'other-host',
+        originSession: 'main-bot',
+        templateSession: template.id,
+      });
+      assert.notEqual(opened.sessionId, template.id);
+      const found = await request({ action: 'search', contextId: opened.id, query: 'Read' });
+      assert.ok(found.tools.some((t: any) => t.name === 'Read'));
+      const call = {
+        action: 'call',
+        contextId: opened.id,
+        callId: 'read-evidence',
+        tool: 'Read',
+        arguments: { path: join(root, 'remote-evidence.txt') },
+      };
+      let value = await request(call);
+      await pollFor(async () => {
+        value = await request({ action: 'result', contextId: opened.id, callId: 'read-evidence' });
+        return value.status === 'completed';
+      });
+      assert.match(JSON.stringify(value), /ONLY THIS HOST/);
+      assert.deepEqual(await request(call), value);
+      const memory = await request({
+        action: 'call',
+        contextId: opened.id,
+        callId: 'memory',
+        tool: 'MemoryIndexList',
+        arguments: {},
+      });
+      assert.equal(memory.status, 'completed');
+      assert.doesNotMatch(JSON.stringify(memory), /requires an active|providerError/);
+      assert.equal(modelCalls, 0);
+      const written = await request({
+        action: 'call',
+        contextId: opened.id,
+        callId: 'write',
+        tool: 'Write',
+        arguments: { path: join(root, 'remote-written.txt'), content: 'REMOTE WRITE' },
+      });
+      assert.doesNotMatch(JSON.stringify(written), /providerError/);
+      const shell = await request({
+        action: 'call',
+        contextId: opened.id,
+        callId: 'shell',
+        tool: 'Bash',
+        arguments: { command: 'pwd' },
+      });
+      let shellResult = shell;
+      await pollFor(async () => {
+        shellResult = await request({ action: 'result', contextId: opened.id, callId: 'shell' });
+        return shellResult.status === 'completed';
+      });
+      assert.doesNotMatch(JSON.stringify(shellResult), /providerError/);
+      assert.match(JSON.stringify(shellResult), new RegExp(root));
+      const task = await request({
+        action: 'call',
+        contextId: opened.id,
+        callId: 'delegate',
+        tool: 'MatterDelegate',
+        arguments: {
+          taskKey: 'remote-task',
+          title: 'Remote follow-up',
+          request: 'Wait for the delivery confirmation and report it.',
+        },
+      });
+      assert.doesNotMatch(JSON.stringify(task), /providerError/);
+      const tasks = await request({
+        action: 'call',
+        contextId: opened.id,
+        callId: 'tasks',
+        tool: 'MatterTasks',
+        arguments: {},
+      });
+      assert.match(JSON.stringify(tasks), /Remote follow-up/);
+      const matterId = task.result.result.id;
+      assert.ok(matterId, JSON.stringify(task));
+      const paused = await request({
+        action: 'call',
+        contextId: opened.id,
+        callId: 'pause-task',
+        tool: 'MatterTaskControl',
+        arguments: { id: matterId, action: 'pause' },
+      });
+      assert.doesNotMatch(JSON.stringify(paused), /providerError/);
+      let feedback: any[] = [];
+      await pollFor(
+        async () => {
+          feedback = await request({ action: 'events', originHost: 'other-host' });
+          return feedback.some((e) => e.content.type === 'task_update');
+        },
+        { timeoutMs: 5000, pollMs: 20 },
+      );
+      assert.match(JSON.stringify(feedback), /Remote follow-up/);
+      assert.equal(feedback.find((e) => e.content.type === 'task_update').sessionId, 'main-bot');
+      const readonlyTemplate = await manager.createSession({
+        cwd: root,
+        llmConnectionId: FAKE_CONNECTION_ID,
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'explore',
+      });
+      const readonlyContext = await request({
+        action: 'open',
+        originHost: 'other-host',
+        originSession: 'main-bot',
+        templateSession: readonlyTemplate.id,
+      });
+      const rejected = await request({
+        action: 'call',
+        contextId: readonlyContext.id,
+        callId: 'forbidden-write',
+        tool: 'Write',
+        arguments: { path: join(root, 'forbidden.txt'), content: 'MUST NOT EXIST' },
+      });
+      assert.match(JSON.stringify(rejected), /error|denied|permission/i);
+      await assert.rejects(stat(join(root, 'forbidden.txt')), { code: 'ENOENT' });
+      const denied = await composition.handlers['remote.tools'](
+        { action: 'contexts' },
+        { ...caller, principalKind: 'session_guest' },
+      );
+      assert.equal(denied.ok, false);
+    } finally {
+      await composition.close();
+    }
+  });
+});
+
+test('every Bot business tool executes remotely with native storage, workers and feedback routing', {
+  timeout: 60000,
+}, async (t) => {
+  let assistant!: PersonalAssistantService;
+  const recover = PersonalAssistantService.prototype.recover;
+  t.mock.method(
+    PersonalAssistantService.prototype,
+    'recover',
+    function (this: PersonalAssistantService, ...args: Parameters<typeof recover>) {
+      assistant = this;
+      return recover.apply(this, args);
+    },
+  );
+  await withCompositionRoot(async ({ root, owner }) => {
+    const workerErrors: unknown[] = [];
+    const invokeWorker = async (sessionId: string, turnId: string, name: string, args: any) => {
+      const tool = assistant.tools.find((x) => x.name === name)!;
+      return tool.impl((tool.parameters as any).parse(args), {
+        sessionId,
+        turnId,
+        toolCallId: randomUUID(),
+        cwd: root,
+        abortSignal: new AbortController().signal,
+      } as any);
+    };
+    const { composition, manager } = await createCapturedExecutionComposition(owner, {
+      primaryBackendFactory: (context) =>
+        new (class extends FakeBackend {
+          override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+            try {
+              const invoke = (name: string, args: any) =>
+                invokeWorker(context.sessionId, input.turnId, name, args);
+              if (input.text.startsWith('Organize')) {
+                const ids = [
+                  ...new Set([
+                    ...[...input.text.matchAll(/"indexId":"([^"]+)"/g)].map((x) => x[1]),
+                    ...[...input.text.matchAll(/Organize index ([^. ]+)/g)].map((x) => x[1]),
+                  ]),
+                ];
+                assert.ok(ids.length);
+                for (const indexId of ids) {
+                  const index: any = await invoke('MemoryIndexRead', { indexId });
+                  const page: any = await invoke('MemoryHistory', {
+                    to: index.range.to,
+                    mode: 'messages',
+                    types: ['user'],
+                  });
+                  const saved: any = await invoke('MemoryIndexWrite', {
+                    indexId,
+                    key: 'event',
+                    expectedRevision: index.index.revision,
+                    text:
+                      'Remote event evidence\n' + page.items.map((m: any) => m.citation).join('\n'),
+                  });
+                  await invoke('MemoryIndexCheckpoint', {
+                    indexId,
+                    rangeId: index.range.rangeId,
+                    expectedRevision: saved.revision,
+                    notes: 'Controlled worker completed native checkpoint',
+                    complete: true,
+                  });
+                }
+              } else if (input.text.includes('Heartbeat ID:')) {
+                await invoke('DiscoveryContext', {});
+                await invoke('DiscoveryReport', { text: 'Remote discovery evidence report' });
+              } else if (input.text.startsWith('Runtime wake notification')) {
+                const workspace = JSON.parse(
+                  input.text.split('Matter workspace (paths and host metadata):\n')[1]!,
+                );
+                await invoke('MatterRead', { activationId: workspace.activationId });
+                await invoke('MatterAskBot', {
+                  requestKey: 'approval',
+                  question: 'Which delivery location?',
+                  evidence: 'The user has not selected a delivery location.',
+                });
+                yield* super.send({ ...input, text: FAKE_HOLD_OPEN_PROMPT });
+                return;
+              }
+            } catch (error) {
+              workerErrors.push(error);
+            }
+            yield* super.send({ ...input, text: 'Controlled worker finished' });
+          }
+        })(context),
+    });
+    const caller: ConnectionContext = {
+      hostEpoch: 'execution-composition-test',
+      connectionId: 'remote-full',
+      principal: 'remote-owner',
+      principalKind: 'remote_owner',
+      acquireResidency: () => new HostResidencyRegistry().acquire('remote-full'),
+    };
+    const req = async (input: any) => {
+      const r = await composition.handlers['remote.tools'](input, caller);
+      assert.equal(r.ok, true, JSON.stringify(r));
+      return (r as any).result.value;
+    };
+    const used = new Set<string>();
+    let contextId: string;
+    const origin = { hostId: 'origin', sessionId: 'bot' };
+    const call = async (tool: string, args: any = {}) => {
+      used.add(tool);
+      const callId = randomUUID();
+      let r = await req({ action: 'call', contextId, origin, callId, tool, arguments: args });
+      await pollFor(
+        async () => {
+          if (r.status !== 'running') return true;
+          r = await req({ action: 'result', contextId, origin, callId });
+          return r.status !== 'running';
+        },
+        { timeoutMs: 10000 },
+      );
+      assert.equal(r.status, 'completed', JSON.stringify(r));
+      assert.doesNotMatch(JSON.stringify(r), /providerError/, tool + ': ' + JSON.stringify(r));
+      assert.ok(r.result?.result !== undefined, tool + ': ' + JSON.stringify(r));
+      return r.result.result;
+    };
+    const events = () => req({ action: 'events', originHost: 'origin' });
+    try {
+      const template = await manager.createSession({
+        cwd: root,
+        llmConnectionId: FAKE_CONNECTION_ID,
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'bypass',
+      });
+      const opened = await req({
+        action: 'open',
+        originHost: 'origin',
+        originSession: 'bot',
+        templateSession: template.id,
+      });
+      contextId = opened.id;
+      const localChat = await manager.createSession({
+        cwd: root,
+        llmConnectionId: FAKE_CONNECTION_ID,
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'bypass',
+      });
+      await assistant.call('assistant.bind', { sessionId: localChat.id });
+      const localBinding = await assistant.call('assistant.binding', {});
+      // Seed history through real Host turn admission, not a replacement memory adapter.
+      const seeded = await composition.handlers['turn.start'](
+        {
+          sessionId: template.id,
+          turnId: randomUUID(),
+          content: { text: 'Lab camera must be returned on Friday.' },
+        },
+        { ...caller, principalKind: 'local_owner' },
+      );
+      assert.equal(seeded.ok, true, JSON.stringify(seeded));
+      await pollFor(() => manager.runningTurnIds(template.id).length === 0, { timeoutMs: 5000 });
+      const sources = await call('MemorySources');
+      assert.ok(sources.some((s: any) => s.id === 'maka'));
+      const range = await call('MemoryRange', { sources: ['maka'] });
+      const page = await call('MemoryHistory', { to: range.to, mode: 'messages', types: ['user'] });
+      assert.ok(page.items.length);
+      const original = await call('MemoryOriginal', { ref: page.items[0].ref });
+      assert.match(JSON.stringify(original), /Lab camera/);
+      const created = await call('MemoryIndexCreate', {
+        name: 'Remote events',
+        instructions: 'Summarize events with original citations',
+        cursor: range.to,
+        background: true,
+      });
+      const indexId = created.index.id;
+      let index: any;
+      await pollFor(
+        async () => {
+          index = await call('MemoryIndexRead', { indexId });
+          return index.range?.completed && !index.maintenance.running;
+        },
+        { timeoutMs: 15000 },
+      );
+      assert.ok((await call('MemoryIndexList')).some((i: any) => i.id === indexId));
+      assert.match(
+        JSON.stringify(await call('MemoryIndexContent', { indexId, view: 'full' })),
+        /Remote event evidence/,
+      );
+      assert.ok((await call('MemoryIndexLinks', { indexId, key: 'event' })).originalCount > 0);
+      await call('MemoryIndexAddSources', { indexIds: [indexId], sources: ['maka'] });
+      for (const action of ['pause', 'resume', 'configure'])
+        await call('MemoryIndexControl', {
+          indexId,
+          action,
+          ...(action === 'configure' ? { intervalMs: 43200000 } : {}),
+        });
+      const coveredBefore = (await call('MemoryIndexRead', { indexId })).coverage.cursor;
+      const update = await composition.handlers['turn.start'](
+        {
+          sessionId: template.id,
+          turnId: randomUUID(),
+          content: { text: 'Update: the lab camera has now been returned.' },
+        },
+        { ...caller, principalKind: 'local_owner' },
+      );
+      assert.equal(update.ok, true);
+      await pollFor(() => manager.runningTurnIds(template.id).length === 0, { timeoutMs: 5000 });
+      const stale = await call('MemoryIndexRead', { indexId });
+      assert.equal(stale.coverage.cursor, coveredBefore);
+      assert.notEqual(stale.freshness.observedCursor, coveredBefore);
+      const delta = await call('MemoryHistory', {
+        from: coveredBefore,
+        to: stale.freshness.observedCursor,
+        mode: 'messages',
+      });
+      assert.match(JSON.stringify(delta), /now been returned/);
+      await call('MemoryIndexMaintain', { indexId, background: false });
+      assert.notEqual((await call('MemoryIndexRead', { indexId })).coverage.cursor, coveredBefore);
+      const group = await call('MemoryIndexCreateGroup', {
+        cursor: range.to,
+        indexes: [
+          { number: 1, name: 'Followups', instructions: 'Open tasks' },
+          { number: 2, name: 'Preferences', instructions: 'Preferences only' },
+        ],
+        background: false,
+      });
+      assert.equal(group.members.length, 2);
+      const g1 = await call('MemoryIndexRead', { indexId: group.members[0].indexId });
+      const g2 = await call('MemoryIndexRead', { indexId: group.members[1].indexId });
+      assert.equal(g1.maintenance.group.sessionId, g2.maintenance.group.sessionId);
+      assert.equal(g1.range.completed, true);
+      assert.equal(g2.range.completed, true);
+      assert.ok((await events()).some((e: any) => e.content.source === 'memory-network'));
+      await call('InitiativeStatus');
+      await call('InitiativeConfigure', { intervalMinutes: 61 });
+      const enabled = await call('InitiativeEnable');
+      assert.equal(enabled.intervalMs, 61 * 60000);
+      for (const action of ['pause', 'resume', 'check'])
+        await call('InitiativeControl', { action });
+      await pollFor(async () => (await events()).some((e: any) => e.content.type === 'discovery'), {
+        timeoutMs: 10000,
+      });
+      await call('InitiativeControl', { action: 'pause' });
+      assert.equal((await call('InitiativeStatus')).enabled, false);
+      // Remote discovery must not bind/start the target Host's local Bot.
+      assert.deepEqual(
+        ((await assistant.call('assistant.binding', {})) as any).state,
+        (localBinding as any).state,
+      );
+      const task = await call('MatterDelegate', {
+        taskKey: 'full-task',
+        title: 'Remote delivery',
+        request: 'Clarify the delivery location before proceeding.',
+      });
+      assert.ok(task.id);
+      assert.equal((await call('MatterDelegationRecover', { taskKey: 'full-task' })).id, task.id);
+      let question: any;
+      await pollFor(
+        async () => {
+          question = (await events()).find(
+            (e: any) => e.content.content?.kind === 'clarification_request',
+          );
+          return !!question;
+        },
+        { timeoutMs: 10000 },
+      );
+      await call('MatterReply', {
+        requestId: question.content.content.requestId,
+        answer: 'Use the laboratory reception desk.',
+      });
+      await call('MatterTaskMessage', { id: task.id, text: 'Also include the receipt number.' });
+      assert.equal((await call('MatterTasks', { id: task.id })).id, task.id);
+      await call('MatterTaskControl', { id: task.id, action: 'pause' });
+      let feedback: any;
+      await pollFor(
+        async () => {
+          feedback = (await events()).find(
+            (e: any) =>
+              e.content.type === 'task_update' &&
+              e.content.content?.kind !== 'clarification_request',
+          );
+          return !!feedback;
+        },
+        { timeoutMs: 5000 },
+      );
+      await call('MatterFeedbackRetry', { notificationId: feedback.content.id });
+      await call('MatterTaskControl', { id: task.id, action: 'cancel' });
+      const { BOT_DELEGATION_TOOLS } = await import('../assistant/bot/capabilities.js');
+      assert.deepEqual(
+        [...BOT_DELEGATION_TOOLS].filter((name) => !used.has(name)),
+        [],
+      );
+      assert.deepEqual(workerErrors.map(String), []);
+      assert.ok((await events()).every((e: any) => e.sessionId === 'bot'));
+    } finally {
+      await composition.close();
+    }
+  });
+});

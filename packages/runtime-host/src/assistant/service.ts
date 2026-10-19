@@ -53,6 +53,8 @@ type Dispose = () => void | Promise<void>;
 
 /** Shared Host capabilities retain invocation identity and source permissions. No plugin Fiber owns this service. */
 export interface AssistantDependencies {
+  isRemoteContext?(sessionId: string): boolean;
+  remoteFeedback?(owner: string, input: import('./bot/store.js').InboxInput): boolean;
   agents: PluginAgentService;
   llm: PluginLlmService;
   sessionQuery: PluginSessionQueryService;
@@ -88,7 +90,7 @@ export interface AssistantModuleServices
 
 class AssistantRuntime {
   readonly tools: MakaTool[] = [];
-  readonly bot = new AssistantBotBridge();
+  readonly bot: AssistantBotBridge;
   private readonly sections: PluginSystemPromptSection[] = [];
   private readonly contexts: PluginSystemPromptSection[] = [];
   private readonly checks: TurnFinishCheck[] = [];
@@ -106,7 +108,9 @@ class AssistantRuntime {
   constructor(
     readonly directory: string,
     readonly dependencies: AssistantDependencies,
-  ) {}
+  ) {
+    this.bot = new AssistantBotBridge(dependencies.remoteFeedback);
+  }
 
   async recover(legacy: HostPluginDataRuntime, entries: readonly MakaCompositionEntryInspection[]) {
     if (this.initialized) throw Error('Personal assistant already initialized');
@@ -470,6 +474,15 @@ export class PersonalAssistantService {
     return this.enabled && this.runtime!.bot.isWorker(sessionId)
       ? this.runtime!.tools.filter((tool) => BOT_TOOLS.has(tool.name))
       : undefined;
+  }
+  remoteOrigin(sessionId: string) {
+    return this.runtime?.bot.ownerFor(sessionId) ?? sessionId;
+  }
+  receiveRemote(sessionId: string, input: import('./bot/store.js').InboxInput) {
+    if (!this.enabled || this.draining) return false;
+    const owner = this.runtime!.bot.ownerFor(sessionId) ?? sessionId;
+    if (!this.runtime!.bot.isConversation(owner)) return 'manual_only' as const;
+    return this.runtime!.bot.post(owner, input);
   }
   async receiveUser(
     sessionId: string,

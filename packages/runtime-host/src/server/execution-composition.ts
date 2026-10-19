@@ -25,6 +25,8 @@ import { ChatImageDeliveryService } from './chat-image-delivery.js';
 import { downloadChatImage, ImageSourceError } from './chat-image-source.js';
 import { readAvatarImageSource } from './avatar-image-source.js';
 import { createWorkHubResultRuntime } from './workhub-result-runtime.js';
+import { RemoteToolsHost } from './remote-tools.js';
+import { ToolRuntime } from '@maka/runtime/tool-runtime';
 import { createWorkHubInspectionTool } from './workhub-inspection-tool.js';
 import { copyWorkHubAttachmentsToTarget } from './workhub-message-attachments.js';
 import { createHash, randomUUID } from 'node:crypto';
@@ -449,9 +451,12 @@ export async function createExecutionRuntimeHostComposition(
       },
     );
 
+    let remoteTools: RemoteToolsHost | undefined;
     const personalAssistant = (assistant = new PersonalAssistantService(
       join(context.owner.controlDirectory, 'personal-assistant'),
       {
+        remoteFeedback: (owner, input) => remoteTools?.feedback(owner, input) ?? false,
+        isRemoteContext: (sessionId) => remoteTools?.ownsSession(sessionId) ?? false,
         stopSessions: async () => {
           if (!rootCoordinator) return;
           const failures: unknown[] = [];
@@ -949,6 +954,91 @@ export async function createExecutionRuntimeHostComposition(
       ...runtimePolicy.modelTools,
     ];
     const hostTools = [...childHostTools, ...recallTools];
+    remoteTools = new RemoteToolsHost(join(context.owner.controlDirectory, 'remote-tools'), {
+      origin: (sessionId) => personalAssistant.remoteOrigin(sessionId),
+      list: async () =>
+        (await stores.sessionStore.listHeaders())
+          .filter(
+            (h) => !h.parentSessionId && !h.labels?.some((l) => l.startsWith('remote-context:')),
+          )
+          .map((h) => ({
+            sessionId: h.id,
+            name: h.name,
+            cwd: h.cwd,
+            permissionMode: h.permissionMode,
+          })),
+      create: async (template, label) => {
+        const existing = (await stores.sessionStore.listHeaders()).find((h) =>
+          h.labels?.includes(label),
+        );
+        if (existing) return existing.id;
+        const parent = await stores.sessionStore.readHeaderSnapshot(template);
+        if (parent.executorId) throw Error('Remote tools require a native Maka Session template');
+        const boundary = await stores.sessionStore.readExecutionBoundary(template);
+        const created = await requireSessionManager(manager).createSession(
+          {
+            cwd: parent.cwd,
+            name: 'Remote tools',
+            labels: [label, 'remote-tool-context'],
+            llmConnectionSlug: parent.llmConnectionSlug,
+            ...(parent.llmConnectionId ? { llmConnectionId: parent.llmConnectionId } : {}),
+            ...(parent.model ? { model: parent.model } : {}),
+            ...(parent.thinkingLevel ? { thinkingLevel: parent.thinkingLevel } : {}),
+            permissionMode: parent.permissionMode,
+          },
+          { initialBoundary: boundary },
+        );
+        hostChanges.publishSessionCatalog(created.id);
+        return created.id;
+      },
+      tools: async () => {
+        const policy = await runtimePolicyStores.runtimePolicy.getSnapshot();
+        return [
+          ...buildBuiltinTools({
+            ...builtinTools,
+            shell: resolveTurnShellPlan(policy.policy.shell),
+          }),
+          ...personalAssistant.tools,
+        ];
+      },
+      execute: async (sessionId, callId, tool, args, event, signal) => {
+        const header = await stores.sessionStore.readHeaderSnapshot(sessionId);
+        if (requireSessionManager(manager).runningTurnIds(sessionId).length)
+          throw Error('Remote execution context is busy');
+        const runtime = new ToolRuntime({
+          sessionId,
+          header,
+          turnId: callId,
+          runId: callId,
+          invocationId: callId,
+          // No provider request is made; this runtime settles tools only.
+          connection: { slug: 'remote-tools', providerType: 'custom', defaultModel: 'tools-only' },
+          modelId: 'tools-only',
+          readExecutionBoundary: () => stores.sessionStore.readExecutionBoundary(sessionId),
+          readPermissionMode: async () =>
+            (await stores.sessionStore.readHeaderSnapshot(sessionId)).permissionMode,
+          newId: randomUUID,
+          now: Date.now,
+          getPermissionPauseTarget: () => null,
+        });
+        return runtime.settleToolCall({
+          tool,
+          turnId: callId,
+          stepId: callId,
+          toolCallId: callId,
+          input: args,
+          abortSignal: signal,
+          eventSink: {
+            push: event,
+            pushAndWaitUntilConsumed: async (value) => {
+              event(value);
+            },
+          },
+        });
+      },
+      deliver: (sessionId, input) => personalAssistant.receiveRemote(sessionId, input),
+    });
+
     const childAgentTools = createHostChildAgentToolComposition({
       builtinTools,
       hostTools: childHostTools,
@@ -3256,6 +3346,39 @@ export async function createExecutionRuntimeHostComposition(
         releaseConnection: [
           (connectionId) => pluginPlatformCoordinator.releaseConnection(connectionId),
         ],
+      }),
+      createRuntimeHostDomainModule({
+        id: 'remote-tools',
+        handlers: [
+          {
+            'remote.tools': async (input, caller) => {
+              if (caller.principalKind !== 'local_owner' && caller.principalKind !== 'remote_owner')
+                return {
+                  ok: false,
+                  error: {
+                    code: 'unauthorized',
+                    message: 'Remote tools require an Owner credential',
+                  },
+                };
+              try {
+                return {
+                  ok: true,
+                  result: { value: await remoteTools!.request(input, caller.principal) },
+                };
+              } catch (error) {
+                return {
+                  ok: false,
+                  error: {
+                    code: 'invalid_request',
+                    message: error instanceof Error ? error.message : String(error),
+                  },
+                };
+              }
+            },
+          },
+        ],
+        drain: [() => remoteTools!.beginDrain()],
+        close: [() => remoteTools!.close()],
       }),
       createRuntimeHostDomainModule({
         id: 'personal-assistant',

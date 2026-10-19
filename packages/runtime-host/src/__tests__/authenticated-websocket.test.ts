@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import net from 'node:net';
 import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -1621,3 +1622,268 @@ async function waitForCondition(condition: () => Promise<boolean>): Promise<void
     message: 'condition did not become true',
   });
 }
+
+test('remote tools cross an authenticated socket and reuse receipts after target restart', {
+  timeout: 120000,
+}, async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-remote-tools-wire-'));
+  const root = join(base, 'target');
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+  let host = await startExecutionRuntimeHostService({
+    rootPath: root,
+    websocket: { host: '127.0.0.1', port: 0 },
+  });
+  let local: RuntimeHostConnection | undefined, remote: RuntimeHostConnection | undefined;
+  try {
+    local = requireConnection(await connectRuntimeHost({ rootPath: root, protocol: PROTOCOL }));
+    await configureTestModel(local);
+    const template = await local.request('session.create', {
+      sessionId: 'remote-template',
+      workspace: { kind: 'host_path', path: root },
+      modelTarget: { kind: 'default' },
+      permissionMode: 'bypass',
+    });
+    assert.ok(!('kind' in template));
+    const issued = await local.request('access.credential.issue', {
+      principalKind: 'remote_owner',
+      principalId: 'remote-tools-test',
+      operationGrants: ['remote.tools'],
+      canPublishClientCapabilities: false,
+      canUseHostPaths: false,
+    });
+    const credential = await consumeAccessCredentialDelivery(
+      root,
+      issued.deliveryId,
+      issued.credentialId,
+    );
+    const connect = async () => {
+      const result = await connectRemoteRuntimeHost({
+        url: host.websocketEndpoints[0]!,
+        credential,
+        expectedRootId: capability.rootId,
+        compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+        protocol: PROTOCOL,
+      });
+      assert.equal(result.kind, 'connected');
+      if (result.kind !== 'connected') throw Error('Not connected');
+      return result.connection;
+    };
+    remote = await connect();
+    const opened = (
+      await remote.request('remote.tools', {
+        action: 'open',
+        originHost: 'origin-host',
+        originSession: 'origin-bot',
+        templateSession: 'remote-template',
+      })
+    ).value as { id: string };
+    const configureDiscovery = {
+      action: 'call' as const,
+      contextId: opened.id,
+      origin: { hostId: 'origin-host', sessionId: 'origin-bot' },
+      callId: 'configure-discovery',
+      tool: 'InitiativeConfigure',
+      arguments: { intervalMinutes: 77 },
+    };
+    const configReceipt = (await remote.request('remote.tools', configureDiscovery)).value as any;
+    assert.equal(configReceipt.result.result.intervalMs, 77 * 60000);
+    await writeFile(join(root, 'evidence.txt'), 'REMOTE WIRE EVIDENCE');
+    const call = {
+      action: 'call' as const,
+      contextId: opened.id,
+      origin: { hostId: 'origin-host', sessionId: 'origin-bot' },
+      callId: 'wire-read',
+      tool: 'Read',
+      arguments: { path: 'evidence.txt' },
+    };
+    let receipt = (await remote.request('remote.tools', call)).value as any;
+    await waitFor(async () => {
+      receipt = (
+        await remote!.request('remote.tools', {
+          action: 'result',
+          contextId: opened.id,
+          origin: { hostId: 'origin-host', sessionId: 'origin-bot' },
+          callId: 'wire-read',
+        })
+      ).value;
+      return receipt.status === 'completed';
+    });
+    assert.match(JSON.stringify(receipt), /REMOTE WIRE EVIDENCE/);
+    await remote.close();
+    remote = undefined;
+    await local.close();
+    local = undefined;
+    await host.close();
+    host = await startExecutionRuntimeHostService({
+      rootPath: root,
+      websocket: { host: '127.0.0.1', port: 0 },
+    });
+    remote = await connect();
+    const recoveredDiscovery = (
+      await remote.request('remote.tools', {
+        ...configureDiscovery,
+        callId: 'discovery-status',
+        tool: 'InitiativeStatus',
+        arguments: {},
+      })
+    ).value as any;
+    assert.equal(recoveredDiscovery.result.result.intervalMs, 77 * 60000);
+    assert.equal(recoveredDiscovery.result.result.enabled, false);
+    await writeFile(join(root, 'evidence.txt'), 'CHANGED AFTER RESTART');
+    assert.deepEqual((await remote.request('remote.tools', call)).value, receipt);
+    assert.match(
+      JSON.stringify(
+        (await remote.request('remote.tools', { ...call, callId: 'fresh-read' })).value,
+      ),
+      /CHANGED AFTER RESTART/,
+    );
+  } finally {
+    await remote?.close();
+    await local?.close();
+    await host.close();
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('remote response loss on a real TCP socket preserves effects and receipts without replay', {
+  timeout: 30000,
+}, async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-remote-loss-'));
+  const root = join(base, 'target');
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+  const host = await startExecutionRuntimeHostService({
+    rootPath: root,
+    websocket: { host: '127.0.0.1', port: 0 },
+  });
+  let local: RuntimeHostConnection | undefined, remote: RuntimeHostConnection | undefined;
+  let blackhole = false;
+  const sockets = new Set<net.Socket>();
+  const targetUrl = new URL(host.websocketEndpoints[0]!);
+  const proxy = net.createServer((client) => {
+    const upstream = net.connect(Number(targetUrl.port), '127.0.0.1');
+    sockets.add(client);
+    sockets.add(upstream);
+    client.pipe(upstream);
+    upstream.on('data', (chunk) => {
+      if (!blackhole) client.write(chunk);
+    });
+    client.on('close', () => {
+      sockets.delete(client);
+      upstream.destroy();
+    });
+    upstream.on('close', () => {
+      sockets.delete(upstream);
+      client.destroy();
+    });
+    client.on('error', () => upstream.destroy());
+    upstream.on('error', () => client.destroy());
+  });
+  await new Promise<void>((resolve) => proxy.listen(0, '127.0.0.1', resolve));
+  const proxyUrl = new URL(targetUrl);
+  proxyUrl.port = String((proxy.address() as net.AddressInfo).port);
+  try {
+    local = requireConnection(await connectRuntimeHost({ rootPath: root, protocol: PROTOCOL }));
+    await configureTestModel(local);
+    await local.request('session.create', {
+      sessionId: 'template',
+      workspace: { kind: 'host_path', path: root },
+      modelTarget: { kind: 'default' },
+      permissionMode: 'bypass',
+    });
+    const issued = await local.request('access.credential.issue', {
+      principalKind: 'remote_owner',
+      principalId: 'loss-test',
+      operationGrants: ['remote.tools'],
+      canPublishClientCapabilities: false,
+      canUseHostPaths: false,
+    });
+    const credential = await consumeAccessCredentialDelivery(
+      root,
+      issued.deliveryId,
+      issued.credentialId,
+    );
+    const connect = async (url: string) => {
+      const result = await connectRemoteRuntimeHost({
+        url,
+        credential,
+        expectedRootId: capability.rootId,
+        compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+        protocol: PROTOCOL,
+      });
+      if (result.kind !== 'connected') throw Error(JSON.stringify(result));
+      return result.connection;
+    };
+    remote = await connect(proxyUrl.toString());
+    const opened = (
+      await remote.request('remote.tools', {
+        action: 'open',
+        originHost: 'origin',
+        originSession: 'bot',
+        templateSession: 'template',
+      })
+    ).value as any;
+    const call = {
+      action: 'call' as const,
+      contextId: opened.id,
+      origin: { hostId: 'origin', sessionId: 'bot' },
+      callId: 'lost-response',
+      tool: 'Bash',
+      arguments: { command: 'echo once >> effect.txt; sleep 0.5; echo completed' },
+    };
+    const response = remote.request('remote.tools', call, 250);
+    const rejected = assert.rejects(response, (error: any) => {
+      assert.match(String(error.cause), /timed out/i);
+      assert.match(error.message, /outcome is unknown/);
+      return true;
+    });
+    await waitFor(
+      async () => {
+        try {
+          return (await readFile(join(root, 'effect.txt'), 'utf8')).includes('once');
+        } catch {
+          return false;
+        }
+      },
+      { timeoutMs: 3000 },
+    );
+    // The effect is confirmed before discarding the server's final response bytes.
+    blackhole = true;
+    await rejected;
+    await remote.close();
+    remote = await connect(targetUrl.toString());
+    let receipt: any;
+    await waitFor(
+      async () => {
+        receipt = (
+          await remote!.request('remote.tools', {
+            action: 'result',
+            contextId: opened.id,
+            origin: call.origin,
+            callId: call.callId,
+          })
+        ).value;
+        return receipt.status === 'completed';
+      },
+      { timeoutMs: 5000 },
+    );
+    assert.deepEqual((await remote.request('remote.tools', call)).value, receipt);
+    assert.equal(await readFile(join(root, 'effect.txt'), 'utf8'), 'once\n');
+    // A later healthy request still succeeds after the failed connection.
+    const next = (
+      await remote.request('remote.tools', {
+        ...call,
+        callId: 'next',
+        tool: 'Read',
+        arguments: { path: 'effect.txt' },
+      })
+    ).value;
+    assert.match(JSON.stringify(next), /once/);
+  } finally {
+    for (const socket of sockets) socket.destroy();
+    await new Promise<void>((resolve) => proxy.close(() => resolve()));
+    await remote?.close();
+    await local?.close();
+    await host.close();
+    await rm(base, { recursive: true, force: true });
+  }
+});

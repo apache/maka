@@ -36,6 +36,7 @@ export interface BotEndpoint {
 /** In-process routing only; durable mailbox and wake state belong to the Bot. */
 export class AssistantBotBridge {
   private endpoint?: BotEndpoint;
+  constructor(private readonly remotePost?: (owner: string, input: InboxInput) => boolean) {}
   register(endpoint: BotEndpoint) {
     this.endpoint = endpoint;
   }
@@ -65,6 +66,7 @@ export class AssistantBotBridge {
     return true;
   }
   post(owner: string, input: InboxInput) {
+    if (this.remotePost?.(owner, input)) return true;
     if (!this.isConversation(owner)) return false;
     this.endpoint!.post(input);
     return true;

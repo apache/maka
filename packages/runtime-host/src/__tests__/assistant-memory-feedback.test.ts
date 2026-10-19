@@ -24,6 +24,7 @@ import { MemoryController } from '../assistant/memory-network/controller.js';
 
 function setup() {
   const db = new DatabaseSync(':memory:');
+  db.exec('CREATE TABLE memory_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL)');
   const workers = new Map(
     ['a', 'b'].map((id) => [
       id,
@@ -123,7 +124,11 @@ test('stopping a shared index job cancels once, waits, and disables all members'
     await Promise.resolve();
     await f.controller.control('b', 'stop');
     assert.equal(cancellations, 1);
-    assert.ok([...f.workers.values()].every((w) => w.nextCheckAt === null && w.lastError === null));
+    assert.ok(
+      [...f.workers].every(
+        ([id, w]) => f.controller.nextCheck(id) === null && w.lastError === null,
+      ),
+    );
     assert.equal(f.controller.runs.size, 0);
     assert.ok(
       [...f.workers.values()].every((w) => w.maintenanceEnabled === false && w.continuationStopped),
@@ -138,7 +143,7 @@ test('stop from a paused member finds the running scheduled sibling', async () =
   try {
     let cancelled = false;
     f.controller.enabled = (id: string) => id === 'b';
-    f.controller.run = async (_: string, signal: AbortSignal) => {
+    f.controller.runGroup = async (_: string[], signal: AbortSignal) => {
       await new Promise<void>((resolve) =>
         signal.addEventListener(
           'abort',

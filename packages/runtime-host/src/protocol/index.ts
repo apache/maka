@@ -113,7 +113,8 @@ export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Also adds assistant.avatar/assistant.avatar-image and the bot block on assistant.binding.
 // 223 is used by the distinct protocol changes in open PRs #6115 and #6091;
 // re-check against main at merge time (the protocol epoch gate remains authoritative).
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 224 as const;
+// 225: Owner-scoped remote tool contexts, receipts and task feedback operations.
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 225 as const;
 // 222: Built-in personal assistant operations and the Host-owned default-off
 // master switch require matching Client and Host support.
 // 221: Epoch-220 peers do not support `artifact.image.resolve` or its image
@@ -914,3 +915,5 @@ function requireReplacement(value: unknown): HostIncompatible['replacement'] {
   if (value === 'blocked_by_residency' || value === 'wait_for_idle_exit') return value;
   throw invalidProtocolFrame('Invalid replacement disposition');
 }
+
+export * from './remote-tools.js';

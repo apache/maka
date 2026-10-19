@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { RemoteHostToolsBridge } from './remote-host-tools.js';
 import { createAssistantWebBackend } from './assistant-web-backend.js';
 import { startAssistantWebServer } from './assistant-web-server.js';
 import { resolveDesktopWslHostHandoff } from './runtime-host-wsl-handoff.js';
@@ -344,6 +345,8 @@ const [runtimeHostClientInstanceId, runtimeHostStartup] = await Promise.all([
   }),
 ]);
 let runtimeHostManager: RuntimeHostDesktopManager | undefined;
+const remoteHostTools = new RemoteHostToolsBridge(() => runtimeHostManager);
+app.once('before-quit', () => remoteHostTools.close());
 function activeRuntimeHostRef(): DesktopTargetScope | undefined {
   const current = runtimeHostManager?.current();
   return current?.hostId
@@ -1079,6 +1082,12 @@ const createLocalRuntimeHostManager = () => createRuntimeHostDesktopManager(
         }
         return [
           workHubControl.group(scope),
+          {
+            offerId: 'desktop_remote_hosts',
+            label: 'Remote Maka Hosts',
+            description: 'Discover and use other connected Owner Hosts. Effects run under target Host permissions; task feedback returns through the bridge.',
+            tools: remoteHostTools.tools(scope),
+          },
           {
             offerId: 'desktop_artifact_preview',
             label: 'HTML Artifact preview',

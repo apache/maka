@@ -7165,3 +7165,55 @@ test('prompt suggestions ask Kimi K3 for its lowest effort instead of its defaul
     await rm(base, { recursive: true, force: true });
   }
 });
+
+test('assistant tool ceiling admits bound remote Host tools without unrelated client tools', async () => {
+  const fixture = backendCreationFixture({
+    abortSignal: new AbortController().signal,
+    resolveExecutionConnection: async () => readyExecutionConnection(),
+    readPricing: async () => ({ revision: 0, overrides: [] }),
+  });
+  const tool = (name: string): MakaTool => ({
+    name,
+    description: name,
+    parameters: z.object({}),
+    impl: async () => ({}),
+  });
+  const factory = createInteractiveRunComposerFactory({
+    skills: {
+      readCanonicalModelInventory: async () => ({ inventory: [] }),
+    } as unknown as HostSkillCatalogCoordinator,
+    memory: { readPromptProjection: async () => ({}) } as unknown as HostMemoryCoordinator,
+    sessionTodo: {} as SessionTodoToolStore,
+    clientCapabilities: {
+      snapshotForSession: () => ({
+        tools: [
+          tool('mcp__desktop_remote_hosts__HostList'),
+          tool('mcp__desktop_remote_hosts__RemoteToolCall'),
+          tool('mcp__unrelated__dangerous'),
+        ],
+      }),
+    } as unknown as HostClientCapabilityCoordinator,
+    resolveTavilyWebSearchReadiness: async () => false,
+    resolveToolCeiling: () => [tool('SendUser'), tool('Sleep')],
+  });
+  const composer = await factory({
+    backendContext: fixture.context,
+    connection: readyExecutionConnection().connection as any,
+    modelId: MODEL_ID,
+    runtimePolicy: { revision: 0, policy: createDefaultRuntimePolicy() },
+    contextWindow: null,
+  });
+  assert.equal(
+    composer.tools.find((t) => t.name === 'mcp__desktop_remote_hosts__HostList')?.discovery,
+    'direct',
+  );
+  assert.deepEqual(
+    composer.tools.map((t) => t.name),
+    [
+      'SendUser',
+      'Sleep',
+      'mcp__desktop_remote_hosts__HostList',
+      'mcp__desktop_remote_hosts__RemoteToolCall',
+    ],
+  );
+});

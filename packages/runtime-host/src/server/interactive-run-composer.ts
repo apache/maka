@@ -174,7 +174,11 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
     input.boundTools !== undefined ||
     (input.toolProfile !== undefined && input.toolProfile !== 'workhub-coordination-v2')
       ? []
-      : (input.clientCapabilities?.tools ?? []);
+      : (input.clientCapabilities?.tools ?? []).map((tool) =>
+          tool.name === 'mcp__desktop_remote_hosts__HostList'
+            ? { ...tool, discovery: 'direct' as const }
+            : tool,
+        );
   const returnMissingInformation = () =>
     typeof input.returnMissingInformation === 'function'
       ? input.returnMissingInformation()
@@ -479,7 +483,19 @@ export function createInteractiveRunComposerFactory(
             backendContext.abortSignal,
           )
         : false;
-      const nativeCeiling = input.resolveToolCeiling?.(backendContext.sessionId);
+      const baseNativeCeiling = input.resolveToolCeiling?.(backendContext.sessionId);
+      const nativeCeiling = baseNativeCeiling
+        ? [
+            ...baseNativeCeiling,
+            ...(clientCapabilities?.tools ?? [])
+              .filter((t) => t.name.startsWith('mcp__desktop_remote_hosts__'))
+              .map((t) =>
+                t.name === 'mcp__desktop_remote_hosts__HostList'
+                  ? { ...t, discovery: 'direct' as const }
+                  : t,
+              ),
+          ]
+        : undefined;
       const candidateHostTools = [...(input.hostTools ?? []), ...rootTools];
       const toolSurface = routeInteractiveRunToolSurface({
         runtimePolicy,

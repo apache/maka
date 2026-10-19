@@ -18,7 +18,10 @@
  */
 
 import type { AssistantModuleServices } from '../service.js';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
+import { readdir, mkdir } from 'node:fs/promises';
+import { join } from 'node:path';
+import type { MakaTool } from '@maka/runtime/tool-runtime';
 import { z } from 'zod';
 import { InitiativeStore } from './store.js';
 import { InitiativeController } from './controller.js';
@@ -29,6 +32,99 @@ export async function initializeInitiative(
   directory: string,
   config: any = {},
 ) {
+  // Remote contexts have their own discovery schedule, but no second chat Bot.
+  // Keep their workers and reports attached to the originating conversation.
+  const scopes = new Map<string, { tools: Map<string, MakaTool>; store: InitiativeStore }>();
+  const pending = new Map<string, Promise<any>>();
+  const starters: (() => () => void | Promise<void>)[] = [];
+  const stops: (() => void | Promise<void>)[] = [];
+  let started = false;
+  const root = join(directory, 'remote-discovery');
+  const create = async (key: string, binding?: { sessionId: string; cwd: string }) => {
+    const tools = new Map<string, MakaTool>();
+    const store = await installInitiative(
+      {
+        ...ctx,
+        tools: {
+          ...ctx.tools,
+          register: (tool) => {
+            tools.set(tool.name, tool);
+          },
+        },
+        onStart: (start) => {
+          starters.push(start);
+          if (started) stops.push(start());
+        },
+      },
+      join(root, key),
+      config,
+      binding ?? 'recover',
+    );
+    const scope = { tools, store };
+    scopes.set(key, scope);
+    return scope;
+  };
+  await mkdir(root, { recursive: true, mode: 0o700 });
+  for (const entry of await readdir(root, { withFileTypes: true }))
+    if (entry.isDirectory() && /^[a-f0-9]{64}$/.test(entry.name)) await create(entry.name);
+  const route = async (sessionId: string, cwd: string) => {
+    for (const scope of scopes.values()) {
+      const state = scope.store.get();
+      if (state?.sessionId === sessionId || state?.discoverySession === sessionId) return scope;
+    }
+    if (!ctx.isRemoteContext?.(sessionId)) return undefined;
+    const key = createHash('sha256').update(sessionId).digest('hex');
+    let opening = pending.get(key);
+    if (!opening) {
+      opening = create(key, { sessionId, cwd });
+      pending.set(key, opening);
+      void opening.finally(() => pending.delete(key)).catch(() => {});
+    }
+    return opening;
+  };
+  await installInitiative(
+    {
+      ...ctx,
+      tools: {
+        ...ctx.tools,
+        register: (tool) =>
+          ctx.tools.register({
+            ...tool,
+            impl: (input, call) => {
+              const scope = [...scopes.values()].find((entry) => {
+                const state = entry.store.get();
+                return (
+                  state?.sessionId === call.sessionId || state?.discoverySession === call.sessionId
+                );
+              });
+              if (scope) return (scope.tools.get(tool.name) ?? tool).impl(input, call);
+              if (!ctx.isRemoteContext?.(call.sessionId)) return tool.impl(input, call);
+              return route(call.sessionId, call.cwd!).then((remote) =>
+                (remote?.tools.get(tool.name) ?? tool).impl(input, call),
+              );
+            },
+          }),
+      },
+    },
+    directory,
+    config,
+  );
+  ctx.onStart(() => {
+    started = true;
+    for (const start of starters) stops.push(start());
+    return async () => {
+      started = false;
+      await Promise.all(stops.map((stop) => stop()));
+    };
+  });
+}
+
+async function installInitiative(
+  ctx: AssistantModuleServices,
+  directory: string,
+  config: any,
+  remote?: { sessionId: string; cwd: string } | 'recover',
+): Promise<InitiativeStore> {
   const limits = { tickMs: config.tickMs ?? 5000 };
   for (const [name, value] of Object.entries(limits))
     if (!Number.isSafeInteger(value) || value < 10 || value > 3600000)
@@ -41,9 +137,18 @@ export async function initializeInitiative(
     controller.start();
     return () => controller.close();
   };
+  if (remote) {
+    if (remote !== 'recover') {
+      if (!store.lease()) throw Error('Remote discovery is owned by another process');
+      store.bind(remote);
+    }
+    if (!store.get()) throw Error('Remote discovery binding is missing');
+  }
   ctx.onStart(activate);
-  initializeBot(ctx, directory, store);
-  registerAssistant(ctx, store, controller);
+  if (!remote) {
+    initializeBot(ctx, directory, store);
+    registerAssistant(ctx, store, controller);
+  }
   ctx.backgroundSessions.register(() =>
     store.get()?.discoverySession ? [store.get().discoverySession] : [],
   );
@@ -60,12 +165,13 @@ export async function initializeInitiative(
       if (!state?.active || state.discoverySession !== call.sessionId)
         throw Error('Not the active exploration worker');
       const id = `discovery:${state.active.id}:${call.toolCallId}`;
-      const reported = ctx.bot.post(state.sessionId, {
+      const report = {
         id,
-        type: 'discovery',
+        type: 'discovery' as const,
         source: call.sessionId,
         content: input.text,
-      });
+      };
+      const reported = ctx.bot.post(state.sessionId, report);
       if (!reported) throw Error('Bot did not accept the discovery report');
       return { reported, sentToUser: false };
     },
@@ -178,4 +284,5 @@ export async function initializeInitiative(
         ? '你是独立的主动探索 Agent。通过可用工具调查。值得交流的发现用 DiscoveryReport 交给个人助手 Bot，由它和用户交流；没有合适内容可以直接结束。这里不是用户聊天框，不要委派执行任务。'
         : undefined,
   });
+  return store;
 }
