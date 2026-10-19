@@ -154,7 +154,7 @@ function observationFromStoredMessage(message: StoredMessage): TurnOutcomeObserv
       status: 'failed',
       failure: {
         class: message.errorClass ?? 'runtime_error',
-        message: message.failureMessage ?? 'Turn failed',
+        message: message.failureMessage ?? message.errorClass ?? 'Turn failed',
       },
     };
   }

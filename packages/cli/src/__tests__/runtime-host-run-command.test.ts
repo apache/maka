@@ -589,7 +589,7 @@ describe('Runtime Host maka run adapter', () => {
     assert.equal(exitCode, 0);
   });
 
-  test('returns exit code 1 when the final Graph Turn fails', async () => {
+  test('returns the stored Graph failure class when no original message exists', async () => {
     const stderr: string[] = [];
     const fixture = runFixture({
       graph: true,
@@ -603,7 +603,7 @@ describe('Runtime Host maka run adapter', () => {
     );
 
     assert.equal(exitCode, 1);
-    assert.equal(stderr.join(''), 'maka run: Turn failed\n');
+    assert.equal(stderr.join(''), 'maka run: provider_failure\n');
   });
 
   test('waits for Host-started graph supervisor Turns before returning', async () => {

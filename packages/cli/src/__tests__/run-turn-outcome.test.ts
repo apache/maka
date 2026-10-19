@@ -89,3 +89,25 @@ test('a tool denial is not a terminal event', () => {
   acceptStoredTurn(classifier, [denied], 'turn');
   assert.equal(classifier.outcome('pending'), undefined);
 });
+
+test('a Runtime failure without a message preserves its stored failure class', () => {
+  const classifier = new TurnOutcomeClassifier('turn');
+  acceptStoredTurn(
+    classifier,
+    [
+      {
+        type: 'turn_state',
+        id: 'end',
+        turnId: 'turn',
+        ts: 3,
+        status: 'failed',
+        errorClass: 'tool_step_cap_reached',
+      },
+    ],
+    'turn',
+  );
+  assert.deepEqual(classifier.outcome('pending')?.failure, {
+    class: 'tool_step_cap_reached',
+    message: 'tool_step_cap_reached',
+  });
+});
