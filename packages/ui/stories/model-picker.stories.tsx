@@ -108,6 +108,9 @@ async function openModels(canvasElement: HTMLElement) {
   await userEvent.click(trigger);
   const page = within(canvasElement.ownerDocument.body);
   await waitFor(() => expect(page.getByRole('listbox')).toBeVisible());
+  const search = page.getByRole('combobox', { expanded: true });
+  await userEvent.click(search);
+  await expect(search).toHaveFocus();
   return page;
 }
 

@@ -31,8 +31,7 @@
    is the same control minus search; resting, hover, focus, and disabled
    chrome all derive from Astryx, so no product overlay is needed here.
    Trigger geometry (min/max width) is owned by composer.css, the one real
-   context these triggers render in. The collapsed WorkHub window is the one
-   exception: its model picker keeps the inline wheel. */
+   context these triggers render in. */
 
 .maka-model-picker-root {
   display: inline-flex;

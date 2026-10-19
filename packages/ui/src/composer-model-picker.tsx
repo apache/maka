@@ -18,7 +18,7 @@
  */
 
 import { useEffect, useState, type ReactNode } from 'react';
-import { Button } from '@astryxdesign/core';
+import { Button, Stack } from '@astryxdesign/core';
 import { Selector, SelectorOption, type SelectorOptionType } from '@astryxdesign/core/Selector';
 import type { ExecutorCatalogEntry, ExecutorConfiguration, ExecutorSelection } from '@maka/core/executor-catalog';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
@@ -275,7 +275,8 @@ export function ComposerModelPicker(props: {
       ? configuration : { ...executor.selection!.configuration, ...configuration } });
   const mode = executor?.selection?.configuration.mode ?? selected?.currentMode;
   return <>
-    <div className="maka-model-picker-root" onClick={event => event.stopPropagation()}>
+    {/* Keep portaled search clicks from focusing the composer editor. */}
+    <Stack direction="horizontal" className="maka-model-picker-root" onClick={event => event.stopPropagation()}>
       <Selector
         key={String(props.openNonce ?? 0) + ':' + String(acknowledged)}
         label={props.sessionId ? modelCopy.switchAriaLabel + ': ' + label : modelCopy.newChatAriaLabel(label)}
@@ -303,7 +304,7 @@ export function ComposerModelPicker(props: {
           void selection.onChange(value);
         }}
       />
-    </div>
+    </Stack>
     {executor?.selection ? group && <ThinkingLevelSelector
       levels={group.variants.map(variant => variant.level)}
       current={group.variants.find(variant => variant.modelId === selectedModel)?.level}
