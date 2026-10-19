@@ -67,7 +67,9 @@ export async function repairRuntimeHostMissingWslNode(
   return withRuntimeHostManagedServiceDeploymentLock(
     resolveRuntimeHostManagedControlRoot(input.rootId),
     async () => {
-      const resolved = await resolveRuntimeHostManagedDeploymentAuthority(input.rootId);
+      const resolved = await resolveRuntimeHostManagedDeploymentAuthority(input.rootId, {
+        repairRootAfterRemount: true,
+      });
       if (!resolved || resolved.record.state !== 'active')
         throw new Error('WSL deployment is absent or requires transaction recovery');
       const current = resolved.record;

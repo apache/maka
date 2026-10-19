@@ -18,11 +18,15 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test, { type TestContext } from 'node:test';
-import { resolveStorageRoot, tryAcquireStateRootOwner } from '@maka/storage/root-authority';
+import {
+  STORAGE_ROOT_MARKER_FILE,
+  resolveStorageRoot,
+  tryAcquireStateRootOwner,
+} from '@maka/storage/root-authority';
 import {
   claimRuntimeHostManagedDeployment,
   resolveRuntimeHostManagedDeploymentConfigPath,
@@ -159,3 +163,56 @@ test('repair-wsl-node requires exact root and absolute source bindings', () => {
     'error',
   );
 });
+
+test('missing WSL Node recovery also repairs a device-only State Root remount', async (t) => {
+  const { config, input } = await fixture(t);
+  const markerPath = join(config.root.path, STORAGE_ROOT_MARKER_FILE);
+  const marker = JSON.parse(await readFile(markerPath, 'utf8'));
+  marker.rootIdentity.dev = (BigInt(marker.rootIdentity.dev) + 1n).toString();
+  await writeFile(markerPath, `${JSON.stringify(marker)}\n`);
+  const repaired = await repairRuntimeHostMissingWslNode(input, { isWsl: async () => true });
+  assert.deepEqual(repaired, {
+    ...config,
+    configRevision: 2,
+    launch: { ...config.launch, nodePath: await realpath(process.execPath) },
+  });
+  const currentMarker = JSON.parse(await readFile(markerPath, 'utf8'));
+  assert.equal(currentMarker.rootId, config.root.id);
+  assert.equal(currentMarker.rootIdentity.ino, marker.rootIdentity.ino);
+  assert.equal(
+    currentMarker.rootIdentity.dev,
+    (await lstat(config.root.path, { bigint: true })).dev.toString(),
+  );
+});
+
+for (const mismatch of ['inode', 'root-id', 'live-owner'] as const) {
+  test(`WSL Node remount recovery preserves the ${mismatch} fence`, async (t) => {
+    const { config, capability, input } = await fixture(t);
+    const owner =
+      mismatch === 'live-owner' ? await tryAcquireStateRootOwner(capability) : undefined;
+    if (mismatch === 'live-owner') assert.ok(owner);
+    const markerPath = join(config.root.path, STORAGE_ROOT_MARKER_FILE);
+    const marker = JSON.parse(await readFile(markerPath, 'utf8'));
+    marker.rootIdentity.dev = (BigInt(marker.rootIdentity.dev) + 1n).toString();
+    if (mismatch === 'inode')
+      marker.rootIdentity.ino = (BigInt(marker.rootIdentity.ino) + 1n).toString();
+    if (mismatch === 'root-id') marker.rootId = 'f'.repeat(64);
+    await writeFile(markerPath, `${JSON.stringify(marker)}\n`);
+    const operatorBefore = await readFile(input.expectedModulePath, 'utf8');
+    try {
+      await assert.rejects(
+        repairRuntimeHostMissingWslNode(input, { isWsl: async () => true }),
+        mismatch === 'live-owner' ? /still running/ : /root|directory/i,
+      );
+    } finally {
+      await owner?.close();
+    }
+    assert.deepEqual(
+      JSON.parse(
+        await readFile(resolveRuntimeHostManagedDeploymentConfigPath(input.rootId), 'utf8'),
+      ),
+      config,
+    );
+    assert.equal(await readFile(input.expectedModulePath, 'utf8'), operatorBefore);
+  });
+}

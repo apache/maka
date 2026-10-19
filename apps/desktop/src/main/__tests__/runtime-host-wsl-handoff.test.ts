@@ -19,6 +19,12 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createClientRuntimeHostProfileCatalog } from '@maka/runtime-host/client';
+import { createDesktopRuntimeHostManagedServiceStore } from '../runtime-host-managed-services.js';
+import { createDesktopRuntimeHostProfileService, resolveDesktopRuntimeHostStartup } from '../runtime-host-profile-service.js';
 import { RuntimeHostRemoteCompatibilityError, type EnvironmentRuntimeHostProfile } from '@maka/runtime-host/client';
 import { RUNTIME_HOST_COMPATIBILITY_EPOCH, RUNTIME_HOST_PROTOCOL_VERSION, INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID } from '@maka/runtime-host/protocol';
 import { resolveDesktopWslHostHandoff } from '../runtime-host-wsl-handoff.js';
@@ -131,3 +137,61 @@ test('development handoff never presents package integrity as a version', async 
     target: 'selected development build',
   });
 });
+
+test('Node recovery followed by compatibility rejection retains the explicit WSL upgrade action', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-wsl-recovered-handoff-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const catalog = createClientRuntimeHostProfileCatalog(root);
+  const managedServices = createDesktopRuntimeHostManagedServiceStore(root);
+  await catalog.create(profile);
+  await managedServices.save(profile, { deployment: binding.deployment });
+  const profiles = createDesktopRuntimeHostProfileService({ clientDataRoot: root,
+    startup: await resolveDesktopRuntimeHostStartup(root, { catalog }), catalog, managedServices,
+    states: () => [], enable: async () => undefined, disable: async () => undefined,
+    setDefault: () => undefined, finalizePairing: async () => undefined,
+  });
+  assert.ok(profile.operator.kind === 'node');
+  const recoveredOperator = { ...profile.operator, nodePath: '/opt/node/new/bin/node' };
+  await profiles.recordRecoveredWslNode({ distribution: 'Ubuntu', operator: profile.operator, rootId: profile.rootId },
+    { operator: recoveredOperator, rootPath: binding.deployment.rootPath, deploymentId: binding.deployment.deploymentId });
+  let changed = false;
+  const blocker = await resolveDesktopWslHostHandoff(profile, incompatible(), new AbortController().signal, {
+    resolveBinding: async (id) => changed ? undefined : profiles.resolveManagedService(id),
+    resolvePackage: async () => ({ kind: 'npm', specifier: 'maka-agent@0.3.0' }),
+    status: async (input) => {
+      assert.deepEqual(input.operator, recoveredOperator);
+      assert.equal(input.distribution, profile.provider.distribution);
+      assert.deepEqual(input.expectedTarget, { serviceId: binding.deployment.id,
+        rootPath: binding.deployment.rootPath, rootId: profile.rootId, deploymentId: binding.deployment.deploymentId });
+      return { schemaVersion: 1, kind: 'result', action: 'status', service };
+    },
+    update: async (input) => {
+      assert.deepEqual(input.expectedHost, { hostEpoch: 'old-host', pid: 42 });
+      assert.equal(input.expectedConfigFingerprint, service.configurationFingerprint);
+      assert.equal(input.expectedSourceVersion, service.installedVersion);
+      assert.equal(input.expectedTarget.deploymentId, binding.deployment.deploymentId);
+      return { schemaVersion: 1, kind: 'result', action: 'update', service,
+        update: { kind: 'updated', previousVersion: '0.2.0', targetVersion: '0.3.0' } };
+    },
+  });
+  assert.equal(blocker.replacement?.requiresExplicitSelection, true);
+  assert.deepEqual(await blocker.replacement!.execute('refuse_active_work', () => {}, 'explicit'), { kind: 'completed' });
+  changed = true;
+  assert.deepEqual(await blocker.replacement!.execute('refuse_active_work', () => {}, 'explicit'), { kind: 'changed' });
+});
+
+for (const other of [
+  { ...profile, id: 'another-profile' },
+  { ...profile, rootId: 'b'.repeat(64) },
+  { ...profile, provider: { kind: 'wsl' as const, distribution: 'Other Ubuntu' } },
+  { ...profile, operator: { ...profile.operator, modulePath: '/another/operator.mjs' } },
+]) {
+  test(`WSL handoff rejects a recovered binding with a different target: ${JSON.stringify(other)}`, async () => {
+    const blocker = await resolveDesktopWslHostHandoff(profile, incompatible(), new AbortController().signal, {
+      resolveBinding: async () => ({ ...binding, profile: other }),
+      resolvePackage: async () => assert.fail('a different target must not select an upgrade package'),
+      status: async () => assert.fail('a different target must not be invoked'),
+    });
+    assert.equal(blocker.replacement, undefined);
+  });
+}
