@@ -455,7 +455,7 @@ class SessionRunObserver {
   }
 
   async result(turnId: string): Promise<MakaRunSessionResult | undefined> {
-    const classifier = new TurnOutcomeClassifier(turnId);
+    const classifier = new TurnOutcomeClassifier(turnId, { recoverStoredRetries: true });
     await this.#channel.replayTranscript(async (messages: readonly StoredMessage[]) => {
       acceptStoredTurn(classifier, messages, turnId);
     }, this.#signal);

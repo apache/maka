@@ -109,6 +109,26 @@ describe('maka run argument parsing', () => {
     assert.deepEqual(JSON.parse(stdout.join('')), { sessionId: 's', status: 'running' });
   });
 
+  test('completed status and stop receipts remain visible without --json', async () => {
+    for (const flags of [[], ['--status'], ['--stop']]) {
+      const stdout: string[] = [];
+      const receipt = { sessionId: 's', status: 'completed' as const, queued: 0 };
+      const exit = await runMakaTextCliCore(
+        ['--session', 's', ...flags],
+        {
+          createContext: async () => {
+            throw new Error('unexpected execution');
+          },
+          listSessions: async () => [],
+          runSession: async () => receipt,
+        },
+        { writeStdout: (text) => stdout.push(text) },
+      );
+      assert.equal(exit, 0);
+      assert.deepEqual(JSON.parse(stdout.join('')), receipt);
+    }
+  });
+
   test('successful status and stop operations do not inherit the child failure exit code', async () => {
     for (const [flags, expected] of [
       [[], 0],

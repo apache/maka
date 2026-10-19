@@ -18,6 +18,8 @@
  */
 
 import assert from 'node:assert/strict';
+import type { BackendSendInput } from '@maka/core/backend-types';
+import type { SessionEvent } from '@maka/core/events';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -80,7 +82,7 @@ test('real Host keeps AskUser alive across CLI processes and returns the origina
           { ...options, bootstrapRuntimePolicy: false },
           {
             primaryBackendFactory: (backendContext: ConstructorParameters<typeof FakeBackend>[0]) =>
-              new FakeBackend(backendContext),
+              new RecoveryBackend(backendContext),
             generateSessionTitle: async () => undefined,
           },
         ),
@@ -479,12 +481,19 @@ test('real Host keeps AskUser alive across CLI processes and returns the origina
       );
       assert.equal(decisionRequests, 0);
       const decided = await cli(root, '--session', sessionId, flag, '--wait', '--json');
-      assert.equal(decided.code, 0, decided.stderr);
-      assert.equal(JSON.parse(decided.stdout).status, 'completed');
-      assert.match(
-        JSON.parse(decided.stdout).finalOutput,
-        new RegExp(`Fake sandbox boundary decision: ${decision}`),
+      assert.equal(decided.code, decision === 'allow' ? 0 : 1, decided.stderr);
+      assert.equal(
+        JSON.parse(decided.stdout).status,
+        decision === 'allow' ? 'completed' : 'failed',
+        decided.stdout,
       );
+      const savedResult = await cli(root, '--session', sessionId, '--result', '--json');
+      assert.deepEqual(JSON.parse(savedResult.stdout), JSON.parse(decided.stdout));
+      if (decision === 'allow')
+        assert.match(
+          JSON.parse(decided.stdout).finalOutput,
+          new RegExp(`Fake sandbox boundary decision: ${decision}`),
+        );
       const resumedTurn = await probe.request('turn.query', {
         sessionId,
         turnId: pendingTurn.turnId,
@@ -597,4 +606,57 @@ async function cli(
       resolve({ code, stdout, stderr });
     });
   });
+}
+
+class RecoveryBackend extends FakeBackend {
+  override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+    if (input.text !== FAKE_ASK_SANDBOX_BOUNDARY_PROMPT) {
+      yield* super.send(input);
+      return;
+    }
+    const call = (id: string, stepId: string): SessionEvent => ({
+      type: 'tool_start',
+      id: randomUUID(),
+      toolUseId: id,
+      stepId,
+      turnId: input.turnId,
+      ts: Date.now(),
+      toolName: 'Fetch',
+      args: { url: 'https://example.test' },
+    });
+    const failed = randomUUID();
+    yield call(failed, randomUUID());
+    yield {
+      type: 'tool_result',
+      id: randomUUID(),
+      toolUseId: failed,
+      turnId: input.turnId,
+      ts: Date.now(),
+      isError: true,
+      content: {
+        kind: 'text',
+        text: 'Network denied',
+        sandboxFailure: {
+          reason: 'sandbox_boundary_required',
+          requiredExpansion: { network: { enabled: true } },
+        },
+      },
+    };
+    for await (const event of super.send(input)) {
+      yield event;
+      if (event.type === 'sandbox_boundary_decision_ack' && event.status === 'approved') {
+        const retried = randomUUID();
+        yield call(retried, randomUUID());
+        yield {
+          type: 'tool_result',
+          id: randomUUID(),
+          toolUseId: retried,
+          turnId: input.turnId,
+          ts: Date.now(),
+          isError: false,
+          content: { kind: 'text', text: 'Fetched successfully' },
+        };
+      }
+    }
+  }
 }

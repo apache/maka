@@ -261,6 +261,75 @@ describe('Runtime Host maka run adapter', () => {
     assert.equal(stderr.join(''), 'maka run: Turn failed\n');
   });
 
+  test('returns the Session ID and terminal failure for --json', async () => {
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const fixture = runFixture({ turnEvents: failedEvents('turn-1', 'provider_failure') });
+    const exit = await runFixtureCommand(
+      fixture,
+      ['fail once', '--json'],
+      (text) => stdout.push(text),
+      (text) => stderr.push(text),
+    );
+    assert.equal(exit, 1);
+    assert.deepEqual(JSON.parse(stdout.join('')), {
+      sessionId: 'session-created',
+      status: 'failed',
+      error: 'Turn failed',
+    });
+    assert.equal(stderr.join(''), 'maka run: Turn failed\n');
+  });
+
+  test('detached admission leaves early interactions unanswered', async () => {
+    for (const request of [
+      {
+        kind: 'sandbox_boundary' as const,
+        expansion: { network: { enabled: true as const } },
+        justification: 'test',
+      },
+      pendingQuestion('turn-1').request,
+      pendingForm('turn-1').request,
+      pendingPermission('turn-1').request,
+    ]) {
+      const gate = deferred<void>();
+      const preparing = deferred<void>();
+      const fixture = runFixture({
+        prepareGate: gate.promise,
+        onPrepareStarted: () => preparing.resolve(),
+      });
+      const context = fixture.createContext({
+        workspaceRoot: '/data',
+        cwd: '/workspace',
+        noWait: true,
+      });
+      try {
+        const sending = collect(
+          context.runtime.sendMessage('session-created', { turnId: 'turn-1', text: 'go' }),
+        );
+        await preparing.promise;
+        fixture.publishPendingInteraction({
+          schemaVersion: 1,
+          sessionId: 'session-created',
+          turnId: 'turn-1',
+          runId: 'run-1',
+          interactionId: 'early',
+          revision: 1,
+          status: 'pending',
+          outcome: null,
+          request,
+        });
+        await Promise.resolve();
+        gate.resolve();
+        await sending;
+        assert.deepEqual(fixture.sandboxResponses, [], request.kind);
+        assert.deepEqual(fixture.exactTurnStops, [], request.kind);
+      } finally {
+        gate.resolve();
+        await context.close();
+      }
+    }
+  });
+
   test('returns exit code 1 when a same-step sibling succeeds after a sandbox failure', async () => {
     const stdout: string[] = [];
     const stderr: string[] = [];

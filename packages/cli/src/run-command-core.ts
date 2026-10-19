@@ -606,7 +606,9 @@ export async function runMakaTextCliCore(
   }
   if (outcome.status !== 'completed' || outcome.finalOutput === undefined) {
     const detail = outcome.failure?.message ?? outcome.failure?.class ?? 'runtime failure';
-    deps.writeStderr(`maka run: ${detail}\n`);
+    if (parsed.options.json) {
+      writeSessionResult({ sessionId: session.id, status: 'failed', error: detail }, deps, true);
+    } else deps.writeStderr(`maka run: ${detail}\n`);
     return 1;
   }
   writeSessionResult(
@@ -622,8 +624,9 @@ export function writeSessionResult(
   deps: Pick<MakaRunDeps, 'writeStdout' | 'writeStderr'>,
   json: boolean,
 ): void {
-  if (json || result.status !== 'completed') deps.writeStdout(`${JSON.stringify(result)}\n`);
-  else deps.writeStdout(withTrailingNewline(result.finalOutput ?? ''));
+  if (json || result.status !== 'completed' || result.finalOutput === undefined)
+    deps.writeStdout(`${JSON.stringify(result)}\n`);
+  else deps.writeStdout(withTrailingNewline(result.finalOutput));
   if (result.status === 'failed' && result.error) deps.writeStderr(`maka run: ${result.error}\n`);
 }
 

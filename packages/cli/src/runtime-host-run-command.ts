@@ -345,6 +345,7 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
       driver,
       (pending) => this.#stopForInteraction(pending),
       () => this.#allowDetach && !this.#graphEnabled && !this.#mcp?.ownsServers,
+      () => this.#noWait,
     );
     this.#unsubscribeTranscriptReplacements = driver.subscribeTranscriptReplacements(
       (sessionId, turnId, messages) => {
@@ -689,6 +690,7 @@ class NonInteractiveInteractionController {
   readonly #driver: RuntimeHostMakaSessionDriver;
   readonly #stop: (pending: InteractionPendingSnapshot) => Promise<void>;
   readonly #canReturnQuestion: () => boolean;
+  readonly #detached: () => boolean;
   readonly #handled = new Set<string>();
   readonly #tasks = new Set<Promise<void>>();
   readonly #unsubscribe: () => void;
@@ -699,10 +701,12 @@ class NonInteractiveInteractionController {
     driver: RuntimeHostMakaSessionDriver,
     stop: (pending: InteractionPendingSnapshot) => Promise<void>,
     canReturnQuestion: () => boolean,
+    detached: () => boolean,
   ) {
     this.#driver = driver;
     this.#stop = stop;
     this.#canReturnQuestion = canReturnQuestion;
+    this.#detached = detached;
     this.#unsubscribe = driver.subscribePendingInteractions((pending) => this.#accept(pending));
   }
 
@@ -738,6 +742,9 @@ class NonInteractiveInteractionController {
   }
 
   #accept(pending: InteractionPendingSnapshot): void {
+    // Admission can publish interactions before its response arrives. A detached
+    // launcher never decides or stops them; later Session commands own handoff.
+    if (this.#detached()) return;
     if (this.#handled.has(pending.interactionId)) return;
     this.#handled.add(pending.interactionId);
     const task = this.#handle(pending).catch((error) => {
