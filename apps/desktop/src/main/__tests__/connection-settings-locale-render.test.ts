@@ -764,11 +764,44 @@ test('model selection survives external refresh and failed save, then cancels to
   assert.equal(harness.controller.hasEnabledModelChanges, false);
 });
 
+test('external refresh updates the saved baseline while retaining edits back to the old selection', async () => {
+  const original = relayConnection();
+  const writes: string[][] = [];
+  const harness = await modelDraftHarness({
+    update: async (_identity, patch) => { writes.push(patch.enabledModelIds!); return original; },
+  });
+  await act(async () => { harness.controller.updateEnabledModels('model-b'); });
+  await harness.refresh({ ...original, defaultModel: 'model-c', enabledModelIds: ['model-c'] });
+  await act(async () => { harness.controller.updateEnabledModels('model-b'); });
+  assert.deepEqual(harness.controller.enabledModelIds, [original.defaultModel]);
+  assert.equal(harness.controller.hasEnabledModelChanges, true);
+  await act(async () => { assert.equal(await harness.controller.saveEnabledModels(), true); });
+  assert.deepEqual(writes, [[original.defaultModel]]);
+  assert.equal(harness.controller.hasEnabledModelChanges, false);
+});
+
+test('connection testing follows an external saved selection while the old selection remains drafted', async () => {
+  const original = relayConnection();
+  const harness = await modelDraftHarness({
+    update: unexpectedCall,
+    testConnection: async () => ({ ok: true, modelTested: 'model-c', latencyMs: 5 }),
+  });
+  await act(async () => { harness.controller.updateEnabledModels('model-b'); });
+  await harness.refresh({ ...original, defaultModel: 'model-c', enabledModelIds: ['model-c'] });
+  await act(async () => { harness.controller.updateEnabledModels('model-b'); });
+  await act(async () => { await harness.controller.runTest(); });
+  assert.ok(harness.document.body.textContent.includes(`Connected · ${original.name}`));
+  assert.ok(!harness.document.body.textContent.includes(`Connection works · ${original.name}`));
+  assert.deepEqual(harness.controller.enabledModelIds, [original.defaultModel]);
+  assert.equal(harness.controller.hasEnabledModelChanges, true);
+});
+
 test('successful model save remains acknowledged if the subsequent refresh fails', async () => {
   const confirmed = { ...relayConnection(), enabledModelIds: ['model-a'], defaultModel: 'model-a' };
   const harness = await modelDraftHarness({
     update: async () => confirmed,
     onChanged: async () => { throw new Error('refresh unavailable'); },
+    testConnection: async () => ({ ok: true, modelTested: 'model-a', latencyMs: 5 }),
   });
   await act(async () => {
     harness.controller.updateEnabledModels(relayConnection().defaultModel);
@@ -777,6 +810,9 @@ test('successful model save remains acknowledged if the subsequent refresh fails
   await act(async () => { assert.equal(await harness.controller.saveEnabledModels(), true); });
   assert.deepEqual(harness.controller.enabledModelIds, ['model-a']);
   assert.equal(harness.controller.hasEnabledModelChanges, false);
+  await act(async () => { await harness.controller.runTest(); });
+  assert.ok(harness.document.body.textContent.includes(`Connected · ${confirmed.name}`));
+  assert.ok(!harness.document.body.textContent.includes(`Connection works · ${confirmed.name}`));
 });
 
 test('toggling a model back restores the clean selection and a connection switch isolates drafts', async () => {

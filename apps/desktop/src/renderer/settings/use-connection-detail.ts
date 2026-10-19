@@ -290,10 +290,11 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
   }, [connection.connectionId, savedBaseUrl]);
 
   useEffect(() => {
-    // Refreshes may acknowledge a save or update an idle selection, but never
-    // replace an edited draft. Failed refreshes leave the acknowledged value.
+    // Preserve edits, but compare them against the latest persisted selection.
+    // A failed refresh does not run this effect, leaving the write acknowledged.
     setEnabledModelsDraft((draft) => draft?.connectionId === connection.connectionId
-      && !modelIdListsEqual(draft.value, draft.saved) ? draft : null);
+      && !modelIdListsEqual(draft.value, draft.saved)
+      ? { ...draft, saved: connectionEnabledModelIds(connection) } : null);
   }, [connection.defaultModel, connection.enabledModelIds, connection.connectionId]);
 
   const modelChoices = connection.catalogEntries;
