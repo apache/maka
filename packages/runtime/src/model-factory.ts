@@ -529,6 +529,16 @@ function buildThinkingProviderOptions(
         connection.providerType === 'anthropic' ? claudeThinkingOptions(modelId, level) : undefined;
       if (level === 'off' && thinkingOptions?.offBehavior === 'anthropic-thinking-disabled') {
         reasoning = { thinking: { type: 'disabled' as const } };
+      } else if (
+        (connection.providerType === 'MiniMax' || connection.providerType === 'MiniMax-cn') &&
+        (modelId === 'MiniMax-M3.1-Flash' || (modelId === 'MiniMax-M3' && level === 'on'))
+      ) {
+        reasoning = {
+          thinking: { type: 'adaptive' as const },
+          ...(modelId === 'MiniMax-M3.1-Flash'
+            ? { effort: level && level !== 'off' && level !== 'on' ? level : 'max' }
+            : {}),
+        };
       } else if (summarizedThinking) {
         reasoning = summarizedThinking;
       } else if (level && level !== 'off' && level !== 'on') {

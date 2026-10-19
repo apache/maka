@@ -19,6 +19,7 @@
 
 import type { ModelInfo, ProviderType, ProviderRuntimeAdapter } from './llm-connections.js';
 import type { ThinkingOptions } from './model-thinking.js';
+import { withMiniMaxTextCatalog } from './models-dev-projection.js';
 import {
   GENERATED_MODELS_DEV_METADATA,
   GENERATED_MODELS_DEV_MODEL_PROVIDER_OVERRIDES,
@@ -64,7 +65,7 @@ let refreshedMetadata: ModelsDevMetadata | undefined;
  */
 export function installRefreshedModelMetadata(metadata: ModelsDevMetadata | undefined): void {
   if (metadata !== undefined) assertWireTokenLimits(metadata);
-  refreshedMetadata = metadata;
+  refreshedMetadata = metadata === undefined ? undefined : withMiniMaxTextCatalog(metadata);
 }
 
 /**
