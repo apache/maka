@@ -348,8 +348,15 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await expect.poll(() => workhub.evaluate(() => innerHeight)).toBe(compactHeight);
   await expect(editor).toHaveText('Keep this draft while folding the conversation.');
   const longDraft = Array.from({ length: 30 }, (_, index) => `第 ${index + 1} 行：长输入应当只在编辑区内滚动。`).join('\n');
+  await editor.click();
+  await expect(editor).toBeFocused();
   await editor.fill(longDraft);
-  await expect.poll(() => editor.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
+  await expect.poll(() => editor.evaluate((element) => ({
+    text: element.textContent,
+    overflow: element.scrollHeight > element.clientHeight,
+    scrollHeight: element.scrollHeight,
+    clientHeight: element.clientHeight,
+  }))).toMatchObject({ text: longDraft, overflow: true });
   await expect.poll(() => editor.evaluate((element) => element.clientHeight)).toBeLessThanOrEqual(132);
   await expect(workhub.locator('[data-chat-scroll-container]')).toHaveCSS('overflow-y', 'hidden');
   await expect.poll(floatingBottom).toBe(anchoredBottom);
