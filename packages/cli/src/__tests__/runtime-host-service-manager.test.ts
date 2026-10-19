@@ -87,6 +87,65 @@ import {
 } from '../runtime-host-systemd-service.js';
 
 describe('managed Runtime Host service', () => {
+  it('uses native Host paths consistently for serve and managed service roots', () => {
+    const paths =
+      process.platform === 'win32'
+        ? ['C:\\projects', 'C:/projects', '\\\\server\\share\\projects']
+        : ['/srv/projects'];
+    for (const path of paths) {
+      for (const [option, value] of [
+        ['--project-root', `Work=${path}`],
+        ['--project-root-json', JSON.stringify({ label: 'Work', path })],
+      ]) {
+        assert.ok(option && value);
+        assert.deepEqual(parseRuntimeHostCommand(['serve', option, value]), {
+          kind: 'runtime-host-serve',
+          json: false,
+          projectDirectoryRoots: [{ label: 'Work', path }],
+        });
+        for (const action of ['install', 'configure']) {
+          const target =
+            action === 'configure'
+              ? [
+                  '--expected-service-id',
+                  'b'.repeat(64),
+                  '--expected-root-path',
+                  path,
+                  '--expected-root-id',
+                  'a'.repeat(64),
+                  '--expected-config-fingerprint',
+                  `sha256:${'c'.repeat(64)}`,
+                ]
+              : [];
+          const result = parseRuntimeHostCommand(['service', action, option, value, ...target]);
+          assert.equal(result.kind, 'runtime-host-service-manage', JSON.stringify(result));
+          if (result.kind !== 'runtime-host-service-manage')
+            assert.fail('expected managed command');
+          assert.deepEqual(result.projectDirectoryRoots, [{ label: 'Work', path }]);
+        }
+      }
+    }
+    for (const path of [
+      'relative',
+      'C:relative',
+      ...(process.platform === 'win32' ? [] : ['C:\\projects']),
+    ]) {
+      assert.equal(
+        parseRuntimeHostCommand(['service', 'install', '--project-root', `Work=${path}`]).kind,
+        'error',
+      );
+      assert.equal(
+        parseRuntimeHostCommand([
+          'service',
+          'install',
+          '--project-root-json',
+          JSON.stringify({ label: 'Work', path }),
+        ]).kind,
+        'error',
+      );
+    }
+  });
+
   it('parses the bounded managed service command surface', () => {
     const nativeProjectRoot = process.platform === 'win32' ? 'C:\\projects' : '/srv/projects';
     assert.deepEqual(
@@ -508,6 +567,40 @@ describe('managed Runtime Host service', () => {
       parseRuntimeHostCommand([...setupUpdateArgs, '--allow-interrupt-active-tasks']).kind,
       'error',
     );
+    const expectedExisting = {
+      rootId: 'a'.repeat(64),
+      operator: {
+        kind: 'node',
+        platform: 'posix',
+        nodePath: '/old/node',
+        modulePath: '/operator.mjs',
+      },
+    };
+    const recoveryArgs = [
+      ...setupUpdateArgs,
+      '--lifecycle',
+      'on-demand',
+      '--reuse-existing-environment',
+    ];
+    const targetArgs = [
+      '--managed-root-id',
+      expectedExisting.rootId,
+      '--expected-operator-json',
+      JSON.stringify(expectedExisting.operator),
+    ];
+    const recovery = parseRuntimeHostCommand([...recoveryArgs, ...targetArgs]);
+    assert.deepEqual(
+      recovery.kind === 'runtime-host-setup' ? recovery.expectedExisting : null,
+      expectedExisting,
+    );
+    for (const invalid of [
+      targetArgs.slice(0, 2),
+      targetArgs.slice(2),
+      [...targetArgs, '--expected-operator-json', '{}'],
+    ]) {
+      assert.equal(parseRuntimeHostCommand([...recoveryArgs, ...invalid]).kind, 'error');
+    }
+    assert.equal(parseRuntimeHostCommand([...setupUpdateArgs, ...targetArgs]).kind, 'error');
     const explicitSetupUpdate = parseRuntimeHostCommand([
       ...setupUpdateArgs,
       '--update-existing',

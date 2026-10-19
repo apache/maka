@@ -635,7 +635,10 @@ export interface RuntimeEventRefs {
   sourceRuntimeEventHighWater?: number;
 }
 
-/** Tool-owned contract for deciding what a later recovery phase may do. */
+/** Current tools only choose how to report an unknown result; neither mode retries an effect. */
+export type ToolOutcomeRecoveryMode = 'never_auto_retry' | 'outcome_unknown';
+
+/** Persisted dispatch metadata, including legacy modes; never authorizes recovery by itself. */
 export type ToolRecoveryMode =
   | 'replay_safe'
   | 'idempotent'

@@ -433,9 +433,8 @@ export function canContinueHistoryCompactCheckpointForModel(
   connectionId: string | undefined,
   modelId: string,
 ): boolean {
-  if (isTextHistoryCompactCheckpoint(checkpoint)) {
-    return connection.providerType !== 'openai-codex';
-  }
+  // Portable text is ordinary model context for both replay and compaction.
+  // Only opaque provider state needs a matching route.
   return canReplayHistoryCompactCheckpointForModel(checkpoint, connection, connectionId, modelId);
 }
 

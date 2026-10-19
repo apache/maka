@@ -60,6 +60,7 @@ import {
   type CandidateExitDetails,
 } from "@maka/runtime-host/client";
 import type { RuntimeHostActivationResult } from "@maka/runtime-host/operator";
+import type { createDesktopRuntimeHostWslOperatorResolver } from './runtime-host-wsl-controller.js';
 import {
   runtimeHostProfileUsesHostWorkspace,
   type RuntimeHostProfileKind,
@@ -131,6 +132,7 @@ import {
 type CandidateIpcMain = ReconnectableReadIpcMain & Pick<IpcMain, "removeHandler">;
 
 export interface DesktopRuntimeHostCandidateDeps {
+  readonly resolveWslOperator?: ReturnType<typeof createDesktopRuntimeHostWslOperatorResolver>;
   readonly terminalCloses?: import('./terminal-close-intents.js').TerminalCloseIntents;
   readonly retireCancelledMessages?: (scope: DesktopTargetScope, sessionId: string, messageIds: readonly string[]) => void;
   readonly failNotAdmittedMessages?: (scope: DesktopTargetScope, sessionId: string, messageIds: readonly string[]) => void;
@@ -533,8 +535,14 @@ async function startProfileDesktopRuntimeHostCandidate(
   observationRegistry: RuntimeHostSessionObservationRegistry | undefined,
   ipcMain: RuntimeHostTargetIpcMain,
 ): Promise<DesktopRuntimeHostCandidateStartResult> {
+  const profile = profileTarget.profile;
   const connection = await connectRuntimeHostProfile({
-    profile: profileTarget.profile,
+    profile: profile.kind === 'environment' && input.resolveWslOperator
+      ? { ...profile, operator: await input.resolveWslOperator({
+          distribution: profile.provider.distribution, operator: profile.operator,
+          rootId: profile.rootId, signal: input.signal,
+        }) }
+      : profile,
     ...(profileTarget.credential === undefined
       ? {}
       : { credential: profileTarget.credential }),

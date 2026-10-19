@@ -18,7 +18,7 @@
  */
 
 import { type UiLocale, defineShippedUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
-import type { EnvironmentRuntimeHostProfile, HostHandoffBlocker, HostHandoffPhase, RuntimeHostRemoteCompatibilityError } from '@maka/runtime-host/client';
+import { sameResolvedRuntimeHostProfileTarget, type EnvironmentRuntimeHostProfile, type HostHandoffBlocker, type HostHandoffPhase, type RuntimeHostRemoteCompatibilityError } from '@maka/runtime-host/client';
 import { compareProductReleaseVersions } from '@maka/runtime-host/operator';
 import type { DesktopRuntimeHostManagedServiceBinding } from './runtime-host-managed-services.js';
 import { runtimeHostSetupPackageDisplayVersion, runtimeHostSetupPackageVersion, type DesktopRuntimeHostSetupPackage } from './runtime-host-setup-package.js';
@@ -51,7 +51,8 @@ export async function resolveDesktopWslHostHandoff(
   }
   const binding = await deps.resolveBinding(profile.id);
   if (!binding || binding.state !== 'active' || binding.profile.kind !== 'environment' ||
-      JSON.stringify(binding.profile) !== JSON.stringify(profile) || !binding.deployment.deploymentId) {
+      binding.profile.id !== profile.id ||
+      !sameResolvedRuntimeHostProfileTarget({ profile: binding.profile }, { profile }) || !binding.deployment.deploymentId) {
     return { ...base, operatorStep: guidance.binding };
   }
   const expectedTarget = {
@@ -59,7 +60,7 @@ export async function resolveDesktopWslHostHandoff(
     rootId: profile.rootId, deploymentId: binding.deployment.deploymentId,
   };
   const status = await (deps.status ?? runDesktopRuntimeHostWslManagement)({
-    distribution: profile.provider.distribution, operator: profile.operator,
+    distribution: binding.profile.provider.distribution, operator: binding.profile.operator,
     action: 'status', expectedTarget, signal,
   });
   if (status.kind !== 'result' || status.action !== 'status' || status.service.lifecycle?.mode !== 'on_demand' ||

@@ -38,13 +38,15 @@ import {
 } from '../session-event-runtime-mapper.js';
 import type { RuntimeEventMapContext } from '../session-event-runtime-mapper.js';
 import { applyRuntimeEventContextBudget } from '../context-budget.js';
-import type {
-  HistoryCompactCheckpoint,
-  HistoryCompactProviderState,
+import {
+  buildHistoryCompactCheckpoint,
+  type HistoryCompactCheckpoint,
+  type HistoryCompactProviderState,
 } from '../history-compact-checkpoint.js';
 import {
   archiveTransitionFor,
   EMPTY_PROJECTION_SNAPSHOT,
+  sectionedSummary,
 } from './history-compact-test-fixtures.js';
 import type { LoadedModelProjectionTransitions } from '../model-projection-transition-ledger.js';
 import type { ContextBudgetDiagnostic } from '@maka/core/usage-stats/types';
@@ -131,6 +133,7 @@ interface MidTurnFixtureOptions {
     | undefined;
   /** Return and replay a Codex subscription V2 provider checkpoint. */
   providerNative?: boolean;
+  loadCheckpoint?: () => HistoryCompactCheckpoint | undefined;
   branch?: string;
   /** Omit the prior turns so the compaction pool has no safe completed span. */
   withoutPriorTurns?: boolean;
@@ -657,6 +660,7 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
       if (options.record) return options.record(checkpoint);
       recorded.push(checkpoint);
     },
+    ...(options.loadCheckpoint ? { loadHistoryCompactCheckpoint: options.loadCheckpoint } : {}),
     ...(options.loadTransitions ? { loadModelProjectionTransitions: options.loadTransitions } : {}),
     loadTurnRuntimeEvents: async (turnId) => {
       fixture.ledgerReads += 1;
@@ -906,6 +910,24 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     assert.equal(midTurnDecision?.decision, 'replaced');
     assert.equal(midTurnDecision?.reason, 'context_limit');
     assert.deepEqual(midTurnDecision?.boundaryIds, [checkpoint.checkpointId]);
+  });
+
+  test('seeds Codex mid-turn compaction from the replayed text checkpoint (#6154)', async () => {
+    let previous: HistoryCompactCheckpoint | undefined;
+    const fixture = buildFixture({ providerNative: true, loadCheckpoint: () => previous });
+    previous = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: fixture.priorEvents,
+      summary: sectionedSummary('PORTABLE_SEED'),
+    });
+    await runFixtureTurn(fixture, consumer);
+
+    assert.match(promptJson(fixture, 0), /PORTABLE_SEED/);
+    assert.doesNotMatch(promptJson(fixture, 0), /PRIOR_FACT/);
+    assert.equal(fixture.recorded.length, 1);
+    assert.equal(fixture.recorded[0]?.previousCheckpointId, previous.checkpointId);
+    assert.equal(fixture.recorded[0]?.version, 3);
+    assert.match(promptJson(fixture, 2), /MID_TURN_ENCRYPTED_STATE/);
   });
 
   test('replays a Codex V2 mid-turn checkpoint as native provider state', async () => {

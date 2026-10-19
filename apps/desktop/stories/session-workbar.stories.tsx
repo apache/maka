@@ -2430,7 +2430,7 @@ export const SideChatAtColumnFloor: Story = {
 
     // Written here rather than in the fixture: the fixture's default model is
     // shared by every other story.
-    const label = companion.querySelector<HTMLElement>('.maka-composer-model-chip-text');
+    const label = companion.querySelector<HTMLElement>('.maka-composer-model-label');
     if (!label) throw new Error('side chat model chip is missing');
     label.textContent = 'Nemotron 3 Ultra Long Context Model';
 

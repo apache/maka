@@ -36,7 +36,7 @@ export type {
   ImmutableRuntimePrefixProofReadBudget,
 } from './runtime-event-store-contract.js';
 
-import { existsSync, mkdirSync } from 'node:fs';
+import { mkdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname } from 'node:path';
 import type { DatabaseSync, SQLInputValue } from 'node:sqlite';
@@ -73,13 +73,10 @@ import {
 import {
   RunSealedError,
   RUNTIME_CONTINUATION_AUTHORITY_V1,
-  TOOL_RECOVERY_BUNDLE_CAPABILITY_V1,
   type ContinuationClaimResult,
   type ContinuationClaimStateV1,
   type RuntimeContinuationAuthorityStore,
   type RuntimeInvocationRecoveryInventoryEntry,
-  type RuntimeRecoveryBundleCommit,
-  type RuntimeRecoveryBundleStore,
   type RuntimeSessionEventSnapshot,
   type RuntimeWorkspaceVersionAuthorityStore,
 } from '@maka/core/runtime-event-store';
@@ -91,7 +88,6 @@ import {
   type RuntimeInvocationRecord,
   type RuntimeInvocationSearchResult,
 } from '@maka/core/runtime-invocation';
-import type { ToolRecoveryDecisionFact } from '@maka/core/tool-recovery-fact';
 import { stableJsonStringify } from '@maka/core/tool-args-identity';
 import {
   type RuntimePartialSnapshot,
@@ -127,13 +123,11 @@ import {
   type ImmutableRuntimePrefixProofV1,
   type RuntimeBoundaryDigest,
 } from '@maka/core/runtime-boundary';
-import {
-  assertToolRecoveryEventBundle,
-  interpretScannedToolRecovery,
-} from '@maka/core/tool-recovery-bundle';
+import { interpretScannedToolRecovery } from '@maka/core/tool-recovery-bundle';
 import {
   configureSqliteRuntimeDatabase,
   configureSqliteRuntimeAutoVacuumForNewDatabase,
+  configureSqliteRuntimeLockWait,
   migrateSqliteRuntimeDatabase,
   readUserVersion,
   RUNTIME_RECOVERY_AUTHORITY_CAPABILITY,
@@ -253,9 +247,6 @@ export type ToolJournalState =
 export type SqliteRuntimeStoreFailpoint =
   | 'after_runtime_event_insert'
   | 'after_journal_event_insert'
-  | 'after_recovery_reconcile'
-  | 'after_recovery_outcome'
-  | 'after_recovery_decision'
   | 'after_recovery_terminal_insert'
   | 'after_recovery_terminal_projection'
   | 'after_continuation_claim_insert'
@@ -309,14 +300,10 @@ export function createSqliteRuntimeStore(
 }
 
 export class SqliteRuntimeStore
-  implements
-    RuntimeRecoveryBundleStore,
-    RuntimeContinuationAuthorityStore,
-    RuntimeWorkspaceVersionAuthorityStore
+  implements RuntimeContinuationAuthorityStore, RuntimeWorkspaceVersionAuthorityStore
 {
   readonly durability = 'canonical' as const;
   readonly toolBoundaryProtocol = 't1_after_preflight_v1' as const;
-  readonly recoveryBundleCapability = TOOL_RECOVERY_BUNDLE_CAPABILITY_V1;
   readonly continuationAuthorityCapability = RUNTIME_CONTINUATION_AUTHORITY_V1;
   readonly workspaceVersionAuthorityCapability = WORKSPACE_VERSION_AUTHORITY_CAPABILITY_V1;
   private readonly db: DatabaseSync;
@@ -346,7 +333,6 @@ export class SqliteRuntimeStore
       return;
     }
     const DatabaseSync = loadDatabaseSync();
-    const databaseExisted = path !== ':memory:' && existsSync(path);
     this.db = options.readOnly
       ? new DatabaseSync(path, { readOnly: true })
       : new DatabaseSync(path);
@@ -360,7 +346,8 @@ export class SqliteRuntimeStore
           );
         }
       } else {
-        configureSqliteRuntimeAutoVacuumForNewDatabase(this.db, databaseExisted);
+        configureSqliteRuntimeLockWait(this.db);
+        configureSqliteRuntimeAutoVacuumForNewDatabase(this.db);
         configureSqliteRuntimeDatabase(this.db);
         migrateSqliteRuntimeDatabase(this.db);
       }
@@ -3565,84 +3552,6 @@ export class SqliteRuntimeStore
     return this.transaction(() => this.commitToolOutcomeSync(canonicalInput));
   }
 
-  async commitToolRecoveryBundle(input: RuntimeRecoveryBundleCommit): Promise<void> {
-    const canonicalInput: RuntimeRecoveryBundleCommit = {
-      ...input,
-      reconcileRuntimeEvent: canonicalizeRuntimeEventForStorage(input.reconcileRuntimeEvent),
-      ...(input.outcomeRuntimeEvent
-        ? { outcomeRuntimeEvent: canonicalizeRuntimeEventForStorage(input.outcomeRuntimeEvent) }
-        : {}),
-      decisionRuntimeEvent: canonicalizeRuntimeEventForStorage(input.decisionRuntimeEvent),
-    };
-    assertNoReservedWorkspaceAuthorityAppend(canonicalInput.reconcileRuntimeEvent);
-    assertNoReservedWorkspaceAuthorityAppend(canonicalInput.decisionRuntimeEvent);
-    if (canonicalInput.outcomeRuntimeEvent) {
-      assertNoReservedWorkspaceAuthorityAppend(canonicalInput.outcomeRuntimeEvent);
-      assertNoReservedRecoveryFact(canonicalInput.outcomeRuntimeEvent);
-    }
-    this.transaction(() => {
-      const operation = this.readToolOperationSync(canonicalInput.operationId);
-      if (!operation) throw new Error(`Unknown tool operation ${canonicalInput.operationId}`);
-      if (!operation.dispatchEventId) {
-        throw new Error('Recovery bundle requires a durable dispatch RuntimeEvent');
-      }
-      assertToolRecoveryEventBundle({
-        operation: recoveryOperationIdentity(operation),
-        callEvent: this.readRequiredRuntimeEvent(operation.callEventId),
-        dispatchEvent: this.readRequiredRuntimeEvent(operation.dispatchEventId),
-        reconcileEvent: canonicalInput.reconcileRuntimeEvent,
-        outcomeEvent: canonicalInput.outcomeRuntimeEvent,
-        decisionEvent: canonicalInput.decisionRuntimeEvent,
-      });
-      assertStrictRuntimeEventOrder([
-        this.runtimeEventSeq(operation.callEventId),
-        this.runtimeEventSeq(operation.dispatchEventId),
-      ]);
-      this.assertToolLedgerTransition(
-        [
-          canonicalInput.reconcileRuntimeEvent,
-          ...(canonicalInput.outcomeRuntimeEvent ? [canonicalInput.outcomeRuntimeEvent] : []),
-          canonicalInput.decisionRuntimeEvent,
-        ],
-        'recovery_bundle',
-      );
-      if (operation.currentState !== 'prepared' || operation.resultEventId !== undefined) {
-        this.assertExactRecoveryBundleAlreadyCommitted(canonicalInput, operation);
-        return;
-      }
-
-      this.commitRecoveryFactSync(
-        operation,
-        canonicalInput.reconcileRuntimeEvent,
-        'reconcile_observed',
-      );
-      this.options.failpoint?.('after_recovery_reconcile');
-      if (canonicalInput.outcomeRuntimeEvent) {
-        this.commitToolOutcomeSync({
-          operationId: canonicalInput.operationId,
-          journalEventId: `${canonicalInput.operationId}_outcome`,
-          runtimeEvent: canonicalInput.outcomeRuntimeEvent,
-          committedAt: canonicalInput.outcomeRuntimeEvent.ts,
-        });
-        this.options.failpoint?.('after_recovery_outcome');
-      }
-
-      const decision = canonicalInput.decisionRuntimeEvent.actions?.toolRecovery;
-      if (!decision || decision.kind !== 'maka.tool.recovery_decision') {
-        throw new Error('Recovery bundle requires a recovery decision');
-      }
-      const current = this.readToolOperationSync(canonicalInput.operationId);
-      if (!current) throw new Error(`Unknown tool operation ${canonicalInput.operationId}`);
-      this.commitRecoveryFactSync(
-        current,
-        canonicalInput.decisionRuntimeEvent,
-        decision.payload.disposition === 'completed' ? 'recovery_completed' : 'recovery_parked',
-        decision.payload,
-      );
-      this.options.failpoint?.('after_recovery_decision');
-    });
-  }
-
   async readToolOperation(operationId: string): Promise<ToolOperationRecord | undefined> {
     return this.readToolOperationSync(operationId);
   }
@@ -4077,57 +3986,6 @@ export class SqliteRuntimeStore
     return { created: true, runtimeEventSeq };
   }
 
-  private commitRecoveryFactSync(
-    operation: ToolOperationRecord,
-    event: RuntimeEvent,
-    state: 'reconcile_observed' | 'recovery_completed' | 'recovery_parked',
-    decision?: ToolRecoveryDecisionFact,
-  ): void {
-    this.insertRuntimeEvent(event, event.ts, false);
-    this.options.failpoint?.('after_runtime_event_insert');
-    this.insertToolJournalEvent(operation, event, state);
-    if (state === 'reconcile_observed') {
-      const updated = this.db
-        .prepare('UPDATE tool_operations SET version = version + 1 WHERE operation_id = ?')
-        .run(operation.operationId);
-      if (updated.changes !== 1) {
-        throw new Error(`Tool operation compare-and-set failed for ${operation.operationId}`);
-      }
-      return;
-    }
-
-    if (
-      state === 'recovery_completed' &&
-      (decision?.disposition !== 'completed' ||
-        operation.currentState !== 'outcome_committed' ||
-        operation.resultEventId !== decision.outcomeEventId)
-    ) {
-      throw new Error('Completed recovery decision does not match the persisted outcome');
-    }
-    if (
-      state === 'recovery_parked' &&
-      (decision?.disposition !== 'parked' ||
-        operation.currentState !== 'prepared' ||
-        operation.resultEventId !== undefined)
-    ) {
-      throw new Error('Parked recovery decision does not match the prepared operation');
-    }
-    const updated = this.db
-      .prepare(`
-      UPDATE tool_operations
-      SET current_state = ?, version = version + 1
-      WHERE operation_id = ? AND current_state = ?
-    `)
-      .run(
-        state,
-        operation.operationId,
-        state === 'recovery_completed' ? 'outcome_committed' : 'prepared',
-      );
-    if (updated.changes !== 1) {
-      throw new Error(`Tool operation compare-and-set failed for ${operation.operationId}`);
-    }
-  }
-
   private insertToolJournalEvent(
     operation: ToolOperationRecord,
     event: RuntimeEvent,
@@ -4156,39 +4014,6 @@ export class SqliteRuntimeStore
         committedAt,
       );
     this.options.failpoint?.('after_journal_event_insert');
-  }
-
-  private assertExactRecoveryBundleAlreadyCommitted(
-    input: RuntimeRecoveryBundleCommit,
-    operation: ToolOperationRecord,
-  ): void {
-    const decision = input.decisionRuntimeEvent.actions?.toolRecovery;
-    const completed =
-      decision?.kind === 'maka.tool.recovery_decision' &&
-      decision.payload.disposition === 'completed';
-    if (
-      (completed &&
-        (!input.outcomeRuntimeEvent ||
-          operation.currentState !== 'recovery_completed' ||
-          operation.resultEventId !== input.outcomeRuntimeEvent.id)) ||
-      (!completed &&
-        (input.outcomeRuntimeEvent !== undefined ||
-          operation.currentState !== 'recovery_parked' ||
-          operation.resultEventId !== undefined))
-    ) {
-      throw new Error(`Tool operation ${operation.operationId} is already settled`);
-    }
-    for (const event of [
-      input.reconcileRuntimeEvent,
-      ...(input.outcomeRuntimeEvent ? [input.outcomeRuntimeEvent] : []),
-      input.decisionRuntimeEvent,
-    ]) {
-      const stored = this.readRuntimeEventJson(event.id);
-      if (stored === undefined) {
-        throw new Error(`Tool recovery bundle is incomplete for ${operation.operationId}`);
-      }
-      assertStoredRuntimeEventEquals(event, stored);
-    }
   }
 
   private transaction<T>(operation: () => T): T {
@@ -5152,12 +4977,6 @@ function canonicalizeRuntimeEventForStorage(event: RuntimeEvent): RuntimeEvent {
   return encodeCanonicalRuntimeEvent(event).event;
 }
 
-function assertNoReservedRecoveryFact(event: RuntimeEvent): void {
-  if (event.actions?.toolRecovery !== undefined) {
-    throw new Error('Tool recovery facts require the atomic recovery bundle writer');
-  }
-}
-
 function assertNoReservedToolLedgerFact(event: RuntimeEvent): void {
   assertNoReservedWorkspaceAuthorityAppend(event);
   if (event.actions?.continuationStart !== undefined) {
@@ -5166,7 +4985,7 @@ function assertNoReservedToolLedgerFact(event: RuntimeEvent): void {
   const validation = validateGenericToolLedgerAppend(event);
   if (validation.ok) return;
   if (validation.code === 'reserved_recovery_fact') {
-    throw new Error('Tool recovery facts require the atomic recovery bundle writer');
+    throw new Error('Historical tool recovery facts are read-only');
   }
   if (validation.code === 'reserved_tool_boundary_fact') {
     throw new Error('Durable tool facts require the atomic tool boundary writer');
@@ -5181,34 +5000,6 @@ function isToolLedgerBearingEvent(event: RuntimeEvent): boolean {
     event.actions?.toolDispatch !== undefined ||
     event.actions?.toolRecovery !== undefined
   );
-}
-
-function recoveryOperationIdentity(operation: ToolOperationRecord) {
-  if (!operation.dispatchEventId) {
-    throw new Error('Recovery bundle requires a durable dispatch RuntimeEvent');
-  }
-  return {
-    operationId: operation.operationId,
-    invocationId: operation.invocationId,
-    runId: operation.runId,
-    turnId: operation.turnId,
-    providerToolCallId: operation.providerToolCallId,
-    toolName: operation.toolName,
-    canonicalArgsHash: operation.canonicalArgsHash,
-    recoveryMode: operation.recoveryMode,
-    callEventId: operation.callEventId,
-    dispatchEventId: operation.dispatchEventId,
-  };
-}
-
-function assertStrictRuntimeEventOrder(eventSequences: readonly number[]): void {
-  if (
-    eventSequences.some(
-      (eventSequence, index) => index > 0 && eventSequence <= (eventSequences[index - 1] ?? -1),
-    )
-  ) {
-    throw new Error('Recovery facts violate canonical RuntimeEvent causal order');
-  }
 }
 
 function requireRuntimeEventOrder(

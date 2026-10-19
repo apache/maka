@@ -626,15 +626,10 @@
       "src/renderer/app-shell-overlays.tsx": {
         "importDeclarations": 4,
         "bridgePaths": {},
-        "environmentCapabilities": {
-          "window.addEventListener": 1,
-          "window.removeEventListener": 1
-        },
+        "environmentCapabilities": {},
         "hookCalls": {
           "useAppShellCommands": 1,
           "useHotkeys": 1,
-          "useLayoutEffect": 2,
-          "useRef": 1,
           "useUiLocale": 1
         },
         "lifecycleMethods": {},
@@ -642,6 +637,7 @@
         "actionFactories": [],
         "dependencyPaths": {
           "./app-shell-command-actions": 1,
+          "./application/contracts/settings-presentation/index.js": 1,
           "./features/overlays/index.js": 1,
           "./locales/shell-remaining-copy.js": 1,
           "./settings/settings-modal": 1,
@@ -650,8 +646,8 @@
           "@maka/ui": 1,
           "react": 1
         },
-        "importSpecifiers": 7,
-        "nonTriviaTokens": 858
+        "importSpecifiers": 5,
+        "nonTriviaTokens": 780
       },
       "src/renderer/app-shell.tsx": {
         "importDeclarations": 34,
@@ -2460,6 +2456,7 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
+          "../application/contracts/settings-presentation/index.js": 1,
           "../features/connection-settings": 2,
           "./password-input": 1,
           "./provider-display": 1,
@@ -2981,6 +2978,7 @@
         "dependencyPaths": {
           "../../shared/settings-ownership.js": 1,
           "../application/contracts/session-catalog/catalog-sessions.js": 1,
+          "../application/contracts/settings-presentation/index.js": 1,
           "../application/contracts/shell-layout-contract.js": 1,
           "../browser-storage": 1,
           "../features/connection-settings": 1,

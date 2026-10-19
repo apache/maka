@@ -1016,7 +1016,7 @@ test('Host reopens one projected image from its ArtifactStore authority', async 
             name: 'ProjectedImage',
             description: 'Return one inline image.',
             parameters: z.object({}),
-            recoveryMode: 'replay_safe',
+            recoveryMode: 'never_auto_retry',
             impl: async () => ({ private: 'raw execution fact' }),
             toModelOutput: () => ({
               type: 'content',

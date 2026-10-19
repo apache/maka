@@ -251,3 +251,24 @@ test('Resume is offered only when the displayed window covers the session tail',
     assert.equal(markup.includes('Continue this turn'), !hasLaterHistory);
   }
 });
+
+
+test('reconnecting with a matching active Turn does not label its unfinished tool Interrupted', async () => {
+  const messages: ComponentProps<typeof ChatView>['messages'] = [
+    { type: 'user', id: 'user', turnId: 'observed', ts: 1, text: 'run' },
+    { type: 'tool_call', id: 'pending', turnId: 'observed', ts: 2, toolName: 'Bash', args: { command: 'sleep 10' } },
+  ];
+  const dom = installTranscriptDom();
+  try {
+    await dom.render(<LocaleProvider locale="en"><ChatSurfaceLayout composer={null}>
+      <ChatView messages={messages} activeSession={activeSession} scrollBehavior="auto" onNew={() => undefined} />
+    </ChatSurfaceLayout></LocaleProvider>);
+    await act(async () => { dom.container.querySelector<HTMLElement>('.maka-processing-summary')?.click(); });
+    assert.match(dom.container.innerHTML, /Interrupted/);
+  } finally {
+    await dom.cleanup();
+  }
+  const after = await renderChat(undefined, { messages, activeTurn: { turnId: 'observed' } });
+  assert.match(after, /sleep 10/);
+  assert.doesNotMatch(after, /Interrupted/);
+});

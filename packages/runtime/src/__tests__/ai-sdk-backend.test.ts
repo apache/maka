@@ -5172,78 +5172,82 @@ describe('AiSdkBackend model history', () => {
     assert.equal(result.contextBudget?.compactionDecisions?.[0]?.decision, 'replaced');
   });
 
-  test('manual compactHistory rolls forward from the previous V2 checkpoint', async () => {
-    const oldEvents = [
-      runtimeTextEvent({
-        id: 'manual-v2-roll-old-1',
-        turnId: 'manual-v2-roll-turn-1',
-        role: 'user',
-        author: 'user',
-        text: 'manual v2 roll old alpha '.repeat(12),
-      }),
-      runtimeTextEvent({
-        id: 'manual-v2-roll-old-2',
-        turnId: 'manual-v2-roll-turn-2',
-        role: 'model',
-        author: 'agent',
-        text: 'manual v2 roll old beta '.repeat(12),
-      }),
-    ];
-    const previous = buildHistoryCompactCheckpoint({
-      sessionId: 'session-1',
-      coveredRuntimeEvents: oldEvents.slice(0, 1),
-      summary: sectionedSummary('MANUAL_V2_PREVIOUS_SUMMARY'),
-      charsPerToken: 1,
-    });
-    const summaryInputs: Array<{ previous?: string; newlyFoldedIds: string[] }> = [];
-    const recorded: HistoryCompactCheckpoint[] = [];
-    const backend = createBackend({
-      connection: connection(),
-      modelId: 'mock-model-id',
-      modelFactory: () => completionModel(),
-      tools: [],
-      contextBudget: {
-        name: 'manual-v2-roll-test',
-        charsPerToken: 1,
-      },
-      loadHistoryCompactCheckpoint: () => previous,
-      summarizeHistoryCompact: async (input) => {
-        summaryInputs.push({
-          previous:
-            input.previousCheckpoint?.version === 2 ? input.previousCheckpoint.summary : undefined,
-          newlyFoldedIds: (input.newlyFoldedRuntimeEvents ?? []).map((event) => event.id),
-        });
-        return structuredSummary('MANUAL_V2_ROLLED_SUMMARY');
-      },
-      recordHistoryCompactCheckpoint: (checkpoint) => {
-        recorded.push(checkpoint);
-      },
-    });
-
-    await backend.compactHistory({
-      turnId: 'turn-compact',
-      runId: 'run-1',
-      runtimeContext: [
-        ...oldEvents,
+  for (const providerType of ['openai', 'openai-codex'] as const) {
+    test(`manual compactHistory rolls forward from the previous V2 checkpoint on ${providerType}`, async () => {
+      const oldEvents = [
         runtimeTextEvent({
-          id: 'manual-v2-roll-recent',
-          turnId: 'manual-v2-roll-recent-turn',
+          id: 'manual-v2-roll-old-1',
+          turnId: 'manual-v2-roll-turn-1',
           role: 'user',
           author: 'user',
-          text: 'manual v2 roll retained context',
+          text: 'manual v2 roll old alpha '.repeat(12),
         }),
-      ],
-    });
+        runtimeTextEvent({
+          id: 'manual-v2-roll-old-2',
+          turnId: 'manual-v2-roll-turn-2',
+          role: 'model',
+          author: 'agent',
+          text: 'manual v2 roll old beta '.repeat(12),
+        }),
+      ];
+      const previous = buildHistoryCompactCheckpoint({
+        sessionId: 'session-1',
+        coveredRuntimeEvents: oldEvents.slice(0, 1),
+        summary: sectionedSummary('MANUAL_V2_PREVIOUS_SUMMARY'),
+        charsPerToken: 1,
+      });
+      const summaryInputs: Array<{ previous?: string; newlyFoldedIds: string[] }> = [];
+      const recorded: HistoryCompactCheckpoint[] = [];
+      const backend = createBackend({
+        connection: { ...connection(), providerType },
+        modelId: 'mock-model-id',
+        modelFactory: () => completionModel(),
+        tools: [],
+        contextBudget: {
+          name: 'manual-v2-roll-test',
+          charsPerToken: 1,
+        },
+        loadHistoryCompactCheckpoint: () => previous,
+        summarizeHistoryCompact: async (input) => {
+          summaryInputs.push({
+            previous:
+              input.previousCheckpoint?.version === 2
+                ? input.previousCheckpoint.summary
+                : undefined,
+            newlyFoldedIds: (input.newlyFoldedRuntimeEvents ?? []).map((event) => event.id),
+          });
+          return structuredSummary('MANUAL_V2_ROLLED_SUMMARY');
+        },
+        recordHistoryCompactCheckpoint: (checkpoint) => {
+          recorded.push(checkpoint);
+        },
+      });
 
-    assert.deepEqual(summaryInputs, [
-      {
-        previous: previous.summary,
-        newlyFoldedIds: ['manual-v2-roll-old-2', 'manual-v2-roll-recent'],
-      },
-    ]);
-    assert.equal(recorded[0]?.previousCheckpointId, previous.checkpointId);
-    assert.equal(recorded[0]?.coverage.eventCount, 3);
-  });
+      await backend.compactHistory({
+        turnId: 'turn-compact',
+        runId: 'run-1',
+        runtimeContext: [
+          ...oldEvents,
+          runtimeTextEvent({
+            id: 'manual-v2-roll-recent',
+            turnId: 'manual-v2-roll-recent-turn',
+            role: 'user',
+            author: 'user',
+            text: 'manual v2 roll retained context',
+          }),
+        ],
+      });
+
+      assert.deepEqual(summaryInputs, [
+        {
+          previous: previous.summary,
+          newlyFoldedIds: ['manual-v2-roll-old-2', 'manual-v2-roll-recent'],
+        },
+      ]);
+      assert.equal(recorded[0]?.previousCheckpointId, previous.checkpointId);
+      assert.equal(recorded[0]?.coverage.eventCount, 3);
+    });
+  }
 
   test('manual compactHistory reuses a checkpoint that already covers the full fold', async () => {
     const oldEvents = [

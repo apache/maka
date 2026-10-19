@@ -21,6 +21,7 @@ import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { PermissionMode } from '@maka/core/permission';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
+import type { SessionSettingSettlement } from '@maka/ui';
 import type { SessionCatalogController } from '../../../application/contracts/session-catalog/session-catalog-state.js';
 import type { SessionModelConfigurationIntent, SessionModelTarget } from '../session-model-configuration-intent.js';
 
@@ -71,6 +72,17 @@ export interface SessionSettingsInput<Owner extends { sessionId?: string }> {
 
 export interface SessionSettingsCommands {
   clear(sessionId: string): void;
+  /**
+   * Waits for the Session's in-flight setting writes. True when they all
+   * committed (or none was pending); false when one failed or was abandoned,
+   * so the caller must not act on the overlay the user saw.
+   */
+  settled(sessionId: string): Promise<boolean>;
+  /**
+   * Observes the Session's setting writes for one submission attempt, from
+   * the moment the user submits until `release()`; see `settled` for results.
+   */
+  beginSettlement(sessionId: string): SessionSettingSettlement;
   setSessionModel(sessionId: string, model: SessionModelTarget): Promise<boolean>;
   setSessionThinkingLevel(sessionId: string, level: ThinkingLevel | null): Promise<boolean>;
   setSessionExecutor(

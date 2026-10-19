@@ -270,7 +270,6 @@ packages/ui/src/attachment-kinds.tsx
 packages/ui/src/bot-brand-logo.tsx
 packages/ui/src/capability-audit-strip.tsx
 packages/ui/src/chat-empty-hero.tsx
-packages/ui/src/chat-model-switcher.tsx
 packages/ui/src/chat-surface-layout.tsx
 packages/ui/src/chat-turn.tsx
 packages/ui/src/chat-view.tsx
@@ -282,11 +281,10 @@ packages/ui/src/components.tsx
 packages/ui/src/composer-message-queue-view.tsx
 packages/ui/src/composer-message-queue.tsx
 packages/ui/src/composer-model-label.tsx
-packages/ui/src/composer-options-menu.tsx
+packages/ui/src/composer-model-picker.tsx
 packages/ui/src/composer.tsx
 packages/ui/src/daily-review-panel.tsx
 packages/ui/src/directory-reference-chip.tsx
-packages/ui/src/executor-model-picker.tsx
 packages/ui/src/form-interaction-prompt.tsx
 packages/ui/src/icons.tsx
 packages/ui/src/image-delivery.tsx
@@ -301,9 +299,7 @@ packages/ui/src/markdown.tsx
 packages/ui/src/mermaid-diagram.tsx
 packages/ui/src/message-summary.tsx
 packages/ui/src/model-picker-internals.tsx
-packages/ui/src/model-picker-panel.tsx
 packages/ui/src/model-picker.tsx
-packages/ui/src/model-wheel-picker.tsx
 packages/ui/src/module-hub-selector.tsx
 packages/ui/src/module-pages.tsx
 packages/ui/src/new-project-dialog.tsx

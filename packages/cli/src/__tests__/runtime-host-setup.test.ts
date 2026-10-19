@@ -36,6 +36,7 @@ import { test } from 'node:test';
 import { promisify } from 'node:util';
 import {
   claimRuntimeHostManagedDeployment,
+  beginRuntimeHostManagedDeploymentTransition,
   decodeRuntimeHostSetupFrame,
   encodeRuntimeHostSetupFrame,
   resolveRuntimeHostManagedDeploymentConfigPath,
@@ -45,6 +46,7 @@ import {
 } from '@maka/runtime-host/operator';
 import { RuntimeHostOperationError } from '@maka/runtime-host/client';
 import {
+  STORAGE_ROOT_MARKER_FILE,
   resolveRootControlNamespace,
   resolveRootOwnershipNamespace,
   resolveStorageRoot,
@@ -215,13 +217,7 @@ test('on-demand setup installs one exact deployment without a service backend', 
   assert.equal(complete.operator.nodePath, process.execPath);
   const persisted = JSON.parse(
     await readFile(resolveRuntimeHostManagedDeploymentConfigPath(rootId), 'utf8'),
-  ) as {
-    deploymentRoot: string;
-    launch: { nodePath: string };
-    lifecycle: { mode: string };
-    listeners: { websocket: { port: number } };
-    reconciliation: { trigger: string };
-  };
+  ) as RuntimeHostManagedDeploymentConfig;
   assert.equal(
     persisted.deploymentRoot,
     join(canonicalDataHome, 'Maka', 'runtime-host-services', rootId),
@@ -229,7 +225,7 @@ test('on-demand setup installs one exact deployment without a service backend', 
   assert.equal(complete.operator.modulePath, join(persisted.deploymentRoot, 'operator.mjs'));
   assert.equal(projectedOperatorDeploymentRoot, persisted.deploymentRoot);
   assert.equal(persisted.lifecycle.mode, 'on_demand');
-  assert.equal(persisted.listeners.websocket.port, 0);
+  assert.equal(persisted.listeners.websocket!.port, 0);
   assert.equal(persisted.reconciliation.trigger, 'activation');
 
   const retryOutputs: string[] = [];
@@ -322,6 +318,155 @@ test('on-demand setup installs one exact deployment without a service backend', 
   }
 
   await discoveryOwner.close();
+
+  await t.test(
+    'missing WSL Node repair preserves authority and retries interrupted transactions',
+    {
+      skip: process.platform === 'win32',
+    },
+    async () => {
+      const capability = await resolveStorageRoot({ path: stateRoot, kind: 'interactive' });
+      const path = resolveRuntimeHostManagedDeploymentConfigPath(rootId);
+      const source = {
+        ...persisted,
+        launch: { ...persisted.launch, nodePath: join(base, 'deleted-node') },
+      };
+      await writeFile(path, JSON.stringify(source));
+      await mkdir(source.deploymentRoot, { recursive: true });
+      const recovery = {
+        ...options,
+        reuseExistingEnvironment: true,
+        repairRootAfterRemount: true as const,
+        expectedExisting: { rootId, operator: runtimeHostManagedOperatorCommand(source, 'posix') },
+      };
+      const recoveredFrames: string[] = [];
+      const repair = () =>
+        runRuntimeHostSetupCli(recovery, {
+          ...overrides,
+          isWsl: async () => true,
+          convergeOperator: convergeRuntimeHostManagedOperator,
+          prepareDeployment: async () =>
+            assert.fail('Node repair must preserve the installed package'),
+          replaceCredential: async () => assert.fail('Node repair must preserve credentials'),
+          writeOutput: (value) => recoveredFrames.push(value),
+        });
+      const refused: string[] = [];
+      assert.equal(
+        await runRuntimeHostSetupCli(recovery, {
+          ...overrides,
+          isWsl: async () => false,
+          writeOutput: (value) => refused.push(value),
+        }),
+        1,
+      );
+      const refusal = refused
+        .map(decodeRuntimeHostSetupFrame)
+        .find((frame) => frame?.kind === 'error');
+      assert.ok(refusal?.kind === 'error');
+      assert.match(refusal.error.message, /only in WSL/u);
+      assert.equal(await readFile(path, 'utf8'), JSON.stringify(source));
+      assert.equal(
+        await runRuntimeHostSetupCli(
+          {
+            ...recovery,
+            expectedExisting: {
+              ...recovery.expectedExisting,
+              operator: {
+                ...recovery.expectedExisting.operator,
+                modulePath: '/another/operator.mjs',
+              },
+            },
+          },
+          { ...overrides, isWsl: async () => true, writeOutput: () => undefined },
+        ),
+        1,
+      );
+      assert.equal(await readFile(path, 'utf8'), JSON.stringify(source));
+      await writeFile(source.launch.nodePath, 'existing but unusable');
+      assert.equal(await repair(), 1);
+      await rm(source.launch.nodePath);
+      const owner = await tryAcquireStateRootOwner(capability);
+      assert.ok(owner);
+      assert.equal(await repair(), 1);
+      assert.equal(await readFile(path, 'utf8'), JSON.stringify(source));
+      await owner.close();
+      const markerPath = join(stateRoot, STORAGE_ROOT_MARKER_FILE);
+      const marker = JSON.parse(await readFile(markerPath, 'utf8'));
+      for (const mismatch of [
+        { ...marker, rootId: 'f'.repeat(64) },
+        {
+          ...marker,
+          rootIdentity: {
+            ...marker.rootIdentity,
+            ino: (BigInt(marker.rootIdentity.ino) + 1n).toString(),
+          },
+        },
+      ]) {
+        await writeFile(markerPath, JSON.stringify(mismatch));
+        assert.equal(await repair(), 1);
+        assert.equal(await readFile(path, 'utf8'), JSON.stringify(source));
+        assert.equal(await readFile(markerPath, 'utf8'), JSON.stringify(mismatch));
+      }
+      marker.rootIdentity.dev = (BigInt(marker.rootIdentity.dev) + 1n).toString();
+      await writeFile(markerPath, JSON.stringify(marker));
+      const desired = {
+        ...source,
+        configRevision: source.configRevision + 1,
+        launch: { ...source.launch, nodePath: await realpath(process.execPath) },
+      };
+      assert.equal(await repair(), 0, recoveredFrames.at(-1) ?? 'missing repair frame');
+      assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), desired);
+      assert.equal(
+        (await readFile(recovery.expectedExisting.operator.modulePath, 'utf8')).includes(
+          JSON.stringify(desired.launch.nodePath),
+        ),
+        true,
+      );
+      assert.equal(await repair(), 0, recoveredFrames.at(-1) ?? 'missing repair frame');
+      assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), desired);
+      assert.equal(
+        recoveredFrames.map(decodeRuntimeHostSetupFrame).at(-1)?.kind,
+        'existing_environment',
+      );
+      for (const partialProjection of [false, true]) {
+        await writeFile(path, JSON.stringify(source));
+        const lease = await tryAcquireStateRootOwner(capability);
+        assert.ok(lease);
+        await beginRuntimeHostManagedDeploymentTransition(lease, {
+          transactionId: '00000000-0000-4000-8000-000000000002',
+          operation: 'configure',
+          recovery: 'restore_from',
+          expected: source,
+          desired,
+        });
+        if (partialProjection) await convergeRuntimeHostManagedOperator(source, desired);
+        assert.equal(await repair(), 1);
+        await lease.close();
+        assert.equal(await repair(), 0, recoveredFrames.at(-1) ?? 'missing repair frame');
+        assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), desired);
+      }
+      await writeFile(path, JSON.stringify(source));
+      const lease = await tryAcquireStateRootOwner(capability);
+      assert.ok(lease);
+      const changed = {
+        ...desired,
+        configRevision: desired.configRevision + 1,
+        launch: { ...desired.launch, package: { ...desired.launch.package, version: '9.9.9' } },
+      };
+      await beginRuntimeHostManagedDeploymentTransition(lease, {
+        transactionId: '00000000-0000-4000-8000-000000000003',
+        operation: 'configure',
+        recovery: 'restore_from',
+        expected: source,
+        desired: changed,
+      });
+      await lease.close();
+      const pending = await readFile(path, 'utf8');
+      assert.equal(await repair(), 1);
+      assert.equal(await readFile(path, 'utf8'), pending);
+      await writeFile(path, JSON.stringify(persisted));
+    },
+  );
 
   const replacementIntegrity = `sha512-${Buffer.alloc(64, 9).toString('base64')}`;
   const replacementOptions = { ...options, version: '1.2.4' } as const;

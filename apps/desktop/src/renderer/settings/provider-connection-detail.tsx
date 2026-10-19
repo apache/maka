@@ -62,6 +62,7 @@ import {
   providerPanelActionErrorMessage,
   type CredentialPresenceStatus,
 } from '../features/connection-settings';
+import { SettingsLeaveCheck } from '../application/contracts/settings-presentation/index.js';
 import {
   useConnectionDetail,
   type ConnectionDetailProps,
@@ -192,6 +193,10 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     savedBaseUrl,
     save,
     updateEnabledModels,
+    saveEnabledModels,
+    cancelEnabledModels,
+    hasEnabledModelChanges,
+    savingEnabledModels,
     addDeclaredModel,
     modelParameters,
     hasModelChanges,
@@ -425,17 +430,27 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
         size="sm"
         value={enabled}
         isDisabled={allActionsBusy}
-        changeAction={() =>
-          updateEnabledModels(
-            enabled ? enabledModelIds.filter((existing) => existing !== id) : [...enabledModelIds, id],
-          )
-        }
+        onChange={() => updateEnabledModels(id)}
       />
     );
   }
 
   return (
     <VStack gap={8}>
+      <SettingsLeaveCheck onLeave={async () => {
+        if (savingEnabledModels) return false;
+        if (!hasEnabledModelChanges) return true;
+        const discard = await toast.confirm({
+          title: copy.discardModels,
+          description: copy.discardModelsHelp,
+          confirmLabel: copy.discardModelsConfirm,
+          cancelLabel: copy.cancel,
+          destructive: true,
+        });
+        if (!mounted.current || !discard) return false;
+        cancelEnabledModels();
+        return true;
+      }} />
       {retired && (
         <Banner status="error" role="alert" title={copy.providerRetired} description={copy.providerRetiredDetail} />
       )}
@@ -836,6 +851,17 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
           <Button variant="destructive" isDisabled={allActionsBusy} isLoading={deleting} onClick={() => void remove()} label={copy.delete} />
         </SettingsActions>
       </SettingsSection>
+      {!retired && (
+        <div className="providerModelsSaveBar" role="group" aria-label={copy.modelSelection}>
+          <span role="status">{hasEnabledModelChanges ? copy.modelsUnsaved : copy.modelsSaved}</span>
+          <HStack gap={2}>
+            <Button variant="secondary" label={copy.cancel} isDisabled={!hasEnabledModelChanges || allActionsBusy}
+              onClick={cancelEnabledModels} />
+            <Button variant="primary" label={copy.save} isLoading={savingEnabledModels}
+              isDisabled={!hasEnabledModelChanges || allActionsBusy} onClick={() => void saveEnabledModels()} />
+          </HStack>
+        </div>
+      )}
     </VStack>
   );
 }

@@ -69,11 +69,6 @@
   .workHubLiveError { padding: var(--space-3); }
   .workHubComposerSurface { position: relative; width: 100%; }
   .workHubComposerContent { position: relative; }
-  /* Compact WorkHub keeps its original inline wheel footprint. Other hosts
-     keep the button footprint and paint the same wheel over that position. */
-  .workHubLive[data-placement='floating'][data-conversation-expanded='false'] .maka-model-wheel-anchor[data-open='true'] {
-    width: min(264px, 55vw); height: var(--maka-model-wheel-height);
-  }
   /* Selector popups stay translucent over the transparent WorkHub surface. */
   .workHubLive .astryx-selector-popup {
     background: color-mix(in oklch, var(--background-elevated) 94%, transparent);

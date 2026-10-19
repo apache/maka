@@ -715,7 +715,7 @@ test('the recovery lane leaves the suites it executes to the required test lane'
       [...workflow.matchAll(/packages[/\\]([^/\\]+)[/\\]dist[/\\]/gu)].map((match) => match[1]),
     ),
   ].sort();
-  assert.deepEqual(executed, ['runtime', 'runtime-host', 'storage']);
+  assert.deepEqual(executed, ['cli', 'runtime', 'runtime-host', 'storage']);
 
   // None of that closure belongs in the filter. These suites are ordinary
   // TypeScript, so `test` runs them on Linux on every pull request and fails
