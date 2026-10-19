@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import type { BackendSendInput } from '@maka/core/backend-types';
 import type { SessionEvent } from '@maka/core/events';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -618,6 +618,112 @@ test('real Host keeps AskUser alive across CLI processes and returns the origina
     for (const child of children) child.kill('SIGTERM');
     await host.close();
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('CLI persists catalog-managed executor model changes without native settings', {
+  timeout: 60_000,
+}, async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-cli-executor-model-'));
+  let host: Awaited<ReturnType<typeof startExecutionRuntimeHostService>> | undefined;
+  t.after(async () => {
+    await host?.close();
+    await rm(root, { recursive: true, force: true });
+  });
+  const owner = await tryAcquireInteractiveRootOwner(
+    await resolveStorageRoot({ path: root, kind: 'interactive' }),
+  );
+  assert.ok(owner);
+  const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+  let sessionId: string;
+  try {
+    sessionId = (
+      await stores.sessionStore.create({
+        cwd: root,
+        executorId: 'fixture-executor',
+        executorConfig: { model: 'before', mode: 'auto' },
+        llmConnectionSlug: 'executor:fixture-executor',
+        model: 'before',
+        permissionMode: 'ask',
+      })
+    ).id;
+  } finally {
+    await stores.sessionStore.close?.();
+    await owner.close();
+  }
+  const source = join(root, 'executor-fixture');
+  await mkdir(source);
+  await writeFile(
+    join(source, 'maka.extension.json'),
+    JSON.stringify({
+      schemaVersion: 1,
+      id: 'cli-executor-fixture',
+      runtime: { entry: 'index.mjs' },
+      composition: { patch: 'maka.composition.json', structuralDependencies: [] },
+    }),
+  );
+  await writeFile(
+    join(source, 'maka.composition.json'),
+    JSON.stringify([
+      {
+        type: 'insert',
+        rootId: 'profile',
+        entry: { id: 'executor', packageId: 'cli-executor-fixture', config: {} },
+      },
+    ]),
+  );
+  await writeFile(
+    join(source, 'index.mjs'),
+    `export default {
+    packageId: 'cli-executor-fixture', contributions: [{ id: 'executor', kind: 'executor' }],
+    host: { apply(ctx) { ctx.executors.register({
+      id: 'fixture-executor',
+      discover: async () => ({ id: 'fixture-executor', displayName: 'Fixture', readiness: 'ready',
+        models: [{ id: 'before', name: 'Before' }, { id: 'after', name: 'After' }],
+        supportsAttachments: false, supportsModelChange: true }),
+      configureConversation: async ({ configuration }) => configuration,
+      execute: async () => ({ status: 'completed', text: '' }),
+    }); } },
+  };`,
+  );
+  const { createExecutionRuntimeHostComposition } = await import(
+    new URL('./execution-composition.js', import.meta.resolve('@maka/runtime-host/server')).href
+  );
+  let composition: Awaited<ReturnType<typeof createExecutionRuntimeHostComposition>> | undefined;
+  host = await startExecutionRuntimeHostService(
+    { rootPath: root },
+    {
+      createComposition: async (context, options) => {
+        composition = await createExecutionRuntimeHostComposition(context, {
+          ...options,
+          bootstrapRuntimePolicy: false,
+        });
+        return composition;
+      },
+    },
+  );
+  assert.ok(composition);
+  const installed = await composition.plugins.installPackage(source);
+  assert.equal(installed.convergence, 'converged', JSON.stringify(installed));
+  const changed = await cli(root, '--session', sessionId, '--model', 'after');
+  assert.equal(changed.code, 0, changed.stderr);
+  assert.equal(JSON.parse(changed.stdout).configuration.model, 'after');
+  const connected = await connectRuntimeHost({
+    rootPath: root,
+    protocol: { min: RUNTIME_HOST_PROTOCOL_VERSION, max: RUNTIME_HOST_PROTOCOL_VERSION },
+  });
+  assert.equal(connected.kind, 'connected');
+  const probe = connected.connection;
+  try {
+    const saved = await probe.request('session.catalog.query', { kind: 'get', sessionId });
+    assert.equal(saved.kind, 'session');
+    assert.ok(saved.kind === 'session' && saved.session && 'executorConfig' in saved.session);
+    assert.deepEqual(saved.session.executorConfig, { model: 'after' });
+    const unsupported = await cli(root, '--session', sessionId, '--thinking', 'high');
+    assert.equal(unsupported.code, 1);
+    assert.match(unsupported.stderr, /Native execution settings require a new Maka task/);
+  } finally {
+    await probe.close();
   }
 });
 

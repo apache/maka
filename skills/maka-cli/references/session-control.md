@@ -68,7 +68,7 @@ maka run --session "$session" --model "other-model" --resume --json
 maka run --session "$session" --model "other-model" "Continue the review" --no-wait
 ```
 
-These are alternatives: only save settings; save then safely resume; or save then submit new user input. `--connection <slug>` changes the saved account; otherwise the existing account remains. `--thinking` can be updated too; model/connection changes reset thinking to the model default unless explicitly supplied. Changes persist like Desktop model selection without changing global defaults or permissions. A settings-only call returns a JSON `configuration` receipt and leaves execution unchanged, even if `status` describes an earlier failed Turn.
+These are alternatives: only save settings; save then safely resume; or save then submit new user input. `--connection <slug>` changes the saved account; otherwise the existing account remains. `--thinking` can be updated too; native model/connection changes reset thinking to the model default unless explicitly supplied; selecting the same target preserves the saved level. Changes persist like Desktop model selection without changing global defaults or permissions. A settings-only call returns a JSON `configuration` receipt and leaves execution unchanged, even if `status` describes an earlier failed Turn.
 
 Settings are saved before an explicit action and remain saved if that action fails. Choose a model from the user's instruction or existing authorization; CLI does not classify failures or select replacements. Busy or unsafe-continuation errors come from the Host. The CLI does not implicitly stop execution or replay the old prompt. A new prompt and safe resume are distinct operations.
 

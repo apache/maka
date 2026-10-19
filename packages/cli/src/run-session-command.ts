@@ -370,17 +370,20 @@ async function configureSessionModel(
     options.sessionId!,
     (current) => {
       const changesModel = options.model !== undefined || options.connection !== undefined;
-      let patch: SessionConfigurationPatch = {
-        thinkingLevel: options.thinking ?? null,
-      };
+      let patch: SessionConfigurationPatch =
+        options.thinking !== undefined ? { thinkingLevel: options.thinking } : {};
       if (changesModel) {
         if (current.executorId && !selected) {
           patch = { ...patch, executorConfig: { model: options.model! } };
         } else {
           const connectionId = selected?.connectionId ?? current.llmConnectionId;
           if (!connectionId) throw new Error('Model selection requires an explicit --connection');
+          const changesTarget =
+            connectionId !== current.llmConnectionId ||
+            (options.model ?? current.model) !== current.model;
           patch = {
             ...patch,
+            ...(changesTarget && options.thinking === undefined ? { thinkingLevel: null } : {}),
             modelTarget: {
               kind: 'explicit',
               connectionId,

@@ -170,8 +170,8 @@ maka run --session "$session" --model "other-model" "Continue the review" --no-w
 
 These are three alternatives. The first only saves settings and returns a JSON `configuration`
 receipt with `connection`, `model`, and `thinking`; it does not start or resume execution.
-Add `--connection <slug>` to select a different saved account. Model/connection changes reset
-thinking to the model default unless `--thinking` is supplied. The new settings persist for future
+Add `--connection <slug>` to select a different saved account. Native native model/connection changes reset
+thinking to the model default unless `--thinking` is supplied; selecting the same target preserves the saved level. The new settings persist for future
 calls, like Desktop model selection; global defaults and permissions are unchanged.
 
 Settings are saved before an explicit action, so they remain saved if that later action fails.

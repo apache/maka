@@ -158,7 +158,7 @@ maka run --session "$session" --model "other-model" "继续审查" --no-wait
 
 这三条是不同用法。第一条只保存设置，返回带有 `connection`、`model`、`thinking` 的 JSON
 `configuration` 回执，不会启动或恢复执行。加 `--connection <slug>` 可以选择另一个已保存的
-账号。切换模型或连接会将 thinking 重置为模型默认值，除非显式指定 `--thinking`。
+账号。原生模型或连接实际改变时会将 thinking 重置为模型默认值，除非显式指定 `--thinking`；选择相同目标会保留已保存的级别。
 与 Desktop 切换模型一样，新设置对后续调用持续生效；全局默认值和权限不变。
 
 设置先保存，再执行显式动作；即使后续动作失败，已保存的设置仍然保留。CLI 不判断会话因何

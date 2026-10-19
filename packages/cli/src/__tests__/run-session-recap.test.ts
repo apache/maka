@@ -137,10 +137,12 @@ test('external CLI combines queries and persists model changes before explicit c
         connection: {
           slug,
           name: slug,
-          providerType: 'ollama',
+          providerType: 'custom',
+          defaultApiProtocol: 'openai-chat',
           baseUrl: `http://127.0.0.1:${address.port}/v1`,
           enabled: true,
           enabledModelIds: ['fake-model', 'other-model'],
+          modelOverrides: { 'fake-model': { thinkingLevels: ['high'] } },
         },
       });
       assert.equal(created.kind, 'committed');
@@ -149,6 +151,11 @@ test('external CLI combines queries and persists model changes before explicit c
         (item) => item.slug === slug,
       )!.connectionId;
       if (slug === 'fake') connectionId = selectedId;
+      await policy.credentialVault.set({
+        locator: { scope: 'connection', connectionId: selectedId, kind: 'api_key' },
+        expected: null,
+        secret: 'test-only-key',
+      });
       const fetch = await policy.operations.beginModelFetch(selectedId);
       assert.equal(fetch.kind, 'ready');
       if (fetch.kind !== 'ready') throw new Error('Model setup failed');
@@ -324,6 +331,12 @@ test('external CLI combines queries and persists model changes before explicit c
   assert.equal(JSON.parse(stopped.stdout).recap, recapText);
   const invalidModel = await cli('--model', 'missing-model').result;
   assert.equal(invalidModel.code, 1);
+  const thinking = await cli('--thinking', 'high').result;
+  assert.equal(thinking.code, 0, thinking.stderr);
+  assert.equal(JSON.parse(thinking.stdout).configuration.thinking, 'high');
+  const unchanged = await cli('--model', 'fake-model').result;
+  assert.equal(unchanged.code, 0, unchanged.stderr);
+  assert.equal(JSON.parse(unchanged.stdout).configuration.thinking, 'high');
   const changed = await cli('--model', 'other-model').result;
   assert.equal(changed.code, 0, changed.stderr);
   assert.deepEqual(JSON.parse(changed.stdout).configuration, {
