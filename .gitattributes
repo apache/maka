@@ -18,6 +18,8 @@
 # Repository-only plugin examples are tested from a Git checkout, but are not
 # ASF source-release inputs.
 /scripts/plugins export-ignore
+# This integration test packages the repository-only Feishu plugin example.
+/packages/runtime-host/test/assistant/memory-network/test/feishu-source.test.ts export-ignore
 
 # DeepSeek Harness remains available to repository development and benchmarks,
 # but its external runtime dependency closure is not an ASF source-release input.

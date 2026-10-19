@@ -513,6 +513,11 @@ describe('ASF source release verification', () => {
         join(repositoryRoot, 'scripts/plugins/codex-app-server-executor/index.mjs'),
         'export {};\n',
       );
+      const memoryTests = 'packages/runtime-host/test/assistant/memory-network/test';
+      mkdirSync(join(repositoryRoot, memoryTests), { recursive: true });
+      for (const name of ['feishu-source.test.ts', 'sources.test.ts']) {
+        writeFileSync(join(repositoryRoot, memoryTests, name), 'export {};\n');
+      }
       mkdirSync(join(repositoryRoot, 'packages/eval/harbor/deepseek-harness-toolchain'), {
         recursive: true,
       });
@@ -553,6 +558,7 @@ describe('ASF source release verification', () => {
         '.claude/launch.json',
         '.maka-shots/review.png',
         'maka-proposal-zh-review.txt',
+        'packages/runtime-host/test/assistant/memory-network/test',
         'packages/eval/harbor/deepseek-harness-toolchain/package-lock.json',
         'packages/eval/harbor/deepseek-harness-toolchain/package.json',
         'packages/eval/harbor/deepseek-harness-toolchain/patch-subprocess-local.mjs',
@@ -630,6 +636,8 @@ describe('ASF source release verification', () => {
       assert.doesNotMatch(entries, /untracked\.txt/);
       assert.doesNotMatch(entries, /\.claude|\.maka-shots|maka-proposal-zh-review/);
       assert.doesNotMatch(entries, /scripts\/plugins\/codex-app-server-executor/);
+      assert.doesNotMatch(entries, /memory-network\/test\/feishu-source\.test\.ts/);
+      assert.match(entries, /memory-network\/test\/sources\.test\.ts/);
       assert.doesNotMatch(entries, /deepseek-harness-toolchain\/package(?:-lock)?\.json/);
       assert.match(entries, /deepseek-harness-toolchain\/patch-subprocess-local\.mjs/);
       assert.match(entries, /deepseek-harness-profile\/cordis\.yml/);
