@@ -25,7 +25,8 @@
 
 ### Added
 
-- A personal assistant with indexed memory and durable tasks (#6004), and durable observation of event waits (#6113).
+- A personal assistant with indexed memory, durable tasks and an inbox bot for coordinating work (#6004, #6124), and durable observation of event waits (#6113).
+- Import Cursor sessions through their SQLite history adapter (#6039).
 - Configured external agents in the model picker, alongside unified model and effort options (#6103, #5789).
 - Automatic rendering and archiving of chat images, and clearer project, task and execution-location controls (#5969, #6088).
 
@@ -35,6 +36,9 @@
 - Recover failed message delivery and workspace Skill deletion, retain client tool outcomes, and release settled external executions whose results were rejected (#5058, #6009, #5458, #5823).
 - Render imported Codex user context without raw envelopes, scope WorkHub tool lookups to the owning turn, and include tool and human evidence in Goal context (#6117, #6096, #6087).
 - Keep fullscreen editing usable on short terminals, mask fine-grained GitHub tokens, and align connection URL validation with the Host (#6085, #6062, #6098).
+- Restore image attachments in Codex imports and preserve running tool state when reconnecting (#6118, #6145).
+- Resolve linked-worktree read boundaries through the common Git directory, and initialize vacuum mode when databases are created concurrently (#6105, #6136).
+- Preserve Windows browser launcher paths and SSH operator arguments, and validate project roots for the target platform (#6121, #6123, #6122).
 - Source patches no longer include the unchanged QuickJS WebAssembly binary; installation reuses it from the pinned npm dependency. Source verification also rejects Base64-encoded WASM.
 - Correct stale source-license component and dependency references, preserve the cursor files' upstream MIT scope, and identify the historical 0.2.0 RC1 in DISCLAIMER-WIP.
 
@@ -47,7 +51,7 @@
 
 ### Upgrade notes
 
-- Update Desktop, CLI and remote Runtime Hosts together. The Runtime Host compatibility epoch is 222 (217 in 0.2.1); mismatched peers cannot connect.
+- Update Desktop, CLI and remote Runtime Hosts together. The Runtime Host compatibility epoch is 224 (217 in 0.2.1); mismatched peers cannot connect.
 - Back up configuration and workspace data before upgrading if rollback is needed. This release adds durable assistant and event-wait state; older releases must not reuse data written by a newer Host without a verified downgrade path.
 - This release continues the TypeScript Runtime Host and Electron desktop. The Rust Host and GPUI desktop remain on the separate `rust-preview` development branch.
 
