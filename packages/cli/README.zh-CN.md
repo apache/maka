@@ -164,12 +164,14 @@ maka run --session "$session" "接下来检查测试" --queue --no-wait --json
 maka run --session "$session" --wait --json
 ```
 
-提交回执中的 `submission` 为 `started`、`queued` 或 `steering`，只表示接收方式；`status`
+工作会话提交回执中的 `submission` 为 `started`、`queued` 或 `steering`，只表示接收方式；`status`
 描述当前观察到的会话，不表示刚提交的消息已完成。排队回执可同时带有 `needs_input` 和当前
 Turn 的问题，或 `needs_approval` 和沙箱请求；先回答交互，后续消息才能执行。`queued` 是观察到
 的后续消息与 steer 总数，不是精确排队位置；回执快照未追上接收结果时省略该计数，
 可用 status 读取新状态。Host 发布重试状态时，status 还会带上
 `providerRetry`，不会根据静默时间猜测活动。
+
+助手 Inbox 会话返回 `submission: "inbox"`，不包含工作 Turn 的结果或队列计数，即使指定 `--wait` 也立即返回接收回执。这仅确认消息已进入 Inbox；委派工作的结果需通过对应工作会话查询。
 
 默认使用 queue，每条显式排队消息对应一个独立后续 Turn。steer 沿用 Host 当前 Turn 的追加
 机制，错过最后处理边界时可能进入后续 Turn。提交排队消息时的 `--wait` 跟踪该消息对应的执行，不会返回前一 Turn 阻塞队列的问题；

@@ -225,6 +225,12 @@ export async function runMakaSessionCommand(
               'Steering was admitted but its observed Turn is unavailable; query Session status before continuing',
             );
           messageId = undefined;
+        } else if (submitted.disposition === 'inbox') {
+          // Inbox admission does not own a worker Turn or a queue revision.
+          // Return its receipt even with --wait; never reuse an older Turn's result.
+          assertActive();
+          const { queued: _queued, ...observed } = observer.status();
+          return { ...observed, submission: 'inbox' };
         } else {
           target = undefined;
           submission = 'queued';

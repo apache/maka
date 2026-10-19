@@ -179,13 +179,15 @@ maka run --session "$session" "Inspect the tests next" --queue --no-wait --json
 maka run --session "$session" --wait --json
 ```
 
-The admission receipt has `submission: "started"`, `"queued"`, or `"steering"`. Its `status`
+Worker admission receipts have `submission: "started"`, `"queued"`, or `"steering"`. Their `status`
 describes the currently observed Session, not completion of the submitted message. A queued receipt
 can include `needs_input` and the current Turn's questions, or `needs_approval` and its sandbox
 request. Answer that interaction before expecting the follow-up to execute. `queued` is the
 observed total of follow-up and steering messages; it is not an exact position. An admission
 receipt omits this count until its queue projection has caught up; use status for a fresh view. Status also reports
 `providerRetry` when the Host has published a retry, without guessing activity from silence.
+
+Assistant Inbox conversations instead return `submission: "inbox"`, without a worker result or queue count, even with `--wait`. This confirms Inbox admission only; inspect delegated work through its own worker Session.
 
 Queue is the default: each explicit queued message opens its own subsequent Turn. Steer uses the
 Host's existing current-Turn delivery and may carry over if it misses that Turn's last boundary.

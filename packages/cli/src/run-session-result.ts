@@ -33,7 +33,7 @@ export interface MakaRunSessionResult {
   pendingQuestionCount?: number;
   approvalRequests?: readonly InteractionSandboxBoundaryRequest[];
   queued?: number;
-  submission?: 'started' | 'queued' | 'steering';
+  submission?: 'started' | 'queued' | 'steering' | 'inbox';
   executionBoundary?: ExecutionBoundarySummary;
   providerRetry?: TurnProviderRetry;
 }

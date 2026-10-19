@@ -129,6 +129,44 @@ test('real Host keeps AskUser alive across CLI processes and returns the origina
     const result = await cli(root, '--session', sessionId, '--result', '--json');
     assert.equal(result.code, 0, result.stderr);
     assert.deepEqual(JSON.parse(result.stdout), JSON.parse(answered.stdout));
+    // Assistant Inbox admission is not a queued worker Turn. Never wait for an
+    // execution identity or return the previous Turn's answer for this message.
+    let inboxAdmissions = 0;
+    const inboxConnection = new Proxy(probe, {
+      get(target, key) {
+        if (key === 'request')
+          return async (...args: Parameters<typeof probe.request>) => {
+            if (args[0] === 'turn.message.submit') {
+              inboxAdmissions++;
+              return {
+                disposition: 'inbox',
+                skillInvocation: { loaded: [], failed: [], receipts: [] },
+              };
+            }
+            if (args[0] === 'turn.message.execution.query' || args[0] === 'turn.query')
+              throw new Error('Inbox admission must not wait for a worker Turn');
+            return Reflect.apply(probe.request, probe, args);
+          };
+        const value = Reflect.get(target, key, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    for (const noWait of [true, false]) {
+      const receipt = await runMakaSessionCommand(
+        inboxConnection,
+        {
+          sessionId,
+          stdinPrompt: false,
+          prompt: 'Inbox input',
+          ...(noWait ? { noWait: true as const } : { wait: true as const }),
+        },
+        { onSigint: () => () => {}, newId: randomUUID },
+      );
+      assert.equal(receipt.submission, 'inbox');
+      assert.equal(receipt.finalOutput, undefined);
+      assert.equal(receipt.queued, undefined);
+    }
+    assert.equal(inboxAdmissions, 2);
     const duplicate = await cli(root, '--session', sessionId, '--answer', JSON.stringify(answers));
     assert.equal(duplicate.code, 1);
     assert.match(duplicate.stderr, /found 0/);
