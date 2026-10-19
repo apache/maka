@@ -23,8 +23,9 @@ import type { BackendSendInput } from '@maka/core/backend-types';
 import type { SessionEvent } from '@maka/core/events';
 import { createMemoryExecutionPersistenceProvider } from '@maka/storage/test-only/memory-execution-persistence';
 import type { ExecutionPersistenceProvider } from '@maka/storage/execution-persistence-provider';
+import type { RootTurnAdmission } from '@maka/storage/agent-run-store';
 import { openInteractiveEventWaitAuthorityForWrite } from '@maka/storage/event-wait-authority';
-import { deferred } from '@maka/core/test-only/async-primitives';
+import { deferred, withTimeout } from '@maka/core/test-only/async-primitives';
 import { MockLanguageModelV4, convertArrayToReadableStream } from 'ai/test';
 import type { LanguageModelV4StreamPart } from '@ai-sdk/provider';
 import { AiSdkBackend } from '@maka/runtime/ai-sdk-backend';
@@ -575,6 +576,7 @@ async function createFixture(
     onEvaluate?: () => unknown;
     onGoalProjection?: (goal: HostGoalCoordinator, sessionId: string) => void;
     afterWaitMutation?: (stage: 'register' | 'settle' | 'queue') => Promise<void>;
+    afterRootAdmission?: (admission: RootTurnAdmission) => Promise<void>;
     beforeReadContext?: () => Promise<void>;
   } = {},
 ): Promise<Fixture> {
@@ -632,7 +634,18 @@ async function createFixture(
     permissionMode: 'ask',
   });
   const admission = new SessionAdmissionGate();
-  const rootAdmissions = new RootAdmissionOwner(stores.agentRunStore);
+  const rootAdmissions = new RootAdmissionOwner(
+    options.afterRootAdmission
+      ? {
+          ...stores.agentRunStore,
+          admitRootTurn: async (input) => {
+            const result = await stores.agentRunStore.admitRootTurn(input);
+            await options.afterRootAdmission!(result.admission);
+            return result;
+          },
+        }
+      : stores.agentRunStore,
+  );
   if (options.recoverAdmissions !== false) await rootAdmissions.recoverSession(session.id);
   const acquireResidency = (): RuntimeHostResidency => ({ release() {} });
   let coordinator: RootTurnCoordinator | undefined;
@@ -856,16 +869,19 @@ async function createFixture(
       goalExecutions.beginDrain();
       goalCoordinator.beginDrain();
       rootCoordinator.beginDrain();
-      await goalCoordinator.close();
-      if (goalStores !== stores) await goalStores.eventWaitStore.close();
-      await rootCoordinator.close();
-      await messages.close();
-      await interactions.close();
-      continuity?.close();
-      await goalStore.close();
-      await stores.sessionStore.close?.();
-      await owner.close();
-      await rm(base, { recursive: true, force: true });
+      try {
+        await goalCoordinator.close();
+      } finally {
+        if (goalStores !== stores) await goalStores.eventWaitStore.close();
+        await rootCoordinator.close();
+        await messages.close();
+        await interactions.close();
+        continuity?.close();
+        await goalStore.close();
+        await stores.sessionStore.close?.();
+        await owner.close();
+        await rm(base, { recursive: true, force: true });
+      }
     },
   };
 }
@@ -1552,7 +1568,9 @@ test('late queue acknowledgement cannot restore a gate after Root admission', {
         },
       },
     });
-    await admissionAccess.promise;
+    // The bridge's rescan timer is unref'd. Keep this wait alive until the
+    // admission authorization barrier is reached, and fail if it never arrives.
+    await withTimeout(admissionAccess.promise, 5000, 'Root admission authorization did not start');
     const scan = f.goal.eventWaitBridge!.reconcile();
     await queueEntered.promise;
     releaseAdmission.resolve();
@@ -1591,6 +1609,115 @@ test('late queue acknowledgement cannot restore a gate after Root admission', {
     await f.close();
   }
 });
+
+for (const provider of ['memory', 'local'] as const)
+  test(`event wait admission with a lost store acknowledgement stays fenced (${provider})`, {
+    timeout: 15000,
+  }, async () => {
+    let storageCalls = 0,
+      modelCalls = 0,
+      gateCalls = 0;
+    let committed: RootTurnAdmission | undefined;
+    const f = await createFixture({
+      persistenceProvider:
+        provider === 'memory' ? createMemoryExecutionPersistenceProvider() : 'local',
+      model: eventWaitModel(() => modelCalls++, true),
+      eventWaitSources: eventWaitSources(async () => ({ kind: 'allowed', context: null })),
+      afterRootAdmission: async (admission) => {
+        if (admission.execution.kind === 'goal' && admission.execution.eventWait) {
+          storageCalls++;
+          committed = admission;
+          // The real transaction committed; only its acknowledgement is lost.
+          throw new Error('Acknowledgement lost after event wait admission commit');
+        }
+      },
+    });
+    try {
+      await startEventWait(f);
+      await waitFor(
+        async () => (await f.goalStore.read(f.sessionId))?.record.activeEventWait?.settled === true,
+        { timeoutMs: 5000 },
+      );
+      await waitFor(() => f.coordinator.readRootState(f.sessionId).kind === 'idle', {
+        timeoutMs: 5000,
+      });
+      const wait = (
+        await f.stores.eventWaitStore.listSession({ sessionId: f.sessionId, limit: 10 })
+      ).items[0]!;
+      const at = Math.max(Date.now(), wait.record.updatedAt);
+      await f.stores.eventWaitStore.commit({
+        sessionId: f.sessionId,
+        waitId: wait.record.waitId,
+        expectedAuthorityRevision: wait.authorityRevision,
+        record: {
+          ...wait.record,
+          status: 'resolved',
+          updatedAt: at,
+          resolvedAt: at,
+          resolution: {
+            outcome: 'satisfied',
+            receiptKey: 'receipt',
+            observedAt: at,
+            evidenceRefs: [],
+          },
+        },
+      });
+      await waitFor(
+        async () => {
+          await f.goal.eventWaitBridge!.reconcile();
+          return f.drainRequested();
+        },
+        { timeoutMs: 5000 },
+      );
+      assert.ok(committed);
+      const successor = committed;
+      assert.equal(
+        (await f.stores.eventWaitStore.read({ sessionId: f.sessionId, waitId: wait.record.waitId }))
+          ?.record.delivery?.kind,
+        'admitted',
+      );
+      assert.throws(
+        () => f.rootAdmissions.assertKnownAdmission(successor),
+        /identity changed within one Host Epoch/,
+      );
+      // Even an explicit same-identity retry is rejected before the execution gate.
+      await assert.rejects(
+        () =>
+          f.coordinator.admit({
+            sessionId: f.sessionId,
+            turnId: successor.turnId,
+            runId: successor.runId,
+            userMessageId: successor.userMessageId,
+            execution: successor.execution,
+            content: successor.normalizedInput,
+            admitExecution: async () => {
+              gateCalls++;
+              return 'executing';
+            },
+            start: () => assert.fail('An unacknowledged admission must not start'),
+          }),
+        /identity changed within one Host Epoch/,
+      );
+      assert.equal(gateCalls, 0);
+      assert.equal(storageCalls, 1);
+      assert.equal(modelCalls, 1);
+      assert.equal(
+        await f.stores.runtimeEventStore.readRunInvocation(f.sessionId, successor.runId),
+        undefined,
+      );
+      assert.equal(
+        (await f.stores.agentRunStore.listRootTurnAdmissionsForRecovery(f.sessionId)).length,
+        2,
+      );
+    } finally {
+      if (f.drainRequested()) {
+        // Cleanup cannot overwrite the committed Goal state with the unconfirmed revision.
+        await assert.rejects(() => f.close(), /Goal authority revision conflict/);
+      } else {
+        await f.close();
+      }
+    }
+  });
 
 test('handoff successor registers and settles a wait through the existing Goal and Root owners', {
   timeout: 15000,
