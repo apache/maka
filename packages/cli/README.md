@@ -132,6 +132,7 @@ Session ID to observe the eventual result. Given a returned Session ID in `$sess
 
 ```sh
 maka run --session "$session" --status
+maka run --session "$session" --recap --json
 maka run --session "$session" --wait --json
 maka run --session "$session" --answer '["Yes",null]' --wait --json
 maka run --session "$session" "Inspect the tests next" --queue --wait --json
@@ -139,6 +140,23 @@ maka run --session "$session" "Focus on the parser" --steer --no-wait
 maka run --session "$session" --result --json
 maka run --session "$session" --resume --wait --json
 ```
+
+`--recap` generates a one-sentence summary of recorded Session progress using the same
+independent model call as TUI `/recap`. It works during an active Turn without steering,
+queueing, stopping, or waiting for that Turn to finish. Without `--json` it prints the summary;
+with `--json` it returns `sessionId`, current `status`, and a separate `recap` field, for example:
+
+```json
+{"sessionId":"…","status":"running","queued":0,"recap":"You asked for a review; the parser is checked and test verification is still pending."}
+```
+
+The recap is a snapshot of the history captured when generation starts. It cannot see unrecorded
+work or results from a tool that has not returned, and execution can advance while it is generated.
+Each invocation requests a fresh summary and consumes model usage; `--status` remains the cheap
+status query. A recap is not the final answer (`--result`) or a reply from the running agent.
+Do not combine `--recap` with a prompt, another Session action, `--wait`, or `--no-wait`.
+Successful recap generation exits 0 even if the Session's latest Turn failed; generation errors
+exit 1. Ctrl+C cancels the CLI observer and leaves Host execution running.
 
 Session controls (`--session`) inherit the Host's saved permissions, just as they inherit the
 model and working directory. Continuing, queueing, steering, or answering does not require another

@@ -120,6 +120,7 @@ maka run "检查这个项目" --no-wait
 
 ```sh
 maka run --session "$session" --status
+maka run --session "$session" --recap --json
 maka run --session "$session" --wait --json
 maka run --session "$session" --answer '["是",null]' --wait --json
 maka run --session "$session" "接下来检查测试" --queue --wait --json
@@ -127,6 +128,21 @@ maka run --session "$session" "重点检查参数解析" --steer --no-wait
 maka run --session "$session" --result --json
 maka run --session "$session" --resume --wait --json
 ```
+
+`--recap` 复用 TUI `/recap` 的独立模型调用，用一句话总结会话已记录的进展。
+它可以在 Turn 运行中使用，不会 steering、排队、停止当前 Turn，也不等 Turn 完成。
+不加 `--json` 时直接输出摘要；加上后返回 `sessionId`、当前 `status` 和独立的 `recap` 字段，例如：
+
+```json
+{"sessionId":"…","status":"running","queued":0,"recap":"你要求审查代码；参数解析已检查，测试验证尚未完成。"}
+```
+
+摘要基于生成开始时读取的历史快照，无法看到尚未记录的工作或尚未返回的工具结果；
+生成期间任务可能继续推进。每次调用都会重新请求模型并产生模型用量；只查状态继续用
+`--status`。摘要不是最终答案（`--result`），也不是正在运行的代理直接回复的消息。
+`--recap` 不能与 prompt、其他会话动作、`--wait` 或 `--no-wait` 组合使用。
+摘要生成成功返回退出码 0，即使会话最近的 Turn 失败；生成失败返回退出码 1。
+Ctrl+C 取消 CLI 观察，不会停止 Host 中的执行。
 
 会话控制（`--session`）与继承模型、工作目录一样，继承 Host 已保存的权限。续跑、queue、
 steer 和回答问题不需要重复 `--yolo`，也不会改变执行边界；只有要显式授予完整权限时才加

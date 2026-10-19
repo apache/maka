@@ -1,0 +1,275 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import assert from 'node:assert/strict';
+import { spawn, type ChildProcess } from 'node:child_process';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { createServer } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
+import { deferred, waitFor } from '@maka/core/test-only/async-primitives';
+import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
+import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
+import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
+import { FakeBackend, FAKE_HOLD_OPEN_PROMPT } from '@maka/runtime/test-only/fake-backend';
+import { connectRuntimeHost, type RuntimeHostConnection } from '@maka/runtime-host/client';
+import { RUNTIME_HOST_PROTOCOL_VERSION } from '@maka/runtime-host/protocol';
+import { startExecutionRuntimeHostService } from '@maka/runtime-host/server';
+
+const fixturePath = fileURLToPath(new URL('./run-session-process-fixture.js', import.meta.url));
+
+test('external CLI recap reads active progress without steering or waiting for the Turn', {
+  timeout: 90_000,
+}, async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-cli-recap-'));
+  const children = new Set<ChildProcess>();
+  let host: Awaited<ReturnType<typeof startExecutionRuntimeHostService>> | undefined;
+  let connection: RuntimeHostConnection | undefined;
+  const recapText = 'You asked for a review; the agent is still working on it.';
+  const requests: string[] = [];
+  let requestArrived = deferred<void>();
+  let releaseResponse = deferred<void>();
+  let emptyResponse = false;
+  const provider = createServer((request, response) => {
+    void (async () => {
+      let body = '';
+      for await (const chunk of request) body += chunk;
+      requests.push(body);
+      requestArrived.resolve();
+      await releaseResponse.promise;
+      response.setHeader('content-type', 'application/json');
+      response.end(
+        JSON.stringify({
+          id: 'recap-response',
+          object: 'chat.completion',
+          created: 1,
+          model: 'fake-model',
+          choices: [
+            {
+              index: 0,
+              message: { role: 'assistant', content: emptyResponse ? '' : recapText },
+              finish_reason: 'stop',
+            },
+          ],
+          usage: { prompt_tokens: 30, completion_tokens: 15, total_tokens: 45 },
+        }),
+      );
+    })().catch((error) => response.destroy(error as Error));
+  });
+  t.after(async () => {
+    releaseResponse.resolve();
+    for (const child of children) child.kill('SIGTERM');
+    try {
+      await connection?.close();
+      await host?.close();
+    } finally {
+      provider.closeAllConnections();
+      await new Promise<void>((resolve, reject) =>
+        provider.close((error) => (error ? reject(error) : resolve())),
+      );
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+  await new Promise<void>((resolve) => provider.listen(0, '127.0.0.1', resolve));
+  const address = provider.address();
+  assert.ok(address && typeof address === 'object');
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  let sessionId: string;
+  try {
+    const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+    const created = await policy.connectionCatalog.create({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: 'fake',
+        name: 'Fake',
+        providerType: 'ollama',
+        baseUrl: `http://127.0.0.1:${address.port}/v1`,
+        enabled: true,
+        enabledModelIds: ['fake-model'],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') throw new Error('Connection setup failed');
+    const connectionId = created.snapshot.connections[0]!.connectionId;
+    const fetch = await policy.operations.beginModelFetch(connectionId);
+    assert.equal(fetch.kind, 'ready');
+    if (fetch.kind !== 'ready') throw new Error('Model setup failed');
+    assert.equal(
+      (
+        await policy.operations.completeModelFetch(fetch.ticket, {
+          models: [{ id: 'fake-model' }],
+          source: 'fetched',
+          fetchedAt: Date.now(),
+        })
+      ).kind,
+      'committed',
+    );
+    const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+    try {
+      sessionId = (
+        await stores.sessionStore.create({
+          cwd: root,
+          llmConnectionId: connectionId,
+          llmConnectionSlug: 'fake',
+          model: 'fake-model',
+          permissionMode: 'ask',
+        })
+      ).id;
+    } finally {
+      await stores.sessionStore.close?.();
+    }
+  } finally {
+    await owner.close();
+  }
+  const { createExecutionRuntimeHostComposition } = await import(
+    new URL('./execution-composition.js', import.meta.resolve('@maka/runtime-host/server')).href
+  );
+  host = await startExecutionRuntimeHostService(
+    { rootPath: root },
+    {
+      createComposition: (context, options) =>
+        createExecutionRuntimeHostComposition(
+          context,
+          { ...options, bootstrapRuntimePolicy: false },
+          {
+            primaryBackendFactory: (backendContext: ConstructorParameters<typeof FakeBackend>[0]) =>
+              new FakeBackend(backendContext),
+            generateSessionTitle: async () => undefined,
+          },
+        ),
+    },
+  );
+  const connected = await connectRuntimeHost({
+    rootPath: root,
+    protocol: { min: RUNTIME_HOST_PROTOCOL_VERSION, max: RUNTIME_HOST_PROTOCOL_VERSION },
+  });
+  assert.equal(connected.kind, 'connected');
+  if (connected.kind !== 'connected') throw new Error('Unable to connect to Host');
+  const probe = connected.connection;
+  connection = probe;
+  const readSnapshot = async () => {
+    const subscription = await probe.openSessionSubscription({
+      sessionId,
+      transcript: { kind: 'none' },
+    });
+    try {
+      await subscription.ready();
+      return {
+        snapshot: subscription.snapshot,
+        activeStreams: subscription.activeAssistantStreams.length,
+      };
+    } finally {
+      await subscription.close();
+    }
+  };
+  const cli = (...args: string[]) => {
+    const child = spawn(process.execPath, [fixturePath, root, '--session', sessionId, ...args], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    children.add(child);
+    let stdout = '';
+    let stderr = '';
+    child.stdout!.setEncoding('utf8').on('data', (data) => {
+      stdout += data;
+    });
+    child.stderr!.setEncoding('utf8').on('data', (data) => {
+      stderr += data;
+    });
+    const result = new Promise<{ code: number | null; stdout: string; stderr: string }>(
+      (resolve, reject) => {
+        child.on('error', reject);
+        child.on('close', (code) => {
+          children.delete(child);
+          resolve({ code, stdout, stderr });
+        });
+      },
+    );
+    return { child, result };
+  };
+  const started = await cli(FAKE_HOLD_OPEN_PROMPT, '--no-wait', '--json').result;
+  assert.equal(started.code, 0, started.stderr);
+  await waitFor(
+    async () => {
+      const current = await readSnapshot();
+      return current.snapshot.rootTurn?.status === 'running' && current.activeStreams > 0;
+    },
+    { timeoutMs: 10_000, pollMs: 10 },
+  );
+  const turn = (await readSnapshot()).snapshot.rootTurn!;
+  const boundary = await probe.request('session.execution_boundary.query', { sessionId });
+  const pendingRecap = cli('--recap', '--json').result;
+  await requestArrived.promise;
+  const during = await cli('--status', '--json').result;
+  assert.equal(during.code, 0, during.stderr);
+  assert.equal(JSON.parse(during.stdout).status, 'running');
+  releaseResponse.resolve();
+  const recap = await pendingRecap;
+  assert.equal(recap.code, 0, recap.stderr);
+  assert.deepEqual(JSON.parse(recap.stdout), {
+    sessionId,
+    status: 'running',
+    queued: 0,
+    recap: recapText,
+  });
+  assert.match(requests[0]!, /Fake backend waiting/);
+  assert.match(requests[0]!, /ONE sentence/);
+  const afterRecap = (await readSnapshot()).snapshot;
+  assert.equal(afterRecap.rootTurn?.turnId, turn.turnId);
+  assert.equal(afterRecap.rootTurn?.runId, turn.runId);
+  assert.equal(afterRecap.rootTurn?.status, 'running');
+  assert.deepEqual(afterRecap.queue.followup, []);
+  assert.deepEqual(afterRecap.queue.steering, []);
+  assert.deepEqual(
+    await probe.request('session.execution_boundary.query', { sessionId }),
+    boundary,
+  );
+  const plain = await cli('--recap').result;
+  assert.equal(plain.code, 0, plain.stderr);
+  assert.equal(plain.stdout, `${recapText}\n`);
+  assert.equal(requests.length, 2, 'each invocation requests a fresh recap');
+  emptyResponse = true;
+  const failed = await cli('--recap', '--json').result;
+  assert.equal(failed.code, 1);
+  assert.equal(failed.stdout, '');
+  assert.match(failed.stderr, /Session recap failed: empty_response/);
+  assert.equal((await readSnapshot()).snapshot.rootTurn?.status, 'running');
+  emptyResponse = false;
+  requestArrived = deferred<void>();
+  releaseResponse = deferred<void>();
+  const interrupted = cli('--recap', '--json');
+  await requestArrived.promise;
+  interrupted.child.kill('SIGINT');
+  const cancelled = await interrupted.result;
+  assert.equal(cancelled.code, 130, cancelled.stderr);
+  assert.equal(cancelled.stdout, '');
+  assert.equal((await readSnapshot()).snapshot.rootTurn?.status, 'running');
+  releaseResponse.resolve();
+  await cli('--stop', '--json').result;
+  await waitFor(async () => (await readSnapshot()).snapshot.rootTurn?.status === 'cancelled', {
+    timeoutMs: 10_000,
+  });
+  const stopped = await cli('--recap', '--json').result;
+  assert.equal(stopped.code, 0, stopped.stderr);
+  assert.equal(JSON.parse(stopped.stdout).status, 'failed');
+  assert.equal(JSON.parse(stopped.stdout).recap, recapText);
+});

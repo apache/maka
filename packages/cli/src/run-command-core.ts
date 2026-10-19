@@ -43,6 +43,7 @@ export interface MakaRunOptions {
   json?: true;
   status?: true;
   result?: true;
+  recap?: true;
   resumeExecution?: true;
   stop?: true;
   sandboxDecision?: 'allow' | 'deny';
@@ -160,6 +161,7 @@ const BOOLEAN_FLAGS = new Set([
   'json',
   'status',
   'result',
+  'recap',
   'queue',
   'steer',
   'stop',
@@ -222,6 +224,7 @@ export function parseMakaRunArgs(argv: readonly string[]): ParseMakaRunArgsResul
   const actions =
     Number(booleanFlags.has('status')) +
     Number(booleanFlags.has('result')) +
+    Number(booleanFlags.has('recap')) +
     Number(flags.has('answer')) +
     Number(resumeExecution) +
     Number(booleanFlags.has('stop')) +
@@ -230,7 +233,8 @@ export function parseMakaRunArgs(argv: readonly string[]): ParseMakaRunArgsResul
   if (actions > 1)
     return {
       kind: 'error',
-      message: 'choose one of --status, --result, --answer, --approve, --deny, --resume or --stop',
+      message:
+        'choose one of --status, --result, --recap, --answer, --approve, --deny, --resume or --stop',
     };
   if ((booleanFlags.has('approve') || booleanFlags.has('deny')) && booleanFlags.has('yolo'))
     return {
@@ -253,10 +257,16 @@ export function parseMakaRunArgs(argv: readonly string[]): ParseMakaRunArgsResul
     return { kind: 'error', message: '--queue and --steer require a prompt' };
   }
   if (
-    (booleanFlags.has('status') || booleanFlags.has('result') || booleanFlags.has('stop')) &&
+    (booleanFlags.has('status') ||
+      booleanFlags.has('result') ||
+      booleanFlags.has('recap') ||
+      booleanFlags.has('stop')) &&
     (booleanFlags.has('wait') || booleanFlags.has('no-wait'))
   ) {
-    return { kind: 'error', message: '--status, --result and --stop do not accept wait options' };
+    return {
+      kind: 'error',
+      message: '--status, --result, --recap and --stop do not accept wait options',
+    };
   }
   if (booleanFlags.has('graph') && booleanFlags.has('no-wait')) {
     return { kind: 'error', message: '--graph must wait for its final result' };
@@ -318,6 +328,7 @@ export function parseMakaRunArgs(argv: readonly string[]): ParseMakaRunArgsResul
       ...(booleanFlags.has('json') ? { json: true as const } : {}),
       ...(booleanFlags.has('status') ? { status: true as const } : {}),
       ...(booleanFlags.has('result') ? { result: true as const } : {}),
+      ...(booleanFlags.has('recap') ? { recap: true as const } : {}),
       ...(resumeExecution ? { resumeExecution: true as const } : {}),
       ...(booleanFlags.has('stop') ? { stop: true as const } : {}),
       ...(booleanFlags.has('approve')
@@ -624,7 +635,8 @@ export function writeSessionResult(
   deps: Pick<MakaRunDeps, 'writeStdout' | 'writeStderr'>,
   json: boolean,
 ): void {
-  if (json || result.status !== 'completed' || result.finalOutput === undefined)
+  if (!json && result.recap !== undefined) deps.writeStdout(withTrailingNewline(result.recap));
+  else if (json || result.status !== 'completed' || result.finalOutput === undefined)
     deps.writeStdout(`${JSON.stringify(result)}\n`);
   else deps.writeStdout(withTrailingNewline(result.finalOutput));
   if (result.status === 'failed' && result.error) deps.writeStderr(`maka run: ${result.error}\n`);
@@ -671,6 +683,7 @@ function makaRunHelpText(cliCommand: string): string {
     '  --no-wait                 Submit and return (Host-owned execution only)',
     '  --status                  Read current Session status without executing',
     '  --result                  Read the latest Turn result without waiting',
+    '  --recap                   Generate a one-sentence progress recap, even during execution',
     '  --stop                    Request stop for the current Turn (no --yolo needed)',
     '  --answer <json-array>     Answer the current AskUser, e.g. ["Yes",null]',
     '  --approve                 Approve the single pending sandbox expansion',
@@ -686,6 +699,7 @@ function makaRunHelpText(cliCommand: string): string {
     '',
     'Session controls inherit saved permissions; --yolo explicitly grants full access.',
     '--status reports the execution boundary; a read-only prompt does not restrict permissions.',
+    '--recap makes a separate model call over recorded progress; it does not steer or wait for the Turn.',
     'Legacy --resume <id> still requires --yolo for a full-access Session.',
     '--approve/--deny decide a sandbox request without changing the Session to full access.',
   ].join('\n');

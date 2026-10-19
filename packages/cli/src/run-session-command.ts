@@ -19,7 +19,7 @@
 
 import { isInteractionAnswerValidForRequest } from '@maka/core/interaction';
 import type { StoredMessage } from '@maka/core/session';
-import type { RuntimeHostConnection } from '@maka/runtime-host/client';
+import { abortable, type RuntimeHostConnection } from '@maka/runtime-host/client';
 import { updateRuntimeHostSession } from './runtime-host-session-update.js';
 import type {
   InteractionPendingSnapshot,
@@ -80,6 +80,20 @@ export async function runMakaSessionCommand(
   try {
     assertActive();
     let target = observer.snapshot.rootTurn?.turnId;
+    if (options.recap) {
+      const result = await abortable(
+        () =>
+          connection.request('session.recap.generate', {
+            sessionId,
+            effectId: env.newId(),
+            reason: 'manual',
+          }),
+        cancelled.signal,
+      );
+      assertActive();
+      if (result.kind === 'failed') throw new Error(`Session recap failed: ${result.errorClass}`);
+      return { ...observer.status(), recap: result.text };
+    }
     let messageId: string | undefined;
     let submission: MakaRunSessionResult['submission'];
     let admittedQueueRevision: number | undefined;

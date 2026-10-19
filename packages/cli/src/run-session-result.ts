@@ -28,6 +28,8 @@ export interface MakaRunSessionResult {
   sessionId: string;
   status: 'running' | 'needs_input' | 'needs_approval' | 'completed' | 'failed' | 'idle';
   finalOutput?: string;
+  /** Model-generated snapshot of recorded progress, independent of the Turn's final output. */
+  recap?: string;
   error?: string;
   questions?: readonly InteractionQuestion[];
   pendingQuestionCount?: number;

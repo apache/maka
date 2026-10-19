@@ -109,6 +109,82 @@ describe('maka run argument parsing', () => {
     assert.deepEqual(JSON.parse(stdout.join('')), { sessionId: 's', status: 'running' });
   });
 
+  test('recap selects one Session action and rejects execution and wait combinations', () => {
+    assert.deepEqual(parseMakaRunArgs(['--session', 's', '--recap', '--json']), {
+      kind: 'run',
+      options: { sessionId: 's', recap: true, json: true, stdinPrompt: false },
+    });
+    assert.equal(parseMakaRunArgs(['--recap']).kind, 'error');
+    for (const extra of [
+      ['prompt'],
+      ['-'],
+      ['--status'],
+      ['--result'],
+      ['--stop'],
+      ['--resume'],
+      ['--approve'],
+      ['--deny'],
+      ['--answer', '["Yes"]'],
+      ['--steer', 'prompt'],
+      ['--queue', 'prompt'],
+      ['--wait'],
+      ['--no-wait'],
+    ])
+      assert.equal(
+        parseMakaRunArgs(['--session', 's', '--recap', ...extra]).kind,
+        'error',
+        extra.join(' '),
+      );
+  });
+
+  test('recap prints text or JSON without reading stdin or returning the Turn failure code', async () => {
+    for (const json of [false, true]) {
+      const stdout: string[] = [];
+      const result = {
+        sessionId: 's',
+        status: 'failed' as const,
+        recap: 'The review found a bug.',
+      };
+      const exit = await runMakaTextCliCore(
+        ['--session', 's', '--recap', ...(json ? ['--json'] : [])],
+        {
+          listSessions: async () => assert.fail('must not select a Session'),
+          createContext: async () => assert.fail('must not prepare execution'),
+          runSession: async (options) => {
+            assert.equal(options.recap, true);
+            return result;
+          },
+        },
+        {
+          stdinIsTTY: () => false,
+          readStdin: async () => assert.fail('recap must not read stdin'),
+          writeStdout: (text) => stdout.push(text),
+        },
+      );
+      assert.equal(exit, 0);
+      assert.equal(stdout.join(''), json ? `${JSON.stringify(result)}\n` : `${result.recap}\n`);
+    }
+  });
+
+  test('recap generation errors exit nonzero without printing a task result', async () => {
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const exit = await runMakaTextCliCore(
+      ['--session', 's', '--recap', '--json'],
+      {
+        listSessions: async () => [],
+        createContext: async () => assert.fail('must not prepare execution'),
+        runSession: async () => {
+          throw new Error('Session recap failed: provider');
+        },
+      },
+      { writeStdout: (text) => stdout.push(text), writeStderr: (text) => stderr.push(text) },
+    );
+    assert.equal(exit, 1);
+    assert.deepEqual(stdout, []);
+    assert.match(stderr.join(''), /Session recap failed: provider/);
+  });
+
   test('completed status and stop receipts remain visible without --json', async () => {
     for (const flags of [[], ['--status'], ['--stop']]) {
       const stdout: string[] = [];
