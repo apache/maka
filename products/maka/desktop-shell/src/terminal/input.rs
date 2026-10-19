@@ -39,9 +39,9 @@
 use gpui_shell::ComponentDataValue;
 use gpui_shell::gpui::{Keystroke, Modifiers};
 
-/// The most text one paste action carries. A long paste is split, so each
-/// action stays well under the controller's 32 KiB a control.
-const PASTE_CHUNK_BYTES: usize = 8 * 1024;
+/// The most text one text or paste action carries. Long text is split, so
+/// each action stays well under the controller's 32 KiB a control.
+const CHUNK_BYTES: usize = 8 * 1024;
 
 /// A mouse button, as the Host names it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -278,8 +278,9 @@ pub(crate) fn key_actions(keystroke: &Keystroke) -> Option<Vec<InputAction>> {
 }
 
 /// What typed (or IME-committed) `text` sends: its printable runs as text,
-/// line breaks as Enter, tabs as Tab, Escape and Backspace as themselves,
-/// and any other control character dropped.
+/// in pieces of at most [`CHUNK_BYTES`], line breaks as Enter, tabs as Tab,
+/// Escape and Backspace as themselves, and any other control character
+/// dropped.
 pub(crate) fn text_actions(text: &str) -> Vec<InputAction> {
     let mut actions = Vec::new();
     let mut run = String::new();
@@ -306,6 +307,9 @@ pub(crate) fn text_actions(text: &str) -> Vec<InputAction> {
                 continue;
             }
             c => {
+                if run.len() + c.len_utf8() > CHUNK_BYTES {
+                    flush(&mut run, &mut actions);
+                }
                 run.push(c);
                 None
             }
@@ -320,7 +324,7 @@ pub(crate) fn text_actions(text: &str) -> Vec<InputAction> {
 }
 
 /// What pasting `text` sends: the text without control characters other
-/// than line breaks and tabs, in pieces of at most [`PASTE_CHUNK_BYTES`].
+/// than line breaks and tabs, in pieces of at most [`CHUNK_BYTES`].
 pub(crate) fn paste_actions(text: &str) -> Vec<InputAction> {
     let clean: String = text
         .chars()
@@ -329,7 +333,7 @@ pub(crate) fn paste_actions(text: &str) -> Vec<InputAction> {
     let mut actions = Vec::new();
     let mut rest = clean.as_str();
     while !rest.is_empty() {
-        let mut end = rest.len().min(PASTE_CHUNK_BYTES);
+        let mut end = rest.len().min(CHUNK_BYTES);
         while !rest.is_char_boundary(end) {
             end -= 1;
         }
@@ -463,6 +467,19 @@ mod tests {
         );
         assert_eq!(text_actions("中文"), vec![InputAction::Text("中文".into())]);
         assert!(text_actions("").is_empty());
+        // A long commit goes in pieces the controller takes, on character
+        // boundaries, with nothing lost.
+        let long = "中".repeat(6000);
+        let pieces: Vec<String> = text_actions(&long)
+            .into_iter()
+            .map(|action| match action {
+                InputAction::Text(text) => text,
+                other => panic!("not text: {other:?}"),
+            })
+            .collect();
+        assert_eq!(pieces.len(), 3);
+        assert!(pieces.iter().all(|piece| piece.len() <= CHUNK_BYTES));
+        assert_eq!(pieces.concat(), long);
     }
 
     #[test]
@@ -472,7 +489,7 @@ mod tests {
             vec![InputAction::Paste("a[31mb\r\nc\td".into())]
         );
         assert!(paste_actions("\u{1b}").is_empty());
-        let long = "中".repeat(PASTE_CHUNK_BYTES);
+        let long = "中".repeat(CHUNK_BYTES);
         let pieces = paste_actions(&long);
         assert!(pieces.len() > 1);
         let mut joined = String::new();
@@ -480,7 +497,7 @@ mod tests {
             let InputAction::Paste(text) = piece else {
                 panic!()
             };
-            assert!(text.len() <= PASTE_CHUNK_BYTES);
+            assert!(text.len() <= CHUNK_BYTES);
             joined.push_str(&text);
         }
         assert_eq!(joined, long);
@@ -489,7 +506,7 @@ mod tests {
     #[test]
     fn a_paste_never_splits_a_crlf() {
         // The piece would end between the CR and the LF: it takes the LF.
-        let text = format!("{}\r\nb", "a".repeat(PASTE_CHUNK_BYTES - 1));
+        let text = format!("{}\r\nb", "a".repeat(CHUNK_BYTES - 1));
         let pieces: Vec<String> = paste_actions(&text)
             .into_iter()
             .map(|piece| match piece {
