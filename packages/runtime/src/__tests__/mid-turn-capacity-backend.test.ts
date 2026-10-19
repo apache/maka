@@ -51,6 +51,10 @@ import type { ContextBudgetDiagnostic } from '@maka/core/usage-stats/types';
 import { HistoryCompactSummarizerError } from '../history-compact-error.js';
 import { buildLlmHistorySummarizer } from '../history-compact-summarizer.js';
 import type { HistoryCompactSummaryInput } from '../ai-sdk-compaction-contract.js';
+import {
+  SIDE_CONVERSATION_BOUNDARY_MARKER,
+  SIDE_CONVERSATION_SESSION_LABEL,
+} from '@maka/core/side-conversation';
 import { decodeModelCallAttempt, type ModelCallAttempt } from '@maka/core/model-call-attempt';
 import type { MemoryExtractionSourceSnapshot } from '../memory-extraction.js';
 import {
@@ -195,6 +199,8 @@ interface MidTurnFixtureOptions {
         readonly allowed: false;
         readonly reason: 'disabled' | 'incognito' | 'unavailable';
       };
+  /** Address the session as a side-conversation fork branched off `sourceTurnId`. */
+  sideFork?: { readonly sourceTurnId: string; readonly branchOfTurnId: string };
 }
 
 /**
@@ -493,9 +499,21 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
     resolveModel: () => summarizerModel,
   });
 
+  const headerValue = header();
+  if (options.sideFork) {
+    headerValue.labels = [SIDE_CONVERSATION_SESSION_LABEL];
+    headerValue.branchOfTurnId = options.sideFork.branchOfTurnId;
+    headerValue.conversationCopy = {
+      kind: 'branch',
+      sourceSessionId: 'session-parent',
+      sourceTurnId: options.sideFork.sourceTurnId,
+      requestFingerprint: `sha256:${'a'.repeat(64)}`,
+      state: 'committed',
+    };
+  }
   const backend = createTestAiSdkBackend({
     sessionId: 'session-1',
-    header: header(),
+    header: headerValue,
     appendMessage: async (message) => {
       messages.push(message);
     },
@@ -906,6 +924,27 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     assert.equal(midTurnDecision?.decision, 'replaced');
     assert.equal(midTurnDecision?.reason, 'context_limit');
     assert.deepEqual(midTurnDecision?.boundaryIds, [checkpoint.checkpointId]);
+  });
+
+  test('a mid-turn fold keeps the side-conversation boundary on the surviving fork first user turn', async () => {
+    // The fork's source turn is the parent turn the fold later covers, so the
+    // replayed history loses both sourceTurnId and branchOfTurnId. The boundary
+    // must re-home onto the surviving fork first user turn (the verbatim head
+    // anchor) instead of vanishing from the next provider request.
+    const fixture = buildFixture({
+      sideFork: { sourceTurnId: 'turn-0', branchOfTurnId: 'turn-0' },
+    });
+    await runFixtureTurn(fixture, consumer);
+
+    // The fold really fired and covered the fork-point turn.
+    assert.equal(fixture.recorded.length, 1);
+    assert.equal(fixture.recorded[0]?.phase, 'mid_turn');
+
+    const thirdPrompt = promptJson(fixture, 2);
+    assert.match(thirdPrompt, /maka_history_compact_checkpoint/);
+    assert.equal(thirdPrompt.includes(SIDE_CONVERSATION_BOUNDARY_MARKER), true);
+    assert.equal(thirdPrompt.includes(ANCHOR_TEXT), true);
+    assert.equal(thirdPrompt.includes('PRIOR_FACT'), false);
   });
 
   test('replays a Codex V2 mid-turn checkpoint as native provider state', async () => {

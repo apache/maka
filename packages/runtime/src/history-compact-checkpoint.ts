@@ -456,6 +456,15 @@ export function historyCompactCheckpointToRuntimeEvent(
   };
 }
 
+/**
+ * True when the event is the rendered history-compact block standing in for the
+ * covered prefix on replay. The block shares `role: 'user'` and text content
+ * with a real user turn, so callers key off its `author: 'system'` provenance.
+ */
+export function isHistoryCompactCheckpointEvent(event: RuntimeEvent): boolean {
+  return event.role === 'user' && event.author === 'system' && event.content?.kind === 'text';
+}
+
 export function validateHistoryCompactCheckpointShape(
   value: unknown,
   sessionId?: string,

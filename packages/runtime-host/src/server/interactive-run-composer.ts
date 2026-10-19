@@ -18,10 +18,6 @@
  */
 
 import { isDeepStrictEqual } from 'node:util';
-import {
-  buildSideConversationSystemPromptFragment,
-  isSideConversationSession,
-} from '@maka/core/side-conversation';
 import { type RunCompositionSourceRevision } from '@maka/core/run-composition';
 import { activePlanExecution, type PlanSessionState, type PlanStore } from '@maka/core/plan';
 import type { PermissionMode } from '@maka/core/permission';
@@ -107,7 +103,6 @@ export interface InteractiveRunComposerInput {
   readonly sessionTodo: SessionTodoToolStore;
   readonly returnMissingInformation?: boolean | (() => boolean);
   readonly childInstruction?: string;
-  readonly sideConversation?: boolean;
   readonly boundTools?: readonly MakaTool[];
   readonly toolProfile?: SessionToolProfile;
   readonly skillBudget?: SkillCatalogBudgetOptions;
@@ -294,7 +289,6 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
               input.plan?.mode === 'plan'
                 ? renderPlanModePrompt({ fullAccess: input.plan.permissionMode === 'bypass' })
                 : undefined,
-              input.sideConversation ? buildSideConversationSystemPromptFragment() : undefined,
             ]);
         // Keep each turn's source revisions independent while sharing identical
         // immutable text already retained by the turn cache.
@@ -501,9 +495,6 @@ export function createInteractiveRunComposerFactory(
         sessionTodo: input.sessionTodo,
         returnMissingInformation: () => backendContext.executionPolicy?.questions === 'return',
         ...(backendContext.systemPrompt ? { childInstruction: backendContext.systemPrompt } : {}),
-        ...(isSideConversationSession(backendContext.header.labels)
-          ? { sideConversation: true }
-          : {}),
         ...((nativeCeiling ?? boundTools) ? { boundTools: nativeCeiling ?? boundTools } : {}),
         ...(!nativeCeiling && !boundTools && backendContext.header.toolProfile
           ? { toolProfile: backendContext.header.toolProfile }
