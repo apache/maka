@@ -135,6 +135,12 @@ export async function initializeMatters(
     text: ({ sessionId, turnId }: any) => controller.stepContext(sessionId, turnId),
   });
 
+  ctx.systemPrompt.context({
+    name: 'proactive-matters.inbox',
+    order: 801,
+    text: ({ sessionId, turnId }: any) => controller.stepInboxContext(sessionId, turnId),
+  });
+
   // Internal service operations. Desktop protocol exposes only the assistant's owner-bound API.
   ctx.api.register('matters.list', () => controller.snapshot());
   ctx.api.register('matters.authorize-session', (input: any) => {

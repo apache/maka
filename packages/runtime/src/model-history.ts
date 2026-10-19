@@ -554,6 +554,7 @@ export type RuntimeEventModelReplayItem =
        * dedupe works on identity, never on text.
        */
       steering?: { eventId: string };
+      runtimeContextName?: string;
       eventId: string;
       ts: number;
     }
@@ -967,7 +968,11 @@ export function buildRuntimeEventModelReplayPlan(
       continue;
     }
 
-    if (event.role === 'system' && !includeSystemEvents) {
+    const runtimeContextName =
+      event.role === 'system' && event.author === 'host' && event.content.kind === 'text'
+        ? event.content.runtimeContextName
+        : undefined;
+    if (event.role === 'system' && !includeSystemEvents && runtimeContextName === undefined) {
       diagnostics.push(
         diagnostic(
           event,
@@ -980,7 +985,7 @@ export function buildRuntimeEventModelReplayPlan(
 
     switch (event.content.kind) {
       case 'text': {
-        const role = modelTextRole(event.role);
+        const role = runtimeContextName !== undefined ? 'user' : modelTextRole(event.role);
         if (!role) {
           diagnostics.push(
             diagnostic(
@@ -1006,6 +1011,7 @@ export function buildRuntimeEventModelReplayPlan(
             ? buildSteeringEnvelope(formatTextWithInlineRefs(event.content))
             : formatTextWithInlineRefs(event.content),
           ...(steeringReplay ? { steering: { eventId: event.id } } : {}),
+          ...(runtimeContextName !== undefined ? { runtimeContextName } : {}),
           ...(event.content.attachments ? { attachments: event.content.attachments } : {}),
           ...(event.content.providerOptions !== undefined
             ? {
@@ -1230,7 +1236,13 @@ export function buildRuntimeEventModelReplayPlan(
             content: item.content,
             providerOptions: steeringProviderOptions(item.steering.eventId),
           }
-        : { role: item.role, content: item.content },
+        : {
+            role: item.role,
+            content: item.content,
+            ...(item.runtimeContextName !== undefined
+              ? { providerOptions: runtimeContextProviderOptions(item.runtimeContextName) }
+              : {}),
+          },
     );
   return {
     items,
@@ -1238,6 +1250,12 @@ export function buildRuntimeEventModelReplayPlan(
     diagnostics,
     hasProviderNativeSemantics: items.some((item) => item.kind !== 'text'),
   };
+}
+
+export function runtimeContextProviderOptions(
+  name: string,
+): NonNullable<ModelMessage['providerOptions']> {
+  return { makaRuntimeContext: { name } };
 }
 
 function modelTextRole(role: RuntimeEventRole): TextModelMessage['role'] | undefined {

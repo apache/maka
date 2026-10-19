@@ -10526,30 +10526,20 @@ describe('AiSdkBackend Anthropic prompt caching', () => {
     return { role, block: rest };
   };
 
-  test('keeps the cache breakpoint on durable history before request-only context', async () => {
+  test('keeps appended context in the cached history without repeating it after tools', async () => {
     const bodies = await runToolTurn(connection());
-
-    const breakpoints = bodies.map((body) => {
-      const flat = blocks(body);
-      const marked = flat.flatMap(({ block }, index) =>
-        block.cache_control !== undefined ? [index] : [],
-      );
-      assert.equal(marked.length, 1, JSON.stringify(body.messages));
-      const breakpoint = marked[0]!;
-      assert.deepEqual(flat[breakpoint]!.block.cache_control, body.cache_control);
-      assert.deepEqual(
-        flat.slice(breakpoint + 1).map(({ block }) => block.text),
-        ['REQUEST_ONLY_CONTEXT'],
-      );
-      return breakpoint;
-    });
-    const cachedPrefix = blocks(bodies[0]!)
-      .slice(0, breakpoints[0]! + 1)
-      .map(withoutCacheControl);
-    assert.deepEqual(
-      blocks(bodies[1]!).slice(0, cachedPrefix.length).map(withoutCacheControl),
-      cachedPrefix,
+    assert.ok(bodies[0]!.cache_control);
+    const first = blocks(bodies[0]!).map(withoutCacheControl);
+    const second = blocks(bodies[1]!).map(withoutCacheControl);
+    assert.deepEqual(second.slice(0, first.length), first);
+    assert.equal(
+      second.filter(
+        ({ block }) =>
+          typeof block.text === 'string' && block.text.includes('REQUEST_ONLY_CONTEXT'),
+      ).length,
+      1,
     );
+    assert.equal(second.at(-1)!.block.type, 'tool_result');
   });
 
   test('adds no cache breakpoint on Anthropic-protocol connections without automatic caching', async () => {

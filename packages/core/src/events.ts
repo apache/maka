@@ -679,6 +679,7 @@ export type SessionEvent =
   | PlanSubmittedEvent
   | TokenUsageEvent
   | SteeringMessageEvent
+  | RuntimeContextEvent
   | MessageAdmissionEvent
   | QueueUpdateEvent
   | ProviderRetryEvent
@@ -1291,6 +1292,13 @@ export interface SteeringMessageEvent extends BaseEvent {
   messageId: string;
   content: MessageContent;
   submittedContentDigest?: `sha256:${string}`;
+}
+
+/** Internal model context, persisted in order but not rendered as a chat message. */
+export interface RuntimeContextEvent extends BaseEvent {
+  type: 'runtime_context';
+  name: string;
+  text: string;
 }
 
 /**

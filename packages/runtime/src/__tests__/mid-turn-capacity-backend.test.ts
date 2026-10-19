@@ -772,9 +772,9 @@ function assertRequestContextPreserved(fixture: MidTurnFixture): void {
         ? message.content.flatMap((part) => (part.type === 'text' ? [part.text] : []))
         : [],
     );
-    assert.equal(texts.filter((text) => text === 'ACTIVE_REQUEST_CONTEXT').length, 1);
+    assert.equal(texts.filter((text) => text.includes('ACTIVE_REQUEST_CONTEXT')).length, 1);
   }
-  assert.doesNotMatch(JSON.stringify(fixture.ledger), /ACTIVE_REQUEST_CONTEXT/u);
+  assert.match(JSON.stringify(fixture.ledger), /ACTIVE_REQUEST_CONTEXT/u);
 }
 
 function compactionDecisions(
@@ -886,9 +886,9 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
       runtimeEventId: 'anchor-1',
       turnId: 'turn-1',
     });
-    // Coverage: [prior-user, prior-model, anchor, call-1, result-1] — all of
+    // Coverage: [prior-user, prior-model, anchor, runtime-context, call-1, result-1] — all of
     // them durable in the ledger before the checkpoint was recorded.
-    assert.equal(checkpoint.coverage.eventCount, 5);
+    assert.equal(checkpoint.coverage.eventCount, 6);
 
     // The next step's prompt is [compact block, verbatim head anchor, preserved active span].
     const thirdPrompt = promptJson(fixture, 2);

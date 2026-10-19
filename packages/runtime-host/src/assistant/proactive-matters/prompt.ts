@@ -49,7 +49,7 @@ export function buildMatterPrompt(context: MatterFileContext): string {
   return `Runtime wake notification; this is not a new user instruction.\n${boundary}\nWoken by: ${causes.join(', ')}.\nPrevious activation ended at: ${previous === null ? 'not available' : new Date(previous).toISOString()}.\nThis activation started at: ${new Date(context.activationStartedAt).toISOString()}. Current time: ${new Date(context.now).toISOString()}.\nThe wake is only a trigger. Read the current matter files and decide from the current situation.\nMatter workspace (paths and host metadata):\n${JSON.stringify(context)}`;
 }
 
-/** Volatile time is host metadata, not another human request or a persisted event. */
+/** Time is host metadata; Runtime appends updates without rewriting earlier observations. */
 export function buildMatterStepContext(now = Date.now()): string {
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   return `Runtime clock (metadata only, not a user request): ${new Date(now).toISOString()}; Unix milliseconds: ${now}; timezone: ${timezone}; local time: ${new Date(now).toLocaleString('en-GB', { timeZone: timezone })}.`;
