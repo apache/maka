@@ -522,6 +522,15 @@ describe('ASF source release verification', () => {
         'packages/runtime-host/test/assistant/proactive-matters/test/source-assistant-loop.test.ts';
       mkdirSync(dirname(join(repositoryRoot, sourceLoopTest)), { recursive: true });
       writeFileSync(join(repositoryRoot, sourceLoopTest), 'export {};\n');
+      const pickerTests = 'packages/ui/src/__tests__';
+      mkdirSync(join(repositoryRoot, pickerTests), { recursive: true });
+      for (const name of [
+        'codex-composer-integration.test.tsx',
+        'composer-model-picker-recovery.test.tsx',
+        'composer-model-picker-fixture.ts',
+      ]) {
+        writeFileSync(join(repositoryRoot, pickerTests, name), 'export {};\n');
+      }
       mkdirSync(join(repositoryRoot, 'packages/eval/harbor/deepseek-harness-toolchain'), {
         recursive: true,
       });
@@ -562,6 +571,8 @@ describe('ASF source release verification', () => {
         '.claude/launch.json',
         '.maka-shots/review.png',
         'maka-proposal-zh-review.txt',
+        'scripts/plugins/codex-app-server-executor/index.mjs',
+        'packages/ui/src/__tests__',
         'packages/runtime-host/test/assistant/memory-network/test',
         'packages/runtime-host/test/assistant/proactive-matters/test',
         'packages/eval/harbor/deepseek-harness-toolchain/package-lock.json',
@@ -644,6 +655,9 @@ describe('ASF source release verification', () => {
       assert.doesNotMatch(entries, /memory-network\/test\/feishu-source\.test\.ts/);
       assert.doesNotMatch(entries, /proactive-matters\/test\/source-assistant-loop\.test\.ts/);
       assert.match(entries, /memory-network\/test\/sources\.test\.ts/);
+      assert.doesNotMatch(entries, /__tests__\/codex-composer-integration\.test\.tsx/);
+      assert.match(entries, /__tests__\/composer-model-picker-recovery\.test\.tsx/);
+      assert.match(entries, /__tests__\/composer-model-picker-fixture\.ts/);
       assert.doesNotMatch(entries, /deepseek-harness-toolchain\/package(?:-lock)?\.json/);
       assert.match(entries, /deepseek-harness-toolchain\/patch-subprocess-local\.mjs/);
       assert.match(entries, /deepseek-harness-profile\/cordis\.yml/);
