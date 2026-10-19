@@ -188,12 +188,6 @@ export async function runMakaCli(
     clientDataRoot: dataRoots.clientDataRoot,
   });
   switch (command.kind) {
-    case 'runtime-host-wsl-node-repair': {
-      const { runRuntimeHostWslNodeRepairCli } = await import(
-        './runtime-host-wsl-node-recovery.js'
-      );
-      return runRuntimeHostWslNodeRepairCli(command);
-    }
     case 'runtime-host-managed-activate': {
       const { runRuntimeHostManagedActivationCli } = await import(
         './runtime-host-activation-command.js'
@@ -400,6 +394,7 @@ export async function runMakaCli(
         ...(command.repairRootAfterRemount ? { repairRootAfterRemount: true } : {}),
         updateExisting: command.updateExisting,
         reuseExistingEnvironment: command.reuseExistingEnvironment,
+        ...(command.expectedExisting ? { expectedExisting: command.expectedExisting } : {}),
         allowInterruptActiveTasks: command.allowInterruptActiveTasks,
         ...(command.rootPath ? { rootPath: command.rootPath } : {}),
         ...(command.projectDirectoryRoots

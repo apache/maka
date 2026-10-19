@@ -508,6 +508,40 @@ describe('managed Runtime Host service', () => {
       parseRuntimeHostCommand([...setupUpdateArgs, '--allow-interrupt-active-tasks']).kind,
       'error',
     );
+    const expectedExisting = {
+      rootId: 'a'.repeat(64),
+      operator: {
+        kind: 'node',
+        platform: 'posix',
+        nodePath: '/old/node',
+        modulePath: '/operator.mjs',
+      },
+    };
+    const recoveryArgs = [
+      ...setupUpdateArgs,
+      '--lifecycle',
+      'on-demand',
+      '--reuse-existing-environment',
+    ];
+    const targetArgs = [
+      '--managed-root-id',
+      expectedExisting.rootId,
+      '--expected-operator-json',
+      JSON.stringify(expectedExisting.operator),
+    ];
+    const recovery = parseRuntimeHostCommand([...recoveryArgs, ...targetArgs]);
+    assert.deepEqual(
+      recovery.kind === 'runtime-host-setup' ? recovery.expectedExisting : null,
+      expectedExisting,
+    );
+    for (const invalid of [
+      targetArgs.slice(0, 2),
+      targetArgs.slice(2),
+      [...targetArgs, '--expected-operator-json', '{}'],
+    ]) {
+      assert.equal(parseRuntimeHostCommand([...recoveryArgs, ...invalid]).kind, 'error');
+    }
+    assert.equal(parseRuntimeHostCommand([...setupUpdateArgs, ...targetArgs]).kind, 'error');
     const explicitSetupUpdate = parseRuntimeHostCommand([
       ...setupUpdateArgs,
       '--update-existing',

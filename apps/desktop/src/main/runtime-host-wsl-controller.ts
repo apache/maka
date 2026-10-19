@@ -17,15 +17,14 @@
  * under the License.
  */
 
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import type { Readable } from 'node:stream';
+import { promisify } from 'node:util';
 import {
   normalizeRuntimeHostWslDistribution,
   resolveSystemRuntimeHostWslExecutable,
   type RuntimeHostWslProcessFactory,
-  type RuntimeHostWslNodeRecovery,
-  type RuntimeHostWslNodeRecoveryInput,
-  resolveRuntimeHostWslNodeOperator,
+  type RuntimeHostProfileCatalog,
 } from '@maka/runtime-host/client';
 import {
   decodeRuntimeHostSetupFrame,
@@ -50,6 +49,7 @@ import type { DesktopRuntimeHostSetupPackage } from './runtime-host-setup-packag
 const WSL_SETUP_TIMEOUT_MS = 10 * 60_000;
 const WSL_SETUP_OUTPUT_MAX_BYTES = 64 * 1024;
 const WSL_SETUP_STDERR_MAX_BYTES = 8 * 1024;
+const execFileAsync = promisify(execFile);
 
 type RuntimeHostSetupCompleteFrame = Extract<RuntimeHostSetupFrame, { kind: 'complete' | 'existing_environment' }>;
 type RuntimeHostWslSetupCompleteFrame = Omit<RuntimeHostSetupCompleteFrame, 'operator'> & {
@@ -64,7 +64,6 @@ export interface DesktopRuntimeHostWslManagementInput {
   readonly distribution: string;
   readonly operator: RuntimeHostPosixOperatorCommand;
   readonly action: 'status' | 'configure';
-  readonly recoverMissingNode?: RuntimeHostWslNodeRecovery;
   readonly expectedTarget: {
     readonly serviceId: string;
     readonly rootPath: string;
@@ -95,12 +94,7 @@ export async function runDesktopRuntimeHostWslManagement(
 ): Promise<RuntimeHostManagementTerminalFrame> {
   input.signal?.throwIfAborted();
   const distribution = normalizeRuntimeHostWslDistribution(input.distribution);
-  const operator = input.recoverMissingNode
-    ? await resolveRuntimeHostWslNodeOperator({ ...input, rootId: input.expectedTarget.rootId }, input.recoverMissingNode, {
-        wslExecutable: overrides.wslExecutable,
-        processFactory: (executable, args) => (overrides.processFactory ?? spawnWslManagement)(executable, args, process.env),
-      })
-    : decodeRuntimeHostPosixOperatorCommand(input.operator);
+  const operator = decodeRuntimeHostPosixOperatorCommand(input.operator);
   const invocation = runtimeHostOperatorInvocation(operator, [
     input.action,
     '--framed',
@@ -162,40 +156,80 @@ export async function runDesktopRuntimeHostWslManagement(
   return terminal;
 }
 
-/** Uses the same login-shell/npx bootstrap as initial WSL onboarding, without installing a Host package. */
-export async function recoverDesktopRuntimeHostWslNode(
-  input: RuntimeHostWslNodeRecoveryInput & { readonly setupPackage: DesktopRuntimeHostSetupPackage },
+export interface DesktopRuntimeHostWslOperatorInput {
+  readonly distribution: string;
+  readonly operator: RuntimeHostPosixOperatorCommand;
+  readonly rootId: string;
+  readonly signal?: AbortSignal;
+}
+
+// An inaccessible parent, dangling symlink or existing non-executable is not missing.
+const NODE_PATH_PROBE = `parent=/; remaining=\${1#/}
+while :; do
+  [ -d "$parent" ] && [ -x "$parent" ] || exit 2
+  segment=\${remaining%%/*}
+  candidate="$parent/$segment"
+  if [ ! -e "$candidate" ] && [ ! -L "$candidate" ]; then echo MAKA_WSL_NODE_MISSING_V1; exit 44; fi
+  case "$remaining" in
+    */*) parent="$candidate"; remaining=\${remaining#*/} ;;
+    *) exit 0 ;;
+  esac
+done`;
+
+export function createDesktopRuntimeHostWslOperatorResolver(
+  input: {
+    readonly catalog: RuntimeHostProfileCatalog;
+    readonly principalId: string;
+    resolvePackage(signal?: AbortSignal): Promise<DesktopRuntimeHostSetupPackage>;
+  },
   overrides: { readonly processFactory?: RuntimeHostWslProcessFactory; readonly wslExecutable?: string } = {},
-): Promise<RuntimeHostWslSetupCompleteFrame> {
-  input.signal?.throwIfAborted();
-  const operator = decodeRuntimeHostPosixOperatorCommand(input.operator);
-  if (operator.kind !== 'node') throw new Error('WSL Node recovery requires a Node operator');
-  const distribution = normalizeRuntimeHostWslDistribution(input.distribution);
-  const processFactory = overrides.processFactory ?? spawnWsl;
-  const executable = overrides.wslExecutable ?? resolveSystemRuntimeHostWslExecutable();
-  const setupPackage = await resolveWslPackageSpecifier(input.setupPackage, distribution, executable, processFactory);
-  const args = ['npx', '--yes', '--package', setupPackage.specifier, 'maka', 'runtime-host', 'repair-wsl-node',
-    '--root-id', input.rootId, '--expected-node-path', operator.nodePath, '--expected-module-path', operator.modulePath];
-  const command = `maka_prefix=$(mktemp -d) || exit 1; trap 'rm -rf -- "$maka_prefix"' EXIT; cd "$maka_prefix" || exit 1; ${args.map(quotePosix).join(' ')}`;
-  const child = processFactory(executable, ['--distribution', distribution, '--exec', '/bin/sh', '-lc', runtimeHostWslLoginCommand(command)]);
-  return runWslFramedProcess({
-    child, signal: input.signal, prefix: RUNTIME_HOST_SETUP_FRAME_PREFIX,
-    decode: decodeRuntimeHostSetupFrame, label: 'WSL Node recovery',
-    onFrame: (frame) => {
-      if (frame.kind === 'error') throw new Error(frame.error.message);
-      if (frame.kind !== 'existing_environment' || frame.operator.kind !== 'node' ||
-          frame.operator.platform !== 'posix' || frame.rootId !== input.rootId ||
-          frame.operator.modulePath !== operator.modulePath) throw new Error('WSL Node recovery returned a different deployment');
-      return { ...frame, operator: createRuntimeHostOperatorCommand({ platform: 'posix',
-        nodePath: frame.operator.nodePath, modulePath: frame.operator.modulePath }) };
-    },
-  });
+): (target: DesktopRuntimeHostWslOperatorInput) => Promise<RuntimeHostPosixOperatorCommand> {
+  return async (target) => {
+    target.signal?.throwIfAborted();
+    if (target.operator.kind !== 'node') return target.operator;
+    const savedOperator = target.operator;
+    const distribution = normalizeRuntimeHostWslDistribution(target.distribution);
+    const profiles = (await input.catalog.read()).profiles;
+    // Managers can retain a pre-repair snapshot; the catalog owns the current route.
+    const current = profiles.find((profile) => profile.kind === 'environment' &&
+      profile.rootId === target.rootId && profile.provider.distribution === distribution &&
+      profile.operator.kind === 'node' && profile.operator.modulePath === savedOperator.modulePath);
+    const operator = current?.kind === 'environment' && current.operator.kind === 'node'
+      ? current.operator : savedOperator;
+    try {
+      await execFileAsync(overrides.wslExecutable ?? resolveSystemRuntimeHostWslExecutable(), [
+        '--distribution', distribution, '--exec', '/bin/sh', '-c', NODE_PATH_PROBE,
+        'maka-node-probe', operator.nodePath,
+      ], { signal: target.signal, timeout: 15_000, maxBuffer: 8192, windowsHide: true });
+      target.signal?.throwIfAborted();
+      return operator;
+    } catch (error) {
+      if (!(error instanceof Error) || !('code' in error) || error.code !== 44 ||
+          !('stdout' in error) || error.stdout !== 'MAKA_WSL_NODE_MISSING_V1\n') throw error;
+    }
+    target.signal?.throwIfAborted();
+    const recovered = await runDesktopRuntimeHostWslSetup({
+      distribution, principalId: input.principalId,
+      setupPackage: await input.resolvePackage(target.signal), signal: target.signal,
+      expectedExisting: { rootId: target.rootId, operator },
+    }, () => undefined, undefined, overrides);
+    for (const profile of profiles) {
+      if (profile.kind !== 'environment' || profile.rootId !== target.rootId ||
+          profile.provider.distribution !== distribution) continue;
+      await input.catalog.updateEnvironmentOperatorIfCurrent({ ...profile, operator }, recovered.operator);
+    }
+    return recovered.operator;
+  };
 }
 
 export interface DesktopRuntimeHostWslSetupInput {
   readonly distribution: string;
   readonly setupPackage: DesktopRuntimeHostSetupPackage;
   readonly principalId: string;
+  readonly expectedExisting?: {
+    readonly rootId: string;
+    readonly operator: RuntimeHostNodeOperatorCommand<'posix'>;
+  };
   readonly projectDirectoryRoots?: readonly {
     readonly label: string;
     readonly path: string;
@@ -238,6 +272,11 @@ export async function runDesktopRuntimeHostWslSetup(
       if (frame.kind === 'error') throw new Error(frame.error.message);
       if (frame.operator.platform !== 'posix') {
         throw new Error('WSL Runtime Host setup returned a non-POSIX operator');
+      }
+      if (input.expectedExisting && (frame.kind !== 'existing_environment' ||
+          frame.rootId !== input.expectedExisting.rootId ||
+          frame.operator.modulePath !== input.expectedExisting.operator.modulePath)) {
+        throw new Error('WSL Node recovery returned a different deployment');
       }
       return {
         ...frame,
@@ -341,7 +380,7 @@ async function resolveWslPackageSpecifier(
 
 function runtimeHostWslSetupCommand(
   setupPackage: { readonly specifier: string; readonly integrity?: string },
-  input: Pick<DesktopRuntimeHostWslSetupInput, 'principalId' | 'projectDirectoryRoots'>,
+  input: Pick<DesktopRuntimeHostWslSetupInput, 'principalId' | 'projectDirectoryRoots' | 'expectedExisting'>,
   development: boolean,
 ): string {
   if (!/^[A-Za-z0-9_.:-]{1,128}$/u.test(input.principalId)) {
@@ -360,7 +399,9 @@ function runtimeHostWslSetupCommand(
     '--repair-root-after-remount',
     // Source development explicitly selects a new archive; released onboarding
     // must never replace an existing shared deployment as a side effect of Connect.
-    ...(development ? ['--update-existing'] : ['--reuse-existing-environment']),
+    ...(development && !input.expectedExisting ? ['--update-existing'] : ['--reuse-existing-environment']),
+    ...(input.expectedExisting ? ['--managed-root-id', input.expectedExisting.rootId,
+      '--expected-operator-json', JSON.stringify(input.expectedExisting.operator)] : []),
     ...(input.projectDirectoryRoots === undefined
       ? []
       : input.projectDirectoryRoots.length === 0

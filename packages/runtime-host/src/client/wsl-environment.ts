@@ -54,11 +54,6 @@ import {
 } from './wsl-control.js';
 import { RuntimeHostPermanentReconnectError } from './reconnect-lifecycle.js';
 
-import {
-  resolveRuntimeHostWslNodeOperator,
-  type RuntimeHostWslNodeRecovery,
-} from './wsl-node-recovery.js';
-
 const DEFAULT_RUNTIME_HOST_WSL_STARTUP_TIMEOUT_MS = 45_000;
 const DEFAULT_RUNTIME_HOST_WSL_READY_TIMEOUT_MS = 45_000;
 
@@ -77,7 +72,6 @@ export interface RuntimeHostWslEnvironmentInput {
   readonly signal?: AbortSignal;
   readonly handshakeTimeoutMs?: number;
   readonly readyTimeoutMs?: number;
-  readonly recoverMissingNode?: RuntimeHostWslNodeRecovery;
 }
 
 export async function connectRuntimeHostWslEnvironment(
@@ -90,9 +84,7 @@ export async function connectRuntimeHostWslEnvironment(
 ): Promise<RuntimeHostConnection> {
   input.signal?.throwIfAborted();
   const distribution = normalizeRuntimeHostWslDistribution(input.distribution);
-  const operator = input.recoverMissingNode
-    ? await resolveRuntimeHostWslNodeOperator(input, input.recoverMissingNode, overrides)
-    : decodeRuntimeHostPosixOperatorCommand(input.operator);
+  const operator = decodeRuntimeHostPosixOperatorCommand(input.operator);
   const rootId = requireHostRootId(input.rootId);
   const processFactory = overrides.processFactory ?? spawnRuntimeHostWslProcess;
   const invocation = runtimeHostOperatorInvocation(operator, [

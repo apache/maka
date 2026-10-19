@@ -17,7 +17,6 @@
  * under the License.
  */
 
-import type { RuntimeHostWslNodeRecovery } from './wsl-node-recovery.js';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   ResumablePeerStream,
@@ -415,7 +414,6 @@ export function runtimeHostProfileTargetFingerprint(profile: RemoteRuntimeHostPr
 
 export async function connectRuntimeHostProfile(
   input: {
-    readonly recoverMissingWslNode?: RuntimeHostWslNodeRecovery;
     readonly profile: PersistedRuntimeHostProfile;
     readonly credential?: string;
     readonly clientInstanceId: string;
@@ -443,7 +441,6 @@ export async function connectRuntimeHostProfile(
   if (input.profile.kind === 'environment') {
     return (overrides.connectWsl ?? connectRuntimeHostWslEnvironment)(
       {
-        ...(input.recoverMissingWslNode ? { recoverMissingNode: input.recoverMissingWslNode } : {}),
         distribution: input.profile.provider.distribution,
         operator: input.profile.operator,
         rootId: input.profile.rootId,

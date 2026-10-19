@@ -17,7 +17,6 @@
  * under the License.
  */
 
-import { isDeepStrictEqual } from 'node:util';
 import { createHash, randomUUID } from "node:crypto";
 import { lstat, open, readFile, rename, rm, rmdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -36,13 +35,12 @@ import {
   sameRemoteRuntimeHostProfileTarget,
   sameResolvedRuntimeHostProfileTarget,
   type EnvironmentRuntimeHostProfile,
-  type RuntimeHostWslNodeRecoveryInput,
   type PersistedRuntimeHostProfile,
   type RemoteRuntimeHostProfile,
   type ResolvedRuntimeHostProfile,
   type RuntimeHostProfileCatalog,
 } from "@maka/runtime-host/client";
-import { type RuntimeHostNodeOperatorCommand, runtimeHostAccessCredentialFingerprint } from "@maka/runtime-host/operator";
+import { runtimeHostAccessCredentialFingerprint } from "@maka/runtime-host/operator";
 import type { HostPeerEndpoint } from '@maka/runtime-host/protocol';
 import type { CredentialStore } from "@maka/storage/credential-store";
 import { withFileUpdateLock } from "@maka/storage/file-update-lock";
@@ -99,10 +97,6 @@ export interface DesktopRuntimeHostStartup {
 }
 
 export interface DesktopRuntimeHostProfileService {
-  recordRecoveredWslNode(expected: RuntimeHostWslNodeRecoveryInput, recovered: {
-    readonly operator: RuntimeHostNodeOperatorCommand<'posix'>;
-    readonly rootPath: string; readonly deploymentId: string;
-  }): Promise<void>;
   getSnapshot(): Promise<DesktopRuntimeHostProfileSnapshot>;
   addAndEnable(
     input: DesktopRuntimeHostProfileAddInput,
@@ -330,10 +324,16 @@ export function createDesktopRuntimeHostProfileService(input: {
     input.startup.pairingIntents.map((intent) => [intent.target.profile.id, intent]),
   );
   let pairingReadFailure = input.startup.pairingReadFailure;
-  const mutate = createMutationQueue();
-  // Local binding writes must also serialize with removal when recovery is invoked
-  // by management outside the lifecycle queue. Enable may already hold `mutate`.
-  const mutateProfileBindings = createMutationQueue();
+  let mutationTail = Promise.resolve();
+
+  const mutate = <T>(operation: () => Promise<T>): Promise<T> => {
+    const pending = mutationTail.then(operation);
+    mutationTail = pending.then(
+      () => undefined,
+      () => undefined,
+    );
+    return pending;
+  };
 
   const assertPreferencesWritable = (): void => {
     // The Local fallback is effective startup state, not a replacement for
@@ -778,24 +778,6 @@ export function createDesktopRuntimeHostProfileService(input: {
   };
 
   return {
-    recordRecoveredWslNode(expected, recovered) {
-      return mutateProfileBindings(async () => {
-        const document = await catalog.read();
-        for (const profile of document.profiles) {
-          if (profile.kind !== 'environment' || profile.rootId !== expected.rootId ||
-              profile.provider.distribution !== expected.distribution) continue;
-          const alreadyRecovered = isDeepStrictEqual(profile.operator, recovered.operator);
-          if (!alreadyRecovered && !isDeepStrictEqual(profile.operator, expected.operator)) continue;
-          if (!alreadyRecovered && !await catalog.updateEnvironmentOperatorIfCurrent(profile, recovered.operator)) {
-            throw new Error('WSL profile changed during Node recovery');
-          }
-          const updated = { ...profile, operator: recovered.operator };
-          await managedServices.save(updated, { deployment: {
-            id: expected.rootId, rootPath: recovered.rootPath, deploymentId: recovered.deploymentId,
-          } });
-        }
-      });
-    },
     getSnapshot: () => mutate(snapshot),
     addAndEnable(value) {
       requireSaveInput(value);
@@ -1329,7 +1311,7 @@ export function createDesktopRuntimeHostProfileService(input: {
       });
     },
     remove(profileId) {
-      return mutateProfiles(() => mutateProfileBindings(async () => {
+      return mutateProfiles(async () => {
         if (profileId === LOCAL_RUNTIME_HOST_PROFILE.id) {
           throw new Error("Local Runtime Host cannot be removed");
         }
@@ -1371,17 +1353,8 @@ export function createDesktopRuntimeHostProfileService(input: {
         await catalog.remove(profileId);
         unavailable.delete(profileId);
         return snapshot();
-      }));
+      });
     },
-  };
-}
-
-function createMutationQueue() {
-  let tail = Promise.resolve();
-  return <T>(operation: () => Promise<T>): Promise<T> => {
-    const pending = tail.then(operation);
-    tail = pending.then(() => undefined, () => undefined);
-    return pending;
   };
 }
 

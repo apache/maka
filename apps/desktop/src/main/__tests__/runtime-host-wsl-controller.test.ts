@@ -21,9 +21,13 @@ import assert from 'node:assert/strict';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
+import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import test from 'node:test';
-import type { RuntimeHostWslProcessFactory } from '@maka/runtime-host/client';
+import { createClientRuntimeHostProfileCatalog, type RuntimeHostWslProcessFactory } from '@maka/runtime-host/client';
+import { createDesktopRuntimeHostManagedServiceStore } from '../runtime-host-managed-services.js';
 import {
   encodeRuntimeHostServiceManagementFrame,
   encodeRuntimeHostSetupFrame,
@@ -31,7 +35,7 @@ import {
   RUNTIME_HOST_SETUP_SOURCE_PACKAGE_INTEGRITY_ENV,
 } from '@maka/runtime-host/operator';
 import {
-  recoverDesktopRuntimeHostWslNode,
+  createDesktopRuntimeHostWslOperatorResolver,
   runDesktopRuntimeHostWslManagement,
   runDesktopRuntimeHostWslSetup,
   runDesktopRuntimeHostWslUpdate,
@@ -289,30 +293,114 @@ test('released WSL discovery accepts an existing binding without a credential or
   assert.deepEqual(result, existing);
 });
 
-for (const rootMatches of [true, false]) {
-  test(`WSL missing-Node recovery uses login bootstrap and fences the result: ${rootMatches}`, async () => {
-    const frame = {
-      schemaVersion: 1 as const, sequence: 0, kind: 'existing_environment' as const,
-      version: '0.2.0', serviceId: 'a'.repeat(64), rootId: (rootMatches ? 'a' : 'b').repeat(64), rootPath: '/state',
-      deploymentId: '00000000-0000-4000-8000-000000000001', operator: { ...OPERATOR, nodePath: '/new/node' },
-    };
-    let command = '';
-    const result = recoverDesktopRuntimeHostWslNode({ distribution: 'Ubuntu', rootId: 'a'.repeat(64),
-      operator: OPERATOR, setupPackage: { kind: 'npm', specifier: 'maka-agent@0.2.1' } }, {
-      wslExecutable: 'wsl.exe', processFactory: (_executable, args) => {
-        command = args.at(-1)!;
-        const child = new EventEmitter() as ChildProcessWithoutNullStreams;
-        const stdout = new PassThrough(); const stderr = new PassThrough();
-        Object.assign(child, { stdin: new PassThrough(), stdout, stderr, kill: () => true });
-        process.nextTick(() => { stdout.end(encodeRuntimeHostSetupFrame(frame)); stderr.end(); child.emit('close', 0, null); });
-        return child;
-      },
-    });
-    if (rootMatches) assert.deepEqual(await result, frame);
-    else await assert.rejects(result, /different deployment/);
-    assert.match(command, /\$\{SHELL:-\/bin\/sh\}.*-lic/u);
-    assert.match(command, /npx.*maka-agent@0\.2\.1.*repair-wsl-node/u);
-    assert.match(command, /--expected-node-path/);
-    assert.doesNotMatch(command, /--update-existing|--allow-interrupt-active-tasks/);
-  });
-}
+test('WSL Node recovery retains deployment bindings, updates aliases and cannot revive deleted profiles', {
+  skip: process.platform === 'win32',
+}, async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-wsl-node-recovery-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const wslExecutable = join(root, 'wsl');
+  const shim = '#!/bin/sh\nshift 3\nexec "$@"\n';
+  await writeFile(wslExecutable, shim, { mode: 0o700 });
+  const catalog = createClientRuntimeHostProfileCatalog(root);
+  const managedServices = createDesktopRuntimeHostManagedServiceStore(root);
+  const target = { distribution: 'Ubuntu', rootId: 'a'.repeat(64),
+    operator: { ...OPERATOR, nodePath: join(root, "manager's deleted Node") } };
+  const operator = { ...OPERATOR, nodePath: process.execPath };
+  const frame = {
+    schemaVersion: 1 as const, sequence: 0, kind: 'existing_environment' as const,
+    version: '0.2.0', serviceId: target.rootId, rootId: target.rootId, rootPath: '/state',
+    deploymentId: '00000000-0000-4000-8000-000000000001', operator,
+  };
+  let terminal = frame;
+  let command = '';
+  const packageResolver = async () => ({ kind: 'npm' as const, specifier: 'maka-agent@0.2.1' });
+  let resolvePackage: typeof packageResolver = async () => assert.fail('an existing path must not discover Node');
+  const resolve = createDesktopRuntimeHostWslOperatorResolver({ catalog, principalId: 'desktop:test',
+    resolvePackage: () => resolvePackage(),
+  }, { wslExecutable, processFactory: (_executable, args) => {
+    command = args.at(-1)!;
+    const child = new EventEmitter() as ChildProcessWithoutNullStreams;
+    const stdout = new PassThrough(); const stderr = new PassThrough();
+    Object.assign(child, { stdin: new PassThrough(), stdout, stderr, kill: () => true });
+    process.nextTick(() => { stdout.end(encodeRuntimeHostSetupFrame(terminal)); stderr.end(); child.emit('close', 0, null); });
+    return child;
+  } });
+  for (const mode of [0o700, 0o600, 'symlink'] as const) {
+    const nodePath = join(root, `existing-${mode}`);
+    if (mode === 'symlink') await symlink(join(root, 'absent-target'), nodePath);
+    else await writeFile(nodePath, 'broken Node', { mode });
+    const existing = { ...OPERATOR, nodePath };
+    assert.deepEqual(await resolve({ ...target, operator: existing }), existing);
+  }
+  const blockedParent = join(root, 'plain-file');
+  await writeFile(blockedParent, 'not a directory');
+  await assert.rejects(resolve({ ...target, operator: {
+    ...OPERATOR, nodePath: join(blockedParent, 'node'),
+  } }), { code: 2 });
+  const aborted = new AbortController();
+  aborted.abort();
+  await assert.rejects(resolve({ ...target, signal: aborted.signal }), { name: 'AbortError' });
+  for (const code of [2, 44]) {
+    await writeFile(wslExecutable, `#!/bin/sh\nexit ${code}\n`);
+    await assert.rejects(resolve(target), { code });
+  }
+  await writeFile(wslExecutable, shim);
+  const profile = { id: 'ubuntu', name: 'Ubuntu', kind: 'environment' as const,
+    provider: { kind: 'wsl' as const, distribution: target.distribution },
+    rootId: target.rootId, operator: target.operator };
+  const alias = { ...profile, id: 'ubuntu-cli-alias' };
+  for (const entry of [profile, alias]) await catalog.create(entry);
+  await managedServices.save(profile, { deployment: {
+    id: frame.serviceId, rootPath: frame.rootPath, deploymentId: frame.deploymentId,
+  } });
+  const managedBefore = await managedServices.read();
+  resolvePackage = packageResolver;
+  for (const mismatch of [
+    { ...frame, rootId: 'b'.repeat(64) },
+    { ...frame, operator: { ...operator, modulePath: '/other/operator.mjs' } },
+  ]) {
+    terminal = mismatch;
+    await assert.rejects(resolve(target), /different deployment/u);
+    assert.deepEqual((await catalog.read()).profiles, [profile, alias]);
+  }
+  terminal = frame;
+  assert.deepEqual(await resolve(target), operator);
+  assert.deepEqual((await catalog.read()).profiles, [
+    { ...profile, operator }, { ...alias, operator },
+  ]);
+  assert.deepEqual(await managedServices.read(), managedBefore);
+  assert.match(command, /\$\{SHELL:-\/bin\/sh\}.*-lic/u);
+  assert.match(command, /npx.*maka-agent@0\.2\.1.*--reuse-existing-environment/u);
+  assert.match(command, /--expected-operator-json/u);
+  assert.doesNotMatch(command, /--update-existing|--allow-interrupt-active-tasks/u);
+  resolvePackage = async () => assert.fail('the catalog already has a usable Node');
+  assert.deepEqual(await resolve(target), operator);
+  for (const entry of [profile, alias]) await catalog.save(entry);
+  resolvePackage = packageResolver;
+  let entered!: () => void;
+  let release!: () => void;
+  const updating = new Promise<void>((done) => { entered = done; });
+  const paused = new Promise<void>((done) => { release = done; });
+  const update = catalog.updateEnvironmentOperatorIfCurrent.bind(catalog);
+  catalog.updateEnvironmentOperatorIfCurrent = async (source, replacement) => {
+    entered(); await paused;
+    return update(source, replacement);
+  };
+  const pending = resolve(target);
+  await updating;
+  for (const entry of [profile, alias]) await catalog.remove(entry.id);
+  await managedServices.removeForProfileIfCurrent(profile);
+  assert.deepEqual((await catalog.read()).profiles, []);
+  assert.deepEqual((await managedServices.read()).bindings, []);
+  const replacement = { ...profile, id: 'ubuntu-reinstalled', operator };
+  await catalog.create(replacement);
+  await managedServices.save(replacement, { deployment: {
+    id: frame.serviceId, rootPath: frame.rootPath,
+    deploymentId: '00000000-0000-4000-8000-000000000002',
+  } });
+  const replacementBindings = await managedServices.read();
+  release();
+  assert.deepEqual(await pending, operator);
+  assert.deepEqual((await catalog.read()).profiles, [replacement]);
+  assert.deepEqual(await managedServices.read(), replacementBindings);
+});
