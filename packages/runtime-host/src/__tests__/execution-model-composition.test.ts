@@ -57,7 +57,10 @@ import {
   decodeRunCompositionSnapshot,
 } from '@maka/core/run-composition';
 import { readInvocation, testInvocationRecord } from '@maka/runtime/test-only/invocation-fixture';
-import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
+import {
+  ASSISTANT_BACKGROUND_SESSION_LABEL,
+  WORKHUB_COORDINATION_SESSION_ID,
+} from '@maka/core/session';
 import { messageContentDigest } from '@maka/core/events';
 import { runtimeInvocationOutcome } from '@maka/core/runtime-invocation';
 import { agentRunCompositionFromEvents } from '@maka/core/agent-run';
@@ -1372,6 +1375,144 @@ test('provider dispatch fails closed when the Request Composition epoch commit f
   } finally {
     await backend?.dispose();
     await provider.close();
+  }
+});
+
+test('persistent assistant Bot compacts on wake by default without changing ordinary sessions or user thresholds', async () => {
+  for (const scenario of [
+    'bot',
+    'ordinary',
+    'discovery',
+    'explicit',
+    'below',
+    'unknown',
+  ] as const) {
+    const provider = await startProvider();
+    let checkpoints = 0;
+    const anchor = compactRuntimeTextEvent(
+      'wake',
+      'wake-turn',
+      'user',
+      'user',
+      'Inbox has new mail',
+    );
+    const prior = [
+      compactRuntimeTextEvent(
+        'old-user',
+        'old-turn',
+        'user',
+        'user',
+        'OLD_BOT_HISTORY '.repeat(100),
+      ),
+      compactRuntimeTextEvent(
+        'old-assistant',
+        'old-turn',
+        'model',
+        'agent',
+        'Previously handled messages.',
+      ),
+      {
+        ...compactRuntimeTextEvent('prior-usage', 'old-turn', 'model', 'agent', ''),
+        role: 'system' as const,
+        author: 'system' as const,
+        content: undefined,
+        actions: {
+          tokenUsage: {
+            input: 7_000,
+            output: 10,
+            lastRequestAnchor: {
+              inputTokens: scenario === 'below' ? 1_000 : 7_000,
+              outputTokens: 10,
+            },
+          },
+        },
+      },
+    ];
+    const fixture = backendCreationFixture({
+      abortSignal: new AbortController().signal,
+      resolveExecutionConnection: async () => {
+        const ready = readyExecutionConnection(provider.baseUrl);
+        return {
+          ...ready,
+          connection: {
+            ...ready.connection,
+            ...(scenario === 'unknown' ? { models: [{ id: MODEL_ID }] } : {}),
+            ...(scenario === 'explicit'
+              ? {
+                  modelOverrides: {
+                    [MODEL_ID]: { compactionThreshold: 20_000 },
+                  },
+                }
+              : {}),
+          },
+        };
+      },
+      readPricing: async () => ({ revision: 0, overrides: [] }),
+      loadTurnRuntimeEvents: async () => [anchor],
+      recordHistoryCompactCheckpoint: async () => {
+        checkpoints += 1;
+      },
+    });
+    fixture.context.header.labels =
+      scenario === 'ordinary'
+        ? []
+        : [
+            ASSISTANT_BACKGROUND_SESSION_LABEL,
+            scenario === 'discovery' ? 'initiative:owner' : 'assistant-bot:owner',
+          ];
+    fixture.context.allowMidTurnHistoryCompaction = true;
+    const backend = await createHostAiSdkBackend(fixture);
+    try {
+      const events = [];
+      for await (const event of backend.send({
+        runId: 'wake-run',
+        turnId: 'wake-turn',
+        text: 'Inbox has new mail',
+        context: [],
+        headAnchorRuntimeEvent: anchor,
+        runtimeContext: prior,
+        runtimeContextInvocations: [
+          testInvocationRecord({
+            sessionId: 'backend-creation-session',
+            runId: 'compact-source-run',
+            turnId: 'old-turn',
+            openedAt: 1,
+            closedAt: 2,
+            outcome: 'completed',
+            opening: {
+              route: {
+                provenance: 'runtime',
+                backendKind: 'ai-sdk',
+                llmConnectionId: '11111111-1111-4111-8111-111111111111',
+                llmConnectionSlug: 'backend-creation-connection',
+                modelId: MODEL_ID,
+              },
+              configuration: { cwd: '/workspace' },
+            },
+          }),
+        ],
+      }))
+        events.push(event);
+      assert.equal(
+        events.some((event) => event.type === 'error'),
+        false,
+        JSON.stringify(events),
+      );
+      assert.equal(checkpoints, scenario === 'bot' ? 1 : 0, scenario);
+      const main = provider.requests.filter((request) => request.body.stream === true);
+      assert.equal(main.length, 1, scenario);
+      assert.equal(
+        JSON.stringify(main[0]?.body).includes('OLD_BOT_HISTORY'),
+        scenario !== 'bot',
+        scenario,
+      );
+      assert.ok(JSON.stringify(main[0]?.body).includes('Inbox has new mail'), scenario);
+      if (scenario === 'bot')
+        assert.match(JSON.stringify(main[0]?.body), /maka_history_compact_checkpoint/);
+    } finally {
+      await backend.dispose();
+      await provider.close();
+    }
   }
 });
 

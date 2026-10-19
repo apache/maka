@@ -500,7 +500,11 @@ export interface HistoryCompactionPolicy {
   enabled: boolean;
   checkpoint?: HistoryCompactCheckpoint;
   highWaterName?: string;
-  midTurn?: { enabled: true };
+  midTurn?: {
+    enabled: true;
+    /** Host-selected target when the user has not configured a compaction threshold. */
+    fallbackThresholdTokens?: number;
+  };
 }
 
 export interface HistoryCompactionReplayResult {

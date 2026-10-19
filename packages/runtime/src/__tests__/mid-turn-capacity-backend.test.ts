@@ -124,6 +124,7 @@ interface MidTurnFixtureOptions {
    * instead of the hand-built one, so a test can exercise the shipped default.
    */
   useRuntimeDefaultPolicy?: boolean;
+  fallbackCompactionThresholdTokens?: number;
   summarize?: (
     input: HistoryCompactSummaryInput,
   ) =>
@@ -601,6 +602,7 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
       ? buildDefaultContextBudgetPolicy({
           name: 'runtime-default-mid-turn',
           modelId: 'mock-model-id',
+          fallbackCompactionThresholdTokens: options.fallbackCompactionThresholdTokens,
         })
       : {
           name: 'mid-turn-test',
@@ -1796,6 +1798,35 @@ describe('mid-turn capacity default-on safety guards (issue #882 PR 3)', () => {
     assert.equal(fixture.summarizerCalls, 0);
     const complete = events.find((event) => event.type === 'complete');
     assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'end_turn');
+  });
+
+  test('a Host fallback compacts a long turn without a user threshold and keeps tool execution intact', async () => {
+    const fixture = buildFixture({
+      useRuntimeDefaultPolicy: true,
+      declareContextWindow: false,
+      fallbackCompactionThresholdTokens: 190,
+    });
+    await runFixtureTurn(fixture);
+    assert.equal(fixture.recorded.length, 1);
+    assert.equal(fixture.recorded[0]?.phase, 'mid_turn');
+    assert.match(promptJson(fixture, 2), /MID_TURN_SUMMARY_SENTINEL/);
+    assert.ok(promptJson(fixture, 2).includes(ANCHOR_TEXT));
+    assert.deepEqual(fixture.toolExecutions, ['one.md', 'two.md']);
+    assert.equal(
+      fixture.events.some((event) => event.type === 'error'),
+      false,
+    );
+  });
+
+  test('an explicit user threshold takes precedence over the Host fallback', async () => {
+    const fixture = buildFixture({
+      useRuntimeDefaultPolicy: true,
+      contextWindow: 100_000,
+      fallbackCompactionThresholdTokens: 190,
+    });
+    await runFixtureTurn(fixture);
+    assert.equal(fixture.summarizerCalls, 0);
+    assert.deepEqual(fixture.toolExecutions, ['one.md', 'two.md']);
   });
 
   test('treats a /models context window as metadata unless the user declares it', async () => {
