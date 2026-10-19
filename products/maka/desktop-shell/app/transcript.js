@@ -1448,7 +1448,6 @@ function failureRow(item, cx) {
     );
 }
 
-const WORKHUB_NOTICE_OBSERVATION = '\n\nOriginal worker observation:\n';
 // A task's notice recorded before the Host kept origins (de2c51a4b): its
 // message id is `m_wh_` and a SHA-256 (workhub/tasks/notifications.rs), and
 // its text starts by naming the task.
@@ -1470,10 +1469,12 @@ function originOf(row) {
  * What a WorkHub notice says: `{ graph, taskId, worker, outcome }`. History
  * gives the message's origin, a task (`taskId`) or a task graph (`graph`,
  * which says the graph has new results). A task's notice text ends with the
- * task as JSON, from which come its worker and its outcome: 'completed',
- * 'failed', 'cancelled', 'rejected', or null when it cannot be read (the
- * text is not all loaded, or its form changed). The text is the Host's fixed
- * English, for the coordinator's model; the row says it in the user's words.
+ * task as one line of JSON, from which come its worker and its outcome:
+ * 'completed', 'failed', 'cancelled', 'rejected', or null when it cannot be
+ * read (the text is not all loaded, or its form changed). The text is for
+ * the coordinator's model, in the language the Host resolves for it when it
+ * is written (workhub/tasks/notifications.rs); the row says it in the
+ * user's words.
  */
 function workhubNotice(row) {
   const origin = originOf(row);
@@ -1485,10 +1486,10 @@ function workhubNotice(row) {
     outcome: null,
   };
   if (!ofTask) return notice;
-  const at = row.text.indexOf(WORKHUB_NOTICE_OBSERVATION);
+  const at = row.text.lastIndexOf('\n');
   if (at < 0) return notice;
   try {
-    const task = JSON.parse(row.text.slice(at + WORKHUB_NOTICE_OBSERVATION.length));
+    const task = JSON.parse(row.text.slice(at + 1));
     const status = task?.status ?? {};
     const work = status.progress ?? {};
     notice.worker = typeof task?.worker === 'string' ? task.worker : null;
