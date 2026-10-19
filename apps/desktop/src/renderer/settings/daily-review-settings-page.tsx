@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import type { UiLocale } from '@maka/core/ui-locale';
+
 import { useEffect, useMemo, useState } from 'react';
 import { Banner } from '@astryxdesign/core';
 import type { DailyReviewConfig } from '@maka/core/daily-review';
@@ -39,7 +41,7 @@ function buildDailyReviewModelOptions(
   connections: readonly ProjectedLlmConnection[],
   currentModelKey: string,
   copy: DailyReviewSettingsCopy,
-  locale: 'zh-CN' | 'zh-TW' | 'en',
+  locale: UiLocale,
 ): Array<{ value: string; label: string }> {
   return [
     { value: DAILY_REVIEW_DEFAULT_MODEL_VALUE, label: copy.defaultModel },

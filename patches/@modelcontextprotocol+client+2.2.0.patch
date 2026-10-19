@@ -1,0 +1,132 @@
+diff --git a/node_modules/@modelcontextprotocol/client/dist/src-oZBjf3U1.cjs b/node_modules/@modelcontextprotocol/client/dist/src-oZBjf3U1.cjs
+index 001483a..fbb2506 100644
+--- a/node_modules/@modelcontextprotocol/client/dist/src-oZBjf3U1.cjs
++++ b/node_modules/@modelcontextprotocol/client/dist/src-oZBjf3U1.cjs
+@@ -5635,6 +5635,22 @@ function requestStateAccessor(value) {
+ /** Shared no-state accessor: the common case allocates nothing per request. */
+ const NO_REQUEST_STATE = requestStateAccessor(void 0);
+ let writeNegotiatedProtocolVersion;
++// Separate scopes keep pending transport sends from retaining request arguments.
++function makaCancellationErrorObserver(protocol) {
++	return (error) => protocol._onerror(new Error(`Failed to send cancellation: ${error}`));
++}
++function makaRequestErrorObserver(protocol, messageId, reject) {
++	return {
++		onError(error) {
++			protocol._progressHandlers.delete(messageId);
++			reject?.(error);
++		},
++		release() {
++			// Native reject retains the settled promise graph until explicitly revoked.
++			reject = void 0;
++		}
++	};
++}
+ /**
+ * Implements MCP protocol framing on top of a pluggable transport, including
+ * features like request/response linking, notifications, and progress.
+@@ -6138,6 +6154,7 @@ var Protocol = class {
+ 		const flowStartedAt = Date.now();
+ 		let onAbort;
+ 		let cleanupMessageId;
++		let sendObserver;
+ 		return new Promise((resolve, reject) => {
+ 			const earlyReject = (error) => {
+ 				reject(error);
+@@ -6191,7 +6208,7 @@ var Protocol = class {
+ 						relatedRequestId,
+ 						resumptionToken,
+ 						onresumptiontoken
+-					}).catch((error) => this._onerror(/* @__PURE__ */ new Error(`Failed to send cancellation: ${error}`)));
++					}).catch(makaCancellationErrorObserver(this));
+ 				} else requestAbort.abort();
+ 				reject(reason instanceof SdkError ? reason : new SdkError(SdkErrorCode.RequestTimeout, String(reason)));
+ 			};
+@@ -6232,17 +6249,17 @@ var Protocol = class {
+ 			const timeout = options?.timeout ?? DEFAULT_REQUEST_TIMEOUT_MSEC;
+ 			const timeoutHandler = () => cancel(new SdkError(SdkErrorCode.RequestTimeout, "Request timed out", { timeout }));
+ 			this._setupTimeout(messageId, timeout, options?.maxTotalTimeout, timeoutHandler, options?.resetTimeoutOnProgress ?? false);
++			sendObserver = makaRequestErrorObserver(this, messageId, reject);
+ 			this._transport.send(outbound, {
+ 				relatedRequestId,
+ 				resumptionToken,
+ 				onresumptiontoken,
+ 				headers,
+ 				requestSignal: requestAbort?.signal
+-			}).catch((error) => {
+-				this._progressHandlers.delete(messageId);
+-				reject(error);
+-			});
++			}).catch(sendObserver.onError);
+ 		}).finally(() => {
++			// Release request state without dropping queued frames or closing the connection.
++			sendObserver?.release();
+ 			if (onAbort) options?.signal?.removeEventListener("abort", onAbort);
+ 			if (cleanupMessageId !== void 0) {
+ 				this._responseHandlers.delete(cleanupMessageId);
+diff --git a/node_modules/@modelcontextprotocol/client/dist/src-xKF0PJN-.mjs b/node_modules/@modelcontextprotocol/client/dist/src-xKF0PJN-.mjs
+index f10b537..265f3ce 100644
+--- a/node_modules/@modelcontextprotocol/client/dist/src-xKF0PJN-.mjs
++++ b/node_modules/@modelcontextprotocol/client/dist/src-xKF0PJN-.mjs
+@@ -5634,6 +5634,22 @@ function requestStateAccessor(value) {
+ /** Shared no-state accessor: the common case allocates nothing per request. */
+ const NO_REQUEST_STATE = requestStateAccessor(void 0);
+ let writeNegotiatedProtocolVersion;
++// Separate scopes keep pending transport sends from retaining request arguments.
++function makaCancellationErrorObserver(protocol) {
++	return (error) => protocol._onerror(new Error(`Failed to send cancellation: ${error}`));
++}
++function makaRequestErrorObserver(protocol, messageId, reject) {
++	return {
++		onError(error) {
++			protocol._progressHandlers.delete(messageId);
++			reject?.(error);
++		},
++		release() {
++			// Native reject retains the settled promise graph until explicitly revoked.
++			reject = void 0;
++		}
++	};
++}
+ /**
+ * Implements MCP protocol framing on top of a pluggable transport, including
+ * features like request/response linking, notifications, and progress.
+@@ -6137,6 +6153,7 @@ var Protocol = class {
+ 		const flowStartedAt = Date.now();
+ 		let onAbort;
+ 		let cleanupMessageId;
++		let sendObserver;
+ 		return new Promise((resolve, reject) => {
+ 			const earlyReject = (error) => {
+ 				reject(error);
+@@ -6190,7 +6207,7 @@ var Protocol = class {
+ 						relatedRequestId,
+ 						resumptionToken,
+ 						onresumptiontoken
+-					}).catch((error) => this._onerror(/* @__PURE__ */ new Error(`Failed to send cancellation: ${error}`)));
++					}).catch(makaCancellationErrorObserver(this));
+ 				} else requestAbort.abort();
+ 				reject(reason instanceof SdkError ? reason : new SdkError(SdkErrorCode.RequestTimeout, String(reason)));
+ 			};
+@@ -6231,17 +6248,17 @@ var Protocol = class {
+ 			const timeout = options?.timeout ?? DEFAULT_REQUEST_TIMEOUT_MSEC;
+ 			const timeoutHandler = () => cancel(new SdkError(SdkErrorCode.RequestTimeout, "Request timed out", { timeout }));
+ 			this._setupTimeout(messageId, timeout, options?.maxTotalTimeout, timeoutHandler, options?.resetTimeoutOnProgress ?? false);
++			sendObserver = makaRequestErrorObserver(this, messageId, reject);
+ 			this._transport.send(outbound, {
+ 				relatedRequestId,
+ 				resumptionToken,
+ 				onresumptiontoken,
+ 				headers,
+ 				requestSignal: requestAbort?.signal
+-			}).catch((error) => {
+-				this._progressHandlers.delete(messageId);
+-				reject(error);
+-			});
++			}).catch(sendObserver.onError);
+ 		}).finally(() => {
++			// Release request state without dropping queued frames or closing the connection.
++			sendObserver?.release();
+ 			if (onAbort) options?.signal?.removeEventListener("abort", onAbort);
+ 			if (cleanupMessageId !== void 0) {
+ 				this._responseHandlers.delete(cleanupMessageId);

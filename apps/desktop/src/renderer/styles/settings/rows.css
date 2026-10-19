@@ -19,10 +19,9 @@
 
 /* The open row group (SettingsSection variant='rows'). The Astryx settings
    idiom — the CLI's settings/settings-dialog templates and `astryx docs
-   layout` — is edge-to-edge rows split by hairline dividers, with NO card
-   chrome ("no stacked full-width Cards as page structure"). The former
-   `.settingsRows` Card is gone; this is a plain block that owns only the
-   row track and the divider rhythm. */
+   layout` — is edge-to-edge rows with NO card chrome ("no stacked
+   full-width Cards as page structure"). The former `.settingsRows` Card is
+   gone; this is a plain block that owns only the row track. */
 .settingsRows {
   display: grid;
   /* Explicit track (#1362): the implicit `auto` track sizes to the widest
@@ -34,26 +33,47 @@
   container: settings-rows / inline-size;
 }
 
-/* Hairline between neighboring rows — the templates' own row-then-Divider
-   idiom, owned by the group so call sites can't forget it. */
-.settingsRows > * + * {
-  border-block-start: var(--border-width-hairline) solid var(--border);
-}
+/* No hairline between rows. The section header's divider is the group's only
+   rule; a line under every row repeated it, so a section's start read as one
+   more row break. Rows are separated by their own block padding instead.
+   Record lists whose rows carry their own actions (`List hasDividers`:
+   archived tasks, projects) keep their dividers — see DESIGN.md §4, The
+   Group Rule. */
 
-/* …and the row must be square for that hairline to read as one line.
-   Astryx's Item ships `border-radius: 10px` for its standalone use — a
-   rounded chip that highlights on hover. Our divider is a border on the Item
-   itself, and a border follows its element's corners, so the line curved
-   down at both ends: a straight middle with two hooks, which reads as two
-   different divider systems meeting. (Reported by owner; measured at
-   runtime as radius 10px + border-block-start 1px on `.astryx-item`.)
-
-   In an edge-to-edge row group the row is not a chip — it spans the column,
-   so its hover highlight should span it too. Zeroing the radius is therefore
-   the whole fix: do NOT wrap the row to preserve rounded hover, which would
-   reintroduce the chip the open idiom removed. */
+/* Astryx's Item ships `border-radius: 10px` and 8px inline padding for its
+   standalone use — a rounded chip that highlights on hover. In a settings
+   row group the row is not a chip: it spans the column, flush with the
+   section heading above it and with the form blocks (`.settingsFieldRow`)
+   beside it, which carry no inline inset. The 8px left every Item label
+   indented against the heading while field labels were not. */
 .settingsRows > .astryx-item {
   border-radius: 0;
+  padding-inline: 0;
+}
+
+/* …except that a clickable row paints a hover wash, and with no inline
+   padding that wash ended flush against the logo and the chevron. A
+   clickable Item renders its click target as a direct <button> child (a
+   static row's controls sit inside the end slot), so those rows step out by
+   the padding they take back: the text keeps the heading's edge and the wash
+   gets breathing room past it. They are separate targets, so each rounds on
+   its own. */
+.settingsRows > .astryx-item:has(> button) {
+  margin-inline: calc(-1 * var(--space-2));
+  padding-inline: var(--space-2);
+  border-radius: var(--radius-surface);
+}
+
+/* A setting's name, in one role wherever it appears: the Item row label
+   (SettingsRow) and the field label of a form block (SettingsField) are the
+   same thing to the reader, but the field label rendered at 500 in muted ink
+   beside body-weight Item labels. Body, primary ink: at semibold the names
+   matched the 16/600 section heading's weight and read as its peers rather
+   than its members; size and ink already set them above the helper line. */
+.settingsRowLabel,
+.settingsRows > .settingsFieldRow .astryx-field-label {
+  font: var(--maka-text-body);
+  color: var(--foreground);
 }
 
 /* Form blocks inside a row group (SettingsField / SettingsActions): block
@@ -110,6 +130,50 @@
    more air above than below so it binds to the rows it introduces. */
 .settingsRows > .settingsRowsSubheading {
   padding-block: var(--space-3) var(--space-1);
+}
+
+/* SettingsEntryRow: a row that opens something. Taller than a setting row
+   because it leads with a 32px icon tile; the chevron is the only end
+   content, and the inline status rides the title's baseline. */
+.settingsRows > .settingsEntryRow {
+  min-height: 64px;
+  gap: var(--space-3);
+  padding-block: var(--space-2);
+}
+
+.settingsEntryTitle {
+  display: inline-flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.settingsEntryChevron {
+  display: flex;
+  color: var(--muted-foreground);
+}
+
+/* The whole row stays the named button; at the narrow floor the chevron is
+   redundant and its width goes to the name and helper line. */
+@container settings-rows (max-width: 460px) {
+  .settingsRows > .settingsEntryRow {
+    gap: var(--space-2);
+  }
+
+  .settingsEntryChevron {
+    display: none;
+  }
+}
+
+/* A RelativeTime inside a line of text (健康 / 权限与能力's 最近读取). The
+   component renders its own <small>, and the UA's `font-size: smaller` on a
+   small nested in a 12px line produced 9.6px, below the 11px floor. The time
+   takes the line's own role and ink. */
+.settingsInlineTime {
+  font: inherit;
+  color: inherit;
 }
 
 /* StatusDot + text, the quiet status idiom shared by health / permission /
@@ -226,11 +290,6 @@
    `overflow-clip-margin` big enough to spare the ring would push the clip edge
    out past the corner it was supposed to round, which defeats the point.
    Rounding the end rows clips nothing at all.
-
-   Only the OUTER corners move, so the divider rhythm above is untouched: the
-   hairline is a `border-block-start` on rows 2..n, and neither the first row's
-   top edge nor the last row's bottom edge carries one. The "straight middle
-   with two hooks" this file already documents cannot come back.
 
    Keyed on `> *` rather than `> .astryx-item` because a group can end on a
    form block (`.settingsFieldRow` / `.settingsActionRow`), and the corner

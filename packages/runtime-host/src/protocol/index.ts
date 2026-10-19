@@ -41,6 +41,7 @@ import {
   decodeConfigurationChangedFrame,
   type ConfigurationChangedFrame,
 } from './configuration-change.js';
+import { decodeArtifactChangedFrame, type ArtifactChangedFrame } from './artifact-change.js';
 import {
   decodeSessionCatalogChangedFrame,
   type SessionCatalogChangedFrame,
@@ -68,6 +69,7 @@ import { isCanonicalRuntimeHostWebSocketPath } from './websocket-path.js';
 import { INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID } from '../composition-identity.js';
 
 export * from './access-authority.js';
+export * from './artifact-change.js';
 export * from './agent-graph.js';
 export * from './interaction.js';
 export * from './daily-review.js';
@@ -78,6 +80,7 @@ export * from './goal.js';
 export * from './hosted-execution.js';
 export * from './host-resources.js';
 export * from './plan.js';
+export * from './personal-assistant.js';
 export * from './peer-mesh.js';
 export * from './project-catalog.js';
 export * from './project-catalog-change.js';
@@ -104,7 +107,41 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 202 as const;
+// Re-check against main before merging; sibling PRs may use the same next epoch.
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 225 as const;
+// 225: Goal successor transcript origins carry typed event-wait provenance.
+// Older peers reject the additional field in the strict stored-message decoder.
+// 224: Assistant conversation admission supports Inbox receipts without a model Turn,
+// inbox execution-query resolutions, external connector provenance and message summaries.
+// Existing bot turn.start producers also carry strict external_connector provenance.
+// Also adds assistant.avatar/assistant.avatar-image and the bot block on assistant.binding.
+// 222: Built-in personal assistant operations and the Host-owned default-off
+// master switch require matching Client and Host support.
+// 221: Epoch-220 peers do not support `artifact.image.resolve` or its image
+// delivery result shapes. Older Hosts reject the unknown operation and close
+// the connection, so mixed peers must fail admission.
+// 220: Client Capability results require a tri-state outcome; session tool
+// continuity and trace steps carry interrupted results. Older peers cannot
+// decode the changed strict shapes.
+// 219: Host change feed includes Artifact deletion and Session purge invalidation frames;
+// the Artifact invalidation feed and guest routing require matching peers.
+// 217: token_usage.lastRequestAnchor may carry completedAt, the provider
+// request settlement time; transcripts may carry context_compaction_applied
+// system notes; and session subscriptions forward the same boundary during
+// running turns. Older peers reject all three in their closed shapes.
+// 215: WorkHub coordination uses canonical configuration and scoped delegated permissions.
+// 212: Session catalogs carry `backgroundActivity` and `backgroundActivityVersion`
+// for Host-owned activity and generation-scoped ordering independent of Session
+// revisions and Turn epochs. Older closed decoders reject these fields.
+// 208: Usage queries filter by model call kind. Epoch-207 peers reject the
+// filter or ignore it.
+// 206: `storage.retention.query` and `storage.retention.set` read and change the
+// opt-in retention for archived tasks. An epoch-205 Client could not show or
+// turn off a Host that deletes archived tasks on its own, and an epoch-205 Host
+// rejects the unknown operations, so the pair must fail admission.
+// 205: Default-model selection can enable atomically; discovery can preserve the model selection.
+// 204: Executor catalogs and Session configuration carry opaque mode IDs;
+// catalog queries may request a provider refresh. Older peers reject these fields.
 // 202: `session.remove.preview` takes a bounded list of Sessions and reports the
 // child tasks, worktrees and optionally the bytes their removal would delete;
 // `session.remove` takes `requireArchivedForMs` and may answer `too_recent`.
@@ -572,6 +609,7 @@ export type HostFrame =
   | SubscriptionFrame
   | ClientCapabilityHostFrame
   | ConfigurationChangedFrame
+  | ArtifactChangedFrame
   | ConnectionCatalogChangedFrame
   | ProjectCatalogChangedFrame
   | SessionCatalogChangedFrame
@@ -706,6 +744,7 @@ export function decodeHostFrame(value: unknown): HostFrame {
     return decodeClientCapabilityHostFrame(frame);
   }
   if (frame.kind === 'configuration.changed') return decodeConfigurationChangedFrame(frame);
+  if (frame.kind === 'artifact.changed') return decodeArtifactChangedFrame(frame);
   if (frame.kind === 'connection.catalog.changed') {
     return decodeConnectionCatalogChangedFrame(frame);
   }

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { executorCopy, ExecutorModelPicker, type ExecutorModelPickerProps } from './executor-model-picker.js';
+import { executorCopy, ComposerModelPicker, ThinkingLevelSelector, type ComposerExecutorPicker } from './composer-model-picker.js';
 import { usePromptSuggestion } from './prompt-suggestion.js';
 import {
   forwardRef,
@@ -33,6 +33,7 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from 'react';
+import type { ContextUsageReading } from './context-usage-reading.js';
 import type { LucideIcon } from './icons.js';
 import { useMountedRef } from './use-mounted-ref.js';
 import { isAppleShortcutPlatform } from './utils.js';
@@ -40,12 +41,14 @@ import {
   ICON_SIZE,
   ArrowUp,
   CircleGauge,
+  Settings,
   FileText,
   ListTodo,
   MessageSquareQuote,
   MessagesSquare,
   Network,
   Pencil,
+  Play,
   Plus,
   Square,
   Sparkles,
@@ -53,12 +56,7 @@ import {
   Upload,
   Workflow,
 } from './icons.js';
-import {
-  ChatModelSwitcher,
-  ModelChipStatic,
-  NewChatModelPicker,
-  ThinkingLevelSelector,
-} from './chat-model-switcher.js';
+import { assistantChatCopy } from './assistant-chat-copy.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 import { type ChatModelChoice, exactModelChoiceValue } from './chat-model-helpers.js';
@@ -75,7 +73,7 @@ import { QuoteCommentPanel } from './quote-comment-panel.js';
 import { DirectoryReferenceChip } from './directory-reference-chip.js';
 import { FolderOpen } from './icons.js';
 import { WorkspacePicker, type WorkspacePickerModel } from './workspace-picker.js';
-import { useComposerDraft, type ComposerDraftPersistence } from './use-composer-draft.js';
+import { useComposerDraft, type ComposerDraftPersistence, type ComposerDraftRecovery } from './use-composer-draft.js';
 import { useComposerHistory } from './use-composer-history.js';
 import {
   composerWireText,
@@ -94,6 +92,7 @@ import {
 import { SKILL_INVOCATION_TOKEN_SOURCE } from '@maka/core/skill-invocation-token';
 import type {
   AttachmentRef,
+  InlineReference,
   FollowUpMode,
   MessageQueueEntryProjection,
   QuoteRef,
@@ -257,7 +256,7 @@ function attachmentExtensionLabel(name: string): string | null {
  */
 export interface ComposerHandle {
   /** Replace the input text, leaving focus on the input with the caret at the end. */
-  setText(text: string): void;
+  setText(text: string, references?: readonly InlineReference[]): void;
   /** Append a prompt/context fragment after the existing draft instead of replacing it. */
   appendText(text: string): void;
   /** Read the current input text (inline tokens serialized to their values). */
@@ -268,8 +267,10 @@ export interface ComposerHandle {
   setDraft(draftKey: string, text: string): void;
   /** Read a specific draft without changing the active input. */
   getDraft(draftKey: string): string;
+  /** Claim the visible empty draft for a later, lossless restore, even after navigation. */
+  captureEmptyDraft(draftKey: string): ComposerDraftRecovery | undefined;
   /** Append to a specific session draft without replacing newer text. */
-  appendDraft?(draftKey: string, text: string): void;
+  appendDraft(draftKey: string, text: string, references?: readonly InlineReference[], replacesMessageId?: string): void;
   /** Move focus to the input without changing its content. */
   focus(): void;
   /** Open the active Session's existing account-and-model picker. */
@@ -277,6 +278,7 @@ export interface ComposerHandle {
 }
 
 export interface ComposerSendMetadata {
+  replacesLocalMessageId?: string;
   workspaceFileReferences?: readonly WorkspaceFileReferencePosition[];
   followUpMode?: FollowUpMode;
 }
@@ -303,6 +305,8 @@ export const Composer = forwardRef<
   {
     disabled?: boolean;
     placeholder?: string;
+    /** Keep configuration available in a disclosure for conversational surfaces. */
+    compactControls?: boolean;
     /**
      * Prevent submission while leaving the draft and recovery controls usable.
      * Hosts use this for configuration failures that the model picker can fix.
@@ -353,6 +357,8 @@ export const Composer = forwardRef<
       text: string,
       metadata?: ComposerSendMetadata,
     ): boolean | void | Promise<boolean | void>;
+    /** Retain this render's send context before any asynchronous preparation. */
+    retainSendContext?(): () => void;
     onStop(): void | Promise<void>;
     onPickAttachments?(): void | Promise<void>;
     onPickDirectory?(): void | Promise<void>;
@@ -409,11 +415,9 @@ export const Composer = forwardRef<
     activeModelLabel?: string;
     activeProviderType?: ProviderType;
     modelChoices?: ChatModelChoice[];
-    executorPicker?: Omit<ExecutorModelPickerProps, 'children' | 'presentation' | 'isReadOnly'>;
-    /** Model-picker surface; 'wheel' is the collapsed WorkHub's inline picker, and any non-popover surface drops the thinking picker to a bottom sheet. */
-    pickerPresentation?: 'popover' | 'bottom-sheet' | 'wheel';
-    /** Distinguishes the active Session model from defaults applied only to newly created WorkHub Sessions. */
-    modelSelectionPurpose?: 'session' | 'new-work-default';
+    executorPicker?: ComposerExecutorPicker;
+    /** Compact WorkHub uses the same selector in a bottom sheet. */
+    pickerPresentation?: 'popover' | 'bottom-sheet';
     /**
      * Close the model/thinking pickers' open surfaces while an interaction
      * prompt occludes the composer — a bottom sheet stays a modal dialog even
@@ -475,14 +479,8 @@ export const Composer = forwardRef<
     noModelHint?: string;
     /** Read-only usage indicator for the active model's latest request. */
     contextUsage?: {
-      usageTokens?: number;
+      reading: ContextUsageReading;
       declaredContextWindow?: number;
-      /**
-       * The window the usage number was metered against, frozen at call time.
-       * When present it outranks the metadata window, so a live reading keeps
-       * its numerator and denominator from the same request.
-       */
-      meteredContextWindow?: number;
       metadataContextWindow?: number;
       /** Open the Host-owned trace surface for this readout. */
       onOpen(): void;
@@ -507,6 +505,18 @@ export const Composer = forwardRef<
     workspacePicker?: WorkspacePickerModel;
     /** Host actions that share the composer's existing footer. */
     footerAccessory?: ReactNode;
+    /**
+     * The Host-confirmed offer to resume the session's latest interrupted
+     * Turn (#5903). While offered and the draft holds nothing sendable, the
+     * send slot renders Resume instead of Send; typing or staging context
+     * brings Send back, and Stop always outranks it. The click re-runs the
+     * full safe-boundary admission, so a stale offer can only park, never
+     * resume the wrong thing.
+     */
+    resumeAction?: {
+      pending: boolean;
+      onResume(): void;
+    };
     /**
      * PR-MOVE-PERMISSION-MODE (WAWQAQ 47fe0d0e + a667cf6c): the
      * permission mode picker lives inside the composer left-controls
@@ -612,12 +622,7 @@ export const Composer = forwardRef<
     });
   const modelSwitchAvailabilityRef = useRef(modelSwitchAvailability);
   modelSwitchAvailabilityRef.current = modelSwitchAvailability;
-  // Any non-popover model surface means a window too small for an anchored
-  // popup; the thinking picker has no wheel, so it drops to a bottom sheet.
-  const thinkingPresentation =
-    props.pickerPresentation && props.pickerPresentation !== 'popover'
-      ? 'bottom-sheet'
-      : 'popover';
+  const thinkingPresentation = props.pickerPresentation;
   useLayoutEffect(() => setModelPickerNonce(0), [props.activeSession?.id]);
   const [pendingImportAction, setPendingImportAction] = useState<ComposerImportActionId | null>(null);
   const composerMountedRef = useMountedRef();
@@ -656,18 +661,30 @@ export const Composer = forwardRef<
   /** A caret-to-end owed to an editor that was not focused when it came due. */
   const caretPendingRef = useRef(false);
   const redrawPendingRef = useRef(false);
+  const restoredReferencesRef = useRef<readonly InlineReference[]>([]);
   const textPortRef = useRef<ComposerTextPort>(null);
   if (!textPortRef.current) {
     textPortRef.current = {
       getValue: () => textRef.current,
       setValue: (value: string) => {
         applyText(value);
+        restoredReferencesRef.current = [];
         caretToEndRef.current = true;
         redrawPendingRef.current = true;
       },
     };
   }
   const textPort = textPortRef.current;
+  function readDraftReferences(): readonly InlineReference[] {
+    if (redrawPendingRef.current) return restoredReferencesRef.current;
+    const editable = editableNode();
+    if (!editable) return [];
+    const value = textRef.current;
+    const leading = value.length - value.trimStart().length;
+    return workspaceFileReferencePositions(editable).map((reference) => ({
+      ...reference, kind: 'workspace_file' as const, label: inlineReferenceFileBasename(reference.value.slice(1)), start: reference.start + leading,
+    }));
+  }
   /**
    * ChatComposerInput restores the caret to the end of the content when a
    * controlled update lands on a *focused* editor, so callers that want the old
@@ -820,25 +837,30 @@ export const Composer = forwardRef<
    */
   function redrawSkillTokens(): boolean {
     if (compositionActiveRef.current) return false;
-    const skills = props.mentionSkills;
-    if (!skills?.length) return false;
+    const skills = props.mentionSkills ?? [];
     const draft = textRef.current;
-    if (!draft.includes('/skill:')) return false;
+    const restored = restoredReferencesRef.current;
+    if (!draft.includes('/skill:') && restored.length === 0) return false;
     const editable = editableNode();
     const node = editable?.firstChild;
     if (!editable || editable.childNodes.length !== 1) return false;
     if (!(node instanceof Text) || node.data !== draft) return false;
     const byId = new Map(skills.map((skill) => [skill.id.toLowerCase(), skill]));
-    const matches = [...draft.matchAll(new RegExp(SKILL_INVOCATION_TOKEN_SOURCE, 'g'))];
+    const references: InlineReference[] = [
+      ...restored.filter((reference) => reference.kind !== 'skill'),
+      ...[...draft.matchAll(new RegExp(SKILL_INVOCATION_TOKEN_SOURCE, 'g'))].flatMap((match) => {
+        const skill = byId.get(match[1].toLowerCase());
+        return skill ? [{ kind: 'skill' as const, value: match[0], label: skill.name, start: match.index }] : [];
+      }),
+    ].filter((reference) => draft.slice(reference.start, reference.start + reference.value.length) === reference.value)
+      .sort((a, b) => a.start - b.start);
     const selection = document.getSelection();
     if (!selection) return false;
     let redrew = false;
-    for (let i = matches.length - 1; i >= 0; i--) {
-      const match = matches[i];
-      const skill = byId.get(match[1].toLowerCase());
-      if (!skill) continue;
-      const start = match.index;
-      let end = start + match[0].length;
+    for (let i = references.length - 1; i >= 0; i--) {
+      const reference = references[i];
+      const start = reference.start;
+      let end = start + reference.value.length;
       const next = draft[end];
       if (next === ' ' || next === '\u00A0') end += 1;
       const range = document.createRange();
@@ -847,10 +869,11 @@ export const Composer = forwardRef<
       selection.removeAllRanges();
       selection.addRange(range);
       inputHandleRef.current?.insertToken(
-        inlineReferenceToken({ kind: 'skill', value: match[0], label: skill.name }),
+        inlineReferenceToken(reference),
       );
       redrew = true;
     }
+    restoredReferencesRef.current = [];
     return redrew;
   }
   /**
@@ -897,13 +920,19 @@ export const Composer = forwardRef<
     clearDraft,
     setDraft,
     getDraft,
+    captureEmptyDraft,
     appendDraft,
     activeDraftKey,
+    replacementMessageId,
+    consumeReplacement,
   } = useComposerDraft({
     text: textPort,
     draftKey: props.draftKey,
     onDraftKeyChange: resetPromptHistoryNavigation,
     persistence: props.draftPersistence,
+    hasPendingContext: Boolean(props.pendingAttachments?.length || props.pendingQuotes?.length
+      || props.pendingDirectories?.length || props.pendingSessionReferences?.length),
+    references: { read: readDraftReferences, write: (references) => { restoredReferencesRef.current = references; } },
   });
   const { resetNavigation, rememberSentEntry, handleArrowKey } = useComposerHistory({
     text: textPort,
@@ -1345,13 +1374,12 @@ export const Composer = forwardRef<
   useImperativeHandle(
     ref,
     () => ({
-      setText(nextText: string) {
+      setText(nextText: string, references?: readonly InlineReference[]) {
         resetPromptHistoryNavigation();
         // Focus first: the controlled update that follows restores the caret to
         // the end of the new content only when the editor already has focus.
         focusInput();
-        textPort.setValue(nextText);
-        saveCurrentDraft(nextText);
+        setDraft(activeDraftKey(), nextText, references);
       },
       appendText(nextText: string) {
         resetPromptHistoryNavigation();
@@ -1379,12 +1407,26 @@ export const Composer = forwardRef<
       getDraft(draftKey: string) {
         return getDraft(draftKey);
       },
-      appendDraft(draftKey: string, nextText: string) {
-        const next = appendDraft(draftKey, nextText);
-        if (activeDraftKey() !== draftKey) return;
-        resetPromptHistoryNavigation();
-        focusInput();
-        textPort.setValue(next);
+      captureEmptyDraft(draftKey: string) {
+        const recovery = captureEmptyDraft(draftKey);
+        if (!recovery) return undefined;
+        return {
+          ...recovery,
+          restore(text, references, replacesMessageId) {
+            if (activeDraftKey() === draftKey) {
+              resetPromptHistoryNavigation();
+              focusInput();
+            }
+            recovery.restore(text, references, replacesMessageId);
+          },
+        };
+      },
+      appendDraft(draftKey: string, nextText: string, references?: readonly InlineReference[], replacesMessageId?: string) {
+        if (activeDraftKey() === draftKey) {
+          resetPromptHistoryNavigation();
+          focusInput();
+        }
+        appendDraft(draftKey, nextText, references, replacesMessageId);
       },
       focus() {
         focusInput();
@@ -1420,16 +1462,22 @@ export const Composer = forwardRef<
     const editable = editableNode();
     const workspaceFileReferences = editable ? workspaceFileReferencePositions(editable) : [];
     const submittedDraftKey = activeDraftKey();
+    const replacesLocalMessageId = replacementMessageId(submittedDraftKey);
     sendPendingRef.current = true;
     setSendPending(true);
     let sent: boolean | void;
+    let releaseSendContext: (() => void) | undefined;
     try {
+      // A picked Session can still be loading. Capture ownership before that
+      // wait so removing a chip cannot revoke this send's attachment snapshot.
+      releaseSendContext = props.retainSendContext?.();
       if (props.waitForSessionReference) {
         const referenceReady = await props.waitForSessionReference();
         if (!referenceReady) return;
       }
       if (!composerMountedRef.current || activeDraftKey() !== submittedDraftKey) return;
       const metadata: ComposerSendMetadata = {
+        ...(replacesLocalMessageId ? { replacesLocalMessageId } : {}),
         ...(workspaceFileReferences.length > 0 ? { workspaceFileReferences } : {}),
         ...(followUpMode ? { followUpMode } : {}),
       };
@@ -1437,16 +1485,20 @@ export const Composer = forwardRef<
     } finally {
       sendPendingRef.current = false;
       if (composerMountedRef.current) setSendPending(false);
+      releaseSendContext?.();
     }
     if (!composerMountedRef.current) return;
     if (sent === false) return;
+    // Admission already replaced the paused original. New text typed while
+    // awaiting it remains a fresh draft, even when it prevents text clearing.
+    consumeReplacement(submittedDraftKey, replacesLocalMessageId);
     // Save to both local ref and global persistence so the history
     // survives page reloads and is shared across all input surfaces.
     rememberSentEntry(text);
     // The owner may have changed while onSend awaited (new-session creation,
     // revision branch, or user navigation). Never erase a foreign draft.
     if (activeDraftKey() !== submittedDraftKey) {
-      clearDraft(submittedDraftKey);
+      if (composerWireText(getDraft(submittedDraftKey)) === text) clearDraft(submittedDraftKey);
       return;
     }
     // The user can begin the next message while the send IPC is still
@@ -1636,8 +1688,9 @@ export const Composer = forwardRef<
     importActionBusy,
     noModelConnection,
     streaming: props.streaming,
+    resumeOffered: props.resumeAction !== undefined,
   });
-  const { sendDisabled, stopShown } = sendPolicy;
+  const { sendDisabled, stopShown, resumeShown } = sendPolicy;
   // Hosts can explain a disabled Send without adding a second visible notice;
   // other disabled reasons (empty draft, in-flight import) keep the neutral label.
   const sendTitle = props.sendBlocked && props.sendBlockedReason?.trim()
@@ -1831,7 +1884,7 @@ export const Composer = forwardRef<
       ? props.onModelChange?.(target)
       : props.onPickNewChatModel?.(target));
   };
-  const renderNativeThinkingControl = (): ReactNode =>
+  const renderNativeThinkingControl = (pending = false): ReactNode =>
     props.activeSession ? (
       <ThinkingLevelSelector
         levels={props.activeThinkingLevels ?? []}
@@ -1839,18 +1892,51 @@ export const Composer = forwardRef<
         presentation={thinkingPresentation}
         isReadOnly={props.pickersReadOnly}
         onChange={props.onThinkingLevelChange}
-        disabled={!modelSwitchAvailability.available}
+        disabled={pending || !modelSwitchAvailability.available}
         disabledReason={thinkingSwitcherDisabledReason}
       />
     ) : (
       <ThinkingLevelSelector
         levels={props.newChatThinkingLevels ?? []}
         current={props.newChatThinkingLevel}
+        disabled={pending}
         presentation={thinkingPresentation}
         isReadOnly={props.pickersReadOnly}
         onChange={props.onNewChatThinkingLevelChange}
       />
     );
+  const renderModelPicker = (contribution?: import('./composer-model-picker.js').ComposerModelContribution) => <ComposerModelPicker
+    key={props.activeSession?.id ?? activeDraftKey()}
+    label={props.activeModelLabel?.trim() || modelChipLabel}
+    sessionId={props.activeSession?.id}
+    choices={props.modelChoices ?? []}
+    value={props.activeSession
+      ? (props.activeModelConnectionId ?? props.activeSession.llmConnectionId)
+        ? exactModelChoiceValue(
+          (props.activeModelConnectionId ?? props.activeSession.llmConnectionId)!,
+          props.activeModelConnectionSlug ?? props.activeSession.llmConnectionSlug,
+          props.activeModel ?? props.activeSession.model,
+        ) : undefined
+      : props.newChatModel ? exactModelChoiceValue(
+        props.newChatModel.llmConnectionId, props.newChatModel.llmConnectionSlug, props.newChatModel.model,
+      ) : undefined}
+    onNativeChange={props.onModelChange || props.onPickNewChatModel ? onNativeModelChange : undefined}
+    renderThinkingControl={!props.executorTarget ? renderNativeThinkingControl : undefined}
+    executor={props.executorPicker}
+    contribution={contribution}
+    executorTarget={props.executorTarget}
+    onExecutorTargetChange={props.onExecutorTargetChange}
+    presentation={props.pickerPresentation}
+    isReadOnly={props.pickersReadOnly}
+    disabled={props.disabled || (props.activeSession ? !modelSwitchAvailability.available : props.streaming)}
+    disabledReason={modelSwitcherDisabledReason}
+    openNonce={modelPickerNonce}
+    hasConversationHistory={props.modelSwitchHasHistory}
+    hideUnavailableCurrentOption={props.hideUnavailableCurrentModel}
+    renderProviderMark={props.renderProviderMark}
+    onOpenSettings={props.onOpenModelSettings}
+    onPendingChange={setExecutorModelPending}
+  />;
 
   return (
     <>
@@ -2411,6 +2497,7 @@ export const Composer = forwardRef<
                   </DropdownMenu>
                 </span>
               ) : null}
+              <ComposerConfiguration compact={props.compactControls} label={assistantChatCopy(locale).chatOptions}>
               {props.onPermissionModeChange ? (
                 <PermissionModeSelect
                   appearance="icon"
@@ -2425,103 +2512,18 @@ export const Composer = forwardRef<
                   disabledReason={(executorNativeDisabledReason ?? props.permissionModeDisabledReason)}
                 />
               ) : null}
-              {/* Model + thinking sit left after permission (adjacent pair), not
-                  in the send cluster. Thinking is its own menu, only when the
-                  active/new-chat model offers levels. Mid-turn the pair stays
-                  mounted — `modelSwitcherDisabledReason` carries the lock and
-                  its explanation, so the footer never reflows when a turn
-                  starts or ends. */}
               <div className="maka-model-selection-controls">
                 <MakaClientSessionScope sessionId={props.activeSession?.id}>
-                  <ExecutorModelPickerBoundary
-                    picker={props.executorPicker}
-                    presentation={props.pickerPresentation}
-                    isReadOnly={props.pickersReadOnly}
-                    nativeLabel={modelChipLabel}
-                    renderProviderMark={props.renderProviderMark}
-                    nativeThinkingControl={!props.executorTarget ? renderNativeThinkingControl() : null}
-                    scopeKey={props.activeSession?.id ?? activeDraftKey()}
-                    onPendingChange={setExecutorModelPending}
-                  >
-                    <MakaClientSlotOutlet
-                      name="conversation.composer.model-selection"
-                      owner={{
-                        disabled: props.disabled === true,
-                        streaming: props.streaming === true,
-                        hasSession: props.activeSession !== undefined,
-                        presentation: props.pickerPresentation,
-                        isReadOnly: props.pickersReadOnly,
-                        purpose: props.modelSelectionPurpose,
-                        modelChoices: props.modelChoices ?? [],
-                        activeModel: props.activeModel,
-                        activeModelLabel: props.activeModelLabel,
-                        activeModelConnectionId: props.activeModelConnectionId,
-                        activeModelConnectionSlug: props.activeModelConnectionSlug,
-                        activeProviderType: props.activeProviderType,
-                        renderProviderMark: props.renderProviderMark,
-                        newChatModel: props.newChatModel,
-                        executorTarget: props.executorTarget,
-                        onNativeModelChange,
-                        // The shared executor panel owns model browsing only; native
-                        // thinking stays mounted beside its trigger in the footer.
-                        renderNativeThinkingControl: props.executorPicker ? () => null : renderNativeThinkingControl,
-                        onExecutorTargetChange: props.onExecutorTargetChange,
-                      }}
-                      options={{
-                        fallback: (
-                          <>
-                            {props.activeSession ? (
-                              <ChatModelSwitcher
-                                presentation={props.pickerPresentation}
-                                isReadOnly={props.pickersReadOnly}
-                                activeSession={props.activeSession}
-                                activeModelConnectionId={props.activeModelConnectionId}
-                                activeModelConnectionSlug={props.activeModelConnectionSlug}
-                                activeModel={props.activeModel}
-                                activeModelLabel={props.activeModelLabel}
-                                currentProviderType={props.activeProviderType}
-                                choices={props.modelChoices ?? []}
-                                hasConversationHistory={props.modelSwitchHasHistory}
-                                availability={modelSwitchAvailability}
-                                disabledReason={modelSwitcherDisabledReason}
-                                openNonce={modelPickerNonce}
-                                hideUnavailableCurrentOption={props.hideUnavailableCurrentModel}
-                                renderProviderMark={props.renderProviderMark}
-                                onChange={props.onModelChange ? onNativeModelChange : undefined}
-                              />
-                            ) : props.onPickNewChatModel &&
-                              (props.modelChoices?.length ?? 0) > 0 ? (
-                              <NewChatModelPicker
-                                label={modelChipLabel}
-                                presentation={props.pickerPresentation}
-                                isReadOnly={props.pickersReadOnly}
-                                choices={props.modelChoices ?? []}
-                                currentValue={
-                                  props.newChatModel && !props.executorPicker?.selection
-                                    ? exactModelChoiceValue(
-                                        props.newChatModel.llmConnectionId,
-                                        props.newChatModel.llmConnectionSlug,
-                                        props.newChatModel.model,
-                                      )
-                                    : undefined
-                                }
-                                currentProviderType={props.newChatProviderType}
-                                renderProviderMark={props.renderProviderMark}
-                                onPick={onNativeModelChange}
-                              />
-                            ) : (
-                              <ModelChipStatic
-                                label={modelChipLabel}
-                                onOpenSettings={props.onOpenModelSettings}
-                                showUnavailableStatus={props.showStaticModelUnavailableStatus}
-                              />
-                            )}
-                            {!props.executorPicker && renderNativeThinkingControl()}
-                          </>
-                        ),
-                      }}
-                    />
-                  </ExecutorModelPickerBoundary>
+                  <MakaClientSlotOutlet
+                    name="conversation.composer.model-selection"
+                    owner={{
+                      hasModels: !!props.modelChoices?.length || !!props.executorPicker?.catalog.some(entry => entry.readiness === 'ready' && entry.models.length > 0),
+                      fixedExecutorId: props.executorPicker?.fixed ? props.executorPicker.selection?.executorId : undefined,
+                      executorTarget: props.executorTarget,
+                      renderPicker: props.onExecutorTargetChange ? renderModelPicker : undefined,
+                    }}
+                    options={{ fallback: renderModelPicker() }}
+                  />
                 </MakaClientSessionScope>
                 {props.contextUsage ? <ContextUsageAction {...props.contextUsage} /> : null}
               </div>
@@ -2582,6 +2584,7 @@ export const Composer = forwardRef<
                   }}
                 />
               </MakaClientSessionScope>
+              </ComposerConfiguration>
               {nextPrompt.text ? <kbd className="maka-composer-next-prompt-key" aria-hidden="true">Tab</kbd> : null}
               {props.footerAccessory}
             </div>
@@ -2600,6 +2603,21 @@ export const Composer = forwardRef<
                 void props.onStop();
               }}
               icon={<Square size={ICON_SIZE.control} aria-hidden="true" />}
+            />
+          ) : resumeShown && props.resumeAction ? (
+            <IconButton
+              variant="primary"
+              type="button"
+              isDisabled={props.resumeAction.pending}
+              label={props.resumeAction.pending ? copy.resumePending : copy.resumeLabel}
+              aria-busy={props.resumeAction.pending ? 'true' : undefined}
+              data-pending={props.resumeAction.pending ? 'true' : undefined}
+              tooltip={props.resumeAction.pending ? copy.resumePending : copy.resumeTitle}
+              onClick={() => {
+                if (props.resumeAction?.pending) return;
+                props.resumeAction?.onResume();
+              }}
+              icon={<Play size={ICON_SIZE.chrome} aria-hidden="true" />}
             />
           ) : (
             <IconButton
@@ -2634,13 +2652,15 @@ export const Composer = forwardRef<
 });
 
 function ContextUsageAction(props: {
-  usageTokens?: number;
+  reading: ContextUsageReading;
   declaredContextWindow?: number;
-  meteredContextWindow?: number;
   metadataContextWindow?: number;
   onOpen(): void;
 }) {
   const copy = getConversationCopy(useUiLocale()).messages;
+  const { reading } = props;
+  const usageTokens = reading.kind === 'measured' ? reading.tokens : undefined;
+  const meteredWindow = reading.kind === 'measured' ? reading.contextWindow : undefined;
   // A window from any source is enough to show a share, and the order is a
   // claim about which window the number was earned against: the user's
   // declaration first — it is the user's intent, and the only one that arms
@@ -2649,17 +2669,18 @@ function ContextUsageAction(props: {
   // same request, and only then the model's reported metadata. With no window
   // at all the usage stands on its own.
   const window =
-    props.declaredContextWindow ?? props.meteredContextWindow ?? props.metadataContextWindow;
-  const label =
-    props.usageTokens !== undefined && window !== undefined && window > 0
-      ? `${Math.round((props.usageTokens / window) * 100)}%`
+    props.declaredContextWindow ?? meteredWindow ?? props.metadataContextWindow;
+  // Without a current measurement, keep the usage entry label.
+  const label = usageTokens !== undefined && window !== undefined && window > 0
+      ? `${Math.round((usageTokens / window) * 100)}%`
       : copy.systemNotes.contextUsageLabel;
-  const tooltip =
-    props.usageTokens === undefined
+  const tooltip = reading.kind === 'stale'
+    ? copy.systemNotes.contextUsageCompacted
+    : usageTokens === undefined
       ? copy.systemNotes.contextUsageUnavailable
       : window !== undefined && window > 0
-        ? copy.systemNotes.contextUsageShare(props.usageTokens, window)
-        : copy.systemNotes.contextUsageNoWindow(props.usageTokens);
+        ? copy.systemNotes.contextUsageShare(usageTokens, window)
+        : copy.systemNotes.contextUsageNoWindow(usageTokens);
   return (
     <UiButton
       variant="ghost"
@@ -2677,29 +2698,12 @@ function ContextUsageAction(props: {
 
 export type ComposerProps = ComponentProps<typeof Composer>;
 
-function ExecutorModelPickerBoundary(props: {
-  picker?: ComposerProps['executorPicker'];
-  presentation?: ExecutorModelPickerProps['presentation'];
-  isReadOnly?: boolean;
-  nativeLabel?: string;
-  renderProviderMark?: ComposerProps['renderProviderMark'];
-  nativeThinkingControl?: ReactNode;
-  scopeKey?: string;
-  onPendingChange?(pending: boolean): void;
-  children: ReactNode;
-}) {
-  return props.picker ? (
-    <ExecutorModelPicker
-      key={props.scopeKey}
-      {...props.picker}
-      presentation={props.presentation}
-      isReadOnly={props.isReadOnly}
-      nativeLabel={props.nativeLabel}
-      renderProviderMark={props.renderProviderMark}
-      nativeThinkingControl={props.nativeThinkingControl}
-      onPendingChange={props.onPendingChange}
-    >
-      {props.children}
-    </ExecutorModelPicker>
-  ) : props.children;
+function ComposerConfiguration({ compact, label, children }: { compact?: boolean; label: string; children: ReactNode }) {
+  if (!compact) return <>{children}</>;
+  return (
+    <details className="maka-composer-configuration">
+      <summary aria-label={label} title={label}><Settings size={ICON_SIZE.control} aria-hidden="true" /></summary>
+      <div className="maka-composer-configuration-panel">{children}</div>
+    </details>
+  );
 }

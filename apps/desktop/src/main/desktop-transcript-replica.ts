@@ -262,6 +262,7 @@ export class DesktopTranscriptReplica {
   async readOlderPage(
     throughSequence: number,
     cursor: string | null,
+    maxBytes = SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
   ): Promise<DesktopTranscriptHistoryPage> {
     this.#assertLive();
     const page = await this.#handle.loadTranscriptPage({
@@ -269,7 +270,7 @@ export class DesktopTranscriptReplica {
       throughSequence,
       cursor,
       anchorSequence: null,
-      maxBytes: SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
+      maxBytes: Math.min(maxBytes, SESSION_TRANSCRIPT_PAGE_MAX_BYTES),
     });
     return this.#withDecodedPage(page, (decoded) => {
       this.#assertLive();
@@ -279,6 +280,33 @@ export class DesktopTranscriptReplica {
           sequence: entry.identity,
           message: entry.message,
         })),
+        nextCursor: decoded.nextCursor,
+        endsAtTurnBoundary: page.endsAtTurnBoundary,
+      };
+    });
+  }
+
+  /** A forward page for one contiguous reading window, including nested Turns. */
+  async readNewerPage(
+    throughSequence: number,
+    cursor: string | null,
+    afterSequence: number | null,
+    maxBytes = SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
+  ): Promise<DesktopTranscriptHistoryPage> {
+    this.#assertLive();
+    const page = await this.#handle.loadTranscriptPage({
+      direction: 'newer', throughSequence, cursor,
+      anchorSequence: cursor === null ? afterSequence : null,
+      maxBytes: Math.min(maxBytes, SESSION_TRANSCRIPT_PAGE_MAX_BYTES),
+    });
+    return this.#withDecodedPage(page, (decoded) => {
+      this.#assertLive();
+      if (decoded.messages.length === 0 && decoded.nextCursor !== null) {
+        throw correlationError('Desktop transcript window returned an empty continuation');
+      }
+      this.#acceptRange(decoded.messages);
+      return {
+        durable: decoded.messages.map((entry) => ({ sequence: entry.identity, message: entry.message })),
         nextCursor: decoded.nextCursor,
         endsAtTurnBoundary: page.endsAtTurnBoundary,
       };

@@ -26,7 +26,7 @@ import { build } from 'esbuild';
 import type { MakaBridge } from '../../preload/bridge-contract.js';
 import type { OnboardingSnapshot } from '../onboarding-service.js';
 import { desktopSessionKey } from '../../shared/runtime-host-identity.js';
-import { createOnboardingSnapshotPoller } from '../../renderer/use-onboarding-snapshot.js';
+import { createOnboardingSnapshotPoller } from '../../renderer/application/contracts/onboarding/onboarding-authority.js';
 
 const owners = [
   { hostId: 'local-host', targetEpoch: 'local-epoch', profileId: 'local', profileName: 'Local', profileKind: 'local', profileAccess: 'owner', readiness: 'ready' },
@@ -172,8 +172,8 @@ test('a Renderer Session event crosses preload to only its owning Host update', 
       assert.equal(update.sessionId, desktopSessionKey({ hostId: 'remote-host', sessionId: 'remote-task' }));
       receiveUpdate();
     },
-    onError: (message) => assert.fail(message),
-  }, () => 'en');
+    onError: () => assert.fail('unexpected onboarding read failure'),
+  });
   await poller.pull();
   const unsubscribe = fixture.bridge.sessions.subscribeChanges((event) => {
     if (event.sessionId) void poller.pullSession(event.sessionId);

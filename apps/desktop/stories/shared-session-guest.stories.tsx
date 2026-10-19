@@ -32,13 +32,15 @@ import {
 import { createFakeSessionCollaborationServices } from '../src/renderer/features/session-collaboration/testing.js';
 
 import {
-  ComposerStagingProvider, ComposerStagingServicesProvider, createComposerStagingCommands,
+  ComposerStagingProvider, ComposerStagingServicesProvider, createComposerStagingCommands, ConversationServicesProvider,
   type ComposerStagingServices,
 } from '../src/renderer/features/conversation/index.js';
+import { stubConversationServices } from '../src/renderer/features/conversation/testing.js';
 
 const stagingServices: ComposerStagingServices = {
   pickFiles: async () => ({ ok: false, reason: 'cancelled' }),
   previewApproval: async () => ({ ok: false, reason: 'unavailable' }),
+  readBytes: async () => ({ ok: false, reason: 'not_found' }),
 };
 
 const SESSION_ID = 'shared-session-story';
@@ -154,10 +156,12 @@ const reconnectServices = services(async () => {
 function GuestComposer(props: { sessionId: string }) {
   const composerRef = useRef<ComposerHandle>(null);
   const stagingCommands = useMemo(createComposerStagingCommands, []);
+  const conversationServices = useMemo(() => stubConversationServices(), []);
   return (
+    <ConversationServicesProvider services={conversationServices}>
     <ComposerStagingServicesProvider services={stagingServices}>
     <ComposerStagingProvider commands={stagingCommands} draftKey={props.sessionId}>
-    <GuestTurnRequests sessionId={props.sessionId} composerRef={composerRef}>
+    <GuestTurnRequests sessionId={props.sessionId} discardDraft={(draftKey) => composerRef.current?.clearDraft(draftKey)}>
       {(guest) => (
         <ChatComposerRegion
           composerRef={composerRef}
@@ -191,6 +195,7 @@ function GuestComposer(props: { sessionId: string }) {
     </GuestTurnRequests>
     </ComposerStagingProvider>
     </ComposerStagingServicesProvider>
+    </ConversationServicesProvider>
   );
 }
 

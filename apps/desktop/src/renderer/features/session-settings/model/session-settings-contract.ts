@@ -21,6 +21,7 @@ import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { PermissionMode } from '@maka/core/permission';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
+import type { SessionSettingSettlement } from '@maka/ui';
 import type { SessionCatalogController } from '../../../application/contracts/session-catalog/session-catalog-state.js';
 import type { SessionModelConfigurationIntent, SessionModelTarget } from '../session-model-configuration-intent.js';
 
@@ -35,9 +36,23 @@ export type SessionSettingsOverlays = {
   readonly [Key in keyof SessionSettingValues]: Readonly<Record<string, SessionSettingValues[Key]>>;
 };
 
+/**
+ * What the next new task starts with. The permission choice is keyed by the
+ * new-task target and absent until the user makes one, so creation can omit it
+ * and let the Host apply its own default.
+ */
+export interface NewTaskSettings {
+  readonly permissionChoice?: ChatDefaultPermissionMode;
+  readonly planMode: boolean;
+  readonly orchestrationMode: OrchestrationMode;
+}
+
 export interface SessionSettingsInput<Owner extends { sessionId?: string }> {
   catalog: SessionCatalogController;
   isActiveSession(sessionId: string): boolean;
+  /** The new-task target the permission choice belongs to. */
+  newTaskChoiceKey: string;
+  /** The choice, or the Host default when none was made. */
   newSessionPermissionMode: ChatDefaultPermissionMode;
   refreshCatalog(): Promise<unknown>;
   saveComposerDefaults(model: SessionModelTarget): void;
@@ -52,12 +67,22 @@ export interface SessionSettingsInput<Owner extends { sessionId?: string }> {
   };
   captureOwner(): Owner;
   isOwnerActive(owner: Owner): boolean;
-  setNewTaskPermissionMode(mode: ChatDefaultPermissionMode): void;
   confirmBypass(): Promise<boolean>;
 }
 
 export interface SessionSettingsCommands {
   clear(sessionId: string): void;
+  /**
+   * Waits for the Session's in-flight setting writes. True when they all
+   * committed (or none was pending); false when one failed or was abandoned,
+   * so the caller must not act on the overlay the user saw.
+   */
+  settled(sessionId: string): Promise<boolean>;
+  /**
+   * Observes the Session's setting writes for one submission attempt, from
+   * the moment the user submits until `release()`; see `settled` for results.
+   */
+  beginSettlement(sessionId: string): SessionSettingSettlement;
   setSessionModel(sessionId: string, model: SessionModelTarget): Promise<boolean>;
   setSessionThinkingLevel(sessionId: string, level: ThinkingLevel | null): Promise<boolean>;
   setSessionExecutor(
@@ -67,8 +92,13 @@ export interface SessionSettingsCommands {
   setPermissionMode(mode: PermissionMode): Promise<boolean>;
   setPlanMode(sessionId: string, active: boolean): Promise<boolean>;
   setOrchestrationMode(sessionId: string, mode: OrchestrationMode): Promise<boolean>;
+  setNewTaskPlanMode(active: boolean): void;
+  setNewTaskOrchestrationMode(mode: OrchestrationMode): void;
+  /** Drops a permission choice once a created Session has consumed it. */
+  clearNewTaskPermissionChoice(): void;
 }
 
 export interface SessionSettingsController extends SessionSettingsCommands {
   readonly overlays: SessionSettingsOverlays;
+  readonly newTask: NewTaskSettings;
 }

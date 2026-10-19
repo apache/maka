@@ -18,7 +18,10 @@
  */
 
 import type { RuntimeEvent } from '@maka/core/runtime-event';
-import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
+import type {
+  RuntimeEventStore,
+  RuntimeSessionEventSnapshot,
+} from '@maka/core/runtime-event-store';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import type { StoredMessage, TurnRecord } from '@maka/core/session';
 import { deriveTurnRecords } from '@maka/core/session';
@@ -78,11 +81,28 @@ export class RuntimeReadModel {
   async getSessionView(sessionId: string): Promise<RuntimeReadModelSessionView> {
     const diagnostics: RuntimeEventReadModelDiagnostic[] = [];
     const inFlightTurnIds = new Set<string>();
+    let snapshot: RuntimeSessionEventSnapshot | undefined;
+    if (this.deps.runtimeEventStore.readSessionRuntimeSnapshot) {
+      try {
+        snapshot = await this.deps.runtimeEventStore.readSessionRuntimeSnapshot(sessionId);
+      } catch (error) {
+        throw new RuntimeReadModelError('RuntimeEvent Session snapshot read failed', [
+          readModelDiagnostic(
+            'unsupported_event',
+            'RuntimeEventStore.readSessionRuntimeSnapshot failed',
+            {
+              error: errorMessage(error),
+            },
+          ),
+        ]);
+      }
+    }
     let invocations: RuntimeInvocationRecord[];
     try {
-      invocations = (await this.deps.runtimeEventStore.listSessionInvocations(sessionId)).filter(
-        (invocation) => isSessionInlineInvocation(invocation.opening),
-      );
+      invocations = (
+        snapshot?.invocations ??
+        (await this.deps.runtimeEventStore.listSessionInvocations(sessionId))
+      ).filter((invocation) => isSessionInlineInvocation(invocation.opening));
     } catch (error) {
       throw new RuntimeReadModelError('RuntimeReadModel could not list Session invocations', [
         readModelDiagnostic(
@@ -99,20 +119,23 @@ export class RuntimeReadModel {
       return this.buildView({ invocations, events: [], diagnostics });
     }
 
-    const durableEventOrdinals = await this.readSessionRuntimeEventOrdinals(sessionId);
-    const durableEventOrdinalById = new Map(
-      durableEventOrdinals.map(({ event, ordinal }) => [event.id, ordinal]),
-    );
+    const durableEventOrdinalById =
+      snapshot?.durableEventOrdinalById ??
+      new Map(
+        (await this.readSessionRuntimeEventOrdinals(sessionId)).map(({ event, ordinal }) => [
+          event.id,
+          ordinal,
+        ]),
+      );
     const ordered: OrderedRuntimeEvent[] = [];
     const terminalFacts: RuntimeEventTerminalFact[] = [];
     for (let runIndex = 0; runIndex < invocations.length; runIndex += 1) {
       const invocation = invocations[runIndex]!;
       let runEvents: RuntimeEvent[];
       try {
-        runEvents = await this.deps.runtimeEventStore.readRuntimeEvents(
-          sessionId,
-          invocation.runId,
-        );
+        runEvents = snapshot
+          ? (snapshot.eventsByRun.get(invocation.runId) ?? [])
+          : await this.deps.runtimeEventStore.readRuntimeEvents(sessionId, invocation.runId);
       } catch (error) {
         throw new RuntimeReadModelError('RuntimeEvent ledger read failed', [
           readModelDiagnostic('unsupported_event', 'RuntimeEventStore.readRuntimeEvents failed', {

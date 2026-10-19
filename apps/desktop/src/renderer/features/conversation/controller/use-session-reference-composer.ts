@@ -47,6 +47,7 @@ export function useSessionReferenceComposer(options: {
   readonly hostId?: string;
   readonly addQuote?: (quote: QuoteRef) => void;
   readonly pendingQuotes?: readonly QuoteRef[];
+  readonly onDraftChange?: (draftKey: string | undefined) => void;
   readonly errorCopy: SessionReferenceErrorCopy;
 }) {
   const services = useConversationServices();
@@ -125,13 +126,14 @@ export function useSessionReferenceComposer(options: {
         return;
       }
       generation.current += 1;
+      options.onDraftChange?.(options.activeId);
       pendingPromise.current = null;
       setPending(false);
       const next = [...pendingReferencesRef.current, selected];
       pendingReferencesRef.current = next;
       setPendingReferences(next);
     }
-  }, [options.activeId, options.errorCopy, options.hostId, options.sessions, reportError]);
+  }, [options.activeId, options.errorCopy, options.hostId, options.onDraftChange, options.sessions, reportError]);
 
   const waitForPending = useCallback(async (): Promise<boolean> => {
     const operation = pendingPromise.current;
@@ -196,18 +198,24 @@ export function useSessionReferenceComposer(options: {
   const removePendingReference = useCallback((sessionId: string): void => {
     const next = pendingReferencesRef.current.filter((reference) => reference.id !== sessionId);
     if (next.length === pendingReferencesRef.current.length) return;
+    options.onDraftChange?.(options.activeId);
     generation.current += 1;
     pendingPromise.current = null;
     setPending(false);
     pendingReferencesRef.current = next;
     setPendingReferences(next);
-  }, []);
+  }, [options.activeId, options.onDraftChange]);
+
+  // Recovery can run before the selection's state update commits, or after
+  // an asynchronous draft read. Inspect the same live selection as send.
+  const hasPendingReferences = useCallback(() => pendingReferencesRef.current.length > 0, []);
 
   return {
     references,
     pick,
     pending,
     pendingReferences,
+    hasPendingReferences,
     removePendingReference,
     error: error?.contextKey === contextKey
       ? { title: error.title, detail: error.detail }

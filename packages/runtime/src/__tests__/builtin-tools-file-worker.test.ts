@@ -26,6 +26,7 @@ import { createManagedExecutionBoundary } from '@maka/core/sandbox-boundary';
 import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 import { createReadOnlyPermissionProfile } from '@maka/core/permission-profile';
 
+import { createImageFileReader } from '../image-file-reader.js';
 import { buildBuiltinTools } from '../builtin-tools.js';
 import { createBoundaryFilesystemExecutor } from '../filesystem-executor.js';
 import { createLocalWorkspaceExecutor } from '../workspace-executor.js';
@@ -613,3 +614,32 @@ async function temporaryDirectory(prefix: string): Promise<string> {
   cleanup.push(path);
   return await realpath(path);
 }
+
+test('chat image reader uses the managed Read boundary and never falls back to host filesystem', async () => {
+  const cwd = await temporaryDirectory('maka-delivery-reader-');
+  const executionBoundary = createManagedExecutionBoundary(createReadOnlyPermissionProfile(), 0);
+  await assert.rejects(
+    createImageFileReader()({ path: 'private.png', cwd, executionBoundary }),
+    /worker|sandbox/i,
+  );
+  let calls = 0;
+  const reader = createImageFileReader({
+    filesystemWorker: {
+      execute: async (input) => {
+        calls++;
+        assert.deepEqual(input.executionBoundary, executionBoundary);
+        assert.deepEqual(input.operation, {
+          kind: 'read',
+          path: 'private.png',
+          imagePurpose: 'chat',
+        });
+        throw new Error('sandbox permission refused');
+      },
+    },
+  });
+  await assert.rejects(
+    reader({ path: 'private.png', cwd, executionBoundary }),
+    /permission refused/,
+  );
+  assert.equal(calls, 1);
+});

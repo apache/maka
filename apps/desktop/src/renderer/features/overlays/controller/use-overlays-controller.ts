@@ -96,6 +96,9 @@ export function useOverlaysController(): OverlaysController {
       openProjectSettings: (profileId) => openSettingsWith({ kind: 'project', profileId }),
       openProviderCatalog: () => openSettingsWith({ kind: 'provider-catalog' }),
       openConnectionDetail: (slug) => openSettingsWith({ kind: 'connection-detail', slug }),
+      openExternalAgentSettings: (executorId) => openSettingsWith(executorId
+        ? { kind: 'external-agent', executorId }
+        : { kind: 'section', section: 'external-agents' }),
       openProviderCreate: (providerType) =>
         openSettingsWith({ kind: 'provider-create', providerType }),
       setSettingsProfileId: (profileId) =>
@@ -117,5 +120,9 @@ export function useOverlaysController(): OverlaysController {
     [helpOpen, paletteOpen, searchOpen, settings, searchScrollTarget],
   );
 
-  return useMemo(() => ({ commands, selectors }), [commands, selectors]);
+  const paletteActions = services.palette;
+  return useMemo(
+    () => ({ commands, selectors, paletteActions }),
+    [commands, selectors, paletteActions],
+  );
 }

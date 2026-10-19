@@ -97,16 +97,19 @@ for (const phase of ['connecting', 'seeding'] as const) {
   }
 }
 
-test('transcript history IPC forwards open mode, load-earlier, and read-turn to the registry', async () => {
+test('transcript history IPC forwards window intent and both page directions to the registry', async () => {
   const ipc = ipcHarness();
   const observations = new RuntimeHostSessionObservationRegistry();
   const calls: unknown[] = [];
-  observations.openTranscript = async (sessionId, consumerId, target, mode) => {
-    calls.push({ command: 'open', sessionId, consumerId, targetId: target.id, mode });
+  observations.openTranscript = async (sessionId, consumerId, target, mode, _resumeFrom, position) => {
+    calls.push({ command: 'open', sessionId, consumerId, targetId: target.id, mode, position });
     return { sessionId, generation: 'generation-1', hostEpoch: 'host-1', readThroughMessageId: null };
   };
   observations.loadEarlierTranscript = async (consumerId, targetId) => {
     calls.push({ command: 'earlier', consumerId, targetId });
+  };
+  observations.loadNewerTranscript = async (consumerId, targetId) => {
+    calls.push({ command: 'newer', consumerId, targetId });
   };
   const turn = [{ type: 'user', id: 'message-1', turnId: 'turn-1', ts: 1, text: 'hello' }];
   observations.readTranscriptTurn = async (sessionId, turnId) => {
@@ -115,13 +118,15 @@ test('transcript history IPC forwards open mode, load-earlier, and read-turn to 
   };
   registerRuntimeHostSessionObservationIpc({ observations, resolveSideConversation: async () => false }, ipc);
 
-  await ipc.invoke('sessions:transcript:open', 'shared-session', 'guest-consumer', 'history');
+  await ipc.invoke('sessions:transcript:open', 'shared-session', 'guest-consumer', 'history', undefined, { turnId: 'turn-1' });
   await ipc.invoke('sessions:transcript:load-earlier', 'guest-consumer');
+  await ipc.invoke('sessions:transcript:load-newer', 'guest-consumer');
   assert.deepEqual(await ipc.invoke('sessions:transcript:read-turn', 'shared-session', 'turn-1'), turn);
   assert.equal(ipc.reconnectableChannels.has('sessions:transcript:read-turn'), true);
   assert.deepEqual(calls, [
-    { command: 'open', sessionId: 'shared-session', consumerId: 'guest-consumer', targetId: 9, mode: 'history' },
+    { command: 'open', sessionId: 'shared-session', consumerId: 'guest-consumer', targetId: 9, mode: 'history', position: { turnId: 'turn-1' } },
     { command: 'earlier', consumerId: 'guest-consumer', targetId: 9 },
+    { command: 'newer', consumerId: 'guest-consumer', targetId: 9 },
     { command: 'read-turn', sessionId: 'shared-session', turnId: 'turn-1' },
   ]);
   await assert.rejects(
@@ -129,7 +134,11 @@ test('transcript history IPC forwards open mode, load-earlier, and read-turn to 
     /Invalid Desktop transcript open mode/,
   );
   await assert.rejects(ipc.invoke('sessions:transcript:load-earlier', ''), /Transcript consumer/);
-  assert.equal(calls.length, 3);
+  await assert.rejects(ipc.invoke('sessions:transcript:load-newer', ''), /Transcript consumer/);
+  for (const position of [{ turnId: '' }, { sequence: -1 }, { sequence: 20, throughSequence: 10 }]) {
+    await assert.rejects(ipc.invoke('sessions:transcript:open', 'shared-session', 'bad', 'history', undefined, position), /Invalid/);
+  }
+  assert.equal(calls.length, 4);
 });
 
 test('treats pending Session observation teardown as IPC cancellation', async () => {
@@ -1040,6 +1049,7 @@ test("submits an ordinary composer message once under its stable message identit
 test('returns Host-owned cancellation proof to the renderer', async () => {
   const ipc = ipcHarness();
   const queriedMessageIds: string[][] = [];
+  const retired: unknown[] = [];
   registerExecutionIpc(
     {
       client: executionClient({
@@ -1052,6 +1062,7 @@ test('returns Host-owned cancellation proof to the renderer', async () => {
           };
         },
       }),
+      retireCancelledMessages(sessionId, messageIds) { retired.push({ sessionId, messageIds }); },
     },
     ipc,
   );
@@ -1064,6 +1075,7 @@ test('returns Host-owned cancellation proof to the renderer', async () => {
     { cancelledMessageIds: ['message-cancelled'] },
   );
   assert.deepEqual(queriedMessageIds, [['message-accepted', 'message-cancelled']]);
+  assert.deepEqual(retired, [{ sessionId: 'session-1', messageIds: ['message-cancelled'] }]);
 });
 
 test('batches cancellation proof queries at the Runtime Host protocol boundary', async () => {
@@ -1880,6 +1892,7 @@ test('keeps an unknown Desktop follow-up admission available for reconciliation'
 });
 
 test("binds steer and stop to Host-owned queue and active Turn identities", async () => {
+  const retired: unknown[] = [];
   const submits: unknown[] = [];
   const interrupts: unknown[] = [];
   const retractions: unknown[] = [];
@@ -1969,6 +1982,7 @@ test("binds steer and stop to Host-owned queue and active Turn identities", asyn
       beforeStop() {
         stopLifecycle.push("teardown");
       },
+      retireCancelledMessages(sessionId, messageIds) { retired.push({ sessionId, messageIds }); },
       newId: () => `id-${++sequence}`,
     },
     ipc,
@@ -2035,6 +2049,10 @@ test("binds steer and stop to Host-owned queue and active Turn identities", asyn
   assert.deepEqual(stopLifecycle, [
     'teardown',
     'interrupt',
+  ]);
+  assert.deepEqual(retired, [
+    { sessionId: 'session-1', messageIds: ['steer-ticket-1'] },
+    { sessionId: 'session-1', messageIds: ['message-followup'] },
   ]);
 
   assert.deepEqual(submits, [
@@ -2205,6 +2223,51 @@ test('Session snapshot IPC rejects invalid budgets and unavailable sources befor
   await assert.rejects(ipc.invoke('sessions:readSnapshot', 'session-1'), /not found/);
   source = { ...session(), isArchived: true };
   await assert.rejects(ipc.invoke('sessions:readSnapshot', 'session-1'), /archived/);
+});
+
+test("sessions:queryResumeLatest previews the plan without starting a resume", async () => {
+  const queries: unknown[] = [];
+  const readyPlan = {
+    sessionId: "session-1",
+    disposition: "ready" as const,
+    sourceRunId: "run-1",
+    sourceTurnId: "turn-1",
+    sourceRuntimeEventHighWater: 42,
+  };
+  const ipc = ipcHarness();
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        queryTurnResume: async (input) => {
+          queries.push(input);
+          return readyPlan;
+        },
+      }),
+    },
+    ipc,
+  );
+
+  assert.deepEqual(await ipc.invoke("sessions:queryResumeLatest", "session-1"), readyPlan);
+  assert.deepEqual(queries, [{ sessionId: "session-1" }]);
+});
+
+test("sessions:queryResumeLatest passes a parked plan through untouched", async () => {
+  const parkedPlan = {
+    sessionId: "session-1",
+    disposition: "parked" as const,
+    reason: "session_busy" as const,
+  };
+  const ipc = ipcHarness();
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        queryTurnResume: async () => parkedPlan,
+      }),
+    },
+    ipc,
+  );
+
+  assert.deepEqual(await ipc.invoke("sessions:queryResumeLatest", "session-1"), parkedPlan);
 });
 
 type ExecutionClient = RuntimeHostSessionExecutionIpcDeps["client"];

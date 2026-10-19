@@ -216,6 +216,18 @@ describe('invocation opening fact backfill', () => {
       const store = createSqliteRuntimeStore(databasePath);
       try {
         const invocations = await store.listSessionInvocations('session-1');
+        const snapshot = await store.readSessionRuntimeSnapshot('session-1');
+        assert.deepEqual(
+          snapshot.invocations,
+          invocations,
+          'batch reads preserve migrated openings',
+        );
+        for (const invocation of invocations) {
+          assert.deepEqual(
+            snapshot.eventsByRun.get(invocation.runId) ?? [],
+            await store.readRuntimeEvents('session-1', invocation.runId),
+          );
+        }
         assert.deepEqual(
           invocations.map((invocation) => invocation.invocationId),
           ['run-legacy-route', 'run-scheduled', 'run-with-events'],

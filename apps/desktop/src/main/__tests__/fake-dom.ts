@@ -190,6 +190,11 @@ export class FakeElement {
     return this.attributes.get(name) ?? null;
   }
 
+  // No selector engine: toast dismissal only asks whether focus must move.
+  querySelector(): null {
+    return null;
+  }
+
   appendChild<T extends FakeElement | FakeText>(node: T): T {
     this.childNodes.push(node);
     node.parentNode = this;

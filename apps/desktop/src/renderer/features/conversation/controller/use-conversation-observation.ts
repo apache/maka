@@ -34,6 +34,7 @@ export function useConversationObservation(options: {
   services: ConversationObservationServices;
   uiLocale: UiLocale;
   activeId: string | undefined;
+  initialTranscriptTurnId?: string;
   observationAuthorityRevision: number;
   activeIdRef: Readonly<RefBox<string | undefined>>;
   handleEvent: (sessionId: string, event: SessionEvent) => void;
@@ -48,6 +49,7 @@ export function useConversationObservation(options: {
     ConversationTranscriptController
   >;
   transcriptRangeRef: RefBox<ConversationTranscriptController | undefined>;
+  observationRef: import('../model/conversation-workspace.js').ConversationWorkspace['observationRef'];
   setSessionEventHealthBySession: SessionEventHealthUpdater;
   toastApi: Pick<ToastApi, 'error'>;
 }) {
@@ -124,7 +126,9 @@ export function useConversationObservation(options: {
     }));
     const controller = options.services.openTranscript(activeId, (error) => {
       if (!disposed) applyReadError(activeId, error);
-    });
+    }, options.initialTranscriptTurnId);
+    const observation = { sessionId: activeId, controller };
+    options.observationRef.current = observation;
     const transcript = controller.store;
     const unsubscribeTranscript = transcript.subscribe(() =>
       applyTranscript(activeId, controller, () => !disposed));
@@ -175,6 +179,7 @@ export function useConversationObservation(options: {
     subscribeSessionEvents();
     return () => {
       disposed = true;
+      if (options.observationRef.current === observation) options.observationRef.current = undefined;
       options.endObservation(activeId);
       observationAttempt += 1;
       if (observationRetryTimer !== undefined) {

@@ -28,6 +28,8 @@ import { LocalizedChatMessage, TurnView } from '../chat-turn.js';
 import { LocaleProvider } from '../locale-context.js';
 import type { TurnTimelineItem, TurnViewModel } from '../materialize.js';
 import { applyThinkingDelta } from '../thinking-stream.js';
+import { ImageDeliveryProvider, type ResolveImageDelivery } from '../image-delivery.js';
+import { SessionAttachmentProvider } from '../attachment-image.js';
 
 const originalGlobals = {
   document: globalThis.document,
@@ -106,6 +108,14 @@ function renderTurn(
   }) as unknown as Promise<void>;
 }
 
+async function openProcess(container: ReturnType<typeof domRoot>['container']) {
+  const process = container.querySelector('details.maka-processing-sequence');
+  const summary = process?.querySelector('summary');
+  if (summary && !process?.hasAttribute('open')) {
+    await act(() => { summary.dispatchEvent(new window.Event('click', { bubbles: true, cancelable: true })); });
+  }
+}
+
 const ANSWER: TurnTimelineItem = {
   kind: 'text',
   text: 'the answer',
@@ -155,31 +165,6 @@ test('places the turn status row at the top of the assistant content', async () 
   assert.equal(content.firstElementChild?.isSameNode(statusbar), true);
 });
 
-test('offers Safe resume in the Desktop Stop outcome notice', async () => {
-  const { container, root } = domRoot();
-  let resumeCalls = 0;
-  await renderTurn(
-    root,
-    {
-      ...turnWith([{ ...ANSWER, live: false }]),
-      status: 'aborted',
-      abortSource: 'renderer.stop_button',
-    },
-    undefined,
-    { pending: false, onResume: () => resumeCalls++ },
-  );
-
-  const statusbar = container.querySelector('.maka-turn-statusbar');
-  const button = [...container.querySelectorAll('button')].find(
-    (candidate) => candidate.textContent?.trim() === 'Continue this turn',
-  );
-  assert.ok(statusbar, 'the existing turn status row remains the single outcome indicator');
-  assert.ok(button, 'the action stays attached to the stopped turn it continues');
-  assert.equal(button.textContent, 'Continue this turn');
-  await act(() => button.click());
-  assert.equal(resumeCalls, 1);
-});
-
 /**
  * Keying the answer by its first timeline entry made the key change whenever
  * that entry did, so React unmounted the answer and mounted a copy — taking
@@ -222,6 +207,7 @@ test('keeps reasoning expanded when its last neighboring tool is projected away'
     kind: 'thinking', messageId: 'reason-1', text: 'First observation', live: false,
   };
   await renderTurn(root, turnWith([thinking, RUNNING_TOOL, ANSWER]));
+  await openProcess(container);
   const header = container.querySelector('[data-slot="activity-card-header"]');
   assert.ok(header);
   await act(() => { header.dispatchEvent(new window.Event('click', { bubbles: true })); });
@@ -231,6 +217,59 @@ test('keeps reasoning expanded when its last neighboring tool is projected away'
   assert.ok(after);
   assert.ok(after.isSameNode(header));
   assert.equal(after.getAttribute('aria-expanded'), 'true');
+});
+
+test('process image links never load bytes while the completed final reply still displays an image', async () => {
+  const { container, root } = domRoot();
+  const sources: string[] = [];
+  let reads = 0;
+  const resolve: ResolveImageDelivery = async (_session, request) => {
+    sources.push(request.source);
+    return { status: 'ready', artifactId: 'final-image' };
+  };
+  const readBytes = async () => {
+    reads++;
+    return { ok: true as const, mimeType: 'image/png', base64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==' };
+  };
+  const thinking: TurnTimelineItem = { kind: 'thinking', messageId: 'reasoning', text: '![Reasoning](https://example.com/reasoning.png)' };
+  const commentary: TurnTimelineItem = { kind: 'text', messageId: 'commentary', text: '![Intermediate](https://example.com/commentary.png)', live: true, complete: true };
+  const final: TurnTimelineItem = { kind: 'text', messageId: 'final', text: '![Final](https://example.com/final.png)' };
+  const render = async (timeline: TurnTimelineItem[], completed = false) => {
+    await act(async () => {
+      root.render(<LocaleProvider locale="en">
+        <SessionAttachmentProvider sessionId="session" readBytes={readBytes}>
+          <ImageDeliveryProvider sessionId="session" resolve={resolve}>
+            <TurnView turn={{ ...turnWith(timeline), status: completed ? 'completed' : 'running' }}
+              liveStreaming={completed ? undefined : { runningStatus: true }} />
+          </ImageDeliveryProvider>
+        </SessionAttachmentProvider>
+      </LocaleProvider>);
+    });
+  };
+
+  // The live last text step is provisional: the next tool can move it into the process.
+  await render([thinking, commentary]);
+  assert.ok(container.querySelector('a[href="https://example.com/commentary.png"]'));
+  assert.equal(container.querySelectorAll('img, .maka-markdown-image-resource').length, 0);
+  assert.deepEqual(sources, []);
+  assert.equal(reads, 0);
+
+  await render([thinking, commentary, RUNNING_TOOL]);
+  assert.ok(container.querySelector('.maka-processing-body a[href="https://example.com/commentary.png"]'));
+  assert.deepEqual(sources, []);
+  assert.equal(reads, 0);
+
+  await render([thinking, commentary, { ...RUNNING_TOOL, items: RUNNING_TOOL.items.map(item => ({ ...item, status: 'completed' })) }, final], true);
+  assert.deepEqual(sources, ['https://example.com/final.png']);
+  assert.equal(reads, 1);
+  assert.equal(container.querySelectorAll('img').length, 1);
+  await act(() => { container.querySelector('.maka-processing-summary')?.dispatchEvent(new window.Event('click', { bubbles: true })); });
+  await act(() => { container.querySelector('.maka-deep-thinking [data-slot="activity-card-header"]')?.dispatchEvent(new window.Event('click', { bubbles: true })); });
+  assert.ok(container.querySelector('.maka-processing-body a[href="https://example.com/reasoning.png"]'));
+  assert.ok(container.querySelector('.maka-processing-body a[href="https://example.com/commentary.png"]'));
+  assert.equal(container.querySelectorAll('.maka-processing-body img, .maka-processing-body .maka-markdown-image-resource').length, 0);
+  assert.deepEqual(sources, ['https://example.com/final.png']);
+  assert.equal(reads, 1);
 });
 
 test('redacts secrets before rendering a settled collapsed reasoning preview', async () => {
@@ -243,7 +282,7 @@ test('redacts secrets before rendering a settled collapsed reasoning preview', a
       live: false,
     },
   ]));
-
+  await openProcess(container);
   const header = container.querySelector('[data-slot="activity-card-header"]');
   assert.ok(header);
   assert.match(header.textContent ?? '', /<redacted>/);
@@ -260,7 +299,7 @@ test('preserves currency in a settled collapsed reasoning preview', async () => 
       live: false,
     },
   ]));
-
+  await openProcess(container);
   const header = container.querySelector('[data-slot="activity-card-header"]');
   assert.ok(header);
   assert.match(header.textContent ?? '', /cost is \$5, not x \+ 1/);
@@ -274,6 +313,7 @@ test('expanded truncated reasoning shows the current tail without replaying its 
     text: thinking.text, truncated: thinking.truncated,
   }]));
   await renderThinking();
+  await openProcess(container);
   const header = container.querySelector('[data-slot="activity-card-header"]');
   assert.ok(header);
   await act(() => { header.dispatchEvent(new window.Event('click', { bubbles: true })); });
@@ -297,7 +337,7 @@ test('preserves a model-authored single newline in plain reasoning', async () =>
       live: false,
     },
   ]));
-
+  await openProcess(container);
   const header = container.querySelector('[data-slot="activity-card-header"]');
   assert.ok(header);
   await act(() => { header.dispatchEvent(new window.Event('click', { bubbles: true })); });
@@ -461,6 +501,85 @@ test('does not edit and resend a message with folder references', async () => {
 });
 
 /**
+ * Quotes and attachments restage into the revision draft (#5109): a selected
+ * user message carrying either stays editable, unlike folder references,
+ * whose Host-owned session binding has no client-side restage path.
+ */
+test('keeps an attachment-carrying message editable', async () => {
+  const { container, root } = domRoot();
+  let editCalls = 0;
+  const turn = {
+    ...turnWith([{ ...ANSWER, live: false }]),
+    status: 'completed' as const,
+    user: {
+      id: 'ask-with-image',
+      role: 'user' as const,
+      text: 'Read this chart',
+      ts: 1,
+      attachments: [
+        {
+          kind: 'image' as const,
+          name: 'chart.png',
+          mimeType: 'image/png',
+          bytes: 10,
+          ref: { kind: 'session_file' as const, sessionId: 'session-1', relativePath: 'a.png' },
+        },
+      ],
+    },
+  };
+
+  await act(() => {
+    root.render(
+      <LocaleProvider locale="en">
+        <TurnView turn={turn} onEditUserMessage={() => { editCalls += 1; }} />
+      </LocaleProvider>,
+    );
+  });
+
+  const editButton = container.querySelector('[data-action="edit"]');
+  assert.ok(editButton, 'the edit action renders');
+  assert.doesNotMatch(
+    editButton.getAttribute('aria-label') ?? '',
+    /does not yet support/,
+  );
+  await act(() => editButton.dispatchEvent(new window.Event('click', { bubbles: true })));
+  assert.equal(editCalls, 1, 'the selected message quotes and attachments restage');
+});
+
+test('keeps a quote-carrying message editable', async () => {
+  const { container, root } = domRoot();
+  let editCalls = 0;
+  const turn = {
+    ...turnWith([]),
+    status: 'completed' as const,
+    user: {
+      id: 'ask-with-quote',
+      role: 'user' as const,
+      text: 'Explain this excerpt',
+      ts: 1,
+      quotes: [{ text: 'selected excerpt', sourceTurnId: 'turn-0' }],
+    },
+  };
+
+  await act(() => {
+    root.render(
+      <LocaleProvider locale="en">
+        <TurnView turn={turn} onEditUserMessage={() => { editCalls += 1; }} />
+      </LocaleProvider>,
+    );
+  });
+
+  const editButton = container.querySelector('[data-action="edit"]');
+  assert.ok(editButton, 'the edit action renders');
+  assert.doesNotMatch(
+    editButton.getAttribute('aria-label') ?? '',
+    /does not yet support/,
+  );
+  await act(() => editButton.dispatchEvent(new window.Event('click', { bubbles: true })));
+  assert.equal(editCalls, 1, 'the selected message quotes restage into the draft');
+});
+
+/**
  * A structured-only user message (#4804) — empty inline text carrying a
  * quote — must render the quote without an empty text bubble, while keeping
  * the metadata row (timestamp, copy) and its edit entry, which used to be
@@ -512,7 +631,7 @@ test('a user message with text still renders its bubble', async () => {
       role: 'user' as const,
       text: 'explain this',
       ts: 1,
-      quotes: [{ text: 'selected excerpt' }],
+      quotes: [{ text: 'selected excerpt', comment: 'explain this' }],
     },
   };
 
@@ -521,6 +640,10 @@ test('a user message with text still renders its bubble', async () => {
   const bubble = container.querySelector('.maka-chat-message-bubble-user');
   assert.ok(bubble, 'a text message keeps its bubble');
   assert.match(bubble?.textContent ?? '', /explain this/);
+  assert.doesNotMatch(bubble?.textContent ?? '', /selected excerpt/);
+  const quote = container.querySelector('.maka-quote-chip');
+  assert.match(quote?.textContent ?? '', /selected excerpt/);
+  assert.doesNotMatch(quote?.textContent ?? '', /explain this/);
 });
 
 test('keeps Astryx auto formatting live for user-message timestamps', async (context) => {
@@ -774,16 +897,21 @@ test('collapses the whole completed process and leaves the final answer outside'
   // The finish time lives in the footer as a semantic timestamp — the fact
   // that makes a transcript reviewable after the fact.
   assert.ok(container.querySelector('.maka-turn-footer time'));
-  assert.match(process.textContent ?? '', /Checking the login state/);
+  assert.doesNotMatch(process.textContent ?? '', /Checking the login state/, 'unopened history does not mount hidden work');
   assert.doesNotMatch(process.textContent ?? '', /the answer/);
-  const answer = container.querySelectorAll('.maka-chat-message-bubble-assistant')[1];
+  const answer = container.querySelector('.maka-assistant-answer');
   assert.ok(answer);
   await act(() => { summary.dispatchEvent(new window.Event('click', { bubbles: true, cancelable: true })); });
   assert.equal(process.hasAttribute('open'), true);
   assert.equal(summary.getAttribute('aria-expanded'), 'true');
+  assert.match(process.textContent ?? '', /Checking the login state/);
+  const mounted = process.querySelector('.maka-processing-body')?.firstElementChild;
+  assert.ok(mounted);
   await act(() => { summary.dispatchEvent(new window.Event('click', { bubbles: true, cancelable: true })); });
   assert.equal(process.hasAttribute('open'), false);
-  assert.equal(container.querySelectorAll('.maka-chat-message-bubble-assistant')[1]?.isSameNode(answer), true);
+  assert.equal(container.querySelector('.maka-assistant-answer')?.isSameNode(answer), true);
+  assert.equal(process.querySelector('.maka-processing-body')?.firstElementChild?.isSameNode(mounted), true,
+    'collapsing an opened process preserves its mounted detail');
 });
 
 test('moves the live clock into the process and settles it to recorded duration without remounting the answer', async (context) => {
@@ -856,6 +984,7 @@ test('keeps running work expanded and allows manual disclosure after settlement'
   assert.equal(process.hasAttribute('open'), true);
   await renderTurn(root, { ...turnWith([PROCESS_TEXT, COMPLETED_TOOL, { ...ANSWER, live: false }]), status: 'completed' });
   assert.equal(process.hasAttribute('open'), false);
+  assert.match(process.textContent ?? '', /Checking the login state/, 'settlement keeps previously displayed live work mounted');
   assert.equal(summary.hasAttribute('aria-disabled'), false);
   assert.equal(summary.getAttribute('tabindex'), '0');
   await click();
@@ -919,4 +1048,31 @@ test('WorkHub feedback is a system notice without a user message bubble', async 
   assert.equal(container.querySelectorAll('.maka-user-message').length, 0);
   assert.ok(container.querySelector('[role="status"][aria-label="Task result update · Order summary"]'));
   assert.ok(container.textContent.includes('the answer'));
+});
+
+
+test('assistant Inbox receipt renders the user message without a fake completed reply', async () => {
+  const { container, root } = domRoot();
+  const turn = { ...turnWith([]), turnId: 'assistant-input:receipt-1',
+    status: 'completed' as const, statusSource: 'recorded' as const };
+  await act(() => root.render(<LocaleProvider locale="zh-CN"><TurnView turn={turn} /></LocaleProvider>));
+  assert.match(container.textContent ?? '', /ask/);
+  assert.doesNotMatch(container.textContent ?? '', /Completed|已完成|Copy answer/i);
+});
+
+
+test('host avatar appears on assistant messages and can change without changing the conversation', async () => {
+  const { container, root } = domRoot();
+  const turn = { ...turnWith([{ ...ANSWER, live: false }]), status: 'completed' as const };
+  const render = (emoji?: string) => act(() => root.render(<LocaleProvider locale="en"><TurnView
+    turn={turn} assistantAvatar={emoji ? <span role="img" aria-label="Assistant avatar">{emoji}</span> : undefined}
+  /></LocaleProvider>));
+  await render('🤖');
+  assert.equal(container.querySelector('.maka-assistant-answer [role="img"]')?.textContent, '🤖');
+  assert.equal(container.querySelector('.maka-user-message [role="img"]'), null);
+  await render('🦊');
+  assert.equal(container.querySelector('.maka-assistant-answer [role="img"]')?.textContent, '🦊');
+  assert.ok(container.textContent.includes('the answer'));
+  await render();
+  assert.equal(container.querySelector('[aria-label="Assistant avatar"]'), null);
 });

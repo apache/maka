@@ -20,8 +20,8 @@
 /**
  * Unchanged-text edit-and-resend regression (PR #5815 follow-up).
  *
- * The production fix removed the `text.trim() === revision.originalText.trim()`
- * early return from the composer's submit path. The existing
+ * The production fix removed the unchanged-text early return from the
+ * revision send path. The existing
  * `app-shell-revision-actions.test.ts` suite only calls `prepareRevisionSend()`
  * directly, so it cannot tell whether the real submit path still short-circuits
  * unchanged text. This suite mounts the real ChatComposerRegion, wires its
@@ -33,6 +33,7 @@
  */
 
 import { ComposerStagingFixture } from './composer-staging-fixture.js';
+import { windowSubmissionServices } from './app-shell-chat-actions-fixture.js';
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { act, createElement, createRef } from 'react';
@@ -47,19 +48,19 @@ import {
 import { ChatComposerRegion } from '../../renderer/chat-composer-region.js';
 import {
   completeTurnRevisionCopyAttempt,
-  createAppShellRevisionActions,
+  createRevisionActions,
   type TurnRevisionDraft,
-} from '../../renderer/app-shell-revision-actions.js';
-import { parseDesktopSlashCommand } from '../../renderer/desktop-slash-command.js';
+} from '../../renderer/features/conversation/testing.js';
+import { parseDesktopSlashCommand } from '../../renderer/application/contracts/desktop-slash-command.js';
 import {
   mergeWorkspaceReferences,
   rebaseWorkspaceFileReferences,
-} from '../../renderer/follow-up-submit-routing.js';
+} from '../../renderer/features/conversation/testing.js';
 import { getDesktopConversationCopy } from '../../renderer/application/contracts/conversation-copy.js';
 import {
   createRevisionAwareOnSend,
   type RevisionSendPorts,
-} from '../../renderer/features/conversation/index.js';
+} from '../../renderer/features/conversation/testing.js';
 
 const SESSION_1 = JSON.stringify(['host-1', 'session-1']);
 const SESSION_2 = JSON.stringify(['host-1', 'session-2']);
@@ -101,6 +102,7 @@ function userMessage(turnId: string, text: string): StoredMessage {
 }
 
 interface RevisionWorld {
+  ports: RevisionSendPorts<TurnRevisionDraft>;
   revisionActions: {
     beginEditUserMessage: (turnId: string) => void;
   };
@@ -203,7 +205,8 @@ async function mountRevisionWorld(): Promise<RevisionWorld> {
   };
 
   const composer = createRef<ComposerHandle>();
-  const revisionActions = createAppShellRevisionActions({
+  const revisionActions = createRevisionActions({
+    services: windowSubmissionServices(),
     uiLocale: 'en' as never,
     activeIdRef,
     captureSelection: () => {
@@ -212,7 +215,15 @@ async function mountRevisionWorld(): Promise<RevisionWorld> {
     },
     composerRef: composer,
     readMessages: () => [userMessage('turn-1', ORIGINAL_TEXT)],
-    hasPendingAttachments: () => false,
+    staging: {
+      captureSubmission: () => ({ hasPendingContext: false }),
+      stagedContext: () => ({
+        quotes: [],
+        attachments: [],
+        restoreQuotes: () => {},
+        clearQuotes: () => [],
+      }),
+    },
     openSessionInChat: (sessionId: string) => {
       selectionRevision += 1;
       activeIdRef.current = sessionId;
@@ -228,6 +239,7 @@ async function mountRevisionWorld(): Promise<RevisionWorld> {
   let pendingSend: Promise<boolean | void> | undefined;
   const sendPendingFlags: boolean[] = [];
   const ports: RevisionSendPorts<TurnRevisionDraft> = {
+    captureSubmitSurface: () => () => true,
     shellCopy: {
       sideChatUnavailableTitle: '',
       sideChatUnavailableDescription: '',
@@ -249,6 +261,7 @@ async function mountRevisionWorld(): Promise<RevisionWorld> {
     retractedWorkspaceReferencesRef: { current: {} },
     captureStaging: () => ({
       draftKey: 'draft',
+      retainAttachments: () => () => {},
       hasPendingContext: false,
       hasStagedQuotes: false,
       submittableAttachments: undefined,
@@ -345,6 +358,7 @@ async function mountRevisionWorld(): Promise<RevisionWorld> {
   });
 
   return {
+    ports,
     revisionActions,
     composer,
     document,
@@ -399,6 +413,172 @@ test('resending an unchanged revision goes through reviseBeforeTurn and the norm
     // The revision draft settled and the composer kept no residue.
     assert.equal(world.revisionDraftRef.current, null);
     assert.equal(world.composer.current?.getText(), '');
+  } finally {
+    world.restoreWindow();
+  }
+});
+
+for (const text of ['edited message', '/swarm task edited message', '/graph task edited message']) {
+  test(`submit preserves replacement and attachment ownership: ${text}`, async () => {
+    const world = await mountRevisionWorld();
+    try {
+      const staging = { ...world.ports.captureStaging(), submittableAttachments: [{
+        stagingKey: 'restored-file', displayName: 'notes.txt', kind: 'doc', size: 4,
+        source: { type: 'approval', approvalId: 'restored-approval', name: 'notes.txt' },
+      }] as NonNullable<ReturnType<typeof world.ports.captureStaging>['submittableAttachments']> };
+      const events: string[] = [];
+      let finish!: (ok: boolean) => void;
+      const result = new Promise<boolean>((resolve) => { finish = resolve; });
+      const onSend = createRevisionAwareOnSend({
+        ...world.ports,
+        captureStaging: () => ({
+          ...staging,
+          clearSubmittedContext: () => { assert.fail('refused send must retain context'); },
+          retainAttachments: (pending) => {
+            assert.equal(pending, staging.submittableAttachments);
+            events.push('retain');
+            return () => { events.push('release'); };
+          },
+        }),
+        setNewTaskSendPending: (pending) => { events.push(`pending:${pending}`); },
+        send: async (_text, _pending, options) => {
+          assert.equal(_pending, staging.submittableAttachments);
+          assert.equal(options?.replacesLocalMessageId, 'paused-original');
+          events.push('send');
+          return result;
+        },
+      });
+      const sent = onSend(text, { replacesLocalMessageId: 'paused-original' });
+      assert.deepEqual(events, ['retain', 'pending:true', 'send']);
+      finish(false);
+      assert.equal(await sent, false);
+      assert.deepEqual(events, ['retain', 'pending:true', 'send', 'release', 'pending:false']);
+    } finally {
+      world.restoreWindow();
+    }
+  });
+}
+
+test('submit releases attachment ownership when sending throws', async () => {
+  const world = await mountRevisionWorld();
+  try {
+    const events: string[] = [];
+    const onSend = createRevisionAwareOnSend({
+      ...world.ports,
+      captureStaging: () => ({ ...world.ports.captureStaging(), retainAttachments: () => {
+        events.push('retain');
+        return () => { events.push('release'); };
+      } }),
+      setNewTaskSendPending: (pending) => { events.push(`pending:${pending}`); },
+      send: async () => { throw new Error('send failed'); },
+    });
+    await assert.rejects(onSend('edited message'), /send failed/);
+    assert.deepEqual(events, ['retain', 'pending:true', 'release', 'pending:false']);
+  } finally {
+    world.restoreWindow();
+  }
+});
+
+// #4695 review: an edit-and-resend copies the source Session's settings, so
+// the Plan write the user saw at submit must settle before that copy.
+for (const outcome of [true, false]) {
+  test(`#4695: a revision waits for the submit's setting writes before copying (${outcome ? 'committed' : 'failed'})`, async () => {
+    const world = await mountRevisionWorld();
+    try {
+      const events: string[] = [];
+      let settle!: (ok: boolean) => void;
+      // One attempt: every read of it sees the same result.
+      const attempt = new Promise<boolean>((resolve) => { settle = resolve; });
+      const settlement = { settled: () => attempt };
+      const onSend = createRevisionAwareOnSend({
+        ...world.ports,
+        revisionDraftRef: { current: { draftSessionId: SESSION_1, sourceSessionId: SESSION_1 } as never },
+        activeIdRef: { current: SESSION_1 },
+        prepareRevisionSend: async () => { events.push('copy'); return true; },
+        setNewTaskSendPending: () => {},
+        send: async () => { events.push('send'); return true; },
+      });
+      const sent = onSend('edited message', undefined, undefined, settlement);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      assert.deepEqual(events, [], 'nothing may copy or send while the Plan write is pending');
+      settle(outcome);
+      const result = await sent;
+      if (outcome) {
+        assert.notEqual(result, false);
+        assert.deepEqual(events, ['copy', 'send']);
+      } else {
+        assert.equal(result, false, 'a failed setting write keeps the draft');
+        assert.deepEqual(events, [], 'no copy is made from a failed Plan attempt');
+      }
+    } finally {
+      world.restoreWindow();
+    }
+  });
+}
+
+// #4695 review round 2: navigation keeps the Session id, so the wait must
+// re-check the surface and selection captured before it.
+test('#4695: a submit that navigates away while settings settle sends nothing', async () => {
+  const world = await mountRevisionWorld();
+  try {
+    let onSurface = true;
+    let captured = 0;
+    let settle!: (ok: boolean) => void;
+    const outcome = new Promise<boolean>((resolve) => { settle = resolve; });
+    const settlement = { settled: () => outcome };
+    const sends: string[] = [];
+    const onSend = createRevisionAwareOnSend({
+      ...world.ports,
+      activeIdRef: { current: SESSION_1 },
+      captureSubmitSurface: () => { captured += 1; return () => onSurface; },
+      setNewTaskSendPending: () => {},
+      send: async (text) => { sends.push(text); return true; },
+    });
+    const sent = onSend('start by submitting a plan', undefined, undefined, settlement);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(captured, 1, 'the surface is captured before the wait');
+    onSurface = false; // e.g. Extensions: same Session id, different surface
+    settle(true);
+    assert.equal(await sent, false);
+    assert.deepEqual(sends, []);
+  } finally {
+    world.restoreWindow();
+  }
+});
+
+test('#4695: a source write that fails while the revision copy is prepared stops the send', async () => {
+  const world = await mountRevisionWorld();
+  try {
+    const events: string[] = [];
+    const outcomes = [true, false];
+    const settlement = { settled: async () => outcomes.shift() ?? false };
+    const onSend = createRevisionAwareOnSend({
+      ...world.ports,
+      revisionDraftRef: { current: { draftSessionId: SESSION_1, sourceSessionId: SESSION_1 } as never },
+      activeIdRef: { current: SESSION_1 },
+      prepareRevisionSend: async () => { events.push('copy'); return true; },
+      setNewTaskSendPending: () => {},
+      send: async () => { events.push('send'); return true; },
+    });
+    assert.equal(await onSend('edited message', undefined, undefined, settlement), false);
+    assert.deepEqual(events, ['copy'], 'the prepared child is kept for an explicit retry, but nothing is sent');
+  } finally {
+    world.restoreWindow();
+  }
+});
+
+test('#4695: local slash commands do not wait on setting writes', async () => {
+  const world = await mountRevisionWorld();
+  try {
+    const settlement = { settled: () => new Promise<boolean>(() => {}) };
+    const onSend = createRevisionAwareOnSend({
+      ...world.ports,
+      activeIdRef: { current: SESSION_1 },
+      setNewTaskSendPending: () => {},
+      getActiveOrchestrationMode: () => 'default',
+      send: async () => assert.fail('/swarm status must not send'),
+    });
+    assert.equal(await onSend('/swarm status', undefined, undefined, settlement), true);
   } finally {
     world.restoreWindow();
   }

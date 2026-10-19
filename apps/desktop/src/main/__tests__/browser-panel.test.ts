@@ -35,6 +35,13 @@ const empty: BrowserState = {
   hasPage: false, secure: false, loadError: null,
 };
 const failed: BrowserState = { ...empty, loadError: { url: 'https://example.test/failed', code: -105 } };
+const toolbarActions = [
+  { method: 'back', label: 'backAria' },
+  { method: 'forward', label: 'forwardAria' },
+  { method: 'reload', label: 'refreshAria' },
+  { method: 'stop', label: 'stopAria' },
+  { method: 'close', label: 'closeAria' },
+] as const;
 let root: Root | undefined;
 let restore: (() => void) | undefined;
 
@@ -74,11 +81,11 @@ function setup() {
   return container;
 }
 
-function render(services: WorkbarServices, sessionId = 'a', hidden = false, locale: 'en' | 'zh-CN' | 'zh-TW' = 'en') {
+function render(services: WorkbarServices, sessionId = 'a', hidden = false, locale: 'en' | 'zh-CN' | 'zh-TW' = 'en', showPanel = true) {
   root!.render(createElement(LocaleProvider, {
     locale,
     children: createElement(ToastProvider, {
-      children: createElement(WorkbarServicesProvider, { services }, createElement(BrowserPanel, { sessionId, hidden })),
+      children: createElement(WorkbarServicesProvider, { services }, showPanel ? createElement(BrowserPanel, { sessionId, hidden }) : null),
     }),
   }));
 }
@@ -158,3 +165,66 @@ test('hiding and switching sessions cannot leak an old failure; showing reseeds 
   await act(async () => render(services, 'a'));
   assert.ok(container.querySelector('[role="alert"]'));
 });
+
+for (const action of toolbarActions) {
+  function actionServices(perform: (sessionId: string) => Promise<void>) {
+    const defaults = createFakeWorkbarServices();
+    return createFakeWorkbarServices({ browser: {
+      ...defaults.browser,
+      getState: async () => ({
+        ...empty, url: 'https://example.test/', hasPage: true, secure: true,
+        canGoBack: true, canGoForward: true, loading: action.method === 'stop',
+      }),
+      [action.method]: perform,
+    } });
+  }
+
+  for (const locale of ['en', 'zh-CN', 'zh-TW'] as const) {
+    test(`${action.method} reports one localized failure for its session in ${locale}`, async () => {
+      const container = setup();
+      const calls: string[] = [];
+      const services = actionServices(async (sessionId) => {
+        calls.push(sessionId);
+        throw new Error('private transport details');
+      });
+      await act(async () => render(services, 'a', false, locale));
+      const copy = getBrowserCopy(locale);
+      const button = container.querySelector<HTMLButtonElement>(`button[aria-label="${copy[action.label]}"]`);
+      assert.ok(button);
+      await act(async () => button.click());
+      assert.deepEqual(calls, ['a']);
+      const text = container.ownerDocument.body.textContent ?? '';
+      assert.equal(text.split(copy.actionFailed).length - 1, 1);
+      assert.ok(text.includes(copy.actionFailedDetail));
+      assert.ok(!text.includes('private transport details'));
+    });
+  }
+
+  for (const transition of ['success', 'switch-session', 'unmount'] as const) {
+    test(`${action.method} stays quiet after ${transition}`, async () => {
+      const container = setup();
+      const completion = deferred<void>();
+      const calls: string[] = [];
+      const services = actionServices((sessionId) => {
+        calls.push(sessionId);
+        return completion.promise;
+      });
+      await act(async () => render(services));
+      const copy = getBrowserCopy('en');
+      const button = container.querySelector<HTMLButtonElement>(`button[aria-label="${copy[action.label]}"]`);
+      assert.ok(button);
+      await act(async () => button.click());
+      assert.deepEqual(calls, ['a']);
+      if (transition === 'switch-session') await act(async () => render(services, 'b'));
+      if (transition === 'unmount') {
+        // Keep the toast provider alive so a late notification remains observable.
+        await act(async () => render(services, 'a', false, 'en', false));
+      }
+      await act(async () => {
+        if (transition === 'success') completion.resolve();
+        else completion.reject(new Error('late transport failure'));
+      });
+      assert.ok(!container.ownerDocument.body.textContent?.includes(copy.actionFailed));
+    });
+  }
+}

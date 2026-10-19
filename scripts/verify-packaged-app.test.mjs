@@ -42,6 +42,10 @@ import {
   stopChild,
 } from './verify-packaged-app.mjs';
 
+const { version: productVersion } = JSON.parse(
+  await readFile(new URL('../package.json', import.meta.url), 'utf8'),
+);
+
 test('stopChild waits for a process that ignores SIGTERM to exit before returning', {
   skip: process.platform === 'win32',
 }, async (t) => {
@@ -245,11 +249,13 @@ test('the upgrade baseline keeps the Git absence rule while relaxing newer resou
     requireCanonicalIcon: false,
     requireAppIconCatalog: false,
     requireDirectPeerArtifact: false,
+    requireMjsFilesystemWorker: false,
   });
 
   // A pinned baseline may predate any of these; none of them may be demanded
   // of bytes that were correct when they shipped.
   for (const path of [
+    join('resources', 'workers', 'filesystem-worker.mjs'),
     join('resources', 'assets', 'icon.png'),
     join('resources', 'licenses', 'maka', 'DISCLAIMER-WIP'),
     join('resources', 'runtime-host-peer', 'maka_runtime_host_peer.node'),
@@ -498,7 +504,7 @@ test('accepts the Intel Mach-O architecture for an x64 package', async () => {
     'provider: github\nowner: apache\nrepo: maka\nchannel: dev\nupdaterCacheDirName: "@makadesktop-updater"\n',
   );
   await writeFile(join(resources, 'icon.icns'), RENDERABLE_ICNS);
-  const version = '0.2.0-dev.14.20260902';
+  const version = `${productVersion}-dev.14.20260902`;
   const app = join(dirname(resources), 'Maka.app');
   await mkdir(join(app, 'Contents'), { recursive: true });
   await rename(resources, join(app, 'Contents', 'Resources'));
@@ -709,6 +715,27 @@ describe('assertRenderableAppIcon', () => {
 });
 
 describe('assertPackagedDependencyClosure', () => {
+  test('requires a relative runtime import to exist inside the shipped archive', async () => {
+    const distFiles = {
+      'main/workhub-remote-bridge.js':
+        "import { readWorkHubTopicAssociation } from '../shared/workhub-topic-association.js';\n",
+    };
+    await assert.rejects(
+      assertPackagedDependencyClosure(await makeResources({ distFiles }), options),
+      /workhub-remote-bridge\.js.*missing file.*shared\/workhub-topic-association\.js/u,
+    );
+    await assertPackagedDependencyClosure(
+      await makeResources({
+        distFiles: {
+          ...distFiles,
+          'shared/workhub-topic-association.js':
+            'export function readWorkHubTopicAssociation() {}\n',
+        },
+      }),
+      options,
+    );
+  });
+
   test('accepts an artifact whose asar, bundle record, and shipped notices match', async () => {
     const resources = await makeResources();
     await assertPackagedDependencyClosure(resources, options);

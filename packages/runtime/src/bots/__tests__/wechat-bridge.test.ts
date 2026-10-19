@@ -23,6 +23,7 @@ import { describe, test } from 'node:test';
 import { createDefaultBotChannel } from '@maka/core/bot-chat-settings';
 import { botReadinessFromSettings, botSettingsRequireRestart } from '../base-adapter.js';
 import {
+  WechatBridge,
   getWechatBridgeQrCode,
   mapWechatIlinkMessage,
   mapWechatBridgeMessage,
@@ -256,4 +257,185 @@ describe('WechatBridge', () => {
 
     assert.deepEqual(parsed, [{ id: 1 }, [{ id: 2 }, { id: 3 }]]);
   });
+});
+
+test('iLink uses the latest per-user reply context, persists it, and rejects HTTP-200 business failures', async () => {
+  const { MockAgent, getGlobalDispatcher, setGlobalDispatcher } = await import('undici');
+  const { mkdtemp, readFile, readdir, rm, stat } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const dir = await mkdtemp(join(tmpdir(), 'wechat-context-'));
+  const previous = getGlobalDispatcher();
+  const mock = new MockAgent();
+  mock.disableNetConnect();
+  setGlobalDispatcher(mock);
+  const pool = mock.get('https://ilinkai.weixin.qq.com');
+  for (const kind of ['start', 'stop'])
+    pool
+      .intercept({ path: `/ilink/bot/msg/notify${kind}`, method: 'POST' })
+      .reply(200, { ret: 0 })
+      .persist();
+  const posted: any[] = [];
+  let fail = false;
+  pool
+    .intercept({ path: '/ilink/bot/sendmessage', method: 'POST' })
+    .reply(200, (req) => {
+      posted.push(JSON.parse(String(req.body)));
+      return fail ? { ret: -2 } : { ret: 0 };
+    })
+    .persist();
+  pool.intercept({ path: '/ilink/bot/getupdates', method: 'POST' }).reply(200, {
+    ret: 0,
+    msgs: [
+      {
+        message_type: 1,
+        from_user_id: 'owner',
+        context_token: 'latest-owner-context',
+        message_id: 'm1',
+        item_list: [{ type: 1, text_item: { text: 'hi' } }],
+      },
+      {
+        message_type: 1,
+        from_user_id: 'stranger',
+        context_token: 'wrong-context',
+        message_id: 'm2',
+        item_list: [{ type: 1, text_item: { text: 'no' } }],
+      },
+    ],
+  });
+  pool
+    .intercept({ path: '/ilink/bot/getupdates', method: 'POST' })
+    .reply(200, { ret: 0, msgs: [] })
+    .persist();
+  const config = {
+    ...createDefaultBotChannel('wechat'),
+    enabled: true,
+    token: 'test-token',
+    webhookUrl: 'https://ilinkai.weixin.qq.com',
+    botUserId: 'bot',
+    allowedUserIds: ['owner'],
+  };
+  let bridge = new WechatBridge(config, dir);
+  try {
+    const received = new Promise<void>((resolve) => bridge.once('message', () => resolve()));
+    await bridge.start();
+    await received;
+    assert.ok(await bridge.sendMessage('owner', 'reply'));
+    assert.equal(posted[0].msg.context_token, 'latest-owner-context');
+    assert.ok(await bridge.sendMessage('stranger', 'test-context-isolation'));
+    assert.equal(posted[1].msg.context_token, undefined);
+    fail = true;
+    assert.equal(await bridge.sendMessage('owner', 'rejected'), null);
+    assert.equal(bridge.getStatus().readiness, 'degraded');
+    const files = await readdir(dir);
+    assert.equal(files.length, 1);
+    assert.equal((await stat(join(dir, files[0]!))).mode & 0o777, 0o600);
+    assert.doesNotMatch(await readFile(join(dir, files[0]!), 'utf8'), /wrong-context/);
+    await bridge.stop();
+    bridge = new WechatBridge(config, dir);
+    fail = false;
+    await bridge.start();
+    assert.ok(await bridge.sendMessage('owner', 'after restart'));
+    assert.equal(posted.at(-1).msg.context_token, 'latest-owner-context');
+    assert.equal(
+      mapWechatIlinkMessage({
+        message_type: 2,
+        from_user_id: 'bot',
+        item_list: [{ type: 1, text_item: { text: 'echo' } }],
+      }),
+      null,
+    );
+  } finally {
+    await bridge.stop();
+    setGlobalDispatcher(previous);
+    await mock.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('iLink typing fetches and caches tickets, cancels, isolates users, and preserves server message IDs', async () => {
+  const { MockAgent, getGlobalDispatcher, setGlobalDispatcher } = await import('undici');
+  const previous = getGlobalDispatcher();
+  const mock = new MockAgent();
+  mock.disableNetConnect();
+  setGlobalDispatcher(mock);
+  const pool = mock.get('https://ilinkai.weixin.qq.com');
+  const events: string[] = [];
+  const typing: any[] = [];
+  let configs = 0;
+  let failTyping = false;
+  pool
+    .intercept({ path: '/ilink/bot/getupdates', method: 'POST' })
+    .reply(200, { ret: 0, msgs: [] })
+    .persist();
+  for (const kind of ['start', 'stop'])
+    pool
+      .intercept({ path: `/ilink/bot/msg/notify${kind}`, method: 'POST' })
+      .reply(200, () => {
+        events.push(kind);
+        return { ret: -1 }; // Advisory failures must not disable chat.
+      })
+      .persist();
+  pool
+    .intercept({ path: '/ilink/bot/getconfig', method: 'POST' })
+    .reply(200, (req) => {
+      assert.equal(JSON.parse(String(req.body)).ilink_user_id, 'owner');
+      configs++;
+      return { ret: 0, typing_ticket: 'ticket' };
+    })
+    .persist();
+  pool
+    .intercept({ path: '/ilink/bot/sendtyping', method: 'POST' })
+    .reply(200, (req) => {
+      const body = JSON.parse(String(req.body));
+      typing.push(body);
+      assert.equal(body.typing_ticket, 'ticket');
+      return { ret: failTyping ? -1 : 0 };
+    })
+    .persist();
+  pool
+    .intercept({ path: '/ilink/bot/sendmessage', method: 'POST' })
+    .reply(200, '{"ret":0,"message_id":18446744073709551614}')
+    .persist();
+  const bridge = new WechatBridge({
+    ...createDefaultBotChannel('wechat'),
+    enabled: true,
+    token: 'synthetic',
+    webhookUrl: 'https://ilinkai.weixin.qq.com',
+    botUserId: 'bot',
+    allowedUserIds: ['owner'],
+  });
+  try {
+    await bridge.start();
+    assert.equal(await bridge.sendTypingIndicator('stranger'), false);
+    assert.equal(configs, 0);
+    assert.deepEqual(
+      await Promise.all([
+        bridge.sendTypingIndicator('owner'),
+        bridge.sendTypingIndicator('owner'),
+        bridge.cancelTypingIndicator('owner'),
+      ]),
+      [true, true, true],
+    );
+    assert.equal(configs, 1);
+    assert.deepEqual(
+      typing.map((x) => x.status),
+      [1, 1, 2],
+    );
+    failTyping = true;
+    assert.equal(await bridge.sendTypingIndicator('owner'), false);
+    assert.equal(bridge.isRunning(), true);
+    failTyping = false;
+    assert.equal(await bridge.sendTypingIndicator('owner'), true);
+    assert.equal(configs, 2);
+    assert.equal(await bridge.sendMessage('owner', 'hi'), '18446744073709551614');
+    await bridge.stop();
+    assert.equal(typing.at(-1).status, 2);
+    assert.deepEqual(events, ['start', 'stop']);
+    assert.equal(await bridge.sendTypingIndicator('owner'), false);
+  } finally {
+    await bridge.stop();
+    setGlobalDispatcher(previous);
+    await mock.close();
+  }
 });

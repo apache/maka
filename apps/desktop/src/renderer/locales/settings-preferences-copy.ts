@@ -18,7 +18,7 @@
  */
 import type { AppIcon, ThemePalette, ThemePreference } from '@maka/core/settings';
 
-import type { UiCatalog, UiLocale, UiLocalePreference } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, type UiLocalePreference, defineShippedUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 type OptionCopy = { label: string; help: string };
 
@@ -170,6 +170,8 @@ export type SettingsPreferencesCopy = {
     workspaceInstructions: string;
     workspaceInstructionsHelp: string;
     workspaceInstructionsFailed: string;
+    personalAssistant: string;
+    personalAssistantHelp: string;
     workHub: string;
     workHubHelp: string;
     workHubFailed: string;
@@ -267,9 +269,7 @@ export type SettingsPreferencesCopy = {
     value: string;
   };
 };
-
-const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
-  'zh-CN': {
+const settingsPreferencesCopyByLocaleZhCn: SettingsPreferencesCopy = {
     personalization: {
       saveFailed: '保存失败', displayName: '显示名称', displayNameHelp: 'Maka 在聊天里会以这个名字称呼你。留空就用默认的“你”。', displayNamePlaceholder: '例如：JK', displayNameUnset: '未设置，Maka 会称呼你“你”', displayNameChange: '更改', displayNameSet: '设置',
       interfaceLanguage: '界面语言', interfaceLanguageHelp: '选择 Maka 界面的显示语言。切换后立即生效，重启后保持。', localeOptions: [['auto', '跟随系统'], ['zh-CN', '简体中文'], ['zh-TW', '繁體中文'], ['en', 'English']],
@@ -337,9 +337,9 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
     },
     general: {
       codeModeHelp: '开启后，新任务通过代码编排和调用工具。WorkHub 从下一轮起采用新设置，其他已有任务保持不变。',
-      incognito: '隐身模式', incognitoHelp: '开启后暂停本地记忆读写、联网搜索和定时任务触发。', enableIncognito: '启用隐身模式', incognitoFailed: '隐身模式切换失败', notifications: '发送系统通知', notificationsHelp: '窗口不在前台时，在回答完成、出错或等你回答时发送桌面通知。', notificationsFailed: '通知设置切换失败', workspaceInstructions: '遵循项目指令', workspaceInstructionsHelp: '自动读取每个项目中已有的 AGENTS.md、CLAUDE.md 或 GEMINI.md；文件仍由各自项目管理。', workspaceInstructionsFailed: '项目指令设置切换失败', workHub: '启用 WorkHub', workHubHelp: 'WorkHub 目前仍不可用。此开关仅供开发测试，开启后也不能保证正常使用。', workHubFailed: 'WorkHub 设置切换失败', updateFailed: '设置未生效，请稍后重试。',
+      incognito: '隐身模式', incognitoHelp: '开启后暂停本地记忆读写、联网搜索和定时任务触发。', enableIncognito: '启用隐身模式', incognitoFailed: '隐身模式切换失败', notifications: '发送系统通知', notificationsHelp: '窗口不在前台时，在回答完成、出错或等你回答时发送桌面通知。', notificationsFailed: '通知设置切换失败', workspaceInstructions: '遵循项目指令', workspaceInstructionsHelp: '自动读取每个项目中已有的 AGENTS.md、CLAUDE.md 或 GEMINI.md；文件仍由各自项目管理。', workspaceInstructionsFailed: '项目指令设置切换失败', personalAssistant: '启用个人助手', personalAssistantHelp: '在当前 Host 上启用个人助手入口、记忆索引、主动发现和持续任务。关闭会停止相关后台工作并保留数据；详细设置见「个人助手」。', workHub: '启用 WorkHub', workHubHelp: 'WorkHub 目前仍不可用。此开关仅供开发测试，开启后也不能保证正常使用。', workHubFailed: 'WorkHub 设置切换失败', updateFailed: '设置未生效，请稍后重试。',
       defaultModel: '默认模型', defaultModelHelp: '新任务默认使用的模型。', notSet: '未设置', saveDefaultModelFailed: '保存默认模型失败', defaultPermission: '默认权限模式', defaultPermissionHelp: '新任务默认使用的权限模式；可在任务内随时切换。', saveDefaultPermissionFailed: '保存默认权限模式失败',
-      shellPreference: 'Bash 工具 shell', shellPreferenceHelp: '自动模式保持 Windows 的 PowerShell 优先规则；Git Bash 是仅对当前 Runtime Host 生效的显式覆盖。', shellAuto: '自动（推荐）', shellGitBash: 'Git Bash', shellExecutable: 'Git Bash 可执行文件', shellExecutableHelp: '填写 Runtime Host 所在 Windows 机器上 bash.exe 的绝对路径。也支持该机器上的旧版 System32 WSL Bash；保存时会验证 GNU Bash。', saveShell: '保存 shell 设置', savingShell: '正在保存…', shellSaved: '已保存', saveShellFailed: '保存 shell 设置失败', shellExecutableRejected: '当前 Runtime Host 无法把该路径作为 GNU Bash 运行。请检查 Host 是否为 Windows、路径是否存在，并确认文件名为 bash.exe。',
+      shellPreference: 'Bash 工具 shell', shellPreferenceHelp: '自动模式保持 Windows 的 PowerShell 优先规则；Git Bash 是仅对当前 Runtime Host 生效的显式覆盖。', shellAuto: '自动（推荐）', shellGitBash: 'Git Bash', shellExecutable: 'Git Bash 可执行文件', shellExecutableHelp: '填写 Runtime Host 所在 Windows 机器上 bash.exe 的绝对路径。也支持该机器上的旧版 System32 WSL Bash；保存时会验证 GNU Bash。', saveShell: '保存 shell 设置', savingShell: '正在保存…', shellSaved: '已保存 shell 设置', saveShellFailed: '保存 shell 设置失败', shellExecutableRejected: '当前 Runtime Host 无法把该路径作为 GNU Bash 运行。请检查 Host 是否为 Windows、路径是否存在，并确认文件名为 bash.exe。',
       proxy: '代理服务器', proxyHelp: '为 AI 模型请求配置网络代理', enableProxy: '启用代理服务器', saveNetworkFailed: '保存网络设置失败', proxyProtocol: '代理协议', serverAddress: '服务器地址', port: '端口', proxyAuth: '代理认证', proxyAuthHelp: '需要用户名和密码时开启。', enableProxyAuth: '启用代理认证', username: '用户名', password: '密码', bypassList: '代理白名单', bypassHelp: (count) => `这些域名将绕过代理直连，多个用逗号分隔。已自动添加 ${count} 个域名。代理仅作用于 AI 模型请求。`, testing: '测试中…', testCurrent: '测试当前配置', proxyReachable: '代理可达', proxyTestFailed: '代理测试失败', proxyTestError: '代理测试出错',
       passwordSavedPlaceholder: '密码已保存；输入新密码以替换',
     },
@@ -374,8 +374,8 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
       sourceCode: '源码', releaseNotes: '发行说明',
     },
     password: { copyFailed: '复制失败', clipboardUnavailable: '剪贴板不可用或被系统拒绝。', copying: '复制中', copied: '已复制', copy: '复制', hide: '隐藏', show: '显示', value: '凭据值' },
-  },
-  'zh-TW': {
+  };
+const settingsPreferencesCopyByLocaleZhTw: SettingsPreferencesCopy = {
     personalization: {
       saveFailed: '儲存失敗', displayName: '顯示名稱', displayNameHelp: 'Maka 在聊天裡會以這個名字稱呼你。留空就用預設的“你”。', displayNamePlaceholder: '例如：JK', displayNameUnset: '未設定，Maka 會稱呼你“你”', displayNameChange: '更改', displayNameSet: '設定',
       interfaceLanguage: '介面語言', interfaceLanguageHelp: '選擇 Maka 介面的顯示語言。切換後立即生效，重新啟動後仍會保留。', localeOptions: [['auto', '自動（跟隨系統）'], ['zh-CN', '简体中文'], ['zh-TW', '繁體中文'], ['en', 'English']],
@@ -443,9 +443,9 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
     },
     general: {
       codeModeHelp: '開啟後，新任務透過程式碼編排和呼叫工具。WorkHub 從下一輪起套用新設定，其他既有任務保持不變。',
-      incognito: '隱身模式', incognitoHelp: '開啟後暫停本地記憶讀寫、聯網搜尋和定時任務觸發。', enableIncognito: '啟用隱身模式', incognitoFailed: '隱身模式切換失敗', notifications: '傳送系統通知', notificationsHelp: '視窗不在前臺時，在回答完成、出錯或等你回答時傳送桌面通知。', notificationsFailed: '通知設定切換失敗', workspaceInstructions: '遵循專案指令', workspaceInstructionsHelp: '自動讀取每個專案中已有的 AGENTS.md、CLAUDE.md 或 GEMINI.md；檔案仍由各自專案管理。', workspaceInstructionsFailed: '專案指令設定切換失敗', workHub: '啟用 WorkHub', workHubHelp: '在一個入口檢視已有工作，並將新輸入保守地送往普通任務。', workHubFailed: 'WorkHub 設定切換失敗', updateFailed: '設定未生效，請稍後重試。',
+      incognito: '隱身模式', incognitoHelp: '開啟後暫停本地記憶讀寫、聯網搜尋和定時任務觸發。', enableIncognito: '啟用隱身模式', incognitoFailed: '隱身模式切換失敗', notifications: '傳送系統通知', notificationsHelp: '視窗不在前臺時，在回答完成、出錯或等你回答時傳送桌面通知。', notificationsFailed: '通知設定切換失敗', workspaceInstructions: '遵循專案指令', workspaceInstructionsHelp: '自動讀取每個專案中已有的 AGENTS.md、CLAUDE.md 或 GEMINI.md；檔案仍由各自專案管理。', workspaceInstructionsFailed: '專案指令設定切換失敗', personalAssistant: '啟用個人助理', personalAssistantHelp: '在目前 Host 上啟用個人助理入口、記憶索引、主動探索與持續任務。關閉會停止相關背景工作並保留資料；詳細設定見「個人助理」。', workHub: '啟用 WorkHub', workHubHelp: '在一個入口檢視已有工作，並將新輸入保守地送往普通任務。', workHubFailed: 'WorkHub 設定切換失敗', updateFailed: '設定未生效，請稍後重試。',
       defaultModel: '預設模型', defaultModelHelp: '新任務預設使用的模型。', notSet: '未設定', saveDefaultModelFailed: '儲存預設模型失敗', defaultPermission: '預設權限模式', defaultPermissionHelp: '新任務預設使用的權限模式；可在任務內隨時切換。', saveDefaultPermissionFailed: '儲存預設權限模式失敗',
-      shellPreference: 'Bash 工具 shell', shellPreferenceHelp: '自動模式保持 Windows 的 PowerShell 優先規則；Git Bash 是僅對目前 Runtime Host 生效的顯式覆蓋。', shellAuto: '自動（推薦）', shellGitBash: 'Git Bash', shellExecutable: 'Git Bash 執行檔', shellExecutableHelp: '填寫 Runtime Host 所在 Windows 機器上 bash.exe 的絕對路徑。也支援該機器上的舊版 System32 WSL Bash；儲存時會驗證 GNU Bash。', saveShell: '儲存 shell 設定', savingShell: '正在儲存…', shellSaved: '已儲存', saveShellFailed: '儲存 shell 設定失敗', shellExecutableRejected: '目前 Runtime Host 無法把該路徑作為 GNU Bash 執行。請檢查 Host 是否為 Windows、路徑是否存在，並確認檔名為 bash.exe。',
+      shellPreference: 'Bash 工具 shell', shellPreferenceHelp: '自動模式保持 Windows 的 PowerShell 優先規則；Git Bash 是僅對目前 Runtime Host 生效的顯式覆蓋。', shellAuto: '自動（推薦）', shellGitBash: 'Git Bash', shellExecutable: 'Git Bash 執行檔', shellExecutableHelp: '填寫 Runtime Host 所在 Windows 機器上 bash.exe 的絕對路徑。也支援該機器上的舊版 System32 WSL Bash；儲存時會驗證 GNU Bash。', saveShell: '儲存 shell 設定', savingShell: '正在儲存…', shellSaved: '已儲存 shell 設定', saveShellFailed: '儲存 shell 設定失敗', shellExecutableRejected: '目前 Runtime Host 無法把該路徑作為 GNU Bash 執行。請檢查 Host 是否為 Windows、路徑是否存在，並確認檔名為 bash.exe。',
       proxy: '代理伺服器', proxyHelp: '為 AI 模型請求設定網路代理', enableProxy: '啟用代理伺服器', saveNetworkFailed: '儲存網路設定失敗', proxyProtocol: '代理協議', serverAddress: '伺服器地址', port: '埠', proxyAuth: '代理認證', proxyAuthHelp: '需要使用者名稱和密碼時開啟。', enableProxyAuth: '啟用代理認證', username: '使用者名稱', password: '密碼', bypassList: '代理白名單', bypassHelp: (count) => `這些域名將繞過代理直連，多個用逗號分隔。已自動新增 ${count} 個域名。代理僅作用於 AI 模型請求。`, testing: '測試中…', testCurrent: '測試目前設定', proxyReachable: '代理可達', proxyTestFailed: '代理測試失敗', proxyTestError: '代理測試出錯',
       passwordSavedPlaceholder: '密碼已儲存；輸入新密碼以替換',
     },
@@ -472,8 +472,8 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
       sourceCode: '原始碼', releaseNotes: '發行說明',
     },
     password: { copyFailed: '複製失敗', clipboardUnavailable: '剪貼簿不可用或被系統拒絕。', copying: '複製中', copied: '已複製', copy: '複製', hide: '隱藏', show: '顯示', value: '憑據值' },
-  },
-  en: {
+  };
+const settingsPreferencesCopyByLocaleEn: SettingsPreferencesCopy = {
     personalization: {
       saveFailed: 'Could not save', displayName: 'Display name', displayNameHelp: 'Maka uses this name when addressing you. Leave it blank to use “you”.', displayNamePlaceholder: 'For example: JK', displayNameUnset: 'Not set — Maka will say “you”', displayNameChange: 'Change', displayNameSet: 'Set', interfaceLanguage: 'Interface language', interfaceLanguageHelp: 'Choose the language used by Maka. Changes apply immediately and persist after restart.', localeOptions: [['auto', 'Follow system'], ['zh-CN', 'Simplified Chinese'], ['zh-TW', 'Traditional Chinese'], ['en', 'English']], assistantTone: 'Assistant tone', assistantToneHelp: 'Up to 500 characters. This changes response style only; permission and safety rules still apply. Changes save automatically.', assistantTonePlaceholder: 'For example: technically rigorous, concise, and no emoji.',
     },
@@ -506,8 +506,8 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
     },
     general: {
       codeModeHelp: 'New tasks use code to compose and call tools. WorkHub applies changes on its next turn; other existing tasks keep their mode.',
-      incognito: 'Incognito mode', incognitoHelp: 'Pause local memory, web search, and scheduled task triggers.', enableIncognito: 'Enable incognito mode', incognitoFailed: 'Could not change incognito mode', notifications: 'Send system notifications', notificationsHelp: 'Notify when a response finishes, fails, or needs your answer while the window is in the background.', notificationsFailed: 'Could not change notification settings', workspaceInstructions: 'Follow project instructions', workspaceInstructionsHelp: 'Automatically read existing AGENTS.md, CLAUDE.md, or GEMINI.md files in each project. Manage the files in their respective projects.', workspaceInstructionsFailed: 'Could not change project instruction settings', workHub: 'Enable WorkHub', workHubHelp: 'WorkHub is not available yet. This toggle is for development testing and does not enable a usable feature.', workHubFailed: 'Could not change WorkHub setting', updateFailed: 'The setting was not applied. Try again later.', defaultModel: 'Default model', defaultModelHelp: 'Model used by new tasks.', notSet: 'Not set', saveDefaultModelFailed: 'Could not save the default model', defaultPermission: 'Default permission mode', defaultPermissionHelp: 'Initial permission mode for new tasks; it can be changed at any time.', saveDefaultPermissionFailed: 'Could not save the default permission mode', proxy: 'Proxy server', proxyHelp: 'Configure a network proxy for AI model requests', enableProxy: 'Enable proxy server', saveNetworkFailed: 'Could not save network settings', proxyProtocol: 'Proxy protocol', serverAddress: 'Server address', port: 'Port', proxyAuth: 'Proxy authentication', proxyAuthHelp: 'Enable this when a username and password are required.', enableProxyAuth: 'Enable proxy authentication', username: 'Username', password: 'Password', bypassList: 'Proxy bypass list', bypassHelp: (count) => `These domains connect directly. Separate multiple domains with commas. ${count} ${count === 1 ? 'domain was' : 'domains were'} added automatically. The proxy applies to AI model requests only.`, testing: 'Testing…', testCurrent: 'Test current configuration', proxyReachable: 'Proxy is reachable', proxyTestFailed: 'Proxy test failed', proxyTestError: 'Could not test proxy',
-      shellPreference: 'Bash tool shell', shellPreferenceHelp: 'Automatic keeps the PowerShell-first Windows default. Git Bash is an explicit override for the current Runtime Host.', shellAuto: 'Automatic (recommended)', shellGitBash: 'Git Bash', shellExecutable: 'Git Bash executable', shellExecutableHelp: 'Enter the absolute path to bash.exe on the Windows machine running the Runtime Host. The legacy System32 WSL Bash shim is also recognized; Maka verifies GNU Bash before saving.', saveShell: 'Save shell setting', savingShell: 'Saving…', shellSaved: 'Saved', saveShellFailed: 'Could not save shell setting', shellExecutableRejected: 'The current Runtime Host could not run that path as GNU Bash. Check that the Host runs Windows, the path exists, and the file is named bash.exe.',
+      incognito: 'Incognito mode', incognitoHelp: 'Pause local memory, web search, and scheduled task triggers.', enableIncognito: 'Enable incognito mode', incognitoFailed: 'Could not change incognito mode', notifications: 'Send system notifications', notificationsHelp: 'Notify when a response finishes, fails, or needs your answer while the window is in the background.', notificationsFailed: 'Could not change notification settings', workspaceInstructions: 'Follow project instructions', workspaceInstructionsHelp: 'Automatically read existing AGENTS.md, CLAUDE.md, or GEMINI.md files in each project. Manage the files in their respective projects.', workspaceInstructionsFailed: 'Could not change project instruction settings', personalAssistant: 'Enable personal assistant', personalAssistantHelp: 'Enable the assistant entry, memory indexes, proactive discovery, and ongoing tasks on this Host. Turning it off stops related background work and keeps your data. See Personal Assistant for detailed settings.', workHub: 'Enable WorkHub', workHubHelp: 'WorkHub is not available yet. This toggle is for development testing and does not enable a usable feature.', workHubFailed: 'Could not change WorkHub setting', updateFailed: 'The setting was not applied. Try again later.', defaultModel: 'Default model', defaultModelHelp: 'Model used by new tasks.', notSet: 'Not set', saveDefaultModelFailed: 'Could not save the default model', defaultPermission: 'Default permission mode', defaultPermissionHelp: 'Initial permission mode for new tasks; it can be changed at any time.', saveDefaultPermissionFailed: 'Could not save the default permission mode', proxy: 'Proxy server', proxyHelp: 'Configure a network proxy for AI model requests', enableProxy: 'Enable proxy server', saveNetworkFailed: 'Could not save network settings', proxyProtocol: 'Proxy protocol', serverAddress: 'Server address', port: 'Port', proxyAuth: 'Proxy authentication', proxyAuthHelp: 'Enable this when a username and password are required.', enableProxyAuth: 'Enable proxy authentication', username: 'Username', password: 'Password', bypassList: 'Proxy bypass list', bypassHelp: (count) => `These domains connect directly. Separate multiple domains with commas. ${count} ${count === 1 ? 'domain was' : 'domains were'} added automatically. The proxy applies to AI model requests only.`, testing: 'Testing…', testCurrent: 'Test current configuration', proxyReachable: 'Proxy is reachable', proxyTestFailed: 'Proxy test failed', proxyTestError: 'Could not test proxy',
+      shellPreference: 'Bash tool shell', shellPreferenceHelp: 'Automatic keeps the PowerShell-first Windows default. Git Bash is an explicit override for the current Runtime Host.', shellAuto: 'Automatic (recommended)', shellGitBash: 'Git Bash', shellExecutable: 'Git Bash executable', shellExecutableHelp: 'Enter the absolute path to bash.exe on the Windows machine running the Runtime Host. The legacy System32 WSL Bash shim is also recognized; Maka verifies GNU Bash before saving.', saveShell: 'Save shell setting', savingShell: 'Saving…', shellSaved: 'Shell setting saved', saveShellFailed: 'Could not save shell setting', shellExecutableRejected: 'The current Runtime Host could not run that path as GNU Bash. Check that the Host runs Windows, the path exists, and the file is named bash.exe.',
       passwordSavedPlaceholder: 'Password saved; enter a new password to replace it',
     },
     about: {
@@ -541,8 +541,9 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
       sourceCode: 'Source code', releaseNotes: 'Release notes',
     },
     password: { copyFailed: 'Copy failed', clipboardUnavailable: 'The clipboard is unavailable or access was denied.', copying: 'Copying', copied: 'Copied', copy: 'Copy', hide: 'Hide', show: 'Show', value: 'credential value' },
-  },
-} satisfies UiCatalog<SettingsPreferencesCopy>;
+  };
+
+const SETTINGS_PREFERENCES_COPY_BY_LOCALE = resolveUiMessageCatalog(defineShippedUiMessageCatalog<SettingsPreferencesCopy>()({ 'zh-CN': settingsPreferencesCopyByLocaleZhCn, 'zh-TW': settingsPreferencesCopyByLocaleZhTw, en: settingsPreferencesCopyByLocaleEn })) satisfies UiCatalog<SettingsPreferencesCopy>;
 
 export function getSettingsPreferencesCopy(locale: UiLocale): SettingsPreferencesCopy {
   return SETTINGS_PREFERENCES_COPY_BY_LOCALE[locale];

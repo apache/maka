@@ -33,11 +33,11 @@ release commit 中的 [DISCLAIMER-WIP](https://github.com/apache/maka/blob/main/
 [Maka podling 状态页](https://incubator.apache.org/projects/maka.html)。本段仅为中文说明，
 英文免责声明以随包发布的 `DISCLAIMER-WIP` 为准。
 
-> **Beta：**CLI 仍在积极开发中，稳定版发布前，命令和本地数据格式可能发生变化。
+> **Beta**：CLI 仍在积极开发中，稳定版发布前，命令和本地数据格式可能发生变化。
 
 ## 环境要求
 
-- Node.js 22.19.0 或更高版本；
+- Node.js 22.19.0 或更高的 22.x 版本，或 24.0.0 及以上版本（不支持 Node 23）；
 - 使用 TUI 时需要支持交互输入的终端；
 - 执行 Agent Turn 时需要已经配置的模型连接；首次设置目前支持使用 API Key 的供应商。
 
@@ -105,6 +105,104 @@ maka run --help
 
 Maka 默认会在执行高权限工具操作前询问。`maka run --yolo` 会授予该任务完整的文件和网络
 权限，只应在你允许任务修改的环境中使用。
+
+
+主代理可以请求结构化结果，或显式提交后返回：
+
+```sh
+maka run "检查这个项目" --json
+maka run "检查这个项目" --no-wait
+```
+
+这两种调用的 JSON 结果都包含 `sessionId`。普通调用仍默认等待并输出最终答案。
+`--no-wait` 在提交被接收后返回；使用会话 ID 查询后续结果。假设返回的会话 ID 保存在
+`$session` 中：
+
+```sh
+maka run --session "$session" --status
+maka run --session "$session" --wait --json
+maka run --session "$session" --answer '["是",null]' --wait --json
+maka run --session "$session" "接下来检查测试" --queue --wait --json
+maka run --session "$session" "重点检查参数解析" --steer --no-wait
+maka run --session "$session" --result --json
+maka run --session "$session" --resume --wait --json
+```
+
+会话控制（`--session`）与继承模型、工作目录一样，继承 Host 已保存的权限。续跑、queue、
+steer 和回答问题不需要重复 `--yolo`，也不会改变执行边界；只有要显式授予完整权限时才加
+`--yolo`。`--status` 会报告 `executionBoundary`：受管 `read_only`/`writable`、bypass 或 external。
+只读任务描述不等于强制只读沙箱，继承 bypass 的会话依然是完整权限。旧阻塞选择器
+`--resume <id>` 对 bypass 会话仍保留显式 `--yolo` 要求。
+
+内置 AskUser 是普通阻塞运行的例外：它会输出问题 JSON 而不是最终答案。脚本应使用 `--json`
+并检查 `status`，不能仅凭退出码 0 判断任务完成。普通内置 AskUser 会以退出码 0 返回
+`needs_input`、问题及选项，Host 保留等待中的 Turn。
+`--answer` 使用 JSON 数组，为每个问题提供一个字符串或 `null`，回答后原工具调用和原 Turn
+继续执行，无需 `--resume`。答案提交失败或结果不确定时不会自动重发；先重新读取当前问题，
+再决定下一步。存在多批待回答问题时会如实报告，无法唯一选择当前批次时拒绝提交答案。
+
+对于 Host 持有的会话执行，`--wait` 和 `--status` 遇到沙箱扩展请求会返回 `needs_approval`，
+并在 `approvalRequests` 中列出 `kind`、扩展范围 `expansion` 和理由 `justification`；内部请求
+ID 不暴露。查看范围后，选择批准或拒绝：
+
+```sh
+maka run --session "$session" --approve --wait --json
+maka run --session "$session" --deny --wait --json
+```
+
+上面两条命令是二选一，不能顺序执行。它们都继续原 Turn，要求会话中恰好有一个待处理沙箱
+请求；没有请求或存在多个请求时拒绝提交决定。它们无需 `--yolo`，也不能与之混用。批准通过
+Host 扩展受管沙箱边界，并保存供该会话后续执行使用，不会将会话切换为 bypass。命令针对
+本次连接时待处理的请求；结果
+不确定时不要自动重试，应先读取当前请求，再决定下一步。普通阻塞运行仍保留原有的沙箱
+边界自动拒绝行为。
+
+协调线程推荐先后台入队，再处理会话交互：
+
+```sh
+maka run --session "$session" "接下来检查测试" --queue --no-wait --json
+maka run --session "$session" --wait --json
+```
+
+工作会话提交回执中的 `submission` 为 `started`、`queued` 或 `steering`，只表示接收方式；`status`
+描述当前观察到的会话，不表示刚提交的消息已完成。排队回执可同时带有 `needs_input` 和当前
+Turn 的问题，或 `needs_approval` 和沙箱请求；先回答交互，后续消息才能执行。`queued` 是观察到
+的后续消息与 steer 总数，不是精确排队位置；回执快照未追上接收结果时省略该计数，
+可用 status 读取新状态。Host 发布重试状态时，status 还会带上
+`providerRetry`，不会根据静默时间猜测活动。
+
+助手 Inbox 会话返回 `submission: "inbox"`，不包含工作 Turn 的结果或队列计数，即使指定 `--wait` 也立即返回接收回执。这仅确认消息已进入 Inbox；委派工作的结果需通过对应工作会话查询。
+
+默认使用 queue，每条显式排队消息对应一个独立后续 Turn。steer 沿用 Host 当前 Turn 的追加
+机制，错过最后处理边界时可能进入后续 Turn。提交排队消息时的 `--wait` 跟踪该消息对应的执行，不会返回前一 Turn 阻塞队列的问题；
+这类问题要通过独立的会话 wait/answer 处理，或采用上面的协调流程。steer 配合 `--wait` 观察连接时选定的
+Turn，不保证追加消息一定在该 Turn 结束前消费。
+单独 `--wait` 在连接时固定目标，空闲时读取最近结果。`--result` 不等待仍在执行的 Turn。
+状态和结果查询不准备模型、不启动 MCP。用 Ctrl+C 退出会话观察会让 Host 继续执行；旧阻塞
+run 的取消行为保持原样。显式停止 Host 执行可用 `maka run --session "$session" --stop --json`。
+停止操作针对连接时观察到的当前 Turn，不需要 `--yolo`，请求成功退出 0。显式或隐式的 status
+查询成功时也退出 0，即使它报告的 Turn 已失败或取消；result/wait 仍以任务失败返回非零退出码。
+停止或查询成功不代表分配的任务已完成。
+
+权限请求、MCP 表单等会话 CLI 无法回答的交互会留在 Host 中等待。wait 会报告实际交互类型和恢复
+命令：使用同一 Host 的交互式客户端处理，或显式停止该 Turn。后台提交成功不保证后续执行
+不会请求交互。
+
+会话控制使用已保存的配置。需要指定配置、cwd、timeout 或 Graph 选项的阻塞运行，继续使用
+兼容入口 `--resume <session-id>` 选择会话并提供新 prompt。`--session <id> --resume` 则表示
+安全恢复已停止的执行。空闲会话的新 prompt 可以使用 `--max-steps`，排队或 steer 消息不能
+给已有 Turn 附加步数上限。
+
+当前不支持客户端 MCP 交互返回后由另一个 CLI 进程续接。阻塞 MCP 运行保留现有行为；
+`--no-wait` 会拒绝脱离本次调用持有的 MCP servers。Graph 交互交接也暂缓。执行本地会话控制
+及后台提交时使用持久 CLI 安装；临时 npx 调用可能持有 Host 生命周期，继续使用旧阻塞路径。
+
+仓库的 `maka-cli` skill 提供主/子代理 CLI 协作指引；待其进入所选分支后可安装。
+skill 本身不安装 Maka CLI：
+
+```sh
+npx skills add apache/maka --skill maka-cli
+```
 
 ## 升级
 

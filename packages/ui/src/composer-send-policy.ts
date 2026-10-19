@@ -42,12 +42,20 @@ export interface ComposerSendPolicyInput {
   readonly importActionBusy: boolean;
   readonly noModelConnection: boolean;
   readonly streaming?: boolean;
+  /**
+   * The Runtime Host's resume planner confirmed the session's latest
+   * interrupted Turn can resume right now (#5903). The send slot offers Resume
+   * in place of Send only while the draft holds nothing sendable — typing or
+   * staging context brings Send back, and a running Turn keeps Stop.
+   */
+  readonly resumeOffered?: boolean;
 }
 
 export interface ComposerSendPolicy {
   readonly hasSendableContent: boolean;
   readonly sendDisabled: boolean;
   readonly stopShown: boolean;
+  readonly resumeShown: boolean;
 }
 
 export function deriveComposerSendPolicy(input: ComposerSendPolicyInput): ComposerSendPolicy {
@@ -65,6 +73,15 @@ export function deriveComposerSendPolicy(input: ComposerSendPolicyInput): Compos
     ),
     stopShown: Boolean(
       input.streaming && (input.sendBlocked || !hasSendableContent),
+    ),
+    resumeShown: Boolean(
+      input.resumeOffered &&
+        !hasSendableContent &&
+        !input.streaming &&
+        !input.disabled &&
+        !input.sendBlocked &&
+        !input.sendPending &&
+        !input.importActionBusy,
     ),
   };
 }

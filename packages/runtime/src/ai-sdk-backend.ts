@@ -67,6 +67,7 @@ import { AiSdkCompaction } from './ai-sdk-compaction.js';
 import type { AiSdkCompactionCapabilities } from './ai-sdk-compaction-contract.js';
 import type { ToolArtifactRecorder } from './tool-artifacts.js';
 import type { RunTraceRecorder } from './run-trace.js';
+import type { TurnFinishContext, TurnFinishDecision } from './plugin-turn-finish-service.js';
 import { getBuiltinPricing } from './telemetry/builtin-pricing.js';
 import { ProviderRequestTelemetry } from './provider-request-telemetry.js';
 import { AiSdkMessageProjection } from './ai-sdk-message-projection.js';
@@ -152,6 +153,8 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   now?: () => number;
   /** Optional cap on tool-call steps per turn; omitted means no step cap. */
   maxSteps?: number;
+  /** Checks a natural model finish before the current turn is sealed. */
+  beforeTurnFinish?: (context: TurnFinishContext) => Promise<TurnFinishDecision>;
   /** Timeout before first SDK stream event; default 30s. */
   streamConnectTimeoutMs?: number;
   /** Timeout between SDK/tool events; paused while a tool is active. Default 120s. */
@@ -178,7 +181,7 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   recordToolInvocation?: ToolTelemetryRecorder;
   /** Optional Phase 2 SQLite T1/T2 boundary for real tool execution. */
   runtimeCommitSink?: RuntimeCommitSink;
-  /** Durable session-lifetime cumulative usage checkpoint after each completed provider step. */
+  /** Durable cumulative usage after completed steps and explicitly metered failed requests. */
   recordUsageCheckpoint?: (
     usage: NormalizedAiSdkUsage & { costUsd?: number },
   ) => void | Promise<void>;
@@ -243,6 +246,8 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
 }
 
 export interface ResolvedSystemPrompt {
+  /** Require a tool step until the Host-owned prerequisite is settled. */
+  readonly requireToolCall?: boolean;
   text?: string;
   /** Per-step ephemeral user-role context, resolved once per logical request. */
   contexts?: readonly { readonly name: string; readonly text: string }[];
@@ -321,6 +326,16 @@ export class AiSdkBackend implements AgentBackend {
    * read back as absent.
    */
   private readonly activeTurns = new Set<AiSdkTurn>();
+  /**
+   * Deferred-tool activations for this Session backend. `tool_search` only
+   * adds names; Turn end and compaction do not clear them. Clearing at Turn
+   * end would change the provider tool list and miss the prompt cache on the
+   * next Turn. Compaction already invalidates that cache, so clearing there
+   * would change the prefix a second time. Concurrent Runs on this backend
+   * share the map, so a search in one Run is visible on a sibling Run's next
+   * step. A rebuilt backend starts empty.
+   */
+  private readonly sessionActiveTools = new Map<string, string>();
   private readonly compaction: AiSdkCompaction;
   private readonly turnSessionState: AiSdkSessionState = {};
   constructor(input: AiSdkBackendInput) {
@@ -542,6 +557,7 @@ export class AiSdkBackend implements AgentBackend {
         providerTelemetry: this.providerTelemetry,
         compaction: this.compaction,
         snapshotToolAvailability: () => this.snapshotToolAvailability(),
+        sessionActiveTools: this.sessionActiveTools,
         codeCellAdmission: this.codeCellAdmission,
         resolvedProviderOptions: this.resolvedProviderOptions,
         session: this.turnSessionState,

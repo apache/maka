@@ -293,6 +293,7 @@ describe('browser tool execution', () => {
     );
     assert.equal(resolved, 2);
     assert.deepEqual(result, {
+      outcome: 'success',
       content: [
         {
           type: 'text',

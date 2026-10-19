@@ -22,6 +22,7 @@ import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { ICON_SIZE, AlertTriangle, Check, Clipboard, RotateCw } from '@maka/ui/icons';
 import { Button as UiButton, Card, redactSecrets } from '@maka/ui';
+import * as Diagnostics from './features/diagnostics/index.js';
 import { getShellCopy } from './locales/shell-copy.js';
 
 export type ErrorBoundaryCopyState = 'idle' | 'pending' | 'copied' | 'failed';
@@ -64,7 +65,25 @@ export function formatRendererErrorReport(error: Error, info?: ErrorInfo | null)
   );
 }
 
-export class ErrorBoundary extends Component<{ children: ReactNode; locale: UiLocale }, State> {
+type ErrorBoundaryProps = { children: ReactNode; locale: UiLocale };
+
+/**
+ * The renderer's crash surface. Desktop composition supplies the crash report
+ * through the diagnostics feature; without it (Storybook, renderer tests) the
+ * boundary still renders its fallback and copies its own browser report.
+ */
+export function ErrorBoundary(props: ErrorBoundaryProps): ReactNode {
+  return (
+    <Diagnostics.RendererCrashReportConsumer>
+      {(copyCrashReport) => <RendererErrorBoundary {...props} copyCrashReport={copyCrashReport} />}
+    </Diagnostics.RendererCrashReportConsumer>
+  );
+}
+
+class RendererErrorBoundary extends Component<
+  ErrorBoundaryProps & { copyCrashReport: Diagnostics.CopyRendererCrashReport | undefined },
+  State
+> {
   state: State = { error: null, errorInfo: null, copyState: 'idle' };
   private mounted = false;
   private copyRequestSeq = 0;
@@ -110,10 +129,9 @@ export class ErrorBoundary extends Component<{ children: ReactNode; locale: UiLo
     const copyRequestId = ++this.copyRequestSeq;
     this.setState({ copyState: 'pending' });
     try {
-      const diagnostics = window.maka?.diagnostics;
-      if (diagnostics) {
-        await diagnostics.copyReport({
-          surface: 'renderer_crash',
+      const { copyCrashReport } = this.props;
+      if (copyCrashReport) {
+        await copyCrashReport({
           title: `${error.name}: ${error.message}`,
           details: formatRendererErrorDetails(error, errorInfo),
         });

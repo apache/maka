@@ -73,8 +73,7 @@ To rebuild, check out upstream `vercel-labs/run` tag `run@2.1.4`
 package and regenerate with `node node_modules/patch-package/index.js run`.
 Copy the patched package manifest as well, and pass `--exclude '^$'` when
 regenerating so patch-package includes that manifest change.
-The large generated hunk is the inline Worker with unchanged embedded WASM;
-`run-2.1.4-notices.md` retains its embedded dependency notices.
+Before committing the regenerated patch, replace the unchanged Base64 WASM payload in both inline Worker diff lines with `__MAKA_RUN_WASM_BASE64__`. `scripts/apply-dependency-patches.mjs` restores that payload from the installed `run@2.1.4` package into a temporary patch directory during postinstall. Run `npm run check:asf-source` to verify the source-only patch and installation; the source verifier rejects embedded WASM. `run-2.1.4-notices.md` retains its embedded dependency notices.
 
 Remove both patches and the run override when published versions support the
 same execution budget semantics. Regression coverage lives in
@@ -130,7 +129,7 @@ Before upgrading Zod, re-verify allocation handoff, reentrant parsing, and cycle
 identity against the new memoizer and container implementations.
 The Runtime `zod-recursive-contract.test.ts` suite covers both shipped entry points.
 
-## `@modelcontextprotocol/client@2.1.0`
+## `@modelcontextprotocol/client@2.2.0`
 
 Pending transport sends retain settled request arguments and results through
 error observers, even after response, abort, timeout, or connection close.
@@ -175,6 +174,15 @@ deltas. See #1967 / #1976 and
 Delete when the ambiguity and blank-name tests pass against an unpatched package.
 
 ## `@astryxdesign/core@0.6.3`
+
+`ToastViewport` keeps its portal host inside the active native modal and opens
+its popover after that modal. Opening the empty viewport only once leaves it
+below later dialog backdrops; reopening alone still leaves it inert outside
+the modal. Moving a stable portal host preserves toast timers and React event
+handling when the dialog closes. The public LayerProvider API cannot change
+the viewport's host. The MCP detail Storybook play checks hit testing, focus
+and dismissal after testing a connection. Remove this hunk when upstream
+provides equivalent modal-aware toast placement.
 
 The shared code tokenizer caches only valid language definitions. Caching `null`
 for arbitrary unsupported fence labels grows a process-lifetime map; a short

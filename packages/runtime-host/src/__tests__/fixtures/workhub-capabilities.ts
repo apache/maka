@@ -42,7 +42,15 @@ export function workHubDesktopCapabilityOffers(
       tools: workHubToolNames.map((name) => ({
         serverId: 'desktop_workhub',
         name,
-        inputSchema: { type: 'object', additionalProperties: false },
+        inputSchema:
+          name === 'tasks'
+            ? {
+                type: 'object',
+                properties: { request: { type: 'object' } },
+                required: ['request'],
+                additionalProperties: false,
+              }
+            : { type: 'object', additionalProperties: false },
       })),
     },
     {

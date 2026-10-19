@@ -19,7 +19,7 @@
 
 import { generalizedErrorMessageForLocale, redactSecrets } from '@maka/core/redaction';
 import type { SubscriptionActionCode, SubscriptionActionFailureReason } from '@maka/core/oauth-subscription';
-import { type UiCatalog, type UiLocale, lookupCopy } from '@maka/core/ui-locale';
+import { type UiLocale, lookupCopy, defineShippedUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 type SubscriptionResultCode =
   | SubscriptionActionCode
@@ -171,6 +171,7 @@ const zhCopy = {
   detail: {
     delete: '删除', cancel: '取消', deleteUnused: '不再需要，删除连接',
     deleteFailed: '删除模型连接失败', credentialReadFailed: '读取模型凭据状态失败', refreshFailed: '刷新模型连接失败',
+    modelSelection: '模型选择', modelsUnsaved: '有未保存的模型选择', modelsSaved: '模型选择已保存', discardModels: '放弃模型选择修改？', discardModelsHelp: '离开将放弃未保存的选择。你也可以取消并返回保存。', discardModelsConfirm: '放弃修改',
     saveFailed: '保存模型连接失败', saveModelsFailed: '保存启用模型失败',
     modelKey: '模型密钥', pasteModelKey: '粘贴模型密钥', getModelKey: '获取模型密钥', saving: '保存中…',
     advancedRequest: '高级请求设置', advancedRequestHelp: '为这个连接的 HTTP 请求添加请求头和额外 JSON 请求体。请求头值作为凭据保存在本机。',
@@ -293,6 +294,16 @@ const zhCopy = {
     connectedLoading: '连接已添加，正在载入详情…', connectedLoadFailed: '连接已添加，但暂时无法刷新连接列表。',
     connectionIdentityChanged: '新连接的身份与登录结果不一致，请返回连接列表后重试。',
     emptyHelp: '从下方的常用服务商开始，或浏览全部服务商。', recommended: '推荐服务商', browseAll: '查看全部服务商',
+    chooseDefaultModel: '选择默认模型', defaultModelField: '默认模型',
+    chooseDefaultModelHelp: '选择这个连接用于新任务的默认模型。',
+    enableDefaultModelHelp: '这个连接尚未启用模型。选择后，将启用该模型并用于新任务。',
+    enableAndSetDefault: '启用并设为默认',
+    defaultModelsEmpty: '暂无可用的对话模型。请先获取或手动添加模型。',
+    fetchDefaultModels: '获取模型', addDefaultModel: '手动添加模型',
+    defaultModelRequired: '请先选择一个模型。',
+    defaultModelUnavailable: '这个模型已不可用，请刷新模型列表后重新选择。',
+    defaultConnectionChanged: '连接配置已更新，请重新选择默认模型。',
+    defaultConnectionDisabled: '请先启用这个连接，再设置默认模型。',
     default: '默认', setDefault: '设为默认', setDefaultTitle: '让新任务默认使用这个连接', setDefaultPending: '设置中…', setDefaultFailed: '设为默认失败', addHelp: '选择账号登录、模型计划、API、聚合服务或本地运行时。',
     searchPlaceholder: '搜索服务商', searchAria: '搜索模型服务商', noMatch: '未找到匹配的服务商', clearSearch: '清除搜索',
     createSubtitle: '完成必要配置后，连接会出现在模型页上方。', connection: '模型连接',
@@ -374,6 +385,7 @@ const zhTwCopy = {
     deviceCode: '登入碼：',
     delete: '刪除', cancel: '取消', deleteUnused: '不再需要，刪除連線',
     deleteFailed: '刪除模型連線失敗', credentialReadFailed: '讀取模型憑據狀態失敗', refreshFailed: '重新整理模型連線失敗',
+    modelSelection: '模型選擇', modelsUnsaved: '有未儲存的模型選擇', modelsSaved: '模型選擇已儲存', discardModels: '放棄模型選擇修改？', discardModelsHelp: '離開將放棄未儲存的選擇。你也可以取消並返回儲存。', discardModelsConfirm: '放棄修改',
     saveFailed: '儲存模型連線失敗', saveModelsFailed: '儲存啟用模型失敗',
     modelKey: '模型金鑰', pasteModelKey: '貼上模型金鑰', getModelKey: '取得模型金鑰', saving: '儲存中…',
     advancedRequest: '高階請求設定', advancedRequestHelp: '為這個連線的 HTTP 請求新增請求頭和額外 JSON 請求體。請求頭值作為憑據儲存在本機。',
@@ -494,6 +506,16 @@ const zhTwCopy = {
     connectedLoading: '帳號已連線，正在載入新的模型連線…', connectedLoadFailed: '帳號已連線，但暫時無法載入新的模型連線。',
     connectionIdentityChanged: '新連線的身分與登入結果不一致，請返回連線列表後重試。',
     emptyHelp: '從下方的常用服務商開始，或瀏覽全部服務商。', recommended: '推薦服務商', browseAll: '查看全部服務商',
+    chooseDefaultModel: '選擇預設模型', defaultModelField: '預設模型',
+    chooseDefaultModelHelp: '選擇這個連線用於新任務的預設模型。',
+    enableDefaultModelHelp: '這個連線尚未啟用模型。選擇後，將啟用該模型並用於新任務。',
+    enableAndSetDefault: '啟用並設為預設',
+    defaultModelsEmpty: '暫無可用的對話模型。請先取得或手動新增模型。',
+    fetchDefaultModels: '取得模型', addDefaultModel: '手動新增模型',
+    defaultModelRequired: '請先選擇一個模型。',
+    defaultModelUnavailable: '這個模型已不可用，請重新整理模型清單後重新選擇。',
+    defaultConnectionChanged: '連線設定已更新，請重新選擇預設模型。',
+    defaultConnectionDisabled: '請先啟用這個連線，再設定預設模型。',
     default: '預設', setDefault: '設為預設', setDefaultTitle: '讓新任務預設使用這個連線', setDefaultPending: '設定中…', setDefaultFailed: '設為預設失敗', addHelp: '選擇帳號登入、模型計劃、API、聚合服務或本地執行時。',
     searchPlaceholder: '搜尋服務商', searchAria: '搜尋模型服務商', noMatch: '沒有符合的服務商', clearSearch: '清除搜尋',
     createSubtitle: '完成必要設定後，連線會出現在模型頁上方。', connection: '模型連線',
@@ -577,6 +599,7 @@ const enCopy: ProviderSettingsCopy = {
   detail: {
     delete: 'Delete', cancel: 'Cancel', deleteUnused: 'Delete unused connection',
     deleteFailed: 'Failed to delete model connection', credentialReadFailed: 'Failed to read model credential status', refreshFailed: 'Failed to refresh model connection',
+    modelSelection: 'Model selection', modelsUnsaved: 'Unsaved model selection', modelsSaved: 'Model selection saved', discardModels: 'Discard model selection changes?', discardModelsHelp: 'Leaving discards your unsaved selection. You can cancel and return to save it.', discardModelsConfirm: 'Discard changes',
     saveFailed: 'Failed to save model connection', saveModelsFailed: 'Failed to save enabled models',
     modelKey: 'Model key', pasteModelKey: 'Paste model key', getModelKey: 'Get model key', saving: 'Saving…',
     advancedRequest: 'Advanced request settings', advancedRequestHelp: 'Add HTTP headers and extra JSON request-body fields for this connection. Header values stay in the local credential vault.',
@@ -696,6 +719,16 @@ const enCopy: ProviderSettingsCopy = {
     connectedLoading: 'Connection added. Loading its details…', connectedLoadFailed: 'Connection added, but the connection list could not be refreshed yet.',
     connectionIdentityChanged: 'The new connection identity did not match the sign-in result. Return to the connection list and try again.',
     emptyHelp: 'Start with a common provider below, or browse them all.', recommended: 'Recommended providers', browseAll: 'Browse all providers',
+    chooseDefaultModel: 'Choose a default model', defaultModelField: 'Default model',
+    chooseDefaultModelHelp: 'Choose the model this connection will use for new tasks.',
+    enableDefaultModelHelp: 'This connection has no enabled models. Your chosen model will be enabled and used for new tasks.',
+    enableAndSetDefault: 'Enable and set as default',
+    defaultModelsEmpty: 'No chat models are available. Fetch models or add one manually first.',
+    fetchDefaultModels: 'Fetch models', addDefaultModel: 'Add model manually',
+    defaultModelRequired: 'Choose a model first.',
+    defaultModelUnavailable: 'This model is no longer available. Refresh the model list and choose again.',
+    defaultConnectionChanged: 'The connection settings changed. Choose the default model again.',
+    defaultConnectionDisabled: 'Enable this connection before setting a default model.',
     default: 'Default', setDefault: 'Set as default', setDefaultTitle: 'New chats will use this connection', setDefaultPending: 'Setting…', setDefaultFailed: 'Could not set as default', addHelp: 'Choose account sign-in, a model plan, API, aggregator, or local runtime.',
     searchPlaceholder: 'Search providers', searchAria: 'Search model providers', noMatch: 'No matching providers', clearSearch: 'Clear search',
     createSubtitle: 'After required setup, the connection appears above on the Models page.', connection: 'Model connection',
@@ -773,11 +806,11 @@ const enCopy: ProviderSettingsCopy = {
   },
 };
 
-const PROVIDER_SETTINGS_COPY = {
+const PROVIDER_SETTINGS_COPY = resolveUiMessageCatalog(defineShippedUiMessageCatalog<ProviderSettingsCopy>()({
   'zh-CN': zhCopy,
   'zh-TW': zhTwCopy,
   en: enCopy,
-} satisfies UiCatalog<ProviderSettingsCopy>;
+}));
 
 export function getProviderSettingsCopy(locale: UiLocale): ProviderSettingsCopy {
   return PROVIDER_SETTINGS_COPY[locale];

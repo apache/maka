@@ -38,6 +38,7 @@ import type {
   DesktopSessionUpdateResult,
 } from '../shared/desktop-session-projection.js';
 import { resolveCreateSessionRequest } from './create-session-input.js';
+import type { ManagedTaskDirectoryAuthority } from './managed-task-directory.js';
 import {
   type DesktopRuntimeHostClient,
   DesktopRuntimeHostClientError,
@@ -81,6 +82,12 @@ export interface RuntimeHostSessionCatalogIpcDeps {
   resolveCreateProject: (
     input: Pick<CreateSessionRequestInput, 'cwd' | 'projectId'>,
   ) => Promise<WorkspaceTarget>;
+  /**
+   * Dedicated task-directory authority for the explicit relocation
+   * correction. Absent on Hosts that cannot provision Client directories —
+   * the IPC then refuses rather than guessing.
+   */
+  dedicatedTaskDirectory?: ManagedTaskDirectoryAuthority;
   emitSessionsChanged: (
     reason: SessionChangedReason,
     sessionId?: string,
@@ -117,9 +124,10 @@ export function registerRuntimeHostSessionCatalogIpc(
   const actionIds = (sessionId: string, options: unknown) =>
     resolveSessionActionIds(() => listSessions(), sessionId, options);
 
-  handleReconnectableRead(ipcMain, 'sessions:executorCatalog', async (_event, cwd: string) => {
+  handleReconnectableRead(ipcMain, 'sessions:executorCatalog', async (_event, cwd: string, refresh?: boolean) => {
     if (typeof cwd !== 'string' || !cwd) throw new Error('Executor discovery requires a workspace');
-    return (await deps.queryExecutors?.({ kind: 'catalog', cwd }))?.items ?? [];
+    if (refresh !== undefined && typeof refresh !== 'boolean') throw new Error('Invalid executor refresh flag');
+    return (await deps.queryExecutors?.({ kind: 'catalog', cwd, ...(refresh ? { refresh: true } : {}) }))?.items ?? [];
   });
   handleReconnectableRead(ipcMain, 'sessions:executorState', async (_event, sessionId: string) =>
     (await deps.queryExecutors?.({ kind: 'conversation', sessionId }))?.items ?? [],
@@ -158,7 +166,11 @@ export function registerRuntimeHostSessionCatalogIpc(
   ipcMain.handle('sessions:archive', async (_event, sessionId: string, options?: unknown) => {
     requestsRevisionFamily(options);
     const ids = await actionIds(sessionId, { revisionFamily: true });
-    await deps.client.setSessionLifecycle(sessionId, 'archived');
+    try {
+      await deps.client.setSessionLifecycle(sessionId, 'archived');
+    } catch (error) {
+      throw asArchiveRefusal(error);
+    }
     await finishSessionRetirement(deps, ids, 'archived');
   });
   ipcMain.handle('sessions:unarchive', async (_event, sessionId: string, options?: unknown) => {
@@ -279,6 +291,9 @@ export function registerRuntimeHostSessionCatalogIpc(
       return moveSessionToProject(deps, sessionId, projectId);
     },
   );
+  ipcMain.handle('sessions:moveToDedicatedDirectory', async (_event, sessionId: string) =>
+    moveSessionToDedicatedDirectory(deps, sessionId),
+  );
 }
 
 /**
@@ -317,6 +332,60 @@ async function moveSessionToProject(
       sessionId,
       current.revision,
       workspace,
+    );
+  } catch (error) {
+    const code = updateFailureCode(error);
+    if (code) return { ok: false, code };
+    throw error;
+  }
+  deps.emitSessionsChanged('updated', sessionId);
+  return { ok: true, session: toDesktopHostSessionSummary(session) };
+}
+
+/**
+ * The explicit correction for a Session bound to an unintended implicit
+ * directory: allocate a dedicated task directory, then rebind through the
+ * same `session.workspace.relocate` authority `moveToProject` uses — one
+ * revision read, one compare-and-set commit, and no project re-pointing.
+ *
+ * The directory is created only once the Session proves eligible, and before
+ * the relocate because the Host requires the target to already exist. A
+ * failed response may follow a committed binding, so the directory is kept.
+ * Automatic directory cleanup is outside this policy.
+ */
+async function moveSessionToDedicatedDirectory(
+  deps: RuntimeHostSessionCatalogIpcDeps,
+  sessionId: string,
+): Promise<DesktopSessionUpdateResult<DesktopHostSessionSummary>> {
+  const authority = deps.dedicatedTaskDirectory;
+  if (!authority) {
+    throw new Error('Dedicated task directories are unavailable on this Runtime Host');
+  }
+  let session: SessionCatalogProjection;
+  try {
+    const current = await deps.client.getSession(sessionId);
+    if (!current) {
+      throw new DesktopRuntimeHostClientError(
+        'session_not_found',
+        `No such Session: ${sessionId}`,
+      );
+    }
+    // A Project-bound Session relocates through `moveToProject` — this
+    // correction is only for a projectless Host-path binding, so dropping a
+    // Project association here can never be an accident. A Session already
+    // inside the managed root needs no correction: refusing keeps a retry or
+    // a racing second invocation from orphaning a fresh directory.
+    if (
+      current.workspace.target.kind !== 'host_path' ||
+      (await authority.classify(current.workspace.hostCwd)) === 'managed'
+    ) {
+      return { ok: false, code: 'operation_unavailable' };
+    }
+    const directory = await authority.allocate();
+    session = await deps.client.relocateSessionWorkspace(
+      sessionId,
+      current.revision,
+      { kind: 'host_path', path: directory },
     );
   } catch (error) {
     const code = updateFailureCode(error);
@@ -381,6 +450,26 @@ async function updateConfiguration(
   }
   deps.emitSessionsChanged(reason, sessionId, extra);
   return { ok: true, session: toDesktopHostSessionSummary(session) };
+}
+
+/**
+ * Electron IPC strips the error class off a `RuntimeHostOperationError`, so a
+ * refusal the rail can explain has to travel as a stable token in the message
+ * text. These are the archive guard's `session_busy` refusals a user can act
+ * on; any other failure keeps the Host's own message.
+ */
+const ARCHIVE_REFUSAL_TOKENS: ReadonlyArray<readonly [needle: string, reason: string]> = [
+  ['has an active WorkHub delegation', 'workhub_delegation'],
+  ['has an undelivered WorkHub result', 'workhub_result'],
+  ['has a live linked child Session', 'linked_child'],
+];
+
+function asArchiveRefusal(error: unknown): unknown {
+  if (!(error instanceof RuntimeHostOperationError) || error.code !== 'session_busy') return error;
+  for (const [needle, reason] of ARCHIVE_REFUSAL_TOKENS) {
+    if (error.message.includes(needle)) return new Error(`session_archive_refused: ${reason}`);
+  }
+  return error;
 }
 
 const EXPECTED_UPDATE_FAILURES = [

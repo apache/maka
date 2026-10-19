@@ -36,11 +36,12 @@ import {
   decodeSkillInvocationResult,
   type SkillInvocationResult,
 } from '@maka/core/skill-invocation';
-import { decodeTurnOrigin, type CloudActivationOrigin } from '@maka/core/turn-origin';
+import { decodeTurnOrigin, type TurnOrigin } from '@maka/core/turn-origin';
 import { invalidProtocolFrame } from './errors.js';
 import {
   assertExactKeys,
   requireCount,
+  requireEncodedByteLimit,
   requireEntityId,
   requireExactRecord,
   requireShapedRecord,
@@ -63,8 +64,8 @@ export interface TurnStartInput {
   skillIds?: string[];
   turnOrchestration?: TurnOrchestration;
   maxSteps?: number;
-  /** Client-originated Runtime Host turns may identify cloud activation only. */
-  origin?: CloudActivationOrigin;
+  /** Provenance only: clients may identify cloud activation or external connector input. */
+  origin?: Extract<TurnOrigin, { kind: 'cloud_activation' | 'external_connector' }>;
 }
 
 export type TurnStartResult =
@@ -320,7 +321,10 @@ export function decodeTurnStartInput(value: unknown): TurnStartInput {
   );
   const skillIds = decodeSkillIds(record.skillIds);
   const decodedOrigin = record.origin === undefined ? undefined : decodeTurnOrigin(record.origin);
-  const origin = decodedOrigin?.kind === 'cloud_activation' ? decodedOrigin : undefined;
+  const origin =
+    decodedOrigin?.kind === 'cloud_activation' || decodedOrigin?.kind === 'external_connector'
+      ? decodedOrigin
+      : undefined;
   if (record.origin !== undefined && origin === undefined) {
     throw invalidProtocolFrame('Invalid turn.start origin');
   }
@@ -471,18 +475,6 @@ function requireUtf8String(
     throw invalidProtocolFrame(`Invalid ${label}`);
   }
   return value;
-}
-
-function requireEncodedByteLimit(value: unknown, label: string, maxBytes: number): void {
-  let encoded: string | undefined;
-  try {
-    encoded = JSON.stringify(value);
-  } catch {
-    throw invalidProtocolFrame(`Invalid ${label}`);
-  }
-  if (encoded === undefined || Buffer.byteLength(encoded, 'utf8') > maxBytes) {
-    throw invalidProtocolFrame(`Invalid ${label}`);
-  }
 }
 
 function decodeTurnQueryInput(value: unknown): TurnQueryInput {

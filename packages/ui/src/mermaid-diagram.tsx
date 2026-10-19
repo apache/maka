@@ -22,7 +22,7 @@ import { CodeBlock } from '@astryxdesign/core/CodeBlock';
 import { Collapsible } from '@astryxdesign/core/Collapsible';
 import { Dialog } from '@astryxdesign/core/Dialog';
 import { Toolbar } from '@astryxdesign/core/Toolbar';
-import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
+import { useEffect, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from 'react';
 import type { MermaidConfig } from 'mermaid';
 import mermaidPackage from 'mermaid/package.json' with { type: 'json' };
 import { ICON_SIZE, Check, Copy, Maximize2, Minimize2, Scan, ZoomIn, ZoomOut } from './icons.js';
@@ -53,9 +53,6 @@ export const MERMAID_EXPORT_MAX_EDGE_PX = 32_767;
 export const MERMAID_EXPORT_MAX_PIXELS = 64 * 1024 * 1024;
 /** useClipboardCopyFeedback attempt key, distinct from the other text-copy entry points. */
 const MERMAID_IMAGE_COPY_KEY = 'mermaid-image';
-const MIN_MERMAID_VIEWPORT_HEIGHT = 112;
-const MAX_MERMAID_VIEWPORT_HEIGHT = 480;
-const MAX_MERMAID_VIEWPORT_HEIGHT_RATIO = 0.55;
 const MERMAID_RENDER_CACHE_SCHEMA_VERSION = 1;
 const MERMAID_ID_REFERENCE_ATTRIBUTES = new Set([
   'aria-activedescendant',
@@ -75,13 +72,8 @@ type MermaidTheme = 'default' | 'dark';
 type MermaidRenderState =
   | { status: 'deferred' }
   | { status: 'loading' }
-  | { status: 'rendered'; svg: string; naturalWidth: number; naturalHeight: number }
+  | { status: 'rendered'; cacheKey: string; svg: string; naturalWidth: number; naturalHeight: number }
   | { status: 'error'; reason: 'invalid' | 'too-large' };
-
-type MermaidViewportLayout = {
-  fitWidth: number;
-  viewportHeight: number;
-};
 
 type MermaidRenderTemplate = {
   svg: string;
@@ -415,20 +407,6 @@ async function mermaidSvgToPngBlob(
   return blob;
 }
 
-export function calculateMermaidFitScale(options: {
-  availableWidth: number;
-  availableHeight: number;
-  naturalWidth: number;
-  naturalHeight: number;
-  expanded: boolean;
-}): number {
-  const widthScale = options.availableWidth / options.naturalWidth;
-  const heightScale = options.availableHeight / options.naturalHeight;
-  return options.expanded
-    ? Math.min(widthScale, heightScale)
-    : Math.min(1, widthScale, heightScale);
-}
-
 function useMermaidTheme(): MermaidTheme {
   const [theme, setTheme] = useState<MermaidTheme>(currentMermaidTheme);
 
@@ -444,6 +422,16 @@ function useMermaidTheme(): MermaidTheme {
   return theme;
 }
 
+function renderedMermaidState(template: MermaidRenderTemplate, cacheKey: string): MermaidRenderState {
+  return {
+    status: 'rendered',
+    cacheKey,
+    svg: instantiateMermaidSvg(template),
+    naturalWidth: template.naturalWidth,
+    naturalHeight: template.naturalHeight,
+  };
+}
+
 export function MermaidDiagram(props: {
   code: string;
   density: 'default' | 'compact';
@@ -452,19 +440,20 @@ export function MermaidDiagram(props: {
   const copy = getSharedUiCopy(useUiLocale()).markdown;
   const theme = useMermaidTheme();
   const autoRender = props.autoRender ?? true;
-  const [manualRenderRequested, setManualRenderRequested] = useState(false);
-  const [state, setState] = useState<MermaidRenderState>(() =>
-    props.code.length > MAX_MERMAID_SOURCE_LENGTH
-      ? { status: 'error', reason: 'too-large' }
-      : autoRender
-        ? { status: 'loading' }
-        : { status: 'deferred' },
-  );
-  const [zoom, setZoom] = useState(1);
+  const cacheKey = mermaidRenderCacheKey(props.code, theme);
   const [expanded, setExpanded] = useState(false);
+  const [manualRenderRequested, setManualRenderRequested] = useState(false);
+  const [state, setState] = useState<MermaidRenderState>(() => {
+    if (props.code.length > MAX_MERMAID_SOURCE_LENGTH) return { status: 'error', reason: 'too-large' };
+    if (!autoRender && !manualRenderRequested) return { status: 'deferred' };
+    const template = mermaidRenderCache.get(cacheKey);
+    if (!template) return { status: 'loading' };
+    touchMermaidRenderCacheEntry(cacheKey, template);
+    return renderedMermaidState(template, cacheKey);
+  });
+  const [zoom, setZoom] = useState(1);
   const [panning, setPanning] = useState(false);
   const [pannableAxis, setPannableAxis] = useState<'none' | 'horizontal' | 'vertical' | 'both'>('none');
-  const [viewportLayout, setViewportLayout] = useState<MermaidViewportLayout | null>(null);
   const copyFeedback = useClipboardCopyFeedback();
   const viewportRef = useRef<HTMLDivElement>(null);
   const panRef = useRef<{
@@ -484,20 +473,22 @@ export function MermaidDiagram(props: {
       setState({ status: 'deferred' });
       return;
     }
+    if (state.status === 'rendered' && state.cacheKey === cacheKey) return;
+
+    setZoom(1);
+    const template = mermaidRenderCache.get(cacheKey);
+    if (template) {
+      touchMermaidRenderCacheEntry(cacheKey, template);
+      setState(renderedMermaidState(template, cacheKey));
+      return;
+    }
 
     let cancelled = false;
-    setZoom(1);
-    setViewportLayout(null);
     setState({ status: 'loading' });
     void renderMermaid(props.code, theme, () => !cancelled).then(
       (template) => {
         if (!cancelled && template) {
-          setState({
-            status: 'rendered',
-            svg: instantiateMermaidSvg(template),
-            naturalWidth: template.naturalWidth,
-            naturalHeight: template.naturalHeight,
-          });
+          setState(renderedMermaidState(template, cacheKey));
         }
       },
       () => {
@@ -509,67 +500,8 @@ export function MermaidDiagram(props: {
     };
   }, [autoRender, manualRenderRequested, props.code, theme]);
 
-  const naturalWidth = state.status === 'rendered' ? state.naturalWidth : 0;
-  const naturalHeight = state.status === 'rendered' ? state.naturalHeight : 0;
-
   useEffect(() => {
-    const viewport = viewportRef.current;
-    if (!viewport || naturalWidth <= 0 || naturalHeight <= 0) return;
-
-    let frame = 0;
-    const updateLayout = () => {
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(() => {
-        const style = getComputedStyle(viewport);
-        const horizontalPadding = (Number.parseFloat(style.paddingLeft) || 0)
-          + (Number.parseFloat(style.paddingRight) || 0);
-        const verticalPadding = (Number.parseFloat(style.paddingTop) || 0)
-          + (Number.parseFloat(style.paddingBottom) || 0);
-        const availableWidth = Math.max(1, viewport.clientWidth - horizontalPadding);
-        const maxViewportHeight = expanded
-          ? Math.max(MIN_MERMAID_VIEWPORT_HEIGHT, viewport.clientHeight)
-          : Math.max(
-              MIN_MERMAID_VIEWPORT_HEIGHT,
-              Math.min(
-                MAX_MERMAID_VIEWPORT_HEIGHT,
-                window.innerHeight * MAX_MERMAID_VIEWPORT_HEIGHT_RATIO,
-              ),
-            );
-        const availableHeight = Math.max(1, maxViewportHeight - verticalPadding);
-        const fitScale = calculateMermaidFitScale({
-          availableWidth,
-          availableHeight,
-          naturalWidth,
-          naturalHeight,
-          expanded,
-        });
-        const fitWidth = naturalWidth * fitScale;
-        const viewportHeight = Math.max(
-          MIN_MERMAID_VIEWPORT_HEIGHT,
-          Math.min(maxViewportHeight, naturalHeight * fitScale + verticalPadding),
-        );
-        setViewportLayout((current) =>
-          current
-          && Math.abs(current.fitWidth - fitWidth) < 0.5
-          && Math.abs(current.viewportHeight - viewportHeight) < 0.5
-            ? current
-            : { fitWidth, viewportHeight });
-      });
-    };
-
-    updateLayout();
-    const observer = new ResizeObserver(updateLayout);
-    observer.observe(viewport);
-    window.addEventListener('resize', updateLayout);
-    return () => {
-      cancelAnimationFrame(frame);
-      observer.disconnect();
-      window.removeEventListener('resize', updateLayout);
-    };
-  }, [expanded, naturalHeight, naturalWidth]);
-
-  useEffect(() => {
-    const frame = requestAnimationFrame(() => {
+    const updatePannableAxis = () => {
       const viewport = viewportRef.current;
       if (!viewport) {
         setPannableAxis('none');
@@ -580,9 +512,15 @@ export function MermaidDiagram(props: {
       setPannableAxis(horizontal
         ? vertical ? 'both' : 'horizontal'
         : vertical ? 'vertical' : 'none');
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [expanded, viewportLayout, zoom]);
+    };
+    updatePannableAxis();
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    // Observe affordances only; sizing is entirely declarative in CSS.
+    const observer = new ResizeObserver(updatePannableAxis);
+    observer.observe(viewport);
+    return () => observer.disconnect();
+  }, [expanded, state.status, zoom]);
 
   function updateZoom(nextZoom: number, anchor?: { clientX: number; clientY: number }) {
     const next = clampMermaidZoom(nextZoom);
@@ -640,16 +578,17 @@ export function MermaidDiagram(props: {
         await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
       });
     }
-    const canvasWidth = viewportLayout
-      ? `${viewportLayout.fitWidth * zoom}px`
-      : `min(${state.naturalWidth * zoom}px, ${zoomPercent}%)`;
     const renderDiagram = (isExpanded: boolean, showContent: boolean) => (
       <figure
         className={`${className} maka-mermaid-diagram${isExpanded ? ' maka-mermaid-diagram-expanded' : ''}`}
         data-maka-contract="mermaid"
         data-maka-mermaid-state="rendered"
         data-maka-mermaid-zoom={zoom.toFixed(2)}
-        data-maka-mermaid-layout={viewportLayout ? 'ready' : 'measuring'}
+        style={{
+          '--maka-mermaid-natural-width': `${state.naturalWidth}px`,
+          '--maka-mermaid-ratio': state.naturalWidth / state.naturalHeight,
+          '--maka-mermaid-zoom': zoom,
+        } as CSSProperties}
         aria-label={copy.mermaidDiagram}
       >
         <Toolbar
@@ -718,9 +657,6 @@ export function MermaidDiagram(props: {
           className="maka-mermaid-viewport"
           data-maka-mermaid-panning={panning ? 'true' : 'false'}
           data-maka-mermaid-pannable={pannableAxis}
-          style={isExpanded || !viewportLayout
-            ? undefined
-            : { height: `${viewportLayout.viewportHeight}px` }}
           aria-label={copy.mermaidViewport}
           tabIndex={0}
           onKeyDown={(event) => {
@@ -775,7 +711,7 @@ export function MermaidDiagram(props: {
         >
           <div
             className="maka-mermaid-canvas"
-            style={{ width: canvasWidth, aspectRatio: `${state.naturalWidth} / ${state.naturalHeight}` }}
+            style={{ aspectRatio: `${state.naturalWidth} / ${state.naturalHeight}` }}
           >
             <div
               className="maka-mermaid-svg"

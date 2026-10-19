@@ -21,6 +21,7 @@ import type { ExecutorConfiguration } from './executor-catalog.js';
 
 import { isWorkHubActionReceipt, type WorkHubActionReceipt } from './workhub-action-result.js';
 import { isExecutorId } from './executor-id.js';
+import { isToolCallOutcome } from './tool-result-status.js';
 import { isThinkingLevel, type ThinkingLevel } from './model-thinking.js';
 
 import {
@@ -260,6 +261,8 @@ export interface SessionHeader {
   // User metadata
   name: string;
   titleIsManual: boolean;
+  /** Host-generated branch title and its untruncated base; absent on legacy Sessions. */
+  branchNameOrigin?: { readonly base: string; readonly name: string };
   isFlagged: boolean;
   labels: string[];
 
@@ -365,6 +368,20 @@ export type BackendKind = 'ai-sdk' | 'plugin-executor';
  */
 export type PersistedBackendKind = BackendKind | 'fake';
 
+/** Host-owned activity of a Session's graph and linked child work, separate from its own turns. */
+export type SessionBackgroundActivity = 'idle' | 'running' | 'waiting_for_user' | 'blocked';
+
+/** Orders activity observations independently of durable Session and live Turn revisions. */
+export interface SessionBackgroundActivityVersion {
+  readonly hostGeneration: string;
+  readonly revision: number;
+}
+
+export interface SessionBackgroundActivitySnapshot {
+  readonly backgroundActivity: SessionBackgroundActivity;
+  readonly backgroundActivityVersion: SessionBackgroundActivityVersion;
+}
+
 export interface SessionSummary {
   id: string;
   cwd?: string;
@@ -414,6 +431,10 @@ export interface SessionSummary {
    * the header alone and omits it.
    */
   runningTurnIds?: string[];
+  /** Live Host projection; `idle` is known empty, omission is unknown. Cached values are not execution authority. */
+  backgroundActivity?: SessionBackgroundActivity;
+  /** Compare revisions only within the same Host generation; strip alongside cached activity. */
+  backgroundActivityVersion?: SessionBackgroundActivityVersion;
   /**
    * Bumped by the runtime each time a turn of this session starts or ends.
    * `revision` does not move for those transitions, so two same-revision
@@ -835,7 +856,10 @@ export function userFacingText(message: Pick<UserMessage, 'text' | 'displayText'
  * exactly the notes the runtime writes.
  */
 export function isUserVisibleSessionSystemNote(kind: string): boolean {
-  return isRuntimeSystemNoteKind(kind);
+  // `context_compaction_applied` is recorded the moment a compaction is applied —
+  // inside a still-running turn — so usage readers can order the boundary
+  // against request completions. `context_compacted` stays the display row.
+  return isRuntimeSystemNoteKind(kind) && kind !== 'context_compaction_applied';
 }
 
 /**
@@ -857,6 +881,8 @@ export function isConversationTextMessage(message: StoredMessage): boolean {
 }
 
 export interface AssistantMessage {
+  /** Model-authored preview; text remains the complete message. */
+  summary?: string;
   type: 'assistant';
   interrupted?: true;
   id: string;
@@ -937,6 +963,7 @@ export interface ToolResultMessage {
   /** Matches ToolCallMessage.id. */
   toolUseId: string;
   isError: boolean;
+  outcome?: import('./tool-result-status.js').ToolCallOutcome;
   content: ToolResultContent;
   providerExecuted?: boolean;
   /** Raw provider result retained only for provider-native replay. */
@@ -1093,6 +1120,8 @@ export interface WorkHubDelegationAssignedMessage extends WorkHubCoordinationMes
   kind: 'delegation_assigned';
   /** New delegations opt into Host-owned asynchronous result delivery. */
   returnResults?: true;
+  /** WorkHub permission policy captured for this execution, not a Session mutation. */
+  executionPermissionMode?: PermissionMode;
   delegationId: string;
   targetTurnId: string;
   targetMessageId: string;
@@ -1281,6 +1310,7 @@ export interface TurnRecord {
  */
 export const RUNTIME_SYSTEM_NOTE_KINDS = [
   'context_compacted',
+  'context_compaction_applied',
   'context_compaction_failed_open',
   'context_window_suggestion',
   'context_window_overrun',
@@ -1349,7 +1379,7 @@ const USER_MESSAGE_SHAPE = defineObjectShape<UserMessage>()(
 );
 const ASSISTANT_MESSAGE_SHAPE = defineObjectShape<AssistantMessage>()(
   ['type', 'id', 'turnId', 'ts', 'text', 'modelId'],
-  ['thinking', 'contentOrder', 'providerOptions', 'interrupted'],
+  ['thinking', 'contentOrder', 'providerOptions', 'interrupted', 'summary'],
 );
 const TOOL_CALL_MESSAGE_SHAPE = defineObjectShape<ToolCallMessage>()(
   ['type', 'id', 'turnId', 'ts', 'toolName', 'args'],
@@ -1370,6 +1400,7 @@ const TOOL_RESULT_MESSAGE_SHAPE = defineObjectShape<ToolResultMessage>()(
   ['type', 'id', 'turnId', 'ts', 'toolUseId', 'isError', 'content'],
   [
     'durationMs',
+    'outcome',
     'providerExecuted',
     'providerOutput',
     'origin',
@@ -1448,6 +1479,7 @@ const WORKHUB_DELEGATION_ASSIGNED_MESSAGE_SHAPE =
       'attachments',
       'targetAttachments',
       'returnResults',
+      'executionPermissionMode',
       'create',
       'steered',
       'replacesActionId',
@@ -1638,6 +1670,7 @@ function decodeMessage(
         hasMessageEnvelope(message, true) &&
         typeof message.text === 'string' &&
         typeof message.modelId === 'string' &&
+        (message.summary === undefined || typeof message.summary === 'string') &&
         (message.interrupted === undefined || message.interrupted === true) &&
         (message.providerOptions === undefined || isRecord(message.providerOptions)) &&
         (message.thinking === undefined || isAssistantThinking(message.thinking)) &&
@@ -1672,6 +1705,9 @@ function decodeMessage(
         hasMessageEnvelope(message, true) &&
         typeof message.toolUseId === 'string' &&
         typeof message.isError === 'boolean' &&
+        (message.outcome === undefined ||
+          (isToolCallOutcome(message.outcome) &&
+            (message.outcome !== 'success') === message.isError)) &&
         (message.providerExecuted === undefined || typeof message.providerExecuted === 'boolean') &&
         isOptionalFiniteDuration(message.durationMs) &&
         isToolActivityIdentity(message)
@@ -1864,6 +1900,8 @@ function isWorkHubCoordinationMessage(message: Record<string, unknown>): boolean
     typeof message.targetSessionName === 'string' &&
     message.targetSessionName.trim().length > 0 &&
     (message.returnResults === undefined || message.returnResults === true) &&
+    (message.executionPermissionMode === undefined ||
+      isPermissionMode(message.executionPermissionMode)) &&
     (message.steered === undefined || message.steered === true) &&
     ((message.schemaVersion === WORKHUB_COORDINATION_RECORD_SCHEMA_VERSION &&
       message.replacesActionId === undefined &&
@@ -2049,3 +2087,6 @@ function inferLegacyTurnStatus(messages: readonly StoredMessage[]): TurnStatus {
     return 'failed';
   return 'completed';
 }
+
+/** Durable provenance for assistant-created workers; visibility is a client preference. */
+export const ASSISTANT_BACKGROUND_SESSION_LABEL = 'personal-assistant-background';

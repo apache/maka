@@ -22,6 +22,7 @@ import test from 'node:test';
 import { act, createElement } from 'react';
 import { parseHTML } from 'linkedom';
 import { deferred } from '@maka/core/test-only/async-primitives';
+import type { DesktopOverlaysBridge } from '../../renderer/platform/desktop/create-overlays-services.js';
 import type {
   RecallSearchOutcome,
   RecallSearchRequest,
@@ -71,7 +72,7 @@ test('overlay search preserves cancellation across supersession, close, reopen, 
   };
   const root = createRoot(document.getElementById('root')!);
   let overlays: import('../../renderer/features/overlays/testing.js').OverlaysShellProjection;
-  const services = createDesktopOverlaysServices({ search }, {
+  const services = createDesktopOverlaysServices({ search } as unknown as DesktopOverlaysBridge, {
     storage: { setItem() {} }, document,
   });
   const navigate = () => {};

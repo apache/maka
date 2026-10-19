@@ -6,7 +6,7 @@ source_language: en
 implementation_status: current
 document_status: current
 translation_status: source-only
-last_verified: 2026-09-04
+last_verified: 2026-10-10
 owners:
   - maka-backend
 ---
@@ -74,9 +74,12 @@ body limit.
 `selectSkillsForContext` returns a `SkillSelectionReport` alongside the selected
 catalog. It records one decision for every inventory item (`advertised`,
 `budget`, `disabled`, `invalid`, `host_incompatible`, or `shadowed`) and the
-advertised rank. Desktop caches the last prompt-build report per project for
-its Context Inspector; before a prompt has been built, it displays a
-deterministic preview.
+advertised rank. The durable catalog snapshot never carries a prompt-build
+rank (`contextRank` is always null there); enabled, valid, unshadowed items
+report `contextStatus: 'unknown'` (omitted over IPC), while disabled, shadowed,
+and invalid items carry those statuses directly. Surfaces render the
+deterministic `enabled ? 'advertised' : 'disabled'` fallback rather than a
+per-project prompt-build report.
 
 Runtime preferences use `.maka/skills-state.json` schema v2:
 
@@ -97,8 +100,9 @@ The reader remains compatible with schema v1 id keys. Desktop migrates an id
 automatically only when it resolves to one inventory entry. If the id exists in
 multiple scopes, schema v2 preserves the legacy default under
 `migration.needsReview` until the user makes explicit ref-level choices; it
-never guesses which copy the old preference meant. The Skills Context Inspector
-shows every affected copy as `Needs review`; toggling or pinning acts on its
+never guesses which copy the old preference meant. The Skills panel renders
+every affected copy as `Needs review` (the `needsReview` flag is projected over
+IPC); toggling or pinning acts on its
 exact ref, and the marker clears only after every ambiguous copy has an explicit
 preference.
 
@@ -109,7 +113,10 @@ installing that source and makes an older bundled lock fail validation with
 already-installed `skills/<id>` directory. If that local copy is otherwise
 valid and enabled, Runtime continues to treat it as user-provided content and it
 remains invocable under the ordinary permission and host-capability rules. The
-user can disable or delete the local copy explicitly.
+user can disable or delete the local copy explicitly; deletion runs through the
+durable skill-catalog transaction (a deletion intent persisted on disk, a
+tombstone generation, and `deletionFacts`), so a failed directory move leaves a
+retryable intent instead of a half-deleted directory.
 
 Configured discovery roots are also part of the diagnostic contract. A missing
 optional root is normal and produces no warning. A symlink/non-directory root,

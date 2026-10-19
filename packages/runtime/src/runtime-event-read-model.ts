@@ -975,6 +975,7 @@ function projectText(
       turnId: event.turnId,
       ts: event.ts,
       text: event.content.text,
+      ...(event.content.summary !== undefined ? { summary: event.content.summary } : {}),
       ...(event.content.interrupted ? { interrupted: true } : {}),
       ...(event.content.providerOptions !== undefined
         ? { providerOptions: structuredClone(event.content.providerOptions) }
@@ -1242,6 +1243,7 @@ function projectFunctionResponse(
     ts: event.ts,
     toolUseId,
     isError: event.content.isError === true,
+    ...(event.content.outcome ? { outcome: event.content.outcome } : {}),
     content: resultContent,
     ...(event.content.providerExecuted !== undefined
       ? { providerExecuted: event.content.providerExecuted }

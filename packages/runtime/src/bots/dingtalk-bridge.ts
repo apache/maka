@@ -432,9 +432,7 @@ export class DingTalkBotBridge extends WsBridgeBase implements SendCapable {
       }
       if (payload) {
         const event = dingTalkPayloadToEvent(payload, Date.now());
-        if (event) {
-          this.lastEventAt = event.receivedAt;
-          this.emitIncomingMessage(event);
+        if (event && this.emitIncomingMessage(event)) {
           this.emitStatusChange();
         }
       }

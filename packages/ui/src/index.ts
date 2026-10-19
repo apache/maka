@@ -26,6 +26,7 @@ export * from './client-plugin-runtime.js';
 export * from './chat-empty-hero.js';
 export * from './chat-model-helpers.js';
 export * from './use-mounted-ref.js';
+export * from './use-draft-mutation-guard.js';
 export * from './session-setting-intent.js';
 export * from './components.js';
 export type { ComposerProps } from './components.js';
@@ -39,6 +40,7 @@ export type {
 export type { SessionMoveTarget } from './session-rail-context.js';
 export * from './session-status-presentation.js';
 export * from './composer-helpers.js';
+export type { ContextUsageReading } from './context-usage-reading.js';
 export * from './conversation-copy.js';
 export * from './shared-ui-copy.js';
 export * from './skills-copy.js';
@@ -61,7 +63,6 @@ export * from './live-turn-buffer.js';
 export * from './transcript-projection.js';
 export * from './use-transcript-projection.js';
 export * from './model-picker.js';
-export * from './model-wheel-picker.js';
 export * from './new-project-dialog.js';
 export * from './interaction-queue.js';
 export * from './user-question-prompt.js';
@@ -202,3 +203,6 @@ export {
 export { PromptAnchorRail, type PromptAnchorRailTurn } from './prompt-anchor-rail.js';
 export { ChoicePanel, type ChoicePanelOption } from './choice-panel.js';
 export { formatCompactTokenCount } from './compact-token-count.js';
+export * from './revision-staged-context.js';
+
+export { TranscriptDisclosure } from './transcript-disclosure.js';

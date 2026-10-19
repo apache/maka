@@ -20,7 +20,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
-import { realpath, writeFile } from 'node:fs/promises';
+import { readFile, realpath, writeFile } from 'node:fs/promises';
 import { createServer, type ServerResponse } from 'node:http';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -148,7 +148,13 @@ describe('Maka ACP child process', () => {
             _meta: { '_maka/goalPlan': { version: 1 } },
           },
           authMethods: [],
-          agentInfo: { name: 'maka', title: 'Maka', version: '0.2.0' },
+          agentInfo: {
+            name: 'maka',
+            title: 'Maka',
+            version: JSON.parse(
+              await readFile(new URL('../../package.json', import.meta.url), 'utf8'),
+            ).version,
+          },
         });
         assert.equal(
           await harness.hasRuntimeHostRootMarker(),

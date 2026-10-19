@@ -155,7 +155,7 @@ const largeConnection = makeConnection({
 const alibabaTokenPlanConnections = [
   makeConnection({
     slug: 'alibaba-token-plan-cn',
-    name: 'Alibaba Token Plan（团队版）',
+    name: 'Alibaba Token Plan 中国站',
     providerType: 'alibaba-token-plan-cn',
     defaultModel: 'qwen3.8-max',
     lastTestStatus: 'verified',
@@ -656,7 +656,7 @@ function ProviderStoryFrame(props: {
           <Layout
             height="auto"
             padding={0}
-            contentWidth={920}
+            contentWidth="calc(var(--maka-reading-measure) + 2 * var(--space-6))"
             header={(
               <LayoutHeader padding={6}>
                 <div className="settingsPageHeader">
@@ -850,6 +850,29 @@ export const LargeConnectionDetail: Story = {
     await waitFor(() => {
       expect(canvasElement.querySelectorAll('button[aria-label*="Fixture model"]').length).toBe(444);
     }, { timeout: 20_000 });
+    const canvas = within(canvasElement);
+    const second = canvas.getByRole('switch', { name: /Fixture model 002$/ });
+    const third = canvas.getByRole('switch', { name: /Fixture model 003$/ });
+    await userEvent.click(second);
+    await userEvent.click(third);
+    expect(second).toBeChecked();
+    expect(third).toBeChecked();
+    const bar = canvasElement.querySelector<HTMLElement>('.providerModelsSaveBar')!;
+    const save = within(bar).getByRole('button', { name: /^(保存|儲存|Save)$/ });
+    expect(save).toBeEnabled();
+    const pane = canvasElement.querySelector<HTMLElement>('.settingsMainPane')!;
+    // The production pane is the sole scroll owner. Save stays on screen at
+    // the top, middle and end of a hundreds-of-models catalog.
+    for (const top of [0, pane.scrollHeight / 2, pane.scrollHeight]) {
+      pane.scrollTop = top;
+      await waitFor(() => {
+        const rect = bar.getBoundingClientRect();
+        const viewport = pane.getBoundingClientRect();
+        expect(rect.top).toBeGreaterThanOrEqual(viewport.top);
+        expect(rect.bottom).toBeLessThanOrEqual(viewport.bottom + 1);
+        expect(rect.height).toBeGreaterThan(0);
+      });
+    }
   },
 };
 
@@ -972,7 +995,7 @@ export const ModelParameterSave: Story = {
     expect(patch()).toHaveTextContent(/^(自动|自動|Automatic)/);
     await userEvent.click(patch());
     await userEvent.click(await body.findByRole('option', { name: /^(启用|啟用|Enabled)$/ }));
-    const save = body.getByRole('button', { name: /^(保存|儲存|Save)$/i });
+    const save = within(body.getByRole('dialog')).getByRole('button', { name: /^(保存|儲存|Save)$/i });
     await userEvent.clear(field);
     await userEvent.type(field, '1MB');
     expect(save).toBeDisabled();
@@ -997,7 +1020,7 @@ export const ModelParameterSave: Story = {
     await userEvent.click(await body.findByRole('option', { name: /^(自动|自動|Automatic)/ }));
     await userEvent.click(vision());
     await userEvent.click(await body.findByRole('option', { name: /^(自动|自動|Model information)/i }));
-    await userEvent.click(body.getByRole('button', { name: /^(保存|儲存|Save)$/i }));
+    await userEvent.click(within(body.getByRole('dialog')).getByRole('button', { name: /^(保存|儲存|Save)$/i }));
     await waitFor(() => expect(configure).toHaveFocus());
     await userEvent.click(configure);
     expect(vision()).toHaveTextContent(/^(自动|自動|Model information)/i);
@@ -1007,7 +1030,7 @@ export const ModelParameterSave: Story = {
     const editable = body.getByRole('textbox', { name: /^(上下文窗口|上下文視窗|Context window)$/i });
     await userEvent.clear(editable);
     await userEvent.type(editable, '256K');
-    await userEvent.click(body.getByRole('button', { name: /^(取消|Cancel)$/i }));
+    await userEvent.click(within(body.getByRole('dialog')).getByRole('button', { name: /^(取消|Cancel)$/i }));
     await waitFor(() => expect(configure).toHaveFocus());
     await userEvent.click(configure);
     expect(await body.findByRole('textbox', { name: /^(上下文窗口|上下文視窗|Context window)$/i })).toHaveValue('128000');

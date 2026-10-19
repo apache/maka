@@ -55,7 +55,6 @@ afterEach(async () => {
 
 test('rejects non-chat permission modes before confirmation or persistence', async () => {
   let permissionWrites = 0;
-  let draftWrites = 0;
   let confirmations = 0;
   const { controller } = await mountController({
     services: createServices({
@@ -64,9 +63,6 @@ test('rejects non-chat permission modes before confirmation or persistence', asy
         return {} as DesktopSessionSummary;
       },
     }),
-    setNewTaskPermissionMode: () => {
-      draftWrites += 1;
-    },
     confirmBypass: async () => {
       confirmations += 1;
       return true;
@@ -80,7 +76,7 @@ test('rejects non-chat permission modes before confirmation or persistence', asy
 
   assert.equal(accepted, false);
   assert.equal(permissionWrites, 0);
-  assert.equal(draftWrites, 0);
+  assert.equal(controller().newTask.permissionChoice, undefined);
   assert.equal(confirmations, 0);
 });
 
@@ -418,7 +414,6 @@ async function mountController(overrides: {
   services?: SessionSettingsServices;
   owner?: { sessionId?: string };
   sessions?: readonly DesktopSessionSummary[];
-  setNewTaskPermissionMode?(mode: 'ask' | 'bypass'): void;
   confirmBypass?(): Promise<boolean>;
   saveComposerDefaults?(model: {
     llmConnectionId: string;
@@ -452,7 +447,6 @@ async function mountController(overrides: {
         },
         owner: overrides.owner ?? {},
         catalog,
-        setNewTaskPermissionMode: overrides.setNewTaskPermissionMode ?? (() => {}),
         confirmBypass: overrides.confirmBypass ?? (async () => true),
         saveComposerDefaults: overrides.saveComposerDefaults ?? (() => {}),
       }),
@@ -471,7 +465,6 @@ function Harness(props: {
   capture(controller: Controller): void;
   owner: { sessionId?: string };
   catalog: SessionCatalogController;
-  setNewTaskPermissionMode(mode: 'ask' | 'bypass'): void;
   confirmBypass(): Promise<boolean>;
   saveComposerDefaults(model: {
     llmConnectionId: string;
@@ -482,6 +475,7 @@ function Harness(props: {
   const controller = useSessionSettingsController({
     catalog: props.catalog,
     isActiveSession: () => true,
+    newTaskChoiceKey: 'new-task:test',
     newSessionPermissionMode: 'ask',
     refreshCatalog: async () => {},
     saveComposerDefaults: props.saveComposerDefaults,
@@ -490,7 +484,6 @@ function Harness(props: {
     planMode: { reportExecutionActive: () => {}, confirmDiscard: async () => true },
     captureOwner: () => props.owner,
     isOwnerActive: () => true,
-    setNewTaskPermissionMode: props.setNewTaskPermissionMode,
     confirmBypass: props.confirmBypass,
   });
   props.capture(controller);
@@ -504,6 +497,7 @@ function CausalRetirementHarness(props: {
   const controller = useSessionSettingsController({
     catalog: props.catalog,
     isActiveSession: () => true,
+    newTaskChoiceKey: 'new-task:test',
     newSessionPermissionMode: 'ask',
     refreshCatalog: async () => {},
     saveComposerDefaults: () => {},
@@ -512,7 +506,6 @@ function CausalRetirementHarness(props: {
     planMode: { reportExecutionActive: () => {}, confirmDiscard: async () => true },
     captureOwner: () => ({ sessionId: 'session-a' }),
     isOwnerActive: () => true,
-    setNewTaskPermissionMode: () => {},
     confirmBypass: async () => true,
   });
   props.capture(controller);

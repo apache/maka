@@ -64,6 +64,190 @@ const PREFIX_PROOF_TEST_BUDGET = {
 };
 
 describe('SqliteRuntimeStore', () => {
+  it('history revision tracks durable append identity without using event time', async () => {
+    await withStore(async (store) => {
+      const first = functionCallEvent({
+        id: 'history-one',
+        content: { kind: 'text', text: 'first' },
+        ts: 100,
+      });
+      assert.equal(await store.readSessionHistoryRevision(first.sessionId), 'empty');
+      await store.appendRuntimeEvent(first.sessionId, first.runId, first);
+      const revision = await store.readSessionHistoryRevision(first.sessionId);
+      await store.appendRuntimeEvent(first.sessionId, first.runId, first);
+      assert.equal(await store.readSessionHistoryRevision(first.sessionId), revision);
+      await store.appendRuntimeEvent(first.sessionId, first.runId, {
+        ...first,
+        id: 'history-late',
+        ts: 1,
+      });
+      assert.notEqual(await store.readSessionHistoryRevision(first.sessionId), revision);
+    });
+  });
+
+  it('leaves an existing NONE auto-vacuum database unchanged', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-sqlite-runtime-existing-none-'));
+    const dbPath = join(root, 'runtime.sqlite');
+    const existing = new DatabaseSync(dbPath);
+    existing.exec('CREATE TABLE existing_data (value TEXT NOT NULL)');
+    existing.close();
+    try {
+      const store = createSqliteRuntimeStore(dbPath);
+      store.close();
+      const inspected = new DatabaseSync(dbPath, { readOnly: true });
+      try {
+        assert.equal(
+          (inspected.prepare('PRAGMA auto_vacuum').get() as { auto_vacuum: number }).auto_vacuum,
+          0,
+        );
+        assert.ok(
+          inspected
+            .prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'existing_data'")
+            .get(),
+        );
+      } finally {
+        inspected.close();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('creates runtime databases with incremental auto-vacuum', async () => {
+    await withStore(async (_store, dbPath) => {
+      const inspected = new DatabaseSync(dbPath, { readOnly: true });
+      try {
+        assert.equal(
+          (inspected.prepare('PRAGMA auto_vacuum').get() as { auto_vacuum: number }).auto_vacuum,
+          2,
+        );
+      } finally {
+        inspected.close();
+      }
+    });
+  });
+
+  it('configures incremental auto-vacuum when another opener created the empty file', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-sqlite-runtime-empty-open-'));
+    const dbPath = join(root, 'runtime.sqlite');
+    const first = new DatabaseSync(dbPath);
+    try {
+      const store = createSqliteRuntimeStore(dbPath);
+      store.close();
+      assert.equal(first.prepare('PRAGMA auto_vacuum').get()?.auto_vacuum, 2);
+    } finally {
+      first.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves an initialized NONE database even when it has no tables', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-sqlite-runtime-empty-none-'));
+    const dbPath = join(root, 'runtime.sqlite');
+    const first = new DatabaseSync(dbPath);
+    try {
+      first.exec('BEGIN IMMEDIATE; COMMIT');
+      const store = createSqliteRuntimeStore(dbPath);
+      store.close();
+      assert.equal(first.prepare('PRAGMA auto_vacuum').get()?.auto_vacuum, 0);
+    } finally {
+      first.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reads a complete Session from one snapshot while another connection commits its terminal', async (t) => {
+    await withStore(async (store, dbPath) => {
+      const opening = invocationOpeningEvent(1);
+      await store.appendRuntimeEvent(opening.sessionId, opening.runId, opening);
+      const terminal: RuntimeEvent = {
+        ...opening,
+        id: 'concurrent-terminal',
+        ts: 20,
+        content: undefined,
+        status: 'completed',
+        actions: { endInvocation: true },
+      };
+      const writer = new DatabaseSync(dbPath);
+      const db = (store as unknown as { db: DatabaseSync }).db;
+      const prepare = db.prepare.bind(db);
+      let committed = false;
+      t.mock.method(db, 'prepare', (sql: string) => {
+        if (!committed && sql.includes("CASE WHEN event_kind = 'invocation_opened'")) {
+          committed = true;
+          writer.exec('BEGIN');
+          writer
+            .prepare(`INSERT INTO runtime_events
+            (event_id, session_id, invocation_id, run_id, turn_id, event_seq, event_kind, payload_json, committed_at)
+            VALUES (?, ?, ?, ?, ?, 2, 'invocation_end', ?, ?)`)
+            .run(
+              terminal.id,
+              terminal.sessionId,
+              terminal.invocationId,
+              terminal.runId,
+              terminal.turnId,
+              JSON.stringify(terminal),
+              terminal.ts,
+            );
+          writer
+            .prepare(
+              'INSERT INTO runtime_session_event_ordinals (session_id, ordinal, event_id) VALUES (?, 2, ?)',
+            )
+            .run(terminal.sessionId, terminal.id);
+          writer.exec('COMMIT');
+        }
+        return prepare(sql);
+      });
+      try {
+        const snapshot = await store.readSessionRuntimeSnapshot(opening.sessionId);
+        assert.ok(committed);
+        assert.equal(snapshot.invocations[0]?.terminalEvent, undefined);
+        assert.deepEqual(
+          snapshot.eventsByRun.get(opening.runId)?.map((event) => event.id),
+          [opening.id],
+        );
+        assert.deepEqual([...snapshot.durableEventOrdinalById], [[opening.id, 1]]);
+        const next = await store.readSessionRuntimeSnapshot(opening.sessionId);
+        assert.equal(next.invocations[0]?.terminalEvent?.id, terminal.id);
+        assert.deepEqual(
+          next.eventsByRun.get(opening.runId)?.map((event) => event.id),
+          [opening.id, terminal.id],
+        );
+        assert.equal(next.durableEventOrdinalById.get(terminal.id), 2);
+      } finally {
+        t.mock.restoreAll();
+        writer.close();
+      }
+    });
+  });
+
+  it('batch Session reads retain event identity validation', async () => {
+    await withStore(async (store, dbPath) => {
+      const opening = invocationOpeningEvent(1);
+      await store.appendRuntimeEvent(opening.sessionId, opening.runId, opening);
+      const text = functionCallEvent({
+        id: 'corrupt-text',
+        content: { kind: 'text', text: 'hello' },
+      });
+      await store.appendRuntimeEvent(text.sessionId, text.runId, text);
+      const writer = new DatabaseSync(dbPath);
+      try {
+        writer
+          .prepare(
+            "UPDATE runtime_events SET payload_json = json_set(payload_json, '$.sessionId', 'wrong-session') WHERE event_id = ?",
+          )
+          .run(text.id);
+        await assert.rejects(
+          store.readRuntimeEvents(text.sessionId, text.runId),
+          /identity mismatch/,
+        );
+        await assert.rejects(store.readSessionRuntimeSnapshot(text.sessionId), /identity mismatch/);
+      } finally {
+        writer.close();
+      }
+    });
+  });
+
   it('applies versioned migrations and reopens the same database without rewriting schema', async () => {
     await withStore(async (store, dbPath) => {
       assert.equal(store.schemaVersion(), SQLITE_RUNTIME_SCHEMA_VERSION);
@@ -2138,6 +2322,36 @@ describe('SqliteRuntimeStore', () => {
         ['prepared', 'outcome_committed'],
       );
       assert.deepEqual(await store.listUnsettledToolOperations(), []);
+    });
+  });
+
+  it('retains an aborted tool outcome after reopening the T2 ledger', async () => {
+    await withStore(async (store, dbPath) => {
+      await commitPrepared(store);
+      const response = functionResponseEvent({
+        content: {
+          kind: 'function_response',
+          id: 'provider-call-1',
+          name: 'Read',
+          result: { kind: 'text', text: 'stopped' },
+          isError: true,
+          outcome: 'aborted',
+        },
+      });
+      await store.commitToolOutcome({
+        operationId: 'operation-1',
+        journalEventId: 'operation-1_outcome',
+        runtimeEvent: response,
+        committedAt: 20,
+      });
+      store.close();
+      const reopened = createSqliteRuntimeStore(dbPath);
+      try {
+        const events = await reopened.readRuntimeEvents('session-1', 'run-1');
+        assert.deepEqual(events.at(-1), response);
+      } finally {
+        reopened.close();
+      }
     });
   });
 

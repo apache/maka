@@ -75,7 +75,12 @@ async function waitFor(
   b: CuDispatchBackend,
   args: Record<string, unknown>,
   observeFirst = true,
-): Promise<{ text: string; modelText?: string; error?: string }> {
+): Promise<{
+  text: string;
+  modelText?: string;
+  error?: string;
+  outcome?: string;
+}> {
   const [tool] = buildComputerUseTools({ backend: b });
   const context = {
     abortSignal: new AbortController().signal,
@@ -93,6 +98,7 @@ async function waitFor(
     text: string;
     modelText?: string;
     error?: string;
+    outcome?: string;
   };
 }
 
@@ -114,6 +120,7 @@ test('a wait for text to go returns when it goes', async () => {
     duration: 5,
   });
   assert.match(result.text, /gone after/);
+  assert.equal(result.outcome, 'success');
 });
 
 test('a timeout hands back the window as it stands', async () => {
@@ -122,6 +129,7 @@ test('a timeout hands back the window as it stands', async () => {
     duration: 0.6,
   });
   assert.equal(result.error, 'timeout');
+  assert.equal(result.outcome, 'error');
   assert.match(result.text, /was still absent after/);
   // The whole question a model asks after a timeout is "what is there instead",
   // and making it spend another call on that is the round trip this removes.

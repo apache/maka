@@ -404,9 +404,15 @@ export class McpOAuthProvider implements OAuthClientProvider {
       record.pendingRedirectUrl ||
       record.pendingServerUrl ||
       record.pendingState;
+    // SDK credentials predating issuer binding cannot safely follow discovery.
+    // Revoke them instead of adopting whichever issuer the server names next.
+    const missingIssuer =
+      (record.tokens !== undefined && !record.tokens.issuer) ||
+      (record.clientInformation !== undefined && !record.clientInformation.issuer);
     return (
-      Boolean(boundable) &&
-      !mcpOAuthRecordBoundTo(record, this.options.serverUrl, this.options.config)
+      missingIssuer ||
+      (Boolean(boundable) &&
+        !mcpOAuthRecordBoundTo(record, this.options.serverUrl, this.options.config))
     );
   }
 

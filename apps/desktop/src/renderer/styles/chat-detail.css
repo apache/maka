@@ -20,14 +20,11 @@
 /* A turn reads as one unit because its internal gap is well under the
    between-turn gap, which the transcript row in chat-view.tsx owns. */
 .maka-turn {
-  display: flex;
-  flex-direction: column;
+  /* local: VStack owns display/direction/gap/width; the reading measure and
+     flex-item behavior have no props to move onto. */
   flex: 0 0 auto;
-  gap: var(--space-3);
   max-width: var(--maka-reading-measure);
   margin: 0 auto;
-  width: 100%;
-  box-sizing: border-box;
 }
 
 /* Search-highlight ring on the turn the search panel just navigated to.
@@ -48,9 +45,9 @@
   background: oklch(from var(--accent) l c h / 0.045);
 }
 
-/* Lineage rows + badges / footer + footer actions retired to the `@maka/ui`
+/* Lineage rows / footer retired to the `@maka/ui`
  * Marker chat primitive (`lineage-row` / `lineage-row-reverse` /
- * `lineage-badge` / `footer` / `footer-action`), issue #332 PR2 —
+ * `footer`), issue #332 PR2 —
  * packages/ui/src/primitives/chat.tsx.
  * The failed-turn banner is an Astryx `Banner`, not a Marker variant.
  * The measure-column geometry the `tool-output.css` re-anchor used to add

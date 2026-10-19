@@ -42,6 +42,7 @@ import {
   type InteractiveUsageStoresFailureClassification,
   type InteractiveUsageStoresWriter,
 } from '@maka/storage/usage-stores';
+import type { RunSettlementCoverage } from '@maka/storage/model-call-ledger';
 import { isSessionNotFoundError } from '@maka/storage/execution-stores';
 import {
   encodePricingQueryResult,
@@ -79,6 +80,17 @@ export class HostUsagePricingCoordinator {
     'pricing.query': (input) => this.#queryPricing(input),
     'pricing.mutate': (input) => this.#mutatePricing(input),
   };
+
+  /**
+   * What the settlement window itself left unsettled (#5890) — hosted
+   * execution settlement's incompleteness check reads the same window as the
+   * totals it guards, minus the `no_run` sentinel rows. Deliberately off the
+   * operation handler map: the ledger-wide `usage.query` coverage keeps a
+   * different shape, so settlement scopes itself through this in-process seam.
+   */
+  async runSettlementCoverage(from: number, to: number): Promise<RunSettlementCoverage> {
+    return this.#stores.modelCalls.modelCallRunSettlementCoverage(from, to);
+  }
 
   readonly #stores: InteractiveUsageStoresWriter;
   readonly #requestDrain: () => void;

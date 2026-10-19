@@ -20,7 +20,10 @@
 import type { MakaBridge } from '../../../preload/bridge-contract.js';
 import type { OverlaysServices } from '../../features/overlays/index.js';
 
-export type DesktopOverlaysBridge = Pick<MakaBridge, 'search'>;
+export type DesktopOverlaysBridge = Pick<
+  MakaBridge,
+  'connections' | 'memory' | 'search' | 'sessions' | 'settings'
+>;
 
 /** The browser capabilities the overlays reach through this adapter. */
 export interface DesktopOverlaysEnvironment {
@@ -54,6 +57,15 @@ export function createDesktopOverlaysServices(
           (element as HTMLElement).blur();
         }
       },
+    },
+    // The palette rows name connections by slug, so these keep the bridge's
+    // slug form rather than Connection Settings' identity form.
+    palette: {
+      testConnection: (slug, host) => bridge.connections.test(slug, undefined, host),
+      setDefaultConnection: (slug, host) => bridge.connections.setDefault(slug, host),
+      testNetworkProxy: (host) => bridge.settings.testNetworkProxy(undefined, host),
+      openLocalMemoryFile: (host) => bridge.memory.openFile(host),
+      saveConversationToFile: (input) => bridge.sessions.saveConversationToFile(input),
     },
   };
 }

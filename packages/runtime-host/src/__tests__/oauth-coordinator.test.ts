@@ -1181,7 +1181,7 @@ async function attachPresentation(
       connection.accept({
         kind: 'client.capability.result',
         invocationId: frame.invocationId,
-        result: { content: [], structuredContent },
+        result: { outcome: 'success', content: [], structuredContent },
       });
     },
   });

@@ -52,11 +52,11 @@ import {
   type ContextBudgetPolicy,
   type ToolResultPruneStats,
 } from './context-budget.js';
-import { isHistoryCompactContentEvent } from './history-compaction.js';
 import {
   canContinueHistoryCompactCheckpointForModel,
   canReplayHistoryCompactCheckpointForModel,
-  historyCompactSourceDigest,
+  checkHistoryCompactCheckpointCurrency,
+  isHistoryCompactContentEvent,
   matchHistoryCompactCheckpointPrefix,
   projectHistoryCompactCheckpointReplay,
   type HistoryCompactCheckpoint,
@@ -294,6 +294,17 @@ export class AiSdkCompaction {
         return { outcome: { kind: 'unchanged', reason: 'empty_history' } };
       }
 
+      // The next send's prepareContextBudgetPolicy prunes oversized tool
+      // results BEFORE it validates this fold's checkpoint, so a summary
+      // written over an unarchived body fails its first currency check and is
+      // silently discarded (#6048). Commit the same archives here first:
+      // projectEffectiveCoverage below then folds them into both the
+      // summarizer's view and the pinned effectiveSourceDigest — the same
+      // effective view the validator folds. The planning pool stays the raw
+      // events, so the coverage identity and the #5929 reuse gate are
+      // untouched.
+      await this.pruneToolResults(runtimeContext, input.turnId);
+
       const charsPerToken = policy.charsPerToken ?? 4;
       let previousCheckpoint: HistoryCompactCheckpoint | undefined;
       try {
@@ -314,12 +325,26 @@ export class AiSdkCompaction {
       }
 
       if (previousCheckpoint) {
+        // Load the transition view only when the raw prefix can replay at all:
+        // a checkpoint that cannot match never reaches for the ledger, the
+        // same as before (#5930 keeps the load point, not the check).
         const match = matchHistoryCompactCheckpointPrefix(previousCheckpoint, runtimeContext);
         if (!match.reason && match.successorRuntimeEvents.length === 0) {
-          {
+          // Raw identity is not enough: a projection transition committed
+          // after the fold rewrites the covered span's effective view without
+          // touching the raw ledger, so reuse requires the pinned effective
+          // digest to still match — the same gate the pre-send path applies
+          // (#5929). On drift, fall through to the planner, whose roll-forward
+          // currency check discards the stale checkpoint and re-summarizes.
+          const currency = checkHistoryCompactCheckpointCurrency(
+            previousCheckpoint,
+            runtimeContext,
+            await this.loadModelProjectionTransitions(),
+          );
+          if (currency.status === 'current') {
             const projectedEvents = projectHistoryCompactCheckpointReplay(
               previousCheckpoint,
-              match.coveredRuntimeEvents,
+              currency.match.coveredRuntimeEvents,
               [],
             );
             return {
@@ -373,11 +398,11 @@ export class AiSdkCompaction {
           : {}),
         ...(automaticMemoryBoundary ? { memoryExtractionBoundary: automaticMemoryBoundary } : {}),
         ...(previousCheckpoint ? { previousCheckpoint } : {}),
-        // The planner projects the covered span to its effective view before
+        // The planner folds the covered span through this snapshot before
         // summarizing and pins its digest as coverage.effectiveSourceDigest:
         // the summary can never quote a body a durable transition removed, and
         // a later transition invalidates the checkpoint at replay (#4845).
-        projectEffectiveCoverage: (covered) => this.foldEffectiveModelHistory(covered),
+        loadProjectionSnapshot: () => this.loadModelProjectionTransitions(),
         summarize: async ({
           coveredRuntimeEvents,
           newlyFoldedRuntimeEvents,
@@ -559,28 +584,6 @@ export class AiSdkCompaction {
   }
 
   /**
-   * Whether the checkpoint's pinned effective view still is the covered
-   * prefix's effective view. The raw identity match happens later in the
-   * replay authority; this gate is about content currency: a projection
-   * transition committed after the fold changes what the model may see of the
-   * covered span without touching the raw ledger, and the checkpoint's summary
-   * or provider state must not survive that drift (#4845 review).
-   */
-  private checkpointEffectiveCoverageMatches(
-    checkpoint: HistoryCompactCheckpoint,
-    effectiveEvents: readonly RuntimeEvent[],
-  ): boolean {
-    const pinned = checkpoint.coverage.effectiveSourceDigest;
-    if (pinned === undefined) return false;
-    const covered = effectiveEvents
-      .filter(isHistoryCompactContentEvent)
-      .slice(0, checkpoint.coverage.eventCount);
-    if (covered.length !== checkpoint.coverage.eventCount) return false;
-    if (covered.at(-1)?.id !== checkpoint.coverage.through.runtimeEventId) return false;
-    return historyCompactSourceDigest(covered) === pinned;
-  }
-
-  /**
    * Apply the same bounded-result rule to current and prior events.
    *
    * This is the one seam where raw RuntimeEvents become effective model
@@ -709,16 +712,12 @@ export class AiSdkCompaction {
       // This gate is only for the case where the raw identity matches but a
       // projection transition committed after the fold changed the effective
       // view the summary (or provider state) was built from (#4845 review).
-      const rawIdentityMatch = matchHistoryCompactCheckpointPrefix(
+      const currency = checkHistoryCompactCheckpointCurrency(
         loadedCheckpoint,
         runtimeContext.filter(isHistoryCompactContentEvent),
+        prepared.projectionSnapshot,
       );
-      if (rawIdentityMatch.reason) {
-        nextPolicy = {
-          ...nextPolicy,
-          historyCompact: { ...nextPolicy.historyCompact!, checkpoint: loadedCheckpoint },
-        };
-      } else if (this.checkpointEffectiveCoverageMatches(loadedCheckpoint, effective.events)) {
+      if (currency.status !== 'effective_history_changed') {
         nextPolicy = {
           ...nextPolicy,
           historyCompact: { ...nextPolicy.historyCompact!, checkpoint: loadedCheckpoint },
@@ -797,7 +796,8 @@ export class AiSdkCompaction {
       headAnchor,
       priorContentEvents,
       input.runtimeContextInvocations ?? [],
-      resolveDeclaredContextWindow(this.input.connection, this.input.modelId),
+      resolveDeclaredContextWindow(this.input.connection, this.input.modelId) ??
+        policy.historyCompact.midTurn.fallbackThresholdTokens,
     );
     // Seed the turn's FIRST request with the last request the provider
     // actually counted, so step 0 is judged by the same real number as every
@@ -820,12 +820,12 @@ export class AiSdkCompaction {
   /**
    * Request-projection stage for proactive compaction: before each request of
    * one turn, compare the baseline — the last provider-accepted request's real
-   * input plus real output tokens — against the context window the user
-   * declared, and over it fold a safe completed prefix into a durable
-   * checkpoint, continuing the turn on `[compact block, verbatim head anchor]`.
+   * input plus real output tokens — against the user's compaction target or
+   * explicit Host fallback. Crossing it folds a safe completed prefix into a
+   * durable checkpoint, continuing on `[compact block, verbatim head anchor]`.
    *
    * Nothing here estimates whether a request fits: the baseline is the
-   * provider's own count, the window is the user's own number, and the part of
+   * provider's own count, the target is a policy choice, and the part of
    * the next request neither describes (tool results, user text, images
    * appended since) is judged by the provider when the request goes out. This
    * hook never terminates the turn: every failure fails open with a diagnostic
@@ -838,6 +838,13 @@ export class AiSdkCompaction {
     queue: AsyncEventQueue<SessionEvent>,
     providerTools: readonly MakaTool[],
     onDiagnosticPatch: (patch: Partial<ContextBudgetDiagnostic>) => void,
+    /**
+     * Fired once a compaction is durable and applied — checkpoint persisted and the
+     * projection takes over — before the replacement request goes out. The
+     * runtime records its apply-time boundary row here; like every system
+     * note it must never disturb the compaction, so the call is fail-open.
+     */
+    onCompactionApplied: (() => void | Promise<void>) | undefined,
     origin: ProviderRequestOrigin,
     memoryCompactionDecision?: () => AutomaticMemoryCompactionDecision,
     onMemoryCompaction?: (input: AutomaticMemoryCompactionDispatch) => void,
@@ -894,7 +901,7 @@ export class AiSdkCompaction {
         return keepProjection();
       };
       // One trigger, one real signal: the baseline plus the room the next reply
-      // needs crossed the window the user declared. A cut reply is deliberately
+      // needs crossed the user target or Host fallback. A cut reply is deliberately
       // not a trigger — see the note on `finishReason: length` in the backend.
       // The next request is at least the baseline, and its reply needs room on
       // top of it. The room is measured from the last reply the model actually
@@ -925,6 +932,7 @@ export class AiSdkCompaction {
         activeToolsForStep,
         memoryCompactionDecision,
         onMemoryCompaction,
+        onCompactionApplied,
         abortSignal,
       });
       if (outcome.decision === 'fail') {
@@ -971,6 +979,8 @@ export class AiSdkCompaction {
     activeToolsForStep: readonly string[];
     memoryCompactionDecision?: () => AutomaticMemoryCompactionDecision;
     onMemoryCompaction?: (input: AutomaticMemoryCompactionDispatch) => void;
+    /** See {@link buildMidTurnCapacityCompactProjection}'s parameter. */
+    onCompactionApplied?: () => void | Promise<void>;
     phase?: 'pre_turn' | 'mid_turn';
     abortSignal?: AbortSignal;
   }): Promise<ActiveRequestCompactionOutcome> {
@@ -1086,7 +1096,7 @@ export class AiSdkCompaction {
             },
           }
         : {}),
-      projectEffectiveCoverage: (covered) => this.foldEffectiveModelHistory(covered),
+      loadProjectionSnapshot: () => this.loadModelProjectionTransitions(),
       summarize: async ({ coveredRuntimeEvents, newlyFoldedRuntimeEvents, previousCheckpoint }) => {
         // Same contract as the standalone path: the planner hands the
         // effective (transition-folded) view to the summarizer and pins its
@@ -1186,6 +1196,14 @@ export class AiSdkCompaction {
       }
     }
     state.projectionCheckpoint = plan.checkpoint;
+    // The boundary is durable the moment the projection takes over: record it
+    // now, not at turn settlement, so usage readers ordering measurements
+    // against the compaction get the apply time.
+    try {
+      await input.onCompactionApplied?.();
+    } catch {
+      // The boundary row explains the compaction; losing it must not undo one.
+    }
     return {
       decision: 'compacted',
       checkpoint: plan.checkpoint,
@@ -1220,6 +1238,8 @@ export class AiSdkCompaction {
     origin: ProviderRequestOrigin;
     memoryCompactionDecision?: () => AutomaticMemoryCompactionDecision;
     onMemoryCompaction?: (input: AutomaticMemoryCompactionDispatch) => void;
+    /** See {@link buildMidTurnCapacityCompactProjection}'s parameter. */
+    onCompactionApplied?: () => void | Promise<void>;
     abortSignal?: AbortSignal;
   }): Promise<{ messages: ModelMessage[] } | undefined> {
     const state = input.midTurnState;
@@ -1255,6 +1275,7 @@ export class AiSdkCompaction {
       activeToolsForStep: input.activeTools,
       memoryCompactionDecision: input.memoryCompactionDecision,
       onMemoryCompaction: input.onMemoryCompaction,
+      onCompactionApplied: input.onCompactionApplied,
       abortSignal: input.abortSignal,
     });
     if (outcome.decision !== 'compacted') {
@@ -1472,20 +1493,78 @@ function persistedRequestAnchor(
   modelId: string,
   connectionId: string | undefined,
 ): LastRequestAnchor | undefined {
+  // The newest anchored usage row is the candidate — but a send that compacted
+  // mid-turn and never completed another request settles its usage row AFTER
+  // the compaction notes while the anchor still describes the pre-compaction
+  // request (#5547). Position alone cannot order that pair, so the scan holds
+  // the candidate and lets a boundary row behind it supersede by event time.
+  let pending: { anchor: LastRequestAnchor; completedAt?: number } | undefined;
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
     const anchor = event?.actions?.tokenUsage?.lastRequestAnchor;
-    if (!anchor) continue;
-    const route = invocations.find((candidate) => candidate.runId === event?.runId)?.opening.route;
-    if (
-      route?.provenance !== 'runtime' ||
-      route.backendKind === 'plugin-executor' ||
-      route.modelId !== modelId ||
-      route.llmConnectionId !== connectionId
-    ) {
-      return undefined;
+    if (anchor) {
+      // A second anchored row settles the candidate: under ordered writes every
+      // boundary behind it is strictly older than the candidate's completion.
+      if (pending) return pending.anchor;
+      const route = invocations.find((candidate) => candidate.runId === event?.runId)?.opening
+        .route;
+      if (
+        route?.provenance !== 'runtime' ||
+        route.backendKind === 'plugin-executor' ||
+        route.modelId !== modelId ||
+        route.llmConnectionId !== connectionId
+      ) {
+        return undefined;
+      }
+      pending = { anchor, completedAt: anchor.completedAt };
+      continue;
     }
-    return anchor;
+    const note = event?.content?.kind === 'system_note' ? event.content.note : undefined;
+    if (note === 'context_compaction_applied' || note === 'context_compacted') {
+      // A boundary behind the candidate is strictly older under ordered
+      // writes — unless the candidate's completion itself predates the compaction.
+      if (!pending) return undefined;
+      const boundaryAt =
+        note === 'context_compacted'
+          ? // The display row lands at settlement — after every request of
+            // its turn — so its own row time would supersede even an anchor
+            // that completed after the compaction. The compaction recorded its real
+            // boundary at apply time earlier in the same turn; only when no
+            // such row exists is the note's own time all there is.
+            (compactionAppliedAtBefore(events, index, event.turnId) ?? event.ts)
+          : event.ts;
+      return pending.completedAt !== undefined &&
+        boundaryAt !== undefined &&
+        boundaryAt >= pending.completedAt
+        ? undefined
+        : pending.anchor;
+    }
+  }
+  return pending?.anchor;
+}
+
+/**
+ * The apply-time boundary a settlement `context_compacted` row describes:
+ * the same turn's `context_compaction_applied` note. Between the compaction's
+ * apply row and its display row sit only that turn's post-compaction output —
+ * the turn's own usage row lands after the note — so the first relevant
+ * row behind the note is the matching apply row when one was recorded. A
+ * usage row, another display note, a different turn's apply row, or the
+ * head of the log all mean the note's own write time is all there is.
+ */
+function compactionAppliedAtBefore(
+  events: readonly RuntimeEvent[],
+  noteIndex: number,
+  turnId: string | undefined,
+): number | undefined {
+  for (let index = noteIndex - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event?.actions?.tokenUsage !== undefined) return undefined;
+    const note = event?.content?.kind === 'system_note' ? event.content.note : undefined;
+    if (note === 'context_compaction_applied') {
+      return event?.turnId === turnId ? event.ts : undefined;
+    }
+    if (note === 'context_compacted') return undefined;
   }
   return undefined;
 }

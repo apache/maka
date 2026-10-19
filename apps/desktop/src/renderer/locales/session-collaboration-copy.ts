@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, defineShippedUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 const ZH_CN = {
     shareAction: '分享此任务',
@@ -86,6 +86,7 @@ const ZH_CN = {
     mountConnecting: '正在连接',
     mountReconnecting: '正在重连',
     mountUnavailable: '当前不可用',
+    mountCached: '任务状态尚未更新',
     directConnection: '直连',
     memberTransitConnection: '成员转发',
     disconnect: '从本机移除',
@@ -199,6 +200,7 @@ const ZH_TW = {
     mountConnecting: '正在連線',
     mountReconnecting: '正在重新連線',
     mountUnavailable: '目前不可用',
+    mountCached: '任務狀態尚未更新',
     directConnection: '直連',
     memberTransitConnection: '成員轉發',
     disconnect: '從本機移除',
@@ -309,6 +311,7 @@ const EN = {
     mountConnecting: 'Connecting',
     mountReconnecting: 'Reconnecting',
     mountUnavailable: 'Unavailable',
+    mountCached: 'Task status is not up to date',
     directConnection: 'Direct',
     memberTransitConnection: 'Member transit',
     disconnect: 'Remove from this device',
@@ -349,7 +352,7 @@ const EN = {
     pendingTurnRequestCount: (count: number) => `${count} pending Turn ${count === 1 ? 'request' : 'requests'}`,
 } satisfies SessionCollaborationCopy;
 
-const COPY = { 'zh-CN': ZH_CN, 'zh-TW': ZH_TW, en: EN } satisfies UiCatalog<SessionCollaborationCopy>;
+const COPY = resolveUiMessageCatalog(defineShippedUiMessageCatalog<SessionCollaborationCopy>()({ 'zh-CN': ZH_CN, 'zh-TW': ZH_TW, en: EN })) satisfies UiCatalog<SessionCollaborationCopy>;
 
 export function getSessionCollaborationCopy(locale: UiLocale) {
   return COPY[locale];

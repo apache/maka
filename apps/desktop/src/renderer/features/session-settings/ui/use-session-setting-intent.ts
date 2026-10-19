@@ -18,13 +18,13 @@
  */
 
 import { useMemo, useSyncExternalStore } from 'react';
-import { createSessionSettingsBridge } from '../controller/session-settings-bridge.js';
-import type { SessionSettingValues, SessionSettingsOverlays } from '../model/session-settings-contract.js';
+import { createSessionSettingsBridge, type SessionSettingsReadState } from '../controller/session-settings-bridge.js';
+import type { NewTaskSettings, SessionSettingValues, SessionSettingsOverlays } from '../model/session-settings-contract.js';
 import { equalSessionModelConfigurationIntent } from '../session-model-configuration-intent.js';
 
-type Selection = Partial<SessionSettingValues>;
+type Selection = { readonly overlay: Partial<SessionSettingValues>; readonly newTask: NewTaskSettings };
 
-function select(overlays: SessionSettingsOverlays, sessionId?: string): Selection {
+function selectOverlay(overlays: SessionSettingsOverlays, sessionId?: string): Partial<SessionSettingValues> {
   return sessionId ? {
     modelConfiguration: overlays.modelConfiguration[sessionId],
     permissionMode: overlays.permissionMode[sessionId],
@@ -33,7 +33,7 @@ function select(overlays: SessionSettingsOverlays, sessionId?: string): Selectio
   } : {};
 }
 
-function equal(left: Selection, right: Selection): boolean {
+function equalOverlay(left: Partial<SessionSettingValues>, right: Partial<SessionSettingValues>): boolean {
   const a = left.modelConfiguration;
   const b = right.modelConfiguration;
   return (a === b || Boolean(a && b && equalSessionModelConfigurationIntent(a, b))) &&
@@ -43,24 +43,28 @@ function equal(left: Selection, right: Selection): boolean {
 }
 
 /**
- * The shell's remaining intent read: only its selected Session's four overlays.
- * No write controller is called here. Inactive Session writes do not wake it.
+ * The shell's remaining intent read: only its selected Session's four overlays
+ * and what the next new task starts with. No write controller is called here.
+ * Inactive Session writes do not wake it.
  */
 export function useSessionSettingIntent(sessionId?: string) {
   const bridge = useMemo(createSessionSettingsBridge, []);
   const getSnapshot = useMemo(() => {
-    let state: SessionSettingsOverlays | undefined;
-    let selection: Selection = {};
+    let state: SessionSettingsReadState | undefined;
+    let selection: Selection | undefined;
     return () => {
       const nextState = bridge.getState();
-      if (state !== nextState) {
-        const next = select(nextState, sessionId);
-        if (state === undefined || !equal(selection, next)) selection = next;
+      if (state !== nextState || !selection) {
+        const nextOverlay = selectOverlay(nextState.overlays, sessionId);
+        const overlay = selection && equalOverlay(selection.overlay, nextOverlay) ? selection.overlay : nextOverlay;
+        if (overlay !== selection?.overlay || nextState.newTask !== selection.newTask) {
+          selection = { overlay, newTask: nextState.newTask };
+        }
         state = nextState;
       }
       return selection;
     };
   }, [bridge, sessionId]);
-  const overlay = useSyncExternalStore(bridge.subscribe, getSnapshot, getSnapshot);
-  return { bridge, commands: bridge.commands, overlay };
+  const { overlay, newTask } = useSyncExternalStore(bridge.subscribe, getSnapshot, getSnapshot);
+  return { bridge, commands: bridge.commands, overlay, newTask };
 }

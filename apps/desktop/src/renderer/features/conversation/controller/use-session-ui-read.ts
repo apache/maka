@@ -17,8 +17,8 @@
  * under the License.
  */
 
-import { useMemo, useSyncExternalStore } from 'react';
-import type { SnapshotReader } from '../../../application/contracts/snapshot-reader.js';
+import { useMemo } from 'react';
+import { useSnapshotReader, type SnapshotReader } from '../../../application/contracts/snapshot-reader.js';
 import type { SessionUiReadKind, SessionUiReads } from '../model/session-ui-reads.js';
 
 type SessionUiReading<K extends SessionUiReadKind> = ReturnType<ReturnType<SessionUiReads[K]>['getSnapshot']>;
@@ -28,10 +28,11 @@ export function useSessionUiRead<K extends SessionUiReadKind>(
   reads: SessionUiReads,
   kind: K,
   sessionId: string | undefined,
+  active = true,
 ): SessionUiReading<K> {
   const reader = useMemo(
     () => reads[kind](sessionId) as SnapshotReader<SessionUiReading<K>>,
     [reads, kind, sessionId],
   );
-  return useSyncExternalStore(reader.subscribe, reader.getSnapshot, reader.getSnapshot);
+  return useSnapshotReader(reader, active);
 }

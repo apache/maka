@@ -94,12 +94,13 @@ const PATTERNS: Pattern[] = [
     streamingValueGroup: 3,
   },
   // Common provider key prefixes
-  // OpenAI: sk-..., Anthropic: sk-ant-..., Google API: AIza..., GitHub: ghp_/gho_/ghu_/ghs_/ghr_
+  // OpenAI: sk-..., Anthropic: sk-ant-..., Google API: AIza...,
+  // GitHub: ghp_/gho_/ghu_/ghs_/ghr_/github_pat_
   // Slack tokens: xox[abprs]-...
   {
     label: 'provider api key',
     regex:
-      /\b(sk-[A-Za-z0-9_-]{16,}|sk-ant-[A-Za-z0-9_-]{16,}|AIza[0-9A-Za-z_-]{30,}|gh[opusr]_[A-Za-z0-9]{30,}|xox[abprs]-[A-Za-z0-9-]{16,})\b/g,
+      /\b(sk-[A-Za-z0-9_-]{16,}|sk-ant-[A-Za-z0-9_-]{16,}|AIza[0-9A-Za-z_-]{30,}|gh[opusr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,}|xox[abprs]-[A-Za-z0-9-]{16,})\b/g,
     streamingReversible: true,
   },
   // Long high-entropy hex/base64 strings (40+ chars) — best-effort catch.

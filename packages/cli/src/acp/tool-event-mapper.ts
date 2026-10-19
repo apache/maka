@@ -33,6 +33,7 @@ import {
 import type { StoredMessage } from '@maka/core/session';
 import { projectToolArgsPreview } from '@maka/core/tool-quiet-preview';
 import { toolResultActivityStatus } from '@maka/core/tool-result-status';
+import type { ToolCallOutcome } from '@maka/core/tool-result-status';
 import { isCanonicalArtifactEntityId } from '@maka/core/artifacts';
 import { formatAttachmentResourceRef } from '@maka/core/attachments';
 import type { InteractionPendingSnapshot, InteractionSnapshot } from '@maka/runtime-host/protocol';
@@ -147,6 +148,7 @@ export class AcpToolEventMapper {
           event.content,
           event.durationMs,
           event.contentOmitted === true,
+          event.outcome,
         );
         return;
     }
@@ -164,6 +166,7 @@ export class AcpToolEventMapper {
         message.content,
         message.durationMs,
         false,
+        message.outcome,
       );
     }
   }
@@ -288,9 +291,11 @@ export class AcpToolEventMapper {
     result: ToolResultContent,
     durationMs: number | undefined,
     omitted: boolean,
+    outcome?: ToolCallOutcome,
   ): Promise<void> {
     const resultDigest = digestValue({
       isError,
+      outcome,
       result: omitted ? null : result,
       durationMs,
       omitted,
@@ -298,7 +303,7 @@ export class AcpToolEventMapper {
     if (tool.resultDigest === resultDigest) return;
     if (omitted) tool.resultAnnounced = true;
     tool.terminal = true;
-    const hostStatus = toolResultActivityStatus(isError, omitted ? undefined : result);
+    const hostStatus = toolResultActivityStatus(isError, omitted ? undefined : result, outcome);
     tool.status = hostStatus === 'completed' ? 'completed' : 'failed';
     tool.meta.hostStatus = hostStatus;
     if (durationMs !== undefined) tool.meta.durationMs = durationMs;
@@ -374,7 +379,11 @@ export class AcpToolEventMapper {
 
   async #publish(
     tool: ToolState,
-    extra: { content?: ToolCallContent[]; rawInput?: unknown; rawOutput?: unknown } = {},
+    extra: {
+      content?: ToolCallContent[];
+      rawInput?: unknown;
+      rawOutput?: unknown;
+    } = {},
   ): Promise<void> {
     const fixedChars = fixedStateChars(tool);
     // Keep recent progress and use the remaining per-tool budget for output.
@@ -414,7 +423,11 @@ export class AcpToolEventMapper {
           type: 'text',
           text: `[${output.stream}]${output.redacted ? ' [redacted]' : ''} ${output.chunk}`,
           _meta: {
-            maka: { sequence: output.seq, stream: output.stream, redacted: output.redacted },
+            maka: {
+              sequence: output.seq,
+              stream: output.stream,
+              redacted: output.redacted,
+            },
           },
         },
       });
@@ -521,7 +534,10 @@ function bounded(text: string, max: number, suffix = '…'): { text: string; dro
   let length = max - suffix.length;
   const before = text.charCodeAt(length - 1);
   if (before >= 0xd800 && before <= 0xdbff) length -= 1;
-  return { text: `${text.slice(0, length)}${suffix}`, dropped: text.length - length };
+  return {
+    text: `${text.slice(0, length)}${suffix}`,
+    dropped: text.length - length,
+  };
 }
 
 function textContent(text: string): ToolCallContent[] {

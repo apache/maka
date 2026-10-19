@@ -127,6 +127,7 @@ Maka currently exposes these deliberately small, product-native seams:
 | --- | --- | --- |
 | `shell.overlay` | list / root | Frame-wide overlay surfaces. |
 | `sidebar.footer` | list / root | Additive Session-sidebar footer actions. |
+| `sidebar.navigation` | list / root | Primary navigation entries between New Task and WorkHub. `openSession` opens native chat and `activeSessionId` identifies the active conversation. Optional `sessionLabels` registration declares Sessions owned by this entry: omit matching labels from the ordinary rail and session palette while keeping the full catalog/Recall. Unloading the entry restores ordinary navigation. |
 | `settings.navigation` | list / root | Plugin-owned Settings navigation controls. |
 | `settings.page` | keyed / root | Full plugin Settings pages dispatched by page id. |
 | `conversation.header.actions` | list / session | Actions in the active conversation context header. |

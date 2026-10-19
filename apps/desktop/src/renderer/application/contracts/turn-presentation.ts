@@ -246,7 +246,7 @@ export function deriveChatTurnPresentation(
 }
 
 /**
- * The shell's `deriveTurnPresentation` prop. What matters is that the
+ * A transcript's `deriveTurnPresentation` prop. What matters is that the
  * derivation — and therefore its cache — survives across renders, which is why
  * it lives in a ref rather than being rebuilt in the render body. The returned
  * function's own identity is not load-bearing: nothing memoizes on it, and a

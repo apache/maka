@@ -70,7 +70,6 @@ export function buildClientSettingsTools(
       'Runtime behavior, credentials, model configuration, network settings, and Bot settings are excluded.',
     parameters: z.object({}).strict(),
     categoryHint: 'read',
-    recoveryMode: 'replay_safe',
     impl: async () => project(await authority.read()),
   };
   const updateTool: MakaTool<ClientSettingsPatch, ClientSettingsUpdateResult> = {

@@ -135,6 +135,7 @@ function installCatalogRenderer(t: TestContext) {
             value: sessionCatalog,
             children: createElement(ComposerStagingFixture, {
               draftKey: sessionId,
+              conversationServices: services,
               children: createElement(ComposerMentionsProvider, {
               sessionId,
               projectPath,

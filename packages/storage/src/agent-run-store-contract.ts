@@ -68,6 +68,7 @@ import {
   isTurnOrchestrationSource,
   type TurnOrchestration,
 } from '@maka/core/orchestration';
+import { decodeEventWaitProvenance } from '@maka/core/event-wait-delivery';
 import { validateGenericToolLedgerAppend } from '@maka/core/tool-ledger-scanner';
 
 export const SAFE_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
@@ -503,7 +504,7 @@ export function assertNoReservedToolLedgerFact(event: RuntimeEvent): void {
   const validation = validateGenericToolLedgerAppend(event);
   if (validation.ok) return;
   if (validation.code === 'reserved_recovery_fact') {
-    throw new Error('Tool recovery facts require the atomic recovery bundle writer');
+    throw new Error('Historical tool recovery facts are read-only');
   }
   if (validation.code === 'reserved_tool_boundary_fact') {
     throw new Error('Durable tool facts require the atomic tool boundary writer');
@@ -1128,7 +1129,10 @@ export function normalizeRootExecutionDescriptor(value: unknown): RootExecutionD
   }
   if (value.kind === 'external_message') {
     const decodedOrigin = decodeTurnOrigin(value.origin);
-    const origin = decodedOrigin?.kind === 'cloud_activation' ? decodedOrigin : undefined;
+    const origin =
+      decodedOrigin?.kind === 'cloud_activation' || decodedOrigin?.kind === 'external_connector'
+        ? decodedOrigin
+        : undefined;
     const allowedKeys = ['kind', 'inputDigest', 'maxSteps', 'origin'];
     if (!Object.keys(value).every((key) => allowedKeys.includes(key))) {
       throw new Error('Invalid root execution descriptor');
@@ -1240,13 +1244,23 @@ export function normalizeRootExecutionDescriptor(value: unknown): RootExecutionD
   }
   if (value.kind === 'goal') {
     if (
-      !hasExactKeys(value, ['kind', 'goalId']) ||
+      !hasExactKeys(value, [
+        'kind',
+        'goalId',
+        ...(value.eventWait === undefined ? [] : ['eventWait']),
+      ]) ||
       typeof value.goalId !== 'string' ||
       !isSafeId(value.goalId)
     ) {
       throw new Error('Invalid root execution descriptor');
     }
-    return Object.freeze({ kind: 'goal', goalId: value.goalId });
+    return Object.freeze({
+      kind: 'goal',
+      goalId: value.goalId,
+      ...(value.eventWait === undefined
+        ? {}
+        : { eventWait: decodeEventWaitProvenance(value.eventWait) }),
+    });
   }
   if (value.kind === 'agent_graph_supervisor_wake') {
     if (

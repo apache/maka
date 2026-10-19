@@ -32,20 +32,6 @@ export function commandPaletteActionErrorMessage(
   return classifiedErrorFallback(error, fallback, locale, 'command-palette');
 }
 
-export function openPathActionErrorMessage(
-  error: unknown,
-  key: 'workspace' | 'project',
-  locale: UiLocale,
-): string {
-  const copy = getShellCopy(locale);
-  return classifiedErrorFallback(
-    error,
-    copy.errors.openPath(copy.paths[key]),
-    locale,
-    `open-path:${key}`,
-  );
-}
-
 export function commandPaletteConnectionTestFailureMessage(result: ConnectionTestResult, locale: UiLocale): string {
   const fallback = commandPaletteConnectionTestFailureFallback(result, locale);
   return result.errorMessage

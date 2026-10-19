@@ -133,6 +133,17 @@ describe('Runtime Host bootstrap protocol', () => {
     // field, so mixed-version peers must fail during the handshake instead.
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 22);
   });
+  test('rejects epoch-220 peers predating image resolution', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 220);
+  });
+
+  test('rejects epoch-224 peers predating event-wait transcript origins', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 224);
+  });
+
+  test('publishes a new compatibility epoch for Artifact invalidation frames', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 196);
+  });
 
   test('publishes a new compatibility epoch for durable external turn origins', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 189);
@@ -448,6 +459,20 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 79);
   });
 
+  test('decodes optional executor catalog refresh without weakening exact keys', () => {
+    const decode = HOST_OPERATION_SPECS['plugin.executor.query'].decodeInput;
+    const catalogQuery = { kind: 'catalog', cwd: '/workspace' } as const;
+
+    assert.deepEqual(decode(catalogQuery), catalogQuery);
+    assert.deepEqual(decode({ ...catalogQuery, refresh: false }), catalogQuery);
+    assert.deepEqual(decode({ ...catalogQuery, refresh: true }), {
+      ...catalogQuery,
+      refresh: true,
+    });
+    assert.throws(() => decode({ ...catalogQuery, refresh: 'true' }), isInvalidFrame);
+    assert.throws(() => decode({ ...catalogQuery, unknown: true }), isInvalidFrame);
+  });
+
   test('publishes a new compatibility epoch for the optional conversation-copy sourceTurnId', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 99);
   });
@@ -572,6 +597,35 @@ describe('Runtime Host bootstrap protocol', () => {
         }),
       isInvalidSessionStatus,
     );
+  });
+
+  test('roundtrips live compaction boundaries with a closed event shape', () => {
+    const frame = {
+      kind: 'subscription.session_event' as const,
+      hostEpoch: 'epoch-1',
+      subscriptionId: 'subscription-1',
+      sequence: 2,
+      sessionId: 'session-1',
+      runId: 'run-1',
+      event: {
+        type: 'context_compaction_applied' as const,
+        id: 'compaction-1',
+        turnId: 'turn-1',
+        ts: 123456789,
+      },
+    };
+    const encoded = encodeProtocolMessage(frame);
+    assert.deepEqual(decodeHostFrame(JSON.parse(encoded.toString('utf8'))), frame);
+    for (const event of [
+      { ...frame.event, toolUseId: 'tool-1' },
+      { ...frame.event, ts: -1 },
+      { ...frame.event, ts: '123456789' },
+      { ...frame.event, id: '' },
+      { ...frame.event, turnId: '' },
+      { type: frame.event.type, id: frame.event.id, turnId: frame.event.turnId },
+    ]) {
+      assert.throws(() => decodeHostFrame({ ...frame, event }), isInvalidFrame);
+    }
   });
 
   test('preserves opaque nested call and step identities in subscription tool events', () => {
@@ -1665,7 +1719,7 @@ describe('Runtime Host bootstrap protocol', () => {
     });
   });
 
-  test('allows only cloud activation as an external-message origin on turn.start', () => {
+  test('allows only cloud activation and external connector origins on turn.start', () => {
     const start = {
       requestId: 'activation-start',
       operation: 'turn.start' as const,
@@ -1686,6 +1740,16 @@ describe('Runtime Host bootstrap protocol', () => {
       isInvalidFrame,
     );
     for (const origin of [
+      { kind: 'external_connector', connectorId: 'telegram' },
+      { kind: 'external_connector', connectorId: 'telegram', senderId: 'sender-1' },
+    ]) {
+      const frame = { ...start, input: { ...start.input, origin } };
+      assert.deepEqual(decodeClientFrame(frame), frame);
+    }
+    for (const origin of [
+      { kind: 'external_connector', connectorId: '' },
+      { kind: 'external_connector', connectorId: 'telegram', senderId: '' },
+      { kind: 'external_connector', connectorId: 'telegram', extra: true },
       { kind: 'goal', goalId: 'goal-1' },
       { kind: 'scheduled_task', scheduledTaskId: 'task-1' },
       { kind: 'agent_graph', graphId: 'graph-1', wakeId: 'wake-1', attemptId: 'attempt-1' },

@@ -19,7 +19,7 @@
 
 import type { ProviderType } from '@maka/core/llm-connections';
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import type { ShippedUiCatalog, UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 /**
  * Pure-data provider introduction copy, localized zh / en.
@@ -51,7 +51,7 @@ export const UNKNOWN_PROVIDER_DESCRIPTION = {
   'zh-CN': '该 provider 在当前版本未注册。',
   'zh-TW': '該 provider 在目前版本未註冊。',
   en: 'This provider is not registered in the current build.',
-} satisfies UiCatalog<string>;
+} satisfies ShippedUiCatalog<string>;
 
 export const PROVIDER_DISPLAY_COPY = {
   'kimi-coding-plan': {
@@ -337,13 +337,13 @@ export const PROVIDER_DISPLAY_COPY = {
     en: { name: 'Alibaba Coding Plan', description: 'Alibaba Cloud Model Studio Coding Plan for interactive coding tools.', badge: 'Plan' },
   },
   'alibaba-token-plan-cn': {
-    'zh-CN': { name: 'Alibaba Token Plan（团队版）', description: '阿里云百炼 Token Plan 订阅，交互式智能体与编码工具 · 北京', badge: 'Token' },
-    'zh-TW': { name: 'Alibaba Token Plan（團隊版）', description: '阿里雲百鍊 Token Plan 訂閱，互動式智慧體與編碼工具 · 北京', badge: 'Token' },
+    'zh-CN': { name: 'Alibaba Token Plan 中国站', description: '阿里云百炼 Token Plan 订阅，交互式智能体与编码工具 · 北京', badge: 'Token' },
+    'zh-TW': { name: 'Alibaba Token Plan 中國站', description: '阿里雲百鍊 Token Plan 訂閱，互動式智慧體與編碼工具 · 北京', badge: 'Token' },
     en: { name: 'Alibaba Token Plan (China)', description: 'Alibaba Cloud Model Studio Token Plan for interactive agents and coding tools, Beijing region.', badge: 'Token' },
   },
   'alibaba-token-plan': {
-    'zh-CN': { name: 'Alibaba Token Plan（团队版）', description: '阿里云百炼 Token Plan 订阅，交互式智能体与编码工具 · 新加坡', badge: 'Token' },
-    'zh-TW': { name: 'Alibaba Token Plan（團隊版）', description: '阿里雲百鍊 Token Plan 訂閱，互動式智慧體與編碼工具 · 新加坡', badge: 'Token' },
+    'zh-CN': { name: 'Alibaba Token Plan 国际站', description: '阿里云百炼 Token Plan 订阅，交互式智能体与编码工具 · 新加坡', badge: 'Token' },
+    'zh-TW': { name: 'Alibaba Token Plan 國際站', description: '阿里雲百鍊 Token Plan 訂閱，互動式智慧體與編碼工具 · 新加坡', badge: 'Token' },
     en: { name: 'Alibaba Token Plan', description: 'Alibaba Cloud Model Studio Token Plan for interactive agents and coding tools, Singapore region.', badge: 'Token' },
   },
   // OAuth account providers (not in CATALOG_PROVIDER_TYPES; shown in the
@@ -368,9 +368,10 @@ export const PROVIDER_DISPLAY_COPY = {
     'zh-TW': { name: 'xAI OAuth', description: '使用 SuperGrok 或 X Premium 帳號登入。', badge: 'Account' },
     en: { name: 'xAI OAuth', description: 'Sign in with SuperGrok or X Premium.', badge: 'Account' },
   },
-} satisfies Record<ProviderType, UiCatalog<ProviderCopy>>;
+} satisfies Record<ProviderType, ShippedUiCatalog<ProviderCopy>>;
 
 export function providerDisplay(type: ProviderType, locale: UiLocale): ProviderCopy {
-  const copy = (PROVIDER_DISPLAY_COPY as Partial<Record<string, UiCatalog<ProviderCopy>>>)[type]?.[locale];
-  return copy ?? { name: type, description: UNKNOWN_PROVIDER_DESCRIPTION[locale] };
+  const catalog = (PROVIDER_DISPLAY_COPY as Partial<Record<string, ShippedUiCatalog<ProviderCopy> & Partial<UiCatalog<ProviderCopy>>>>)[type];
+  const copy = catalog?.[locale] ?? catalog?.en;
+  return copy ?? { name: type, description: (UNKNOWN_PROVIDER_DESCRIPTION as Partial<UiCatalog<string>>)[locale] ?? UNKNOWN_PROVIDER_DESCRIPTION.en };
 }

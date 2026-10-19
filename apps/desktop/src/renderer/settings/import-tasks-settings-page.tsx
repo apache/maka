@@ -840,14 +840,15 @@ export function ImportTasksSettingsPage(props: {
             ? sourceLabel(adapterId, copy.sourceNames)
             : undefined
         }
-        variant="bare"
-      >
-        <VStack gap={3}>
-          {sourceIds.length > 1 && adapterId !== null && (
+        // The source switch is this section's group-level control, so it sits in
+        // the header's trailing slot at content width -- the same place the
+        // Session rail puts its grouping switch -- rather than as a full-width
+        // bar between the heading and the search field it scopes.
+        action={
+          sourceIds.length > 1 && adapterId !== null ? (
             <SegmentedControl
               label={copy.sourceLabel}
               value={adapterId}
-              layout="fill"
               size="sm"
               onChange={(nextAdapterId) => {
                 setSelection(EMPTY_LISTED_SELECTION);
@@ -859,7 +860,11 @@ export function ImportTasksSettingsPage(props: {
                 <SegmentedControlItem key={id} value={id} label={sourceLabel(id, copy.sourceNames)} />
               ))}
             </SegmentedControl>
-          )}
+          ) : undefined
+        }
+        variant="bare"
+      >
+        <VStack gap={3}>
           {isMakaSource && <SessionBundleImportPanel />}
           {!isMakaSource && (
           <>
@@ -883,7 +888,7 @@ export function ImportTasksSettingsPage(props: {
       </SettingsSection>
 
       {isMakaSource || noSource ? null : (
-      <SettingsSection description={copy.duplicateNote}>
+      <SettingsSection title={copy.conversationsLabel} description={copy.duplicateNote}>
         <VStack gap={3}>
           {catalogError && (
             <Banner

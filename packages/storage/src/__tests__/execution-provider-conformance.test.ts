@@ -605,6 +605,21 @@ for (const backend of ['Local', 'Memory'] as const) {
         // Repair renumbers every ordinal, so the extents move with them.
         await s.resequenceSessionEventOrdinals(sessionId);
         const entries = await s.readSessionRuntimeEventEntries(sessionId);
+        if (backend === 'Local') {
+          assert.ok(s.readSessionRuntimeSnapshot, 'the production facade must expose batch reads');
+          const snapshot = await s.readSessionRuntimeSnapshot(sessionId);
+          assert.deepEqual(snapshot.invocations, await s.listSessionInvocations(sessionId));
+          assert.deepEqual(
+            snapshot.durableEventOrdinalById,
+            new Map(entries.map(({ event, ordinal }) => [event.id, ordinal])),
+          );
+          for (const invocation of snapshot.invocations) {
+            assert.deepEqual(
+              snapshot.eventsByRun.get(invocation.runId),
+              await s.readRuntimeEvents(sessionId, invocation.runId),
+            );
+          }
+        }
         const ordinalsOf = (turnId: string) =>
           entries.filter((entry) => entry.event.turnId === turnId).map((entry) => entry.ordinal);
         const [moved] = await s.readTranscriptTurns(sessionId, { turnId: outer.turnId });

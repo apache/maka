@@ -224,7 +224,6 @@ npm stage approve "$stage_id" --registry https://registry.npmjs.org/
 获得批准后，检查公共 dist-tags：
 
 ```sh
-version=0.1.0
 npm view maka-agent dist-tags --json --registry https://registry.npmjs.org/
 ```
 

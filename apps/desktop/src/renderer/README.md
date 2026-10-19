@@ -133,6 +133,33 @@ checks module edges, not the behavior of arbitrary wrappers; public capability
 shapes and ownership still require review. Conversation uses it to keep raw
 Session UI construction and whole-state inspection out of production consumers.
 
+`rootSymbolUses` records, per feature public entry, the runtime symbols each
+root zone takes from it: `appShell` (the AppShell family above),
+`composition`, and `bootstrap` (`bootstrap/` plus the guarded `main.tsx` and
+`app.tsx` entries). Being allowed to import an entry does not make every export
+appropriate for the root. The checker attributes named and default imports,
+static namespace members (including `<NS.X>` in JSX) and named re-exports, and
+follows `export { x } from`, re-exported imports and `export *` through any
+intermediate module until it reaches a feature public entry, so a legacy shim
+cannot hide which symbol the root holds. A root namespace binding may only be
+read as static members. Passing it on, destructuring or spreading it, computed
+access, `import x = NS.y`, `export *` / `export * as` over an entry, and a
+runtime `import()` or `require` of an entry are rejected because their symbols
+cannot be attributed. Type-only imports and type positions are not recorded.
+Deep feature imports stay with the zone rules. `--write` regenerates the record
+and the tree must match it exactly. Against the base the record may only
+shrink, with two exceptions the CLI lists as it admits them. A new root use
+passes when the same change adds that binding to the entry's public surface,
+measured on the materialized base tree. Bindings are compared by their
+declaring module and local name, so a new alias of an export the base entry
+already had is not new. A use may also move one way out of
+`appShell` into `composition` or `bootstrap` when `appShell` gives it up in the
+same change; a copy or the reverse move fails. Taking an export the base entry
+already had fails, and so does removing the record. This is a module-graph rule:
+it does not see a legacy helper that wraps a feature export and returns the
+result, and it does not prove that an admitted export is narrow at runtime. Both
+remain review concerns.
+
 Dependency-path debt prices only regressive runtime edges. Type-only imports
 are erased at compile time and never count. Edges into a shell, feature public,
 or application public/contract boundary are the direction the migration wants,
@@ -216,6 +243,86 @@ an explicit architecture change instead of routing around the ledger.
 This initial guardrail is source-policy and migration metadata only. It does not
 change runtime behavior, provider order, IPC/storage contracts, bootstrap,
 Composer mount semantics, Session switching, or Workbar resource lifecycles.
+
+`--report` prints the completion measures #4582 tracks for M3 and M5: the
+AppShell-family bridge references and action factories from
+`legacyAppShell.files`, the rows of the Conversation README's transitional
+capability table, the hook-gate entries that lack a retained-root row, and the
+root symbol uses per zone. It only reports. These numbers fall over several
+PRs, and the existing no-growth ratchets already stop them rising. It also
+lists the feature public symbols that legacy files in the AppShell closure
+take, and a `--base` run prints each one a change adds there. Those files are
+not a root zone and their entry edges stay free, so this is reported, never
+ratcheted.
+
+### Retained root hooks
+
+Every hook the AppShell hook gate (`scripts/check-app-shell-hooks.mjs`) still
+allows has one row per call site below. A row either names why the call stays
+at the root (locale, navigation, layout, a cross-region command, or an
+application lifecycle) or the R2 module that removes it, never both. The
+architecture checker reads the gate's `ALLOWED` literal without running or
+editing it, and fails when a gate entry has no row, when its row count differs
+from the gate's call-site count, or when a row names a hook the gate no longer
+lists. Where an entry has several call sites, each row's call site must name,
+in backticks, an identifier of exactly one of those calls in `app-shell.tsx`
+(a binding it declares or an identifier in its arguments), and no two rows may
+name the same call. A change that moves a hook out of AppShell therefore edits
+the gate and deletes the matching rows together. The checker validates the
+table's shape and call-site binding, not the accuracy of each consumer, owner
+or reason, which stays with review.
+
+<!-- retained-root-hooks:start -->
+| Component | Hook | Call site | Consumer | Owner | Allowed capability | Root reason | Removal |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `AppShell` | `useState` | `uiLocalePreference` | `LocaleProvider`; appearance settings | AppShell | the persisted locale preference and its setter | locale | — |
+| `AppShell` | `useState` | `uiLocaleOverride` | `LocaleProvider`; E2E locale override | AppShell | a runtime locale override above every region | locale | — |
+| `AppShell` | `useSystemUiLocale` | `systemUiLocale` | `resolveUiLocale`, whose result reaches `LocaleProvider`, `ErrorBoundary` and `AppShellContent` | legacy `use-system-ui-locale.ts` | read the OS locale and its changes | locale | — |
+| `AppShellContent` | `useActiveExecutionBoundary` | `activeExecutionBoundary` | Composer permission control and unreadable notice; the palette's permission-mode command; the Session Collaboration dialog gate; the health notice's picker gate; reloaded by the Composer submission owner and Conversation lifecycle | Conversation | read and reload the owner Session's execution boundary | cross-region command | — |
+| `AppShellContent` | `useAppShellBootstrapSubscriptions` | lifecycle handlers and startup | `ShellLifecycleSubscriptions` (Session, connection, Host-profile and settings refreshes, window commands); the startup Session and E2E-fixture refresh; ⌘, and ⌘N | legacy `app-shell-effects.ts` | startup refreshes, the global shortcuts and the mounted flag; returns the handlers `ShellLifecycleSubscriptions` subscribes with the injected `ShellLifecycleSources`; no bridge access | application lifecycle | — |
+| `AppShellContent` | `useAppShellHostEffects` | titlebar modal sync | the native window controls, dimmed through `titlebar-modal-sync.ts` | legacy `app-shell-effects.ts` | observe top-layer modals; the `data-os` platform tag is applied by `ShellLifecycleSources` | layout | — |
+| `AppShellContent` | `useAppShellNavRefSync` | `navSelectionRef` | ownership checks of async results (Composer claim, surface-owner checks) | legacy `app-shell-effects.ts` | mirror the navigation selection into a ref | navigation | — |
+| `AppShellContent` | `useAppShellPersistenceEffects` | theme and navigation persistence | `<html>` theme class and palette; stored navigation | legacy `app-shell-effects.ts` | apply the theme preference and palette; persist the navigation state | layout | — |
+| `AppShellContent` | `useAppShellProjectContext` | project context | titlebar project name, path and open-folder gate; Workbar project id and aliases; Module Hub and command-palette client-path access; composer mentions project path; the default-Host refresh in the lifecycle handlers | legacy `use-project-context.ts` | read the owner Session's project (path, Git state, current project, capabilities) and, with no Session, the default Host's, and re-read it on change; no writes: project mutations and the open-folder commands belong to Task Entry | application lifecycle | — |
+| `AppShellContent` | `useAppShellSessionWorkspace` | Session workspace | every region's requested, published and owner Session; transcript flags; the queue surface and named Composer edits; the Session UI reads store | legacy `use-app-shell-session-workspace.ts` over the Session catalog and Conversation | Session selection, the catalog controller, list refresh and row patches, message reads and refresh | navigation | — |
+| `AppShellContent` | `useLayoutEffect` | `openSessionInChatRef` publication | every caller of `openSessionInChat`: turn footer, transcript lineage, linked-Session and revision links, Composer submission, Workbar, Module Hub, command palette, Settings overlays, turn-request approval, agent graph, titlebar parent link | AppShell | publish the current open-Session command into a ref | cross-region command | — |
+| `AppShellContent` | `useSessionNavigationReads` | rail reads | transcript revision navigation, titlebar parent and `sidebarCollapsed`, frame `data-sidebar-state` and `--maka-sidenav-width` | Session Navigation | revision navigation, the active parent Session and the rail layout; writes the compact flag into `sessionRailLayoutStore` | navigation | — |
+| `AppShellContent` | `useSessionSettingIntent` | selected-Session setting overlay | Composer model, thinking and mode controls; the palette's permission-mode command; new-task settings for creation; Session teardown | Session Settings | an equality-selected overlay read, the new-task settings and setting commands | cross-region command | — |
+| `AppShellContent` | `useShellAppearance` | appearance settings | theme, palette, user label, Workbar toggle position, locale update gate; `appearanceHydrated` for the previous-shutdown notice | legacy `use-shell-appearance.ts` | read client and Host appearance settings and E2E state, hydrate the locale, apply theme, palette and font sizes, and expose local setters | layout | — |
+| `AppShellContent` | `useShellChatModel` | Composer model selection | Composer model and executor pickers; the transcript's health notice; the staging vision gate; the readiness and new-task submission model; the first-send Session activation, which adopts the submitted executor catalog; Workbar model choices | Conversation | derive the model, thinking and executor selection and set the new-task choice | cross-region command | — |
+| `AppShellContent` | `useShellConnections` | `newTaskConnections` | new-task model choices; transcript and onboarding connections and refresh; executor connection count | legacy `use-shell-connections.ts` | the new-task target's connection snapshot and refresh, falling back to the default Host or onboarding snapshot | application lifecycle | — |
+| `AppShellContent` | `useShellConnections` | `defaultHostConnections` | `OnboardingConnectionSeed`; the new-task fallback; the refresh when Settings closes; the connection-event fan-out | legacy `use-shell-connections.ts` | the default Host's connection snapshot and refresh | application lifecycle | — |
+| `AppShellContent` | `useShellConnections` | `sessionHostConnections` | owner Session model choices and readiness; transcript connections and refresh; the WorkHub snapshot | legacy `use-shell-connections.ts` | the owner Session Host's connection snapshot and refresh | application lifecycle | — |
+| `AppShellContent` | `useShellMemoryPill` | memory indicator | the transcript's session-context memory indicator; refreshed by the lifecycle handlers and when Settings closes | legacy `use-shell-memory-pill.ts` | read and refresh the owner Session's memory state, or the default Host's without a Session | layout | — |
+| `AppShellContent` | `useStableActions` | `createAppShellE2eFixtureActions` | the startup E2E-fixture refresh | legacy `app-shell-e2e-fixture.ts` over `application/contracts/use-stable-actions.ts` | apply test fixtures across Session selection and refresh, navigation, rail, Workbar, Settings, search and appearance | cross-region command | — |
+| `AppShellContent` | `useState` | `petCompletionNonce` | custom pet companion | AppShell | a counter `ConversationLifecycle`'s `onTurnCompleted` bumps when the active Turn completes | cross-region command | — |
+| `AppShellContent` | `useState` | `navigationState` | navigation sections; stored navigation | AppShell | the selected section and each hub's module | navigation | — |
+| `AppShellContent` | `useState` | `workHubActive` | WorkHub or Session surface; Workbar workspace; the rail entry; the Session-Host connection snapshot; the titlebar identity | AppShell | whether the WorkHub surface is shown; enablement is the WorkHub enablement authority's | navigation | — |
+| `AppShellContent` | `useToast` | `toastApi` | toasts and confirm dialogs of every legacy action | `@maka/ui` `ToastProvider` (Astryx) | show toasts and confirmations | cross-region command | — |
+<!-- retained-root-hooks:end -->
+
+### Transitional feature exports outside Conversation
+
+Conversation keeps its own table of transitional capabilities in its README.
+Outside it, the public exports the root takes that are not plain assembly
+components (providers, roots, hosts and overlays mounted through JSX) are the
+following. Exports only tests or Storybook read live in each feature's
+`testing.ts`, not its public entry. A feature cannot depend on another, so a
+projection one feature makes into another's region is composed here.
+
+| Feature | Export | Root consumer | Kind | Stays because / Removal |
+| --- | --- | --- | --- | --- |
+| overlays | `OverlaysConsumer` | `app-shell-overlays.tsx` (Settings modal, palette command list) | render-prop projection of overlay state | stays: root composition of the legacy Settings surface and the palette command list, which a feature cannot import; it moves when the Settings surface migrates, outside R2 |
+| diagnostics | `ManualDiagnosticReportConsumer` | command palette options in `app-shell.tsx` | render-prop manual report command | stays: cross-region command (the diagnostics owner's manual report, handed to the shell-built palette options) |
+| task-entry | `TaskEntryWorkspacePickerConsumer` | Composer region in `app-shell.tsx` | render-prop workspace picker | stays: cross-region projection into the Composer |
+| session-collaboration | `GuestTurnRequests` | Composer region in `app-shell.tsx` | render-prop guest composer projection; discards a settled request's draft through the named Composer edit | stays: cross-region projection into the Composer |
+| module-hub | `ModuleHubSkillCatalogRevisionBoundary` | Composer mentions provider | render-prop skill catalog revision | stays: cross-region projection into the Composer |
+| module-hub | `ModuleHubScheduledTasksBoundary` | Session rail (`SessionNavigationProvider`) | render-prop scheduled tasks | stays: cross-region projection into navigation |
+| module-hub | `createModuleHubCommandPort` | command palette; project selection | command port | stays: cross-region command |
+| session-navigation | `createSessionOpenCommand` | open-Session command | command factory | stays: cross-region command |
+| session-navigation | `sessionRailLayoutStore` | rail collapse handle; E2E fixture | layout store | stays: layout |
+| session-navigation | `useSessionNavigationReads` | see the retained-root table | read hook | stays: navigation |
+| session-settings | `useSessionSettingIntent` | see the retained-root table | read hook and commands | stays: cross-region command |
 
 `settings/` holds the settings pages and the `SettingsModal` shell — one page per `SettingsSection` (defined in `@maka/core`); the models/providers page is `ProvidersPanel`. Plus the `provider-*` files and the shared `settings-rows` / `settings-skeleton` / `settings-surface` helpers.
 

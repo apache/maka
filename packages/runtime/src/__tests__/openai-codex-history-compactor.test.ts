@@ -30,6 +30,13 @@ import {
 } from '../openai-codex-history-compactor.js';
 import { HistoryCompactSummarizerError } from '../history-compact-error.js';
 import type { HistoryCompactSummaryInput } from '../ai-sdk-compaction-contract.js';
+import {
+  buildHistoryCompactCheckpoint,
+  renderHistoryCompactCheckpoint,
+} from '../history-compact-checkpoint.js';
+import { planHistoryCompaction } from '../history-compaction.js';
+import { buildLlmHistorySummarizer } from '../history-compact-summarizer.js';
+import { sectionedSummary } from './history-compact-test-fixtures.js';
 
 describe('OpenAI Codex compaction fallback', () => {
   const input: HistoryCompactSummaryInput = {
@@ -135,6 +142,115 @@ describe('OpenAI Codex compaction output', () => {
 });
 
 describe('OpenAI Codex compaction input', () => {
+  test('preserves the verbatim head anchor of a text mid-turn checkpoint (#6154)', async () => {
+    const anchor = runtimeEvent({
+      id: 'anchor',
+      role: 'user',
+      author: 'user',
+      content: { kind: 'text', text: 'EXACT_USER_DIRECTIVE' },
+    });
+    const old = assistantTextEvent('old', 'old-step', 'ALREADY_FOLDED');
+    const tail = assistantTextEvent('tail', 'tail-step', 'NEW_TAIL');
+    const previous = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: [anchor, old],
+      summary: sectionedSummary('PORTABLE_SUMMARY'),
+      phase: 'mid_turn',
+      headAnchor: { runtimeEventId: anchor.id, turnId: anchor.turnId },
+    });
+    const model = compactionModel();
+    await buildOpenAiCodexHistoryCompactor({
+      resolveModel: () => model,
+      connectionId: 'codex-subscription',
+      modelId: 'gpt-5.3-codex',
+    })({
+      sessionId: 'session-1',
+      turnId: 'turn-current',
+      source: { foldedRuntimeEvents: [anchor, old, tail] },
+      previousCheckpoint: previous,
+      newlyFoldedRuntimeEvents: [tail],
+    });
+
+    const prompt = JSON.stringify(model.doStreamCalls[0]?.prompt);
+    assert.match(prompt, /PORTABLE_SUMMARY.*EXACT_USER_DIRECTIVE.*NEW_TAIL/);
+    assert.doesNotMatch(prompt, /ALREADY_FOLDED/);
+  });
+
+  for (const nativeState of [true, false]) {
+    test(`continues a rolled text checkpoint with ${nativeState ? 'native state' : 'text fallback'} (#6154)`, async () => {
+      const old = assistantTextEvent('old', 'old-step', 'RAW_ALREADY_SUMMARIZED '.repeat(1000));
+      const newer = assistantTextEvent('newer', 'newer-step', 'RAW_FOLDED_AGAIN');
+      const tail = assistantTextEvent('tail', 'tail-step', 'NEW_TAIL');
+      const first = buildHistoryCompactCheckpoint({
+        sessionId: 'session-1',
+        coveredRuntimeEvents: [old],
+        summary: sectionedSummary('FIRST_SUMMARY'),
+      });
+      const previous = buildHistoryCompactCheckpoint({
+        sessionId: 'session-1',
+        coveredRuntimeEvents: [old, newer],
+        summary: sectionedSummary('LATEST_SUMMARY'),
+        previousCheckpointId: first.checkpointId,
+      });
+      const model = compactionModel(nativeState);
+      const fallbackInputs: unknown[] = [];
+      const native = buildOpenAiCodexHistoryCompactor({
+        resolveModel: () => model,
+        connectionId: 'codex-subscription',
+        modelId: 'gpt-5.3-codex',
+      });
+      const fallback = buildLlmHistorySummarizer({
+        resolveModel: () => 'unused',
+        generateText: async (options) => {
+          fallbackInputs.push(options.messages);
+          return { text: sectionedSummary('FALLBACK_SUMMARY') };
+        },
+      });
+      const summarize = withOpenAiCodexHistoryCompactionFallback(native, fallback);
+      const plan = await planHistoryCompaction({
+        sessionId: 'session-1',
+        phase: 'standalone',
+        orderedEvents: [old, newer, tail],
+        previousCheckpoint: previous,
+        summarize: ({ coveredRuntimeEvents, newlyFoldedRuntimeEvents, previousCheckpoint }) =>
+          summarize({
+            sessionId: 'session-1',
+            turnId: 'turn-current',
+            source: { foldedRuntimeEvents: [...coveredRuntimeEvents] },
+            newlyFoldedRuntimeEvents: [...newlyFoldedRuntimeEvents],
+            previousCheckpoint,
+          }),
+      });
+
+      const prompt = model.doStreamCalls[0]?.prompt;
+      assert.equal(prompt?.[0]?.role, 'user');
+      const firstPart = prompt?.[0]?.content[0];
+      assert.equal(
+        firstPart?.type === 'text' ? firstPart.text : undefined,
+        renderHistoryCompactCheckpoint(previous),
+      );
+      assert.match(JSON.stringify(prompt), /NEW_TAIL/);
+      assert.doesNotMatch(
+        JSON.stringify(prompt),
+        /RAW_ALREADY_SUMMARIZED|RAW_FOLDED_AGAIN|FIRST_SUMMARY/,
+      );
+      if (!nativeState) {
+        assert.equal(fallbackInputs.length, 1);
+        assert.match(JSON.stringify(fallbackInputs), /LATEST_SUMMARY/);
+        assert.match(JSON.stringify(fallbackInputs), /NEW_TAIL/);
+        assert.doesNotMatch(
+          JSON.stringify(fallbackInputs),
+          /RAW_ALREADY_SUMMARIZED|RAW_FOLDED_AGAIN/,
+        );
+      }
+      assert.equal(plan.decision, 'compacted');
+      if (plan.decision !== 'compacted') assert.fail('expected compaction');
+      assert.equal(plan.checkpoint.version, nativeState ? 3 : 2);
+      assert.equal(plan.checkpoint.previousCheckpointId, previous.checkpointId);
+      assert.equal(plan.checkpoint.coverage.eventCount, 3);
+    });
+  }
+
   test('keeps an interrupted late tool step after the intervening assistant step', async () => {
     const model = compactionModel();
     const summarize = buildOpenAiCodexHistoryCompactor({
@@ -231,7 +347,7 @@ function runtimeEvent(
   };
 }
 
-function compactionModel(): MockLanguageModelV4 {
+function compactionModel(nativeState = true): MockLanguageModelV4 {
   const chunks: LanguageModelV4StreamPart[] = [
     { type: 'stream-start', warnings: [] },
     {
@@ -251,7 +367,7 @@ function compactionModel(): MockLanguageModelV4 {
   return new MockLanguageModelV4({
     doStream: {
       stream: simulateReadableStream({
-        chunks,
+        chunks: nativeState ? chunks : chunks.filter((part) => part.type !== 'custom'),
         initialDelayInMs: null,
         chunkDelayInMs: null,
       }),

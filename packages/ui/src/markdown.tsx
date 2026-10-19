@@ -33,8 +33,8 @@
  * lazy split, that code is parsed on demand the first time a message appears,
  * and cached for every subsequent render.
  *
- * Secret redaction happens eagerly in this wrapper so the Suspense fallback
- * is safe. The remaining trust-boundary contract (URI allowlist, safe-scheme
+ * Secret redaction happens eagerly here, before loading the Markdown body.
+ * The remaining trust-boundary contract (URI allowlist, safe-scheme
  * external gate, broken-link inline errors) lives in `markdown-body.tsx`;
  * see that file for the routing rationale.
  *
@@ -55,6 +55,7 @@ const MarkdownBody = lazy(() => import('./markdown-body.js').then((m) => ({ defa
 
 export function Markdown(props: {
   text: string;
+  imageDisplay?: 'image' | 'link';
   streaming?: boolean;
   settledText?: string;
   /** Block rhythm. Transcript turns pass `compact`; documents leave it. */
@@ -78,6 +79,7 @@ export function Markdown(props: {
     >
       <MarkdownBody
         text={safeText}
+        imageDisplay={props.imageDisplay}
         streaming={streaming}
         settledText={safeSettledText}
         density={props.density}

@@ -28,9 +28,12 @@ export function createComposerStagingCommands(): ComposerStagingCommands {
   };
   const commands: ComposerStagingCommands = {
     captureSubmission: () => requireOwner().captureSubmission(),
+    stagedContext: () => requireOwner().stagedContext(),
     addQuote: (quote) => requireOwner().addQuote(quote),
     resetImageNotice: (key) => requireOwner().resetImageNotice(key),
     transferImageNotice: (from, to) => requireOwner().transferImageNotice(from, to),
+    // Recovery only: with no owner mounted there is no draft to restore into.
+    restoreContext: (draftKey, context) => binding.current?.restoreContext(draftKey, context),
   };
   stagingBindings.set(commands, binding);
   return commands;

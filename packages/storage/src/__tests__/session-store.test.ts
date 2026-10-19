@@ -42,6 +42,49 @@ import { OPERATIONAL_STATE_DATABASE_NAME } from '../operational-state-store.js';
 import { createSqliteSessionMetadataStore } from '../sqlite-session-metadata-store.js';
 
 describe('SQLite SessionStore', () => {
+  test('stable branch title provenance survives reopening without requiring it on legacy headers', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-branch-title-origin-'));
+    const store = createSessionStore(root);
+    const origin = { base: 'Review (2026)', name: 'Review (2026) (1)' };
+    try {
+      const legacy = await store.create(makeInput({ cwd: root, name: 'Review (2026)' }));
+      assert.equal(normalizeSessionHeader(legacy).branchNameOrigin, undefined);
+      const created = await store.createStableSession({
+        sessionId: 'numbered-branch',
+        requestFingerprint: `sha256:${'c'.repeat(64)}`,
+        input: { ...makeInput({ cwd: root, name: origin.name }), branchNameOrigin: origin },
+      });
+      assert.equal(created.kind, 'created');
+      assert.deepEqual(
+        (await store.readHeaderSnapshot('numbered-branch')).branchNameOrigin,
+        origin,
+      );
+      for (const invalid of [
+        null,
+        {},
+        { base: 7, name: origin.name },
+        { base: '', name: origin.name },
+      ]) {
+        assert.throws(
+          () => normalizeSessionHeader({ ...legacy, branchNameOrigin: invalid } as SessionHeader),
+          /malformed fields/,
+        );
+      }
+    } finally {
+      await store.close?.();
+    }
+    const reopened = createSessionStore(root);
+    try {
+      assert.deepEqual(
+        (await reopened.readHeaderSnapshot('numbered-branch')).branchNameOrigin,
+        origin,
+      );
+    } finally {
+      await reopened.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('persists the creation-time tool mode across reloads', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-tool-mode-'));
     let store = createSessionStore(root);
@@ -556,17 +599,70 @@ describe('SQLite SessionStore', () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-session-import-commit-boundary-'));
     const store = createSessionStore(root);
     let commitStarted = false;
+    let preparedId: string | undefined;
+    let discardedId: string | undefined;
     try {
       await assert.rejects(
         store.createImportedSession(
           makeInput(),
           [{ type: 'user' } as unknown as StoredMessage],
           { adapterId: 'fake', sourceSessionId: 'source-1' },
-          { onCommitStarted: () => (commitStarted = true) },
+          {
+            onCommitStarted: () => (commitStarted = true),
+            prepareMessages: async (sessionId, messages) => {
+              preparedId = sessionId;
+              return messages;
+            },
+            discardPreparedMessages: async (sessionId) => {
+              discardedId = sessionId;
+            },
+          },
         ),
         /Invalid stored message schema/,
       );
       assert.equal(commitStarted, false);
+      assert.ok(preparedId);
+      assert.equal(discardedId, preparedId);
+      assert.deepEqual(await store.listHeaders(), []);
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('preserves the original import failure when prepared message cleanup fails', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-import-cleanup-failure-'));
+    const store = createSessionStore(root);
+    const preparationError = new Error('message preparation failed');
+    const commitError = new Error('import commit callback failed');
+    let cleanupAttempts = 0;
+    try {
+      for (const stage of ['prepare', 'decode', 'commit'] as const) {
+        await assert.rejects(
+          store.createImportedSession(
+            makeInput(),
+            stage === 'decode' ? [{ type: 'user' } as unknown as StoredMessage] : [],
+            { adapterId: 'fake', sourceSessionId: `source-${stage}` },
+            {
+              prepareMessages: async (_sessionId, messages) => {
+                if (stage === 'prepare') throw preparationError;
+                return messages;
+              },
+              onCommitStarted: () => {
+                if (stage === 'commit') throw commitError;
+              },
+              discardPreparedMessages: async () => {
+                cleanupAttempts++;
+                throw new Error('artifact cleanup failed');
+              },
+            },
+          ),
+          stage === 'decode'
+            ? /Invalid stored message schema/
+            : (error) => error === (stage === 'prepare' ? preparationError : commitError),
+        );
+      }
+      assert.equal(cleanupAttempts, 3);
       assert.deepEqual(await store.listHeaders(), []);
     } finally {
       await store.close?.();

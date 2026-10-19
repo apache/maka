@@ -57,6 +57,8 @@ export interface SessionCollaborationMountSummary {
   readonly failure?: SessionCollaborationMountFailure;
   readonly peerPath?: RuntimeHostPeerConnectionPath;
   readonly session?: SharedSessionCatalogProjection;
+  /** Whether the Session snapshot was observed on the current ready connection. */
+  readonly sessionState?: 'live' | 'cached';
 }
 
 export type SessionCollaborationMountFailure =

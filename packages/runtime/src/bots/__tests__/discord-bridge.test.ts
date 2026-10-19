@@ -20,6 +20,7 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import { createDefaultBotChannel } from '@maka/core/settings';
+import type { BotIncomingMessage } from '../types.js';
 
 import { DiscordBotBridge, __TEST__ } from '../discord-bridge.js';
 
@@ -48,6 +49,40 @@ class ResetTrackingDiscordBridge extends DiscordBotBridge {
 }
 
 describe('resume gateway url lifecycle', () => {
+  it('drops unlisted gateway senders in direct and group messages', () => {
+    const settings = { ...createDefaultBotChannel('discord'), allowedUserIds: ['owner'] };
+    const bridge = new ResetTrackingDiscordBridge('discord', settings);
+    const messages: BotIncomingMessage[] = [];
+    const statuses: unknown[] = [];
+    bridge.on('message', (message) => messages.push(message));
+    bridge.on('statusChange', (status) => statuses.push(status));
+    for (const guild_id of [undefined, 'guild']) {
+      for (const userId of ['outsider', 'owner']) {
+        bridge.receive(
+          JSON.stringify({
+            op: 0,
+            t: 'MESSAGE_CREATE',
+            d: {
+              id: `${guild_id}:${userId}`,
+              channel_id: 'chat',
+              guild_id,
+              content: 'hello',
+              author: { id: userId, username: 'owner' },
+            },
+          }),
+        );
+      }
+    }
+    assert.deepEqual(
+      messages.map((message) => [message.userId, message.isGroup]),
+      [
+        ['owner', false],
+        ['owner', true],
+      ],
+    );
+    assert.equal(statuses.length, 2);
+  });
+
   it('clears resumeGatewayUrl when the session is dropped', () => {
     const bridge = new ResetTrackingDiscordBridge('discord', {
       ...createDefaultBotChannel('discord'),

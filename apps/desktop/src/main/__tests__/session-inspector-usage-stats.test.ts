@@ -27,6 +27,11 @@ import {
   usageRingArcs,
 } from '../../renderer/features/workbar/testing.js';
 import type { UsageSummaryV2 } from '@maka/core/usage-stats/types';
+import type { DesktopSessionUsageSummary } from '../../preload/bridge-contract.js';
+import {
+  loadSessionUsageSummaryVia,
+  type UsageSummaryInvoke,
+} from '../../preload/usage-summary.js';
 
 function usageSummary(overrides: Partial<UsageSummaryV2> = {}): UsageSummaryV2 {
   return {
@@ -47,6 +52,22 @@ function usageSummary(overrides: Partial<UsageSummaryV2> = {}): UsageSummaryV2 {
     errorRequests: 0,
     totalDurationMs: 0,
     ...overrides,
+  };
+}
+
+function fullCoverageProvenance(): DesktopSessionUsageSummary['provenance'] {
+  return {
+    coverage: {
+      attempts: 3,
+      pricedAttempts: 3,
+      unpricedAttempts: 0,
+      usageReportedAttempts: 3,
+      usagePartialAttempts: 0,
+      usageMissingAttempts: 0,
+    },
+    legacyRecords: 0,
+    unreadableRecords: 0,
+    pendingRepairs: 0,
   };
 }
 
@@ -352,4 +373,133 @@ test('carries rounded inspector durations into the next unit', () => {
   assert.equal(formatDuration(119_600), '2m0s');
   assert.equal(formatDuration(3_599_600), '60m0s');
   assert.equal(formatDuration(125_000), '2m5s');
+});
+
+test('reads the cache rate from the main loop alone when the main summary is available', () => {
+  // A 10k-token uncached suggestion call drops a 95%-cached main loop to a
+  // blended 86%: auxiliary prompts keep their own prefix, so the rate must
+  // read the main summary, not the blend (#5691).
+  const blended = usageSummary({
+    totalTokens: {
+      input: 1_100_000,
+      output: 60_300,
+      cacheMiss: 150_000,
+      cacheRead: 950_000,
+      cacheWrite: 0,
+      reasoning: 0,
+      total: 1_160_300,
+    },
+  });
+  const main = usageSummary({
+    totalTokens: {
+      input: 1_000_000,
+      output: 60_000,
+      cacheMiss: 50_000,
+      cacheRead: 950_000,
+      cacheWrite: 0,
+      reasoning: 0,
+      total: 1_060_000,
+    },
+  });
+
+  const blendedRate = deriveInspectorOverviewModel(undefined, blended).cacheHitRate;
+  const refined = deriveInspectorOverviewModel(undefined, {
+    ...blended,
+    mainSummary: main,
+  }).cacheHitRate;
+
+  assert.ok(blendedRate);
+  assert.equal(Math.round(blendedRate * 100), 86);
+  assert.ok(refined);
+  assert.equal(Math.round(refined * 100), 95);
+});
+
+test('shows no cache rate when the main-only read failed rather than blending', () => {
+  // A failed narrow query leaves the blended totals in place. Reporting the
+  // blended 86% as the main loop's rate is the same misreading the main
+  // summary exists to prevent (#5691 review): hide the rate instead.
+  const { cacheHitRate } = deriveInspectorOverviewModel(undefined, {
+    ...usageSummary({
+      totalTokens: {
+        input: 1_100_000,
+        output: 60_300,
+        cacheMiss: 150_000,
+        cacheRead: 950_000,
+        cacheWrite: 0,
+        reasoning: 0,
+        total: 1_160_300,
+      },
+    }),
+    mainSummaryUnavailable: true,
+  });
+
+  assert.equal(cacheHitRate, undefined);
+});
+
+test('marks the overview when the injected preload IPC read of the main loop fails', async () => {
+  // The model-level test above pins the hiding rule; this one pins the
+  // preload wiring that feeds it. A failed main-only IPC call — the injected
+  // preload failure path — must mark the blended summary rather than drop
+  // the overview or present the blend as the main loop's (#5691 review).
+  const blended: DesktopSessionUsageSummary = {
+    ...usageSummary(),
+    provenance: fullCoverageProvenance(),
+  };
+  const calls: Array<Record<string, unknown>> = [];
+  const invoke: UsageSummaryInvoke = async (_channel, _scope, args) => {
+    calls.push(args);
+    return (args as { callKinds?: readonly string[] }).callKinds
+      ? { ok: false, error: { code: 'persistence_failed', message: 'usage read failed' } }
+      : { ok: true, data: blended };
+  };
+
+  const outcome = await loadSessionUsageSummaryVia(invoke, {
+    scope: { profileId: 'profile-1' },
+    sessionId: 'session-1',
+  });
+
+  assert.equal(outcome.ok, true);
+  if (!outcome.ok) return;
+  assert.equal(outcome.data.mainSummary, undefined);
+  assert.equal(outcome.data.mainSummaryUnavailable, true);
+
+  // A crashed secondary invoke (rejected promise, not an ok:false result)
+  // must degrade the same way instead of failing the overview (#5691 review).
+  const crashingInvoke: UsageSummaryInvoke = async (_channel, _scope, args) => {
+    if ((args as { callKinds?: readonly string[] }).callKinds) {
+      throw new Error('IPC transport died');
+    }
+    return { ok: true, data: usageSummary() } as Awaited<ReturnType<UsageSummaryInvoke>>;
+  };
+  const degraded = await loadSessionUsageSummaryVia(crashingInvoke, {
+    scope: { profileId: 'profile-1' },
+    sessionId: 'session-1',
+  });
+  assert.equal(degraded.ok, true);
+  if (!degraded.ok) return;
+  assert.equal(degraded.data.mainSummaryUnavailable, true);
+  // The second read asked for exactly the agent loop's own calls.
+  assert.deepEqual(
+    calls.map((args) => (args as { callKinds?: readonly string[] }).callKinds ?? null),
+    [null, ['main']],
+  );
+});
+
+test('attaches the main summary when both injected preload reads succeed', async () => {
+  const invoke: UsageSummaryInvoke = async (_channel, _scope, args) => ({
+    ok: true,
+    data: (args as { callKinds?: readonly string[] }).callKinds
+      ? { ...usageSummary(), provenance: fullCoverageProvenance(), cacheHitRequests: 2 }
+      : { ...usageSummary({ cacheHitRequests: 3 }), provenance: fullCoverageProvenance() },
+  });
+
+  const outcome = await loadSessionUsageSummaryVia(invoke, {
+    scope: { profileId: 'profile-1' },
+    sessionId: 'session-1',
+  });
+
+  assert.equal(outcome.ok, true);
+  if (!outcome.ok) return;
+  assert.equal(outcome.data.mainSummaryUnavailable, undefined);
+  assert.equal(outcome.data.mainSummary?.cacheHitRequests, 2);
 });

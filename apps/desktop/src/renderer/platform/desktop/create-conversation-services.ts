@@ -67,6 +67,11 @@ export function createDesktopConversationServices(
     runtimeHosts: {
       subscribeChanges: (handler) => bridge.runtimeHostProfiles.subscribeChanges(handler),
     },
+    resume: {
+      queryPlan: (sessionId) => bridge.sessions.queryResumeLatest(sessionId),
+      start: (sessionId) => bridge.sessions.resumeLatest(sessionId),
+      subscribeChanges: (handler) => bridge.sessions.subscribeChanges(handler),
+    },
     skills: bridge.skills,
     workspace: bridge.workspace,
     newTasks: bridge.newTasks,

@@ -39,7 +39,11 @@ import {
 import type { GoalEvaluation } from '../goal-evaluator.js';
 import type { MakaToolContext } from '../tool-runtime.js';
 import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
-import type { GoalPendingContinuation } from '@maka/core/goal';
+import {
+  sameGoalControlLease,
+  type GoalControlLease,
+  type GoalPendingContinuation,
+} from '@maka/core/goal';
 
 const SESSION = 'sess-1';
 function controlledCall<T>() {
@@ -186,6 +190,78 @@ function setup(opts?: {
     queueEvaluations: (...next: Partial<GoalEvaluation>[]) => evaluationQueue.push(...next),
   };
 }
+
+for (const stage of [
+  'before_recovery',
+  'before_completion',
+  'while_queued',
+  'control_changed',
+] as const)
+  test(`recovered event wait source preserves generation ownership (${stage})`, async () => {
+    const { manager, coordinator, deps, attemptedPrompts } = setup();
+    const goal = manager.create(SESSION, 'Finish the wait').goal;
+    const controlLease = manager.getControlLease(SESSION)!;
+    const entered = deferred<void>(),
+      release = deferred<void>();
+    let settlements = 0;
+    const eventWait = {
+      isGated: () => true,
+      ownsSource: (sessionId: string, turnId: string, lease: GoalControlLease) =>
+        sessionId === SESSION && turnId === 'source' && sameGoalControlLease(lease, controlLease),
+      settleCompleted: async (_sessionId: string, turnId: string) => {
+        if (turnId === 'older') {
+          entered.resolve();
+          await release.promise;
+        } else {
+          assert.equal(turnId, 'source');
+          settlements++;
+        }
+      },
+    };
+    deps.eventWait = eventWait;
+    deps.evaluator.evaluate = async () => assert.fail('Explicit waits must not evaluate');
+    const advance = () => {
+      const current = manager.get(SESSION)!;
+      manager.settleTurn(SESSION, {
+        checkpoint: { goalId: current.id, revision: current.revision },
+        verdict: 'continue',
+        reason: 'Earlier work settled without revoking the wait source.',
+      });
+    };
+    let olderSettlement: Promise<void> | undefined;
+    try {
+      if (stage === 'while_queued') {
+        const older = coordinator.beginObservedTurn(SESSION, 'older');
+        assert.equal(older.kind, 'registered');
+        if (older.kind !== 'registered') return;
+        olderSettlement = older.settle({ kind: 'completed', turnId: 'older' });
+        await entered.promise;
+      }
+      if (stage === 'before_recovery') advance();
+      const source = coordinator.recoverCurrentExecution({
+        execution: { sessionId: SESSION, turnId: 'source', runId: 'source-run' },
+        checkpoint: { goalId: goal.id, revision: goal.revision },
+        controlLease,
+      });
+      assert.equal(source.kind, 'registered');
+      if (source.kind !== 'registered') return;
+      if (stage === 'before_completion') advance();
+      if (stage === 'control_changed') {
+        const paused = manager.pause(SESSION)!;
+        manager.resume(SESSION, { goalId: paused.id, revision: paused.revision });
+      }
+      const settlement = source.settle({ kind: 'completed', turnId: 'source' });
+      if (stage === 'while_queued') advance();
+      release.resolve();
+      await olderSettlement;
+      await settlement;
+      assert.equal(settlements, stage === 'control_changed' ? 0 : 1);
+      assert.equal(attemptedPrompts.length, 0);
+    } finally {
+      release.resolve();
+      await coordinator.close();
+    }
+  });
 
 test('Goal activity covers evaluation through settlement but not a paused durable Goal', async () => {
   const { manager, coordinator, deps, admitted } = setup();

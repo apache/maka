@@ -17,7 +17,18 @@
  * under the License.
  */
 
-import type { DesktopSessionSummary } from '../../../preload/bridge-contract.js';
+import type { DesktopSessionSummary, MakaBridge } from '../../../preload/bridge-contract.js';
+import type { SessionCatalogSource } from '../../application/contracts/session-catalog/session-catalog-state.js';
+
+/** The session catalog's Desktop source: full lists and change events. */
+export function createDesktopSessionCatalogSource(
+  bridge: { sessions: Pick<MakaBridge['sessions'], 'list' | 'subscribeChanges'> } = window.maka,
+): SessionCatalogSource {
+  return {
+    list: () => bridge.sessions.list(),
+    subscribeChanges: (handler) => bridge.sessions.subscribeChanges(handler),
+  };
+}
 
 /**
  * `sessions:changed` carries the changed row's id, so the hot path reads and

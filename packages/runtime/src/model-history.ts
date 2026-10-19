@@ -93,7 +93,6 @@ export type PriorUnknownToolOutcomeProjection =
   | {
       readonly kind: 'projected';
       readonly outcomes: readonly PriorUnknownToolOutcome[];
-      readonly systemNotice: string;
     };
 
 /**
@@ -241,19 +240,10 @@ export function inspectPriorUnknownToolOutcomes(
   }
   if (outcomes.length === 0) return { kind: 'none' };
 
-  const rows = outcomes
-    .slice(0, 64)
-    .map((outcome) => `- ${outcome.toolName} (operation ${outcome.operationId})`);
-  if (outcomes.length > 64) rows.push(`- and ${outcomes.length - 64} more unknown operations`);
-  return {
-    kind: 'projected',
-    outcomes,
-    systemNotice: [
-      'A prior execution was interrupted after these tools were dispatched. No durable tool results were recorded; their side effects may or may not have happened.',
-      'The outcome_unknown tool responses in history are temporary context, not proof of success or failure. Inspect current state before repeating any action.',
-      ...rows,
-    ].join('\n'),
-  };
+  // The unknown is carried only by the request-local tool responses below
+  // (appendPriorUnknownToolResponses): the system prompt stays byte-stable,
+  // so the provider's cached request prefix is never churned per event.
+  return { kind: 'projected', outcomes };
 }
 
 /** Insert request-only tool responses beside their calls so provider history stays well-formed. */

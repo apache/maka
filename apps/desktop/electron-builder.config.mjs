@@ -89,6 +89,7 @@ const baseDesktopBuilderConfig = {
   files: [
     'dist/**/*',
     'dist-renderer/**/*',
+    'dist-assistant-web/**/*',
     'package.json',
     // Keep node-gyp's checkout-specific projects and link intermediates out.
     // Native addons, the Unix spawn helper and ConPTY's DLL/helper are runtime files.
@@ -132,8 +133,8 @@ const baseDesktopBuilderConfig = {
       to: 'status',
     },
     {
-      from: 'resources/workers/filesystem-worker.js',
-      to: 'workers/filesystem-worker.js',
+      from: 'resources/workers/filesystem-worker.mjs',
+      to: 'workers/filesystem-worker.mjs',
     },
     {
       from: '../../native/runtime-host-peer/target/release/maka_runtime_host_peer.node',

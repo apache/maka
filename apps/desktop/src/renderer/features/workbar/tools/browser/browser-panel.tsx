@@ -225,6 +225,17 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean; focuse
       }
     });
   };
+
+  const runToolbarAction = async (action: 'back' | 'forward' | 'reload' | 'stop' | 'close') => {
+    const ownerSessionId = sessionId;
+    try {
+      await browser[action](ownerSessionId);
+    } catch {
+      if (isBrowserPanelSessionCurrent(ownerSessionId)) {
+        toast.error(copy.actionFailed, copy.actionFailedDetail, undefined, { sessionId: ownerSessionId });
+      }
+    }
+  };
   const liveAddress = state.loadError?.url ?? state.url;
 
   return (
@@ -254,7 +265,7 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean; focuse
                 variant="ghost"
                 size="sm"
                 isDisabled={!state.canGoBack}
-                onClick={() => void browser.back(sessionId)}
+                onClick={() => void runToolbarAction('back')}
               />
             </Tooltip>
             <Tooltip content={copy.forward}>
@@ -264,7 +275,7 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean; focuse
                 variant="ghost"
                 size="sm"
                 isDisabled={!state.canGoForward}
-                onClick={() => void browser.forward(sessionId)}
+                onClick={() => void runToolbarAction('forward')}
               />
             </Tooltip>
             <Tooltip content={state.loading ? copy.stop : copy.refresh}>
@@ -275,7 +286,7 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean; focuse
                 size="sm"
                 isDisabled={!state.hasPage && !state.loading && !state.loadError}
                 onClick={() =>
-                  state.loading ? void browser.stop(sessionId) : void browser.reload(sessionId)
+                  void runToolbarAction(state.loading ? 'stop' : 'reload')
                 }
               />
             </Tooltip>
@@ -333,7 +344,7 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean; focuse
               icon={<X size={ICON_SIZE.chrome} aria-hidden />}
               variant="ghost"
               size="sm"
-              onClick={() => { props.onPreviewExit?.(); void browser.close(sessionId); }}
+              onClick={() => { props.onPreviewExit?.(); void runToolbarAction('close'); }}
             />
           </Tooltip>
           </div>

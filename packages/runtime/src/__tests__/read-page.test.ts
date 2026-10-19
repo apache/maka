@@ -18,6 +18,8 @@
  */
 
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { test } from 'node:test';
 import {
   readPage,
@@ -173,5 +175,49 @@ test('archive Read preserves fields beside structured text across pages', () => 
       input = page.next;
     }
     assert.deepEqual(JSON.parse(recovered), value);
+  }
+});
+
+test('small line ranges do not need a whole-file line index', async () => {
+  // 固定堆预算验证实际资源边界，不依赖耗时阈值或具体索引实现。
+  const { stdout } = await promisify(execFile)(
+    process.execPath,
+    [
+      '--max-old-space-size=64',
+      '--input-type=module',
+      '--eval',
+      `
+        import assert from 'node:assert/strict';
+        import { readPage } from ${JSON.stringify(new URL('../read-page.js', import.meta.url).href)};
+        const content = 'x\\n'.repeat(8_000_000);
+        const page = readPage(content, { path: 'log.txt', offset: 2_000_000, limit: 20 });
+        assert.equal(page.totalLines, 8_000_001);
+        assert.equal(page.offset, 2_000_000);
+        assert.equal(page.returnedLines, 20);
+        assert.equal(page.content, 'x\\n'.repeat(19) + 'x');
+        assert.equal(page.next, null);
+        console.log('bounded read passed');
+      `,
+    ],
+    { timeout: 30_000 },
+  );
+  assert.equal(stdout.trim(), 'bounded read passed');
+});
+
+test('line ranges preserve empty lines, trailing newlines and offsets beyond EOF', () => {
+  for (const content of ['', '\n', '\n\n', 'a\nb', 'a\nb\n', 'a\r\n😀\n\nlast']) {
+    const lines = content.split('\n');
+    for (let offset = 0; offset <= lines.length + 1; offset++) {
+      for (const limit of [undefined, 1, 2, 100]) {
+        const selected = lines.slice(offset, limit === undefined ? undefined : offset + limit);
+        assert.deepEqual(readPage(content, { path: 'file.txt', offset, limit }), {
+          content: selected.join('\n'),
+          offset,
+          returnedLines: selected.length,
+          totalLines: lines.length,
+          next: null,
+        });
+      }
+    }
   }
 });
