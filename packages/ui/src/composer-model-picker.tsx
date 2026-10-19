@@ -41,6 +41,7 @@ export interface ComposerModelContribution {
   readonly models: readonly {
     readonly id: string;
     readonly label: string;
+    readonly providerType?: ProviderType;
     readonly thinkingLevels: readonly ThinkingLevel[];
     readonly defaultThinkingLevel?: ThinkingLevel;
   }[];
@@ -262,7 +263,7 @@ export function ComposerModelPicker(props: {
       const value = JSON.stringify([contribution.id, model.id]);
       actions.set(value, () => props.onExecutorTargetChange?.({ executorId: contribution.id, model: model.id,
         ...(model.defaultThinkingLevel ? { thinkingLevel: model.defaultThinkingLevel } : {}) }));
-      return { value, label: model.label };
+      return { value, label: model.label, icon: providerMarkIcon(model.providerType, props.renderProviderMark) };
     }) });
   }
   for (const entry of executor?.catalog ?? []) {

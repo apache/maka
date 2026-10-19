@@ -60,6 +60,7 @@ window.__MakaModuleLoader__.load({
         models: models.map((model) => ({
           id: model.model,
           label: model.displayName || model.model,
+          providerType: 'openai',
           thinkingLevels: (model.supportedReasoningEfforts ?? []).map(
             (effort) => effort.reasoningEffort,
           ),

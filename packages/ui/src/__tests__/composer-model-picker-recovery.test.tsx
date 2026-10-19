@@ -108,6 +108,7 @@ test('the real Codex contribution shares one Composer picker with native and ACP
     return <MakaClientSlotProvider core={core}><LocaleProvider locale="en"><Composer ref={ref}
       activeSession={external ? session('acp') : undefined}
       activeModelLabel="Native" modelChoices={choices}
+      renderProviderMark={type => <span data-provider-brand={type} />}
       newChatModel={{ llmConnectionId: 'first', llmConnectionSlug: 'first', model: 'gpt-6.1-sol' }}
       onPickNewChatModel={value => { writes.push(value); }}
       executorTarget={target} onExecutorTargetChange={next => new Promise<void>(resolve => {
@@ -133,6 +134,7 @@ test('the real Codex contribution shares one Composer picker with native and ACP
     assert.equal(dom.document.querySelectorAll('.maka-model-switcher-trigger').length, 1);
     assert.ok(dom.document.querySelector('[role="group"][aria-label="Agent"]'));
     assert.ok(dom.document.querySelector('[role="group"][aria-label="first"]'));
+    assert.ok(option('Codex model')?.querySelector('[data-provider-brand="openai"]'), 'contributed models use the same provider mark as native models');
     await act(async () => { ref.current?.setText('Continue'); });
     await click(option('Codex model'));
     assert.deepEqual(writes.at(-1), { executorId: 'codex.app-server', model: 'codex-model', thinkingLevel: 'high' });

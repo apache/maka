@@ -163,8 +163,10 @@ export const CodexAndAcp: Story = {
     await expect(await page.findByRole('group', { name: 'Codex' })).toBeVisible();
     await expect(page.getByRole('group', { name: 'Antigravity' })).toBeVisible();
     await expect(page.getByRole('group', { name: 'OpenAI' })).toBeVisible();
+    const codexOption = within(page.getByRole('group', { name: 'Codex' })).getByRole('option', { name: 'GPT-6 Astra' });
+    await expect(codexOption.querySelector('svg')).not.toBeNull();
     await expect(canvasElement.querySelectorAll('.maka-model-switcher-trigger')).toHaveLength(1);
-    await userEvent.click(within(page.getByRole('group', { name: 'Codex' })).getByRole('option', { name: 'GPT-6 Astra' }));
+    await userEvent.click(codexOption);
     await waitFor(() => expect(canvasElement.querySelector('.maka-model-switcher-trigger')).toHaveTextContent('Codex · GPT-6 Astra'));
     await expect(canvasElement.querySelector('.maka-thinking-level-selector')).toHaveTextContent(/High|高/);
     await openModels(canvasElement);
