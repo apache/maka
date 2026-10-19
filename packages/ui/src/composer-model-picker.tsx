@@ -220,9 +220,10 @@ export function ComposerModelPicker(props: {
   const copy = executorCopy(locale);
   const executor = props.executor;
   const contribution = props.contribution;
+  const catalog = executor?.catalog.filter(entry => entry.id !== contribution?.id && (!executor.fixed || entry.id === executor.selection?.executorId)) ?? [];
   const contributed = contribution?.id === props.executorTarget?.executorId ? contribution : undefined;
   const contributedModel = contributed?.models.find(model => model.id === props.executorTarget?.model);
-  const selected = !contributed ? executor?.catalog.find(entry => entry.id === executor.selection?.executorId) : undefined;
+  const selected = catalog.find(entry => entry.id === executor?.selection?.executorId);
   const selectedModel = executor?.selection?.configuration.model ?? selected?.currentModel;
   const group = selected && executorModelGroup(selected, selectedModel);
   const modelLabel = contributed ? contributedModel?.label ?? props.executorTarget?.model ?? copy.default : executor?.selection
@@ -266,9 +267,7 @@ export function ComposerModelPicker(props: {
       return { value, label: model.label, icon: providerMarkIcon(model.providerType, props.renderProviderMark) };
     }) });
   }
-  for (const entry of executor?.catalog ?? []) {
-    if (entry.id === contribution?.id) continue;
-    if (executor?.fixed && entry.id !== executor.selection?.executorId) continue;
+  for (const entry of catalog) {
     options.push({
       type: 'section',
       title: entry.displayName,
@@ -308,9 +307,7 @@ export function ComposerModelPicker(props: {
     executor?.onSelect({ executorId: executor.selection!.executorId, configuration: executor.fixed || (configuration.model !== undefined && configuration.model !== selectedModel)
       ? configuration : { ...executor.selection!.configuration, ...configuration } });
   const mode = executor?.selection?.configuration.mode ?? selected?.currentMode;
-  const recoveryEntries = executor?.selection
-    ? selected && selected.readiness !== 'ready' ? [selected] : []
-    : executor?.catalog.filter(entry => entry.readiness === 'authentication_required' || entry.readiness === 'unavailable') ?? [];
+  const recoveryEntries = catalog.filter(entry => entry.readiness !== 'ready');
   return <>
     {/* Keep portaled search clicks from focusing the composer editor. */}
     <Stack direction="horizontal" className="maka-model-picker-root"

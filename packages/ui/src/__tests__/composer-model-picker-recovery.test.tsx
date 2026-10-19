@@ -58,22 +58,28 @@ function actions(dom: ReturnType<typeof installTranscriptDom>) {
   };
 }
 
-test('unselected Agents retain sign-in and discovery retry without committing a selection', async () => {
+test('new tasks can recover another Agent without changing their selection', async () => {
   const dom = installTranscriptDom();
   const setup: string[] = [];
   let retries = 0;
+  let selectionWrites = 0;
   try {
     for (const readiness of ['authentication_required', 'unavailable'] as const) {
-      await dom.render(<LocaleProvider locale="en"><ComposerModelPicker label="Native" choices={choices}
-        executor={{ catalog: [{ ...catalog[0]!, readiness }],
-          onSelect() { assert.fail('recovery must not select an unavailable Agent'); },
-          onSetup: id => { setup.push(id!); }, onRetry: () => { retries++; }, onNewTask() {} }}
-      /></LocaleProvider>);
-      const { click } = actions(dom);
-      await click([...dom.document.querySelectorAll('button')].find(el => el.textContent === (readiness === 'unavailable' ? 'Retry' : 'Go to sign in')));
+      for (const selected of [false, true]) {
+        await dom.render(<LocaleProvider locale="en"><ComposerModelPicker label="Native" choices={choices}
+          executor={{ catalog: [{ ...catalog[0]!, readiness }, { ...catalog[0]!, id: 'ready', displayName: 'Ready Agent' }],
+            selection: selected ? { executorId: 'ready', configuration: { model: 'opaque-high' } } : undefined,
+            onSelect() { selectionWrites++; },
+            onSetup: id => { setup.push(id!); }, onRetry: () => { retries++; }, onNewTask() {} }}
+        /></LocaleProvider>);
+        const { click, trigger } = actions(dom);
+        await click([...dom.document.querySelectorAll('button')].find(el => el.textContent === (readiness === 'unavailable' ? 'Retry' : 'Go to sign in')));
+        assert.equal(trigger()?.textContent, selected ? 'Ready Agent · Family' : 'Native');
+      }
     }
-    assert.deepEqual(setup, ['agent']);
-    assert.equal(retries, 1);
+    assert.deepEqual(setup, ['agent', 'agent']);
+    assert.equal(retries, 2);
+    assert.equal(selectionWrites, 0);
   } finally { await dom.cleanup(); }
 });
 
@@ -266,12 +272,13 @@ test('fixed external sessions show only their executor and failed writes retain 
   const dom = installTranscriptDom();
   try {
     await dom.render(<LocaleProvider locale="en"><ComposerModelPicker label="Native" choices={choices}
-      executor={{ catalog, selection: { executorId: 'agent', configuration: { model: 'opaque-high' } }, fixed: true,
+      executor={{ catalog: [...catalog, { ...catalog[0]!, id: 'other', displayName: 'Other Agent', readiness: 'authentication_required' }], selection: { executorId: 'agent', configuration: { model: 'opaque-high' } }, fixed: true,
         onSelect: async () => { throw Error('offline'); }, onSetup() {}, onRetry() {}, onNewTask() {} }}
     /></LocaleProvider>);
     const { click, option, trigger } = actions(dom);
     await click(trigger());
-    assert.equal(dom.document.querySelector('[role="group"][aria-label="OpenAI"]'), null);
+    assert.deepEqual([...dom.document.querySelectorAll('[role="group"]')].map(element => element.getAttribute('aria-label')), ['Agent']);
+    assert.equal([...dom.document.querySelectorAll('button')].some(element => element.textContent === 'Go to sign in'), false);
     await click(option('Other'));
     assert.equal(trigger()?.textContent, 'Family');
     assert.match(dom.document.querySelector('[role="status"]')?.textContent ?? '', /failed/);

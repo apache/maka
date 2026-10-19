@@ -173,14 +173,22 @@ export const CodexAndAcp: Story = {
   },
 };
 
-// Real path: a new task discovers an ACP Agent that requires sign-in, before any selection.
+// Real path: a new task selects a ready ACP Agent while another configured Agent requires sign-in.
 export const UnselectedUnavailableAgentNarrow: Story = {
-  render: () => <PickerFrame catalog={[{ ...CATALOG[0]!, readiness: 'authentication_required' }]} />,
+  render: () => <PickerFrame catalog={[CATALOG[0]!, {
+    id: 'claude', displayName: 'Claude Agent', readiness: 'authentication_required',
+    models: [], supportsModelChange: false, supportsAttachments: false,
+  }]} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.getByRole('button', { name: /Go to sign in|前往登录/ })).toBeVisible();
     const label = canvasElement.querySelector<HTMLElement>('.maka-composer-model-label')!;
     await waitFor(() => expect(label.scrollWidth).toBeLessThanOrEqual(label.clientWidth + 1));
+    const page = await openModels(canvasElement);
+    await userEvent.click(page.getByRole('option', { name: /Gemini 3.8 Flash/ }));
+    await waitFor(() => expect(canvasElement.querySelector('.maka-model-switcher-trigger')).toHaveTextContent('Antigravity · Gemini 3.8 Flash'));
+    await expect(canvas.getByRole('button', { name: /Go to sign in|前往登录/ })).toBeVisible();
+    await expect(canvasElement.querySelector('.maka-executor-notice')).toHaveTextContent('Claude Agent');
     await openModels(canvasElement);
   },
 };
