@@ -4976,12 +4976,6 @@ function canonicalizeRuntimeEventForStorage(event: RuntimeEvent): RuntimeEvent {
   return encodeCanonicalRuntimeEvent(event).event;
 }
 
-function assertNoReservedRecoveryFact(event: RuntimeEvent): void {
-  if (event.actions?.toolRecovery !== undefined) {
-    throw new Error('Historical tool recovery facts are read-only');
-  }
-}
-
 function assertNoReservedToolLedgerFact(event: RuntimeEvent): void {
   assertNoReservedWorkspaceAuthorityAppend(event);
   if (event.actions?.continuationStart !== undefined) {
