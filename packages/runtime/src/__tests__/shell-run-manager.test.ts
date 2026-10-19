@@ -2950,6 +2950,102 @@ describe('ShellRunProcessManager', () => {
     assert.equal(forced.liveCount(), 0);
     assert.equal(forced.livePtyCount(), 0);
   });
+
+  test('hangs up an interactive terminal shell after the SIGTERM it ignores', {
+    skip:
+      process.platform === 'win32'
+        ? 'Windows tree termination has no graceful SIGTERM or SIGHUP phase'
+        : false,
+  }, async (t) => {
+    // The grace outlasts the test: without the hang-up, Stop would wait 30 s
+    // and the process group would receive SIGTERM then SIGKILL.
+    const manager = await createTestManager(undefined, { killGraceMs: 30_000 });
+    const run = await manager.runBackgroundBash(
+      shellInput({
+        cwd: await workspace(),
+        command: 'trap "" TERM; printf "ready\\n"; while :; do sleep 0.05; done',
+        pty: true,
+        interactiveShell: true,
+        timeoutMs: 60_000,
+      }),
+    );
+    assertShellRun(run);
+    const pid = run.pid;
+    assert.ok(pid !== undefined && pid > 0);
+    await waitForPtyText(manager, run.ref, /ready/);
+    const kill = t.mock.method(process, 'kill');
+    const signalsTo = (target: number) =>
+      kill.mock.calls
+        .filter((call) => call.arguments[0] === target)
+        .map((call) => call.arguments[1]);
+
+    const startedAt = performance.now();
+    const stopped = await manager.stopBackgroundTask('session-1', run.ref, NO_ABORT);
+    const stopMs = performance.now() - startedAt;
+
+    assertShellRun(stopped);
+    assert.equal(stopped.status, 'cancelled');
+    assert.deepEqual(signalsTo(-pid), ['SIGTERM']);
+    assert.deepEqual(signalsTo(pid), ['SIGHUP']);
+    assert.ok(stopMs < 5_000, `Stop took ${stopMs} ms`);
+    assert.equal(manager.livePtyCount(), 0);
+  });
+
+  test('ends a job that ignores SIGHUP in an interactive shell process group', {
+    skip:
+      process.platform === 'win32'
+        ? 'Windows tree termination has no graceful SIGTERM or SIGHUP phase'
+        : false,
+  }, async () => {
+    const cwd = await workspace();
+    const manager = await createTestManager(undefined, { killGraceMs: 30_000 });
+    let childPid: number | undefined;
+    try {
+      // Without job control the job stays in the shell's process group. It
+      // ignores SIGHUP, as under nohup, and starts before the shell ignores
+      // SIGTERM, so SIGTERM still ends it.
+      const run = await manager.runBackgroundBash(
+        shellInput({
+          cwd,
+          command:
+            '(trap "" HUP; exec sleep 30) & echo $! > child.pid; trap "" TERM; printf "ready\\n"; while :; do sleep 0.05; done',
+          pty: true,
+          interactiveShell: true,
+          timeoutMs: 60_000,
+        }),
+      );
+      assertShellRun(run);
+      await waitForPtyText(manager, run.ref, /ready/);
+      const pid = Number.parseInt(await readFile(join(cwd, 'child.pid'), 'utf8'), 10);
+      assert.ok(Number.isSafeInteger(pid) && pid > 0);
+      childPid = pid;
+
+      const stopped = await manager.stopBackgroundTask('session-1', run.ref, NO_ABORT);
+
+      assertShellRun(stopped);
+      assert.equal(stopped.status, 'cancelled');
+      await waitUntil(() => !isProcessAlive(pid)).catch(() => undefined);
+      assert.equal(isProcessAlive(pid), false, 'the job that ignores SIGHUP outlived the stop');
+    } finally {
+      if (childPid !== undefined && isProcessAlive(childPid)) {
+        try {
+          process.kill(childPid, 'SIGKILL');
+        } catch {
+          /* the job already exited */
+        }
+      }
+    }
+  });
+
+  test('refuses an interactive shell outside a PTY', async () => {
+    const manager = await createTestManager();
+    const cwd = await workspace();
+    await assert.rejects(
+      () => manager.runBackgroundBash(shellInput({ cwd, command: 'true', interactiveShell: true })),
+      /An interactive shell requires PTY Bash/,
+    );
+    assert.equal(manager.liveCount(), 0);
+  });
 });
 
 type ControlPersistenceGateState = Readonly<{ armed: boolean; paused: boolean }>;
@@ -3079,6 +3175,7 @@ function shellInput(input: {
   env?: NodeJS.ProcessEnv;
   fdInputs?: readonly { fd: number; data: Uint8Array }[];
   pty?: boolean;
+  interactiveShell?: boolean;
   timeoutMs?: number;
   abortSignal?: AbortSignal;
   emitOutput?: (stream: 'stdout' | 'stderr', chunk: string) => void;
@@ -3097,6 +3194,7 @@ function shellInput(input: {
     ...(input.env !== undefined ? { env: input.env } : {}),
     ...(input.fdInputs !== undefined ? { fdInputs: input.fdInputs } : {}),
     ...(input.pty !== undefined ? { pty: input.pty } : {}),
+    ...(input.interactiveShell !== undefined ? { interactiveShell: input.interactiveShell } : {}),
     ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
     ...(input.abortSignal !== undefined ? { abortSignal: input.abortSignal } : {}),
     ...(input.shell !== undefined ? { shell: input.shell } : {}),

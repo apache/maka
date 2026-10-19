@@ -427,6 +427,7 @@ describe('Host Runtime Resource coordinator', () => {
         visibility: harness.lastBackgroundInput.visibility,
         cwd: harness.lastBackgroundInput.cwd,
         pty: harness.lastBackgroundInput.pty,
+        interactiveShell: harness.lastBackgroundInput.interactiveShell,
       },
       {
         sessionId: SESSION_ID,
@@ -437,6 +438,8 @@ describe('Host Runtime Resource coordinator', () => {
         visibility: undefined,
         cwd: '/workspace',
         pty: true,
+        // Stopping the terminal hangs up the shell instead of sending SIGTERM.
+        interactiveShell: true,
       },
     );
     harness.finishBackground({ successful: true });
@@ -646,6 +649,7 @@ describe('Host Runtime Resource coordinator', () => {
         cwd: harness.lastBackgroundInput.cwd,
         command: harness.lastBackgroundInput.command,
         pty: harness.lastBackgroundInput.pty,
+        interactiveShell: harness.lastBackgroundInput.interactiveShell,
       },
       {
         sessionId: SESSION_ID,
@@ -655,6 +659,7 @@ describe('Host Runtime Resource coordinator', () => {
         cwd: '/workspace',
         command: 'printf user-command',
         pty: false,
+        interactiveShell: undefined,
       },
     );
     harness.finishBackground({ successful: true });

@@ -107,7 +107,8 @@ export class PtyProcessDriver {
     this.pty.resize(cols, rows);
   }
 
-  kill(signal: 'SIGTERM' | 'SIGKILL'): void {
+  /** Signals the root process only; SIGHUP hangs up an interactive shell. */
+  kill(signal: 'SIGHUP' | 'SIGTERM' | 'SIGKILL'): void {
     killPty(this.pty, signal);
   }
 
@@ -124,7 +125,7 @@ export class PtyProcessDriver {
   }
 }
 
-function killPty(pty: IPty, signal: 'SIGTERM' | 'SIGKILL'): void {
+function killPty(pty: IPty, signal: 'SIGHUP' | 'SIGTERM' | 'SIGKILL'): void {
   if (process.platform === 'win32') {
     pty.kill();
     return;
