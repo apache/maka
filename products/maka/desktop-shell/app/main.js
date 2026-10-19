@@ -325,8 +325,11 @@ export default class MakaDesktop extends View {
   reveal(transcript, position, field) {
     if (transcript.reveal(position, field)) return;
     log(`find: row ${rowPositionKey(position)} is not loaded; opening the conversation at it`);
-    if (transcript.endpoint === 'coordinator') this.workhub.attach(transcript.session, position);
-    else this.select(transcript.session, false, position);
+    if (transcript.endpoint === 'coordinator') {
+      this.workhub.attach(transcript.session, position, field);
+    } else {
+      this.select(transcript.session, false, position, field);
+    }
   }
 
   /** Records a move from the current place, for Back. */
@@ -378,14 +381,15 @@ export default class MakaDesktop extends View {
   /**
    * Switches the transcript, leaving WorkHub or the Search page; the previous
    * one's watch is closed first. With `anchor` (a transcript row, from a
-   * Search passage) it opens at that row, also when the task is open already.
+   * Search passage or Find) it opens at that row, also when the task is open
+   * already; `anchorField` is a Find match's field there (Transcript).
    */
-  async select(session, record = true, anchor = null) {
+  async select(session, record = true, anchor = null, anchorField = null) {
     if (this.settings.open) this.settings.hide();
     if (this.place() === session.id && anchor === null) return;
     if (record) this.visit(session.id);
     const previous = this.transcript;
-    const transcript = new Transcript(session, this.hooks, 'agent', { anchor });
+    const transcript = new Transcript(session, this.hooks, 'agent', { anchor, anchorField });
     this.transcript = transcript;
     for (const [id, source] of this.forkSources) {
       if (source?.failed === true) this.forkSources.delete(id);

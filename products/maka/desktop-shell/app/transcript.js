@@ -192,9 +192,12 @@ export class Transcript {
    * @param {{ changed: () => void, report: (message: string) => void }} hooks
    * @param {string} endpoint the Agent endpoint that holds the session: `agent`
    *   for a task, `coordinator` for WorkHub's conversation; every call goes to it
-   * @param {{ anchor?: import('./history-position.js').RowPosition | null }} options `anchor`, a transcript row
-   *   position (a Search passage's `anchorPosition`), opens the transcript at
-   *   that row instead of at the newest
+   * @param {{ anchor?: import('./history-position.js').RowPosition | null, anchorField?: string | null }} options
+   *   `anchor`, a transcript row position (a Search passage's
+   *   `anchorPosition`, a Find match's `position`), opens the transcript at
+   *   that row instead of at the newest; `anchorField`, the source field of a
+   *   Find match there, opens it at the row's thinking for `thinking`, else at
+   *   its body
    */
   constructor(session, hooks, endpoint = 'agent', options = {}) {
     this.session = session;
@@ -202,6 +205,7 @@ export class Transcript {
     this.hooks = hooks;
     this.endpoint = endpoint;
     this.anchor = options.anchor ?? null;
+    this.anchorField = options.anchorField === 'thinking' ? 'thinking' : 'body';
     /**
      * While the list opens at the anchor and keeps the reader where they
      * are, instead of following the newest row (see showing).
@@ -371,12 +375,13 @@ export class Transcript {
   }
 
   /**
-   * The history page that starts at the anchor's row, read at `fence` as the
-   * exact inclusive row boundary. Null when it cannot be read or has
-   * nothing, and the transcript then opens at the newest row as usual.
+   * The history page that starts at the anchor's row (its `anchorField`),
+   * read at `fence` as the exact inclusive row boundary. Null when it cannot
+   * be read or has nothing, and the transcript then opens at the newest row
+   * as usual.
    */
   async readAnchor(fence) {
-    const position = { kind: 'row', position: this.anchor, field: 'body' };
+    const position = { kind: 'row', position: this.anchor, field: this.anchorField };
     try {
       const { page, calls } = await readHistory(this.historyInput(fence, position), this.endpoint);
       this.stats.tailCalls += calls;

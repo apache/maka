@@ -230,8 +230,11 @@ export class WorkHub {
     this.hooks.changed();
   }
 
-  /** Opens the conversation of `session` while WorkHub shows. */
-  attach(session, anchor = null) {
+  /**
+   * Opens the conversation of `session` while WorkHub shows, at `anchor` and
+   * `anchorField` when given (Transcript).
+   */
+  attach(session, anchor = null, anchorField = null) {
     if (!this.open || (this.transcript?.id === session.id && anchor === null)) return;
     this.transcript?.close();
     // A notice that a task ended names it and shows it in the Tasks tab.
@@ -240,7 +243,7 @@ export class WorkHub {
       taskTitle: (taskId) => this.titleOf(taskId),
       openTask: (taskId, worker) => this.openTask(taskId, worker),
     };
-    const transcript = new Transcript(session, hooks, 'coordinator', { anchor });
+    const transcript = new Transcript(session, hooks, 'coordinator', { anchor, anchorField });
     this.transcript = transcript;
     transcript.open();
   }

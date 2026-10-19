@@ -348,7 +348,7 @@ export class Find {
     if (match === undefined || this.transcript === null) return;
     this.index = index;
     this.transcript.found = this.found();
-    const position = match.cursor.position;
+    const position = match.position;
     log(
       `find: match ${index + 1} of ${this.scan.matches.length} at row ${rowPositionKey(position)}`,
     );
@@ -360,7 +360,7 @@ export class Find {
   found() {
     const match = this.index < 0 ? undefined : this.scan?.matches[this.index];
     if (match === undefined) return null;
-    return { position: match.cursor.position, field: match.field, pattern: this.scan.pattern };
+    return { position: match.position, field: match.field, pattern: this.scan.pattern };
   }
 
   /** The count beside the field: "3 of 12", "12+" while the scan goes on, "No results", or null. */
