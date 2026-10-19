@@ -117,29 +117,67 @@ and network access and should only be used in an environment you are prepared to
 modify.
 
 
-For another agent to drive a Session, request structured output or explicitly submit without waiting:
+For a parent agent coordinating work across calls, prefer `--no-wait`, save the returned
+`sessionId` as `$session`, then wait when ready to handle an interaction or result:
 
 ```sh
-maka run "Inspect this project" --json
 maka run "Inspect this project" --no-wait
+maka run --session "$session" --wait --json
 ```
 
-Both forms return a `sessionId` in their JSON result. Ordinary runs still wait and print the final
-answer by default. Built-in AskUser is an exception: it returns question JSON and exits 0
-while the Turn waits. Scripts that need a final answer should use `--json` and inspect `status`,
-not treat exit code 0 alone as task completion. `--no-wait` returns after admission; use the
-Session ID to observe the eventual result. Given a returned Session ID in `$session`:
+`--no-wait` already returns JSON; an extra `--json` is unnecessary. Ordinary `maka run` keeps its
+blocking default and prints the final answer, making it suitable for a single shell call.
+Use `maka run "Inspect this project" --json` for a structured blocking result.
+
+Choose the next Session call by purpose:
 
 ```sh
 maka run --session "$session" --status
 maka run --session "$session" --recap --json
-maka run --session "$session" --wait --json
-maka run --session "$session" --answer '["Yes",null]' --wait --json
-maka run --session "$session" "Inspect the tests next" --queue --wait --json
+maka run --session "$session" --answer '["Yes",null]' --json
+maka run --session "$session" "Inspect the tests next" --no-wait
 maka run --session "$session" "Focus on the parser" --steer --no-wait
 maka run --session "$session" --result --json
-maka run --session "$session" --resume --wait --json
+maka run --session "$session" --resume --json
 ```
+
+An added prompt queues by default, so `--queue` is optional. Repeating the same flag or value is
+accepted; conflicting values and incompatible actions still produce a usage error. Execution commands wait unless given
+`--no-wait`; `--session <id> --wait` explicitly observes the current Turn without submitting work.
+
+| Call | Default stdout | Meaning of exit 0 |
+| --- | --- | --- |
+| Ordinary run or Session wait/result | Final answer text; pending interactions are JSON | Inspect the outcome; a pending interaction still needs a decision |
+| `--no-wait` | JSON admission receipt | Submission accepted, not task completion |
+| `--status` / `--stop` | JSON | Observation or stop request succeeded |
+| Model settings without an action | JSON with `configuration` | Settings saved; execution is unchanged |
+| `--recap` | Summary text | Independent summary generated |
+
+Use `--json` on waits, results, and recaps for uniform structured results. `status` is the lifecycle;
+`finalOutput` is the task answer; `recap` is progress; `submission` is an admission receipt. CLI errors
+go to stderr and can leave stdout empty. For a remote Host, repeat the same `--host <profile-id>`
+on every call. `--session` inherits saved settings and accepts persistent model/connection/thinking updates.
+Workspace, timeout, and Graph overrides still require legacy `--resume <id>` and are rejected
+before connecting when combined with `--session`.
+
+Change a Session's model persistently, then explicitly choose continuation or a new message:
+
+```sh
+maka run --session "$session" --model "other-model"
+maka run --session "$session" --model "other-model" --resume --json
+maka run --session "$session" --model "other-model" "Continue the review" --no-wait
+```
+
+These are three alternatives. The first only saves settings and returns a JSON `configuration`
+receipt with `connection`, `model`, and `thinking`; it does not start or resume execution.
+Add `--connection <slug>` to select a different saved account. Model/connection changes reset
+thinking to the model default unless `--thinking` is supplied. The new settings persist for future
+calls, like Desktop model selection; global defaults and permissions are unchanged.
+
+Settings are saved before an explicit action, so they remain saved if that later action fails.
+CLI does not classify why execution stopped or choose a model automatically. Host errors such
+as busy-session rejection are returned without implicitly stopping the Turn or resubmitting the
+old prompt. Resume uses the Host's existing safe-continuation operation; a new prompt is new input.
 
 `--recap` generates a one-sentence summary of recorded Session progress using the same
 independent model call as TUI `/recap`. It works during an active Turn without steering,
@@ -154,7 +192,8 @@ The recap is a snapshot of the history captured when generation starts. It canno
 work or results from a tool that has not returned, and execution can advance while it is generated.
 Each invocation requests a fresh summary and consumes model usage; `--status` remains the cheap
 status query. A recap is not the final answer (`--result`) or a reply from the running agent.
-Do not combine `--recap` with a prompt, another Session action, `--wait`, or `--no-wait`.
+Combine `--status --recap` to return JSON containing both status/boundary and progress. Other
+Session actions, prompts, and wait flags cannot be combined with recap.
 Successful recap generation exits 0 even if the Session's latest Turn failed; generation errors
 exit 1. Ctrl+C cancels the CLI observer and leaves Host execution running.
 
@@ -177,8 +216,8 @@ For Host-owned Session execution, `--wait` and `--status` return `needs_approval
 `expansion`, and `justification`; internal request IDs stay inside the CLI. Review the scope, then:
 
 ```sh
-maka run --session "$session" --approve --wait --json
-maka run --session "$session" --deny --wait --json
+maka run --session "$session" --approve --json
+maka run --session "$session" --deny --json
 ```
 
 These are alternative decisions, not a sequence to execute. Both continue the original Turn and
@@ -193,7 +232,7 @@ Ordinary blocking runs retain their existing sandbox-boundary denial behavior.
 For coordination, submit follow-ups without blocking, then service the Session's interactions:
 
 ```sh
-maka run --session "$session" "Inspect the tests next" --queue --no-wait --json
+maka run --session "$session" "Inspect the tests next" --no-wait
 maka run --session "$session" --wait --json
 ```
 
@@ -209,7 +248,7 @@ Assistant Inbox conversations instead return `submission: "inbox"`, without a wo
 
 Queue is the default: each explicit queued message opens its own subsequent Turn. Steer uses the
 Host's existing current-Turn delivery and may carry over if it misses that Turn's last boundary.
-Submitting a queued prompt with `--wait` follows that message's execution. It does not return
+Submitting a queued prompt without `--no-wait` follows that message's execution (`--wait` is optional). It does not return
 questions from an earlier Turn blocking the queue; service those through a separate Session
 wait/answer call, or use the coordination workflow above. Steer with `--wait`
 observes the Turn selected on attachment; it does not guarantee consumption before that Turn ends. A standalone `--wait` fixes its
@@ -227,9 +266,7 @@ remain waiting in the Host. A wait reports the actual interaction kind and a rec
 interactive client on the same Host, or stop the Turn explicitly. Detached admission does not
 promise that subsequent execution will need no interaction.
 
-Session commands use the saved configuration. Keep using the legacy `--resume <session-id>`
-selector for blocking runs that supply configuration, cwd, timeout or Graph options; that selector
-continues accepting a new prompt. `--session <id> --resume` instead requests safe continuation of
+`--session <id> --resume` instead requests safe continuation of
 stopped execution. An idle Session prompt can use `--max-steps`; a queued or steering message
 cannot attach a step cap to an existing Turn.
 

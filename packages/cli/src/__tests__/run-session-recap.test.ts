@@ -29,14 +29,13 @@ import { deferred, waitFor } from '@maka/core/test-only/async-primitives';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
-import { FakeBackend, FAKE_HOLD_OPEN_PROMPT } from '@maka/runtime/test-only/fake-backend';
 import { connectRuntimeHost, type RuntimeHostConnection } from '@maka/runtime-host/client';
 import { RUNTIME_HOST_PROTOCOL_VERSION } from '@maka/runtime-host/protocol';
 import { startExecutionRuntimeHostService } from '@maka/runtime-host/server';
 
 const fixturePath = fileURLToPath(new URL('./run-session-process-fixture.js', import.meta.url));
 
-test('external CLI recap reads active progress without steering or waiting for the Turn', {
+test('external CLI combines queries and persists model changes before explicit continuation', {
   timeout: 90_000,
 }, async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'maka-cli-recap-'));
@@ -45,6 +44,8 @@ test('external CLI recap reads active progress without steering or waiting for t
   let connection: RuntimeHostConnection | undefined;
   const recapText = 'You asked for a review; the agent is still working on it.';
   const requests: string[] = [];
+  const modelRequests: Array<{ model: string; messages: unknown[] }> = [];
+  let holdFirstRun = true;
   let requestArrived = deferred<void>();
   let releaseResponse = deferred<void>();
   let emptyResponse = false;
@@ -52,6 +53,37 @@ test('external CLI recap reads active progress without steering or waiting for t
     void (async () => {
       let body = '';
       for await (const chunk of request) body += chunk;
+      const input = JSON.parse(body);
+      if (input.stream) {
+        modelRequests.push(input);
+        response.setHeader('content-type', 'text/event-stream');
+        const chunk = (delta: object, finishReason: string | null) =>
+          `data: ${JSON.stringify({
+            id: 'model-response',
+            object: 'chat.completion.chunk',
+            created: 1,
+            model: input.model,
+            choices: [{ index: 0, delta, finish_reason: finishReason }],
+          })}\n\n`;
+        response.write(
+          chunk(
+            {
+              role: 'assistant',
+              content: holdFirstRun
+                ? 'Inspected the parser; verification is pending.'
+                : `Ran using ${input.model}.`,
+            },
+            null,
+          ),
+        );
+        if (holdFirstRun) {
+          holdFirstRun = false;
+          return; // The original provider request stays active until the caller explicitly stops it.
+        }
+        response.write(chunk({}, 'stop'));
+        response.end('data: [DONE]\n\n');
+        return;
+      }
       requests.push(body);
       requestArrived.resolve();
       await releaseResponse.promise;
@@ -97,33 +129,40 @@ test('external CLI recap reads active progress without steering or waiting for t
   let sessionId: string;
   try {
     const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
-    const created = await policy.connectionCatalog.create({
-      expectedCatalogRevision: 0,
-      connection: {
-        slug: 'fake',
-        name: 'Fake',
-        providerType: 'ollama',
-        baseUrl: `http://127.0.0.1:${address.port}/v1`,
-        enabled: true,
-        enabledModelIds: ['fake-model'],
-      },
-    });
-    assert.equal(created.kind, 'committed');
-    if (created.kind !== 'committed') throw new Error('Connection setup failed');
-    const connectionId = created.snapshot.connections[0]!.connectionId;
-    const fetch = await policy.operations.beginModelFetch(connectionId);
-    assert.equal(fetch.kind, 'ready');
-    if (fetch.kind !== 'ready') throw new Error('Model setup failed');
-    assert.equal(
-      (
-        await policy.operations.completeModelFetch(fetch.ticket, {
-          models: [{ id: 'fake-model' }],
-          source: 'fetched',
-          fetchedAt: Date.now(),
-        })
-      ).kind,
-      'committed',
-    );
+    let connectionId = '';
+    for (const slug of ['fake', 'alternate']) {
+      const catalog = await policy.connectionCatalog.getSnapshot();
+      const created = await policy.connectionCatalog.create({
+        expectedCatalogRevision: catalog.revision,
+        connection: {
+          slug,
+          name: slug,
+          providerType: 'ollama',
+          baseUrl: `http://127.0.0.1:${address.port}/v1`,
+          enabled: true,
+          enabledModelIds: ['fake-model', 'other-model'],
+        },
+      });
+      assert.equal(created.kind, 'committed');
+      if (created.kind !== 'committed') throw new Error('Connection setup failed');
+      const selectedId = created.snapshot.connections.find(
+        (item) => item.slug === slug,
+      )!.connectionId;
+      if (slug === 'fake') connectionId = selectedId;
+      const fetch = await policy.operations.beginModelFetch(selectedId);
+      assert.equal(fetch.kind, 'ready');
+      if (fetch.kind !== 'ready') throw new Error('Model setup failed');
+      assert.equal(
+        (
+          await policy.operations.completeModelFetch(fetch.ticket, {
+            models: [{ id: 'fake-model' }, { id: 'other-model' }],
+            source: 'fetched',
+            fetchedAt: Date.now(),
+          })
+        ).kind,
+        'committed',
+      );
+    }
     const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
     try {
       sessionId = (
@@ -152,8 +191,6 @@ test('external CLI recap reads active progress without steering or waiting for t
           context,
           { ...options, bootstrapRuntimePolicy: false },
           {
-            primaryBackendFactory: (backendContext: ConstructorParameters<typeof FakeBackend>[0]) =>
-              new FakeBackend(backendContext),
             generateSessionTitle: async () => undefined,
           },
         ),
@@ -206,7 +243,7 @@ test('external CLI recap reads active progress without steering or waiting for t
     );
     return { child, result };
   };
-  const started = await cli(FAKE_HOLD_OPEN_PROMPT, '--no-wait', '--json').result;
+  const started = await cli('Inspect the parser and verify it.', '--no-wait').result;
   assert.equal(started.code, 0, started.stderr);
   await waitFor(
     async () => {
@@ -217,6 +254,10 @@ test('external CLI recap reads active progress without steering or waiting for t
   );
   const turn = (await readSnapshot()).snapshot.rootTurn!;
   const boundary = await probe.request('session.execution_boundary.query', { sessionId });
+  const busyChange = await cli('--model', 'other-model').result;
+  assert.equal(busyChange.code, 1);
+  assert.match(busyChange.stderr, /configuration cannot change while a linked Turn is active/);
+  assert.equal((await readSnapshot()).snapshot.rootTurn?.runId, turn.runId);
   const pendingRecap = cli('--recap', '--json').result;
   await requestArrived.promise;
   const during = await cli('--status', '--json').result;
@@ -231,7 +272,7 @@ test('external CLI recap reads active progress without steering or waiting for t
     queued: 0,
     recap: recapText,
   });
-  assert.match(requests[0]!, /Fake backend waiting/);
+  assert.match(requests[0]!, /Inspected the parser/);
   assert.match(requests[0]!, /ONE sentence/);
   const afterRecap = (await readSnapshot()).snapshot;
   assert.equal(afterRecap.rootTurn?.turnId, turn.turnId);
@@ -247,6 +288,15 @@ test('external CLI recap reads active progress without steering or waiting for t
   assert.equal(plain.code, 0, plain.stderr);
   assert.equal(plain.stdout, `${recapText}\n`);
   assert.equal(requests.length, 2, 'each invocation requests a fresh recap');
+  const combined = await cli('--status', '--recap').result;
+  assert.equal(combined.code, 0, combined.stderr);
+  assert.deepEqual(JSON.parse(combined.stdout), {
+    sessionId,
+    status: 'running',
+    queued: 0,
+    recap: recapText,
+    executionBoundary: boundary,
+  });
   emptyResponse = true;
   const failed = await cli('--recap', '--json').result;
   assert.equal(failed.code, 1);
@@ -272,4 +322,56 @@ test('external CLI recap reads active progress without steering or waiting for t
   assert.equal(stopped.code, 0, stopped.stderr);
   assert.equal(JSON.parse(stopped.stdout).status, 'failed');
   assert.equal(JSON.parse(stopped.stdout).recap, recapText);
+  const invalidModel = await cli('--model', 'missing-model').result;
+  assert.equal(invalidModel.code, 1);
+  const changed = await cli('--model', 'other-model').result;
+  assert.equal(changed.code, 0, changed.stderr);
+  assert.deepEqual(JSON.parse(changed.stdout).configuration, {
+    connection: 'fake',
+    model: 'other-model',
+    thinking: null,
+  });
+  assert.equal(
+    (await readSnapshot()).snapshot.rootTurn?.runId,
+    turn.runId,
+    'model change alone does not resume',
+  );
+  assert.equal(
+    modelRequests.length,
+    1,
+    'no model request is dispatched by a configuration-only command',
+  );
+  const saved = await probe.request('session.catalog.query', { kind: 'get', sessionId });
+  assert.equal(saved.kind, 'session');
+  assert.equal(
+    saved.kind === 'session' && saved.session && 'model' in saved.session && saved.session.model,
+    'other-model',
+  );
+  const resumed = await cli('--model', 'other-model', '--resume', '--json').result;
+  assert.equal(resumed.code, 0, resumed.stderr);
+  assert.equal(JSON.parse(resumed.stdout).sessionId, sessionId);
+  assert.match(JSON.parse(resumed.stdout).finalOutput, /Ran using other-model/);
+  assert.equal(modelRequests.at(-1)?.model, 'other-model');
+  const newInput = await cli('--model', 'fake-model', 'Continue the review.', '--json').result;
+  assert.equal(newInput.code, 0, newInput.stderr);
+  assert.match(JSON.parse(newInput.stdout).finalOutput, /Ran using fake-model/);
+  assert.equal(modelRequests.at(-1)?.model, 'fake-model');
+  const moved = await cli('--connection', 'alternate', '--model', 'other-model').result;
+  assert.equal(moved.code, 0, moved.stderr);
+  assert.deepEqual(JSON.parse(moved.stdout).configuration, {
+    connection: 'alternate',
+    model: 'other-model',
+    thinking: null,
+  });
+  const afterMove = await cli('Use the saved settings.', '--json').result;
+  assert.equal(afterMove.code, 0, afterMove.stderr);
+  assert.match(JSON.parse(afterMove.stdout).finalOutput, /Ran using other-model/);
+  const persisted = await probe.request('session.catalog.query', { kind: 'get', sessionId });
+  assert.equal(
+    persisted.kind === 'session' &&
+      persisted.session &&
+      'llmConnectionSlug' in persisted.session &&
+      persisted.session.llmConnectionSlug,
+    'alternate',
+  );
 });

@@ -109,6 +109,80 @@ describe('maka run argument parsing', () => {
     assert.deepEqual(JSON.parse(stdout.join('')), { sessionId: 's', status: 'running' });
   });
 
+  test('rejects unsupported Session overrides before connecting while preserving legacy selectors', () => {
+    for (const setting of [['--cwd', '/tmp'], ['--timeout', '10'], ['--graph']]) {
+      assert.equal(parseMakaRunArgs(['--session', 's', 'check', ...setting]).kind, 'error');
+      assert.equal(parseMakaRunArgs(['check', '--resume', 's', ...setting]).kind, 'run');
+    }
+    assert.equal(parseMakaRunArgs(['--session', 's', 'check', '--max-steps', '2']).kind, 'run');
+    for (const extra of [
+      [],
+      ['--status'],
+      ['--resume'],
+      ['--queue', 'check'],
+      ['--steer', 'check'],
+    ])
+      assert.equal(
+        parseMakaRunArgs(['--session', 's', '--max-steps', '2', ...extra]).kind,
+        'error',
+        extra.join(' '),
+      );
+  });
+
+  test('Session model settings persist independently of explicit resume or a new prompt', () => {
+    for (const settings of [
+      ['--model', 'other-model'],
+      ['--connection', 'other-account', '--model', 'other-model'],
+      ['--thinking', 'high'],
+    ]) {
+      const change = parseMakaRunArgs(['--session', 's', ...settings]);
+      assert.equal(change.kind, 'run');
+      if (change.kind !== 'run') return;
+      assert.equal(change.options.resumeExecution, undefined);
+      assert.equal(change.options.prompt, undefined);
+      const resume = parseMakaRunArgs(['--session', 's', ...settings, '--resume']);
+      assert.equal(resume.kind, 'run');
+      if (resume.kind === 'run') assert.equal(resume.options.resumeExecution, true);
+      const prompt = parseMakaRunArgs(['--session', 's', ...settings, 'continue']);
+      assert.equal(prompt.kind, 'run');
+      if (prompt.kind === 'run') {
+        assert.equal(prompt.options.prompt, 'continue');
+        assert.equal(prompt.options.resumeExecution, undefined);
+      }
+    }
+  });
+
+  test('invalid Session options return a short usage error without opening the Host or reading stdin', async () => {
+    for (const args of [
+      ['--session', 's', '--status', '--cwd', '/tmp'],
+      ['--session', 's', '--wait', '--max-steps', '2'],
+      ['--unknown'],
+    ]) {
+      const stdout: string[] = [];
+      const stderr: string[] = [];
+      const exit = await runMakaTextCliCore(
+        args,
+        {
+          createContext: async () => assert.fail('must not prepare execution'),
+          listSessions: async () => assert.fail('must not select a Session'),
+          runSession: async () => assert.fail('must not connect to Host'),
+        },
+        {
+          cliCommand: () => 'npm run cli:dev --',
+          stdinIsTTY: () => false,
+          readStdin: async () => assert.fail('must not read stdin'),
+          writeStdout: (text) => stdout.push(text),
+          writeStderr: (text) => stderr.push(text),
+        },
+      );
+      assert.equal(exit, 2);
+      assert.deepEqual(stdout, []);
+      assert.equal(stderr.join('').trim().split('\n').length, 2);
+      assert.match(stderr.join(''), /npm run cli:dev -- run --help/);
+      assert.doesNotMatch(stderr.join(''), /Usage:/);
+    }
+  });
+
   test('recap selects one Session action and rejects execution and wait combinations', () => {
     assert.deepEqual(parseMakaRunArgs(['--session', 's', '--recap', '--json']), {
       kind: 'run',
@@ -118,7 +192,6 @@ describe('maka run argument parsing', () => {
     for (const extra of [
       ['prompt'],
       ['-'],
-      ['--status'],
       ['--result'],
       ['--stop'],
       ['--resume'],
@@ -135,6 +208,39 @@ describe('maka run argument parsing', () => {
         'error',
         extra.join(' '),
       );
+  });
+
+  test('accepts equivalent repeated flags and combines status with recap without discarding either', () => {
+    assert.deepEqual(
+      parseMakaRunArgs([
+        '--session',
+        's',
+        '--session',
+        's',
+        '--status',
+        '--recap',
+        '--json',
+        '--json',
+      ]),
+      {
+        kind: 'run',
+        options: { sessionId: 's', status: true, recap: true, json: true, stdinPrompt: false },
+      },
+    );
+    assert.deepEqual(
+      parseMakaRunArgs(['check', '--no-wait', '--no-wait', '--model', 'm', '--model', 'm']),
+      {
+        kind: 'run',
+        options: { prompt: 'check', noWait: true, model: 'm', stdinPrompt: false },
+      },
+    );
+    for (const extra of [['--answer', '["Yes"]'], ['--result'], ['--stop']])
+      assert.equal(
+        parseMakaRunArgs(['--session', 's', '--status', '--recap', ...extra]).kind,
+        'error',
+      );
+    assert.equal(parseMakaRunArgs(['--session', 's', '--session', 'other']).kind, 'error');
+    assert.equal(parseMakaRunArgs(['check', '--model', 'm', '--model', 'other']).kind, 'error');
   });
 
   test('recap prints text or JSON without reading stdin or returning the Turn failure code', async () => {
