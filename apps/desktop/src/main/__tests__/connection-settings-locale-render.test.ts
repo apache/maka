@@ -40,6 +40,7 @@ interface DetailController {
   enabledModelIds: string[];
   hasEnabledModelChanges: boolean;
   savingEnabledModels: boolean;
+  runTest(): Promise<void>;
   updateEnabledModels(id: string): void;
   saveEnabledModels(): Promise<boolean>;
   cancelEnabledModels(): void;
@@ -687,11 +688,12 @@ async function clickText(container: ParentNode, label: string) {
 async function modelDraftHarness(options: {
   update: ConnectionsBridge['update'];
   onChanged?: () => Promise<void>;
+  testConnection?: ConnectionsBridge['test'];
 }) {
   const renderer = installRenderer();
   let connection = relayConnection();
   let controller!: DetailController;
-  const bridge = connectionDetailBridge({ hasSecret: async () => true, update: options.update });
+  const bridge = connectionDetailBridge({ hasSecret: async () => true, update: options.update, ...(options.testConnection ? { test: options.testConnection } : {}) });
   function Probe() {
     controller = components.useConnectionDetail({
       bridge, connection, isDefault: true,
@@ -704,6 +706,7 @@ async function modelDraftHarness(options: {
   }));
   await render();
   return {
+    document: renderer.document,
     get controller() { return controller; },
     async refresh(next: ProjectedLlmConnection) { connection = next; await render(); },
   };
@@ -790,6 +793,23 @@ test('toggling a model back restores the clean selection and a connection switch
   await harness.refresh({ ...relayConnection(), connectionId: 'another-connection', defaultModel: 'another-model', enabledModelIds: ['another-model'] });
   assert.deepEqual(harness.controller.enabledModelIds, ['another-model']);
   assert.equal(harness.controller.hasEnabledModelChanges, false);
+});
+
+test('testing a connection uses the saved selection when a different model is only drafted', async () => {
+  const original = relayConnection();
+  const harness = await modelDraftHarness({
+    update: unexpectedCall,
+    testConnection: async () => ({ ok: true, modelTested: original.defaultModel, latencyMs: 5 }),
+  });
+  await act(async () => {
+    harness.controller.updateEnabledModels(original.defaultModel);
+    harness.controller.updateEnabledModels('unsaved-model');
+  });
+  await act(async () => { await harness.controller.runTest(); });
+  assert.ok(harness.document.body.textContent.includes(`Connected · ${original.name}`));
+  assert.ok(!harness.document.body.textContent.includes(`Connection works · ${original.name}`));
+  assert.deepEqual(harness.controller.enabledModelIds, ['unsaved-model']);
+  assert.equal(harness.controller.hasEnabledModelChanges, true);
 });
 
 test('adding a custom model preserves an existing selection draft without persisting it', async () => {

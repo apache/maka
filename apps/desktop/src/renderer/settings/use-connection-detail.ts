@@ -535,6 +535,9 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     const releaseTest = connectionDetailActionGuard.beginExclusive('test');
     if (!releaseTest) return;
     const lifecycle = connectionDetailLifecycleRef.current;
+    // The Host tests persisted configuration, not the selection still being edited.
+    const savedSelection = enabledModelsDraft?.connectionId === connection.connectionId
+      ? enabledModelsDraft.saved : connectionEnabledModelIds(connection);
     setTesting(true);
     try {
       // No model argument: `resolveConnectionTestModel` already picks one from
@@ -563,12 +566,12 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
         // string for `modelLabel(testedId)` below.
         if (
           testedId !== undefined &&
-          enabledModelIds.length > 0 &&
-          !enabledModelIds.includes(testedId)
+          savedSelection.length > 0 &&
+          !savedSelection.includes(testedId)
         ) {
           toast.warning(
             copy.connectionFallbackTitle(connection.name),
-            copy.connectionFallbackDetail(enabledModelIds.map(modelLabel), modelLabel(testedId)),
+            copy.connectionFallbackDetail(savedSelection.map(modelLabel), modelLabel(testedId)),
           );
         } else {
           toast.success(
