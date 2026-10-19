@@ -51,16 +51,13 @@ class Environment:
 
 
 def load_relay(framework="harbor"):
-    from eval_framework import install
+    import eval_framework as framework_authority
 
-    install(framework)
-    package = types.ModuleType(framework)
-    agents = types.ModuleType(f"{framework}.agents")
-    base = types.ModuleType(f"{framework}.agents.base")
-    base.BaseAgent = BaseAgent
-    sys.modules[framework] = package
-    sys.modules[f"{framework}.agents"] = agents
-    sys.modules[f"{framework}.agents.base"] = base
+    framework_authority.install(framework)
+    names = (framework, f"{framework}.agents", f"{framework}.agents.base")
+    modules = {name: types.ModuleType(name) for name in names}
+    modules[names[-1]].BaseAgent = BaseAgent
+    sys.modules.update(modules)
     sys.modules.pop("relay_agent", None)
     return importlib.import_module("relay_agent")
 
@@ -782,7 +779,4 @@ class RelayFrameworkAuthorityTest(unittest.TestCase):
                 with patch.dict(os.environ, environment, clear=True):
                     relay = load_relay(selected)
                 self.assertEqual(relay.framework, selected)
-
-
-if __name__ == "__main__":
-    unittest.main()
+unittest.main(verbosity=2) if __name__ == "__main__" else None

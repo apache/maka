@@ -98,7 +98,7 @@
   justify-content: space-between;
   gap: 8px;
   padding: 8px;
-  border-radius: 6px;
+  border-radius: var(--radius-control);
 }
 
 .maka-work-board-row:hover {

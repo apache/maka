@@ -17,16 +17,16 @@
  * under the License.
  */
 
-import type { AgentGraphIntentClaim } from '@maka/core/agent-graph-control';
+import type { AgentGraphIntentClaim as GraphIntentClaim } from '@maka/core/agent-graph-control';
 import type { SessionEvent } from '@maka/core/events';
 import type {
   ClaimedAgentGraphIntentResult,
   RunClaimedAgentGraphIntentInput,
 } from './session-manager.js';
-import type { AgentGraphProjection } from './stream-graph-projection.js';
+import type { AgentGraphProjection as GraphProjection } from './stream-graph-projection.js';
 import type {
-  AgentGraphReadinessSnapshot,
-  AgentGraphRunnableIntent,
+  AgentGraphReadinessSnapshot as GraphReadinessSnapshot,
+  AgentGraphRunnableIntent as RunnableGraphIntent,
 } from './stream-graph-readiness.js';
 
 export interface AgentGraphIntentExecutor {
@@ -36,20 +36,20 @@ export interface AgentGraphIntentExecutor {
 }
 
 export interface AgentGraphSupervisorObservation {
-  projection: AgentGraphProjection;
-  readiness: AgentGraphReadinessSnapshot;
-  claims: readonly AgentGraphIntentClaim[];
+  projection: GraphProjection;
+  readiness: GraphReadinessSnapshot;
+  claims: readonly GraphIntentClaim[];
 }
 
 export interface AgentGraphSupervisorActivationReady {
-  intent: AgentGraphRunnableIntent;
-  claim: AgentGraphIntentClaim;
+  intent: RunnableGraphIntent;
+  claim: GraphIntentClaim;
   runtime: Parameters<NonNullable<RunClaimedAgentGraphIntentInput['onReady']>>[0];
 }
 
 export interface AgentGraphSupervisorRuntimeEvent {
-  intent: AgentGraphRunnableIntent;
-  claim: AgentGraphIntentClaim;
+  intent: RunnableGraphIntent;
+  claim: GraphIntentClaim;
   event: SessionEvent;
 }
 
@@ -69,8 +69,8 @@ export interface AgentGraphSupervisorObserver {
 }
 
 export interface AgentGraphDispatchedActivation {
-  intent: AgentGraphRunnableIntent;
-  claim: AgentGraphIntentClaim;
+  intent: RunnableGraphIntent;
+  claim: GraphIntentClaim;
   claimCreated: boolean;
   result: ClaimedAgentGraphIntentResult;
 }

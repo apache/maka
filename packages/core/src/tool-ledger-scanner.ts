@@ -167,14 +167,6 @@ export type ToolLedgerTransitionValidation =
 
 export type ToolLedgerTransitionFailure = Extract<ToolLedgerTransitionValidation, { ok: false }>;
 
-export type IncrementalToolLedgerTransitionValidation =
-  | {
-      ok: true;
-      checkpoint: number;
-      appendedEvents: number;
-    }
-  | ({ source: 'existing' | 'candidate' } & ToolLedgerTransitionFailure);
-
 /**
  * Enforces the semantic boundary for durable tool-ledger facts.
  *
@@ -237,41 +229,51 @@ export function validateToolLedgerTransition(input: {
   existingEvents: readonly RuntimeEvent[];
   candidateEvents: readonly RuntimeEvent[];
   expectedTransition: ToolLedgerTransitionKind;
-}): ToolLedgerTransitionValidation {
+}): { ok: true } | ({ source: 'existing' | 'candidate' } & ToolLedgerTransitionFailure) {
   const reducer = new ToolLedgerReducer(input.existingEvents);
-  const validation = validateIncrementalToolLedgerTransition({
-    reducer,
-    candidateEvents: input.candidateEvents,
-    expectedTransition: input.expectedTransition,
-  });
-  if (validation.ok) {
-    reducer.commit(validation.checkpoint);
-    return { ok: true };
+  const existing = reducer.scan();
+  if (existing.hasCorruption) {
+    return { source: 'existing', ...issueValidation(existing.issues[0]!) };
   }
-  const { source: _source, ...failure } = validation;
-  return failure;
+
+  const candidates: RuntimeEvent[] = [];
+  for (const candidate of input.candidateEvents) {
+    const prior = reducer.event(candidate.id);
+    if (!prior) {
+      candidates.push(candidate);
+      continue;
+    }
+    if (!nodeUtil.isDeepStrictEqual(prior, candidate)) {
+      return {
+        ok: false,
+        source: 'candidate',
+        code: 'duplicate_event_id',
+        eventId: candidate.id,
+      };
+    }
+  }
+  const shape = validateTransitionShape(candidates, input.expectedTransition);
+  if (!shape.ok) return { source: 'candidate', ...shape };
+
+  reducer.append(candidates);
+  const issue = reducer.scan().issues[0];
+  return issue ? { source: 'candidate', ...issueValidation(issue) } : { ok: true };
 }
 
 /**
- * Stateful interpretation of an immutable RuntimeEvent prefix.
- *
- * Candidate appends mutate the reducer behind a checkpoint. The caller either
- * commits that checkpoint after durable transaction commit or rolls it back.
- * Rollback records only the fields touched by the candidate batch, so a small
- * append does not clone maps proportional to the full checked prefix.
+ * Invocation-scoped interpretation shared by scans and prospective validation.
+ * Each caller owns a fresh reducer; no state survives a validation call.
  */
-export class ToolLedgerReducer {
+class ToolLedgerReducer {
   private readonly operations: ToolLedgerScanOperation[] = [];
   private readonly issues: ToolLedgerIssue[] = [];
   private readonly eventsById = new Map<string, RuntimeEvent>();
   private readonly byToolCall = new Map<string, ToolLedgerScanOperation>();
   private readonly byOperation = new Map<string, ToolLedgerScanOperation>();
   private readonly invocationSpines = new Map<string, string>();
-  private readonly undoLog: Array<() => void> = [];
-  private recordUndo = false;
 
-  constructor(events: readonly RuntimeEvent[] = []) {
-    this.consume(events, false);
+  constructor(events: readonly RuntimeEvent[]) {
+    this.append(events);
   }
 
   scan(): ToolLedgerScanResult {
@@ -305,41 +307,8 @@ export class ToolLedgerReducer {
     return this.eventsById.get(eventId);
   }
 
-  checkpoint(): number {
-    return this.undoLog.length;
-  }
-
   append(events: readonly RuntimeEvent[]): void {
-    this.consume(events, true);
-  }
-
-  rollback(checkpoint: number): void {
-    this.assertCheckpoint(checkpoint);
-    for (let index = this.undoLog.length - 1; index >= checkpoint; index -= 1) {
-      this.undoLog[index]!();
-    }
-    this.undoLog.length = checkpoint;
-  }
-
-  commit(checkpoint: number): void {
-    this.assertCheckpoint(checkpoint);
-    this.undoLog.length = checkpoint;
-  }
-
-  private assertCheckpoint(checkpoint: number): void {
-    if (!Number.isSafeInteger(checkpoint) || checkpoint < 0 || checkpoint > this.undoLog.length) {
-      throw new RangeError('Invalid tool ledger reducer checkpoint');
-    }
-  }
-
-  private consume(events: readonly RuntimeEvent[], recordUndo: boolean): void {
-    const previous = this.recordUndo;
-    this.recordUndo = recordUndo;
-    try {
-      for (const event of events) this.consumeEvent(event);
-    } finally {
-      this.recordUndo = previous;
-    }
+    for (const event of events) this.consumeEvent(event);
   }
 
   private consumeEvent(event: RuntimeEvent): void {
@@ -347,7 +316,7 @@ export class ToolLedgerReducer {
       this.addIssue(undefined, { code: 'duplicate_event_id', eventId: event.id });
       return;
     }
-    this.setMap(this.eventsById, event.id, event);
+    this.eventsById.set(event.id, event);
     const spine = JSON.stringify([event.sessionId, event.runId, event.turnId]);
     const existingSpine = this.invocationSpines.get(event.invocationId);
     if (existingSpine !== undefined && existingSpine !== spine) {
@@ -356,7 +325,7 @@ export class ToolLedgerReducer {
         eventId: event.id,
       });
     } else {
-      this.setMap(this.invocationSpines, event.invocationId, spine);
+      this.invocationSpines.set(event.invocationId, spine);
     }
     const lane = validateToolLedgerEventLane(event);
     if (!lane.ok) {
@@ -372,7 +341,7 @@ export class ToolLedgerReducer {
       const existing = this.byToolCall.get(toolCallKey);
       if (existing) {
         if (!existing.callEvent) {
-          this.setOperationField(existing, 'callEvent', event);
+          existing.callEvent = event;
           if (existing.toolName !== content.name) {
             this.addIssue(existing, {
               code: 'identity_conflict',
@@ -399,8 +368,8 @@ export class ToolLedgerReducer {
         decisionEvents: [],
         issues: [],
       };
-      this.setMap(this.byToolCall, toolCallKey, operation);
-      this.push(this.operations, operation);
+      this.byToolCall.set(toolCallKey, operation);
+      this.operations.push(operation);
       return;
     }
 
@@ -419,8 +388,8 @@ export class ToolLedgerReducer {
           decisionEvents: [],
           issues: [],
         };
-        this.setMap(this.byToolCall, toolCallKey, operation);
-        this.push(this.operations, operation);
+        this.byToolCall.set(toolCallKey, operation);
+        this.operations.push(operation);
         this.addIssue(operation, {
           code: 'event_order_conflict',
           eventId: event.id,
@@ -445,15 +414,15 @@ export class ToolLedgerReducer {
           operationId: dispatch.operationId,
           toolCallId: dispatch.providerToolCallId,
         };
-        this.push(this.issues, issue);
-        this.push(existingOperation.issues, issue);
-        this.push(operation.issues, issue);
+        this.issues.push(issue);
+        existingOperation.issues.push(issue);
+        operation.issues.push(issue);
         return;
       }
 
-      this.setOperationField(operation, 'operationId', dispatch.operationId);
-      this.setOperationField(operation, 'dispatchEvent', event);
-      this.setMap(this.byOperation, dispatch.operationId, operation);
+      operation.operationId = dispatch.operationId;
+      operation.dispatchEvent = event;
+      this.byOperation.set(dispatch.operationId, operation);
       if (
         operation.toolName !== dispatch.toolName ||
         event.refs?.operationId !== dispatch.operationId ||
@@ -522,8 +491,8 @@ export class ToolLedgerReducer {
           decisionEvents: [],
           issues: [],
         };
-        this.push(this.operations, orphan);
-        this.setMap(this.byToolCall, toolCallKey, orphan);
+        this.operations.push(orphan);
+        this.byToolCall.set(toolCallKey, orphan);
         this.addIssue(orphan, {
           code: 'orphan_response',
           eventId: event.id,
@@ -540,7 +509,7 @@ export class ToolLedgerReducer {
         });
         return;
       }
-      this.setOperationField(operation, 'responseEvent', event);
+      operation.responseEvent = event;
       if (
         operation.toolName !== content.name ||
         !sameExecutionIdentity(operation.callEvent, event) ||
@@ -571,50 +540,14 @@ export class ToolLedgerReducer {
         });
         return;
       }
-      if (lane.lane === 'reconcile_result') this.push(operation.reconcileEvents, event);
-      else this.push(operation.decisionEvents, event);
+      if (lane.lane === 'reconcile_result') operation.reconcileEvents.push(event);
+      else operation.decisionEvents.push(event);
     }
   }
 
   private addIssue(operation: ToolLedgerScanOperation | undefined, issue: ToolLedgerIssue): void {
-    this.push(this.issues, issue);
-    if (operation) this.push(operation.issues, issue);
-  }
-
-  private push<T>(values: T[], value: T): void {
-    const length = values.length;
-    this.undo(() => {
-      values.length = length;
-    });
-    values.push(value);
-  }
-
-  private setMap<K, V>(values: Map<K, V>, key: K, value: V): void {
-    const had = values.has(key);
-    const previous = values.get(key);
-    this.undo(() => {
-      if (had) values.set(key, previous!);
-      else values.delete(key);
-    });
-    values.set(key, value);
-  }
-
-  private setOperationField<K extends keyof ToolLedgerScanOperation>(
-    operation: ToolLedgerScanOperation,
-    key: K,
-    value: ToolLedgerScanOperation[K],
-  ): void {
-    const had = Object.hasOwn(operation, key);
-    const previous = operation[key];
-    this.undo(() => {
-      if (had) operation[key] = previous;
-      else delete operation[key];
-    });
-    operation[key] = value;
-  }
-
-  private undo(operation: () => void): void {
-    if (this.recordUndo) this.undoLog.push(operation);
+    this.issues.push(issue);
+    if (operation) operation.issues.push(issue);
   }
 
   private toolDependencyIssues(): Array<{
@@ -699,57 +632,8 @@ export class ToolLedgerReducer {
 }
 
 /**
- * Applies one prospective writer batch to a checked prefix. A successful call
- * leaves the candidate delta applied until the caller commits or rolls back the
- * returned checkpoint. A rejected candidate restores the reducer immediately.
- */
-export function validateIncrementalToolLedgerTransition(input: {
-  reducer: ToolLedgerReducer;
-  candidateEvents: readonly RuntimeEvent[];
-  expectedTransition: ToolLedgerTransitionKind;
-}): IncrementalToolLedgerTransitionValidation {
-  const existing = input.reducer.scan();
-  if (existing.hasCorruption) {
-    return { source: 'existing', ...issueValidation(existing.issues[0]!) };
-  }
-
-  const candidates: RuntimeEvent[] = [];
-  for (const candidate of input.candidateEvents) {
-    const prior = input.reducer.event(candidate.id);
-    if (!prior) {
-      candidates.push(candidate);
-      continue;
-    }
-    if (!nodeUtil.isDeepStrictEqual(prior, candidate)) {
-      return {
-        ok: false,
-        source: 'candidate',
-        code: 'duplicate_event_id',
-        eventId: candidate.id,
-      };
-    }
-  }
-  const shape = validateTransitionShape(candidates, input.expectedTransition);
-  if (!shape.ok) return { source: 'candidate', ...shape };
-
-  const checkpoint = input.reducer.checkpoint();
-  try {
-    input.reducer.append(candidates);
-  } catch (error) {
-    input.reducer.rollback(checkpoint);
-    throw error;
-  }
-  const issue = input.reducer.scan().issues[0];
-  if (issue) {
-    input.reducer.rollback(checkpoint);
-    return { source: 'candidate', ...issueValidation(issue) };
-  }
-  return { ok: true, checkpoint, appendedEvents: candidates.length };
-}
-
-/**
  * Scans immutable RuntimeEvents once, in physical ledger order. Resolver,
- * projection rebuild and incremental writers all use the same reducer rules.
+ * projection rebuild and prospective writers all use the same reducer rules.
  */
 export function scanToolLedger(events: readonly RuntimeEvent[]): ToolLedgerScanResult {
   return new ToolLedgerReducer(events).scan();

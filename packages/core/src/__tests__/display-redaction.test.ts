@@ -74,6 +74,13 @@ describe('display redactSecrets', () => {
       redactSecrets('https://alice:hunter2@api.example.com/v1?token=abc123'),
       'https://<redacted>@api.example.com/v1?token=<redacted>',
     );
+
+    // Fine-grained GitHub PATs (`github_pat_`) are one of the token families
+    // Maka imports as a Copilot credential (classic `ghp_` is refused); they
+    // mask like the rest.
+    const fineGrained = 'github_pat_11ABCDEFG0abcdefghijklmnop_qrstuvwxyz0123456789ABCD';
+    assert.equal(redactSecrets(`token ${fineGrained} done`), 'token <redacted> done');
+
     // Negatives: bare https://host must not swallow a later @ across spaces/newlines/quotes.
     assert.equal(
       redactSecrets('see https://example.com and mail bob@corp.com'),
@@ -113,10 +120,11 @@ describe('display streaming suffix redactors', () => {
   });
 
   test('still shortens a reversible provider token that reaches end-of-input', () => {
-    const token = `ghp_${'A'.repeat(200)}`;
-    const reversible = redactReversibleStreamingSuffix(token);
-    assert.ok(reversible);
-    assert.equal(redactSecrets(reversible.compactedInput), redactSecrets(token));
-    assert.equal(reversible.compactedToken.length < token.length, true);
+    for (const token of [`ghp_${'A'.repeat(200)}`, `github_pat_${'A'.repeat(200)}`]) {
+      const reversible = redactReversibleStreamingSuffix(token);
+      assert.ok(reversible);
+      assert.equal(redactSecrets(reversible.compactedInput), redactSecrets(token));
+      assert.equal(reversible.compactedToken.length < token.length, true);
+    }
   });
 });

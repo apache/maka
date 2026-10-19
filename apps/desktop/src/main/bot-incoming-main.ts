@@ -32,6 +32,7 @@ import { generalizedErrorMessageForLocale } from '@maka/core/redaction';
 import type { BotIncomingMessage, BotRegistry, BotReplyStream } from '@maka/runtime/bots';
 import type { BotSessionAdapter, BotSessionTurnResult } from './bot-session-adapter.js';
 import { isBotSessionUnavailableError } from './bot-session-adapter.js';
+import type { WorkHubRemoteBridge } from './workhub-remote-bridge.js';
 import { isSessionWorkspaceUnavailableError } from './project-context-root.js';
 
 const BOT_RECENT_SOURCE_EVENT_LIMIT = 1_000;
@@ -55,6 +56,7 @@ export interface BotIncomingMainService {
 
 interface BotIncomingMainServiceDeps {
   sessions: BotSessionAdapter;
+  workHub?: WorkHubRemoteBridge;
   botRegistry: BotRegistry;
 }
 
@@ -118,7 +120,7 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
   function close(): Promise<void> {
     if (closeTask) return closeTask;
     closed = true;
-    closeTask = Promise.allSettled([...activeTasks]).then(() => {
+    closeTask = Promise.allSettled([...activeTasks, deps.workHub?.close()]).then(() => {
       botConversationSessions.clear();
       botConversationQueues.clear();
       botRecentSourceEventKeys.clear();
@@ -224,6 +226,14 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
     text: string,
   ): Promise<void> {
     if (closed) return;
+    if (deps.workHub) {
+      try {
+        if (await deps.workHub.handle(message, () => consumeBotConversationToken(conversationKey))) return;
+      } catch (error) {
+        await sendTransientBotNotice(message, generalizedErrorMessageForLocale(error, 'WorkHub 暂时无法处理这条消息', 'zh-CN'), 5 * 60_000);
+        return;
+      }
+    }
     let replyStream: BotReplyStream | null = null;
     // PR-BOT-EPHEMERAL-REPLY-0: TTL for system notices (help / reset ack /
     // fallback errors). Five minutes is long enough for the user to read
@@ -317,6 +327,12 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
         sessionId,
         turnId,
         text: formatBotMessageForSession({ ...message, text }),
+        origin: {
+          kind: 'external_connector',
+          connectorId: message.platform,
+          // BotMessageEvent calls the connector sender identity userId.
+          ...(message.userId ? { senderId: message.userId } : {}),
+        },
         onReplySnapshot: (snapshot) => replyStream?.update(snapshot),
       });
       // PR-BOT-TYPING-INDICATOR-0 (external bot research): keep "Maka 正在

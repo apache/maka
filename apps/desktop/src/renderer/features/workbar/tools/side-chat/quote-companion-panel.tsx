@@ -39,7 +39,7 @@ import { useQuoteCompanion } from './use-quote-companion';
 import { useComposerAttachments } from '@maka/ui/use-composer-attachments';
 import { localizedShellErrorMessage } from '../../../../locales/shell-copy.js';
 import { useComposerMentionsContext } from '../../../../composer-mentions.js';
-import { preflightAttachmentItems } from '../../../../attachment-preflight';
+import { preflightAttachmentItems } from '../../../../application/contracts/attachment-preflight.js';
 import { getDesktopConversationCopy } from '../../../../application/contracts/conversation-copy.js';
 import { useAppShellTurnPresentation } from '../../../../application/contracts/turn-presentation.js';
 import {
@@ -273,6 +273,7 @@ export function QuoteCompanionPanel(props: {
                 )}
                 {companion.activeQuestion && (
                   <UserQuestionPrompt
+                    key={companion.activeQuestion.requestId}
                     request={companion.activeQuestion}
                     onRespond={companion.respondToUserQuestion}
                     onStop={() => void companion.stop()}
@@ -403,7 +404,7 @@ export function QuoteCompanionPanel(props: {
           liveTurns={companion.liveTurns}
           activeTurn={companion.activeTurn}
           activeSession={companion.companionSession}
-          onReadAttachmentBytes={attachments.readBytes}
+          onReadAttachmentBytes={attachments.readBytes} onResolveImageDelivery={attachments.resolveImageDelivery}
           deriveTurnPresentation={deriveTurnPresentation}
           onEditUserMessage={(turnId) => {
             const message = companion.messages.find(

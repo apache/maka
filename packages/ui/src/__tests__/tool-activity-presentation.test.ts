@@ -22,12 +22,13 @@ import { describe, it } from 'node:test';
 import { createElement, type ReactNode } from 'react';
 import { renderToStaticMarkup as renderReactToStaticMarkup } from 'react-dom/server';
 import { computerUseModelCallArgs } from '@maka/core/computer-use';
-import { UI_LOCALES, type UiCatalog, type UiLocale } from '@maka/core/ui-locale';
+import { UI_LOCALES, type UiLocale, defineShippedUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 import { ToolCallDetail, ToolTrow } from '../tool-activity.js';
 import type { ToolActivityItem } from '../materialize.js';
 import { LocaleProvider } from '../locale-context.js';
 import { ToolResultPreview } from '../tool-activity/tool-result-preview.js';
 import { getToolActivityCopy } from '../tool-activity/copy.js';
+import { formatDuration } from '../tool-activity/preview-utils.js';
 import {
   computerActionLabel,
   computerRunningLabel,
@@ -81,11 +82,11 @@ describe('tool activity presentation', () => {
     assert.match(en, /Bypass mode required/);
     assert.match(en, /Switch and retry/);
 
-    const errorMessages = {
-      'zh-CN': '需要“绕过”模式。此操作会直接控制本机应用，无法在沙箱模式下执行。',
-      'zh-TW': '需要“繞過”模式。此操作會直接控制本機應用，無法在沙箱模式下執行。',
-      en: 'Bypass mode required. This action controls a local app directly and cannot run inside the sandbox.',
-    } satisfies UiCatalog<string>;
+    const errorMessages = resolveUiMessageCatalog(defineShippedUiMessageCatalog<string>()({
+          'zh-CN': '需要“绕过”模式。此操作会直接控制本机应用，无法在沙箱模式下执行。',
+          'zh-TW': '需要“繞過”模式。此操作會直接控制本機應用，無法在沙箱模式下執行。',
+          en: 'Bypass mode required. This action controls a local app directly and cannot run inside the sandbox.',
+        }));
     for (const locale of UI_LOCALES) {
       const row = renderToStaticMarkup(createElement(ToolTrow, { items: [item] }), locale);
       assert.ok(row.includes(`title="${errorMessages[locale]}"`), `${locale}: full bypass error`);
@@ -954,4 +955,12 @@ it('uses WorkHub status once in the collapsed row and retains arguments in detai
     const detail = renderToStaticMarkup(createElement(ToolCallDetail, { item }));
     assert.match(detail, /status/);
   }
+});
+
+it('carries rounded tool durations into the next unit', () => {
+  assert.equal(formatDuration(9_949), '9.9s');
+  assert.equal(formatDuration(9_960), '10s');
+  assert.equal(formatDuration(59_600), '1m 0s');
+  assert.equal(formatDuration(119_600), '2m 0s');
+  assert.equal(formatDuration(125_000), '2m 5s');
 });

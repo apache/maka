@@ -20,6 +20,8 @@
 import { Buffer } from "node:buffer";
 import type { ComputerUseToolSet } from '@maka/runtime/computer-use-tools';
 import type { MakaTool } from '@maka/runtime/tool-runtime';
+import { coerceResultContent, deriveToolResultStatus } from '@maka/runtime/tool-runtime';
+import { requireToolCallOutcome } from '@maka/core/tool-result-status';
 import {
   createOAuthPresentationClientProvider,
   type ClientCapabilityProvider,
@@ -730,6 +732,9 @@ async function projectToolResult(
   input: unknown,
   output: unknown,
 ): Promise<ClientCapabilityCallResult> {
+  const outcome = tool.resultOutcome
+    ? requireToolCallOutcome(tool.resultOutcome(output))
+    : deriveToolResultStatus(coerceResultContent(output), output);
   const modelOutput = tool.toModelOutput
     ? await tool.toModelOutput({
         toolCallId,
@@ -739,24 +744,25 @@ async function projectToolResult(
     : undefined;
   if (!modelOutput) {
     return typeof output === "string"
-      ? { content: [{ type: "text", text: output }] }
-      : { content: [], structuredContent: output };
+      ? { outcome, content: [{ type: "text", text: output }] }
+      : { outcome, content: [], structuredContent: output };
   }
   switch (modelOutput.type) {
     case "text":
     case "error-text":
-      return { content: [{ type: "text", text: modelOutput.value }] };
+      return { outcome, content: [{ type: "text", text: modelOutput.value }] };
     case "json":
     case "error-json":
-      return { content: [], structuredContent: modelOutput.value };
+      return { outcome, content: [], structuredContent: modelOutput.value };
     case "execution-denied":
       return {
+        outcome,
         content: [
           { type: "text", text: modelOutput.reason ?? "Execution denied" },
         ],
       };
     case "content":
-      return { content: modelOutput.value.map(projectContentPart) };
+      return { outcome, content: modelOutput.value.map(projectContentPart) };
   }
 }
 

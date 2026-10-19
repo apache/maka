@@ -216,8 +216,28 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
             });
             return { ok: true, result: projected };
           },
+          'session.remove.preview': async (input) => {
+            assert.deepEqual(input, {
+              sessionIds: ['session-ipc'],
+              measureBytes: true,
+              requireArchived: true,
+            });
+            return {
+              ok: true,
+              result: {
+                archivableSubtaskCount: 1,
+                removedSubtaskCount: 2,
+                worktreeCount: 3,
+                bytes: 4096,
+              },
+            };
+          },
           'session.remove': async (input) => {
             assert.ok(projected);
+            if (input.requireArchivedForMs !== undefined) {
+              // The Host's clock says the task is not old enough yet.
+              return { ok: true, result: { kind: 'too_recent', sessionId: input.sessionId } };
+            }
             if (restoreUnderNextRemove) {
               // Another window restored the task between the Client's read and
               // this write. The Host rejects the stale revision, which is what
@@ -325,6 +345,29 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
     assert.equal(updatedSession.revision, 2);
     await ipc.invoke('sessions:archive', 'session-ipc');
     assert.equal((await ipc.invoke('sessions:list') as Array<{ isArchived: boolean }>)[0]?.isArchived, true);
+    // The confirm's preview crosses the wire as one page of this Host's ids.
+    const previewInput = { sessionIds: ['session-ipc'], measureBytes: true, requireArchived: true };
+    assert.deepEqual(await ipc.invoke('sessions:removePreview', previewInput), {
+      archivableSubtaskCount: 1,
+      removedSubtaskCount: 2,
+      worktreeCount: 3,
+      bytes: 4096,
+    });
+    // The protocol codec, not a second IPC check, refuses a malformed input.
+    await assert.rejects(
+      ipc.invoke('sessions:removePreview', { sessionIds: 'session-ipc' }),
+      /Session remove preview/,
+    );
+    // An age filter's threshold reaches the Host, and its refusal keeps the task.
+    assert.deepEqual(
+      await ipc.invoke('sessions:remove', 'session-ipc', {
+        revisionFamily: true,
+        requireArchived: true,
+        requireArchivedForMs: 604_800_000,
+      }),
+      { disposition: 'too_recent', archivedSubtaskCount: 0 },
+    );
+    assert.equal((await ipc.invoke('sessions:list') as unknown[]).length, 1);
     // A purge sweep asks for the task it saw archived. Restored under it, the
     // deletion is called off rather than replayed at the fresh revision (#3050).
     restoreUnderNextRemove = true;

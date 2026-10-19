@@ -423,6 +423,9 @@ type ProjectionSamples = {
 };
 
 const PROJECTION_SAMPLES: ProjectionSamples = {
+  context_compaction_applied: {
+    subject: { type: 'context_compaction_applied', id: 'e', turnId: 'turn-1', ts: 1 },
+  },
   text_delta: {
     subject: { type: 'text_delta', id: 'e', turnId: 'turn-1', ts: 1, messageId: 'm1', text: 'h' },
   },

@@ -64,8 +64,8 @@ function reportInventoryCheck(result, output = console) {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
     process.exitCode = reportInventoryCheck(runInventoryCheck());
-  } catch (error) {
-    console.error(error);
+  } catch (failure) {
+    console.error(failure);
     process.exitCode = 1;
   }
 }

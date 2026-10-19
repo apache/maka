@@ -324,6 +324,18 @@ function storedToolResult(content: unknown) {
   };
 }
 
+test('explicit tool outcome survives both decoders and old rows remain readable', () => {
+  const legacy = storedToolResult({ kind: 'text', text: 'old' });
+  assert.deepEqual(decodePersistedMessage(legacy), legacy);
+  for (const outcome of ['success', 'error', 'aborted'] as const) {
+    const row = { ...legacy, isError: outcome !== 'success', outcome };
+    assert.deepEqual(decodeCanonicalMessage(row), row);
+    assert.deepEqual(decodePersistedMessage(row), row);
+    assert.throws(() => decodeCanonicalMessage({ ...row, isError: outcome === 'success' }));
+  }
+  assert.throws(() => decodePersistedMessage({ ...legacy, outcome: 'failed' }));
+});
+
 function decodePersistedMessage(value: unknown): StoredMessage {
   return decodeStoredMessage(markPersisted<StoredMessage>(value));
 }

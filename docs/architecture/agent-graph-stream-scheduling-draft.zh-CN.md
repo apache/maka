@@ -371,9 +371,9 @@ Structural reconciliation 也不拥有 resource permit 或 global fairness。Sha
 
 主 Agent 既不是每条 record 必经的 node，也不是 child execution 内部 callback。它是 external supervisor，承担三类职责：
 
-1. **Observe：**检查紧凑 schedule、topology、operator state、wait、failure 与 candidate result record。
-2. **Control：**添加 dependent work、follow up 已有 operator、stop/replace 失去价值的 work，并关闭 schedule。
-3. **Synthesize：**读取权威 child output、选择已提交 result record，并回答用户。
+1. **Observe**：检查紧凑 schedule、topology、operator state、wait、failure 与 candidate result record。
+2. **Control**：添加 dependent work、follow up 已有 operator、stop/replace 失去价值的 work，并关闭 schedule。
+3. **Synthesize**：读取权威 child output、选择已提交 result record，并回答用户。
 
 这个位置同时保留自治与响应性。Operator 可以按照持久 control decision 推进，root Agent 仍然是普通 conversation participant。用户可以通过 host 观察或停止 Graph，而不把 supervisor 变成 data-delivery bottleneck。
 

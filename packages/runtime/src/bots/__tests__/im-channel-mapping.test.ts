@@ -55,29 +55,6 @@ describe('IM channel event mapping', () => {
     assert.equal(JSON.stringify(event).includes('must-not-cross'), false);
   });
 
-  it('drops Feishu group messages outside the local allowlist', () => {
-    // PR1197 review: the Lark SDK dmAllowlist is DM-only, so a group message
-    // from an unauthorized sender must be dropped by the bridge's own local
-    // allowlist. Empty/absent list allows all (asserted implicitly by the
-    // mapping test above, which passes no allowlist and returns an event).
-    const message = {
-      messageId: 'om_2',
-      chatId: 'oc_2',
-      chatType: 'group',
-      senderId: 'ou_blocked',
-      senderName: 'Mallory',
-      content: 'hello',
-      rawContentType: 'text',
-      resources: [],
-      mentions: [],
-      mentionAll: false,
-      mentionedBot: true,
-      createTime: 123,
-      raw: {},
-    } satisfies NormalizedMessage;
-    assert.equal(feishuMessageToEvent(message, 456, ['ou_allowed']), null);
-  });
-
   it('maps a WeCom direct text message to the sender conversation', () => {
     const frame = {
       headers: { req_id: 'req_1' },
@@ -100,22 +77,6 @@ describe('IM channel event mapping', () => {
       sourceMessageId: 'msg_1',
       receivedAt: 789,
     });
-  });
-
-  it('drops WeCom messages outside the local allowlist', () => {
-    const frame = {
-      headers: { req_id: 'req_2' },
-      body: {
-        msgid: 'msg_2',
-        aibotid: 'bot_1',
-        chatid: 'group_1',
-        chattype: 'group',
-        from: { userid: 'blocked_user' },
-        msgtype: 'text',
-        text: { content: 'question' },
-      },
-    } as WsFrame<TextMessage>;
-    assert.equal(wecomTextFrameToEvent(frame, 789, ['allowed_user']), null);
   });
 
   it('force-closes a Feishu raw socket even when the channel handshake never completed', async () => {

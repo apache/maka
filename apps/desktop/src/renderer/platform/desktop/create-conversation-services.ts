@@ -21,16 +21,19 @@ import type { MakaBridge } from '../../../preload/bridge-contract.js';
 import type { ConversationServices } from '../../features/conversation/index.js';
 
 
+import { createDesktopConversationObservationServices } from './create-conversation-observation-services.js';
+
 const PROMPT_SUGGESTIONS_KEY = 'maka.promptSuggestions.enabled';
 
 export function createDesktopConversationServices(
   bridge: Pick<
     MakaBridge,
-    'sessionLocal' | 'sessions' | 'runtimeHostProfiles' | 'skills' | 'workspace' | 'newTasks' | 'mcp'
+    'shellRuns' | 'transcripts' | 'sessionLocal' | 'sessions' | 'runtimeHostProfiles' | 'skills' | 'workspace' | 'newTasks' | 'mcp'
   > = window.maka,
 ): ConversationServices {
   return {
     ...bridge.sessionLocal,
+    observation: createDesktopConversationObservationServices(bridge),
     promptSuggestions: {
       generate: async (sessionId) => {
         const result = await bridge.sessions.generatePromptSuggestion(sessionId);
@@ -63,6 +66,11 @@ export function createDesktopConversationServices(
     },
     runtimeHosts: {
       subscribeChanges: (handler) => bridge.runtimeHostProfiles.subscribeChanges(handler),
+    },
+    resume: {
+      queryPlan: (sessionId) => bridge.sessions.queryResumeLatest(sessionId),
+      start: (sessionId) => bridge.sessions.resumeLatest(sessionId),
+      subscribeChanges: (handler) => bridge.sessions.subscribeChanges(handler),
     },
     skills: bridge.skills,
     workspace: bridge.workspace,

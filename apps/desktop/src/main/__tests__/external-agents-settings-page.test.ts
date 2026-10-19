@@ -61,8 +61,10 @@ async function mount(
   input: {
     locale?: UiLocale;
     list?: boolean;
+    initialExecutorId?: string;
     executable?: string;
     remote?: boolean;
+    selectExecutable?: () => Promise<string | undefined>;
     start?: (value: ExternalAgentSetupStart) => Promise<ExternalAgentSetupProjection>;
   } = {},
 ) {
@@ -112,7 +114,7 @@ async function mount(
         }),
       },
       externalAgents: {
-        selectExecutable: async () => '/existing/agy_acp_server.par',
+        selectExecutable: input.selectExecutable ?? (async () => '/existing/agy_acp_server.par'),
         start: async (value: ExternalAgentSetupStart) => {
           starts.push(value);
           return input.start ? input.start(value) : { ...value, phase: 'succeeded' };
@@ -144,6 +146,7 @@ async function mount(
               children: createElement(ExternalAgentSettingsServicesProvider, {
                 services,
                 children: createElement(ExternalAgentsSettingsPage, {
+                  initialExecutorId: input.initialExecutorId,
                   settings: { ...settings, externalAgents: { antigravity: { executable } } },
                   onUpdate: async (
                     patch: import('@maka/core/settings').UpdateAppSettingsInput,
@@ -163,7 +166,7 @@ async function mount(
     );
   };
   await render('generation-1');
-  if (!input.list)
+  if (!input.list && !input.initialExecutorId)
     await act(async () => {
       const entry = [...document.querySelectorAll<HTMLButtonElement>('button')].find((button) =>
         button.textContent?.includes('Antigravity'),
@@ -187,6 +190,16 @@ async function mount(
     },
   };
 }
+test('sign-in navigation opens the agent detail directly and can return to the catalog', async () => {
+  const page = await mount({ initialExecutorId: 'antigravity-acp' });
+  assert.equal(page.button('Sign in with Google').disabled, false);
+  assert.equal(page.starts.length, 0, 'opening settings does not start authentication');
+  const back = page.document.querySelector<HTMLButtonElement>('button[aria-label="Back to external agents"]');
+  assert.ok(back);
+  await act(async () => back.click());
+  assert.match(page.document.body.textContent ?? '', /Available agents/);
+});
+
 for (const [locale, label] of [
   ['en', 'Check connection'],
   ['zh-CN', '检查连接'],
@@ -306,6 +319,22 @@ test('saved program exposes file selection without an advanced path editor', asy
   assert.deepEqual(page.updates, ['/existing/agy_acp_server.par']);
   assert.equal(page.starts.length, 0);
 });
+
+for (const failure of ['executable_unavailable', 'helper_unavailable'] as const) {
+  test(`invalid program selection reports ${failure} without changing the saved path`, async () => {
+    const page = await mount({
+      selectExecutable: async () => {
+        throw new Error(`Error invoking remote method 'external-agents:select-executable': Error: Antigravity program: ${failure}`);
+      },
+    });
+    await act(async () => page.button('Choose existing program').click());
+    assert.match(page.document.querySelector('[role="alert"]')?.textContent ?? '',
+      failure === 'helper_unavailable' ? /localharness_external helper is missing/ : /executable is missing/);
+    assert.deepEqual(page.updates, []);
+    assert.deepEqual(page.starts, []);
+    assert.equal(page.button('Choose existing program').disabled, false);
+  });
+}
 
 test('first setup offers managed install and an official source without exposing a path editor', async () => {
   const page = await mount({ executable: '' });

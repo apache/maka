@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { stubConversationServices, useComposerQuotes } from '../../renderer/features/conversation/testing.js';
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { act, createElement } from 'react';
@@ -26,7 +27,6 @@ import type { SessionSnapshot } from '@maka/core/session-reference';
 import {
   ConversationServicesProvider,
   type ConversationServices,
-  useComposerQuotes,
   useSessionReferenceComposer,
 } from '../../renderer/features/conversation/index.js';
 
@@ -44,9 +44,11 @@ let root: Root | undefined;
 
 const sessionLocalServices: Pick<
   ConversationServices,
-  'listMessages' | 'cancelMessage' | 'reconcileMessage' | 'subscribeChanges' | 'runtimeHosts'
+  'listMessages' | 'readFailedMessage' | 'releaseRecoveryAttachments' | 'cancelMessage' | 'reconcileMessage' | 'subscribeChanges' | 'runtimeHosts'
 > = {
   listMessages: async () => [],
+  readFailedMessage: async () => { throw new Error('Failed-message drafts are not used in reference tests'); },
+  releaseRecoveryAttachments: async () => {},
   cancelMessage: async () => undefined,
   reconcileMessage: async () => undefined,
   subscribeChanges: () => () => undefined,
@@ -61,6 +63,8 @@ const queueStubs = {
   promoteQueueEntry: async () => undefined,
   retractQueueEntry: async () => undefined,
   reorderQueueEntries: async () => undefined,
+  compact: async () => { throw new Error('Context compaction is not used in reference tests'); },
+  listTurnLandmarks: async () => ({ landmarks: [] }),
 };
 
 afterEach(async () => {
@@ -110,6 +114,9 @@ test('Session reference picker keeps same-Host sessions and send waits for the s
     releaseSnapshot = resolve;
   });
   const services: ConversationServices = {
+    resumeMessage: async () => undefined,
+    observation: stubConversationServices().observation,
+    resume: stubConversationServices().resume,
     ...sessionLocalServices,
     sessions: {
       readSnapshot: async () => snapshot,
@@ -252,6 +259,9 @@ test('send resolves the selected Session snapshot at the send boundary', async (
   };
   let reads = 0;
   const services: ConversationServices = {
+    resumeMessage: async () => undefined,
+    observation: stubConversationServices().observation,
+    resume: stubConversationServices().resume,
     ...sessionLocalServices,
     sessions: {
       ...queueStubs,
@@ -358,6 +368,9 @@ test('ignores a snapshot that resolves after the Composer owner changes', async 
   });
   let release!: (snapshot: SessionSnapshot) => void;
   const services: ConversationServices = {
+    resumeMessage: async () => undefined,
+    observation: stubConversationServices().observation,
+    resume: stubConversationServices().resume,
     ...sessionLocalServices,
     sessions: {
       ...queueStubs,

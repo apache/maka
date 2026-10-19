@@ -75,6 +75,9 @@ function createService(
       if (preview.throws) throw new Error('preview failed');
       return preview.count ?? 0;
     },
+    previewRemovals: async () => {
+      throw new Error('a single delete does not preview a batch');
+    },
     moveToProject: async (id: string, projectId: string | null) => {
       calls.push(`move:${id}:${projectId ?? 'none'}`);
       return { ok: true } as const;

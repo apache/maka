@@ -17,7 +17,10 @@
  * under the License.
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { join } from 'node:path';
+import { createWorkHubRemoteBridge } from './workhub-remote-bridge.js';
+import type { BotMessageHandling } from '@maka/core/bot-chat-settings';
 import { acquireOperationalStateDatabase } from '@maka/storage/operational-state-store';
 import type { IpcMain } from "electron";
 import type { ActiveInteractionRequestEvent } from '@maka/core/events';
@@ -36,6 +39,9 @@ import {
   type RuntimeHostSshOperatorActivationInput,
   connectOrSpawnRuntimeHost,
   connectRuntimeHostProfile,
+  DEFAULT_ELECTION_DEADLINE_MS,
+  ELECTION_DEADLINE_MS_ENV_VAR,
+  electionDeadlineMsFromEnvironment,
   type RuntimeHostPeerClient,
   type RuntimeHostConnectionPhase,
   type RuntimeHostSshInteraction,
@@ -63,6 +69,7 @@ import {
   type WorkspaceTarget,
 } from "@maka/runtime-host/protocol";
 import type { AttachmentApprovalRegistry } from "./attachment-approval.js";
+import type { ManagedTaskDirectoryAuthority } from "./managed-task-directory.js";
 import {
   createBotIncomingMainService,
   type BotIncomingMainService,
@@ -123,6 +130,8 @@ type CandidateIpcMain = ReconnectableReadIpcMain & Pick<IpcMain, "removeHandler"
 
 export interface DesktopRuntimeHostCandidateDeps {
   readonly terminalCloses?: import('./terminal-close-intents.js').TerminalCloseIntents;
+  readonly retireCancelledMessages?: (scope: DesktopTargetScope, sessionId: string, messageIds: readonly string[]) => void;
+  readonly failNotAdmittedMessages?: (scope: DesktopTargetScope, sessionId: string, messageIds: readonly string[]) => void;
   readonly cacheTranscript?: (scope: DesktopTargetScope, snapshot: DesktopTranscriptReplicaSnapshot) => void;
   readonly ipcMain: RuntimeHostTargetIpcMain;
   readonly workspaceRoot: string;
@@ -144,6 +153,8 @@ export interface DesktopRuntimeHostCandidateDeps {
   };
   readonly nativeCapabilities: DesktopNativeCapabilityProviderInput;
   readonly botRegistry: BotRegistry;
+  readonly readBotMessageHandling?: () => Promise<BotMessageHandling>;
+  readonly botWorkHubStateDirectory?: string;
   readonly resolveBotCreateTarget: (
     target: DesktopRuntimeHostTargetPolicy,
   ) => Promise<{ readonly workspace: WorkspaceTarget }>;
@@ -155,6 +166,12 @@ export interface DesktopRuntimeHostCandidateDeps {
   readonly resolveExternalSessionImportWorkspace: (
     target: DesktopRuntimeHostTargetPolicy,
   ) => Promise<WorkspaceTarget>;
+  /**
+   * Dedicated task-directory authority on the Client filesystem. Wired only
+   * for targets that resolve workspaces there; remote Hosts see `undefined`
+   * and refuse dedicated-directory relocation.
+   */
+  readonly taskDirectories?: ManagedTaskDirectoryAuthority;
   readonly emitSessionsChanged: (
     scope: DesktopTargetScope,
     reason: SessionChangedReason,
@@ -167,6 +184,7 @@ export interface DesktopRuntimeHostCandidateDeps {
   readonly notifyRun: (input: RunNotificationEvent) => Promise<void>;
   readonly e2eInteractions?: RuntimeHostSessionExecutionIpcDeps["e2eInteractions"];
   readonly transcriptHistoryBytes?: number;
+  readonly transcriptInitialHistoryBytes?: number;
   readonly renderer?: {
     send(channel: string, scope: DesktopTargetScope, payload: unknown): void;
   };
@@ -492,6 +510,19 @@ function redactRuntimeHostStderr(stderr: string): string {
   return redacted.replace(/\S+/gu, (token) => redactSecrets(token));
 }
 
+// Resolved from the client's own constant and env channel: a Desktop-only
+// fallback let the readiness wait expire inside a still-valid election window.
+export function resolveDesktopCandidateReadyTimeoutMs(
+  electionDeadlineMs: number | undefined,
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+): number {
+  return (
+    electionDeadlineMs ??
+    electionDeadlineMsFromEnvironment(environment[ELECTION_DEADLINE_MS_ENV_VAR]) ??
+    DEFAULT_ELECTION_DEADLINE_MS
+  );
+}
+
 async function startProfileDesktopRuntimeHostCandidate(
   input: DesktopRuntimeHostCandidateStartInput,
   profileTarget: NonNullable<DesktopRuntimeHostCandidateStartInput["profileTarget"]>,
@@ -511,7 +542,7 @@ async function startProfileDesktopRuntimeHostCandidate(
     ...(input.handshakeTimeoutMs === undefined
       ? {}
       : { handshakeTimeoutMs: input.handshakeTimeoutMs }),
-    readyTimeoutMs: input.electionDeadlineMs ?? 45_000,
+    readyTimeoutMs: resolveDesktopCandidateReadyTimeoutMs(input.electionDeadlineMs),
     ...(input.peerClient === undefined ? {} : { peerClient: input.peerClient }),
     ...(input.refreshPeerRoutes === undefined
       ? {}
@@ -685,9 +716,34 @@ export async function createDesktopRuntimeHostCandidate(
         interactions,
       });
     };
+    const retireCancelledMessages = (sessionId: string, messageIds: readonly string[]) => {
+      if (target.access === 'owner' && isTargetActive()) {
+        deps.retireCancelledMessages?.(scope, sessionId, messageIds);
+      }
+    };
     const sessionObserver = new RuntimeHostSessionObserver({
       client,
       transcriptHistoryBytes: deps.transcriptHistoryBytes,
+      transcriptInitialHistoryBytes: deps.transcriptInitialHistoryBytes,
+      onMessageRetraction: (sessionId, messageIds, proof) => {
+        if (target.access !== 'owner' || !isTargetActive()) return;
+        // Execution resolution is already positive Host proof. Preserve its
+        // kind: not_admitted has no cancellation tombstone to query, and its
+        // unsent content must remain recoverable instead of being discarded.
+        if (proof === 'not_admitted') {
+          deps.failNotAdmittedMessages?.(scope, sessionId, messageIds);
+          return;
+        }
+        if (proof === 'cancelled') {
+          retireCancelledMessages(sessionId, messageIds);
+          return;
+        }
+        // Projection disappearance alone is not durable cancellation proof.
+        // Another client may have stopped the Turn: confirm with the Host first.
+        void client.queryMessages({ sessionId, messageIds })
+          .then((result) => retireCancelledMessages(sessionId, result.cancelledMessageIds))
+          .catch(reportError);
+      },
       cacheTranscript: (snapshot) => {
         if (target.access === 'owner') deps.cacheTranscript?.(scope, snapshot);
       },
@@ -894,6 +950,9 @@ export async function createDesktopRuntimeHostCandidate(
           queryExecutors: (input) => client.request('plugin.executor.query', input),
           runningTurnIds: (sessionId) => sessionObserver.observedRunningTurnIds(sessionId),
           resolveCreateProject: (input) => deps.resolveSessionCreateProject(input, target),
+          ...(deps.taskDirectories && !runtimeHostProfileUsesHostWorkspace(target.kind)
+            ? { dedicatedTaskDirectory: deps.taskDirectories }
+            : {}),
           emitSessionsChanged,
           releaseSessionResources: releaseNativeSession,
           sessionCopyCleanup,
@@ -935,6 +994,7 @@ export async function createDesktopRuntimeHostCandidate(
           {
             client,
             observer: sessionObserver,
+            retireCancelledMessages,
             attachmentApprovals: deps.attachmentApprovals,
             emitSessionsChanged,
             stat: deps.stat,
@@ -958,6 +1018,14 @@ export async function createDesktopRuntimeHostCandidate(
     const botIncoming = target.access === 'owner'
       ? createBotIncomingMainService({
           botRegistry: deps.botRegistry,
+          ...(deps.readBotMessageHandling && deps.botWorkHubStateDirectory ? {
+            workHub: createWorkHubRemoteBridge({
+              client, botRegistry: deps.botRegistry, readMode: deps.readBotMessageHandling,
+              statePath: join(deps.botWorkHubStateDirectory, `${createHash('sha256').update(client.hostId).digest('hex')}.json`),
+              onError: reportError,
+              isActive: deps.isTargetActive,
+            }),
+          } : {}),
           sessions: createRuntimeHostBotSessionAdapter({
             client,
             resolveCreateTarget: () => deps.resolveBotCreateTarget(target),

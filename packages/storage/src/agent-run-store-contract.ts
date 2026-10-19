@@ -1128,7 +1128,10 @@ export function normalizeRootExecutionDescriptor(value: unknown): RootExecutionD
   }
   if (value.kind === 'external_message') {
     const decodedOrigin = decodeTurnOrigin(value.origin);
-    const origin = decodedOrigin?.kind === 'cloud_activation' ? decodedOrigin : undefined;
+    const origin =
+      decodedOrigin?.kind === 'cloud_activation' || decodedOrigin?.kind === 'external_connector'
+        ? decodedOrigin
+        : undefined;
     const allowedKeys = ['kind', 'inputDigest', 'maxSteps', 'origin'];
     if (!Object.keys(value).every((key) => allowedKeys.includes(key))) {
       throw new Error('Invalid root execution descriptor');

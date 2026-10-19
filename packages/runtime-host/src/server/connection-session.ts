@@ -366,9 +366,18 @@ export class RuntimeHostConnectionSession {
         : hasRuntimeHostOperationGrant(this.#options.connection.authority, 'session.catalog.query')
           ? true
           : undefined;
+    // Artifact invalidations are consumed by the owner Desktop. Guest clients
+    // must not learn Artifact identities or share a session-scoped subscription
+    // whose lifetime is tied to another guest's catalog scope.
+    const artifact: HostChangeSubscriptionMask['artifact'] =
+      this.#options.connection.authority.principalKind !== 'session_guest' &&
+      hasRuntimeHostOperationGrant(this.#options.connection.authority, 'artifact.query')
+        ? true
+        : undefined;
     this.#hostChanges = service.attachConnection(
       this.#options.connection.connectionId,
       {
+        artifact,
         configuration: hasRuntimeHostOperationGrant(
           this.#options.connection.authority,
           'runtime.policy.query',

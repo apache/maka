@@ -1406,7 +1406,7 @@ test('pier cannot declare an egress proxy it never enforces', () => {
   );
 });
 
-test('Pier rejects configured mounts that collide with framework log ownership', () => {
+test('Pier rejects configured mounts that collide with framework log ownership', (t) => {
   const root = join(tmpdir(), 'maka-test-pier-reserved-mount');
   const restoreEnvironment = setEnvironment({
     MAKA_TEST_MOUNT: join(root, 'mount'),
@@ -1414,32 +1414,30 @@ test('Pier rejects configured mounts that collide with framework log ownership',
     MAKA_TEST_TASKS: join(root, 'tasks'),
     MAKA_TEST_TRIALS: join(root, 'trials'),
   });
-  try {
-    for (const target of ['/logs/agent/../agent', '/logs/verifier/reward.txt']) {
-      assert.throws(
-        () =>
-          createPierExecutor(
-            {
-              ...executorConfig(),
-              tasksRootEnv: 'MAKA_TEST_TASKS',
-              mounts: [{ sourceEnv: 'MAKA_TEST_MOUNT', target, readOnly: true }],
-            },
-            'experiment.json',
-          ),
-        (error) =>
-          error instanceof Error &&
-          error.message === `Pier mount target ${target} is reserved for framework logs`,
-      );
-    }
-  } finally {
-    restoreEnvironment();
+  t.after(restoreEnvironment);
+  for (const target of ['/logs/agent/../agent', '/logs/verifier/reward.txt']) {
+    assert.throws(
+      () =>
+        createPierExecutor(
+          {
+            ...executorConfig(),
+            tasksRootEnv: 'MAKA_TEST_TASKS',
+            mounts: [{ sourceEnv: 'MAKA_TEST_MOUNT', target, readOnly: true }],
+          },
+          'experiment.json',
+        ),
+      (error) =>
+        error instanceof Error &&
+        error.message === `Pier mount target ${target} is reserved for framework logs`,
+    );
   }
 });
 
 test('Pier owns framework selection while retaining configured and log mounts', {
-  timeout: 10_000,
-}, async () => {
+  timeout: 5_000 * 2,
+}, async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'maka-pier-launch-contract-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
   const { executable, observation } = await writePierLaunchProbe(root);
   const mount = { sourceEnv: 'MAKA_TEST_MOUNT', target: '/input', readOnly: true };
   const executorOptions = {
@@ -1447,46 +1445,44 @@ test('Pier owns framework selection while retaining configured and log mounts', 
     tasksRootEnv: 'MAKA_TEST_TASKS',
     preparationEnvironment: ['MAKA_TEST_OBSERVATION'],
     mounts: [mount],
+  } satisfies JsonObject;
+  const restoreEnvironment = setEnvironment(
+    Object.fromEntries([
+      ['MAKA_TEST_PYTHON', executable],
+      ['MAKA_TEST_TRIALS', root],
+      ['MAKA_TEST_OBSERVATION', observation],
+      ['MAKA_TEST_MOUNT', root],
+      ['MAKA_TEST_TASKS', root],
+      ['MAKA_EVAL_FRAMEWORK', 'harbor'],
+    ]),
+  );
+  t.after(restoreEnvironment);
+
+  const spec: ExperimentSpec = {
+    ...experiment(),
+    executor: { kind: 'pier', config: executorOptions },
+    tasks: [{ id: 'task', input: 'solve', config: { pier: { path: 'task' } } }],
   };
-  const restoreEnvironment = setEnvironment({
-    MAKA_TEST_PYTHON: executable,
-    MAKA_TEST_TRIALS: root,
-    MAKA_TEST_OBSERVATION: observation,
-    MAKA_TEST_MOUNT: root,
-    MAKA_TEST_TASKS: root,
-    MAKA_EVAL_FRAMEWORK: 'harbor',
+  const results = await runExperiment({
+    spec,
+    store: new FileAttemptStore(join(root, 'attempts')),
+    executor: createPierExecutor(executorOptions, join(root, 'experiment.json')),
+    subjects: [successfulExternalSubject()],
   });
 
-  try {
-    const spec: ExperimentSpec = {
-      ...experiment(),
-      executor: { kind: 'pier', config: executorOptions },
-      tasks: [{ id: 'task', input: 'solve', config: { pier: { path: 'task' } } }],
-    };
-    const results = await runExperiment({
-      spec,
-      store: new FileAttemptStore(join(root, 'attempts')),
-      executor: createPierExecutor(executorOptions, join(root, 'experiment.json')),
-      subjects: [successfulExternalSubject()],
-    });
-
-    assert.equal(results.get('task::1::external')?.result.status, 'completed');
-    const launch = JSON.parse(await readFile(observation, 'utf8')) as {
-      inheritedSelector: string | null;
-      mounts: Array<{ source: string; target: string }>;
-      trial: string;
-    };
-    assert.equal(launch.inheritedSelector, null);
-    assert.deepEqual(launch.mounts, [
-      { type: 'bind', source: root, target: '/input', read_only: true },
-      { type: 'bind', source: join(root, launch.trial, 'agent'), target: '/logs/agent' },
-      { type: 'bind', source: join(root, launch.trial, 'verifier'), target: '/logs/verifier' },
-      { type: 'bind', source: join(root, launch.trial, 'artifacts'), target: '/logs/artifacts' },
-    ]);
-  } finally {
-    restoreEnvironment();
-    await rm(root, { recursive: true, force: true });
-  }
+  assert.equal(results.get('task::1::external')?.result.status, 'completed');
+  const launch = JSON.parse(await readFile(observation, 'utf8')) as {
+    inheritedSelector: string | null;
+    mounts: Array<{ source: string; target: string }>;
+    trial: string;
+  };
+  assert.equal(launch.inheritedSelector, null);
+  assert.deepEqual(launch.mounts, [
+    { type: 'bind', source: root, target: '/input', read_only: true },
+    { type: 'bind', source: join(root, launch.trial, 'agent'), target: '/logs/agent' },
+    { type: 'bind', source: join(root, launch.trial, 'verifier'), target: '/logs/verifier' },
+    { type: 'bind', source: join(root, launch.trial, 'artifacts'), target: '/logs/artifacts' },
+  ]);
 });
 
 async function writePierLaunchProbe(
@@ -1528,23 +1524,20 @@ socket.end();
   return { executable, observation };
 }
 
-function successfulExternalSubject(): SubjectAdapter {
-  return {
-    kind: 'external',
-    execute: async ({ context }) => {
-      await context.execute({ command: '/bin/true', args: [], credentialEnvironment: {} });
-      return {
-        usage: null,
-        costUsd: null,
-        durationMs: 1,
-        status: 'completed',
-        failureReason: null,
-        artifacts: [],
-      };
-    },
-  };
-}
-
+const successfulExternalSubject = (): SubjectAdapter => ({
+  kind: 'external',
+  execute: async ({ context }) => {
+    await context.execute({ command: '/bin/true', args: [], credentialEnvironment: {} });
+    return {
+      usage: null,
+      costUsd: null,
+      durationMs: 1,
+      status: 'completed',
+      failureReason: null,
+      artifacts: [],
+    };
+  },
+});
 function executorConfig(): JsonObject {
   return {
     frameworkVersion: '0.20.0',

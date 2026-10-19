@@ -41,10 +41,13 @@
 @import "./styles/native-cursor.css" layer(components);
 @import "./styles/shell-layout.css" layer(components);
 @import "./styles/sidebar.css" layer(components);
+@import "./styles/session-history.css" layer(components);
 @import "./styles/search-modal.css" layer(components);
 @import "./styles/prompt-suggestions.css" layer(components);
 @import "./styles/onboarding.css" layer(components);
 @import "./styles/module-pages.css" layer(components);
+@import "./features/personal-assistant/personal-assistant.css" layer(components);
+@import "./features/personal-assistant/original-reader.css";
 @import "./styles/settings/select.css" layer(components);
 @import "./styles/model-switcher.css" layer(components);
 @import "./styles/chat-header.css" layer(components);

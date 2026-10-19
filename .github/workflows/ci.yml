@@ -31,7 +31,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
-  contents: read
+  contents: read # Checkout only; every write-capable action declares its own scope.
 
 jobs:
   # One job, not three. A runner slot is scarcer than a minute on shared
@@ -54,7 +54,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-          persist-credentials: false
+          persist-credentials: false # Do not leave the checkout token in git config.
 
       - id: comparison
         name: Resolve checked-out comparison
@@ -136,7 +136,7 @@ jobs:
         run: node --test --test-concurrency=1 scripts/protocol-epoch-check.test.mjs
 
       - name: Test Storybook audit contracts
-        run: node --test scripts/ax-tree-audit.test.mjs scripts/storybook-visual-smoke.test.mjs
+        run: node --test scripts/ax-tree-audit.test.mjs scripts/storybook-visual-smoke.test.mjs scripts/storybook-visual-diff.test.mjs
       - name: Test Computer Use script contracts
         run: node --test scripts/computer-use/lab-root.test.mjs
 
@@ -230,6 +230,17 @@ jobs:
       - name: Install dependencies
         if: steps.plan.outputs.code == 'true' || steps.plan.outputs.astryx_surface == 'true' || steps.plan.outputs.asf_source == 'true' || steps.plan.outputs.cli_package == 'true' || steps.plan.outputs.release_contract == 'true'
         run: npm ci
+
+      # Here rather than in a packaging job so the cost lands in the pull
+      # request that adds it. electron-builder ships the production dependency
+      # closure whether or not anything loads it, and a packaging job runs only
+      # at release -- which is how 183 MB of renderer sources shipped for weeks
+      # with nothing reporting the step change (#3146). The closure is read
+      # from installed node_modules, so this runs after `npm ci`, and the
+      # ledger is the Linux install this runner makes.
+      - name: Check packaged artifact budget
+        if: steps.plan.outputs.code == 'true'
+        run: npm run check:artifact-budget
 
       - name: Check localized TUI copy boundaries
         if: steps.plan.outputs.code == 'true'
@@ -437,6 +448,11 @@ jobs:
       - name: WorkHub native browser presentation smoke
         if: steps.plan.outputs.e2e == 'true'
         run: xvfb-run -a -s "-screen 0 1920x1080x24" npm exec --workspace @maka/desktop -- electron --no-sandbox scripts/workhub-browser-presentation-smoke.mjs
+
+      - name: Browser load failure and retry smoke
+        if: steps.plan.outputs.e2e == 'true'
+        # Like the browser smoke above, this uses only a loopback fixture.
+        run: xvfb-run -a npm exec --workspace @maka/desktop -- electron --no-sandbox scripts/browser-load-failure-smoke.mjs
 
       - name: Alignment audit
         if: steps.plan.outputs.e2e == 'true'

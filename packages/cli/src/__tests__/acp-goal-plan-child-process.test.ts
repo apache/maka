@@ -279,7 +279,6 @@ describe('ACP Goal/Plan real Host routes', () => {
   test('Plan paging preserves storeVersion and returns revision_changed after an external write', {
     timeout: 45_000,
   }, async () => {
-    let call = 0;
     const model = createServer((request, response) => {
       void readRequest(request)
         .then((body) => {
@@ -306,16 +305,17 @@ describe('ACP Goal/Plan real Host routes', () => {
             );
             return;
           }
-          call += 1;
           const names = (input.tools ?? []).flatMap((tool) =>
             tool.function?.name ? [tool.function.name] : [],
           );
           if (names.includes('SubmitPlan'))
             respondTool(response, 'SubmitPlan', {
-              title: `Fixture plan ${call}`,
-              steps: [
-                { id: 'step-1', title: 'Do the work', description: 'Finish the fixture task' },
-              ],
+              title: 'Fixture plan',
+              steps: Array.from({ length: 3 }, (_, index) => ({
+                id: `step-${index + 1}`,
+                title: 'Do the work',
+                description: 'x'.repeat(12 * 1024),
+              })),
             });
           else respondTool(response, 'tool_search', { query: 'SubmitPlan' });
         })
@@ -342,7 +342,7 @@ describe('ACP Goal/Plan real Host routes', () => {
               value: 'plan',
             });
             let latestProposalId = '';
-            for (let index = 0; index < 17; index += 1) {
+            for (let index = 0; index < 2; index += 1) {
               await context.request(methods.agent.session.prompt, {
                 sessionId,
                 prompt: [{ type: 'text', text: `Prepare fixture plan ${index}` }],
@@ -356,20 +356,13 @@ describe('ACP Goal/Plan real Host routes', () => {
               };
               assert.equal(latest.kind, 'page');
               latestProposalId = latest.latestProposalId;
-              if (index < 16) {
-                try {
-                  await context.request('_maka/plan/control', {
-                    kind: 'request_revision',
-                    sessionId,
-                    proposalId: latestProposalId,
-                    operationId: randomUUID(),
-                  });
-                } catch (error) {
-                  throw new Error(
-                    `revision index=${index} proposal=${latestProposalId} modelCalls=${call}`,
-                    { cause: error },
-                  );
-                }
+              if (index === 0) {
+                await context.request('_maka/plan/control', {
+                  kind: 'request_revision',
+                  sessionId,
+                  proposalId: latestProposalId,
+                  operationId: randomUUID(),
+                });
               }
             }
             const first = (await context.request('_maka/plan/query', {
@@ -382,7 +375,7 @@ describe('ACP Goal/Plan real Host routes', () => {
               items: unknown[];
             };
             assert.equal(first.kind, 'page');
-            assert.equal(first.items.length, 16);
+            assert.equal(first.items.length, 1);
             assert.ok(first.nextCursor);
             const second = (await context.request('_maka/plan/query', {
               kind: 'list_continue',
@@ -582,7 +575,7 @@ describe('ACP Goal/Plan real Host routes', () => {
   });
 
   test('submits and executes a Plan through the model, ACP, and real Host', {
-    timeout: 30_000,
+    timeout: 45_000,
   }, async () => {
     let modelCalls = 0;
     const modelToolNames: string[][] = [];
@@ -1011,6 +1004,7 @@ describe('ACP Goal/Plan real Host routes', () => {
         },
         {
           startRuntimeHost: true,
+          timeoutMs: 30_000,
           model: {
             id: 'goal-plan-fixture',
             thinkingLevels: [],

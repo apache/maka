@@ -28,6 +28,10 @@ import { fetch, type Dispatcher } from 'undici';
 
 const DEFAULT_PROBE_URL = 'https://icanhazip.com';
 const DEFAULT_TIMEOUT_MS = 8_000;
+// Bounded wait for dispatcher teardown: a graceful close that never settles
+// (observed behind real proxies after an abort) must not keep this call —
+// and the serialized settings lane it runs on — pending forever.
+const DISPATCHER_CLOSE_GRACE_MS = 1_000;
 
 export async function testProxyConnection(
   input: TestProxyInput = {},
@@ -101,8 +105,34 @@ export async function testProxyConnection(
       error: error instanceof Error ? error.message : String(error),
     };
   } finally {
+    // Mirror the shared transport teardown ordering: begin dispatcher
+    // teardown before aborting, so the graceful close can retire live
+    // CONNECT tunnels before the signal kills their sockets; abort still
+    // cancels any pending connect or handshake. Keep the wait bounded so a
+    // stalled close cannot hold this call past its result.
+    const teardown = disposeDispatcher(timedOut);
     controller.abort();
-    await disposeDispatcher(timedOut);
+    let graceTimer: ReturnType<typeof setTimeout> | undefined;
+    const graceExpired = await Promise.race([
+      teardown.then(() => false),
+      new Promise<boolean>((resolve) => {
+        graceTimer = setTimeout(() => resolve(true), DISPATCHER_CLOSE_GRACE_MS);
+      }),
+    ]);
+    if (graceTimer) clearTimeout(graceTimer);
+    if (graceExpired) {
+      // The graceful close never settled within the grace, so destroy the
+      // dispatcher instead of leaking it. Fire-and-forget with the error
+      // swallowed: teardown must never replace the result this call owes.
+      const disposable = dispatcher as {
+        destroy?: (error?: Error) => void | Promise<void>;
+      };
+      if (typeof disposable.destroy === 'function') {
+        void Promise.resolve(
+          disposable.destroy.call(dispatcher, new Error('Dispatcher close grace expired')),
+        ).catch(() => {});
+      }
+    }
   }
 }
 

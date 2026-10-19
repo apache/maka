@@ -38,10 +38,6 @@ export function ungroupedGroupId(hostId: string): string {
   return `${UNGROUPED_KEY}:${hostId}`;
 }
 
-function scopedProjectLabel(projectName: string, profileName: string): string {
-  return `${projectName} · ${profileName}`;
-}
-
 /** Groups every Session by its owning Runtime Host and Project at one level. */
 export function deriveSessionNavigationGroups(
   sessions: readonly SessionNavigationSession[],
@@ -82,7 +78,8 @@ export function deriveSessionNavigationGroups(
     const key = scope.key;
     return {
       id: projectGroupId(key),
-      label: scopedProjectLabel(scope.project.name, scope.profileName),
+      label: scope.project.name,
+      host: { kind: scope.profileKind, name: scope.profileName },
       sessions: sessionsByProject.get(key) ?? [],
       // The UI treats this id as an opaque action target. Scope it here so
       // equal Host-local UUIDs can never route a mutation to another Host.
@@ -100,22 +97,18 @@ export function deriveSessionNavigationGroups(
       .at(-1);
     groups.push({
       id: projectGroupId(key),
-      label: scopedProjectLabel(
-        pathName || first.projectId || 'Project',
-        first.profileName,
-      ),
+      label: pathName || first.projectId || 'Project',
+      host: { kind: first.profileKind, name: first.profileName },
       sessions: missingSessions,
     });
   }
 
   for (const [hostId, ungrouped] of ungroupedByHost) {
-    const profileName = ungrouped[0]!.profileName;
+    const first = ungrouped[0]!;
     groups.push({
       id: ungroupedGroupId(hostId),
-      label: scopedProjectLabel(
-        getShellRemainingCopy(locale).projects.ungrouped,
-        profileName,
-      ),
+      label: getShellRemainingCopy(locale).projects.ungrouped,
+      host: { kind: first.profileKind, name: first.profileName },
       sessions: ungrouped,
     });
   }

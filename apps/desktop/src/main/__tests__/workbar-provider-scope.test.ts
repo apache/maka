@@ -23,6 +23,7 @@ import { act, createElement } from 'react';
 import type { SessionSummary } from '@maka/core/session';
 import { LocaleProvider, type ToastApi } from '@maka/ui';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
+import { WorkHubEnablementProvider } from '../../renderer/application/contracts/workhub-workspace/workhub-enablement.js';
 import {
   createFakeWorkbarServices,
   createWorkbarShellBridge,
@@ -124,12 +125,16 @@ describe('WorkbarProvider render scope', () => {
         createElement(LocaleProvider, {
           locale: 'en',
           children: createElement(
-            WorkbarServicesProvider,
-            { services: createFakeWorkbarServices() },
-            createElement(WorkbarShellRoot, {
-              children: (workbar: ShellIntent) =>
-                createElement(ShellProbe, { workbar, input }),
-            }),
+            WorkHubEnablementProvider,
+            { value: { isEnabled: () => false, subscribe: () => () => {} } },
+            createElement(
+              WorkbarServicesProvider,
+              { services: createFakeWorkbarServices() },
+              createElement(WorkbarShellRoot, {
+                children: (workbar: ShellIntent) =>
+                  createElement(ShellProbe, { workbar, input }),
+              }),
+            ),
           ),
         }),
       ),

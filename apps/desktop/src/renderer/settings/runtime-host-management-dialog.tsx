@@ -642,7 +642,7 @@ export function RuntimeHostManagementDialog(props: {
   const automaticUpdatesAvailable = updatePolicy?.schedulingState === 'ready';
   const directoryRoots = directoryPolicyEdit?.draft ?? [];
   const normalizedDirectoryRoots = canonicalProjectDirectoryRoots(directoryRoots);
-  const directoryRootsAreValid = projectDirectoryRootsValid(directoryRoots);
+  const directoryRootsAreValid = projectDirectoryRootsValid(directoryRoots, service?.platform === 'win32' ? 'win32' : 'posix');
   const directoryRootsDirty =
     directoryPolicyEdit !== undefined &&
     JSON.stringify(normalizedDirectoryRoots) !== JSON.stringify(directoryPolicyEdit.baseline.roots);

@@ -31,7 +31,8 @@ reads `window.maka`.
 ## Shell boundary
 
 `useSessionSettingIntent(sessionId)` retains the shell's existing hook name,
-but is now an equality-selected read of only that Session's four overlays.
+but is now an equality-selected read of only that Session's four overlays and
+the new-task settings below.
 It creates a per-shell bridge, without calling the write controller. The shell
 still needs these values to derive its model picker and mode controls. The hook
 inventory therefore stays at one call; it does not claim that all settings
@@ -41,6 +42,20 @@ The bridge forwards stable commands to the provider's latest committed
 controller. The provider publishes after commit and reuses the shell's children
 on its own updates. Writes for other Sessions do not re-render the shell or its
 frame. Cleanup disconnects commands and clears the published overlays.
+
+## New-task settings (R2 M3)
+
+The provider also owns what the next new task starts with: a Plan toggle, one
+orchestration value and the draft's permission choice. They used to be shell
+state. `setPermissionMode` already decided between the selected Session and the
+new task and confirmed Bypass for both, so the choice now lives with that write.
+The permission choice is keyed by the new-task target through the shared
+`useNewTaskChoice` contract, and stays absent until the user makes one, so
+creation can omit it and the Host applies its own default.
+`setNewTaskPlanMode`, `setNewTaskOrchestrationMode` and
+`clearNewTaskPermissionChoice` are the only writes. The shell reads `newTask`
+from the same hook for the Composer's mode controls and passes it to creation;
+a new-task change does not replace the Session overlay it returns.
 
 ## Preserved behavior
 

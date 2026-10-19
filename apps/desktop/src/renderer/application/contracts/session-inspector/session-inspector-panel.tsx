@@ -932,10 +932,14 @@ function StepRow(props: {
   );
 }
 
-function formatDuration(ms: number): string {
+export function formatDuration(ms: number): string {
   if (ms < 1_000) return `${Math.round(ms)}ms`;
-  if (ms < 60_000) return `${(ms / 1_000).toFixed(1)}s`;
-  return `${Math.floor(ms / 60_000)}m${Math.round((ms % 60_000) / 1_000)}s`;
+  // Round once, before splitting into units, so a value just under a unit
+  // boundary carries into the next unit instead of printing `60.0s` or `1m60s`.
+  const tenths = Math.round(ms / 100);
+  if (tenths < 600) return `${(tenths / 10).toFixed(1)}s`;
+  const totalSeconds = Math.round(ms / 1_000);
+  return `${Math.floor(totalSeconds / 60)}m${totalSeconds % 60}s`;
 }
 
 /**

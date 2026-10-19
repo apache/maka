@@ -29,7 +29,6 @@ import {
   nativeTheme,
   powerMonitor,
   powerSaveBlocker,
-  protocol,
   shell,
   Tray,
 } from "electron";
@@ -80,7 +79,6 @@ import { createMcpOAuthController } from "./mcp-oauth-controller.js";
 import { createWorkHubControl } from './workhub-control.js';
 import { createWorkHubPresentation } from './workhub-presentation.js';
 import { createWorkHubRuntime } from './workhub-runtime.js';
-import { readWorkHubNewWorkDefaults } from './workhub-new-work-defaults.js';
 import { createWindowsAppTray } from './windows-app-tray.js';
 import { readableAppIconPath } from './app-icon-surface.js';
 import { registerAppClientIpc, registerAppIpc } from "./app-ipc-main.js";
@@ -144,6 +142,7 @@ import {
   defaultRuntimeHostRecoveryDialog,
 } from "./native-diagnostic-dialog.js";
 import {
+  projectlessTaskWorkspace,
   resolveDesktopSessionWorkspace,
 } from "./new-session-project.js";
 import { createMcpExclusiveLane, registerMcpIpcMain } from "./mcp-ipc-main.js";
@@ -173,6 +172,7 @@ import {
   createProjectRootController,
   type ProjectRootController,
 } from "./project-root-controller.js";
+import { createManagedTaskDirectoryAuthority } from "./managed-task-directory.js";
 import { createSessionCopyCleanupAuthority } from "@maka/storage/session-copy-cleanup";
 import {
   projectHostConnections,
@@ -188,7 +188,8 @@ import { startClientSettingsWatcher } from "./client-settings-watcher.js";
 import { registerRuntimeHostGitHubCopilotIpc } from "./runtime-host-github-copilot-ipc-main.js";
 import { registerRuntimeHostArtifactsIpc } from "./runtime-host-artifacts-ipc-main.js";
 import { ManagedArtifactPreview } from './managed-artifact-preview.js';
-import { buildManagedArtifactPreviewTools } from './managed-artifact-preview-tools.js';
+import { buildArtifactPreviewOfferTools } from './managed-artifact-preview-tools.js';
+import { createPreviewPreflightAuthority } from './preview-preflight-probes.js';
 import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
 import type {
   DesktopRuntimeHostCandidateControls,
@@ -238,13 +239,13 @@ import { createDesktopRuntimeHostManagement } from "./runtime-host-management.js
 import { createDesktopRuntimeHostLocalManagement } from './runtime-host-local-management.js';
 import { createDesktopRuntimeHostPeerMeshManagement } from './runtime-host-peer-mesh-management.js';
 import { registerExternalAgentSetupIpc } from "./external-agent-setup-ipc-main.js";
+import { selectAntigravityExecutable } from './external-agent-executable-selection.js';
 import { registerRuntimeHostOAuthIpc } from "./runtime-host-oauth-ipc-main.js";
 import { RuntimeHostOAuthPresentation } from "./runtime-host-oauth-presentation.js";
 import { registerRuntimeHostPermissionsIpc } from "./runtime-host-permissions-ipc-main.js";
 import { registerRuntimeHostRendererIpc } from "./runtime-host-renderer-ipc-main.js";
 import {
-  ClientPluginTransport,
-  MAKA_CLIENT_PLUGIN_SCHEME,
+  clientPluginTransport,
   registerClientPluginIpc,
 } from './client-plugin-transport.js';
 import { registerRuntimeHostRecallIpc } from "./runtime-host-recall-ipc-main.js";
@@ -263,6 +264,7 @@ import {
   type SettingsBotsIpcHandle,
 } from "./settings-bots-ipc-main.js";
 import {
+  hasIsolatedE2eProfile,
   isComputerUseRealModelE2e,
   isE2e,
   isIsolatedE2e,
@@ -280,8 +282,6 @@ bootContext.prepareToQuit = prepareRuntimeHostDesktopQuit;
 bootContext.cleanup = closeRuntimeHostDesktop;
 bootContext.activeRuntimeHostRef = activeRuntimeHostRef;
 bootContext.resolveRuntimeHostDiagnostics = resolveRuntimeHostDiagnostics;
-const clientPluginTransport = new ClientPluginTransport();
-protocol.handle(MAKA_CLIENT_PLUGIN_SCHEME, (request) => clientPluginTransport.serve(request.url));
 const runtimeHostPeerConfiguration = await configureDesktopRuntimeHostPeerClient({
   isPackaged: app.isPackaged,
   enableDevelopmentPeer: process.argv.includes('--runtime-host-peer'),
@@ -441,6 +441,29 @@ mainWindowDelegates.onMainWindowClose = () => {
   native.computerUsePip.destroyAll();
 };
 const attachmentApprovals = createAttachmentApprovalRegistry();
+/**
+ * Dedicated task directories live in the user-owned `~/Maka/tasks` root —
+ * deliberately separate from `userData` (settings, credentials, session
+ * state) and from the install location. Source launches are `Maka Dev`, so
+ * development tasks land in `~/Maka Dev/tasks`; `getAppPath()` staying in
+ * `reservedRoots` also means a projectless cwd inside the source tree reads
+ * as `suspicious`, which is intended — the app must not nest task state in
+ * its own checkout. Isolated e2e profiles redirect both `userData` and the
+ * fake home into one sandbox, so the root moves under the isolated
+ * workspace instead — `~` there resolves inside `userData` itself and would
+ * trip the reserved-location guard; inside the sandbox the Client-data
+ * reserved roots no longer apply.
+ */
+const managedTaskDirectories = createManagedTaskDirectoryAuthority({
+  root:
+    e2eFixture || hasIsolatedE2eProfile
+      ? join(workspaceRoot, 'task-directories')
+      : join(app.getPath('home'), app.getName(), 'tasks'),
+  reservedRoots:
+    e2eFixture || hasIsolatedE2eProfile
+      ? [app.getAppPath()]
+      : [userDataDir, workspaceRoot, app.getAppPath()],
+});
 const sessionLocalStore = new DesktopSessionLocalStore(join(userDataDir, 'session-experience.sqlite'));
 const localSessionChanged = createSessionLocalChangedEmitter({
   send: (channel, scope, payload) => mainWindowController.send(channel, scope, payload),
@@ -463,6 +486,7 @@ registerDesktopSessionLocalIpc({
     if (!context?.isActive()) throw new Error('Select a cached project before creating an offline task');
     return resolveDesktopSessionWorkspace(input, context.projectManagement, context.projectCatalog, {
       allowHostPath: !runtimeHostProfileUsesHostWorkspace(context.policy.kind),
+      allocateDedicatedDirectory: () => managedTaskDirectories.allocate(),
     });
   },
 });
@@ -565,6 +589,9 @@ const guestSessionMountService = createDesktopGuestSessionMountService({
     if (!state) return undefined;
     return {
       readiness: state.readiness,
+      connectionEpoch: state.readiness === 'ready'
+        ? JSON.stringify([state.epoch, state.candidate.client.hostEpoch])
+        : state.epoch,
       ...(state.readiness !== 'ready' && state.error ? { error: state.error } : {}),
       ...(state.readiness === 'ready' && state.candidate.client.peerPath
         ? { peerPath: state.candidate.client.peerPath }
@@ -732,7 +759,7 @@ const currentDesktopWorkspaceTarget = async (
   if (!workspace) {
     throw new Error("Select a project from the Runtime Host first");
   }
-  return workspace;
+  return projectlessTaskWorkspace(workspace, () => managedTaskDirectories.allocate());
 };
 const requireWorkHubTarget = (scope: DesktopTargetScope): DesktopRuntimeHostTargetContext => {
   const target = runtimePolicyTargetsByEpoch.get(scope.targetEpoch);
@@ -752,10 +779,6 @@ const workHubRuntime = createWorkHubRuntime({
     const target = requireWorkHubTarget(scope);
     return {
       workspace: await currentDesktopWorkspaceTarget(target.policy),
-      defaults: {
-        permissionMode: (await settingsStore.get()).chatDefaults.permissionMode,
-        ...readWorkHubNewWorkDefaults(target.client.hostId),
-      },
     };
   },
   changed: emitSessionsChanged,
@@ -1056,12 +1079,22 @@ const createLocalRuntimeHostManager = () => createRuntimeHostDesktopManager(
           {
             offerId: 'desktop_artifact_preview',
             label: 'HTML Artifact preview',
-            description: 'Prepare an isolated, temporary HTTP preview of a generated HTML Artifact.',
-            tools: buildManagedArtifactPreviewTools(async (sessionId, artifactId, signal) => {
-              if (!scope || !runtimeHostManager?.ownsScope(scope)) throw new Error('Preview target is unavailable');
-              const target = runtimePolicyTargetsByEpoch.get(scope.targetEpoch);
-              if (!target?.isActive()) throw new Error('Preview target is no longer active');
-              return managedArtifactPreview.prepare(scope.targetEpoch, target.client, sessionId, artifactId, signal);
+            description: 'Check what this client can preview locally, and prepare an isolated, temporary HTTP preview of a generated HTML Artifact.',
+            // The preflight lives in this offer, not the Browser one, for two
+            // reasons. Every Browser tool is admitted against an Origin read
+            // from the view's current URL, so a capability check there would
+            // need a page already loaded and would fail with the very
+            // "requires an HTTP origin" error it exists to explain. And the
+            // route it hands off to is ArtifactPreview, so the two must be
+            // granted together or the handoff names a tool the caller lacks.
+            tools: buildArtifactPreviewOfferTools({
+              preflight: createPreviewPreflightAuthority(),
+              prepare: async (sessionId, artifactId, signal) => {
+                if (!scope || !runtimeHostManager?.ownsScope(scope)) throw new Error('Preview target is unavailable');
+                const target = runtimePolicyTargetsByEpoch.get(scope.targetEpoch);
+                if (!target?.isActive()) throw new Error('Preview target is no longer active');
+                return managedArtifactPreview.prepare(scope.targetEpoch, target.client, sessionId, artifactId, signal);
+              },
             }),
           },
           {
@@ -1130,6 +1163,8 @@ const createLocalRuntimeHostManager = () => createRuntimeHostDesktopManager(
       releaseDesktopInteractionSession,
     },
     botRegistry,
+    readBotMessageHandling: async () => (await settingsStore.get()).botChat.messageHandling ?? 'task',
+    botWorkHubStateDirectory: join(userDataDir, 'workhub-remote'),
     resolveBotCreateTarget: async (target) => ({
       workspace: await currentDesktopWorkspaceTarget(target),
     }),
@@ -1147,16 +1182,27 @@ const createLocalRuntimeHostManager = () => createRuntimeHostDesktopManager(
             : {}),
         },
         currentTarget.projectCatalog,
-        { allowHostPath: !runtimeHostProfileUsesHostWorkspace(target.kind) },
+        {
+          allowHostPath: !runtimeHostProfileUsesHostWorkspace(target.kind),
+          allocateDedicatedDirectory: () => managedTaskDirectories.allocate(),
+        },
       );
     },
+    taskDirectories: managedTaskDirectories,
     resolveExternalSessionImportWorkspace: (target) =>
       currentDesktopWorkspaceTarget(target),
     emitSessionsChanged,
     cacheTranscript: (scope, snapshot) => sessionLocal.cacheTranscript(scope, snapshot),
     ...(e2eFixture?.scenario === "chat-partial-history"
-      ? { transcriptHistoryBytes: PARTIAL_HISTORY_TRANSCRIPT_BYTES }
+      ? {
+          transcriptHistoryBytes: PARTIAL_HISTORY_TRANSCRIPT_BYTES,
+          transcriptInitialHistoryBytes: PARTIAL_HISTORY_TRANSCRIPT_BYTES,
+        }
       : {}),
+    retireCancelledMessages: (scope, sessionId, messageIds) =>
+      sessionLocal.retireCancelledMessages(scope, sessionId, messageIds),
+    failNotAdmittedMessages: (scope, sessionId, messageIds) =>
+      sessionLocal.failNotAdmittedMessages(scope, sessionId, messageIds),
     completeDesktopInteractionTurn,
     notifyRun,
     createSessionCopyCleanup: ({ removeSession, resumeSessionCopy }) =>
@@ -1188,6 +1234,7 @@ const createLocalRuntimeHostManager = () => createRuntimeHostDesktopManager(
     onTargetStateChanged: (state) => {
       const localTarget = localSessionTarget(state);
       if (localTarget) {
+        sessionLocal.connectionChanged(localTarget);
         sessionLocalStore.bindAuthority(localTarget.profileId, localTarget.partition);
         if (state.readiness === 'unavailable' && state.error instanceof RuntimeHostProfileConnectionError && state.error.reason === 'credential_rejected') sessionLocal.purge(localTarget);
       }
@@ -1562,6 +1609,13 @@ function registerHostClientIpc(
   const unsubscribeSessionCatalogChanges = client.subscribeSessionCatalogChanges(
     ({ sessionId }) => emitTargetSessionsChanged("updated", sessionId),
   );
+  const unsubscribeArtifactChanges = client.subscribeArtifactChanges((frame) => {
+    if (frame.reason === 'deleted') {
+      void managedArtifactPreview.revoke(scope.targetEpoch, frame.sessionId, frame.artifactId);
+    } else {
+      void managedArtifactPreview.releaseSession(scope.targetEpoch, frame.sessionId);
+    }
+  });
   const unsubscribeProjectCatalogChanges = client.subscribeProjectCatalogChanges(() => {
     sendToRenderer("projects:changed");
   });
@@ -1624,10 +1678,9 @@ function registerHostClientIpc(
   });
   registerExternalAgentSetupIpc({ ipcMain: scopedIpc, client, presentation: oauthPresentation,
     onCatalogChanged: () => sendToRenderer('external-agents:catalog-changed'),
-    selectExecutable: async () => {
-      const result = await mainWindowController.showOpenDialog({ properties: ['openFile'] });
-      return result.canceled ? undefined : result.filePaths[0];
-    },
+    selectExecutable: () => selectAntigravityExecutable(
+      (options) => mainWindowController.showOpenDialog(options),
+    ),
   });
   registerRuntimeHostOAuthIpc({
     ipcMain: scopedIpc,
@@ -1701,14 +1754,17 @@ function registerHostClientIpc(
       if (typeof projectId === "string") {
         return { kind: "project", projectId };
       }
+      // A projectless new task runs in a fresh dedicated directory under the
+      // managed root, not the implicit fallback the selection carries.
+      // Preview its skills against that root — never allocate on a read.
       if (projectId === null) {
         if (usesHostWorkspace) return undefined;
-        return {
-          kind: "host_path",
-          path: (await requireRuntimePolicyTarget(target).projectManagement.current()).path,
-        };
+        return { kind: "host_path", path: await managedTaskDirectories.prepareRoot() };
       }
-      return selectedDesktopWorkspaceTarget(target);
+      const workspace = await selectedDesktopWorkspaceTarget(target);
+      return workspace?.kind === 'host_path'
+        ? { kind: 'host_path', path: await managedTaskDirectories.prepareRoot() }
+        : workspace;
     },
     getDefaultPermissionMode: () =>
       resolveDefaultPermissionMode(() => runtimeHostSettings.get()),
@@ -1747,6 +1803,15 @@ function registerHostClientIpc(
       e2eFixture,
       projectManagement: targetProjectManagement,
       allowLocalProjectPaths: !usesHostWorkspace,
+      getSessionTaskDirectoryBinding: usesHostWorkspace
+        ? undefined
+        : async (sessionId) => {
+            const session = await client.getSession(sessionId);
+            if (!session || session.workspace.target.kind !== 'host_path') {
+              return undefined;
+            }
+            return managedTaskDirectories.classify(session.workspace.hostCwd);
+          },
     },
     scopedIpc,
   );
@@ -1835,12 +1900,14 @@ function registerHostClientIpc(
   });
   registerOnboardingIpc({ onboardingService, ipcMain: scopedIpc });
   registerTaskSubmissionReadinessIpc(taskSubmissionReadinessService, scopedIpc);
+  managedArtifactPreview.openScope(scope.targetEpoch);
   return async () => {
     clientPluginTransport.release(client);
     unsubscribeConfigurationChanges();
     await managedArtifactPreview.closeScope(scope.targetEpoch);
     unsubscribeConnectionCatalogChanges();
     unsubscribeSessionCatalogChanges();
+    unsubscribeArtifactChanges();
     unsubscribeProjectCatalogChanges();
     unsubscribeScheduledTaskChanges();
     runtimePolicyTargets.delete(target);
@@ -2041,7 +2108,7 @@ function emitSessionsChanged(
 ): void {
   sessionLocal.changed(scope);
   if (reason === 'deleted' && sessionId) {
-    try { sessionLocalStore.removeSession(sessionLocal.target(scope).partition, sessionId); } catch { /* A retired target cannot repopulate its cache. */ }
+    try { sessionLocal.removeSession(sessionLocal.target(scope), sessionId); } catch { /* A retired target cannot repopulate its cache. */ }
   }
   const event: SessionChangedEvent = {
     reason,

@@ -43,7 +43,7 @@ export const zhCN: Copy = {
     lede: 'Agent harness 的本职就是把任务做完。衡量它的标准只有一条：完成了多少，花了多少。我们公开每一次运行：同一个模型，同一个官方验证器，逐任务的完整记录。',
     releases: '查看发布进展',
     contribute: '参与开发',
-    fine: '首个 Apache 正式版本正在准备中',
+    fine: 'Apache Maka 0.2.0（孵化中）已发布',
     architecture: '阅读架构文档',
   },
   scene: {
@@ -105,7 +105,7 @@ export const zhCN: Copy = {
     },
     releases: {
       title: 'Apache Releases',
-      body: 'Maka 尚未发布过 Apache release。发布之后，带签名的源码包才是正式 release，安装包只是便利构建。',
+      body: '带签名的源码包才是正式 Apache release，安装包只是便利构建。',
       note: 'KEYS · SHA-512 · .asc',
     },
   },
@@ -152,27 +152,26 @@ export const zhCN: Copy = {
   },
   downloads: {
     title: '下载',
-    lede: 'Apache Maka 尚未发布首个 Apache 正式版本。获批后，本页会提供发布文件和验证说明。',
+    lede: '下载 Apache Maka 源码正式版本，使用前先完成校验。',
     onThisPage: '本页目录',
     copy: '复制',
     copied: '已复制',
     status: {
       h3: '当前状态',
       release: {
-        label: 'Apache release',
-        value: '暂未发布。首个 release 投票通过后会列在这里。',
-        note: '暂无',
+        label: '最新版本',
       },
     },
     releases: {
       h2: 'Apache releases',
-      note: '暂无 APACHE RELEASE',
-      p: 'Apache Maka (Incubating) 尚未发布过 Apache release。首个 release 投票通过后会列在这里：源码包、ASF 分发目录中的 SHA-512 校验和与独立的 GPG 签名，以及签名对应的 KEYS 文件。',
-      distNote: '获批的正式版本将发布到：',
+      p: '带签名的源码包就是正式 Apache release。源码包链接走 ASF 下载服务；校验和与签名请从 ASF 分发目录下载。',
+      checksum: 'SHA-512',
+      signature: '签名',
+      archiveNote: '历史版本归档在',
     },
     verify: {
       h2: '验证 release',
-      p: '正式版本发布后，将以下命令中的 <version> 替换为对应版本号。',
+      p: '以下命令校验最新版本。校验历史版本时，请替换路径中的版本号。',
       keys: '第 1 步：导入 release manager 的公钥',
       signature: '第 2 步：校验签名',
       checksum: '第 3 步：核对校验和',

@@ -222,8 +222,8 @@ flowchart LR
 `AgentRun` 让一次执行在持久世界里有身份和生命周期。开始运行时，它会：
 
 1. 把这次 invocation 的开场事实作为 RuntimeEvent 提交；
-2. 对顶层 Run 写入用户消息和 `running` Turn 投影；
-3. 写入本轮初始用户 `RuntimeEvent`；
+2. 在任何 catalog/status 写入之前先提交本轮初始用户 `RuntimeEvent`；
+3. 对顶层 Run 写入用户消息和 `running` Turn 投影；
 4. 锁定本 Session 的连接配置；
 5. 确保 Backend 已创建并注册为活跃 Run；
 6. 从此前的 RuntimeEvent ledger 构造模型历史。
@@ -258,7 +258,7 @@ mapper 是确定性的，不拥有 streaming、stop、dispose 或 admission。�
 
 ### `AgentBackend`：模型与工具循环真正发生的地方
 
-对默认的 `AiSdkBackend` 来说，核心循环仍在 `send()` 内部。它会：
+对默认的 `AiSdkBackend` 来说，`send()` 把每个 turn 委托给一个独立的 `AiSdkTurn`（`packages/runtime/src/ai-sdk-turn.ts`），由它持有模型/工具 step loop 与本轮 `ToolRuntime`。turn 会：
 
 1. 解析模型并准备本轮可见的工具集合；
 2. 从 RuntimeEvent 历史构造 provider messages，并应用上下文预算策略；
@@ -384,7 +384,7 @@ Maka 当前保护的核心不变量是：
 ### 当前代价
 
 - 迁移期同时存在 `SessionEvent`、`StoredMessage`、`RuntimeEvent` 和 operational Run events，事件映射的维护成本较高；
-- `AiSdkBackend` 仍然很重，同时组织 history、context budget、tool availability、step loop、usage 与 telemetry；
+- `AiSdkBackend` 仍然较重，负责组装 history、context budget、tool availability、usage 与 telemetry，而 step loop 本身在其构造的 `AiSdkTurn` 中；
 - `SessionEvent Runtime mapper` 仍承担 legacy-to-canonical adapter 角色，而不是 Backend 原生产 canonical events；
 - `SessionStore` 与 RuntimeEvent projection 需要在 active/in-flight 场景中协同；
 - 启动恢复是确定性终结与修复，不是从任意位置热续跑。续跑走另一条路：`safe_boundary_continuation` 从一个经过校验的安全边界接着跑，它在 invocation 开场事实里记着自己的续跑来源，由 `RuntimeKernel` 完成准入和 dispatch；两者的区别见[第八章](./runtime-resume-architecture.zh-CN.md)。
@@ -401,7 +401,8 @@ Maka 当前保护的核心不变量是：
 2. `packages/runtime/src/runtime-kernel.ts`：Run/Backend 的活跃控制与主链组装。
 3. `packages/runtime/src/agent-run.ts`：Durable lifecycle、历史构造和终态提交。
 4. `packages/runtime/src/session-event-runtime-mapper.ts`：纯 `SessionEvent → RuntimeEvent` 映射。
-5. `packages/runtime/src/ai-sdk-backend.ts`：AI SDK 模型/工具 step loop。
+5. `packages/runtime/src/ai-sdk-backend.ts`：backend 组装层，把每次 `send()` 委托给独立的 `AiSdkTurn`；
+5b. `packages/runtime/src/ai-sdk-turn.ts`：AI SDK 模型/工具 step loop 与本轮 `ToolRuntime` 归属。
 6. `packages/runtime/src/model-adapter.ts`：provider stream 适配。
 7. `packages/runtime/src/tool-runtime.ts`：沙箱边界、工具执行和副作用边界。
 8. `packages/core/src/runtime-event.ts`：canonical RuntimeEvent 契约。

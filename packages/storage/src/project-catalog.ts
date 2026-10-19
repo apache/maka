@@ -823,8 +823,7 @@ async function canonicalizeMissingPath(path: string): Promise<string> {
  * the same thing to a historical working directory: keep walking up.
  */
 function isUnreachablePathError(error: unknown): boolean {
-  const code = (error as NodeJS.ErrnoException).code;
-  return code === 'ENOENT' || code === 'ENOTDIR';
+  return ['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '');
 }
 
 async function isDirectory(path: string): Promise<boolean> {
@@ -881,29 +880,26 @@ export async function resolveProjectLocation(input: {
   if (!location.isDirectory()) {
     throw new TypeError(`Project path is not a directory: ${canonicalPath}`);
   }
-  if (!(await hasEnclosingGitEntry(canonicalPath))) {
-    return {
-      canonicalPath,
-      identity: `folder:${canonicalPath}`,
-      kind: 'folder',
-    };
-  }
+  const folder = (): ResolvedProjectLocation => ({
+    canonicalPath,
+    identity: `folder:${canonicalPath}`,
+    kind: 'folder',
+  });
+  if (!(await hasEnclosingGitEntry(canonicalPath))) return folder();
   const git = await resolveGitLocation(canonicalPath);
   // A chooser selection names this directory exactly. Historical working
   // directories may resolve upward to their enclosing worktree instead.
   if (input.intent === 'selected' && canonicalPath !== git.worktreeRoot) {
-    return {
-      canonicalPath,
-      identity: `folder:${canonicalPath}`,
-      kind: 'folder',
-    };
+    return folder();
   }
-  return {
-    canonicalPath,
-    identity: `git:${git.commonDir}`,
-    kind: 'git',
-    git,
-  };
+  return gitLocation(canonicalPath, git);
+}
+
+function gitLocation(
+  canonicalPath: string,
+  git: NonNullable<ResolvedProjectLocation['git']>,
+): ResolvedProjectLocation {
+  return { canonicalPath, identity: `git:${git.commonDir}`, kind: 'git', git };
 }
 
 function isPathWithin(root: string, candidate: string): boolean {

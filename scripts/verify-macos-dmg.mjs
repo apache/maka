@@ -342,7 +342,7 @@ export async function verifyPackagedMacApp(
   }
   const executableName = await readPlistValue(run, infoPlist, 'CFBundleExecutable');
   const executable = join(contents, 'MacOS', executableName);
-  const filesystemWorker = join(resources, 'workers', 'filesystem-worker.js');
+  const filesystemWorker = join(resources, 'workers', 'filesystem-worker.mjs');
   const appAsar = join(resources, 'app.asar');
 
   await requirePath(executable);

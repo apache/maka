@@ -93,7 +93,7 @@ test('the Windows package workflow path list has no duplicate entries', () => {
  * `RELEASE_CONTRACT_FILES` so that editing the filter selects the gate that
  * checks it.
  */
-test('the recovery filter is exactly the Windows-branching closure of its tests', async () => {
+test('the recovery filter is exactly the Windows-specific closure of its tests', async () => {
   const workflow = readFileSync(
     new URL('../.github/workflows/windows-recovery.yml', import.meta.url),
     'utf8',
@@ -133,11 +133,15 @@ test('the recovery filter is exactly the Windows-branching closure of its tests'
   // because it names every Windows-only path: `git-worktree-child-executor.ts`
   // carries a genuine Windows workaround with no such literal. A branch written
   // without it stays outside this filter, and the lane's schedule is what
-  // observes it.
+  // observes it. The CLI project-root parser is an explicit exception: its
+  // node:path.isAbsolute call dispatches to Windows semantics without a win32
+  // literal, and the native Host path regression above exercises that behavior.
   const closure = await collectWorkspaceSourceClosure(entrypoints);
   const windowsBranching = closure
-    .filter((path) =>
-      readFileSync(new URL(`../${path}`, import.meta.url), 'utf8').includes('win32'),
+    .filter(
+      (path) =>
+        path === 'packages/cli/src/runtime-host-cli.ts' ||
+        readFileSync(new URL(`../${path}`, import.meta.url), 'utf8').includes('win32'),
     )
     .sort();
 

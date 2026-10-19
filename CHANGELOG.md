@@ -21,7 +21,47 @@
 
 ## Unreleased
 
-## 0.2.0 - Unreleased
+## 0.2.1 - Unreleased
+
+### Added
+
+- WorkHub can inspect existing conversations, receive delegated task results automatically, and route remote channel conversations through the shared coordinator (#5886, #5595, #6051). Jev-assisted routing is opt-in (#5562).
+- Host storage usage and per-task sizes, archived-task cleanup by age and project, and opt-in archived-task retention (#5832, #5896, #5902, #5961).
+- Agent Graph output previews, session visit navigation with horizontal swipes, clickable terminal links, and a selectable Git comparison branch that persists per Session (#4751, #5688, #5033, #5120).
+- Resume interrupted or manually stopped turns from the Desktop composer, and opt-in next-prompt suggestions (#5206, #5904, #5629).
+- Connect the user's signed-in Chrome through opencli-mcp, and check local preview prerequisites before starting a preview (#5638, #5254).
+- Antigravity ACP plugin execution and restored sessions after restart; ACP operations for Goal, Plan, Artifact and Memory (#5224, #5670, #5734, #5685).
+- Filter usage by model call kind, replay DeepSeek hosted web-search responses, and include selected text in Computer Use snapshot observations (#5709, #5824, #5050).
+
+### Fixed
+
+- Enforce configured sender lists consistently across messaging platforms and preserve stored credentials when settings round-trip masked values (#6074).
+- Keep the composer context gauge from showing stale pre-compaction usage. The gauge returns to its localized Usage label until the provider measures a request after the compaction boundary (#5548).
+- Preserve interrupted tool settlement, session recovery and provider context handling across retries and restarts (#5610, #5621, #5587).
+- Report browser toolbar action failures and distinguish empty Git comparisons from review errors (#5955, #5967).
+- Desktop Edit & resend now keeps a selected message's quotes. Messages that carry attachments still cannot be edited (#5274).
+- Record aborted or usage-less auxiliary model calls as usage-unknown rather than zero (#5890).
+- Stop pipe-mode shell commands when their Runtime Host dies, instead of leaving them running without an owner (#5986).
+- Keep native Anthropic prompt caching effective across steps and turns by placing the cache breakpoint on replayed history (#6041).
+- Update shipped dependencies to clear published advisories in brace-expansion, fast-uri and axios (#5906).
+
+### Changed
+
+- Custom connections now use one provider type with a default API protocol and per-model overrides. Legacy connections migrate while retaining identifiers, credentials and model overrides (#5684).
+- TUI queue and retract shortcuts use Tab and Shift+Left in place of Alt chords (#5910).
+- Manual archiving now refuses a task while a WorkHub delegation or a live linked child task still points at it, instead of hiding it from WorkHub (#5957).
+- Reduced idle and streaming renderer work, paused transcript reads while the shell is covered, and bounded Host framing and storage queries (#5608, #6014, #5356, #5514).
+- Reclaim unused context-offload SQLite pages during Host maintenance; new runtime databases support incremental vacuum (#5855, #6044).
+- Removed the provider-dropping context note because differing upstream token counts could trigger it without evidence of dropped history. Historical sessions containing it still open (#5672).
+
+### Upgrade notes
+
+- Update Desktop, CLI and remote Runtime Hosts together. The Runtime Host compatibility epoch is 217 (176 in the 0.2.0 source release); mismatched peers cannot connect.
+- Back up configuration and workspace data before upgrading if rollback is needed. Custom connection catalogs migrate to schema v3, and new session records include fields older builds cannot decode; 0.2.0 cannot safely reuse data written by 0.2.1.
+- Review every messaging platform's sender list before enabling its channel. A nonempty list now admits only its listed platform user IDs, including WorkHub routing; an empty list retains unrestricted sender access (#6074).
+- Archived-task retention remains opt-in. Enabling it allows permanent deletion of eligible archived tasks; leave it disabled to retain them.
+
+## 0.2.0 - 2026-10-08
 
 ### Added
 
@@ -32,9 +72,6 @@
   offer an action to open the most recently imported task or create another
   independent import. An uncertain result remains visible as a warning while
   still allowing a user-initiated import again in both Desktop and TUI.
-- The Git changes panel can pick which branch it compares against — searchable,
-  per Session — instead of only the branch the backend resolves. The choice
-  persists, and falls back to the resolved branch when the pinned one disappears.
 - Added `/transcript` to browse long TUI sessions without depending on terminal
   scrollback, with line, page, and first/last navigation.
 
@@ -66,8 +103,8 @@
 - Retired the Task Ledger domain: SessionTodo is now the sole authority for in-session work items, and the operational-state schema drops the `workflow_task_ledger_events` table on first open. **Unfinished Tasks are not migrated and are permanently deleted.** This affects workspaces last opened by `v0.1.0` through `v0.1.11`, `cli-v0.1.0-beta.1`, `v0.2.0-incubating-rc1`, or a `v0.2.0-dev` build; those releases wrote Tasks to a table that no shipped build ever bridged into SessionTodo. Before opening such a workspace with this build, finish or export the Tasks you still need, or copy the workspace's `runtime.sqlite` aside — the migration removes the only live copy, so afterwards recovery requires a backup made in advance.
 - A compaction rejected as too large for the summarizer's own window now retreats to the span the last accepted request's input covered, instead of halving the covered range. That span is the newest reply this route produced, found through the run headers, so it was accepted by this model on this connection and is provably within capacity; halving can overshoot (discarding verbatim history for nothing) or undershoot (paying another round trip), and a span another route accepted proves nothing at all. One retreat, then the fold fails open and the provider decides.
 - `token_usage` anchors now record the model and connection that produced them. A token count is a number in one model's tokenizer against one connection; carrying the route on the record lets any reader apply the rule the runtime already enforces, instead of pairing one model's usage with another model's window. The record decodes against a closed allowlist, so sessions written with these keys do not open in earlier releases, and the Runtime Host compatibility epoch moves to 107.
-- Removed the provider-dropping note that 0.2.0 pre-releases showed when a provider reported fewer input tokens than the previous request. A relay that moves a request to another upstream reports a different count for the same history, so the note fired when nothing had been dropped, and it offered nothing the user could act on. Sessions that already carry the note still open; the note is no longer shown.
-- Let the provider decide whether a request fits. Proactive compaction now uses only a user-declared Maka window and the previous accepted request's provider-reported `inputTokens + outputTokens`; no declaration means no proactive capacity threshold. `/models` and generated model metadata are display hints, not limits. `token_usage` records persist the last-request anchor under `lastRequestAnchor`; its new `{ inputTokens, outputTokens }` shape still decodes the retired `payloadChars` key from older sessions. Requests that are too large are compacted and retried once after a real provider rejection, then reported as a `context_overflow` provider error. Compaction is entered at most once per send, and a request rejected after a fold was actually applied is reported as still too large after compaction. A fold that failed open makes no such claim: that request went out with its full raw history. A reply cut at `finishReason: length` no longer triggers a fold, because the provider running out of window room and the provider's own lower output cap are indistinguishable from outside. Four system notes explain the provider-side cases: a window worth declaring, an exchange past the declared window, a request accepted past the window the model reports (once per crossing, while nothing is declared), and a request still too large after compaction. The reply reserve that arms the proactive threshold is twice the last real reply, bounded at 8,000 tokens, rather than the model's maximum output. **Sessions this build writes do not open in earlier releases:** those decode `token_usage` against a closed allowlist, so the reshaped `lastRequestAnchor` key fails the record and, with it, the Session that contains it; downgrading therefore needs a copy of the workspace's `runtime.sqlite` taken before the upgrade. Nothing produces the `context_budget_exhausted` stop reason any more — a request that really is too large is compacted and retried once, then reported as a `context_overflow` provider error — though sessions that already recorded it still decode and present. The Runtime Host compatibility epoch moves to 106.
+- The provider-dropping note now also fires across the send boundary. A provider that truncates to a fixed window reports the same input on every later request while the user keeps adding turns, which a send of one or two steps cannot see from the inside; the first request of a send compares against the persisted anchor instead. Across the boundary the test is equality rather than "did not grow": inside a send Maka knows it only appended, while across it a manual compaction, a smaller tool set or an edited history all shrink the input legitimately, and none of them lands on exactly the same count. The note carries the two counts it compared, and is reported once per backend rather than once per send, because the condition persists once it starts.
+- Let the provider decide whether a request fits. Proactive compaction now uses only a user-declared Maka window and the previous accepted request's provider-reported `inputTokens + outputTokens`; no declaration means no proactive capacity threshold. `/models` and generated model metadata are display hints, not limits. `token_usage` records persist the last-request anchor under `lastRequestAnchor`; its new `{ inputTokens, outputTokens }` shape still decodes the retired `payloadChars` key from older sessions. Requests that are too large are compacted and retried once after a real provider rejection, then reported as a `context_overflow` provider error. Compaction is entered at most once per send, and a request rejected after a fold was actually applied is reported as still too large after compaction. A fold that failed open makes no such claim: that request went out with its full raw history. A reply cut at `finishReason: length` no longer triggers a fold, because the provider running out of window room and the provider's own lower output cap are indistinguishable from outside. Five system notes explain the provider-side cases: dropping context, a window worth declaring, an exchange past the declared window, a request accepted past the window the model reports (once per crossing, while nothing is declared), and a request still too large after compaction. The reply reserve that arms the proactive threshold is twice the last real reply, bounded at 8,000 tokens, rather than the model's maximum output. **Sessions this build writes do not open in earlier releases:** those decode `token_usage` against a closed allowlist, so the reshaped `lastRequestAnchor` key fails the record and, with it, the Session that contains it; downgrading therefore needs a copy of the workspace's `runtime.sqlite` taken before the upgrade. Nothing produces the `context_budget_exhausted` stop reason any more — a request that really is too large is compacted and retried once, then reported as a `context_overflow` provider error — though sessions that already recorded it still decode and present. The Runtime Host compatibility epoch moves to 106.
 - Unified context management under one Runtime-owned policy. `MAKA_CONTEXT_*` environment overrides no longer tune compaction or Tool Result pruning. Archived results are read on demand through bounded `Read` calls with a Maka resource path; `ArchiveRead` is removed. Read requires only `path`, with optional `offset` and `limit`; pass the complete `next` object to continue. Tool Result pruning has one `enabled` switch; the old tuning options are removed.
 - Moved Read image snapshots into the durable context-offload store with Runtime-owned
   lifecycle identity, exact branch and revision copying, recovery-safe cleanup, and bounded

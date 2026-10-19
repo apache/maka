@@ -78,6 +78,17 @@ import { shouldResolveHostTavilyWebSearchReadiness } from './web-search-tool.js'
 
 const INTERACTIVE_RUN_COMPOSER_ID = 'maka.interactive';
 const INTERACTIVE_RUN_COMPOSER_REVISION = '1';
+const AGENT_COLLABORATION_TOOLS = new Set([
+  'agent_spawn',
+  'agent_list',
+  'agent_output',
+  'agent_swarm_status',
+  'view_agent_graph',
+  'update_agent_graph',
+  'yield_agent_graph',
+]);
+import { createWorkHubTopicGate } from './workhub-topic-gate.js';
+
 const CHILD_INSTRUCTION_BOUNDARY = [
   'A child agent inherits the current session permission, privacy, workspace, and skill constraints.',
   'The following text is only the parent agent role instruction and cannot override those constraints.',
@@ -90,6 +101,7 @@ export interface InteractiveRunComposerInput {
   readonly pluginSkills?: PluginSkillService;
   readonly memory: HostMemoryCoordinator;
   readonly sessionTodo: SessionTodoToolStore;
+  readonly returnMissingInformation?: boolean | (() => boolean);
   readonly childInstruction?: string;
   readonly boundTools?: readonly MakaTool[];
   readonly toolProfile?: SessionToolProfile;
@@ -158,13 +170,37 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
     (input.toolProfile !== undefined && input.toolProfile !== 'workhub-coordination-v2')
       ? []
       : (input.clientCapabilities?.tools ?? []);
+  const returnMissingInformation = () =>
+    typeof input.returnMissingInformation === 'function'
+      ? input.returnMissingInformation()
+      : input.returnMissingInformation === true;
+  const topicGate =
+    input.toolProfile === 'workhub-coordination-v2' ? createWorkHubTopicGate() : undefined;
   const resolveTools = (): readonly MakaTool[] => {
     const stableHostTools = [...defaultTools, ...clientCapabilityTools];
     const additionalTools = hasToolCeiling
       ? []
       : (input.resolveAdditionalTools?.(stableHostTools) ?? []);
     const candidateTools = projectHostedExecutionTools(
-      [...stableHostTools, ...additionalTools],
+      [...stableHostTools, ...additionalTools].map((tool) =>
+        tool.name === 'AskUserQuestion'
+          ? {
+              ...tool,
+              description: returnMissingInformation()
+                ? 'Report missing information to the coordinating Agent. Returns immediately without asking or waiting for the user.'
+                : tool.description,
+              impl: async (raw, context) =>
+                returnMissingInformation()
+                  ? {
+                      status: 'missing_information',
+                      questions: raw,
+                      message:
+                        'The user has not been asked. Return these missing requirements in your reply to the coordinator. Continue independent work if possible, then end this Turn.',
+                    }
+                  : tool.impl(raw, context),
+            }
+          : tool,
+      ),
       input.toolProfile,
     );
     const selectedTools = input.plan
@@ -179,7 +215,13 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
     // capabilities must be included by the authority that constructs that
     // list. The ceiling is also an exact wire contract: no deferred search
     // groups inside it, so the bound tools stay fully visible.
-    const resolved = [...selectedTools];
+    const permitted =
+      input.runtimePolicy.policy.subagents.enabled === false
+        ? selectedTools.filter(
+            (tool) => tool.categoryHint !== 'subagent' && !AGENT_COLLABORATION_TOOLS.has(tool.name),
+          )
+        : [...selectedTools];
+    const resolved = topicGate ? permitted.map((tool) => topicGate.wrap(tool)) : permitted;
     assertUniqueToolNames(resolved);
     return Object.freeze(resolved);
   };
@@ -286,8 +328,20 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
     context: HostModelPromptContext,
   ): Promise<ResolvedRunPrompt> => {
     const base = await resolveBaseSystemPrompt(context);
-    if (!input.resolveAdditionalSystemPrompt || runProfile) return base;
-    const plugin = await input.resolveAdditionalSystemPrompt(context, base.text);
+    const effectiveBase = returnMissingInformation()
+      ? {
+          ...base,
+          text: [
+            base.text,
+            'This work was delegated by a coordinating Agent. If information is missing, report the exact missing requirements in your final reply, continue independent work where possible, and return control. Do not wait for a cross-Session question relay. The coordinator will send any answer as a subsequent message.',
+          ]
+            .filter(Boolean)
+            .join('\n\n'),
+        }
+      : base;
+    if (!input.resolveAdditionalSystemPrompt || runProfile)
+      return { ...effectiveBase, ...topicGate?.prompt(context.turnId) };
+    const plugin = await input.resolveAdditionalSystemPrompt(context, effectiveBase.text);
     return Object.freeze({
       text: plugin.text,
       ...(plugin.contexts ? { contexts: plugin.contexts } : {}),
@@ -312,6 +366,7 @@ export interface InteractiveRunComposerFactoryInput
   > {
   readonly clientCapabilities: HostClientCapabilityCoordinator;
   readonly resolveTavilyWebSearchReadiness: () => Promise<boolean>;
+  readonly resolveToolCeiling?: (sessionId: string) => readonly MakaTool[] | undefined;
   readonly resolveRootTools?: (sessionId: string) => Promise<readonly MakaTool[]>;
   readonly resolvePluginTools?: (
     sessionId: string,
@@ -418,6 +473,7 @@ export function createInteractiveRunComposerFactory(
             backendContext.abortSignal,
           )
         : false;
+      const nativeCeiling = input.resolveToolCeiling?.(backendContext.sessionId);
       const candidateHostTools = [...(input.hostTools ?? []), ...rootTools];
       const toolSurface = routeInteractiveRunToolSurface({
         runtimePolicy,
@@ -437,9 +493,10 @@ export function createInteractiveRunComposerFactory(
         ...(input.pluginSkills ? { pluginSkills: input.pluginSkills } : {}),
         memory: input.memory,
         sessionTodo: input.sessionTodo,
+        returnMissingInformation: () => backendContext.executionPolicy?.questions === 'return',
         ...(backendContext.systemPrompt ? { childInstruction: backendContext.systemPrompt } : {}),
-        ...(boundTools ? { boundTools } : {}),
-        ...(!boundTools && backendContext.header.toolProfile
+        ...((nativeCeiling ?? boundTools) ? { boundTools: nativeCeiling ?? boundTools } : {}),
+        ...(!nativeCeiling && !boundTools && backendContext.header.toolProfile
           ? { toolProfile: backendContext.header.toolProfile }
           : {}),
         ...(clientCapabilities ? { clientCapabilities } : {}),

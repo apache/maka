@@ -18,23 +18,30 @@
  */
 
 import type {
+  NewTaskSettings,
   SessionSettingsCommands,
   SessionSettingsController,
   SessionSettingsOverlays,
 } from '../model/session-settings-contract.js';
 
-const EMPTY_OVERLAYS: SessionSettingsOverlays = {
-  modelConfiguration: {}, permissionMode: {}, planMode: {}, orchestrationMode: {},
+export interface SessionSettingsReadState {
+  readonly overlays: SessionSettingsOverlays;
+  readonly newTask: NewTaskSettings;
+}
+
+const EMPTY_STATE: SessionSettingsReadState = {
+  overlays: { modelConfiguration: {}, permissionMode: {}, planMode: {}, orchestrationMode: {} },
+  newTask: { planMode: false, orchestrationMode: 'default' },
 };
 
 /** Per-shell command port and read store; the provider alone owns write state. */
 export function createSessionSettingsBridge() {
   let controller: SessionSettingsController | undefined;
-  let overlays = EMPTY_OVERLAYS;
+  let state = EMPTY_STATE;
   const listeners = new Set<() => void>();
-  const publishOverlays = (next: SessionSettingsOverlays) => {
-    if (overlays === next) return;
-    overlays = next;
+  const publishState = (next: SessionSettingsReadState) => {
+    if (state.overlays === next.overlays && state.newTask === next.newTask) return;
+    state = next;
     for (const listener of [...listeners]) listener();
   };
   const commands: SessionSettingsCommands = {
@@ -45,21 +52,24 @@ export function createSessionSettingsBridge() {
     setPermissionMode: (mode) => controller?.setPermissionMode(mode) ?? Promise.resolve(false),
     setPlanMode: (id, active) => controller?.setPlanMode(id, active) ?? Promise.resolve(false),
     setOrchestrationMode: (id, mode) => controller?.setOrchestrationMode(id, mode) ?? Promise.resolve(false),
+    setNewTaskPlanMode: (active) => controller?.setNewTaskPlanMode(active),
+    setNewTaskOrchestrationMode: (mode) => controller?.setNewTaskOrchestrationMode(mode),
+    clearNewTaskPermissionChoice: () => controller?.clearNewTaskPermissionChoice(),
   };
   return {
     commands,
-    getState: () => overlays,
+    getState: () => state,
     subscribe(listener: () => void) {
       listeners.add(listener);
       return () => { listeners.delete(listener); };
     },
     publish(next: SessionSettingsController) {
       controller = next;
-      publishOverlays(next.overlays);
+      publishState({ overlays: next.overlays, newTask: next.newTask });
     },
     disconnect() {
       controller = undefined;
-      publishOverlays(EMPTY_OVERLAYS);
+      publishState(EMPTY_STATE);
     },
   };
 }

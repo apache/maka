@@ -64,9 +64,10 @@ export const RetainedFunctionalMotion: Story = {
   ),
   play: async ({ canvasElement }) => {
     const spinner = canvasElement.querySelector<HTMLElement>('.astryx-spinner')!;
-    // Chromium runs an <svg> element's transform on the main thread every
-    // frame, so the rotation must sit on the HTML box and step, not glide.
-    expect(spinner.querySelector('svg')!.getAnimations()).toHaveLength(0);
+    // Chromium repaints an animating SVG on the main thread every frame, so the
+    // only animation must be the HTML box's rotation, stepping, not gliding.
+    expect(spinner.getAnimations({ subtree: true })).toHaveLength(1);
+    expect(spinner.getAnimations()).toHaveLength(1);
     expect(getComputedStyle(spinner).animationTimingFunction).toBe('steps(16)');
     // Pinned to the timeline origin, spinners mounted apart step on the same
     // frames instead of each adding its own.

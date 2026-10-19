@@ -33,7 +33,9 @@ test('a pending WorkHub question preserves docked placement, choices and focus a
   const choice = hub.getByRole('option', { name: /公开测试/ });
   await expect(choice).toBeVisible();
   await expect(hub.locator('.workHubLive')).toHaveAttribute('data-placement', 'docked');
-  await choice.click();
+  // Pointer activation advances immediately; keyboard selection keeps this
+  // question pending while Electron transfers focus between native windows.
+  await hub.locator('.maka-choice-panel').press('2');
   await app.evaluate(async ({ app }) => { if (process.platform === 'darwin') await app.dock!.show(); });
   await hub.evaluate(() => window.maka.workHubPresentation.detach());
   await expect(hub.locator('.workHubLive')).toHaveAttribute('data-placement', 'floating');

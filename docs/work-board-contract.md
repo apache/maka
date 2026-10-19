@@ -1,3 +1,7 @@
+---
+translation_status: source-only
+last_verified: 2026-10-10
+---
 <!--
   Licensed to the Apache Software Foundation (ASF) under one
   or more contributor license agreements.  See the NOTICE file
@@ -19,7 +23,7 @@
 
 # Work Board Phase 0 Contract
 
-Status: Phase 0 contract shipped; Phase 1 capture/list MVP shipped in [#3135](https://github.com/apache/maka/pull/3135). The Phase 3 spike evidence and contributor request are in the [Phase 3 update comment on #2560](https://github.com/apache/maka/issues/2560#issuecomment-5867638658); the maintainer go/stop decision remains pending on [#2560](https://github.com/apache/maka/issues/2560). Scope: `packages/core` (contract) + `packages/storage` (store and migration).
+Status: Phase 0 contract shipped; Phase 1 capture/list MVP shipped in [#3135](https://github.com/apache/maka/pull/3135). The [Phase 3 maintainer decision on #2560](https://github.com/apache/maka/issues/2560#issuecomment-5873486343) records **mechanism verified (GO); delayed return-use pending; Phase 2/4 paused**. Scope: `packages/core` (contract) + `packages/storage` (store and migration).
 
 Tracking: [Work Board delivery #2560](https://github.com/apache/maka/issues/2560)
 
@@ -28,7 +32,8 @@ Tracking: [Work Board delivery #2560](https://github.com/apache/maka/issues/2560
 The Work Board is a user-owned, local-first surface for deferred work. It is not an
 execution authority:
 
-- no `task_*` tools, no `task.ledger.query`, and no `workflow_task_ledger_*` reads/writes;
+- no `task_*` tools and no `workflow_task_ledger_*` reads/writes (the former Session Task
+  Ledger was removed entirely — module, storage, and table — in #4400, workflow schema 12);
 - no model-visible tools or automatic prompt injection;
 - no Goal, AgentRun, RuntimeEvent, or Agent Graph writes;
 - execution state is projected at read time, never copied into board storage.

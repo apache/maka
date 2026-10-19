@@ -19,7 +19,7 @@
 
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 40;
+export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 41;
 export const SQLITE_SESSION_MESSAGE_CHUNK_BYTES = 64 * 1024;
 export const SQLITE_SESSION_MESSAGE_CHUNK_MARKER = '{"$maka":"session-message-chunks-v1"}';
 
@@ -37,6 +37,16 @@ export const SQLITE_AGENT_GRAPH_CONTROL_TABLES = [
 ] as const;
 
 const MIGRATIONS: ReadonlyMap<number, string> = new Map([
+  [
+    41,
+    `
+    -- When the Session last entered the archive, owned by the lifecycle
+    -- writer alone. Rows archived before this column existed keep NULL: the
+    -- time they were archived was never recorded, and neither committed_at nor
+    -- activity says when.
+    ALTER TABLE session_metadata ADD COLUMN archived_at INTEGER;
+  `,
+  ],
   [
     40,
     `
@@ -1387,14 +1397,16 @@ export function migrateSqliteSessionMetadataDatabase(
     ) {
       const sql = MIGRATIONS.get(version);
       if (!sql) throw new Error(`Missing SQLite session metadata migration ${version}`);
-      // Versions 32, 35, and 37 each add one column, and the post-merge convergence
-      // path can replay them onto a database that already carries the current
-      // table shape. SQLite has no `ADD COLUMN IF NOT EXISTS`, so the guards
-      // live here.
+      // Versions 32, 35, 37, and 41 each add one column, and the post-merge
+      // convergence path can replay them onto a database that already carries
+      // the current table shape. SQLite has no `ADD COLUMN IF NOT EXISTS`, so
+      // the guards live here.
       const columnAlreadyPresent =
         (version === 32 && hasColumn(db, 'message_admissions', 'submitted_intent_json')) ||
         (version === 35 && hasColumn(db, 'message_admissions', 'skill_invocation_json')) ||
-        (version === 37 && hasColumn(db, 'cancelled_message_admissions', 'cancellation_claim_id'));
+        (version === 37 &&
+          hasColumn(db, 'cancelled_message_admissions', 'cancellation_claim_id')) ||
+        (version === 41 && hasColumn(db, 'session_metadata', 'archived_at'));
       if (!columnAlreadyPresent) {
         db.exec(sql);
       }

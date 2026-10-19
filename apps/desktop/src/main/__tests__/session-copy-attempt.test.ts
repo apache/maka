@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type * as SessionCopyAttemptModule from '../../renderer/session-copy-attempt.js';
+import type * as SessionCopyAttemptModule from '../../renderer/application/contracts/session-copy-attempt.js';
 
 test('one logical Session copy preserves its target and source boundary across renderer reload', async () => {
   const storage = memoryStorage();
@@ -158,7 +158,7 @@ test('renderer reload can enumerate every orphaned Side Chat copy owner', async 
 });
 
 async function loadFreshModule(name: string): Promise<typeof SessionCopyAttemptModule> {
-  const url = new URL('../../renderer/session-copy-attempt.js', import.meta.url);
+  const url = new URL('../../renderer/application/contracts/session-copy-attempt.js', import.meta.url);
   url.searchParams.set('instance', name);
   return import(url.href) as Promise<typeof SessionCopyAttemptModule>;
 }

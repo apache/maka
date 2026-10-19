@@ -132,8 +132,8 @@ const baseDesktopBuilderConfig = {
       to: 'status',
     },
     {
-      from: 'resources/workers/filesystem-worker.js',
-      to: 'workers/filesystem-worker.js',
+      from: 'resources/workers/filesystem-worker.mjs',
+      to: 'workers/filesystem-worker.mjs',
     },
     {
       from: '../../native/runtime-host-peer/target/release/maka_runtime_host_peer.node',

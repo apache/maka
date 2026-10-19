@@ -26,6 +26,28 @@ import { test } from "node:test";
 import { registerRuntimeHostArtifactsIpc } from "../runtime-host-artifacts-ipc-main.js";
 import { ManagedArtifactPreview } from '../managed-artifact-preview.js';
 
+test('image resolution validates renderer requests before forwarding them', async () => {
+  const handlers = new Map<string, Handler>();
+  const forwarded: unknown[] = [];
+  registerRuntimeHostArtifactsIpc({
+    uiLocale: () => 'en',
+    ipcMain: { handle: (channel, handler) => handlers.set(channel, handler as Handler) },
+    client: { hostEpoch: 'host', resolveImageDelivery: async (...args: unknown[]) => {
+      forwarded.push(args); return { status: 'requires_confirmation' };
+    } } as never,
+    mainWindowController: {} as never,
+    showItemInFolder() {},
+  });
+  const resolve = handlers.get('attachments:resolveImage')!;
+  const request = { turnId: 'turn', messageId: 'message', source: 'https://example.invalid/image.png', loadRemote: true };
+  await resolve({}, 'session', request);
+  assert.deepEqual(forwarded, [['session', request]]);
+  for (const invalid of [null, { ...request, sessionId: 'other' }, { ...request, loadRemote: 'yes' }, { ...request, source: 'bad\nurl' }]) {
+    await assert.rejects(async () => resolve({}, 'session', invalid), /Invalid image delivery request/);
+  }
+  assert.equal(forwarded.length, 1);
+});
+
 for (const launchFails of [false, true]) {
   test(`HTML external open uses the managed endpoint and reports launch failure=${launchFails}`, async () => {
     const service = new ManagedArtifactPreview();

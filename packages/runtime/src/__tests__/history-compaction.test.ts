@@ -29,6 +29,11 @@ import {
 import { HistoryCompactSummarizerError } from '../history-compact-summarizer.js';
 import { testInvocationRecord } from './invocation-fixture.js';
 import { matchHistoryCompactCheckpointPrefix } from '../history-compact-checkpoint.js';
+import {
+  archiveTransitionFor,
+  EMPTY_PROJECTION_SNAPSHOT,
+} from './history-compact-test-fixtures.js';
+import type { LoadedModelProjectionTransitions } from '../model-projection-transition-ledger.js';
 
 describe('safe compaction prefix selection', () => {
   test('folds the largest immutable non-partial prefix, leaving the reserved tail', () => {
@@ -339,6 +344,73 @@ describe('plan context compaction', () => {
     ]);
   });
 
+  test('a mid-turn retreat with no safe span reports the summarizer failure', async () => {
+    // The proven boundary is a prior-run reply before the head anchor, so the
+    // retreat has no mid_turn coverage. The summarizer was still called and
+    // refused, so the result must say so rather than look like a pool that was
+    // never summarized.
+    let attempts = 0;
+    const result = await planHistoryCompaction(
+      planInput({
+        orderedEvents: [
+          user('old-user', 'turn-0'),
+          modelOnRun('old-model', 'turn-0', 'run-0', 'accepted by this route'),
+          ...longTurnEvents().slice(2),
+        ],
+        invocations: [runOn('run-0', 'model-a', 'conn-a')],
+        acceptedRoute: ROUTE_A,
+        summarize: () => {
+          attempts += 1;
+          throw new HistoryCompactSummarizerError('input_too_large');
+        },
+      }),
+    );
+
+    assert.equal(attempts, 1);
+    assert.deepEqual(result, {
+      decision: 'fail_open',
+      reason: 'summarizer_failed',
+      diagnosticReason: 'input_too_large',
+    });
+  });
+
+  test('a mid-turn retreat still tries a proven span handoff put after the anchor', async () => {
+    // Handoff replay keeps the same logical turn's predecessor events — and the
+    // predecessor run's record — in the pool, so a reply after the head anchor
+    // can be the proven boundary. The retreat must still try it (#5790 review).
+    const attemptedCoverage: string[][] = [];
+    const plan = await planHistoryCompaction(
+      planInput({
+        orderedEvents: [
+          user('old-user', 'turn-0'),
+          modelOnRun('old-model', 'turn-0', 'run-0', 'old reply'),
+          user('anchor', 'turn-1'),
+          modelOnRun('handoff-reply', 'turn-1', 'run-0', 'source-run reply'),
+          call('call-x', 'cx', 'turn-1'),
+          result('res-x', 'cx', 'turn-1'),
+        ],
+        invocations: [runOn('run-0', 'model-a', 'conn-a')],
+        acceptedRoute: ROUTE_A,
+        summarize: ({ coveredRuntimeEvents }) => {
+          attemptedCoverage.push(coveredRuntimeEvents.map((event) => event.id));
+          throw new HistoryCompactSummarizerError('input_too_large');
+        },
+      }),
+    );
+
+    // First attempt covers through the reserved tail cut; the retreat then
+    // retries the proven prefix ending on the predecessor run's reply.
+    assert.deepEqual(attemptedCoverage, [
+      ['old-user', 'old-model', 'anchor', 'handoff-reply'],
+      ['old-user', 'old-model', 'anchor'],
+    ]);
+    assert.deepEqual(plan, {
+      decision: 'fail_open',
+      reason: 'summarizer_failed',
+      diagnosticReason: 'input_too_large',
+    });
+  });
+
   test('fails open when only another route has ever been accepted', async () => {
     let attempts = 0;
     const result = await planHistoryCompaction(
@@ -542,10 +614,12 @@ describe('plan context compaction', () => {
       call('call-c', 'cc', 'turn-1'),
       result('res-c', 'cc', 'turn-1'),
     ];
-    const identityFold = async (covered: readonly RuntimeEvent[]) => [...covered];
     // Coverage ends at `res-a`: the first fold's covered span contains it.
     const first = await planHistoryCompaction(
-      planInput({ orderedEvents: events, projectEffectiveCoverage: identityFold }),
+      planInput({
+        orderedEvents: events,
+        loadProjectionSnapshot: async () => EMPTY_PROJECTION_SNAPSHOT,
+      }),
     );
     assert.equal(first.decision, 'compacted');
     if (first.decision !== 'compacted') return;
@@ -555,7 +629,7 @@ describe('plan context compaction', () => {
       planInput({
         orderedEvents: longerEvents,
         previousCheckpoint: first.checkpoint,
-        projectEffectiveCoverage: identityFold,
+        loadProjectionSnapshot: async () => EMPTY_PROJECTION_SNAPSHOT,
         summarize: ({ newlyFoldedRuntimeEvents, previousCheckpoint }) => {
           seenNewlyFolded = newlyFoldedRuntimeEvents.map((event) => event.id);
           assert.equal(previousCheckpoint?.checkpointId, first.checkpoint.checkpointId);
@@ -576,11 +650,13 @@ describe('plan context compaction', () => {
       call('call-c', 'cc', 'turn-1'),
       result('res-c', 'cc', 'turn-1'),
     ];
-    const identityFold = async (covered: readonly RuntimeEvent[]) => [...covered];
     // First fold: no transition exists, so the effective view IS the raw view
     // and the checkpoint (covering through `res-a`) pins that digest.
     const first = await planHistoryCompaction(
-      planInput({ orderedEvents: events, projectEffectiveCoverage: identityFold }),
+      planInput({
+        orderedEvents: events,
+        loadProjectionSnapshot: async () => EMPTY_PROJECTION_SNAPSHOT,
+      }),
     );
     assert.equal(first.decision, 'compacted');
     if (first.decision !== 'compacted') return;
@@ -589,25 +665,15 @@ describe('plan context compaction', () => {
     // first checkpoint's coverage — leaving the raw prefix untouched. The
     // inherited summary still quotes the raw body, but the view it describes
     // no longer exists.
-    const foldWithArchive = async (covered: readonly RuntimeEvent[]): Promise<RuntimeEvent[]> =>
-      covered.map((event) => {
-        if (event.id !== 'res-a') return event;
-        const content = event.content as Extract<
-          RuntimeEvent['content'],
-          { kind: 'function_response' }
-        >;
-        return {
-          ...event,
-          content: {
-            ...content,
-            modelProjection: {
-              version: 1 as const,
-              kind: 'text' as const,
-              text: '[archived: artifact-res-a]',
-            },
-          },
-        };
-      });
+    const archiveSnapshot: LoadedModelProjectionTransitions = {
+      ...EMPTY_PROJECTION_SNAPSHOT,
+      transitions: [
+        archiveTransitionFor(
+          events.find((event) => event.id === 'res-a')!,
+          '[archived: artifact-res-a]',
+        ),
+      ],
+    };
 
     let summarizeSawPrevious: string | undefined;
     let seenCovered: string[] = [];
@@ -616,7 +682,7 @@ describe('plan context compaction', () => {
       planInput({
         orderedEvents: longerEvents,
         previousCheckpoint: first.checkpoint,
-        projectEffectiveCoverage: foldWithArchive,
+        loadProjectionSnapshot: async () => archiveSnapshot,
         summarize: ({ coveredRuntimeEvents, newlyFoldedRuntimeEvents, previousCheckpoint }) => {
           summarizeSawPrevious = previousCheckpoint?.checkpointId;
           seenCovered = coveredRuntimeEvents.map((event) => event.id);

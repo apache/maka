@@ -220,10 +220,8 @@ export class RuntimeHostSessionProjector {
     const seededAssistantContent = events.some(
       (event) => event.type === 'text_delta' || event.type === 'thinking_delta',
     );
-    if (!seededAssistantContent) {
-      const retry = seedProviderRetry(root, this.#now());
-      if (retry) events.push(retry);
-    }
+    const retry = !seededAssistantContent ? seedProviderRetry(root, this.#now()) : undefined;
+    events.push(...(retry ? [retry] : []));
     for (const interaction of this.#snapshot.interactions.pending) {
       events.push(...projectRuntimeHostInteractionRequest(interaction, this.#now()));
     }
@@ -454,7 +452,7 @@ export class RuntimeHostSessionProjector {
       events.push(contextCompactionStartedEvent(root, this.#now()));
     }
     const retry = projectProviderRetryChange(previousRoot, root, this.#now());
-    if (retry) events.push(retry);
+    events.push(...(retry ? [retry] : []));
     const terminalTurn =
       root && isRuntimeHostTerminalTurn(root) && !sameRuntimeHostTerminalTurn(previousRoot, root)
         ? root
@@ -633,6 +631,14 @@ function projectSessionEvent(
   frame: Extract<SubscriptionFrame, { kind: 'subscription.session_event' }>,
 ): SessionEvent {
   const event = frame.event;
+  if (event.type === 'context_compaction_applied') {
+    return {
+      type: event.type,
+      id: event.id,
+      turnId: event.turnId,
+      ts: event.ts,
+    };
+  }
   if (event.type === 'steering_message') {
     const steering: SessionSteeringEvent = {
       type: 'steering_message',
@@ -693,7 +699,9 @@ function projectSessionEvent(
     type: 'tool_result',
     ...base,
     contentOmitted: true,
-    isError: event.status === 'errored',
+    isError: event.status !== 'completed',
+    outcome:
+      event.status === 'interrupted' ? 'aborted' : event.status === 'errored' ? 'error' : 'success',
     content: {
       kind: 'text',
       text: '',

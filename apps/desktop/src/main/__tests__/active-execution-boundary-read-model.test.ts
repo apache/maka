@@ -28,7 +28,7 @@ import type { SessionEvent } from '@maka/core/events';
 import { parseHTML } from 'linkedom';
 import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
-import { createAppShellSessionEventHandlers } from '../../renderer/app-shell-session-events.js';
+import { createAppShellSessionEventHandlers } from '../../renderer/features/conversation/testing.js';
 import {
   ConversationServicesProvider,
   type ConversationHostChange,

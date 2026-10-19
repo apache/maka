@@ -15,71 +15,84 @@
 # specific language governing permissions and limitations
 # under the License.
 
-import asyncio
-import importlib.util
+import asyncio as async_runtime
+from importlib import util as import_util
 import os
-import sys
-import unittest
-from pathlib import Path
+import sys as process_state
+import unittest as testing
+from pathlib import Path as FilePath
 from types import SimpleNamespace
 from unittest.mock import patch
 
-MODULE_PATH = Path(__file__).with_name("run_trial.py")
-SPEC = importlib.util.spec_from_file_location("maka_eval_run_trial", MODULE_PATH)
-assert SPEC and SPEC.loader
-MODULE = importlib.util.module_from_spec(SPEC)
+SPEC = import_util.spec_from_file_location(
+    "maka_eval_run_trial", FilePath(__file__).with_name("run_trial.py")
+)
+if SPEC is None or SPEC.loader is None:
+    raise RuntimeError("could not load trial runner")
+MODULE = import_util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
 
-class RunTrialPolicyTest(unittest.TestCase):
-    def test_forces_only_the_subject_phase_through_the_cell_proxy(self) -> None:
-        agent = SimpleNamespace(network_mode=None, allowed_hosts=None)
-        task = SimpleNamespace(config=SimpleNamespace(agent=agent))
-        with patch.dict(
-            os.environ,
-            {
-                "MAKA_EVAL_EGRESS_REQUIRED": "1",
-                "MAKA_EVAL_EGRESS_ALLOWED_HOST": "maka-eval-mitmproxy",
-            },
-            clear=False,
-        ):
-            MODULE.apply_subject_egress_policy(task)
-        self.assertEqual(agent.network_mode, "allowlist")
-        self.assertEqual(agent.allowed_hosts, ["maka-eval-mitmproxy"])
+def task_with_agent(**values: object):
+    return SimpleNamespace(config=SimpleNamespace(agent=SimpleNamespace(**values)))
 
-    def test_required_egress_fails_closed_without_the_proxy_host(self) -> None:
-        task = SimpleNamespace(config=SimpleNamespace(agent=SimpleNamespace()))
-        with patch.dict(os.environ, {"MAKA_EVAL_EGRESS_REQUIRED": "1"}, clear=True):
-            with self.assertRaisesRegex(RuntimeError, "proxy host is unavailable"):
+
+def required_egress_environment(host: str | None) -> dict[str, str]:
+    environment = {"MAKA_EVAL_EGRESS_REQUIRED": "1"}
+    if host is not None:
+        environment["MAKA_EVAL_EGRESS_ALLOWED_HOST"] = host
+    return environment
+
+
+class RunTrialPolicyContract(testing.TestCase):
+    def test_required_egress_overrides_subject_network_configuration(self) -> None:
+        configurations = ((None, None), ("none", []), ("host", ["x.ai"]))
+        for network_mode, allowed_hosts in configurations:
+            task = task_with_agent(network_mode=network_mode, allowed_hosts=allowed_hosts)
+            with patch.dict(
+                os.environ,
+                {
+                    "MAKA_EVAL_EGRESS_REQUIRED": "1",
+                    "MAKA_EVAL_EGRESS_ALLOWED_HOST": "maka-eval-mitmproxy",
+                },
+                clear=True,
+            ):
                 MODULE.apply_subject_egress_policy(task)
+            self.assertEqual(task.config.agent.network_mode, "allowlist")
+            self.assertEqual(task.config.agent.allowed_hosts, ["maka-eval-mitmproxy"])
 
-    def test_rejects_unknown_framework_without_loading_its_modules(self) -> None:
-        with patch.object(MODULE.importlib, "import_module") as imported:
-            with self.assertRaisesRegex(RuntimeError, "harbor or pier"):
-                asyncio.run(MODULE.run_trial("other", "1.0.0", Path("missing.json")))
-        imported.assert_not_called()
+    def test_required_egress_fails_closed_without_a_nonempty_proxy_host(self) -> None:
+        for host in (None, ""):
+            with self.subTest(host=host), patch.dict(
+                os.environ, required_egress_environment(host), clear=True
+            ):
+                with self.assertRaisesRegex(RuntimeError, "proxy host is unavailable"):
+                    MODULE.apply_subject_egress_policy(task_with_agent())
 
-    def test_trial_installs_its_framework_before_loading_modules(self) -> None:
-        import eval_framework
+    def test_framework_validation_precedes_dynamic_import(self) -> None:
+        with patch.object(MODULE.importlib, "import_module") as imported, self.assertRaisesRegex(
+            RuntimeError, r"harbor or pier"
+        ):
+            async_runtime.run(MODULE.run_trial("other", "1.0.0", FilePath("missing.json")))
+        self.assertFalse(imported.called)
+    def test_framework_is_installed_before_version_or_module_validation(self) -> None:
+        import eval_framework as framework_authority
+        for framework in ("harbor", "pier"):
+            with self.subTest(framework=framework):
+                with patch.object(MODULE.importlib.metadata, "version", return_value="different"):
+                    with self.assertRaises(MODULE.FrameworkVersionMismatch):
+                        async_runtime.run(
+                            MODULE.run_trial(framework, "1.0.0", FilePath("missing.json"))
+                        )
+                self.assertEqual(framework_authority.current_framework(), framework)
 
-        with patch.object(MODULE.importlib.metadata, "version", return_value="different"):
-            with self.assertRaises(MODULE.FrameworkVersionMismatch):
-                asyncio.run(MODULE.run_trial("harbor", "1.0.0", Path("missing.json")))
-        self.assertEqual(eval_framework.current_framework(), "harbor")
-
-    def test_main_binds_the_argv_framework_during_the_trial(self) -> None:
-        import eval_framework
-
-        observed: list[tuple[str, str, Path]] = []
-
-        async def fake_trial(framework: str, expected_version: str, config_file: Path) -> None:
+    def test_main_forwards_the_cli_tuple_without_reinterpreting_it(self) -> None:
+        observed: list[tuple[str, str, FilePath]] = []
+        async def fake_trial(framework, expected_version, config_file):
             observed.append((framework, expected_version, config_file))
+        argv = ["run_trial.py", "pier", "1.2.3", "config.json"]
+        with patch.object(process_state, "argv", argv), patch.object(MODULE, "run_trial", fake_trial):
+            async_runtime.run(MODULE.main())
+        self.assertListEqual(observed, [("pier", "1.2.3", FilePath("config.json"))])
 
-        with patch.object(sys, "argv", ["run_trial.py", "pier", "1.2.3", "config.json"]):
-            with patch.object(MODULE, "run_trial", fake_trial):
-                asyncio.run(MODULE.main())
-        self.assertEqual(observed, [("pier", "1.2.3", Path("config.json"))])
-
-
-if __name__ == "__main__":
-    unittest.main()
+testing.main(exit=False) if __name__ == "__main__" else None

@@ -33,7 +33,7 @@ import {
 import {
   createAppShellSessionDisplayBatch,
   createAppShellSessionEventHandlers,
-} from '../../renderer/app-shell-session-events.js';
+} from '../../renderer/features/conversation/testing.js';
 import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 import { renderTranscriptMarkup } from './transcript-test-dom.js';
 
@@ -81,6 +81,7 @@ function renderLiveTurn(liveTurn: LiveTurnProjection): Promise<string> {
       permissionMode: 'ask',
     },
     messages: [{ type: 'user', id: 'user-1', turnId: liveTurn.turnId, ts: 1, text: 'go' }],
+    activeTurn: liveTurn.terminal ? undefined : { turnId: liveTurn.turnId },
     scrollBehavior: 'smooth',
     liveTurns: liveTurn ? [liveTurn] : undefined,
     onNew() {},
@@ -307,6 +308,7 @@ describe('single live-turn handoff', () => {
         { type: 'assistant', id: 'assistant-1', turnId: 'turn-1', ts: 2, text, modelId: 'model' },
       ],
       scrollBehavior: 'smooth',
+      activeTurn: { turnId: 'turn-1' },
       liveTurns: [{
         turnId: 'turn-1',
         steps: [{
@@ -545,17 +547,18 @@ describe('single live-turn handoff', () => {
     const stateRef = { current: state.get() };
     const frameQueue: Array<() => void> = [];
     const publicationCounts: number[] = [];
+    const publishLiveTurns = (update: Parameters<typeof state.set>[0]) => {
+      state.set(update);
+      stateRef.current = state.get();
+      publicationCounts.push((publicationCounts.at(-1) ?? 0) + 1);
+    };
     const eventHandlers = createAppShellSessionEventHandlers({
       uiLocale: 'zh-CN',
       activeIdRef: { current: sessionId },
       liveTurnBySessionRef: stateRef,
       async refreshMessages() { return true; },
       async refreshSessions() { return []; },
-      setLiveTurnBySession(update) {
-        state.set(update);
-        stateRef.current = state.get();
-        publicationCounts.push(publicationCounts.length + 1);
-      },
+      setLiveTurnBySession: publishLiveTurns,
       setInteractionBySession: createStateSetter<InteractionQueues>({}).set,
       showModelSetupToast() {},
       toastApi: { error() {} },
@@ -579,10 +582,8 @@ describe('single live-turn handoff', () => {
       type: 'text_delta', id: 'continued', turnId: 'turn-1', messageId: 'assistant-1',
       ts: 2, text: ' plus live text',
     } satisfies SessionEvent);
-    assert.deepEqual(
-      { publications: publicationCounts.length, frames: frameQueue.length },
-      { publications: 1, frames: 1 }, 'live continuation waits for a frame',
-    );
+    assert.equal(publicationCounts.length, 1, 'live continuation remains unpublished');
+    assert.equal(frameQueue.length, 1, 'live continuation remains frame-gated');
     frameQueue.shift()?.();
     const renderedSnapshot = { publications: publicationCounts.length, text: renderedText() };
     assert.deepEqual(renderedSnapshot, { publications: 2, text: 'restored prefix plus live text' });

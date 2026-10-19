@@ -87,6 +87,8 @@ export class HostPluginPlatformError extends Error {
 }
 
 export interface HostPluginPlatformOptions {
+  /** Packages replaced by Host-owned services: keep stored data/configuration, never activate their entries. */
+  readonly replacedPackages?: readonly string[];
   readonly composition?: MakaCompositionLoader;
   readonly packages?: PluginPackageStore;
   readonly packageLoader?: TrustedPluginPackageLoader;
@@ -157,7 +159,7 @@ export class HostPluginPlatform {
 
   constructor(
     readonly controlDirectory: string,
-    options: HostPluginPlatformOptions = {},
+    private readonly options: HostPluginPlatformOptions = {},
   ) {
     this.#composition = options.composition ?? new MakaCompositionLoader();
     this.#packages = options.packages ?? new PluginPackageStore(controlDirectory);
@@ -927,6 +929,18 @@ export class HostPluginPlatform {
       }
     }
 
+    // Apply on every projection (including later composition edits), so stale installs cannot
+    // start a second scheduler or replace the built-in UI/tools.
+    for (const record of compositionEntryRecords(working)) {
+      if (
+        record.entry.packageId &&
+        this.options.replacedPackages?.includes(record.entry.packageId)
+      ) {
+        working = applyCompositionState(working, {
+          operations: [{ type: 'update', entryId: record.entry.id, patch: { disabled: true } }],
+        });
+      }
+    }
     let desired = compositionWithGeneration(working, authority.generation);
     if (policy === 'strict') await this.#validateDesired(desired, override?.manifest);
     else desired = await this.#normalizeCompositionConfigurations(desired);

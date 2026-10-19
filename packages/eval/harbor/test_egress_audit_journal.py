@@ -20,6 +20,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 MODULE_PATH = Path(__file__).with_name("egress_filter.py")
 SPEC = importlib.util.spec_from_file_location("maka_eval_egress_journal", MODULE_PATH)
@@ -47,6 +48,41 @@ class EgressAuditJournalTest(unittest.TestCase):
             self.assertEqual(json.loads(raw)["normalizedPath"], normalized_path)
             self.assertFalse(journal.has_full_marker())
 
+    def test_creates_parent_directories_and_bounds_untrusted_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "nested" / "state" / "hits.jsonl"
+            journal = self.journal(path)
+
+            journal.record("rule", "h" * 300, "/" + "p" * 5000)
+
+            record = json.loads(path.read_text())
+            self.assertEqual(record["ruleId"], "rule")
+            self.assertEqual(record["host"], "h" * 255)
+            self.assertEqual(record["normalizedPath"], "/" + "p" * 4095)
+
+    def test_encoding_and_empty_file_boundaries_are_explicit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "hits.jsonl"
+            journal = self.journal(path)
+
+            self.assertEqual(journal._separator(), b"")
+            self.assertIsNone(journal._last_record())
+            path.touch()
+            self.assertEqual(journal._separator(), b"")
+            self.assertIsNone(journal._last_record())
+
+            with patch.object(MODULE.time, "time", return_value=1_234.5):
+                encoded = journal._encode("rule", "host", "/path")
+            self.assertEqual(
+                json.loads(encoded),
+                {
+                    "ts": 1_234_500,
+                    "ruleId": "rule",
+                    "host": "host",
+                    "normalizedPath": "/path",
+                },
+            )
+
     def test_appends_exactly_one_marker_after_capacity_is_exhausted(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "hits.jsonl"
@@ -64,6 +100,15 @@ class EgressAuditJournalTest(unittest.TestCase):
                 if record.get("ruleId") == "audit_truncated"
             ]
             self.assertEqual(len(markers), 1)
+            self.assertEqual(
+                markers[0],
+                {
+                    "ts": markers[0]["ts"],
+                    "ruleId": "audit_truncated",
+                    "host": "",
+                    "normalizedPath": "",
+                },
+            )
 
     def test_marks_a_record_that_would_cross_the_limit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

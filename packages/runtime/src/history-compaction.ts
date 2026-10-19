@@ -21,7 +21,7 @@ import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { ContextBudgetDiagnostic } from '@maka/core/usage-stats/types';
 import { finitePositive } from './context-budget-helpers.js';
-import { estimateRuntimeEventChars, estimateRuntimeEventsTokens } from './model-history.js';
+import { estimateRuntimeEventsTokens } from './model-history.js';
 import { compactionDecisionDiagnosticPatch } from './compaction-boundary.js';
 import {
   HistoryCompactSummarizerError,
@@ -30,8 +30,9 @@ import {
 import { findCheckpointSummaryDefect } from './history-compact-summary-validation.js';
 import {
   buildHistoryCompactCheckpoint,
+  checkHistoryCompactCheckpointCurrency,
   historyCompactCheckpointToRuntimeEvent,
-  historyCompactSourceDigest,
+  isHistoryCompactContentEvent,
   matchHistoryCompactCheckpointPrefix,
   midTurnHeadAnchorEvent,
   projectHistoryCompactCheckpointReplay,
@@ -39,6 +40,10 @@ import {
   type HistoryCompactMemoryExtractionBoundary,
   type HistoryCompactProviderState,
 } from './history-compact-checkpoint.js';
+import {
+  reduceEffectiveModelProjections,
+  type LoadedModelProjectionTransitions,
+} from './model-projection-transition-ledger.js';
 
 /**
  * Context compaction: the pure measurement + safe-boundary engine.
@@ -189,21 +194,25 @@ export interface PlanHistoryCompactionInput {
    * The invocations behind the ordered events, and the route this fold is
    * dispatched on. Together they name the newest reply this route produced,
    * which is the only span a retreat may target: a rejection of a larger one
-   * says nothing about a span another model accepted.
+   * says nothing about a span another model accepted. Handoff counts too: a
+   * predecessor run's reply inside the same logical turn can sit after the
+   * head anchor and still prove a mid_turn retreat.
    */
   invocations?: readonly RuntimeInvocationRecord[];
   acceptedRoute?: { modelId: string; connectionId?: string };
   /** Present only when this automatic Compaction should create a Memory task. */
   memoryExtractionBoundary?: HistoryCompactMemoryExtractionBoundary;
   /**
-   * Projects the covered span to its effective (transition-folded) view. When
-   * present, the summary is written from that view and its digest is pinned as
-   * `coverage.effectiveSourceDigest`, so a later projection transition
-   * invalidates the checkpoint instead of being restored by it (#4845 review).
+   * Loads the model-projection transition view this plan is judged and built
+   * under. Called only after a safe covered boundary exists — the ledger is
+   * never read for a fold that cannot run — and the loaded snapshot then
+   * covers the whole pass: the covered span is folded through it before
+   * summarizing, its digest is pinned as `coverage.effectiveSourceDigest` so
+   * a later projection transition invalidates the checkpoint instead of being
+   * restored by it (#4845 review), and the same view gates checkpoint
+   * roll-forward.
    */
-  projectEffectiveCoverage?: (
-    coveredRuntimeEvents: readonly RuntimeEvent[],
-  ) => Promise<readonly RuntimeEvent[]>;
+  loadProjectionSnapshot?: () => Promise<LoadedModelProjectionTransitions>;
   summarize: HistoryCompactionSummarizer;
 }
 
@@ -291,6 +300,14 @@ export async function planHistoryCompaction(
   if (phase !== 'standalone' && headAnchorIndex < 0) {
     return { decision: 'fail_open', reason: 'no_safe_completed_span' };
   }
+  // After a retreat the summarizer has already been called and refused, so a
+  // smaller window with nothing safe to fold is that failure, not a pool that
+  // never reached the summarizer (#5790 review).
+  let retreated = false;
+  const noSafeSpan = (): PlanHistoryCompactionResult =>
+    retreated
+      ? { decision: 'fail_open', reason: 'summarizer_failed', diagnosticReason: 'input_too_large' }
+      : { decision: 'fail_open', reason: 'no_safe_completed_span' };
   let maxCoveredCount = input.orderedEvents.length;
   while (maxCoveredCount > 0) {
     const boundary = selectSafeCompactionPrefix(input.orderedEvents, {
@@ -312,19 +329,19 @@ export async function planHistoryCompaction(
         : phase === 'mid_turn'
           ? boundary.ok && boundary.coveredCount > headAnchorIndex && boundary.coveredCount >= 2
           : boundary.ok && boundary.coveredCount > 0 && boundary.coveredCount <= headAnchorIndex;
-    if (!boundary.ok || !hasSafeCoverage) {
-      return { decision: 'fail_open', reason: 'no_safe_completed_span' };
-    }
+    if (!boundary.ok || !hasSafeCoverage) return noSafeSpan();
     const coveredRuntimeEvents = input.orderedEvents.slice(0, boundary.coveredCount);
     const tailRuntimeEvents = input.orderedEvents.slice(boundary.coveredCount);
 
+    // One transition view per pass: the same loaded snapshot judges the
+    // previous checkpoint's currency and produces the effective view the
+    // summary is written from.
+    const projectionSnapshot = input.loadProjectionSnapshot
+      ? await input.loadProjectionSnapshot()
+      : undefined;
+
     // Roll forward from a previous checkpoint when it is an exact prefix of the
     // covered events, so the summary only re-reads the newly folded span.
-    const checkpointMatch = input.previousCheckpoint
-      ? matchHistoryCompactCheckpointPrefix(input.previousCheckpoint, coveredRuntimeEvents)
-      : undefined;
-    let previousCheckpoint =
-      checkpointMatch && !checkpointMatch.reason ? input.previousCheckpoint : undefined;
     // Content-currency gate for roll-forward: the inherited summary or
     // provider state describes the EFFECTIVE view of the previous coverage at
     // its own creation. A projection transition committed since rewrites that
@@ -332,23 +349,37 @@ export async function planHistoryCompaction(
     // would launder it into the new checkpoint under the current effective
     // digest — later replay guards would then pass it (#4845 review). On
     // drift, discard the checkpoint and re-summarize the whole effective span.
-    if (previousCheckpoint && checkpointMatch && input.projectEffectiveCoverage) {
-      const pinned = previousCheckpoint.coverage.effectiveSourceDigest;
-      const previousEffectiveCovered = await input.projectEffectiveCoverage(
-        checkpointMatch.coveredRuntimeEvents,
+    let previousCheckpoint = input.previousCheckpoint;
+    let successorRuntimeEvents: readonly RuntimeEvent[] | undefined;
+    if (previousCheckpoint && projectionSnapshot) {
+      const currency = checkHistoryCompactCheckpointCurrency(
+        previousCheckpoint,
+        coveredRuntimeEvents,
+        projectionSnapshot,
       );
-      if (pinned === undefined || historyCompactSourceDigest(previousEffectiveCovered) !== pinned) {
+      if (currency.status === 'current') {
+        successorRuntimeEvents = currency.match.successorRuntimeEvents;
+      } else {
+        previousCheckpoint = undefined;
+      }
+    } else if (previousCheckpoint) {
+      const match = matchHistoryCompactCheckpointPrefix(previousCheckpoint, coveredRuntimeEvents);
+      if (match.reason === undefined) {
+        successorRuntimeEvents = match.successorRuntimeEvents;
+      } else {
         previousCheckpoint = undefined;
       }
     }
-    const newlyFoldedRuntimeEvents = previousCheckpoint
-      ? checkpointMatch!.successorRuntimeEvents
-      : coveredRuntimeEvents;
+    const newlyFoldedRuntimeEvents = successorRuntimeEvents ?? coveredRuntimeEvents;
 
     // The model-visible summary reads the effective (transition-folded) view
     // of the covered span; the raw events keep the coverage identity.
-    const effectiveCoveredRuntimeEvents = input.projectEffectiveCoverage
-      ? [...(await input.projectEffectiveCoverage(coveredRuntimeEvents))]
+    const effectiveCoveredRuntimeEvents = projectionSnapshot
+      ? reduceEffectiveModelProjections(
+          coveredRuntimeEvents,
+          projectionSnapshot.transitions,
+          projectionSnapshot.unreadableTargets,
+        ).events
       : undefined;
     const effectiveNewlyFoldedRuntimeEvents = effectiveCoveredRuntimeEvents
       ? newlyFoldedRuntimeEvents.length === coveredRuntimeEvents.length
@@ -394,6 +425,7 @@ export async function planHistoryCompaction(
             };
           }
           maxCoveredCount = proven;
+          retreated = true;
           continue;
         }
         return {
@@ -461,7 +493,7 @@ export async function planHistoryCompaction(
       estimatedTokensAfter,
     };
   }
-  return { decision: 'fail_open', reason: 'no_safe_completed_span' };
+  return noSafeSpan();
 }
 
 export interface HistoryCompactionPolicy {
@@ -533,9 +565,4 @@ export function applyRuntimeEventHistoryCompact(
       estimatedTokensAfter: checkpointTokens,
     }),
   };
-}
-
-/** True when the event carries model-visible content the compact projection counts. */
-export function isHistoryCompactContentEvent(event: RuntimeEvent): boolean {
-  return event.modelVisibility !== 'hidden' && estimateRuntimeEventChars(event) > 0;
 }

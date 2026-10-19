@@ -7,7 +7,7 @@ counterpart: ./runtime-resume-architecture.md
 implementation_status: phase_0_2_and_phase_3a_authority_current
 document_status: current
 translation_status: synced
-last_verified: 2026-09-02
+last_verified: 2026-10-10
 owners:
   - maka-backend
 ---
@@ -38,7 +38,7 @@ owners:
 
 本文面向第一次接触 Maka Runtime 的工程师。前半部分用一个文件写入例子建立直觉，后半部分说明 Phase 0–4、Desktop/CLI 接线、T1/T2、恢复判定、workspace checkpoint 和工程实施顺序。
 
-本文描述截至 2026-07-28 的 `main`：
+本文描述截至 2026-10-10 的 `main`：
 
 - Phase 0–2 已落地；
 - Phase 3A 的 recovery fact 原子写入权威与 Resolver 已落地；
@@ -236,7 +236,7 @@ Resume 会同时出现 Session、Turn、Run、Invocation 和 Operation。它们�
 | `invocationId` | 这一次 model/tool flow 调用边界是谁？ |
 | `operationId` | 这一次具体工具副作用尝试是谁？ |
 
-Continuation 会创建新的 `runId`、`invocationId` 和 `turnId`，同时在新 Run 中保存：
+Continuation 会创建新的 `runId`、`invocationId` 和 `turnId`。legacy header 把 lineage 记录为：
 
 ```text
 continuationSource = {
@@ -246,6 +246,8 @@ continuationSource = {
   sourceRuntimeEventHighWater
 }
 ```
+
+已合并的 PR B 取代了这个 header 字段：现行 lineage 是 `AgentRunLineage`（`parentRunId`、`resumedFromRunId`、`parentTurnId`），经过校验的 replay prefix 通过 `continuation_start_v2` 与 `replayManifestDigest` 提交，唯一性保证由 `runtime_continuation_claims` 表承载。`continuationSource` 只剩 legacy run-header 解码器在读取。
 
 工具的 `providerToolCallId` 继续负责 provider-native call/result 配对；`operationId` 则负责 Runtime、SQLite 和未来外部幂等协议中的执行身份。两者不能互相替代。
 
@@ -473,7 +475,6 @@ sequenceDiagram
   participant Planner as RuntimeContinuationPlanner
   participant Kernel as RuntimeKernel
   participant Run as New AgentRun
-  participant Kernel as RuntimeKernel
   participant Provider as Model provider
 
   User->>UI: 点击 Safe resume
@@ -489,7 +490,7 @@ sequenceDiagram
   else continue
     SM->>Kernel: resumeSafeBoundaryContinuation
     Kernel->>Kernel: 重新读取并 revalidate 全部边界
-    Kernel->>Run: 创建新 Run，写 continuationSource
+    Kernel->>Run: 创建新 Run，提交 continuation claim + continuation_start_v2
     Run->>Kernel: 返回 durable continuation-start proof
     Kernel->>Kernel: 消费一次性 start proof
     Kernel->>Provider: replay history，不追加重复 user message
@@ -507,10 +508,10 @@ T2 结果，Runtime 会把旧 invocation 封存为 `outcome_unknown`；它不会
 也不会重试该工具。旧 Run 仍然是停止状态。
 
 之后用户显式发送新消息时，Runtime 会开启一个新的 Turn。只有这个新 Turn 中发给模型的请求会看到临时的
-历史投影：旧工具调用后面暂时附上一条 `outcome_unknown` 响应和 system 提醒，再接上新用户消息。这条临时响应
-和提醒不会写入 RuntimeEvent ledger 或 transcript。例如，`Bash("touch marker.txt")` 已派发、但结果来不及提交；
-用户新消息可以说“检查 `marker.txt` 是否存在”。模型可以先检查当前状态，再决定下一步；Maka 不会替模型
-判断文件是否写入，也不会自动重试命令。
+历史投影：旧工具调用后面暂时附上一条 `outcome_unknown` 响应（system prompt 保持逐字节稳定，不会附加任何
+system 提醒），再接上新用户消息。这条临时响应不会写入 RuntimeEvent ledger 或 transcript。例如，
+`Bash("touch marker.txt")` 已派发、但结果来不及提交；用户新消息可以说“检查 `marker.txt` 是否存在”。
+模型可以先检查当前状态，再决定下一步；Maka 不会替模型判断文件是否写入，也不会自动重试命令。
 
 云端 activation、定时任务、Goal、WorkHub 结果和 Agent Graph 唤醒都不是用户显式消息。如果这类新 Turn
 遇到尚未确定结果的工具调用，Runtime 会在请求模型之前拒绝继续；需要用户检查当前状态并发送新消息。
@@ -555,7 +556,7 @@ Host 投影和 CLI 展示，不改变 planner、durable continuation claim 或 f
 
 这样既避免模型看到重复请求，也避免 completed tool call 因为“新建了一轮”而再次执行。
 
-多代 continuation 当前通过 `continuationSource` 逐层读取祖先 Run，再把各段合法 replay history 从老到新拼起来。后续 PR B 会把这条链收紧为 immutable event-seq high-water、domain-separated prefix digest 和数据库唯一 claim；当前实现还不能把 `events.length` 和进程内 claim 描述成跨进程的最终协议。
+多代 continuation 通过 durable continuation claim 逐层读取祖先 Run 的 lineage，再把各段合法 replay history 从老到新拼起来。已合并的 PR B 把早期的 `events.length` high-water 和进程内 claim 收紧为 immutable event-seq 边界、domain-separated prefix digest 和 SQLite 唯一 claim（`runtime_continuation_claims` 表）。
 
 ## Workspace identity 能证明什么
 
@@ -581,22 +582,19 @@ Host 投影和 CLI 展示，不改变 planner、durable continuation claim 或 f
 
 ## Phase 2：SQLite 是 RuntimeEvent 的 durable store
 
-没有 `RuntimeCommitSink` 的 JSONL host 不能声明 T1 协议。只有 host 真正把 SQLite store 同时接成 `RuntimeEventStore` 和 `RuntimeCommitSink`，AiSdk tool path 才会在 Run 首事件写入 `t1_after_preflight_v1` marker。
+host 把 SQLite store 同时接成 `RuntimeEventStore` 和 `RuntimeCommitSink`，AiSdk tool path 才会在 Run 首事件写入 `t1_after_preflight_v1` marker。
 
 当前启动规则是：
 
 ```text
 打开 RuntimeEvent writer
   → 创建或迁移 runtime.sqlite
-  → 批量、幂等导入 legacy RuntimeEvent JSONL
   → RuntimeEvent 只写 SQLite
 ```
 
-这里不再有 backend selection flag。只读检查可以读取尚未创建数据库的 legacy-only
-workspace；第一个 writer 执行单向导入。一旦存在 `runtime.sqlite`，所有 reader
-都只读 SQLite，不会再与过期 JSONL 合并或 fallback。
-
-JSONL 在迁移后只承担 legacy import 和显式 export；Session message JSONL 与 AgentRun operational JSONL 仍保留各自用途，但不与 SQLite 竞争 RuntimeEvent authority。
+这里不再有 backend selection flag。一次性 legacy JSONL 导入已随文件型 store 一并退役：
+`runtime-event-persistence` 直接打开 SQLite store，所有 reader 都只读 SQLite，
+不会再与过期 JSONL 合并或 fallback。
 
 ## Phase 3A：恢复事实怎样原子提交
 
@@ -859,7 +857,7 @@ Phase 3–4 不适合做成一个横跨 schema、runtime protocol、host lifecyc
 
 ```mermaid
 flowchart TD
-  A["PR A<br/>Recovery persistence authority<br/>已完成"] --> B["PR B<br/>Immutable cursor + durable claim"]
+  A["PR A<br/>Recovery persistence authority<br/>已完成"] --> B["PR B<br/>Immutable cursor + durable claim<br/>已合并"]
   A --> C["PR C<br/>File evidence + finalize-only recovery"]
   B --> E["PR E<br/>Checkpoint contracts"]
   C --> E
@@ -962,7 +960,7 @@ Process crash、SQLite transaction atomicity 和应用级 `fsync` 不能自动�
 
 当前最重要的两个后续缺口是：
 
-1. PR B：immutable event-seq high-water、prefix digest、SQLite unique claim 和祖先统一 replay policy；
+1. PR B 已落地：immutable event-seq 边界、domain-separated prefix digest、SQLite 唯一 claim（`runtime_continuation_claims`），祖先 replay 通过 `continuation_start_v2` 统一；
 2. PR C/D：production file evidence/reconciler 与唯一 host owner lifecycle。
 
 ## 代码阅读地图
@@ -999,7 +997,7 @@ Process crash、SQLite transaction atomicity 和应用级 `fsync` 不能自动�
 
 1. `apps/desktop/src/main/runtime-host-boot.ts`：Runtime Host 启动、客户端投影和 shutdown。
 2. `apps/desktop/src/main/runtime-host-session-execution-ipc-main.ts`：`sessions:resumeLatest`。
-3. `apps/desktop/src/renderer/use-shell-resume.ts`：中断横幅的手动入口。
+3. `apps/desktop/src/renderer/features/conversation/controller/use-shell-resume.ts`：中断横幅的手动入口。
 4. `packages/cli/src/runtime-host-cli-context.ts`：CLI Runtime Host 连接与上下文。
 5. `packages/cli/src/runtime-host-session-driver.ts`：TUI `/resume` 的 plan/execute 路径。
 

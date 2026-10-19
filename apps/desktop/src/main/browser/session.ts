@@ -74,8 +74,8 @@ export class BrowserActionBlockedError extends Error {
   constructor(label: string) {
     super(
       `Browser ${label} blocked: the agent can only read, navigate, or act on the embedded browser while ` +
-        `this conversation is the one on screen. Ask the user to switch back to this conversation (and keep ` +
-        `its browser panel open) to continue.`,
+        `this conversation is selected or has Host-authorized background access. Switch back to this ` +
+        `conversation to continue. A hidden/minimized window or collapsed browser panel is allowed.`,
     );
     this.name = 'BrowserActionBlockedError';
   }
@@ -144,12 +144,12 @@ const pendingAcquires = new Map<string, Promise<Connection>>();
 // would outlive the conversation with nothing left to ever clean it up. The
 // entry only lives until the acquire settles, not for every released session.
 const releaseEpochs = new Map<string, number>();
-// In-flight actions per conversation, so the visible lease can REVOKE — not just
-// preflight. canDrive gates the START on screen; this severs an action that was
-// still running when the user switched away (browser:active-session), so a
-// wait / navigate / extract / mutate can never keep reading or driving a now-
-// hidden, logged-in page. Keyed by session because only the shown conversation
-// may have one in flight, but a Set tolerates overlap defensively.
+// In-flight actions per conversation, so the selection/authorization lease can
+// REVOKE, not just preflight. canDrive gates the start; switching away revokes
+// ordinary Session access even while replacement identity resolution is pending.
+// Hiding/minimizing the window or collapsing the panel does not revoke the selected
+// Session. Host-authorized background access retains its independent admission.
+// A Set tolerates overlapping actions defensively.
 const inFlightBySession = new Map<string, Set<AbortController>>();
 
 function trackInFlight(sessionId: string): AbortController {
@@ -169,7 +169,7 @@ function untrackInFlight(sessionId: string, ctrl: AbortController): void {
 
 /**
  * A renderer selection changed: abort any browser action whose session is no
- * longer admitted by the Host (visible ordinary Session or background-authorized
+ * longer admitted by the Host (selected ordinary Session or background-authorized
  * WorkHub coordination). The action lease is
  * continuous, not a one-time preflight. Losing that admission severs the
  * connection like a timeout/abort; the page itself survives for when the user
@@ -309,8 +309,7 @@ export async function withBrowserPage<T>(
 ): Promise<T> {
   if (opts?.abort?.aborted) throw new BrowserActionCanceledError(label);
   const kind: TakeoverMode = opts?.takeover ?? 'observe';
-  // The Host admits visible ordinary Sessions and the background-authorized
-  // WorkHub coordination Session. Runs BEFORE acquire, so a vetoed
+  // The Host admits renderer-owned Sessions even with hidden browser panels. Runs BEFORE acquire, so a vetoed
   // background action creates no view and opens no connection. For a mutate whose
   // viewport is briefly absent (a permission modal just closed), canDrive waits
   // out the renderer's strip restore so the first approved click/type lands;
@@ -334,7 +333,7 @@ export async function withBrowserPage<T>(
     ? browserViewHost().openOriginLease(sessionId, opts.originAdmission.approvedUrl, kind)
     : undefined;
   // Track this action so a switch away from the conversation can revoke it (the
-  // visible lease is continuous, not just the preflight canDrive above).
+  // selection/authorization lease is continuous, not just the preflight canDrive above).
   // Registered AFTER canDrive resolved true, with no await between, so the
   // active-session IPC can't slip a revoke into the gap.
   const revoke = trackInFlight(sessionId);

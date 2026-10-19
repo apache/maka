@@ -24,22 +24,25 @@
     "build": "tsc -p tsconfig.json",
     "benchmark:redaction": "npm run build && node scripts/benchmark-streaming-redaction.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test:dist": "node --test \"dist/**/*.test.js\""
+    "test:dist": "node --test \"dist/**/*.test.js\"",
+    "test:images:browser": "npm run build && node --test scripts/markdown-images.browser.test.mjs"
   },
   "dependencies": {
-    "@astryxdesign/core": "0.6.2",
+    "@astryxdesign/core": "0.6.3",
     "@maka/core": "0.1.0",
     "clsx": "^2.1.1",
-    "katex": "0.18.7",
-    "lucide-react": "^1.45.0",
+    "katex": "0.18.9",
+    "lucide-react": "^1.48.0",
     "mermaid": "^11.17.2",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "virtua": "0.52.7"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
+    "esbuild": "^0.28.2",
     "linkedom": "^0.18.13"
   }
 }

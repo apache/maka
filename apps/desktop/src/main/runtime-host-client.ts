@@ -102,6 +102,7 @@ import {
   type ProjectDirectoryEntry,
   type ProjectDirectoryRoot,
   SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
+  type ArtifactChangedFrame,
   type SessionCatalogChangedFrame,
   type ScheduledTaskChangedFrame,
   type SessionCatalogItem,
@@ -133,6 +134,8 @@ import {
   type ExecutionBoundarySummary,
   type SessionLifecycleState,
   type SessionMetadataPatch,
+  type SessionRemovePreviewInput,
+  type SessionRemovePreviewResult,
   type SessionUpdateResult,
   type SkillCatalogWorkspaceContext,
   type SkillCatalogInvocableItem,
@@ -176,7 +179,7 @@ type QueueMutationInput<K extends QueueMutationOperation> = Omit<
  * How a remove settled. `restored` is not a failure: the task left the state
  * the caller decided against, so nothing was destroyed and nothing is wrong.
  */
-export type SessionRemoveDisposition = "removed" | "restored";
+export type SessionRemoveDisposition = "removed" | "restored" | "too_recent";
 
 /**
  * How a remove settled together with what it archived. `archivedSubtaskCount`
@@ -393,6 +396,11 @@ export class DesktopRuntimeHostClient {
     return this.connection.subscribeConfigurationChanges(listener);
   }
 
+  subscribeArtifactChanges(listener: (frame: ArtifactChangedFrame) => void): () => void {
+    this.#assertOpen();
+    return this.connection.subscribeArtifactChanges(listener);
+  }
+
   subscribeConnectionCatalogChanges(listener: (revision: number) => void): () => void {
     this.#assertOpen();
     return this.connection.subscribeConnectionCatalogChanges(listener);
@@ -504,10 +512,12 @@ export class DesktopRuntimeHostClient {
   setDefaultConnectionTarget(
     expectedCatalogRevision: number,
     target: OperationInput<"connection.catalog.set-default-target">["target"],
+    enableModel?: boolean,
   ): Promise<OperationOutput<"connection.catalog.set-default-target">> {
     return this.request("connection.catalog.set-default-target", {
       expectedCatalogRevision,
       target,
+      ...(enableModel === undefined ? {} : { enableModel }),
     });
   }
 
@@ -538,8 +548,9 @@ export class DesktopRuntimeHostClient {
 
   fetchConnectionModels(
     connectionId: string,
+    preserveSelection?: boolean,
   ): Promise<OperationOutput<"connection.models.fetch">> {
-    return this.request("connection.models.fetch", { connectionId });
+    return this.request("connection.models.fetch", { connectionId, ...(preserveSelection === undefined ? {} : { preserveSelection }) });
   }
 
   testConnection(
@@ -854,6 +865,10 @@ export class DesktopRuntimeHostClient {
   #projectForMutation(result: ProjectCatalogMutateResult): ProjectCatalogProject {
     if (result.kind !== "project") throw invalidProjection("Project mutation");
     return result.project;
+  }
+
+  resolveImageDelivery(sessionId: string, request: import('@maka/core/image-delivery').ImageDeliveryRequest): Promise<import('@maka/core/image-delivery').ImageDeliveryResult> {
+    return this.request('artifact.image.resolve', { ...request, sessionId });
   }
 
   async listArtifacts(sessionId: string): Promise<ArtifactProjection[]> {
@@ -1175,7 +1190,7 @@ export class DesktopRuntimeHostClient {
    */
   async removeSession(
     sessionId: string,
-    options: { requireArchived?: boolean } = {},
+    options: { requireArchived?: boolean; requireArchivedForMs?: number } = {},
   ): Promise<SessionRemoveOutcome> {
     for (let attempt = 0; attempt < MAX_SESSION_REVISION_ATTEMPTS; attempt += 1) {
       const current = await this.#requireSession(sessionId);
@@ -1185,23 +1200,29 @@ export class DesktopRuntimeHostClient {
       const result = await this.request("session.remove", {
         sessionId,
         expectedRevision: current.revision,
+        ...(options.requireArchivedForMs === undefined
+          ? {}
+          : { requireArchivedForMs: options.requireArchivedForMs }),
       });
       if (result.kind === "removed") {
         return { disposition: "removed", archivedSubtaskCount: result.archivedSubtaskCount ?? 0 };
+      }
+      // The Host's clock says it was archived too recently: kept, not failed.
+      if (result.kind === "too_recent") {
+        return { disposition: "too_recent", archivedSubtaskCount: 0 };
       }
     }
     throw revisionConflict("remove", sessionId);
   }
 
   /**
-   * How many linked subtasks a delete of this parent would move to the archive,
-   * per the Host's own removal plan. The delete confirm warns off this so the
-   * renderer never re-derives the plan from a catalog projection that omits the
-   * operator marker and copy state.
+   * What deleting these Sessions, one `removeSession` each, would remove and
+   * archive, per the Host's own removal plans. A delete confirm states this so
+   * the renderer never re-derives a plan from a catalog projection that omits
+   * the operator marker and copy state. One bounded page; callers page.
    */
-  async previewSessionRemoval(sessionId: string): Promise<number> {
-    const result = await this.request("session.remove.preview", { sessionId });
-    return result.archivableSubtaskCount;
+  previewSessionRemoval(input: SessionRemovePreviewInput): Promise<SessionRemovePreviewResult> {
+    return this.request("session.remove.preview", input);
   }
 
   async removeSessionCopy(sessionId: string): Promise<'removed' | 'retained'> {

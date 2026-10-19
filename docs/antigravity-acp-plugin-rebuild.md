@@ -157,11 +157,13 @@ This does not introduce a new application architecture or another backend.
 
 ## Scope and acceptance
 
-PR 2 covers local macOS arm64 Desktop and local Runtime Host. PR 3 alone will restore an external
-Session after process loss. PR 4 owns modes, account/directory invalidation and the expanded catalog
-lifecycle. Remote execution, OAuth forwarding, external child orchestration, steering, rollback and
+PR 2 covers local macOS arm64 Desktop and local Runtime Host. PR 3 added explicit restoration of the
+same external Session after process loss, with a visible history gap when replay cannot be aligned.
+PR 4 extends the generic executor configuration with opaque Agent modes and scopes catalog caches
+by workspace. A successful setup/login or configuration change invalidates provider discovery;
+manual refresh requests a new probe for the selected workspace. Remote execution, OAuth forwarding, external child orchestration, steering and
 cross-Agent continuation are not added here.
 
-See [PR 2 acceptance evidence](archive/antigravity-acp-pr2-acceptance.md) for controlled-process coverage,
-official Agent verification, Desktop verification and the remaining merge gate. The issue's PR 2
-checkbox stays unchecked until the PR is reviewed and merged.
+See [PR 2 acceptance evidence](archive/antigravity-acp-pr2-acceptance.md),
+[PR 3 acceptance evidence](archive/antigravity-acp-pr3-acceptance.md), and
+[PR 4 acceptance evidence](archive/antigravity-acp-pr4-acceptance.md) for the checks and their limits.

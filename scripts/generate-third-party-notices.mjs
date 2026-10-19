@@ -100,14 +100,14 @@ const LICENSE_METADATA_OVERRIDES = new Map([
 // The published tarball omits the repository LICENSE; package.json declares Apache-2.0.
 // Keyed by exact version so a bump re-checks the license rather than inheriting this.
 const APACHE_TEXT_OVERRIDE_KEYS = new Set([
-  '@ai-sdk/provider-utils@5.0.40',
+  '@ai-sdk/provider-utils@5.0.51',
   '@sigstore/verify@4.1.2',
 ]);
 const EMBEDDED_COMPONENT_LICENSES = new Map([
   [
     '@ai-sdk/code-mode',
     {
-      version: '1.0.56',
+      version: '1.0.79',
       components: [
         {
           name: 'quickjs-emscripten (embedded runtime)',
@@ -130,6 +130,7 @@ const MIT_COPYRIGHT_OVERRIDES = new Map([
   // The published tarball omits the monorepo-root LICENSE.
   ['@earendil-works/pi-tui@0.84.4', 'Copyright (c) 2025 Mario Zechner'],
   ['@earendil-works/pi-tui@0.85.1', 'Copyright (c) 2025 Mario Zechner'],
+  ['@earendil-works/pi-tui@0.87.1', 'Copyright (c) 2025 Mario Zechner'],
   // The published tarball omits the repository LICENSE; sibling @astryxdesign
   // packages ship it verbatim with this notice.
   ['@astryxdesign/core@0.1.9', 'Copyright (c) 2026 Meta Platforms, Inc.'],
@@ -141,6 +142,7 @@ const MIT_COPYRIGHT_OVERRIDES = new Map([
   ['@astryxdesign/core@0.5.2', 'Copyright (c) 2026 Meta Platforms, Inc.'],
   ['@astryxdesign/core@0.6.1', 'Copyright (c) 2026 Meta Platforms, Inc.'],
   ['@astryxdesign/core@0.6.2', 'Copyright (c) 2026 Meta Platforms, Inc.'],
+  ['@astryxdesign/core@0.6.3', 'Copyright (c) 2026 Meta Platforms, Inc.'],
   ['@stylexjs/stylex@0.19.0', 'Copyright (c) Meta Platforms, Inc. and affiliates.'],
   ['@wecom/aibot-node-sdk@1.0.7', 'Copyright (c) WeComTeam contributors'],
   [

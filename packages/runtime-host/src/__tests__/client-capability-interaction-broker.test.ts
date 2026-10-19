@@ -123,7 +123,10 @@ test('Client Capability accepts a final result while interaction delivery is sti
         broker.accept('connection-a', {
           kind: 'client.capability.result',
           invocationId: frame.invocationId,
-          result: { content: [{ type: 'text', text: 'deployed' }] },
+          result: {
+            outcome: 'success',
+            content: [{ type: 'text', text: 'deployed' }],
+          },
         });
         await flush();
       },
@@ -160,7 +163,10 @@ test('Client Capability accepts a final result while interaction delivery is sti
     },
   });
 
-  assert.deepEqual(await result, { content: [{ type: 'text', text: 'deployed' }] });
+  assert.deepEqual(await result, {
+    outcome: 'success',
+    content: [{ type: 'text', text: 'deployed' }],
+  });
   broker.close();
 });
 

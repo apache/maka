@@ -435,6 +435,7 @@ export interface RuntimePolicyOperationCoordinator {
   completeModelFetch(
     ticket: ModelFetchTicket,
     result: ConnectionModelDiscoveryResult,
+    preserveSelection?: boolean,
   ): Promise<ConnectionEffectCompletionResult>;
   beginConnectionOnboarding(
     input: BeginConnectionOnboardingInput,

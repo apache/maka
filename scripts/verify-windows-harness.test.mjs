@@ -47,6 +47,7 @@ import {
 import {
   deleteUninstallRegistrationForInstall,
   readUninstallDisplayVersionsForInstall,
+  verifyRegistryMismatchRecoveryEvidence,
   verifyRestoredWindowsInstallation,
 } from './verify-windows-installer-rollback.mjs';
 import {
@@ -325,6 +326,22 @@ it('reuses the packaged renderer smoke without widening rollback verification', 
       options: { timeoutMs: 30_000 },
     },
   ]);
+});
+
+it('accepts recoverable exit 103 evidence when no failed-upgrade aside was created', async () => {
+  const root = await makeTree({
+    'installed/Maka.exe': 'new version',
+    'installed.pre-upgrade-backup/.maka-backup-complete': 'version=1.2.3',
+    'installed.pre-upgrade-backup/RECOVERY-README.txt': 'rerun the installer',
+  });
+  const installDirectory = join(root, 'installed');
+  const backupDirectory = `${installDirectory}.pre-upgrade-backup`;
+
+  await verifyRegistryMismatchRecoveryEvidence(installDirectory, backupDirectory, '1.2.4', {
+    run: async () => ({ stdout: '1.2.4.0', stderr: '' }),
+  });
+
+  await assert.rejects(access(`${installDirectory}.failed-upgrade`), { code: 'ENOENT' });
 });
 
 async function makeTree(shape) {

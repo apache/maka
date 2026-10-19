@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { ResolveImageDelivery } from '@maka/core/image-delivery';
 import type { SessionInspectorService } from '../../application/contracts/session-inspector/service.js';
 export type { SessionInspectorService, SessionTracePage, SessionUsageSummary } from '../../application/contracts/session-inspector/service.js';
 
@@ -78,6 +79,13 @@ export interface WorkbarReviewService {
   subscribeSessionEvents(
     sessionId: string,
     handler: (event: SessionEvent) => void,
+  ): WorkbarUnsubscribe;
+  /**
+   * Catalog-level changes, e.g. a workspace relocation — the read re-resolves
+   * the Session's actual workspace afterwards.
+   */
+  subscribeSessionChanges(
+    handler: (event: SessionChangedEvent) => void,
   ): WorkbarUnsubscribe;
 }
 
@@ -159,6 +167,7 @@ export interface WorkbarArtifactsService {
 
 export interface WorkbarAttachmentsService {
   readBytes(sessionId: string, artifactId: string): Promise<ArtifactBinaryReadResult>;
+  resolveImageDelivery?: ResolveImageDelivery;
   pickFiles(): Promise<
     | {
         ok: true;

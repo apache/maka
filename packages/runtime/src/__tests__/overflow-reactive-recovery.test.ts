@@ -167,6 +167,8 @@ interface ReactiveFixtureOptions {
   providerNative?: boolean;
   /** Explicit send-level step budget forwarded to the backend. */
   maxSteps?: number;
+  /** Per provider-call reported usage, keyed by 1-based call number. */
+  usageByCall?: Record<number, { input: number; output: number }>;
   /** The FIRST tool step reports an unusable usage object (no token counts). */
   firstStepUsageMissing?: boolean;
   /** Tool-search availability with the deferred `Big` tool. */
@@ -242,6 +244,10 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
     inputTokens: { total: input, noCache: input, cacheRead: 0, cacheWrite: 0 },
     outputTokens: { total: output, text: output, reasoning: 0 },
   });
+  const usageOverride = (call: number): ReturnType<typeof usage> | undefined => {
+    const override = options.usageByCall?.[call];
+    return override ? usage(override.input, override.output) : undefined;
+  };
   const toolCallChunks = (
     call: number,
     toolName: string,
@@ -263,9 +269,10 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
       // An unusable first-step usage: the SDK accepts the object but the
       // adapter's normalization fails closed (undefined), the #972 shape.
       usage:
-        options.firstStepUsageMissing && call === 1
+        usageOverride(call) ??
+        (options.firstStepUsageMissing && call === 1
           ? ({ inputTokens: {}, outputTokens: {} } as ReturnType<typeof usage>)
-          : usage(100, 20),
+          : usage(100, 20)),
     },
   ];
   const doneChunks = (call: number): LanguageModelV4StreamPart[] => [
@@ -276,7 +283,7 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
     {
       type: 'finish',
       finishReason: { unified: 'stop', raw: 'stop' },
-      usage: usage(120, 10),
+      usage: usageOverride(call) ?? usage(120, 10),
     },
   ];
   const streamForCall = (call: number): ReadableStream<LanguageModelV4StreamPart> => {
@@ -1896,6 +1903,55 @@ describe('reactive overflow recovery in the streaming backend', () => {
     assert.equal(fixture.llmCalls.at(-1)?.errorClass, 'context_overflow');
   });
 
+  test('a terminal retry after the compaction still settles usage with its completed anchor (#5547)', async () => {
+    // Step 1 completes; step 2 overflows; the recovery compaction lands; the retry
+    // overflows terminally. Settlement persists the completed steps' usage
+    // row — after the compaction notes — and its anchor still describes the
+    // PRE-compaction request. The fact is kept whole: `completedAt` is what lets a
+    // reader order the anchor against the apply-time boundary instead of
+    // trusting ledger position.
+    const fixture = buildReactiveFixture({
+      script: ['tool', 'overflow', 'overflow'],
+      bigPriors: true,
+    });
+    await runTurn(fixture);
+
+    const usage = fixture.events.find((event) => event.type === 'token_usage') as
+      | {
+          type: 'token_usage';
+          lastRequestAnchor?: { inputTokens?: number; completedAt?: number };
+        }
+      | undefined;
+    assert.ok(usage);
+    assert.equal(typeof usage.lastRequestAnchor?.inputTokens, 'number');
+    assert.equal(typeof usage.lastRequestAnchor?.completedAt, 'number');
+    assert.equal(
+      fixture.messages.some(
+        (message) =>
+          (message as { type?: string; kind?: string }).type === 'system_note' &&
+          (message as { kind?: string }).kind === 'context_compaction_applied',
+      ),
+      true,
+    );
+  });
+
+  test('a post-compaction retry that completes keeps its request anchor', async () => {
+    // The healthy counterpart: the retry completed after the compaction, so the
+    // settlement usage row anchors the NEXT turn's baseline on real post-compaction
+    // input.
+    const fixture = buildReactiveFixture({
+      script: ['tool', 'overflow', 'done'],
+      bigPriors: true,
+    });
+    await runTurn(fixture);
+
+    const usage = fixture.events.find((event) => event.type === 'token_usage') as
+      | { type: 'token_usage'; lastRequestAnchor?: { inputTokens?: number } }
+      | undefined;
+    assert.ok(usage);
+    assert.equal(typeof usage.lastRequestAnchor?.inputTokens, 'number');
+  });
+
   test('a proactive fold spends the step, so the same step does not fold again', async () => {
     // The declared window is crossed before the second request, so that
     // request is already the folded one when the provider rejects it. Reactive
@@ -1944,6 +2000,36 @@ describe('reactive overflow recovery in the streaming backend', () => {
     // One write lost, one kept: the fold that rescued the rejected request.
     assert.equal(fixture.recorded.length, 1);
     assert.equal(fixture.summarizerCalls(), 2);
+  });
+
+  test('a no_safe_completed_span fail-open does not block overflow recovery once the pool grows (#5790)', async () => {
+    // Step 1's large usage fires the proactive trigger while the durable pool
+    // is only the anchor plus one tool pair — a miss that never reached the
+    // summarizer yet (before the fix) latched the turn's failure flag. Step 2
+    // lands a second pair and reports a small usage so the proactive trigger
+    // stays quiet, then the third request overflows: recovery must re-read
+    // the grown ledger and fold instead of inheriting the earlier miss.
+    const fixture = buildReactiveFixture({
+      script: ['tool', 'tool', 'overflow', 'done'],
+      withoutPriorTurns: true,
+      declareContextWindow: true,
+      contextWindow: 190,
+      usageByCall: { 1: { input: 1_000, output: 50 }, 2: { input: 10, output: 5 } },
+    });
+    await runTurn(fixture);
+
+    // Recovery folded the grown pool and resent: the turn completes for real.
+    assert.equal(complete(fixture)?.stopReason, 'end_turn');
+    assert.equal(fixture.model.doStreamCalls.length, 4);
+    assert.equal(
+      fixture.events.some((event) => event.type === 'error'),
+      false,
+    );
+    assert.equal(fixture.summarizerCalls(), 1);
+    assert.equal(fixture.recorded.length, 1);
+    // The resent request carries the folded checkpoint, not the raw span.
+    const resent = JSON.stringify(fixture.model.doStreamCalls[3]?.prompt);
+    assert.match(resent, /REACTIVE_SUMMARY_SENTINEL/);
   });
 
   test('a later step that overflows again folds again after real progress', async () => {
@@ -2153,7 +2239,8 @@ describe('reactive overflow recovery in the streaming backend', () => {
 
       const note = fixture.messages.find(
         (message): message is { type: 'system_note'; kind: string; data?: unknown } =>
-          (message as { type?: string }).type === 'system_note',
+          (message as { type?: string }).type === 'system_note' &&
+          (message as { kind?: string }).kind === 'context_window_suggestion',
       );
       assert.equal(note?.kind, 'context_window_suggestion');
       assert.deepEqual(note?.data, {
@@ -2234,6 +2321,15 @@ describe('reactive overflow recovery in the streaming backend', () => {
     await runTurn(fixture);
     assert.equal(complete(fixture)?.stopReason, 'end_turn');
     // The fold itself is noted (context_compacted); the window suggestion is not.
+    // The compaction landed mid-turn, so its apply-time boundary row exists too.
+    assert.equal(
+      fixture.messages.some(
+        (message) =>
+          (message as { type?: string; kind?: string }).type === 'system_note' &&
+          (message as { kind?: string }).kind === 'context_compaction_applied',
+      ),
+      true,
+    );
     assert.equal(
       fixture.messages.some(
         (message) =>

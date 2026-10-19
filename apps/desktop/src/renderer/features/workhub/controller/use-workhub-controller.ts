@@ -41,7 +41,6 @@ import type { WorkHubAnswerInput, WorkHubAnswerResult } from '../../../../shared
 import type { AttachmentRef, FollowUpMode, MessageQueueEntryProjection, MessageQueuePlacement } from '@maka/core/events';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
-import type { WorkHubCreateDefaults } from '@maka/core/session';
 import {
   startWorkHubCoordinationLifecycle,
   WorkHubModelConfigurationRequiredError,
@@ -53,6 +52,7 @@ import type { WorkHubServices, WorkHubTranscript, WorkHubTranscriptSnapshot } fr
 const emptyTranscript: WorkHubTranscriptSnapshot = {
   messages: [],
   hasOlder: false,
+  historyComplete: false,
   ready: false,
 };
 interface SendAttempt {
@@ -80,9 +80,6 @@ export function useWorkHubController(
   );
   const [configuringModel, setConfiguringModel] = useState(false);
   const configuringModelRef = useRef(false);
-  const [newWorkDefaults, setNewWorkDefaults] = useState<
-    Omit<WorkHubCreateDefaults, 'permissionMode'>
-  >({});
   const [choices, setChoices] = useState<ChatModelChoice[]>([]);
   const [modelSetupChoicesReady, setModelSetupChoicesReady] = useState(false);
   const [transcript, setTranscript] = useState(emptyTranscript);
@@ -107,6 +104,7 @@ export function useWorkHubController(
   const [error, setError] = useState<string>();
   const [modelSetupRequired, setModelSetupRequired] = useState(false);
   const [readError, setReadError] = useState<string>();
+  const [historyError, setHistoryError] = useState<string>();
   const [readRevision, setReadRevision] = useState(0);
   const retryResolution = useRef<() => void>(() => undefined);
   const refreshSessions = useRef<() => void>(() => undefined);
@@ -336,11 +334,11 @@ export function useWorkHubController(
 
   useEffect(() => {
     setChoices([]);
-    setNewWorkDefaults({});
     transcriptRef.current = emptyTranscript;
     settledBeforePublication.current.clear();
     setTranscript(emptyTranscript);
     setReadError(undefined);
+    setHistoryError(undefined);
     const attempt = pendingSend.current;
     const pending = attempt && attempt.sessionId === sessionId && attempt.admission !== 'terminal' && attempt.admission !== 'rejected' ? attempt : undefined;
     setExecution(undefined);
@@ -352,21 +350,6 @@ export function useWorkHubController(
     }] : [] });
   }, [sessionId]);
 
-  useEffect(() => {
-    if (!sessionId) return;
-    let disposed = false;
-    void services
-      .getNewWorkDefaults(sessionId)
-      .then((defaults) => {
-        if (!disposed && currentSessionId.current === sessionId) setNewWorkDefaults(defaults);
-      })
-      .catch((reason: unknown) => {
-        if (!disposed && currentSessionId.current === sessionId) report(reason);
-      });
-    return () => {
-      disposed = true;
-    };
-  }, [services, sessionId]);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -490,6 +473,30 @@ export function useWorkHubController(
       },
       (projection) => { if (!disposed) setExecution(projection); },
     );
+    let fullHistoryRequested = false;
+    const loadFullHistory = () => {
+      if (
+        disposed ||
+        fullHistoryRequested ||
+        !handle ||
+        !transcriptRef.current.ready ||
+        !transcriptRef.current.hasOlder
+      ) return;
+      fullHistoryRequested = true;
+      void handle.loadEarlier(0).then(() => {
+        if (disposed) return;
+        if (transcriptRef.current.historyComplete) {
+          setHistoryError(undefined);
+          return;
+        }
+        fullHistoryRequested = false;
+        setHistoryError(workHubLiveCopy[localeRef.current].historyIncomplete);
+      }, () => {
+        if (disposed) return;
+        fullHistoryRequested = false;
+        setHistoryError(workHubLiveCopy[localeRef.current].historyIncomplete);
+      });
+    };
     const opening = services.openTranscript(sessionId, (snapshot) => {
       if (disposed) return;
       const attempt = pendingSend.current;
@@ -503,6 +510,8 @@ export function useWorkHubController(
         message.type === 'user' && message.id === queued.messageId)) queued.observed = true;
       transcriptRef.current = snapshot;
       setTranscript(snapshot);
+      if (snapshot.historyComplete) setHistoryError(undefined);
+      loadFullHistory();
       if (snapshot.ready && observationPhase === 'ready') setReadError(undefined);
       setMessagePresentation((previous) => ({ ...previous, transientMessages: previous.transientMessages.filter((pending) =>
         !snapshot.messages.some((message) => message.type === 'user' &&
@@ -523,6 +532,7 @@ export function useWorkHubController(
         else {
           range.current = opened;
           opened.observationChanged(observationPhase);
+          loadFullHistory();
         }
       })
       .catch(readFailed);
@@ -638,47 +648,21 @@ export function useWorkHubController(
     llmConnectionSlug: string;
     model: string;
   }, thinkingLevel: ThinkingLevel | null = null) {
-    if (!sessionId || busy || configuringModelRef.current) return;
+    if (!sessionId || !session || busy || configuringModelRef.current) return;
     configuringModelRef.current = true;
     setConfiguringModel(true);
     try {
-      const next: Omit<WorkHubCreateDefaults, 'permissionMode'> = {
-        model: {
-          llmConnectionId: input.llmConnectionId,
-          llmConnectionSlug: input.llmConnectionSlug,
-          model: input.model,
-        },
-        ...(thinkingLevel ? { thinkingLevel } : {}),
-      };
-      await services.setNewWorkDefaults(sessionId, next);
+      const result = await services.configureModel(sessionId, {
+        expectedRevision: session.revision,
+        modelTarget: { kind: 'explicit', connectionId: input.llmConnectionId,
+          connectionSlug: input.llmConnectionSlug, model: input.model },
+        thinkingLevel,
+      });
       if (currentSessionId.current !== sessionId) return;
-      setNewWorkDefaults(next);
-      setError(undefined);
-    } catch (reason) {
+      const updated = await services.getSession(sessionId);
       if (currentSessionId.current !== sessionId) return;
-      report(reason);
-    } finally {
-      configuringModelRef.current = false;
-      setConfiguringModel(false);
-    }
-  }
-  async function changeExecutor(input: {
-    executorId: string;
-    model?: string;
-    thinkingLevel?: ThinkingLevel;
-  }) {
-    if (!sessionId || busy || configuringModelRef.current) return;
-    configuringModelRef.current = true;
-    setConfiguringModel(true);
-    try {
-      const next: Omit<WorkHubCreateDefaults, 'permissionMode'> = {
-        executorId: input.executorId,
-        ...(input.model ? { executorModel: input.model } : {}),
-        ...(input.thinkingLevel ? { thinkingLevel: input.thinkingLevel } : {}),
-      };
-      await services.setNewWorkDefaults(sessionId, next);
-      if (currentSessionId.current !== sessionId) return;
-      setNewWorkDefaults(next);
+      setSessions((current) => [...current.filter((item) => item.id !== sessionId), updated]);
+      if (result.kind !== 'committed') throw new Error('WorkHub configuration changed; try again');
       setError(undefined);
     } catch (reason) {
       if (currentSessionId.current !== sessionId) return;
@@ -719,13 +703,20 @@ export function useWorkHubController(
   const queuedEntryDraft = sessionId
     ? { retract: deleteQueuedEntry, restoreDraft: (draft: RestoredDraftContent) => restoreDraft(sessionId, draft) }
     : undefined;
+  const pendingAttempt = pendingSend.current;
+  const retryableSendError =
+    error &&
+    pendingAttempt &&
+    pendingAttempt.sessionId === sessionId &&
+    (pendingAttempt.admission === 'unknown' || pendingAttempt.admission === 'rejected')
+      ? error
+      : undefined;
   return {
     services,
     sessionId,
     session,
     sessions,
     choices,
-    newWorkDefaults,
     transcript,
     activeForm: activeInteraction?.type === 'form_request' ? activeInteraction : undefined,
     respondToUserForm: async (response: import('@maka/core/interaction').InteractionFormResponse) => {
@@ -759,45 +750,32 @@ export function useWorkHubController(
     busy,
     sending,
     stopPending,
-    error: readError ?? error,
+    error: retryableSendError ?? historyError ?? readError ?? error,
     modelSetupRequired,
     modelSetupChoicesReady,
-    canRetry: Boolean(readError || (!sessionId && error) || (error && (pendingSend.current?.admission === 'unknown' || pendingSend.current?.admission === 'rejected'))),
+    canRetry: Boolean(historyError || readError || (!sessionId && error) || retryableSendError),
     send,
     stop,
     changeModel,
-    changeExecutor,
     selectSetupModel,
     configuringModel,
     changeThinkingLevel: async (level: ThinkingLevel | undefined) => {
-      if (newWorkDefaults.executorId) {
-        await changeExecutor({
-          executorId: newWorkDefaults.executorId,
-          ...(newWorkDefaults.executorModel ? { model: newWorkDefaults.executorModel } : {}),
-          ...(level ? { thinkingLevel: level } : {}),
-        });
-        return;
-      }
-      const model = newWorkDefaults.model ??
-        (session?.llmConnectionId && session.llmConnectionSlug && session.model
-          ? {
-              llmConnectionId: session.llmConnectionId,
-              llmConnectionSlug: session.llmConnectionSlug,
-              model: session.model,
-            }
-          : undefined);
+      const model = session?.llmConnectionId && session.llmConnectionSlug && session.model
+        ? { llmConnectionId: session.llmConnectionId, llmConnectionSlug: session.llmConnectionSlug, model: session.model }
+        : undefined;
       if (!model) return;
       await changeModel(model, level ?? null);
     },
     retry: () => {
       const attempt = pendingSend.current;
-      if (readError && sessionId) {
+      if (retryableSendError && attempt && attempt.sessionId === sessionId && attempt.admission === 'unknown') {
+        void recoverSend();
+      } else if (retryableSendError && attempt && attempt.sessionId === sessionId && attempt.admission === 'rejected') {
+        void send(attempt.input.text, attempt.input.attachments ?? []);
+      } else if ((historyError || readError) && sessionId) {
+        setHistoryError(undefined);
         setReadError(undefined);
         setReadRevision((revision) => revision + 1);
-      } else if (attempt && attempt.sessionId === sessionId && attempt.admission === 'unknown') {
-        void recoverSend();
-      } else if (attempt && attempt.sessionId === sessionId && attempt.admission === 'rejected') {
-        void send(attempt.input.text, attempt.input.attachments ?? []);
       } else retryResolution.current();
     },
     loadEarlier: () => range.current?.loadEarlier(),

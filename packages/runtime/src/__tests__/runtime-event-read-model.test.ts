@@ -28,6 +28,7 @@ import type { SessionHeader, SessionSummary, StoredMessage, TurnRecord } from '@
 import { deriveTurnRecords, decodeCanonicalMessage } from '@maka/core/session';
 import type { CanonicalPermissionOutcomeRecord } from '../interaction-authority.js';
 import {
+  classifyRuntimeEventTerminalFact,
   createRuntimeEventStoredMessageProjector,
   isHardRuntimeEventReadModelDiagnostic,
   isUnclaimedRuntimeEventDiagnostic,
@@ -293,6 +294,36 @@ function equivalentLegacyMessages(): StoredMessage[] {
 }
 
 describe('projectRuntimeEventsToStoredMessages', () => {
+  test('preserves declared aborts while projecting old result events unchanged', () => {
+    const oldEvents = baseEvents();
+    const oldResult = projectRuntimeEventsToStoredMessages(oldEvents, {
+      invocations: [invocation],
+    }).messages.find((message) => message.type === 'tool_result');
+    assert.equal(oldResult?.type === 'tool_result' && oldResult.outcome, undefined);
+
+    const events = oldEvents.map(
+      (event): RuntimeEvent =>
+        event.id === 'evt-tool-result'
+          ? {
+              ...event,
+              content: {
+                kind: 'function_response',
+                id: 'tool-1',
+                name: 'Read',
+                result: { kind: 'text', text: 'file contents' },
+                isError: true,
+                outcome: 'aborted',
+              },
+            }
+          : event,
+    );
+    const result = projectRuntimeEventsToStoredMessages(events, {
+      invocations: [invocation],
+    }).messages.find((message) => message.type === 'tool_result');
+    assert.equal(result?.type === 'tool_result' && result.isError, true);
+    assert.equal(result?.type === 'tool_result' && result.outcome, 'aborted');
+  });
+
   test('streaming projection is equivalent to the batch read model', () => {
     const events = baseEvents();
     const streamed = createRuntimeEventStoredMessageProjector({ invocations: [invocation] });
@@ -2102,6 +2133,38 @@ describe('projectRuntimeEventsToStoredMessages', () => {
     assert.deepStrictEqual(out.diagnostics, []);
   });
 
+  // The exact shape AgentRun.reachHandoffBoundary commits: endInvocation plus
+  // the pause, and deliberately no terminal status. Ledgers written before the
+  // classifier learned this shape carry this event, immutable.
+  test('handoff-pause terminal RuntimeEvent classifies as handed off', () => {
+    const pauseEvent = ev({
+      id: 'evt-handoff-pause',
+      author: 'host',
+      modelVisibility: 'hidden',
+      actions: {
+        endInvocation: true,
+        handoffPause: {
+          claimId: 'claim-1',
+          handoffId: 'handoff-1',
+          hostEpoch: 'epoch-1',
+          protocol: 'runtime_handoff_pause_v1',
+          remainingSteps: null,
+          rootRunId: runId,
+          successorInvocationId: 'successor-inv-1',
+          successorRunId: 'successor-run-1',
+        },
+      },
+    });
+    const result = classifyRuntimeEventTerminalFact({ sessionId, runId, turnId }, [
+      ev({ id: 'evt-open' }),
+      pauseEvent,
+    ]);
+    assert.equal(result.fact?.runStatus, 'handed_off');
+    assert.equal(result.fact?.turnStatus, 'handed_off');
+    assert.equal(result.fact?.terminalEvent.id, 'evt-handoff-pause');
+    assert.deepEqual(result.diagnostics, []);
+  });
+
   test('projects tool_call stepId from refs so the UI timeline keeps step pairing', () => {
     const stepCall = (id: string, stepId?: string) =>
       ev({
@@ -2786,4 +2849,25 @@ test('Coordination receipts materialize as host facts, never assistant output', 
     out.messages.some((message) => message.type === 'assistant'),
     false,
   );
+});
+
+test('assistant authored summary survives canonical decoding, ledger backfill and projection', () => {
+  const message = decodeCanonicalMessage({
+    type: 'assistant',
+    id: 'summary-message',
+    turnId,
+    ts,
+    text: 'Complete original body with evidence',
+    summary: 'A distinct short preview',
+    modelId: 'fixture',
+  });
+  const { events } = backfillRuntimeEventsFromStoredMessages({
+    run: { sessionId, runId, turnId, invocationId },
+    messages: [message],
+  });
+  const projected = projectRuntimeEventsToStoredMessages(events, { invocations: [invocation] });
+  const assistant = projected.messages.find((row) => row.type === 'assistant');
+  assert.equal(assistant?.text, 'Complete original body with evidence');
+  assert.equal(assistant?.summary, 'A distinct short preview');
+  assert.throws(() => decodeCanonicalMessage({ ...message, summary: 123 }));
 });

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { PersonalAssistantSettings } from '../features/personal-assistant/index.js';
 import type { UsageScreenQuery, UsageScreenRequest } from '@maka/core/settings';
 
 import {
@@ -103,6 +104,7 @@ import { SessionBundleTasks } from '../features/session-bundle';
 import { CatalogSessions } from '../application/contracts/session-catalog/catalog-sessions.js';
 import { ImportTasksSettingsPage } from './import-tasks-settings-page';
 import { TasksSettingsPage, type ArchivedTasksBridge } from './tasks-settings-page';
+import { ArchivedTaskScope } from '../features/session-navigation';
 import { UsageScopeMount, UsageSettingsPage, type UsageScopeHandle } from './usage-settings-page';
 import { WebSearchSettingsPage } from './web-search-settings-page';
 import type { UiLocaleUpdateGate } from './ui-locale-update-gate';
@@ -176,7 +178,7 @@ type SettingsSurfaceProps = {
   uiLocaleUpdateGate: UiLocaleUpdateGate;
   onUserLabelChange?(label: string): void;
   onDefaultPermissionModeChange(mode: ChatDefaultPermissionMode): void;
-  request?: { readonly section?: SettingsSection; readonly profileId?: string };
+  request?: { readonly section?: SettingsSection; readonly profileId?: string; readonly externalAgentId?: string };
   openProviderCatalog?: boolean;
   initialConnectionSlug?: string;
   initialCreateProviderType?: ProviderType;
@@ -928,6 +930,7 @@ function SettingsSurfaceContent(
                   ))}
                 </SideNavSection>
               ))}
+              <SideNavItem label="个人助手" isSelected={section === "personal-assistant"} onClick={() => setSection("personal-assistant")} />
               <MakaClientSlotOutlet
                 name="settings.navigation"
                 owner={{
@@ -949,7 +952,7 @@ function SettingsSurfaceContent(
             <Layout
               /* The rounded main pane owns page scrolling. Keeping scroll on
                  the centered LayoutContent made the wide gutters inert and
-                 parked the scrollbar beside the 920px content column. */
+                 parked the scrollbar beside the centered content column. */
               height="auto"
               padding={0}
               /* One column width for EVERY section. Usage used to get 920
@@ -957,8 +960,12 @@ function SettingsSurfaceContent(
                  visibly shifted the left edge — the title jumped ~120px
                  between 使用统计 and any other page. A settings surface is
                  one place; its margins must not depend on which page is
-                 open. */
-              contentWidth={920}
+                 open. The column is the app's one reading measure
+                 (DESIGN.md §7, One Measure Rule), plus LayoutContent's 24px
+                 inline padding on each side. It is wrapped in calc() because
+                 Astryx aligns a bare var() differently from an arithmetic
+                 width. */
+              contentWidth="calc(var(--maka-reading-measure) + 2 * var(--space-6))"
               header={headerCopy ? (
                 <LayoutHeader padding={6}>
                   <div className="settingsPageHeader">
@@ -1038,6 +1045,7 @@ function SettingsSurfaceContent(
                           ? `${selectedRuntimeHost.profileId}:${selectedRuntimeHost.hostId}`
                           : 'client'}
                         host={selectedRuntimeHost}
+                        label={selectedRuntimeHostEntry?.profile.name}
                         generation={selectedProfileId
                           ? runtimeHostLifecycleByProfile.get(selectedProfileId)?.epoch
                           : undefined}
@@ -1082,6 +1090,7 @@ function SettingsSurfaceContent(
                             onRemoteHostAdded={props.onRemoteHostAdded}
                             openProviderCatalog={providerCatalogRequested}
                             initialConnectionSlug={props.initialConnectionSlug}
+                            initialExternalAgentId={props.request?.externalAgentId}
                             initialCreateProviderType={createProviderRequest}
                             onInitialCreateProviderConsumed={() => {
                               setCreateProviderRequest(undefined);
@@ -1146,6 +1155,7 @@ function SettingsPageBody(props: {
   initialConnectionSlug?: string;
   initialCreateProviderType?: ProviderType;
   onInitialCreateProviderConsumed?(): void;
+  initialExternalAgentId?: string;
   onInitialProviderCatalogConsumed?(): void;
 }) {
   const locale = useUiLocale();
@@ -1173,7 +1183,7 @@ function SettingsPageBody(props: {
         </SettingsPage>
       );
     case 'external-agents':
-      return <ExternalAgentsSettingsPage settings={props.settings} onUpdate={props.onUpdateSettings} />;
+      return <ExternalAgentsSettingsPage settings={props.settings} onUpdate={props.onUpdateSettings} initialExecutorId={props.initialExternalAgentId} />;
     case 'subagents':
       return (
         <SubagentSettingsPage
@@ -1244,7 +1254,13 @@ function SettingsPageBody(props: {
     case 'archived-tasks':
       return (
         <CatalogSessions catalog={props.archivedTasks.catalog}>
-          {(sessions) => <TasksSettingsPage {...props.archivedTasks} sessions={sessions} />}
+          {(sessions) => (
+            <ArchivedTaskScope {...props.archivedTasks} sessions={sessions}>
+              {(scope) => (
+                <TasksSettingsPage {...props.archivedTasks} sessions={sessions} scope={scope} />
+              )}
+            </ArchivedTaskScope>
+          )}
         </CatalogSessions>
       );
     case 'import-tasks':
@@ -1288,6 +1304,8 @@ function SettingsPageBody(props: {
           onReloadSettings={props.onReloadSettings}
         />
       );
+    case 'personal-assistant':
+      return <PersonalAssistantSettings key={`${props.runtimeHost?.profileId}:${props.runtimeHost?.hostId}`} host={props.runtimeHost} onOpenSession={props.onOpenSession} />;
     case 'daily-review':
       return <DailyReviewSettingsPage connections={props.connections} />;
     case 'search':

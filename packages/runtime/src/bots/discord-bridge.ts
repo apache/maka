@@ -297,8 +297,7 @@ export class DiscordBotBridge extends GatewayBridgeBase implements SendCapable {
     if (type === 'MESSAGE_CREATE') {
       const event = discordMessageToEvent(d as DiscordMessagePayload, Date.now());
       if (!event) return;
-      this.lastEventAt = event.receivedAt;
-      this.emitIncomingMessage(event);
+      if (!this.emitIncomingMessage(event)) return;
       this.emitStatusChange();
       return;
     }

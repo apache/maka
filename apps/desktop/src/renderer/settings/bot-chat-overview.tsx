@@ -17,17 +17,18 @@
  * under the License.
  */
 
+import type { UiLocale } from '@maka/core/ui-locale';
+
 import type { ReactNode } from 'react';
-import { ICON_SIZE, ChevronRight } from '@maka/ui/icons';
-import type { BotChannelSettings, BotProvider } from '@maka/core/bot-chat-settings';
+import type { BotChannelSettings, BotProvider, BotMessageHandling } from '@maka/core/bot-chat-settings';
 import type { BotStatus } from '@maka/runtime/bots';
 import { BOT_PROVIDERS } from '@maka/core/settings';
-import { EmptyState, Item, StatusDot } from '@astryxdesign/core';
+import { EmptyState, StatusDot, Selector } from '@astryxdesign/core';
 import { Button, RelativeTime, useUiLocale, Banner } from '@maka/ui';
 import { deriveBotChannelViewState } from './bot-settings-view-model';
 import { BOT_LABELS, BotBrandLogo, botReadinessCopyForSupport, botStatusDetail } from './bot-chat-shared';
 import { botStatusReasonMessage, getBotSettingsCopy } from '../locales/settings-bot-copy';
-import { SettingsPage, SettingsSection } from './settings-section';
+import { SettingsEntryRow, SettingsPage, SettingsSection, SettingsRow } from './settings-section';
 import { dotForStatus } from '@maka/ui';
 
 /**
@@ -37,6 +38,8 @@ import { dotForStatus } from '@maka/ui';
  * per-channel view rows during render.
  */
 export function BotChatOverview(props: {
+  messageHandling?: BotMessageHandling;
+  onMessageHandlingChange?(value: BotMessageHandling): void;
   channels: Record<BotProvider, BotChannelSettings>;
   statuses: Record<BotProvider, BotStatus> | null;
   statusLoadError: string | null;
@@ -80,10 +83,26 @@ export function BotChatOverview(props: {
   // pre-#1972 dialect — bespoke page container, section-header dialect,
   // hand-rolled list grids, a decorative readiness Badge. It is a kit page
   // now: SettingsPage → SettingsSection (whose headings keep the ids the
-  // remote-access e2e names sections by) → hairline rows; readiness reads
+  // remote-access e2e names sections by) → SettingsEntryRow; readiness reads
   // as the shared StatusDot + text idiom.
   return (
     <SettingsPage>
+      <SettingsSection title={copy.messageHandlingTitle}>
+        <SettingsRow
+          label={copy.messageHandlingLabel}
+          description={copy.messageHandlingDescription}
+          end={<Selector
+            label={copy.messageHandlingLabel}
+            isLabelHidden
+            value={props.messageHandling ?? 'task'}
+            options={[
+              { value: 'task', label: copy.separateTask },
+              { value: 'workhub', label: 'WorkHub' },
+            ]}
+            onChange={(value) => props.onMessageHandlingChange?.(value as BotMessageHandling)}
+          />}
+        />
+      </SettingsSection>
       {props.statusLoadError && (
         <Banner
           status="error"
@@ -97,41 +116,38 @@ export function BotChatOverview(props: {
             // description — the catalog below is the way forward.
             (<EmptyState isCompact title={copy.empty} />)
           ) : activeChannels.map((entry) => (
-            <Item
+            <SettingsEntryRow
               key={entry.provider}
               className="settingsRemoteAccessChannelRow"
               data-attention={entry.needsAttention ? 'true' : undefined}
-              startContent={<BotBrandLogo provider={entry.provider} />}
-              label={(
-                // a11y-allow: this label names the ROW, not the span. Astryx's Item puts consumer props on its outer wrapper and renders a separate invisible <button> for the click target, so an aria-label on the Item never reaches that button — measured. The button is named from its content, and this span is how the status reaches that name. Removing it drops the runtime error from the row's accessible name (settings.spec:226).
-                (<span className="settingsRemoteAccessItemTitle" aria-label={copy.manageAria(botCopy.providers[entry.provider].label, entry.copy.label)}>
-                  {botCopy.providers[entry.provider].label}
-                  <span className="settingsStatus">
-                    <StatusDot variant={dotForStatus(entry.copy.tone)} label={entry.copy.label} />
-                    <span>{entry.copy.label}</span>
-                  </span>
-                </span>)
+              icon={<BotBrandLogo provider={entry.provider} />}
+              label={botCopy.providers[entry.provider].label}
+              labelAriaLabel={copy.manageAria(botCopy.providers[entry.provider].label, entry.copy.label)}
+              status={(
+                <span className="settingsStatus">
+                  <StatusDot variant={dotForStatus(entry.copy.tone)} label={entry.copy.label} />
+                  <span>{entry.copy.label}</span>
+                </span>
               )}
               description={(
                 <span className="settingsRemoteAccessItemDescription" id={`settings-remote-access-${entry.provider}-summary`}>
                   {botOverviewDetail(entry.status, entry.currentError, entry.copy.detail, entry.liveOperational, locale)}
                 </span>
               )}
-              endContent={<span className="settingsRemoteAccessItemActions"><ChevronRight size={ICON_SIZE.chrome} aria-hidden="true" /></span>}
               onClick={() => props.onOpenChannel(entry.provider)}
             />
           ))}
       </SettingsSection>
       <SettingsSection titleId="remote-access-available-heading" title={copy.more} description={copy.choose}>
           {availableChannels.map((entry) => (
-            <Item
+            <SettingsEntryRow
               key={entry.provider}
               className="settingsRemoteAccessCatalogRow"
               data-support={entry.support}
-              startContent={<BotBrandLogo provider={entry.provider} />}
-              label={/* a11y-allow: this label names the ROW, not the span. Astryx's Item puts consumer props on its outer wrapper and renders a separate invisible <button> for the click target, so an aria-label on the Item never reaches that button — measured. The button is named from its content, and this span is how the status reaches that name. Removing it drops the runtime error from the row's accessible name (settings.spec:226).*/ <span className="settingsRemoteAccessItemTitle" aria-label={copy.connectAria(botCopy.providers[entry.provider].label)}>{botCopy.providers[entry.provider].label}</span>}
+              icon={<BotBrandLogo provider={entry.provider} />}
+              label={botCopy.providers[entry.provider].label}
+              labelAriaLabel={copy.connectAria(botCopy.providers[entry.provider].label)}
               description={botCopy.providers[entry.provider].help}
-              endContent={<span className="settingsRemoteAccessItemActions"><ChevronRight size={ICON_SIZE.chrome} aria-hidden="true" /></span>}
               onClick={() => props.onOpenChannel(entry.provider)}
             />
           ))}
@@ -145,7 +161,7 @@ function botOverviewDetail(
   currentError: string | undefined,
   fallback: string,
   liveOperational: boolean,
-  locale: 'zh-CN' | 'zh-TW' | 'en',
+  locale: UiLocale,
 ): ReactNode {
   const copy = getBotSettingsCopy(locale).overview;
   const identity = status?.identity?.username ?? status?.identity?.displayName;
@@ -153,7 +169,7 @@ function botOverviewDetail(
     return (
       <>
         {copy.listening}{identity ? ` · ${identity}` : ''}
-        {status?.lastEventAt ? <> · <RelativeTime ts={status.lastEventAt} /></> : ''}
+        {status?.lastEventAt ? <> · <RelativeTime ts={status.lastEventAt} className="settingsInlineTime" /></> : ''}
       </>
     );
   }

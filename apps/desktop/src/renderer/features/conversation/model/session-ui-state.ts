@@ -25,7 +25,7 @@ import {
   type InteractionQueues,
   type LiveTurnBuffer,
 } from '@maka/ui';
-import { createObservableState } from './observable-state.js';
+import { createSessionUiReads } from './session-ui-reads.js';
 import type { SessionExecutionProjection } from '../../../../shared/session-execution-projection.js';
 
 type StateUpdater<T> = (updater: (current: T) => T) => void;
@@ -127,7 +127,16 @@ export function clearAppShellSessionUiStateForSession(
 export function createAppShellSessionUiStateController(
   initialState: AppShellSessionUiState = createInitialAppShellSessionUiState(),
 ) {
-  const state = createObservableState(initialState);
+  return createSessionUiState(initialState).controller;
+}
+
+/** Internal construction seam; only the testing entry exposes whole-state inspection. */
+export function createSessionUiState(
+  initialState: AppShellSessionUiState = createInitialAppShellSessionUiState(),
+) {
+  let currentState = initialState;
+  const getState = () => currentState;
+  const { reads, publish } = createSessionUiReads(getState);
   const liveTurnBySessionRef = { current: initialState.liveTurnBySession };
   // Written by the event-health probes and read back by them alone. Kept off
   // the observed state so a probe never notifies a subscriber.
@@ -142,15 +151,17 @@ export function createAppShellSessionUiStateController(
   // The ref mirrors whatever is about to become current, so it is already
   // correct when the synchronous notification reaches a listener that reads it.
   function replaceState(next: AppShellSessionUiState): void {
+    if (next === currentState) return;
     liveTurnBySessionRef.current = next.liveTurnBySession;
-    state.replaceState(next);
+    currentState = next;
+    publish();
   }
 
   function updateMap<K extends AppShellSessionUiStateMapKey>(
     key: K,
     updater: (current: AppShellSessionUiState[K]) => AppShellSessionUiState[K],
   ): void {
-    const latestState = state.getState();
+    const latestState = getState();
     const nextMap = updater(latestState[key]);
     if (nextMap === latestState[key]) return;
     replaceState({ ...latestState, [key]: nextMap });
@@ -175,7 +186,7 @@ export function createAppShellSessionUiStateController(
   function createPendingClaim(key: BooleanMapKey): SessionPendingClaim {
     return {
       claim(claimKey: string): boolean {
-        if (state.getState()[key][claimKey] === true) return false;
+        if (getState()[key][claimKey] === true) return false;
         updateMap(key, (current) => ({ ...current, [claimKey]: true }));
         return true;
       },
@@ -185,9 +196,8 @@ export function createAppShellSessionUiStateController(
     };
   }
 
-  return {
-    getState: state.getState,
-    subscribe: state.subscribe,
+  const controller = {
+    reads,
     liveTurnBySessionRef,
     sessionEventHealthBySessionRef: sessionEventHealthBySession.ref,
     transcriptReadingAnchorBySessionRef: transcriptReadingAnchors.ref,
@@ -224,9 +234,10 @@ export function createAppShellSessionUiStateController(
     clearSessionUiState: (sessionId: string) => {
       sessionEventHealthBySession.clear(sessionId);
       transcriptReadingAnchors.set(sessionId, undefined);
-      replaceState(clearAppShellSessionUiStateForSession(state.getState(), sessionId));
+      replaceState(clearAppShellSessionUiStateForSession(getState(), sessionId));
     },
   };
+  return { controller, getState };
 }
 
 export type AppShellSessionUiStateController = ReturnType<typeof createAppShellSessionUiStateController>;

@@ -754,6 +754,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     target: DesktopRuntimeHostTargetGeneration,
     error: unknown,
   ): Promise<void> {
+    if (!this.#ownsTarget(target)) return;
     const alreadyUnavailable = target.state.readiness === 'unavailable';
     target.valid = false;
     this.#ipcMain.deactivate(target.epoch);
@@ -1186,27 +1187,36 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
         throw error;
       }
       if (result.kind === 'ready') {
-        ipcMain.completeRegistration();
-        const previous = target.lastCandidate;
-        const retainedOwnedProcess =
-          previous?.hostId === result.candidate.client.hostId &&
-          previous.hostEpoch === result.candidate.client.hostEpoch &&
-          previous.ownership === 'owned_ephemeral' &&
-          result.candidate.hostOwnership === 'owned_ephemeral' &&
-          previous.ownedProcess?.pid === result.candidate.hostPid
-            ? previous.ownedProcess
-            : undefined;
-        target.lastCandidate = {
-          hostId: result.candidate.client.hostId,
-          hostEpoch: result.candidate.client.hostEpoch,
-          ownership: result.candidate.hostOwnership,
-          ...(result.candidate.ownedProcess
-            ? { ownedProcess: trackOwnedProcess(result.candidate.ownedProcess) }
-            : retainedOwnedProcess
-              ? { ownedProcess: retainedOwnedProcess }
-              : {}),
-        };
-        return { kind: 'ready', value: result.candidate };
+        try {
+          signal.throwIfAborted();
+          if (!this.#ownsTarget(target) || !target.valid) {
+            throw new Error('Runtime Host target is no longer active');
+          }
+          ipcMain.completeRegistration();
+          const previous = target.lastCandidate;
+          const retainedOwnedProcess =
+            previous?.hostId === result.candidate.client.hostId &&
+            previous.hostEpoch === result.candidate.client.hostEpoch &&
+            previous.ownership === 'owned_ephemeral' &&
+            result.candidate.hostOwnership === 'owned_ephemeral' &&
+            previous.ownedProcess?.pid === result.candidate.hostPid
+              ? previous.ownedProcess
+              : undefined;
+          target.lastCandidate = {
+            hostId: result.candidate.client.hostId,
+            hostEpoch: result.candidate.client.hostEpoch,
+            ownership: result.candidate.hostOwnership,
+            ...(result.candidate.ownedProcess
+              ? { ownedProcess: trackOwnedProcess(result.candidate.ownedProcess) }
+              : retainedOwnedProcess
+                ? { ownedProcess: retainedOwnedProcess }
+                : {}),
+          };
+          return { kind: 'ready', value: result.candidate };
+        } catch (error) {
+          await result.candidate.close().catch(() => undefined);
+          throw error;
+        }
       }
       if (result.kind === 'incompatible' || result.kind === 'upgrade_required') {
         const conflict = result;
@@ -1434,6 +1444,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
         this.#publishState(generation, generation.state);
       },
       onFatalError: (error) => {
+        if (!this.#ownsTarget(generation)) return;
         if (starting) {
           fatalDuringStart = error;
         } else if (generation.valid) {
@@ -1518,6 +1529,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
   }
 
   #activate(target: DesktopRuntimeHostTargetGeneration): void {
+    if (!this.#ownsTarget(target) || !target.valid) return;
     this.#ipcMain.activate(target.epoch);
     const profile = target.target.profile;
     if (profile.kind === 'remote' && profile.transport.kind === 'libp2p-direct') {
@@ -1602,10 +1614,15 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     return target;
   }
 
+  #ownsTarget(target: DesktopRuntimeHostTargetGeneration): boolean {
+    return !this.#closed && this.#targets.get(target.target.profile.id) === target;
+  }
+
   #publishState(
     target: DesktopRuntimeHostTargetGeneration,
     state: RuntimeHostDesktopTargetState,
   ): void {
+    if (!this.#ownsTarget(target)) return;
     // A retry starting is not evidence of recovery. Keep its last failure until
     // a connection succeeds (or a newer failure replaces it).
     if (state.readiness !== 'ready' && target.state.readiness !== 'ready') {

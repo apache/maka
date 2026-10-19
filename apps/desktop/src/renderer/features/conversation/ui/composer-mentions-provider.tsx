@@ -20,8 +20,8 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { getConversationCopy, useUiLocale } from '@maka/ui';
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
-import type { QuoteRef } from '@maka/core/events';
 import type { InvocableSkillEntry } from '@maka/runtime/skill-invocation';
+import { useComposerStaging } from './composer-staging-context.js';
 import type { ConversationSession } from '../ports.js';
 import { useConversationServices } from '../services.js';
 import {
@@ -31,7 +31,7 @@ import {
   type SessionCatalogState,
 } from '../../../application/contracts/session-catalog/session-catalog-state.js';
 import { useExternalStoreSelector } from '../../../application/contracts/session-catalog/use-external-store-selector.js';
-import { shellSessionRowEqual } from '../controller/use-app-shell-session-ui-state.js';
+import { shellSessionRowEqual } from '../model/conversation-catalog-row.js';
 import {
   useSessionReferenceComposer,
   type SessionReferenceSession,
@@ -49,8 +49,6 @@ export interface ComposerMentionsSurface {
     readonly hostId: string;
     readonly projectId: string | null;
   };
-  readonly onAddQuote?: (quote: QuoteRef) => void;
-  readonly pendingQuotes?: readonly QuoteRef[];
 }
 
 
@@ -67,6 +65,7 @@ export interface ComposerMentions {
   readonly sessionReferences: ReadonlyArray<SessionReferenceSession>;
   readonly onPickSessionReference?: (session: SessionReferenceSession) => Promise<void>;
   readonly pendingSessionReferences: ReadonlyArray<SessionReferenceSession>;
+  hasPendingSessionReferences(): boolean;
   onRemovePendingSessionReference(sessionId: string): void;
   readonly sessionReferenceError?: { title: string; detail: string };
   waitForSessionReference(): Promise<boolean>;
@@ -124,6 +123,7 @@ function conversationSessionListsEqual(
 
 function useConversationMentions(surface: ComposerMentionsSurface): ComposerMentions {
   const services = useConversationServices();
+  const staging = useComposerStaging();
   const locale = useUiLocale();
   const mentionCopy = getConversationCopy(locale).mentions;
   const sessionCatalog = useSessionCatalogController();
@@ -271,8 +271,9 @@ function useConversationMentions(surface: ComposerMentionsSurface): ComposerMent
     sessions,
     activeId: surface.sessionId,
     hostId: activeHostId,
-    addQuote: surface.onAddQuote,
-    pendingQuotes: surface.pendingQuotes,
+    addQuote: staging.addQuote,
+    pendingQuotes: staging.pendingQuotes,
+    onDraftChange: staging.markDraftChanged,
     errorCopy: useMemo(
       () => ({
         unavailableTitle: mentionCopy.sessionReferenceUnavailableTitle,
@@ -300,10 +301,11 @@ function useConversationMentions(surface: ComposerMentionsSurface): ComposerMent
     mentionSkillsUnavailable: liveCatalog.settled === 'empty',
     mentionSkillsLoading: liveCatalog.loading,
     searchMentionFiles,
-    sessionReferences: surface.onAddQuote && referenceEnabled ? reference.references : [],
+    sessionReferences: referenceEnabled ? reference.references : [],
     onPickSessionReference:
-      surface.onAddQuote && referenceEnabled ? reference.pick : undefined,
+      referenceEnabled ? reference.pick : undefined,
     pendingSessionReferences: reference.pendingReferences,
+    hasPendingSessionReferences: reference.hasPendingReferences,
     onRemovePendingSessionReference: reference.removePendingReference,
     sessionReferenceError: reference.error,
     waitForSessionReference: reference.waitForPending,
@@ -312,13 +314,13 @@ function useConversationMentions(surface: ComposerMentionsSurface): ComposerMent
     liveCatalog.settled,
     liveCatalog.skills,
     reference.error,
+    reference.hasPendingReferences,
     reference.pick,
     reference.pendingReferences,
     reference.removePendingReference,
     reference.references,
     reference.waitForPending,
     searchMentionFiles,
-    surface.onAddQuote,
   ]);
 }
 

@@ -20,6 +20,7 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import type { SessionSummary } from '@maka/core/session';
+import type { SessionRemovePreviewResult } from '@maka/runtime-host/protocol';
 import {
   createSessionNavigationRowActions,
   type SessionNavigationSessionService,
@@ -56,6 +57,14 @@ type SweepHarness = {
   archived: string[];
   /** Each `remove` call as `[sessionId, requireArchived]`. */
   removeOptions: Array<[string, boolean]>;
+  /** The age guard each `remove` carried, when it carried one. */
+  removeAgeGuards: Array<[string, number]>;
+  /** Each `previewRemovals` call: ids and options. */
+  batchPreviews: Array<{ ids: string[]; options: unknown }>;
+  /** Each confirm the flow opened. */
+  confirms: Array<{ title: string; description: string }>;
+  /** Error toasts, as title then description. */
+  errors: Array<[string, string | undefined]>;
   cleared: string[];
   /** Titles of the success toasts a row action raised. */
   toasts: string[];
@@ -91,6 +100,10 @@ function installService(
     catalog?: readonly SessionSummary[];
     /** Subtasks the Host archives per removed id, summed into the outcome. */
     archivedByRemoval?: Record<string, number>;
+    /** What the batch preview answers; a thrown error when `null`. */
+    batchPreview?: SessionRemovePreviewResult | null;
+    /** Ids the Host keeps as archived too recently. */
+    tooRecentIds?: readonly string[];
   } = {},
 ): SessionNavigationSessionService {
   return {
@@ -108,6 +121,12 @@ function installService(
     rename: async () => undefined,
     remove: async (id, removeOptions) => {
       harness.removeOptions.push([id, removeOptions.requireArchived]);
+      if (removeOptions.requireArchivedForMs !== undefined) {
+        harness.removeAgeGuards.push([id, removeOptions.requireArchivedForMs]);
+      }
+      if (options.tooRecentIds?.includes(id)) {
+        return { disposition: 'too_recent', archivedSubtaskCount: 0 };
+      }
       if (options.rejectWithUndefinedIds?.includes(id)) {
         return Promise.reject(undefined);
       }
@@ -124,6 +143,13 @@ function installService(
       harness.previews.push(id);
       if (options.rejectPreviewIds?.includes(id)) throw new Error(`preview-unavailable:${id}`);
       return options.previewSubtasks?.[id] ?? 0;
+    },
+    previewRemovals: async (ids, previewOptions) => {
+      harness.batchPreviews.push({ ids: [...ids], options: previewOptions });
+      if (options.batchPreview === null) throw new Error('preview-unavailable');
+      return (
+        options.batchPreview ?? { archivableSubtaskCount: 0, removedSubtaskCount: 0, worktreeCount: 0 }
+      );
     },
     moveToProject: async () => ({ ok: true }),
   };
@@ -154,8 +180,13 @@ function createActions(input: {
         input.harness.toasts.push(title);
         input.harness.toastDescriptions.push(description);
       },
-      error: () => undefined,
-      confirm: async (options) => input.onConfirm?.(options) ?? true,
+      error: (title: string, description?: string) => {
+        input.harness.errors.push([title, description]);
+      },
+      confirm: async (options) => {
+        input.harness.confirms.push({ title: options.title, description: options.description });
+        return input.onConfirm?.(options) ?? true;
+      },
     },
   });
 }
@@ -166,6 +197,10 @@ function harness(): SweepHarness {
     previews: [],
     archived: [],
     removeOptions: [],
+    removeAgeGuards: [],
+    batchPreviews: [],
+    confirms: [],
+    errors: [],
     cleared: [],
     toasts: [],
     toastDescriptions: [],
@@ -193,6 +228,7 @@ describe('purgeSessions', () => {
       archivedSubtasks: 0,
       remaining: [],
       restored: [],
+      tooRecent: [],
       verified: true,
       firstFailure: undefined,
     });
@@ -435,5 +471,130 @@ describe('deleteSession', () => {
     assert.equal(activeIdRef.current, 'rescued');
     // Not "Deleted rescued": nothing was.
     assert.deepEqual(h.toasts, ['rescued was restored, so it was kept']);
+  });
+});
+
+describe('purgeArchived', () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const sessions = [summary('a'), summary('b'), summary('c')];
+
+  it('previews the frozen ids, measured and archived-only, then deletes exactly them', async () => {
+    const h = harness();
+    const service = installService(h, {
+      batchPreview: {
+        archivableSubtaskCount: 1,
+        removedSubtaskCount: 2,
+        worktreeCount: 0,
+        bytes: 2048,
+      },
+    });
+    const actions = createActions({ harness: h, sessions, activeIdRef: { current: undefined }, service });
+    const ids = ['a', 'b'];
+
+    const run = actions.purgeArchived({
+      sessionIds: ids,
+      narrowed: true,
+      requireArchivedForMs: 30 * DAY,
+      isCurrent: () => true,
+    });
+    ids.push('c');
+    await run;
+
+    assert.deepEqual(h.batchPreviews, [
+      { ids: ['a', 'b'], options: { measureBytes: true, requireArchived: true } },
+    ]);
+    assert.deepEqual(h.confirms, [
+      {
+        title: 'Delete the 2 tasks shown?',
+        description:
+          'The tasks and all of their messages are removed permanently. This cannot be undone. ' +
+          '2 Agent Graph subtasks are deleted with them. ' +
+          '1 ordinary subtask is kept and moved to Archived. ' +
+          'About 2.0 KB of task data (an estimate).',
+      },
+    ]);
+    assert.deepEqual(h.removed, ['a', 'b']);
+    // The age filter's threshold travels with every delete, for the Host's clock.
+    assert.deepEqual(h.removeAgeGuards, [
+      ['a', 30 * DAY],
+      ['b', 30 * DAY],
+    ]);
+  });
+
+  it('asks no age of the Host when no age filter is on', async () => {
+    const h = harness();
+    const service = installService(h);
+    const actions = createActions({ harness: h, sessions, activeIdRef: { current: undefined }, service });
+    await actions.purgeArchived({ sessionIds: ['a'], narrowed: false, isCurrent: () => true });
+    assert.deepEqual(h.removed, ['a']);
+    assert.deepEqual(h.removeAgeGuards, []);
+    // All-zero figures say nothing beyond the body.
+    assert.deepEqual(h.confirms, [
+      {
+        title: 'Clear the 1 archived task?',
+        description:
+          'The tasks and all of their messages are removed permanently. This cannot be undone.',
+      },
+    ]);
+  });
+
+  it('falls back to the uncertain note when the Host cannot preview', async () => {
+    const h = harness();
+    const service = installService(h, { batchPreview: null });
+    const actions = createActions({ harness: h, sessions, activeIdRef: { current: undefined }, service });
+    await actions.purgeArchived({ sessionIds: ['a', 'b', 'c'], narrowed: false, isCurrent: () => true });
+    assert.deepEqual(h.confirms, [
+      {
+        title: 'Clear all 3 archived tasks?',
+        description:
+          'The tasks and all of their messages are removed permanently. This cannot be undone. ' +
+          'Any ordinary subtasks are kept and moved to Archived.',
+      },
+    ]);
+    assert.deepEqual(h.removed, ['a', 'b', 'c']);
+  });
+
+  it('opens no confirm for a preview that outlived its page or scope', async () => {
+    const h = harness();
+    const service = installService(h);
+    const actions = createActions({ harness: h, sessions, activeIdRef: { current: undefined }, service });
+    await actions.purgeArchived({ sessionIds: ['a'], narrowed: false, isCurrent: () => false });
+    assert.equal(h.batchPreviews.length, 1);
+    assert.deepEqual(h.confirms, []);
+    assert.deepEqual(h.removeOptions, []);
+  });
+
+  it('deletes nothing when the confirm is declined', async () => {
+    const h = harness();
+    const service = installService(h);
+    const actions = createActions({
+      harness: h,
+      sessions,
+      activeIdRef: { current: undefined },
+      service,
+      onConfirm: () => false,
+    });
+    await actions.purgeArchived({ sessionIds: ['a'], narrowed: false, isCurrent: () => true });
+    assert.deepEqual(h.removeOptions, []);
+  });
+
+  it('counts a task the Host kept as too recent as kept, not failed', async () => {
+    const h = harness();
+    const service = installService(h, { tooRecentIds: ['b'] });
+    const actions = createActions({ harness: h, sessions, activeIdRef: { current: undefined }, service });
+    await actions.purgeArchived({
+      sessionIds: ['a', 'b'],
+      narrowed: true,
+      requireArchivedForMs: 7 * DAY,
+      isCurrent: () => true,
+    });
+    assert.deepEqual(h.removed, ['a']);
+    assert.deepEqual(h.errors, []);
+    assert.deepEqual(h.toasts, ['Deleted 1 task']);
+    assert.deepEqual(h.toastDescriptions, [
+      '1 more was archived too recently for the chosen age and kept.',
+    ]);
+    // Kept, so nothing the renderer holds for it is dropped.
+    assert.ok(!h.cleared.includes('b'));
   });
 });

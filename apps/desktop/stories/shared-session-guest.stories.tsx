@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useRef } from 'react';
+import { useMemo, useRef } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, waitFor } from 'storybook/test';
 import type { SessionTurnAccessRequest } from '@maka/runtime-host/protocol';
@@ -30,6 +30,18 @@ import {
   type SessionCollaborationServices,
 } from '../src/renderer/features/session-collaboration/index.js';
 import { createFakeSessionCollaborationServices } from '../src/renderer/features/session-collaboration/testing.js';
+
+import {
+  ComposerStagingProvider, ComposerStagingServicesProvider, createComposerStagingCommands, ConversationServicesProvider,
+  type ComposerStagingServices,
+} from '../src/renderer/features/conversation/index.js';
+import { stubConversationServices } from '../src/renderer/features/conversation/testing.js';
+
+const stagingServices: ComposerStagingServices = {
+  pickFiles: async () => ({ ok: false, reason: 'cancelled' }),
+  previewApproval: async () => ({ ok: false, reason: 'unavailable' }),
+  readBytes: async () => ({ ok: false, reason: 'not_found' }),
+};
 
 const SESSION_ID = 'shared-session-story';
 const SHARED_SESSION: SessionSummary = {
@@ -143,8 +155,13 @@ const reconnectServices = services(async () => {
 // ChatComposerRegion, which sends Turn requests while the Session is shared.
 function GuestComposer(props: { sessionId: string }) {
   const composerRef = useRef<ComposerHandle>(null);
+  const stagingCommands = useMemo(createComposerStagingCommands, []);
+  const conversationServices = useMemo(() => stubConversationServices(), []);
   return (
-    <GuestTurnRequests sessionId={props.sessionId} composerRef={composerRef}>
+    <ConversationServicesProvider services={conversationServices}>
+    <ComposerStagingServicesProvider services={stagingServices}>
+    <ComposerStagingProvider commands={stagingCommands} draftKey={props.sessionId}>
+    <GuestTurnRequests sessionId={props.sessionId} discardDraft={(draftKey) => composerRef.current?.clearDraft(draftKey)}>
       {(guest) => (
         <ChatComposerRegion
           composerRef={composerRef}
@@ -161,20 +178,24 @@ function GuestComposer(props: { sessionId: string }) {
           contextUsageSessionId={props.sessionId}
           newTaskDraftKey="new-task:story"
           newTaskSendPending={false}
-          stopPendingBySession={{}}
+          stopPending={false}
           respondToSandboxBoundary={() => undefined}
           respondToClientCapability={() => undefined}
           respondToUserQuestion={() => undefined}
           respondToUserForm={() => undefined}
           stop={() => undefined}
           onOpenContextUsage={() => undefined}
-          directoryComposerProps={{}}
+          canStageContext={false}
+          contextPickEnabled={false}
           directoryPickerEnabled={false}
           onSend={() => false}
           onStop={() => undefined}
         />
       )}
     </GuestTurnRequests>
+    </ComposerStagingProvider>
+    </ComposerStagingServicesProvider>
+    </ConversationServicesProvider>
   );
 }
 

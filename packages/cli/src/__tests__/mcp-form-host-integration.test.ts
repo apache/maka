@@ -56,7 +56,10 @@ for (const action of ['accept', 'decline', 'cancel'] as const) {
         );
         assert.equal(answered.ok, true, JSON.stringify(answered));
         const settled = await result;
-        assert.deepEqual(settled.result, { content: [{ type: 'text', text: 'complete' }] });
+        assert.deepEqual(settled.result, {
+          outcome: 'success',
+          content: [{ type: 'text', text: 'complete' }],
+        });
         assert.equal(server.calls.length, 2);
         assert.notEqual(server.calls[0]?.id, server.calls[1]?.id);
         assert.deepEqual(server.calls[1]?.params.arguments, server.calls[0]?.params.arguments);
@@ -92,7 +95,10 @@ test('TUI handles a second MCP question as a new canonical Host form', {
       assert.notEqual(second.requestId, first.requestId);
       assert.equal(server.calls.length, 2);
       assert.equal((await host.answer(second.requestId, { action: 'accept', values })).ok, true);
-      assert.deepEqual((await result).result, { content: [{ type: 'text', text: 'complete' }] });
+      assert.deepEqual((await result).result, {
+        outcome: 'success',
+        content: [{ type: 'text', text: 'complete' }],
+      });
       assert.equal(server.calls.length, 3);
       assert.deepEqual(server.calls[1]?.params.inputResponses, { form: { action: 'decline' } });
       assert.deepEqual(server.calls[2]?.params.inputResponses, {

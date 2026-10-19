@@ -23,7 +23,7 @@ import type { BotStatusCode, BotTestErrorCode, WechatBridgeQrHintCode } from '@m
 import type { BotOnboardingErrorCode, BotOnboardingProvider, BotOnboardingSnapshot, BotOnboardingRetryFailureCategory } from '@maka/core/bot-onboarding';
 import type { GeneralizedErrorClass } from '@maka/core/redaction';
 
-import { type UiCatalog, type UiLocale, lookupCopy } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, lookupCopy, defineShippedUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 type WidenCopy<T> = T extends string
   ? string
@@ -33,7 +33,7 @@ type WidenCopy<T> = T extends string
 
 // Bot transport failures name the platform, not the model service that the
 // shared generalized copy describes.
-const BOT_TRANSPORT_ERRORS = {
+const BOT_TRANSPORT_ERRORS = resolveUiMessageCatalog(defineShippedUiMessageCatalog<Record<GeneralizedErrorClass, string>>()({
   'zh-CN': {
     timeout: '请求超时，请稍后重试',
     rate_limited: '请求过于频繁，请稍后重试',
@@ -55,7 +55,7 @@ const BOT_TRANSPORT_ERRORS = {
     provider_error: 'The platform is temporarily unavailable. Try again later',
     network_error: 'Network error. Check the network and proxy settings',
   },
-} satisfies UiCatalog<Record<GeneralizedErrorClass, string>>;
+})) satisfies UiCatalog<Record<GeneralizedErrorClass, string>>;
 
 const zhCopy = {
   providers: {
@@ -123,6 +123,8 @@ const zhCopy = {
     wechat_ilink_credentials_incomplete: '请先完成微信扫码登录，保存 iLink bot token 与 base URL。',
   } satisfies Record<BotTestErrorCode, string>,
   overview: {
+    messageHandlingTitle: '消息处理', messageHandlingLabel: '消息处理方式', separateTask: '独立任务',
+    messageHandlingDescription: 'WorkHub：所有聊天与桌面共用一个 WorkHub，会话上下文共享，使用 WorkHub 权限。切换从下一条消息生效。',
     loadFailed: '远程接入状态载入失败', reload: '重新载入', active: '正在使用', sortHint: '按需要处理、最近活动排序',
     empty: '还没有正在使用的渠道', emptyHelp: '从下方选择一个消息平台开始配置。', more: '接入更多渠道', choose: '选择平台开始配置',
     listening: '监听中', manageAria: (name: string, status: string) => `管理 ${name}，${status}`, connectAria: (name: string) => `接入 ${name}`,
@@ -262,6 +264,8 @@ const zhTwCopy = {
     wechat_ilink_credentials_incomplete: '請先完成微信掃碼登入，儲存 iLink bot token 與 base URL。',
   } satisfies Record<BotTestErrorCode, string>,
   overview: {
+    messageHandlingTitle: '訊息處理', messageHandlingLabel: '訊息處理方式', separateTask: '獨立任務',
+    messageHandlingDescription: 'WorkHub：所有聊天與桌面共用一個 WorkHub，共享對話脈絡，使用 WorkHub 權限。切換從下一則訊息生效。',
     loadFailed: '遠端串接狀態載入失敗', reload: '重新載入', active: '正在使用', sortHint: '按需要處理、最近活動排序',
     empty: '還沒有正在使用的管道', emptyHelp: '從下方選擇一個訊息平台開始設定。', more: '串接更多管道', choose: '選擇平台開始設定',
     listening: '監聽中', manageAria: (name: string, status: string) => `管理 ${name}，${status}`, connectAria: (name: string) => `串接 ${name}`,
@@ -391,7 +395,9 @@ const enCopy: BotSettingsCopy = {
     wechat_bridge_url_invalid: 'The local WeChat bridge only accepts the local wechat-bridge, not a remote URL.',
     wechat_ilink_credentials_incomplete: 'Complete WeChat QR sign-in first to save the iLink bot token and base URL.',
   } satisfies Record<BotTestErrorCode, string>,
-  overview: { loadFailed: 'Failed to load remote-access status', reload: 'Reload', active: 'In use', sortHint: 'Sorted by attention needed and recent activity', empty: 'No channels are in use', emptyHelp: 'Choose a messaging platform below to begin setup.', more: 'Connect more channels', choose: 'Choose a platform to begin setup', listening: 'Listening', manageAria: (name, status) => `Manage ${name}, ${status}`, connectAria: (name) => `Connect ${name}` },
+  overview: {
+    messageHandlingTitle: 'Message handling', messageHandlingLabel: 'Handle messages with', separateTask: 'Separate task',
+    messageHandlingDescription: 'WorkHub shares one conversation and its permissions across desktop and remote chats. Changes apply to the next message.', loadFailed: 'Failed to load remote-access status', reload: 'Reload', active: 'In use', sortHint: 'Sorted by attention needed and recent activity', empty: 'No channels are in use', emptyHelp: 'Choose a messaging platform below to begin setup.', more: 'Connect more channels', choose: 'Choose a platform to begin setup', listening: 'Listening', manageAria: (name, status) => `Manage ${name}, ${status}`, connectAria: (name) => `Connect ${name}` },
   page: { saveFailed: (name) => `Failed to save ${name}`, loadFailed: 'Failed to load remote-access status', refreshFailed: 'Failed to refresh remote-access status', credentialVerified: (name) => `${name} credentials verified`, credentialVerifiedDetail: 'The credential check passed.', credentialTestFailed: (name) => `${name} credential test failed`, credentialTestFailedDetail: 'Check the credentials and network settings, then try again.', testError: (name) => `${name} test error`, listening: (name) => `${name} is listening`, notListening: (name) => `${name} did not start listening`, startFailed: (name) => `Failed to start ${name}`, disconnectTitle: 'Disconnect WeChat?', disconnectDescription: 'This clears the saved local QR sign-in credentials. You will need to scan again to keep using WeChat.', disconnect: 'Disconnect', cancel: 'Cancel', disconnected: 'WeChat disconnected', credentialsCleared: 'Local linked-session credentials cleared.' },
   detail: {
     unavailableHint: 'This platform is not available and cannot be enabled.', scanFirstHint: 'Scan to connect before enabling this channel.', testFirstHint: 'Test and connect before enabling this channel.', back: 'Back to Remote access', configDocs: 'View setup guide', enableAria: (name) => `Enable ${name} channel`, listening: 'Listening for new messages', healthy: 'Connection healthy. No action needed.', actionsAria: (name) => `${name} channel actions`, quickBind: 'Quick connect', scanLogin: 'Scan to sign in', scanConnect: 'Scan to connect', disconnecting: 'Disconnecting…', disconnectWechat: 'Disconnect WeChat', bridgeQr: 'Local bridge QR code', testing: 'Testing…', test: 'Test connection', connecting: 'Connecting…', testAndConnect: 'Test and connect', restarting: 'Restarting…', restart: 'Restart listener', runtimeAria: (name) => `${name} runtime status`, identity: 'Identity', unknownIdentity: 'Unavailable', connectionType: 'Connection type', lastEvent: 'Last event', noneYet: 'None', lastTest: 'Last test', neverTested: 'Never tested', statusRefreshFailed: 'Failed to refresh runtime status', latestFailure: 'Latest failure', latestFailureDetail: 'Check the configuration, network, and runtime logs, then try again.', savedButNotConnected: 'Credentials were saved, but the connection did not start.', setupMethod: 'Connection method', connectionSettings: 'Connection settings', localCredentials: 'Credentials stay on this device', autosave: 'Saved automatically', setupAria: (name) => `${name} connection method`, quickRecommended: 'Quick setup (recommended)', manual: 'Manual setup', quickAria: (name) => `${name} quick setup`, quickWecomTitle: 'Scan to create and connect a bot', quickTitle: 'Scan to create an app and bot', quickWecomDetail: 'After an administrator confirms the scan, Maka saves the Bot ID and Secret and starts the persistent connection.', quickQqTitle: 'Scan with mobile QQ to create and bind a bot', quickQqDetail: 'After confirmation, QQ securely returns the AppID and AppSecret; Maka stores them locally and starts the Gateway.', telegramOfficialFlow: 'Telegram officially requires a Bot Token from @BotFather and does not provide an API that creates a bot by QR scan and returns its token.', quickDetail: 'After confirmation, Maka stores credentials in the main process and starts the message connection.', feishuRegionAria: 'Choose Feishu account region', feishu: 'Feishu', beginQuickBind: 'Start quick connect', scanWith: (name) => `Scan with ${name}`, planned: 'This platform is shown in the catalog only. It will not become an active channel or a scheduled-task delivery target.', credentialsSaved: (name) => `${name} credentials saved`, scanComplete: (name) => `${name} QR setup complete`, savedAndConnected: 'Credentials saved securely and connection started', proxy: 'Proxy URL', chinaRequired: '(required on networks in mainland China)', authOnly: '(Bot authentication only)', telegramProxyAria: 'Telegram proxy URL', telegramNotice: 'Enable TUN mode in your network tool and restart the app to complete Telegram Bot setup.', feishuCredentialId: 'Feishu credential ID', feishuSecret: 'Feishu App Secret', feishuDomain: 'Feishu domain', feishuOption: 'Feishu (feishu.cn)', discordProxyAria: 'Discord proxy URL', discordNotice: 'For Discord access from mainland China, the proxy above covers Bot authentication only. Message WebSockets require a system-level proxy. Enable TUN mode and restart the app.', dingtalkId: 'DingTalk app key', dingtalkSecret: 'DingTalk Client Secret', wecomBotPlaceholder: 'WeCom AI app Bot ID', wecomBotAria: 'WeCom Bot ID', wecomSecretPlaceholder: 'AI app Secret', wecomSecretAria: 'WeCom Secret', qqId: 'QQ app ID', allowedUsersLabel: (count, max) => `Allowed user IDs (${count} / ${max})`, allowedUsersPlaceholder: 'One user ID per line; leave empty to allow everyone\nExample: 123456789',
@@ -419,11 +425,11 @@ const enCopy: BotSettingsCopy = {
   wechat: { token: 'WeChat Bot Token', tokenPlaceholder: 'Local wechat-bridge Bearer Token', collapseAdvanced: 'Hide advanced settings', expandAdvanced: 'Advanced settings (Official Account / local bridge URL)', bridgeAddress: 'Local bridge URL', appId: 'Official Account App ID', appIdPlaceholder: 'WeChat Official Account App ID', appSecret: 'Official Account App Secret', appSecretPlaceholder: 'WeChat Official Account App Secret', advancedNotice: 'The local bridge defaults to http://127.0.0.1:18400. Official Account App ID and App Secret are used only for Official Account messaging; personal WeChat QR sign-in uses the local bridge.', readQrFailed: 'Could not read a QR code from the local wechat-bridge. Make sure the bridge is running.', title: 'WeChat QR sign-in', subtitle: 'Scan the QR code with WeChat and confirm signing in to the local wechat-bridge on your phone.', close: 'Close WeChat QR sign-in', generating: 'Generating QR code…', loggedIn: 'WeChat is signed in. Return to test the connection or restart the listener.', expired: 'QR code expired', expiredHint: 'Refresh the QR code and scan again to continue signing in.', refreshing: 'Refreshing…', refresh: 'Refresh QR code', qrAlt: 'WeChat sign-in QR code', waiting: 'Waiting for confirmation… Sign-in status refreshes every 3 seconds.', retrying: 'Retrying…', retry: 'Retry', bridgeGenerating: 'The bridge is generating a QR code', bridgeGeneratingHint: 'The QR code appears automatically once ready; you can also fetch it again.', fetching: 'Fetching…', fetchAgain: 'Fetch again' },
 };
 
-const BOT_SETTINGS_COPY = {
+const BOT_SETTINGS_COPY = resolveUiMessageCatalog(defineShippedUiMessageCatalog<BotSettingsCopy>()({
   'zh-CN': zhCopy,
   'zh-TW': zhTwCopy,
   en: enCopy,
-} satisfies UiCatalog<BotSettingsCopy>;
+})) satisfies UiCatalog<BotSettingsCopy>;
 
 export function getBotSettingsCopy(locale: UiLocale): BotSettingsCopy {
   return BOT_SETTINGS_COPY[locale];
@@ -518,7 +524,7 @@ export function botOnboardingStatusCopy(
   starting: boolean,
   error: string | null,
   copy: BotSettingsCopy['onboarding']['providers'][BotOnboardingProvider],
-  locale: 'zh-CN' | 'zh-TW' | 'en',
+  locale: UiLocale,
 ): string {
   const shared = getBotSettingsCopy(locale).onboarding;
   if (starting) return shared.generating;

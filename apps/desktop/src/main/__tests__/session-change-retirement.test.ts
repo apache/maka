@@ -29,7 +29,7 @@ import {
   selectWatchedCatalogRows,
   type DesktopSessionSummary,
 } from '../../renderer/application/contracts/session-catalog/catalog-row-watch.js';
-import { createSessionWorkspaceActions } from '../../renderer/session-workspace-actions.js';
+import { createSessionWorkspaceActions } from '../../renderer/features/conversation/testing.js';
 import { createSessionPatchDrain } from '../../renderer/platform/desktop/session-catalog-sync.js';
 import type { DesktopTranscriptRangeController } from '../../renderer/platform/desktop/desktop-transcript-range-store.js';
 
@@ -57,6 +57,7 @@ function harness(
   const requestedRef = { current: activeId };
   const retired: string[] = [];
   const workspace = createSessionWorkspaceActions({
+    queryCancelledMessages: async () => ({ cancelledMessageIds: [] }),
     activeIdRef,
     readRequestedSessionId: () => requestedRef.current,
     isReadableSession: () => true,
@@ -96,7 +97,7 @@ function harness(
       if (!(id in source)) throw new Error('read failed');
       return source[id];
     } } }).request,
-    setSessionEventHealthBySession: () => {},
+    recordSessionChange: () => {},
     notifyModelRebound: () => {},
     toastApi: {
       error: () => {},

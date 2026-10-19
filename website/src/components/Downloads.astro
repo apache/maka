@@ -29,10 +29,13 @@ const { copy } = Astro.props;
 const d = copy.downloads;
 const l = copy.locale;
 
-// Archive naming follows scripts/asf-source-release.mjs; <version> is the
-// release version, for example 0.1.0.
-const archive = 'apache-maka-<version>-incubating-src.tar.gz';
-const dist = `${links.dist}<version>/`;
+// The latest IPMC-approved release, as moved to dist/release. Archive naming
+// follows scripts/asf-source-release.mjs.
+const version = '0.2.0';
+const released = '2026-10-08';
+const archive = `apache-maka-${version}-incubating-src.tar.gz`;
+const dir = `${version}-incubating/`;
+const dist = `${links.dist}${dir}`;
 const steps = {
   keys: [`curl -O ${links.dist}KEYS`, 'gpg --import KEYS'],
   signature: [
@@ -57,14 +60,16 @@ const sections = [
 
       <div class="status">
         <h3>{d.status.h3}</h3>
-        <a class="row" href="#apache-releases"><b>{d.status.release.label}</b><span>{d.status.release.value}</span><small class="warn">{d.status.release.note}</small></a>
+        <a class="row" href="#apache-releases"><b>{d.status.release.label}</b><span>{version} · {released}</span></a>
       </div>
 
       <section id="apache-releases">
         <h2>{d.releases.h2}</h2>
-        <span class="note">{d.releases.note}</span>
         <p>{d.releases.p}</p>
-        <p>{d.releases.distNote} <code>{links.dist}</code></p>
+        <ul>
+          <li><a href={`${links.closer}${dir}${archive}`}>{archive}</a> (<a href={`${dist}${archive}.sha512`}>{d.releases.checksum}</a>, <a href={`${dist}${archive}.asc`}>{d.releases.signature}</a>, <a href={`${links.dist}KEYS`}>KEYS</a>)</li>
+        </ul>
+        <p>{d.releases.archiveNote} <a href={links.archive}>{links.archive}</a></p>
       </section>
 
       <hr class="div" />

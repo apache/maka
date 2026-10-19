@@ -26,6 +26,7 @@ import type {
   WorkspaceProjection,
 } from '../protocol/index.js';
 import type { ConnectionContext, SkillCatalogOperationHandlerMap } from './operation-dispatcher.js';
+import { reportUnexpectedOperation } from '@maka/core/redaction';
 import type { HostCapabilities } from '@maka/runtime/skills';
 import {
   SkillCatalogRepository,
@@ -291,6 +292,7 @@ function repositoryFailure<K extends CatalogOperation>(
         error: { code: 'invalid_request', message: error.message },
       } as OperationOutcome<K>;
     }
+    reportUnexpectedOperation(`runtime-host:skill-catalog:${operation}`, error);
     return {
       ok: false,
       error: { code: 'internal_failure', message: 'Skill catalog operation failed' },

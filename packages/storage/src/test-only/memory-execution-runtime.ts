@@ -48,9 +48,8 @@ import {
   scanToolLedger,
   referencedToolOperationIds,
   ToolLedgerCorruptionError,
-  ToolLedgerReducer,
   ToolLedgerRejectionError,
-  validateIncrementalToolLedgerTransition,
+  validateToolLedgerTransition,
   type ToolLedgerTransitionKind,
 } from '@maka/core/tool-ledger-scanner';
 import { interpretScannedToolRecovery } from '@maka/core/tool-recovery-bundle';
@@ -227,11 +226,8 @@ function transition(
       }
     }
   }
-  const reducer = new ToolLedgerReducer(
-    existingEvents.filter((event) => invocationIds.has(event.invocationId)),
-  );
-  const validation = validateIncrementalToolLedgerTransition({
-    reducer,
+  const validation = validateToolLedgerTransition({
+    existingEvents: existingEvents.filter((event) => invocationIds.has(event.invocationId)),
     candidateEvents,
     expectedTransition,
   });
@@ -687,6 +683,11 @@ export function createMemoryRuntimeStore(a: MemoryExecutionAuthority): Execution
       ),
     readImmutableRuntimeEvents: async (sessionId, runId) =>
       a.read((s) => immutable(s, sessionId, runId)),
+    readSessionHistoryRevision: async (sessionId) =>
+      a.read((s) => {
+        const last = ordinals(s).get(sessionId)?.at(-1);
+        return last ? `${last.ordinal}:${last.event.id}` : 'empty';
+      }),
     readRecoveryMessageEvents: async (input) =>
       a.read((s) => {
         check(input.sessionId, ...input.turnIds, ...input.eventIds);

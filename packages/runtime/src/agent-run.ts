@@ -553,6 +553,15 @@ export class AgentRun {
     // method exists to prevent.
     const runStore = this.input.runStore;
     if (!this.input.runtimeEventStore || !runStore) return;
+    // A stream may have attempted finalization after an earlier stop failed.
+    // Join that write, but let this explicit retry reuse its reserved fact if
+    // the write failed; a rejected promise is not durable terminal evidence.
+    const previousWrite = this.terminalClaim.write;
+    try {
+      await previousWrite;
+    } catch {
+      if (this.terminalClaim.write === previousWrite) this.terminalClaim.write = undefined;
+    }
     await this.flushRuntimePartialBuffer(true);
     // The claim only fences writers inside this Run. Another owner — a Host
     // recovery, a resumed continuation — may have sealed the ledger already,

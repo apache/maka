@@ -422,9 +422,11 @@ test('renders collapsible project navigation and row actions as sibling controls
   const action = document.querySelector<HTMLButtonElement>(
     'button[aria-label="Maka project actions"]',
   );
+  const newTask = projectRow?.querySelector<HTMLButtonElement>('button[aria-label="Maka New task"]');
 
   assert.ok(projectRow);
   assert.ok(action);
+  assert.ok(newTask);
   const navigation = projectRow.querySelector<HTMLButtonElement>(
     ':scope > div > button[aria-controls]',
   );
@@ -439,6 +441,8 @@ test('renders collapsible project navigation and row actions as sibling controls
   assert.ok(controlledGroup);
   assert.equal(navigation.contains(metadata), true);
   assert.equal(navigation.contains(action), false);
+  assert.equal(navigation.contains(newTask), false);
+  assert.equal(action.closest('.maka-project-row-actions'), newTask.closest('.maka-project-row-actions'));
   assert.equal(metadata.textContent, '');
   assert.equal(navigation.textContent, 'Maka', 'project navigation omits the task-count badge');
   assert.equal(controlledGroup.getAttribute('aria-hidden'), 'false');
@@ -449,10 +453,40 @@ test('renders collapsible project navigation and row actions as sibling controls
     'project navigation precedes its auxiliary action',
   );
   assert.equal(projectButtons.indexOf(action), 1, 'project action precedes nested tasks');
+  assert.equal(projectButtons.indexOf(newTask), 2, 'new task follows the menu and precedes nested tasks');
   assert.ok(navigation.getAttribute('aria-describedby'));
   assertDescriptionReferencesResolve(markup);
   assertNoNestedButtons(markup);
 });
+
+for (const scenario of [
+  { name: 'empty', project, sessions: [], hasNewTask: true },
+  { name: 'unavailable', project: { ...project, available: false }, sessions: [session], hasNewTask: false },
+  { name: 'archived', project: { ...project, archivedAt: 1 }, sessions: [session], hasNewTask: false },
+  { name: 'ungrouped', project: undefined, sessions: [session], hasNewTask: false },
+]) {
+  test(`an ${scenario.name} project group offers the correct new-task shortcut`, () => {
+    const markup = renderToStaticMarkup(
+      <LocaleProvider locale="en">
+        <Rail
+          sessions={scenario.sessions}
+          groups={[{ id: 'group', label: 'Maka', project: scenario.project, sessions: scenario.sessions }]}
+          groupVariant="project"
+          projectActions={projectActions}
+        />
+      </LocaleProvider>,
+    );
+    const { document } = parseHTML(markup);
+    const projectRow = document.querySelector('[data-project-id="group"]');
+    assert.ok(projectRow);
+    assert.equal(projectRow.querySelector('button[aria-label="Maka New task"]') !== null, scenario.hasNewTask);
+    assert.equal(
+      projectRow.querySelector('button[aria-label="Maka project actions"]') !== null,
+      scenario.project !== undefined,
+    );
+    assertNoNestedButtons(markup);
+  });
+}
 
 test('renders pinned tasks once above project groups', () => {
   const pinnedSession: SessionSummary = {

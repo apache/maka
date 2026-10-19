@@ -31,6 +31,7 @@ export const workHubPresentationBridge: WorkHubPresentationBridge = {
   ready: () => invokeWhenReady('workhub-presentation:command', 'ready'),
   getSnapshot: () => invokeWhenReady('workhub-presentation:command', 'snapshot'),
   setHost: (host) => invokeWhenReady('workhub-presentation:command', 'host', host),
+  captureBackdrop: () => invokeWhenReady('workhub-presentation:command', 'capture-backdrop'),
   setConversationLayout: (layout) => invokeWhenReady('workhub-presentation:command', 'conversation-layout', layout),
   progressReady: (request) => invokeWhenReady('workhub-presentation:command', 'progress-ready', request),
   resizeProgress: (request, height) => invokeWhenReady('workhub-presentation:command', 'progress-layout', { request, height }),

@@ -466,6 +466,8 @@ export function normalizeTerminalFontSize(value: unknown): number {
 export type WorkbarTogglePosition = 'titlebar' | 'edge';
 
 export interface AppearanceSettings {
+  /** Show personal-assistant index workers and delegated tasks in session navigation. */
+  showAssistantBackgroundSessions?: boolean;
   /** Where the desktop exposes the Workbar expand/collapse control. */
   workbarTogglePosition?: WorkbarTogglePosition;
   theme: ThemePreference;
@@ -856,7 +858,8 @@ export function createDefaultSettings(): AppSettings {
       activeTab: 'requests',
     },
     appearance: {
-      workbarTogglePosition: 'edge',
+      showAssistantBackgroundSessions: false,
+      workbarTogglePosition: 'titlebar',
       theme: 'auto',
       palette: 'default',
       appIcon: DEFAULT_APP_ICON,
@@ -1050,8 +1053,8 @@ export function normalizeSettings(input: unknown): AppSettings {
     // position; UI density is no longer a product setting.
     appearance: {
       ...appearanceWithoutLegacyFields,
-      workbarTogglePosition:
-        base.appearance.workbarTogglePosition === 'titlebar' ? 'titlebar' : 'edge',
+      showAssistantBackgroundSessions: base.appearance.showAssistantBackgroundSessions === true,
+      workbarTogglePosition: base.appearance.workbarTogglePosition === 'edge' ? 'edge' : 'titlebar',
       palette: isThemePalette(base.appearance.palette) ? base.appearance.palette : 'default',
       // Same fail-closed rule as `palette` above, for the same reason: an
       // unknown id would otherwise reach the main process and resolve to a

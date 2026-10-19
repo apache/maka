@@ -24,6 +24,7 @@
     "./tool-result-preview": "./dist/tool-result-preview.js",
     "./workspace-version-authority": "./dist/workspace-version-authority.js",
     "./runtime-policy": "./dist/runtime-policy.js",
+    "./event-wait": "./dist/event-wait.js",
     "./goal": "./dist/goal.js",
     "./execution-log-coverage": "./dist/execution-log-coverage.js",
     "./execution-inspect": "./dist/execution-inspect.js",
@@ -63,6 +64,8 @@
     "./context-offload": "./dist/context-offload.js",
     "./tool-result-archive-evidence": "./dist/tool-result-archive-evidence.js",
     "./attachments": "./dist/attachments.js",
+    "./image-delivery": "./dist/image-delivery.js",
+    "./image-markdown": "./dist/image-markdown.js",
     "./artifacts": "./dist/artifacts.js",
     "./pet": "./dist/pet.js",
     "./skill-invocation": "./dist/skill-invocation.js",
@@ -99,6 +102,7 @@
     "./openai-urls": "./dist/openai-urls.js",
     "./llm-connections": "./dist/llm-connections.js",
     "./provider-registry": "./dist/provider-registry.js",
+    "./provider-retirement": "./dist/provider-retirement.js",
     "./model-catalog": "./dist/model-catalog.js",
     "./model-facts": "./dist/model-facts.js",
     "./model-metadata": "./dist/model-metadata.js",
@@ -144,6 +148,7 @@
     "./project": "./dist/project.js",
     "./pty-output-view": "./dist/pty-output-view.js",
     "./relative-time": "./dist/relative-time.js",
+    "./archive-retention": "./dist/archive-retention.js",
     "./run-composition": "./dist/run-composition.js",
     "./runtime-event-store": "./dist/runtime-event-store.js",
     "./side-conversation": "./dist/side-conversation.js",
@@ -176,6 +181,7 @@
     "test:dist": "node --test \"dist/**/*.test.js\""
   },
   "dependencies": {
-    "intl-messageformat": "11.2.15"
+    "intl-messageformat": "11.2.15",
+    "marked": "18.0.11"
   }
 }

@@ -549,10 +549,12 @@ async function runCli() {
     );
   }
   const { chromium } = await import('@playwright/test');
-  // Headless Chromium paints no platform scrollbar, so anything a scrollbar
-  // can occlude is inert here and on CI. `SMOKE_HEADED=1` is how you check
-  // those by hand, on the platform whose scrollbar overlays the content.
-  const browser = await chromium.launch({ headless: process.env.SMOKE_HEADED !== '1' });
+  // Keep native scrollbar geometry in headless layout checks. Playwright hides
+  // scrollbars by default, masking the space classic scrollbars consume.
+  const browser = await chromium.launch({
+    headless: process.env.SMOKE_HEADED !== '1',
+    ignoreDefaultArgs: ['--hide-scrollbars'],
+  });
   const server = await startStaticServer(staticDir);
   let problems;
   try {

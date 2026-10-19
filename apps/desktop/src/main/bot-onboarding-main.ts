@@ -376,6 +376,8 @@ export class BotOnboardingService {
     ownedFields: ReadonlyArray<keyof BotChannelSettings>,
   ): Promise<void> {
     const previousValues = pickChannelFields(previousChannel, ownedFields);
+    // An absent pre-onboarding secret needs an explicit clear on rollback.
+    if ('appSecret' in previousValues) previousValues.appSecret ??= '';
     const rollbackPatch: UpdateAppSettingsInput = {
       botChat: { channels: { [provider]: previousValues } },
     };

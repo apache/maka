@@ -38,11 +38,12 @@ export interface WorkspacePickerGroup {
   selectedProjectId?: string | null;
   onSelectProject?(projectId: string): void;
   /**
-   * Create a project on this host. The picker collects the name first (see
+   * Create a project on this host. The dialog collects an optional name (see
    * `NewProjectDialog`) and passes it here; the handler then asks for the
-   * directory and registers the project under that name.
+   * directory and registers the project under that name, or under the folder
+   * name when none was given.
    */
-  onAdd?(name: string): void;
+  onAdd?(name?: string): void;
   onManage?(): void;
   onRelink?(projectId: string): void;
   onSelectNoProject?(): void;
@@ -68,9 +69,9 @@ export function WorkspacePicker({ workspacePicker: picker }: {
 }) {
   const copy = getConversationCopy(useUiLocale()).workspace;
   const locked = picker.pending === true;
-  // Which host's New project dialog is open. The picker names the project, then
-  // the caller's `onAdd` opens the folder picker — so the name is collected
-  // before the directory step, not after it.
+  // Which host's New project dialog is open. The dialog optionally names the
+  // project, then the caller's `onAdd` opens the folder picker — a blank name
+  // simply means the folder's name will be used.
   const [newProjectGroupId, setNewProjectGroupId] = useState<string | null>(null);
   const newProjectGroup = picker.groups.find((group) => group.id === newProjectGroupId);
 

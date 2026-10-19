@@ -69,6 +69,8 @@ export function TitlebarSessionIdentity(props: {
   parentSession?: TitlebarParentSession;
   readOnly?: boolean;
   action?: { readonly label: string; onClick(): void };
+  /** Extra task-menu items appended after `action` (e.g. directory repair). */
+  actions?: ReadonlyArray<{ readonly label: string; onClick(): void }>;
 }) {
   const locale = useUiLocale();
   const copy = getConversationCopy(locale);
@@ -177,7 +179,7 @@ export function TitlebarSessionIdentity(props: {
           <span ref={measureRef} className="maka-titlebar-identity__segment--session">{sessionName}</span>
         </Button>
       )}
-      {!props.readOnly || props.action || (props.parentSession && props.project) ? (
+      {!props.readOnly || props.action || (props.actions?.length ?? 0) > 0 || (props.parentSession && props.project) ? (
         <span className="maka-titlebar-identity__action">
           <DropdownMenu
             className="maka-titlebar-menu"
@@ -189,6 +191,9 @@ export function TitlebarSessionIdentity(props: {
           >
             {!props.readOnly ? <DropdownMenuItem label={copy.sessions.rename} onClick={() => setRenaming(true)} /> : null}
             {props.action ? <DropdownMenuItem label={props.action.label} onClick={props.action.onClick} /> : null}
+            {props.actions?.map((item) => (
+              <DropdownMenuItem key={item.label} label={item.label} onClick={item.onClick} />
+            ))}
             {props.parentSession ? projectContent : null}
           </DropdownMenu>
         </span>

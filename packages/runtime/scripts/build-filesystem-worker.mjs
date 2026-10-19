@@ -21,9 +21,10 @@ import { mkdir } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
+import { FILESYSTEM_WORKER_BUNDLE_NAME } from '../dist/filesystem-worker/resource-resolver.js';
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const outfile = resolve(packageRoot, 'dist', 'workers', 'filesystem-worker.js');
+const outfile = resolve(packageRoot, 'dist', 'workers', FILESYSTEM_WORKER_BUNDLE_NAME);
 const agentsCoreUtils = fileURLToPath(import.meta.resolve('@openai/agents-core/utils'));
 
 await mkdir(dirname(outfile), { recursive: true });

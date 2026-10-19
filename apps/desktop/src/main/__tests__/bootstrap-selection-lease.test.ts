@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { createBootstrapSelectionLease } from '../../renderer/bootstrap-selection-lease.js';
+import { createBootstrapSelectionLease } from '../../renderer/application/contracts/bootstrap-selection-lease.js';
 import {
   clearNewTaskReloadIntent,
   hasNewTaskReloadIntent,

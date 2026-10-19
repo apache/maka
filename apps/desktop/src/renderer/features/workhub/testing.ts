@@ -25,3 +25,8 @@ export { WorkHubConversation } from './ui/workhub-conversation.js';
 export { WorkHubHighlightContext } from './ui/workhub-work-identity.js';
 export { workspaceNameFromCwd } from './model/workspace-name.js';
 export { allocateWorkHubHues } from './model/identity-colors.js';
+export { workHubLinkedWork } from './model/linked-work.js';
+
+export { workHubTurnContexts } from './model/turn-context.js';
+
+export { completedWorkHubDraft } from './model/wn-draft.js';

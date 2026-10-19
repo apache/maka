@@ -157,6 +157,7 @@ export interface PluginExecutorContext {
 export interface PluginExecutorDiscoveryInput {
   readonly cwd: string;
   readonly signal: AbortSignal;
+  readonly refresh?: boolean;
 }
 export interface PluginExecutorConversationInput {
   readonly conversationKey: string;
@@ -170,10 +171,13 @@ export interface PluginExecutorProvider {
   readonly capabilities?: PluginExecutorCapabilities;
   disposeConversation?(conversationKey: string): Promise<void>;
   discover?(input: PluginExecutorDiscoveryInput): Promise<ExecutorCatalogEntry>;
+  /** Clear provider-owned discovery data after an observable account or setup change. */
+  invalidateCatalog?(): void;
+  /** Return the complete confirmed configuration snapshot; omit the result when unchanged. */
   configureConversation?(
     input: PluginExecutorConversationInput,
     signal: AbortSignal,
-  ): Promise<void>;
+  ): Promise<ExecutorConfiguration | void>;
   inspectConversation?(input: PluginExecutorConversationInput): Promise<ExecutorCatalogEntry>;
   /** Confirm terminal consumption for any result; the provider decides whether it can checkpoint. */
   acknowledgeExecution?(conversationKey: string, turnId: string): Promise<void>;
@@ -187,6 +191,8 @@ export interface PluginExecutorProvider {
 
 export interface PluginExecutorExecutionOptions {
   readonly signal?: AbortSignal;
+  /** Called when the provider returns a terminal result, before the Runtime validates it. */
+  readonly onSettled?: () => void;
   readonly onEvent?: (event: PluginExecutorOutputEvent) => void;
   readonly onPermissionRequest?: (
     request: PluginExecutorPermissionRequest,
@@ -276,6 +282,9 @@ export class PluginExecutorService extends Service {
           ? { configureConversation: provider.configureConversation.bind(provider) }
           : {}),
         ...(provider.discover ? { discover: provider.discover.bind(provider) } : {}),
+        ...(provider.invalidateCatalog
+          ? { invalidateCatalog: provider.invalidateCatalog.bind(provider) }
+          : {}),
         ...(provider.inspectConversation
           ? { inspectConversation: provider.inspectConversation.bind(provider) }
           : {}),
@@ -342,6 +351,7 @@ export class PluginExecutorService extends Service {
   async catalog(
     input: {
       cwd: string;
+      refresh?: boolean;
       sessionId?: string;
       /** Discover within this Session's scope without inspecting a retained conversation. */
       discoverySessionId?: string;
@@ -387,7 +397,11 @@ export class PluginExecutorService extends Service {
                   cwd: input.cwd,
                   ...(input.configuration ? { configuration: input.configuration } : {}),
                 })
-              : await entry.provider.discover?.({ cwd: input.cwd, signal: combined });
+              : await entry.provider.discover?.({
+                  cwd: input.cwd,
+                  signal: combined,
+                  ...(input.refresh ? { refresh: true } : {}),
+                });
             combined.throwIfAborted();
             if (!result) return fallback;
             return normalizeCatalogEntry(result, entry.provider.id);
@@ -399,11 +413,17 @@ export class PluginExecutorService extends Service {
     );
   }
 
+  invalidateCatalog(): void {
+    for (const entry of this.registry.entries('profile')) {
+      if (!entry.retired) entry.provider.invalidateCatalog?.();
+    }
+  }
+
   async configureConversation(
     sessionId: string,
     executorId: string,
     input: PluginExecutorConversationInput,
-  ): Promise<void> {
+  ): Promise<ExecutorConfiguration | void> {
     const entry = this.entry(sessionId, executorId);
     const configure = entry.provider.configureConversation;
     if (
@@ -413,11 +433,17 @@ export class PluginExecutorService extends Service {
       throw new Error('Executor configuration is unavailable or busy');
     if (!isExecutorConfiguration(input.configuration))
       throw new TypeError('Invalid executor configuration');
-    await this.withActiveOperation(
+    return await this.withActiveOperation(
       entry,
       { conversationKey: input.conversationKey },
       async (signal) => {
-        await configure(input, AbortSignal.any([signal, AbortSignal.timeout(30_000)]));
+        const confirmed = await configure(
+          input,
+          AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
+        );
+        if (confirmed !== undefined && !isExecutorConfiguration(confirmed))
+          throw new TypeError('Invalid confirmed executor configuration');
+        return confirmed;
       },
     );
   }
@@ -527,6 +553,11 @@ export class PluginExecutorService extends Service {
               return normalizePermissionResult(result, normalized);
             },
           });
+          try {
+            options.onSettled?.();
+          } catch {
+            // A settlement observer must not change external execution.
+          }
           if (signal.aborted) {
             const cancelled = cancelledResult(signal.reason);
             const normalized = normalizeResult(result);
