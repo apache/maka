@@ -30,11 +30,13 @@ test('the context usage action opens its host trace surface', async () => {
   const original = {
     document: globalThis.document,
     window: globalThis.window,
+    matchMedia: globalThis.matchMedia,
     IS_REACT_ACT_ENVIRONMENT: (globalThis as typeof globalThis & {
       IS_REACT_ACT_ENVIRONMENT?: boolean;
     }).IS_REACT_ACT_ENVIRONMENT,
   };
   const { document, window } = parseHTML('<div id="root"></div>');
+  window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} }) as unknown as MediaQueryList;
   window.getComputedStyle = () => ({
     direction: 'ltr',
     writingMode: 'horizontal-tb',
@@ -83,11 +85,13 @@ test('the context usage share resolves declared, then metered, then metadata win
   const original = {
     document: globalThis.document,
     window: globalThis.window,
+    matchMedia: globalThis.matchMedia,
     IS_REACT_ACT_ENVIRONMENT: (globalThis as typeof globalThis & {
       IS_REACT_ACT_ENVIRONMENT?: boolean;
     }).IS_REACT_ACT_ENVIRONMENT,
   };
   const { document, window } = parseHTML('<div id="root"></div>');
+  window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} }) as unknown as MediaQueryList;
   window.getComputedStyle = () => ({
     direction: 'ltr',
     writingMode: 'horizontal-tb',
