@@ -2846,6 +2846,13 @@ test('production Host executes a canonical ai-sdk Session against a real provide
       { skillHomeDirectory: home },
     );
     await composition.recover();
+    // This test freezes the ordinary-session wire contract, independently of
+    // the assistant's default enablement and additional tools.
+    const assistantDisabled = await composition.handlers['personal-assistant.call'](
+      { method: 'assistant.set-enabled', input: { enabled: false } },
+      connectionContext,
+    );
+    assert.equal(assistantDisabled.ok, true, JSON.stringify(assistantDisabled));
     const memoryState = await composition.handlers['memory.query'](
       { kind: 'state' },
       connectionContext,

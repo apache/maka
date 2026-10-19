@@ -403,6 +403,8 @@ test('assistant master switch gates real Host execution and stops only assistant
       return result.ok ? result.result.value : undefined;
     };
     try {
+      assert.deepEqual(await call('assistant.enablement'), { enabled: true });
+      await call('assistant.set-enabled', { enabled: false });
       assert.deepEqual(await call('assistant.enablement'), { enabled: false });
       const create = (labels: string[]) =>
         manager.createSession({
