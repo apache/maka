@@ -73,75 +73,68 @@ export async function searchToolResultText(
   let lastLine = 0;
   let lastPosition = 0;
   let prefix = '';
+  let prefixFields = 0;
   let inMatch = false;
-  // rg --json repeats the entire source line, even with --only-matching. A
-  // minified JSON line can be megabytes. Parse only the numeric prefix of
-  // ordinary -n -b -o records and discard each match body as it streams past.
-  if (input.pattern === '') {
-    // Empty regexes emit a record per character with -o. Grep counts lines,
-    // so the equivalent bounded pass needs only one position per source line.
-    for (let at = 0, line = 1; at < bytes.length; line++) {
-      record(line, at);
-      const end = bytes.indexOf(10, at);
-      at = end === -1 ? bytes.length : end + 1;
-    }
-  } else {
-    const result = await run({
-      executable,
-      stdin: text,
-      timeoutMs: input.timeoutMs ?? SEARCH_TIMEOUT_MS,
-      abortSignal: input.abortSignal,
-      args: [
-        '--no-config',
-        '--text',
-        // The source is already Read's UTF-8 text; do not strip a BOM or transcode it.
-        '--encoding=none',
-        '--only-matching',
-        '--line-number',
-        '--byte-offset',
-        '--no-filename',
-        '--no-heading',
-        '--color=never',
-        '--line-buffered',
-        '--',
-        input.pattern,
-        '-',
-      ],
-      onStdout(chunk) {
-        for (let at = 0; at < chunk.length; ) {
-          if (inMatch) {
-            const end = chunk.indexOf(10, at);
-            if (end === -1) return;
-            inMatch = false;
-            at = end + 1;
-            continue;
-          }
-          const char = String.fromCharCode(chunk[at++]!);
-          prefix += char;
-          if (prefix.length > 40 || !/^[0-9:]+$/.test(prefix))
-            throw new GrepSearchError(INCOMPLETE_SEARCH);
-          if (char !== ':' || prefix.indexOf(':') === prefix.length - 1) continue;
-          const match = /^([1-9]\d*):(0|[1-9]\d*):$/.exec(prefix);
-          if (!match) throw new GrepSearchError(INCOMPLETE_SEARCH);
-          record(Number(match[1]), Number(match[2]));
-          prefix = '';
-          inMatch = true;
+  // Default rg output has one record per matching line. --column gives the
+  // first match's byte column; --byte-offset gives the source line's offset.
+  // Avoid -o/--json, whose per-occurrence records/submatches can dwarf the
+  // source for dense regexes. Retain just the prefix and skip each line body.
+  const result = await run({
+    executable,
+    stdin: text,
+    timeoutMs: input.timeoutMs ?? SEARCH_TIMEOUT_MS,
+    abortSignal: input.abortSignal,
+    args: [
+      '--no-config',
+      '--text',
+      // The source is already Read's UTF-8 text; do not strip a BOM or transcode it.
+      '--encoding=none',
+      '--line-number',
+      '--byte-offset',
+      '--column',
+      '--no-filename',
+      '--no-heading',
+      '--color=never',
+      '--',
+      input.pattern,
+      '-',
+    ],
+    onStdout(chunk) {
+      for (let at = 0; at < chunk.length; ) {
+        if (inMatch) {
+          const end = chunk.indexOf(10, at);
+          if (end === -1) return;
+          inMatch = false;
+          at = end + 1;
+          continue;
         }
-      },
-    });
-    if (result.exitCode !== 0 && result.exitCode !== 1) {
-      throw new GrepSearchError(
-        `Grep failed; search totals are unknown. Check the regex, then retry.\n${result.stderrTail.trim().slice(-1024)}`,
-      );
-    }
-    if (
-      prefix ||
-      inMatch ||
-      (result.exitCode === 1 && matchedLines > 0) ||
-      (result.exitCode === 0 && matchedLines === 0)
-    )
-      throw new GrepSearchError(INCOMPLETE_SEARCH);
+        const separator = chunk.indexOf(58, at);
+        const end = separator === -1 ? chunk.length : separator + 1;
+        if (prefix.length + end - at > 60) throw new GrepSearchError(INCOMPLETE_SEARCH);
+        prefix += chunk.toString('latin1', at, end);
+        at = end;
+        if (separator === -1 || ++prefixFields < 3) continue;
+        const match = /^([1-9]\d*):([1-9]\d*):(0|[1-9]\d*):$/.exec(prefix);
+        if (!match) throw new GrepSearchError(INCOMPLETE_SEARCH);
+        record(Number(match[1]), Number(match[3]) + Number(match[2]) - 1);
+        prefix = '';
+        prefixFields = 0;
+        inMatch = true;
+      }
+    },
+  });
+  if (result.exitCode !== 0 && result.exitCode !== 1) {
+    throw new GrepSearchError(
+      `Grep failed; search totals are unknown. Check the regex, then retry.\n${result.stderrTail.trim().slice(-1024)}`,
+    );
   }
+  if (
+    prefix ||
+    inMatch ||
+    (result.exitCode === 1 && matchedLines > 0) ||
+    (result.exitCode === 0 && matchedLines === 0)
+  )
+    throw new GrepSearchError(INCOMPLETE_SEARCH);
   input.abortSignal?.throwIfAborted();
   const metadata = readToolResultMetadata(input.serializedResult);
   const output: ToolResultSearchResult = {
@@ -205,15 +198,13 @@ export async function searchToolResultText(
       !Number.isSafeInteger(line) ||
       !Number.isSafeInteger(at) ||
       line < 1 ||
-      line < lastLine ||
+      line <= lastLine ||
       at < lastPosition ||
       at > bytes.length
     )
       throw new GrepSearchError(INCOMPLETE_SEARCH);
-    if (line !== lastLine) {
-      matchedLines++;
-      if (positions.length < GREP_MAX_LINES_PER_FILE) positions.push({ line, at });
-    }
+    matchedLines++;
+    if (positions.length < GREP_MAX_LINES_PER_FILE) positions.push({ line, at });
     lastLine = line;
     lastPosition = at;
   }

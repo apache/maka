@@ -28,7 +28,7 @@ export const grepParameters = z.object({
     .string()
     .optional()
     .describe('File or directory to search; defaults to the session working directory.'),
-  glob: z.string().optional().describe('Optional filesystem glob, for example **/*.ts.'),
+  glob: z.string().optional().describe('Optional ripgrep file glob, for example **/*.ts.'),
 });
 
 export const GREP_MAX_LINES_PER_FILE = 50;
@@ -176,7 +176,7 @@ export async function runRipgrep(input: GrepRunInput): Promise<GrepRunResult> {
       () =>
         fail(
           new GrepSearchError(
-            'Grep timed out; search totals are unknown. Retry with a narrower path or glob.',
+            `Grep timed out; search totals are unknown. Retry with a narrower ${input.stdin === undefined ? 'path or glob' : 'pattern'}.`,
           ),
         ),
       input.timeoutMs,

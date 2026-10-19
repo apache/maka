@@ -96,6 +96,36 @@ test('retains only a bounded prefix while streaming a huge regex match', async (
   assert.ok(page.content.startsWith('😀'));
 });
 
+test('dense and zero-width regexes keep subprocess output proportional to source lines', async () => {
+  const row = '2026-10-16T12:34:56.789Z request=123456789 status=200 latency=12345ms\n';
+  const rows = Math.ceil((4 * 1024 * 1024) / row.length);
+  for (const [text, pattern, matchedLines] of [
+    [row.repeat(rows), '\\d', rows],
+    ['x'.repeat(2 * 1024 * 1024), '.', 1],
+    ['x'.repeat(2 * 1024 * 1024), 'z*', 1],
+  ] as const) {
+    let stdoutBytes = 0;
+    const result = await searchToolResultText(
+      { path, pattern, serializedResult: JSON.stringify({ content: text }) },
+      (execution) =>
+        runRipgrep({
+          ...execution,
+          onStdout(chunk) {
+            stdoutBytes += chunk.length;
+            execution.onStdout(chunk);
+          },
+        }),
+    );
+    assert.equal(result.matchedLines, matchedLines);
+    assert.ok(result.returnedLines > 0 && result.returnedLines <= 50);
+    assert.equal(result.omittedLines, matchedLines - result.returnedLines);
+    assert.ok(Buffer.byteLength(JSON.stringify(result)) <= READ_PAGE_MAX_BYTES);
+    // Include room for numeric positions and rg's final newline. A record per
+    // occurrence would amplify these inputs into millions of output records.
+    assert.ok(stdoutBytes <= Buffer.byteLength(text) + matchedLines * 60 + 1);
+  }
+});
+
 test('preserves failed execution and retained-output truncation metadata', async () => {
   const result = await searchToolResultText({
     path,
@@ -165,17 +195,18 @@ test('chunked numeric prefixes are bounded and partial or failed searches are re
     assert.equal(stdin, '前缀 timeout timeout\n');
     assert.ok(args.includes('--no-config'));
     assert.equal(args.at(-1), '-');
-    for (const byte of Buffer.from('1:7:timeout\n1:15:timeout\n')) onStdout(Buffer.from([byte]));
+    for (const byte of Buffer.from('1:8:0:前缀 timeout timeout\n')) onStdout(Buffer.from([byte]));
     return { exitCode: 0, stderrTail: '' };
   });
   assert.equal(result.matchedLines, 1);
   for (const [stdout, exitCode] of [
-    ['1:7:timeout', 0],
+    ['1:8:0:前缀 timeout timeout', 0],
     ['1:', 0],
     ['', 0],
-    ['1:7:timeout\n', 1],
-    ['1:7:timeout\n', 2],
-    ['1:999999:timeout\n', 0],
+    ['1:8:0:前缀 timeout timeout\n', 1],
+    ['1:8:0:前缀 timeout timeout\n', 2],
+    ['1:999999:0:timeout\n', 0],
+    ['1:8:0:timeout\n1:16:0:timeout\n', 0],
     ['x'.repeat(100), 0],
   ] as const) {
     await assert.rejects(
@@ -196,7 +227,10 @@ test('the shared runner enforces a deadline and cancellation while waiting for a
     timeoutMs: 20,
     onStdout() {},
   };
-  await assert.rejects(runRipgrep(wait), /timed out; search totals are unknown/);
+  await assert.rejects(
+    runRipgrep(wait),
+    /timed out; search totals are unknown\. Retry with a narrower pattern\./,
+  );
   const controller = new AbortController();
   const execution = runRipgrep({ ...wait, timeoutMs: 10_000, abortSignal: controller.signal });
   controller.abort();
