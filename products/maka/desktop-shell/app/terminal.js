@@ -23,20 +23,16 @@
 // (WorkHub's conversation: `coordinatorTerminal`) answers every call with an
 // outcome, `{ kind: 'completed', value }` or `{ kind: 'failed', message }`.
 //
-// The tabs follow `watchList`, which lists the terminals again on every
-// change to one, its output included: a page each time a shell prints. Every
-// page is pulled as it comes, only the latest is kept, and it is applied at
-// most every LIST_PACE ms; the tool is redrawn only when what the tabs show
-// changed. The terminal shown is painted, then followed
-// with `watchOutput`: when the Host still holds its output from the start,
-// it is replayed from there; otherwise the Host's screen (`read`) is painted
-// and the output followed from where that screen is. The Host's ring holds
-// only its last 8 events and `read` carries no output sequence, so the
-// output since a `gap` cannot be joined exactly: the output is walked with
-// `readOutput` to the newest event first, then the screen is read and
-// painted, then the output is followed from that event. Only what arrived
-// between the walk and the read can show twice. The output goes to the
-// native component as the Host's base64, unread here.
+// The tabs follow `watchList`, which lists the terminals again when one
+// starts, changes state or is resized. Every page is pulled as it comes and
+// only the latest is applied; the tool is redrawn only when what the tabs
+// show changed. The terminal shown is followed with `watchOutput`: the Host
+// keeps every Data and Resize event of a live terminal from its start, so a
+// screen that has taken none starts from the first, at its `initialSize`,
+// and one that has resumes after the last it took. Once the Host no longer
+// holds the output (the terminal retired, or the Host restarted), its screen
+// (`read`, plain text) is painted instead. The output goes to the native
+// component as the Host's base64, unread here.
 //
 // Typing or a paste in the terminal acquires its controller (`acquire`), and
 // in a shell started here a press does too; input then goes in `control`
@@ -76,27 +72,8 @@ const MAX_ACTIONS = 64;
 /** The most text in one `control` call: the Host takes 32 KiB a call. */
 const MAX_TEXT_BYTES = 24 * 1024;
 
-/** The most `readOutput` steps a walk to the newest event takes: the ring holds 8. */
-const WALK_LIMIT = 32;
-
 /** The size a shell starts at before any terminal has measured its pane. */
 const DEFAULT_GRID = { cols: 80, rows: 24 };
-
-/**
- * The wait before following again after a `gap`, in ms: none after the
- * first, then from `first` doubling up to `max` while each comes within
- * `quiet` of following again, and none again after `quiet` without one.
- */
-const BACKOFF = { first: 100, max: 500, quiet: 2000 };
-
-/**
- * The least time between two listings applied, in ms. The Host lists the
- * terminals again whenever one prints, so a busy shell would otherwise have
- * the list sorted and compared hundreds of times a second. Pages are still
- * pulled as they come: the Host holds the next back until the last is
- * pulled, so pulling at this pace left the tabs seconds behind.
- */
-const LIST_PACE = 150;
 
 /** How long a shell started here stays selected before a page lists it, in ms. */
 const START_LISTED = 5000;
@@ -181,8 +158,13 @@ class Term {
     /** The ResourceUpdate as last listed or read. */
     this.entry = entry;
     this.state = null;
-    /** The last output sequence applied to `state`, and whether it has been painted at all. */
+    /**
+     * The last output sequence applied to `state`; whether `state` took the
+     * output from its start (only then does following resume after `after`);
+     * and whether it shows anything, that output or the Host's screen.
+     */
     this.after = 0;
+    this.parsed = false;
     this.painted = false;
     /** A pipes run's output as last painted: the listed resource carries none. */
     this.pipes = null;
@@ -196,9 +178,6 @@ class Term {
     this.problem = null;
     /** The output follow running now: `{ closed, handle }`, or null. */
     this.follow = null;
-    /** When the output was last followed again after a gap, and the wait before the next. */
-    this.followedAt = 0;
-    this.backoff = 0;
     /** The controller: `{ handle, closed, held, controllerId, next }`, or null. */
     this.lease = null;
     /** 'none', 'acquiring', 'held', or 'refused' (view only, `refusal` says why). */
@@ -211,7 +190,7 @@ class Term {
     /** The size last asked of the PTY while held. */
     this.sentSize = null;
     /** The script's share of following the output, for the dev driver. */
-    this.stats = { events: 0, bytes: 0, ms: 0, gaps: 0, recoveries: 0, recoverMs: 0, waited: 0 };
+    this.stats = { events: 0, bytes: 0, ms: 0 };
   }
 
   target() {
@@ -265,10 +244,13 @@ class Term {
     if (this.state === null) {
       this.state = takeState();
       this.after = 0;
+      this.parsed = false;
       this.painted = false;
       this.size = null;
       this.atBottom = true;
     }
+    // Its output was taken to the end: there is nothing more to follow.
+    if (this.parsed && this.live === 'ended') return;
     const run = { closed: false, handle: null };
     this.follow = run;
     if (this.mode() === 'pty') this.followPty(run);
@@ -298,102 +280,72 @@ class Term {
   }
 
   /**
-   * Paints and follows a PTY's output until hidden, or until it ends
-   * (`closed`), the Host lets its output go (`unavailable`) or a call fails.
+   * Follows a PTY's output until hidden, or until it ends (`closed`), the
+   * Host no longer holds it (`unavailable`: its screen is painted instead,
+   * since output may have come after what was taken) or a call fails.
    */
   async followPty(run) {
     try {
-      let after = this.after;
-      if (!this.painted) {
-        this.live = 'loading';
-        const first = unwrap(
-          await query(this.endpoint, 'readOutput', { target: this.target(), after: 0 }),
-        );
-        if (run.closed) return;
-        if (first.kind === 'gap') {
-          after = await this.recover(run, first.firstAvailable - 1);
-          if (after === null) return;
-        } else if (first.kind === 'unavailable') {
-          await this.paintRead(run);
-          if (run.closed) return;
-          this.live = 'unavailable';
-          this.touch();
-          return;
-        } else {
-          // Everything it wrote is still held: replay it from an empty screen.
-          const size = first.size ?? DEFAULT_GRID;
-          this.state.reset(size.cols, size.rows);
-          this.size = size;
-          this.after = 0;
-          this.painted = true;
-          after = 0;
-        }
-      }
-      for (;;) {
-        const handle = await subscribe(this.endpoint, 'watchOutput', {
-          target: this.target(),
-          after,
-        });
-        if (run.closed) {
-          close(handle).catch(() => {});
-          return;
-        }
-        run.handle = handle;
-        SUBSCRIPTIONS.add(handle);
-        if (this.live !== 'live') {
-          this.live = 'live';
-          this.touch();
-        }
-        let end = null;
-        for (;;) {
-          const item = await next(handle);
-          if (run.closed) return;
-          if (item === null) {
-            end = { kind: 'finished' };
-            break;
-          }
-          const started = now();
-          const event = unwrap(item);
-          if (event.kind === 'data') {
-            this.apply(event);
-            this.stats.events += 1;
-            this.stats.bytes += event.dataBase64.length;
-            this.stats.ms += now() - started;
-          } else if (event.kind === 'resize') {
-            this.resizeTo(event.size);
-            this.after = event.sequence;
-          } else if (event.kind === 'pending') {
-            this.resizeTo(event.size);
-          } else {
-            end = event;
-            break;
-          }
-        }
-        run.handle = null;
-        untrack(handle);
-        if (end.kind === 'gap') {
-          this.stats.gaps += 1;
-          await this.pause(run);
-          if (run.closed) return;
-          after = await this.recover(run, end.firstAvailable - 1);
-          if (after === null) return;
-          continue;
-        }
-        if (end.kind === 'closed') {
-          this.resizeTo(end.size);
-          this.live = 'ended';
-        } else if (end.kind === 'unavailable') {
-          if (!this.painted) await this.paintRead(run);
-          if (run.closed) return;
-          this.live = 'unavailable';
-        } else {
-          // The Host ended the watch without saying why.
-          this.failed(t('terminalWatchEnded'));
-        }
-        log(`terminal: ${this.ref} output ${this.live} after ${this.after}`);
-        this.touch();
+      if (!this.parsed) this.live = 'loading';
+      const handle = await subscribe(this.endpoint, 'watchOutput', {
+        target: this.target(),
+        after: this.parsed ? this.after : 0,
+      });
+      if (run.closed) {
+        close(handle).catch(() => {});
         return;
       }
+      run.handle = handle;
+      SUBSCRIPTIONS.add(handle);
+      if (this.live !== 'live') {
+        this.live = 'live';
+        this.touch();
+      }
+      let end = null;
+      for (;;) {
+        const item = await next(handle);
+        if (run.closed) return;
+        if (item === null) {
+          end = { kind: 'finished' };
+          break;
+        }
+        const started = now();
+        const event = unwrap(item);
+        if (event.kind === 'unavailable') {
+          end = event;
+          break;
+        }
+        if (!this.parsed) this.begin(event.initialSize);
+        if (event.kind === 'data') {
+          this.apply(event);
+          this.stats.events += 1;
+          this.stats.bytes += event.dataBase64.length;
+          this.stats.ms += now() - started;
+        } else if (event.kind === 'resize') {
+          this.resizeTo(event.size);
+          this.after = event.sequence;
+        } else if (event.kind === 'pending') {
+          this.resizeTo(event.size);
+        } else {
+          end = event;
+          break;
+        }
+      }
+      run.handle = null;
+      untrack(handle);
+      if (end.kind === 'closed') {
+        this.resizeTo(end.size);
+        this.live = 'ended';
+      } else if (end.kind === 'unavailable') {
+        await this.paintRead(run);
+        if (run.closed) return;
+        this.live = 'unavailable';
+      } else {
+        // The Host ended the watch without saying why.
+        this.failed(t('terminalWatchEnded'));
+      }
+      log(`terminal: ${this.ref} output ${this.live} after ${this.after}`);
+      this.touch();
     } catch (error) {
       if (run.closed) return;
       log(`terminal: following ${this.ref} failed: ${error.message}`);
@@ -410,17 +362,26 @@ class Term {
   }
 
   /**
-   * Following the output failed (its watch, or a read to join it again):
-   * says so, with Retry, and releases the controller. Input is not taken
-   * while the output is not followed, so a held controller would only keep
-   * the agent from typing into its own terminal; after Retry, typing takes
-   * it again.
+   * Following the output failed: says so, with Retry, and releases the
+   * controller. Input is not taken while the output is not followed, so a
+   * held controller would only keep the agent from typing into its own
+   * terminal; after Retry, typing takes it again.
    */
   failed(message) {
     this.live = 'failed';
     this.problem = message;
     this.release();
     this.touch();
+  }
+
+  /** Starts the screen over for the output from its start, at the PTY's first size. */
+  begin(size) {
+    const first = size ?? DEFAULT_GRID;
+    this.state.reset(first.cols, first.rows);
+    this.size = { cols: first.cols, rows: first.rows };
+    this.after = 0;
+    this.parsed = true;
+    this.painted = true;
   }
 
   /** One `data` event: at the PTY's size it was written at, after everything before it. */
@@ -438,51 +399,6 @@ class Term {
     this.state.resize(size.cols, size.rows);
   }
 
-  /**
-   * After a gap that came soon after following again, waits a little longer
-   * each time (up to BACKOFF.max, and there while gaps keep coming): output
-   * faster than it can be followed is shown as the Host's screen every so
-   * often instead of one recovery after another. The time is counted from
-   * following again, so neither the wait nor the recovery counts as quiet.
-   */
-  async pause(run) {
-    const quiet = Date.now() - this.followedAt >= BACKOFF.quiet;
-    this.backoff = quiet ? 0 : Math.min(BACKOFF.max, Math.max(BACKOFF.first, this.backoff * 2));
-    if (this.backoff > 0 && !run.closed) {
-      this.stats.waited += this.backoff;
-      await this.owner.cx.sleep(this.backoff);
-    }
-  }
-
-  /**
-   * Joins the output again after a gap (or on first showing one whose start
-   * is gone): walks `readOutput` from `from` to the newest event, then
-   * paints the Host's screen, and returns the sequence to follow from; null
-   * when hidden meanwhile. A walk that does not reach the newest event
-   * (output faster than the walk) follows from where it stopped.
-   */
-  async recover(run, from) {
-    const started = now();
-    let after = from;
-    for (let step = 0; step < WALK_LIMIT; step += 1) {
-      const event = unwrap(
-        await query(this.endpoint, 'readOutput', { target: this.target(), after }),
-      );
-      if (run.closed) return null;
-      if (event.kind === 'data' || event.kind === 'resize') after = event.sequence;
-      else if (event.kind === 'gap') after = event.firstAvailable - 1;
-      else break;
-    }
-    await this.paintRead(run);
-    if (run.closed) return null;
-    this.after = after;
-    this.followedAt = Date.now();
-    this.stats.recoveries += 1;
-    this.stats.recoverMs += now() - started;
-    log(`terminal: ${this.ref} painted from the Host's screen; following from ${after}`);
-    return after;
-  }
-
   /** Paints the Host's screen of it (`read`). */
   async paintRead(run) {
     const resource = unwrap(await query(this.endpoint, 'read', this.target()));
@@ -492,6 +408,7 @@ class Term {
     if (output?.mode !== 'pty') return;
     this.state.paint(output);
     this.size = { cols: output.cols, rows: output.rows };
+    this.parsed = false;
     this.painted = true;
   }
 
@@ -777,7 +694,7 @@ export class Terminals {
   /**
    * @param {import('./transcript.js').Transcript} transcript
    * @param {{ changed: () => void, report: (message: string) => void }} hooks
-   * @param cx the Workbar's view context, whose timers pace the recoveries
+   * @param cx the Workbar's view context, for its timers and dialogs
    */
   constructor(transcript, hooks, cx) {
     this.sessionId = transcript.id;
@@ -861,7 +778,7 @@ export class Terminals {
    * `applyList`.
    */
   async watchList() {
-    const watch = { handle: null, closed: false, latest: null, applying: false, applied: 0 };
+    const watch = { handle: null, closed: false, latest: null, applying: false };
     this.listWatch = watch;
     try {
       const handle = await subscribe(this.endpoint, 'watchList', {
@@ -888,20 +805,14 @@ export class Terminals {
   }
 
   /**
-   * Applies the latest page: at once when the last was applied LIST_PACE
-   * ago, otherwise when that much time has passed. A long list continues in
-   * pages of `list`.
+   * Applies the latest page, and then the latest that came meanwhile. A long
+   * list continues in pages of `list`.
    */
   async applyList(watch) {
     if (watch.applying) return;
     watch.applying = true;
     try {
       while (watch.latest !== null && !watch.closed) {
-        const wait = watch.applied + LIST_PACE - Date.now();
-        if (wait > 0) {
-          await this.cx.sleep(wait);
-          continue;
-        }
         const page = watch.latest;
         watch.latest = null;
         const resources = [...page.resources];
@@ -913,7 +824,6 @@ export class Terminals {
           resources.push(...more.resources);
           offset = more.nextOffset ?? null;
         }
-        watch.applied = Date.now();
         this.stats.applied += 1;
         this.accept(resources);
       }
@@ -1031,7 +941,7 @@ export class Terminals {
         this.entries = [...this.entries, resource];
         this.pending = { ref, entry: resource, until: Date.now() + START_LISTED };
         (async () => {
-          await this.cx.sleep(START_LISTED + LIST_PACE);
+          await this.cx.sleep(START_LISTED);
           // Without a page meanwhile (the tool hidden, the list failed) the
           // next page decides.
           if (this.shown && this.listWatch !== null && this.pending?.ref === ref) {
