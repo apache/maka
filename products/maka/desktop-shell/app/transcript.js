@@ -2111,8 +2111,9 @@ function codeBlock(id, label, content, m) {
             .text_color(m.ink)
             .child(shown),
         )
-        // Placed beside the box rather than with overflow_y_scrollbar, whose
-        // content would keep the box's max_h and so never overflow.
+        // Placed beside the box rather than with overflow_y_scrollbar, which
+        // would leave the box's background and padding on the scrolled
+        // content, to scroll away with the text.
         .child(Scrollbar.vertical(id).absolute().inset_0()),
     );
 }
