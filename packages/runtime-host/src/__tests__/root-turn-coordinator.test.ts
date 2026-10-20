@@ -987,6 +987,8 @@ test('forwards compaction boundaries while the root turn is still running', asyn
     id: `compaction-${index}`,
     turnId: 'compaction-turn',
     ts: 123456789 + index,
+    compactionId: `compaction-${index}`,
+    scope: 'step' as const,
   }));
   const fixture = await createFailureFixture({
     registerBackend: (backends) =>

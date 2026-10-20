@@ -1342,7 +1342,13 @@ export class RuntimeKernel implements RuntimeKernelLike {
       // a note queued behind one this compaction may already own would be
       // refused, and the reader would never learn the summary was skipped.
       if (result.outcome.kind === 'failed') {
-        await run.recordSystemNote('context_compaction_failed_open').catch(() => {});
+        await run
+          .recordSystemNote('context_compaction_failed_open', {
+            compactionId: run.runId,
+            scope: 'turn',
+            failOpenReason: result.outcome.reason,
+          })
+          .catch(() => {});
         notedTerminal = true;
       } else if (result.outcome.kind === 'compacted') {
         // Explicit compaction runs on its own turn and never enters the
@@ -1352,7 +1358,12 @@ export class RuntimeKernel implements RuntimeKernelLike {
         // duplicate.
         // The applied row is the apply-time boundary the usage reader orders
         // measurements against; the note below stays the display row.
-        await run.recordSystemNote('context_compaction_applied').catch(() => {});
+        await run
+          .recordSystemNote('context_compaction_applied', {
+            compactionId: run.runId,
+            scope: 'turn',
+          })
+          .catch(() => {});
         await run.recordSystemNote('context_compacted').catch(() => {});
         notedTerminal = true;
       }
@@ -1377,7 +1388,12 @@ export class RuntimeKernel implements RuntimeKernelLike {
       // because the ledger seals on its terminal fact; the internal compaction
       // Turn has no user timeline for a failure banner.
       if (!notedTerminal && !run.isStopped()) {
-        await run.recordSystemNote('context_compaction_failed_open').catch(() => {});
+        await run
+          .recordSystemNote('context_compaction_failed_open', {
+            compactionId: run.runId,
+            scope: 'turn',
+          })
+          .catch(() => {});
       }
       await run.recordFailure(error);
       throw error;

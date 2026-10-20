@@ -687,7 +687,8 @@ export type SessionEvent =
   | CompleteEvent
   | AbortEvent
   | ContextCompactionAppliedEvent
-  | ContextCompactionStartedEvent;
+  | ContextCompactionStartedEvent
+  | ContextCompactionFailedEvent;
 
 export interface TextDeltaEvent extends BaseEvent {
   type: 'text_delta';
@@ -1437,13 +1438,21 @@ export interface AbortEvent extends BaseEvent {
 }
 
 /**
- * A host-owned explicit context-compaction Turn has started. Synthesized by the
- * Runtime Host session projector (not the kernel) purely so a client can render
- * a "compacting" transcript row while the Turn is in flight; it carries no
- * durable state and is excluded from `BackendSessionEvent` like `queue_update`.
+ * A context-compaction execution started. The Host synthesizes the `turn`
+ * scope for an explicit compaction Turn; the Runtime emits the `step` scope
+ * before an automatic in-Turn fold so the client can render the attempt in the
+ * execution timeline. `compactionId` pairs the start with its terminal event.
  */
 export interface ContextCompactionStartedEvent extends BaseEvent {
   type: 'context_compaction_started';
+  /**
+   * Required for a `step` attempt. A turn-scoped event (including a legacy /
+   * manually synthesized one without this field) describes the whole Turn and
+   * never becomes an attempt timeline row.
+   */
+  compactionId?: string;
+  /** `turn` = the whole Turn is an explicit compaction; `step` = in-Turn fold. */
+  scope?: 'turn' | 'step';
 }
 
 /**
@@ -1453,6 +1462,27 @@ export interface ContextCompactionStartedEvent extends BaseEvent {
  */
 export interface ContextCompactionAppliedEvent extends BaseEvent {
   type: 'context_compaction_applied';
+  /**
+   * Required for a new `step` attempt. Legacy applied records have no attempt
+   * identity and no start to pair with; they stay hidden or render as the
+   * existing settlement note, never as a timeline attempt. Never pair by
+   * `turnId` or turn order: one Turn may contain several attempts.
+   */
+  compactionId?: string;
+  /** `step` for an automatic in-Turn fold; `turn` for explicit compaction. */
+  scope?: 'turn' | 'step';
+}
+
+/**
+ * An automatic in-Turn compaction attempt failed open. The Turn continues with
+ * the un-compacted projection; this event only settles the timeline row.
+ */
+export interface ContextCompactionFailedEvent extends BaseEvent {
+  type: 'context_compaction_failed';
+  compactionId: string;
+  scope: 'step';
+  /** `interrupted` means the attempt was cancelled, not that folding failed. */
+  reason: string;
 }
 
 // ============================================================================

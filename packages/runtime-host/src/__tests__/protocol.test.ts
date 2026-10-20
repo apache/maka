@@ -612,6 +612,8 @@ describe('Runtime Host bootstrap protocol', () => {
         id: 'compaction-1',
         turnId: 'turn-1',
         ts: 123456789,
+        compactionId: 'compaction-1',
+        scope: 'step' as const,
       },
     };
     const encoded = encodeProtocolMessage(frame);
@@ -625,6 +627,48 @@ describe('Runtime Host bootstrap protocol', () => {
       { type: frame.event.type, id: frame.event.id, turnId: frame.event.turnId },
     ]) {
       assert.throws(() => decodeHostFrame({ ...frame, event }), isInvalidFrame);
+    }
+  });
+
+  test('roundtrips in-turn compaction lifecycle frames with closed event shapes', () => {
+    for (const event of [
+      {
+        type: 'context_compaction_started' as const,
+        id: 'compaction-started-1',
+        turnId: 'turn-1',
+        ts: 123456789,
+        compactionId: 'compact-1',
+        scope: 'step' as const,
+      },
+      {
+        type: 'context_compaction_failed' as const,
+        id: 'compaction-failed-1',
+        turnId: 'turn-1',
+        ts: 123456790,
+        compactionId: 'compact-1',
+        scope: 'step' as const,
+        reason: 'write_failed',
+      },
+    ]) {
+      const frame = {
+        kind: 'subscription.session_event' as const,
+        hostEpoch: 'epoch-1',
+        subscriptionId: 'subscription-1',
+        sequence: 2,
+        sessionId: 'session-1',
+        runId: 'run-1',
+        event,
+      };
+      const encoded = encodeProtocolMessage(frame);
+      assert.deepEqual(decodeHostFrame(JSON.parse(encoded.toString('utf8'))), frame);
+      assert.throws(
+        () => decodeHostFrame({ ...frame, event: { ...event, scope: 'turn' } }),
+        isInvalidFrame,
+      );
+      assert.throws(
+        () => decodeHostFrame({ ...frame, event: { ...event, compactionId: '' } }),
+        isInvalidFrame,
+      );
     }
   });
 

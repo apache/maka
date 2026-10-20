@@ -787,6 +787,134 @@ function compactionDecisions(
 }
 
 function defineMidTurnSuite(consumer: ConsumerMode): void {
+  test('does not label an uncancelled provider AbortError as user interruption', async () => {
+    const fixture = buildFixture({
+      summarize: () => {
+        throw Object.assign(new Error('provider aborted'), { name: 'AbortError' });
+      },
+    });
+    await runFixtureTurn(fixture, consumer);
+    assert.equal(
+      fixture.events.find((event) => event.type === 'context_compaction_failed')?.reason,
+      'summarizer_failed',
+    );
+    assert.equal(fixture.summarizerCalls, 1);
+  });
+
+  test('records interruption when initial overflow recovery is cancelled', {
+    timeout: 5_000,
+  }, async () => {
+    const started = deferred();
+    const fixture = buildFixture({
+      firstRequestContextOverflow: true,
+      summarize: ({ abortSignal }) =>
+        new Promise((_, reject) => {
+          assert.ok(abortSignal);
+          abortSignal.addEventListener(
+            'abort',
+            () => reject(Object.assign(new Error('cancelled'), { name: 'AbortError' })),
+            { once: true },
+          );
+          started.resolve();
+        }),
+    });
+    const turn = runFixtureTurn(fixture, consumer);
+    await started.promise;
+    await fixture.backend.stop('user_stop');
+    await turn;
+    assert.equal(fixture.recorded.length, 0);
+    assert.equal(
+      fixture.events.find((event) => event.type === 'context_compaction_failed')?.reason,
+      'interrupted',
+    );
+  });
+
+  test('a stop before the summarizer call opens no compaction row', {
+    timeout: 5_000,
+  }, async () => {
+    // The planner loads its transition snapshot after choosing a safe span and
+    // right before the summarizer. Every request build reads the ledger too, so
+    // only this read pins the stop between the ledger boundary and the call.
+    let stopped = false;
+    const fixture = buildFixture({
+      loadTransitions: async () => {
+        if (!stopped && new Error().stack?.includes('planHistoryCompaction')) {
+          stopped = true;
+          void fixture.backend.stop('user_stop');
+        }
+        return EMPTY_PROJECTION_SNAPSHOT;
+      },
+    });
+    await runFixtureTurn(fixture, consumer);
+    assert.equal(stopped, true, 'the stop must land inside the compaction attempt');
+    assert.equal(fixture.recorded.length, 0);
+    assert.equal(
+      fixture.events.some(
+        (event) =>
+          event.type === 'context_compaction_started' || event.type === 'context_compaction_failed',
+      ),
+      false,
+    );
+  });
+
+  test('a fail-open before the summarizer call opens no row on any step', async () => {
+    // No prior turns: each over-window step finds no safe completed span and
+    // retries on the next step. Those misses must not stack one timeline row
+    // per step; the send keeps its single settlement note.
+    const fixture = buildFixture({ contextWindow: 120, withoutPriorTurns: true });
+    await runFixtureTurn(fixture, consumer);
+
+    const missedSteps = compactionDecisions(fixture).filter(
+      (decision) => decision.failOpenReason === 'no_safe_completed_span',
+    );
+    assert.equal(missedSteps.length > 0, true);
+    // Rows exist only for attempts that reached the summarizer, and each one
+    // that opened also settled.
+    const startedIds = fixture.events.flatMap((event) =>
+      event.type === 'context_compaction_started' ? [event.compactionId] : [],
+    );
+    const settledIds = fixture.events.flatMap((event) =>
+      event.type === 'context_compaction_applied' || event.type === 'context_compaction_failed'
+        ? [event.compactionId]
+        : [],
+    );
+    assert.equal(startedIds.length <= fixture.summarizerCalls, true);
+    assert.deepEqual([...settledIds].sort(), [...startedIds].sort());
+    assert.equal(
+      fixture.events.some(
+        (event) =>
+          event.type === 'context_compaction_failed' && event.reason === 'no_safe_completed_span',
+      ),
+      false,
+    );
+    const missNotes = fixture.ledger.filter(
+      (event) =>
+        event.content?.kind === 'system_note' &&
+        event.content.note === 'context_compaction_failed_open' &&
+        (event.content.data as { failOpenReason?: string } | undefined)?.failOpenReason ===
+          'no_safe_completed_span',
+    );
+    assert.equal(missNotes.length <= 1, true, 'at most the one settlement note per send');
+  });
+
+  test('an unexpected throw after the summarizer call still settles the open row', async () => {
+    const fixture = buildFixture({
+      loadTransitions: async () => {
+        if (fixture.summarizerCalls > 0) throw new Error('transition ledger offline');
+        return EMPTY_PROJECTION_SNAPSHOT;
+      },
+    });
+    await runFixtureTurn(fixture, consumer).catch(() => {});
+
+    const started = fixture.events.find((event) => event.type === 'context_compaction_started');
+    const failed = fixture.events.find((event) => event.type === 'context_compaction_failed');
+    assert.ok(started?.type === 'context_compaction_started');
+    assert.ok(failed?.type === 'context_compaction_failed');
+    assert.equal(failed.compactionId, started.compactionId);
+    assert.equal(failed.reason, 'unexpected_error');
+    assert.equal(fixture.recorded.length, 0);
+  });
+
   test('publishes the applied boundary while the post-compaction request is still running', {
     timeout: 5_000,
   }, async () => {
@@ -822,6 +950,26 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
       assert.equal(boundaries[0]?.id, applied?.id);
       assert.equal(boundaries[0]?.ts, applied?.ts);
       assert.equal(boundaries[0]?.modelVisibility, 'hidden');
+      const started = fixture.events.find((event) => event.type === 'context_compaction_started');
+      assert.ok(started?.type === 'context_compaction_started');
+      assert.ok(applied?.type === 'context_compaction_applied');
+      assert.equal(started.scope, 'step');
+      assert.equal(started.compactionId, applied.compactionId);
+      assert.equal(
+        fixture.events.indexOf(started) < fixture.events.indexOf(applied),
+        true,
+        'the start row must be published before the applied boundary',
+      );
+      const startedNote = fixture.ledger.find(
+        (event) =>
+          event.content?.kind === 'system_note' &&
+          event.content.note === 'context_compaction_started',
+      );
+      assert.ok(startedNote && startedNote.content?.kind === 'system_note');
+      assert.deepEqual(startedNote.content.data, {
+        compactionId: started.compactionId,
+        scope: 'step',
+      });
     } finally {
       requestHeld.resolve();
       await turn;
@@ -862,6 +1010,15 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     );
     const complete = fixture.events.find((event) => event.type === 'complete');
     assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'user_stop');
+    const failed = fixture.events.find((event) => event.type === 'context_compaction_failed');
+    assert.equal(failed?.reason, 'interrupted');
+    const note = fixture.ledger.find(
+      (event) =>
+        event.content?.kind === 'system_note' &&
+        event.content.note === 'context_compaction_failed_open',
+    );
+    assert.ok(note?.content?.kind === 'system_note');
+    assert.equal((note.content.data as { failOpenReason: string }).failOpenReason, 'interrupted');
   });
 
   test('compacts after provider usage crosses the declared window, persists first, and continues the same turn', async () => {
@@ -1120,6 +1277,25 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
       fixture.events.some((event) => event.type === 'context_compaction_applied'),
       false,
     );
+    const started = fixture.events.find((event) => event.type === 'context_compaction_started');
+    const failed = fixture.events.find((event) => event.type === 'context_compaction_failed');
+    assert.ok(started?.type === 'context_compaction_started');
+    assert.ok(failed?.type === 'context_compaction_failed');
+    assert.equal(started.compactionId, failed.compactionId);
+    assert.equal(failed.reason, 'write_failed');
+    assert.equal(fixture.events.indexOf(started) < fixture.events.indexOf(failed), true);
+    const failedNotes = fixture.ledger.filter(
+      (event) =>
+        event.content?.kind === 'system_note' &&
+        event.content.note === 'context_compaction_failed_open',
+    );
+    assert.equal(failedNotes.length, 1, 'the terminal event owns one durable failure note');
+    assert.ok(failedNotes[0]?.content?.kind === 'system_note');
+    assert.deepEqual(failedNotes[0].content.data, {
+      compactionId: started.compactionId,
+      scope: 'step',
+      failOpenReason: 'write_failed',
+    });
   });
 
   test('a malformed summarizer completion fails open end-to-end with its granular reason', async () => {

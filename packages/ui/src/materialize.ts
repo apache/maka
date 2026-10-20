@@ -39,9 +39,24 @@ import type {
 } from '@maka/core/events';
 import type { ToolActivityStatus } from '@maka/core/tool-result-status';
 import type { ShellRunToolResult } from '@maka/core/shell-run-result';
-import type { StoredMessage, TurnRecord, TurnStatus, UserMessage } from '@maka/core/session';
+import {
+  compactionStateForFailure,
+  compactionStateForTurnStatus,
+  readCompactionFailureReason,
+  readCompactionTimelineMarker,
+  type CompactionTimelineState,
+  type CompactionTimelineMarker,
+} from '@maka/core/compaction-status';
+import type {
+  StoredMessage,
+  SystemNoteKind,
+  TurnRecord,
+  TurnStatus,
+  UserMessage,
+} from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type {
+  LiveCompactionProjection,
   LiveSteeringProjection,
   LiveTurnProjection,
 } from "./live-turn-projection.js";
@@ -50,7 +65,9 @@ import { getConversationCopy } from "./conversation-copy.js";
 export { isCancelledToolResultContent, isInFlightToolStatus, toolResultActivityStatus } from '@maka/core/tool-result-status';
 
 export interface ChatItem {
-  compactionState?: "running" | "compacted" | "failed";
+  compactionState?: CompactionTimelineState;
+  /** Source kind for runtime-note rows; lets timeline projection suppress its own duplicate. */
+  systemNoteKind?: SystemNoteKind;
   id: string;
   role: "user" | "assistant" | "system";
   text: string;
@@ -145,7 +162,11 @@ export interface ToolActivityItem {
 function systemNoteLabel(kind: string, data: unknown, locale: UiLocale): string {
   const copy = getConversationCopy(locale).messages.systemNotes;
   if (kind === "context_compacted") return copy.contextCompacted;
-  if (kind === "context_compaction_failed_open") return copy.contextCompactionFailedOpen;
+  if (kind === "context_compaction_failed_open") {
+    return compactionStateForFailure(readCompactionFailureReason(data)) === "interrupted"
+      ? copy.contextCompactionInterrupted
+      : copy.contextCompactionFailedOpen;
+  }
   if (kind === "context_overflow_after_compaction") return copy.contextOverflowAfterCompaction;
   if (kind === "context_reported_window_exceeded") {
     const exceeded = data as
@@ -181,6 +202,17 @@ function systemNoteLabel(kind: string, data: unknown, locale: UiLocale): string 
   }
   if (kind === "step_limit") return copy.stepLimit;
   return kind;
+}
+
+function compactionTimelineText(
+  locale: UiLocale,
+  state: CompactionTimelineState,
+): string {
+  const notes = getConversationCopy(locale).messages.systemNotes;
+  if (state === "running") return notes.contextCompacting;
+  if (state === "compacted") return notes.contextCompacted;
+  if (state === "interrupted") return notes.contextCompactionInterrupted;
+  return notes.contextCompactionFailedOpen;
 }
 
 export function materializeTools(
@@ -350,7 +382,16 @@ export type TurnTimelineItem =
       complete?: boolean;
       truncated?: boolean;
     }
-  | { kind: "tools"; items: ToolActivityItem[] };
+  | { kind: "tools"; items: ToolActivityItem[] }
+  | {
+      kind: "compaction";
+      compactionId: string;
+      state: CompactionTimelineState;
+      text: string;
+      ts: number;
+      /** Present only when `state === 'failed'`; cancellation uses `interrupted`. */
+      reason?: string;
+    };
 
 /**
  * A single conversational turn — typically one user message, the assistant's
@@ -458,14 +499,22 @@ export function overlayLiveTurn(
       } satisfies TurnViewModel,
     ];
   }
-  if (targetIndex >= 0 && liveTurn.steps.length === 0) {
+  if (
+    targetIndex >= 0 &&
+    liveTurn.steps.length === 0 &&
+    (liveTurn.compactions?.length ?? 0) === 0
+  ) {
     return turns;
   }
   // A send arm is only a presentation claim that the next message may still
   // arrive. It is not a Turn record and must not manufacture one while the
   // canonical transcript is catching up. A real live step (or steering
   // message) is sufficient evidence to project a missing external Turn.
-  if (targetIndex < 0 && liveTurn.steps.length === 0) {
+  if (
+    targetIndex < 0 &&
+    liveTurn.steps.length === 0 &&
+    (liveTurn.compactions?.length ?? 0) === 0
+  ) {
     return turns;
   }
   const current =
@@ -505,6 +554,9 @@ export function overlayLiveTurn(
       );
     }
   }
+  for (const compaction of liveTurn.compactions ?? []) {
+    liveContentKeys.add(`compaction\0${compaction.compactionId}`);
+  }
   const liveTimeline: TurnTimelineItem[] = [];
   const liveItemTs: number[] = [];
   const pushLive = (item: TurnTimelineItem, ts: number | undefined): void => {
@@ -518,7 +570,30 @@ export function overlayLiveTurn(
       messageId: message.id,
     }, message.ts);
   };
+  const pendingCompactions = [...(liveTurn.compactions ?? [])].sort(
+    (left, right) => left.startedAt - right.startedAt,
+  );
+  let nextCompaction = 0;
+  const pushCompactionsThrough = (ts: number | undefined): void => {
+    while (nextCompaction < pendingCompactions.length) {
+      const compaction = pendingCompactions[nextCompaction]!;
+      if (ts !== undefined && compaction.startedAt > ts) return;
+      pushLive(
+        {
+          kind: "compaction",
+          compactionId: compaction.compactionId,
+          state: compaction.state,
+          text: compactionTimelineText(locale, compaction.state),
+          ts: compaction.startedAt,
+          ...(compaction.reason !== undefined ? { reason: compaction.reason } : {}),
+        },
+        compaction.startedAt,
+      );
+      nextCompaction += 1;
+    }
+  };
   for (const step of liveTurn.steps) {
+    pushCompactionsThrough(step.startedAt);
     if (step.steering !== undefined) appendLiveSteering(step.steering);
     const contentOrder = step.contentOrder ?? [
       ...(step.thinking ? ["thinking" as const] : []),
@@ -554,6 +629,7 @@ export function overlayLiveTurn(
       }
     }
   }
+  pushCompactionsThrough(undefined);
   // Shared entries are handoff points: replace them in place while preserving
   // live production order. Appending all live content after settled rows moved
   // an earlier answer (and its steering anchor) behind later persisted steps.
@@ -786,7 +862,12 @@ export function materializeTurns(
         id: message.id,
         role: "system",
         text: systemNoteLabel(message.kind, message.data, locale),
-        compactionState: message.kind === "context_compacted" ? "compacted" : message.kind === "context_compaction_failed_open" ? "failed" : undefined,
+        compactionState: message.kind === "context_compacted"
+          ? "compacted"
+          : message.kind === "context_compaction_failed_open"
+            ? compactionStateForFailure(readCompactionFailureReason(message.data))
+            : undefined,
+        systemNoteKind: message.kind,
         ts: message.ts,
       });
     } else if (message.type === "token_usage") {
@@ -837,8 +918,47 @@ export function materializeTurns(
     turn.timeline = buildTurnTimeline(
       turnMessages,
       toolItemsByTurnId.get(turnId) ?? new Map(),
+      locale,
     );
+    if (turn.statusSource === "recorded" && turn.status !== "running") {
+      const terminalState = compactionStateForTurnStatus(turn.status);
+      turn.timeline = turn.timeline.map((item) => {
+        if (item.kind !== "compaction" || item.state !== "running") return item;
+        const { reason: _reason, ...withoutReason } = item;
+        return {
+          ...withoutReason,
+          state: terminalState,
+          text: compactionTimelineText(locale, terminalState),
+        };
+      });
+    }
     turn.tools = timelineTools(turn.timeline);
+    if (turn.timeline.some((item) => item.kind === "compaction")) {
+      // The execution item is the single display row for an in-Turn fold. Keep
+      // the durable notes available to other clients, but do not render the
+      // same fold again above the timeline. Match by attempt: a settlement-only
+      // failure has no step-scoped marker of its own, so a successful fold in
+      // the same Turn must not take that independent failure note down with it.
+      const timelineNoteIds = new Set<string>();
+      for (const message of turnMessages) {
+        if (
+          message.type === "system_note" &&
+          readCompactionTimelineMarker(message)
+        ) {
+          timelineNoteIds.add(message.id);
+        }
+      }
+      const hasCompactedTimelineItem = turn.timeline.some(
+        (item) => item.kind === "compaction" && item.state === "compacted",
+      );
+      turn.notes = turn.notes.filter((note) => {
+        if (note.systemNoteKind === "context_compacted") return !hasCompactedTimelineItem;
+        if (note.systemNoteKind === "context_compaction_failed_open") {
+          return !timelineNoteIds.has(note.id);
+        }
+        return true;
+      });
+    }
   }
 
   return order.map((turnId) => byId.get(turnId)!);
@@ -1022,12 +1142,43 @@ export function projectTurnTools(
 function buildTurnTimeline(
   turnMessages: readonly StoredMessage[],
   toolItemByUseId: ReadonlyMap<string, ToolActivityItem>,
+  locale: UiLocale,
 ): TurnTimelineItem[] {
   const raw: TurnTimelineItem[] = [];
   let pending: ToolActivityItem[] = [];
   let sawRootUser = false;
+  const compactionIndexById = new Map<string, number>();
   const flushTools = (items: ToolActivityItem[]): void => {
     if (items.length > 0) raw.push({ kind: "tools", items });
+  };
+  const upsertCompaction = (marker: CompactionTimelineMarker): void => {
+    const index = compactionIndexById.get(marker.compactionId);
+    const existing = index === undefined ? undefined : raw[index];
+    if (index !== undefined && existing?.kind === "compaction") {
+      // A terminal state never downgrades back to running on a replayed seed.
+      if (existing.state !== "running") return;
+      raw[index] = {
+        ...existing,
+        state: marker.state,
+        text: compactionTimelineText(locale, marker.state),
+        ...(marker.reason !== undefined ? { reason: marker.reason } : {}),
+      };
+      return;
+    }
+    // Compaction lands at a request boundary: everything buffered before it is
+    // earlier tool work and must keep its place ahead of the compaction row.
+    flushTools(pending);
+    pending = [];
+    const item: Extract<TurnTimelineItem, { kind: "compaction" }> = {
+      kind: "compaction",
+      compactionId: marker.compactionId,
+      state: marker.state,
+      text: compactionTimelineText(locale, marker.state),
+      ts: marker.ts,
+      ...(marker.reason !== undefined ? { reason: marker.reason } : {}),
+    };
+    compactionIndexById.set(marker.compactionId, raw.length);
+    raw.push(item);
   };
   for (const message of turnMessages) {
     if (message.type === "user") {
@@ -1115,6 +1266,9 @@ function buildTurnTimeline(
         }
         flushTools(matched);
       }
+    } else if (message.type === "system_note") {
+      const marker = readCompactionTimelineMarker(message);
+      if (marker) upsertCompaction(marker);
     }
   }
   flushTools(pending);
@@ -1189,7 +1343,9 @@ function projectImportedCodexQuotes(content: MessageContent): Pick<ChatItem, 'te
 }
 
 export function timelineItemKey(item: TurnTimelineItem): string {
-  return item.kind === 'tools' ? `tool\0${item.items[0]!.toolUseId}` : `${item.kind}\0${item.messageId}`;
+  if (item.kind === 'tools') return `tool\0${item.items[0]!.toolUseId}`;
+  if (item.kind === 'compaction') return `compaction\0${item.compactionId}`;
+  return `${item.kind}\0${item.messageId}`;
 }
 
 function flattenTimelineTools(items: readonly TurnTimelineItem[]): TurnTimelineItem[] {

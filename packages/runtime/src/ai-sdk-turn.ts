@@ -114,6 +114,7 @@ import { finitePositive } from './context-budget-helpers.js';
 import type {
   AutomaticMemoryCompactionDecision,
   AutomaticMemoryCompactionDispatch,
+  CompactionLifecycle,
   ProviderImageBudget,
 } from './ai-sdk-compaction.js';
 import {
@@ -1080,7 +1081,22 @@ export class AiSdkTurn {
     // The apply-time boundary the usage reader orders measurements against:
     // recorded when each compaction lands, so it exists mid-turn and a stop or
     // stream error cannot erase it — unlike the settlement-time display note.
-    const recordCompactionApplied = async (): Promise<void> => {
+    const recordCompactionStarted = async (compactionId: string): Promise<void> => {
+      try {
+        await queue.pushAndWaitUntilConsumed({
+          type: 'context_compaction_started',
+          id: this.deps.newId(),
+          turnId,
+          ts: this.deps.now(),
+          compactionId,
+          scope: 'step',
+        });
+      } catch {
+        // The attempt may still run; losing the presentation row must not block
+        // the compaction or the request it gates.
+      }
+    };
+    const recordCompactionApplied = async (compactionId: string): Promise<void> => {
       // The consumer persists the hidden note and forwards the same boundary
       // to live subscribers. Await its ack before dispatching the replacement
       // prompt, so even a slow consumer observes the boundary before new usage.
@@ -1089,7 +1105,33 @@ export class AiSdkTurn {
         id: this.deps.newId(),
         turnId,
         ts: this.deps.now(),
+        compactionId,
+        scope: 'step',
       });
+    };
+    const recordCompactionFailed = async (compactionId: string, reason: string): Promise<void> => {
+      try {
+        await queue.pushAndWaitUntilConsumed({
+          type: 'context_compaction_failed',
+          id: this.deps.newId(),
+          turnId,
+          ts: this.deps.now(),
+          compactionId,
+          scope: 'step',
+          reason,
+        });
+        // The event's mapper writes the durable failed_open note at the decision
+        // point. Keep the settlement fallback from adding the same failure again.
+        contextCompactionFailedOpenNoteWritten = true;
+      } catch {
+        // Leave the flag down so the settlement fallback can still record it.
+      }
+    };
+    const compactionLifecycle: CompactionLifecycle = {
+      newCompactionId: () => this.deps.newId(),
+      onCompactionStarted: recordCompactionStarted,
+      onCompactionApplied: recordCompactionApplied,
+      onCompactionFailed: recordCompactionFailed,
     };
     const trace = new RunTrace({
       sessionId: this.deps.backend.sessionId,
@@ -1501,7 +1543,7 @@ export class AiSdkTurn {
           queue,
           capacityProviderTools,
           onMidTurnDiagnosticPatch,
-          recordCompactionApplied,
+          compactionLifecycle,
           this,
           this.automaticMemoryCompactionSupported()
             ? () => this.automaticMemoryCompactionDecision()
@@ -2078,7 +2120,7 @@ export class AiSdkTurn {
                       activeTools: activeToolsForRequest,
                       queue,
                       onDiagnosticPatch: onMidTurnDiagnosticPatch,
-                      onCompactionApplied: recordCompactionApplied,
+                      lifecycle: compactionLifecycle,
                       origin: this,
                       ...(this.automaticMemoryCompactionSupported()
                         ? {

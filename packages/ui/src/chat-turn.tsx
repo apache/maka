@@ -1425,6 +1425,7 @@ const AssistantAnswerBubble = memo(function AssistantAnswerBubble(props: Assista
 // Semantic keys (no index) so mid-timeline inserts do not remount/collapse disclosures.
 function timelineEntryKey(item: TurnTimelineItem, index: number): string {
   if (item.kind === 'tools') return `tools-${item.items[0]?.toolUseId ?? index}`;
+  if (item.kind === 'compaction') return `compaction-${item.compactionId}`;
   return `${item.kind}-${item.messageId}`;
 }
 
@@ -1439,6 +1440,14 @@ const TurnTimelineEntry = memo(function TurnTimelineEntry(props: {
   initialLiveContent?: ReadonlyMap<string, string>;
 }) {
   const { item } = props;
+  if (item.kind === 'compaction') {
+    return (
+      <CompactionTimelineRow
+        item={item}
+        activityObserved={props.activityObserved}
+      />
+    );
+  }
   if (item.kind === 'thinking') {
     return (
       <DeepThinking
@@ -1473,6 +1482,32 @@ const TurnTimelineEntry = memo(function TurnTimelineEntry(props: {
     />
   );
 });
+
+function CompactionTimelineRow(props: {
+  item: Extract<TurnTimelineItem, { kind: 'compaction' }>;
+  activityObserved?: boolean;
+}) {
+  const copy = getConversationCopy(useUiLocale()).messages;
+  const running = props.item.state === 'running';
+  const observed = props.activityObserved !== false;
+  const text = running && !observed
+    ? copy.systemNotes.contextCompactionUnobserved
+    : props.item.text;
+  return (
+    <ChatSystemMessage
+      className="maka-chat-system-message maka-compaction-timeline-row"
+      variant={props.item.state === 'failed' || props.item.state === 'interrupted' ? 'default' : 'divider'}
+      data-compaction-state={running && !observed ? 'unavailable' : props.item.state}
+      aria-label={text}
+    >
+      <span className="maka-compaction-status">
+        {running && observed && <Spinner size="sm" shade="subtle" aria-hidden="true" />}
+        <span>{text}</span>
+        {running && observed && <TurnElapsedTime startedAt={props.item.ts} />}
+      </span>
+    </ChatSystemMessage>
+  );
+}
 
 /**
  * The turn's execution process (reasoning, intermediate commentary, tool

@@ -180,6 +180,88 @@ test('forwards the durable steering echo to subscribers as a session event', asy
   coordinator.close();
 });
 
+test('forwards in-turn compaction lifecycle events with their compaction identity', async () => {
+  const sink = new RecordingSink();
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  const connection = attachTestConnection(coordinator, 'connection-1', sink);
+  const opened = await open(coordinator, 'connection-1');
+  connection.activate(opened.subscriptionId);
+  await delayImmediate();
+  sink.frames.length = 0;
+
+  const started = {
+    type: 'context_compaction_started' as const,
+    id: 'compaction-started-1',
+    turnId: 'turn-1',
+    ts: 7,
+    compactionId: 'compact-1',
+    scope: 'step' as const,
+  };
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', started);
+  assert.equal(sink.frames.length, 1);
+  const startedFrame = sink.frames[0];
+  assert.equal(startedFrame?.kind, 'subscription.session_event');
+  if (startedFrame?.kind !== 'subscription.session_event') return;
+  assert.deepEqual(startedFrame.event, started);
+
+  const failed = {
+    type: 'context_compaction_failed' as const,
+    id: 'compaction-failed-1',
+    turnId: 'turn-1',
+    ts: 8,
+    compactionId: 'compact-1',
+    scope: 'step' as const,
+    reason: 'write_failed',
+  };
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', failed);
+  assert.equal(sink.frames.length, 2);
+  const failedFrame = sink.frames[1];
+  assert.equal(failedFrame?.kind, 'subscription.session_event');
+  if (failedFrame?.kind !== 'subscription.session_event') return;
+  assert.deepEqual(failedFrame.event, failed);
+
+  connection.abort(opened.subscriptionId);
+  coordinator.close();
+});
+
+test('does not forward a legacy compaction event without an attempt identity', async () => {
+  const sink = new RecordingSink();
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  const connection = attachTestConnection(coordinator, 'connection-1', sink);
+  const opened = await open(coordinator, 'connection-1');
+  connection.activate(opened.subscriptionId);
+  await delayImmediate();
+  sink.frames.length = 0;
+
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+    type: 'context_compaction_applied',
+    id: 'legacy-applied',
+    turnId: 'turn-1',
+    ts: 9,
+  });
+  assert.equal(sink.frames.length, 0);
+
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+    type: 'context_compaction_started',
+    id: 'legacy-started',
+    turnId: 'turn-1',
+    ts: 10,
+    scope: 'step',
+  });
+  assert.equal(sink.frames.length, 0);
+
+  connection.abort(opened.subscriptionId);
+  coordinator.close();
+});
+
 test('projects model-only user content out of Guest queue and steering frames', async () => {
   const grant = {
     kind: 'session_observation' as const,

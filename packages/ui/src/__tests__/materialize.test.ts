@@ -280,6 +280,295 @@ describe("materializeTurns message metadata", () => {
       turns.flatMap((turn) => turn.notes.map((note) => note.id)),
       ["compacted"],
     );
+    assert.equal(turns[0]?.timeline.some((item) => item.kind === "compaction"), false);
+  });
+
+  test("projects one in-turn compaction lifecycle into the execution timeline", () => {
+    const turns = materializeTurns([
+      originalUser,
+      {
+        type: "system_note",
+        id: "started",
+        turnId: "t1",
+        ts: 2,
+        kind: "context_compaction_started",
+        data: { compactionId: "compact-1", scope: "step" },
+      },
+      {
+        type: "system_note",
+        id: "applied",
+        turnId: "t1",
+        ts: 3,
+        kind: "context_compaction_applied",
+        data: { compactionId: "compact-1", scope: "step" },
+      },
+      {
+        type: "system_note",
+        id: "compacted",
+        turnId: "t1",
+        ts: 4,
+        kind: "context_compacted",
+      },
+    ], "en");
+    const turn = turns[0]!;
+    assert.deepEqual(turn.notes, []);
+    const compactions = turn.timeline.filter(
+      (item): item is Extract<TurnTimelineItem, { kind: "compaction" }> =>
+        item.kind === "compaction",
+    );
+    assert.equal(compactions.length, 1);
+    assert.equal(compactions[0]?.compactionId, "compact-1");
+    assert.equal(compactions[0]?.state, "compacted");
+    assert.equal(compactions[0]?.ts, 2);
+    assert.equal(compactions[0]?.text, "Earlier context compacted.");
+  });
+
+  test("keeps a legacy applied row out of the timeline and leaves its settlement note", () => {
+    const automatic = materializeTurns([
+      originalUser,
+      {
+        type: "system_note",
+        id: "applied",
+        turnId: "t1",
+        ts: 3,
+        kind: "context_compaction_applied",
+      },
+      {
+        type: "system_note",
+        id: "compacted",
+        turnId: "t1",
+        ts: 4,
+        kind: "context_compacted",
+      },
+    ], "en")[0]!;
+    assert.equal(automatic.timeline.some((item) => item.kind === "compaction"), false);
+    assert.deepEqual(automatic.notes.map((note) => note.id), ["compacted"]);
+
+    const settlementOnly = materializeTurns([
+      originalUser,
+      {
+        type: "system_note",
+        id: "compacted-only",
+        turnId: "t1",
+        ts: 4,
+        kind: "context_compacted",
+      },
+    ], "en")[0]!;
+    assert.equal(settlementOnly.timeline.some((item) => item.kind === "compaction"), false);
+    assert.deepEqual(settlementOnly.notes.map((note) => note.id), ["compacted-only"]);
+  });
+
+  test("requires compactionId before a step row becomes a timeline attempt", () => {
+    const startedOnly = materializeTurns([
+      originalUser,
+      {
+        type: "system_note",
+        id: "started-without-id",
+        turnId: "t1",
+        ts: 2,
+        kind: "context_compaction_started",
+        data: { scope: "step" },
+      },
+      {
+        type: "turn_state",
+        id: "state",
+        turnId: "t1",
+        ts: 3,
+        status: "completed",
+      },
+    ], "en")[0]!;
+    assert.equal(startedOnly.timeline.some((item) => item.kind === "compaction"), false);
+
+    const appliedOnly = materializeTurns([
+      originalUser,
+      {
+        type: "system_note",
+        id: "applied-without-id",
+        turnId: "t1",
+        ts: 2,
+        kind: "context_compaction_applied",
+        data: { scope: "step" },
+      },
+      {
+        type: "system_note",
+        id: "compacted",
+        turnId: "t1",
+        ts: 3,
+        kind: "context_compacted",
+      },
+    ], "en")[0]!;
+    assert.equal(appliedOnly.timeline.some((item) => item.kind === "compaction"), false);
+    assert.deepEqual(appliedOnly.notes.map((note) => note.id), ["compacted"]);
+  });
+
+  test("keeps a failed step-scoped attempt and suppresses its duplicate note", () => {
+    const turn = materializeTurns([
+      originalUser,
+      {
+        type: "system_note",
+        id: "started",
+        turnId: "t1",
+        ts: 2,
+        kind: "context_compaction_started",
+        data: { compactionId: "compact-1", scope: "step" },
+      },
+      {
+        type: "system_note",
+        id: "failed",
+        turnId: "t1",
+        ts: 3,
+        kind: "context_compaction_failed_open",
+        data: { compactionId: "compact-1", scope: "step", failOpenReason: "write_failed" },
+      },
+    ], "en")[0]!;
+    assert.deepEqual(turn.notes, []);
+    const item = turn.timeline.find((entry) => entry.kind === "compaction");
+    assert.equal(item?.kind, "compaction");
+    if (item?.kind !== "compaction") return;
+    assert.equal(item.state, "failed");
+    assert.equal(item.reason, "write_failed");
+  });
+
+  test("reads a cancelled step-scoped attempt as interrupted", () => {
+    const turn = materializeTurns([
+      originalUser,
+      {
+        type: "system_note",
+        id: "started",
+        turnId: "t1",
+        ts: 2,
+        kind: "context_compaction_started",
+        data: { compactionId: "compact-1", scope: "step" },
+      },
+      {
+        type: "system_note",
+        id: "interrupted",
+        turnId: "t1",
+        ts: 3,
+        kind: "context_compaction_failed_open",
+        data: { compactionId: "compact-1", scope: "step", failOpenReason: "interrupted" },
+      },
+    ], "en")[0]!;
+    assert.deepEqual(turn.notes, []);
+    const item = turn.timeline.find((entry) => entry.kind === "compaction");
+    assert.equal(item?.kind, "compaction");
+    if (item?.kind !== "compaction") return;
+    assert.equal(item.state, "interrupted");
+    assert.equal(item.reason, undefined);
+    assert.equal(item.text, "Context compaction was interrupted.");
+  });
+
+  test("keeps legacy compaction rows as notes instead of timeline attempts", () => {
+    // Old sessions wrote neither an attempt id nor a step scope. Both the
+    // successful fold and the failure stay transcript notes; neither is an
+    // attempt that could collide with another fold in the same Turn.
+    const turn = materializeTurns([
+      originalUser,
+      {
+        type: "system_note",
+        id: "applied",
+        turnId: "t1",
+        ts: 2,
+        kind: "context_compaction_applied",
+      },
+      {
+        type: "system_note",
+        id: "compacted",
+        turnId: "t1",
+        ts: 3,
+        kind: "context_compacted",
+      },
+      {
+        type: "system_note",
+        id: "failed-legacy",
+        turnId: "t1",
+        ts: 4,
+        kind: "context_compaction_failed_open",
+        data: { failOpenReason: "summarizer_failed" },
+      },
+    ], "en")[0]!;
+    const compactions = turn.timeline.filter((item) => item.kind === "compaction");
+    assert.deepEqual(compactions, []);
+    assert.deepEqual(
+      turn.notes.map((note) => [note.id, note.systemNoteKind]),
+      [
+        ["compacted", "context_compacted"],
+        ["failed-legacy", "context_compaction_failed_open"],
+      ],
+    );
+  });
+
+  test("settles a running attempt as interrupted when the turn is already terminal", () => {
+    const turn = materializeTurns([
+      originalUser,
+      {
+        type: "system_note",
+        id: "started",
+        turnId: "t1",
+        ts: 2,
+        kind: "context_compaction_started",
+        data: { compactionId: "compact-1", scope: "step" },
+      },
+      {
+        type: "turn_state",
+        id: "state",
+        turnId: "t1",
+        ts: 3,
+        status: "completed",
+      },
+    ], "en")[0]!;
+    const item = turn.timeline.find((entry) => entry.kind === "compaction");
+    assert.equal(item?.kind, "compaction");
+    if (item?.kind !== "compaction") return;
+    assert.equal(item.state, "interrupted");
+    assert.equal(item.reason, undefined);
+    assert.equal(item.text, "Context compaction was interrupted.");
+  });
+
+  test("settles a running attempt as failed when the recorded turn failed", () => {
+    const turn = materializeTurns([
+      originalUser,
+      {
+        type: "system_note",
+        id: "started",
+        turnId: "t1",
+        ts: 2,
+        kind: "context_compaction_started",
+        data: { compactionId: "compact-1", scope: "step" },
+      },
+      {
+        type: "turn_state",
+        id: "state",
+        turnId: "t1",
+        ts: 3,
+        status: "failed",
+      },
+    ], "en")[0]!;
+    const item = turn.timeline.find((entry) => entry.kind === "compaction");
+    assert.equal(item?.kind, "compaction");
+    if (item?.kind !== "compaction") return;
+    assert.equal(item.state, "failed");
+    assert.equal(item.text, "Context compaction failed.");
+  });
+
+  test("keeps a durable running attempt while the transcript only infers turn completion", () => {
+    const turn = materializeTurns([
+      originalUser,
+      {
+        type: "system_note",
+        id: "started",
+        turnId: "t1",
+        ts: 2,
+        kind: "context_compaction_started",
+        data: { compactionId: "compact-1", scope: "step" },
+      },
+    ], "en")[0]!;
+    const item = turn.timeline.find((entry) => entry.kind === "compaction");
+    assert.equal(turn.statusSource, "inferred");
+    assert.equal(item?.kind, "compaction");
+    if (item?.kind !== "compaction") return;
+    assert.equal(item.state, "running");
+    assert.equal(item.text, "Compacting context…");
   });
 
   test("localizes visible system notes", () => {
@@ -301,6 +590,22 @@ describe("materializeTurns message metadata", () => {
       materializeTurns(messages, "zh-CN")[0]?.notes[0]?.text,
       "已压缩较早的上下文。",
     );
+  });
+
+  test("labels a turn-scoped cancelled compaction as interrupted", () => {
+    const turn = materializeTurns([
+      originalUser,
+      {
+        type: "system_note",
+        id: "cancelled",
+        turnId: "t1",
+        ts: 2,
+        kind: "context_compaction_failed_open",
+        data: { failOpenReason: "interrupted" },
+      },
+    ], "en")[0]!;
+    assert.equal(turn.notes[0]?.compactionState, "interrupted");
+    assert.equal(turn.notes[0]?.text, "Context compaction was interrupted.");
   });
 
   test("preserves an explicit empty reference projection as the new-format marker", () => {
