@@ -172,13 +172,6 @@ export class BotController {
       .catch(async (error) => {
         if (!this.abort.signal.aborted) {
           this.store.transaction(() => {
-            // Retrying an undelivered error bubble must retain the original
-            // execution failure and its durable publication identity.
-            if (
-              this.store.get('error') &&
-              this.store.get<number>('errorThrough') === attemptedThrough
-            )
-              return;
             this.store.set('error', String(error));
             // Mail arriving during a failed execution must still trigger a new
             // attempt. Do not latch the failure against that newer input.
