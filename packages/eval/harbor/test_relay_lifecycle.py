@@ -241,16 +241,13 @@ class RecordingEnvironment:
 
 
 def load_relay():
-    from eval_framework import install
+    import eval_framework as framework_authority
 
-    install("harbor")
-    package = types.ModuleType("harbor")
-    agents = types.ModuleType("harbor.agents")
-    base = types.ModuleType("harbor.agents.base")
-    base.BaseAgent = BaseAgent
-    sys.modules["harbor"] = package
-    sys.modules["harbor.agents"] = agents
-    sys.modules["harbor.agents.base"] = base
+    framework_authority.install("harbor")
+    names = ("harbor", "harbor.agents", "harbor.agents.base")
+    modules = {name: types.ModuleType(name) for name in names}
+    modules[names[-1]].BaseAgent = BaseAgent
+    sys.modules.update(modules)
     sys.modules.pop("relay_agent", None)
     return importlib.import_module("relay_agent")
 

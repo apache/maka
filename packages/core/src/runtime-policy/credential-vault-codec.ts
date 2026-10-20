@@ -46,6 +46,11 @@ export function decodeCredentialLocator(value: unknown): CredentialLocator {
     ['scope', 'connectionId', 'provider', 'kind'],
     ['scope', 'kind'],
   );
+  if (base.scope === 'jev') {
+    const item = exactRecord(value, 'Jev credential locator', ['scope', 'kind']);
+    if (item.kind !== 'api_key') throw domainError('Jev credential kind is invalid');
+    return { scope: 'jev', kind: 'api_key' };
+  }
   if (base.scope === 'connection') {
     const item = exactRecord(value, 'connection credential locator', [
       'scope',

@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { inactiveWindowPlatformArgs, isCiLinuxDisplay } from './fixture-env.mjs';
+import { buildFixtureEnv, inactiveWindowPlatformArgs, isCiLinuxDisplay } from './fixture-env.mjs';
 
 describe('inactiveWindowPlatformArgs', () => {
   it('keeps a native Wayland session on XWayland', () => {
@@ -52,5 +52,40 @@ describe('isCiLinuxDisplay', () => {
     assert.equal(isCiLinuxDisplay({ CI: '1' }, 'linux'), true);
     assert.equal(isCiLinuxDisplay({}, 'linux'), false);
     assert.equal(isCiLinuxDisplay({ CI: '1' }, 'darwin'), false);
+  });
+});
+
+describe('buildFixtureEnv display routing', () => {
+  const withEnv = (overrides, assertion) => {
+    const saved = new Map(Object.keys(overrides).map((key) => [key, process.env[key]]));
+    Object.assign(process.env, overrides);
+    for (const [key, value] of Object.entries(overrides)) {
+      if (value === undefined) delete process.env[key];
+    }
+    try {
+      assertion();
+    } finally {
+      for (const [key, value] of saved) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  };
+
+  it('routes each Playwright worker to its own X server', () => {
+    withEnv({ DISPLAY: ':90', MAKA_E2E_DISPLAY_BASE: '90', TEST_PARALLEL_INDEX: '2' }, () => {
+      assert.equal(buildFixtureEnv('/tmp/data', '/tmp/home').DISPLAY, ':92');
+    });
+  });
+
+  it('keeps the inherited display when no one started per-worker servers', () => {
+    // A serial run and every non-Playwright launcher land here; routing them to
+    // a display nobody started would fail the launch outright.
+    withEnv({ DISPLAY: ':99', MAKA_E2E_DISPLAY_BASE: undefined, TEST_PARALLEL_INDEX: '2' }, () => {
+      assert.equal(buildFixtureEnv('/tmp/data', '/tmp/home').DISPLAY, ':99');
+    });
+    withEnv({ DISPLAY: ':99', MAKA_E2E_DISPLAY_BASE: '90', TEST_PARALLEL_INDEX: undefined }, () => {
+      assert.equal(buildFixtureEnv('/tmp/data', '/tmp/home').DISPLAY, ':99');
+    });
   });
 });

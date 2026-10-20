@@ -36,7 +36,7 @@ const DESKTOP_RUNTIME_WORKER = join(
   'desktop',
   'resources',
   'workers',
-  'filesystem-worker.js',
+  'filesystem-worker.mjs',
 );
 const DESKTOP_SMOKE = join(REPO_ROOT, 'scripts', 'desktop-real-window-smoke.mjs');
 const CLI_TIMEOUT_MS = 15_000;

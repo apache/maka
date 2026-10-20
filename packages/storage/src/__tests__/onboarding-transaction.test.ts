@@ -42,8 +42,9 @@ after(async () => {
 
 const BASE = {
   connectionId: '00000000-0000-4000-8000-000000000001',
-  slug: 'openai-compatible-2',
-  providerType: 'openai-compatible',
+  slug: 'custom-2',
+  providerType: 'custom',
+  defaultApiProtocol: 'openai-chat',
   suppliedSecret: 'relay-secret',
   enabledModelIds: ['relay/model'],
   discovery: { models: [{ id: 'relay/model' }], source: 'fetched', fetchedAt: 123 },
@@ -63,23 +64,49 @@ test('an onboarding intent round-trips its endpoint override through the journal
   ) as { schemaVersion: number; slug: string };
   assert.deepEqual(persisted, { ...intent });
   assert.equal(persisted.schemaVersion, 2);
-  assert.equal(persisted.slug, 'openai-compatible-2');
+  assert.equal(persisted.slug, 'custom-2');
 });
+
+const { slug: _slug, defaultApiProtocol: _protocol, ...legacyBase } = BASE;
 
 test('a journal written before the baseUrl field replays as no override', async () => {
   const directory = await root();
   // The exact persisted shape an older build leaves behind on crash: no
   // `baseUrl` key at all. Recovery must replay it, not reject the document.
-  const { slug: _slug, ...legacyBase } = BASE;
   await writeFile(
     join(directory, 'runtime-policy-onboarding.json'),
-    JSON.stringify({ schemaVersion: 1, ...legacyBase }),
+    JSON.stringify({ schemaVersion: 1, ...legacyBase, providerType: 'openai-compatible' }),
   );
   const replayed = await readConnectionOnboardingIntent(directory);
   assert.equal(replayed?.schemaVersion, 1);
+  assert.equal(replayed && 'providerType' in replayed && replayed.providerType, 'custom');
   assert.equal(replayed?.slug, null);
   assert.equal(replayed?.baseUrl, null);
   assert.deepEqual(replayed?.enabledModelIds, ['relay/model']);
+});
+
+test('a journal naming a legacy custom type replays as a custom connection', async () => {
+  for (const [providerType, defaultApiProtocol] of [
+    ['openai-compatible', 'openai-chat'],
+    ['openai-responses-compatible', 'openai-responses'],
+    ['anthropic-compatible', 'anthropic-messages'],
+  ] as const) {
+    const directory = await root();
+    await writeFile(
+      join(directory, 'runtime-policy-onboarding.json'),
+      JSON.stringify({
+        schemaVersion: 2,
+        slug: 'my-relay',
+        baseUrl: 'https://relay.example.test/v1',
+        ...legacyBase,
+        providerType,
+      }),
+    );
+    const replayed = await readConnectionOnboardingIntent(directory);
+    assert.ok(replayed && 'providerType' in replayed, providerType);
+    assert.equal(replayed.providerType, 'custom', providerType);
+    assert.equal(replayed.defaultApiProtocol, defaultApiProtocol, providerType);
+  }
 });
 
 test('a caller-chosen display name round-trips through the journal', async () => {
@@ -97,14 +124,14 @@ test('a caller-chosen display name round-trips through the journal', async () =>
 test('a journal written before the name field replays with the provider default', async () => {
   const directory = await root();
   // Schema v2 predates `name`: the key is simply absent on crash replay.
-  const { slug: _slug, ...legacyBase } = BASE;
   await writeFile(
     join(directory, 'runtime-policy-onboarding.json'),
     JSON.stringify({
       schemaVersion: 2,
-      slug: 'openai-compatible-2',
-      baseUrl: null,
+      slug: 'custom-2',
+      baseUrl: 'https://relay.example.test/v1',
       ...legacyBase,
+      providerType: 'openai-compatible',
     }),
   );
   const replayed = await readConnectionOnboardingIntent(directory);
@@ -118,7 +145,7 @@ test('a malformed requested display name fails input decode, never the journal',
       prepareConnectionOnboardingIntent({
         ...BASE,
         name: 42,
-        baseUrl: null,
+        baseUrl: 'https://relay.example.test/v1',
       }),
     /connection name/,
   );

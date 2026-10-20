@@ -77,6 +77,7 @@ test('cancels managed approval owners and joiners with the canonical provider id
     const interactions = createInteractionCoordinator(store);
     const runOwner = interactions.bindRun(RUN);
     const capabilities = new HostClientCapabilityCoordinator({
+      isSessionRetired: async () => false,
       activation: new RuntimePolicyActivationGate(),
       onModelToolsChanged: () => undefined,
       interactions,
@@ -106,7 +107,10 @@ test('cancels managed approval owners and joiners with the canonical provider id
           connection.accept({
             kind: 'client.capability.result',
             invocationId: frame.invocationId,
-            result: { content: [{ type: 'text', text: 'snapshot' }] },
+            result: {
+              outcome: 'success',
+              content: [{ type: 'text', text: 'snapshot' }],
+            },
           });
         }
       },
@@ -256,7 +260,10 @@ test('cancels managed approval owners and joiners with the canonical provider id
         ...retryRequest.request.target,
       });
       assert.equal(grant?.providerId, providerId);
-      assert.deepEqual(settlement.result, { content: [{ type: 'text', text: 'snapshot' }] });
+      assert.deepEqual(settlement.result, {
+        outcome: 'success',
+        content: [{ type: 'text', text: 'snapshot' }],
+      });
       assert.deepEqual(order, ['accepted', 'accepted', 'accepted', 'approved', 'T1', 'admitted']);
     } finally {
       snapshot?.release();
@@ -355,7 +362,8 @@ function createInteractionCoordinator(
     preflightSessionSnapshot: () => true,
     refreshCanonicalContinuity: async () => undefined,
     onPoison: () => undefined,
-    onSandboxBoundarySettled: async () => undefined,
+    resolveSandboxBoundaryRootSession: async () => undefined,
+    onSandboxBoundaryGraphWake: async () => undefined,
   };
   return new HostInteractionCoordinator(options);
 }

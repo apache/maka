@@ -35,12 +35,35 @@ import {
   type SubscriptionFrame,
 } from '@maka/runtime-host/protocol';
 import { resolveRuntimeHostCliTarget } from '../runtime-host-cli-context.js';
+import { RunQuestionAvailable } from '../run-session-result.js';
 import { createRuntimeHostRunContext, runRuntimeHostTextCli } from '../runtime-host-run-command.js';
 import type { RuntimeHostMakaSessionDriver } from '../runtime-host-session-driver.js';
 import type { MakaRunContextInput, MakaRunOutcome } from '../run-command-core.js';
 import type { MakaTranscriptReplacementReason } from '../session-driver.js';
 
 describe('Runtime Host maka run adapter', () => {
+  test('preserves a non-user trigger through the production run adapter', async () => {
+    const fixture = runFixture({});
+    const session = await fixture.context.runtime.createSession({
+      cwd: '/workspace',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      permissionMode: 'ask',
+    });
+
+    await collect(
+      fixture.context.runtime.sendMessage(session.id, {
+        turnId: 'turn-activation',
+        text: 'Inspect the workspace',
+        origin: { kind: 'cloud_activation', activationId: 'activation-1' },
+      }),
+    );
+
+    assert.deepEqual(fixture.preparedOrigins, [
+      { kind: 'cloud_activation', activationId: 'activation-1' },
+    ]);
+  });
+
   test('stops before context creation when CLI preflight finds a confirmed blocker', async () => {
     const stderr: string[] = [];
     let contextCreations = 0;
@@ -238,6 +261,75 @@ describe('Runtime Host maka run adapter', () => {
     assert.equal(stderr.join(''), 'maka run: Turn failed\n');
   });
 
+  test('returns the Session ID and terminal failure for --json', async () => {
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const fixture = runFixture({ turnEvents: failedEvents('turn-1', 'provider_failure') });
+    const exit = await runFixtureCommand(
+      fixture,
+      ['fail once', '--json'],
+      (text) => stdout.push(text),
+      (text) => stderr.push(text),
+    );
+    assert.equal(exit, 1);
+    assert.deepEqual(JSON.parse(stdout.join('')), {
+      sessionId: 'session-created',
+      status: 'failed',
+      error: 'Turn failed',
+    });
+    assert.equal(stderr.join(''), 'maka run: Turn failed\n');
+  });
+
+  test('detached admission leaves early interactions unanswered', async () => {
+    for (const request of [
+      {
+        kind: 'sandbox_boundary' as const,
+        expansion: { network: { enabled: true as const } },
+        justification: 'test',
+      },
+      pendingQuestion('turn-1').request,
+      pendingForm('turn-1').request,
+      pendingPermission('turn-1').request,
+    ]) {
+      const gate = deferred<void>();
+      const preparing = deferred<void>();
+      const fixture = runFixture({
+        prepareGate: gate.promise,
+        onPrepareStarted: () => preparing.resolve(),
+      });
+      const context = fixture.createContext({
+        workspaceRoot: '/data',
+        cwd: '/workspace',
+        noWait: true,
+      });
+      try {
+        const sending = collect(
+          context.runtime.sendMessage('session-created', { turnId: 'turn-1', text: 'go' }),
+        );
+        await preparing.promise;
+        fixture.publishPendingInteraction({
+          schemaVersion: 1,
+          sessionId: 'session-created',
+          turnId: 'turn-1',
+          runId: 'run-1',
+          interactionId: 'early',
+          revision: 1,
+          status: 'pending',
+          outcome: null,
+          request,
+        });
+        await Promise.resolve();
+        gate.resolve();
+        await sending;
+        assert.deepEqual(fixture.sandboxResponses, [], request.kind);
+        assert.deepEqual(fixture.exactTurnStops, [], request.kind);
+      } finally {
+        gate.resolve();
+        await context.close();
+      }
+    }
+  });
+
   test('returns exit code 1 when a same-step sibling succeeds after a sandbox failure', async () => {
     const stdout: string[] = [];
     const stderr: string[] = [];
@@ -374,6 +466,64 @@ describe('Runtime Host maka run adapter', () => {
     assert.equal(exitCode, 1);
   });
 
+  test('prints the transcript answer when the live stream never carried one', async () => {
+    const stdout: string[] = [];
+    let publishReplacement = () => {};
+    const fixture = runFixture({
+      turnEvents: eventsWithoutStreamedAnswer(() => publishReplacement()),
+    });
+    publishReplacement = () =>
+      fixture.publishTranscriptReplacement(
+        'turn-1',
+        [
+          {
+            type: 'assistant',
+            id: 'assistant-1',
+            turnId: 'turn-1',
+            ts: 1,
+            text: 'Answer only the transcript saw',
+            modelId: 'gpt-5',
+          },
+        ],
+        'reconnect',
+      );
+
+    const exitCode = await runFixtureCommand(fixture, ['reattach'], (text) => stdout.push(text));
+
+    assert.equal(exitCode, 0);
+    assert.equal(stdout.join(''), 'Answer only the transcript saw\n');
+  });
+
+  test('prints the answer when a durable transcript read lands after it', async () => {
+    const stdout: string[] = [];
+    let publishReplacement = () => {};
+    const fixture = runFixture({
+      turnEvents: eventsWithLateTranscriptRead(() => publishReplacement()),
+    });
+    publishReplacement = () =>
+      fixture.publishTranscriptReplacement(
+        'turn-1',
+        [
+          {
+            type: 'assistant',
+            id: 'assistant-step-1',
+            turnId: 'turn-1',
+            ts: 1,
+            text: 'Reading the file',
+            modelId: 'gpt-5',
+          },
+          storedToolCall('turn-1', 'tool-2', 'step-1', 1),
+          successfulToolResult('turn-1', 2),
+        ],
+        'reconcile',
+      );
+
+    const exitCode = await runFixtureCommand(fixture, ['answer once'], (text) => stdout.push(text));
+
+    assert.equal(exitCode, 0);
+    assert.equal(stdout.join(''), 'Host answer\n');
+  });
+
   test('returns exit code 1 when one retry follows two sandbox failures', async () => {
     const fixture = runFixture({
       turnEvents: multipleSandboxFailureEvents('turn-1'),
@@ -468,7 +618,7 @@ describe('Runtime Host maka run adapter', () => {
     );
 
     assert.equal(exitCode, 1);
-    assert.equal(stderr.join(''), 'maka run: Agent Graph final Turn failed\n');
+    assert.equal(stderr.join(''), 'maka run: Turn failed\n');
   });
 
   test('waits for Host-started graph supervisor Turns before returning', async () => {
@@ -562,6 +712,56 @@ describe('Runtime Host maka run adapter', () => {
     assert.equal(live.failure?.class, 'aborted');
     assert.equal(durable.status, 'failed');
     assert.equal(durable.failure?.class, 'aborted');
+  });
+
+  test('observes a resumed Host Turn through the same outcome path as a fresh Turn', async () => {
+    const observed: MakaRunOutcome[] = [];
+    const fixture = runFixture({ observed, resumeReady: true });
+    const session = await fixture.context.runtime.createSession({
+      cwd: '/workspace',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      permissionMode: 'ask',
+    });
+
+    assert.ok(fixture.context.runtime.resumeLatest);
+    const resumed = await fixture.context.runtime.resumeLatest(session.id);
+    assert.ok(resumed);
+    await collect(resumed);
+
+    assert.equal(observed.length, 1);
+    assert.equal(observed[0]?.outcomeId, 'run-resumed');
+    assert.equal(observed[0]?.status, 'completed');
+    assert.equal(observed[0]?.finalOutput, 'Resumed answer');
+  });
+
+  test('stops a resumed Host Turn if cancellation races its start', async () => {
+    const resumeStarted = deferred<void>();
+    const resumeGate = deferred<void>();
+    const fixture = runFixture({
+      resumeReady: true,
+      resumeGate: resumeGate.promise,
+      onResumeStarted: () => resumeStarted.resolve(),
+    });
+    const session = await fixture.context.runtime.createSession({
+      cwd: '/workspace',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      permissionMode: 'ask',
+    });
+    assert.ok(fixture.context.runtime.resumeLatest);
+    const resumed = await fixture.context.runtime.resumeLatest(session.id);
+    assert.ok(resumed);
+    const draining = collect(resumed);
+    await resumeStarted.promise;
+
+    await fixture.context.runtime.stopSession(session.id);
+    resumeGate.resolve();
+    await draining;
+
+    assert.deepEqual(fixture.exactTurnStops, [
+      { sessionId: 'session-created', turnId: 'turn-resumed', runId: 'run-resumed' },
+    ]);
   });
 
   test('classifies live and durable step-cap failures equally', async () => {
@@ -773,7 +973,7 @@ describe('Runtime Host maka run adapter', () => {
     assert.deepEqual(fixture.graphStops, [session.id, session.id]);
   });
 
-  test('fails and stops instead of waiting for an interactive question', async () => {
+  test('returns an AskUser handoff without stopping its Host Turn', async () => {
     const fixture = runFixture({
       turnEvents: questionEvents('turn-1'),
       pendingInteractions: [pendingQuestion('turn-1')],
@@ -793,11 +993,75 @@ describe('Runtime Host maka run adapter', () => {
           text: 'ask me something',
         }),
       ),
-      new Error('interactive user questions are unavailable in non-interactive mode'),
+      RunQuestionAvailable,
     );
-    assert.deepEqual(fixture.exactTurnStops, [
-      { sessionId: session.id, turnId: 'turn-1', runId: 'run-1' },
-    ]);
+    assert.deepEqual(fixture.exactTurnStops, []);
+  });
+
+  test('public run returns questions with exit 0 and keeps the original Turn waiting', async () => {
+    const fixture = runFixture({
+      turnEvents: questionEvents('turn-1'),
+      pendingInteractions: [pendingQuestion('turn-1')],
+      pendingAfterTurnStarts: true,
+    });
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const code = await runFixtureCommand(
+      fixture,
+      ['ask something'],
+      (text) => stdout.push(text),
+      (text) => stderr.push(text),
+    );
+    assert.equal(code, 0, stderr.join(''));
+    assert.equal(JSON.parse(stdout.join('')).status, 'needs_input');
+    assert.equal(JSON.parse(stdout.join('')).sessionId, 'session-created');
+    assert.ok(JSON.parse(stdout.join('')).questions.length);
+    assert.deepEqual(fixture.exactTurnStops, []);
+    assert.deepEqual(stderr, []);
+  });
+
+  test('no-wait returns after admission instead of consuming the event stream', async () => {
+    const fixture = runFixture({
+      turnEvents: (async function* (): AsyncIterable<SessionEvent> {
+        throw new Error('no-wait must not consume events');
+      })(),
+    });
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const code = await runFixtureCommand(
+      fixture,
+      ['execute in background', '--no-wait'],
+      (text) => stdout.push(text),
+      (text) => stderr.push(text),
+    );
+    assert.equal(code, 0, stderr.join(''));
+    assert.deepEqual(JSON.parse(stdout.join('')), {
+      sessionId: 'session-created',
+      status: 'running',
+      submission: 'started',
+    });
+    assert.deepEqual(fixture.exactTurnStops, []);
+  });
+
+  test('preserves the concrete provider failure stored with a Turn', async () => {
+    const messages = structuredClone(graphMessages());
+    const terminal = messages.find(
+      (message) => message.type === 'turn_state' && message.turnId === 'turn-2',
+    );
+    assert.ok(terminal && terminal.type === 'turn_state');
+    terminal.status = 'failed';
+    terminal.errorClass = 'quota_exhausted';
+    terminal.failureMessage = 'Selected provider has no remaining quota';
+    const fixture = runFixture({ graph: true, finalMessages: messages });
+    const stderr: string[] = [];
+    const code = await runFixtureCommand(
+      fixture,
+      ['execute', '--graph'],
+      () => {},
+      (text) => stderr.push(text),
+    );
+    assert.equal(code, 1);
+    assert.match(stderr.join(''), /Selected provider has no remaining quota/);
   });
 
   test('fails and stops instead of dropping an interactive form', async () => {
@@ -954,6 +1218,9 @@ function runFixture(input: {
   prepareGate?: Promise<void>;
   onPrepareStarted?: () => void;
   turnEvents?: AsyncIterable<SessionEvent>;
+  resumeReady?: boolean;
+  resumeGate?: Promise<void>;
+  onResumeStarted?: () => void;
   pendingInteractions?: InteractionPendingSnapshot[];
   pendingAfterTurnStarts?: boolean;
   graphProjectionRace?: boolean;
@@ -987,6 +1254,7 @@ function runFixture(input: {
   >();
   let messageReads = 0;
   const preparedMaxSteps: Array<number | undefined> = [];
+  const preparedOrigins: unknown[] = [];
   const driver = {
     createSession: async () => sessionSummary('session-created'),
     readMessages: async () => {
@@ -1053,9 +1321,10 @@ function runFixture(input: {
     },
     preparePrompt: async (
       _prompt: string,
-      options: { turnId?: string; maxSteps?: number } = {},
+      options: { turnId?: string; maxSteps?: number; origin?: unknown } = {},
     ) => {
       preparedMaxSteps.push(options.maxSteps);
+      preparedOrigins.push(options.origin);
       input.onPrepareStarted?.();
       await input.prepareGate;
       const events = input.turnEvents ?? eventsFor(options.turnId ?? 'turn-1', 'Host answer');
@@ -1070,6 +1339,16 @@ function runFixture(input: {
               input.pendingInteractions ?? [],
             )
           : events,
+      };
+    },
+    resumeLatestTurn: async () => {
+      input.onResumeStarted?.();
+      await input.resumeGate;
+      return {
+        sessionId: switches.at(-1) ?? 'session-created',
+        turnId: 'turn-resumed',
+        runId: 'run-resumed',
+        events: eventsFor('turn-resumed', 'Resumed answer'),
       };
     },
     respondToSandboxBoundary: async (response: { requestId: string; decision: 'deny' }) => {
@@ -1095,6 +1374,15 @@ function runFixture(input: {
   const connection = {
     hostEpoch: 'host-1',
     request: async (operation: string, requestInput: Record<string, unknown>) => {
+      if (operation === 'turn.resume.query' && input.resumeReady) {
+        return {
+          sessionId: requestInput.sessionId,
+          disposition: 'ready',
+          sourceRunId: 'run-source',
+          sourceTurnId: 'turn-source',
+          sourceRuntimeEventHighWater: 3,
+        };
+      }
       if (operation === 'session.execution_boundary.query') {
         return { kind: 'managed', access: 'writable', revision: 0 };
       }
@@ -1156,6 +1444,7 @@ function runFixture(input: {
     graphStops,
     exactTurnStops,
     preparedMaxSteps,
+    preparedOrigins,
     sandboxResponses,
     createContext,
     publishPendingInteraction(pending: InteractionPendingSnapshot) {
@@ -1592,6 +1881,45 @@ async function* eventsFor(turnId: string, text: string, ts = 1): AsyncIterable<S
     text,
   };
   yield { type: 'complete', id: `${turnId}-complete`, turnId, ts: ts + 1, stopReason: 'end_turn' };
+}
+
+async function* eventsWithLateTranscriptRead(publish: () => void): AsyncIterable<SessionEvent> {
+  yield toolStart('turn-1', 'tool-2', 'step-1', 1);
+  yield successfulToolResult('turn-1', 2);
+  yield {
+    type: 'text_complete',
+    id: 'turn-1-text',
+    turnId: 'turn-1',
+    messageId: 'turn-1-message',
+    ts: 3,
+    text: 'Host answer',
+  };
+  // The read this tool result triggered only reaches the transcript as far as
+  // the Host had committed it, which is behind the answer that just streamed.
+  publish();
+  yield {
+    type: 'complete',
+    id: 'turn-1-complete',
+    turnId: 'turn-1',
+    ts: 4,
+    stopReason: 'end_turn',
+  };
+}
+
+// Reattaching to a Turn whose answer was produced before this client arrived:
+// only the transcript can supply it, so a stored answer has to be able to set
+// the final output when the stream never delivered one.
+async function* eventsWithoutStreamedAnswer(publish: () => void): AsyncIterable<SessionEvent> {
+  yield toolStart('turn-1', 'tool-1', 'step-1', 1);
+  yield successfulToolResult('turn-1', 2);
+  publish();
+  yield {
+    type: 'complete',
+    id: 'turn-1-complete',
+    turnId: 'turn-1',
+    ts: 3,
+    stopReason: 'end_turn',
+  };
 }
 
 async function* eventsAfterTranscriptReplacement(publish: () => void): AsyncIterable<SessionEvent> {

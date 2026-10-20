@@ -125,7 +125,7 @@ describe('bounded Memory Extraction', () => {
   test('keeps Assistant text while excluding parallel Tool and provider-native semantics', () => {
     const stepText = {
       ...event('assistant-step', 'model', { kind: 'text', text: 'Checking both sources.' }),
-      refs: { storedMessageId: 'step-1' },
+      refs: { providerEventId: 'step-1' },
     };
     const firstCall = {
       ...event('call-a', 'model', {
@@ -195,6 +195,33 @@ describe('bounded Memory Extraction', () => {
       serialized,
       /tool_call|tool_result|a\.md|b\.md|secret-provider-metadata|signed-thinking|private step reasoning/,
     );
+  });
+
+  test('drops a repaired Assistant prefix before Memory provider context', () => {
+    const repairedAssistant = {
+      ...event('repaired-assistant', 'model', {
+        kind: 'text',
+        text: 'Assistant text before any user message.',
+      }),
+      refs: { storedMessageId: 'stored-assistant' },
+    };
+    const source = buildMemoryCompactionSourceContext(
+      [
+        repairedAssistant,
+        event('first-user', 'user', { kind: 'text', text: 'User-led memory evidence.' }),
+      ],
+      'first-user',
+    );
+
+    assert.ok(source);
+    assert.deepEqual(source.messages, [
+      {
+        role: 'user',
+        content: [{ type: 'text', text: 'User-led memory evidence.' }],
+      },
+    ]);
+    assert.equal(source.eventMessagePositions?.['repaired-assistant'], undefined);
+    assert.deepEqual(source.eventMessagePositions?.['first-user'], [0]);
   });
 
   test('rebuilds only the post-Cursor Event slice behind the previous Compaction summary', () => {

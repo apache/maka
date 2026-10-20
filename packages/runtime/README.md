@@ -42,6 +42,51 @@ The main integration points are:
 
 Shared execution composition — where `BackendRegistry` and `SessionManager` are constructed — lives in the Runtime Host at [`packages/runtime-host/src/server/execution-composition.ts`](../runtime-host/src/server/execution-composition.ts). Clients, including Desktop, execute Maka through Runtime Host rather than composing Runtime directly.
 
+## Background-task readiness
+
+`Bash` background runs return a durable runtime-task ref and expose the native
+process id when available. A process id published after startup is captured on
+the next task observation, output flush, or finalization.
+`BackgroundTaskHealth` deliberately keeps
+the process lifecycle (`starting`, `running`, or terminal, with timestamps and
+captured output) separate from endpoint readiness. An endpoint is `healthy`
+only after an explicit HTTP(S) probe succeeds; an omitted probe is
+`not_checked`, and a failed or policy-blocked probe is `unknown`. Consumers must
+not infer HTTP readiness from the process status alone.
+
+## Explicit event waits (internal)
+
+`event-wait-tool` exposes a composition seam for `WaitForEvent`. It is absent from
+production catalogs until a production adapter is provided. The tool requires a
+direct, exclusive tool step; a successful Host registration produces an in-memory
+control receipt that ends the Turn with `event_wait` after persisting its result.
+Persisted JSON and ordinary tool output cannot manufacture that receipt.
+
+Runtime Host's `HostGoalEventWaitBridge` binds registration to the current Goal
+control generation and Root execution. Its narrow storage operations atomically
+register the gate, settle the source once, and queue an existing Goal continuation.
+The continuation freezes execution IDs, prompt and typed result provenance. Root
+admission atomically consumes that continuation and acknowledges delivery. The
+observation outcome remains available after admission; it is not cancellation.
+
+While the gate is outstanding, the normal Goal evaluator and waiting timer cannot
+start work. Observation uses the existing bounded Host observation service. Busy
+admission and temporarily unknown authorization retain the original continuation;
+new user work keeps its normal admission priority. Pause/cancellation invalidate
+the old generation. Portable Session copies pause linked Goals and discard the
+wait linkage; same-root backups retain it.
+
+Recovery distinguishes a queued continuation from an admitted successor. A queued
+result or timeout retains its frozen execution IDs and input across restart, and
+retries through the existing Root admission checks. If admission commits but its
+acknowledgement is lost before the Root owner adopts it, the Host requests drain
+and fences further admission for that Session. Restart the Host before resuming
+the Goal: recovery closes an admitted Goal Turn without a Run as `app_restarted`
+and pauses the Goal. An explicit user resume starts a fresh continuation under a
+new control generation; it does not redeliver the old wait. If a Run already
+exists, its recovery follows the normal Runtime policy. This boundary does not
+provide transparent retry or exactly-once execution of external side effects.
+
 ## Extension rules
 
 - Add backend behavior behind `AgentBackend` and register it through the existing registry.

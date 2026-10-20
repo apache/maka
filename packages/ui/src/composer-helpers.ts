@@ -71,7 +71,7 @@ export function deriveComposerModelSwitchAvailability(input: {
 }
 
 /**
- * Maximum number of characters retained for a single draft. Drafts
+ * Maximum number of characters retained for an ordinary draft. Drafts
  * that grow past this limit keep only the trailing window so the
  * user's most recent typing survives an accidental tab close.
  */
@@ -103,7 +103,10 @@ export function appendPromptContextDraft(current: string, fragment: string): str
   return `${base}\n\n${next}`;
 }
 
-export function rememberComposerDraft(store: Map<string, string>, key: string | undefined, value: string): void {
+export function rememberComposerDraft(
+  store: Map<string, string>, key: string | undefined, value: string,
+  options?: { preserveFullText?: boolean },
+): void {
   if (!key) return;
   const trimmed = value.trim();
   if (!trimmed) {
@@ -111,8 +114,10 @@ export function rememberComposerDraft(store: Map<string, string>, key: string | 
     return;
   }
 
-  // Detach the tail from the oversized backing while preserving every UTF-16 code unit.
-  const bounded = value.length > COMPOSER_DRAFT_MAX_CHARS
+  // Replacement drafts must stay lossless: sending them can delete the durable
+  // original. They still share the entry limit and whole-draft eviction below.
+  // For ordinary drafts, detach the tail from its oversized backing.
+  const bounded = !options?.preserveFullText && value.length > COMPOSER_DRAFT_MAX_CHARS
     ? structuredClone(value.slice(value.length - COMPOSER_DRAFT_MAX_CHARS))
     : value;
   store.delete(key);
@@ -216,27 +221,4 @@ export function reconcileHistorySync(
     },
     restoreDraft: false,
   };
-}
-
-/**
- * Paste size at which text becomes a quote chip instead of textarea content.
- * Either bound alone is enough: a wall of prose trips the character bound, a
- * pasted log or diff trips the line bound while staying short per line.
- */
-export const PASTE_AS_QUOTE_MIN_CHARS = 1_000;
-export const PASTE_AS_QUOTE_MIN_LINES = 10;
-
-/**
- * True when a paste is reference material (a log, a diff, a doc section) rather
- * than something the user will keep editing inline. Reference-sized pastes are
- * staged as a quote chip so they stay model-visible without flooding the
- * composer; anything smaller is left alone, because the user is writing.
- */
-export function isReferenceSizedPaste(text: string): boolean {
-  if (text.length >= PASTE_AS_QUOTE_MIN_CHARS) return true;
-  let lines = 1;
-  for (let i = 0; i < text.length; i++) {
-    if (text[i] === '\n' && ++lines > PASTE_AS_QUOTE_MIN_LINES) return true;
-  }
-  return false;
 }

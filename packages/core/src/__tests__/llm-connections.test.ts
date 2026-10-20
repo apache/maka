@@ -26,7 +26,6 @@ import {
 } from '../model-metadata.js';
 import { PROVIDER_REGISTRY, providerFallbackModelIds } from '../provider-registry.js';
 import {
-  authorizeConnectionModel,
   effectiveBaseUrl,
   normalizeConnectionBaseUrl,
   providerAuthRequiresSecret,
@@ -39,6 +38,7 @@ import {
   type ProviderType,
 } from '../llm-connections.js';
 import { isRealConnection } from '../connection-readiness.js';
+import { normalizeCatalogConnectionBaseUrl } from '../runtime-policy/connection-catalog-codec.js';
 import { resolveConnectionModelCatalog } from '../model-catalog.js';
 import { buildChatModelChoices } from '../chat-model-choice.js';
 import { deriveProviderAuthContract } from '../provider-auth.js';
@@ -81,6 +81,57 @@ test('connection base URLs allow HTTP(S) and reject unsafe or malformed inputs',
   const exactLimit = `https://example.com/${'a'.repeat(2048 - 'https://example.com/'.length)}`;
   assert.equal(exactLimit.length, 2048);
   assert.equal(validateConnectionBaseUrl(exactLimit), null);
+});
+
+test('connection base URL gate agrees with the Runtime Host contract (#3672)', () => {
+  // The Host codec is the authority. Accepting what it refuses sends the rejection back
+  // unclassified, so the form shows generic "service unavailable" copy on the wrong field.
+  const hostRejects = (value: string): boolean => {
+    try {
+      normalizeCatalogConnectionBaseUrl(value);
+      return false;
+    } catch {
+      return true;
+    }
+  };
+
+  for (const [value, rule] of [
+    ['https://user:pw@gw.example.com/v1', 'credentials'],
+    ['https://gw.example.com/v1?api-version=2024-06', 'query or fragment'],
+    ['https://gw.example.com/v1#main', 'query or fragment'],
+    ['https://gw.example.com/v1?api-version=2024-06#main', 'query or fragment'],
+  ] as const) {
+    const gate = validateConnectionBaseUrl(value);
+    assert.notEqual(gate, null, value);
+    assert.match(gate ?? '', new RegExp(rule), value);
+    assert.equal(hostRejects(value), true, value);
+  }
+
+  for (const value of [
+    'https://gw.example.com/v1',
+    'https://gw.example.com',
+    'http://localhost:11434/v1',
+  ]) {
+    assert.equal(validateConnectionBaseUrl(value), null, value);
+    assert.equal(hostRejects(value), false, value);
+  }
+});
+
+test('connection base URL gate bounds bytes like the Host, not only characters (#3672)', () => {
+  const multibyte = `https://gw.example.com/${'é'.repeat(1200)}`;
+  assert.equal(
+    multibyte.length <= 2048,
+    true,
+    `character cap must not reject it: ${multibyte.length}`,
+  );
+  assert.match(validateConnectionBaseUrl(multibyte) ?? '', /2048 bytes/);
+  let hostThrew = false;
+  try {
+    normalizeCatalogConnectionBaseUrl(multibyte);
+  } catch {
+    hostThrew = true;
+  }
+  assert.equal(hostThrew, true);
 });
 
 test('base URL normalization preserves clear intent and rejects untrusted runtime types', () => {
@@ -324,7 +375,7 @@ test('chat model choices project exact vision support for attachment composition
       connectionId: 'connection-vision',
       slug: 'openai-compatible',
       name: 'OpenAI compatible',
-      providerType: 'openai-compatible',
+      providerType: 'custom',
       enabled: true,
       defaultModel: 'text-model',
       enabledModelIds: ['text-model', 'vision-model'],
@@ -352,7 +403,7 @@ test('chat model choices keep provider metadata separate from user context decla
       connectionId: 'connection-context',
       slug: 'openai-compatible',
       name: 'OpenAI compatible',
-      providerType: 'openai-compatible',
+      providerType: 'custom',
       enabled: true,
       defaultModel: 'declared-model',
       enabledModelIds: ['declared-model', 'reported-model'],
@@ -415,41 +466,18 @@ test('provider recognition does not resolve inherited object members', () => {
   }
 });
 
-test('a quarantined model id is vetoed even when enabled and present in the inventory', () => {
+test('stored OpenCode Free models cannot be selected', () => {
   const connection = {
-    providerType: 'opencode-free' as ProviderType,
-    enabledModelIds: ['nemotron-3-ultra-free', 'muse-spark-1.2-contributor-free'],
-    models: [{ id: 'nemotron-3-ultra-free' }, { id: 'muse-spark-1.2-contributor-free' }],
-  };
-  assert.equal(authorizeConnectionModel(connection, 'muse-spark-1.2-contributor-free'), undefined);
-  assert.deepEqual(authorizeConnectionModel(connection, 'nemotron-3-ultra-free'), {
-    id: 'nemotron-3-ultra-free',
-  });
-});
-
-test('a quarantined stored default is dropped from the picker, not re-added as a missing-default row', () => {
-  // The retired `x-preview-f-free` was picker-visible before the quarantine, so
-  // an upgrade connection can carry it as `defaultModel` and enabled. `models`
-  // and `enabledModelIds` are filtered against `brokenModelIds`, but the raw
-  // `defaultModel` used to pass through unfiltered and `makeMissingDefaultEntry`
-  // re-added it as a selectable `provider_default` row — visible and pickable
-  // while `authorizeConnectionModel` vetoed the same id. The picker and the send
-  // authority must agree: neither offers it, and the live model still renders.
-  const connection = {
-    connectionId: 'connection-opencode-free',
+    connectionId: 'stored-free',
     slug: 'opencode-free',
     name: 'OpenCode Free',
     providerType: 'opencode-free' as ProviderType,
     enabled: true,
-    defaultModel: 'x-preview-f-free',
-    enabledModelIds: ['x-preview-f-free', 'nemotron-3-ultra-free'],
-    models: [{ id: 'x-preview-f-free' }, { id: 'nemotron-3-ultra-free' }],
-    modelSource: 'fetched' as const,
+    defaultModel: 'nemotron-3-ultra-free',
+    enabledModelIds: ['nemotron-3-ultra-free'],
+    models: [{ id: 'nemotron-3-ultra-free' }],
     createdAt: 1,
     updatedAt: 1,
   };
-  const models = chatModelChoicesFor([connection]).map(({ model }) => model);
-  assert.ok(!models.includes('x-preview-f-free'), 'quarantined default must not be offered');
-  assert.ok(models.includes('nemotron-3-ultra-free'), 'live enabled model still renders');
-  assert.equal(authorizeConnectionModel(connection, 'x-preview-f-free'), undefined);
+  assert.deepEqual(chatModelChoicesFor([connection]), []);
 });

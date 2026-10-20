@@ -158,6 +158,7 @@ export async function verifyPackagedWindowsApp(
     requireCanonicalIcon: requiresCurrentContract,
     requireAppIconCatalog: requiresCurrentContract,
     requireDirectPeerArtifact: requiresCurrentContract,
+    requireMjsFilesystemWorker: requiresCurrentContract,
   });
   // The upgrade baseline is a build that shipped on its own channel, from its
   // own commit: its update feed and dependency closure are the ones that were

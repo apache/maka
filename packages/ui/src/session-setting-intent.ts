@@ -57,8 +57,15 @@ export type SessionSettingIntentChannel<Value> = SessionSettingIntentChannelBase
     }
 );
 
+export interface SessionSettingIntentCatalog {
+  /** The catalog's latest committed revision, read at call time. */
+  revision(): number;
+  /** Runs `listener` after every catalog commit; returns the unsubscribe. */
+  subscribeChanged(listener: () => void): () => void;
+}
+
 export interface SessionSettingIntentOptions<Values extends object> {
-  catalogRevision: number;
+  catalog: SessionSettingIntentCatalog;
   refreshCatalog(): Promise<unknown>;
   channels: {
     [Channel in keyof Values]: SessionSettingIntentChannel<Values[Channel]>;
@@ -77,6 +84,30 @@ export interface SessionSettingIntentController<Values extends object> {
     value: Values[Channel],
   ): Promise<boolean>;
   clear(sessionId: string): void;
+  /**
+   * Starts observing `sessionId`'s setting writes for one submission attempt:
+   * every write in flight now and every write requested before `release()`.
+   * Begin it when the user submits, before any other await, so a write that
+   * fails while the submission prepares is still attributed to it.
+   */
+  beginSettlement(sessionId: string): SessionSettingSettlement;
+  /** `beginSettlement`, awaited and released in one call. */
+  settled(sessionId: string): Promise<boolean>;
+}
+
+export interface SessionSettingSettlement {
+  /**
+   * Resolves once every observed write has finished: true when all of them
+   * committed (or there were none), false when any failed, was cleared, or the
+   * owner unmounted. Writes requested while this waits are awaited too.
+   */
+  settled(): Promise<boolean>;
+  /** Stops observing; later writes no longer affect this attempt. */
+  release(): void;
+}
+
+interface SettlementObserver {
+  readonly completions: Promise<boolean>[];
 }
 
 type AnyIntent = SettingIntent<unknown>;
@@ -115,6 +146,7 @@ export function useSessionSettingIntent<Values extends object>(
   const optionsRef = useRef(options);
   optionsRef.current = options;
   const intentsRef = useRef(new Map<keyof Values, Map<string, AnyIntent>>());
+  const observersRef = useRef(new Map<string, Set<SettlementObserver>>());
   const mountedRef = useRef(false);
   const [overlayByChannel, setOverlayByChannel] = useState<
     SessionSettingIntentOverlays<Values>
@@ -168,18 +200,24 @@ export function useSessionSettingIntent<Values extends object>(
       ) {
         return;
       }
-    } else if (optionsRef.current.catalogRevision <= intent.committedAtCatalogRevision) {
+    } else if (optionsRef.current.catalog.revision() <= intent.committedAtCatalogRevision) {
       return;
     }
     channelIntents?.delete(sessionId);
     setOverlay(channel, sessionId, undefined);
   }, [setOverlay]);
 
+  // Reconcile is driven by catalog commits, not renders: subscribing here is
+  // what lets the catalog live outside this component's render scope.
   useEffect(() => {
-    for (const [channel, intents] of intentsRef.current) {
-      for (const sessionId of intents.keys()) reconcile(channel, sessionId);
-    }
-  }, [options.catalogRevision, reconcile]);
+    const reconcileAll = () => {
+      for (const [channel, intents] of intentsRef.current) {
+        for (const sessionId of intents.keys()) reconcile(channel, sessionId);
+      }
+    };
+    reconcileAll();
+    return options.catalog.subscribeChanged(reconcileAll);
+  }, [options.catalog, reconcile]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -191,6 +229,14 @@ export function useSessionSettingIntent<Values extends object>(
         for (const intent of intents.values()) intent.resolveCompletion(false);
       }
     };
+  }, []);
+
+  /** Attributes a write's outcome to every settlement observing its Session. */
+  const observe = useCallback((sessionId: string, completion: Promise<boolean>) => {
+    for (const observer of observersRef.current.get(sessionId) ?? []) {
+      observer.completions.push(completion);
+    }
+    return completion;
   }, []);
 
   const request = useCallback(<Channel extends keyof Values>(
@@ -213,7 +259,7 @@ export function useSessionSettingIntent<Values extends object>(
       }
       existing.desired = value;
       setOverlay(channel, sessionId, value);
-      if (existing.inFlight) return existing.completion;
+      if (existing.inFlight) return observe(sessionId, existing.completion);
     }
 
     const intent = createIntent(value, existing);
@@ -242,7 +288,7 @@ export function useSessionSettingIntent<Values extends object>(
         if (!mountedRef.current || typedIntents.get(sessionId) !== intent) return;
         if (committed) {
           intent.committed = attempted;
-          intent.committedAtCatalogRevision = optionsRef.current.catalogRevision;
+          intent.committedAtCatalogRevision = optionsRef.current.catalog.revision();
           intent.committedAtSessionRevision = committedSessionRevision;
           if (isEqual(channel, intent.desired, attempted)) {
             setOverlay(channel, sessionId, attempted);
@@ -283,8 +329,8 @@ export function useSessionSettingIntent<Values extends object>(
       }
     })();
 
-    return intent.completion;
-  }, [isEqual, reconcile, setOverlay]);
+    return observe(sessionId, intent.completion);
+  }, [isEqual, observe, reconcile, setOverlay]);
 
   const clear = useCallback((sessionId: string): void => {
     for (const [channel, intents] of intentsRef.current) {
@@ -295,5 +341,47 @@ export function useSessionSettingIntent<Values extends object>(
     }
   }, [setOverlay]);
 
-  return { overlayByChannel, request, clear };
+  const beginSettlement = useCallback((sessionId: string): SessionSettingSettlement => {
+    const observer: SettlementObserver = { completions: [] };
+    for (const intents of intentsRef.current.values()) {
+      const intent = intents.get(sessionId);
+      if (intent?.inFlight) observer.completions.push(intent.completion);
+    }
+    let observers = observersRef.current.get(sessionId);
+    if (!observers) {
+      observers = new Set();
+      observersRef.current.set(sessionId, observers);
+    }
+    observers.add(observer);
+    const release = () => {
+      const current = observersRef.current.get(sessionId);
+      current?.delete(observer);
+      if (current?.size === 0) observersRef.current.delete(sessionId);
+    };
+    return {
+      async settled() {
+        let succeeded = true;
+        // A write requested while earlier ones are awaited joins the list, and
+        // its outcome counts even if it finished before this loop saw it.
+        for (let awaited = 0; awaited < observer.completions.length;) {
+          const batch = observer.completions.slice(awaited);
+          awaited += batch.length;
+          if ((await Promise.all(batch)).includes(false)) succeeded = false;
+        }
+        return succeeded && mountedRef.current;
+      },
+      release,
+    };
+  }, []);
+
+  const settled = useCallback(async (sessionId: string): Promise<boolean> => {
+    const settlement = beginSettlement(sessionId);
+    try {
+      return await settlement.settled();
+    } finally {
+      settlement.release();
+    }
+  }, [beginSettlement]);
+
+  return { overlayByChannel, request, clear, beginSettlement, settled };
 }

@@ -22,3 +22,5 @@ export {
   modelConfigurationIntentForModel,
   modelConfigurationIntentForThinking,
 } from './session-model-configuration-intent.js';
+export { useSessionSettingsController } from './controller/use-session-settings-controller.js';
+export { writeSessionPlanMode } from './model/write-session-plan-mode.js';

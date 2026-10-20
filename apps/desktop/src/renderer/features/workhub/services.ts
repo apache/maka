@@ -17,8 +17,13 @@
  * under the License.
  */
 
+import { createElement, type ReactNode } from 'react';
+import { WorkHubWorkspaceServicesProvider } from '../../application/contracts/workhub-workspace/use-workhub-workspace.js';
 import { createServicesContext } from '../../application/contracts/feature-services.js';
 import type { WorkHubServices } from './ports.js';
 const context = createServicesContext<WorkHubServices>('WorkHubServicesProvider');
-export const WorkHubServicesProvider = context.Provider;
+export function WorkHubServicesProvider(props: { services: WorkHubServices; children?: ReactNode }) {
+  return createElement(WorkHubWorkspaceServicesProvider, { value: props.services },
+    createElement(context.Provider, props));
+}
 export const useWorkHubServices = context.useServices;

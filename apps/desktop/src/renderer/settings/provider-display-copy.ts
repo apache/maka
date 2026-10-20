@@ -19,7 +19,7 @@
 
 import type { ProviderType } from '@maka/core/llm-connections';
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import type { ShippedUiCatalog, UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 /**
  * Pure-data provider introduction copy, localized zh / en.
@@ -51,7 +51,7 @@ export const UNKNOWN_PROVIDER_DESCRIPTION = {
   'zh-CN': '该 provider 在当前版本未注册。',
   'zh-TW': '該 provider 在目前版本未註冊。',
   en: 'This provider is not registered in the current build.',
-} satisfies UiCatalog<string>;
+} satisfies ShippedUiCatalog<string>;
 
 export const PROVIDER_DISPLAY_COPY = {
   'kimi-coding-plan': {
@@ -73,6 +73,11 @@ export const PROVIDER_DISPLAY_COPY = {
     'zh-CN': { name: 'Moonshot', description: 'Moonshot 官方接入', badge: 'API' },
     'zh-TW': { name: 'Moonshot', description: 'Moonshot 官方 API 連線', badge: 'API' },
     en: { name: 'Moonshot', description: 'Official Moonshot API access.', badge: 'API' },
+  },
+  'moonshot-global': {
+    'zh-CN': { name: 'Moonshot 国际版', description: 'Moonshot 国际版官方 API 接入', badge: 'API' },
+    'zh-TW': { name: 'Moonshot 國際版', description: 'Moonshot 國際版官方 API 連線', badge: 'API' },
+    en: { name: 'Moonshot Global', description: 'Official Moonshot international API access.', badge: 'API' },
   },
   'zai-coding-plan': {
     'zh-CN': { name: 'Z.AI Coding Plan', description: '智谱 · OpenAI 兼容', badge: 'Coding' },
@@ -103,6 +108,11 @@ export const PROVIDER_DISPLAY_COPY = {
     'zh-CN': { name: 'OpenAI', description: 'OpenAI 官方接入', badge: 'API' },
     'zh-TW': { name: 'OpenAI', description: 'OpenAI 官方 API 連線', badge: 'API' },
     en: { name: 'OpenAI', description: 'Official OpenAI API access.', badge: 'API' },
+  },
+  inception: {
+    'zh-CN': { name: 'Inception', description: 'Inception 官方 Mercury 模型 API 接入', badge: 'API' },
+    'zh-TW': { name: 'Inception', description: 'Inception 官方 Mercury 模型 API 連線', badge: 'API' },
+    en: { name: 'Inception', description: 'Official Inception Mercury model API access.', badge: 'API' },
   },
   google: {
     'zh-CN': { name: 'Google Gemini', description: 'Google AI Studio 接入', badge: 'API' },
@@ -169,20 +179,10 @@ export const PROVIDER_DISPLAY_COPY = {
     'zh-TW': { name: 'LocalAI', description: '本機 LocalAI 服務，可選金鑰保護', badge: 'Local' },
     en: { name: 'LocalAI', description: 'Local models served by LocalAI, with optional API key.', badge: 'Local' },
   },
-  'openai-compatible': {
-    'zh-CN': { name: '自定义中转站（OpenAI Chat）', description: 'OpenAI Chat Completions 兼容中转站、代理服务或自部署网关。', badge: '中转' },
-    'zh-TW': { name: '自訂中轉站（OpenAI Chat）', description: 'OpenAI Chat Completions 相容中轉站、代理服務或自部署閘道器。', badge: '中轉' },
-    en: { name: 'Custom relay (OpenAI Chat)', description: 'OpenAI Chat Completions-compatible relay, proxy, or self-hosted gateway.', badge: 'Relay' },
-  },
-  'openai-responses-compatible': {
-    'zh-CN': { name: '自定义中转站（OpenAI Responses）', description: 'OpenAI Responses API 兼容中转站、代理服务或自部署网关。', badge: 'Responses' },
-    'zh-TW': { name: '自訂中轉站（OpenAI Responses）', description: 'OpenAI Responses API 相容中轉站、代理服務或自部署閘道器。', badge: 'Responses' },
-    en: { name: 'Custom relay (OpenAI Responses)', description: 'OpenAI Responses-compatible relay, proxy, or self-hosted gateway.', badge: 'Responses' },
-  },
-  'anthropic-compatible': {
-    'zh-CN': { name: '自定义中转站（Anthropic）', description: 'Anthropic Messages 兼容中转站、代理服务或自部署网关。', badge: 'Anthropic' },
-    'zh-TW': { name: '自訂中轉站（Anthropic）', description: 'Anthropic Messages 相容中轉站、代理服務或自部署閘道器。', badge: 'Anthropic' },
-    en: { name: 'Custom relay (Anthropic)', description: 'Anthropic Messages-compatible relay, proxy, or self-hosted gateway.', badge: 'Anthropic' },
+  custom: {
+    'zh-CN': { name: '自定义连接', description: '中转站、代理服务或自部署网关，支持 OpenAI Chat、OpenAI Responses 和 Anthropic Messages，可按模型选择协议。', badge: '自定义' },
+    'zh-TW': { name: '自訂連線', description: '中轉站、代理服務或自部署閘道器，支援 OpenAI Chat、OpenAI Responses 和 Anthropic Messages，可依模型選擇協定。', badge: '自訂' },
+    en: { name: 'Custom connection', description: 'Relay, proxy, or self-hosted gateway speaking OpenAI Chat, OpenAI Responses, or Anthropic Messages, chosen per model.', badge: 'Custom' },
   },
   'fireworks-ai': {
     'zh-CN': { name: 'Fireworks AI', description: 'Serverless 开源模型托管', badge: 'API' },
@@ -290,14 +290,22 @@ export const PROVIDER_DISPLAY_COPY = {
     en: { name: 'OpenCode Go', description: 'Low-cost subscription to curated open coding models.', badge: 'Plan' },
   },
   'opencode-free': {
-    'zh-CN': { name: 'OpenCode Free', description: '免费匿名 OpenCode Zen 模型，无需密钥，按 IP 限速', badge: 'Free' },
-    'zh-TW': { name: 'OpenCode Free', description: '免費匿名 OpenCode Zen 模型，無需金鑰，按 IP 限速', badge: 'Free' },
-    en: { name: 'OpenCode Free', description: 'Free anonymous OpenCode Zen models — no API key, IP-limited.', badge: 'Free' },
+    'zh-CN': { name: 'OpenCode Free', description: '已停用：OpenCode 免费服务仅限其官方客户端使用。', badge: 'Free' },
+    'zh-TW': { name: 'OpenCode Free', description: '已停用：OpenCode 免費服務僅限其官方用戶端使用。', badge: 'Free' },
+    en: { name: 'OpenCode Free', description: 'Retired: OpenCode restricts its free tier to its own client.', badge: 'Free' },
   },
   commandcode: {
     'zh-CN': { name: 'Command Code', description: '使用 Command Code 套餐额度，连接后自动获取模型。', badge: 'Coding' },
     'zh-TW': { name: 'Command Code', description: '使用 Command Code 方案額度，連線後自動取得模型。', badge: 'Coding' },
     en: { name: 'Command Code', description: 'Use your Command Code plan credits. Models are fetched when you connect.', badge: 'Coding' },
+  },
+  // Retired: its transport reached a private endpoint under the official CLI's
+  // identity. Kept so an existing connection stays identifiable and readable;
+  // the connection card states that nothing can send through it any more.
+  'commandcode-go': {
+    'zh-CN': { name: 'Command Code GO', description: '已停用：该套餐通过官方 CLI 的私有通道访问，已不再支持。', badge: 'Coding' },
+    'zh-TW': { name: 'Command Code GO', description: '已停用：該方案透過官方 CLI 的私有通道存取，已不再支援。', badge: 'Coding' },
+    en: { name: 'Command Code GO', description: 'Retired: this plan reached a private endpoint under the official CLI\u2019s identity.', badge: 'Coding' },
   },
   groq: {
     'zh-CN': { name: 'Groq', description: 'LPU 高速推理托管开源模型', badge: 'API' },
@@ -334,13 +342,13 @@ export const PROVIDER_DISPLAY_COPY = {
     en: { name: 'Alibaba Coding Plan', description: 'Alibaba Cloud Model Studio Coding Plan for interactive coding tools.', badge: 'Plan' },
   },
   'alibaba-token-plan-cn': {
-    'zh-CN': { name: 'Alibaba Token Plan（团队版）', description: '阿里云百炼 Token Plan 订阅，交互式智能体与编码工具 · 北京', badge: 'Token' },
-    'zh-TW': { name: 'Alibaba Token Plan（團隊版）', description: '阿里雲百鍊 Token Plan 訂閱，互動式智慧體與編碼工具 · 北京', badge: 'Token' },
+    'zh-CN': { name: 'Alibaba Token Plan 中国站', description: '阿里云百炼 Token Plan 订阅，交互式智能体与编码工具 · 北京', badge: 'Token' },
+    'zh-TW': { name: 'Alibaba Token Plan 中國站', description: '阿里雲百鍊 Token Plan 訂閱，互動式智慧體與編碼工具 · 北京', badge: 'Token' },
     en: { name: 'Alibaba Token Plan (China)', description: 'Alibaba Cloud Model Studio Token Plan for interactive agents and coding tools, Beijing region.', badge: 'Token' },
   },
   'alibaba-token-plan': {
-    'zh-CN': { name: 'Alibaba Token Plan（团队版）', description: '阿里云百炼 Token Plan 订阅，交互式智能体与编码工具 · 新加坡', badge: 'Token' },
-    'zh-TW': { name: 'Alibaba Token Plan（團隊版）', description: '阿里雲百鍊 Token Plan 訂閱，互動式智慧體與編碼工具 · 新加坡', badge: 'Token' },
+    'zh-CN': { name: 'Alibaba Token Plan 国际站', description: '阿里云百炼 Token Plan 订阅，交互式智能体与编码工具 · 新加坡', badge: 'Token' },
+    'zh-TW': { name: 'Alibaba Token Plan 國際站', description: '阿里雲百鍊 Token Plan 訂閱，互動式智慧體與編碼工具 · 新加坡', badge: 'Token' },
     en: { name: 'Alibaba Token Plan', description: 'Alibaba Cloud Model Studio Token Plan for interactive agents and coding tools, Singapore region.', badge: 'Token' },
   },
   // OAuth account providers (not in CATALOG_PROVIDER_TYPES; shown in the
@@ -365,9 +373,10 @@ export const PROVIDER_DISPLAY_COPY = {
     'zh-TW': { name: 'xAI OAuth', description: '使用 SuperGrok 或 X Premium 帳號登入。', badge: 'Account' },
     en: { name: 'xAI OAuth', description: 'Sign in with SuperGrok or X Premium.', badge: 'Account' },
   },
-} satisfies Record<ProviderType, UiCatalog<ProviderCopy>>;
+} satisfies Record<ProviderType, ShippedUiCatalog<ProviderCopy>>;
 
 export function providerDisplay(type: ProviderType, locale: UiLocale): ProviderCopy {
-  const copy = (PROVIDER_DISPLAY_COPY as Partial<Record<string, UiCatalog<ProviderCopy>>>)[type]?.[locale];
-  return copy ?? { name: type, description: UNKNOWN_PROVIDER_DESCRIPTION[locale] };
+  const catalog = (PROVIDER_DISPLAY_COPY as Partial<Record<string, ShippedUiCatalog<ProviderCopy> & Partial<UiCatalog<ProviderCopy>>>>)[type];
+  const copy = catalog?.[locale] ?? catalog?.en;
+  return copy ?? { name: type, description: (UNKNOWN_PROVIDER_DESCRIPTION as Partial<UiCatalog<string>>)[locale] ?? UNKNOWN_PROVIDER_DESCRIPTION.en };
 }

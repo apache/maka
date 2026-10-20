@@ -1,0 +1,115 @@
+diff --git a/node_modules/electron-updater/out/providers/GitHubProvider.js b/node_modules/electron-updater/out/providers/GitHubProvider.js
+index e768d24..b7ae8d5 100644
+--- a/node_modules/electron-updater/out/providers/GitHubProvider.js
++++ b/node_modules/electron-updater/out/providers/GitHubProvider.js
+@@ -47,14 +47,20 @@ class GitHubProvider extends BaseGitHubProvider {
+         // noinspection TypeScriptValidateJSTypes
+         let latestRelease = feed.element("entry", false, `No published versions on GitHub`);
+         let tag = null;
++        const releaseCandidates = [];
+         try {
+             if (this.updater.allowPrerelease) {
+                 const currentChannel = ((_a = this.updater) === null || _a === void 0 ? void 0 : _a.channel) || ((_b = semver.prerelease(this.updater.currentVersion)) === null || _b === void 0 ? void 0 : _b[0]) || null;
+                 if (currentChannel === null) {
+                     // allowPrerelease=true with no explicit channel and stable current version:
+-                    // pick the first entry from the Atom feed, which may be a prerelease
++                    // Preserve feed order so a missing first entry can fall through.
+                     // noinspection TypeScriptValidateJSTypes
+-                    tag = hrefRegExp.exec(latestRelease.element("link").attribute("href"))[1];
++                    for (const element of feed.getElements("entry")) {
++                        const hrefElement = hrefRegExp.exec(element.element("link").attribute("href"));
++                        if (hrefElement !== null && semver.valid(hrefElement[1])) {
++                            releaseCandidates.push({ tag: hrefElement[1], release: element });
++                        }
++                    }
+                 }
+                 else {
+                     for (const element of feed.getElements("entry")) {
+@@ -76,15 +82,12 @@ class GitHubProvider extends BaseGitHubProvider {
+                         // Allow moving from alpha to beta but not down
+                         const channelMismatch = currentChannel === "beta" && hrefChannel === "alpha";
+                         if (shouldFetchVersion && !isCustomChannel && !channelMismatch) {
+-                            tag = hrefTag;
+-                            latestRelease = element;
+-                            break;
++                            releaseCandidates.push({ tag: hrefTag, release: element });
++                            continue;
+                         }
+                         const isNextPreRelease = hrefChannel && hrefChannel === currentChannel;
+                         if (isNextPreRelease) {
+-                            tag = hrefTag;
+-                            latestRelease = element;
+-                            break;
++                            releaseCandidates.push({ tag: hrefTag, release: element });
+                         }
+                     }
+                 }
+@@ -102,12 +105,15 @@ class GitHubProvider extends BaseGitHubProvider {
+                         break;
+                     }
+                 }
++                if (tag != null) {
++                    releaseCandidates.push({ tag, release: latestRelease });
++                }
+             }
+         }
+         catch (e) {
+             throw (0, builder_util_runtime_1.newError)(`Cannot parse releases feed: ${e.stack || e.message},\nXML:\n${feedXml}`, "ERR_UPDATER_INVALID_RELEASE_FEED");
+         }
+-        if (tag == null) {
++        if (releaseCandidates.length === 0) {
+             throw (0, builder_util_runtime_1.newError)(`No published versions on GitHub`, "ERR_UPDATER_NO_PUBLISHED_VERSIONS");
+         }
+         let rawData;
+@@ -127,22 +133,42 @@ class GitHubProvider extends BaseGitHubProvider {
+                 throw e;
+             }
+         };
+-        try {
++        let missingCandidateError = null;
++        for (const candidate of releaseCandidates) {
++            tag = candidate.tag;
++            latestRelease = candidate.release;
+             let channel = this.channel;
+             if (this.updater.allowPrerelease && ((_d = semver.prerelease(tag)) === null || _d === void 0 ? void 0 : _d[0])) {
+                 channel = this.getCustomChannelName(String((_e = semver.prerelease(tag)) === null || _e === void 0 ? void 0 : _e[0]));
+             }
+-            rawData = await fetchData(channel);
+-        }
+-        catch (e) {
+-            if (this.updater.allowPrerelease) {
+-                // Allow fallback to `latest.yml`
+-                rawData = await fetchData(this.getDefaultChannelName());
++            try {
++                rawData = await fetchData(channel);
++                missingCandidateError = null;
++                break;
+             }
+-            else {
+-                throw e;
++            catch (e) {
++                const channelFileMissing = e.code === "ERR_UPDATER_CHANNEL_FILE_NOT_FOUND";
++                if (!this.updater.allowPrerelease) {
++                    throw e;
++                }
++                try {
++                    // Allow fallback to `latest.yml`
++                    rawData = await fetchData(this.getDefaultChannelName());
++                    missingCandidateError = null;
++                    break;
++                }
++                catch (fallbackError) {
++                    if (channelFileMissing && fallbackError.code === "ERR_UPDATER_CHANNEL_FILE_NOT_FOUND") {
++                        missingCandidateError = fallbackError;
++                        continue;
++                    }
++                    throw fallbackError;
++                }
+             }
+         }
++        if (missingCandidateError !== null) {
++            throw missingCandidateError;
++        }
+         const result = (0, Provider_1.parseUpdateInfo)(rawData, channelFile, channelFileUrl);
+         if (result.releaseName == null) {
+             result.releaseName = latestRelease.elementValueOrEmpty("title");

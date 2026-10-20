@@ -17,8 +17,8 @@
  * under the License.
  */
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
-import type { EnvironmentRuntimeHostProfile, HostHandoffBlocker, HostHandoffPhase, RuntimeHostRemoteCompatibilityError } from '@maka/runtime-host/client';
+import { type UiLocale, defineShippedUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
+import { sameResolvedRuntimeHostProfileTarget, type EnvironmentRuntimeHostProfile, type HostHandoffBlocker, type HostHandoffPhase, type RuntimeHostRemoteCompatibilityError } from '@maka/runtime-host/client';
 import { compareProductReleaseVersions } from '@maka/runtime-host/operator';
 import type { DesktopRuntimeHostManagedServiceBinding } from './runtime-host-managed-services.js';
 import { runtimeHostSetupPackageDisplayVersion, runtimeHostSetupPackageVersion, type DesktopRuntimeHostSetupPackage } from './runtime-host-setup-package.js';
@@ -51,7 +51,8 @@ export async function resolveDesktopWslHostHandoff(
   }
   const binding = await deps.resolveBinding(profile.id);
   if (!binding || binding.state !== 'active' || binding.profile.kind !== 'environment' ||
-      JSON.stringify(binding.profile) !== JSON.stringify(profile) || !binding.deployment.deploymentId) {
+      binding.profile.id !== profile.id ||
+      !sameResolvedRuntimeHostProfileTarget({ profile: binding.profile }, { profile }) || !binding.deployment.deploymentId) {
     return { ...base, operatorStep: guidance.binding };
   }
   const expectedTarget = {
@@ -59,7 +60,7 @@ export async function resolveDesktopWslHostHandoff(
     rootId: profile.rootId, deploymentId: binding.deployment.deploymentId,
   };
   const status = await (deps.status ?? runDesktopRuntimeHostWslManagement)({
-    distribution: profile.provider.distribution, operator: profile.operator,
+    distribution: binding.profile.provider.distribution, operator: binding.profile.operator,
     action: 'status', expectedTarget, signal,
   });
   if (status.kind !== 'result' || status.action !== 'status' || status.service.lifecycle?.mode !== 'on_demand' ||
@@ -118,7 +119,7 @@ interface WslHandoffGuidance {
   readonly development: string;
 }
 
-const GUIDANCE = {
+const GUIDANCE = resolveUiMessageCatalog(defineShippedUiMessageCatalog<WslHandoffGuidance>()({
   en: {
     client: 'Update Desktop to a build compatible with this Host. The Host will not be downgraded.',
     binding: 'The WSL management binding is unavailable. Restore it through Runtime Host settings before updating.',
@@ -140,4 +141,4 @@ const GUIDANCE = {
     target: '目前 Desktop 無法驗證合適的替換套件。請更新 Desktop，或透過開發環境明確管理選定的開發套件；現有 Host 會被保留。',
     development: '選定的開發建置版本',
   },
-} satisfies UiCatalog<WslHandoffGuidance>;
+}));

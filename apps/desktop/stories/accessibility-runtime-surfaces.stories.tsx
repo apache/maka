@@ -32,6 +32,8 @@ import {
   type WorkbarServices,
 } from '../src/renderer/features/workbar/testing';
 import { WorkbarSurface } from '../src/renderer/features/workbar/stories';
+import { TaskEntryServicesProvider } from '../src/renderer/features/task-entry';
+import { createFakeTaskEntryServices } from '../src/renderer/features/task-entry/testing';
 import { RemoteProjectDirectoryDialog } from '../src/renderer/remote-project-directory-dialog';
 import { RuntimeHostSshTerminalDialog } from '../src/renderer/settings/runtime-host-ssh-terminal-dialog';
 import { withScopedMakaBridge } from './maka-bridge';
@@ -89,12 +91,12 @@ function WorkbarToolSurface(props: { kind: 'terminal' | 'browser' | 'files'; hid
           sessionId="runtime-surface"
           hidden={props.hidden ?? false}
           onDismissPanel={noop}
+          onToggleRightPanel={noop}
           panelsState={createSessionWorkbarPanelsState(props.backgroundFiles ? openStaticSessionWorkbarTab(right, 'review') : right)}
           rightCollapsed={false}
           bottomOpen={false}
           onActivateTab={noop}
           onCloseTab={noop}
-          onCloseTabs={noop}
           onOpenLauncher={noop}
           onRequestOpenTab={noop}
           confirmBypass={async () => true}
@@ -206,6 +208,7 @@ export const BrowserLoaded: Story = {
         }),
         subscribeState: unsubscribe,
         setViewport: () => undefined,
+        capturePage: async () => undefined,
         back: async () => undefined,
         forward: async () => undefined,
         stop: async () => undefined,
@@ -249,11 +252,14 @@ const htmlArtifact: ArtifactDescriptor = {
   source: 'subagent_writeback',
 };
 
+const taskEntryServices = createFakeTaskEntryServices();
+
 function RemoteProjectDirectoryStory() {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   return (
-    <>
+    <ToastProvider>
+      <TaskEntryServicesProvider services={taskEntryServices}>
       <button ref={triggerRef} type="button" onClick={() => setOpen(true)}>
         选择远程项目目录
       </button>
@@ -265,7 +271,8 @@ function RemoteProjectDirectoryStory() {
         onClose={() => setOpen(false)}
         onRegistered={() => setOpen(false)}
       />
-    </>
+      </TaskEntryServicesProvider>
+    </ToastProvider>
   );
 }
 
@@ -355,6 +362,7 @@ export const BackgroundArtifactCount: Story = {
   },
 };
 
+// Real path: Project Settings → choose a remote Host directory → register and reopen.
 export const RemoteProjectDirectory: Story = {
   decorators: [
     withScopedMakaBridge({

@@ -18,33 +18,54 @@
  */
 
 import type { StoredMessage } from '@maka/core/session';
-import type { SessionTurnContribution, SessionTurnLandmark } from '@maka/storage/execution-stores';
+import type { SessionTurnContribution } from '@maka/storage/execution-stores';
 import { foldTurnContribution } from '@maka/storage/session-message-projection';
+import type { SessionTurnLandmark } from '../../protocol/index.js';
 import type { SessionTranscriptReader } from '../../server/session-transcript-reader.js';
 
 export function transcriptReader(
   durable: readonly StoredMessage[],
-  overlay: readonly StoredMessage[] = [],
   sequenceStride = 1,
 ): SessionTranscriptReader {
-  const durableRecords = () =>
-    durable.map((message, index) => ({ sequence: index * sequenceStride, message }));
+  // Here Turns do not interleave, so a run of rows with one turnId is a whole
+  // Turn and a page is between Turns wherever that run changes.
+  const durableRecords = () => {
+    let cluster = 0;
+    let owner: string | undefined;
+    return durable.map((message, index) => {
+      const turnId = 'turnId' in message ? message.turnId : undefined;
+      if (index === 0 || turnId !== owner) cluster += 1;
+      owner = turnId;
+      return { sequence: index * sequenceStride, message, cluster };
+    });
+  };
   const durableHighWater = () =>
     durable.length === 0 ? null : (durable.length - 1) * sequenceStride + sequenceStride - 1;
   return {
     readDurableHighWater: async () => durableHighWater(),
-    readDurablePage: async (_sessionId, request) => {
+    // Cuts pages more simply than the ledger reader does — what it shares is
+    // the contract the pager depends on: rows the projection hides take up no
+    // room on the page, and the page resumes past them.
+    readDurablePage: async (_sessionId, request, project) => {
       const throughSequence =
         request.throughSequence === undefined ? durableHighWater() : request.throughSequence;
       if (throughSequence === null) {
-        return { throughSequence: null, fragments: [], rawBytes: 0, next: null };
+        return {
+          throughSequence: null,
+          fragments: [],
+          rawBytes: 0,
+          next: null,
+          endsAtTurnBoundary: true,
+        };
       }
       const position = request.position ?? (request.direction === 'older' ? throughSequence : 0);
       const candidates = durableRecords()
-        .map(({ sequence, message }) => ({
-          sequence,
-          data: Buffer.from(JSON.stringify(message), 'utf8'),
-        }))
+        .flatMap(({ sequence, message, cluster }) => {
+          const projected = project ? project(message) : message;
+          return projected === null
+            ? []
+            : [{ sequence, cluster, data: Buffer.from(JSON.stringify(projected), 'utf8') }];
+        })
         .filter(
           ({ sequence }) =>
             sequence <= throughSequence &&
@@ -55,6 +76,7 @@ export function transcriptReader(
             ? right.sequence - left.sequence
             : left.sequence - right.sequence,
         );
+      let endsAtTurnBoundary = true;
       const fragments = [] as Array<{
         sequence: number;
         byteOffset: number;
@@ -65,7 +87,10 @@ export function transcriptReader(
       let rawBytes = 0;
       let next: { position: number; byteOffset: number | null } | null = null;
       for (const candidate of candidates) {
-        if (fragments.length >= request.maxMessages || rawBytes >= request.maxBytes) break;
+        if (fragments.length >= request.maxMessages || rawBytes >= request.maxBytes) {
+          endsAtTurnBoundary = candidate.cluster !== candidates[fragments.length - 1]?.cluster;
+          break;
+        }
         const continued = candidate.sequence === position && request.byteOffset !== undefined;
         const edge = continued
           ? request.byteOffset!
@@ -89,6 +114,7 @@ export function transcriptReader(
         const complete =
           request.direction === 'older' ? byteOffset === 0 : end === candidate.data.byteLength;
         if (!complete) {
+          endsAtTurnBoundary = false;
           next = {
             position: candidate.sequence,
             byteOffset: request.direction === 'older' ? byteOffset : end,
@@ -102,7 +128,7 @@ export function transcriptReader(
           byteOffset: null,
         };
       }
-      return { throughSequence, fragments, rawBytes, next };
+      return { throughSequence, fragments, rawBytes, next, endsAtTurnBoundary };
     },
     readDurableRecords: async (_sessionId, request) => {
       const throughSequence =
@@ -136,14 +162,6 @@ export function transcriptReader(
           records.length < candidates.length ? candidates[records.length]!.sequence : null,
       };
     },
-    readDurableMessagesById: async (_sessionId, request) =>
-      request.throughSequence === null
-        ? []
-        : durableRecords().flatMap(({ sequence, message }) =>
-            sequence <= request.throughSequence! && request.messageIds.includes(message.id)
-              ? [message]
-              : [],
-          ),
     readDurableTurnContributions: async (
       _sessionId,
       throughSequence,
@@ -172,20 +190,30 @@ export function transcriptReader(
         nextPosition: null,
       };
     },
-    readDurableTurnLandmarks: async (_sessionId, maxLandmarks) => {
+    readDurableTurnLandmarks: async (_sessionId, request) => {
       const watermark = durableHighWater();
       if (watermark === null) return { throughSequence: null, landmarks: [] };
       const seen = new Set<string>();
       const landmarks: SessionTurnLandmark[] = [];
       for (const { sequence, message } of durableRecords()) {
-        if (landmarks.length >= maxLandmarks) break;
+        if (landmarks.length >= request.maxLandmarks) break;
         const turnId = message.turnId;
         if (message.type !== 'user' || turnId === undefined || seen.has(turnId)) continue;
+        if (request.turnId !== null && turnId !== request.turnId) continue;
         seen.add(turnId);
-        landmarks.push({ turnId, sequence, label: message.displayText ?? message.text });
+        const lastSequence = Math.max(
+          ...durableRecords()
+            .filter((record) => record.message.turnId === turnId)
+            .map((record) => record.sequence),
+        );
+        landmarks.push({
+          turnId,
+          sequence,
+          lastSequence,
+          label: message.displayText ?? message.text,
+        });
       }
       return { throughSequence: watermark, landmarks };
     },
-    readActiveOverlay: async () => overlay,
   };
 }

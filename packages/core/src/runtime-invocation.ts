@@ -26,6 +26,8 @@
  * writer could set independently of the events.
  */
 
+import { sameEventWaitProvenance, type EventWaitProvenance } from './event-wait-delivery.js';
+import type { TurnOrigin, WorkHubResultOrigin } from './turn-origin.js';
 import type { AgentGraphIntentClaim } from './agent-graph-control.js';
 import type {
   RuntimeEvent,
@@ -34,6 +36,13 @@ import type {
 } from './runtime-event.js';
 import { isTerminalRuntimeEvent } from './runtime-event.js';
 import type { WorkHubRoutingDecision } from './workhub-routing.js';
+
+/** Persisted namespace used only by deterministic legacy-transcript conversion runs. */
+export const TRANSCRIPT_LEDGER_INVOCATION_ID_PREFIX = 'transcript-' as const;
+
+export function mayBeTranscriptLedgerInvocationId(invocationId: string): boolean {
+  return invocationId.startsWith(TRANSCRIPT_LEDGER_INVOCATION_ID_PREFIX);
+}
 
 export interface RuntimeInvocationRecord {
   sessionId: string;
@@ -238,6 +247,8 @@ export type RootExecutionDescriptor =
       kind: 'external_message';
       inputDigest?: `sha256:${string}`;
       maxSteps?: number;
+      /** Caller-authored trigger retained so recovery preserves its authority class. */
+      origin?: Extract<TurnOrigin, { kind: 'cloud_activation' | 'external_connector' }>;
     }
   | {
       /** Conversational execution admitted only by WorkHub authority. */
@@ -250,6 +261,8 @@ export type RootExecutionDescriptor =
       inputDigest: `sha256:${string}`;
       /** Model-derived, Policy-owned advice bound before the main Turn starts. */
       routingDecision?: WorkHubRoutingDecision;
+      /** Host-owned result delivery; never admitted by the public answer endpoint. */
+      feedback?: WorkHubResultOrigin;
     }
   | { kind: 'regenerate'; sourceTurnId: string }
   | { kind: 'context_compact' }
@@ -260,7 +273,7 @@ export type RootExecutionDescriptor =
       executionFingerprint?: `sha256:${string}`;
     }
   | { kind: 'legacy_automation'; automationId: string }
-  | { kind: 'goal'; goalId: string }
+  | { kind: 'goal'; goalId: string; eventWait?: EventWaitProvenance }
   | {
       kind: 'agent_graph_supervisor_wake';
       graphId: string;
@@ -380,6 +393,7 @@ export function invocationMatchesHostedRootExecution(
       return (
         root.kind === 'goal' &&
         root.goalId === execution.goalId &&
+        sameEventWaitProvenance(root.eventWait, execution.eventWait) &&
         source.kind === 'fresh' &&
         lineageIsExactly(lineage, {})
       );

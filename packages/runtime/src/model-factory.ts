@@ -34,12 +34,16 @@ import {
   type SharedV4ProviderMetadata,
   type SharedV4ProviderOptions,
 } from '@ai-sdk/provider';
-import { type RuntimeExecutionConnection } from '@maka/core/llm-connections';
-import { lookupModelMetadata } from '@maka/core/model-metadata';
+import {
+  type ProviderRuntimeAdapter,
+  type RuntimeExecutionConnection,
+} from '@maka/core/llm-connections';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import {
+  modelOverride,
   resolveThinkingLevel,
-  supportsRelayFastServiceTier,
+  THINKING_LEVELS,
+  supportsCustomFastServiceTier,
   thinkingOptionsForModel,
   thinkingVariantsForConnection,
   type ThinkingOptions,
@@ -52,8 +56,8 @@ import {
 import type { OpenAiResponsesTransportState } from './openai-responses-websocket.js';
 import { openResponsesUrl } from './provider-urls.js';
 import { createOpenResponsesCompatibilityFinalizer } from './open-responses-compatibility.js';
+import { deepSeekWebSearchCodec } from './deepseek-web-search-codec.js';
 import { resolveModelRuntime, type ResolvedModelRuntime } from './model-runtime.js';
-import { runtimeProviderName, type RuntimeProviderAdapter } from './provider-runtime-policy.js';
 import { openAiCodexHeaders } from './subscription-auth.js';
 import { createRequestCustomizationFetch } from './request-customization-fetch.js';
 import { createStreamUsageFallbackFetch } from './stream-usage-fallback-fetch.js';
@@ -101,6 +105,30 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
   } as const;
   const requestFetch = createRequestCustomizationFetch(baseFetch, requestCustomization);
 
+  const openResponsesSdkModel = () => {
+    const contract = reasoningReplay.kind === 'responses' ? reasoningReplay.contract : undefined;
+    if (contract?.adapter !== 'open-responses') return undefined;
+    const finalizeBody = createOpenResponsesCompatibilityFinalizer(contract.compatibility);
+    // Request customization is applied first; provider compatibility is
+    // the final authority before network dispatch, so an overlay cannot
+    // re-enable storage or violate the provider's tool-choice contract.
+    const responsesFetch = finalizeBody
+      ? createRequestCustomizationFetch(baseFetch, {
+          ...requestCustomization,
+          finalizeBody,
+        })
+      : requestFetch;
+    return createOpenResponses({
+      name: connection.providerType,
+      apiKey,
+      url: openResponsesUrl(baseURL),
+      fetch: responsesFetch,
+      ...(connection.providerType === 'deepseek'
+        ? { experimental_extensions: [deepSeekWebSearchCodec] }
+        : {}),
+    })(modelId);
+  };
+
   switch (adapter.kind) {
     case 'anthropic':
       return createAnthropic({
@@ -123,6 +151,10 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
       }).responses(modelId);
 
     case 'openai': {
+      if (wire === 'openai-responses') {
+        const model = openResponsesSdkModel();
+        if (model) return model;
+      }
       const openai = createOpenAI({
         apiKey,
         baseURL,
@@ -151,26 +183,8 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
         );
       }
       if (wire === 'openai-responses') {
-        if (reasoningReplay.contract.adapter === 'open-responses') {
-          const finalizeBody = createOpenResponsesCompatibilityFinalizer(
-            reasoningReplay.contract.compatibility,
-          );
-          // Request customization is applied first; provider compatibility is
-          // the final authority before network dispatch, so an overlay cannot
-          // re-enable storage or violate the provider's tool-choice contract.
-          const responsesFetch = finalizeBody
-            ? createRequestCustomizationFetch(baseFetch, {
-                ...requestCustomization,
-                finalizeBody,
-              })
-            : requestFetch;
-          return createOpenResponses({
-            name: runtimeProviderName(adapter, connection),
-            apiKey,
-            url: openResponsesUrl(baseURL),
-            fetch: responsesFetch,
-          })(modelId);
-        }
+        const model = openResponsesSdkModel();
+        if (model) return model;
         return createOpenAI({
           apiKey,
           baseURL,
@@ -193,7 +207,7 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
           )
         : reasoningTransport.transformRequestBody;
       const model = createOpenAICompatible({
-        name: runtimeProviderName(adapter, connection),
+        name: connection.providerType,
         apiKey,
         baseURL,
         // Ask every Chat Completions server for stream usage unless the
@@ -379,69 +393,60 @@ function claudeFamilyId(modelId: string): string {
   );
 }
 
-function defaultOpenAiReasoningEffort(modelId: string): ThinkingLevel | undefined {
-  const familyModelId = modelFamilyId(modelId);
-  return thinkingOptionsForModel('openai', familyModelId)?.efforts?.includes('medium')
-    ? 'medium'
-    : undefined;
-}
-
 function openAiResponsesSummary(modelId: string, reasoningEffort: string | undefined) {
-  return reasoningEffort !== 'none' && defaultOpenAiReasoningEffort(modelId) !== undefined
+  return reasoningEffort !== 'none' &&
+    (thinkingOptionsForModel('openai', modelFamilyId(modelId))?.efforts?.length ?? 0) > 0
     ? { reasoningSummary: 'auto' as const }
     : {};
 }
 
-function visibleClaudeThinking(
-  providerType: RuntimeExecutionConnection['providerType'],
-  modelId: string,
-  thinkingOptions: ThinkingOptions | undefined,
-  effort: string | undefined,
-) {
-  const mode = claudeThinkingMode(providerType, modelId, thinkingOptions);
-  if (!mode) return undefined;
-
-  const thinking =
-    mode === 'adaptive'
-      ? { type: 'adaptive' as const, display: 'summarized' as const }
-      : { type: 'enabled' as const, budgetTokens: 1_024 };
+function claudeThinkingOptions(modelId: string, level: ThinkingLevel | undefined) {
+  if (level === undefined || level === 'off') return undefined;
+  const familyModelId = claudeFamilyId(modelId);
+  if (!familyModelId.startsWith('claude-')) return undefined;
+  const isKnownBareLegacyClaude4 = /^claude-(?:opus|sonnet)-4$/.test(familyModelId);
+  // The SDK's capability table only recognizes dated Claude 4 aliases. The
+  // active bare aliases are the same legacy budget-thinking families.
+  const adaptive =
+    !isKnownBareLegacyClaude4 &&
+    getAnthropicModelCapabilities(familyModelId).supportsAdaptiveThinking;
   return {
-    thinking,
-    ...(effort ? { effort } : {}),
+    thinking: adaptive
+      ? { type: 'adaptive' as const, display: 'summarized' as const }
+      : { type: 'enabled' as const, budgetTokens: 1_024 },
+    ...(level === 'on' ? {} : { effort: level }),
   };
 }
 
-function claudeThinkingMode(
-  providerType: RuntimeExecutionConnection['providerType'],
+/**
+ * The level that asks this model for the least reasoning it accepts, for
+ * callers that want none but cannot rely on `'off'` surviving
+ * `resolveThinkingLevel`.
+ *
+ * `'off'` is used when the model declares it. It is also used when the model
+ * declares no levels, or is a Claude model on Anthropic Messages, because on
+ * those paths an omitted parameter already means no extended thinking, while
+ * the lowest effort would switch adaptive thinking on. That holds for Claude,
+ * not for every Anthropic Messages route: Kimi's K3 and kimi-for-coding think
+ * by default when no level is sent. K3 can declare an explicit `none` effort;
+ * when it does, the provider builder maps `'off'` to disabled thinking.
+ *
+ * When a model declares effort levels but no `none`, a dropped `'off'` omits
+ * the effort parameter and the provider runs its default reasoning (medium on
+ * GPT-5, GPT-6 and o3, dynamic on Gemini 3). So this returns the model's
+ * lowest declared level instead, which the wire builders send explicitly.
+ */
+export function leastReasoningThinkingLevel(
+  connection: RuntimeExecutionConnection,
   modelId: string,
-  thinkingOptions: ThinkingOptions | undefined,
-): 'adaptive' | 'legacy' | undefined {
-  const familyModelId = claudeFamilyId(modelId);
-  if (!familyModelId.startsWith('claude-')) return undefined;
-
-  const providerMetadata = lookupModelMetadata(providerType, modelId);
-  const anthropicMetadata = lookupModelMetadata('anthropic', familyModelId);
-  const isKnownBareLegacyClaude4 = /^claude-(?:opus|sonnet)-4$/.test(familyModelId);
-  const effectiveOptions =
-    thinkingOptions ??
-    providerMetadata.thinkingOptions ??
-    anthropicMetadata.thinkingOptions ??
-    thinkingOptionsForModel('anthropic', familyModelId);
-  const supportsThinking =
-    effectiveOptions?.toggle === true ||
-    (effectiveOptions?.efforts?.length ?? 0) > 0 ||
-    providerMetadata.capabilities?.reasoning === true ||
-    anthropicMetadata.capabilities?.reasoning === true ||
-    isKnownBareLegacyClaude4;
-  if (!supportsThinking) return undefined;
-
-  // The SDK's capability table only recognizes dated Claude 4 aliases. The
-  // active bare aliases are the same legacy budget-thinking families.
-  if (isKnownBareLegacyClaude4) return 'legacy';
-
-  return getAnthropicModelCapabilities(familyModelId).supportsAdaptiveThinking
-    ? 'adaptive'
-    : 'legacy';
+  runtime = resolveModelRuntime(connection, modelId),
+): ThinkingLevel {
+  const variants = thinkingVariantsForConnection(connection, modelId);
+  if (variants.length === 0 || variants.includes('off')) return 'off';
+  if (runtime.wire === 'anthropic-messages' && claudeFamilyId(modelId).startsWith('claude-')) {
+    return 'off';
+  }
+  return THINKING_LEVELS.find((level) => variants.includes(level)) ?? 'off';
 }
 
 export function buildProviderOptions(
@@ -467,32 +472,46 @@ function buildThinkingProviderOptions(
   const thinkingOptions = thinkingOptionsForModel(connection.providerType, modelId);
   const level = resolveThinkingLevel(connection, modelId, thinkingLevel);
   switch (connection.providerType) {
+    case 'custom':
+      // Messages needs a thinking mode beside the effort. A declared level is
+      // the user's statement the gateway thinks, so it always gets adaptive.
+      // Messages has no `minimal` effort; `low` is its lowest.
+      if (runtime.wire === 'anthropic-messages') {
+        return level
+          ? {
+              anthropic: {
+                thinking: { type: 'adaptive', display: 'summarized' },
+                effort: level === 'minimal' ? 'low' : level,
+              },
+            }
+          : {};
+      }
+      return buildFamilyWire(connection, modelId, level, thinkingOptions, runtime);
     case 'kimi-coding-plan': {
-      // Kimi's coding route has no off wire. Check the raw argument, not the
-      // normalized level: the entry gate above drops unsupported levels to
-      // undefined (default max), but an explicit off must be rejected, never
-      // silently upgraded to max. Today off cannot reach this branch through
-      // the UI (variants exclude it), but a direct runtime caller or a future
-      // models.dev `none` declaration must fail loudly, and the wire-contract
-      // sweep keeps that tripwire armed.
-      if (thinkingLevel === 'off') return {};
-      const effort = level ?? 'max';
+      if (!level || level === 'on') return {};
+      if (level === 'off') {
+        // A refreshed Kimi Code catalog may declare `none`. Omitting the
+        // control leaves K3 at its default reasoning level, so send the
+        // provider's explicit disabled-thinking wire when that choice exists.
+        if (!thinkingOptions?.efforts?.includes('none')) return {};
+        return runtime.wire === 'openai-chat'
+          ? { kimiCodingPlan: { reasoningEffort: 'none' } }
+          : { anthropic: { thinking: { type: 'disabled' as const } } };
+      }
       if (runtime.wire === 'openai-chat') {
         // The kimiCodingPlan provider-options namespace is the
         // openai-compatible adapter name; ai-sdk resolves its camelCase
         // alias to the kimi-coding-plan schema key (reasoning_effort).
         return {
-          kimiCodingPlan: { reasoningEffort: effort },
+          kimiCodingPlan: { reasoningEffort: level },
         };
       }
       return {
         anthropic:
           modelId === 'k3' || modelId === 'k3-256k'
             ? {
-                // K3 (and its 256k-context variant) supports adaptive thinking
-                // only; effort defaults to max when unset.
                 thinking: { type: 'adaptive' as const },
-                effort,
+                effort: level,
               }
             : modelId === 'kimi-for-coding'
               ? {
@@ -500,7 +519,7 @@ function buildThinkingProviderOptions(
                   // Anthropic AI SDK also requires a compatibility budget and
                   // otherwise injects the same value with a warning.
                   thinking: { type: 'enabled' as const, budgetTokens: 1_024 },
-                  effort,
+                  effort: level,
                 }
               : {
                   // kimi-for-coding-highspeed has no declared effort and no
@@ -517,15 +536,12 @@ function buildThinkingProviderOptions(
     case 'MiniMax-cn': {
       let reasoning = {};
       const summarizedThinking =
-        connection.providerType === 'anthropic' &&
-        (thinkingLevel === undefined || level !== undefined)
-          ? visibleClaudeThinking(connection.providerType, modelId, thinkingOptions, level)
-          : undefined;
+        connection.providerType === 'anthropic' ? claudeThinkingOptions(modelId, level) : undefined;
       if (level === 'off' && thinkingOptions?.offBehavior === 'anthropic-thinking-disabled') {
         reasoning = { thinking: { type: 'disabled' as const } };
       } else if (summarizedThinking) {
         reasoning = summarizedThinking;
-      } else if (level && level !== 'off') {
+      } else if (level && level !== 'off' && level !== 'on') {
         reasoning = { effort: level };
       }
       return {
@@ -537,32 +553,17 @@ function buildThinkingProviderOptions(
         },
       };
     }
-    case 'openai-codex': {
-      const reasoningEffort =
-        level === 'off'
-          ? 'none'
-          : (level ??
-            (thinkingLevel === undefined ? defaultOpenAiReasoningEffort(modelId) : undefined));
-      return {
-        openai: {
-          store: false,
-          textVerbosity: 'medium',
-          ...openAiResponsesSummary(modelId, reasoningEffort),
-          ...(reasoningEffort ? { reasoningEffort } : {}),
-        },
-      };
-    }
+    case 'openai-codex':
     case 'openai': {
-      const usesResponses = runtime.wire === 'openai-responses';
-      const reasoningEffort =
-        level === 'off'
-          ? 'none'
-          : (level ??
-            (thinkingLevel === undefined ? defaultOpenAiReasoningEffort(modelId) : undefined));
+      const isCodex = connection.providerType === 'openai-codex';
+      const reasoningEffort = level === 'off' ? 'none' : level;
       return {
         openai: {
           store: false,
-          ...(usesResponses ? openAiResponsesSummary(modelId, reasoningEffort) : {}),
+          ...(isCodex ? { textVerbosity: 'medium' } : {}),
+          ...(runtime.wire === 'openai-responses'
+            ? openAiResponsesSummary(modelId, reasoningEffort)
+            : {}),
           ...(reasoningEffort ? { reasoningEffort } : {}),
         },
       };
@@ -587,11 +588,11 @@ function buildThinkingProviderOptions(
           },
         };
       }
-      return buildFamilyWire(connection, modelId, level, thinkingOptions, thinkingLevel, runtime);
+      return buildFamilyWire(connection, modelId, level, thinkingOptions, runtime);
     case 'volcengine-ark':
       return {
         [toCamelCase(connection.providerType)]: {
-          thinking: { type: level === 'off' ? 'disabled' : 'enabled' },
+          ...(level ? { thinking: { type: level === 'off' ? 'disabled' : 'enabled' } } : {}),
           ...(level && level !== 'off' ? { reasoningEffort: level } : {}),
         },
       };
@@ -632,7 +633,7 @@ function buildThinkingProviderOptions(
     // above (level is defined only when metadata declares it) is what makes
     // this safe to generalize: undeclared models never reach the wire.
     default:
-      return buildFamilyWire(connection, modelId, level, thinkingOptions, thinkingLevel, runtime);
+      return buildFamilyWire(connection, modelId, level, thinkingOptions, runtime);
   }
 }
 
@@ -646,20 +647,20 @@ function withParallelToolCallOptions(
 
   let providerKey: string;
   let optionKey: 'parallelToolCalls' | 'parallel_tool_calls';
-  if (runtime.adapter.kind === 'openai' || runtime.adapter.kind === 'openai-codex') {
+  if (runtime.wire === 'openai-responses') {
+    // parallelToolCalls is an @ai-sdk/openai provider option; the Open
+    // Responses SDK has no namespaced switch for it.
+    if (runtime.reasoningReplay.contract.adapter !== 'openai') {
+      return options;
+    }
+    providerKey = 'openai';
+    optionKey = 'parallelToolCalls';
+  } else if (runtime.adapter.kind === 'openai') {
     providerKey = 'openai';
     optionKey = 'parallelToolCalls';
   } else if (runtime.adapter.kind === 'openai-compatible') {
-    if (runtime.wire === 'openai-responses') {
-      if (runtime.reasoningReplay.contract.adapter !== 'openai') {
-        return options;
-      }
-      providerKey = 'openai';
-      optionKey = 'parallelToolCalls';
-    } else {
-      providerKey = openAiCompatibleProviderOptionsKey(runtime.adapter, connection);
-      optionKey = 'parallel_tool_calls';
-    }
+    providerKey = openAiCompatibleProviderOptionsKey(connection);
+    optionKey = 'parallel_tool_calls';
   } else {
     return options;
   }
@@ -679,24 +680,17 @@ function buildFamilyWire(
   modelId: string,
   level: ThinkingLevel | undefined,
   thinkingOptions: ThinkingOptions | undefined,
-  requestedLevel: ThinkingLevel | undefined,
   runtime: ResolvedModelRuntime,
 ): SharedV4ProviderOptions {
   const { adapter, wire, reasoningReplay } = runtime;
-  const explicitReasoningEffort = level ? (level === 'off' ? 'none' : level) : undefined;
-  const serviceTier =
-    wire === 'openai-responses' &&
-    reasoningReplay.kind === 'responses' &&
-    reasoningReplay.contract.adapter === 'openai' &&
-    supportsRelayFastServiceTier(connection.providerType, modelId)
-      ? connection.modelOverrides?.[modelId]?.serviceTier
-      : undefined;
+  const explicitReasoningEffort =
+    level && level !== 'on' ? (level === 'off' ? 'none' : level) : undefined;
   // Provider selection and reasoning continuation are independent. The OpenAI
   // provider reads its provider-options namespace; the Open Responses provider
   // consumes a provider-native reasoningEffort through the same namespace,
   // keyed by the provider name getAIModel passes to createOpenResponses.
   if (wire === 'openai-responses') {
-    // Connection-aware: a relay model's declared variants count too.
+    // Connection-aware: a custom model's declared variants count too.
     const reasons = thinkingVariantsForConnection(connection, modelId).length > 0;
     if (reasoningReplay.contract.adapter === 'open-responses') {
       // @ai-sdk/open-responses@2.0.34 passes a provider-native reasoningEffort
@@ -705,63 +699,42 @@ function buildFamilyWire(
       // sends `xhigh` to high, not max). The SDK resolves providerOptions
       // under the raw provider `name` — no camelCase alias, unlike
       // openai-compatible — so key by the same name getAIModel passes.
-      return explicitReasoningEffort || serviceTier
-        ? {
-            [runtimeProviderName(adapter, connection)]: {
-              ...(explicitReasoningEffort ? { reasoningEffort: explicitReasoningEffort } : {}),
-              ...(serviceTier ? { serviceTier } : {}),
-            },
-          }
+      return explicitReasoningEffort
+        ? { [connection.providerType]: { reasoningEffort: explicitReasoningEffort } }
         : {};
     }
-    const reasoningEffort =
-      explicitReasoningEffort ??
-      (requestedLevel === undefined ? defaultOpenAiReasoningEffort(modelId) : undefined);
+    const serviceTier = supportsCustomFastServiceTier(connection, modelId)
+      ? modelOverride(connection, modelId)?.serviceTier
+      : undefined;
     return {
       openai: {
         store: false,
         ...(reasons || reasoningReplay.contract.reasoningReplay === 'encrypted-content'
           ? { forceReasoning: true }
           : {}),
-        ...openAiResponsesSummary(modelId, reasoningEffort),
-        ...(reasoningEffort ? { reasoningEffort } : {}),
+        ...openAiResponsesSummary(modelId, explicitReasoningEffort),
+        ...(explicitReasoningEffort ? { reasoningEffort: explicitReasoningEffort } : {}),
         ...(serviceTier ? { serviceTier } : {}),
       },
     };
   }
-  if (wire === 'anthropic-messages' && (requestedLevel === undefined || level !== undefined)) {
-    const reasoning = visibleClaudeThinking(
-      connection.providerType,
-      modelId,
-      thinkingOptions,
-      explicitReasoningEffort,
-    );
+  if (wire === 'anthropic-messages') {
+    if (level === 'off' && thinkingOptions?.offBehavior === 'anthropic-thinking-disabled') {
+      return { anthropic: { thinking: { type: 'disabled' } } };
+    }
+    const reasoning = claudeThinkingOptions(modelId, level);
     if (reasoning) return { anthropic: reasoning };
   }
-  if (wire === 'openai-chat' && adapter.kind === 'openai-compatible') {
-    const reasoningEffort =
-      explicitReasoningEffort ??
-      (requestedLevel === undefined ? defaultOpenAiReasoningEffort(modelId) : undefined);
-    if (reasoningEffort) {
-      return {
-        [openAiCompatibleProviderOptionsKey(adapter, connection)]: { reasoningEffort },
-      };
-    }
-  }
-  if (!explicitReasoningEffort && !serviceTier) return {};
+  if (!explicitReasoningEffort) return {};
   switch (adapter.kind) {
     case 'openai-compatible':
       return {
-        [openAiCompatibleProviderOptionsKey(adapter, connection)]: {
-          ...(explicitReasoningEffort ? { reasoningEffort: explicitReasoningEffort } : {}),
+        [openAiCompatibleProviderOptionsKey(connection)]: {
+          reasoningEffort: explicitReasoningEffort,
         },
       };
     case 'openai':
-      return {
-        openai: {
-          ...(explicitReasoningEffort ? { reasoningEffort: explicitReasoningEffort } : {}),
-        },
-      };
+      return { openai: { reasoningEffort: explicitReasoningEffort } };
     case 'anthropic':
       // Anthropic-protocol models declare no `none` effort, so an off
       // choice only exists where an explicit case wires it.
@@ -801,9 +774,6 @@ function toCamelCase(name: string): string {
  * A metadata reader keyed by the raw `connection.providerType` would
  * silently read nothing for dashed providers.
  */
-function openAiCompatibleProviderOptionsKey(
-  adapter: RuntimeProviderAdapter,
-  connection: RuntimeExecutionConnection,
-): string {
-  return toCamelCase(runtimeProviderName(adapter, connection));
+function openAiCompatibleProviderOptionsKey(connection: RuntimeExecutionConnection): string {
+  return toCamelCase(connection.providerType);
 }

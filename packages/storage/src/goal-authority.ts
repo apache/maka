@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { suppressPreviousBridgeWait } from './sqlite-event-wait-bridge.js';
 import { decodeGoalAuthorityRecord, type GoalAuthorityRecord } from '@maka/core/goal';
 import {
   acquireOperationalStateDatabase,
@@ -32,7 +33,10 @@ import { assertSafeStorageId } from './storage-id.js';
 
 const writerBrand: unique symbol = Symbol('InteractiveGoalAuthorityWriter');
 const writers = new WeakSet<object>();
+const successfullyClosedWriters = new WeakSet<object>();
 const writerByLease = new WeakMap<object, InteractiveGoalAuthorityWriter>();
+const backendByLease = new WeakMap<object, object>();
+const retainedByExecution = new WeakSet<object>();
 const writerOpeningByLease = new WeakMap<object, Promise<InteractiveGoalAuthorityWriter>>();
 
 export interface GoalAuthoritySnapshot {
@@ -66,6 +70,16 @@ export interface InteractiveGoalAuthorityWriter {
   close(): Promise<void>;
 }
 
+/** Unauthenticated backend port; only trusted lease composition may wrap it. */
+export interface GoalAuthorityRepository {
+  list(): readonly GoalAuthoritySnapshot[] | Promise<readonly GoalAuthoritySnapshot[]>;
+  read(sessionId: string): GoalAuthoritySnapshot | null | Promise<GoalAuthoritySnapshot | null>;
+  commit(
+    input: CommitGoalAuthorityInput,
+  ): CommitGoalAuthorityResult | Promise<CommitGoalAuthorityResult>;
+  close(): void | Promise<void>;
+}
+
 export function authenticateInteractiveGoalAuthorityWriter(
   writer: InteractiveGoalAuthorityWriter,
 ): InteractiveGoalAuthorityWriter {
@@ -80,23 +94,61 @@ export function authenticateInteractiveGoalAuthorityWriter(
 
 export async function openInteractiveGoalAuthorityForWrite(
   lease: StorageRootLease<'interactive', 'write'>,
+  repositoryFactory?: (root: string) => GoalAuthorityRepository,
+  backendIdentity: object = repositoryFactory ?? createSqliteGoalAuthority,
+  retainUntilGroupClose?: (release: () => void) => void,
 ): Promise<InteractiveGoalAuthorityWriter> {
   await assertStorageRootLease(lease, 'interactive', 'write');
+  // A child may revoke its facade, but only the successfully closed execution
+  // group may release its backend binding. Otherwise a legacy accessor could
+  // silently create a Local writer alongside a still-live non-Local group.
+  if (retainUntilGroupClose && !retainedByExecution.has(lease)) {
+    retainedByExecution.add(lease);
+    retainUntilGroupClose(() => {
+      retainedByExecution.delete(lease);
+      const cached = writerByLease.get(lease);
+      if (!cached || successfullyClosedWriters.has(cached)) {
+        writerByLease.delete(lease);
+        backendByLease.delete(lease);
+      }
+    });
+  }
   const existing = writerByLease.get(lease);
+  if (
+    (existing && !writers.has(existing)) ||
+    (!existing && retainedByExecution.has(lease) && !retainUntilGroupClose)
+  ) {
+    throw new StorageRootAuthorityError(
+      'invalid_lease',
+      'Goal authority is owned by its execution group',
+    );
+  }
+  if (
+    repositoryFactory &&
+    backendByLease.has(lease) &&
+    backendByLease.get(lease) !== backendIdentity
+  ) {
+    throw new StorageRootAuthorityError(
+      'invalid_lease',
+      'Goal authority is already composed for this lease',
+    );
+  }
   if (existing) return existing;
   const opening = writerOpeningByLease.get(lease);
   if (opening) return opening;
 
+  backendByLease.set(lease, backendIdentity);
+
   const pending = Promise.resolve().then(async () => {
-    let repository: SqliteGoalAuthority | undefined;
+    let repository: GoalAuthorityRepository | undefined;
     try {
       repository = await runWithStorageRootLease(lease, 'interactive', 'write', async (root) =>
-        createSqliteGoalAuthority(root),
+        (repositoryFactory ?? createSqliteGoalAuthority)(root),
       );
       await assertStorageRootLease(lease, 'interactive', 'write');
       const raced = writerByLease.get(lease);
       if (raced) {
-        repository.close();
+        await repository.close();
         return raced;
       }
       const writer = createWriterFacade(lease, repository);
@@ -104,7 +156,8 @@ export async function openInteractiveGoalAuthorityForWrite(
       writerByLease.set(lease, writer);
       return writer;
     } catch (error) {
-      repository?.close();
+      await repository?.close();
+      backendByLease.delete(lease);
       throw error;
     }
   });
@@ -118,12 +171,12 @@ export async function openInteractiveGoalAuthorityForWrite(
 
 function createWriterFacade(
   lease: StorageRootLease<'interactive', 'write'>,
-  repository: SqliteGoalAuthority,
+  repository: GoalAuthorityRepository,
 ): InteractiveGoalAuthorityWriter {
   let closed = false;
   let closeTask: Promise<void> | undefined;
   const activeOperations = new Set<Promise<unknown>>();
-  const run = <T>(operation: () => T): Promise<T> => {
+  const run = <T>(operation: () => T | Promise<T>): Promise<T> => {
     if (closed) {
       return Promise.reject(
         new StorageRootAuthorityError('invalid_lease', 'Goal authority writer is closed'),
@@ -147,10 +200,14 @@ function createWriterFacade(
     close: () => {
       closeTask ??= (async () => {
         closed = true;
-        if (writerByLease.get(lease) === writer) writerByLease.delete(lease);
         writers.delete(writer);
         await Promise.allSettled([...activeOperations]);
-        repository.close();
+        await repository.close();
+        successfullyClosedWriters.add(writer);
+        if (writerByLease.get(lease) === writer && !retainedByExecution.has(lease)) {
+          writerByLease.delete(lease);
+          backendByLease.delete(lease);
+        }
       })();
       return closeTask;
     },
@@ -198,6 +255,7 @@ class SqliteGoalAuthority {
       if (current !== input.expectedAuthorityRevision) {
         return { kind: 'revision_conflict', actualAuthorityRevision: current };
       }
+      suppressPreviousBridgeWait(this.#database.database, input.sessionId, input.record);
       if (input.record === null) {
         this.#database.database
           .prepare('DELETE FROM workflow_goal_authority WHERE session_id = ?')
@@ -238,7 +296,7 @@ class SqliteGoalAuthority {
   }
 }
 
-function createSqliteGoalAuthority(root: string): SqliteGoalAuthority {
+export function createSqliteGoalAuthority(root: string): SqliteGoalAuthority {
   return new SqliteGoalAuthority(root);
 }
 

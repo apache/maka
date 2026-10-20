@@ -24,6 +24,68 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { registerRuntimeHostArtifactsIpc } from "../runtime-host-artifacts-ipc-main.js";
+import { ManagedArtifactPreview } from '../managed-artifact-preview.js';
+
+test('image resolution validates renderer requests before forwarding them', async () => {
+  const handlers = new Map<string, Handler>();
+  const forwarded: unknown[] = [];
+  registerRuntimeHostArtifactsIpc({
+    uiLocale: () => 'en',
+    ipcMain: { handle: (channel, handler) => handlers.set(channel, handler as Handler) },
+    client: { hostEpoch: 'host', resolveImageDelivery: async (...args: unknown[]) => {
+      forwarded.push(args); return { status: 'requires_confirmation' };
+    } } as never,
+    mainWindowController: {} as never,
+    showItemInFolder() {},
+  });
+  const resolve = handlers.get('attachments:resolveImage')!;
+  const request = { turnId: 'turn', messageId: 'message', source: 'https://example.invalid/image.png', loadRemote: true };
+  await resolve({}, 'session', request);
+  assert.deepEqual(forwarded, [['session', request]]);
+  for (const invalid of [null, { ...request, sessionId: 'other' }, { ...request, loadRemote: 'yes' }, { ...request, source: 'bad\nurl' }]) {
+    await assert.rejects(async () => resolve({}, 'session', invalid), /Invalid image delivery request/);
+  }
+  assert.equal(forwarded.length, 1);
+});
+
+for (const launchFails of [false, true]) {
+  test(`HTML external open uses the managed endpoint and reports launch failure=${launchFails}`, async () => {
+    const service = new ManagedArtifactPreview();
+    const handlers = new Map<string, Handler>();
+    const bytes = Buffer.from('<!doctype html><title>Managed preview</title><button>Interact</button>');
+    let openedUrl = '';
+    try {
+      registerRuntimeHostArtifactsIpc({
+        uiLocale: () => 'en',
+        ipcMain: { handle: (channel, handler) => handlers.set(channel, handler as Handler) },
+        client: {
+          hostEpoch: 'h',
+          getArtifact: async () => previewArtifact({ name: 'preview.html', kind: 'html', sizeBytes: bytes.length }),
+          streamArtifact: async (_s: string, _a: string, write: (chunk: Uint8Array) => Promise<void>) => { await write(bytes); return bytes.length; },
+          deleteArtifact: async () => ({ ok: true }),
+        } as never,
+        mainWindowController: {} as never,
+        showItemInFolder: () => assert.fail('HTML must not silently fall back to Finder'),
+        openPath: async () => assert.fail('Managed preview must not open file URLs'),
+        preview: { service, scope: 'h', openExternal: async (url) => {
+          openedUrl = url;
+          assert.equal(await (await fetch(url)).text(), bytes.toString());
+          if (launchFails) throw new Error('No browser available');
+        } },
+      });
+      const result = await handlers.get('app:openArtifactPath')!({}, 's1', 'a1');
+      if (launchFails) {
+        assert.deepEqual(result, { ok: false, reason: 'open-failed' });
+        await assert.rejects(fetch(openedUrl));
+      } else {
+        assert.equal((result as { loaded: boolean }).loaded, false);
+        assert.equal((result as { reachable: boolean }).reachable, true);
+        await handlers.get('artifacts:delete')!({}, 's1', 'a1');
+        await assert.rejects(fetch(openedUrl));
+      }
+    } finally { await service.close(); }
+  });
+}
 
 type Handler = (event: unknown, ...args: any[]) => unknown;
 type StreamArtifact = (

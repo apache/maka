@@ -17,6 +17,9 @@
  * under the License.
  */
 
+import { PersonalAssistantSettings } from '../features/personal-assistant/index.js';
+import type { UsageScreenQuery, UsageScreenRequest } from '@maka/core/settings';
+
 import {
   useEffect,
   useEffectEvent,
@@ -63,7 +66,14 @@ import type {
 } from '../../preload/bridge-contract.js';
 import type { UiLocalePreference } from '@maka/core/ui-locale';
 import { createDefaultSettings, DEFAULT_APP_ICON } from '@maka/core/settings';
-import { Banner, Selector, useMountedRef, useToast, useUiLocale } from '@maka/ui';
+import {
+  Banner,
+  MakaClientSlotOutlet,
+  Selector,
+  useMountedRef,
+  useToast,
+  useUiLocale,
+} from '@maka/ui';
 import { ProvidersPanel } from './providers-panel';
 import { ExternalAgentsSettingsPage } from '../features/external-agent-settings/index.js';
 import { SubagentSettingsPage } from './subagent-settings-page';
@@ -88,11 +98,14 @@ import {
 } from './settings-nav';
 import { getSettingsNavigationCopy } from '../locales/settings-navigation-copy.js';
 import { SettingRow } from './settings-rows';
+import { SettingsNavigationGuard, type SettingsNavigate } from '../application/contracts/settings-presentation/index.js';
 import { SettingsPage, SettingsSection as SettingsSectionBlock } from './settings-section';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { SessionBundleTasks } from '../features/session-bundle';
+import { CatalogSessions } from '../application/contracts/session-catalog/catalog-sessions.js';
 import { ImportTasksSettingsPage } from './import-tasks-settings-page';
 import { TasksSettingsPage, type ArchivedTasksBridge } from './tasks-settings-page';
+import { ArchivedTaskScope } from '../features/session-navigation';
 import { UsageScopeMount, UsageSettingsPage, type UsageScopeHandle } from './usage-settings-page';
 import { WebSearchSettingsPage } from './web-search-settings-page';
 import type { UiLocaleUpdateGate } from './ui-locale-update-gate';
@@ -127,9 +140,13 @@ import {
 } from './settings-snapshot-cache.js';
 import { RuntimeHostInteractionBoundary } from './runtime-host-interaction-boundary.js';
 import { createSettingsRequestAuthority } from './settings-request-authority.js';
+import { SHELL_SETTINGS_NARROW_QUERY } from '../application/contracts/shell-layout-contract.js';
 
-const NARROW_SETTINGS_QUERY = '(max-width: 760px)';
 const RUNTIME_HOST_CATALOG_KEY = 'runtime-host-catalog';
+
+function isBuiltInSettingsSection(value: string): value is SettingsSection {
+  return SETTINGS_NAV.some((item) => item.id === value);
+}
 
 type RuntimeHostAvailabilityStatus = 'loading' | 'ready' | 'unavailable' | 'error';
 
@@ -162,7 +179,7 @@ type SettingsSurfaceProps = {
   uiLocaleUpdateGate: UiLocaleUpdateGate;
   onUserLabelChange?(label: string): void;
   onDefaultPermissionModeChange(mode: ChatDefaultPermissionMode): void;
-  request?: { readonly section?: SettingsSection; readonly profileId?: string };
+  request?: { readonly section?: SettingsSection; readonly profileId?: string; readonly externalAgentId?: string };
   openProviderCatalog?: boolean;
   initialConnectionSlug?: string;
   initialCreateProviderType?: ProviderType;
@@ -179,27 +196,34 @@ type SettingsSurfaceProps = {
 
 export function SettingsSurface(props: SettingsSurfaceProps) {
   return (
-    <ConnectionSettingsServicesConsumer>
-      {(connectionSettingsServices) => (
-        <SettingsSurfaceContent
-          {...props}
-          connectionSettingsServices={connectionSettingsServices}
-        />
-      )}
-    </ConnectionSettingsServicesConsumer>
+    <SettingsNavigationGuard>{(navigate) => (
+      <ConnectionSettingsServicesConsumer>
+        {(connectionSettingsServices) => (
+          <SettingsSurfaceContent
+            {...props}
+            navigate={navigate}
+            connectionSettingsServices={connectionSettingsServices}
+          />
+        )}
+      </ConnectionSettingsServicesConsumer>
+    )}</SettingsNavigationGuard>
   );
 }
 
 function SettingsSurfaceContent(
   props: SettingsSurfaceProps & {
     readonly connectionSettingsServices: ConnectionSettingsServices;
+    readonly navigate: SettingsNavigate;
   },
 ) {
+  const { navigate } = props;
   const locale = useUiLocale();
   const copy = getSettingsSharedCopy(locale);
   const localizedNav = groupedNav(locale);
-  const isNarrowSettings = useMediaQuery(NARROW_SETTINGS_QUERY);
-  const [section, setSection] = useState<SettingsSection>(() => props.request?.section ?? readLastSettingsSection());
+  const isNarrowSettings = useMediaQuery(SHELL_SETTINGS_NARROW_QUERY);
+  const [section, setSection] = useState<string>(
+    () => props.request?.section ?? readLastSettingsSection(),
+  );
   const [providerCatalogRequested, setProviderCatalogRequested] = useState(props.openProviderCatalog === true);
   // One-shot landing intent, mirroring providerCatalogRequested above: the
   // request retires once ProvidersPanel consumes it, so remounting the panel
@@ -222,7 +246,8 @@ function SettingsSurfaceContent(
   // its section into the local state.
   useEffect(() => {
     if (props.request?.section && props.request.section !== section) {
-      setSection(props.request.section);
+      const next = props.request.section;
+      void navigate(() => setSection(next));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.request?.section]);
@@ -236,7 +261,7 @@ function SettingsSurfaceContent(
   // away from anything the user opened inside Settings dozens of times a
   // second while a session streams.
   useEffect(() => {
-    props.initialFocusRef.current?.focus();
+    if (isBuiltInSettingsSection(section)) props.initialFocusRef.current?.focus();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- ref identity is stable; re-run only on section change.
   }, [section]);
 
@@ -256,7 +281,8 @@ function SettingsSurfaceContent(
         detail?.section &&
         SETTINGS_NAV.some((item) => item.id === detail.section)
       ) {
-        setSection(detail.section);
+        const next = detail.section;
+        void navigate(() => setSection(next));
       }
     };
     window.addEventListener('maka:jumpToSettingsSection', handler);
@@ -390,11 +416,19 @@ function SettingsSurfaceContent(
   // Settings surface. `usageScopeRef.fenceTarget()` rejects an in-flight old-Host
   // load synchronously at a Host change, before React re-renders the new target.
   const usageScopeRef = useRef<UsageScopeHandle>(null);
+  const readUsage = (range: UsageRange | Extract<UsageScreenRequest, {kind: 'activity'}>, query?: UsageScreenQuery) =>
+    selectedRuntimeHost ? window.maka.settings.usageStats(range, selectedRuntimeHost, query) : Promise.resolve(null);
   const usageServices = {
-    loadUsageStats: (range: UsageRange) =>
-      selectedRuntimeHost
-        ? window.maka.settings.usageStats(range, selectedRuntimeHost)
-        : Promise.resolve(null),
+    loadUsageStats: async (range: UsageRange, query?: UsageScreenQuery) => {
+      const result = await readUsage(range, query);
+      if (result && 'kind' in result && result.kind !== 'screen_response_too_large') throw new Error('Invalid Usage screen response');
+      return result;
+    },
+    loadUsageActivity: async (input: Extract<UsageScreenRequest, {kind: 'activity'}>) => {
+      const result = await readUsage(input);
+      if (!result || !('kind' in result)) throw new Error('Invalid Usage activity response');
+      return result;
+    },
     updateUsageSettings: (patch: Partial<AppSettings['usage']>) =>
       updateSettings({ usage: patch }).then((result) => result.settings.usage),
   };
@@ -443,7 +477,9 @@ function SettingsSurfaceContent(
   );
   const connections = selectedConnections?.connections ?? [];
   const defaultSlug = selectedConnections?.defaultSlug ?? null;
-  const sectionScope = settingsSectionScope(section);
+  const sectionScope = isBuiltInSettingsSection(section)
+    ? settingsSectionScope(section)
+    : 'client';
   const showsRuntimeHost = sectionScope !== 'client';
   const requiresRuntimeHost = sectionScope === 'runtime-host';
   useEffect(() => {
@@ -805,7 +841,9 @@ function SettingsSurfaceContent(
   // boundary — so an unrouted section fails loudly at build time instead of
   // silently rendering 通用 copy over a different page's body. The nav
   // highlight below still keys off `section === item.id` independently.
-  const headerCopy = getSettingsNavigationCopy(locale).sections[section];
+  const headerCopy = isBuiltInSettingsSection(section)
+    ? getSettingsNavigationCopy(locale).sections[section]
+    : undefined;
   const runtimeHostOptions = (runtimeHosts?.entries ?? [])
     .filter((entry) => entry.enabled)
     .map((entry) => ({
@@ -864,7 +902,7 @@ function SettingsSurfaceContent(
                       label={copy.backToApp}
                       tooltip={copy.backToApp}
                       icon={<ArrowLeft size={ICON_SIZE.chrome} aria-hidden="true" />}
-                      onClick={props.onClose}
+                      onClick={() => void navigate(props.onClose)}
                     />
                   : <Button
                       data-maka-assistant-target="settings.close"
@@ -873,7 +911,7 @@ function SettingsSurfaceContent(
                       width="100%"
                       label={copy.backToApp}
                       icon={<ArrowLeft size={ICON_SIZE.chrome} aria-hidden="true" />}
-                      onClick={props.onClose}
+                      onClick={() => void navigate(props.onClose)}
                     />
               )}
             >
@@ -895,11 +933,20 @@ function SettingsSurfaceContent(
                           }
                         : undefined}
                       endContent={item.badge ? <Badge variant="neutral" label={item.badge} /> : undefined}
-                      onClick={() => setSection(item.id)}
+                      onClick={() => void navigate(() => setSection(item.id))}
                     />
                   ))}
                 </SideNavSection>
               ))}
+              <SideNavItem label="个人助手" isSelected={section === "personal-assistant"} onClick={() => void navigate(() => setSection("personal-assistant"))} />
+              <MakaClientSlotOutlet
+                name="settings.navigation"
+                owner={{
+                  activePage: section,
+                  compact: isNarrowSettings,
+                  selectPage: (page) => void navigate(() => setSection(page)),
+                }}
+              />
             </SideNav>
           </LayoutPanel>
         )}
@@ -913,7 +960,7 @@ function SettingsSurfaceContent(
             <Layout
               /* The rounded main pane owns page scrolling. Keeping scroll on
                  the centered LayoutContent made the wide gutters inert and
-                 parked the scrollbar beside the 920px content column. */
+                 parked the scrollbar beside the centered content column. */
               height="auto"
               padding={0}
               /* One column width for EVERY section. Usage used to get 920
@@ -921,9 +968,13 @@ function SettingsSurfaceContent(
                  visibly shifted the left edge — the title jumped ~120px
                  between 使用统计 and any other page. A settings surface is
                  one place; its margins must not depend on which page is
-                 open. */
-              contentWidth={920}
-              header={(
+                 open. The column is the app's one reading measure
+                 (DESIGN.md §7, One Measure Rule), plus LayoutContent's 24px
+                 inline padding on each side. It is wrapped in calc() because
+                 Astryx aligns a bare var() differently from an arithmetic
+                 width. */
+              contentWidth="calc(var(--maka-reading-measure) + 2 * var(--space-6))"
+              header={headerCopy ? (
                 <LayoutHeader padding={6}>
                   <div className="settingsPageHeader">
                     <div className="settingsPageHeaderTitleStack">
@@ -942,15 +993,17 @@ function SettingsSurfaceContent(
                           isDisabled={!runtimeHosts}
                           width={220}
                           onChange={(profileId) => {
-                            selectedProfileChangedByUserRef.current = true;
-                            commitSelectedRuntimeHostProfile(profileId);
+                            void navigate(() => {
+                              selectedProfileChangedByUserRef.current = true;
+                              commitSelectedRuntimeHostProfile(profileId);
+                            });
                           }}
                         />
                       </div>
                     ) : null}
                   </div>
                 </LayoutHeader>
-              )}
+              ) : undefined}
               content={(
                 <LayoutContent padding={6} isScrollable={false}>
                   <UsageScopeMount
@@ -1002,6 +1055,7 @@ function SettingsSurfaceContent(
                           ? `${selectedRuntimeHost.profileId}:${selectedRuntimeHost.hostId}`
                           : 'client'}
                         host={selectedRuntimeHost}
+                        label={selectedRuntimeHostEntry?.profile.name}
                         generation={selectedProfileId
                           ? runtimeHostLifecycleByProfile.get(selectedProfileId)?.epoch
                           : undefined}
@@ -1011,6 +1065,7 @@ function SettingsSurfaceContent(
                         >
                           <SettingsPageBody
                             section={section}
+                            onClose={props.onClose}
                             // A bundle names a path on THIS machine, so the
                             // feature is offered only while the Local Host is
                             // the target -- never beside a Remote one.
@@ -1045,6 +1100,7 @@ function SettingsSurfaceContent(
                             onRemoteHostAdded={props.onRemoteHostAdded}
                             openProviderCatalog={providerCatalogRequested}
                             initialConnectionSlug={props.initialConnectionSlug}
+                            initialExternalAgentId={props.request?.externalAgentId}
                             initialCreateProviderType={createProviderRequest}
                             onInitialCreateProviderConsumed={() => {
                               setCreateProviderRequest(undefined);
@@ -1069,7 +1125,8 @@ function SettingsSurfaceContent(
 }
 
 function SettingsPageBody(props: {
-  section: SettingsSection;
+  section: string;
+  onClose(): void;
   isLocalRuntimeHost: boolean;
   settings: AppSettings;
   connections: ProjectedLlmConnection[];
@@ -1108,6 +1165,7 @@ function SettingsPageBody(props: {
   initialConnectionSlug?: string;
   initialCreateProviderType?: ProviderType;
   onInitialCreateProviderConsumed?(): void;
+  initialExternalAgentId?: string;
   onInitialProviderCatalogConsumed?(): void;
 }) {
   const locale = useUiLocale();
@@ -1135,7 +1193,7 @@ function SettingsPageBody(props: {
         </SettingsPage>
       );
     case 'external-agents':
-      return <ExternalAgentsSettingsPage settings={props.settings} onUpdate={props.onUpdateSettings} />;
+      return <ExternalAgentsSettingsPage settings={props.settings} onUpdate={props.onUpdateSettings} initialExecutorId={props.initialExternalAgentId} />;
     case 'subagents':
       return (
         <SubagentSettingsPage
@@ -1193,6 +1251,7 @@ function SettingsPageBody(props: {
     case 'appearance':
       return (
         <AppearanceSettingsPage
+          workbarTogglePosition={props.settings.appearance.workbarTogglePosition}
           themePref={props.themePref}
           themePalette={props.themePalette}
           appIcon={props.settings.appearance.appIcon ?? DEFAULT_APP_ICON}
@@ -1203,13 +1262,23 @@ function SettingsPageBody(props: {
         />
       );
     case 'archived-tasks':
-      return <TasksSettingsPage {...props.archivedTasks} />;
+      return (
+        <CatalogSessions catalog={props.archivedTasks.catalog}>
+          {(sessions) => (
+            <ArchivedTaskScope {...props.archivedTasks} sessions={sessions}>
+              {(scope) => (
+                <TasksSettingsPage {...props.archivedTasks} sessions={sessions} scope={scope} />
+              )}
+            </ArchivedTaskScope>
+          )}
+        </CatalogSessions>
+      );
     case 'import-tasks':
       return (
         <SettingsPage as="section">
           <SessionBundleTasks
             isLocalTarget={props.isLocalRuntimeHost}
-            sessions={props.archivedTasks.sessions}
+            catalog={props.archivedTasks.catalog}
             renderSection={({ children, ...section }) => (
               <SettingsSectionBlock {...section}>{children}</SettingsSectionBlock>
             )}
@@ -1245,6 +1314,8 @@ function SettingsPageBody(props: {
           onReloadSettings={props.onReloadSettings}
         />
       );
+    case 'personal-assistant':
+      return <PersonalAssistantSettings key={`${props.runtimeHost?.profileId}:${props.runtimeHost?.hostId}`} host={props.runtimeHost} onOpenSession={props.onOpenSession} />;
     case 'daily-review':
       return <DailyReviewSettingsPage connections={props.connections} />;
     case 'search':
@@ -1256,9 +1327,24 @@ function SettingsPageBody(props: {
       );
     default:
       return (
-        <div className="settingsRows">
-          <SettingRow title={navLabel(props.section, locale)} detail={copy.unavailablePage} value={copy.ready} />
-        </div>
+        <MakaClientSlotOutlet
+          name="settings.page"
+          owner={{ page: props.section, close: props.onClose }}
+          options={{
+            entryKey: props.section,
+            fallback: (
+              <div className="settingsRows">
+                <SettingRow
+                  title={isBuiltInSettingsSection(props.section)
+                    ? navLabel(props.section, locale)
+                    : props.section}
+                  detail={copy.unavailablePage}
+                  value={copy.ready}
+                />
+              </div>
+            ),
+          }}
+        />
       );
   }
 }

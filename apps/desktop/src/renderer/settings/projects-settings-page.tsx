@@ -27,6 +27,7 @@ import {
   Button,
   EmptyState,
   MoreMenu,
+  NewProjectDialog,
   TextInput,
   useMountedRef,
   useToast,
@@ -42,6 +43,7 @@ import { RuntimeHostProfilesSection } from './runtime-host-profiles-section.js';
 import { useKeyedActionGuard } from './use-action-guard';
 import { useOptionalRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
 import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
+import { ProjectRegistrationBoundary, type ProjectRegistration } from '../features/task-entry/index.js';
 import { RemoteProjectDirectoryDialog } from '../remote-project-directory-dialog.js';
 import { RuntimeHostInteractionBoundary } from './runtime-host-interaction-boundary.js';
 
@@ -91,7 +93,7 @@ export function ProjectsSettingsPage(props: {
   const [homePath, setHomePath] = useState<string | undefined>(undefined);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [draftName, setDraftName] = useState('');
-  const [directoryPickerOpen, setDirectoryPickerOpen] = useState(false);
+  const [projectDialog, setProjectDialog] = useState<'directory' | 'new' | null>(null);
   const directoryPickerTriggerRef = useRef<HTMLButtonElement>(null);
   const reloadGeneration = useRef(0);
 
@@ -104,6 +106,24 @@ export function ProjectsSettingsPage(props: {
       setCapabilities(snapshot.capabilities);
     }
   }, [host, mountedRef, props.runtimeHostTargetVerified]);
+
+  /**
+   * Create a project from the optional name the New project dialog collected.
+   * The add call still owns the folder picker, so a cancelled picker simply
+   * leaves the list unchanged; a typed name rides along, and a blank one lets
+   * the catalog name the project after its folder.
+   */
+  async function addNamedProject(name: string | undefined, registration: ProjectRegistration) {
+    if (!host || !props.runtimeHostTargetVerified) return;
+    await runRowAction('add', async () => {
+      const result = await registration.register(
+        () => window.maka.projects.add(host, name ? { name } : undefined),
+        () => mountedRef.current,
+      );
+      // Cancelled or invalidated registrations must not trigger a refresh.
+      if (!result?.ok) return false;
+    }, copy.actionFailed);
+  }
 
   useEffect(() => {
     if (!host || !props.runtimeHostTargetVerified) {
@@ -152,7 +172,7 @@ export function ProjectsSettingsPage(props: {
 
   async function runRowAction(
     key: string,
-    action: () => Promise<void>,
+    action: () => Promise<void | false>,
     failure: string,
   ) {
     if (!props.runtimeHostTargetVerified) return;
@@ -160,7 +180,7 @@ export function ProjectsSettingsPage(props: {
     if (!release) return;
     try {
       try {
-        await action();
+        if (await action() === false) return;
       } catch (error) {
         if (mountedRef.current) {
           toast.error(
@@ -229,6 +249,8 @@ export function ProjectsSettingsPage(props: {
     );
   }
   return (
+    <ProjectRegistrationBoundary host={props.runtimeHostTargetVerified ? host : undefined}>
+      {(registration) => (
     <SettingsPage as="section" aria-label={copy.section}>
       <RuntimeHostProfilesSection
         onRemoteHostAdded={props.onRemoteHostAdded}
@@ -254,6 +276,7 @@ export function ProjectsSettingsPage(props: {
             removed from the skills page. The rule this page exists for lives in
             the page subtitle; the section keeps only its action. */}
         <SettingsSection
+          title={copy.projectsTitle}
           description={
             defaultProjectId !== undefined && !defaultResolves
               ? `${copy.sectionHelp} ${copy.defaultUnavailable}`
@@ -263,16 +286,16 @@ export function ProjectsSettingsPage(props: {
             <Button
               ref={directoryPickerTriggerRef}
               variant="secondary"
-              size="sm"
               label={copy.addProject}
-              clickAction={capabilities.chooseHostDirectory
+              isLoading={registration.pending}
+              onClick={capabilities.chooseHostDirectory
                 ? () => {
-                    if (props.runtimeHostTargetVerified) setDirectoryPickerOpen(true);
+                    if (props.runtimeHostTargetVerified) setProjectDialog('directory');
                   }
-                : async () => {
-                    if (!props.runtimeHostTargetVerified) return;
-                    const result = await window.maka.projects.add(host);
-                    if (result.ok) await reload();
+                : () => {
+                    // The dialog collects an optional name; the folder picker
+                    // it opens is the same one, just reached one step later.
+                    if (props.runtimeHostTargetVerified) setProjectDialog('new');
                   }}
             />
           ) : undefined}
@@ -493,15 +516,27 @@ export function ProjectsSettingsPage(props: {
         )}
         </SettingsSection>
         <RemoteProjectDirectoryDialog
-          host={directoryPickerOpen && props.runtimeHostTargetVerified ? host : undefined}
+          host={projectDialog === 'directory' && props.runtimeHostTargetVerified ? host : undefined}
           returnFocusTo={directoryPickerTriggerRef.current}
-          onClose={() => setDirectoryPickerOpen(false)}
+          onClose={() => setProjectDialog(null)}
           onRegistered={() => {
-            setDirectoryPickerOpen(false);
-            void reload();
+            setProjectDialog(null);
+            void runRowAction('add', async () => {}, copy.actionFailed);
           }}
         />
+        {projectDialog === 'new' && props.runtimeHostTargetVerified ? (
+          <NewProjectDialog
+            onOpenChange={(open) => {
+              if (!open) setProjectDialog(null);
+            }}
+            onSubmit={(name) => {
+              void addNamedProject(name, registration);
+            }}
+          />
+        ) : null}
       </RuntimeHostInteractionBoundary>
     </SettingsPage>
+      )}
+    </ProjectRegistrationBoundary>
   );
 }

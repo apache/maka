@@ -101,6 +101,18 @@ export interface ComputerUseRect {
   height: number;
 }
 
+/**
+ * Text currently selected in a Computer Use target window.
+ *
+ * The executor reports this per snapshot (`maka.cu/2` §5.2). `text` is the
+ * selected string; `truncated` is true when the executor cut it. Rendering
+ * for a model must still apply its own length cap — the wire does not.
+ */
+export interface ComputerUseSelectedText {
+  text: string;
+  truncated: boolean;
+}
+
 export interface ComputerUseFrameIdentity {
   frameId: string;
   epoch: number;

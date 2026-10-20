@@ -107,18 +107,28 @@ describe('hosted web search capability', () => {
     );
     assert.deepEqual(
       resolveHostedWebSearchCapability(
-        'openai-responses-compatible',
-        [
-          {
-            id: 'relay-model',
-            apiProtocol: 'openai-responses',
-            capabilities: { webSearch: true },
-          },
-        ],
+        'custom',
+        [{ id: 'relay-model', capabilities: { webSearch: true } }],
         'relay-model',
+        'openai-responses',
       ),
       { adapter: 'openai-responses', implemented: true },
     );
+  });
+
+  it('follows a custom model wire and never infers support from the model name', () => {
+    const declared = [{ id: 'm', capabilities: { webSearch: true } }];
+    assert.deepEqual(
+      resolveHostedWebSearchCapability('custom', declared, 'm', 'anthropic-messages'),
+      { adapter: 'anthropic-messages', implemented: true },
+    );
+    assert.equal(resolveHostedWebSearchCapability('custom', declared, 'm', 'openai-chat'), null);
+    for (const wire of ['openai-responses', 'anthropic-messages']) {
+      assert.equal(
+        resolveHostedWebSearchCapability('custom', undefined, 'deepseek-v4-flash', wire),
+        null,
+      );
+    }
   });
 
   it('keeps dual-wire providers on the configured connection protocol', () => {
@@ -126,19 +136,6 @@ describe('hosted web search capability', () => {
       adapter: 'openai-responses',
       implemented: false,
     });
-    assert.deepEqual(
-      resolveHostedWebSearchCapability(
-        'anthropic-compatible',
-        [
-          {
-            id: 'deepseek-v4-flash',
-            apiProtocol: 'anthropic-messages',
-          },
-        ],
-        'deepseek-v4-flash',
-      ),
-      { adapter: 'anthropic-messages', implemented: true },
-    );
     assert.equal(
       resolveHostedWebSearchCapability(
         'deepseek',

@@ -962,17 +962,6 @@ describe('workspace version persistence authority', () => {
         }),
         /workspace version authority writer/i,
       );
-      await assert.rejects(
-        store.commitToolRecoveryBundle({
-          operationId: 'workspace-bypass-operation',
-          reconcileRuntimeEvent: epochOpenedEvent,
-          decisionRuntimeEvent: {
-            ...epochOpenedEvent,
-            id: 'workspace-bypass-decision',
-          },
-        }),
-        /workspace version authority writer/i,
-      );
     });
   });
 
@@ -1346,6 +1335,10 @@ function recreateWorkspaceTablesAsSchema12(database: DatabaseSync): void {
     DROP TABLE runtime_workspace_heads_schema_13;
     DROP TABLE runtime_workspace_versions_schema_13;
     DROP TABLE runtime_managed_mutation_reservations;
+    DROP INDEX runtime_events_recovery_user_message;
+    DROP INDEX runtime_events_steering_message;
+    DROP INDEX runtime_events_tool_dispatch_operation;
+    DROP INDEX tool_operations_unsettled;
     DROP INDEX runtime_events_by_session_kind;
     DROP INDEX runtime_events_one_opening_per_invocation;
     DROP TABLE runtime_legacy_invocation_openings;

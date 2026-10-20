@@ -88,7 +88,6 @@ const RETIRED_CONTEXT_BUDGET_KEYS = [
   'archiveRetrievalFailures',
   'archiveRetrievalSkippedReasonCounts',
   'archiveRetrievalFailureReasonCounts',
-  'historySearchMatches',
   'historyAroundRetrievedEvents',
   'historyAroundEstimatedTokens',
   'historyAroundSkippedEvents',
@@ -303,6 +302,8 @@ export interface TokenUsageFields {
 export interface LastRequestAnchor {
   inputTokens: number;
   outputTokens?: number;
+  /** Settlement time of this provider request, rather than the later token row write. */
+  completedAt?: number;
   /**
    * The route that produced these counts.
    *
@@ -318,7 +319,7 @@ export interface LastRequestAnchor {
 
 const LAST_REQUEST_ANCHOR_SHAPE = defineObjectShape<LastRequestAnchor>()(
   ['inputTokens'],
-  ['outputTokens', 'modelId', 'connectionId'],
+  ['outputTokens', 'completedAt', 'modelId', 'connectionId'],
   ['payloadChars'],
 );
 
@@ -330,6 +331,8 @@ export function isLastRequestAnchor(value: unknown): value is LastRequestAnchor 
     value.inputTokens > 0 &&
     (value.outputTokens === undefined ||
       (isFiniteNumber(value.outputTokens) && value.outputTokens >= 0)) &&
+    (value.completedAt === undefined ||
+      (isFiniteNumber(value.completedAt) && value.completedAt >= 0)) &&
     (value.payloadChars === undefined || isFiniteNumber(value.payloadChars))
   );
 }

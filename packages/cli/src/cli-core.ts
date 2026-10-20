@@ -143,7 +143,7 @@ function helpText(cliCommand: string): string {
     ...(
       [
         ['', 'Start the TUI'],
-        ['--acp', 'Serve ACP v1 over stdio (sessions, prompts, streaming, cancellation)'],
+        ['--acp', 'Serve ACP v1 over stdio (sessions, tools, permissions, forms, stdio MCP)'],
         ['run ...', 'Run one non-interactive model turn'],
         ['-p ...', `Alias for ${cliCommand} run`],
         ['activate ...', 'Run one Cloud Session activation and emit JSONL'],
@@ -394,6 +394,7 @@ export async function runMakaCli(
         ...(command.repairRootAfterRemount ? { repairRootAfterRemount: true } : {}),
         updateExisting: command.updateExisting,
         reuseExistingEnvironment: command.reuseExistingEnvironment,
+        ...(command.expectedExisting ? { expectedExisting: command.expectedExisting } : {}),
         allowInterruptActiveTasks: command.allowInterruptActiveTasks,
         ...(command.rootPath ? { rootPath: command.rootPath } : {}),
         ...(command.projectDirectoryRoots
@@ -786,6 +787,7 @@ export async function runMakaCli(
         locale: locale.locale,
         cwd: process.cwd(),
         onProcessExit: handleMakaCliProcessExit,
+        buildVersion: version,
         ...(command.resumeSessionId ? { resumeSessionId: command.resumeSessionId } : {}),
         ...(command.resumeCwd ? { resumeCwd: command.resumeCwd } : {}),
         ...(command.hostProfileId ? { hostProfileId: command.hostProfileId } : {}),

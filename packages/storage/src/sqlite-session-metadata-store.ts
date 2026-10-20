@@ -17,6 +17,19 @@
  * under the License.
  */
 
+import {
+  SessionMetadataConflictError,
+  SessionMetadataVersionConflictError,
+  type VersionedSessionIdentity,
+  type SessionConfigurationMetadataUpdate,
+} from './session-store-contract.js';
+export {
+  SessionMetadataConflictError,
+  SessionMetadataVersionConflictError,
+  type VersionedSessionIdentity,
+  type SessionConfigurationMetadataUpdate,
+} from './session-store-contract.js';
+
 import { createRequire } from 'node:module';
 import { createHash } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
@@ -117,15 +130,17 @@ import {
   type ProvenRootMessageHandoff,
   type ProvenSteeringMessageHandoff,
 } from './message-admission-store.js';
+import { rootTurnSourceMessagePayloadsEqual } from './agent-run-store-contract.js';
 import { normalizeSubmittedTurnIntent } from './submitted-turn-intent.js';
 import {
   messageContentDigest,
   messageContentsEqual,
   normalizeMessageContent,
+  type MessageContent,
 } from '@maka/core/events';
-import {
-  type AgentGraphIntentAdmissionSnapshot,
-  type AgentGraphTimelineMetadataSnapshot,
+import type {
+  AgentGraphIntentAdmissionSnapshot,
+  AgentGraphTimelineMetadataSnapshot,
 } from '@maka/core/agent-graph-timeline';
 import {
   AGENT_GRAPH_SUPERVISOR_WAKE_SCHEMA_VERSION,
@@ -136,11 +151,9 @@ import {
   type CompleteAgentGraphSupervisorWakeAttemptRequest,
   type SupersedeAgentGraphSupervisorWakesRequest,
 } from '@maka/core/agent-graph-supervisor-wake';
-import { type SessionListFilter } from '@maka/core/runtime-inputs';
+import type { SessionListFilter } from '@maka/core/runtime-inputs';
 import {
   assertSafeSessionId,
-  decodePersistedSessionHeader,
-  normalizeSessionHeader,
   SessionNotFoundError,
   type ExternalSessionImportLookupResult,
   type CoordinationTranscriptReference,
@@ -150,7 +163,8 @@ import {
   type SessionMessageScanRecord,
   type SessionMessageScanRequest,
   type SessionTranscriptMessageLookupRequest,
-} from './session-store.js';
+} from './session-store-contract.js';
+import { decodePersistedSessionHeader, normalizeSessionHeader } from './session-store.js';
 import {
   isDiscardableConversationCopy,
   isValidConversationCopyTransition,
@@ -166,7 +180,13 @@ import {
 } from './sqlite-session-metadata-schema.js';
 import type { OperationalStateDatabaseLease } from './operational-state-store.js';
 import {
+  assertFoldedSearchTerm,
+  recallFoldedMatchClause,
+  registerRecallFoldFunction,
+} from './recall-fold.js';
+import {
   buildSqliteSessionCatalogPageQuery,
+  sqliteArchivedTaskRowPredicate,
   type SqliteSessionCatalogCursor,
 } from './sqlite-session-catalog-query.js';
 import {
@@ -184,6 +204,14 @@ const WORKHUB_TARGET_LINKAGE_MAX_SESSIONS = 256;
 function decodeStoredMessage(value: unknown): StoredMessage {
   return decodePersistedStoredMessage(markPersisted<StoredMessage>(value));
 }
+
+/**
+ * Message types that carry user-visible content. Coordination records are
+ * excluded here so a candidate scan never reads them, matching the projection
+ * the recall predicate applies afterwards.
+ */
+const SEARCHABLE_MESSAGE_TYPES = ['user', 'assistant', 'tool_call', 'tool_result'] as const;
+const SEARCHABLE_MESSAGE_TYPE_PLACEHOLDERS = SEARCHABLE_MESSAGE_TYPES.map(() => '?').join(', ');
 
 const require = createRequire(import.meta.url);
 const AGENT_GRAPH_CONTROL_DELETE_TABLES = SQLITE_AGENT_GRAPH_CONTROL_TABLES.filter(
@@ -255,6 +283,11 @@ export interface SessionMetadataRecord {
 export interface SessionMetadataCatalogRecord extends SessionMetadataRecord {
   readonly activityAt: number;
   readonly lastMessagePreview?: string;
+  /**
+   * When the Session last entered the archive. Absent while it is not
+   * archived, and for a Session archived before the time was recorded.
+   */
+  readonly archivedAt?: number;
 }
 
 export interface SessionCatalogRevisionState {
@@ -337,11 +370,6 @@ export interface SessionAuthoritySnapshot {
   boundary: ExecutionBoundary;
 }
 
-export interface VersionedSessionIdentity {
-  readonly sessionId: string;
-  readonly expectedVersion: number;
-}
-
 export type SessionRemovalProbe =
   | { readonly kind: 'present'; readonly record: SessionMetadataRecord }
   | { readonly kind: 'removed' }
@@ -387,35 +415,9 @@ export type StableSessionMetadataCreateResult =
       readonly reason: 'identity_mismatch' | 'removed';
     };
 
-export interface SessionConfigurationMetadataUpdate {
-  readonly expectedVersion: number;
-  readonly configuration: {
-    readonly backend: SessionHeader['backend'];
-    readonly llmConnectionId: string;
-    readonly llmConnectionSlug: string;
-    readonly connectionLocked: boolean;
-    readonly model: string;
-    readonly thinkingLevel: SessionHeader['thinkingLevel'];
-    readonly permissionMode: SessionHeader['permissionMode'];
-    readonly collaborationMode: NonNullable<SessionHeader['collaborationMode']>;
-    readonly orchestrationMode: NonNullable<SessionHeader['orchestrationMode']>;
-    readonly labels: readonly string[];
-  };
-  readonly lifecycle:
-    | { readonly kind: 'preserve' }
-    | {
-        readonly kind: 'clear_connection_block';
-        readonly statusUpdatedAt: number;
-      };
-}
-
 export interface IdempotentAgentGraphOperatorMetadataResult
   extends AgentGraphOperatorProvisionResult {
   record: SessionMetadataRecord;
-}
-
-export class SessionMetadataConflictError extends Error {
-  readonly name: string = 'SessionMetadataConflictError';
 }
 
 export class StoredSessionMessageIncompatibleError extends Error {
@@ -431,27 +433,24 @@ export class StoredSessionMessageIncompatibleError extends Error {
   }
 }
 
-export class SessionMetadataVersionConflictError extends SessionMetadataConflictError {
-  readonly name = 'SessionMetadataVersionConflictError';
-
-  constructor(
-    readonly sessionId: string,
-    readonly expectedVersion: number,
-    readonly actualVersion: number,
-  ) {
-    super(
-      `Session metadata version conflict for ${sessionId}: expected ${expectedVersion}, found ${actualVersion}`,
-    );
-  }
-}
-
-export class AgentGraphIntentClaimConflictError extends SessionMetadataConflictError {
-  readonly name = 'AgentGraphIntentClaimConflictError';
-}
-
-export class AgentGraphScheduleUpdateConflictError extends SessionMetadataConflictError {
-  readonly name = 'AgentGraphScheduleUpdateConflictError';
-}
+import {
+  AgentGraphIntentClaimConflictError,
+  AgentGraphScheduleUpdateConflictError,
+} from './session-store-contract.js';
+export {
+  AgentGraphIntentClaimConflictError,
+  AgentGraphScheduleUpdateConflictError,
+} from './session-store-contract.js';
+import {
+  assertGraphLookupIdentity,
+  assertAgentGraphSupervisorWakeClaim,
+  assertAgentGraphSupervisorWakeAttempt,
+  assertAgentGraphSupervisorWakeCompletion,
+  assertAgentGraphClientProjectionRequest,
+  encodeProjectionPayload,
+  assertGraphEventTime,
+  assertGraphIntentId,
+} from './graph-control-values.js';
 
 export function createSqliteSessionMetadataStore(
   path: string,
@@ -474,6 +473,7 @@ export class SqliteSessionMetadataStore {
     if (options.databaseLease) {
       this.databaseLease = options.databaseLease;
       this.db = options.databaseLease.database;
+      registerRecallFoldFunction(this.db);
       this.now = options.now ?? Date.now;
       return;
     }
@@ -482,6 +482,7 @@ export class SqliteSessionMetadataStore {
     try {
       configureSqliteSessionMetadataDatabase(database);
       migrateSqliteSessionMetadataDatabase(database);
+      registerRecallFoldFunction(database);
     } catch (error) {
       database.close();
       throw error;
@@ -1208,6 +1209,7 @@ export class SqliteSessionMetadataStore {
           metadata.payload_json,
           metadata.metadata_version,
           metadata.committed_at,
+          metadata.archived_at,
           projection.activity_at,
           projection.last_message_preview
         FROM session_catalog_projection projection
@@ -1281,6 +1283,121 @@ export class SqliteSessionMetadataStore {
             )
             .all(sessionId);
     return (rows as unknown as Array<{ readonly sessionId: string }>).map((row) => row.sessionId);
+  }
+
+  /**
+   * Archive-retention candidates, oldest archive first: the rows Settings ›
+   * Archived tasks shows (the catalog's own archived-row predicate), less
+   * Agent Graph operators, which retire only with their root, and less any
+   * family a pinned member keeps. A row that no longer decodes is returned as
+   * such, so a sweep can count it and move past it.
+   */
+  async listArchiveRetentionCandidates(query: {
+    readonly archivedBefore?: number;
+    readonly after?: { readonly archivedAt?: number; readonly sessionId: string };
+    readonly limit: number;
+  }): Promise<
+    Array<
+      | (SessionMetadataRecord & { readonly archivedAt?: number })
+      | { readonly undecodable: true; readonly sessionId: string; readonly archivedAt?: number }
+    >
+  > {
+    this.assertOpen();
+    if (!Number.isSafeInteger(query.limit) || query.limit < 1 || query.limit > 256) {
+      throw new Error('Archive retention candidate limit must be between 1 and 256');
+    }
+    const candidate = archiveRetentionCandidatePredicate();
+    const where = [candidate.sql];
+    const parameters: Array<string | number> = [...candidate.parameters];
+    if (query.archivedBefore !== undefined) {
+      where.push('(metadata.archived_at IS NULL OR metadata.archived_at < ?)');
+      parameters.push(query.archivedBefore);
+    }
+    if (query.after) {
+      assertSafeSessionId(query.after.sessionId);
+      where.push('(COALESCE(metadata.archived_at, -1), metadata.session_id) > (?, ?)');
+      parameters.push(query.after.archivedAt ?? -1, query.after.sessionId);
+    }
+    const rows = this.db
+      .prepare(
+        `
+        SELECT
+          metadata.session_id,
+          metadata.payload_json,
+          metadata.metadata_version,
+          metadata.committed_at,
+          metadata.archived_at
+        FROM session_metadata metadata
+        JOIN session_catalog_projection projection
+          ON projection.session_id = metadata.session_id
+        WHERE ${where.join(' AND ')}
+        ORDER BY COALESCE(metadata.archived_at, -1), metadata.session_id
+        LIMIT ?
+      `,
+      )
+      .all(...parameters, query.limit) as unknown as Array<
+      SessionMetadataRow & { archived_at: number | null }
+    >;
+    return rows.map((row) => {
+      const position = typeof row.archived_at === 'number' ? { archivedAt: row.archived_at } : {};
+      try {
+        const archivedAt = decodeCatalogArchivedAt(row.archived_at, row.session_id);
+        return { ...decodeRecord(row), ...(archivedAt === undefined ? {} : { archivedAt }) };
+      } catch {
+        return { undecodable: true as const, sessionId: row.session_id, ...position };
+      }
+    });
+  }
+
+  /**
+   * How many families `listArchiveRetentionCandidates` would offer, and the
+   * earliest clock start among them under a policy enabled at `enabledAt`: a
+   * family starts when its most recently archived member did, and never before
+   * enablement.
+   */
+  async countArchiveRetentionCandidates(
+    enabledAt: number,
+  ): Promise<{ readonly families: number; readonly firstStart?: number }> {
+    this.assertOpen();
+    const candidate = archiveRetentionCandidatePredicate();
+    const row = this.db
+      .prepare(
+        `
+        SELECT COUNT(*) AS families, MIN(start) AS first_start
+        FROM (
+          SELECT MAX(MAX(COALESCE(metadata.archived_at, ?), ?)) AS start
+          FROM session_metadata metadata
+          JOIN session_catalog_projection projection
+            ON projection.session_id = metadata.session_id
+          WHERE ${candidate.sql}
+          GROUP BY COALESCE(metadata.revision_root_session_id, metadata.session_id)
+        )
+      `,
+      )
+      .get(enabledAt, enabledAt, ...candidate.parameters) as {
+      families: number;
+      first_start: number | null;
+    };
+    return {
+      families: row.families,
+      ...(typeof row.first_start === 'number' ? { firstStart: row.first_start } : {}),
+    };
+  }
+
+  async readLatestSessionMetadataTime(): Promise<number | undefined> {
+    this.assertOpen();
+    const row = this.db
+      .prepare(
+        `
+        SELECT MAX(committed_at) AS committed_at, MAX(archived_at) AS archived_at
+        FROM session_metadata
+      `,
+      )
+      .get() as { committed_at: number | null; archived_at: number | null } | undefined;
+    const times = [row?.committed_at, row?.archived_at].filter(
+      (value): value is number => typeof value === 'number' && Number.isFinite(value),
+    );
+    return times.length === 0 ? undefined : Math.max(...times);
   }
 
   async reconcileOrphanedAgentGraphRetirements(): Promise<string[]> {
@@ -1452,6 +1569,7 @@ export class SqliteSessionMetadataStore {
           metadata.payload_json,
           metadata.metadata_version,
           metadata.committed_at,
+          metadata.archived_at,
           COALESCE(projection.activity_at, 0) AS activity_at,
           projection.last_message_preview
         FROM session_metadata metadata
@@ -2184,6 +2302,7 @@ export class SqliteSessionMetadataStore {
   async readActiveWorkHubAssignmentsByTarget(
     targetSessionIds: readonly string[],
     maxAssignmentsPerTarget?: number,
+    includeStopped?: boolean,
   ): Promise<readonly WorkHubDelegationAssignedMessage[]> {
     this.assertOpen();
     for (const sessionId of targetSessionIds) assertSafeSessionId(sessionId);
@@ -2294,11 +2413,11 @@ export class SqliteSessionMetadataStore {
         ) {
           continue;
         }
-        const stopResolution = this.readMessageByIdSync(
-          WORKHUB_COORDINATION_SESSION_ID,
-          `whz_${terminalSuffix}`,
-        );
+        const stopResolution =
+          this.readMessageByIdSync(WORKHUB_COORDINATION_SESSION_ID, `whzt_${terminalSuffix}`) ??
+          this.readMessageByIdSync(WORKHUB_COORDINATION_SESSION_ID, `whz_${terminalSuffix}`);
         if (
+          !includeStopped &&
           stopResolution?.type === 'workhub_coordination' &&
           stopResolution.kind === 'delegation_stop_resolved' &&
           stopResolution.outcome !== 'not_owned'
@@ -2383,23 +2502,31 @@ export class SqliteSessionMetadataStore {
           admission.runId === steeringProof.admissionRunId &&
           admission.admittedAt === steeringProof.admittedAt &&
           messageContentsEqual(admission.content, steeringProof.content);
+        // Root admission commits before this mutable queue projection is retired. A crash
+        // between those writes can therefore leave the same Message looking like steering
+        // for its predecessor even though the successor Root already owns it.
+        const provenSuccessorRootHandoff =
+          admission !== undefined &&
+          fallback !== undefined &&
+          rootTurnSourceMessagePayloadsEqual(admission, fallback);
         if (admission !== undefined && steeringProof !== undefined && !provenCrossTurnSteering) {
           throw new SessionMetadataConflictError('Proven steering admission identity conflict');
         }
         if (
           admission !== undefined &&
-          admission.turnId !== input.turnId &&
-          admission.disposition !== 'followup' &&
-          !provenCrossTurnSteering
+          fallback !== undefined &&
+          !rootTurnSourceMessagePayloadsEqual(admission, fallback)
         ) {
-          throw new SessionMetadataConflictError('Message admission Turn conflict');
+          throw new SessionMetadataConflictError('Message admission fallback payload conflict');
         }
         if (
           admission !== undefined &&
-          fallback !== undefined &&
-          !messageContentsEqual(admission.content, fallback.content)
+          admission.turnId !== input.turnId &&
+          admission.disposition !== 'followup' &&
+          !provenCrossTurnSteering &&
+          !provenSuccessorRootHandoff
         ) {
-          throw new SessionMetadataConflictError('Message admission fallback content conflict');
+          throw new SessionMetadataConflictError('Message admission Turn conflict');
         }
         if (
           !admission &&
@@ -2666,6 +2793,149 @@ export class SqliteSessionMetadataStore {
 
   async readMessages(sessionId: string): Promise<StoredMessage[]> {
     return this.readMessagesWith(sessionId, decodeStoredMessage);
+  }
+
+  /**
+   * Narrows recall to the pre-ledger Sessions whose transcript rows contain
+   * one of the folded terms. The answer is a superset of the true matches,
+   * never an answer: the caller projects each candidate Session and re-runs the
+   * real predicate on the projected, redacted text.
+   *
+   * Only Sessions the ledger does not yet own are scanned here. A Session with
+   * `transcriptLedgerVersion` 1 is projected from `runtime_events`, and its
+   * rows in these tables are a frozen copy of what the conversion read, so the
+   * ledger scan already covers it. Sessions still awaiting conversion, and
+   * imports still being prepared, keep their transcript here.
+   *
+   * Folding is ASCII `lower()` in SQL plus an unconditional match on every
+   * record that fold cannot reproduce — see `recall-fold.ts`. Terms must arrive
+   * folded; a raw term is rejected rather than quietly mismatched.
+   *
+   * Two scans rather than one condition, because the two storage forms need
+   * different reads. An inline record is matched directly; a record above the
+   * chunk threshold keeps only a marker in `record_json` and has to be
+   * reassembled from its chunks first. SQLite concatenates chunk blobs
+   * byte-wise, which restores characters a chunk boundary split in half.
+   *
+   * Returns `undefined` when a chunked record cannot be reassembled, which
+   * declines the fast path rather than answering with fewer candidates.
+   */
+  async listLegacyTranscriptCandidateSessions(
+    sessionIds: readonly string[],
+    terms: readonly string[],
+  ): Promise<string[] | undefined> {
+    this.assertOpen();
+    if (sessionIds.length === 0 || terms.length === 0) return [];
+    for (const sessionId of sessionIds) assertSafeSessionId(sessionId);
+    for (const term of terms) assertFoldedSearchTerm(term);
+
+    const sessions = sessionIds.map(() => '?').join(', ');
+    const inlineMatch = recallFoldedMatchClause('message.record_json', terms.length);
+    const chunkedMatch = recallFoldedMatchClause('chunked.body', terms.length);
+
+    return this.readTransaction(() => {
+      // A payload row whose chunks do not reassemble to the bytes it recorded
+      // would be matched on a body shorter than the record, which is the one
+      // way this scan could return less than a superset: the term could sit in
+      // the part that is missing. A short body is as unusable as no body at
+      // all, so both decline the fast path rather than quietly answering with
+      // fewer candidates.
+      const unreadable = this.db
+        .prepare(
+          `
+          SELECT count(*) AS total
+          FROM session_message_payloads AS payload
+          WHERE payload.session_id IN (${sessions})
+            AND COALESCE(
+                  octet_length((SELECT group_concat(CAST(chunk.data AS TEXT), '' ORDER BY chunk.chunk_index)
+                                  FROM session_message_chunks AS chunk
+                                 WHERE chunk.session_id = payload.session_id
+                                   AND chunk.sequence = payload.sequence)),
+                  -1
+                ) <> payload.record_bytes
+        `,
+        )
+        .get(...sessionIds) as { total?: unknown } | undefined;
+      if (typeof unreadable?.total === 'number' && unreadable.total > 0) return undefined;
+
+      const rows = this.db
+        .prepare(
+          `
+          WITH legacy AS (
+            SELECT metadata.session_id
+            FROM session_metadata AS metadata
+            WHERE metadata.session_id IN (${sessions})
+              AND COALESCE(json_extract(metadata.payload_json, '$.transcriptLedgerVersion'), -1) <> 1
+          ),
+          chunked AS (
+            SELECT payload.session_id, payload.sequence,
+                   (SELECT group_concat(CAST(chunk.data AS TEXT), '' ORDER BY chunk.chunk_index)
+                      FROM session_message_chunks AS chunk
+                     WHERE chunk.session_id = payload.session_id
+                       AND chunk.sequence = payload.sequence) AS body
+              FROM session_message_payloads AS payload
+             WHERE payload.session_id IN (SELECT session_id FROM legacy)
+          )
+          SELECT DISTINCT message.session_id
+          FROM session_messages AS message
+          LEFT JOIN session_message_payloads AS payload
+            ON payload.session_id = message.session_id AND payload.sequence = message.sequence
+          WHERE message.session_id IN (SELECT session_id FROM legacy)
+            AND message.message_type IN (${SEARCHABLE_MESSAGE_TYPE_PLACEHOLDERS})
+            AND payload.sequence IS NULL
+            AND (${inlineMatch})
+          UNION
+          SELECT DISTINCT message.session_id
+          FROM session_messages AS message
+          JOIN chunked
+            ON chunked.session_id = message.session_id AND chunked.sequence = message.sequence
+          WHERE message.message_type IN (${SEARCHABLE_MESSAGE_TYPE_PLACEHOLDERS})
+            AND chunked.body IS NOT NULL
+            AND (${chunkedMatch})
+        `,
+        )
+        .all(
+          ...sessionIds,
+          ...SEARCHABLE_MESSAGE_TYPES,
+          ...terms,
+          ...SEARCHABLE_MESSAGE_TYPES,
+          ...terms,
+        ) as Array<{ session_id?: unknown }>;
+      return rows.map((row) => {
+        if (typeof row.session_id !== 'string') {
+          throw new Error('Session search candidate is missing its Session');
+        }
+        return row.session_id;
+      });
+    });
+  }
+
+  /**
+   * How many pre-ledger transcript rows could project to a searchable message,
+   * for recall's idf term. Counted by message type rather than by projecting,
+   * so it is cheap and identical whichever path recall takes to find its hits;
+   * Sessions the ledger owns are counted from `runtime_events` instead.
+   */
+  async countLegacyTranscriptMessages(sessionIds: readonly string[]): Promise<number> {
+    this.assertOpen();
+    if (sessionIds.length === 0) return 0;
+    for (const sessionId of sessionIds) assertSafeSessionId(sessionId);
+    const sessions = sessionIds.map(() => '?').join(', ');
+    return this.readTransaction(() => {
+      const row = this.db
+        .prepare(
+          `
+          SELECT count(*) AS total
+          FROM session_messages AS message
+          JOIN session_metadata AS metadata ON metadata.session_id = message.session_id
+          WHERE message.session_id IN (${sessions})
+            AND COALESCE(json_extract(metadata.payload_json, '$.transcriptLedgerVersion'), -1) <> 1
+            AND message.message_type IN (${SEARCHABLE_MESSAGE_TYPE_PLACEHOLDERS})
+        `,
+        )
+        .get(...sessionIds, ...SEARCHABLE_MESSAGE_TYPES) as { total?: unknown } | undefined;
+      return typeof row?.total === 'number' ? row.total : 0;
+    });
   }
 
   async readMessagesAfter(
@@ -3153,6 +3423,23 @@ export class SqliteSessionMetadataStore {
     return rows.map(decodeAgentGraphScheduleUpdateRow);
   }
 
+  async listAgentGraphScheduleRecoveryGraphIds(): Promise<string[]> {
+    this.assertOpen();
+    const rows = this.db
+      .prepare(`
+        SELECT DISTINCT graph_id
+        FROM agent_graph_schedule_updates
+        ORDER BY graph_id
+      `)
+      .all() as Array<{ graph_id?: unknown }>;
+    return rows.map((row) => {
+      if (typeof row.graph_id !== 'string') {
+        throw new Error('Invalid Agent Graph schedule identity');
+      }
+      return row.graph_id;
+    });
+  }
+
   async claimAgentGraphSupervisorWake(
     request: ClaimAgentGraphSupervisorWakeRequest,
   ): Promise<{ wake: AgentGraphSupervisorWakeRecord; created: boolean }> {
@@ -3213,12 +3500,20 @@ export class SqliteSessionMetadataStore {
   }> {
     this.assertOpen();
     assertAgentGraphSupervisorWakeAttempt(request);
+    if (
+      request.maxAttempts !== undefined &&
+      (!Number.isSafeInteger(request.maxAttempts) || request.maxAttempts < 1)
+    ) {
+      throw new Error('Agent graph supervisor wake max attempts must be positive');
+    }
     return this.transaction(() => {
       const wake = this.requireAgentGraphSupervisorWakeSync(request.graphId, request.wakeId);
       if (
         wake.status === 'delivered' ||
         wake.status === 'running' ||
-        wake.status === 'waiting_permission'
+        wake.status === 'waiting_permission' ||
+        wake.status === 'exhausted' ||
+        (request.maxAttempts !== undefined && wake.attemptCount >= request.maxAttempts)
       ) {
         return { wake, acquired: false };
       }
@@ -3236,9 +3531,18 @@ export class SqliteSessionMetadataStore {
           WHERE graph_id = ?
             AND wake_id = ?
             AND status IN ('pending', 'retryable_failed')
+            AND (? IS NULL OR attempt_count < ?)
         `,
         )
-        .run(request.attemptId, request.turnId, now, request.graphId, request.wakeId);
+        .run(
+          request.attemptId,
+          request.turnId,
+          now,
+          request.graphId,
+          request.wakeId,
+          request.maxAttempts ?? null,
+          request.maxAttempts ?? null,
+        );
       if (updated.changes !== 1) {
         return {
           wake: this.requireAgentGraphSupervisorWakeSync(request.graphId, request.wakeId),
@@ -3339,6 +3643,36 @@ export class SqliteSessionMetadataStore {
           wake.status,
         );
       return this.requireAgentGraphSupervisorWakeSync(request.graphId, request.wakeId);
+    });
+  }
+
+  async exhaustAgentGraphSupervisorWake(
+    graphId: string,
+    wakeId: string,
+    reason: string,
+  ): Promise<AgentGraphSupervisorWakeRecord> {
+    this.assertOpen();
+    assertGraphLookupIdentity(graphId, 'graph id');
+    assertGraphLookupIdentity(wakeId, 'supervisor wake id');
+    if (!reason.trim() || reason.length > 4_000) {
+      throw new Error(
+        'Agent graph supervisor wake exhaustion reason must be non-empty and bounded',
+      );
+    }
+    return this.transaction(() => {
+      const wake = this.requireAgentGraphSupervisorWakeSync(graphId, wakeId);
+      if (wake.status === 'exhausted') return wake;
+      if (wake.status !== 'retryable_failed') {
+        throw new SessionMetadataConflictError('Agent graph supervisor wake is not retryable');
+      }
+      this.db
+        .prepare(`
+        UPDATE agent_graph_supervisor_wakes
+        SET status = 'exhausted', failure_reason = ?, updated_at = ?
+        WHERE graph_id = ? AND wake_id = ? AND status = 'retryable_failed'
+      `)
+        .run(reason, this.now(), graphId, wakeId);
+      return this.requireAgentGraphSupervisorWakeSync(graphId, wakeId);
     });
   }
 
@@ -4283,10 +4617,13 @@ export class SqliteSessionMetadataStore {
     this.assertOpen();
     const identities = uniqueVersionedSessionIdentities(sessions);
     return this.transaction(() => {
+      // One instant for the whole set, so a family archived together reads as
+      // archived together.
+      const archivedAt = this.now();
       const records = identities.map(({ sessionId, expectedVersion }) =>
-        this.setArchivedSync(sessionId, expectedVersion, isArchived),
+        this.setArchivedSync(sessionId, expectedVersion, isArchived, archivedAt),
       );
-      if (isArchived) this.deleteGoalAuthorities(identities);
+      if (isArchived) this.deleteWorkflowAuthorities(identities);
       return records;
     });
   }
@@ -4339,7 +4676,7 @@ export class SqliteSessionMetadataStore {
       }
       const deletedAt = this.now();
       for (const { sessionId, expectedVersion } of archiveIdentities) {
-        this.setArchivedSync(sessionId, expectedVersion, true);
+        this.setArchivedSync(sessionId, expectedVersion, true, deletedAt);
       }
       for (const { sessionId } of present) {
         const deleted = this.db
@@ -4365,17 +4702,21 @@ export class SqliteSessionMetadataStore {
           )
           .run(sessionId, deletedAt, retirementUnitId);
       }
-      this.deleteGoalAuthorities([...identities, ...archiveIdentities]);
+      this.deleteWorkflowAuthorities([...identities, ...archiveIdentities]);
       return identities.map((identity) => identity.sessionId);
     });
   }
 
-  private deleteGoalAuthorities(sessions: readonly VersionedSessionIdentity[]): void {
+  private deleteWorkflowAuthorities(sessions: readonly VersionedSessionIdentity[]): void {
     // Standalone metadata stores have no workflow schema. An operational lease
-    // guarantees that Goal authority shares this exact transaction boundary.
+    // guarantees that workflow authority shares this exact transaction boundary.
     if (!this.databaseLease) return;
     const remove = this.db.prepare('DELETE FROM workflow_goal_authority WHERE session_id = ?');
-    for (const { sessionId } of sessions) remove.run(sessionId);
+    const removeWaits = this.db.prepare('DELETE FROM workflow_event_waits WHERE session_id = ?');
+    for (const { sessionId } of sessions) {
+      remove.run(sessionId);
+      removeWaits.run(sessionId);
+    }
   }
 
   async remove(sessionId: string): Promise<boolean> {
@@ -4688,6 +5029,7 @@ export class SqliteSessionMetadataStore {
     sessionId: string,
     expectedVersion: number,
     isArchived: boolean,
+    archivedAt: number,
   ): SessionMetadataRecord {
     const current = this.readRecordSync(sessionId);
     if (!current) throw new SessionNotFoundError(sessionId);
@@ -4699,7 +5041,13 @@ export class SqliteSessionMetadataStore {
       );
     }
     const next = normalizeSessionHeader({ ...current.header, isArchived }, sessionId);
-    return this.persistHeaderSync(sessionId, current, next, { skipNoop: true });
+    // A Session already in the requested state is a no-op below, so an
+    // archived Session keeps the time it was first archived; only a real
+    // transition writes the column. Every other writer leaves it alone.
+    return this.persistHeaderSync(sessionId, current, next, {
+      skipNoop: true,
+      archivedAt: isArchived ? archivedAt : null,
+    });
   }
 
   private persistHeaderSync(
@@ -4709,6 +5057,8 @@ export class SqliteSessionMetadataStore {
     options: {
       skipNoop?: boolean;
       catalogPreview?: { readonly kind: 'replace'; readonly value?: string };
+      /** Set only by the archive lifecycle writer; null clears the column. */
+      archivedAt?: number | null;
     } = {},
   ): SessionMetadataRecord {
     if (next.id !== sessionId) {
@@ -4743,7 +5093,8 @@ export class SqliteSessionMetadataStore {
           llm_connection_slug = ?,
           model = ?,
           metadata_version = ?,
-          committed_at = ?
+          committed_at = ?,
+          archived_at = CASE WHEN ? = 1 THEN ? ELSE archived_at END
         WHERE session_id = ? AND metadata_version = ?
       `,
       )
@@ -4764,6 +5115,8 @@ export class SqliteSessionMetadataStore {
         next.model,
         metadataVersion,
         committedAt,
+        options.archivedAt === undefined ? 0 : 1,
+        options.archivedAt ?? null,
         sessionId,
         current.metadataVersion,
       );
@@ -5850,6 +6203,7 @@ interface OrphanedAgentGraphOperatorRow extends OwnedAgentGraphOperatorRow {
 }
 
 interface SessionMetadataCatalogRow extends SessionMetadataRow {
+  archived_at: number | null;
   activity_at: number;
   last_message_preview: string | null;
 }
@@ -6055,6 +6409,7 @@ function decodeAgentGraphSupervisorWakeRow(
       'waiting_permission',
       'delivered',
       'superseded',
+      'exhausted',
       'retryable_failed',
     ].includes(row.status) ||
     !Number.isSafeInteger(row.attemptCount) ||
@@ -6138,6 +6493,28 @@ function agentGraphScheduleUpdateRequest(
   return request;
 }
 
+function archiveRetentionCandidatePredicate(): { sql: string; parameters: readonly string[] } {
+  const row = sqliteArchivedTaskRowPredicate();
+  return {
+    // The pinned-family exclusion is deliberately uncorrelated: SQLite
+    // evaluates the pinned family roots once, instead of rescanning
+    // session_metadata for every candidate. The correlated form was quadratic
+    // (about 1 s at 10k Sessions) and runs synchronously on the Host thread.
+    // No index covers is_flagged/is_archived (migration 26 dropped them).
+    sql: `(
+      metadata.is_flagged = 0
+      AND ${row.sql}
+      AND json_type(metadata.payload_json, '$.subagentParent.graph') IS NULL
+      AND COALESCE(metadata.revision_root_session_id, metadata.session_id) NOT IN (
+        SELECT COALESCE(pinned.revision_root_session_id, pinned.session_id)
+        FROM session_metadata pinned
+        WHERE pinned.is_flagged = 1
+      )
+    )`,
+    parameters: row.parameters,
+  };
+}
+
 function decodeRecord(row: SessionMetadataRow): SessionMetadataRecord {
   const parsed = JSON.parse(row.payload_json) as SessionHeader;
   if (
@@ -6159,11 +6536,21 @@ function decodeCatalogRecord(row: SessionMetadataCatalogRow): SessionMetadataCat
     throw new Error(`Invalid SQLite Session catalog activity for ${row.session_id}`);
   }
   const lastMessagePreview = decodeCatalogPreview(row.last_message_preview, row.session_id);
+  const archivedAt = decodeCatalogArchivedAt(row.archived_at, row.session_id);
   return {
     ...decodeRecord(row),
     activityAt: row.activity_at,
     ...(lastMessagePreview === undefined ? {} : { lastMessagePreview }),
+    ...(archivedAt === undefined ? {} : { archivedAt }),
   };
+}
+
+function decodeCatalogArchivedAt(value: unknown, sessionId: string): number | undefined {
+  if (value === null || value === undefined) return undefined;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`Invalid SQLite Session archive time for ${sessionId}`);
+  }
+  return value;
 }
 
 function decodeCatalogPreview(value: unknown, sessionId: string): string | undefined {
@@ -6265,18 +6652,6 @@ function requireManagedProfile(
   return boundary.profile;
 }
 
-function assertGraphLookupIdentity(value: string, name: string): void {
-  if (
-    typeof value !== 'string' ||
-    value.length === 0 ||
-    value.length > 256 ||
-    value.trim() !== value ||
-    /[\u0000-\u001f\u007f]/.test(value)
-  ) {
-    throw new Error(`Invalid agent graph ${name}`);
-  }
-}
-
 function assertSafeBoundaryRequestId(value: string): void {
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(value)) {
     throw new Error('Invalid sandbox boundary request id');
@@ -6293,109 +6668,6 @@ function assertSandboxBoundaryProvenanceId(value: string, name: string): void {
   ) {
     throw new Error(`Invalid sandbox boundary ${name}`);
   }
-}
-
-function assertAgentGraphSupervisorWakeClaim(request: ClaimAgentGraphSupervisorWakeRequest): void {
-  if (request.schemaVersion !== AGENT_GRAPH_SUPERVISOR_WAKE_SCHEMA_VERSION) {
-    throw new Error('Invalid agent graph supervisor wake schema');
-  }
-  assertGraphLookupIdentity(request.graphId, 'graph id');
-  assertGraphLookupIdentity(request.wakeId, 'supervisor wake id');
-  assertGraphLookupIdentity(request.snapshotVersion, 'snapshot version');
-  assertSafeSessionId(request.rootSessionId);
-}
-
-function assertAgentGraphSupervisorWakeAttempt(
-  request: BeginAgentGraphSupervisorWakeAttemptRequest,
-): void {
-  assertGraphLookupIdentity(request.graphId, 'graph id');
-  assertGraphLookupIdentity(request.wakeId, 'supervisor wake id');
-  assertGraphLookupIdentity(request.attemptId, 'supervisor wake attempt id');
-  assertGraphLookupIdentity(request.turnId, 'supervisor wake turn id');
-}
-
-function assertAgentGraphSupervisorWakeCompletion(
-  request: CompleteAgentGraphSupervisorWakeAttemptRequest,
-): void {
-  assertGraphLookupIdentity(request.graphId, 'graph id');
-  assertGraphLookupIdentity(request.wakeId, 'supervisor wake id');
-  assertGraphLookupIdentity(request.attemptId, 'supervisor wake attempt id');
-  if (
-    request.status !== 'waiting_permission' &&
-    request.status !== 'delivered' &&
-    request.status !== 'superseded' &&
-    request.status !== 'retryable_failed'
-  ) {
-    throw new Error('Invalid agent graph supervisor wake completion status');
-  }
-  if (
-    (request.status === 'retryable_failed' || request.status === 'superseded') &&
-    (!request.failureReason?.trim() || request.failureReason.length > 4_000)
-  ) {
-    throw new Error('Agent graph supervisor wake failure reason must be non-empty and bounded');
-  }
-}
-
-function assertAgentGraphClientProjectionRequest(
-  request: CommitAgentGraphClientProjectionRequest,
-): void {
-  if (
-    request.schemaVersion !== AGENT_GRAPH_CLIENT_PROJECTION_SCHEMA_VERSION ||
-    (request.expectedSnapshotVersion !== null &&
-      typeof request.expectedSnapshotVersion !== 'string') ||
-    typeof request.replaceOperators !== 'boolean' ||
-    !Array.isArray(request.operators) ||
-    !Array.isArray(request.terminalActivities) ||
-    !Array.isArray(request.activityRecords)
-  ) {
-    throw new Error('Invalid agent graph client projection request');
-  }
-  assertGraphLookupIdentity(request.graphId, 'graph id');
-  assertSafeSessionId(request.rootSessionId);
-  if (request.expectedSnapshotVersion !== null) {
-    assertGraphLookupIdentity(request.expectedSnapshotVersion, 'expected snapshot version');
-  }
-  assertGraphLookupIdentity(request.snapshotVersion, 'snapshot version');
-  const operatorIds = new Set<string>();
-  for (const operator of request.operators) {
-    assertGraphLookupIdentity(operator.operatorId, 'operator id');
-    if (operatorIds.has(operator.operatorId)) {
-      throw new Error(`Duplicate agent graph client operator ${operator.operatorId}`);
-    }
-    operatorIds.add(operator.operatorId);
-  }
-  const terminalIds = new Set<string>();
-  for (const terminal of request.terminalActivities) {
-    assertGraphLookupIdentity(terminal.recordId, 'terminal record id');
-    assertGraphEventTime(terminal.eventTime);
-    if (terminalIds.has(terminal.recordId)) {
-      throw new Error(`Duplicate agent graph terminal activity ${terminal.recordId}`);
-    }
-    terminalIds.add(terminal.recordId);
-  }
-  const activityIds = new Set<string>();
-  for (const record of request.activityRecords) {
-    assertGraphLookupIdentity(record.recordId, 'activity record id');
-    assertGraphEventTime(record.eventTime);
-    if (activityIds.has(record.recordId)) {
-      throw new Error(`Duplicate agent graph activity ${record.recordId}`);
-    }
-    activityIds.add(record.recordId);
-  }
-  if (request.incrementalRecordId !== undefined) {
-    assertGraphLookupIdentity(request.incrementalRecordId, 'incremental record id');
-    if (request.expectedSnapshotVersion === null || !activityIds.has(request.incrementalRecordId)) {
-      throw new Error('Invalid incremental agent graph projection record');
-    }
-  }
-}
-
-function encodeProjectionPayload(payload: unknown, name: string): string {
-  const encoded = JSON.stringify(payload);
-  if (encoded === undefined) {
-    throw new Error(`Invalid agent graph ${name} payload`);
-  }
-  return encoded;
 }
 
 function decodeAgentGraphClientProjectionRow(
@@ -6437,18 +6709,6 @@ function decodeAgentGraphClientOperatorProjectionRow(
     payload: JSON.parse(row.payloadJson) as unknown,
     materializedAt: row.materializedAt,
   };
-}
-
-function assertGraphEventTime(value: number): void {
-  if (!Number.isSafeInteger(value) || value < 0) {
-    throw new Error('Invalid agent graph terminal activity event time');
-  }
-}
-
-function assertGraphIntentId(value: string): void {
-  if (!/^graph_intent_[a-f0-9]{32}$/.test(value)) {
-    throw new Error('Invalid agent graph intent id');
-  }
 }
 
 function decodeStoredMessageRow(
@@ -6570,7 +6830,7 @@ function sameWorkHubAssignmentRequest(
       disposition: existing.disposition,
       userText: existing.userText,
       delegationText: existing.delegationText,
-      attachments: existing.attachments,
+      attachments: existing.attachments ?? [],
       create: existing.create,
       replacesActionId: existing.replacesActionId,
       replacesDelegationId: existing.replacesDelegationId,
@@ -6583,7 +6843,7 @@ function sameWorkHubAssignmentRequest(
       disposition: requested.disposition,
       userText: requested.userText,
       delegationText: requested.delegationText,
-      attachments: requested.attachments,
+      attachments: requested.attachments ?? [],
       create: requested.create,
       replacesActionId: requested.replacesActionId,
       replacesDelegationId: requested.replacesDelegationId,

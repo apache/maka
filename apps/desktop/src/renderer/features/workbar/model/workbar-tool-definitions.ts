@@ -133,3 +133,10 @@ export function isPersistedWorkbarTool(
 ): boolean {
   return workbarToolDefinition(kind).persisted;
 }
+
+/** WorkHub coordinates work; task-specific resources belong to ordinary sessions. */
+export function workbarToolsForWorkspace(workspace: 'session' | 'workhub' = 'session'): readonly WorkbarToolDefinition[] {
+  return workspace === 'workhub'
+    ? WORKBAR_TOOL_DEFINITIONS.filter(({ kind }) => kind === 'browser' || kind === 'work-board' || kind === 'inspector')
+    : WORKBAR_TOOL_DEFINITIONS;
+}

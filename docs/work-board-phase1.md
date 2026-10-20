@@ -54,15 +54,22 @@ suffice.
 ## Assumption
 
 We are betting that users will return to the board and start tasks from it.
-Phase 3 must prove this.
+The 2026-09-28 run verified the start-task mechanism, but because creation and
+revisit happened in one sitting it has not yet demonstrated delayed return-use.
+The [Phase 3 maintainer decision on #2560](https://github.com/apache/maka/issues/2560#issuecomment-5873486343)
+records **mechanism verified (GO); delayed return-use pending; Phase 2/4
+paused**. The Phase 1 delayed return-use assumption still needs a later-day
+dogfooding run before Phases 2 and 4 can resume.
 
 ## Sequencing
 
 Per maintainer review, the thin capture -> revisit -> start-as-task loop is
 validated **before** Phase 2 (side-chat capture) and Phase 4 (evidence /
 refinement): a minimal, flag-gated Phase 3 spike wires one hard-coded item ->
-"Start task" -> new Session -> link back, with no polish. Only if the loop
-shows real use do we resume Phases 2 and 4.
+"Start task" -> new Session -> link back, with no polish. The current run
+verifies that mechanism; a delayed return-use run and an explicit go/stop
+decision on [#2560](https://github.com/apache/maka/issues/2560) are still
+required before resuming Phases 2 and 4.
 
 ## Implementation
 

@@ -333,6 +333,7 @@ describe('Runtime Host operator commands', () => {
       assert.equal(resolved.operationGrants.includes('plugin.platform.query'), false);
       assert.equal(resolved.operationGrants.includes('plugin.package.install'), false);
       assert.equal(resolved.operationGrants.includes('turn.start'), true);
+      assert.equal(resolved.operationGrants.includes('session.prompt-suggestion.generate'), true);
       assert.equal(resolved.operationGrants.includes('project.catalog.query'), true);
     }
     assert.equal(desktop.canPublishClientCapabilities, true);
@@ -492,6 +493,7 @@ describe('Runtime Host operator commands', () => {
         'peer.mesh.rename',
         'peer.mesh.transit.set',
         'plugin.composition.apply',
+        'plugin.executor.query',
         'plugin.package.export',
         'plugin.package.install',
         'plugin.package.reload',

@@ -24,7 +24,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
+import { eventWaitDeliveryKey, type EventWaitRecord } from '@maka/core/event-wait';
 import { createSqliteArtifactStoreWriteAuthority } from '../artifact-store.js';
+import type { EventWaitSnapshot } from '../event-wait-authority.js';
+import { createSqliteEventWaitAuthority } from '../sqlite-event-wait-authority.js';
 import { createProjectCatalog } from '../project-catalog.js';
 import { createSessionStore } from '../session-store.js';
 import {
@@ -114,6 +117,142 @@ test('backs up and restores runtime.sqlite plus artifact bytes', async () => {
     } finally {
       await restored.close?.();
       restoredCatalog.close();
+    }
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('backup restores every wait lifecycle, revisions and the resolved active slot', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-operational-backup-waits-'));
+  const stateRoot = join(base, 'state');
+  const backupRoot = join(base, 'backup');
+  const restoreRoot = join(base, 'restore');
+  const sessions = createSessionStore(stateRoot);
+  const waits = createSqliteEventWaitAuthority(stateRoot);
+  const expected: EventWaitSnapshot[] = [];
+  try {
+    for (const status of ['waiting', 'resolved', 'cancelled', 'expired'] as const) {
+      const session = await sessions.create({
+        cwd: base,
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'ask',
+        name: `Backup ${status}`,
+      });
+      const record: EventWaitRecord = {
+        schemaVersion: 1,
+        waitId: `wait-${status}`,
+        sessionId: session.id,
+        goalControlLease: { goalId: 'goal-1', generation: 3 },
+        sourceTurnId: 'turn-1',
+        sourceToolCallId: 'call-1',
+        resource: {
+          providerId: 'test',
+          connectionId: 'connection-1',
+          resourceType: 'task',
+          resourceId: 'opaque/任务',
+        },
+        condition: { typeId: 'terminal', version: 1, parameters: { nested: [null, true, 3] } },
+        deliveryKey: eventWaitDeliveryKey(`wait-${status}`),
+        createdAt: 10,
+        updatedAt: 10,
+        deadlineAt: 100,
+        status: 'waiting',
+      };
+      const commit = (next: EventWaitRecord, revision: number | null) =>
+        waits.commit({
+          sessionId: session.id,
+          waitId: record.waitId,
+          record: next,
+          expectedAuthorityRevision: revision,
+        });
+      let result = await commit(record, null);
+      if (status === 'resolved' || status === 'cancelled') {
+        const resolved: EventWaitRecord = {
+          ...record,
+          status: 'resolved',
+          updatedAt: 30,
+          resolvedAt: 30,
+          resolution: {
+            outcome: 'invalidated',
+            receiptKey: 'receipt-1',
+            observedAt: 25,
+            evidenceRefs: ['artifact:external-evidence'],
+          },
+        };
+        result = await commit(resolved, 0);
+        if (status === 'cancelled') {
+          result = await commit(
+            {
+              ...record,
+              status: 'cancelled',
+              updatedAt: 40,
+              cancelledAt: 40,
+              reason: 'Revoked before delivery',
+              priorResolution: { resolvedAt: resolved.resolvedAt, resolution: resolved.resolution },
+            },
+            1,
+          );
+        }
+      } else if (status === 'expired') {
+        result = await commit({ ...record, status: 'expired', expiredAt: 100, updatedAt: 100 }, 0);
+      }
+      assert.equal(result.kind, 'committed');
+      if (result.kind !== 'committed') throw new Error('Expected stored wait');
+      expected.push(result.snapshot);
+    }
+  } finally {
+    await waits.close();
+    await sessions.close?.();
+  }
+  try {
+    await createOperationalStateBackup({ stateRoot, destinationRoot: backupRoot, now: () => 200 });
+    await restoreOperationalStateBackup({ backupRoot, destinationRoot: restoreRoot });
+    const restored = createSqliteEventWaitAuthority(restoreRoot);
+    try {
+      for (const snapshot of expected) {
+        const { record } = snapshot;
+        assert.deepEqual(
+          await restored.read({ sessionId: record.sessionId, waitId: record.waitId }),
+          snapshot,
+        );
+        assert.deepEqual(await restored.listSession({ sessionId: record.sessionId, limit: 200 }), {
+          items: [snapshot],
+          nextCursor: null,
+        });
+        const nextWaitId = `${record.waitId}-next`;
+        // Use the original waiting shape, omitting terminal fields from the
+        // restored record, when checking whether its active slot survived.
+        const waiting = {
+          schemaVersion: record.schemaVersion,
+          waitId: nextWaitId,
+          sessionId: record.sessionId,
+          goalControlLease: record.goalControlLease,
+          sourceTurnId: record.sourceTurnId,
+          sourceToolCallId: record.sourceToolCallId,
+          resource: record.resource,
+          condition: record.condition,
+          deliveryKey: eventWaitDeliveryKey(nextWaitId),
+          createdAt: record.createdAt,
+          updatedAt: record.createdAt,
+          deadlineAt: record.deadlineAt,
+          status: 'waiting',
+        } as const;
+        assert.deepEqual(
+          await restored.commit({
+            sessionId: record.sessionId,
+            waitId: nextWaitId,
+            expectedAuthorityRevision: null,
+            record: waiting,
+          }),
+          record.status === 'waiting' || record.status === 'resolved'
+            ? { kind: 'active_wait_conflict', waitId: record.waitId }
+            : { kind: 'committed', snapshot: { authorityRevision: 0, record: waiting } },
+        );
+      }
+    } finally {
+      await restored.close();
     }
   } finally {
     await rm(base, { recursive: true, force: true });

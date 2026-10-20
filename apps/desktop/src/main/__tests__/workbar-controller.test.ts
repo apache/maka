@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { WorkHubWorkspaceServicesProvider, type WorkHubWorkspaceServices } from '../../renderer/application/contracts/workhub-workspace/use-workhub-workspace.js';
+import { WorkHubEnablementProvider } from '../../renderer/application/contracts/workhub-workspace/workhub-enablement.js';
 import { deferred } from '@maka/core/test-only/async-primitives';
 import { strict as assert } from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
@@ -24,10 +26,21 @@ import { act, createElement, StrictMode, useLayoutEffect } from 'react';
 import type { ShellRunUpdate } from '@maka/core/events';
 import type { SessionSummary } from '@maka/core/session';
 import type { WorkBoardActiveItem, WorkBoardItem, WorkBoardLinkedSession } from '@maka/core/work-board';
-import { LocaleProvider, type ToastApi } from '@maka/ui';
-import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
+import { LocaleProvider, ToastProvider, type ToastApi } from '@maka/ui';
+import {
+  cleanupFakeDom,
+  fakeMediaQueryMatches,
+  installReactRenderer,
+  resizeFakeWindow,
+  setFakeWindowInnerWidth,
+} from './fake-dom.js';
+import {
+  SHELL_WORKBAR_COMPACT_QUERY,
+  shellRailLayoutPort,
+} from '../../renderer/application/contracts/shell-layout-contract.js';
+import { createSessionRailLayoutStore } from '../../renderer/features/session-navigation/testing.js';
 import { TerminalCloseIntents } from '../terminal-close-intents.js';
-import type { TerminalCloseChange } from '../../shared/runtime-host-identity.js';
+import { desktopSessionKey, type TerminalCloseChange } from '../../shared/runtime-host-identity.js';
 import {
   createFakeWorkbarServices,
   projectWorkbarPanelsForSession,
@@ -105,6 +118,8 @@ function ControllerProbe(props: ControllerProbeInput) {
 
 const connectedServices = new WeakSet<WorkbarServices>();
 
+const WORKHUB_OFF = { isEnabled: () => false, subscribe: () => () => {} };
+
 function renderController(
   root: ReturnType<typeof installReactRenderer>['root'],
   services: WorkbarServices,
@@ -130,7 +145,7 @@ function renderController(
       children: createElement(
         WorkbarServicesProvider,
         { services },
-        createElement(ControllerProbe, input),
+        createElement(WorkHubEnablementProvider, { value: WORKHUB_OFF }, createElement(ControllerProbe, input)),
       ),
     },
   );
@@ -236,7 +251,7 @@ function workBoardInput(
       ownerRef.current += 1;
       return ownerRef.current;
     },
-    composerRef: { current: { setDraft: () => undefined, focus: () => undefined } },
+    composerDraft: { seedDraft: () => undefined, focus: () => undefined },
     ...overrides,
   };
 }
@@ -300,20 +315,27 @@ function renderWorkBoardComposition(
     createElement(LocaleProvider, {
       locale: 'en',
       children: createElement(
-        TaskEntryServicesProvider,
-        { services: taskEntryServices },
+        ToastProvider,
+        null,
         createElement(
-          WorkbarServicesProvider,
-          { services: workbarServices },
-          createElement(WorkBoardCompositionProbe, { ownerRef }),
+          TaskEntryServicesProvider,
+          { services: taskEntryServices },
+          createElement(
+            WorkbarServicesProvider,
+            { services: workbarServices },
+            createElement(WorkHubEnablementProvider, { value: WORKHUB_OFF }, createElement(WorkBoardCompositionProbe, { ownerRef })),
+          ),
         ),
       ),
     }),
   );
 }
 
+const installedRailLayoutPort = shellRailLayoutPort.current;
+
 describe('useWorkbarController', () => {
   afterEach(() => {
+    shellRailLayoutPort.current = installedRailLayoutPort;
     latestController = undefined;
     latestTaskEntryController = undefined;
     controllerRenderSnapshots = [];
@@ -335,6 +357,51 @@ describe('useWorkbarController', () => {
     assert.equal(controller().host.rightCollapsed, false);
   });
 
+  it('toggles the visible tool, reveals a different one, and retains its placement', async () => {
+    const { root } = installReactRenderer();
+    await act(async () => renderController(root, createFakeWorkbarServices(), input(session('a'))));
+    await act(async () => controller().commands.toggleTool('files'));
+    assert.equal(controller().host.rightCollapsed, false);
+    const filesId = controller().host.panelsState.right.activeTabId;
+    await act(async () => controller().commands.toggleTool('files'));
+    assert.equal(controller().host.rightCollapsed, true);
+    await act(async () => controller().commands.toggleTool('files'));
+    assert.equal(controller().host.rightCollapsed, false);
+    assert.equal(controller().host.panelsState.right.activeTabId, filesId);
+    await act(async () => controller().commands.toggleTool('browser'));
+    assert.equal(controller().host.rightCollapsed, false);
+    assert.equal(controller().host.panelsState.right.activeTabId, 'workbar:browser');
+    await act(async () => controller().commands.toggleTool('files'));
+    assert.equal(controller().host.rightCollapsed, false);
+    assert.equal(controller().host.panelsState.right.activeTabId, filesId);
+    await act(async () => controller().commands.openTool('inspector', 'bottom'));
+    assert.equal(controller().host.bottomOpen, true);
+    await act(async () => controller().commands.toggleTool('inspector'));
+    assert.equal(controller().host.bottomOpen, false);
+    assert.equal(controller().host.rightCollapsed, false);
+    await act(async () => controller().commands.toggleTool('inspector'));
+    assert.equal(controller().host.bottomOpen, true);
+    assert.equal(controller().host.panelsState.bottom.activeTabId, 'workbar:inspector');
+  });
+
+  it('opens a Side Chat for the active Session instead of toggling a hidden one', async () => {
+    const { root } = installReactRenderer();
+    const services = createFakeWorkbarServices();
+    const authoritativeSessionIds = new Set(['a', 'b']);
+    const show = (id: string) => renderController(root, services, {
+      ...input(session(id)),
+      authoritativeSessionIds,
+    });
+
+    await act(async () => show('a'));
+    await act(async () => controller().commands.toggleTool('side-chat'));
+    assert.deepEqual(controller().host.quotes?.map((panel) => panel.sourceSessionId), ['a']);
+
+    await act(async () => show('b'));
+    await act(async () => controller().commands.toggleTool('side-chat'));
+    assert.deepEqual(controller().host.quotes?.map((panel) => panel.sourceSessionId), ['a', 'b']);
+  });
+
   it('keeps right-panel visibility independent across Session navigation', async () => {
     const { root } = installReactRenderer();
     const services = createFakeWorkbarServices();
@@ -351,6 +418,225 @@ describe('useWorkbarController', () => {
     await act(async () => show('b'));
     assert.equal(controller().host.rightCollapsed, true);
     await act(async () => show('a'));
+    assert.equal(controller().host.rightCollapsed, false);
+  });
+
+  function fakeRail(width = 260) {
+    const listeners = new Set<() => void>();
+    return {
+      collapsed: false,
+      width,
+      spaceConcealed: false,
+      calls: 0,
+      getState() {
+        return { collapsed: this.collapsed || this.spaceConcealed, width: this.width };
+      },
+      subscribe(listener: () => void) {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      setCollapsed(next: boolean) {
+        this.calls += 1;
+        this.spaceConcealed = false;
+        this.collapsed = next;
+        for (const listener of [...listeners]) listener();
+      },
+      setSpaceConcealed(concealed: boolean) {
+        if (this.spaceConcealed === concealed) return;
+        this.calls += 1;
+        this.spaceConcealed = concealed;
+        for (const listener of [...listeners]) listener();
+      },
+    };
+  }
+
+  it('hides an expanded rail before revealing the Workbar at the compact breakpoint', async () => {
+    fakeMediaQueryMatches.set(SHELL_WORKBAR_COMPACT_QUERY, true);
+    // 960px beside a 260px rail leaves the Workbar 292px — under its minimum.
+    setFakeWindowInnerWidth(960);
+    const rail = fakeRail();
+    shellRailLayoutPort.current = rail;
+    const { root } = installReactRenderer();
+    await act(async () =>
+      renderController(root, createFakeWorkbarServices(), input(session('a'))));
+    // The rail gives up the grid column first, then the same click's reveal
+    // of the collapsed Workbar proceeds.
+    await act(async () => controller().commands.toggleRightPanel());
+    assert.equal(rail.calls, 1);
+    assert.equal(controller().host.rightCollapsed, false);
+
+    // The user expanding the rail under the open Workbar is the later choice:
+    // the rail keeps the grid and the Workbar yields to a reopenable collapse.
+    await act(async () => rail.setCollapsed(false));
+    assert.equal(controller().host.rightCollapsed, true);
+    assert.equal(rail.getState().collapsed, false);
+
+    // The next reveal click conceals the rail again and reopens the Workbar.
+    await act(async () => controller().commands.toggleRightPanel());
+    assert.equal(rail.calls, 3);
+    assert.equal(controller().host.rightCollapsed, false);
+    assert.equal(rail.getState().collapsed, true);
+  });
+
+  it('applies the same space decision when a tool opens the Workbar without room', async () => {
+    fakeMediaQueryMatches.set(SHELL_WORKBAR_COMPACT_QUERY, true);
+    // 960px beside a 260px rail leaves the Workbar 292px — under its minimum.
+    // The openTool path must conceal the rail exactly like the panel toggle.
+    setFakeWindowInnerWidth(960);
+    const rail = fakeRail();
+    shellRailLayoutPort.current = rail;
+    const { root } = installReactRenderer();
+    await act(async () =>
+      renderController(root, createFakeWorkbarServices(), input(session('a'))));
+
+    await act(async () => controller().commands.openTool('inspector'));
+    assert.equal(rail.getState().collapsed, true);
+    assert.equal(rail.calls, 1);
+    assert.equal(controller().host.rightCollapsed, false);
+  });
+
+  it('collapses an open Workbar when the window narrows past its room beside the rail', async () => {
+    fakeMediaQueryMatches.set(SHELL_WORKBAR_COMPACT_QUERY, true);
+    // 1080px leaves 412px — the Workbar opens beside the untouched rail.
+    setFakeWindowInnerWidth(1080);
+    const rail = fakeRail();
+    shellRailLayoutPort.current = rail;
+    const { root } = installReactRenderer();
+    await act(async () =>
+      renderController(root, createFakeWorkbarServices(), input(session('a'))));
+    await act(async () => controller().commands.toggleRightPanel());
+    assert.equal(controller().host.rightCollapsed, false);
+    assert.equal(rail.getState().collapsed, false);
+
+    // Narrowing to 960px leaves 292px: the rail is the persistent panel, so
+    // the Workbar yields instead of holding an unusable sliver.
+    await act(async () => resizeFakeWindow(960));
+    assert.equal(controller().host.rightCollapsed, true);
+    assert.equal(rail.getState().collapsed, false);
+
+    // Widening back returns the Workbar: the yield is a space decision the
+    // room change forgets, not a collapse the user has to undo.
+    await act(async () => resizeFakeWindow(1080));
+    assert.equal(controller().host.rightCollapsed, false);
+    assert.equal(rail.getState().collapsed, false);
+  });
+
+  it('restores a yielded Workbar when the rail gives the room back mid-spell', async () => {
+    fakeMediaQueryMatches.set(SHELL_WORKBAR_COMPACT_QUERY, true);
+    setFakeWindowInnerWidth(960);
+    const rail = fakeRail();
+    shellRailLayoutPort.current = rail;
+    const { root } = installReactRenderer();
+    await act(async () =>
+      renderController(root, createFakeWorkbarServices(), input(session('a'))));
+
+    await act(async () => controller().commands.toggleRightPanel());
+    assert.equal(rail.getState().collapsed, true);
+
+    // Re-expanding the rail makes the Workbar yield; collapsing it again
+    // releases the suppression and the Workbar returns.
+    await act(async () => rail.setCollapsed(false));
+    assert.equal(controller().host.rightCollapsed, true);
+    await act(async () => rail.setCollapsed(true));
+    assert.equal(controller().host.rightCollapsed, false);
+  });
+
+  it('collapses a session-restored Workbar when the rail took its room meanwhile', async () => {
+    fakeMediaQueryMatches.set(SHELL_WORKBAR_COMPACT_QUERY, true);
+    setFakeWindowInnerWidth(960);
+    const rail = fakeRail();
+    shellRailLayoutPort.current = rail;
+    const { root } = installReactRenderer();
+    const services = createFakeWorkbarServices();
+    const show = (id: string) => renderController(root, services, input(session(id)));
+
+    // Session A: the reveal conceals the rail for room.
+    await act(async () => show('a'));
+    await act(async () => controller().commands.toggleRightPanel());
+    assert.equal(controller().host.rightCollapsed, false);
+    assert.equal(rail.getState().collapsed, true);
+
+    // Session B's Workbar is collapsed, so re-expanding the rail wins the room.
+    await act(async () => show('b'));
+    await act(async () => rail.setCollapsed(false));
+    assert.equal(rail.getState().collapsed, false);
+
+    // Back on A the open reading returns beside an expanded rail that leaves
+    // it 292px — nothing fired a notification for that combination, so the
+    // effect's entry check is what makes the Workbar yield.
+    await act(async () => show('a'));
+    assert.equal(controller().host.rightCollapsed, true);
+    assert.equal(rail.getState().collapsed, false);
+  });
+
+  it('keeps the Workbar open below its minimum once the rail is already hidden', async () => {
+    fakeMediaQueryMatches.set(SHELL_WORKBAR_COMPACT_QUERY, true);
+    // 700px with no rail leaves the Workbar 292px — under its minimum, but
+    // there is no rail to yield the room to, so the narrow panel stays usable.
+    setFakeWindowInnerWidth(700);
+    const rail = fakeRail();
+    rail.collapsed = true;
+    shellRailLayoutPort.current = rail;
+    const { root } = installReactRenderer();
+    await act(async () =>
+      renderController(root, createFakeWorkbarServices(), input(session('a'))));
+
+    await act(async () => controller().commands.openTool('inspector'));
+    assert.equal(rail.calls, 0);
+    assert.equal(controller().host.rightCollapsed, false);
+  });
+
+  it('conceals an expanded rail where only the Workbar is compact, and closes on the next click', async () => {
+    fakeMediaQueryMatches.set(SHELL_WORKBAR_COMPACT_QUERY, true);
+    setFakeWindowInnerWidth(960);
+    // The 821–1080px band: the rail's own compact query does not match, but an
+    // expanded rail still leaves the Workbar no grid room. The real store —
+    // not a fake — owns the concealment here.
+    const rail = createSessionRailLayoutStore();
+    rail.setCollapsed(false);
+    shellRailLayoutPort.current = rail;
+    const { root } = installReactRenderer();
+    await act(async () =>
+      renderController(root, createFakeWorkbarServices(), input(session('a'))));
+
+    await act(async () => controller().commands.toggleRightPanel());
+    assert.equal(controller().host.rightCollapsed, false);
+    assert.equal(rail.getState().collapsed, true);
+
+    await act(async () => controller().commands.toggleRightPanel());
+    assert.equal(controller().host.rightCollapsed, true);
+    assert.equal(rail.getState().collapsed, false);
+  });
+
+  it('toggles the Workbar without touching the rail when the frame leaves it room', async () => {
+    fakeMediaQueryMatches.set(SHELL_WORKBAR_COMPACT_QUERY, true);
+    // The top of the compact band: 1080px beside a 260px rail leaves the
+    // Workbar 412px, above its 340px minimum — "collapse" must collapse the
+    // Workbar, not hide the sidebar.
+    setFakeWindowInnerWidth(1080);
+    const rail = fakeRail();
+    shellRailLayoutPort.current = rail;
+    const { root } = installReactRenderer();
+    await act(async () =>
+      renderController(root, createFakeWorkbarServices(), input(session('a'))));
+
+    await act(async () => controller().commands.toggleRightPanel());
+    assert.equal(rail.calls, 0);
+    assert.equal(controller().host.rightCollapsed, false);
+
+    await act(async () => controller().commands.toggleRightPanel());
+    assert.equal(rail.calls, 0);
+    assert.equal(controller().host.rightCollapsed, true);
+  });
+
+  it('leaves the rail alone when the window is not compact', async () => {
+    const rail = fakeRail();
+    shellRailLayoutPort.current = rail;
+    const { root } = installReactRenderer();
+    await act(async () =>
+      renderController(root, createFakeWorkbarServices(), input(session('a'))));
+    await act(async () => controller().commands.toggleRightPanel());
+    assert.equal(rail.calls, 0);
     assert.equal(controller().host.rightCollapsed, false);
   });
 
@@ -471,6 +757,40 @@ describe('useWorkbarController', () => {
       ),
       true,
     );
+  });
+
+  it('blocks task-specific tools and side-chat commands in WorkHub', async () => {
+    const { root } = installReactRenderer();
+    const services = createFakeWorkbarServices();
+    const coordinationId = desktopSessionKey({ hostId: 'local', sessionId: 'maka_workhub_coordination' });
+    const coordination: WorkHubWorkspaceServices = {
+      resolve: async () => coordinationId,
+      subscribeHosts: () => () => {},
+      subscribeAvailability: () => () => {},
+    };
+    const ordinary = input(session('ordinary'));
+    const render = (active: boolean) => root.render(createElement(LocaleProvider, {
+      locale: 'en',
+      children: createElement(WorkbarServicesProvider, { services },
+        createElement(WorkHubEnablementProvider, { value: { isEnabled: () => true, subscribe: () => () => {} } },
+          createElement(WorkHubWorkspaceServicesProvider, { value: coordination },
+            createElement(ControllerProbe, { ...ordinary, workHub: { active } })))),
+    }));
+    await act(async () => render(true));
+    assert.equal(controller().host.activeId, coordinationId);
+    await act(async () => {
+      for (const kind of ['review', 'terminal', 'files', 'side-chat'] as const) controller().commands.openTool(kind);
+    });
+    assert.deepEqual(controller().host.panelsState.right.tabs, []);
+    await act(async () => controller().commands.openTool('browser'));
+    assert.deepEqual(controller().host.panelsState.right.tabs.map((tab) => tab.kind), ['browser']);
+    await act(async () => render(false));
+    assert.equal(controller().host.activeId, 'ordinary');
+    await act(async () => controller().commands.openTool('review'));
+    assert.ok(controller().host.panelsState.right.tabs.some((tab) => tab.kind === 'review'));
+    await act(async () => render(true));
+    assert.equal(controller().host.activeId, coordinationId);
+    assert.ok(controller().host.panelsState.right.tabs.some((tab) => tab.kind === 'browser'));
   });
 
   it('opens registry singletons once and dynamic tools as separate instances', async () => {
@@ -609,6 +929,14 @@ describe('useWorkbarController', () => {
     const firstStop = deferred<void>();
     const retryStop = deferred<void>();
     const stops: Array<{ sessionId: string; ref: string }> = [];
+    const stopErrors: Array<{ title: string; description?: string; sessionId?: string }> = [];
+    const toastApi: ToastApi = {
+      ...createFakeToastApi(),
+      error: (title, description, _action, options) => {
+        stopErrors.push({ title, description, sessionId: options?.sessionId });
+        return '';
+      },
+    };
     const defaults = createFakeWorkbarServices();
     const services = createFakeWorkbarServices({
       terminal: {
@@ -621,7 +949,7 @@ describe('useWorkbarController', () => {
       },
     });
 
-    await act(async () => renderController(root, services, input(session('a'))));
+    await act(async () => renderController(root, services, input(session('a'), toastApi)));
     await act(async () => controller().commands.openTool('terminal'));
     const tab = controller().host.panelsState.right.tabs.find(
       (candidate) => candidate.kind === 'terminal',
@@ -636,12 +964,20 @@ describe('useWorkbarController', () => {
       firstStop.reject(new Error('Host disconnected'));
       await Promise.resolve();
     });
-    await act(async () => renderController(root, services, input(session('b'))));
+    // The failure is reported against the Terminal's owner Session, and the
+    // Session id never lands in the visible title or description.
+    assert.ok(stopErrors.length > 0);
+    for (const error of stopErrors) {
+      assert.equal(error.sessionId, 'a');
+      assert.notEqual(error.title, 'a');
+      assert.notEqual(error.description, 'a');
+    }
+    await act(async () => renderController(root, services, input(session('b'), toastApi)));
     assert.equal(stops.length, 1);
-    await act(async () => renderController(root, services, input(session('a'))));
+    await act(async () => renderController(root, services, input(session('a'), toastApi)));
     assert.ok(controller().host.panelsState.right.tabs.includes(tab));
     await act(async () => controller().host.onCloseTab('right', tab));
-    await act(async () => renderController(root, services, input(session('b'))));
+    await act(async () => renderController(root, services, input(session('b'), toastApi)));
     await act(async () => controller().commands.toggleRight());
     assert.equal(controller().host.rightCollapsed, false);
     await act(async () => retryStop.resolve());
@@ -896,7 +1232,7 @@ describe('useWorkbarController', () => {
     assert.deepEqual(staleErrors, []);
   });
 
-  it('keeps Side Chat through collapse, confirms content close, and removes it on source switch', async () => {
+  it('keeps Side Chat through collapse and source switches, but confirms explicit content close', async () => {
     const { root } = installReactRenderer();
     const services = createFakeWorkbarServices();
     await act(async () => renderController(root, services, input(session('a'))));
@@ -932,13 +1268,88 @@ describe('useWorkbarController', () => {
     );
 
     await act(async () => controller().commands.openTool('side-chat'));
+    const retainedPanelId = controller().host.quotes?.[0]?.id;
+    assert.ok(retainedPanelId);
     await act(async () => renderController(root, services, input(session('b'))));
     assert.equal(
       controller().host.panelsState.right.tabs.some(
-        (candidate) => candidate.kind === 'side-chat',
+        (candidate) => candidate.id === `side-chat:${retainedPanelId}`,
+      ),
+      true,
+    );
+    assert.equal(
+      controller().host.quotes?.some((panel) => panel.id === retainedPanelId),
+      true,
+    );
+    await act(async () => renderController(root, services, input(session('a'))));
+    assert.equal(
+      controller().host.quotes?.some((panel) => panel.id === retainedPanelId),
+      true,
+    );
+  });
+
+  it('retains a Side Chat through a catalog gap and archive, then retires it on source deletion', async () => {
+    const { root } = installReactRenderer();
+    const defaults = createFakeWorkbarServices();
+    const sessionChangeHandlers = new Set<Parameters<WorkbarServices['sideChat']['subscribeSessionChanges']>[0]>();
+    const services = createFakeWorkbarServices({ sideChat: {
+      ...defaults.sideChat,
+      subscribeSessionChanges: (handler) => {
+        sessionChangeHandlers.add(handler);
+        return () => { sessionChangeHandlers.delete(handler); };
+      },
+    } });
+    const show = (id: string, authoritativeSessionIds: ReadonlySet<string>) =>
+      renderController(root, services, {
+        ...input(session(id)),
+        authoritativeSessionIds,
+      });
+
+    await act(async () => show('a', new Set(['a', 'b'])));
+    await act(async () => controller().commands.openTool('side-chat'));
+    const panelId = controller().host.quotes?.[0]?.id;
+    assert.ok(panelId);
+    await act(async () => controller().host.onContentStateChange?.(panelId, true));
+
+    await act(async () => show('b', new Set(['a', 'b'])));
+    await act(async () => controller().commands.toggleRight());
+    assert.equal(controller().host.rightCollapsed, false);
+    assert.equal(controller().host.quotes?.[0]?.sourceSessionId, 'a');
+
+    await act(async () => show('b', new Set(['b'])));
+    assert.equal(
+      controller().host.panelsState.right.tabs.some(
+        (tab) => tab.id === `side-chat:${panelId}`,
+      ),
+      true,
+    );
+    assert.equal(controller().host.quotes?.some((panel) => panel.id === panelId), true);
+    await act(async () => {
+      for (const handler of sessionChangeHandlers) handler({ reason: 'archived', sessionId: 'a', ts: Date.now() });
+    });
+    assert.equal(controller().host.quotes?.some((panel) => panel.id === panelId), true);
+
+    await act(async () => show('b', new Set(['a', 'b'])));
+    assert.equal(controller().host.quotes?.some((panel) => panel.id === panelId), true);
+    await act(async () => {
+      for (const handler of sessionChangeHandlers) handler({ reason: 'deleted', sessionId: 'b', ts: Date.now() });
+    });
+    assert.equal(controller().host.quotes?.some((panel) => panel.id === panelId), true);
+    await act(async () => {
+      for (const handler of sessionChangeHandlers) handler({ reason: 'deleted', sessionId: 'a', ts: Date.now() });
+    });
+    assert.equal(
+      controller().host.panelsState.right.tabs.some(
+        (tab) => tab.id === `side-chat:${panelId}`,
       ),
       false,
     );
+    assert.equal(
+      controller().host.quotes?.some((panel) => panel.id === panelId),
+      false,
+    );
+    assert.equal(controller().host.closeConfirmation.open, false);
+    assert.equal(controller().host.rightCollapsed, false);
   });
 
   it('keeps a newly created companion hidden through panel changes and stale catalogs until cleanup', async () => {
@@ -982,6 +1393,94 @@ describe('useWorkbarController', () => {
     await act(async () => root.unmount());
 
     assert.deepEqual(activeSessions, ['a', 'b']);
+  });
+
+  it('opens Browser once when the active Session gains a live browser view', async () => {
+    const { root } = installReactRenderer();
+    let publishState:
+      | Parameters<WorkbarServices['browser']['subscribeState']>[0]
+      | undefined;
+    const defaults = createFakeWorkbarServices();
+    const services = createFakeWorkbarServices({
+      browser: {
+        ...defaults.browser,
+        subscribeState: (handler) => {
+          publishState = handler;
+          return () => {
+            publishState = undefined;
+          };
+        },
+      },
+    });
+
+    await act(async () => renderController(root, services, input(session('a'))));
+    assert.equal(controller().host.rightCollapsed, true);
+
+    const liveState = {
+      url: 'https://example.com',
+      title: 'Example',
+      canGoBack: false,
+      canGoForward: false,
+      loading: false,
+      secure: true,
+      hasPage: true,
+    };
+    await act(async () =>
+      publishState?.({
+        sessionId: 'a',
+        state: liveState,
+      }),
+    );
+    assert.equal(controller().host.rightCollapsed, false);
+    assert.equal(controller().host.panelsState.right.activeTabId, 'workbar:browser');
+
+    await act(async () => controller().commands.openTool('files'));
+    const browserTab = controller().host.panelsState.right.tabs.find(
+      (tab) => tab.kind === 'browser',
+    );
+    assert.ok(browserTab);
+    await act(async () => controller().host.onCloseTab('right', browserTab));
+    assert.equal(controller().host.panelsState.right.activeTabId, 'workbar:files');
+    await act(async () =>
+      publishState?.({
+        sessionId: 'a',
+        state: {
+          ...liveState,
+          url: 'https://example.com/redirected',
+          title: 'Redirected',
+          canGoBack: true,
+        },
+      }),
+    );
+    assert.equal(controller().host.panelsState.right.activeTabId, 'workbar:files');
+    assert.equal(
+      controller().host.panelsState.right.tabs.some((tab) => tab.kind === 'browser'),
+      false,
+    );
+
+    await act(async () =>
+      publishState?.({
+        sessionId: 'a',
+        state: {
+          ...liveState,
+          url: '',
+          title: '',
+          secure: false,
+          hasPage: false,
+        },
+      }),
+    );
+    await act(async () =>
+      publishState?.({
+        sessionId: 'a',
+        state: {
+          ...liveState,
+          url: 'https://example.org',
+          title: 'Example again',
+        },
+      }),
+    );
+    assert.equal(controller().host.panelsState.right.activeTabId, 'workbar:browser');
   });
 
   it('links a Session produced on the surface that owns the claim', async () => {
@@ -1166,7 +1665,6 @@ describe('useWorkbarController', () => {
     });
     const taskEntryServices = createFakeTaskEntryServices({
       catalog: {
-        ...createFakeTaskEntryServices().catalog,
         getCatalog: async () => ({
           defaultProfileId: 'profile-1',
           hosts: [taskEntryHost()],

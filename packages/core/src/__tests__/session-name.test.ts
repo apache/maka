@@ -23,7 +23,7 @@ import { normalizeUserSessionName } from '../session-name.js';
 
 describe('normalizeUserSessionName', () => {
   it('strips the deprecated Cf bidi-adjacent controls U+206A-206F (#3823)', () => {
-    // The session-name surface shares one sanitizer with foreign-session, so a
+    // Native and external Session titles share one sanitizer, so a
     // gap in the character class reaches user-visible names too: two names
     // differing only by one of these render identically but compare unequal.
     for (let cp = 0x206a; cp <= 0x206f; cp += 1) {

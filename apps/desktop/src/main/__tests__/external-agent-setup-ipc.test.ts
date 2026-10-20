@@ -57,9 +57,11 @@ test('setup IPC registers an expectation before start and releases it on termina
   });
   let phase: ExternalAgentSetupProjection['phase'] = 'connecting';
   let attempts = 0;
+  let catalogChanges = 0;
   const input = { attemptId: 'attempt-1', action: 'login' as const, expectedExecutable: '/agent' };
   registerExternalAgentSetupIpc({
     selectExecutable: async () => "/existing/agy_acp_server.par",
+    onCatalogChanged: () => { catalogChanges++; },
     ipcMain: {
       handle: (channel, listener) => {
         handlers.set(channel, listener);
@@ -91,10 +93,14 @@ test('setup IPC registers an expectation before start and releases it on termina
   // with a regular model OAuth expectation.
   const concurrent = presentation.expect('model-after-presentation');
   await invoke('external-agents:setup:query', { attemptId: input.attemptId });
+  assert.equal(catalogChanges, 0);
   concurrent.cancel();
   phase = 'succeeded';
   await invoke('external-agents:setup:query', { attemptId: input.attemptId });
+  await invoke('external-agents:setup:query', { attemptId: input.attemptId });
+  assert.equal(catalogChanges, 1, 'one successful setup invalidates the model catalog once');
   await invoke('external-agents:setup:start', { ...input, attemptId: 'attempt-2' });
+  assert.equal(catalogChanges, 2, 'an immediately successful setup also invalidates the catalog');
   await invoke('external-agents:setup:cancel', { attemptId: 'attempt-2' });
   const next = presentation.expect('regular-oauth');
   next.cancel();

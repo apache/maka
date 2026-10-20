@@ -1,0 +1,15 @@
+{
+  "name": "@maka/codex-app-server-executor",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "description": "Experimental Maka executor backed by the local Codex app-server",
+  "scripts": {
+    "check": "node --check index.mjs && node --check src/codex-app-server.mjs && node --check client.js",
+    "test": "node --test test/plugin.test.mjs"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "license": "Apache-2.0"
+}

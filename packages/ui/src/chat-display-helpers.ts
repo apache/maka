@@ -19,8 +19,7 @@
 
 /**
  * Small pure helpers backing the chat surface (TurnView,
- * RelativeTime, AssistantAnswerBubble, etc.) —
- * time formatters, turn duration + abort marker copy.
+ * RelativeTime, AssistantAnswerBubble, etc.) — time formatters.
  *
  * PR-UI-LIB-EXTRACT-4 (round 5/10) introduced this module with a
  * deliberate ESM circular import on `./components.js` for
@@ -28,20 +27,17 @@
  * cycle by lifting locale helpers into a new `locale-helpers`
  * leaf module; this file now depends on that leaf instead.
  *
- * Why this seam: duration formatting has ms→s→m bucket rules, and
- * the abort-marker label is i18n-able copy. Each rule was
- * previously buried between TurnView's 200-line JSX block and
- * the answer bubble's rendering lifecycle; the bundle now
- * sits as short pure functions easy to unit-test in isolation.
+ * Why this seam: duration formatting has ms→s→m bucket rules.
+ * Each rule was previously buried between TurnView's 200-line
+ * JSX block and the answer bubble's rendering lifecycle; the
+ * bundle now sits as short pure functions easy to unit-test in
+ * isolation.
  *
  * PR-CHAT-CHROME-FOLLOWUP-0: `messageRoleLabel` / `avatarInitial`
  * were removed — the chat surface dropped per-message avatars and
  * name labels (MessageMeta), leaving both helpers with zero call
  * sites.
  */
-
-import type { UiLocale } from '@maka/core/ui-locale';
-import { getConversationCopy } from './conversation-copy.js';
 
 /* `formatAbsoluteTimestamp` used to live here as a second copy of the same
    `Intl` options `@maka/core/relative-time` already owned, and it built a
@@ -74,12 +70,4 @@ export function formatTurnDuration(ms: number): string {
   const totalSeconds = Math.floor(Math.max(0, ms) / 1000);
   if (totalSeconds < 60) return `${totalSeconds}s`;
   return `${Math.floor(totalSeconds / 60)}m ${totalSeconds % 60}s`;
-}
-
-export function turnAbortStatusLabel(abortSource: string | undefined, locale: UiLocale): string {
-  const copy = getConversationCopy(locale).messages;
-  switch (abortSource) {
-    case 'renderer.stop_button': return copy.abortedByStop;
-    default: return copy.aborted;
-  }
 }

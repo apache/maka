@@ -27,6 +27,7 @@ export interface ResolvedBrowserSession {
 interface BrowserSelectionSink {
   show(documentId: string, generation: number, session: ResolvedBrowserSession): void;
   hide(documentId: string, generation: number): void;
+  capturePage(session: ResolvedBrowserSession): Promise<string | undefined>;
   setViewport(
     documentId: string,
     generation: number,
@@ -61,12 +62,15 @@ export function createBrowserSelectionCoordinator(
   return {
     setActiveSession(sessionId: string | null): void {
       generation += 1;
+      // Revoke the previous owner before asynchronous Host identity resolution.
+      current = undefined;
+      sink.hide(documentId, generation);
       if (!sessionId) {
-        current = undefined;
-        sink.hide(documentId, generation);
         return;
       }
 
+      // Main admits only strictly newer generations; show follows the revoke.
+      generation += 1;
       const selection = {
         generation,
         sessionId,
@@ -81,6 +85,13 @@ export function createBrowserSelectionCoordinator(
           if (isCurrent(selection)) sink.hide(documentId, selection.generation);
         },
       );
+    },
+
+    async capturePage(sessionId: string): Promise<string | undefined> {
+      const selection = current;
+      if (!selection || selection.sessionId !== sessionId) return undefined;
+      const session = await selection.resolved;
+      return isCurrent(selection) ? sink.capturePage(session) : undefined;
     },
 
     setViewport(input: { sessionId: string; rect: BrowserViewRect | null }): void {

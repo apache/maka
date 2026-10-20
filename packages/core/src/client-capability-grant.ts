@@ -21,7 +21,7 @@ import { defineObjectShape, hasExactShape } from './record-schema.js';
 
 const SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
-export type ClientCapabilityGrantCapability = 'browser' | 'computer_use' | 'desktop_mcp';
+export type ClientCapabilityGrantCapability = 'browser' | 'computer_use' | 'desktop_mcp' | 'mcp';
 
 export type ClientCapabilityGrantScope =
   | { readonly kind: 'browser_origin'; readonly origin: string }
@@ -89,14 +89,14 @@ export function decodeClientCapabilityGrantTarget(value: unknown): ClientCapabil
   const record = plainRecord(value, 'Client Capability Grant target');
   const capability = oneOf(
     record.capability,
-    ['browser', 'computer_use', 'desktop_mcp'] as const,
+    ['browser', 'computer_use', 'desktop_mcp', 'mcp'] as const,
     'capability',
   );
   const scope = decodeClientCapabilityGrantScope(record.scope);
   if (
     (capability === 'browser' && scope.kind !== 'browser_origin') ||
     (capability === 'computer_use' && scope.kind !== 'capability') ||
-    (capability === 'desktop_mcp' && scope.kind !== 'mcp_tool')
+    ((capability === 'desktop_mcp' || capability === 'mcp') && scope.kind !== 'mcp_tool')
   ) {
     throw new Error('Client Capability Session Grant scope does not match capability');
   }

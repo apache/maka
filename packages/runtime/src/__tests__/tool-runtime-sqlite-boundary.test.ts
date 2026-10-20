@@ -433,7 +433,7 @@ describe('ToolRuntime with real SQLite boundary', () => {
         name: 'Read',
         description: 'read',
         parameters: {},
-        recoveryMode: 'replay_safe',
+        recoveryMode: 'never_auto_retry',
         impl: async () => {
           implementationCalls += 1;
           return { ok: true, text: 'contents' };
@@ -563,7 +563,7 @@ describe('ToolRuntime with real SQLite boundary', () => {
         name: 'Read',
         description: 'read',
         parameters: {},
-        recoveryMode: 'replay_safe',
+        recoveryMode: 'never_auto_retry',
         impl: async () => {
           implementationCalls += 1;
           return { private: 'completed execution fact' };
@@ -641,7 +641,7 @@ describe('ToolRuntime with real SQLite boundary', () => {
         name: 'Read',
         description: 'read',
         parameters: {},
-        recoveryMode: 'replay_safe',
+        recoveryMode: 'never_auto_retry',
         impl: async () => {
           throw new Error('disk read failed');
         },

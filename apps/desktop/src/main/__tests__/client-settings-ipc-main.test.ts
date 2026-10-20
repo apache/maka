@@ -19,6 +19,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { SENSITIVE_PLACEHOLDER } from "@maka/core/settings/network-settings";
 import {
   createDefaultSettings,
   mergeSettings,
@@ -26,7 +27,7 @@ import {
 } from "@maka/core/settings";
 import { registerClientSettingsIpc } from "../client-settings-ipc-main.js";
 
-test("client settings updates filter Host policy and return newly submitted secrets", async () => {
+test("client settings updates filter Host policy and mask newly submitted secrets", async () => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   let settings = createDefaultSettings();
   let storedPatch: UpdateAppSettingsInput | undefined;
@@ -53,7 +54,7 @@ test("client settings updates filter Host policy and return newly submitted secr
   const result = await handlers.get("settings:client:update")?.({}, {
     appearance: { theme: "dark" },
     botChat: { channels: { telegram: { token: "fresh-bot-token" } } },
-    chatDefaults: { permissionMode: "bypass" },
+    chatDefaults: { permissionMode: "ask" },
   });
 
   assert.deepEqual(storedPatch, {
@@ -63,8 +64,9 @@ test("client settings updates filter Host policy and return newly submitted secr
   assert.equal((result as { settings: typeof settings }).settings.appearance.theme, "dark");
   assert.equal(
     (result as { settings: typeof settings }).settings.botChat.channels.telegram.token,
-    "fresh-bot-token",
+    SENSITIVE_PLACEHOLDER,
   );
-  assert.equal(settings.chatDefaults.permissionMode, "ask");
+  assert.equal(settings.botChat.channels.telegram.token, "fresh-bot-token");
+  assert.equal(settings.chatDefaults.permissionMode, "bypass");
   assert.equal(applied, 1);
 });

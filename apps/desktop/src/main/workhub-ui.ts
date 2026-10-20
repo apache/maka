@@ -420,25 +420,40 @@ export class WorkHubUi {
     hover = false,
   ) {
     if (!validate) await this.reveal(css, signal);
-    let point: { x: number; y: number } | null = null;
-    await this.waitFor(async () => {
-      point = await this.point(css, hover);
-      return point !== null;
-    }, signal);
+    const point = await this.settledPoint(css, signal, hover);
     const distance = this.cursor
-      ? Math.hypot(point!.x - this.cursor.x, point!.y - this.cursor.y)
+      ? Math.hypot(point.x - this.cursor.x, point.y - this.cursor.y)
       : 0;
     const durationMs =
       distance < 1 ? 0 : Math.round(Math.min(780, 260 + distance * 0.45));
-    this.cursor = point!;
-    this.update({ cursor: { ...point!, clicking: false, durationMs } });
+    this.cursor = point;
+    this.update({ cursor: { ...point, clicking: false, durationMs } });
     await delay(durationMs + 50, signal);
     const current = await this.point(css, hover);
-    if (!current || current.x !== point!.x || current.y !== point!.y)
+    if (!current || current.x !== point.x || current.y !== point.y)
       throw new Error("Control moved or is covered; action stopped");
     signal.throwIfAborted();
     await validate?.();
     return current;
+  }
+
+  private async settledPoint(css: string, signal: AbortSignal, hover = false) {
+    let previous: { x: number; y: number } | null = null;
+    let stableSamples = 0;
+    await this.waitFor(async () => {
+      const next = await this.point(css, hover);
+      if (!next) {
+        previous = null;
+        stableSamples = 0;
+        return false;
+      }
+      stableSamples = previous && previous.x === next.x && previous.y === next.y
+        ? stableSamples + 1
+        : 1;
+      previous = next;
+      return stableSamples >= 2;
+    }, signal);
+    return previous!;
   }
 
   private async click(

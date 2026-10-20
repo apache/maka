@@ -21,6 +21,132 @@
 
 The Electron desktop app: `main` (Node/Electron main process) + `preload` (context bridge) + `renderer` (React UI). This file covers the three-layer split and the IPC contract. For build/test commands and the test-layer selection guide, see the top-level `README.md`; for the renderer interior, see `src/renderer/README.md`.
 
+## Personal assistant web chat (first version)
+
+The web chat connects to the default Host's existing personal assistant. Enable
+Personal Assistant in desktop settings and open it once before connecting. It
+shares the owner conversation, Inbox admission and SendUser output; opening the
+page does not create another Bot or start discovery/index maintenance.
+
+Build and start from the repository root (workspace dependencies must already be built):
+
+```sh
+npm run build --workspace @maka/desktop
+MAKA_ASSISTANT_WEB_PORT=8787 npm start --workspace @maka/desktop
+```
+
+Open `http://127.0.0.1:8787`. The listener is off unless
+`MAKA_ASSISTANT_WEB_PORT` is supplied and closes with the desktop app.
+Only loopback bindings (`127.0.0.1`, `::1`, `localhost`) are accepted. Direct
+LAN/public bindings such as `0.0.0.0` are rejected because this listener has no
+built-in authentication.
+For phone or remote access, use an authenticated HTTPS reverse proxy (for example
+Cloudflare Access) and set `MAKA_ASSISTANT_WEB_ORIGIN=https://your-hostname`.
+The proxy must protect the page and all `/api/` routes; configuring an origin is
+not authentication. Host headers must match a loopback address at the listener's
+port or the configured public origin's host. Origins are independently checked;
+forwarded headers do not grant access. This prevents DNS-rebinding domains from
+using their own matching Host/Origin pair to reach the local assistant.
+
+The page supports text, Markdown, optional authored summaries, older history,
+typing state and live updates. An SSE connection announces transcript changes;
+the page reads the canonical transcript from its last position on reconnect.
+Retries retain their message ID, and an unconfirmed send is kept in browser tab
+storage for manual retry. Host/session identity prevents a stale page from
+sending into another assistant. Runtime subscription cursors are scoped and
+validated; an expired cursor reloads a fresh history tail.
+
+Only user-facing user/assistant rows are displayed. File transfer, desktop-only
+artifact/original links, configuration and background mobile push notifications
+are not part of this version. Maka must remain running; missed messages become
+visible when the page reconnects. No additional conversation database is created.
+
+Focused validation:
+
+```sh
+npm run build:main --workspace @maka/desktop
+npm run build:assistant-web --workspace @maka/desktop
+npm run typecheck:assistant-web --workspace @maka/desktop
+node --test apps/desktop/dist/main/__tests__/assistant-web.test.js
+```
+
+## Managed HTML Artifact previews
+
+Generated Files → the HTML file's menu → **Open in default app** opens a
+Desktop-owned HTTP snapshot in the system browser. The session-bound
+`ArtifactPreview({ artifactId })` tool prepares the same kind of endpoint for
+browser tools without starting a shell server or relaxing the `file://` policy.
+Save As and Show in Folder still export the original, unrestricted file.
+
+Snapshots support self-contained interactive HTML: inline scripts/styles and
+embedded images/fonts. A response CSP sandbox blocks same-origin authority,
+fetch requests, remote subresources, forms, frames and popups. This is not an
+OS network sandbox: an external browser can still navigate away from the
+document. Referenced workspace files are not served. Use Save As for documents
+requiring external resources.
+
+Each snapshot gets its own loopback port and a 256-bit bearer URL. Do not share
+the URL. There is no directory listing, CORS access, persistent disk copy or
+cache. The server checks the exact Host and path, accepts GET/HEAD only, caps
+each snapshot at 8 MiB and reserves at most 16 concurrent snapshots. Listeners
+and memory are released after 30 minutes, on Artifact deletion through the
+Desktop, on host-target retirement, or when the app exits. A remote Host's
+Artifact is streamed to the Desktop through the existing authenticated client;
+the resulting URL belongs to the Desktop machine, not the Host's localhost.
+
+`reachable: true` is evidence that a bounded Desktop HTTP probe succeeded.
+`loaded: false` deliberately does **not** assert browser rendering. An OS
+launch success also does not prove page load; browser observation is required
+before reporting that the page loaded or its interaction worked (#5235).
+
+Focused regression checks (build workspace dependencies first):
+
+```sh
+npm run build:main --workspace apps/desktop
+node --test apps/desktop/dist/main/__tests__/managed-artifact-preview.test.js apps/desktop/dist/main/__tests__/runtime-host-artifacts-ipc-main.test.js
+```
+
+## Worktree development profiles
+
+Run `npm run dev:worktree` from the repository root to start desktop HMR with
+an independent data directory for this checkout. This prevents experimental
+branches from reading or writing another checkout's settings, sessions, and
+runtime policy. The first launch opens onboarding with an empty configuration;
+existing data and credentials are not copied. Only the profile is separate:
+user-level state outside it, such as skills in `~/.maka/skills` and
+`~/.agents/skills`, stays shared with every checkout.
+
+The launcher prints the selected directory before building. It uses the
+checkout's canonical path, not its branch name: restarting or switching branches
+in the same checkout reuses the profile; distinct checkouts get separate
+profiles, even when their directory names match. Symlink aliases reuse the same
+profile. Moving a checkout selects a new profile and leaves its old data intact.
+
+Profiles live in `Maka Dev Worktrees/<checkout-name>-<path-hash>` beneath:
+
+- macOS: `~/Library/Application Support`
+- Windows: `%APPDATA%` (defaults to `%USERPROFILE%\AppData\Roaming`)
+- Linux: `$XDG_CONFIG_HOME` (defaults to `~/.config`)
+
+An explicit directory takes precedence, with relative paths resolved against the
+checkout root. Both argument forms are accepted:
+
+```sh
+npm run dev:worktree -- --user-data-dir="/path/to/my profile"
+npm run dev:worktree -- --user-data-dir "/path/to/my profile"
+MAKA_DEV_TCC=1 npm run dev:worktree  # macOS permission development
+```
+
+This command uses the existing desktop launcher, including its process cleanup
+and macOS TCC support. `npm run dev`, `npm start`, and the CLI retain their
+existing profile selection. With `MAKA_DEV_TCC=1`, every launch republishes the
+profile of this checkout's app bundle, so reopening the bundle from the Dock,
+Spotlight, or a permission prompt uses the profile of the last TCC launch here:
+after a TCC `npm run dev` or `npm start`, run `dev:worktree` again before
+reopening it. Removing a Git worktree does not remove its data, and a checkout
+later created at the same path reuses it: quit the app and manually remove its
+printed profile directory when it is no longer needed.
+
 ## macOS development permissions
 
 `npm run dev` and `npm start` use the plain Electron executable on every
@@ -125,7 +251,7 @@ npm Electron bundle, which macOS will not accept as a durable grant.
 | Suffix | Role | Examples |
 |---|---|---|
 | `runtime-host-*-ipc-main.ts` | Projects one Runtime Host protocol domain onto renderer IPC | `runtime-host-connections-ipc-main`, `runtime-host-session-execution-ipc-main`, `runtime-host-settings-ipc-main` |
-| `*-ipc-main.ts` | Registers a client-local Electron or OS-facing IPC domain | `browser-ipc-main`, `notifications-ipc-main`, `workspace-search-ipc-main` |
+| `*-ipc-main.ts` | Registers a client-local Electron or OS-facing IPC domain | `browser-ipc-main`, `workspace-search-ipc-main` |
 | `*-service.ts` / `*-controller.ts` | A client-local service without direct IPC ownership | `app-update-service`, `project-management-service`, `project-root-controller` |
 | `*-guard.ts` | Validation / security boundary | `external-link-guard`, `open-path-guard`, `permission-response-guard` |
 | (other) | Window, state, platform wiring | `main.ts` (entry), `main-window`, `window-state`, `theme-source`, `credential-store`, `skills`, `attachment-*` |
@@ -159,3 +285,82 @@ The renderer never imports `@maka/runtime` or `@maka/storage` at runtime — all
 ## Convergence note
 
 The renderer side carries the frontend convergence debt (hand-rolled CSS, primitive overrides); see `src/renderer/README.md`. The main process itself is not part of that convergence — its boundaries (IPC channel names, the preload bridge, the `*-guard.ts` files) are stable contract seams.
+
+### WeChat personal assistant transport
+
+All eight IM channels offer Personal assistant, Separate task and WorkHub targets.
+The overview sets the global default; each channel can inherit it or override it.
+Existing explicit channel choices are preserved. New channels inherit the default. The existing task and WorkHub routes remain available. In assistant
+mode, WeChat uses the enabled, existing personal assistant. Open the assistant once on desktop, then scan
+to connect WeChat. QR onboarding limits access to the scanning user. Existing local
+bridge configurations must explicitly allow exactly one private-chat user; group
+chats cannot reach the assistant. Telegram, Feishu, WeCom, WeChat, Discord, DingTalk, QQ and Slack use the same assistant routing.
+Assistant mode requires exactly one allowed user and rejects group chats. For channels
+whose chat IDs differ from user IDs, the first authorized private message binds the
+reply destination; no destination is guessed from the allowlist. The binding and
+delivery receipts survive restart.
+
+New `SendUser` messages (including discovery and delegated task results) are mirrored
+as full text, without replaying pre-binding history. Delivery runs independently of
+incoming messages and the Agent. It attempts at most twice, with a short delay;
+failures and attempt receipts persist in the desktop user-data `assistant-wechat`
+directory. Crash-uncertain attempts count toward the limit. Delivery is best effort,
+not exactly-once or guaranteed receipt. Desktop/web history remains authoritative.
+
+iLink reply contexts are stored per account/credential in `wechat-reply-context`
+with file mode 0600, refreshed from incoming messages, and checked via send business
+return codes. Persisting a context cannot extend its server-side validity. The initial
+connection confirmation may fail until the user sends a WeChat message. Disabling
+the channel/assistant or selecting another mode stops subsequent assistant delivery; changing the bound account or owner
+conversation starts a new boundary. No second Bot or ordinary task Session is created.
+
+
+In personal-assistant mode, WeChat's typing hint follows the Bot's current work,
+refreshes at most every four seconds, and clears on sleep, error, mode changes or
+shutdown. It does not follow delegated Matters that are waiting in the background.
+Typing/config calls run independently from message delivery. iLink startup/shutdown
+notifications are advisory and do not gate chat availability. These auxiliary requests
+have short transport timeouts; they do not impose an Agent execution time limit.
+
+The adapter preserves the server's message ID when present (otherwise its local
+client ID). Assistant delivery receipts store that acknowledgement, which does not
+prove delivery to the phone or that the user has read it. No delivery/read-receipt
+API is assumed. Text and provided voice transcriptions remain supported; binary
+image/file/video ingestion and sending are not implemented by this assistant transport.
+
+
+### Feishu personal assistant transport
+
+Feishu/Lark can select Personal assistant, Separate task or WorkHub, or inherit
+the global target, just like the other channels. Enable and open the desktop assistant
+first. Quick onboarding requests the scanning user's `open_id` and binds that user.
+Manual setup requires exactly one allowed `open_id` in assistant mode. Missing or
+multiple owners deny access, rather than opening the personal assistant to everyone.
+Group messages do not enter the personal assistant. The shared transport uses the
+same owner Session as desktop/web and WeChat; it never creates another Agent.
+
+New SendUser rows, including proactive discoveries and delegated task results, are
+mirrored independently with one retry and persisted receipts. Existing history is
+not replayed. Feishu sends use provider UUIDs stable across retries (deduplication is
+subject to Feishu's server retention window, not an exactly-once guarantee).
+Markdown is preserved. Replies without summaries use ordinary rich-text posts, not cards.
+AI-authored summaries become expandable JSON 2.0 cards;
+long bodies are split without dropping text. The first message ID is retained when
+a reply needs multiple cards. Existing task/WorkHub reply threading is unchanged.
+
+While the assistant Bot is working, the latest inbound message gets a `Typing`
+reaction. Repeated status checks reuse that reaction, and sleep/stop removes it.
+This is a processing reaction, not native chat typing. The app needs message-reaction
+write permission. Reaction errors never prevent receiving or sending chat messages.
+Feishu's read-users API is queried for the latest acknowledged assistant message,
+at most once every 30 seconds and for at most a day. Results live in the private
+transport receipt, not a desktop/web read badge. Missing read permissions mean
+`unknown`, never falsely `unread` or `read`; acceptance alone is not proof of delivery.
+For split replies, this observation applies only to the first card.
+
+The bot needs permission to receive direct messages and send as the bot; reactions
+and read-user queries additionally depend on the permissions granted to that app.
+This change does not grant scopes automatically. It retains the existing long
+connection and Feishu/Lark region setting. Picture/file/audio/video messages receive
+an explicit unsupported notice; binary attachment ingestion is not implemented.
+No source indexing/synchronization settings are changed by the IM entry point.

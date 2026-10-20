@@ -52,9 +52,9 @@ test('opening settings commits an active titlebar rename', async ({ window: page
   const workbarToolbar = workbar.getByRole('toolbar', { name: '任务工作栏标签' });
   await expect(workbarToolbar).toBeVisible();
   await expect(
-    workbarToolbar.getByRole('button', { name: '打开或关闭工作栏的面' }),
+    workbarToolbar.getByRole('button', { name: '添加面板' }),
   ).toBeVisible();
-  await expect(workbarToolbar.getByRole('button', { name: '收起任务工作栏' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '收起任务工作栏' })).toBeVisible();
   await page
     .getByRole('button', { name: /变更.*查看当前 Git 工作区变化/ })
     .click();

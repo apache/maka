@@ -57,6 +57,7 @@ import type {
   ClientCapabilityService,
 } from '../server/client-capability-service.js';
 import { RuntimeHostConnectionSession } from '../server/connection-session.js';
+import { HostChangeFeed } from '../server/host-change-feed.js';
 import type { SessionContinuityService } from '../server/session-continuity-service.js';
 import {
   createUnavailableHostCoreOperationHandlers,
@@ -136,6 +137,65 @@ test('concurrent responses remain framed and correlated in reverse completion or
   );
 });
 
+test('does not expose Artifact invalidations to Session Guests', async () => {
+  const pair = await openTransportPair();
+  const hostChanges = new HostChangeFeed();
+  const session = new RuntimeHostConnectionSession({
+    transport: pair.serverTransport,
+    connection: {
+      ...acceptedConnection('session-guest-artifact-changes'),
+      authority: {
+        principalKind: 'session_guest',
+        principalId: 'session_guest:guest-1',
+        credentialId: 'credential-1',
+        operationGrants: ['artifact.query', 'session.shared.query'],
+        canPublishClientCapabilities: false,
+        canUseHostPaths: false,
+      },
+    },
+    resolveHandlers: () => ({
+      'host.status': async () => ({
+        ok: true,
+        result: {
+          hostEpoch: 'host-epoch',
+          compositionId: 'maka.interactive',
+          compositionRevision: '1',
+          state: 'ready',
+          connections: 1,
+          activeOperations: 0,
+          activeResidencies: 0,
+        },
+      }),
+      ...UNUSED_HOST_DIAGNOSTICS_HANDLER,
+      ...createUnavailableHostCoreOperationHandlers(),
+      ...createUnavailableDomainOperationHandlers(),
+    }),
+    resolveContinuity: () => undefined,
+    resolveHostChanges: () => hostChanges,
+    resolveSharedSessionId: () => 'session-1',
+    beginOperation: async () => ({
+      acquireResidency: () => ({ release() {} }),
+      seal() {},
+      finish() {},
+    }),
+    onTeardown() {},
+  });
+  const run = session.run();
+  try {
+    hostChanges.publishArtifactDeleted('session-2', 'artifact-2');
+    hostChanges.publishArtifactDeleted('session-1', 'artifact-1');
+    hostChanges.publishSessionCatalog('session-1');
+    assert.deepEqual(decodeHostFrame(await pair.clientTransport.read(1_000)), {
+      kind: 'session.catalog.changed',
+      revision: 1,
+      sessionId: 'session-1',
+    });
+  } finally {
+    pair.clientTransport.abort();
+    await Promise.allSettled([run, pair.close()]);
+  }
+});
+
 test('transcript pages are serialized per connection before their responses are retained', async () => {
   const pair = await openTransportPair();
   const entered = Array.from({ length: 3 }, () => deferred());
@@ -175,14 +235,12 @@ test('transcript pages are serialized per connection before their responses are 
         result: {
           kind: 'page',
           sessionId: 'session-1',
-          source: input.source,
           direction: input.direction,
           throughSequence: input.throughSequence,
           rawBytes: 0,
           fragments: [],
-          rangeBoundarySequence: null,
-          protectedTurnSequence: null,
           nextCursor: null,
+          endsAtTurnBoundary: true,
         },
       };
     },
@@ -207,7 +265,6 @@ test('transcript pages are serialized per connection before their responses are 
         operation: 'session.transcript.page',
         input: {
           subscriptionId: 'subscription-1',
-          source: 'durable',
           direction: 'older',
           throughSequence: null,
           cursor: null,
@@ -438,7 +495,7 @@ test('serial outbound writer reports its 2 MiB byte bound before its frame bound
   }
 });
 
-test('flushes concurrent subscription opens before activating their live frame streams', async () => {
+test('flushes concurrent subscription opens before the frames their readiness starts', async () => {
   const releaseWrites = deferred();
   const requestsEntered = deferred();
   const allWrites = deferred();
@@ -446,6 +503,13 @@ test('flushes concurrent subscription opens before activating their live frame s
     requestId: `open-${index}`,
     operation: 'subscription.open',
     input: { sessionId: `session-${index}`, transcript: { kind: 'none' } },
+  }));
+  // A Client learns a subscriptionId from the open result, so it cannot ask for
+  // frames before that result reaches it. These follow the same way.
+  const followUp = Array.from({ length: 16 }, (_, index) => ({
+    requestId: `ready-${index}`,
+    operation: 'subscription.ready',
+    input: { subscriptionId: `subscription-session-${index}` },
   }));
   const written: EncodedProtocolMessage[] = [];
   let aborted = false;
@@ -459,6 +523,9 @@ test('flushes concurrent subscription opens before activating their live frame s
     read: async () => {
       const frame = inbound.shift();
       if (frame) return frame;
+      await releaseWrites.promise;
+      const next = followUp.shift();
+      if (next) return next;
       return new Promise<never>((_resolve, reject) => {
         rejectRead = reject;
       });
@@ -466,7 +533,7 @@ test('flushes concurrent subscription opens before activating their live frame s
     write: async (message) => {
       await releaseWrites.promise;
       written.push(message);
-      if (written.length === 32) allWrites.resolve();
+      if (written.length === 48) allWrites.resolve();
     },
     closeAfterFlush: () => {
       resolveClosed();
@@ -527,10 +594,19 @@ test('flushes concurrent subscription opens before activating their live frame s
         ok: true,
         result: { subscriptionId: input.subscriptionId },
       }),
-      'session.transcript.overlay.release': async () => ({
-        ok: false,
-        error: { code: 'operation_unavailable', message: 'not used' },
-      }),
+      'subscription.ready': async (input) => {
+        const sessionId = input.subscriptionId.slice('subscription-'.length);
+        void sink
+          ?.send({
+            kind: 'subscription.session_projection',
+            hostEpoch: 'host-epoch',
+            subscriptionId: input.subscriptionId,
+            sequence: 1,
+            snapshot: largeSnapshot(sessionId),
+          })
+          .catch(() => undefined);
+        return { ok: true, result: { subscriptionId: input.subscriptionId } };
+      },
       'session.transcript.page': async () => ({
         ok: false,
         error: { code: 'operation_unavailable', message: 'not used' },
@@ -538,22 +614,7 @@ test('flushes concurrent subscription opens before activating their live frame s
     },
     attachConnection: (_connectionId, attachedSink) => {
       sink = attachedSink;
-      return {
-        activate: (subscriptionId) => {
-          const sessionId = subscriptionId.slice('subscription-'.length);
-          void sink
-            ?.send({
-              kind: 'subscription.session_projection',
-              hostEpoch: 'host-epoch',
-              subscriptionId,
-              sequence: 1,
-              snapshot: largeSnapshot(sessionId),
-            })
-            .catch(() => undefined);
-        },
-        abort() {},
-        close() {},
-      };
+      return { abort() {}, close() {} };
     },
   };
   const handlers: OperationHandlerMap = {
@@ -1741,6 +1802,17 @@ async function openSubscription(transport: FramedTransport, sessionId: string, r
   if ('kind' in response || response.operation !== 'subscription.open' || !response.ok) {
     throw new Error(`Unable to open ${sessionId} subscription`);
   }
+  // Frames start where the subscriber says it can take them, which is what a
+  // Client does once it has the open result in hand.
+  await writeProtocolFrame(transport, {
+    requestId: `${requestId}-ready`,
+    operation: 'subscription.ready',
+    input: { subscriptionId: response.result.subscriptionId },
+  });
+  const ready = decodeHostFrame(await transport.read(1_000));
+  if ('kind' in ready || ready.operation !== 'subscription.ready' || !ready.ok) {
+    throw new Error(`Unable to start ${sessionId} subscription frames`);
+  }
   return response.result;
 }
 
@@ -1780,18 +1852,14 @@ function canonicalProjection(sessionId: string): CanonicalSessionProjection {
 function transcriptBootstrapFor(sessionId: string) {
   const contents = Buffer.from('t'.repeat(16 * 1024));
   return {
-    throughSequence: 0,
-    overlayMessageCount: 0,
     durable: {
       kind: 'page' as const,
       sessionId,
-      source: 'durable' as const,
       direction: 'older' as const,
       throughSequence: 0,
       rawBytes: contents.byteLength,
       fragments: [
         {
-          kind: 'durable' as const,
           sequence: 0,
           byteOffset: 0,
           totalBytes: contents.byteLength,
@@ -1799,21 +1867,8 @@ function transcriptBootstrapFor(sessionId: string) {
           data: contents.toString('base64'),
         },
       ],
-      rangeBoundarySequence: null,
-      protectedTurnSequence: null,
       nextCursor: null,
-    },
-    overlay: {
-      kind: 'page' as const,
-      sessionId,
-      source: 'overlay' as const,
-      direction: 'older' as const,
-      throughSequence: 0,
-      rawBytes: 0,
-      fragments: [],
-      rangeBoundarySequence: null,
-      protectedTurnSequence: null,
-      nextCursor: null,
+      endsAtTurnBoundary: true,
     },
   };
 }

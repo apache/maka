@@ -163,7 +163,16 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
   const [name, setName] = useState(connection.name);
   const [baseUrl, setBaseUrl] = useState(connection.baseUrl ?? defaults.baseUrl ?? '');
   const models = connection.models ?? [];
-  const [enabledModelIds, setEnabledModelIds] = useState(() => connectionEnabledModelIds(connection));
+  const [enabledModelsDraft, setEnabledModelsDraft] = useState<{
+    connectionId: string;
+    value: string[];
+    saved: string[];
+  } | null>(null);
+  const enabledModelIds = enabledModelsDraft?.connectionId === connection.connectionId
+    ? enabledModelsDraft.value
+    : connectionEnabledModelIds(connection);
+  const hasEnabledModelChanges = enabledModelsDraft?.connectionId === connection.connectionId
+    && !modelIdListsEqual(enabledModelsDraft.value, enabledModelsDraft.saved);
   const endpointOwnerRef = useRef({ connectionId: connection.connectionId, saved: baseUrl });
   const [busy, setBusy] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -281,7 +290,11 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
   }, [connection.connectionId, savedBaseUrl]);
 
   useEffect(() => {
-    setEnabledModelIds(connectionEnabledModelIds(connection));
+    // Preserve edits, but compare them against the latest persisted selection.
+    // A failed refresh does not run this effect, leaving the write acknowledged.
+    setEnabledModelsDraft((draft) => draft?.connectionId === connection.connectionId
+      && !modelIdListsEqual(draft.value, draft.saved)
+      ? { ...draft, saved: connectionEnabledModelIds(connection) } : null);
   }, [connection.defaultModel, connection.enabledModelIds, connection.connectionId]);
 
   const modelChoices = connection.catalogEntries;
@@ -349,29 +362,43 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     }
   }
 
-  async function updateEnabledModels(nextIds: string[]) {
+  function updateEnabledModels(modelId: string) {
     if (connectionDetailActionGuard.has('save-enabled-models') || detailActionBusy) return;
-    // The selection is passed through as stated. Merging the default back in
-    // here made unchecking it a silent no-op: the recomputed list equalled the
-    // current one, `modelIdListsEqual` short-circuited, and nothing was ever
-    // written. The store owns what follows from the selection.
-    const next = [...new Set(nextIds.map((id) => id.trim()).filter(Boolean))];
-    if (modelIdListsEqual(next, enabledModelIds)) return;
-    const previous = enabledModelIds;
+    // Apply against the latest draft, including clicks in the same React batch.
+    setEnabledModelsDraft((draft) => {
+      const current = draft?.connectionId === connection.connectionId
+        ? draft.value : connectionEnabledModelIds(connection);
+      return {
+        connectionId: connection.connectionId,
+        saved: draft?.connectionId === connection.connectionId ? draft.saved : connectionEnabledModelIds(connection),
+        value: current.includes(modelId)
+          ? current.filter((id) => id !== modelId) : [...current, modelId],
+      };
+    });
+  }
+
+  function cancelEnabledModels() {
+    if (!connectionDetailActionGuard.has('save-enabled-models')) setEnabledModelsDraft(null);
+  }
+
+  async function saveEnabledModels(): Promise<boolean> {
+    if (!hasEnabledModelChanges) return true;
+    const releaseSaveModels = connectionDetailActionGuard.beginExclusive('save-enabled-models');
+    if (!releaseSaveModels) return false;
     const lifecycle = connectionDetailLifecycleRef.current;
-    const releaseSaveModels = connectionDetailActionGuard.begin('save-enabled-models');
-    if (!releaseSaveModels) return;
     setSavingEnabledModels(true);
-    setEnabledModelIds(next);
     let saved = false;
     try {
-      await props.bridge.update(connectionIdentity, { enabledModelIds: next });
+      const updated = await props.bridge.update(connectionIdentity, { enabledModelIds });
       saved = true;
-      if (!isConnectionDetailCurrent(lifecycle)) return;
+      if (!isConnectionDetailCurrent(lifecycle)) return true;
+      // Use the Host's canonical selection (it also owns default-model changes).
+      const confirmed = connectionEnabledModelIds(updated);
+      setEnabledModelsDraft({ connectionId: connection.connectionId, value: confirmed, saved: confirmed });
       await props.onChanged();
     } catch (error) {
-      if (!isConnectionDetailCurrent(lifecycle)) return;
-      if (!saved) setEnabledModelIds(previous);
+      if (!isConnectionDetailCurrent(lifecycle)) return saved;
+      // A failed write keeps the user's selection available for retry.
       reportHostError(
         saved ? copy.refreshFailed : copy.saveModelsFailed,
         providerPanelActionErrorMessage(error, locale),
@@ -380,6 +407,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       releaseSaveModels();
       if (isConnectionDetailCurrent(lifecycle)) setSavingEnabledModels(false);
     }
+    return saved;
   }
 
   const [modelDraft, setModelDraft] = useState<{
@@ -467,24 +495,29 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     const modelId = id.trim();
     if (!modelId || enabledModelIds.includes(modelId)) return false;
     if (connectionDetailActionGuard.has('save-enabled-models') || detailActionBusy) return false;
-    const next = [...enabledModelIds, modelId];
-    const previous = enabledModelIds;
     const lifecycle = connectionDetailLifecycleRef.current;
     const releaseSaveModels = connectionDetailActionGuard.begin('save-enabled-models');
     if (!releaseSaveModels) return false;
     setSavingEnabledModels(true);
-    setEnabledModelIds(next);
     let saved = false;
     try {
-      await props.bridge.update(connectionIdentity, {
+      const updated = await props.bridge.update(connectionIdentity, {
         modelOverride: { modelId, expected: null, value: profile, enable: true },
       });
+      if (isConnectionDetailCurrent(lifecycle)) {
+        const confirmed = connectionEnabledModelIds(updated);
+        setEnabledModelsDraft((draft) => ({
+          connectionId: connection.connectionId,
+          value: draft?.connectionId === connection.connectionId
+            ? [...new Set([...draft.value, modelId])] : confirmed,
+          saved: confirmed,
+        }));
+      }
       saved = true;
       if (!isConnectionDetailCurrent(lifecycle)) return saved;
       await props.onChanged();
     } catch (error) {
       if (!isConnectionDetailCurrent(lifecycle)) return saved;
-      if (!saved) setEnabledModelIds(previous);
       reportHostError(
         saved ? copy.refreshFailed : copy.saveModelsFailed,
         providerPanelActionErrorMessage(error, locale),
@@ -503,6 +536,9 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     const releaseTest = connectionDetailActionGuard.beginExclusive('test');
     if (!releaseTest) return;
     const lifecycle = connectionDetailLifecycleRef.current;
+    // The Host tests persisted configuration, not the selection still being edited.
+    const savedSelection = enabledModelsDraft?.connectionId === connection.connectionId
+      ? enabledModelsDraft.saved : connectionEnabledModelIds(connection);
     setTesting(true);
     try {
       // No model argument: `resolveConnectionTestModel` already picks one from
@@ -516,7 +552,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       if (!isConnectionDetailCurrent(lifecycle)) return;
       if (result.ok) {
         // The backend probes the enabled models first, then the provider
-        // fallbacks (opencode-free tries each in turn until one answers). When
+        // fallback. When
         // the model that actually answered isn't one the user enabled, a plain
         // "connection succeeded · <model>" reads as if their selection never
         // took — and hides that their chosen model is currently down. Name both
@@ -531,12 +567,12 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
         // string for `modelLabel(testedId)` below.
         if (
           testedId !== undefined &&
-          enabledModelIds.length > 0 &&
-          !enabledModelIds.includes(testedId)
+          savedSelection.length > 0 &&
+          !savedSelection.includes(testedId)
         ) {
           toast.warning(
             copy.connectionFallbackTitle(connection.name),
-            copy.connectionFallbackDetail(enabledModelIds.map(modelLabel), modelLabel(testedId)),
+            copy.connectionFallbackDetail(savedSelection.map(modelLabel), modelLabel(testedId)),
           );
         } else {
           toast.success(
@@ -698,6 +734,10 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     lastTestAtMs,
     save,
     updateEnabledModels,
+    saveEnabledModels,
+    cancelEnabledModels,
+    hasEnabledModelChanges,
+    savingEnabledModels,
     addDeclaredModel,
     modelParameters,
     hasModelChanges,
@@ -712,5 +752,5 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
 }
 
 function modelIdListsEqual(left: string[], right: string[]): boolean {
-  return left.length === right.length && left.every((id, index) => id === right[index]);
+  return left.length === right.length && left.every((id) => right.includes(id));
 }

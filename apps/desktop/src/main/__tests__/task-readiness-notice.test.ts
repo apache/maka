@@ -20,11 +20,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { TaskSubmissionReadinessSnapshot } from '@maka/core/task-submission-readiness';
+import { resolveTaskReadinessModelTarget } from '../../renderer/features/conversation/index.js';
 import {
   deriveTaskReadinessNotice,
   isTaskSubmissionHardBlocked,
-  resolveTaskReadinessModelTarget,
-} from '../../renderer/task-readiness-notice.js';
+} from '../../renderer/features/conversation/testing.js';
 
 test('an unlocked stale session keeps its stored target until explicit recovery', () => {
   assert.deepEqual(

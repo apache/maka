@@ -25,9 +25,11 @@ import type { SessionStatus } from '@maka/core/session';
 import {
   assertExactKeys,
   requireCount,
+  requireEncodedByteLimit,
   requireEntityId,
   requireExactRecord,
   requireId,
+  requireOpaqueIdentity,
   requireRecord,
 } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
@@ -206,7 +208,7 @@ export type SessionToolEvent =
   | (SessionToolEventIdentity & {
       type: 'tool_result';
       operationId?: string;
-      status: 'completed' | 'errored';
+      status: 'completed' | 'errored' | 'interrupted';
       sandboxFailureReason?: SandboxBoundaryFailureSignal['reason'];
       durationMs?: number;
     })
@@ -231,11 +233,18 @@ export interface SessionSteeringEvent {
   content: MessageContent;
 }
 
+export interface SessionContextCompactionAppliedEvent {
+  type: 'context_compaction_applied';
+  id: string;
+  turnId: string;
+  ts: number;
+}
+
 export interface SessionEventFrame extends SubscriptionEnvelope {
   kind: 'subscription.session_event';
   sessionId: string;
   runId: string;
-  event: SessionToolEvent | SessionSteeringEvent;
+  event: SessionToolEvent | SessionSteeringEvent | SessionContextCompactionAppliedEvent;
 }
 
 export interface SessionTranscriptAdvancedFrame extends SubscriptionEnvelope {
@@ -244,13 +253,7 @@ export interface SessionTranscriptAdvancedFrame extends SubscriptionEnvelope {
   throughSequence: number;
 }
 
-export const SESSION_DOMAINS = [
-  'todo',
-  'plan',
-  'deep_research',
-  'usage',
-  'runtime_resource',
-] as const;
+export const SESSION_DOMAINS = ['todo', 'plan', 'usage', 'runtime_resource'] as const;
 export type SessionDomain = (typeof SESSION_DOMAINS)[number];
 export const SESSION_RUNTIME_RESOURCE_CHANGES_MAX = 64;
 
@@ -366,14 +369,28 @@ export const SESSION_CONTINUITY_OPERATION_SPECS = {
       if (
         input.transcript.kind === 'tail' &&
         output.transcript &&
-        output.transcript.durable.rawBytes + output.transcript.overlay.rawBytes >
-          input.transcript.maxBytes
+        output.transcript.durable.rawBytes > input.transcript.maxBytes
       ) {
         throw invalidProtocolFrame('Session transcript bootstrap exceeds requested byte limit');
       }
     },
   }),
   'subscription.close': defineOperation({
+    mode: 'control',
+    availability: 'ready',
+    errors: SUBSCRIPTION_CLOSE_ERRORS,
+    decodeInput: decodeSubscriptionCloseInput,
+    decodeOutput: decodeSubscriptionCloseResult,
+  }),
+  /**
+   * The subscriber can take frames now.
+   *
+   * The Host holds a new subscription's frames until this arrives. What it
+   * holds includes the in-flight answer a mid-stream subscriber has not seen,
+   * which is as large as the answer and so cannot be handed to a client that
+   * is still assembling the state those frames apply to.
+   */
+  'subscription.ready': defineOperation({
     mode: 'control',
     availability: 'ready',
     errors: SUBSCRIPTION_CLOSE_ERRORS,
@@ -791,8 +808,22 @@ function decodeAssistantDelta(value: unknown): SessionAssistantDelta {
   };
 }
 
-function decodeSessionFrameEvent(value: unknown): SessionToolEvent | SessionSteeringEvent {
+function decodeSessionFrameEvent(value: unknown): SessionEventFrame['event'] {
   const record = requireRecord(value, 'Session event');
+  if (record.type === 'context_compaction_applied') {
+    assertExactKeys(record, 'Session context compaction applied event', [
+      'type',
+      'id',
+      'turnId',
+      'ts',
+    ]);
+    return {
+      type: record.type,
+      id: requireId(record.id, 'Session context compaction applied event id'),
+      turnId: requireEntityId(record.turnId, 'turnId'),
+      ts: requireCount(record.ts, 'Session context compaction applied event timestamp'),
+    };
+  }
   if (record.type === 'steering_message') return decodeSessionSteeringEvent(record);
   return decodeSessionToolEvent(record);
 }
@@ -822,7 +853,7 @@ function decodeSessionToolEvent(value: unknown): SessionToolEvent {
     id: requireId(record.id, 'Session tool event id'),
     turnId: requireEntityId(record.turnId, 'turnId'),
     ts: requireCount(record.ts, 'Session tool event timestamp'),
-    toolUseId: requireId(record.toolUseId, 'toolUseId'),
+    toolUseId: requireOpaqueIdentity(record.toolUseId, 'toolUseId'),
   };
   if (record.type === 'tool_start') {
     const allowed = [
@@ -891,7 +922,9 @@ function decodeSessionToolEvent(value: unknown): SessionToolEvent {
       ...(record.argsPreview === undefined
         ? {}
         : { argsPreview: structuredClone(record.argsPreview) }),
-      ...(record.stepId === undefined ? {} : { stepId: requireEntityId(record.stepId, 'stepId') }),
+      ...(record.stepId === undefined
+        ? {}
+        : { stepId: requireOpaqueIdentity(record.stepId, 'stepId') }),
       ...(record.shellRunRef === undefined
         ? {}
         : { shellRunRef: decodeRuntimeResourceRef(record.shellRunRef) }),
@@ -970,7 +1003,11 @@ function decodeSessionToolEvent(value: unknown): SessionToolEvent {
       'toolUseId',
       'status',
     ]);
-    if (record.status !== 'completed' && record.status !== 'errored') {
+    if (
+      record.status !== 'completed' &&
+      record.status !== 'errored' &&
+      record.status !== 'interrupted'
+    ) {
       throw invalidProtocolFrame('Invalid Session tool result status');
     }
     if (record.status === 'completed' && record.sandboxFailureReason !== undefined) {
@@ -1097,18 +1134,6 @@ function requireUtf8BoundedString(value: unknown, label: string, maxBytes: numbe
     throw invalidProtocolFrame(`Invalid ${label}`);
   }
   return value;
-}
-
-function requireEncodedByteLimit(value: unknown, label: string, maxBytes: number): void {
-  let encoded: string | undefined;
-  try {
-    encoded = JSON.stringify(value);
-  } catch {
-    throw invalidProtocolFrame(`Invalid ${label}`);
-  }
-  if (encoded === undefined || Buffer.byteLength(encoded, 'utf8') > maxBytes) {
-    throw invalidProtocolFrame(`Invalid ${label}`);
-  }
 }
 
 /**

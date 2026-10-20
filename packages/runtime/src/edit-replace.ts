@@ -32,7 +32,8 @@
 //     License:   Apache-2.0
 //     Copyright: Copyright 2025 Cline Bot Inc.
 //     Modified:  returns every matching span instead of the first, and rejects
-//                a match at EOF when old_string ended with a newline.
+//                a match at EOF when old_string ended with a newline; tracks
+//                line offsets incrementally instead of rescanning prefixes.
 //
 //   `escapeNormalizedSpans` unescape — the regular expression and the first
 //   eight branches (n, t, r, ', ", `, \, newline), in order, are from
@@ -111,14 +112,14 @@ export function computeEditedSource(
     throw new Error(`old_string must not be empty in ${where}`);
   }
 
-  // Exact match first — counted via indexOf so a large file is not split into an
-  // array of substrings just to count. Short-circuits before any fuzzy work.
-  const exactCount = countOccurrences(source, oldString);
-  if (exactCount === 1) {
+  // A second starting position already proves ambiguity, including an overlap.
+  // Stop there instead of repeatedly scanning long, repetitive snippets.
+  const exactIndex = source.indexOf(oldString);
+  if (exactIndex !== -1) {
+    if (source.indexOf(oldString, exactIndex + 1) !== -1) {
+      throw new Error(`old_string is not unique in ${where} (at least 2 matches)`);
+    }
     return finish(source, oldString, newString, 'exact');
-  }
-  if (exactCount > 1) {
-    throw new Error(`old_string is not unique in ${where} (${exactCount} matches)`);
   }
 
   // Exact failed — entering fuzzy territory. Apply fuzzy-only guards up front so
@@ -226,7 +227,12 @@ export function computeEditedSource(
       searchLines.pop();
     }
     if (searchLines.length === 0) return out;
+    let nextLineOffset = 0;
     for (let i = 0; i <= originalLines.length - searchLines.length; i++) {
+      // Advance even on a mismatch: repeated candidates must not rescan the
+      // entire file prefix just to recover their character offsets.
+      const startIndex = nextLineOffset;
+      nextLineOffset += originalLines[i].length + 1;
       let matches = true;
       for (let j = 0; j < searchLines.length; j++) {
         if (originalLines[i + j].trim() !== searchLines[j].trim()) {
@@ -235,8 +241,6 @@ export function computeEditedSource(
         }
       }
       if (!matches) continue;
-      let startIndex = 0;
-      for (let k = 0; k < i; k++) startIndex += originalLines[k].length + 1;
       let endIndex = startIndex;
       for (let k = 0; k < searchLines.length; k++) {
         endIndex += originalLines[i + k].length;

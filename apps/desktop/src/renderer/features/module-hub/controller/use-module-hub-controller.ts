@@ -72,7 +72,7 @@ export interface ModuleHubController {
 export interface UseModuleHubControllerInput {
   readonly selection: NavSelection;
   readonly selectModule: (selection: NavSelection) => void;
-  readonly openSkillsFolder?: () => void | Promise<void>;
+  readonly clientPathsAccessible: boolean;
   readonly useSkillInChat: (skillId: string, skillName: string) => void;
   readonly openSession: (sessionId: string) => void;
   readonly appendComposerText: (text: string) => void;
@@ -94,7 +94,7 @@ export function useModuleHubController(
     active: isSkillsActive,
     toastApi,
     useSkillInChat: input.useSkillInChat,
-    openSkillsFolder: input.openSkillsFolder,
+    clientPathsAccessible: input.clientPathsAccessible,
   });
   const scheduledTasks = useScheduledTasksController({
     uiLocale,

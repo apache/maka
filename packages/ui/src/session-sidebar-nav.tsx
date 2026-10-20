@@ -18,11 +18,12 @@
  */
 
 import { AlertCircle, Blocks, Download, Network, Settings, SquarePen, Timer } from './icons.js';
-import { useSessionRailChrome } from './session-rail-context.js';
+import { useSessionRailChrome, useSessionRailData } from './session-rail-context.js';
 import { useSidebarUpdateProjection } from './sidebar-update-projection-context.js';
 import { useUiLocale } from './locale-context.js';
 import { getShellControlsCopy } from './shell-controls-copy.js';
 import { PlatformShortcutText } from './platform-shortcut-text.js';
+import { MakaClientSlotOutlet } from './client-plugin-slots.js';
 import { Icon } from '@astryxdesign/core/Icon';
 import { IconButton } from '@astryxdesign/core/IconButton';
 import { SideNavItem, SideNavSection } from '@astryxdesign/core/SideNav';
@@ -30,6 +31,7 @@ import { Tooltip } from '@astryxdesign/core/Tooltip';
 
 export function SessionSidebarNav() {
   const props = useSessionRailChrome();
+  const { onSelectSession, navigationSessionId } = useSessionRailData();
   const locale = useUiLocale();
   const copy = getShellControlsCopy(locale).navigation;
   const extensionsActive = props.selection.section === 'extensions';
@@ -63,6 +65,11 @@ export function SessionSidebarNav() {
             <PlatformShortcutText apple="⌘ N" other="Ctrl N" />
           </kbd>
         )}
+      />
+      {props.personalAssistantNavigation}
+      <MakaClientSlotOutlet
+        name="sidebar.navigation"
+        owner={{ collapsed: props.collapsed, openSession: onSelectSession, activeSessionId: props.selection.section === 'sessions' ? navigationSessionId : undefined }}
       />
       {props.workHubEntry ? (
         <SideNavItem
@@ -196,6 +203,10 @@ export function SessionSidebarFooter() {
           </Tooltip>
         )}
       </div>
+      <MakaClientSlotOutlet
+        name="sidebar.footer"
+        owner={{ collapsed: props.collapsed }}
+      />
     </SideNavSection>
   );
 }

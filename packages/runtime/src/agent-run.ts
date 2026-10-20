@@ -29,6 +29,7 @@ import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
 import { isRuntimeHandoffPause, type RuntimeHandoffIntent } from '@maka/core/runtime-handoff';
 import { RunHandoffGate, type RunHandoffRequest } from './run-handoff-gate.js';
 import { preserveHandoffOpening } from './runtime-resume.js';
+import { runtimeInvocationRouteForHeader } from './runtime-invocation-route.js';
 import type {
   RequestCompositionSnapshot,
   RequestCompositionSnapshotInput,
@@ -273,7 +274,6 @@ export class AgentRun {
   private failureClass: string | undefined;
   private failureMessage: string | undefined;
   private lastTs = 0;
-  private sawCompletion = false;
   private finalStatus: { status: SessionStatus; blockedReason?: SessionBlockedReason } | undefined;
   private turnFailed = false;
   private finalized = false;
@@ -553,6 +553,15 @@ export class AgentRun {
     // method exists to prevent.
     const runStore = this.input.runStore;
     if (!this.input.runtimeEventStore || !runStore) return;
+    // A stream may have attempted finalization after an earlier stop failed.
+    // Join that write, but let this explicit retry reuse its reserved fact if
+    // the write failed; a rejected promise is not durable terminal evidence.
+    const previousWrite = this.terminalClaim.write;
+    try {
+      await previousWrite;
+    } catch {
+      if (this.terminalClaim.write === previousWrite) this.terminalClaim.write = undefined;
+    }
     await this.flushRuntimePartialBuffer(true);
     // The claim only fences writers inside this Run. Another owner — a Host
     // recovery, a resumed continuation — may have sealed the ledger already,
@@ -1164,7 +1173,6 @@ export class AgentRun {
       (ev.type === 'complete' || ev.type === 'abort') && !this.turnFailed;
     const turnStatus = terminalSessionEvent ? turnStatusFromEvent(ev) : undefined;
     if (terminalSessionEvent) {
-      this.sawCompletion = true;
       if (ev.type === 'abort' && !this.abortSource) this.abortSource = ev.reason;
       if (ev.type === 'complete' && ev.stopReason === 'user_stop' && !this.abortSource)
         this.abortSource = 'user_stop';
@@ -1444,22 +1452,7 @@ export class AgentRun {
     const opening: RuntimeEventInvocationOpenedContent = {
       kind: 'invocation_opened',
       protocol: 'invocation_opened_v1',
-      route:
-        this.header.llmConnectionId === undefined
-          ? {
-              provenance: 'unknown',
-              backendKind: this.header.backend,
-              llmConnectionSlug: this.header.llmConnectionSlug,
-              modelId: this.header.model,
-            }
-          : {
-              provenance: 'runtime',
-              backendKind: this.header.backend,
-              llmConnectionId: this.header.llmConnectionId,
-              llmConnectionSlug: this.header.llmConnectionSlug,
-              modelId: this.header.model,
-              ...(providerStateIdentity ? { providerStateIdentity } : {}),
-            },
+      route: runtimeInvocationRouteForHeader(this.header, providerStateIdentity),
       configuration: {
         cwd: this.header.cwd,
         permissionMode: this.header.permissionMode,
@@ -1500,7 +1493,12 @@ export class AgentRun {
     if (origin?.kind === 'scheduled_task') {
       return { kind: 'scheduled_task', scheduledTaskId: origin.scheduledTaskId };
     }
-    if (origin?.kind === 'goal') return { kind: 'goal', goalId: origin.goalId };
+    if (origin?.kind === 'goal')
+      return {
+        kind: 'goal',
+        goalId: origin.goalId,
+        ...(origin.eventWait ? { eventWait: origin.eventWait } : {}),
+      };
     if (origin?.kind === 'agent_graph') {
       return {
         kind: 'agent_graph_supervisor_wake',

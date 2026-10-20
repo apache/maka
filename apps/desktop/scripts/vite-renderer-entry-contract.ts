@@ -21,19 +21,26 @@ import { resolve, sep } from 'node:path';
 import type { Plugin } from 'vite';
 
 const SOURCE_FILE = /\.(?:(?:c|m)?(?:js|ts)x?)$/u;
+// svg/g/path exist for the static preload wordmark in index.html — the tag
+// whitelist stays closed to anything that can navigate or execute (a, img,
+// iframe, foreignObject, svg script/animate): the single-module script check
+// and the `on*=` handler scan still apply inside allowed tags.
 const ALLOWED_HTML_TAGS = new Set([
   'body',
   'div',
+  'g',
   'head',
   'html',
   'link',
   'meta',
+  'path',
   'script',
   'style',
+  'svg',
   'title',
 ]);
 const CONTENT_SECURITY_POLICY =
-  "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'";
+  "default-src 'self'; script-src 'self' maka-client-plugin:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'";
 
 function normalizePath(path: string): string {
   return path.split(sep).join('/');
@@ -81,8 +88,13 @@ export function assertRendererEntryHtml(html: string, expectedScriptSource?: str
       htmlAttribute(attributes, 'http-equiv')?.toLowerCase() === 'content-security-policy' &&
       htmlAttribute(attributes, 'content')?.trim().replace(/\s+/gu, ' ') === CONTENT_SECURITY_POLICY,
   );
+  const referrerMetas = metas.filter(
+    (attributes) => htmlAttribute(attributes, 'name')?.toLowerCase() === 'referrer' &&
+      htmlAttribute(attributes, 'content') === 'no-referrer',
+  );
   const validMetas =
-    metas.length === 3 &&
+    metas.length === 4 &&
+    referrerMetas.length === 1 &&
     charsetMetas.length === 1 &&
     viewportMetas.length === 1 &&
     policyMetas.length === 1;

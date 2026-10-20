@@ -33,9 +33,7 @@ attacker-influenced string.
 
 ## 1. Reporting a vulnerability
 
-Report privately by emailing **security@maka.app** (or open a
-private GitHub Security Advisory once that's enabled). Please do
-NOT open public issues for security vulnerabilities.
+Report privately by emailing **security@apache.org**. Please do NOT open public issues for security vulnerabilities.
 
 Useful reports include:
 
@@ -153,10 +151,7 @@ selection rules are documented in
 5. **Settings sensitive masking.** Tokens, API keys, and proxy
    passwords are masked at the IPC store boundary
    (`maskAppSettings` in `apps/desktop/src/main/settings-ipc-helpers.ts`).
-   Re-submitting the mask sentinel `••••••` is interpreted as
-   "keep current" by the merge logic; an empty string is
-   interpreted as an explicit clear. The Tavily API key follows the
-   same boundary.
+   Re-submitting the mask sentinel `••••••••` (or the legacy `••••••`) is interpreted as "keep current" by the merge logic; an empty string is interpreted as an explicit clear. The Tavily API key follows the same boundary.
 6. **Network egress through user-configured proxies.** The
    `network.proxy` settings drive Electron's session proxy. Tools
    that bypass `proxiedFetch` (Tavily lives in main, uses
@@ -208,9 +203,10 @@ privacy commitments:
   consumer tests own the full enforcement inventory.
 - **Token boundary.** Cleartext API keys / OAuth tokens / bot
   tokens NEVER cross the main→renderer IPC boundary.
-  `apps/desktop/src/main/__tests__/web-search-boundary.test.ts` and
-  `claude-subscription-ipc-boundary.test.ts` enforce this for Tavily
-  and Claude subscription credentials.
+  `apps/desktop/src/main/__tests__/settings-ipc-helpers.test.ts` enforces
+  this for Tavily and bot credentials, and
+  `runtime-host-connections-ipc-main.test.ts` for Connection credentials
+  (including OAuth subscriptions and custom headers).
 
 ## 3. Scope of vulnerability reports
 
@@ -249,22 +245,16 @@ SUBMITS a token when the user pastes it into a Settings input.
 The main process NEVER returns the cleartext token to the
 renderer.**
 
-Reads of `settings:get` return the bullet-mask sentinel `••••••`
-for all sensitive fields. The renderer can detect "has a stored
-value" vs "empty" by comparing against the sentinel, but cannot
-ever see the value. An update payload that contains exactly the
-sentinel is interpreted by
-`mergeWebSearchSettings` (and its peers in `mergeSettings`) as
-"keep current", so a round-trip through `settings:get →
-settings:update` cannot accidentally overwrite the stored value.
+Reads of `settings:get` return the bullet-mask sentinel `••••••••` for masked sensitive fields. The renderer can detect "has a stored value" vs "empty" by comparing against the sentinel, but cannot ever see the value. An update payload that contains exactly that sentinel or the legacy `••••••` is interpreted as "keep current" by the credential update and settings merge paths, so a round-trip through `settings:get → settings:update` cannot accidentally overwrite the stored value.
 
 Credential-test requests may submit an unsaved cleartext token so the
 user can verify it before saving. The main process accepts it for that
 single request and does not echo it in the response.
 
-The static-analysis contract tests for this policy:
-- `apps/desktop/src/main/__tests__/web-search-boundary.test.ts`
-- `apps/desktop/src/main/__tests__/claude-subscription-ipc-boundary.test.ts`
+The contract tests for this policy:
+- `apps/desktop/src/main/__tests__/settings-ipc-helpers.test.ts`
+- `apps/desktop/src/main/__tests__/runtime-host-settings-ipc-main.test.ts`
+- `apps/desktop/src/main/__tests__/runtime-host-connections-ipc-main.test.ts`
 
 ## 5. Versioning
 

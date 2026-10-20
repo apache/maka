@@ -52,10 +52,16 @@ export interface ExtensionPackageManifest {
   readonly dependencies: readonly ExtensionPackageDependency[];
   readonly configuration: ExtensionConfigurationSchema;
   readonly runtime?: ExtensionPackageRuntime;
+  readonly client?: ExtensionPackageClient;
   readonly composition?: ExtensionPackageComposition;
 }
 
 export interface ExtensionPackageRuntime {
+  readonly entry: string;
+}
+
+/** Prebuilt trusted Renderer bundle registered through the Client module loader. */
+export interface ExtensionPackageClient {
   readonly entry: string;
 }
 
@@ -97,7 +103,15 @@ export function decodeExtensionPackageManifest(value: unknown): ExtensionPackage
   exactOptional(
     source,
     ['schemaVersion', 'id'],
-    ['displayName', 'description', 'dependencies', 'configuration', 'runtime', 'composition'],
+    [
+      'displayName',
+      'description',
+      'dependencies',
+      'configuration',
+      'runtime',
+      'client',
+      'composition',
+    ],
   );
   if (source.schemaVersion !== 1) throw invalid('Extension manifest schemaVersion must be 1');
   const id = extensionId(source.id);
@@ -108,6 +122,7 @@ export function decodeExtensionPackageManifest(value: unknown): ExtensionPackage
   const dependencies = decodeDependencies(source.dependencies);
   const configuration = decodeConfigurationSchema(source.configuration);
   const runtime = decodeRuntime(source.runtime);
+  const client = decodeClient(source.client);
   const composition = decodeComposition(source.composition);
   return Object.freeze({
     schemaVersion: 1,
@@ -117,6 +132,7 @@ export function decodeExtensionPackageManifest(value: unknown): ExtensionPackage
     dependencies,
     configuration,
     ...(runtime === undefined ? {} : { runtime }),
+    ...(client === undefined ? {} : { client }),
     ...(composition === undefined ? {} : { composition }),
   });
 }
@@ -138,8 +154,16 @@ function decodeComposition(value: unknown): ExtensionPackageComposition | undefi
 function decodeRuntime(value: unknown): ExtensionPackageRuntime | undefined {
   if (value === undefined) return undefined;
   const runtime = record(value, 'runtime');
+  exactOptional(runtime, ['entry'], []);
   if (runtime.entry === undefined) return undefined;
   return Object.freeze({ entry: packagePath(runtime.entry, 'runtime.entry') });
+}
+
+function decodeClient(value: unknown): ExtensionPackageClient | undefined {
+  if (value === undefined) return undefined;
+  const client = record(value, 'client');
+  exactOptional(client, ['entry'], []);
+  return Object.freeze({ entry: packagePath(client.entry, 'client.entry') });
 }
 
 function packagePath(value: unknown, label: string): string {

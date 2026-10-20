@@ -17,14 +17,15 @@
  * under the License.
  */
 
-import type { ForeignSessionDigest, ForeignSessionSummary } from '@maka/core/foreign-session';
-import type { ModelInfo, ProviderType } from '@maka/core/llm-connections';
+import type { ModelApiProtocol, ModelInfo, ProviderType } from '@maka/core/llm-connections';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { ConnectionOnboardingTarget } from '@maka/core/runtime-policy';
 import type {
   ConnectionEffectFailureClass,
   ConnectionOnboardingSaveResult as RuntimeHostOnboardingSaveResult,
   ConnectionOnboardingVerifyResult as RuntimeHostOnboardingVerifyResult,
+  ExternalSessionCatalogItem,
+  ExternalSessionImportResult,
   OAuthConnectionIdentity,
   OAuthLoginFailureCode,
 } from '@maka/runtime-host/protocol';
@@ -62,6 +63,7 @@ export type ConnectionIdentity = {
 
 export interface OnboardableProvider {
   providerType: ProviderType;
+  defaultApiProtocol?: ModelApiProtocol;
   label: string;
   requiresBaseUrl: boolean;
   setupMethod: 'api_key' | 'oauth';
@@ -197,9 +199,25 @@ export interface SessionRecapGenerator {
   ): Promise<{ ok: true; text: string; raw: string } | { ok: false; error: string }>;
 }
 
-export interface MakaForeignSessionReader {
-  listSessions(options?: { cwd?: string }): Promise<ForeignSessionSummary[]>;
-  readDigest(summary: ForeignSessionSummary): Promise<ForeignSessionDigest>;
+export type ExternalSessionCatalogScope = 'current_workspace' | 'all';
+
+export interface MakaExternalSessionSurface {
+  /** Available catalog scopes in initial-display order. */
+  listScopes(): readonly [ExternalSessionCatalogScope, ...ExternalSessionCatalogScope[]];
+  listSources(): Promise<readonly string[]>;
+  listSessions(input: {
+    readonly adapterId: string;
+    readonly scope: ExternalSessionCatalogScope;
+    readonly cursor?: string;
+    readonly text?: string;
+  }): Promise<{
+    readonly sessions: readonly ExternalSessionCatalogItem[];
+    readonly nextCursor: string | null;
+  }>;
+  importSession(input: {
+    readonly adapterId: string;
+    readonly sourceSessionId: string;
+  }): Promise<ExternalSessionImportResult>;
 }
 
 export type MakaPiTuiTurnActivitySurface = MakaPiTuiTurnActivity;

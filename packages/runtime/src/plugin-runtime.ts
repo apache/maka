@@ -18,6 +18,11 @@
  */
 
 import type { Context, FiberState, Plugin } from './plugin-kernel.js';
+import {
+  cloneCompositionEntry,
+  freezeCompositionEntry,
+  walkCompositionEntry,
+} from './plugin-internals.js';
 
 const ID_PATTERN = /^[a-z][a-z0-9]*(?:[._:-][a-z0-9]+)*$/u;
 
@@ -626,49 +631,18 @@ export function isCanonicalExtensionId(value: unknown): value is string {
   return typeof value === 'string' && value.length <= 128 && ID_PATTERN.test(value);
 }
 
-function cloneCompositionEntry(entry: MakaCompositionEntry): MakaCompositionEntry {
-  return {
-    ...entry,
-    ...(entry.inject && !Array.isArray(entry.inject)
-      ? { inject: { ...entry.inject } }
-      : entry.inject
-        ? { inject: [...entry.inject] }
-        : {}),
-    ...(entry.isolate ? { isolate: { ...entry.isolate } } : {}),
-    ...(entry.intercept ? { intercept: { ...entry.intercept } } : {}),
-    children: (entry.children ?? []).map(cloneCompositionEntry),
-  };
-}
-
-function* walkCompositionEntry(entry: MakaCompositionEntry): Generator<MakaCompositionEntry> {
-  yield entry;
-  for (const child of entry.children ?? []) yield* walkCompositionEntry(child);
-}
-
 function freezeCompositionState(state: MakaCompositionState): MakaCompositionState {
-  const freezeEntry = (entry: MakaCompositionEntry): MakaCompositionEntry =>
-    Object.freeze({
-      ...entry,
-      ...(entry.inject && !Array.isArray(entry.inject)
-        ? { inject: Object.freeze({ ...entry.inject }) }
-        : entry.inject
-          ? { inject: Object.freeze([...entry.inject]) }
-          : {}),
-      ...(entry.isolate ? { isolate: Object.freeze({ ...entry.isolate }) } : {}),
-      ...(entry.intercept ? { intercept: Object.freeze({ ...entry.intercept }) } : {}),
-      children: Object.freeze((entry.children ?? []).map(freezeEntry)),
-    });
   return Object.freeze({
     schemaVersion: 1,
     generation: state.generation,
     roots: Object.freeze({
-      profile: Object.freeze(state.roots.profile.map(freezeEntry)),
-      desktopUi: Object.freeze(state.roots.desktopUi.map(freezeEntry)),
+      profile: Object.freeze(state.roots.profile.map(freezeCompositionEntry)),
+      desktopUi: Object.freeze(state.roots.desktopUi.map(freezeCompositionEntry)),
       sessions: Object.freeze(
         Object.fromEntries(
           Object.entries(state.roots.sessions).map(([scopeId, entries]) => [
             scopeId,
-            Object.freeze(entries.map(freezeEntry)),
+            Object.freeze(entries.map(freezeCompositionEntry)),
           ]),
         ),
       ),

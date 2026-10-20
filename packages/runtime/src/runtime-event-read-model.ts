@@ -176,7 +176,6 @@ export interface ProjectRuntimeEventsToStoredMessagesOptions {
     | readonly RuntimeInvocationRecord[]
     | Readonly<Record<string, RuntimeInvocationRecord>>;
   canonicalPermissionOutcomes?: ReadonlyMap<string, CanonicalPermissionOutcomeRecord>;
-  active?: boolean;
   projectToolResult?: (event: RuntimeEvent, decoded: ToolResultContent) => ToolResultContent;
   onMessage?: (message: StoredMessage, sourceEventId: string) => void;
 }
@@ -192,6 +191,15 @@ export interface RuntimeEventStoredMessageProjector {
  * The durable RuntimeEvent remains untouched and the marker names its retained
  * result, so readers can fetch the full output without repeating the command.
  */
+/**
+ * The marker `projectTranscriptToolResult` writes into a truncated terminal
+ * output, as a whole line. It is projection text with no stored counterpart,
+ * so recall removes it before matching; keep this in step with the marker
+ * `truncateToolOutput` builds and the hint below.
+ */
+export const TRANSCRIPT_TOOL_RESULT_SYNTHETIC_TEXT_PATTERN =
+  /^\.\.\.\d+ (?:lines|bytes) truncated\. Read \{"path":"maka:\/\/runtime\/tool-results\/[^"\n]*"\} for the retained output; follow next to continue\. Otherwise work from the kept output above\.$/gmu;
+
 export function projectTranscriptToolResult(
   event: RuntimeEvent,
   content: ToolResultContent,
@@ -243,8 +251,8 @@ export interface ArchivedToolResultReadModelStatus {
 export interface RuntimeEventTerminalFact {
   runId: string;
   turnId: string;
-  runStatus: 'completed' | 'failed' | 'cancelled';
-  turnStatus: 'completed' | 'failed' | 'aborted';
+  runStatus: 'completed' | 'failed' | 'cancelled' | 'handed_off';
+  turnStatus: 'completed' | 'failed' | 'aborted' | 'handed_off';
   terminalEvent: RuntimeEvent;
   failureClass?: string;
   abortSource?: string;
@@ -342,6 +350,7 @@ export function createRuntimeEventStoredMessageProjector(
     diagnosticPosition: number;
   }> = [];
   const permissionRequestIds = new Set<string>();
+  const endedInvocationIds = new Set<string>();
   let nextSourceOrder = 0;
   let finished: RuntimeEventReadModelProjection | undefined;
   const attributeEmitted = (
@@ -565,6 +574,7 @@ export function createRuntimeEventStoredMessageProjector(
       projected = projectTokenUsage(event, state, messages) || projected;
     }
 
+    if (isTerminalRuntimeEvent(event)) endedInvocationIds.add(event.invocationId);
     if (isTerminalRuntimeEvent(event) && !event.actions?.handoffPause) {
       projected = projectTerminalTurnState(event, state, messages) || projected;
     }
@@ -598,8 +608,7 @@ export function createRuntimeEventStoredMessageProjector(
 
   const push = (event: RuntimeEvent): void => {
     if (finished) throw new Error('RuntimeEvent StoredMessage projector is already finished');
-    const sourceOrder = nextSourceOrder++;
-    projectEvent(options.active ? settledPresentationEvent(event) : event, sourceOrder);
+    projectEvent(event, nextSourceOrder++);
   };
 
   const finish = (): RuntimeEventReadModelProjection => {
@@ -620,13 +629,6 @@ export function createRuntimeEventStoredMessageProjector(
       attributeDiagnostics(acceptance.sourceOrder, acceptance.diagnosticPosition);
     }
 
-    if (options.active) {
-      for (const pendingItems of [...state.thinkingByMessageId.values()]) {
-        const pending = pendingItems.at(-1);
-        if (pending) projectEvent(emptyAssistantText(pending.event), pending.sourceOrder);
-      }
-    }
-
     const orderedDiagnostics = state.diagnostics
       .map((diagnostic, index) => ({ diagnostic, source: diagnosticSources[index]! }))
       .sort(
@@ -641,16 +643,17 @@ export function createRuntimeEventStoredMessageProjector(
       ...orderedDiagnostics.map(({ diagnostic }) => diagnostic),
     );
 
-    if (!options.active) {
-      for (const pendingItems of state.thinkingByMessageId.values()) {
-        for (const pending of pendingItems) {
-          diagnostic(
-            state,
-            pending.event,
-            'unsupported_event',
-            'thinking content has no assistant text row with a matching message id',
-          );
-        }
+    // Before its invocation ends, thinking may still get its text in a later
+    // event, so an unended prefix leaves it without a row rather than a defect.
+    for (const pendingItems of state.thinkingByMessageId.values()) {
+      for (const pending of pendingItems) {
+        if (!endedInvocationIds.has(pending.event.invocationId)) continue;
+        diagnostic(
+          state,
+          pending.event,
+          'unsupported_event',
+          'thinking content has no assistant text row with a matching message id',
+        );
       }
     }
 
@@ -850,6 +853,23 @@ export function classifyRuntimeEventTerminalFact(
   }
 
   const terminalEvent = terminalSignals[0]!;
+  // A handoff pause seals the run without ending the turn: the successor run
+  // owns the turn's terminal state. The pause carries no terminal status by
+  // design — completed/failed/aborted would each be a lie about a run that was
+  // none of them — so it classifies as its own status. The event is immutable
+  // once written, so ledgers written before this classification carry exactly
+  // this shape.
+  if (terminalEvent.actions?.handoffPause) {
+    const fact: RuntimeEventTerminalFact = {
+      runId: invocation.runId,
+      turnId: invocation.turnId,
+      runStatus: 'handed_off',
+      turnStatus: 'handed_off',
+      terminalEvent,
+      diagnostics,
+    };
+    return { fact, diagnostics };
+  }
   if (!isTerminalRuntimeEventStatus(terminalEvent.status)) {
     diagnostics.push(
       readModelDiagnostic(
@@ -955,6 +975,7 @@ function projectText(
       turnId: event.turnId,
       ts: event.ts,
       text: event.content.text,
+      ...(event.content.summary !== undefined ? { summary: event.content.summary } : {}),
       ...(event.content.interrupted ? { interrupted: true } : {}),
       ...(event.content.providerOptions !== undefined
         ? { providerOptions: structuredClone(event.content.providerOptions) }
@@ -1222,6 +1243,7 @@ function projectFunctionResponse(
     ts: event.ts,
     toolUseId,
     isError: event.content.isError === true,
+    ...(event.content.outcome ? { outcome: event.content.outcome } : {}),
     content: resultContent,
     ...(event.content.providerExecuted !== undefined
       ? { providerExecuted: event.content.providerExecuted }

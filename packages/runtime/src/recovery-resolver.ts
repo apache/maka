@@ -28,9 +28,6 @@ import {
   type ToolLedgerScanOperation,
 } from '@maka/core/tool-ledger-scanner';
 import { interpretScannedToolRecovery } from '@maka/core/tool-recovery-bundle';
-import type { ToolOutcomeCommit } from './runtime-commit-sink.js';
-import type { ToolMode } from '@maka/core/tool-mode';
-import { compatibilityToolResultProjection } from './durable-tool-result-projection.js';
 
 export type ToolRecoveryDecisionStatus =
   | 'completed'
@@ -85,7 +82,6 @@ export interface RuntimeRecoveryResolution {
     eventId: string;
   }>;
   hasCorruption: boolean;
-  requiresReconciliation: boolean;
 }
 
 export function resolveRuntimeRecovery(events: readonly RuntimeEvent[]): RuntimeRecoveryResolution {
@@ -119,79 +115,7 @@ export function resolveRuntimeRecovery(events: readonly RuntimeEvent[]): Runtime
     decisions,
     issues,
     hasCorruption,
-    requiresReconciliation:
-      !hasCorruption && decisions.some((decision) => decision.status === 'indeterminate'),
   };
-}
-
-export function buildInterruptedCodeModeOutcomeCommits(
-  events: readonly RuntimeEvent[],
-  now: number,
-  toolMode: ToolMode,
-): ToolOutcomeCommit[] {
-  if (toolMode !== 'code_mode') return [];
-  const eventsById = new Map(events.map((event) => [event.id, event] as const));
-  const recovery = resolveRuntimeRecovery(events);
-  return recovery.decisions.flatMap((decision) => {
-    if (
-      decision.status !== 'indeterminate' ||
-      decision.reason !== 'dispatch_without_response' ||
-      !decision.operationId ||
-      !decision.callRuntimeEventId
-    ) {
-      return [];
-    }
-    const callEvent = eventsById.get(decision.callRuntimeEventId);
-    const call = callEvent?.content;
-    if (
-      !callEvent ||
-      call?.kind !== 'function_call' ||
-      call.name !== 'exec' ||
-      callEvent.origin === 'code_mode' ||
-      callEvent.modelVisibility === 'hidden'
-    ) {
-      return [];
-    }
-    const result = {
-      kind: 'json' as const,
-      value: {
-        kind: 'code_mode' as const,
-        status: 'interrupted' as const,
-        message: 'Code Mode execution was interrupted by runtime recovery.',
-      },
-    };
-    const responseContent = {
-      kind: 'function_response' as const,
-      id: call.id,
-      name: call.name,
-      result,
-      isError: true as const,
-    };
-    const modelProjection = compatibilityToolResultProjection(responseContent, callEvent.sessionId);
-    const runtimeEvent: RuntimeEvent = {
-      id: `${decision.operationId}_response`,
-      invocationId: callEvent.invocationId,
-      runId: callEvent.runId,
-      sessionId: callEvent.sessionId,
-      turnId: callEvent.turnId,
-      ts: now,
-      partial: false,
-      role: 'tool',
-      author: 'tool',
-      origin: 'provider',
-      modelVisibility: 'visible',
-      content: { ...responseContent, ...(modelProjection ? { modelProjection } : {}) },
-      refs: { operationId: decision.operationId, toolCallId: call.id },
-    };
-    return [
-      {
-        operationId: decision.operationId,
-        journalEventId: `${decision.operationId}_outcome`,
-        runtimeEvent,
-        committedAt: now,
-      },
-    ];
-  });
 }
 
 function decisionFromOperation(
@@ -247,6 +171,8 @@ function decisionFromOperation(
   if (operation.reconcileEvents.length === 0 && operation.decisionEvents.length === 0) {
     return decision;
   }
+  // Historical bundles remain authoritative when reading an existing ledger.
+  // New uncertain calls are sealed as outcome_unknown, never reconciled.
   const recovery = interpretScannedToolRecovery(operation, eventOrder);
   if (recovery.kind !== 'valid') {
     decision.status = 'corruption';

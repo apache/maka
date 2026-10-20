@@ -265,6 +265,7 @@ describe('provider request tracker', () => {
     await drain(result.stream);
 
     assert.equal(attempts[0]?.contextWindow, 200_000);
+    assert.equal(tracker.latestCompletedMainRequestAt, attempts[0]?.completedAt);
   });
 
   test('omits a non-positive request model context window', async () => {
@@ -810,7 +811,7 @@ describe('canonical model-call accounting', () => {
     assert.equal(attempt.httpStatus, 429);
     assert.equal(attempt.providerCode, 'rate_limit_exceeded');
     assert.equal(attempt.providerRequestId, 'req-compact-1');
-    assert.equal(attempt.retryable, false);
+    assert.equal(attempt.retryable, true);
     assert.doesNotMatch(
       JSON.stringify(attempt),
       /private request body|private response body|private prompt/i,

@@ -30,6 +30,9 @@ import { assertProductNightlyAdvances } from './release-version.mjs';
 
 const run = promisify(execFile);
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+const { version: productVersion } = JSON.parse(
+  await readFile(new URL('../package.json', import.meta.url), 'utf8'),
+);
 
 test('a nightly identity is a dev build of the checked-in product version', () => {
   assert.deepEqual(
@@ -66,7 +69,7 @@ test('the version handoff CLI passes only the exact version to Desktop', async (
   const record = join(fixture, 'version.txt');
   const output = join(fixture, 'github-output');
   const script = join(repoRoot, 'scripts', 'product-nightly.mjs');
-  const version = '0.2.0-dev.42.20260829';
+  const version = `${productVersion}-dev.42.20260829`;
   await run(process.execPath, [script, 'write-version', record, version]);
   await run(process.execPath, [script, 'inspect-version', record, output]);
   assert.equal(await readFile(output, 'utf8'), `version=${version}\n`);
@@ -94,7 +97,7 @@ test('the npm channel CLI advances across the checked-in product version boundar
     run(process.execPath, [
       join(repoRoot, 'scripts', 'product-nightly.mjs'),
       'assert-channel-advance',
-      '0.2.0-dev.43.20260830',
+      `${productVersion}-dev.43.20260830`,
       '0.1.0-dev.42.20260829',
     ]),
   );
@@ -125,7 +128,7 @@ test('the identity entrypoint runs before repository dependencies are installed'
     },
   });
   assert.deepEqual(JSON.parse(stdout), {
-    version: '0.2.0-dev.42.20260829',
+    version: `${productVersion}-dev.42.20260829`,
     sourceCommit: 'a'.repeat(40),
   });
 });

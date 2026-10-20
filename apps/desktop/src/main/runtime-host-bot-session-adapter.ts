@@ -123,7 +123,7 @@ export function createRuntimeHostBotSessionAdapter(
       return 'ready';
     },
 
-    async runTurn({ sessionId, turnId, text, onReplySnapshot }) {
+    async runTurn({ sessionId, turnId, text, origin, onReplySnapshot }) {
       let session;
       try {
         session = await deps.client.openSession(sessionId);
@@ -140,10 +140,14 @@ export function createRuntimeHostBotSessionAdapter(
       void completion.catch(() => undefined);
       try {
         try {
+          // The Host holds this subscription's frames until here, so the reply
+          // has to be collectable before the Turn that produces it starts.
+          await session.ready();
           const started = await deps.client.startTurn({
             sessionId,
             turnId,
             content: { text },
+            ...(origin !== undefined ? { origin } : {}),
           });
           if (started.kind === 'blocked') {
             return {

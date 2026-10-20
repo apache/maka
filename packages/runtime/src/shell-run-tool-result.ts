@@ -33,7 +33,7 @@ import type {
 } from '@maka/core/events';
 import { encodedTerminalInputActionsByteLength } from '@maka/core/terminal-input';
 
-import { isActiveShellRunStatus } from '@maka/core/shell-run';
+import { isActiveShellRunStatus, isDesktopTerminalShellRun } from '@maka/core/shell-run';
 
 import { shellRunResourceRef, type ShellRunWriteInput } from './shell-run-contract.js';
 import { truncateToolOutput } from './tool-output.js';
@@ -52,7 +52,9 @@ export function shellRunUpdate(record: ShellRunRecord): ShellRunUpdate {
     ownership: { kind: 'local' },
     sourceTurnId: record.sourceTurnId,
     sourceToolCallId: record.sourceToolCallId,
-    result: shellRunSnapshotContent(record),
+    result: isDesktopTerminalShellRun({ ...record, mode: record.output.mode })
+      ? shellRunStateContent(record)
+      : shellRunSnapshotContent(record),
   };
 }
 
@@ -146,6 +148,7 @@ function shellRunStateContent(record: ShellRunRecord): ShellRunCompactResult {
     cmd: record.command,
     startedAt: record.startedAt,
     updatedAt: record.updatedAt,
+    ...(record.pid !== undefined ? { pid: record.pid } : {}),
     ...(record.completedAt !== undefined ? { completedAt: record.completedAt } : {}),
     ...(record.timeoutMs !== undefined ? { timeoutMs: record.timeoutMs } : {}),
     ...(record.exitCode !== undefined ? { exitCode: record.exitCode } : {}),

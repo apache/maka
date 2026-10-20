@@ -33,6 +33,7 @@ export type DesktopRuntimeHostManagementTerminalFrame = Exclude<
 
 export interface DesktopRuntimeHostManagementProvider {
   readonly profileId: string;
+  readonly platform: 'posix' | 'win32';
   readonly accessManagementAvailable: boolean;
   run(
     action: Exclude<DesktopRuntimeHostManagementAction, 'uninstall'>,

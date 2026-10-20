@@ -1,0 +1,69 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+.session-history-swipe {
+  position: fixed;
+  z-index: 50;
+  width: calc(28px + var(--swipe-progress) * 12px);
+  height: 104px;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  border-radius: 0 14px 14px 0;
+  /* Preserve the theme hue with enough contrast for the white arrow. */
+  background: oklch(from var(--accent) 0.64 c h);
+  color: #fff;
+  opacity: calc(0.6 + var(--swipe-progress) * 0.4);
+  --swipe-anchor-x: 0%;
+  transform: translate(var(--swipe-anchor-x), -50%);
+  transition: width var(--swipe-arrival-duration) cubic-bezier(0.2, 0.8, 0.2, 1), opacity var(--swipe-opacity-duration) ease-out;
+}
+
+.session-history-swipe[data-direction="1"] {
+  --swipe-anchor-x: -100%;
+  border-radius: 14px 0 0 14px;
+}
+
+@starting-style {
+  .session-history-swipe {
+    opacity: 0;
+    width: 24px;
+  }
+}
+
+.session-history-swipe[data-phase="committed"] {
+  opacity: 1;
+}
+
+.session-history-swipe[data-phase="unavailable"] {
+  opacity: 0.3;
+  width: 28px;
+}
+
+.session-history-swipe[data-phase="returning"] {
+  opacity: 0;
+  width: 24px;
+  transition-duration: var(--swipe-return-duration);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .session-history-swipe {
+    transition: none;
+  }
+}

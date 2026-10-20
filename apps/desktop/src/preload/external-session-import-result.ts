@@ -18,6 +18,7 @@
  */
 
 import type { SessionSummary } from '@maka/core/session';
+import type { ExternalSessionLimit } from '@maka/core/external-session';
 
 /**
  * Why an import did not produce a task. Each maps to a specific, actionable
@@ -31,10 +32,20 @@ export type ExternalSessionImportFailureReason =
   | 'commit_outcome_unknown'
   /** No usable model connection to attach the imported task to — configure a model first. */
   | 'no_model'
+  /** A fixed import budget was exceeded; the source must change before retrying. */
+  | 'source_limit_exceeded'
   /** The source conversation could not be read or converted (e.g. too large or malformed). */
   | 'source_unreadable';
 
 /** Stable Desktop IPC result for the import failures the page renders distinctly. */
 export type ExternalSessionImportIpcResult<T extends SessionSummary = SessionSummary> =
   | { readonly ok: true; readonly session: T }
-  | { readonly ok: false; readonly reason: ExternalSessionImportFailureReason };
+  | {
+      readonly ok: false;
+      readonly reason: Exclude<ExternalSessionImportFailureReason, 'source_limit_exceeded'>;
+    }
+  | {
+      readonly ok: false;
+      readonly reason: 'source_limit_exceeded';
+      readonly limit: ExternalSessionLimit;
+    };

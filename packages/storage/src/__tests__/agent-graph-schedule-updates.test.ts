@@ -38,6 +38,33 @@ import {
 } from '../sqlite-session-metadata-store.js';
 
 describe('SQLite agent graph schedule updates', () => {
+  test('lists only graph identities that have durable schedule intent', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    try {
+      await store.commitAgentGraphScheduleUpdate(request());
+      await store.commitAgentGraphScheduleUpdate(
+        request({
+          graphId: 'graph-2',
+          updateId: `graph_update_${'6'.repeat(32)}`,
+          updateFingerprint: `sha256:${'7'.repeat(64)}`,
+          source: {
+            sessionId: 'session-second',
+            runId: 'run-second',
+            turnId: 'turn-second',
+            toolCallId: 'tool-second',
+          },
+        }),
+      );
+
+      assert.deepEqual(await store.listAgentGraphScheduleRecoveryGraphIds(), [
+        'graph-1',
+        'graph-2',
+      ]);
+    } finally {
+      store.close();
+    }
+  });
+
   test('commits ordered idempotent updates and closes the schedule atomically', async () => {
     const store = createSqliteSessionMetadataStore(':memory:', { now: nextNumber(40) });
     try {

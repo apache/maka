@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiLocale, defineShippedUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 export interface SharedUiCopy {
   capabilityAudit: {
@@ -30,6 +30,15 @@ export interface SharedUiCopy {
   markdown: {
     invalidInternalLink: string;
     unsafeLink: string;
+    imageLoading: string;
+    imageRemoteRedacted: string;
+    imageRemoteUnavailable: string;
+    imageArchiveFailure: (reason: import('@maka/core/image-delivery').ImageDeliveryFailure) => string;
+    imageUnavailable: string;
+    imageLoadFailed: string;
+    imageUnsupported: string;
+    imageRetry: string;
+    imageOpen: string;
     taskList: string;
     table: string;
     checkbox: string;
@@ -52,6 +61,8 @@ export interface SharedUiCopy {
     mermaidExpandView: string;
     mermaidCollapseView: string;
     mermaidZoomLevel: (percent: number) => string;
+    mermaidCopyImage: string;
+    mermaidCopyImageFailed: string;
   };
   formControls: {
     selectPlaceholder: string;
@@ -60,8 +71,10 @@ export interface SharedUiCopy {
     optional: string;
   };
   modelPicker: {
+    empty: string;
+    noResults: string;
+    clearSearch: string;
     searchPlaceholder: string;
-    knowledgeCutoff: (date: string) => string;
   };
   moduleHubs: {
     extensions: {
@@ -102,18 +115,14 @@ export interface SharedUiCopy {
     cancel: string;
   };
   stream: {
-    assistantChunkTruncated: string;
     assistantTailTruncated: string;
     thinkingHeadTruncated: string;
-    thinkingChunkTruncated: string;
     toolChunkTruncated: string;
   };
   artifact: { unknownSize: string };
   providers: { minimaxChina: string; custom: string; claudeSubscription: string };
 }
-
-const SHARED_UI_COPY = {
-  'zh-CN': {
+const sharedUiCopyZhCn: SharedUiCopy = {
     capabilityAudit: {
       ariaLabel: '能力风险提示',
       needsAuthorization: (count) => `${count} 个来源等待授权`,
@@ -124,6 +133,24 @@ const SHARED_UI_COPY = {
     markdown: {
       invalidInternalLink: '内部链接无效',
       unsafeLink: '链接不安全',
+      imageLoading: '正在加载图片…',
+      imageRemoteRedacted: '图片地址含已隐藏的敏感信息，无法加载或在浏览器中打开。',
+      imageRemoteUnavailable: '此处无法加载远程图片，可在浏览器中打开。',
+      imageArchiveFailure: (reason) => ({
+        quota_exceeded: '图片未保存：存储配额已满（每个会话 100 MiB，工作区 1 GiB）。删除不再需要的会话可释放空间，仅归档不会释放。',
+        too_large: '图片未保存：超过自动保存的大小或像素上限。',
+        not_allowed: '图片未保存：当前权限、联网设置或来源地址不允许加载。',
+        not_found: '图片未保存：原文件已不存在。',
+        unsupported_mime: '图片未保存：不是支持的有效图片。',
+        download_failed: '图片未保存：下载失败，请重试。',
+        read_failed: '图片未保存：读取失败，请重试。',
+        queue_full: '图片未保存：保存队列已满，请稍后重试。',
+      })[reason],
+      imageUnavailable: '当前无法读取图片附件。',
+      imageLoadFailed: '图片加载失败，请重试。',
+      imageUnsupported: '此图片地址无法在这里显示。',
+      imageRetry: '重试',
+      imageOpen: '在浏览器中打开',
       taskList: '任务列表',
       table: '表格',
       checkbox: '复选框',
@@ -146,6 +173,8 @@ const SHARED_UI_COPY = {
       mermaidExpandView: '全屏查看图表',
       mermaidCollapseView: '退出全屏图表',
       mermaidZoomLevel: (percent) => `缩放比例 ${percent}%`,
+      mermaidCopyImage: '复制图表',
+      mermaidCopyImageFailed: '复制图表失败',
     },
     formControls: {
       selectPlaceholder: '选择…',
@@ -154,8 +183,10 @@ const SHARED_UI_COPY = {
       optional: '可选',
     },
     modelPicker: {
+      empty: '暂无可用模型',
+      noResults: '没有匹配的模型',
+      clearSearch: '清除搜索',
       searchPlaceholder: '搜索模型…',
-      knowledgeCutoff: (date) => `知识截止：${date}`,
     },
     moduleHubs: {
       extensions: {
@@ -186,11 +217,11 @@ const SHARED_UI_COPY = {
     },
     primitives: { loading: '加载中', close: '关闭', resizeHandle: '调整宽度' },
     toast: { notifications: '通知', closeNotification: '关闭通知', confirm: '确定', cancel: '取消' },
-    stream: { assistantChunkTruncated: '\n[…单条 delta 已截断]\n', assistantTailTruncated: '\n\n[…后续已截断]', thinkingHeadTruncated: '[…已截断早期 reasoning]\n', thinkingChunkTruncated: '\n[…单条 delta 已截断]\n', toolChunkTruncated: '\n[…已截断]\n' },
+    stream: { assistantTailTruncated: '\n\n[…后续已截断]', thinkingHeadTruncated: '[…已截断早期 reasoning]\n', toolChunkTruncated: '\n[…已截断]\n' },
     artifact: { unknownSize: '未知大小' },
     providers: { minimaxChina: 'MiniMax 中国站', custom: '自定义', claudeSubscription: 'Claude 订阅' },
-  },
-  'zh-TW': {
+  };
+const sharedUiCopyZhTw: SharedUiCopy = {
     capabilityAudit: {
       ariaLabel: '能力風險提示',
       needsAuthorization: (count) => `${count} 個來源等待授權`,
@@ -201,6 +232,24 @@ const SHARED_UI_COPY = {
     markdown: {
       invalidInternalLink: '內部連結無效',
       unsafeLink: '連結不安全',
+      imageLoading: '正在載入圖片…',
+      imageRemoteRedacted: '圖片位址含已隱藏的敏感資訊，無法載入或在瀏覽器中開啟。',
+      imageRemoteUnavailable: '此處無法載入遠端圖片，可在瀏覽器中開啟。',
+      imageArchiveFailure: (reason) => ({
+        quota_exceeded: '圖片未儲存：儲存配額已滿（每個對話 100 MiB，工作區 1 GiB）。刪除不再需要的對話可釋放空間，僅封存不會釋放。',
+        too_large: '圖片未儲存：超過自動儲存的大小或像素上限。',
+        not_allowed: '圖片未儲存：目前權限、連線設定或來源位址不允許載入。',
+        not_found: '圖片未儲存：原檔案已不存在。',
+        unsupported_mime: '圖片未儲存：不是支援的有效圖片。',
+        download_failed: '圖片未儲存：下載失敗，請重試。',
+        read_failed: '圖片未儲存：讀取失敗，請重試。',
+        queue_full: '圖片未儲存：儲存佇列已滿，請稍後重試。',
+      })[reason],
+      imageUnavailable: '目前無法讀取圖片附件。',
+      imageLoadFailed: '圖片載入失敗，請重試。',
+      imageUnsupported: '此圖片位址無法在這裡顯示。',
+      imageRetry: '重試',
+      imageOpen: '在瀏覽器中開啟',
       taskList: '任務列表',
       table: '表格',
       checkbox: '核取方塊',
@@ -223,6 +272,8 @@ const SHARED_UI_COPY = {
       mermaidExpandView: '全屏檢視圖表',
       mermaidCollapseView: '退出全屏圖表',
       mermaidZoomLevel: (percent) => `縮放比例 ${percent}%`,
+      mermaidCopyImage: '複製圖表',
+      mermaidCopyImageFailed: '複製圖表失敗',
     },
     formControls: {
       selectPlaceholder: '選擇…',
@@ -231,8 +282,10 @@ const SHARED_UI_COPY = {
       optional: '可選',
     },
     modelPicker: {
+      empty: '暫無可用模型',
+      noResults: '沒有符合的模型',
+      clearSearch: '清除搜尋',
       searchPlaceholder: '搜尋模型…',
-      knowledgeCutoff: (date) => `知識截止：${date}`,
     },
     moduleHubs: {
       extensions: {
@@ -263,11 +316,11 @@ const SHARED_UI_COPY = {
     },
     primitives: { loading: '載入中', close: '關閉', resizeHandle: '調整寬度' },
     toast: { notifications: '通知', closeNotification: '關閉通知', confirm: '確定', cancel: '取消' },
-    stream: { assistantChunkTruncated: '\n[…單條 delta 已截斷]\n', assistantTailTruncated: '\n\n[…後續已截斷]', thinkingHeadTruncated: '[…已截斷早期 reasoning]\n', thinkingChunkTruncated: '\n[…單條 delta 已截斷]\n', toolChunkTruncated: '\n[…已截斷]\n' },
+    stream: { assistantTailTruncated: '\n\n[…後續已截斷]', thinkingHeadTruncated: '[…已截斷早期 reasoning]\n', toolChunkTruncated: '\n[…已截斷]\n' },
     artifact: { unknownSize: '未知大小' },
     providers: { minimaxChina: 'MiniMax 中國站', custom: '自訂', claudeSubscription: 'Claude 訂閱' },
-  },
-  en: {
+  };
+const sharedUiCopyEn: SharedUiCopy = {
     capabilityAudit: {
       ariaLabel: 'Capability risks',
       needsAuthorization: (count) => `${count} ${count === 1 ? 'source' : 'sources'} awaiting authorization`,
@@ -278,6 +331,24 @@ const SHARED_UI_COPY = {
     markdown: {
       invalidInternalLink: 'Invalid internal link',
       unsafeLink: 'Unsafe link',
+      imageLoading: 'Loading image…',
+      imageRemoteRedacted: 'The image address contains hidden sensitive information. Loading and opening it are disabled.',
+      imageRemoteUnavailable: 'Remote images cannot be loaded here. You can open this image in your browser.',
+      imageArchiveFailure: (reason) => ({
+        quota_exceeded: 'Image not saved: storage quota reached (100 MiB per session, 1 GiB per workspace). Delete unneeded sessions to free space; archiving does not free space.',
+        too_large: 'Image not saved: exceeds the automatic save size or pixel limit.',
+        not_allowed: 'Image not saved: permissions, network settings, or the source address block loading.',
+        not_found: 'Image not saved: the original file no longer exists.',
+        unsupported_mime: 'Image not saved: not a supported valid image.',
+        download_failed: 'Image not saved: download failed. Try again.',
+        read_failed: 'Image not saved: read failed. Try again.',
+        queue_full: 'Image not saved: the save queue is full. Try again later.',
+      })[reason],
+      imageUnavailable: 'This image attachment is unavailable here.',
+      imageLoadFailed: 'Could not load the image. Try again.',
+      imageUnsupported: 'This image address cannot be displayed here.',
+      imageRetry: 'Retry',
+      imageOpen: 'Open in browser',
       taskList: 'Task list',
       table: 'Table',
       checkbox: 'Checkbox',
@@ -300,6 +371,8 @@ const SHARED_UI_COPY = {
       mermaidExpandView: 'View diagram fullscreen',
       mermaidCollapseView: 'Exit diagram fullscreen',
       mermaidZoomLevel: (percent) => `Zoom level ${percent}%`,
+      mermaidCopyImage: 'Copy diagram',
+      mermaidCopyImageFailed: 'Copy diagram failed',
     },
     formControls: {
       selectPlaceholder: 'Select…',
@@ -308,8 +381,10 @@ const SHARED_UI_COPY = {
       optional: 'Optional',
     },
     modelPicker: {
+      empty: 'No models available',
+      noResults: 'No matching models',
+      clearSearch: 'Clear search',
       searchPlaceholder: 'Search models…',
-      knowledgeCutoff: (date) => `Knowledge cutoff: ${date}`,
     },
     moduleHubs: {
       extensions: {
@@ -340,11 +415,12 @@ const SHARED_UI_COPY = {
     },
     primitives: { loading: 'Loading', close: 'Close', resizeHandle: 'Resize handle' },
     toast: { notifications: 'Notifications', closeNotification: 'Close notification', confirm: 'Confirm', cancel: 'Cancel' },
-    stream: { assistantChunkTruncated: '\n[…single delta truncated]\n', assistantTailTruncated: '\n\n[…remaining output truncated]', thinkingHeadTruncated: '[…earlier reasoning truncated]\n', thinkingChunkTruncated: '\n[…single delta truncated]\n', toolChunkTruncated: '\n[…truncated]\n' },
+    stream: { assistantTailTruncated: '\n\n[…remaining output truncated]', thinkingHeadTruncated: '[…earlier reasoning truncated]\n', toolChunkTruncated: '\n[…truncated]\n' },
     artifact: { unknownSize: 'Unknown size' },
     providers: { minimaxChina: 'MiniMax China', custom: 'Custom', claudeSubscription: 'Claude subscription' },
-  },
-} satisfies UiCatalog<SharedUiCopy>;
+  };
+
+const SHARED_UI_COPY = resolveUiMessageCatalog(defineShippedUiMessageCatalog<SharedUiCopy>()({ 'zh-CN': sharedUiCopyZhCn, 'zh-TW': sharedUiCopyZhTw, en: sharedUiCopyEn }));
 
 export function getSharedUiCopy(locale: UiLocale): SharedUiCopy {
   return SHARED_UI_COPY[locale];

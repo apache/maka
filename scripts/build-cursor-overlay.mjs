@@ -82,11 +82,11 @@ async function buildBrowserDialogDesignTokens() {
     readFile(join(renderer, 'astryx-theme', 'maka.css'), 'utf8'),
     readFile(join(renderer, 'maka-tokens.css'), 'utf8'),
   ]);
-  const astryxComponentsMarker = '\n  .astryx-heading.level-1 {';
+  const astryxComponentsMarker = '\n  .astryx-heading[data-level="1"] {';
   const astryxTokenEnd = astryxTheme.indexOf(astryxComponentsMarker);
-  const baseStylesMarker =
-    '/* =============================================================================\n   BASE STYLES';
-  const tokenEnd = makaTokens.indexOf(baseStylesMarker);
+  const typeRolesMarker =
+    '/* =============================================================================\n   TYPE ROLES';
+  const tokenEnd = makaTokens.indexOf(typeRolesMarker);
   if (astryxTokenEnd < 0 || tokenEnd < 0) {
     throw new Error('Unable to locate the dialog design-token boundaries');
   }

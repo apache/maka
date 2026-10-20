@@ -1,0 +1,122 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import type { StoredMessage } from '@maka/core/session';
+import type { UiLocale } from '@maka/core/ui-locale';
+import type { TurnFooterActionMeta } from '@maka/ui';
+import { getDesktopConversationCopy } from '../../../application/contracts/conversation-copy.js';
+import { getShellCopy, localizedShellErrorMessage } from '../../../locales/shell-copy.js';
+import {
+  isSessionWorkspaceUnavailableError,
+  showSessionWorkspaceUnavailableToast,
+} from '../../../application/contracts/session-workspace-errors.js';
+import { acquireSessionCopyAttempt } from '../../../application/contracts/session-copy-attempt.js';
+import type { ComposerSubmissionServices } from '../submission-services.js';
+
+type ToastApi = {
+  info(title: string, description?: string): void;
+  success(title: string, description?: string): void;
+  error(
+    title: string,
+    description?: string,
+    diagnosticDetails?: string,
+    diagnosticTarget?: { sessionId: string },
+  ): void;
+};
+
+export interface TurnActions {
+  handleTurnFooterAction(turnId: string, actionId: TurnFooterActionMeta['id']): Promise<void>;
+}
+
+export function createTurnActions(deps: {
+  services: Pick<ComposerSubmissionServices, 'branchFromTurn'>;
+  uiLocale: UiLocale;
+  activeIdRef: { readonly current: string | undefined };
+  captureSelection(): () => boolean;
+  turnActionRegistry: {
+    addKey(key: string): boolean;
+    clearKey(key: string): void;
+    keyOf(sessionId: string, turnId: string, actionId: string): string;
+  };
+  openSessionInChat: (sessionId: string, turnId?: string) => void;
+  refreshSessions: () => Promise<unknown>;
+  toastApi: ToastApi;
+}): TurnActions {
+  const {
+    services,
+    uiLocale,
+    activeIdRef,
+    captureSelection,
+    turnActionRegistry,
+    openSessionInChat,
+    refreshSessions,
+    toastApi,
+  } = deps;
+  const copy = getDesktopConversationCopy(uiLocale).actions;
+
+  async function handleTurnFooterAction(turnId: string, actionId: TurnFooterActionMeta['id']) {
+    if (actionId === 'copy') return; // handled in-component
+    const sessionId = activeIdRef.current;
+    if (!sessionId) return;
+    const selectionIsCurrent = captureSelection();
+    const key = turnActionRegistry.keyOf(sessionId, turnId, actionId);
+    // Ref-backed guard blocks same-frame double clicks before React has
+    // committed the disabled state. State alone is too late here because
+    // Branch IPC returns after the copy starts asynchronously.
+    if (!turnActionRegistry.addKey(key)) return;
+    try {
+      if (actionId === 'branch') {
+        const copyAttempt = acquireSessionCopyAttempt(
+          {
+            scope: `turn-footer:${turnId}`,
+            kind: 'branch',
+            sourceSessionId: sessionId,
+          },
+          turnId,
+        );
+        const newSession = await services.branchFromTurn(sessionId, {
+          sourceTurnId: copyAttempt.sourceTurnId,
+          copyId: copyAttempt.copyId,
+        });
+        copyAttempt.complete();
+        await refreshSessions();
+        if (selectionIsCurrent()) {
+          openSessionInChat(newSession.id);
+          toastApi.success(copy.branchCreatedTitle, copy.branchCreatedDescription(newSession.name));
+        }
+      }
+    } catch (error) {
+      if (!selectionIsCurrent()) return;
+      if (isSessionWorkspaceUnavailableError(error)) {
+        showSessionWorkspaceUnavailableToast(toastApi, getShellCopy(uiLocale).errors, { sessionId });
+      } else {
+        toastApi.error(
+          copy.operationFailedTitle,
+          localizedShellErrorMessage(error, copy.operationFailedFallback, uiLocale),
+          undefined,
+          { sessionId },
+        );
+      }
+    } finally {
+      turnActionRegistry.clearKey(key);
+    }
+  }
+
+  return { handleTurnFooterAction };
+}

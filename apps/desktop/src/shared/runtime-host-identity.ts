@@ -32,9 +32,6 @@ export interface DesktopHostRef {
   readonly hostId: string;
 }
 
-/** Desktop launch identity persisted by Host as sourceTurnId/sourceToolCallId. */
-export const DESKTOP_TERMINAL_LAUNCH_PREFIX = 'desktop-terminal-';
-
 export interface DesktopTargetScope extends DesktopHostRef {
   readonly targetEpoch: string;
 }

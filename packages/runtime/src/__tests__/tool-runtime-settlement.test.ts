@@ -394,6 +394,42 @@ describe('ToolRuntime settlement', () => {
     }
   });
 
+  it('records a thrown Bash cancellation as an aborted tool outcome', async () => {
+    const runtime = makeRuntime();
+    const events: SessionEvent[] = [];
+    const bash = buildManagedBashTool({
+      runForegroundBash: async () => {
+        throw Object.assign(new Error('cancelled'), {
+          code: 130,
+          stdout: '',
+          stderr: 'cancelled',
+        });
+      },
+      runBackgroundBash: async () => {
+        throw new Error('not used');
+      },
+    });
+
+    await runtime.settleToolCall({
+      tool: bash,
+      turnId: 'turn-1',
+      stepId: 'step-1',
+      toolCallId: 'call-cancelled',
+      input: { command: 'printf cancelled', boundary_intent: 'current' },
+      abortSignal: new AbortController().signal,
+      eventSink: {
+        push: (event) => events.push(event),
+        pushAndWaitUntilConsumed: async (event) => {
+          events.push(event);
+        },
+      },
+    });
+
+    const result = events.find((event) => event.type === 'tool_result');
+    assert.equal(result?.type, 'tool_result');
+    assert.equal(result?.outcome, 'aborted');
+  });
+
   it('preserves live provider error mapping', async () => {
     const runtime = makeRuntime();
     const events: SessionEvent[] = [];

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, defineShippedUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 type ReasonCopy = { title: string; description: string };
 
@@ -46,6 +46,10 @@ export type ArtifactCopy = {
     empty: string;
     emptyHint: string;
     back: string;
+    focusPreview: string;
+    releaseToFocus: string;
+    restorePreview: string;
+    moveComposer: string;
     moreActions(name: string): string;
     viewInMaka: string;
     openInDefaultApp: string;
@@ -73,6 +77,7 @@ export type ArtifactCopy = {
     notAllowed: ReasonCopy;
     tooLarge(bytes: number): ReasonCopy;
     unsupportedMime: ReasonCopy;
+    officeUnsupported: ReasonCopy;
   };
   registry: {
     kindDisallowed: ReasonCopy;
@@ -89,9 +94,7 @@ export type ArtifactCopy = {
     loadingImage: string;
   };
 };
-
-const ARTIFACT_COPY = {
-  'zh-CN': {
+const artifactCopyZhCn: ArtifactCopy = {
     pane: {
       refreshFailed: '刷新生成文件失败', openFailed: '无法在 Finder 中打开生成文件', copyFailed: '复制失败',
       readTextFailed: '无法读取生成文件文本内容。', copied: '已复制生成文件文本', saved: '已另存生成文件', saveFailed: '另存失败',
@@ -100,6 +103,7 @@ const ARTIFACT_COPY = {
       listLoadFailed: '生成文件列表载入失败', retrying: '重试中…', retry: '重试', listAria: '生成文件列表',
       previewNamed: (name) => `预览 ${name}`, empty: '暂无生成文件', emptyHint: '助手生成文件后会显示在这里。',
       back: '返回生成文件列表', moreActions: (name) => `${name} 的更多操作`,
+      focusPreview: '聚焦文件', releaseToFocus: '松开以聚焦文件', restorePreview: '还原分栏', moveComposer: '拖到文件中继续输入',
       viewInMaka: '在 Maka 中查看', openInDefaultApp: '在默认应用中打开',
       openInFinder: '在 Finder 中打开', saveAs: '另存为', copy: '复制',
       saveFailures: { not_found: '生成文件不存在。', not_allowed: '生成文件路径检查未通过。', write_failed: '目标位置无法写入。', deleted: '生成文件已删除，不能另存。', source_failed: '生成文件传输中断，请重试。', size_mismatch: '生成文件大小在传输过程中发生变化，请重试。', target_write_failed: '目标位置无法写入。', replace_failed: '替换目标文件失败，原文件已保留。', default: '无法保存生成文件。' },
@@ -117,6 +121,7 @@ const ARTIFACT_COPY = {
       notAllowed: { title: '无法读取生成文件', description: '路径检查未通过，文件已不在允许预览的生成文件目录内。' },
       tooLarge: (bytes) => ({ title: '文件超出预览大小', description: `${bytes} 字节超过文本预览阈值，请通过更多菜单打开或另存完整内容。` }),
       unsupportedMime: { title: '不支持的文件类型', description: '该生成文件的 MIME 类型不在内联预览允许列表中。请使用工具栏「在 Finder 中打开」或「另存为」。' },
+      officeUnsupported: { title: '暂不支持 Office 内联预览', description: '该文件是二进制文档，不能作为文本显示。请在 Finder 中打开或另存为。' },
     },
     registry: {
       kindDisallowed: { title: '当前预览暂不支持该类型', description: '此类生成文件不能在面板内直接预览。请使用「在 Finder 中打开」查看。' },
@@ -126,8 +131,8 @@ const ARTIFACT_COPY = {
       readFailed: { title: '加载预览失败', description: '无法读取文件内容（可能已被删除、移动或权限不足）。请通过「在 Finder 中打开」检查文件。' },
       unsupported: '暂不支持的预览', name: '名称', unnamed: '(未命名)', type: '类型', size: '大小', openInFinder: '在 Finder 中打开', loadingImage: '加载图片预览…',
     },
-  },
-  'zh-TW': {
+  };
+const artifactCopyZhTw: ArtifactCopy = {
     pane: {
       refreshFailed: '重新整理生成檔案失敗', openFailed: '無法在 Finder 中開啟生成檔案', copyFailed: '複製失敗',
       readTextFailed: '無法讀取生成檔案文本內容。', copied: '已複製生成檔案文本', saved: '已另存生成檔案', saveFailed: '另存失敗',
@@ -136,6 +141,7 @@ const ARTIFACT_COPY = {
       listLoadFailed: '生成檔案列表載入失敗', retrying: '重試中…', retry: '重試', listAria: '生成檔案列表',
       previewNamed: (name) => `預覽 ${name}`, empty: '暫無生成檔案', emptyHint: '助手生成檔案後會顯示在這裡。',
       back: '返回生成檔案列表', moreActions: (name) => `${name} 的更多操作`,
+      focusPreview: '聚焦檔案', releaseToFocus: '放開以聚焦檔案', restorePreview: '還原分欄', moveComposer: '拖到檔案中繼續輸入',
       viewInMaka: '在 Maka 中檢視', openInDefaultApp: '在預設應用程式中開啟',
       openInFinder: '在 Finder 中開啟', saveAs: '另存為', copy: '複製',
       saveFailures: { not_found: '生成檔案不存在。', not_allowed: '生成檔案路徑檢查未通過。', write_failed: '目標位置無法寫入。', deleted: '生成檔案已刪除，不能另存。', source_failed: '生成檔案傳輸中斷，請重試。', size_mismatch: '生成檔案大小在傳輸過程中發生變化，請重試。', target_write_failed: '目標位置無法寫入。', replace_failed: '替換目標檔案失敗，原檔案已保留。', default: '無法儲存生成檔案。' },
@@ -153,6 +159,7 @@ const ARTIFACT_COPY = {
       notAllowed: { title: '無法讀取生成檔案', description: '路徑檢查未通過，檔案已不在允許預覽的生成檔案目錄內。' },
       tooLarge: (bytes) => ({ title: '檔案超出預覽大小', description: `${bytes} 位元組超過文本預覽閾值，請透過更多選單開啟或另存完整內容。` }),
       unsupportedMime: { title: '不支援的檔案型別', description: '該生成檔案的 MIME 型別不在內聯預覽允許列表中。請使用工具欄「在 Finder 中開啟」或「另存為」。' },
+      officeUnsupported: { title: '暫不支援 Office 行內預覽', description: '這是二進位文件，不能當作文字顯示。請在 Finder 中開啟或另存。' },
     },
     registry: {
       kindDisallowed: { title: '目前預覽暫不支援該型別', description: '此類生成檔案不能在面板內直接預覽。請使用「在 Finder 中開啟」檢視。' },
@@ -162,8 +169,8 @@ const ARTIFACT_COPY = {
       readFailed: { title: '載入預覽失敗', description: '無法讀取檔案內容（可能已被刪除、移動或權限不足）。請透過「在 Finder 中開啟」檢查檔案。' },
       unsupported: '暫不支援的預覽', name: '名稱', unnamed: '(未命名)', type: '型別', size: '大小', openInFinder: '在 Finder 中開啟', loadingImage: '載入圖片預覽…',
     },
-  },
-  en: {
+  };
+const artifactCopyEn: ArtifactCopy = {
     pane: {
       refreshFailed: 'Failed to refresh generated files', openFailed: 'Could not show generated file in Finder', copyFailed: 'Copy failed',
       readTextFailed: 'Could not read the generated file as text.', copied: 'Generated file text copied', saved: 'Generated file saved as', saveFailed: 'Save as failed',
@@ -172,6 +179,7 @@ const ARTIFACT_COPY = {
       listLoadFailed: 'Failed to load generated files', retrying: 'Retrying…', retry: 'Retry', listAria: 'Generated files',
       previewNamed: (name) => `Preview ${name}`, empty: 'No generated files', emptyHint: 'Files generated by the assistant appear here.',
       back: 'Back to generated files', moreActions: (name) => `More actions for ${name}`,
+      focusPreview: 'Focus file', releaseToFocus: 'Release to focus file', restorePreview: 'Restore split view', moveComposer: 'Drag into the file to continue typing',
       viewInMaka: 'View in Maka', openInDefaultApp: 'Open in Default App',
       openInFinder: 'Show in Finder', saveAs: 'Save as', copy: 'Copy',
       saveFailures: { not_found: 'The generated file does not exist.', not_allowed: 'The generated file failed the path safety check.', write_failed: 'The destination is not writable.', deleted: 'Deleted generated files cannot be saved.', source_failed: 'The generated file transfer was interrupted. Try again.', size_mismatch: 'The generated file size changed during transfer. Try again.', target_write_failed: 'The destination is not writable.', replace_failed: 'Could not replace the destination. The original file was kept.', default: 'Could not save the generated file.' },
@@ -189,6 +197,7 @@ const ARTIFACT_COPY = {
       notAllowed: { title: 'Could not read generated file', description: 'The path safety check failed because the file is no longer inside the allowed generated-files directory.' },
       tooLarge: (bytes) => ({ title: 'File exceeds preview size', description: `${bytes} bytes exceeds the text preview limit. Use the More menu to open or save the complete file.` }),
       unsupportedMime: { title: 'Unsupported file type', description: 'This generated file’s MIME type is not allowed for inline preview. Use “Show in Finder” or “Save as”.' },
+      officeUnsupported: { title: 'Office preview unavailable', description: 'This is a binary document and cannot be shown as text. Open it in Finder or save a copy.' },
     },
     registry: {
       kindDisallowed: { title: 'This type cannot be previewed here', description: 'This generated file cannot be previewed in the panel. Use “Show in Finder”.' },
@@ -198,8 +207,9 @@ const ARTIFACT_COPY = {
       readFailed: { title: 'Failed to load preview', description: 'The file could not be read. It may have been deleted, moved, or blocked by permissions. Use “Show in Finder” to inspect it.' },
       unsupported: 'Unsupported preview', name: 'Name', unnamed: '(unnamed)', type: 'Type', size: 'Size', openInFinder: 'Show in Finder', loadingImage: 'Loading image preview…',
     },
-  },
-} satisfies UiCatalog<ArtifactCopy>;
+  };
+
+const ARTIFACT_COPY = resolveUiMessageCatalog(defineShippedUiMessageCatalog<ArtifactCopy>()({ 'zh-CN': artifactCopyZhCn, 'zh-TW': artifactCopyZhTw, en: artifactCopyEn })) satisfies UiCatalog<ArtifactCopy>;
 
 export function getArtifactCopy(locale: UiLocale): ArtifactCopy {
   return ARTIFACT_COPY[locale];

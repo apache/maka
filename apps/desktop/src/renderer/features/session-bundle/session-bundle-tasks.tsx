@@ -31,6 +31,8 @@ import { SegmentedControl, SegmentedControlItem } from '@astryxdesign/core/Segme
 import { HStack, VStack } from '@astryxdesign/core/Stack';
 import { useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import type { DesktopSessionSummary } from '../../../shared/desktop-session-projection.js';
+import { selectSessions, type SessionCatalogController } from '../../application/contracts/session-catalog/session-catalog-state.js';
+import { useExternalStoreSelector } from '../../application/contracts/session-catalog/use-external-store-selector.js';
 import { getExternalSessionImportCopy } from '../../locales/external-session-import-copy.js';
 import { getSettingsSharedCopy } from '../../locales/settings-shared-copy.js';
 import { ExportTree } from './export-tree.js';
@@ -56,8 +58,8 @@ export function SessionBundleTasks(props: {
   isLocalTarget: boolean;
   /** The adapter catalog, rendered when the import half is showing. */
   children: ReactNode;
-  /** Local tasks for the export half. Archived ones are left out here. */
-  sessions?: readonly DesktopSessionSummary[];
+  /** The shell's session catalog, subscribed for the export half's task list. */
+  catalog: SessionCatalogController;
   /** The settings surface's own section chrome, supplied rather than imported. */
   renderSection: (input: {
     title?: string;
@@ -76,18 +78,23 @@ export function SessionBundleTasks(props: {
   // filesystem. A Guest projection is not ours to carry at all -- a Guest's
   // Desktop does not even register these channels, and a remote owner is not
   // granted the operations.
-  const exportable = (props.sessions ?? []).filter(
+  const sessions = useExternalStoreSelector(props.catalog, selectSessions);
+  const exportable = sessions.filter(
     (session) => session.profileKind === 'local' && session.shared !== true,
   );
 
   // Its own label, and segment names no row action shares. `来源` is what an
   // adapter is; this switch is not that. And a row's action is called 导出 too,
   // so two controls answering to one name is a person tabbing to the wrong one.
+  //
+  // Content width, not `layout="fill"`: a full-width bar under the page title
+  // outweighed the title itself. The page header belongs to the settings
+  // surface (and its trailing slot to the runtime host selector), so the switch
+  // leads the page at the content column's start instead.
   const modeSwitch = (
     <SegmentedControl
       label={copy.modeLabel}
       value={mode}
-      layout="fill"
       size="sm"
       onChange={(next) => {
         // The note reports what the other half just did. Carrying it across
@@ -119,7 +126,9 @@ export function SessionBundleTasks(props: {
 
   return (
     <>
-      {props.renderSection({ variant: 'bare', children: modeSwitch })}
+      {/* HStack, because the section body stretches its children: the
+          control would hug its segments but still paint its track full width. */}
+      {props.renderSection({ variant: 'bare', children: <HStack>{modeSwitch}</HStack> })}
       {mode === 'export'
         ? props.renderSection({
             title: copy.exportTitle,

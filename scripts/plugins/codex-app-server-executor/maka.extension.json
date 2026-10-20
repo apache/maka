@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "id": "codex-app-server-executor",
+  "displayName": "Maka Executor for Codex (Experimental)",
+  "description": "Runs Maka sessions and child agents through a user-installed local Codex app-server.",
+  "dependencies": [],
+  "configuration": {
+    "properties": {
+      "codexPath": {
+        "type": "string",
+        "title": "Codex executable",
+        "description": "Command name or absolute path for the user-installed Codex CLI.",
+        "default": "codex"
+      },
+      "model": {
+        "type": "string",
+        "title": "Codex model fallback",
+        "description": "Used when a Maka Session has no selected model. Leave empty to use the local Codex default.",
+        "default": ""
+      },
+      "sandbox": {
+        "type": "string",
+        "title": "Sandbox mode",
+        "description": "Codex runs unattended with approvalPolicy=never, so read-only is the safe default.",
+        "default": "read-only",
+        "enum": ["read-only", "workspace-write", "danger-full-access"]
+      },
+      "ephemeralThreads": {
+        "type": "boolean",
+        "title": "Use ephemeral Codex threads",
+        "default": true
+      },
+      "disposeGraceMs": {
+        "type": "number",
+        "title": "Shutdown grace (ms)",
+        "default": 3000
+      },
+      "rpcTimeoutMs": {
+        "type": "number",
+        "title": "App Server request timeout (ms)",
+        "default": 30000
+      },
+      "inheritEnvironmentCredentials": {
+        "type": "boolean",
+        "title": "Inherit credential environment variables",
+        "description": "Native Codex login files remain available when this is disabled.",
+        "default": false
+      }
+    },
+    "required": []
+  },
+  "runtime": {
+    "entry": "index.mjs"
+  },
+  "client": {
+    "entry": "client.js"
+  },
+  "composition": {
+    "patch": "maka.composition.yml",
+    "structuralDependencies": []
+  }
+}

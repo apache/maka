@@ -21,6 +21,7 @@ import {
   decodeModelCallAttempt,
   MODEL_CALL_ATTEMPT_EVENT_TYPE,
   type ModelCallAttempt,
+  type ModelCallAttemptStatus,
   type ModelCallCoverage,
 } from '@maka/core/model-call-attempt';
 import {
@@ -31,6 +32,7 @@ import {
 } from '@maka/core/model-call-usage-projection';
 import { usageBucketKey } from '@maka/core/usage-stats/bucket-key';
 import type {
+  ModelCallKind,
   UsageBucket,
   UsageGroupBy,
   UsageLogRow,
@@ -43,8 +45,10 @@ import {
   count,
   countableFilter,
   COVERAGE_SUMS,
+  NO_RUN_TURN_ID,
   PRICED_COST,
   REQUEST_SUMS,
+  RUN_SETTLEMENT_COVERAGE_SUMS,
   TOKEN_SUMS,
   unreadableFilter,
   type SqlFilter,
@@ -55,6 +59,8 @@ import {
 } from './operational-state-store.js';
 import { MODEL_CALL_COLUMNS } from './sqlite-usage-schema.js';
 import type { ModelCallLedgerResult } from './usage-stores.js';
+
+export { NO_RUN_TURN_ID };
 
 /**
  * Materialization of the canonical model-call accounting ledger (#1679).
@@ -116,6 +122,26 @@ export interface ModelCallLedgerReader {
     offset: number,
     limit: number,
   ): ModelCallLedgerResult<ModelCallUsageLogs>;
+  /**
+   * What the settlement window itself left unsettled (#5890): the attempts
+   * between `from` and `to` inclusive whose usage the provider never reported
+   * or only partly reported, across every Session — the same scope as the
+   * window-wide totals this check guards. Rows recorded outside any run — by
+   * the usage-unknown seam, which the ledger marks `no_run` — belong to no
+   * run's settlement and are excluded, the reverse of the ledger-wide
+   * coverage above, which must see them.
+   */
+  runSettlementCoverage(from: number, to: number): RunSettlementCoverage;
+}
+
+/**
+ * What a hosted execution's settlement checks instead of the ledger-wide
+ * coverage: whether everything in the window settled (#5890, widening #5691's
+ * run-owned scope so delegated Sessions cannot settle underneath it).
+ */
+export interface RunSettlementCoverage {
+  readonly usageMissingAttempts: number;
+  readonly usagePartialAttempts: number;
 }
 
 export interface CatchUpModelCallProjectionInput {
@@ -133,11 +159,51 @@ export interface CatchUpModelCallProjectionResult {
   readonly unreadableEvents: number;
 }
 
+/**
+ * One canonical row for a call no AgentRun owns (#5691).
+ *
+ * Auxiliary Host model calls run outside any run, so nothing projects them
+ * from an event stream — the caller carries the row's identity itself. Usage
+ * cannot be known for these calls (the provider never reported it), so the
+ * record cannot express token counts or a cost: it lands as
+ * `usageBasis: 'missing'` / `costBasis: 'unpriced'`, the same facts the
+ * run-path projection records and the same rule the table's CHECK enforces on
+ * every other writer.
+ */
+export interface UsageUnknownModelCallRecord {
+  /** Idempotency key: recording the same attempt twice stores one row. */
+  readonly attemptId: string;
+  readonly completedAt: number;
+  readonly sessionId?: string;
+  readonly logicalCallId: string;
+  /**
+   * Calls outside any run's turn carry the shared no-run sentinel
+   * (`NO_RUN_TURN_ID`) — the table requires the column for every countable
+   * row. The value is a placeholder, not the discriminator: the ledger
+   * records the row's no-run ownership from this seam itself, so an
+   * execution legally named like the sentinel keeps its own rows.
+   */
+  readonly turnId: string;
+  readonly callKind: ModelCallKind;
+  readonly connectionSlug?: string;
+  readonly providerId: string;
+  readonly modelId: string;
+  readonly latencyMs: number;
+  readonly status: ModelCallAttemptStatus;
+  readonly errorClass?: string;
+}
+
 export interface ModelCallLedgerWriter extends ModelCallLedgerReader {
   /** Advances the read model from the AgentRun authority's durable sequence. */
   catchUpProjection(
     input?: CatchUpModelCallProjectionInput,
   ): Promise<CatchUpModelCallProjectionResult>;
+  /**
+   * Records one usage-unknown row for a call outside any AgentRun. The single
+   * write that does not come from the event stream: the caller owns the
+   * attempt's identity, and re-recording an `attemptId` upserts in place.
+   */
+  recordUsageUnknownAttempt(record: UsageUnknownModelCallRecord): Promise<void>;
 }
 
 export interface ModelCallLedger extends ModelCallLedgerWriter {
@@ -207,6 +273,11 @@ class SqliteModelCallLedger implements ModelCallLedger {
     return this.write(() =>
       catchUpModelCallProjection(this.#lease.database, input, limit, eventsPerRun),
     );
+  }
+
+  recordUsageUnknownAttempt(record: UsageUnknownModelCallRecord): Promise<void> {
+    if (this.#state !== 'open') return Promise.reject(new ModelCallLedgerClosedError());
+    return this.write(() => writeUsageUnknownModelCallAttempt(this.#lease.database, record));
   }
 
   summary(query: UsageQuery, now: number): ModelCallLedgerResult<ModelCallUsageSummary> {
@@ -317,6 +388,22 @@ class SqliteModelCallLedger implements ModelCallLedger {
     return {
       projection: { rows: rows.map(toUsageLogRow), total: coverage.attempts, coverage },
       unreadableRecords: this.#unreadable(query, range),
+    };
+  }
+
+  runSettlementCoverage(from: number, to: number): RunSettlementCoverage {
+    const db = this.#open();
+    const row = db
+      .prepare(
+        `SELECT ${RUN_SETTLEMENT_COVERAGE_SUMS}
+         FROM usage_model_call_attempts
+         WHERE cost_basis IS NOT NULL AND no_run = 0
+           AND completed_at >= ? AND completed_at <= ?`,
+      )
+      .get(from, to) as Record<string, unknown> | undefined;
+    return {
+      usageMissingAttempts: count(row?.usageMissingAttempts),
+      usagePartialAttempts: count(row?.usagePartialAttempts),
     };
   }
 
@@ -463,12 +550,58 @@ function bindModelCallAttempt(attempt: ModelCallAttempt): (string | number | nul
     reasoning_tokens: attempt.reasoningTokens ?? null,
     cost_basis: attempt.costBasis,
     cost_usd: attempt.costUsd ?? null,
+    // The projection's only source is the AgentRun authority: every row it
+    // writes is run-owned, whatever turn the run ran under.
+    no_run: 0,
   };
   return MODEL_CALL_COLUMNS.map((column) => values[column]);
 }
 
 function writeModelCallAttempt(db: DatabaseSync, attempt: ModelCallAttempt): void {
   db.prepare(MODEL_CALL_UPSERT).run(...bindModelCallAttempt(attempt));
+}
+
+/**
+ * The usage-unknown binding: no token counts and no cost exist to record, and
+ * the table's CHECKs refuse any row that claimed otherwise.
+ */
+function bindUsageUnknownModelCallAttempt(
+  record: UsageUnknownModelCallRecord,
+): (string | number | null)[] {
+  const values: Record<(typeof MODEL_CALL_COLUMNS)[number], string | number | null> = {
+    attempt_id: record.attemptId,
+    completed_at: record.completedAt,
+    session_id: record.sessionId ?? null,
+    logical_call_id: record.logicalCallId,
+    turn_id: record.turnId,
+    call_kind: record.callKind,
+    connection_slug: record.connectionSlug ?? null,
+    provider_id: record.providerId,
+    model_id: record.modelId,
+    latency_ms: record.latencyMs,
+    status: record.status,
+    error_class: record.errorClass ?? null,
+    usage_basis: 'missing',
+    input_tokens: null,
+    output_tokens: null,
+    cache_read_input_tokens: null,
+    cache_miss_input_tokens: null,
+    cache_write_input_tokens: null,
+    reasoning_tokens: null,
+    cost_basis: 'unpriced',
+    cost_usd: null,
+    // The one write outside any run's event stream: the ledger marks the row
+    // no-run here rather than inferring ownership from the turn value.
+    no_run: 1,
+  };
+  return MODEL_CALL_COLUMNS.map((column) => values[column]);
+}
+
+function writeUsageUnknownModelCallAttempt(
+  db: DatabaseSync,
+  record: UsageUnknownModelCallRecord,
+): void {
+  db.prepare(MODEL_CALL_UPSERT).run(...bindUsageUnknownModelCallAttempt(record));
 }
 
 interface LaggingRunRow {

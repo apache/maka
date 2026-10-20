@@ -19,7 +19,8 @@
 
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_WORKFLOW_SCHEMA_VERSION = 12;
+// v15 excludes acknowledged deliveries from active wait ownership and delivery scans.
+export const SQLITE_WORKFLOW_SCHEMA_VERSION = 15;
 
 const RELEASED_WORKFLOW_PROJECTION_TABLES = [
   {
@@ -41,6 +42,9 @@ const RELEASED_WORKFLOW_PROJECTION_TABLES = [
 
 export function migrateSqliteWorkflowDatabase(db: DatabaseSync): void {
   retireReleasedWorkflowProjections(db);
+  db.exec(
+    'DROP INDEX IF EXISTS workflow_event_waits_one_active_session; DROP INDEX IF EXISTS workflow_event_waits_pending',
+  );
   db.exec(`
     DROP INDEX IF EXISTS workflow_plan_reminders_order;
     DROP TABLE IF EXISTS workflow_plan_reminders;
@@ -62,6 +66,8 @@ export function migrateSqliteWorkflowDatabase(db: DatabaseSync): void {
       UNIQUE (session_id, store_version)
     );
 
+    -- Retained for existing State Roots: schema validation compares the complete DDL.
+    -- The research writer is retired, but its stored events must survive upgrades.
     CREATE TABLE IF NOT EXISTS workflow_deep_research_events (
       session_id TEXT NOT NULL,
       sequence INTEGER NOT NULL CHECK (sequence >= 0),
@@ -143,6 +149,39 @@ export function migrateSqliteWorkflowDatabase(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS workflow_work_board_items_active_order
       ON workflow_work_board_items(updated_at DESC, item_id DESC)
       WHERE archived = 0;
+
+    CREATE TABLE IF NOT EXISTS workflow_event_waits (
+      wait_id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      authority_revision INTEGER NOT NULL CHECK (authority_revision >= 0),
+      status TEXT NOT NULL CHECK (status IN ('waiting', 'resolved', 'cancelled', 'expired')),
+      delivery_key TEXT NOT NULL UNIQUE,
+      deadline_at INTEGER NOT NULL CHECK (deadline_at >= 0),
+      record_json TEXT NOT NULL,
+      FOREIGN KEY (session_id) REFERENCES session_metadata(session_id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS workflow_event_waits_by_session
+      ON workflow_event_waits(session_id, wait_id);
+    CREATE INDEX IF NOT EXISTS workflow_event_waits_by_status
+      ON workflow_event_waits(status, wait_id);
+    CREATE INDEX IF NOT EXISTS workflow_event_waits_observation_order
+      ON workflow_event_waits(COALESCE(json_extract(record_json, '$.observation.lastAttemptAt'), 0), wait_id)
+      WHERE status = 'waiting';
+    CREATE INDEX IF NOT EXISTS workflow_event_waits_pending
+      ON workflow_event_waits(wait_id) WHERE status IN ('waiting', 'resolved') AND json_extract(record_json, '$.delivery') IS NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS workflow_event_waits_one_active_session
+      ON workflow_event_waits(session_id) WHERE status IN ('waiting', 'resolved') AND json_extract(record_json, '$.delivery') IS NULL;
+
+    CREATE INDEX IF NOT EXISTS workflow_event_waits_delivery ON workflow_event_waits(status, wait_id) WHERE status IN ('resolved', 'expired') AND json_extract(record_json, '$.delivery') IS NULL;
+
+    CREATE TABLE IF NOT EXISTS workflow_event_wait_source_cooldowns (
+      source_key TEXT PRIMARY KEY,
+      until_ms INTEGER NOT NULL CHECK (until_ms >= 0),
+      dispatch_token TEXT,
+      dispatch_until_ms INTEGER NOT NULL DEFAULT 0 CHECK (dispatch_until_ms >= 0)
+    );
+    CREATE INDEX IF NOT EXISTS workflow_event_wait_source_cooldowns_expiry
+      ON workflow_event_wait_source_cooldowns(MAX(until_ms, dispatch_until_ms), source_key);
 
     CREATE TABLE IF NOT EXISTS workflow_goal_authority (
       session_id TEXT PRIMARY KEY,

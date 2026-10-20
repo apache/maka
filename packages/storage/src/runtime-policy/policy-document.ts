@@ -142,6 +142,8 @@ export function policySnapshot(document: RuntimePolicyDocument): RuntimePolicySn
 
 function applyMutation(policy: RuntimePolicy, operation: RuntimePolicyMutation): RuntimePolicy {
   switch (operation.kind) {
+    case 'set_jev':
+      return { ...policy, jev: operation.value };
     case 'set_network_proxy':
       return { ...policy, networkProxy: operation.value };
     case 'set_personalization':

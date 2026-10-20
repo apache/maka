@@ -222,7 +222,7 @@ test('successful replacement does not resurrect its retired predecessor', async 
   await loader.close();
 });
 
-test('desktop-ui registration and unresolved variables fail closed', async () => {
+test('desktop-ui rejects Host-only packages and unresolved variables fail closed', async () => {
   const { loader, prompts } = setup();
   await loader.install({
     packageId: 'ui-package',
@@ -230,7 +230,7 @@ test('desktop-ui registration and unresolved variables fail closed', async () =>
   });
   await assert.rejects(
     () => loader.create('desktop-ui', { id: 'ui-entry', packageId: 'ui-package' }),
-    /desktop-ui plugins cannot contribute Host System Prompt/u,
+    /Plugin package has no Client plugin/u,
   );
 
   await loader.install({

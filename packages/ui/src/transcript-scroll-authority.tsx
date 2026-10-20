@@ -18,15 +18,20 @@
  */
 
 /**
- * Owns automatic transcript following. Astryx auto-follow is disabled by the
- * host; explicit navigation releases this authority before moving the viewport.
+ * Owns every intentional write to the transcript's `scrollTop`. Astryx
+ * auto-follow is disabled by the host.
  *
- *   pinned  → content that grows writes `scrollTop = scrollHeight`
- *   !pinned → only an explicit range publication restores its reading anchor
+ *   pinned      → content that grows writes `scrollTop = scrollHeight`
+ *   positioning → one Turn is being put at one place in the scrollport: a
+ *                 navigation to it, or keeping the reader's Turn where it was
+ *                 while the list of Turns changes under it
+ *   otherwise   → this authority writes nothing
  *
- * While pinned, disable native anchoring so content cannot move the viewport
- * behind this authority's own write. Once released, restore native anchoring
- * to keep the reader on the same content without application writes.
+ * At most one of these holds. Every command and every reader input ends a
+ * positioning.
+ *
+ * Native anchoring stays off: the transcript virtualizer keeps the reader on
+ * the same content itself, and a second corrector would fight it.
  *
  * Input establishes reading intent; scroll and resize only report geometry.
  * Layout can shrink, clamp the offset, then grow before scroll is delivered.
@@ -41,55 +46,94 @@ import {
   type ReactNode,
 } from 'react';
 import { ChatLayoutScrollButton } from '@astryxdesign/core/Chat';
-import { flushSync } from 'react-dom';
 
 /** Astryx's own thresholds, so the affordance keeps the feel readers learnt. */
 const PIN_THRESHOLD_PX = 10;
 const BUTTON_THRESHOLD_PX = 100;
+/** How long a positioning keeps writing while the rows around its Turn measure. */
+const SETTLE_FRAMES = 30;
+
+/** How the virtualized list addresses Turns. */
+export interface TranscriptLayout {
+  /** The Turn under a scroll offset. */
+  turnAt(scrollTop: number): string | undefined;
+  /** Where a Turn's top sits in the scroller's content; `undefined` when it is not in the list. */
+  offsetOf(turnId: string): number | undefined;
+  /** An animated or centered reveal, which the virtualizer runs itself. */
+  reveal(turnId: string, options: { align: 'start' | 'center'; smooth: boolean }): void;
+  /** The list knows its viewport; until then it renders no Turns. */
+  measured(): boolean;
+  /** Upward reader input near the beginning; true while earlier history is available. */
+  readEarlier?(): boolean;
+  hasNewer?(): boolean;
+  readNewer?(): boolean;
+  readLatest?(): void;
+}
+
+/** How a list of Turns changed: where Turns were added, if anywhere but in place. */
+export type TranscriptTurnListChange = 'same' | 'append' | 'prepend' | 'reset';
+
+export interface TranscriptNavigation {
+  readonly turnId: string;
+  readonly align: 'start' | 'center';
+  readonly smooth?: boolean;
+  /**
+   * What brings the Turn into the list. Once it settles and the list has
+   * rendered, a Turn still absent is not coming, and the navigation ends.
+   */
+  readonly arrival?: PromiseLike<unknown>;
+  /** The positioning finished without being superseded. */
+  onSettled?(): void;
+}
 
 export interface TranscriptScrollSnapshot {
   /** Following the tail: growth writes `scrollTop`. */
   readonly pinned: boolean;
+  /**
+   * A Turn is being put somewhere, or waits to arrive so it can be. The reading
+   * position says nothing about where the reader wants to be until it ends.
+   */
+  readonly positioning: boolean;
   /** Far enough up that the return-to-tail affordance earns its place. */
   readonly awayFromTail: boolean;
   /**
-   * The Turn the reader is on: the first whose box crosses the scrollport's
-   * top edge. One reading line for every consumer — the bookmark that survives
-   * a session switch and the rail's current tick have to name the same Turn.
+   * The Turn the reader is on: the one under the scrollport's top edge. One
+   * reading line for every consumer — the bookmark that survives a session
+   * switch and the rail's current tick have to name the same Turn.
    */
   readonly readingTurnId: string | undefined;
 }
 
 export interface TranscriptScrollAuthority {
-  /** Whether native input still holds the published geometry. */
-  isInputActive(): boolean;
-  /** Synchronously publish and preserve geometry if native input permits it. */
-  commitIfIdle(commit: () => void): boolean;
-  subscribeToIdle(listener: () => void): () => void;
   /** Take the scroller. Returns the detach for the effect that called it. */
-  attach(root: HTMLElement | null): () => void;
+  attach(root: HTMLElement | null, layout?: TranscriptLayout): () => void;
   /** One-shot: put the tail back under the reader and follow it again. */
   pinToTail(): void;
-  /**
-   * The reader chose a position, so stop following. A command that moves the
-   * viewport itself calls this first; afterwards automatic following is off.
-   */
+  /** The reader chose a position, so stop following and stop positioning. */
   releasePin(): void;
   /**
-   * Input can request history at an edge before any movement. Scroll reports
-   * the resulting reading position; settled rechecks the final edge after a
-   * gesture. No phase is emitted for layout alone;
-   * consumers do not interpret raw wheel or scroll events themselves.
-   * Returning true from input accepts history-reading intent, even at an
-   * unmoving edge. The window owner knows whether adjacent history exists.
+   * Take the reader to a Turn. One that is not in the list yet is taken to
+   * when it arrives, unless another command or the reader moves first, or its
+   * `arrival` settles without it.
    */
-  subscribeToReaderScroll(listener: (phase: 'input' | 'scroll' | 'settled', direction?: 'up' | 'down') => boolean | void): () => void;
+  navigate(target: TranscriptNavigation): void;
+  /**
+   * The list of Turns just changed. Anything but growth at the tail keeps the
+   * reader on the Turn they were reading, at the same place in the scrollport.
+   */
+  turnsChanged(change: TranscriptTurnListChange): void;
   /**
    * The reading position, measured now and published like any other move. For
    * a caller that has just moved the viewport or the content itself and cannot
    * wait for the scroll or resize that will report it.
    */
   measureReadingTurn(): string | undefined;
+  /**
+   * Calls back once, on a frame where the list is measured and the reader is
+   * where the last command put them, or after the settle budget.
+   * Returns the cancel.
+   */
+  whenInPlace(callback: () => void): () => void;
   subscribe(listener: () => void): () => void;
   getSnapshot(): TranscriptScrollSnapshot;
 }
@@ -111,110 +155,135 @@ function reachesTranscript(event: Event, root: HTMLElement, direction: 'up' | 'd
 export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
   let root: HTMLElement | null = null;
   let pinned = true;
-  let awayFromTail = false;
   // Geometry belongs to a known input operation, never the other way around.
   // scrollend also covers smooth keyboard scrolling and touchpad inertia.
   let gesture: { top: number; direction?: 'up' | 'down' } | undefined;
-  const idleListeners = new Set<() => void>();
   let pointer: number | undefined;
   let touchHeld = false;
-  const isInputActive = (): boolean => gesture !== undefined || pointer !== undefined || touchHeld;
-  const commitRange = (commit: () => void): void => {
-    const target = root;
-    if (!target) { commit(); return; }
-    if (pinned) { flushSync(commit); writeToTail(); return; }
-    const top = target.getBoundingClientRect().top;
-    const anchor = [...target.querySelectorAll<HTMLElement>('[data-turn-id]')]
-      .find((turn) => turn.getBoundingClientRect().bottom > top);
-    if (!anchor) { flushSync(commit); return; }
-    const before = anchor.getBoundingClientRect().top;
-    // A gap notice is a poor native anchor: it survives a range replacement
-    // while the paragraph beneath it moves. Restore a content Turn once, with
-    // native compensation disabled for the same synchronous publication.
-    target.style.overflowAnchor = 'none';
-    try {
-      flushSync(commit);
-      const next = target.querySelector<HTMLElement>(`[data-turn-id="${CSS.escape(anchor.dataset.turnId!)}"]`);
-      if (next) target.scrollTop += next.getBoundingClientRect().top - before;
-    } finally {
-      target.style.overflowAnchor = pinned ? 'none' : 'auto';
-    }
-  };
-  const notifyIdle = (): void => {
-    if (isInputActive()) return;
-    for (const listener of [...idleListeners]) listener();
-  };
+  let layout: TranscriptLayout | undefined;
   let readingTurnId: string | undefined;
-  let snapshot: TranscriptScrollSnapshot = { pinned, awayFromTail, readingTurnId };
+  /** Where the reading Turn's top sits relative to the scrollport's top. */
+  let readingGap = 0;
+  let positioning: {
+    readonly turnId: string;
+    /** Writes the Turn this far below the scrollport's top; a reveal otherwise. */
+    readonly gap?: number;
+    readonly navigation?: TranscriptNavigation;
+    revealed: boolean;
+    framesLeft: number;
+    frame?: number;
+  } | undefined;
+  let snapshot: TranscriptScrollSnapshot = { pinned, positioning: false, awayFromTail: false, readingTurnId };
   const listeners = new Set<() => void>();
-  const readerListeners = new Set<(phase: 'input' | 'scroll' | 'settled', direction?: 'up' | 'down') => boolean | void>();
   const distanceToTail = (): number =>
     root ? root.scrollHeight - root.scrollTop - root.clientHeight : 0;
   const readTurn = (): string | undefined => {
-    if (!root) return undefined;
-    const top = root.getBoundingClientRect().top;
-    for (const turn of root.querySelectorAll<HTMLElement>('[data-turn-id]')) {
-      if (turn.getBoundingClientRect().bottom > top) {
-        return turn.getAttribute('data-turn-id') ?? undefined;
-      }
-    }
-    return undefined;
+    if (!root || !layout) return undefined;
+    const turnId = layout.turnAt(root.scrollTop);
+    const offset = turnId === undefined ? undefined : layout.offsetOf(turnId);
+    if (offset !== undefined) readingGap = offset - root.scrollTop;
+    return turnId;
   };
   const publish = (): void => {
-    if (root) root.style.overflowAnchor = pinned ? 'none' : 'auto';
-    if (snapshot.pinned === pinned && snapshot.awayFromTail === awayFromTail
-      && snapshot.readingTurnId === readingTurnId) return;
-    snapshot = { pinned, awayFromTail, readingTurnId };
+    const awayFromTail = layout?.hasNewer?.() === true || distanceToTail() > BUTTON_THRESHOLD_PX;
+    const next = positioning !== undefined;
+    if (snapshot.pinned === pinned && snapshot.positioning === next
+      && snapshot.awayFromTail === awayFromTail && snapshot.readingTurnId === readingTurnId) return;
+    snapshot = { pinned, positioning: next, awayFromTail, readingTurnId };
     for (const listener of listeners) listener();
+  };
+  const endPositioning = (): void => {
+    if (!positioning) return;
+    if (positioning.frame !== undefined) cancelAnimationFrame(positioning.frame);
+    positioning = undefined;
   };
   const writeToTail = (): void => {
     if (!root) return;
     root.scrollTop = root.scrollHeight;
-    awayFromTail = false;
     publish();
   };
-  const reportReader = (phase: 'input' | 'scroll' | 'settled', direction?: 'up' | 'down'): boolean => {
-    let readingHistory = false;
-    for (const listener of [...readerListeners]) {
-      if (listener(phase, direction) === true) readingHistory = true;
+  /** Puts the Turn in place once; `false` while it is not in the list. */
+  const place = (): boolean => {
+    const current = positioning;
+    if (!current || !root || !layout) return false;
+    const offset = layout.offsetOf(current.turnId);
+    if (offset === undefined) return false;
+    if (current.gap !== undefined) {
+      const top = offset - current.gap;
+      if (Math.abs(root.scrollTop - top) >= 0.5) root.scrollTop = top;
+    } else if (!current.revealed) {
+      layout.reveal(current.turnId, {
+        align: current.navigation?.align ?? 'start',
+        smooth: current.navigation?.smooth ?? false,
+      });
     }
-    return readingHistory;
+    current.revealed = true;
+    return true;
   };
-
+  // Rows around the Turn mount and measure over the frames after it is placed,
+  // and each measurement moves its offset, so placing repeats until they settle.
+  const settle = (): void => {
+    const current = positioning;
+    if (!place() || !current || current.frame !== undefined) return;
+    const step = (): void => {
+      current.frame = undefined;
+      if (positioning !== current) return;
+      place();
+      if (--current.framesLeft > 0) {
+        current.frame = requestAnimationFrame(step);
+        return;
+      }
+      positioning = undefined;
+      readingTurnId = readTurn();
+      publish();
+      current.navigation?.onSettled?.();
+    };
+    current.frame = requestAnimationFrame(step);
+  };
+  const inPlace = (): boolean => {
+    if (!root || !layout?.measured()) return false;
+    if (pinned) return distanceToTail() <= PIN_THRESHOLD_PX;
+    if (positioning?.gap === undefined) return positioning?.revealed ?? true;
+    const offset = layout.offsetOf(positioning.turnId);
+    return offset !== undefined && Math.abs(root.scrollTop - (offset - positioning.gap)) < 0.5;
+  };
   return {
-    isInputActive,
-    commitIfIdle(commit) {
-      if (isInputActive()) return false;
-      commitRange(commit);
-      return true;
-    },
-    subscribeToIdle(listener) {
-      idleListeners.add(listener);
-      return () => { idleListeners.delete(listener); };
-    },
-    attach(next) {
+    attach(next, nextLayout) {
       root = next;
       const target = root;
       if (!target) return () => undefined;
+      layout = nextLayout;
       const previousOverflowAnchor = target.style.overflowAnchor;
-      publish();
+      target.style.overflowAnchor = 'none';
+      const readEarlier = (): void => {
+        if (!positioning && target.scrollTop <= target.clientHeight && layout?.readEarlier?.()) {
+          pinned = false;
+          readingTurnId = readTurn();
+        }
+      };
+      const readNewer = (): void => {
+        if (!positioning && distanceToTail() <= target.clientHeight && layout?.readNewer?.()) {
+          pinned = false;
+          readingTurnId = readTurn();
+        }
+      };
       const begin = (event: Event, direction: 'up' | 'down'): void => {
         if (event.defaultPrevented || !reachesTranscript(event, target, direction)) return;
+        endPositioning();
         const remaining = direction === 'up' ? target.scrollTop : distanceToTail();
         gesture = { top: gesture?.top ?? target.scrollTop, direction };
+        if (direction === 'up') readEarlier();
+        else readNewer();
+        // An edge gesture produces no scroll and therefore no scrollend. A
+        // passive wheel can arrive after the threaded scroll it caused, already
+        // at the top edge; that input did move the reader.
         if (remaining <= 0) {
-          // An edge gesture can ask for an adjacent history page even though
-          // it produces no scroll (and therefore no scrollend).
-          if (reportReader('input', direction)) {
-            pinned = false;
-            publish();
-          }
+          if (direction === 'up' && distanceToTail() > PIN_THRESHOLD_PX) pinned = false;
           onScrollEnd();
           return;
         }
         pinned = false;
         publish();
-        reportReader('input', direction);
       };
       const onWheel = (event: WheelEvent): void => {
         if (event.ctrlKey || event.metaKey || event.deltaY === 0) return;
@@ -234,6 +303,8 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
       const onPointerDown = (event: PointerEvent): void => {
         if (event.defaultPrevented || event.button !== 0 || event.pointerType === 'touch'
           || event.target !== target) return;
+        endPositioning();
+        publish();
         pointer = event.pointerId;
         gesture = { top: target.scrollTop };
       };
@@ -241,6 +312,7 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
         if (pointer === event.pointerId) gesture ??= { top: target.scrollTop };
       };
       const onPointerUp = (): void => {
+        if (pointer === undefined) return;
         pointer = undefined;
         onScrollEnd();
         const pending = gesture;
@@ -251,7 +323,6 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
         requestAnimationFrame(() => {
           if (gesture !== pending || pending.direction !== undefined) return;
           gesture = undefined;
-          notifyIdle();
           if (pinned) writeToTail();
         });
       };
@@ -274,7 +345,6 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
         onScrollEnd();
       };
       const onScroll = (): void => {
-        awayFromTail = distanceToTail() > BUTTON_THRESHOLD_PX;
         readingTurnId = readTurn();
         if (gesture) {
           const delta = target.scrollTop - gesture.top;
@@ -286,23 +356,17 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
             // A reversed input may arrive while the previous smooth scroll
             // still moves in the opposite direction. Its end is not the end
             // of the new input's default action.
-            if ((delta < 0 ? 'up' : 'down') !== direction) {
-              publish();
-              return;
+            if ((delta < 0 ? 'up' : 'down') === direction) {
+              gesture.direction = direction;
+              pinned = false;
+              if (direction === 'up') readEarlier();
+              else readNewer();
             }
-            gesture.direction = direction;
-            pinned = false;
-            publish();
-            reportReader('scroll');
-            return;
           }
         }
         publish();
       };
       const onScrollEnd = (): void => {
-        // An explicit navigation may already have retired the gesture while
-        // a pointer or touch was held. Release still has to wake publication.
-        notifyIdle();
         const ended = gesture;
         if (!ended) return;
         const top = ended.top;
@@ -314,15 +378,10 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
           if (gesture !== ended || ended.top !== top || pointer !== undefined || touchHeld) return;
           // Input that can scroll and observed reader movement already release
           // the pin. Settling an unmoved edge gesture must not release it too.
-          pinned = pinned || (ended.direction === 'down' && distanceToTail() <= PIN_THRESHOLD_PX);
+          pinned = pinned || (ended.direction === 'down' && !layout?.hasNewer?.() && distanceToTail() <= PIN_THRESHOLD_PX);
           gesture = undefined;
-          notifyIdle();
           publish();
           if (pinned) writeToTail();
-          // An anchor navigation can supersede the last in-flight page while
-          // the gesture is held. Recheck its edge once after publication;
-          // waiting for another movement would strand a reader at scrollTop 0.
-          if (ended.direction) reportReader('settled');
         }));
       };
       target.addEventListener('wheel', onWheel, { passive: true });
@@ -344,10 +403,7 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
       // outside Turns. Resize changes position only; it never changes intent.
       const box = new ResizeObserver(() => {
         if (pinned && !gesture) writeToTail();
-        else awayFromTail = distanceToTail() > BUTTON_THRESHOLD_PX;
-        // Turns mounting, unmounting and growing all reach this before they
-        // reach any scroll event, so this is where the reading position moves
-        // when the reader does not.
+        else if (positioning) place();
         readingTurnId = readTurn();
         publish();
       });
@@ -356,14 +412,11 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
         box.observe(target);
         for (const child of target.children) box.observe(child);
       };
-      const childList = new MutationObserver(() => {
-        observeBox();
-        readingTurnId = readTurn();
-        publish();
-      });
+      const childList = new MutationObserver(observeBox);
       childList.observe(target, { childList: true });
       observeBox();
       if (pinned) writeToTail();
+      else settle();
       readingTurnId = readTurn();
       publish();
       return () => {
@@ -385,35 +438,81 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
         gesture = undefined;
         pointer = undefined;
         touchHeld = false;
-        if (root === target) root = null;
+        if (root === target) {
+          endPositioning();
+          root = null;
+          layout = undefined;
+        }
       };
     },
     pinToTail() {
+      if (layout?.hasNewer?.()) layout.readLatest?.();
+      endPositioning();
       gesture = undefined;
       pointer = undefined;
       touchHeld = false;
       pinned = true;
-      queueMicrotask(notifyIdle);
       writeToTail();
       publish();
     },
     releasePin() {
+      endPositioning();
       gesture = undefined;
       pinned = false;
-      // Commands can originate in a React effect. Publish before their next
-      // positioning frame, outside React's lifecycle, if a range is pending.
-      queueMicrotask(notifyIdle);
-      awayFromTail = distanceToTail() > BUTTON_THRESHOLD_PX;
       publish();
     },
-    subscribeToReaderScroll(listener) {
-      readerListeners.add(listener);
-      return () => { readerListeners.delete(listener); };
+    navigate(navigation) {
+      endPositioning();
+      gesture = undefined;
+      pinned = false;
+      positioning = {
+        turnId: navigation.turnId,
+        gap: navigation.align === 'start' && !navigation.smooth ? 0 : undefined,
+        navigation,
+        revealed: false,
+        framesLeft: SETTLE_FRAMES,
+      };
+      publish();
+      settle();
+      const settled = () => requestAnimationFrame(() => {
+        if (positioning?.navigation !== navigation) return;
+        if (layout?.offsetOf(navigation.turnId) !== undefined) {
+          settle();
+          return;
+        }
+        endPositioning();
+        readingTurnId = readTurn();
+        publish();
+      });
+      navigation.arrival?.then(settled, settled);
+    },
+    turnsChanged(change) {
+      publish();
+      if (change === 'same' || change === 'append') {
+        settle();
+        return;
+      }
+      if (positioning) positioning.framesLeft = SETTLE_FRAMES;
+      else if (!pinned && readingTurnId !== undefined) {
+        positioning = { turnId: readingTurnId, gap: readingGap, revealed: false, framesLeft: SETTLE_FRAMES };
+        // The reader's Turn left the list, so there is nowhere to keep them.
+        if (layout?.offsetOf(readingTurnId) === undefined) positioning = undefined;
+      }
+      publish();
+      settle();
     },
     measureReadingTurn() {
       readingTurnId = readTurn();
       publish();
       return readingTurnId;
+    },
+    whenInPlace(callback) {
+      let framesLeft = SETTLE_FRAMES;
+      let frame = requestAnimationFrame(function check() {
+        if (inPlace() || --framesLeft <= 0) callback();
+        else frame = requestAnimationFrame(check);
+      });
+      return () => cancelAnimationFrame(frame);
     },
     subscribe(listener) {
       listeners.add(listener);
@@ -461,11 +560,7 @@ export function useTranscriptScrollAuthority(): TranscriptScrollAuthority {
  * The label stays unset on purpose: `ChatSurfaceLayout` overrides Astryx's
  * `scrollToBottom` string through the locale provider that wraps this.
  */
-export function TranscriptScrollButton({
-  onActivate,
-}: {
-  onActivate?: () => Promise<void> | void;
-}) {
+export function TranscriptScrollButton() {
   const authority = useTranscriptScrollAuthority();
   const snapshot = useSyncExternalStore(
     authority.subscribe,
@@ -474,12 +569,8 @@ export function TranscriptScrollButton({
   );
   return (
     <ChatLayoutScrollButton
-      isVisible={snapshot.awayFromTail || onActivate !== undefined}
-      onClick={() => {
-        authority.pinToTail();
-        const activation = onActivate?.();
-        if (activation) void activation.catch(() => undefined);
-      }}
+      isVisible={snapshot.awayFromTail}
+      onClick={authority.pinToTail}
     />
   );
 }

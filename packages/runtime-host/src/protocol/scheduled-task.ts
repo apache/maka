@@ -43,6 +43,7 @@ import {
   type UpdateScheduledTaskInput,
 } from '@maka/core/scheduled-task';
 import { isThinkingLevel } from '@maka/core/model-thinking';
+import { isToolMode } from '@maka/core/tool-mode';
 import {
   requireCount,
   requireEncodedByteLimit,
@@ -554,7 +555,7 @@ function decodeExecution(
       'collaborationMode',
       'orchestrationMode',
     ],
-    ['projectId', 'thinkingLevel', 'backend', 'llmConnectionId'],
+    ['projectId', 'thinkingLevel', 'backend', 'llmConnectionId', 'toolMode'],
   );
   if (requireConnectionId && !Object.hasOwn(execution, 'llmConnectionId')) {
     throw invalidProtocolFrame('ScheduledTask execution requires Connection id');
@@ -571,6 +572,9 @@ function decodeExecution(
   if (Object.hasOwn(execution, 'thinkingLevel') && !isThinkingLevel(execution.thinkingLevel)) {
     throw invalidProtocolFrame('Invalid ScheduledTask thinking level');
   }
+  if (Object.hasOwn(execution, 'toolMode') && !isToolMode(execution.toolMode)) {
+    throw invalidProtocolFrame('Invalid ScheduledTask tool mode');
+  }
   if (
     Object.hasOwn(execution, 'projectId') &&
     execution.projectId !== null &&
@@ -580,6 +584,9 @@ function decodeExecution(
   }
   return {
     cwd: boundedText(execution.cwd, 'ScheduledTask cwd', 4_096, true),
+    ...(Object.hasOwn(execution, 'toolMode')
+      ? { toolMode: execution.toolMode as ScheduledTaskExecutionTemplate['toolMode'] }
+      : {}),
     ...(Object.hasOwn(execution, 'projectId')
       ? { projectId: execution.projectId as string | null }
       : {}),

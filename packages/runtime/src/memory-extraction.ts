@@ -55,14 +55,15 @@ import {
   type AdmittedProposalFields,
   type MemoryProposalItem,
 } from './memory-extraction-proposal.js';
-import { isHistoryCompactContentEvent } from './history-compaction.js';
 import {
+  isHistoryCompactContentEvent,
   isTextHistoryCompactCheckpoint,
   matchHistoryCompactCheckpointPrefix,
   renderHistoryCompactCheckpoint,
   type HistoryCompactCheckpoint,
 } from './history-compact-checkpoint.js';
 import type { ModelMessage, ModelToolSet } from './model-protocol.js';
+import { applyRuntimeEventProviderHistoryBoundary } from './model-history.js';
 import type { MakaTool, MakaToolContext } from './tool-runtime.js';
 
 export const MEMORY_REMEMBER_TOOL_NAME = 'memory_remember';
@@ -239,7 +240,13 @@ export function buildMemoryCompactionSourceContext(
       content: [{ type: 'text', text: renderHistoryCompactCheckpoint(options.previousCheckpoint) }],
     });
   }
-  for (const event of events.slice(afterIndex + 1, boundaryIndex + 1)) {
+  const sourceEvents = events.slice(afterIndex + 1, boundaryIndex + 1);
+  const providerEvents = applyRuntimeEventProviderHistoryBoundary(sourceEvents, {
+    allowRepairedAssistantPrefix:
+      options.previousCheckpoint !== undefined &&
+      isTextHistoryCompactCheckpoint(options.previousCheckpoint),
+  }).events;
+  for (const event of providerEvents) {
     if (event.partial || event.content?.kind !== 'text') continue;
     if (event.role === 'user' && event.author === 'user') {
       push(event.id, { role: 'user', content: [{ type: 'text', text: event.content.text }] });
@@ -297,7 +304,6 @@ export function buildMemoryExtractionTriggerTools(input: {
         'Use only when the user explicitly asks you to remember long-term information. It stores the requested memory and returns exactly what was saved.',
       parameters: noArguments,
       executionSemantics: 'exclusive_step',
-      recoveryMode: 'idempotent',
       impl: async (_args: Record<string, never>, context: MakaToolContext) => {
         const gate = await input.capabilities.gate();
         if (!gate.allowed) return { status: 'unavailable', requestedItems: [] };
@@ -318,7 +324,6 @@ export function buildMemoryExtractionTriggerTools(input: {
       description:
         'Use when the conversation contains durable long-term information worth preserving and the user did not explicitly ask to remember it. The extraction runs after this turn.',
       parameters: noArguments,
-      recoveryMode: 'idempotent',
       impl: async (_args: Record<string, never>, context: MakaToolContext) => {
         const gate = await input.capabilities.gate();
         if (!gate.allowed) return { status: 'unavailable' };

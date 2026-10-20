@@ -49,29 +49,37 @@ export function pendingAttachmentSourceKey(
   return `retained:${JSON.stringify(attachment.source.attachment)}`;
 }
 
-export function toComposerIngestItems(
-  pending: readonly PendingAttachment[],
-): ComposerIngestInput[] {
-  return pending.flatMap((item) => {
-    if (item.source.type === 'retained') return [];
-    return [
-      item.source.type === 'approval'
-        ? {
-            approvalId: item.source.approvalId,
-            name: item.source.name,
-            ...(item.mimeType ? { mimeType: item.mimeType } : {}),
-          }
-        : { file: item.source.file },
-    ];
-  });
+export interface SubmittedAttachments {
+  /** New files the Host still has to ingest. */
+  attachmentItems?: ComposerIngestInput[];
+  /** Host attachments a restored draft already owns. */
+  retainedAttachments?: AttachmentRef[];
 }
 
-export function retainedAttachmentRefs(
+/**
+ * Every staged attachment, split into the two fields a send command carries.
+ * An empty field is omitted.
+ */
+export function toSubmittedAttachments(
   pending: readonly PendingAttachment[],
-): AttachmentRef[] {
-  return pending.flatMap((item) =>
-    item.source.type === 'retained'
-      ? [structuredClone(item.source.attachment)]
-      : [],
-  );
+): SubmittedAttachments {
+  const attachmentItems: ComposerIngestInput[] = [];
+  const retainedAttachments: AttachmentRef[] = [];
+  for (const { source, mimeType } of pending) {
+    if (source.type === 'retained') {
+      retainedAttachments.push(structuredClone(source.attachment));
+    } else if (source.type === 'approval') {
+      attachmentItems.push({
+        approvalId: source.approvalId,
+        name: source.name,
+        ...(mimeType ? { mimeType } : {}),
+      });
+    } else {
+      attachmentItems.push({ file: source.file });
+    }
+  }
+  return {
+    ...(attachmentItems.length > 0 ? { attachmentItems } : {}),
+    ...(retainedAttachments.length > 0 ? { retainedAttachments } : {}),
+  };
 }

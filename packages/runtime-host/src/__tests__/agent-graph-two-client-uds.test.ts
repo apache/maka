@@ -123,6 +123,7 @@ test('two Clients query and control one Agent graph through Session invalidation
       sessionId: ROOT_SESSION_ID,
       transcript: { kind: 'none' },
     });
+    await subscription.ready();
 
     const [desktopSnapshot, tuiSnapshot] = await Promise.all([
       desktop.request('agent.graph.query', { rootSessionId: ROOT_SESSION_ID }),

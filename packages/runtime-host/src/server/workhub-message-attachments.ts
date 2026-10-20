@@ -44,6 +44,7 @@ export async function copyWorkHubAttachmentsToTarget(
     targetSessionId,
     turnIds: [],
     includeArtifactIds: ids,
+    existingTarget: 'reuse_verified',
   });
   return attachments.map((attachment, index) => {
     const relativePath = copied.artifactIds.get(ids[index]!);

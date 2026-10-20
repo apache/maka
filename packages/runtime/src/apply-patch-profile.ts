@@ -18,30 +18,50 @@
  */
 
 import type { ApplyPatchProtocol } from '@maka/core/llm-connections';
-import { parseCodexV4aPatch } from './codex-v4a-patch.js';
+import { modelApplyPatchEnabled } from '@maka/core/model-thinking';
+import { z } from 'zod';
+import { CODEX_PATCH_DESCRIPTION, parseCodexV4aPatch } from './codex-v4a-patch.js';
 import type { ApplyPatchOperation } from './filesystem-executor.js';
 import type { ModelRuntimeWire } from './model-runtime.js';
 import { openAiModelSupportsApplyPatch } from './openai-apply-patch.js';
 import type { MakaTool } from './tool-runtime.js';
 
-export type ApplyPatchProfile = { readonly kind: 'openai-structured' };
+export type ApplyPatchProfile =
+  | { readonly kind: 'openai-structured' }
+  | { readonly kind: 'codex-v4a-freeform' }
+  | { readonly kind: 'portable-v4a' };
 
 export interface ApplyPatchProfileRuntime {
   readonly wire: ModelRuntimeWire;
   readonly applyPatchProtocol?: ApplyPatchProtocol;
+  readonly enabled?: boolean;
+  readonly customTools?: boolean;
 }
 
-/** Resolve the exact provider/model/wire contract; unknown combinations fail closed. */
+const portableApplyPatchParameters = z.object({ patch: z.string() });
+
+/** Project a provider-native ApplyPatch tool into the portable client-executed shape. */
+export function portableApplyPatchTool(tool: MakaTool): MakaTool {
+  return {
+    ...tool,
+    description: CODEX_PATCH_DESCRIPTION,
+    parameters: portableApplyPatchParameters,
+    providerTool: undefined,
+  };
+}
+
+/** User overrides take precedence; new models can opt in through ordinary function calling. */
 export function resolveApplyPatchProfile(
   runtime: ApplyPatchProfileRuntime,
   modelId: string,
 ): ApplyPatchProfile | null {
-  if (runtime.wire !== 'openai-responses' || !runtime.applyPatchProtocol) return null;
-  const id = modelId.trim().toLowerCase();
-  if (runtime.applyPatchProtocol === 'openai-structured' && openAiModelSupportsApplyPatch(id)) {
-    return { kind: 'openai-structured' };
-  }
-  return null;
+  if (!modelApplyPatchEnabled(modelId, { applyPatch: runtime.enabled })) return null;
+  const structured =
+    runtime.wire === 'openai-responses' &&
+    runtime.applyPatchProtocol === 'openai-structured' &&
+    openAiModelSupportsApplyPatch(modelId.trim().toLowerCase());
+  if (structured) return { kind: 'openai-structured' };
+  return runtime.customTools ? { kind: 'codex-v4a-freeform' } : { kind: 'portable-v4a' };
 }
 
 /** Project one verified profile into an exclusive model-facing editing surface. */
@@ -53,10 +73,23 @@ export function routeApplyPatchTools(
   if (!applyPatchTool) return [...tools];
   if (!profile) return tools.filter((tool) => tool !== applyPatchTool);
 
-  return tools.filter((tool) => tool.name !== 'Write' && tool.name !== 'Edit');
+  const routed = tools.filter((tool) => tool.name !== 'Write' && tool.name !== 'Edit');
+  if (profile.kind === 'openai-structured') return routed;
+  return routed.map((tool) =>
+    tool !== applyPatchTool
+      ? tool
+      : profile.kind === 'codex-v4a-freeform'
+        ? {
+            ...tool,
+            description: CODEX_PATCH_DESCRIPTION,
+            parameters: z.string(),
+            providerTool: { kind: 'codex-apply-patch' as const },
+          }
+        : portableApplyPatchTool(tool),
+  );
 }
 
-/** Convert historical freeform calls for a structured target, or reject an undeclared target. */
+/** Re-encode history for the current tool transport, or preserve it as facts when disabled. */
 export function normalizeApplyPatchReplayInput(
   profile: ApplyPatchProfile | null,
   toolCallId: string,
@@ -66,9 +99,16 @@ export function normalizeApplyPatchReplayInput(
   // Returning the historical input would serialize a call to an undeclared
   // tool; route it through the durable-fact downgrade instead.
   if (!profile) return null;
-  if (typeof input !== 'string') return input;
+  const patch = patchText(input);
+  if (profile.kind !== 'openai-structured') {
+    const text = patch ?? structuredPatchText(input);
+    if (text === null) return null;
+    if (profile.kind === 'codex-v4a-freeform') return text;
+    return patch !== null && typeof input === 'object' ? input : { patch: text };
+  }
+  if (patch === null) return structuredApplyPatchOperation(input) ? input : null;
   try {
-    const operations = parseCodexV4aPatch(input);
+    const operations = parseCodexV4aPatch(patch);
     return operations.length === 1 ? { callId: toolCallId, operation: operations[0] } : null;
   } catch {
     return null;
@@ -82,9 +122,10 @@ export function applyPatchReplayFactText(
   isError: boolean,
 ): string | null {
   let operations: ApplyPatchOperation[];
-  if (typeof input === 'string') {
+  const patch = patchText(input);
+  if (patch !== null) {
     try {
-      operations = parseCodexV4aPatch(input);
+      operations = parseCodexV4aPatch(patch);
     } catch {
       return null;
     }
@@ -155,4 +196,20 @@ function structuredApplyPatchOperation(input: unknown): ApplyPatchOperation | nu
     return { type: candidate.type, path: candidate.path, diff: candidate.diff };
   }
   return null;
+}
+
+function patchText(input: unknown): string | null {
+  if (typeof input === 'string') return input;
+  if (input && typeof input === 'object' && 'patch' in input && typeof input.patch === 'string')
+    return input.patch;
+  return null;
+}
+
+function structuredPatchText(input: unknown): string | null {
+  const op = structuredApplyPatchOperation(input);
+  if (!op) return null;
+  const action =
+    op.type === 'create_file' ? 'Add' : op.type === 'delete_file' ? 'Delete' : 'Update';
+  const body = op.type === 'delete_file' ? '' : op.diff.endsWith('\n') ? op.diff : `${op.diff}\n`;
+  return `*** Begin Patch\n*** ${action} File: ${op.path}\n${body}*** End Patch`;
 }

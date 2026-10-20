@@ -33,6 +33,7 @@ import {
   defaultRuntimeHostDiagnosticTarget,
   defaultRuntimeHostOperationHost,
   isDefaultRuntimeHostCurrent,
+  isDefaultRuntimeHostResolvable,
   runIfDefaultRuntimeHostCurrent,
   runOnDefaultRuntimeHost,
 } from './default-runtime-host.js';
@@ -117,12 +118,14 @@ export function useScheduledTasksController(options: {
       if (!mountedRef.current || generation !== refreshGenerationRef.current)
         return;
       const operationHost = defaultRuntimeHostOperationHost(error);
+      // A refresh that never reached a Host is pending, not failed — the
+      // ready transition re-fires it.
       const hostIsCurrent = operationHost
         ? await isDefaultRuntimeHostCurrent(
             services.runtimeHosts,
             operationHost,
           )
-        : true;
+        : await isDefaultRuntimeHostResolvable(services.runtimeHosts);
       if (
         !mountedRef.current ||
         generation !== refreshGenerationRef.current ||

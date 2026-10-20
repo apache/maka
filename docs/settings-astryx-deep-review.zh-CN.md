@@ -1,12 +1,12 @@
 ---
 doc_id: settings-astryx-deep-review.zh-CN
-title: "Maka 设置页深度 Review——以 Astryx 设计语言为基准"
+title: "Maka 设置页 Astryx 深度审计（历史记录）"
 language: zh-CN
 source_language: zh-CN
 implementation_status: historical
 document_status: historical
 translation_status: source-only
-last_verified: 2026-09-05
+last_verified: 2026-09-28
 owners:
   - maka-backend
 ---
@@ -29,19 +29,20 @@ owners:
   under the License.
 -->
 
-# Maka 设置页深度 Review——以 Astryx 设计语言为基准
+# Maka 设置页 Astryx 深度审计（历史记录）
 
-> 2026-08-03,基于 `settings/astryx-refactor` 分支(已 rebase 到最新 main)。
-> 审计方式:Storybook 全页截图(中/英 × 亮/暗)+ Astryx 官方 `settings` / `settings-dialog` 模板与 `astryx docs` 原文精读。
-
-> **状态(2026-09-05 核验):** 这是一份钉在 2026-08-03 `settings/astryx-refactor` 分支头上的评审记录,下文引用的卡片式布局等描述的都是当时的树。此后 `SettingsSection` 已重写为 open row-group 设计,memory/health 页也改用了 `MoreMenu` 与 `StatusDot`。以下发现按原文保留。
+> **生命周期：历史。** 下文记录的是 2026-08-03、`#1972` 落地前的设置页问题与重构目标，不是当前缺陷清单。该方案已经由 `refactor(desktop): rebuild Settings on the Astryx open-group idiom (#1972)` 落地。当前 `SettingsSection` / `SettingsRow` / `SettingsField` / `SettingsActions` 的实现以 `application/contracts/settings-presentation/settings-section.tsx` 为准；`settings/settings-section.tsx` 仅转导出这些组件，`settings/settings-rows.tsx` 定义额外的 `SettingRow` 组合，行样式位于 `styles/settings/rows.css`。全量 surface 覆盖以生成的 [astryx-surface-file-inventory.md](./astryx-surface-file-inventory.md) 为准。
+>
+> 原审计基于 `settings/astryx-refactor` 分支，使用 Storybook 全页截图（中/英 × 亮/暗）、Astryx 官方 `settings` / `settings-dialog` 模板和 `astryx docs` 原文。2026-09-05 复核确认：`SettingsSection` 的开放行组、`SettingsRow` / `SettingsField` / `SettingsActions` 三种行语法，以及以 `StatusDot` + 文本为主的状态表达均已进入当前实现；页面数量、按钮数量和 CSS 行数等下文数字只描述当时快照。
+>
+> **2026-10-01 后续决定（[#5888](https://github.com/apache/maka/pull/5888)，维护者确认）：设置行不再用行间分隔线。** 一个设置区块只画一条线——区块标题下的分隔线；设置行（名称 + 说明 + 一个控件）之间不画线，靠标题分隔线、区块间 40px 和行自身内边距分组。原因是每行都有线时，区块的开头读起来像又一次换行，组与标题成了平级。整行可点击、进入详情的**入口行**（模型连接、外部 Agent、远程接入渠道）统一用 `SettingsEntryRow`（服务商目录暂留 `List`：它属于旧 app shell 依赖闭包，架构检查不允许新增依赖，迁出后再改），同样不画行间线；行内自带操作或勾选的**记录列表**（已归档任务、项目、导入的对话、能力详情等）保留 `List hasDividers`，因为每行有多个操作，分隔线负责界定记录边界。下文第一节和第四节里「行与行之间用 `Divider`」的描述已被此决定取代；规则见 `DESIGN.md` §4。
 
 ## 一、Astryx 官方设置语言到底是什么
 
 来自 CLI vendor 的官方模板(`@astryxdesign/cli/templates/pages/settings*`)与 `astryx docs principles / layout` 原文:
 
 1. **开放式分组,不是卡片堆叠。** 官方两个 settings 模板中,设置行**零卡片**:
-   分组 = `Heading level={3}` + supporting 副标题,行与行之间用 `Divider`,
+   分组 = `Heading level={3}` + supporting 副标题,行与行之间用 `Divider`(设置行已于 2026-10-01 改为无行间线,见文首),
    内容列上限 ~680px。Card 只出现在**强调性 callout**(隐私承诺、提示卡)上。
 2. **原文规则:**
    - "Card = widget container, NOT list-item wrapper. dense/scannable data =
@@ -137,7 +138,7 @@ owners:
 卡片降级为例外(callout、option grid)。
 
 1. **中枢一次切换**(`settings-section.tsx` + `rows.css`):
-   `SettingsSection` 的 'rows' 体从 `Card` 改为开放行组——行间 `Divider`、
+   `SettingsSection` 的 'rows' 体从 `Card` 改为开放行组——行间 `Divider`(2026-10-01 起设置行不再画行间线,见文首)、
    无边框无底色;section 头下加 `Divider` 锚线(官方 dialog 模板节奏);
    段间距 32px。全部 14 页零调用点改动即换肤。
 2. **行语法收敛为三种**:

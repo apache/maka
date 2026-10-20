@@ -15,6 +15,14 @@
 /.maka-shots export-ignore
 /maka-proposal-zh-review.txt export-ignore
 
+# Repository-only plugin examples are tested from a Git checkout, but are not
+# ASF source-release inputs.
+/scripts/plugins export-ignore
+# These integration tests use repository-only plugin examples.
+/packages/runtime-host/test/assistant/memory-network/test/feishu-source.test.ts export-ignore
+/packages/runtime-host/test/assistant/proactive-matters/test/source-assistant-loop.test.ts export-ignore
+/packages/ui/src/__tests__/codex-composer-integration.test.tsx export-ignore
+
 # DeepSeek Harness remains available to repository development and benchmarks,
 # but its external runtime dependency closure is not an ASF source-release input.
 /packages/eval/harbor/deepseek-harness-toolchain/package.json export-ignore

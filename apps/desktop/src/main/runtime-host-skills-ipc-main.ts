@@ -17,6 +17,10 @@
  * under the License.
  */
 
+import { createHash, randomUUID } from 'node:crypto';
+import { realpath } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { findSkillLocation } from '@maka/core/skill-locations';
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import { resolveSkillDiscoveryPaths, scanSkillsWithDiagnostics } from '@maka/runtime/skills';
 import { type InvocableSkillEntry } from '@maka/runtime/skill-invocation';
@@ -36,7 +40,9 @@ import type {
   ManagedSkillUpdatePreview,
   SkillEntry,
   SkillGovernanceDetails,
+  SkillLocation,
 } from "@maka/ui";
+import type { OpenSkillLocationResult, SkillLocationsSnapshot } from '../shared/skill-locations.js';
 import type { createMainWindowController } from "./main-window.js";
 import {
   importManagedSkillSource,
@@ -49,6 +55,12 @@ import type {
 import type { UiLocale } from "@maka/core/ui-locale";
 import { nativeFileDialogCopy } from "./native-file-dialog-copy.js";
 import { resolveSkillOpenPath } from "./skill-open-path.js";
+import {
+  listSkillLocations,
+  resolveSkillLocation,
+  type SkillLocationContext,
+} from "./skill-locations.js";
+import type { CurrentProjectSelection } from './project-root-controller.js';
 import {
   handleReconnectableRead,
   type ReconnectableReadIpcMain,
@@ -64,12 +76,14 @@ interface RuntimeHostSkillsIpcDeps {
   readonly workspaceRoot: string;
   readonly mainWindowController: MainWindowController;
   readonly getSelectedWorkspaceTarget: () => Promise<WorkspaceTarget | undefined>;
+  readonly getSelectedProject: () => Promise<CurrentProjectSelection>;
   readonly resolveNewSessionWorkspaceTarget: (
     projectId: string | null | undefined,
   ) => Promise<WorkspaceTarget | undefined>;
   readonly getDefaultPermissionMode: () => Promise<ChatDefaultPermissionMode>;
   readonly openPath: (path: string) => Promise<string>;
   readonly allowLocalPaths?: boolean;
+  readonly homeDirectory?: string;
   readonly resolveLocale: () => Promise<UiLocale>;
 }
 
@@ -93,6 +107,8 @@ interface StableSkillMutation {
 export function registerRuntimeHostSkillsIpc(
   deps: RuntimeHostSkillsIpcDeps,
 ): void {
+  // A replacement Host registration cannot reuse an old location snapshot.
+  const locationContextSeed = randomUUID();
   handleReconnectableRead(deps.ipcMain, "skills:list", async () => {
     const workspace = await deps.getSelectedWorkspaceTarget();
     if (!workspace) return [];
@@ -180,6 +196,47 @@ export function registerRuntimeHostSkillsIpc(
         : [],
     );
   });
+
+  handleReconnectableRead(deps.ipcMain, "skills:locations:list", async (): Promise<SkillLocationsSnapshot> => {
+    if (deps.allowLocalPaths === false) return { contextIds: {}, locations: [] };
+    const context = await readSkillLocationContext(deps, true);
+    const [locations, project, workspace, user] = await Promise.all([
+      listSkillLocations(context),
+      skillLocationContextId(context, 'project', locationContextSeed),
+      skillLocationContextId(context, 'workspace', locationContextSeed),
+      skillLocationContextId(context, 'user', locationContextSeed),
+    ]);
+    return {
+      contextIds: { project, workspace, user },
+      locations,
+    };
+  });
+
+  deps.ipcMain.handle(
+    "skills:locations:open",
+    async (_event, ref: string, options?: { contextId?: unknown; createIfMissing?: unknown }): Promise<OpenSkillLocationResult> => {
+      if (deps.allowLocalPaths === false) {
+        return { ok: false as const, reason: "blocked_path" as const };
+      }
+      const scope = findSkillLocation(ref)?.scope;
+      if (!scope) return { ok: false, reason: 'unknown_location' };
+      const context = await readSkillLocationContext(deps, scope === 'project');
+      const contextId = await skillLocationContextId(context, scope, locationContextSeed);
+      if (!contextId || options?.contextId !== contextId) {
+        return { ok: false, reason: "stale_context" };
+      }
+      const resolved = await resolveSkillLocation(
+        context,
+        ref,
+        options?.createIfMissing === true,
+      );
+      if (!resolved.ok) return resolved;
+      const error = await deps.openPath(resolved.path);
+      return error
+        ? { ok: false as const, reason: "open_failed" as const }
+        : { ok: true as const };
+    },
+  );
 
   deps.ipcMain.handle("skills:sources:importLocalFile", async () => {
     if (deps.allowLocalPaths === false) {
@@ -346,6 +403,38 @@ export function registerRuntimeHostSkillsIpc(
         : { ok: true as const, target: resolved.target };
     },
   );
+}
+
+type LocalSkillLocationContext = SkillLocationContext & { readonly projectId: string | null };
+
+async function readSkillLocationContext(
+  deps: RuntimeHostSkillsIpcDeps,
+  includeProject: boolean,
+): Promise<LocalSkillLocationContext> {
+  // Project lookup failure affects only Project locations, never the other roots.
+  const project = includeProject ? await deps.getSelectedProject().catch(() => null) : null;
+  return {
+    projectId: project?.projectId ?? null,
+    projectRoot: project?.path ?? null,
+    workspaceRoot: deps.workspaceRoot,
+    homeDirectory: deps.homeDirectory ?? homedir(),
+  };
+}
+
+async function skillLocationContextId(
+  context: LocalSkillLocationContext,
+  scope: SkillLocation['scope'],
+  hostRegistration: string,
+): Promise<string | undefined> {
+  const root = scope === 'project'
+    ? context.projectRoot
+    : scope === 'workspace' ? context.workspaceRoot : context.homeDirectory;
+  if (!root) return undefined;
+  const canonicalRoot = await realpath(root).catch(() => undefined);
+  if (!canonicalRoot) return undefined;
+  return createHash('sha256')
+    .update(JSON.stringify([hostRegistration, scope, canonicalRoot, scope === 'project' ? context.projectId : null]))
+    .digest('hex');
 }
 
 async function loadGovernance(

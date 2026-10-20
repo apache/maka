@@ -467,7 +467,13 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
             const claim = await this.#store.claimNow(input.taskId, this.#now());
             await this.#refreshResidency();
             const task = await this.#fulfill(claim, false);
-            if (!task) throw new ScheduledTaskNativeUnavailableError();
+            if (!task) {
+              // The waiting claim is already durable. A Store failure here
+              // drains the Host and recovery retries the claim, so the caller
+              // still gets the provider outcome rather than a generic failure.
+              await this.#refreshSchedule().catch((error: unknown) => this.#fatal(error));
+              throw new ScheduledTaskNativeUnavailableError();
+            }
             return task;
           }),
         );
@@ -609,6 +615,11 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
           claim,
           'The previous native notification stopped before delivery was confirmed.',
         );
+      }
+      // Expiry closes delivery just as it closes due and Trigger Now admission.
+      // A fire still waiting for a provider is settled rather than sent late.
+      if (task.expiresAt !== null && this.#now() >= task.expiresAt) {
+        return this.#settle(claim, 'blocked', '定时任务已过期，通知没有送达。', 'blocked');
       }
       if (task.effect.channel === 'bot' && !isBotDeliveryProvider(task.effect.platform)) {
         return this.#settle(
@@ -865,10 +876,17 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
     await this.#refreshResidency();
     if (!this.#started || this.#draining || this.#handoffHeld) return;
     const [tasks, claims] = await Promise.all([this.#store.list(), this.#store.listPendingFires()]);
+    const claimedTaskIds = new Set(claims.map((claim) => claim.task.id));
     const next = tasks
-      .filter((task) => task.status === 'active' && task.nextFireAt !== null)
+      .filter((task) => task.status === 'active')
       .reduce<number | null>((earliest, task) => {
-        const deadline = Math.min(task.nextFireAt!, task.expiresAt ?? task.nextFireAt!);
+        // A claimed fire waits on delivery, not on its original due time. Its
+        // expiry still wakes the scheduler, which settles a fire that is still
+        // waiting for a provider as blocked.
+        const nextFireAt = claimedTaskIds.has(task.id) ? null : task.nextFireAt;
+        const deadline =
+          nextFireAt === null ? task.expiresAt : Math.min(nextFireAt, task.expiresAt ?? nextFireAt);
+        if (deadline === null) return earliest;
         return earliest === null || deadline < earliest ? deadline : earliest;
       }, null);
     const waitingForProvider = claims.some((claim) => claim.nativeState === 'waiting_for_provider');

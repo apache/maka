@@ -86,6 +86,8 @@ export interface CommitTerminalRunWithRuntimeFactInput extends RunIdentity {
   failureClass?: string;
   failureMessage?: string;
   abortSource?: string;
+  /** Dispatched T1 operations whose outcomes remain unknown at restart. */
+  unsettledOperationIds?: readonly string[];
 }
 
 /**
@@ -100,11 +102,23 @@ export async function commitTerminalRunWithRuntimeFact(
   input: CommitTerminalRunWithRuntimeFactInput,
 ): Promise<void> {
   assertCommittableTerminalEvent(input.terminalEvent, input, input.status);
-  await input.runtimeEventStore.ensureTerminalRuntimeEventDurable(
-    input.sessionId,
-    input.runId,
-    input.terminalEvent,
-  );
+  if (
+    input.unsettledOperationIds?.length &&
+    input.runtimeEventStore.ensureRecoveredTerminalRuntimeEventDurable
+  ) {
+    await input.runtimeEventStore.ensureRecoveredTerminalRuntimeEventDurable(
+      input.sessionId,
+      input.runId,
+      input.terminalEvent,
+      input.unsettledOperationIds,
+    );
+  } else {
+    await input.runtimeEventStore.ensureTerminalRuntimeEventDurable(
+      input.sessionId,
+      input.runId,
+      input.terminalEvent,
+    );
+  }
 }
 
 export interface CommitOrCreateTerminalRunFactInput

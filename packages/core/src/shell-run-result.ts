@@ -111,6 +111,7 @@ const CURRENT_TERMINAL_RESULT_SHAPE = defineObjectShape<TerminalToolResult>()(
 const CURRENT_SHELL_RUN_RESULT_SHAPE = defineObjectShape<ShellRunToolResultRecord>()(
   ['kind', 'ref', 'mode', 'status', 'cwd', 'cmd', 'startedAt', 'updatedAt', 'revision'],
   [
+    'pid',
     'completedAt',
     'exitCode',
     'failureMessage',

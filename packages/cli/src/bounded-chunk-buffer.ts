@@ -45,6 +45,21 @@ export class BoundedChunkBuffer<T> {
     return this.dropped;
   }
 
+  get charLength(): number {
+    return this.retainedChars;
+  }
+
+  /** Share a presentation budget with other buffers without rebuilding sequence history. */
+  trimTo(maxChars: number, maxChunks: number): void {
+    const previousLength = this.length;
+    const previousChars = this.retainedChars;
+    this.trim(Math.max(0, maxChars), Math.max(0, maxChunks));
+    if (previousLength !== this.length || previousChars !== this.retainedChars) {
+      this.revision += 1;
+      this.cachedValues = undefined;
+    }
+  }
+
   get version(): number {
     return this.revision;
   }
@@ -93,8 +108,8 @@ export class BoundedChunkBuffer<T> {
     this.chunks.splice(index < 0 ? this.chunks.length : index, 0, chunk);
   }
 
-  private trim(): void {
-    let excess = this.retainedChars - this.options.maxChars;
+  private trim(maxChars = this.options.maxChars, maxChunks = this.options.maxChunks): void {
+    let excess = this.retainedChars - maxChars;
     while (excess > 0 && this.length > 0) {
       const first = this.chunks[this.head];
       if (first === undefined) break;
@@ -110,7 +125,7 @@ export class BoundedChunkBuffer<T> {
       this.dropped += cut;
       excess = 0;
     }
-    while (this.length > this.options.maxChunks) {
+    while (this.length > maxChunks) {
       const first = this.chunks[this.head];
       if (first === undefined) break;
       this.dropFirst(first, this.options.textOf(first).length);

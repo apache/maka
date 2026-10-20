@@ -20,7 +20,11 @@
 import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { decodeClientFrame, decodeHostFrame } from '../protocol/index.js';
+import {
+  decodeClientFrame,
+  decodeHostFrame,
+  RUNTIME_HOST_COMPATIBILITY_EPOCH,
+} from '../protocol/index.js';
 
 const EXPECTED = {
   connectionId: '00000000-0000-4000-8000-000000000001',
@@ -28,6 +32,22 @@ const EXPECTED = {
 };
 
 describe('Runtime Host connection effects protocol', () => {
+  test('admits discovery without selecting a model only on the new compatibility epoch', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 199);
+    const frame = request('connection.models.fetch', {
+      connectionId: EXPECTED.connectionId,
+      preserveSelection: true,
+    });
+    assert.deepEqual(decodeClientFrame(frame), frame);
+    assert.throws(() =>
+      decodeClientFrame(
+        request('connection.models.fetch', {
+          connectionId: EXPECTED.connectionId,
+          preserveSelection: 'true',
+        }),
+      ),
+    );
+  });
   test('bounds transient onboarding secrets, models, and save selections', () => {
     const verify = request('connection.onboarding.verify', {
       target: { kind: 'create', providerType: 'openrouter' },
@@ -65,7 +85,7 @@ describe('Runtime Host connection effects protocol', () => {
             connectionId: '00000000-0000-4000-8000-000000000002',
             revision: 2,
             slug: 'relay-2',
-            providerType: 'openai-compatible',
+            providerType: 'custom',
           },
         }),
       ),
@@ -75,7 +95,7 @@ describe('Runtime Host connection effects protocol', () => {
           connectionId: '00000000-0000-4000-8000-000000000002',
           revision: 2,
           slug: 'relay-2',
-          providerType: 'openai-compatible',
+          providerType: 'custom',
         },
       }),
     );
@@ -96,12 +116,30 @@ describe('Runtime Host connection effects protocol', () => {
     // Provider-specific URL semantics are resolved after an existing target's
     // canonical provider is loaded; the wire still bounds the raw value.
     assertInvalidRequest('connection.onboarding.verify', {
-      target: { kind: 'create', providerType: 'openai-compatible' },
+      target: { kind: 'create', providerType: 'custom', defaultApiProtocol: 'openai-chat' },
       apiKey: 'transient-secret',
       baseUrl: 'x'.repeat(2_049),
     });
+    const customVerify = request('connection.onboarding.verify', {
+      target: { kind: 'create', providerType: 'custom', defaultApiProtocol: 'anthropic-messages' },
+      apiKey: 'transient-secret',
+      baseUrl: 'https://relay.example/v1',
+    });
+    assert.deepEqual(decodeClientFrame(customVerify), customVerify);
+    // The default protocol is required on a custom target and closed to every other provider.
+    for (const target of [
+      { kind: 'create', providerType: 'custom' },
+      { kind: 'create', providerType: 'custom', defaultApiProtocol: 'google-generate' },
+      { kind: 'create', providerType: 'openrouter', defaultApiProtocol: 'openai-chat' },
+    ]) {
+      assertInvalidRequest('connection.onboarding.verify', {
+        target,
+        apiKey: 'transient-secret',
+        baseUrl: 'https://relay.example/v1',
+      });
+    }
     assertInvalidRequest('connection.onboarding.verify', {
-      providerType: 'openai-compatible',
+      providerType: 'custom',
       connectionId: null,
       apiKey: 'transient-secret',
       baseUrl: null,
@@ -130,7 +168,12 @@ describe('Runtime Host connection effects protocol', () => {
     });
     // …and the create target stays closed to fields it does not define.
     assertInvalidRequest('connection.onboarding.verify', {
-      target: { kind: 'create', providerType: 'openai-compatible', slug2: 'surface-owned' },
+      target: {
+        kind: 'create',
+        providerType: 'custom',
+        defaultApiProtocol: 'openai-chat',
+        slug2: 'surface-owned',
+      },
       apiKey: 'transient-secret',
       baseUrl: null,
     });
@@ -162,7 +205,7 @@ describe('Runtime Host connection effects protocol', () => {
         connectionId: '00000000-0000-4000-8000-000000000002',
         revision: 0,
         slug: 'relay-2',
-        providerType: 'openai-compatible',
+        providerType: 'custom',
       },
     });
   });

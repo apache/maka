@@ -30,15 +30,18 @@ authority admits it and restores the reading anchor at commit.
 - Ordinary CI runs `GEOMETRY_REPETITIONS=1 node scripts/perf/geometry-ablation.mjs --assert-stable`.
   Three fixed-range production stories cover mixed Turns, tools and long code.
   Cold upward scrolling must keep height drift and reverse motion within 1px.
-- `apps/desktop/e2e/scroll-geometry.spec.ts` exercises the native scrollbar:
-  held height/membership, monotonic movement, release-frame anchor and progress.
-- `apps/desktop/e2e/transcript-scroll-cost.spec.ts` covers bounded paging and
-  reading anchors across range changes with consecutive native wheel ticks.
+- `apps/desktop/e2e/partial-history-notice.spec.ts` covers bounded paging across
+  preload and Host storage; the geometry of a range change is covered by the
+  browser stories above, not by native wheel ticks.
 - Performance commands and comparison limits are in [CI.md](CI.md).
   Timing success alone does not establish statistical non-regression.
 
 The fixed-range probe waits for fonts and Markdown readiness. It does not
 establish stability during cold Markdown admission, streaming or media resize.
+There is no CI gate for a native scrollbar thumb held across the origin while
+Host history arrives. The former combined probe sampled after a fixed 50ms,
+which did not distinguish native input still completing from layout-induced
+displacement; the wheel and browser checks are not equivalent coverage.
 Scroll timing now covers only the first upward sweep; older reports also
 included a downward/upward return and must not be compared as equal workloads.
 

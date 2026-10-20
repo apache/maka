@@ -22,7 +22,7 @@ import { describe, it } from 'node:test';
 import {
   formatCommandLine,
   parseCommandLine,
-} from '../../renderer/mcp-command-line.js';
+} from '../../renderer/features/module-hub/testing.js';
 
 describe('MCP command line parsing', () => {
   it('splits on whitespace without shell interpretation', () => {

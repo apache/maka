@@ -77,6 +77,7 @@ export function bindHostChildAgentBackend(
         },
         agentProfile: input.agentProfile,
         ...(input.subagentId ? { subagentId: input.subagentId } : {}),
+        ...(input.executorId ? { executorId: input.executorId } : {}),
         prompt: input.prompt,
         ...(input.swarm ? { swarm: input.swarm } : {}),
         abortSignal: input.abortSignal,

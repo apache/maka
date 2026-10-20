@@ -192,7 +192,6 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
     signal?: AbortSignal,
   ) => DesktopRuntimeHostSetupPackage | Promise<DesktopRuntimeHostSetupPackage>;
   readonly operator: DesktopRuntimeHostLocalOperator;
-  readonly onUpdateProgress?: (phase: RuntimeHostServiceUpdatePhase | 'restart') => void;
   readonly resolveManagedDeploymentAuthority?: (
     rootId: string,
   ) => Promise<LocalManagedDeploymentAuthority | undefined>;
@@ -779,13 +778,11 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
                 ...(retirementSignal ? { retirementSignal } : {}),
               },
               (phase) => {
-                input.onUpdateProgress?.(phase);
                 progress?.(phase);
               },
             );
             if (frame.kind === 'error') {
               if (frame.error.code === 'active_tasks') return 'active_tasks';
-              if (frame.error.code === 'target_mismatch') return 'replaced';
               throw conflictReplacementError(registration.pid, frame.error.message);
             }
             if (frame.kind === 'progress' || frame.action !== 'update') {
@@ -878,7 +875,6 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
 
         const setupPackage = await input.resolveSetupPackage(signal);
         const progress = (phase: RuntimeHostServiceUpdatePhase | 'restart') => {
-          input.onUpdateProgress?.(phase);
           options.onProgress?.(phase);
         };
         progress('checking');
@@ -900,7 +896,6 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
         );
         if (frame.kind === 'error') {
           if (frame.error.code === 'active_tasks') return { kind: 'active_tasks' };
-          if (frame.error.code === 'target_mismatch') return { kind: 'unavailable' };
           throw new Error(`Runtime Host repair failed: ${frame.error.message}`);
         }
         if (frame.kind === 'progress' || frame.action !== 'update') {
@@ -925,7 +920,6 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
           });
           if (restarted.kind === 'error') {
             if (restarted.error.code === 'active_tasks') return { kind: 'active_tasks' };
-            if (restarted.error.code === 'target_mismatch') return { kind: 'unavailable' };
             throw new Error(`Runtime Host restart failed: ${restarted.error.message}`);
           }
           if (restarted.kind === 'progress' || restarted.action !== 'restart') {

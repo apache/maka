@@ -32,20 +32,26 @@ export interface ProcessingFold {
   children: FoldedTimelineChild[];
 }
 
-export type FoldedTimelineEntry = TurnTimelineItem | ProcessingFold;
+export type FoldedTimelineEntry = Extract<TurnTimelineItem, { kind: 'user' | 'text' }> | ProcessingFold;
 
-export function foldTimeline(items: readonly TurnTimelineItem[]): FoldedTimelineEntry[] {
+export function foldTimeline(items: readonly TurnTimelineItem[]): {
+  entries: FoldedTimelineEntry[];
+  finalReply: Extract<TurnTimelineItem, { kind: 'text' }> | undefined;
+} {
   const out: FoldedTimelineEntry[] = [];
+  let finalReply: Extract<TurnTimelineItem, { kind: 'text' }> | undefined;
   let anchor = 'start';
   let buffer: FoldedTimelineChild[] = [];
   const flush = (): void => {
+    if (buffer.length === 0) return;
     // Imported transcripts can record reasoning after the visible reply.
     // Ignore that trailing reasoning when locating the answer, but stop at
     // tool activity: text before tools is still process commentary.
     const replyIndex = buffer.findLastIndex((item) => item.kind !== 'thinking');
-    const answer = buffer[replyIndex]?.kind === 'text'
-      ? buffer.splice(replyIndex, 1)[0]
-      : undefined;
+    const candidate = buffer[replyIndex];
+    const answer = candidate?.kind === 'text' ? candidate : undefined;
+    if (answer) buffer.splice(replyIndex, 1);
+    finalReply = answer;
     if (buffer.length > 0) {
       out.push({ kind: 'processing', id: anchor, children: buffer });
     }
@@ -57,6 +63,7 @@ export function foldTimeline(items: readonly TurnTimelineItem[]): FoldedTimeline
       flush();
       out.push(item);
       anchor = item.messageId;
+      finalReply = undefined;
     } else if (item.kind === 'text' && item.interrupted) {
       buffer.push(item);
       flush();
@@ -66,5 +73,46 @@ export function foldTimeline(items: readonly TurnTimelineItem[]): FoldedTimeline
     }
   }
   flush();
-  return out;
+  return { entries: out, finalReply };
+}
+
+/**
+ * Keep the previous fold object for every entry whose content is unchanged.
+ * foldTimeline rebuilds every fold on each re-run, but its inputs are the
+ * reconciled timeline items, so equality is cheap here: leaf entries are the
+ * same objects, and a processing fold is unchanged iff its children are the
+ * same objects in the same order. Fold `id` (the preceding boundary's
+ * messageId) survives mid-timeline inserts, so matching by it rather than
+ * position keeps entries after a steering message stable too.
+ */
+export function reconcileFoldedEntries(
+  previous: FoldedTimelineEntry[],
+  next: FoldedTimelineEntry[],
+): FoldedTimelineEntry[] {
+  if (previous.length === 0) return next;
+  const processingById = new Map<string, ProcessingFold>();
+  const leafEntries = new Set<FoldedTimelineEntry>();
+  for (const entry of previous) {
+    if (entry.kind === 'processing') processingById.set(entry.id, entry);
+    else leafEntries.add(entry);
+  }
+  let moved = previous.length !== next.length;
+  const reconciled = next.map((entry) => {
+    if (entry.kind !== 'processing') {
+      if (leafEntries.has(entry)) return entry;
+      moved = true;
+      return entry;
+    }
+    const prior = processingById.get(entry.id);
+    if (
+      prior !== undefined
+      && prior.children.length === entry.children.length
+      && prior.children.every((child, index) => child === entry.children[index])
+    ) {
+      return prior;
+    }
+    moved = true;
+    return entry;
+  });
+  return moved ? reconciled : previous;
 }

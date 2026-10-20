@@ -52,6 +52,7 @@ describe('web search settings', () => {
   it('masks persisted tokens while preserving explicit replace and clear operations', () => {
     const reconciled = [
       ['secret-key', '••••••', 'secret-key'],
+      ['secret-key', '••••••••', 'secret-key'],
       ['old', 'new-token', 'new-token'],
       ['old', '', ''],
     ] as const;
@@ -59,7 +60,7 @@ describe('web search settings', () => {
       assert.equal(reconcileMaskedToken(persisted, candidate), expected);
     }
     assert.equal(maskedTokenForDisplay(''), '');
-    assert.equal(maskedTokenForDisplay('secret'), '••••••');
+    assert.equal(maskedTokenForDisplay('secret'), '••••••••');
   });
 
   it('preserves validation metadata for a masked round-trip and resets it for a new key', () => {
@@ -72,10 +73,12 @@ describe('web search settings', () => {
         },
       },
     });
-    const masked = mergeWebSearchSettings(current, {
-      providers: { tavily: { apiKey: '••••••' } },
-    });
-    assert.deepEqual(masked.providers.tavily, current.providers.tavily);
+    for (const apiKey of ['••••••', '••••••••']) {
+      const masked = mergeWebSearchSettings(current, {
+        providers: { tavily: { apiKey } },
+      });
+      assert.deepEqual(masked.providers.tavily, current.providers.tavily);
+    }
 
     const changed = mergeWebSearchSettings(current, {
       providers: { tavily: { apiKey: 'new-key' } },

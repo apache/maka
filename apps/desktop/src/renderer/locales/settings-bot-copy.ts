@@ -20,10 +20,10 @@
 import type { StatusSemantic } from '@maka/ui';
 import type { BotProvider, BotReadinessState } from '@maka/core/bot-chat-settings';
 import type { BotStatusCode, BotTestErrorCode, WechatBridgeQrHintCode } from '@maka/runtime/bots';
-import type { BotOnboardingErrorCode } from '@maka/core/bot-onboarding';
+import type { BotOnboardingErrorCode, BotOnboardingProvider, BotOnboardingSnapshot, BotOnboardingRetryFailureCategory } from '@maka/core/bot-onboarding';
 import type { GeneralizedErrorClass } from '@maka/core/redaction';
 
-import { type UiCatalog, type UiLocale, lookupCopy } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, lookupCopy, defineShippedUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 type WidenCopy<T> = T extends string
   ? string
@@ -33,7 +33,7 @@ type WidenCopy<T> = T extends string
 
 // Bot transport failures name the platform, not the model service that the
 // shared generalized copy describes.
-const BOT_TRANSPORT_ERRORS = {
+const BOT_TRANSPORT_ERRORS = resolveUiMessageCatalog(defineShippedUiMessageCatalog<Record<GeneralizedErrorClass, string>>()({
   'zh-CN': {
     timeout: '请求超时，请稍后重试',
     rate_limited: '请求过于频繁，请稍后重试',
@@ -55,14 +55,14 @@ const BOT_TRANSPORT_ERRORS = {
     provider_error: 'The platform is temporarily unavailable. Try again later',
     network_error: 'Network error. Check the network and proxy settings',
   },
-} satisfies UiCatalog<Record<GeneralizedErrorClass, string>>;
+})) satisfies UiCatalog<Record<GeneralizedErrorClass, string>>;
 
 const zhCopy = {
   providers: {
     telegram: { label: 'Telegram', help: '通过 @BotFather 创建 Bot 并获取 Token' },
-    feishu: { label: '飞书', help: '在飞书开放平台创建应用并获取凭证' },
+    feishu: { label: '飞书', help: '默认连接个人助手，需先在桌面启用。扫码绑定本人；手动配置请填写唯一用户 open_id。支持 Markdown、折叠卡片与处理中表情。' },
     wecom: { label: '企业微信', help: '通过企业微信 AI 应用接入，使用 WebSocket 长连接' },
-    wechat: { label: '微信', help: '通过本机 wechat-bridge 接入个人微信，需 iOS / Android 微信 8.0.70+。' },
+    wechat: { label: '微信', help: '先在桌面启用并打开个人助手，再扫码绑定私聊用户。消息尽力投递，失败重试一次，完整记录保留在桌面和网页。' },
     discord: { label: 'Discord', help: '在 Discord Developer Portal 创建 Bot' },
     dingtalk: { label: '钉钉', help: '在钉钉开发者后台创建机器人应用' },
     qq: { label: 'QQ', help: '在 QQ 开放平台创建机器人并获取 AppID 和 AppSecret' },
@@ -123,6 +123,8 @@ const zhCopy = {
     wechat_ilink_credentials_incomplete: '请先完成微信扫码登录，保存 iLink bot token 与 base URL。',
   } satisfies Record<BotTestErrorCode, string>,
   overview: {
+    messageHandlingTitle: '消息处理', messageHandlingLabel: '消息处理方式', separateTask: '独立任务', personalAssistant: '个人助手', followDefault: '跟随全局设置',
+    messageHandlingDescription: '所有渠道均可使用独立任务、WorkHub 或个人助手，也可在渠道中单独选择。个人助手共享桌面对话，需要设置唯一允许用户并先发一条私聊消息。切换从下一条消息生效。',
     loadFailed: '远程接入状态载入失败', reload: '重新载入', active: '正在使用', sortHint: '按需要处理、最近活动排序',
     empty: '还没有正在使用的渠道', emptyHelp: '从下方选择一个消息平台开始配置。', more: '接入更多渠道', choose: '选择平台开始配置',
     listening: '监听中', manageAria: (name: string, status: string) => `管理 ${name}，${status}`, connectAria: (name: string) => `接入 ${name}`,
@@ -149,7 +151,7 @@ const zhCopy = {
     beginQuickBind: '开始快捷绑定', scanWith: (name: string) => `使用${name}扫码接入`, planned: '这个平台当前只作为平台清单展示，不会进入可用渠道，也不会保存为定时任务投递目标。',
     credentialsSaved: (name: string) => `${name}凭据已保存`, scanComplete: (name: string) => `${name}已完成扫码接入`, savedAndConnected: '凭据已安全保存并开始连接',
     proxy: '代理地址', chinaRequired: '（国内网络必填）', authOnly: '（仅用于 Bot 鉴权）', telegramProxyAria: 'Telegram 代理地址',
-    telegramNotice: '请打开网络的 TUN 模式后重启应用，以便完成 Telegram Bot 设置', feishuCredentialId: '飞书凭据 ID', feishuSecret: '飞书 App Secret',
+    telegramNotice: '请打开网络的 TUN 模式后重启应用，以便完成 Telegram Bot 设置', feishuAllowedUsersPlaceholder: '个人助手模式仅接受一个用户 open_id，例如 ou_xxx；留空不会开放个人助手。', feishuCredentialId: '飞书凭据 ID', feishuSecret: '飞书 App Secret',
     feishuDomain: '飞书域名', feishuOption: '飞书 (feishu.cn)', discordProxyAria: 'Discord 代理地址',
     discordNotice: '国内网络访问 Discord：上方代理仅作用于 Bot 鉴权请求，消息收发走 WebSocket 长连接需要系统级代理。请打开网络的 TUN 模式后重启应用。',
     dingtalkId: '钉钉应用密钥', dingtalkSecret: '钉钉 Client Secret', wecomBotPlaceholder: '企业微信 AI 应用 Bot ID', wecomBotAria: '企业微信 Bot ID',
@@ -177,7 +179,7 @@ const zhCopy = {
     connectedRefreshFailed: (message: string) => `连接已完成，但状态刷新失败：${message}`, close: (title: string) => `关闭${title}`,
     generatingAria: '正在生成二维码', privacy: '凭据仅保存在本机，不会传给 renderer 或 Maka 云端。', openBrowser: '无法扫码？在浏览器中打开',
     done: '完成', regenerate: '重新生成', refreshQr: '刷新二维码', cancel: '取消', generating: '正在生成安全二维码…', connecting: '授权完成，正在保存凭据并启动连接…',
-    connected: (name: string) => `${name} 已连接`, connectedWarning: '凭据已保存，但连接尚未成功启动。', expired: '二维码已过期，请重新生成', denied: '授权已取消，请重新生成二维码', cancelled: '扫码接入已取消', failed: '扫码接入失败，请重试', preparing: '准备扫码接入…',
+    connected: (name: string) => `${name} 已连接`, connectedWarning: '凭据已保存，但连接尚未成功启动。', retrying: (category: BotOnboardingRetryFailureCategory, count: number, seconds: number) => `${retryCategoryZh(category)}；连续失败 ${count} 次，约 ${seconds} 秒后自动重试。`, expired: '二维码已过期，请重新生成', denied: '授权已取消，请重新生成二维码', cancelled: '扫码接入已取消', failed: '扫码接入失败，请重试', preparing: '准备扫码接入…',
     savedNotConnected: '凭据已保存，但连接未建立，可稍后在设置中重试。',
     savedNotConnectedDetail: (detail: string) => `凭据已保存，但连接未建立：${detail}，可稍后在设置中重试。`,
     errors: {
@@ -199,9 +201,9 @@ const zhCopy = {
 const zhTwCopy = {
   providers: {
     telegram: { label: 'Telegram', help: '透過 @BotFather 建立 Bot 並取得 Token' },
-    feishu: { label: '飛書', help: '在飛書開放平台建立應用並取得憑證' },
+    feishu: { label: '飛書', help: '預設連接個人助手，請先在桌面啟用。掃碼綁定本人；手動設定請填寫唯一使用者 open_id。支援 Markdown、摺疊卡片與處理中表情。' },
     wecom: { label: '企業微信', help: '透過企業微信 AI 應用串接，使用 WebSocket 長連線' },
-    wechat: { label: '微信', help: '透過本機 wechat-bridge 串接個人微信，需 iOS / Android 微信 8.0.70+。' },
+    wechat: { label: '微信', help: '先在桌面啟用並開啟個人助手，再掃碼綁定私聊使用者。訊息盡力投遞，失敗重試一次，完整記錄保留在桌面及網頁。' },
     discord: { label: 'Discord', help: '在 Discord Developer Portal 建立 Bot' },
     dingtalk: { label: '釘釘', help: '在釘釘開發者後臺建立機器人應用' },
     qq: { label: 'QQ', help: '在 QQ 開放平台建立機器人並取得 AppID 和 AppSecret' },
@@ -262,6 +264,8 @@ const zhTwCopy = {
     wechat_ilink_credentials_incomplete: '請先完成微信掃碼登入，儲存 iLink bot token 與 base URL。',
   } satisfies Record<BotTestErrorCode, string>,
   overview: {
+    messageHandlingTitle: '訊息處理', messageHandlingLabel: '訊息處理方式', separateTask: '獨立任務', personalAssistant: '個人助手', followDefault: '跟隨全域設定',
+    messageHandlingDescription: '所有管道均可使用獨立任務、WorkHub 或個人助手，也可在管道中單獨選擇。個人助手共用桌面對話，需設定唯一允許使用者並先發一則私聊訊息。切換從下一則訊息生效。',
     loadFailed: '遠端串接狀態載入失敗', reload: '重新載入', active: '正在使用', sortHint: '按需要處理、最近活動排序',
     empty: '還沒有正在使用的管道', emptyHelp: '從下方選擇一個訊息平台開始設定。', more: '串接更多管道', choose: '選擇平台開始設定',
     listening: '監聽中', manageAria: (name: string, status: string) => `管理 ${name}，${status}`, connectAria: (name: string) => `串接 ${name}`,
@@ -288,7 +292,7 @@ const zhTwCopy = {
     beginQuickBind: '開始快捷綁定', scanWith: (name: string) => `使用${name}掃碼串接`, planned: '這個平台目前只作為平台清單展示，不會進入可用管道，也不會儲存為定時任務投遞目標。',
     credentialsSaved: (name: string) => `${name}憑證已儲存`, scanComplete: (name: string) => `${name}已完成掃碼串接`, savedAndConnected: '憑證已安全儲存並開始連線',
     proxy: '代理地址', chinaRequired: '（國內網路必填）', authOnly: '（僅用於 Bot 鑑權）', telegramProxyAria: 'Telegram 代理地址',
-    telegramNotice: '請開啟網路的 TUN 模式後重啟應用，以便完成 Telegram Bot 設定', feishuCredentialId: '飛書憑證 ID', feishuSecret: '飛書 App Secret',
+    telegramNotice: '請開啟網路的 TUN 模式後重啟應用，以便完成 Telegram Bot 設定', feishuAllowedUsersPlaceholder: '個人助手模式只接受一位使用者 open_id，例如 ou_xxx；留空不會開放個人助手。', feishuCredentialId: '飛書憑證 ID', feishuSecret: '飛書 App Secret',
     feishuDomain: '飛書域名', feishuOption: '飛書 (feishu.cn)', discordProxyAria: 'Discord 代理地址',
     discordNotice: '國內網路存取 Discord：上方代理僅作用於 Bot 鑑權請求，訊息收發走 WebSocket 長連線需要系統級代理。請開啟網路的 TUN 模式後重啟應用。',
     dingtalkId: '釘釘應用金鑰', dingtalkSecret: '釘釘 Client Secret', wecomBotPlaceholder: '企業微信 AI 應用 Bot ID', wecomBotAria: '企業微信 Bot ID',
@@ -316,7 +320,7 @@ const zhTwCopy = {
     connectedRefreshFailed: (message: string) => `連線已完成，但狀態重新整理失敗：${message}`, close: (title: string) => `關閉${title}`,
     generatingAria: '正在生成二維碼', privacy: '憑證僅儲存在本機，不會傳給 renderer 或 Maka 雲端。', openBrowser: '無法掃碼？在瀏覽器中開啟',
     done: '完成', regenerate: '重新生成', refreshQr: '重新整理二維碼', cancel: '取消', generating: '正在生成安全二維碼…', connecting: '授權完成，正在儲存憑證並啟動連線…',
-    connected: (name: string) => `${name} 已連線`, connectedWarning: '憑證已儲存，但連線尚未成功啟動。', expired: '二維碼已過期，請重新生成', denied: '授權已取消，請重新生成二維碼', cancelled: '掃碼串接已取消', failed: '掃碼串接失敗，請重試', preparing: '準備掃碼串接…',
+    connected: (name: string) => `${name} 已連線`, connectedWarning: '憑證已儲存，但連線尚未成功啟動。', retrying: (category: BotOnboardingRetryFailureCategory, count: number, seconds: number) => `${retryCategoryZhTw(category)}；連續失敗 ${count} 次，約 ${seconds} 秒後自動重試。`, expired: '二維碼已過期，請重新生成', denied: '授權已取消，請重新生成二維碼', cancelled: '掃碼串接已取消', failed: '掃碼串接失敗，請重試', preparing: '準備掃碼串接…',
     savedNotConnected: '憑證已儲存，但連線未建立，可稍後在設定中重試。',
     savedNotConnectedDetail: (detail: string) => `憑證已儲存，但連線未建立：${detail}，可稍後在設定中重試。`,
     errors: {
@@ -340,8 +344,8 @@ export type BotSettingsCopy = WidenCopy<typeof zhCopy>;
 
 const enCopy: BotSettingsCopy = {
   providers: {
-    telegram: { label: 'Telegram', help: 'Create a bot with @BotFather and get its token' }, feishu: { label: 'Feishu', help: 'Create an app and credentials in Feishu Open Platform' },
-    wecom: { label: 'WeCom', help: 'Connect a WeCom AI app over a persistent WebSocket' }, wechat: { label: 'WeChat', help: 'Connect personal WeChat through the local bridge; requires WeChat 8.0.70+ on iOS or Android.' },
+    telegram: { label: 'Telegram', help: 'Create a bot with @BotFather and get its token' }, feishu: { label: 'Feishu', help: 'Enable the desktop personal assistant first. Scan to bind yourself, or enter exactly one user open_id manually. Supports Markdown, expandable cards and processing reactions.' },
+    wecom: { label: 'WeCom', help: 'Connect a WeCom AI app over a persistent WebSocket' }, wechat: { label: 'WeChat', help: 'Enable and open the desktop assistant first, then scan to pair your WeChat DM. Delivery retries once; desktop and web keep the complete record.' },
     discord: { label: 'Discord', help: 'Create a bot in Discord Developer Portal' }, dingtalk: { label: 'DingTalk', help: 'Create a bot app in DingTalk Developer Console' }, qq: { label: 'QQ', help: 'Create a bot in QQ Open Platform and get its AppID and AppSecret' },
     slack: { label: 'Slack', help: 'Connect with a Bot Token and App-Level Token over Socket Mode' },
   },
@@ -391,10 +395,12 @@ const enCopy: BotSettingsCopy = {
     wechat_bridge_url_invalid: 'The local WeChat bridge only accepts the local wechat-bridge, not a remote URL.',
     wechat_ilink_credentials_incomplete: 'Complete WeChat QR sign-in first to save the iLink bot token and base URL.',
   } satisfies Record<BotTestErrorCode, string>,
-  overview: { loadFailed: 'Failed to load remote-access status', reload: 'Reload', active: 'In use', sortHint: 'Sorted by attention needed and recent activity', empty: 'No channels are in use', emptyHelp: 'Choose a messaging platform below to begin setup.', more: 'Connect more channels', choose: 'Choose a platform to begin setup', listening: 'Listening', manageAria: (name, status) => `Manage ${name}, ${status}`, connectAria: (name) => `Connect ${name}` },
+  overview: {
+    messageHandlingTitle: 'Message handling', messageHandlingLabel: 'Handle messages with', separateTask: 'Separate task', personalAssistant: 'Personal assistant', followDefault: 'Use global setting',
+    messageHandlingDescription: 'All channels support separate tasks, WorkHub, or the personal assistant, with per-channel overrides. The assistant shares the desktop conversation; allow exactly one user and send a direct message first. Changes apply to the next message.', loadFailed: 'Failed to load remote-access status', reload: 'Reload', active: 'In use', sortHint: 'Sorted by attention needed and recent activity', empty: 'No channels are in use', emptyHelp: 'Choose a messaging platform below to begin setup.', more: 'Connect more channels', choose: 'Choose a platform to begin setup', listening: 'Listening', manageAria: (name, status) => `Manage ${name}, ${status}`, connectAria: (name) => `Connect ${name}` },
   page: { saveFailed: (name) => `Failed to save ${name}`, loadFailed: 'Failed to load remote-access status', refreshFailed: 'Failed to refresh remote-access status', credentialVerified: (name) => `${name} credentials verified`, credentialVerifiedDetail: 'The credential check passed.', credentialTestFailed: (name) => `${name} credential test failed`, credentialTestFailedDetail: 'Check the credentials and network settings, then try again.', testError: (name) => `${name} test error`, listening: (name) => `${name} is listening`, notListening: (name) => `${name} did not start listening`, startFailed: (name) => `Failed to start ${name}`, disconnectTitle: 'Disconnect WeChat?', disconnectDescription: 'This clears the saved local QR sign-in credentials. You will need to scan again to keep using WeChat.', disconnect: 'Disconnect', cancel: 'Cancel', disconnected: 'WeChat disconnected', credentialsCleared: 'Local linked-session credentials cleared.' },
   detail: {
-    unavailableHint: 'This platform is not available and cannot be enabled.', scanFirstHint: 'Scan to connect before enabling this channel.', testFirstHint: 'Test and connect before enabling this channel.', back: 'Back to Remote access', configDocs: 'View setup guide', enableAria: (name) => `Enable ${name} channel`, listening: 'Listening for new messages', healthy: 'Connection healthy. No action needed.', actionsAria: (name) => `${name} channel actions`, quickBind: 'Quick connect', scanLogin: 'Scan to sign in', scanConnect: 'Scan to connect', disconnecting: 'Disconnecting…', disconnectWechat: 'Disconnect WeChat', bridgeQr: 'Local bridge QR code', testing: 'Testing…', test: 'Test connection', connecting: 'Connecting…', testAndConnect: 'Test and connect', restarting: 'Restarting…', restart: 'Restart listener', runtimeAria: (name) => `${name} runtime status`, identity: 'Identity', unknownIdentity: 'Unavailable', connectionType: 'Connection type', lastEvent: 'Last event', noneYet: 'None', lastTest: 'Last test', neverTested: 'Never tested', statusRefreshFailed: 'Failed to refresh runtime status', latestFailure: 'Latest failure', latestFailureDetail: 'Check the configuration, network, and runtime logs, then try again.', savedButNotConnected: 'Credentials were saved, but the connection did not start.', setupMethod: 'Connection method', connectionSettings: 'Connection settings', localCredentials: 'Credentials stay on this device', autosave: 'Saved automatically', setupAria: (name) => `${name} connection method`, quickRecommended: 'Quick setup (recommended)', manual: 'Manual setup', quickAria: (name) => `${name} quick setup`, quickWecomTitle: 'Scan to create and connect a bot', quickTitle: 'Scan to create an app and bot', quickWecomDetail: 'After an administrator confirms the scan, Maka saves the Bot ID and Secret and starts the persistent connection.', quickQqTitle: 'Scan with mobile QQ to create and bind a bot', quickQqDetail: 'After confirmation, QQ securely returns the AppID and AppSecret; Maka stores them locally and starts the Gateway.', telegramOfficialFlow: 'Telegram officially requires a Bot Token from @BotFather and does not provide an API that creates a bot by QR scan and returns its token.', quickDetail: 'After confirmation, Maka stores credentials in the main process and starts the message connection.', feishuRegionAria: 'Choose Feishu account region', feishu: 'Feishu', beginQuickBind: 'Start quick connect', scanWith: (name) => `Scan with ${name}`, planned: 'This platform is shown in the catalog only. It will not become an active channel or a scheduled-task delivery target.', credentialsSaved: (name) => `${name} credentials saved`, scanComplete: (name) => `${name} QR setup complete`, savedAndConnected: 'Credentials saved securely and connection started', proxy: 'Proxy URL', chinaRequired: '(required on networks in mainland China)', authOnly: '(Bot authentication only)', telegramProxyAria: 'Telegram proxy URL', telegramNotice: 'Enable TUN mode in your network tool and restart the app to complete Telegram Bot setup.', feishuCredentialId: 'Feishu credential ID', feishuSecret: 'Feishu App Secret', feishuDomain: 'Feishu domain', feishuOption: 'Feishu (feishu.cn)', discordProxyAria: 'Discord proxy URL', discordNotice: 'For Discord access from mainland China, the proxy above covers Bot authentication only. Message WebSockets require a system-level proxy. Enable TUN mode and restart the app.', dingtalkId: 'DingTalk app key', dingtalkSecret: 'DingTalk Client Secret', wecomBotPlaceholder: 'WeCom AI app Bot ID', wecomBotAria: 'WeCom Bot ID', wecomSecretPlaceholder: 'AI app Secret', wecomSecretAria: 'WeCom Secret', qqId: 'QQ app ID', allowedUsersLabel: (count, max) => `Allowed user IDs (${count} / ${max})`, allowedUsersPlaceholder: 'One user ID per line; leave empty to allow everyone\nExample: 123456789',
+    unavailableHint: 'This platform is not available and cannot be enabled.', scanFirstHint: 'Scan to connect before enabling this channel.', testFirstHint: 'Test and connect before enabling this channel.', back: 'Back to Remote access', configDocs: 'View setup guide', enableAria: (name) => `Enable ${name} channel`, listening: 'Listening for new messages', healthy: 'Connection healthy. No action needed.', actionsAria: (name) => `${name} channel actions`, quickBind: 'Quick connect', scanLogin: 'Scan to sign in', scanConnect: 'Scan to connect', disconnecting: 'Disconnecting…', disconnectWechat: 'Disconnect WeChat', bridgeQr: 'Local bridge QR code', testing: 'Testing…', test: 'Test connection', connecting: 'Connecting…', testAndConnect: 'Test and connect', restarting: 'Restarting…', restart: 'Restart listener', runtimeAria: (name) => `${name} runtime status`, identity: 'Identity', unknownIdentity: 'Unavailable', connectionType: 'Connection type', lastEvent: 'Last event', noneYet: 'None', lastTest: 'Last test', neverTested: 'Never tested', statusRefreshFailed: 'Failed to refresh runtime status', latestFailure: 'Latest failure', latestFailureDetail: 'Check the configuration, network, and runtime logs, then try again.', savedButNotConnected: 'Credentials were saved, but the connection did not start.', setupMethod: 'Connection method', connectionSettings: 'Connection settings', localCredentials: 'Credentials stay on this device', autosave: 'Saved automatically', setupAria: (name) => `${name} connection method`, quickRecommended: 'Quick setup (recommended)', manual: 'Manual setup', quickAria: (name) => `${name} quick setup`, quickWecomTitle: 'Scan to create and connect a bot', quickTitle: 'Scan to create an app and bot', quickWecomDetail: 'After an administrator confirms the scan, Maka saves the Bot ID and Secret and starts the persistent connection.', quickQqTitle: 'Scan with mobile QQ to create and bind a bot', quickQqDetail: 'After confirmation, QQ securely returns the AppID and AppSecret; Maka stores them locally and starts the Gateway.', telegramOfficialFlow: 'Telegram officially requires a Bot Token from @BotFather and does not provide an API that creates a bot by QR scan and returns its token.', quickDetail: 'After confirmation, Maka stores credentials in the main process and starts the message connection.', feishuRegionAria: 'Choose Feishu account region', feishu: 'Feishu', beginQuickBind: 'Start quick connect', scanWith: (name) => `Scan with ${name}`, planned: 'This platform is shown in the catalog only. It will not become an active channel or a scheduled-task delivery target.', credentialsSaved: (name) => `${name} credentials saved`, scanComplete: (name) => `${name} QR setup complete`, savedAndConnected: 'Credentials saved securely and connection started', proxy: 'Proxy URL', chinaRequired: '(required on networks in mainland China)', authOnly: '(Bot authentication only)', telegramProxyAria: 'Telegram proxy URL', telegramNotice: 'Enable TUN mode in your network tool and restart the app to complete Telegram Bot setup.', feishuAllowedUsersPlaceholder: 'Assistant mode requires exactly one user open_id, e.g. ou_xxx. Empty does not allow assistant access.', feishuCredentialId: 'Feishu credential ID', feishuSecret: 'Feishu App Secret', feishuDomain: 'Feishu domain', feishuOption: 'Feishu (feishu.cn)', discordProxyAria: 'Discord proxy URL', discordNotice: 'For Discord access from mainland China, the proxy above covers Bot authentication only. Message WebSockets require a system-level proxy. Enable TUN mode and restart the app.', dingtalkId: 'DingTalk app key', dingtalkSecret: 'DingTalk Client Secret', wecomBotPlaceholder: 'WeCom AI app Bot ID', wecomBotAria: 'WeCom Bot ID', wecomSecretPlaceholder: 'AI app Secret', wecomSecretAria: 'WeCom Secret', qqId: 'QQ app ID', allowedUsersLabel: (count, max) => `Allowed user IDs (${count} / ${max})`, allowedUsersPlaceholder: 'One user ID per line; leave empty to allow everyone\nExample: 123456789',
     allowedUsersHelp: (atCap) => atCap
       ? 'Telegram user IDs are 64-bit integers. When set, only messages from these IDs are accepted; all others are silently ignored. (limit reached)'
       : 'Telegram user IDs are 64-bit integers. When set, only messages from these IDs are accepted; all others are silently ignored.',
@@ -407,7 +413,7 @@ const enCopy: BotSettingsCopy = {
   },
   onboarding: {
     providers: { dingtalk: { title: 'Set up DingTalk', ariaLabel: 'Set up DingTalk with a QR code', qrAlt: 'DingTalk setup QR code', subtitle: 'Scan in DingTalk to register the app', waiting: 'Scan with DingTalk and confirm authorization', scanned: 'Scanned. Complete confirmation in DingTalk.' }, feishu: { title: 'Set up Feishu', ariaLabel: 'Set up Feishu with a QR code', qrAlt: 'Feishu setup QR code', subtitle: 'Scan with Feishu to create and configure the bot', waiting: 'Scan with Feishu and confirm creation', scanned: 'Scanned. Complete confirmation in Feishu.' }, wecom: { title: 'Set up WeCom', ariaLabel: 'Set up WeCom with a QR code', qrAlt: 'WeCom setup QR code', subtitle: 'Quick setup creates and connects a WeCom bot', waiting: 'Open WeCom and scan to create the bot', scanned: 'Scanned. Complete confirmation in WeCom.' }, wechat: { title: 'Scan to sign in', ariaLabel: 'WeChat QR sign-in', qrAlt: 'WeChat sign-in QR code', subtitle: 'Scan with WeChat to connect', waiting: 'Scan with WeChat and confirm on your phone', scanned: 'Scanned. Complete confirmation in WeChat.' }, qq: { title: 'Set up QQ', ariaLabel: 'Set up QQ with a QR code', qrAlt: 'QQ setup QR code', subtitle: 'Scan with mobile QQ to create and bind a bot', waiting: 'Scan with mobile QQ and confirm binding', scanned: 'Scanned. Complete confirmation in QQ.' } },
-    lark: { title: 'Set up Lark', ariaLabel: 'Set up Lark with a QR code', qrAlt: 'Lark setup QR code', subtitle: 'Scan with Lark to create and configure the bot', waiting: 'Scan with Lark and confirm creation', scanned: 'Scanned. Complete confirmation in Lark.' }, connectedRefreshFailed: (message) => `Connected, but status refresh failed: ${message}`, close: (title) => `Close ${title}`, generatingAria: 'Generating QR code', privacy: 'Credentials stay on this device and are never sent to the renderer or Maka cloud.', openBrowser: 'Cannot scan? Open in browser', done: 'Done', regenerate: 'Generate again', refreshQr: 'Refresh QR code', cancel: 'Cancel', generating: 'Generating a secure QR code…', connecting: 'Authorization complete. Saving credentials and starting connection…', connected: (name) => `${name} connected`, connectedWarning: 'Credentials were saved, but the connection did not start.', expired: 'QR code expired. Generate a new one.', denied: 'Authorization cancelled. Generate a new QR code.', cancelled: 'QR setup cancelled', failed: 'QR setup failed. Try again.', preparing: 'Preparing QR setup…',
+    lark: { title: 'Set up Lark', ariaLabel: 'Set up Lark with a QR code', qrAlt: 'Lark setup QR code', subtitle: 'Scan with Lark to create and configure the bot', waiting: 'Scan with Lark and confirm creation', scanned: 'Scanned. Complete confirmation in Lark.' }, connectedRefreshFailed: (message) => `Connected, but status refresh failed: ${message}`, close: (title) => `Close ${title}`, generatingAria: 'Generating QR code', privacy: 'Credentials stay on this device and are never sent to the renderer or Maka cloud.', openBrowser: 'Cannot scan? Open in browser', done: 'Done', regenerate: 'Generate again', refreshQr: 'Refresh QR code', cancel: 'Cancel', generating: 'Generating a secure QR code…', connecting: 'Authorization complete. Saving credentials and starting connection…', connected: (name) => `${name} connected`, connectedWarning: 'Credentials were saved, but the connection did not start.', retrying: (category, count, seconds) => `${retryCategoryEn(category)}; ${count} consecutive ${count === 1 ? 'failure' : 'failures'}. Retrying automatically in about ${seconds}s.`, expired: 'QR code expired. Generate a new one.', denied: 'Authorization cancelled. Generate a new QR code.', cancelled: 'QR setup cancelled', failed: 'QR setup failed. Try again.', preparing: 'Preparing QR setup…',
     savedNotConnected: 'Credentials were saved, but the connection did not start. Retry from settings later.',
     savedNotConnectedDetail: (detail) => `Credentials were saved, but the connection did not start: ${detail}. Retry from settings later.`,
     errors: {
@@ -419,14 +425,44 @@ const enCopy: BotSettingsCopy = {
   wechat: { token: 'WeChat Bot Token', tokenPlaceholder: 'Local wechat-bridge Bearer Token', collapseAdvanced: 'Hide advanced settings', expandAdvanced: 'Advanced settings (Official Account / local bridge URL)', bridgeAddress: 'Local bridge URL', appId: 'Official Account App ID', appIdPlaceholder: 'WeChat Official Account App ID', appSecret: 'Official Account App Secret', appSecretPlaceholder: 'WeChat Official Account App Secret', advancedNotice: 'The local bridge defaults to http://127.0.0.1:18400. Official Account App ID and App Secret are used only for Official Account messaging; personal WeChat QR sign-in uses the local bridge.', readQrFailed: 'Could not read a QR code from the local wechat-bridge. Make sure the bridge is running.', title: 'WeChat QR sign-in', subtitle: 'Scan the QR code with WeChat and confirm signing in to the local wechat-bridge on your phone.', close: 'Close WeChat QR sign-in', generating: 'Generating QR code…', loggedIn: 'WeChat is signed in. Return to test the connection or restart the listener.', expired: 'QR code expired', expiredHint: 'Refresh the QR code and scan again to continue signing in.', refreshing: 'Refreshing…', refresh: 'Refresh QR code', qrAlt: 'WeChat sign-in QR code', waiting: 'Waiting for confirmation… Sign-in status refreshes every 3 seconds.', retrying: 'Retrying…', retry: 'Retry', bridgeGenerating: 'The bridge is generating a QR code', bridgeGeneratingHint: 'The QR code appears automatically once ready; you can also fetch it again.', fetching: 'Fetching…', fetchAgain: 'Fetch again' },
 };
 
-const BOT_SETTINGS_COPY = {
+const BOT_SETTINGS_COPY = resolveUiMessageCatalog(defineShippedUiMessageCatalog<BotSettingsCopy>()({
   'zh-CN': zhCopy,
   'zh-TW': zhTwCopy,
   en: enCopy,
-} satisfies UiCatalog<BotSettingsCopy>;
+})) satisfies UiCatalog<BotSettingsCopy>;
 
 export function getBotSettingsCopy(locale: UiLocale): BotSettingsCopy {
   return BOT_SETTINGS_COPY[locale];
+}
+
+function retryCategoryZh(category: BotOnboardingRetryFailureCategory): string {
+  switch (category) {
+    case 'timeout': return '请求超时';
+    case 'network': return '网络暂时异常';
+    case 'rate_limited': return '服务请求频率受限';
+    case 'server': return '服务端暂时异常';
+    default: return '服务暂时异常';
+  }
+}
+
+function retryCategoryZhTw(category: BotOnboardingRetryFailureCategory): string {
+  switch (category) {
+    case 'timeout': return '請求逾時';
+    case 'network': return '網路暫時異常';
+    case 'rate_limited': return '服務請求頻率受限';
+    case 'server': return '服務端暫時異常';
+    default: return '服務暫時異常';
+  }
+}
+
+function retryCategoryEn(category: BotOnboardingRetryFailureCategory): string {
+  switch (category) {
+    case 'timeout': return 'The request timed out';
+    case 'network': return 'The network is temporarily unavailable';
+    case 'rate_limited': return 'The service is rate limiting requests';
+    case 'server': return 'The service is temporarily unavailable';
+    default: return 'The service is temporarily unavailable';
+  }
 }
 
 const BOT_STATUS_REASON_PATTERNS: ReadonlyArray<{
@@ -481,4 +517,42 @@ export function botStatusReasonCopy(reason: string, locale: UiLocale): string | 
 export function botOnboardingErrorMessage(errorCode: string | undefined, locale: UiLocale): string {
   const shared = BOT_SETTINGS_COPY[locale].onboarding;
   return lookupCopy(shared.errors, errorCode) ?? shared.failed;
+}
+
+export function botOnboardingStatusCopy(
+  snapshot: BotOnboardingSnapshot | null,
+  starting: boolean,
+  error: string | null,
+  copy: BotSettingsCopy['onboarding']['providers'][BotOnboardingProvider],
+  locale: UiLocale,
+): string {
+  const shared = getBotSettingsCopy(locale).onboarding;
+  if (starting) return shared.generating;
+  if (error) return error;
+  if (snapshot?.retryHealth) {
+    const seconds = Math.max(1, Math.ceil(snapshot.nextPollAfterMs / 1_000));
+    const retry = shared.retrying(
+      snapshot.retryHealth.category,
+      snapshot.retryHealth.consecutiveFailures,
+      seconds,
+    );
+    return snapshot.state === 'scanned' ? `${copy.scanned} ${retry}` : retry;
+  }
+  switch (snapshot?.state) {
+    case 'waiting': return copy.waiting;
+    case 'scanned': return copy.scanned;
+    case 'connecting': return shared.connecting;
+    // PR1197 review (P0-3): honour the honest "saved but not connected" notice
+    // instead of claiming a healthy connection.
+    case 'connected': return snapshot.warningCode
+      ? (snapshot.warningDetail
+          ? shared.savedNotConnectedDetail(botStatusReasonMessage(snapshot.warningDetail, locale))
+          : shared.savedNotConnected)
+      : shared.connected(getBotSettingsCopy(locale).providers[snapshot.provider].label);
+    case 'expired': return shared.expired;
+    case 'denied': return shared.denied;
+    case 'cancelled': return shared.cancelled;
+    case 'error': return botOnboardingErrorMessage(snapshot.errorCode, locale);
+    default: return shared.preparing;
+  }
 }

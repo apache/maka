@@ -1116,6 +1116,345 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
     ]);
   });
 
+  test('a sequence closing observation is immediately usable by the next action', async () => {
+    const backend = fakeBackend();
+    backend.observeApp = async () => observation();
+    backend.captureObservation = async () => observation();
+    let dispatches = 0;
+    backend.runSemantic = async () => {
+      dispatches += 1;
+      return { outcome: { ok: true, tier: 'ax', verified: true } };
+    };
+    const [tool] = buildComputerUseTools({ backend });
+    const observed = (await tool.impl({ action: 'observe', app: 'Fixture' } as never, ctx())) as {
+      text: string;
+    };
+    const sequence = (await tool.impl(
+      {
+        action: 'element_sequence',
+        observation_id: JSON.parse(observed.text).observation_id,
+        steps: [{ label: 'Continue' }],
+      } as never,
+      ctx(undefined, { toolCallId: 'sequence' }),
+    )) as { modelText?: string; error?: string };
+    assert.equal(sequence.error, undefined);
+    const freshId = observationIdOf(sequence.modelText);
+    assert.ok(freshId);
+    const next = (await tool.impl(
+      { action: 'click_element', observation_id: freshId, element_id: '5' } as never,
+      ctx(undefined, { toolCallId: 'next' }),
+    )) as { error?: string };
+    assert.equal(next.error, undefined);
+    assert.equal(dispatches, 2);
+  });
+
+  test('a sequence does not publish a closing capture invalidated in flight', async () => {
+    const backend = fakeBackend();
+    backend.observeApp = async () => observation();
+    const tools = buildComputerUseTools({ backend });
+    backend.captureObservation = async () => {
+      tools.sessionEvents.reobserveRequired('s1');
+      return observation();
+    };
+    backend.runSemantic = async () => ({ outcome: { ok: true, tier: 'ax', verified: true } });
+    const [tool] = tools;
+    const observed = (await tool.impl({ action: 'observe', app: 'Fixture' } as never, ctx())) as {
+      text: string;
+    };
+    const result = (await tool.impl(
+      {
+        action: 'element_sequence',
+        observation_id: JSON.parse(observed.text).observation_id,
+        steps: [{ label: 'Continue' }],
+      } as never,
+      ctx(undefined, { toolCallId: 'sequence' }),
+    )) as { modelText?: string; text: string; error?: string };
+    assert.doesNotMatch(result.modelText ?? '', /Fresh observation/);
+    assert.doesNotMatch(result.text, /element_sequence ok/);
+    assert.match(result.text, /failed after 1 of 1 steps: reobserve_required/);
+    assert.match(result.modelText ?? '', /call action:"observe"/);
+    assert.equal(result.error, 'reobserve_required');
+    assert.equal(tools.sessionEvents.snapshot('s1').status, 'reobserve_required');
+  });
+
+  test('a sequence stops before the next step when its intermediate capture is invalidated', async () => {
+    const backend = fakeBackend();
+    backend.observeApp = async () => observation();
+    const tools = buildComputerUseTools({ backend });
+    let captures = 0;
+    let dispatches = 0;
+    backend.captureObservation = async () => {
+      if (++captures === 1) tools.sessionEvents.userStopped('s1');
+      return observation();
+    };
+    backend.runSemantic = async () => {
+      dispatches += 1;
+      return { outcome: { ok: true, tier: 'ax', verified: true } };
+    };
+    const [tool] = tools;
+    const observed = (await tool.impl({ action: 'observe', app: 'Fixture' } as never, ctx())) as {
+      text: string;
+    };
+    const result = (await tool.impl(
+      {
+        action: 'element_sequence',
+        observation_id: JSON.parse(observed.text).observation_id,
+        steps: [{ label: 'Continue' }, { label: 'Continue' }],
+      } as never,
+      ctx(undefined, { toolCallId: 'sequence' }),
+    )) as { modelText?: string; text: string };
+    assert.equal(dispatches, 1);
+    assert.match(result.text, /stopped at step 1 of 2: user_stopped/);
+    assert.doesNotMatch(result.modelText ?? '', /Fresh observation/);
+  });
+
+  test('a condition wait does not accept an observation invalidated during polling', async () => {
+    const backend = fakeBackend();
+    const tools = buildComputerUseTools({ backend });
+    let polls = 0;
+    backend.observeApp = async () => {
+      if (++polls === 2) tools.sessionEvents.userStopped('s1');
+      return observation();
+    };
+    const [tool] = tools;
+    await tool.impl({ action: 'observe', app: 'Fixture' } as never, ctx());
+    const result = (await tool.impl(
+      { action: 'wait', wait_for_text: 'Continue', duration: 0.01 } as never,
+      ctx(undefined, { toolCallId: 'wait' }),
+    )) as { error?: string; modelText?: string };
+    assert.equal(result.error, 'user_stopped');
+    assert.doesNotMatch(result.modelText ?? '', /observation_id=/);
+  });
+
+  test('a new turn accepts its observation after retiring the previous turn frame', async () => {
+    const backend = fakeBackend();
+    backend.observeApp = async () => observation();
+    const [tool] = buildComputerUseTools({ backend });
+    const first = (await tool.impl({ action: 'observe', app: 'Fixture' } as never, ctx())) as {
+      modelText?: string;
+    };
+    assert.ok(observationIdOf(first.modelText));
+    const next = (await tool.impl(
+      { action: 'observe', app: 'Fixture' } as never,
+      ctx(undefined, { turnId: 't2', toolCallId: 'new-turn-observe' }),
+    )) as { error?: string; modelText?: string };
+    assert.equal(next.error, undefined);
+    assert.ok(observationIdOf(next.modelText));
+  });
+
+  test('a sequence stopped during presentation keeps its completed prefix and does not dispatch the next step', async () => {
+    const backend = fakeBackend();
+    backend.observeApp = async () => observation();
+    backend.captureObservation = async () => observation();
+    let dispatches = 0;
+    backend.runSemantic = async () => {
+      dispatches += 1;
+      return { outcome: { ok: true, tier: 'ax', verified: true } };
+    };
+    let begins = 0;
+    let tools!: ReturnType<typeof buildComputerUseTools>;
+    tools = buildComputerUseTools({
+      backend,
+      overlay: {
+        onActionBegin() {
+          if (++begins === 2) tools.sessionEvents.userStopped('s1');
+          return { readyForInteraction: Promise.resolve(), finished: Promise.resolve() };
+        },
+      },
+    });
+    const [tool] = tools;
+    const observed = (await tool.impl({ action: 'observe', app: 'Fixture' } as never, ctx())) as {
+      text: string;
+    };
+    const progress: Array<[number, number]> = [];
+    const result = (await tool.impl(
+      {
+        action: 'element_sequence',
+        observation_id: JSON.parse(observed.text).observation_id,
+        steps: [{ label: 'Continue' }, { label: 'Continue' }],
+      } as never,
+      ctx(undefined, {
+        toolCallId: 'sequence',
+        emitProgress: (current, total) => progress.push([current, total]),
+      }),
+    )) as { text: string; modelText?: string; error?: string };
+    assert.equal(dispatches, 1);
+    assert.equal(result.error, 'user_stopped');
+    assert.match(result.text, /stopped at step 2 of 2: user_stopped/);
+    assert.match(result.modelText ?? '', /1\. ok/);
+    assert.match(result.modelText ?? '', /2\. failed/);
+    assert.deepEqual(progress, [
+      [0, 2],
+      [1, 2],
+      [2, 2],
+    ]);
+  });
+
+  test('a partially delivered sequence step reports an unknown outcome', async () => {
+    const backend = fakeBackend();
+    backend.observeApp = async () => observation();
+    backend.captureObservation = async () => observation();
+    backend.runSemantic = async () => ({
+      outcome: {
+        ok: false,
+        error: 'capture_failed',
+        message: 'verification failed after delivery',
+        completedSubSteps: 1,
+      },
+    });
+    const [tool] = buildComputerUseTools({ backend });
+    const observed = (await tool.impl({ action: 'observe', app: 'Fixture' } as never, ctx())) as {
+      text: string;
+    };
+    const result = (await tool.impl(
+      {
+        action: 'element_sequence',
+        observation_id: JSON.parse(observed.text).observation_id,
+        steps: [{ label: 'Continue' }],
+      } as never,
+      ctx(undefined, { toolCallId: 'sequence' }),
+    )) as { text: string; error?: string };
+    assert.equal(result.error, 'outcome_unknown');
+    assert.match(result.text, /stopped at step 1 of 1: outcome_unknown/);
+  });
+
+  test('a sequence reports a retired pre-dispatch step as a duplicate action', async () => {
+    const backend = fakeBackend();
+    backend.observeApp = async () => observation();
+    backend.captureObservation = async () => observation();
+    let dispatches = 0;
+    backend.runSemantic = async () => {
+      dispatches += 1;
+      return {
+        outcome: {
+          ok: false,
+          error: 'dispatch_refused',
+          message: 'the executor refused before dispatch',
+          evidence: { path: 'none' },
+        },
+      };
+    };
+    const [tool] = buildComputerUseTools({ backend });
+    const observed = (await tool.impl({ action: 'observe', app: 'Fixture' } as never, ctx())) as {
+      text: string;
+    };
+    const observationId = JSON.parse(observed.text).observation_id as string;
+    const refused = (await tool.impl(
+      {
+        action: 'click_element',
+        observation_id: observationId,
+        element_id: '5',
+      } as never,
+      ctx(undefined, { toolCallId: 'refused' }),
+    )) as { error?: string };
+    assert.equal(refused.error, 'dispatch_refused');
+
+    const sequence = (await tool.impl(
+      {
+        action: 'element_sequence',
+        observation_id: observationId,
+        steps: [{ label: 'Continue' }],
+      } as never,
+      ctx(undefined, { toolCallId: 'sequence' }),
+    )) as { error?: string; text: string };
+    assert.equal(sequence.error, 'duplicate_action');
+    const modelOutput = tool.toModelOutput?.({
+      toolCallId: 'sequence',
+      input: {},
+      output: sequence,
+    });
+    assert.match(JSON.stringify(modelOutput), /stopped at step 0 of 1: duplicate_action/);
+    assert.match(JSON.stringify(modelOutput), /Address a different element/);
+    assert.doesNotMatch(JSON.stringify(modelOutput), /retired_action/);
+    assert.equal(dispatches, 1);
+  });
+
+  test('a stopped sequence preserves a partially delivered outcome over frame confirmation failure', async () => {
+    const backend = fakeBackend();
+    backend.observeApp = async () => observation();
+    const tools = buildComputerUseTools({ backend });
+    backend.captureObservation = async () => observation();
+    backend.runSemantic = async () => {
+      tools.sessionEvents.userStopped('s1');
+      return {
+        outcome: {
+          ok: false,
+          error: 'capture_failed',
+          message: 'verification failed after delivery',
+          completedSubSteps: 1,
+        },
+      };
+    };
+    const [tool] = tools;
+    const observed = (await tool.impl({ action: 'observe', app: 'Fixture' } as never, ctx())) as {
+      text: string;
+    };
+    const result = (await tool.impl(
+      {
+        action: 'element_sequence',
+        observation_id: JSON.parse(observed.text).observation_id,
+        steps: [{ label: 'Continue' }],
+      } as never,
+      ctx(undefined, { toolCallId: 'sequence' }),
+    )) as { text: string; error?: string };
+    assert.equal(result.error, 'outcome_unknown');
+    assert.match(result.text, /stopped at step 1 of 1: outcome_unknown/);
+  });
+
+  test('a sequence dispatch exception releases its presentation before a later action', async () => {
+    const backend = fakeBackend();
+    backend.observeApp = async () => observation();
+    backend.captureObservation = async () => observation();
+    let dispatches = 0;
+    backend.runSemantic = async () => {
+      if (++dispatches === 1) throw new Error('executor unavailable');
+      return { outcome: { ok: true, tier: 'ax', verified: true } };
+    };
+    let finished = 0;
+    const [tool] = buildComputerUseTools({
+      backend,
+      overlay: {
+        onActionBegin() {
+          return { readyForInteraction: Promise.resolve(), finished: Promise.resolve() };
+        },
+        onActionEnd() {
+          finished += 1;
+        },
+      },
+    });
+    const observed = (await tool.impl({ action: 'observe', app: 'Fixture' } as never, ctx())) as {
+      text: string;
+    };
+    await assert.rejects(
+      async () =>
+        tool.impl(
+          {
+            action: 'element_sequence',
+            observation_id: JSON.parse(observed.text).observation_id,
+            steps: [{ label: 'Continue' }],
+          } as never,
+          ctx(undefined, { toolCallId: 'sequence' }),
+        ),
+      /executor unavailable/,
+    );
+    assert.equal(finished, 1);
+    const reobserved = (await tool.impl(
+      { action: 'observe', app: 'Fixture' } as never,
+      ctx(undefined, { toolCallId: 'reobserve' }),
+    )) as { text: string };
+    const next = (await tool.impl(
+      {
+        action: 'click_element',
+        observation_id: JSON.parse(reobserved.text).observation_id,
+        element_id: '5',
+      } as never,
+      ctx(undefined, { toolCallId: 'next' }),
+    )) as { error?: string };
+    assert.equal(next.error, undefined);
+    assert.equal(finished, 2);
+    assert.equal(dispatches, 2);
+  });
+
   test('a sequence stops at the step it cannot resolve, and says which', async () => {
     const backend = fakeBackend() as CuDispatchBackend & {
       observeApp: NonNullable<CuDispatchBackend['observeApp']>;
@@ -1813,6 +2152,8 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
     const r = await callComputer(fakeBackend({ accessibility: false }), { action: 'wait' });
     assert.match(r.text, /permission_missing/);
     assert.match(r.text, /Accessibility/);
+    assert.equal((r as { error?: string }).error, 'permission_missing');
+    assert.equal((r as { outcome?: string }).outcome, 'error');
   });
 
   test('requests Accessibility once on first use while every action still preflights', async () => {
@@ -2691,6 +3032,7 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
     const backend = fakeBackend();
     const r = await callComputer(backend, { action: 'wait', duration: 0.001 }, ac.signal);
     assert.match(r.text, /aborted/);
+    assert.equal((r as { outcome?: string }).outcome, 'aborted');
     assert.equal(backend.last, undefined, 'backend.run must not be called after abort');
   });
 

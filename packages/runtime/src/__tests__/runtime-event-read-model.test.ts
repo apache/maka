@@ -28,7 +28,7 @@ import type { SessionHeader, SessionSummary, StoredMessage, TurnRecord } from '@
 import { deriveTurnRecords, decodeCanonicalMessage } from '@maka/core/session';
 import type { CanonicalPermissionOutcomeRecord } from '../interaction-authority.js';
 import {
-  activePresentationRuntimeEvents,
+  classifyRuntimeEventTerminalFact,
   createRuntimeEventStoredMessageProjector,
   isHardRuntimeEventReadModelDiagnostic,
   isUnclaimedRuntimeEventDiagnostic,
@@ -294,6 +294,36 @@ function equivalentLegacyMessages(): StoredMessage[] {
 }
 
 describe('projectRuntimeEventsToStoredMessages', () => {
+  test('preserves declared aborts while projecting old result events unchanged', () => {
+    const oldEvents = baseEvents();
+    const oldResult = projectRuntimeEventsToStoredMessages(oldEvents, {
+      invocations: [invocation],
+    }).messages.find((message) => message.type === 'tool_result');
+    assert.equal(oldResult?.type === 'tool_result' && oldResult.outcome, undefined);
+
+    const events = oldEvents.map(
+      (event): RuntimeEvent =>
+        event.id === 'evt-tool-result'
+          ? {
+              ...event,
+              content: {
+                kind: 'function_response',
+                id: 'tool-1',
+                name: 'Read',
+                result: { kind: 'text', text: 'file contents' },
+                isError: true,
+                outcome: 'aborted',
+              },
+            }
+          : event,
+    );
+    const result = projectRuntimeEventsToStoredMessages(events, {
+      invocations: [invocation],
+    }).messages.find((message) => message.type === 'tool_result');
+    assert.equal(result?.type === 'tool_result' && result.isError, true);
+    assert.equal(result?.type === 'tool_result' && result.outcome, 'aborted');
+  });
+
   test('streaming projection is equivalent to the batch read model', () => {
     const events = baseEvents();
     const streamed = createRuntimeEventStoredMessageProjector({ invocations: [invocation] });
@@ -305,36 +335,112 @@ describe('projectRuntimeEventsToStoredMessages', () => {
     );
   });
 
-  test('active streaming projection settles model partials and inserts thinking-only rows in source order', () => {
+  // A transcript page may cut an invocation at any committed event. Rows that
+  // appear for a prefix must be exactly the rows the whole invocation later
+  // attributes to those same events, or a page would change once the Turn ends.
+  test('every event prefix projects the rows the full ledger attributes to it', () => {
     const events = [
       ev({
-        id: 'evt-thinking-partial',
+        id: 'evt-prefix-user',
         ts: ts + 1,
-        partial: true,
-        role: 'model',
-        author: 'agent',
-        content: { kind: 'thinking', text: 'still thinking' },
-        refs: { providerEventId: 'step-thinking-only' },
-      }),
-      ev({
-        id: 'evt-later-user',
-        ts: ts + 2,
         role: 'user',
         author: 'user',
-        content: { kind: 'text', text: 'steer' },
+        content: { kind: 'text', text: 'read the file' },
+      }),
+      ev({
+        id: 'evt-prefix-thinking',
+        ts: ts + 2,
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'thinking', text: 'look first', signature: 'sig' },
+        refs: { providerEventId: 'step-1' },
+      }),
+      ev({
+        id: 'evt-prefix-text',
+        ts: ts + 3,
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'text', text: 'Reading it.' },
+        refs: { providerEventId: 'step-1' },
+      }),
+      ev({
+        id: 'evt-prefix-call',
+        ts: ts + 4,
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'function_call', id: 'tool-p', name: 'Read', args: { path: '/a' } },
+        refs: { toolCallId: 'tool-p', providerEventId: 'step-1' },
+      }),
+      ev({
+        id: 'evt-prefix-result',
+        ts: ts + 5,
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id: 'tool-p',
+          name: 'Read',
+          result: { kind: 'text', text: 'contents' },
+        },
+        refs: { toolCallId: 'tool-p' },
+      }),
+      ev({
+        id: 'evt-prefix-usage',
+        ts: ts + 6,
+        actions: { tokenUsage: { input: 10, output: 5 } },
+      }),
+      ev({
+        id: 'evt-prefix-ended',
+        ts: ts + 7,
+        status: 'completed',
+        actions: { endInvocation: true },
       }),
     ];
-    const streamed = createRuntimeEventStoredMessageProjector({
-      invocations: [invocation],
-      active: true,
+    const project = (prefix: readonly RuntimeEvent[]) =>
+      projectRuntimeEventsToStoredMessages(prefix, { invocations: [invocation] });
+    const full = project(events);
+    assert.deepStrictEqual(full.diagnostics, []);
+    assert.deepStrictEqual(
+      full.messages.map((message) => message.type),
+      ['user', 'assistant', 'tool_call', 'tool_result', 'token_usage', 'turn_state'],
+    );
+
+    for (let k = 1; k <= events.length; k += 1) {
+      const seen = new Set(events.slice(0, k).map((event) => event.id));
+      const expected = full.messages.filter((_, index) => seen.has(full.sourceEventIds[index]!));
+      const prefix = project(events.slice(0, k));
+      assert.deepStrictEqual(prefix.messages, expected, `prefix of ${k} events`);
+      assert.deepStrictEqual(prefix.diagnostics, [], `prefix of ${k} events`);
+    }
+    assert.deepStrictEqual(
+      project(events.slice(0, 2)).messages.map((message) => message.type),
+      ['user'],
+    );
+  });
+
+  test('unclaimed thinking is a defect only once its invocation has ended', () => {
+    const thinking = ev({
+      id: 'evt-orphan-thinking',
+      role: 'model',
+      author: 'agent',
+      content: { kind: 'thinking', text: 'no answer followed' },
+      refs: { providerEventId: 'step-orphan' },
     });
-    for (const event of events) streamed.push(event);
+    const ended = ev({
+      id: 'evt-orphan-ended',
+      status: 'completed',
+      actions: { endInvocation: true },
+    });
 
     assert.deepStrictEqual(
-      streamed.finish(),
-      projectRuntimeEventsToStoredMessages(activePresentationRuntimeEvents(events), {
+      projectRuntimeEventsToStoredMessages([thinking], { invocations: [invocation] }).diagnostics,
+      [],
+    );
+    assert.deepStrictEqual(
+      projectRuntimeEventsToStoredMessages([thinking, ended], {
         invocations: [invocation],
-      }),
+      }).diagnostics.map((diagnostic) => [diagnostic.code, diagnostic.eventId]),
+      [['unsupported_event', 'evt-orphan-thinking']],
     );
   });
 
@@ -1743,11 +1849,15 @@ describe('projectRuntimeEventsToStoredMessages', () => {
             result: 'plain string is not ToolResultContent',
           },
         }),
+        ev({ id: 'evt-ended', status: 'completed', actions: { endInvocation: true } }),
       ],
       { invocations: [invocation] },
     );
 
-    assert.deepStrictEqual(out.messages, []);
+    assert.deepStrictEqual(
+      out.messages.map((message) => message.type),
+      ['turn_state'],
+    );
     // The orphaned permission decision carries no content, so its catch-all is
     // the soft code — but the projector that tried to build its row and failed
     // still reports `incomplete_event`, which stays hard. Downgrading the
@@ -2021,6 +2131,38 @@ describe('projectRuntimeEventsToStoredMessages', () => {
       abortedAt: ts + 9,
     });
     assert.deepStrictEqual(out.diagnostics, []);
+  });
+
+  // The exact shape AgentRun.reachHandoffBoundary commits: endInvocation plus
+  // the pause, and deliberately no terminal status. Ledgers written before the
+  // classifier learned this shape carry this event, immutable.
+  test('handoff-pause terminal RuntimeEvent classifies as handed off', () => {
+    const pauseEvent = ev({
+      id: 'evt-handoff-pause',
+      author: 'host',
+      modelVisibility: 'hidden',
+      actions: {
+        endInvocation: true,
+        handoffPause: {
+          claimId: 'claim-1',
+          handoffId: 'handoff-1',
+          hostEpoch: 'epoch-1',
+          protocol: 'runtime_handoff_pause_v1',
+          remainingSteps: null,
+          rootRunId: runId,
+          successorInvocationId: 'successor-inv-1',
+          successorRunId: 'successor-run-1',
+        },
+      },
+    });
+    const result = classifyRuntimeEventTerminalFact({ sessionId, runId, turnId }, [
+      ev({ id: 'evt-open' }),
+      pauseEvent,
+    ]);
+    assert.equal(result.fact?.runStatus, 'handed_off');
+    assert.equal(result.fact?.turnStatus, 'handed_off');
+    assert.equal(result.fact?.terminalEvent.id, 'evt-handoff-pause');
+    assert.deepEqual(result.diagnostics, []);
   });
 
   test('projects tool_call stepId from refs so the UI timeline keeps step pairing', () => {
@@ -2588,10 +2730,6 @@ class ReadOnlyStore implements SessionStore {
     throw new Error('not implemented');
   }
 
-  async setExecutionBoundaryKind(): Promise<never> {
-    throw new Error('not implemented');
-  }
-
   async readExecutionBoundary(): Promise<never> {
     throw new Error('not implemented');
   }
@@ -2711,4 +2849,25 @@ test('Coordination receipts materialize as host facts, never assistant output', 
     out.messages.some((message) => message.type === 'assistant'),
     false,
   );
+});
+
+test('assistant authored summary survives canonical decoding, ledger backfill and projection', () => {
+  const message = decodeCanonicalMessage({
+    type: 'assistant',
+    id: 'summary-message',
+    turnId,
+    ts,
+    text: 'Complete original body with evidence',
+    summary: 'A distinct short preview',
+    modelId: 'fixture',
+  });
+  const { events } = backfillRuntimeEventsFromStoredMessages({
+    run: { sessionId, runId, turnId, invocationId },
+    messages: [message],
+  });
+  const projected = projectRuntimeEventsToStoredMessages(events, { invocations: [invocation] });
+  const assistant = projected.messages.find((row) => row.type === 'assistant');
+  assert.equal(assistant?.text, 'Complete original body with evidence');
+  assert.equal(assistant?.summary, 'A distinct short preview');
+  assert.throws(() => decodeCanonicalMessage({ ...message, summary: 123 }));
 });

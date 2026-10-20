@@ -46,7 +46,11 @@ const ownerChildEntrypoint = fileURLToPath(
 test('rejects a second authority for the same storage root in another process', async (t) => {
   const storageRoot = await mkdtemp(join(tmpdir(), 'maka-dependency-owner-process-'));
   const child = spawn(process.execPath, [ownerChildEntrypoint], {
-    env: { ...process.env, MAKA_DEPENDENCY_OWNER_ROOT: storageRoot },
+    env: {
+      ...process.env,
+      NODE_NO_WARNINGS: '1',
+      MAKA_DEPENDENCY_OWNER_ROOT: storageRoot,
+    },
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
   });

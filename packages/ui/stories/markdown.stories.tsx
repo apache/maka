@@ -18,6 +18,7 @@
  */
 
 import type { Meta, StoryObj } from '@storybook/react-vite';
+import { expect, waitFor } from 'storybook/test';
 import { ChatMessageBubble } from '@astryxdesign/core';
 import { Markdown } from '../src/markdown.js';
 
@@ -126,6 +127,58 @@ export const TranscriptCodeBlock: Story = {
       </div>
     </ProseFrame>
   ),
+};
+
+// Real path: chat → an assistant turn answering a math question. The answer
+// mixes inline \(…\), display \[…\] and $$…$$, plus prose dollars and inline
+// code that must stay literal — the delimiter contract this story exists to
+// show at a glance. The frame is the transcript's compact density.
+export const TranscriptMath: Story = {
+  render: () => (
+    <ProseFrame>
+      <div className="maka-turn">
+        <ChatMessageBubble variant="ghost" width="100%" className="maka-chat-message-bubble maka-chat-message-bubble-assistant">
+          <Markdown
+            density="compact"
+            text={[
+              '## 同余方程',
+              '',
+              '线性同余 \\( ax \\equiv b \\pmod{n} \\) 有解当且仅当 \\( \\gcd(a, n) \\mid b \\)。',
+              '',
+              '以 \\( 3x \\equiv 6 \\pmod{9} \\) 为例，约去 \\( \\gcd = 3 \\) 得：',
+              '',
+              '\\[',
+              'x \\equiv 2 \\pmod{3}',
+              '\\]',
+              '',
+              '即 \\( x = 2 + 3k \\)，其中 \\( k \\in \\mathbb{Z} \\)。顺便验证求和公式：',
+              '',
+              '$$',
+              '\\sum_{k=0}^{n} k = \\frac{n(n+1)}{2}',
+              '$$',
+              '',
+              '> 注意：`$HOME`、`$5–$10`、`$x$` 和 `` `\\(x\\)` `` 都保持字面量，不会被当成公式。',
+            ].join('\n')}
+          />
+        </ChatMessageBubble>
+      </div>
+    </ProseFrame>
+  ),
+  play: async ({ canvasElement }) => {
+    // Math nodes land on a later parser pass than the first commit, so the
+    // count must wait rather than query synchronously.
+    await waitFor(() => {
+      expect(canvasElement.querySelectorAll('.maka-math-inline')).toHaveLength(6);
+      expect(canvasElement.querySelectorAll('.maka-math-display')).toHaveLength(2);
+    });
+    const text = canvasElement.textContent ?? '';
+    if (!text.includes('$HOME') || !text.includes('$5–$10') || !text.includes('$x$')) {
+      throw new Error('literal dollars were not preserved');
+    }
+    if (/MAKA_MATH|\uE000|\uE001/.test(text)) {
+      throw new Error('math transport syntax leaked into rendered output');
+    }
+  },
 };
 
 // Real path: 每日回顾 → a generated report that mixes headings, emphasis, a list,

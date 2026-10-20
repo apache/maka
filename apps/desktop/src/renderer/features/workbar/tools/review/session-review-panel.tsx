@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
 import { Collapsible, CollapsibleGroup } from '@astryxdesign/core/Collapsible';
@@ -28,11 +28,13 @@ import { Skeleton } from '@astryxdesign/core/Skeleton';
 import { Text } from '@astryxdesign/core/Text';
 import { redactSecrets as displayRedactSecrets } from '@maka/core/display-redaction';
 import { generalizedErrorMessageForLocale } from '@maka/core/redaction';
-import { type GitReviewReadResult } from '@maka/core/git-review';
+import { type GitReviewBranchContext, type GitReviewReadResult } from '@maka/core/git-review';
 import { DiffCodePreview, useUiLocale } from '@maka/ui';
-import { ICON_SIZE, GitBranch } from '@maka/ui/icons';
-import { getDesktopConversationCopy } from '../../../../locales/conversation-copy';
+import { ICON_SIZE, AlertCircle, ArrowRight, FolderGit2, GitBranch, Monitor } from '@maka/ui/icons';
+import { getDesktopConversationCopy } from '../../../../application/contracts/conversation-copy.js';
+import { SessionWorkspaceRecoveryContext } from '../../../../application/contracts/session-workspace-recovery-authority.js';
 import { useWorkbarServices } from '../../services-context.js';
+import { SessionReviewBaseBranchPicker } from './session-review-base-branch-picker.js';
 
 const REVIEW_FILE_PAGE_SIZE = 20;
 const REVIEW_DIFF_LINE_CAP = 500;
@@ -72,25 +74,63 @@ export function SessionReviewPanel(props: {
   sessionId: string;
   active: boolean;
 }) {
-  const { review } = useWorkbarServices();
+  const { review, reviewBaseBranchPreference } = useWorkbarServices();
+  const openWorkspaceRecovery = useContext(SessionWorkspaceRecoveryContext);
   const locale = useUiLocale();
   const copy = getDesktopConversationCopy(locale).reviewPanel;
   const [gitResult, setGitResult] = useState<GitReviewReadResult | null>(null);
+  const [branches, setBranches] = useState<GitReviewBranchContext | null>(null);
   const [loading, setLoading] = useState(false);
+  // Distinct from `loading`: a background refresh must not flash the switch
+  // feedback, so only a user's pick drives it.
+  const [switching, setSwitching] = useState(false);
   const [visibleFileCount, setVisibleFileCount] = useState(REVIEW_FILE_PAGE_SIZE);
   const [error, setError] = useState<string | null>(null);
+  const [baseBranch, setBaseBranch] = useState(() =>
+    reviewBaseBranchPreference.read(props.sessionId),
+  );
   const revisionRef = useRef(0);
+  const displayedBaseBranchRef = useRef<string | null | undefined>(undefined);
+  // Read the latest selection without restarting the subscription effect.
+  // WorkbarSurface keys this panel by sessionId, so each Session initializes afresh.
+  const baseBranchRef = useRef(baseBranch);
 
   const load = useCallback(async () => {
     const revision = ++revisionRef.current;
     setLoading(true);
     setError(null);
-    try {
-      const nextGit = await review.read({
+    const readReview = (selection: string | null) =>
+      review.read({
         sessionId: props.sessionId,
         source: 'branch',
+        baseBranch: selection ?? undefined,
       });
+    try {
+      let nextGit = await readReview(baseBranchRef.current);
       if (revision !== revisionRef.current) return;
+      if (
+        !nextGit.ok &&
+        nextGit.reason === 'invalid_base_branch' &&
+        baseBranchRef.current !== null
+      ) {
+        // The pinned branch is gone. Drop it and re-read once: the retry has no
+        // selection left to reject, so this cannot loop.
+        if (nextGit.branches) setBranches(nextGit.branches);
+        baseBranchRef.current = null;
+        setBaseBranch(null);
+        reviewBaseBranchPreference.write(props.sessionId, null);
+        nextGit = await readReview(null);
+        if (revision !== revisionRef.current) return;
+      }
+      const nextBranches = nextGit.ok ? nextGit.snapshot : nextGit.branches;
+      setBranches(nextBranches ?? null);
+      if (nextGit.ok) {
+        // Preserve expansion on refresh, but start each comparison at page one.
+        if (displayedBaseBranchRef.current !== nextGit.snapshot.baseBranch) {
+          setVisibleFileCount(REVIEW_FILE_PAGE_SIZE);
+          displayedBaseBranchRef.current = nextGit.snapshot.baseBranch;
+        }
+      }
       setGitResult(nextGit);
     } catch (nextError) {
       if (revision === revisionRef.current) {
@@ -99,9 +139,24 @@ export function SessionReviewPanel(props: {
         );
       }
     } finally {
-      if (revision === revisionRef.current) setLoading(false);
+      if (revision === revisionRef.current) {
+        setLoading(false);
+        setSwitching(false);
+      }
     }
-  }, [copy.loadFailed, locale, props.sessionId, review]);
+  }, [copy.loadFailed, locale, props.sessionId, review, reviewBaseBranchPreference]);
+
+  const selectBaseBranch = useCallback(
+    (branch: string) => {
+      if (branch === baseBranchRef.current) return;
+      baseBranchRef.current = branch;
+      setBaseBranch(branch);
+      reviewBaseBranchPreference.write(props.sessionId, branch);
+      setSwitching(true);
+      void load();
+    },
+    [load, props.sessionId, reviewBaseBranchPreference],
+  );
 
   useEffect(() => {
     if (!props.active) return;
@@ -120,6 +175,14 @@ export function SessionReviewPanel(props: {
         scheduleRefresh();
       },
     );
+    // A workspace relocation lands as a catalog change, not a Session event:
+    // the next read resolves the task's actual (new) workspace.
+    const unsubscribeChanges = review.subscribeSessionChanges((change) => {
+      if (change.sessionId !== props.sessionId || change.reason !== 'updated') {
+        return;
+      }
+      scheduleRefresh();
+    });
     const refreshAfterExternalChange = () => {
       if (document.visibilityState === 'hidden') return;
       scheduleRefresh();
@@ -133,6 +196,7 @@ export function SessionReviewPanel(props: {
       window.removeEventListener('focus', refreshAfterExternalChange);
       document.removeEventListener('visibilitychange', refreshAfterExternalChange);
       unsubscribe();
+      unsubscribeChanges();
     };
   }, [load, props.active, props.sessionId, review]);
 
@@ -145,19 +209,82 @@ export function SessionReviewPanel(props: {
     additions: gitSnapshot?.additions ?? 0,
     deletions: gitSnapshot?.deletions ?? 0,
   };
-  const sourceError =
-    gitResult?.ok !== false
-      ? null
-      : gitResult.reason === 'not_git_repository'
-        ? copy.notGitRepository
-        : gitResult.reason === 'workspace_unavailable'
-          ? copy.workspaceUnavailable
-          : gitResult.reason === 'unborn_repository'
-            ? copy.unbornRepository
-            : gitResult.reason === 'invalid_base_branch'
-              ? copy.invalidBaseBranch
-              : copy.gitFailed;
-  const empty = !loading && !error && !sourceError && gitFiles.length === 0;
+  // A valid non-Git directory, a missing workspace and an unborn repository
+  // are capability states with their own next action — not read failures, so
+  // they take neutral guidance instead of the error Banner.
+  const failure = gitResult?.ok === false ? gitResult : null;
+  const recoveryAction = openWorkspaceRecovery ? (
+    <Button
+      variant="secondary"
+      size="sm"
+      label={copy.chooseTaskFolder}
+      onClick={() => openWorkspaceRecovery(props.sessionId)}
+    />
+  ) : null;
+  const refreshAction = (
+    <Button
+      variant="ghost"
+      size="sm"
+      label={copy.refresh}
+      isLoading={loading}
+      onClick={() => void load()}
+    />
+  );
+  const guidance = (() => {
+    switch (failure?.reason) {
+      case 'not_git_repository':
+        return {
+          icon: <FolderGit2 size={ICON_SIZE.empty} aria-hidden />,
+          title: copy.notGitRepository,
+          help: copy.notGitRepositoryHelp,
+          actions: (
+            <HStack gap={2} align="center">
+              {recoveryAction}
+              {refreshAction}
+            </HStack>
+          ),
+        };
+      case 'workspace_unavailable':
+        return {
+          icon: <AlertCircle size={ICON_SIZE.empty} aria-hidden />,
+          title: copy.workspaceUnavailable,
+          help: copy.workspaceUnavailableHelp,
+          // Retry is legitimate: the folder may be back, and after relocation
+          // the read resolves the task's actual current workspace.
+          actions: (
+            <HStack gap={2} align="center">
+              {recoveryAction}
+              <Button
+                variant="ghost"
+                size="sm"
+                label={copy.retry}
+                isLoading={loading}
+                onClick={() => void load()}
+              />
+            </HStack>
+          ),
+        };
+      case 'unborn_repository':
+        return {
+          icon: <GitBranch size={ICON_SIZE.empty} aria-hidden />,
+          title: copy.unbornRepository,
+          help: copy.unbornRepositoryHelp,
+          actions: refreshAction,
+        };
+      case 'remote_workspace':
+        return {
+          icon: <Monitor size={ICON_SIZE.empty} aria-hidden />,
+          title: copy.remoteWorkspace,
+          help: copy.remoteWorkspaceHelp,
+          // Nothing local can help: the folder is not gone, and neither a
+          // local-folder recovery nor a retry changes who owns it.
+          actions: null,
+        };
+      default:
+        return null;
+    }
+  })();
+  const empty = !loading && !error && !failure && gitFiles.length === 0;
 
   return (
     <Section
@@ -168,7 +295,40 @@ export function SessionReviewPanel(props: {
       aria-label={copy.ariaLabel}
       aria-busy={loading || undefined}
     >
-      <VStack gap={3} align="stretch" width="100%">
+      <VStack
+        gap={3}
+        align="stretch"
+        width="100%"
+        className={switching ? 'maka-session-review-switching' : undefined}
+      >
+        {/* Keep branch selection available when computing the diff fails. */}
+        {branches && branches.baseBranchOptions.length > 0 ? (
+          <HStack
+            align="center"
+            width="100%"
+            className="maka-session-review-branch-row"
+          >
+            {branches.currentBranch ? (
+              <>
+                <Text
+                  type="supporting"
+                  maxLines={1}
+                  className="maka-session-review-current-branch"
+                >
+                  {branches.currentBranch}
+                </Text>
+                <ArrowRight size={ICON_SIZE.control} aria-hidden />
+              </>
+            ) : null}
+            <SessionReviewBaseBranchPicker
+              baseBranch={baseBranch ?? gitSnapshot?.baseBranch ?? null}
+              baseBranchOptions={branches.baseBranchOptions}
+              isLoading={switching}
+              label={copy.baseBranchLabel}
+              onSelect={selectBaseBranch}
+            />
+          </HStack>
+        ) : null}
         {loading && gitResult === null ? (
           <VStack
             gap={2}
@@ -213,12 +373,38 @@ export function SessionReviewPanel(props: {
             }
           />
         ) : null}
+        {guidance ? (
+          /* Panel-level capability state (DESIGN.md §10 tier 2): the reason is
+             a directory the panel cannot use, not an absent diff, so it gets
+             the same icon + description treatment as the real empty state. */
+          (<EmptyState
+            icon={guidance.icon}
+            title={guidance.title}
+            description={guidance.help}
+            actions={
+              failure?.workspace || guidance.actions ? (
+                <VStack gap={2} align="center">
+                  {failure?.workspace ? (
+                    <Text
+                      type="code"
+                      maxLines={2}
+                    >
+                      {failure.workspace}
+                    </Text>
+                  ) : null}
+                  {guidance.actions}
+                </VStack>
+              ) : undefined
+            }
+          />)
+        ) : null}
         {/* A source that cannot be read is a failure, not an absence — it takes
             the same Banner the load error above does, not an EmptyState. */}
-        {sourceError ? (
+        {failure && !guidance ? (
           <Banner
             status="error"
-            title={sourceError}
+            title={copy.gitFailed}
+            description={failure.detail ? displayRedactSecrets(failure.detail) : undefined}
             endContent={
               <Button
                 variant="ghost"

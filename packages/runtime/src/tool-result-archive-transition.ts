@@ -46,7 +46,7 @@ import type {
 } from './tool-result-archive-capability.js';
 import { serializeToolResultProjectionV1 } from './tool-result-archive-encoding.js';
 
-import { READ_PAGE_MAX_CHARS, readToolResultPage } from './read-page.js';
+import { READ_PAGE_MAX_BYTES, readToolResultPage } from './read-page.js';
 
 export type ModelProjectionTransitionRecorder = (
   transition: ModelProjectionTransition,
@@ -166,7 +166,7 @@ export async function archiveToolResultAsTransition(
     placeholder.page = readToolResultPage(
       request.serializedResult,
       { path: placeholder.resourceRef! },
-      READ_PAGE_MAX_CHARS - JSON.stringify(placeholder).length - 32,
+      READ_PAGE_MAX_BYTES - utf8ByteLength(JSON.stringify(placeholder)) - 32,
     );
   } catch {
     return undefined;
@@ -239,7 +239,7 @@ export function collectToolResultArchiveCandidates(
     const originalEstimatedTokens =
       estimateTokens(serializedResult.length, charsPerToken) +
       media.length * MATERIALIZED_IMAGE_TOKENS;
-    if (media.length > 0 || serializedResult.length <= READ_PAGE_MAX_CHARS) continue;
+    if (media.length > 0 || originalBytes <= READ_PAGE_MAX_BYTES) continue;
     candidates.push({
       runtimeEventId: event.id,
       turnId: event.turnId,

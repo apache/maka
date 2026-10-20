@@ -18,6 +18,7 @@
  */
 
 import { deferred } from '@maka/core/test-only/async-primitives';
+import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
 import { strict as assert } from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
 import type {
@@ -26,12 +27,14 @@ import type {
 } from '@maka/core/session';
 import {
   abandonPendingCompanionCopy,
+  cleanupCompanionCopy,
   createFakeWorkbarServices,
   ensureCompanionFork,
   performCompanionTurn,
   type PerformCompanionTurnDeps,
   type WorkbarServices,
 } from '../../renderer/features/workbar/testing.js';
+import { desktopSessionKey } from '../../shared/runtime-host-identity.js';
 function session(id: string): SessionSummary {
   return {
     id,
@@ -85,6 +88,56 @@ afterEach(async () => {
 });
 
 describe('quote companion disposal fencing', () => {
+  it('creates a WorkHub companion from an empty boundary without reading coordination turns', async () => {
+    const defaults = createFakeWorkbarServices();
+    const coordinationSession = session(
+      desktopSessionKey({
+        hostId: 'workhub-test-host',
+        sessionId: WORKHUB_COORDINATION_SESSION_ID,
+      }),
+    );
+    coordinationSession.permissionMode = 'bypass';
+    let listedTurns = 0;
+    const branchInputs: Parameters<WorkbarServices['sideChat']['branchFromTurn']>[1][] = [];
+    const sideChat = {
+      ...defaults.sideChat,
+      listTurns: async () => {
+        listedTurns += 1;
+        return [settledTurn('coordination-turn')];
+      },
+      branchFromTurn: async (
+        _sourceSessionId: string,
+        input: Parameters<WorkbarServices['sideChat']['branchFromTurn']>[1],
+      ) => {
+        branchInputs.push(input);
+        return { ok: true as const, session: session('workhub-side-chat') };
+      },
+    };
+
+    const result = await ensureCompanionFork({
+      api: sideChat,
+      sourceSession: coordinationSession,
+      panelId: 'workhub-side-chat-panel',
+      name: 'Side chat',
+      isDisposed: () => false,
+    });
+
+    assert.equal(result.status, 'ready');
+    assert.equal(listedTurns, 0);
+    assert.equal(branchInputs.length, 1);
+    assert.equal(branchInputs[0]?.sourceTurnId, undefined);
+    assert.equal(branchInputs[0]?.sideConversation, true);
+    assert.equal(
+      await cleanupCompanionCopy(
+        sideChat,
+        coordinationSession.id,
+        'workhub-side-chat-panel',
+        'workhub-side-chat',
+      ),
+      true,
+    );
+  });
+
   it('preserves a retryable busy reason from Side Conversation creation', async () => {
     const defaults = createFakeWorkbarServices();
     const sideChat = {
@@ -103,6 +156,24 @@ describe('quote companion disposal fencing', () => {
       }),
       { status: 'error', code: 'fork_source_busy' },
     );
+  });
+
+  it('keeps the attachment code when the first send is refused for an attachment (#5279)', async () => {
+    const defaults = createFakeWorkbarServices();
+    const sideChat = {
+      ...defaults.sideChat,
+      send: async () => ({
+        ok: false as const,
+        reason: 'attachment_blocked' as const,
+        code: 'item_unreadable' as const,
+      }),
+    };
+
+    assert.deepEqual(await performCompanionTurn(turnDeps(sideChat)), {
+      status: 'error',
+      code: 'send_rejected',
+      attachmentBlocked: 'item_unreadable',
+    });
   });
 
   it('does not start a send when the panel was disposed after fork setup', async () => {

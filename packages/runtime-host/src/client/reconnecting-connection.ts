@@ -25,11 +25,15 @@ import {
   type OperationInput,
   type OperationKey,
   type OperationOutput,
+  type ArtifactChangedFrame,
   type SessionCatalogChangedFrame,
   type ScheduledTaskChangedFrame,
   type SubscriptionOpenInput,
 } from '../protocol/index.js';
-import type { ClientCapabilityProvider } from './client-capability.js';
+import type {
+  ClientCapabilityProvider,
+  ClientCapabilityRegistrationOptions,
+} from './client-capability.js';
 import {
   RuntimeHostOperationError,
   RuntimeHostRequestInterruptedError,
@@ -125,6 +129,7 @@ class RuntimeHostReconnectingConnectionImpl implements RuntimeHostReconnectingCo
   readonly #connectionCatalogListeners = new Set<(revision: number) => void>();
   readonly #projectListeners = new Set<(revision: number) => void>();
   readonly #sessionListeners = new Set<(frame: SessionCatalogChangedFrame) => void>();
+  readonly #artifactListeners = new Set<(frame: ArtifactChangedFrame) => void>();
   readonly #scheduledTaskListeners = new Set<(frame: ScheduledTaskChangedFrame) => void>();
   readonly #lifecycle: RuntimeHostReconnectLifecycle<RuntimeHostConnection>;
   #connectionAvailability: RuntimeHostConnectionAvailability;
@@ -225,22 +230,27 @@ class RuntimeHostReconnectingConnectionImpl implements RuntimeHostReconnectingCo
 
   async replaceClientCapabilities(
     provider: ClientCapabilityProvider,
-    timeoutMs?: number,
+    options?: number | ClientCapabilityRegistrationOptions,
   ): Promise<ClientCapabilityReplaceResult> {
     const connection = this.#requireCurrent('client.capability.replace');
-    return connection.replaceClientCapabilities(provider, timeoutMs);
+    return connection.replaceClientCapabilities(provider, options);
   }
 
   async unregisterClientCapabilities(
-    timeoutMs?: number,
+    options?: number | ClientCapabilityRegistrationOptions,
   ): Promise<ClientCapabilityUnregisterResult> {
     const connection = this.#requireCurrent('client.capability.unregister');
-    return connection.unregisterClientCapabilities(timeoutMs);
+    return connection.unregisterClientCapabilities(options);
   }
 
   subscribeConfigurationChanges(listener: (revision: number) => void): () => void {
     this.#configurationListeners.add(listener);
     return () => this.#configurationListeners.delete(listener);
+  }
+
+  subscribeArtifactChanges(listener: (frame: ArtifactChangedFrame) => void): () => void {
+    this.#artifactListeners.add(listener);
+    return () => this.#artifactListeners.delete(listener);
   }
 
   subscribeConnectionAvailability(
@@ -355,6 +365,9 @@ class RuntimeHostReconnectingConnectionImpl implements RuntimeHostReconnectingCo
     this.#listenerDisposers = [
       connection.subscribeConfigurationChanges((revision: number) => {
         notify(this.#configurationListeners, revision);
+      }),
+      connection.subscribeArtifactChanges((frame: ArtifactChangedFrame) => {
+        notify(this.#artifactListeners, frame);
       }),
       connection.subscribeConnectionCatalogChanges((revision: number) => {
         notify(this.#connectionCatalogListeners, revision);

@@ -39,7 +39,26 @@ test('preserves opaque remote paths while normalizing labels', () => {
 test('rejects paths that are not absolute on the remote POSIX Host', () => {
   for (const path of ['srv/work', 'C:\\work']) {
     const roots = [{ label: 'Work', path }];
-    assert.equal(projectDirectoryRootsValid(roots), false);
-    assert.throws(() => requireProjectDirectoryRoots(roots), /Project directory is invalid/u);
+    assert.equal(projectDirectoryRootsValid(roots, 'posix'), false);
+    assert.throws(() => requireProjectDirectoryRoots(roots, 'posix'), /Project directory is invalid/u);
+  }
+});
+
+test('validates absolute paths for the target Host rather than the Desktop platform', () => {
+  for (const path of ['C:\\work', 'C:/work', '\\\\server\\share\\work', '/work']) {
+    const roots = [{ label: 'Work', path }];
+    assert.equal(projectDirectoryRootsValid(roots, 'win32'), true, path);
+    assert.deepEqual(requireProjectDirectoryRoots(roots, 'win32'), roots);
+    assert.equal(projectDirectoryRootsValid(roots), true, path);
+  }
+  for (const platform of ['posix', 'win32', undefined] as const) {
+    for (const path of ['work', 'C:work', '', '/work\nother']) {
+      const roots = [{ label: 'Work', path }];
+      assert.equal(projectDirectoryRootsValid(roots, platform), false, path);
+      assert.throws(() => requireProjectDirectoryRoots(roots, platform), /invalid/u);
+    }
+    const duplicates = [{ label: 'Work', path: '/one' }, { label: ' Work ', path: '/two' }];
+    assert.equal(projectDirectoryRootsValid(duplicates, platform), false);
+    assert.throws(() => requireProjectDirectoryRoots(duplicates, platform), /unique/u);
   }
 });

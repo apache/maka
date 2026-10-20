@@ -20,4 +20,11 @@
 
 import { runExecutionCandidateEntry } from './candidate-entry.js';
 
-await runExecutionCandidateEntry(process.argv.slice(2), import.meta.url);
+const initialization = process.env.MAKA_HOSTED_INITIALIZATION;
+delete process.env.MAKA_HOSTED_INITIALIZATION;
+await runExecutionCandidateEntry(process.argv.slice(2), import.meta.url, {
+  overrideOptions: (options) => ({
+    ...options,
+    ...(initialization ? { initialization: JSON.parse(initialization) } : {}),
+  }),
+});

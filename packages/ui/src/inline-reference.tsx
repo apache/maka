@@ -18,6 +18,7 @@
  */
 
 import type { InlineReference } from '@maka/core/events';
+import { SKILL_INVOCATION_TOKEN_SOURCE } from '@maka/core/skill-invocation-token';
 import { ChatTokenizedText, type ChatComposerToken } from '@astryxdesign/core';
 import type { ReactNode } from 'react';
 import { ICON_SIZE, Sparkles } from './icons.js';
@@ -89,6 +90,17 @@ export function inlineReferenceToken(reference: InlineReferenceVisual): ChatComp
   };
 }
 
+/**
+ * The one renderer for a user row's text: the references the message carries,
+ * plus the `/skill:<id>` invocations the text itself spells.
+ *
+ * A Skill chip arrives structurally only once the Host has frozen it from the
+ * invocation receipts, so the optimistic row, the local store's copy and any
+ * invocation with no successful receipt carry the token as plain text. Drawing
+ * only what `references` holds left those rows showing `/skill:writer` while the
+ * canonical copy of the same message showed a chip — the token is the grammar
+ * and the chip is one of its renderings, so it is drawn from the text here too.
+ */
 export function InlineReferenceText(props: {
   text: string;
   references: readonly InlineReference[];
@@ -105,7 +117,9 @@ export function InlineReferenceText(props: {
     ) {
       continue;
     }
-    if (reference.start > cursor) parts.push(props.text.slice(cursor, reference.start));
+    if (reference.start > cursor) {
+      parts.push(...skillTokenizedParts(props.text, cursor, reference.start));
+    }
     parts.push(
       <ChatTokenizedText
         key={`${reference.start}:${reference.value}`}
@@ -116,6 +130,50 @@ export function InlineReferenceText(props: {
     );
     cursor = reference.start + reference.value.length;
   }
-  if (cursor < props.text.length) parts.push(props.text.slice(cursor));
+  if (cursor < props.text.length) {
+    parts.push(...skillTokenizedParts(props.text, cursor, props.text.length));
+  }
   return <span>{parts}</span>;
+}
+
+/**
+ * `/skill:<id>` invocations in `text[start..end)` drawn as chips at their
+ * grammar positions. `ChatTokenizedText` re-locates a token by its value, so
+ * each match gets an island holding exactly the matched text: a value can
+ * never chip a position the grammar rejected (`a/skill:x`), and a shorter id
+ * can never split a longer one.
+ */
+function skillTokenizedParts(text: string, start: number, end: number): ReactNode[] {
+  const parts: ReactNode[] = [];
+  let cursor = start;
+  for (const match of text.slice(start, end).matchAll(new RegExp(SKILL_INVOCATION_TOKEN_SOURCE, 'g'))) {
+    if (match.index === undefined) continue;
+    const at = start + match.index;
+    // The grammar's `^` reads the slice's start; the real boundary is the
+    // character before it in the full text.
+    if (match.index === 0 && start > 0 && !/\s/.test(text[start - 1])) continue;
+    if (at > cursor) parts.push(text.slice(cursor, at));
+    parts.push(
+      <ChatTokenizedText
+        key={`skill:${at}`}
+        tokens={[
+          inlineReferenceToken({ kind: 'skill', value: match[0], label: skillTokenLabel(match[0]) }),
+        ]}
+      >
+        {match[0]}
+      </ChatTokenizedText>,
+    );
+    cursor = at + match[0].length;
+  }
+  if (cursor < end) parts.push(text.slice(cursor, end));
+  return parts;
+}
+
+/**
+ * What a token-only chip is labelled with. The id is what the text carries and
+ * what the Host's frozen reference labels itself from when the Skill's name is
+ * the id — the common case, so the chip does not rename itself mid-flight.
+ */
+function skillTokenLabel(value: string): string {
+  return value.slice('/skill:'.length);
 }

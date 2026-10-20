@@ -17,7 +17,6 @@
  * under the License.
  */
 
-import { safeLocalStorageGet } from '../../../browser-storage.js';
 import { isPersistedWorkbarTool } from './workbar-tool-definitions.js';
 
 export type SessionWorkbarTabKind =
@@ -446,8 +445,7 @@ export function persistableSessionWorkbarPanels(
   };
 }
 
-export function readSessionWorkbarPanels(): SessionWorkbarPanelsState {
-  const raw = safeLocalStorageGet('maka-session-workbar-panels-v3');
+export function parseSessionWorkbarPanels(raw: string | null): SessionWorkbarPanelsState {
   if (raw) {
     try {
       const parsed = JSON.parse(raw) as Partial<PersistedSessionWorkbarPanels>;

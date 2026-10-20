@@ -19,6 +19,8 @@
 
 # Managed Mutation Lifecycle Authority v1
 
+当前实现状态：Runtime 中没有生产消费者的 managed mutation admission、transform 与 outcome adoption 路径已移除；Write/Edit 继续使用现有工具执行路径。下文保留 Storage 已有记录的身份、原子性与恢复约束，其中 Runtime 接线描述属于历史设计，不代表现有可调用能力。后续如有真实消费者，应从其具体需求确定接线，不恢复整套预留实现。
+
 ## 1. 交付边界
 
 本切片只证明一个主要不变量：

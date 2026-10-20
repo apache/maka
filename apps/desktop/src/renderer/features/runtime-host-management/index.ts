@@ -25,6 +25,7 @@ export { RuntimeHostAddComputerMenu } from './ui/runtime-host-add-computer-menu.
 export { RuntimeHostConnectionCodeButton } from './ui/runtime-host-connection-code-button.js';
 export { RuntimeHostConnectionCodeDialog } from './ui/runtime-host-connection-code-dialog.js';
 export { RuntimeHostResourceDialog } from './ui/runtime-host-resource-dialog.js';
+export { RuntimeHostHandoffOverlay } from './ui/runtime-host-handoff-overlay.js';
 export {
   RuntimeHostPairingRecoveryButton,
   RuntimeHostProfileMoreMenu,

@@ -117,6 +117,28 @@ describe('invocation_opened content contract', () => {
     );
   });
 
+  test('binds a plugin executor route to its exact activation generation', () => {
+    const route = {
+      provenance: 'runtime',
+      backendKind: 'plugin-executor',
+      executorId: 'codex.app-server',
+      llmConnectionSlug: 'executor:codex.app-server',
+      modelId: 'codex.app-server',
+      providerStateIdentity: DIGEST,
+    } as const;
+    assert.deepEqual(decodeRuntimeInvocationOpened(opening({ route })).route, route);
+    assert.throws(() =>
+      decodeRuntimeInvocationOpened(
+        opening({ route: { ...route, providerStateIdentity: undefined } as never }),
+      ),
+    );
+    assert.throws(() =>
+      decodeRuntimeInvocationOpened(
+        opening({ route: { ...route, llmConnectionId: 'not-an-executor-route' } as never }),
+      ),
+    );
+  });
+
   test('accepts every root authority the runtime can open, and no mixture of them', () => {
     for (const root of [
       { kind: 'user' },

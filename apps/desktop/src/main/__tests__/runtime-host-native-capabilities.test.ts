@@ -31,6 +31,7 @@ import {
 } from '@maka/runtime-host/protocol';
 import { z } from 'zod';
 import { buildClientSettingsTools } from '../client-settings-tools.js';
+import { buildManagedArtifactPreviewTools } from '../managed-artifact-preview-tools.js';
 import { browserOriginAdmission } from '../browser/browser-origin-admission.js';
 import { buildRiveWorkflowTool } from '../rive-workflow-tool.js';
 import { createDesktopNativeCapabilityProvider } from '../runtime-host-native-capabilities.js';
@@ -40,6 +41,32 @@ function jsonSchema(schema: Record<string, unknown>): {
 } {
   return { jsonSchema: schema };
 }
+
+test('Artifact preview is discoverable and admitted without a pre-existing browser origin', async () => {
+  let invoked = false;
+  const provider = createDesktopNativeCapabilityProvider({
+    browserTools: [],
+    resolveBrowserUrl: () => { throw new Error('No browser page exists'); },
+    releaseBrowserSession() {},
+    computerUseTools: computerTools(),
+    releaseDesktopInteractionSession() {},
+    additionalGroups: () => [{
+      offerId: 'desktop_artifact_preview', label: 'HTML preview', description: 'Prepare HTML preview',
+      tools: buildManagedArtifactPreviewTools(async (sessionId, artifactId, signal) => {
+        assert.equal(sessionId, 'session-1');
+        assert.equal(artifactId, 'artifact-1');
+        signal.throwIfAborted();
+        invoked = true;
+        return { url: 'http://127.0.0.1:12345/token/index.html', expiresAt: 123456, reachable: true, loaded: false };
+      }),
+    }],
+  }, { nativeSessionId: (sessionId) => `native:${sessionId}` });
+  assert.doesNotThrow(() => decodeClientCapabilityReplaceInput({ registrationId: 'registration-1', offers: provider.offers() }));
+  assert.ok(provider.offers().some((offer) => offer.offerId === 'desktop_artifact_preview' && offer.tools.some((tool) => tool.name === 'ArtifactPreview')));
+  const result = await call(provider, capabilityFrame({ offerId: 'desktop_artifact_preview', serverId: 'desktop_artifact_preview', toolName: 'ArtifactPreview', arguments: { artifactId: 'artifact-1' } }));
+  assert.equal(invoked, true);
+  assert.deepEqual(result.structuredContent, { url: 'http://127.0.0.1:12345/token/index.html', expiresAt: 123456, reachable: true, loaded: false });
+});
 
 test('publishes self-described session-affine Browser and Computer Use offers', () => {
   const provider = createDesktopNativeCapabilityProvider({
@@ -245,7 +272,7 @@ test('forwards JSON Schema native capability arguments to the MCP authority', as
         arguments: {},
       }),
     ),
-    { content: [{ type: 'text', text: 'server result' }] },
+    { outcome: 'success', content: [{ type: 'text', text: 'server result' }] },
   );
   assert.deepEqual(receivedArguments, {});
 });
@@ -643,7 +670,7 @@ test('validates before admission and invokes the exact offered tool with Host co
       admitted = true;
     },
   );
-  assert.deepEqual(result, { content: [{ type: 'text', text: 'Loaded' }] });
+  assert.deepEqual(result, { outcome: 'success', content: [{ type: 'text', text: 'Loaded' }] });
   assert.deepEqual(received, {
     args: { url: 'https://example.com/path' },
     context: {
@@ -782,6 +809,7 @@ test('projects Computer Use screenshots and releases all native resources for a 
 
   const completed = await call(provider, computerFrame({ sessionId: 'completed-session', arguments: {} }));
   assert.deepEqual(completed, {
+    outcome: 'success',
     content: [
       { type: 'text', text: 'captured' },
       { type: 'image', data: 'aW1hZ2U=', mimeType: 'image/png' },
@@ -809,6 +837,19 @@ test('projects Computer Use screenshots and releases all native resources for a 
   ]);
   await provider.close();
   await assert.rejects(() => call(provider, capabilityFrame()), /provider is closed/u);
+});
+
+test('projects native Computer Use refusal separately from its model text', async () => {
+  const backend = computerBackend();
+  backend.preflight = async () => ({ accessibility: false, screenRecording: true });
+  const provider = createDesktopNativeCapabilityProvider({
+    browserTools: [], resolveBrowserUrl: () => 'https://example.com/', releaseBrowserSession() {},
+    computerUseTools: buildComputerUseTools({ backend }), releaseDesktopInteractionSession() {},
+  });
+  const result = await call(provider, computerFrame({ arguments: { action: 'wait', duration: 0.001 } }));
+  assert.equal(result.outcome, 'error');
+  assert.match(result.content[0]?.type === 'text' ? result.content[0].text : '', /permission_missing/);
+  await provider.close();
 });
 
 test('does not advertise unavailable capability groups or dispatch unknown identities', async () => {
@@ -873,7 +914,7 @@ test('dispatches through the same immutable tool snapshot it advertised', async 
         toolName: 'old_tool',
       }),
     ),
-    { content: [{ type: 'text', text: 'old implementation' }] },
+    { outcome: 'success', content: [{ type: 'text', text: 'old implementation' }] },
   );
   await assert.rejects(
     () =>
@@ -938,7 +979,7 @@ test('chunks a dynamic capability group beyond the single-offer tool limit', asy
         arguments: {},
       }),
     ),
-    { content: [{ type: 'text', text: 'tool-64' }] },
+    { outcome: 'success', content: [{ type: 'text', text: 'tool-64' }] },
   );
   await provider.close();
 });
@@ -1113,7 +1154,7 @@ test('publishes identified tools under their real normalized MCP identity', asyn
         arguments: {},
       }),
     ),
-    { content: [{ type: 'text', text: 'echo result' }] },
+    { outcome: 'success', content: [{ type: 'text', text: 'echo result' }] },
   );
   assert.deepEqual(
     await call(
@@ -1125,7 +1166,7 @@ test('publishes identified tools under their real normalized MCP identity', asyn
         arguments: {},
       }),
     ),
-    { content: [{ type: 'text', text: 'run result' }] },
+    { outcome: 'success', content: [{ type: 'text', text: 'run result' }] },
   );
   await provider.close();
 });

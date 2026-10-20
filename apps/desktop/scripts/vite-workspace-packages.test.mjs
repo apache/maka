@@ -98,20 +98,22 @@ test('renderer-facing Runtime Host protocol does not load Node crypto', async (t
   t.after(() => server.close());
   await server.listen();
 
-  const protocolModule = join(
-    repoRoot,
-    'packages/runtime-host/dist/protocol/client-capability.js',
-  );
-  const response = await fetch(`${server.resolvedUrls.local[0]}@fs/${protocolModule}`);
-  const transformed = await response.text();
+  for (const module of ['client-capability', 'plugin-platform']) {
+    const protocolModule = join(repoRoot, `packages/runtime-host/dist/protocol/${module}.js`);
+    const response = await fetch(`${server.resolvedUrls.local[0]}@fs/${protocolModule}`);
+    const transformed = await response.text();
 
-  assert.equal(response.status, 200, transformed);
-  // A missing dist is served as the SPA fallback, and index.html trivially
-  // satisfies the assertion below. Say so instead of passing.
-  assert.doesNotMatch(
-    transformed,
-    /^<!doctype html>/iu,
-    'Vite served the SPA fallback; build @maka/runtime-host first',
-  );
-  assert.doesNotMatch(transformed, /vite-browser-external:node:crypto/u);
+    assert.equal(response.status, 200, transformed);
+    // A missing dist is served as the SPA fallback, and index.html trivially
+    // satisfies the assertions below. Say so instead of passing.
+    assert.doesNotMatch(
+      transformed,
+      /^<!doctype html>/iu,
+      'Vite served the SPA fallback; build @maka/runtime-host first',
+    );
+    assert.doesNotMatch(transformed, /vite-browser-external:node:crypto/u);
+    // Importing the server executor service evaluates its Node crypto import
+    // before React mounts, leaving the development window blank.
+    assert.doesNotMatch(transformed, /runtime\/dist\/plugin-executor-service\.js/u);
+  }
 });

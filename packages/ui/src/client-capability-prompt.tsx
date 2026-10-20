@@ -56,6 +56,8 @@ export function ClientCapabilityPrompt({
     setResponsePending(true);
     try {
       await onRespond({ requestId, decision });
+    } catch {
+      // The shell surfaces a toast when this session is still active.
     } finally {
       if (activeRequestIdRef.current === requestId) {
         responsePendingRef.current = false;
@@ -106,6 +108,7 @@ function clientCapabilityLabel(
     case 'computer_use':
       return copy.computerUse;
     case 'desktop_mcp':
+    case 'mcp':
       if (request.scope.kind !== 'mcp_tool') break;
       return copy.desktopMcp(request.scope.serverId, request.scope.toolName);
   }

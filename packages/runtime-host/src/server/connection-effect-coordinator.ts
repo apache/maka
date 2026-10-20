@@ -24,7 +24,11 @@ import type {
   ConnectionTestSummary,
 } from '@maka/core/runtime-policy';
 import { parseRequestHeaders } from '@maka/core/runtime-policy';
-import { PROVIDER_REGISTRY, providerFallbackModelIds } from '@maka/core/llm-connections';
+import {
+  PROVIDER_REGISTRY,
+  effectiveBaseUrl,
+  providerFallbackModelIds,
+} from '@maka/core/llm-connections';
 import {
   createConnectionEffectFetchTransport,
   type ConnectionEffectFetchTransport,
@@ -165,7 +169,11 @@ export class HostConnectionEffectCoordinator {
         fetchedAt: this.#now(),
       };
       const completion = await this.#complete(() =>
-        this.#stores.operations.completeModelFetch(prepared.ticket, result),
+        this.#stores.operations.completeModelFetch(
+          prepared.ticket,
+          result,
+          input.preserveSelection,
+        ),
       );
       return completion.kind === 'committed'
         ? {
@@ -623,7 +631,10 @@ function operationFailure<
 }
 
 function transientConnection(
-  identity: Pick<ConnectionCatalogEntry, 'connectionId' | 'slug' | 'providerType'>,
+  identity: Pick<
+    ConnectionCatalogEntry,
+    'connectionId' | 'slug' | 'providerType' | 'defaultApiProtocol'
+  >,
   baseUrl: string | null = null,
 ): ConnectionCatalogEntry {
   const { providerType } = identity;
@@ -636,6 +647,9 @@ function transientConnection(
     name: definition.label,
     providerType,
     ...((baseUrl ?? definition.baseUrl) ? { baseUrl: baseUrl ?? definition.baseUrl } : {}),
+    ...(identity.defaultApiProtocol === undefined
+      ? {}
+      : { defaultApiProtocol: identity.defaultApiProtocol }),
     enabled: true,
     enabledModelIds: models.map(({ id }) => id),
     models,

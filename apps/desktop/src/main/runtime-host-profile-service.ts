@@ -303,6 +303,7 @@ export function createDesktopRuntimeHostProfileService(input: {
     onPeerEndpoint?: (endpoint: HostPeerEndpoint) => void,
   ) => Promise<void>;
   readonly disable: (profileId: string) => Promise<void>;
+  readonly retryLocal?: () => Promise<void>;
   readonly finalizePairing: (profileId: string) => Promise<void>;
   readonly setDefault: (profileId: string) => void;
   readonly catalog?: RuntimeHostProfileCatalog;
@@ -405,16 +406,10 @@ export function createDesktopRuntimeHostProfileService(input: {
           enabled: isEnabled,
           isDefault: preferences.defaultProfileId === profile.id,
           readiness: isEnabled ? (state?.readiness ?? "unavailable") : "disabled",
-          ...(state?.readiness === "ready"
-            ? {
-                hostId: state.candidate.client.hostId,
-                ...(state.candidate.client.peerPath
-                  ? { peerPath: state.candidate.client.peerPath }
-                  : {}),
-              }
-            : state && "hostId" in state && state.hostId
-              ? { hostId: state.hostId }
-              : {}),
+          ...(state ? { hostId: state.hostId } : {}),
+          ...(state?.readiness === "ready" && state.candidate.client.peerPath
+            ? { peerPath: state.candidate.client.peerPath }
+            : {}),
           ...(error ? { message: error.message } : {}),
         };
       }),
@@ -1266,6 +1261,7 @@ export function createDesktopRuntimeHostProfileService(input: {
       return mutateProfiles(async () => {
         if (profileId === LOCAL_RUNTIME_HOST_PROFILE.id) {
           if (!isEnabled) throw new Error("Local Runtime Host cannot be disabled");
+          await input.retryLocal?.();
           return snapshot();
         }
         if (isEnabled) {
@@ -1459,14 +1455,7 @@ function assertRootIsNotEnabled(
     ) {
       return false;
     }
-    const stateRootId = state.target.profile.kind !== 'local'
-      ? state.target.profile.rootId
-      : state.readiness === "ready"
-        ? state.candidate.client.hostId
-        : "hostId" in state
-          ? state.hostId
-          : undefined;
-    return stateRootId === rootId;
+    return state.hostId === rootId;
   });
   const duplicate = duplicateProfile ?? duplicateState?.target.profile;
   if (duplicate) {

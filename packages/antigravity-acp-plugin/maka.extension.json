@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "id": "antigravity-acp",
+  "displayName": "Antigravity ACP",
+  "description": "Runs Google Antigravity as an external Agent through ACP.",
+  "dependencies": [{ "id": "acp-executor" }],
+  "runtime": {
+    "entry": "dist/plugin.mjs"
+  },
+  "configuration": {
+    "properties": {
+      "executable": {
+        "type": "string",
+        "title": "ACP executable",
+        "description": "Absolute path to agy_acp_server.par."
+      },
+      "helper": {
+        "type": "string",
+        "title": "ACP helper",
+        "description": "Optional absolute path to localharness_external; defaults beside the executable."
+      },
+      "model": {
+        "type": "string",
+        "title": "Model",
+        "description": "Optional ACP model configuration value applied when each external Session is created."
+      }
+    },
+    "required": ["executable"]
+  }
+}

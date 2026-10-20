@@ -209,6 +209,12 @@ describe('builtin apply_patch', () => {
 
     assert.equal(await readFile(join(cwd, 'added.txt'), 'utf8'), 'hello\n');
     assert.equal(await readFile(join(cwd, 'changed.txt'), 'utf8'), 'after\n');
+    await runTool(
+      applyPatch,
+      { patch: '*** Begin Patch\n*** Delete File: added.txt\n*** End Patch' },
+      cwd,
+    );
+    await assert.rejects(access(join(cwd, 'added.txt')));
   });
 });
 
@@ -347,6 +353,33 @@ describe('builtin Bash streaming output', () => {
       }).success,
       false,
     );
+  });
+
+  test('Bash drops its boundary declaration when the session has no boundary to widen', () => {
+    const shellRuns = {
+      runForegroundBash: () => Promise.reject(new Error('not used')),
+      runBackgroundBash: () => Promise.reject(new Error('not used')),
+    };
+    for (const options of [
+      { shellRuns, declareSandboxBoundary: false },
+      {
+        sandboxManager: availableLinuxManager(),
+        sandboxPlatform: 'linux' as const,
+        declareSandboxBoundary: false,
+      },
+    ]) {
+      const bash = buildBuiltinTools(options).find((tool) => tool.name === 'Bash');
+      if (!bash) throw new Error('Bash tool missing');
+      const parameters = bash.parameters as z.ZodTypeAny;
+      const keys = Object.keys(z.toJSONSchema(parameters).properties ?? {});
+      assert.equal(keys.includes('boundary_intent'), false);
+      assert.equal(keys.includes('required_boundary'), false);
+      assert.doesNotMatch(bash.description, /sandbox boundary/u);
+      assert.equal(
+        parameters.safeParse({ command: 'echo', boundary_intent: 'expand' }).success,
+        false,
+      );
+    }
   });
 
   test('Bash schema exposes explicit background execution and boundary declarations', () => {
@@ -2477,7 +2510,65 @@ describe('builtin write tools path containment', () => {
   });
 });
 
+test('Edit leaves a file unchanged when exact matches overlap', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-edit-overlap-'));
+  const original = 'retry();\nretry();\nretry();\n';
+  await writeFile(join(root, 'overlap.txt'), original, 'utf8');
+  await assert.rejects(
+    runTool(
+      tool('Edit'),
+      { path: 'overlap.txt', old_string: 'retry();\nretry();', new_string: 'MARKER();' },
+      root,
+    ),
+    /old_string is not unique/,
+  );
+  assert.equal(await readFile(join(root, 'overlap.txt'), 'utf8'), original);
+});
+
 describe('builtin FormatJson (file in place)', () => {
+  test('the path-based executor preserves nested numbers and sorts ordinary data keys', async () => {
+    let written: string | undefined;
+    const formatter = buildBuiltinTools({
+      executor: fakeExecutor({
+        readFile: async () => ({
+          content:
+            '{"z":[9223372036854775807,1e400,-0,1.00],"rawJSON":"null","__proto__":{"b":0.123456789012345678901,"a":2}}',
+        }),
+        writeFile: async ({ path, content }) => {
+          written = content;
+          return { ok: true, path, bytes: Buffer.byteLength(content) };
+        },
+      }),
+    }).find((candidate) => candidate.name === 'FormatJson')!;
+    await runTool(formatter, { path: 'data.json', sort_keys: true }, tmpdir());
+    assert.equal(
+      written,
+      '{\n  "__proto__": {\n    "a": 2,\n    "b": 0.123456789012345678901\n  },\n  "rawJSON": "null",\n  "z": [\n    9223372036854775807,\n    1e400,\n    -0,\n    1.00\n  ]\n}',
+    );
+  });
+
+  for (const sort_keys of [false, true]) {
+    test(`formatting preserves exact JSON numeric values (sort_keys=${sort_keys})`, async () => {
+      const root = await mkdtemp(join(tmpdir(), 'maka-formatjson-numbers-'));
+      const original =
+        '{"account_id":9223372036854775807,"amount":0.123456789012345678901,"large":1e400}';
+      await writeInput(root, 'numbers.json', original);
+      const result = await runFormatJson({ path: 'numbers.json', sort_keys }, root);
+      const after = await readFile(join(root, 'numbers.json'), 'utf8');
+      if (result.ok === false) {
+        assert.equal(
+          after,
+          original,
+          'an unsupported numeric value must be rejected before writing',
+        );
+        return;
+      }
+      assert.match(after, /"account_id"\s*:\s*9223372036854775807(?=\s*[,}])/);
+      assert.match(after, /"amount"\s*:\s*0\.123456789012345678901(?=\s*[,}])/);
+      assert.match(after, /"large"\s*:\s*1e400(?=\s*[,}])/);
+    });
+  }
+
   async function writeInput(root: string, name: string, content: string): Promise<string> {
     const path = join(root, name);
     await writeFile(path, content, 'utf8');
@@ -2697,7 +2788,7 @@ function fakeExecutor(overrides: Partial<WorkspaceExecutor>): WorkspaceExecutor 
     resolveExistingPath: async ({ path }) => ({ path }),
     resolveWritablePath: async ({ path }) => ({ path }),
     writeLockKey: async ({ cwd, path }) => ({ key: `${cwd}:${path}` }),
-    globFiles: async () => ({ files: [] }),
+    globFiles: async () => ({ files: [], truncated: false }),
     grepFiles: async () => ({
       matches: [],
       matchedLines: 0,

@@ -738,6 +738,8 @@ export class ExecutionFixture {
             messageId: input.messageId,
             content,
             submittedContentDigest: contentDigest,
+            submittedPlacement: 'current_turn',
+            skillInvocation: { loaded: [], failed: [], receipts: [] },
             placement: 'current_turn',
             disposition: 'turn_started',
           },
@@ -1289,7 +1291,7 @@ export class ExecutionFixture {
   ): ChildProcess {
     const env = { ...process.env };
     if (safeBoundaryResumeEnabled) env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME = '1';
-    else delete env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME;
+    else env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME = '0';
     const child = fork(
       new URL('./execution-host.js', import.meta.url),
       [
@@ -1556,6 +1558,7 @@ export async function waitForTerminalTurn(
     { sessionId, transcript: { kind: 'none' } },
     PROCESS_TIMEOUT_MS,
   );
+  await subscription.ready();
   try {
     return await withTimeout(
       (async () => {

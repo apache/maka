@@ -143,6 +143,63 @@ describe('config-transfer', () => {
     assert.equal(overwrite.skipped.length, 0);
   });
 
+  it('skips overwriting a custom connection whose default protocol differs', () => {
+    const relay = (defaultApiProtocol: LlmConnection['defaultApiProtocol']) =>
+      conn('relay', {
+        providerType: 'custom',
+        defaultApiProtocol,
+        baseUrl: 'https://relay.example/v1',
+      });
+    const plan = planConnectionMerge(
+      [relay('openai-chat')],
+      [relay('openai-responses')],
+      'overwrite',
+    );
+    assert.equal(plan.overwrite.length, 0);
+    assert.deepEqual(plan.skipped, [{ slug: 'relay', reason: 'exists' }]);
+    assert.deepEqual(
+      planConnectionMerge(
+        [relay('openai-chat')],
+        [relay('openai-chat')],
+        'overwrite',
+      ).overwrite.map((c) => c.slug),
+      ['relay'],
+    );
+  });
+
+  it('skips retired providers for both new connections and overwrites', () => {
+    for (const providerType of [
+      'opencode-free',
+      'commandcode-go',
+      'claude-subscription',
+    ] as const) {
+      const retired = conn(providerType, { providerType });
+      for (const strategy of ['skip', 'overwrite'] as const) {
+        for (const existing of [[], [retired]]) {
+          const plan = planConnectionMerge(existing, [retired, conn('active')], strategy);
+          assert.deepEqual(plan, {
+            create: [conn('active')],
+            overwrite: [],
+            skipped: [{ slug: providerType, reason: 'provider_retired' }],
+          });
+        }
+      }
+    }
+  });
+
+  it('skips a connection whose provider type no longer exists', () => {
+    const legacy = {
+      ...conn('relay', { baseUrl: 'https://relay.example/v1' }),
+      providerType: 'anthropic-compatible',
+    } as unknown as LlmConnection;
+    const plan = planConnectionMerge([], [legacy, conn('x')], 'skip');
+    assert.deepEqual(
+      plan.create.map((c) => c.slug),
+      ['x'],
+    );
+    assert.deepEqual(plan.skipped, [{ slug: 'relay', reason: 'provider_retired' }]);
+  });
+
   it('de-dupes repeated slugs within the imported set', () => {
     const plan = planConnectionMerge([], [conn('x'), conn('x'), conn('y')], 'skip');
     assert.deepEqual(

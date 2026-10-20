@@ -17,37 +17,22 @@
  * under the License.
  */
 
-/**
- * Controllable thinking level for reasoning-capable models.
- *
- * A `ThinkingLevel` is a user-facing reasoning-depth knob. It is a per-model
- * variant: each model supports a subset of levels (declared here by
- * `thinkingVariantsForModel`), and switching models clears the choice so a
- * level is never sent to a model that does not understand it. `undefined`
- * means "no override" (the model's default behaviour) and is the only value
- * persisted-absent — the UI shows it as "默认". `'off'` explicitly disables
- * reasoning for providers that expose a true off switch (`reasoningEffort:
- * 'none'` for OpenAI gpt-5 / codex, `thinking: { type: 'disabled' }` for
- * Anthropic-protocol); providers without a clean off switch do not list it.
- *
- * The runtime maps a chosen level to the ai-sdk provider option
- * (`reasoningEffort` / `thinking.budgetTokens` / `thinkingConfig`) in
- * `buildProviderOptions`; this module owns only the vocabulary and the
- * per-model supported set, so the UI and runtime share one source of truth.
- */
+/** Explicit reasoning controls. Omission uses the provider's default settings. */
 
 import type { ModelInfo, ProviderType } from './llm-connections.js';
 import { lookupModelMetadata } from './model-metadata.js';
+import { isModelApiProtocol, type ModelApiProtocol } from './provider-registry.js';
 
 /**
  * Reasoning-depth variants. Ordered from shallowest to deepest for display.
  * Not every model supports every level — call `thinkingVariantsForModel` for
  * the model-specific subset.
  */
-export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+export type ThinkingLevel = 'off' | 'on' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 export const THINKING_LEVELS: readonly ThinkingLevel[] = [
   'off',
+  'on',
   'minimal',
   'low',
   'medium',
@@ -56,18 +41,9 @@ export const THINKING_LEVELS: readonly ThinkingLevel[] = [
   'max',
 ];
 
-/**
- * The levels a generic-relay declaration may hold — the vocabulary the
- * settings surfaces offer and the one the data layer admits. `off` is the
- * sole exclusion: it is not an intensity tier but a *disable* wire
- * (`reasoning_effort: 'none'`), and no generic relay is presumed to honor
- * that encoding; built-in providers that support it get `off` from their own
- * metadata instead. `minimal` and every effort tier above are pure
- * intensity values — the user declaring them is the authority on what the
- * relay accepts.
- */
+/** Relay declarations contain effort tiers; switches require a provider-specific wire. */
 export const DECLARABLE_RELAY_THINKING_LEVELS: readonly ThinkingLevel[] = THINKING_LEVELS.filter(
-  (level) => level !== 'off',
+  (level) => level !== 'off' && level !== 'on',
 );
 
 export function isThinkingLevel(value: unknown): value is ThinkingLevel {
@@ -95,24 +71,20 @@ export interface ThinkingOptions {
   readonly offBehavior?: ThinkingOffBehavior;
 }
 
-/**
- * Derive the user-facing thinking-level choices from a model's declared
- * `ThinkingOptions`. `none` (OpenAI's off effort) and declared `offBehavior`
- * surface as `'off'`; other effort values map to the same-named
- * `ThinkingLevel`. Raw `toggle` alone is intentionally not enough because some
- * adapters have no real disabled wire. Unknown effort values (not in
- * `ThinkingLevel`) are dropped. Returns `[]` for models with no declared
- * options (miss → no thinking menu, fallback default).
- */
+/** Only expose controls the adapter can encode; unknown effort values are ignored. */
 function deriveThinkingChoices(options: ThinkingOptions | undefined): readonly ThinkingLevel[] {
   if (!options) return [];
   const choices = new Set<ThinkingLevel>();
   if (options.offBehavior) choices.add('off');
   for (const effort of options.efforts ?? []) {
     if (effort === 'none') choices.add('off');
-    else if (isThinkingLevel(effort)) choices.add(effort);
-    // Unknown effort values (not in ThinkingLevel) are dropped — add the
-    // level to THINKING_LEVELS if a provider introduces a new effort tier.
+    else if ((DECLARABLE_RELAY_THINKING_LEVELS as readonly string[]).includes(effort)) {
+      choices.add(effort as ThinkingLevel);
+    }
+  }
+  // Legacy Claude models need an explicit enabled request and have no effort knob.
+  if (options.offBehavior === 'anthropic-thinking-disabled' && choices.size === 1) {
+    choices.add('on');
   }
   return THINKING_LEVELS.filter((level) => choices.has(level));
 }
@@ -123,7 +95,11 @@ export interface ModelOverride {
   readonly capabilities?: Omit<NonNullable<ModelInfo['capabilities']>, 'vision'>;
   readonly modalities?: ModelInfo['modalities'];
   readonly thinkingLevels?: readonly ThinkingLevel[];
+  /** Thinking level used when a new Session starts on this exact model. */
+  readonly defaultThinkingLevel?: ThinkingLevel;
   readonly vision?: boolean;
+  /** Override ApplyPatch file editing. Omit to use this model's known support default. */
+  readonly applyPatch?: boolean;
   readonly contextWindow?: number;
   readonly compactionThreshold?: number;
   readonly inputLimit?: number;
@@ -131,12 +107,55 @@ export interface ModelOverride {
   readonly maxOutputTokens?: number;
   readonly displayName?: string;
   readonly description?: string;
-  readonly apiProtocol?: 'openai-chat' | 'openai-responses' | 'anthropic-messages';
-  /** Use OpenAI's low-latency service tier for this relay model. */
+  readonly apiProtocol?: ModelApiProtocol;
+  /** Use OpenAI's low-latency service tier for this custom model. */
   readonly serviceTier?: 'fast';
 }
 
 export type ModelOverrides = Readonly<Record<string, ModelOverride>>;
+
+/** Known patch-capable models. Unknown models stay off until explicitly enabled. */
+const APPLY_PATCH_MODELS: ReadonlySet<string> = new Set([
+  'gpt-5-codex',
+  'gpt-5.1',
+  'gpt-5.1-codex',
+  'gpt-5.1-codex-mini',
+  'gpt-5.1-codex-max',
+  'gpt-5.2',
+  'gpt-5.2-codex',
+  'gpt-5.3-codex',
+  'gpt-5.3-codex-spark',
+  'gpt-5.4',
+  'gpt-5.4-mini',
+  'gpt-5.4-nano',
+  'gpt-5.4-pro',
+  'gpt-5.5',
+  'gpt-5.6',
+  'gpt-5.6-sol',
+  'gpt-5.6-terra',
+  'gpt-5.6-luna',
+  'gpt-6-astra',
+  'deepseek-flash',
+  'deepseek-v4-flash',
+  'deepseek-v4-flash-vision-exp',
+  'deepseek-v4-pro',
+]);
+
+/** Shared by model settings and tool routing so the displayed switch matches execution. */
+export function modelApplyPatchEnabled(
+  modelId: string,
+  override?: Pick<ModelOverride, 'applyPatch'>,
+): boolean {
+  return (
+    override?.applyPatch ??
+    APPLY_PATCH_MODELS.has(
+      modelId
+        .trim()
+        .toLowerCase()
+        .replace(/-\d{4}-\d{2}-\d{2}$/, ''),
+    )
+  );
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -149,23 +168,19 @@ function normalizeModelOverride(entry: unknown): ModelOverride | undefined {
     capabilities?: ModelOverride['capabilities'];
     modalities?: ModelOverride['modalities'];
     thinkingLevels?: readonly ThinkingLevel[];
+    defaultThinkingLevel?: ThinkingLevel;
     vision?: boolean;
+    applyPatch?: boolean;
     contextWindow?: number;
     compactionThreshold?: number;
     inputLimit?: number;
     maxOutputTokens?: number;
     displayName?: string;
     description?: string;
-    apiProtocol?: 'openai-chat' | 'openai-responses' | 'anthropic-messages';
+    apiProtocol?: ModelApiProtocol;
     serviceTier?: 'fast';
   } = {};
   if (Array.isArray(entry.thinkingLevels)) {
-    // Declared levels are filtered to the declarable vocabulary, not merely
-    // the level vocabulary: `off` is a disable-wire encoding no generic
-    // relay is presumed to speak, and a declaration table has no business
-    // carrying it. The codec rejects it in persisted documents for the same
-    // reason; normalize silently drops it because it also sanitizes input
-    // that never passed a validator (settings drafts, hand-edited tables).
     const declaredSet = new Set(
       entry.thinkingLevels.filter(
         (level): level is ThinkingLevel =>
@@ -179,7 +194,11 @@ function normalizeModelOverride(entry: unknown): ModelOverride | undefined {
       );
     }
   }
+  if (isThinkingLevel(entry.defaultThinkingLevel)) {
+    declared.defaultThinkingLevel = entry.defaultThinkingLevel;
+  }
   if (typeof entry.vision === 'boolean') declared.vision = entry.vision;
+  if (typeof entry.applyPatch === 'boolean') declared.applyPatch = entry.applyPatch;
   for (const field of [
     'contextWindow',
     'compactionThreshold',
@@ -196,12 +215,7 @@ function normalizeModelOverride(entry: unknown): ModelOverride | undefined {
   if (isRecord(entry.capabilities)) declared.capabilities = entry.capabilities;
   if (isRecord(entry.modalities))
     declared.modalities = entry.modalities as unknown as ModelOverride['modalities'];
-  if (
-    entry.apiProtocol === 'openai-chat' ||
-    entry.apiProtocol === 'openai-responses' ||
-    entry.apiProtocol === 'anthropic-messages'
-  )
-    declared.apiProtocol = entry.apiProtocol;
+  if (isModelApiProtocol(entry.apiProtocol)) declared.apiProtocol = entry.apiProtocol;
   if (entry.serviceTier === 'fast') declared.serviceTier = 'fast';
   return declared;
 }
@@ -225,18 +239,6 @@ export function normalizeModelOverrides(table: unknown): Record<string, ModelOve
     if (declared) parsed.push([modelId, declared]);
   }
   return parsed.length > 0 ? Object.fromEntries(parsed) : undefined;
-}
-
-/** Remove profiles for models explicitly retired from a provider. */
-export function pruneModelOverrides(
-  table: ModelOverrides | undefined,
-  retainedModelIds: readonly string[],
-): ModelOverrides | undefined {
-  if (table === undefined) return undefined;
-  const kept = Object.fromEntries(
-    Object.entries(table).filter(([modelId]) => retainedModelIds.includes(modelId)),
-  );
-  return Object.keys(kept).length > 0 ? kept : undefined;
 }
 
 /**
@@ -271,12 +273,36 @@ export function declaredContextWindow(
   return modelOverride(connection, modelId)?.compactionThreshold;
 }
 
+export interface ConnectionProtocolContext extends ConnectionThinkingContext {
+  readonly defaultApiProtocol?: ModelApiProtocol;
+  readonly models?: readonly Pick<ModelInfo, 'id' | 'apiProtocol'>[];
+}
+
+/** The model's own wire declaration, then the discovered one, then the connection default. */
+export function declaredModelApiProtocol(
+  connection: ConnectionProtocolContext,
+  modelId: string,
+): ModelApiProtocol | undefined {
+  return (
+    modelOverride(connection, modelId)?.apiProtocol ??
+    connection.models?.find((model) => model.id === modelId)?.apiProtocol ??
+    connection.defaultApiProtocol
+  );
+}
+
 /**
  * Mirrors @ai-sdk/openai@4.0.42 priority-processing detection. The UI and
  * runtime share this gate so a saved Fast declaration always reaches the wire.
  */
-export function supportsRelayFastServiceTier(providerType: ProviderType, modelId: string): boolean {
-  if (providerType !== 'openai-responses-compatible') return false;
+export function supportsCustomFastServiceTier(
+  connection: ConnectionProtocolContext,
+  modelId: string,
+): boolean {
+  if (
+    connection.providerType !== 'custom' ||
+    declaredModelApiProtocol(connection, modelId) !== 'openai-responses'
+  )
+    return false;
   const oSeriesVersion = /^o(\d+)(?:-|$)/.exec(modelId)?.[1];
   const gptMatch = /^gpt-(\d+)(?:\.(\d+))?(?:-(.+))?$/.exec(modelId);
   const gptMajor = gptMatch?.[1] === undefined ? undefined : Number(gptMatch[1]);
@@ -291,12 +317,12 @@ export function supportsRelayFastServiceTier(providerType: ProviderType, modelId
 }
 
 /**
- * OpenAI-compatible relay connections declare thinking support **per model** via
- * `modelOverrides[modelId].thinkingLevels` — a relay may front a
+ * Custom connections declare thinking support **per model** via
+ * `modelOverrides[modelId].thinkingLevels` — one endpoint may front a
  * DeepSeek-family reasoner and a plain instruct model side by side, so the
  * declaration granularity is the model, not the connection. Without a usable
- * declaration for that model every provider (including relays) falls through
- * to the metadata-derived variants.
+ * declaration for that model every provider falls through to the
+ * metadata-derived variants.
  */
 export function thinkingVariantsForConnection(
   connection: ConnectionThinkingContext,
@@ -305,6 +331,22 @@ export function thinkingVariantsForConnection(
   const declared = modelOverride(connection, modelId)?.thinkingLevels;
   if (declared) return declared;
   return thinkingVariantsForModel(connection.providerType, modelId);
+}
+
+/**
+ * Resolve the configured new-Session default against the model's effective
+ * capability ladder. A stale declaration falls back to the provider default
+ * instead of reaching Session creation as an unsupported level.
+ */
+export function defaultThinkingLevelForConnection(
+  connection: ConnectionThinkingContext,
+  modelId: string,
+): ThinkingLevel | undefined {
+  const configured = modelOverride(connection, modelId)?.defaultThinkingLevel;
+  return configured !== undefined &&
+    thinkingVariantsForConnection(connection, modelId).includes(configured)
+    ? configured
+    : undefined;
 }
 
 /**
@@ -340,7 +382,7 @@ export function thinkingOptionsForModel(
  * Levels a model supports, in display order. Returns an empty list for
  * non-reasoning models and for provider/model combinations whose reasoning
  * support is not declarable from `providerType` + `modelId` alone (e.g.
- * `openai-compatible`, where the backing model is user-configured and
+ * `custom`, where the backing model is user-configured and
  * unknown). The UI hides the thinking switcher when this returns `[]`.
  *
  * Heuristics are intentionally conservative: only patterns known to accept the
@@ -361,9 +403,11 @@ export function applyModelOverride(
   if (!override) return model;
   const {
     thinkingLevels: _thinking,
+    defaultThinkingLevel: _defaultThinking,
     serviceTier: _tier,
     compactionThreshold: _threshold,
     maxOutputTokens: _outputBudget,
+    applyPatch: _applyPatch,
     vision,
     capabilities,
     ...facts

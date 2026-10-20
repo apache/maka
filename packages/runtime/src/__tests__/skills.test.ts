@@ -1064,25 +1064,40 @@ Body.`,
       '/home/user',
     );
     assert.deepEqual(entries, [
-      { dir: '/repo/.maka/skills', containmentRoot: '/repo', scope: 'project', source: 'maka' },
-      { dir: '/repo/.agents/skills', containmentRoot: '/repo', scope: 'project', source: 'agents' },
+      {
+        dir: '/repo/.maka/skills',
+        containmentRoot: '/repo',
+        scope: 'project',
+        source: 'maka',
+        refPrefix: 'project:maka',
+      },
+      {
+        dir: '/repo/.agents/skills',
+        containmentRoot: '/repo',
+        scope: 'project',
+        source: 'agents',
+        refPrefix: 'project:agents',
+      },
       {
         dir: '/workspace/skills',
         containmentRoot: '/workspace',
         scope: 'workspace',
         source: 'legacy',
+        refPrefix: 'workspace:legacy',
       },
       {
         dir: '/home/user/.maka/skills',
         containmentRoot: '/home/user',
         scope: 'user',
         source: 'maka',
+        refPrefix: 'user:maka',
       },
       {
         dir: '/home/user/.agents/skills',
         containmentRoot: '/home/user',
         scope: 'user',
         source: 'agents',
+        refPrefix: 'user:agents',
       },
     ]);
     assert.deepEqual(dirs, [

@@ -20,11 +20,8 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import type { SessionSummary } from '@maka/core/session';
-import {
-  archivedTaskRows,
-  isOrphanedSubagentTask,
-  matchesArchivedTaskQuery,
-} from '../../renderer/settings/task-catalog-rows.js';
+import { archivedTaskRows } from '../../renderer/features/session-navigation/testing.js';
+import { isOrphanedSubagentTask } from '../../renderer/settings/task-catalog-rows.js';
 
 function summary(id: string, overrides: Partial<SessionSummary> = {}): SessionSummary {
   return {
@@ -107,39 +104,46 @@ describe('archivedTaskRows', () => {
   });
 });
 
-describe('matchesArchivedTaskQuery', () => {
-  const projectLabelOf = (session: SessionSummary) =>
-    session.projectId === 'p1' ? 'astryx-design' : undefined;
+describe('archived task order', () => {
+  /**
+   * Store order here is deliberately none of the orders under test: not
+   * archive order, not activity order, and the two unknown rows sit on either
+   * side of known ones. Only an archive-time sort with unknowns last and a
+   * stable tie-break yields the expected list.
+   */
+  it('puts the most recently archived first, unknown times last, ties in store order', () => {
+    const sessions = [
+      summary('unknown-a', { isArchived: true, lastMessageAt: 900 }),
+      summary('older', { isArchived: true, lastMessageAt: 800, archivedAt: 1_000 }),
+      summary('tie-first', { isArchived: true, lastMessageAt: 100, archivedAt: 3_000 }),
+      summary('unknown-b', { isArchived: true, lastMessageAt: 50 }),
+      summary('newest', { isArchived: true, lastMessageAt: 10, archivedAt: 5_000 }),
+      summary('tie-second', { isArchived: true, lastMessageAt: 700, archivedAt: 3_000 }),
+    ];
 
-  it('keeps every task while the box is empty or only whitespace', () => {
-    const task = summary('a', { name: 'rail sorting' });
-    assert.equal(matchesArchivedTaskQuery(task, '', projectLabelOf), true);
-    assert.equal(matchesArchivedTaskQuery(task, '   ', projectLabelOf), true);
+    assert.deepEqual(
+      archivedTaskRows(sessions).map((session) => session.id),
+      ['newest', 'tie-first', 'tie-second', 'older', 'unknown-a', 'unknown-b'],
+    );
   });
 
-  it('matches the task name regardless of case or surrounding spaces', () => {
-    const task = summary('a', { name: 'Fix rail sorting' });
-    assert.equal(matchesArchivedTaskQuery(task, '  RAIL ', projectLabelOf), true);
-    assert.equal(matchesArchivedTaskQuery(task, 'compaction', projectLabelOf), false);
-  });
+  it('orders a revision family by the archive time of the row that represents it', () => {
+    const sessions = [
+      summary('solo', { isArchived: true, lastMessageAt: 900, archivedAt: 2_000 }),
+      summary('v1', { isArchived: true, lastMessageAt: 100, archivedAt: 4_000 }),
+      summary('v2', {
+        isArchived: true,
+        lastMessageAt: 200,
+        archivedAt: 4_000,
+        revisionRootSessionId: 'v1',
+        revisionParentSessionId: 'v1',
+      }),
+    ];
 
-  it('matches the project name, because the row shows it too', () => {
-    const task = summary('a', { name: 'Fix rail sorting', projectId: 'p1' });
-    assert.equal(matchesArchivedTaskQuery(task, 'astryx', projectLabelOf), true);
-  });
-
-  it('never matches across the seam between the name and the project', () => {
-    // "sorting astryx" reads like a match on the joined string and like
-    // nothing at all on the row, which is the one answer a reader cannot
-    // account for.
-    const task = summary('a', { name: 'Fix rail sorting', projectId: 'p1' });
-    assert.equal(matchesArchivedTaskQuery(task, 'sorting astryx', projectLabelOf), false);
-  });
-
-  it('falls back to the name when the project could not be resolved', () => {
-    const task = summary('a', { name: 'Analyze everything', projectId: 'gone' });
-    assert.equal(matchesArchivedTaskQuery(task, 'analyze', projectLabelOf), true);
-    assert.equal(matchesArchivedTaskQuery(task, 'undefined', projectLabelOf), false);
+    assert.deepEqual(
+      archivedTaskRows(sessions).map((session) => session.id),
+      ['v2', 'solo'],
+    );
   });
 });
 

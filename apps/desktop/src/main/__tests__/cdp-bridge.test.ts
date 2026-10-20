@@ -99,8 +99,9 @@ function open(url: string, opts?: ClientOptions): Promise<WebSocket> {
   });
 }
 
-function nextMessage(ws: WebSocket): Promise<Record<string, unknown>> {
-  return new Promise((resolve) => ws.once('message', (data) => resolve(JSON.parse(String(data)))));
+async function nextMessage(ws: WebSocket): Promise<Record<string, unknown>> {
+  const [data] = await once(ws, 'message', { signal: AbortSignal.timeout(2_000) });
+  return JSON.parse(String(data));
 }
 
 function waitForCommand(debuggerEmitter: EventEmitter): Promise<unknown[]> {
@@ -237,36 +238,156 @@ describe('CdpBridge', () => {
     release({});
   });
 
-  it('a reconnecting client reusing a command id never sees the previous client result', async () => {
+  it('teardown fails every session sharing an in-flight command id', async () => {
     const { wc, asWebContents } = makeWc();
-    const resolvers: Array<(value: unknown) => void> = [];
-    wc.debugger.impl = () => new Promise((resolve) => resolvers.push(resolve));
-    const { cdpEndpoint } = await startBridge(asWebContents);
-
-    const first = await open(cdpEndpoint);
-    const firstCommandStarted = waitForCommand(wc.debugger);
-    first.send(JSON.stringify({ id: 1, method: 'Page.navigate', params: {} }));
-    await firstCommandStarted;
-    first.terminate();
-
-    // The single slot frees only once the server has processed the close.
-    let second: WebSocket | null = null;
-    for (let attempt = 0; attempt < 50 && !second; attempt++) {
-      second = await open(cdpEndpoint).catch(() => null);
-      if (!second) await new Promise((resolve) => setTimeout(resolve, 10));
+    const releases: Array<(value: unknown) => void> = [];
+    wc.debugger.impl = () => new Promise((resolve) => releases.push(resolve));
+    const { bridge, cdpEndpoint } = await startBridge(asWebContents);
+    const ws = await open(cdpEndpoint);
+    const messages: unknown[] = [];
+    ws.on('message', (data) => messages.push(JSON.parse(String(data))));
+    const sessions = [undefined, 'session-a', 'session-b'];
+    for (const sessionId of sessions) {
+      const commandStarted = waitForCommand(wc.debugger);
+      ws.send(JSON.stringify({ id: 7, method: 'Page.navigate', params: {}, sessionId }));
+      await commandStarted;
     }
-    if (!second) throw new Error('could not reconnect after terminate');
 
-    const answered = nextMessage(second);
-    const secondCommandStarted = waitForCommand(wc.debugger);
-    second.send(JSON.stringify({ id: 1, method: 'Runtime.evaluate', params: {} }));
-    await secondCommandStarted;
-    resolvers[0]?.({ stale: true }); // the dead connection's command completes late
-    resolvers[1]?.({ fresh: true });
-    const msg = (await answered) as { id: number; result: Record<string, unknown> };
-    assert.equal(msg.id, 1);
-    assert.deepEqual(msg.result, { fresh: true });
+    const closed = once(ws, 'close', { signal: AbortSignal.timeout(2_000) });
+    await bridge.stop();
+    await closed;
+    assert.deepEqual(messages, sessions.map((sessionId) => ({
+      id: 7,
+      error: { code: -32000, message: 'bridge closed' },
+      ...(sessionId ? { sessionId } : {}),
+    })));
+    for (const release of releases) release({});
   });
+
+  for (const sessionId of [undefined, 'session-a']) {
+    it(`rejects an in-flight duplicate within ${sessionId ?? 'the root session'} and allows reuse`, async () => {
+      const { wc, asWebContents } = makeWc();
+      let releaseFirst: (value: unknown) => void = () => {};
+      wc.debugger.impl = (method) => {
+        if (method === 'Page.navigate') return new Promise((resolve) => (releaseFirst = resolve));
+        return Promise.resolve({ fresh: true });
+      };
+      const { cdpEndpoint } = await startBridge(asWebContents);
+      const ws = await open(cdpEndpoint);
+
+      const firstCommandStarted = waitForCommand(wc.debugger);
+      ws.send(JSON.stringify({ id: 7, method: 'Page.navigate', params: {}, sessionId }));
+      await firstCommandStarted;
+
+      const distinctAnswered = nextMessage(ws);
+      ws.send(JSON.stringify({ id: 8, method: 'Runtime.evaluate', params: {}, sessionId }));
+      const distinct = await distinctAnswered;
+      assert.equal(distinct.id, 8);
+      assert.equal(distinct.sessionId, sessionId);
+      assert.deepEqual(distinct.result, { fresh: true });
+
+      const duplicateRejected = nextMessage(ws);
+      // An omitted or empty sessionId addresses the same root session.
+      ws.send(JSON.stringify({ id: 7, method: 'Runtime.evaluate', params: {}, sessionId: sessionId ?? '' }));
+      const duplicate = await duplicateRejected;
+      assert.equal(duplicate.id, 7);
+      assert.equal(duplicate.sessionId, sessionId);
+      assert.deepEqual(duplicate.error, { code: -32600, message: 'duplicate in-flight command id: 7' });
+      assert.equal(wc.debugger.calls.length, 2, 'the duplicate command must not reach the debugger');
+
+      const firstAnswered = nextMessage(ws);
+      releaseFirst({ accepted: true });
+      const first = await firstAnswered;
+      assert.equal(first.id, 7);
+      assert.equal(first.sessionId, sessionId);
+      assert.deepEqual(first.result, { accepted: true });
+
+      const reusedAnswered = nextMessage(ws);
+      ws.send(JSON.stringify({ id: 7, method: 'Runtime.evaluate', params: {}, sessionId }));
+      const reused = await reusedAnswered;
+      assert.equal(reused.id, 7);
+      assert.equal(reused.sessionId, sessionId);
+      assert.deepEqual(reused.result, { fresh: true });
+      assert.equal(wc.debugger.calls.length, 3);
+    });
+  }
+
+  for (const firstSessionId of [undefined, 'session-a']) {
+    for (const secondFails of [false, true]) {
+      it(`isolates concurrent id 7 in ${firstSessionId ?? 'the root session'} and session-b after ${secondFails ? 'an error' : 'success'}`, async () => {
+        const { wc, asWebContents } = makeWc();
+        let releaseFirst: (value: unknown) => void = () => {};
+        wc.debugger.impl = (method) => {
+          if (method === 'Page.navigate') return new Promise((resolve) => (releaseFirst = resolve));
+          if (secondFails && wc.debugger.calls.length === 2) return Promise.reject(new Error('boom'));
+          return Promise.resolve({ fresh: true });
+        };
+        const { cdpEndpoint } = await startBridge(asWebContents);
+        const ws = await open(cdpEndpoint);
+
+        const firstCommandStarted = waitForCommand(wc.debugger);
+        ws.send(JSON.stringify({ id: 7, method: 'Page.navigate', params: {}, sessionId: firstSessionId }));
+        await firstCommandStarted;
+
+        const secondAnswered = nextMessage(ws);
+        ws.send(JSON.stringify({ id: 7, method: 'Runtime.evaluate', params: {}, sessionId: 'session-b' }));
+        const second = await secondAnswered;
+        assert.deepEqual(second, {
+          id: 7,
+          sessionId: 'session-b',
+          ...(secondFails ? { error: { code: -32000, message: 'boom' } } : { result: { fresh: true } }),
+        });
+        assert.equal(wc.debugger.calls.length, 2, 'both sessions must reach the debugger');
+        assert.equal(wc.debugger.calls[1]?.sessionId, 'session-b');
+
+        // Success or failure frees only session-b's id while the original stays pending.
+        const reusedAnswered = nextMessage(ws);
+        ws.send(JSON.stringify({ id: 7, method: 'Runtime.evaluate', params: {}, sessionId: 'session-b' }));
+        assert.deepEqual(await reusedAnswered, { id: 7, sessionId: 'session-b', result: { fresh: true } });
+
+        const firstAnswered = nextMessage(ws);
+        releaseFirst({ accepted: true });
+        const first = await firstAnswered;
+        assert.equal(first.id, 7);
+        assert.equal(first.sessionId, firstSessionId);
+        assert.deepEqual(first.result, { accepted: true });
+      });
+    }
+  }
+
+  for (const sessionId of [undefined, 'session-a']) {
+    it(`a reconnecting client reusing an id in ${sessionId ?? 'the root session'} never sees the previous result`, async () => {
+      const { wc, asWebContents } = makeWc();
+      const resolvers: Array<(value: unknown) => void> = [];
+      wc.debugger.impl = () => new Promise((resolve) => resolvers.push(resolve));
+      const { cdpEndpoint } = await startBridge(asWebContents);
+
+      const first = await open(cdpEndpoint);
+      const firstCommandStarted = waitForCommand(wc.debugger);
+      first.send(JSON.stringify({ id: 1, method: 'Page.navigate', params: {}, sessionId }));
+      await firstCommandStarted;
+      first.terminate();
+
+      // The single slot frees only once the server has processed the close.
+      let second: WebSocket | null = null;
+      for (let attempt = 0; attempt < 50 && !second; attempt++) {
+        second = await open(cdpEndpoint).catch(() => null);
+        if (!second) await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      if (!second) throw new Error('could not reconnect after terminate');
+
+      const answered = nextMessage(second);
+      const secondCommandStarted = waitForCommand(wc.debugger);
+      second.send(JSON.stringify({ id: 1, method: 'Runtime.evaluate', params: {}, sessionId }));
+      await secondCommandStarted;
+      resolvers[0]?.({ stale: true }); // the dead connection's command completes late
+      resolvers[1]?.({ fresh: true });
+      const msg = await answered;
+      assert.equal(msg.id, 1);
+      assert.equal(msg.sessionId, sessionId);
+      assert.deepEqual(msg.result, { fresh: true });
+    });
+  }
 
   it('an external debugger detach tears the bridge down', async () => {
     const { wc, asWebContents } = makeWc();

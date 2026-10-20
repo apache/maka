@@ -19,6 +19,7 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { LOCAL_RUNTIME_HOST_PROFILE } from '@maka/runtime-host/client';
 import { createRuntimeHostDefaultRecovery } from '../runtime-host-default-recovery.js';
 
 test('recovers an unavailable default Host without blocking other Hosts', async () => {
@@ -61,4 +62,32 @@ test('recovers an unavailable default Host without blocking other Hosts', async 
   assert.equal(defaultProfileId, 'local');
   assert.equal(retries, 1);
   assert.deepEqual(prompts, ['offline', 'still offline']);
+});
+
+test('prompts to retry a failed Local default instead of leaving the app degraded', async () => {
+  let retries = 0;
+  let resolveRecovered!: () => void;
+  const recovered = new Promise<void>((resolve) => {
+    resolveRecovered = resolve;
+  });
+  const recovery = createRuntimeHostDefaultRecovery({
+    defaultProfileId: () => LOCAL_RUNTIME_HOST_PROFILE.id,
+    prompt: async () => 'retry',
+    retry: async () => {
+      retries += 1;
+      resolveRecovered();
+      return undefined;
+    },
+    useLocal: async () => assert.fail('use_local is unreachable for the Local profile'),
+    onError: (error) => assert.fail(error instanceof Error ? error : String(error)),
+  });
+
+  recovery.offer({
+    profileId: LOCAL_RUNTIME_HOST_PROFILE.id,
+    profileName: LOCAL_RUNTIME_HOST_PROFILE.name,
+    error: new Error('Local Host failed'),
+  });
+  await recovered;
+
+  assert.equal(retries, 1);
 });

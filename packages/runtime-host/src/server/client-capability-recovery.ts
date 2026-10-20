@@ -31,51 +31,49 @@ export async function recoverClientCapabilityOutcomes(
   now: () => number = Date.now,
 ): Promise<number> {
   let recovered = 0;
-  for (const sessionId of sessionIds) {
-    const operations = await store.listUnsettledToolOperations(sessionId);
-    for (const operation of operations) {
-      if (operation.recoveryMode !== 'outcome_unknown') continue;
-      const ts = now();
-      const result = {
-        kind: 'text',
-        text: OUTCOME_UNKNOWN_TEXT,
-        uncertainOutcome: {
-          code: 'outcome_unknown',
-          retrySafe: false,
-        },
-      } as const satisfies ToolResultContent;
-      const responseContent = {
-        kind: 'function_response' as const,
-        id: operation.providerToolCallId,
-        name: operation.toolName,
-        result,
-        isError: true as const,
-      };
-      const modelProjection = compatibilityToolResultProjection(responseContent, sessionId);
-      const runtimeEvent: RuntimeEvent = {
-        id: `${operation.operationId}_response`,
-        invocationId: operation.invocationId,
-        runId: operation.runId,
-        sessionId,
-        turnId: operation.turnId,
-        ts,
-        partial: false,
-        role: 'tool',
-        author: 'tool',
-        content: { ...responseContent, ...(modelProjection ? { modelProjection } : {}) },
-        refs: {
-          operationId: operation.operationId,
-          toolCallId: operation.providerToolCallId,
-        },
-      };
-      const committed = await store.commitToolOutcome({
+  const operations = await store.listUnsettledToolOperations(sessionIds);
+  for (const operation of operations) {
+    if (operation.recoveryMode !== 'outcome_unknown') continue;
+    const ts = now();
+    const result = {
+      kind: 'text',
+      text: OUTCOME_UNKNOWN_TEXT,
+      uncertainOutcome: {
+        code: 'outcome_unknown',
+        retrySafe: false,
+      },
+    } as const satisfies ToolResultContent;
+    const responseContent = {
+      kind: 'function_response' as const,
+      id: operation.providerToolCallId,
+      name: operation.toolName,
+      result,
+      isError: true as const,
+    };
+    const modelProjection = compatibilityToolResultProjection(responseContent, operation.sessionId);
+    const runtimeEvent: RuntimeEvent = {
+      id: `${operation.operationId}_response`,
+      invocationId: operation.invocationId,
+      runId: operation.runId,
+      sessionId: operation.sessionId,
+      turnId: operation.turnId,
+      ts,
+      partial: false,
+      role: 'tool',
+      author: 'tool',
+      content: { ...responseContent, ...(modelProjection ? { modelProjection } : {}) },
+      refs: {
         operationId: operation.operationId,
-        journalEventId: `${operation.operationId}_outcome`,
-        runtimeEvent,
-        committedAt: ts,
-      });
-      if (committed.created) recovered += 1;
-    }
+        toolCallId: operation.providerToolCallId,
+      },
+    };
+    const committed = await store.commitToolOutcome({
+      operationId: operation.operationId,
+      journalEventId: `${operation.operationId}_outcome`,
+      runtimeEvent,
+      committedAt: ts,
+    });
+    if (committed.created) recovered += 1;
   }
   return recovered;
 }

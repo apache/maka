@@ -31,6 +31,20 @@ owners:
 
 # perf(desktop): remove models.dev metadata from the renderer startup path
 
+> **Audit update (2026-09-08, #4711 follow-up):** the `command-palette-commands.ts`
+> static chain recorded as accepted debt below is now cut. `isRetiredProvider` was
+> extracted into `packages/core/src/provider-retirement.ts` (a metadata-free module
+> whose only `provider-registry` import is `import type`), and
+> `command-palette-commands.ts` now imports it through
+> `application/contracts/provider-retirement.ts`, which re-exports only the predicate
+> from `@maka/core/provider-retirement`,
+> so the `AppShellOverlays → … → command-palette-commands → provider-registry` hop
+> no longer reaches the generated tables. A separate static chain still does —
+> `main.tsx → @maka/ui → maka-uri → core/settings → core/onboarding →
+> core/llm-connections → provider-registry` — and remains open; the "Desired
+> outcome" section already lists the `modelMenuGroups`/`buildChatModelChoices`
+> seam it belongs to.
+
 <details open>
 <summary><strong>English</strong></summary>
 
@@ -96,7 +110,7 @@ Full metadata remains available to the main process and lazy-loaded SettingsModa
 Acceptance criteria:
 
 - The startup entry and all of its static transitive dependencies exclude `model-metadata.generated.ts`, `model-metadata.ts`, `provider-registry.ts`, `model-catalog.ts`, and `model-thinking.ts`.
-- The startup path no longer statically depends on the renderer's `model-catalog-choices.ts`; `shell-chat-model-selection.ts` deliberately remains on the static path as the lightweight selector behind `useShellChatModel` — this optimization removes the heavy metadata modules, not that selector.
+- The startup path no longer statically depends on the renderer's `model-catalog-choices.ts`; the conversation feature's `model/shell-chat-model-selection.ts` deliberately remains on the static path as the lightweight selector behind `useShellChatModel` — this optimization removes the heavy metadata modules, not that selector.
 - Searching startup chunks for `claude-opus|gpt-5\.|gemini-2\.` returns zero; full metadata exists only on lazy Settings paths.
 - Model choices, headings, provider logos, and active/new-chat thinking levels remain correct.
 - OnboardingHero still shows the four recommended providers with their names, descriptions, and logos.
@@ -115,6 +129,17 @@ Acceptance criteria:
 
 <details>
 <summary><strong>简体中文</strong></summary>
+
+> **审计更新（2026-09-08，#4711 后续）：** 下面记录为遗留债务的
+> `command-palette-commands.ts` 静态链路现已切断。`isRetiredProvider` 被抽取到
+> `packages/core/src/provider-retirement.ts`（一个不含元数据的模块，对
+> `provider-registry` 仅有 `import type`），`command-palette-commands.ts` 改通过
+> `application/contracts/provider-retirement.ts` 引入；该契约仅从
+> `@maka/core/provider-retirement` 转导出此谓词，因此
+> `AppShellOverlays → … → command-palette-commands → provider-registry` 这一段不再触达
+> 生成表。另有一条静态链路仍然存在——`main.tsx → @maka/ui → maka-uri → core/settings →
+> core/onboarding → core/llm-connections → provider-registry`——属“期望结果”中已列出的
+> `modelMenuGroups`/`buildChatModelChoices` 同一切面，尚未处理。
 
 ## 问题
 
@@ -171,7 +196,7 @@ Session health notice 在 event 触发的异步刷新完成前继续使用上一
 验收标准：
 
 - 首屏入口及其所有静态传递依赖不包含 `model-metadata.generated.ts`、`model-metadata.ts`、`provider-registry.ts`、`model-catalog.ts` 或 `model-thinking.ts`。
-- 首屏不再静态依赖 renderer 的 `model-catalog-choices.ts`；`shell-chat-model-selection.ts` 作为 `useShellChatModel` 背后的轻量选择器有意保留在静态路径上——本优化移除的是重量级元数据模块，不含这个选择器。
+- 首屏不再静态依赖 renderer 的 `model-catalog-choices.ts`；conversation feature 下的 `model/shell-chat-model-selection.ts` 作为 `useShellChatModel` 背后的轻量选择器有意保留在静态路径上——本优化移除的是重量级元数据模块，不含这个选择器。
 - 构建产物的首屏 chunk 中检索 `claude-opus|gpt-5\.|gemini-2\.` 为 0；完整元数据只存在于设置页懒加载路径。
 - model picker 的模型、heading、provider logo，以及 active/new-chat thinking level 选项保持正确。
 - OnboardingHero 正常显示 4 个推荐 provider 的名称、描述和 logo。

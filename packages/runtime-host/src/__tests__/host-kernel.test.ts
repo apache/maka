@@ -49,14 +49,22 @@ import {
   RuntimeHostRequestInterruptedError,
   type RuntimeHostConnection,
 } from '../client/index.js';
-import { connectOrSpawnRuntimeHostWithDependencies } from '../client/connect-or-spawn.js';
+import {
+  DEFAULT_ELECTION_DEADLINE_MS,
+  IDLE_GRACE_MS_ENV_VAR,
+  connectOrSpawnRuntimeHostWithDependencies,
+} from '../client/connect-or-spawn.js';
 import {
   launchDetachedRuntimeHostCandidate,
   type DetachedCandidateAttempt,
   type DetachedCandidateLaunch,
   type DetachedCandidateInput,
 } from '../client/launcher.js';
-import { readHostRegistration, RUNTIME_HOST_REGISTRATION_FILE } from '../control/registration.js';
+import {
+  readHostRegistration,
+  writeHostRegistration,
+  RUNTIME_HOST_REGISTRATION_FILE,
+} from '../control/registration.js';
 import {
   readCandidateStartupDiagnostic,
   writeCandidateStartupDiagnostic,
@@ -84,6 +92,8 @@ import {
   type InteractiveRuntimeHostCandidateOptions,
   type InteractiveRuntimeHostCandidateResult,
 } from '../server/candidate.js';
+import type { ExecutionRuntimeHostComposition } from '../server/execution-composition.js';
+import { startExecutionRuntimeHostService } from '../server/execution-service.js';
 import type { RuntimeHostCompositionSource } from '../server/host-composition.js';
 import { createUnavailableDomainOperationHandlers } from '../server/operation-dispatcher.js';
 import { HostChangeFeed } from '../server/host-change-feed.js';
@@ -183,6 +193,59 @@ describe('non-serving Runtime Host kernel', () => {
 
       assert.deepEqual(result, { kind: 'failed', reason: 'stored_data_incompatible' });
     });
+  });
+
+  const launchedIdleGraceMs = async (
+    input: { idleGraceMs?: number },
+    env: NodeJS.ProcessEnv,
+  ): Promise<number | undefined> => {
+    let launched: number | undefined;
+    await withHostPaths(async (paths) => {
+      let connectCalls = 0;
+      await connectOrSpawnRuntimeHostWithDependencies(
+        {
+          ...input,
+          rootPath: paths.root,
+          protocol: CURRENT_PROTOCOL,
+          compositionId: KERNEL_COMPOSITION.descriptor.id,
+          candidateEntrypoint: KERNEL_CANDIDATE_ENTRYPOINT,
+          electionDeadlineMs: 100,
+        },
+        {
+          env,
+          random: () => 0,
+          connectHost: async () => {
+            connectCalls += 1;
+            return connectCalls === 1
+              ? {
+                  kind: 'unavailable' as const,
+                  reason: 'not_registered' as const,
+                  endpointConnected: false,
+                }
+              : { kind: 'election_deadline_elapsed' as const, endpointConnected: false };
+          },
+          launchCandidate: (candidate) => {
+            launched = candidate.idleGraceMs;
+            return {
+              spawned: Promise.resolve({
+                pid: 4242,
+                exited: new Promise<never>(() => undefined),
+              }),
+            };
+          },
+        },
+      );
+    });
+    return launched;
+  };
+
+  test('forwards the environment idle grace to the Candidate', async () => {
+    assert.equal(await launchedIdleGraceMs({}, { [IDLE_GRACE_MS_ENV_VAR]: '2000' }), 2_000);
+  });
+
+  test('an explicit idle grace takes precedence over the environment', async () => {
+    const env = { [IDLE_GRACE_MS_ENV_VAR]: 'not-a-number' };
+    assert.equal(await launchedIdleGraceMs({ idleGraceMs: 0 }, env), 0);
   });
 
   test('reports an operational migration blocker as a permanent election failure', async () => {
@@ -1884,6 +1947,204 @@ describe('non-serving Runtime Host kernel', () => {
     });
   });
 
+  test('Candidate releases ownership when composition preparation fails before Kernel startup', async () => {
+    await withHostPaths(async (paths) => {
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      const failure = new Error('composition preparation failed');
+      await assert.rejects(
+        startInteractiveRuntimeHostCandidate(
+          { rootPath: paths.root, expectedRootId: capability.rootId },
+          async () => {
+            assert.equal(await tryAcquireInteractiveRootOwner(capability), undefined);
+            throw failure;
+          },
+          { managedDeploymentAuthority: { authorityRoot: join(paths.base, 'managed') } },
+        ),
+        (error: unknown) => error === failure,
+      );
+
+      const successor = paths.resources.trackCloseable(
+        await tryAcquireInteractiveRootOwner(capability),
+      );
+      assert.ok(successor);
+      assert.equal(successor.capability.rootId, capability.rootId);
+      assert.equal(successor.closed, false);
+    });
+  });
+
+  test('execution service releases ownership when preparation fails before Kernel startup', async () => {
+    await withHostPaths(async (paths) => {
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      // Opening the access authority is the service's last step before Kernel.start.
+      const { controlDirectory } = await prepareStorageRootControlDirectory(capability);
+      await writeFile(join(controlDirectory, 'runtime-host-access.json'), '{', { mode: 0o600 });
+      await assert.rejects(
+        startExecutionRuntimeHostService(
+          { rootPath: paths.root },
+          {
+            managedDeploymentAuthority: { authorityRoot: join(paths.base, 'managed') },
+            createComposition: () => assert.fail('Kernel startup unexpectedly began'),
+          },
+        ),
+        SyntaxError,
+      );
+
+      const successor = paths.resources.trackCloseable(
+        await tryAcquireInteractiveRootOwner(capability),
+      );
+      assert.ok(successor);
+      assert.equal(successor.capability.rootId, capability.rootId);
+      assert.equal(successor.closed, false);
+    });
+  });
+
+  const kernelStartupPaths: readonly {
+    readonly name: string;
+    start(
+      paths: HostPaths,
+      capability: StorageRootCapability<'interactive'>,
+      create: RuntimeHostCompositionFactory,
+      onRootOwned?: () => void,
+    ): Promise<RuntimeHostKernel>;
+  }[] = [
+    {
+      name: 'Candidate',
+      async start(paths, capability, create, onRootOwned) {
+        const result = await startInteractiveRuntimeHostCandidate(
+          { rootPath: paths.root, expectedRootId: capability.rootId },
+          () => {
+            onRootOwned?.();
+            return defineInteractiveRuntimeHostComposition(create);
+          },
+          { managedDeploymentAuthority: { authorityRoot: join(paths.base, 'managed') } },
+        );
+        if (result.kind !== 'winner') assert.fail('Candidate unexpectedly lost the root');
+        return result.host;
+      },
+    },
+    {
+      name: 'execution service',
+      start: (paths, _capability, create, onRootOwned) =>
+        startExecutionRuntimeHostService(
+          { rootPath: paths.root },
+          {
+            managedDeploymentAuthority: { authorityRoot: join(paths.base, 'managed') },
+            createComposition: async (context) => {
+              onRootOwned?.();
+              return (await create(context)) as ExecutionRuntimeHostComposition;
+            },
+          },
+        ),
+    },
+  ];
+
+  for (const startup of kernelStartupPaths) {
+    test(`${startup.name} permits a ready successor after recovery failure is cleanly closed`, async () => {
+      await withHostPaths(async (paths) => {
+        const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+        const failure = new Error('composition recovery failed');
+        let closed = false;
+        await assert.rejects(
+          startup.start(paths, capability, async () =>
+            testComposition({
+              recover: async () => {
+                throw failure;
+              },
+              close: async () => {
+                closed = true;
+              },
+            }),
+          ),
+          (error: unknown) => error === failure,
+        );
+        assert.equal(closed, true);
+
+        const successor = paths.resources.trackCloseable(
+          await startup.start(paths, capability, async () => testComposition()),
+        );
+        assert.equal(successor.state, 'ready');
+        await successor.close();
+      });
+    });
+
+    test(`${startup.name} preserves Kernel ownership when startup cleanup requires process termination`, {
+      timeout: 10_000,
+    }, async (t) => {
+      await withHostPaths(async (paths) => {
+        const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+        const failure = new Error('composition recovery failed');
+        const closeEntered = deferred<void>();
+        const releaseClose = deferred<void>();
+        const closeFinished = deferred<void>();
+        let owner: InteractiveRootOwner | undefined;
+        let closed = false;
+        const startupFailure = startup
+          .start(
+            paths,
+            capability,
+            async (context) => {
+              owner = context.owner;
+              return testComposition({
+                recover: async () => {
+                  throw failure;
+                },
+                close: async () => {
+                  closeEntered.resolve();
+                  await releaseClose.promise;
+                  closed = true;
+                  closeFinished.resolve();
+                },
+              });
+            },
+            // Ownership acquisition uses real I/O. Only mock the Kernel's timers
+            // after the startup path has acquired its owner.
+            () => t.mock.timers.enable({ apis: ['setTimeout'] }),
+          )
+          .then(
+            () => assert.fail(`${startup.name} startup unexpectedly succeeded`),
+            (error: unknown) => error,
+          );
+
+        try {
+          await closeEntered.promise;
+          // Both startup paths use the Kernel's default shutdown deadline.
+          t.mock.timers.tick(10_000);
+          const error = await startupFailure;
+          assert.ok(error instanceof AggregateError);
+          assert.equal(error.cause, failure);
+          assert.ok(
+            error.errors.some(
+              (cause: unknown) => cause instanceof RuntimeHostProcessTerminationRequiredError,
+            ),
+          );
+          assert.equal(closed, false);
+          assert.ok(owner);
+          assert.equal(owner.closed, false);
+          const competingOwner = paths.resources.trackCloseable(
+            await tryAcquireInteractiveRootOwner(capability),
+          );
+          assert.equal(competingOwner, undefined);
+
+          releaseClose.resolve();
+          await closeFinished.promise;
+          assert.equal(closed, true);
+          assert.equal(owner.closed, false);
+          const lateOwner = paths.resources.trackCloseable(
+            await tryAcquireInteractiveRootOwner(capability),
+          );
+          assert.equal(lateOwner, undefined);
+        } finally {
+          releaseClose.resolve();
+          if (owner) await closeFinished.promise;
+          // The test owns this in-process Kernel; production releases this lock
+          // only when the required process termination actually happens.
+          await owner?.close();
+          t.mock.timers.reset();
+        }
+      });
+    });
+  }
+
   test('blocks incompatible replacement while resident and permits it only after true idle', async () => {
     await withHostPaths(async (paths) => {
       const candidate = await startTestRuntimeHostCandidate(paths, {
@@ -3584,6 +3845,51 @@ describe('non-serving Runtime Host kernel', () => {
     });
   });
 
+  test('preserves a stale endpoint errno through connection and election diagnostics', async () => {
+    await withHostPaths(async (paths) => {
+      const candidate = await startTestRuntimeHostCandidate(paths, {
+        rootPath: paths.root,
+        idleGraceMs: 10_000,
+      });
+      assert.equal(candidate.kind, 'winner');
+      if (candidate.kind !== 'winner') return;
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      const { controlDirectory } = await prepareStorageRootControlDirectory(capability);
+      const registration = await readHostRegistration(controlDirectory);
+      assert.ok(registration);
+      await candidate.host.close();
+      await writeHostRegistration(controlDirectory, registration);
+
+      const connection = await connectRuntimeHost({
+        rootPath: paths.root,
+        protocol: CURRENT_PROTOCOL,
+      });
+      assert.equal(connection.kind, 'unavailable');
+      if (connection.kind !== 'unavailable') return;
+      assert.equal(connection.reason, 'connect_failed');
+      assert.deepEqual(connection.connectionFailure, { phase: 'connect', code: 'ENOENT' });
+
+      const result = await connectOrSpawnRuntimeHostWithDependencies(
+        {
+          rootPath: paths.root,
+          protocol: CURRENT_PROTOCOL,
+          compositionId: KERNEL_COMPOSITION.descriptor.id,
+          candidateEntrypoint: KERNEL_CANDIDATE_ENTRYPOINT,
+          electionDeadlineMs: 1_000,
+        },
+        {
+          random: () => 0.5,
+          launchCandidate: () => ({ spawned: Promise.resolve({ pid: process.pid }) }),
+        },
+      );
+      assert.equal(result.kind, 'failed');
+      if (result.kind !== 'failed') return;
+      assert.equal(result.reason, 'startup_timeout');
+      assert.deepEqual(result.diagnostic?.lastConnectionFailure, connection.connectionFailure);
+      assert.equal(JSON.stringify(result.diagnostic).includes(registration.endpoint), false);
+    });
+  });
+
   test('invalid registration fails closed without following its endpoint', async () => {
     await withHostPaths(async (paths) => {
       const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
@@ -3832,7 +4138,7 @@ async function retryConnect(
     clientInstanceId?: string;
   },
 ) {
-  const deadline = Date.now() + 5_000;
+  const deadline = Date.now() + DEFAULT_ELECTION_DEADLINE_MS;
   let result = await connectRuntimeHost({
     ...paths,
     ...options,

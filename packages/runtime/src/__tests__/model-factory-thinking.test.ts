@@ -20,11 +20,11 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { PROVIDER_REGISTRY, type LlmConnection } from '@maka/core/llm-connections';
-import { lookupModelMetadata } from '@maka/core/model-metadata';
+import { installRefreshedModelMetadata, lookupModelMetadata } from '@maka/core/model-metadata';
 import { thinkingVariantsForModel, type ThinkingLevel } from '@maka/core/model-thinking';
 import { isRetiredProvider } from '@maka/core/provider-registry';
 
-import { buildProviderOptions, getAIModel } from '../model-factory.js';
+import { buildProviderOptions, getAIModel, leastReasoningThinkingLevel } from '../model-factory.js';
 import { resolveModelRuntime } from '../model-runtime.js';
 
 function conn(providerType: LlmConnection['providerType'], slug = 'test'): LlmConnection {
@@ -39,7 +39,84 @@ function conn(providerType: LlmConnection['providerType'], slug = 'test'): LlmCo
   };
 }
 
+function custom(
+  defaultApiProtocol: NonNullable<LlmConnection['defaultApiProtocol']>,
+  slug = 'my-relay',
+): LlmConnection {
+  return {
+    ...conn('custom', slug),
+    baseUrl: 'https://relay.example/v1',
+    defaultApiProtocol,
+  };
+}
+
 describe('buildProviderOptions: thinking level', () => {
+  test('provider defaults reach the SDK request body without thinking overrides', async () => {
+    for (const [connection, modelId] of [
+      [conn('openai'), 'gpt-5.5'],
+      [conn('kimi-coding-plan'), 'k3'],
+      [conn('kimi-coding-plan'), 'kimi-for-coding'],
+      [{ ...conn('kimi-coding-plan'), models: [{ id: 'k3', apiProtocol: 'openai-chat' }] }, 'k3'],
+      [conn('volcengine-ark'), 'doubao-seed-2-0-pro-260215'],
+      [conn('inception'), 'mercury-3'],
+    ] satisfies readonly (readonly [LlmConnection, string])[]) {
+      let body: Record<string, unknown> = {};
+      await getAIModel({
+        connection,
+        modelId,
+        apiKey: 'test-key',
+        fetch: async (input, init) => {
+          body = JSON.parse(String(init?.body));
+          const url = String(input);
+          return Response.json(
+            url.endsWith('/messages')
+              ? {
+                  id: 'msg-1',
+                  type: 'message',
+                  role: 'assistant',
+                  model: modelId,
+                  content: [{ type: 'text', text: 'ok' }],
+                  stop_reason: 'end_turn',
+                  usage: { input_tokens: 1, output_tokens: 1 },
+                }
+              : url.endsWith('/responses')
+                ? { id: 'resp-1', object: 'response', model: modelId, output: [] }
+                : {
+                    id: 'chatcmpl-1',
+                    object: 'chat.completion',
+                    created: 1,
+                    model: modelId,
+                    choices: [
+                      {
+                        index: 0,
+                        message: { role: 'assistant', content: 'ok' },
+                        finish_reason: 'stop',
+                      },
+                    ],
+                    usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+                  },
+          );
+        },
+      }).doGenerate({
+        prompt: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+        providerOptions: buildProviderOptions(connection, modelId),
+      });
+      const label = `${connection.providerType}/${modelId}`;
+      assert.equal(body.thinking, undefined, label);
+      assert.equal(body.reasoning_effort, undefined, label);
+      assert.equal(
+        (body.reasoning as Record<string, unknown> | undefined)?.effort,
+        undefined,
+        label,
+      );
+      assert.equal(
+        (body.output_config as Record<string, unknown> | undefined)?.effort,
+        undefined,
+        label,
+      );
+    }
+  });
+
   test('Anthropic-compatible providers do not inherit automatic prompt caching', () => {
     for (const providerType of ['MiniMax', 'MiniMax-cn', 'kimi-coding-plan'] as const) {
       const anthropic = buildProviderOptions(conn(providerType), 'claude-opus-4-8').anthropic;
@@ -73,63 +150,54 @@ describe('buildProviderOptions: thinking level', () => {
         effort: 'xhigh',
       },
     });
-    assert.deepEqual(buildProviderOptions(conn('anthropic'), 'claude-opus-4-8'), {
-      anthropic: {
-        cacheControl: { type: 'ephemeral' },
-        thinking: { type: 'adaptive', display: 'summarized' },
-      },
-    });
   });
 
-  test('anthropic budget/toggle model (haiku-4-5) sends thinking.disabled for off; drops unsupported effort', () => {
-    assert.deepEqual(buildProviderOptions(conn('anthropic'), 'claude-haiku-4-5'), {
-      anthropic: {
-        cacheControl: { type: 'ephemeral' },
-        thinking: { type: 'enabled', budgetTokens: 1_024 },
-      },
-    });
-    assert.deepEqual(buildProviderOptions(conn('anthropic'), 'claude-haiku-4-5', 'off'), {
-      anthropic: {
-        cacheControl: { type: 'ephemeral' },
-        thinking: { type: 'disabled' },
-      },
-    });
-    // haiku-4-5 has no effort variants, only off → high is dropped
-    assert.deepEqual(buildProviderOptions(conn('anthropic'), 'claude-haiku-4-5', 'high'), {
-      anthropic: { cacheControl: { type: 'ephemeral' } },
-    });
+  test('toggle-only Claude sends on and off without inventing an effort', async () => {
+    for (const [providerType, modelId] of [
+      ['anthropic', 'claude-haiku-4-5'],
+      ['opencode', 'claude-sonnet-4-5'],
+      ['opencode', 'claude-haiku-4-5'],
+    ] as const) {
+      const bodies: Record<string, unknown>[] = [];
+      const connection = conn(providerType);
+      const model = getAIModel({
+        connection,
+        modelId,
+        apiKey: 'test-key',
+        fetch: async (_input, init) => {
+          bodies.push(JSON.parse(String(init?.body)));
+          return Response.json({
+            id: 'msg-1',
+            type: 'message',
+            role: 'assistant',
+            model: modelId,
+            content: [{ type: 'text', text: 'ok' }],
+            stop_reason: 'end_turn',
+            usage: { input_tokens: 1, output_tokens: 1 },
+          });
+        },
+      });
+      for (const level of [undefined, 'on', 'off', 'high'] as const) {
+        await model.doGenerate({
+          prompt: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+          providerOptions: buildProviderOptions(connection, modelId, level),
+        });
+      }
+      assert.deepEqual(
+        bodies.map((body) => body.thinking),
+        [undefined, { type: 'enabled', budget_tokens: 1_024 }, { type: 'disabled' }, undefined],
+        `${providerType}/${modelId}`,
+      );
+      for (const body of bodies) assert.equal(body.output_config, undefined);
+    }
   });
 
   test('Claude 4.5 uses legacy enabled thinking even when the UI exposes effort levels', () => {
-    assert.deepEqual(buildProviderOptions(conn('anthropic'), 'claude-opus-4-5'), {
-      anthropic: {
-        cacheControl: { type: 'ephemeral' },
-        thinking: { type: 'enabled', budgetTokens: 1_024 },
-      },
-    });
     assert.deepEqual(buildProviderOptions(conn('anthropic'), 'claude-opus-4-5', 'high'), {
       anthropic: {
         cacheControl: { type: 'ephemeral' },
         thinking: { type: 'enabled', budgetTokens: 1_024 },
         effort: 'high',
-      },
-    });
-    assert.deepEqual(buildProviderOptions(conn('anthropic'), 'claude-sonnet-4-5'), {
-      anthropic: {
-        cacheControl: { type: 'ephemeral' },
-        thinking: { type: 'enabled', budgetTokens: 1_024 },
-      },
-    });
-    assert.deepEqual(buildProviderOptions(conn('anthropic'), 'claude-sonnet-4-5-20250929'), {
-      anthropic: {
-        cacheControl: { type: 'ephemeral' },
-        thinking: { type: 'enabled', budgetTokens: 1_024 },
-      },
-    });
-    assert.deepEqual(buildProviderOptions(conn('anthropic'), 'claude-opus-4-1-20250805'), {
-      anthropic: {
-        cacheControl: { type: 'ephemeral' },
-        thinking: { type: 'enabled', budgetTokens: 1_024 },
       },
     });
   });
@@ -140,13 +208,12 @@ describe('buildProviderOptions: thinking level', () => {
     });
   });
 
-  test('Kimi K3 passes the chosen effort through adaptive thinking, defaulting to max', () => {
+  test('Kimi K3 passes the chosen effort through adaptive thinking', () => {
     assert.deepEqual(
       [...thinkingVariantsForModel('kimi-coding-plan', 'k3')],
       ['low', 'high', 'max'],
     );
     const expected = { anthropic: { thinking: { type: 'adaptive' }, effort: 'max' } };
-    assert.deepEqual(buildProviderOptions(conn('kimi-coding-plan'), 'k3'), expected);
     assert.deepEqual(buildProviderOptions(conn('kimi-coding-plan'), 'k3', 'max'), expected);
     assert.deepEqual(buildProviderOptions(conn('kimi-coding-plan'), 'k3', 'low'), {
       anthropic: { thinking: { type: 'adaptive' }, effort: 'low' },
@@ -166,7 +233,6 @@ describe('buildProviderOptions: thinking level', () => {
       models: [{ id: 'k3', apiProtocol: 'openai-chat' as const }],
     };
     const expected = { kimiCodingPlan: { reasoningEffort: 'max' } };
-    assert.deepEqual(buildProviderOptions(connection, 'k3'), expected);
     assert.deepEqual(buildProviderOptions(connection, 'k3', 'max'), expected);
     assert.deepEqual(buildProviderOptions(connection, 'k3', 'low'), {
       kimiCodingPlan: { reasoningEffort: 'low' },
@@ -174,11 +240,38 @@ describe('buildProviderOptions: thinking level', () => {
     assert.deepEqual(buildProviderOptions(connection, 'k3', 'high'), {
       kimiCodingPlan: { reasoningEffort: 'high' },
     });
-    // Kimi has no off wire: an explicit off request is rejected (empty
-    // options), never silently upgraded to max. Unsupported levels other
-    // than off keep the global default-max semantics.
+    // The bundled catalog has no off choice, so the provider default remains.
     assert.deepEqual(buildProviderOptions(connection, 'k3', 'off'), {});
     assert.deepEqual(buildProviderOptions(conn('kimi-coding-plan'), 'k3', 'off'), {});
+  });
+
+  test('Kimi Coding Plan emits disabled-thinking wires when refreshed metadata declares none', () => {
+    installRefreshedModelMetadata({
+      'kimi-coding-plan': {
+        k3: { thinkingOptions: { efforts: ['none', 'low', 'high', 'max'] } },
+      },
+    });
+    try {
+      assert.deepEqual(
+        [...thinkingVariantsForModel('kimi-coding-plan', 'k3')],
+        ['off', 'low', 'high', 'max'],
+      );
+      const kimi = conn('kimi-coding-plan');
+      assert.equal(leastReasoningThinkingLevel(kimi, 'k3'), 'off');
+      assert.deepEqual(buildProviderOptions(kimi, 'k3', 'off'), {
+        anthropic: { thinking: { type: 'disabled' } },
+      });
+
+      const openAi = {
+        ...kimi,
+        models: [{ id: 'k3', apiProtocol: 'openai-chat' as const }],
+      };
+      assert.deepEqual(buildProviderOptions(openAi, 'k3', 'off'), {
+        kimiCodingPlan: { reasoningEffort: 'none' },
+      });
+    } finally {
+      installRefreshedModelMetadata(undefined);
+    }
   });
 
   test('openai gpt-5.5 sends reasoningEffort (none for off, max for max); gpt-4o drops level', () => {
@@ -189,7 +282,6 @@ describe('buildProviderOptions: thinking level', () => {
       openai: {
         store: false,
         reasoningSummary: 'auto',
-        reasoningEffort: 'medium',
         parallelToolCalls: true,
       },
     });
@@ -214,13 +306,34 @@ describe('buildProviderOptions: thinking level', () => {
     });
   });
 
+  test('GPT-6 Sol and Luna send selected reasoning effort on API and Codex paths', () => {
+    for (const modelId of ['gpt-6-sol', 'gpt-6-luna']) {
+      assert.deepEqual(buildProviderOptions(conn('openai'), modelId, 'max'), {
+        openai: {
+          store: false,
+          reasoningSummary: 'auto',
+          reasoningEffort: 'max',
+          parallelToolCalls: true,
+        },
+      });
+      assert.deepEqual(buildProviderOptions(conn('openai-codex'), modelId, 'max'), {
+        openai: {
+          store: false,
+          textVerbosity: 'medium',
+          reasoningSummary: 'auto',
+          reasoningEffort: 'max',
+          parallelToolCalls: true,
+        },
+      });
+    }
+  });
+
   test('openai-codex (gpt-5.5) preserves store:false / textVerbosity and merges reasoningEffort', () => {
     assert.deepEqual(buildProviderOptions(conn('openai-codex'), 'gpt-5.5'), {
       openai: {
         store: false,
         textVerbosity: 'medium',
         reasoningSummary: 'auto',
-        reasoningEffort: 'medium',
         parallelToolCalls: true,
       },
     });
@@ -252,26 +365,18 @@ describe('buildProviderOptions: thinking level', () => {
       openai: {
         store: false,
         reasoningSummary: 'auto',
-        reasoningEffort: 'medium',
         parallelToolCalls: false,
       },
     });
 
     const compatible: LlmConnection = {
-      ...conn('openai-compatible', 'my-relay'),
-      baseUrl: 'https://relay.example/v1',
+      ...custom('openai-chat'),
       models: [{ id: 'relay-model', capabilities: { parallelToolCalls: true } }],
     };
     assert.deepEqual(buildProviderOptions(compatible, 'relay-model'), {
-      myRelay: { parallel_tool_calls: true },
+      custom: { parallel_tool_calls: true },
     });
-    assert.deepEqual(
-      buildProviderOptions(
-        { ...conn('openai-compatible', 'my-relay'), baseUrl: 'https://relay.example/v1' },
-        'relay-model',
-      ),
-      {},
-    );
+    assert.deepEqual(buildProviderOptions(custom('openai-chat'), 'relay-model'), {});
   });
 
   test('parallel tool-call capability reaches native and compatible chat request bodies', async () => {
@@ -279,8 +384,7 @@ describe('buildProviderOptions: thinking level', () => {
       { connection: conn('openai'), modelId: 'gpt-4o', expected: true },
       {
         connection: {
-          ...conn('openai-compatible', 'my-relay'),
-          baseUrl: 'https://relay.example/v1',
+          ...custom('openai-chat'),
           models: [{ id: 'relay-model', capabilities: { parallelToolCalls: false } }],
         },
         modelId: 'relay-model',
@@ -342,6 +446,50 @@ describe('buildProviderOptions: thinking level', () => {
     assert.ok((g25.google as { safetySettings: unknown[] }).safetySettings.length > 0);
   });
 
+  test('Inception serializes reasoning effort on the Chat Completions wire', async () => {
+    const connection = conn('inception');
+    let body: Record<string, unknown> = {};
+    const model = getAIModel({
+      connection,
+      modelId: 'mercury-3',
+      apiKey: 'test-key',
+      fetch: async (input, init) => {
+        assert.equal(String(input), 'https://api.inceptionlabs.ai/v1/chat/completions');
+        assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer test-key');
+        body = JSON.parse(String(init?.body));
+        return Response.json({
+          id: 'chatcmpl-inception',
+          object: 'chat.completion',
+          created: 1,
+          model: 'mercury-3',
+          choices: [
+            { index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' },
+          ],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        });
+      },
+    });
+    await model.doGenerate({
+      prompt: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+      providerOptions: buildProviderOptions(connection, 'mercury-3', 'high'),
+    });
+    assert.equal(body.model, 'mercury-3');
+    assert.equal(body.reasoning_effort, 'high');
+  });
+
+  test('Inception sends supported reasoning efforts and leaves the provider default alone', () => {
+    for (const id of ['mercury-3', 'mercury-2.5', 'mercury-2']) {
+      assert.deepEqual([...thinkingVariantsForModel('inception', id)], ['low', 'medium', 'high']);
+      assert.deepEqual(buildProviderOptions(conn('inception'), id), {});
+      assert.deepEqual(buildProviderOptions(conn('inception'), id, 'off'), {});
+      for (const effort of ['low', 'medium', 'high'] as const) {
+        assert.deepEqual(buildProviderOptions(conn('inception'), id, effort), {
+          inception: { reasoningEffort: effort },
+        });
+      }
+    }
+  });
+
   test('openai-compatible sends reasoningEffort for effort levels and does not expose no-op off', () => {
     assert.deepEqual(
       [...thinkingVariantsForModel('deepinfra', 'moonshotai/Kimi-K2.7-Code')],
@@ -385,9 +533,7 @@ describe('buildProviderOptions: thinking level', () => {
     assert.deepEqual(buildProviderOptions(conn('openrouter'), 'openai/gpt-5.6-sol', 'off'), {
       openrouter: { reasoningEffort: 'none' },
     });
-    assert.deepEqual(buildProviderOptions(conn('openrouter'), 'openai/gpt-5.6-sol'), {
-      openrouter: { reasoningEffort: 'medium' },
-    });
+    assert.deepEqual(buildProviderOptions(conn('openrouter'), 'openai/gpt-5.6-sol'), {});
     // claude-sonnet-5 exposes no off switch (no `none` effort); only effort tiers.
     assert.deepEqual(
       [...thinkingVariantsForModel('openrouter', 'anthropic/claude-sonnet-5')],
@@ -461,11 +607,7 @@ describe('buildProviderOptions: thinking level', () => {
         effort: 'high',
       },
     });
-    assert.deepEqual(buildProviderOptions(conn('opencode'), 'claude-sonnet-4'), {
-      anthropic: {
-        thinking: { type: 'enabled', budgetTokens: 1_024 },
-      },
-    });
+    assert.deepEqual(buildProviderOptions(conn('opencode'), 'claude-sonnet-4'), {});
     assert.deepEqual(buildProviderOptions(conn('opencode'), 'gemini-3.5-flash', 'high'), {
       google: { thinkingConfig: { includeThoughts: true, thinkingLevel: 'high' } },
     });
@@ -479,7 +621,7 @@ describe('buildProviderOptions: thinking level', () => {
     });
   });
 
-  test('every active shipped Claude model on Anthropic Messages requests visible thinking', () => {
+  test('shipped Claude defaults leave thinking to the provider', () => {
     const activeClaudeModels: Array<{
       connection: LlmConnection;
       modelId: string;
@@ -503,29 +645,13 @@ describe('buildProviderOptions: thinking level', () => {
       }
     }
 
-    assert.equal(activeClaudeModels.length, 16);
-    assert.ok(
-      activeClaudeModels.some(
-        ({ connection, modelId }) =>
-          connection.providerType === 'opencode' && modelId === 'claude-sonnet-4',
-      ),
-    );
     for (const { connection, modelId } of activeClaudeModels) {
       const thinking = (
         buildProviderOptions(connection, modelId).anthropic as
           | { thinking?: { type?: string; display?: string; budgetTokens?: number } }
           | undefined
       )?.thinking;
-      assert.ok(thinking, `${connection.providerType}/${modelId} must request visible thinking`);
-      if (thinking.type === 'adaptive') {
-        assert.equal(thinking.display, 'summarized', `${connection.providerType}/${modelId}`);
-      } else {
-        assert.deepEqual(
-          thinking,
-          { type: 'enabled', budgetTokens: 1_024 },
-          `${connection.providerType}/${modelId}`,
-        );
-      }
+      assert.equal(thinking, undefined, connection.providerType + '/' + modelId);
     }
   });
 
@@ -542,21 +668,19 @@ describe('buildProviderOptions: thinking level', () => {
     const anthropic = {
       ...conn('github-copilot'),
       models: [{ id: 'anthropic/claude-opus-4-8', apiProtocol: 'anthropic-messages' as const }],
+      modelOverrides: { 'anthropic/claude-opus-4-8': { thinkingLevels: ['high' as const] } },
     };
-    assert.deepEqual(buildProviderOptions(anthropic, 'anthropic/claude-opus-4-8'), {
+    assert.deepEqual(buildProviderOptions(anthropic, 'anthropic/claude-opus-4-8', 'high'), {
       anthropic: {
         thinking: { type: 'adaptive', display: 'summarized' },
+        effort: 'high',
       },
     });
     const legacyAnthropic = {
       ...conn('github-copilot'),
       models: [{ id: 'anthropic/claude-opus-4.5', apiProtocol: 'anthropic-messages' as const }],
     };
-    assert.deepEqual(buildProviderOptions(legacyAnthropic, 'anthropic/claude-opus-4.5'), {
-      anthropic: {
-        thinking: { type: 'enabled', budgetTokens: 1_024 },
-      },
-    });
+    assert.deepEqual(buildProviderOptions(legacyAnthropic, 'anthropic/claude-opus-4.5'), {});
     const responses = {
       ...conn('github-copilot'),
       models: [{ id: 'gpt-5.5', apiProtocol: 'openai-responses' as const }],
@@ -576,35 +700,43 @@ describe('buildProviderOptions: thinking level', () => {
         store: false,
         forceReasoning: true,
         reasoningSummary: 'auto',
-        reasoningEffort: 'medium',
       },
     });
   });
 
-  test('custom relays apply family defaults only when no explicit level was supplied', () => {
-    const openaiRelay = conn('openai-compatible', 'my-relay');
-    assert.deepEqual(buildProviderOptions(openaiRelay, 'gpt-5.6-sol'), {
-      myRelay: { reasoningEffort: 'medium' },
-    });
+  test('custom chat models do not infer effort from a model name', () => {
+    const openaiRelay = custom('openai-chat');
+    assert.deepEqual(buildProviderOptions(openaiRelay, 'gpt-5.6-sol'), {});
     assert.deepEqual(buildProviderOptions(openaiRelay, 'gpt-5.6-sol', 'minimal'), {});
     assert.deepEqual(buildProviderOptions(openaiRelay, 'gpt-5.6-sol', 'off'), {});
     assert.deepEqual(buildProviderOptions(openaiRelay, 'gpt-5.6-sol', 'high'), {});
+  });
 
-    assert.deepEqual(buildProviderOptions(conn('anthropic-compatible'), 'claude-opus-4-8'), {
-      anthropic: {
-        thinking: { type: 'adaptive', display: 'summarized' },
+  test('custom Messages models think only on a declared level, always adaptive', () => {
+    const undeclared = custom('anthropic-messages');
+    // A model name alone never turns thinking on.
+    for (const modelId of ['claude-opus-4-8', 'claude-sonnet-4', 'minimax-m2']) {
+      assert.deepEqual(buildProviderOptions(undeclared, modelId), {}, modelId);
+      assert.deepEqual(buildProviderOptions(undeclared, modelId, 'high'), {}, modelId);
+    }
+    const declared: LlmConnection = {
+      ...undeclared,
+      modelOverrides: {
+        'claude-sonnet-4': { thinkingLevels: ['low', 'high'] },
+        'kimi-k3': { thinkingLevels: ['minimal', 'high', 'max'] },
       },
-    });
-    assert.deepEqual(buildProviderOptions(conn('anthropic-compatible'), 'claude-sonnet-4'), {
-      anthropic: {
-        thinking: { type: 'enabled', budgetTokens: 1_024 },
-      },
-    });
-    assert.deepEqual(
-      buildProviderOptions(conn('anthropic-compatible'), 'claude-opus-4-8', 'off'),
-      {},
-    );
-    assert.deepEqual(buildProviderOptions(conn('anthropic-compatible'), 'minimax-m2'), {});
+    };
+    for (const [modelId, level, effort] of [
+      ['claude-sonnet-4', 'high', 'high'],
+      ['kimi-k3', 'max', 'max'],
+      ['kimi-k3', 'minimal', 'low'],
+    ] as const) {
+      assert.deepEqual(buildProviderOptions(declared, modelId, level), {
+        anthropic: { thinking: { type: 'adaptive', display: 'summarized' }, effort },
+      });
+    }
+    assert.deepEqual(buildProviderOptions(declared, 'kimi-k3', 'low'), {});
+    assert.deepEqual(buildProviderOptions(declared, 'kimi-k3'), {});
   });
 
   test('Cloudflare Workers AI sends Kimi K2.6 reasoning effort and its real thinking-off wire', () => {
@@ -648,9 +780,7 @@ describe('buildProviderOptions: thinking level', () => {
       [...thinkingVariantsForModel('volcengine-ark', modelId)],
       ['off', 'minimal', 'low', 'medium', 'high'],
     );
-    assert.deepEqual(buildProviderOptions(conn('volcengine-ark'), modelId), {
-      volcengineArk: { thinking: { type: 'enabled' } },
-    });
+    assert.deepEqual(buildProviderOptions(conn('volcengine-ark'), modelId), { volcengineArk: {} });
     assert.deepEqual(buildProviderOptions(conn('volcengine-ark'), modelId, 'high'), {
       volcengineArk: { thinking: { type: 'enabled' }, reasoningEffort: 'high' },
     });
@@ -696,13 +826,17 @@ describe('buildProviderOptions: thinking level', () => {
   });
 
   test('Vercel Gateway sends reasoning effort under its stable namespace and exact model id', () => {
-    assert.deepEqual(
-      [...thinkingVariantsForModel('vercel', 'openai/gpt-5.1-thinking')],
-      ['off', 'low', 'medium', 'high'],
-    );
-    assert.deepEqual(buildProviderOptions(conn('vercel'), 'openai/gpt-5.1-thinking', 'high'), {
-      vercel: { reasoningEffort: 'high' },
-    });
+    // Keep the known effort levels covered while allowing models.dev to add
+    // levels; every advertised level must retain its namespace and wire mapping.
+    const levels = thinkingVariantsForModel('vercel', 'openai/gpt-5.1-thinking');
+    for (const level of ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const) {
+      assert.ok(levels.includes(level), `Vercel must advertise ${level}`);
+    }
+    for (const level of levels) {
+      assert.deepEqual(buildProviderOptions(conn('vercel'), 'openai/gpt-5.1-thinking', level), {
+        vercel: { reasoningEffort: level === 'off' ? 'none' : level },
+      });
+    }
     assert.deepEqual(buildProviderOptions(conn('vercel'), 'openai/gpt-5.1-thinking', 'off'), {
       vercel: { reasoningEffort: 'none' },
     });
@@ -741,6 +875,14 @@ describe('buildProviderOptions: thinking level', () => {
 });
 
 describe('getAIModel: models.dev registry providers', () => {
+  test('a custom Chat connection without a base URL fails with a connection error', () => {
+    const { baseUrl: _baseUrl, ...migrated } = custom('openai-chat');
+    assert.throws(
+      () => getAIModel({ connection: migrated, apiKey: 'test-key', modelId: 'relay-model' }),
+      /custom connection my-relay requires a base URL/,
+    );
+  });
+
   test('routes the existing Kimi provider through its explicitly selected protocol', () => {
     const anthropic = getAIModel({
       connection: conn('kimi-coding-plan'),
@@ -839,93 +981,60 @@ describe('buildProviderOptions: openai-compatible namespace', () => {
     );
   });
 
-  test('custom relay connections use per-model declared levels under the camelCase slug namespace', () => {
+  test('custom chat models send declared levels under the custom provider namespace', () => {
     const declared: LlmConnection = {
-      ...conn('openai-compatible', 'my-relay'),
-      baseUrl: 'https://relay.example/v1',
+      ...custom('openai-chat'),
       modelOverrides: {
         'dsv4-flash': { thinkingLevels: ['minimal', 'low', 'medium', 'high', 'max'] },
       },
     };
-    // Declared levels land under the provider-options key derived from the
-    // connection slug. The SDK's canonical key for a dashed provider name is
-    // its camelCase alias — using the raw form still works but returns a
-    // `deprecated` warning on every call. ('off' cannot appear in a
-    // declaration — see DECLARABLE_RELAY_THINKING_LEVELS — so no off→'none'
-    // mapping for relays is asserted here.)
     assert.deepEqual(buildProviderOptions(declared, 'dsv4-flash', 'high'), {
-      myRelay: { reasoningEffort: 'high' },
+      custom: { reasoningEffort: 'high' },
     });
     assert.deepEqual(buildProviderOptions(declared, 'dsv4-flash', 'max'), {
-      myRelay: { reasoningEffort: 'max' },
+      custom: { reasoningEffort: 'max' },
     });
-    // Levels outside the declaration stay gated off, and undeclared
-    // connections emit nothing (prior behaviour).
+    // Levels outside the declaration stay gated off, and undeclared models
+    // emit nothing.
     assert.deepEqual(buildProviderOptions(declared, 'dsv4-flash', 'xhigh'), {});
-    assert.deepEqual(
-      buildProviderOptions(conn('openai-compatible', 'my-relay'), 'any-model', 'high'),
-      {},
-    );
+    assert.deepEqual(buildProviderOptions(custom('openai-chat'), 'any-model', 'high'), {});
   });
 
-  test('custom Responses relays use per-model declared levels on the Responses wire', () => {
+  test('custom Responses models use per-model declared levels on the Responses wire', () => {
     const declared: LlmConnection = {
-      ...conn('openai-responses-compatible', 'my-responses-relay'),
-      baseUrl: 'https://relay.example/v1',
-      models: [{ id: 'custom-reasoner', apiProtocol: 'openai-responses' }],
+      ...custom('openai-chat'),
       modelOverrides: {
-        'custom-reasoner': { thinkingLevels: ['minimal', 'low', 'medium', 'high', 'max'] },
+        // The model's own wire overrides the connection default.
+        'custom-reasoner': {
+          apiProtocol: 'openai-responses',
+          thinkingLevels: ['minimal', 'low', 'medium', 'high', 'max'],
+        },
       },
     };
     assert.deepEqual(buildProviderOptions(declared, 'custom-reasoner', 'high'), {
-      openai: {
-        store: false,
-        forceReasoning: true,
-        reasoningEffort: 'high',
-        parallelToolCalls: true,
-      },
+      openai: { store: false, forceReasoning: true, reasoningEffort: 'high' },
     });
     assert.deepEqual(buildProviderOptions(declared, 'custom-reasoner', 'max'), {
-      openai: {
-        store: false,
-        forceReasoning: true,
-        reasoningEffort: 'max',
-        parallelToolCalls: true,
-      },
+      openai: { store: false, forceReasoning: true, reasoningEffort: 'max' },
     });
     assert.deepEqual(buildProviderOptions(declared, 'custom-reasoner', 'xhigh'), {
-      openai: { store: false, forceReasoning: true, parallelToolCalls: true },
+      openai: { store: false, forceReasoning: true },
     });
   });
 
-  test('custom relays send the declared fast service tier independently of reasoning', () => {
+  test('custom models send the declared fast service tier only on the Responses wire', () => {
     const chat: LlmConnection = {
-      ...conn('openai-compatible', 'my-relay'),
-      baseUrl: 'https://relay.example/v1',
-      modelOverrides: { 'fast-model': { serviceTier: 'fast' } },
+      ...custom('openai-chat'),
+      modelOverrides: { 'gpt-5-relay': { serviceTier: 'fast' } },
     };
-    assert.deepEqual(buildProviderOptions(chat, 'fast-model'), {});
+    assert.deepEqual(buildProviderOptions(chat, 'gpt-5-relay'), {});
     const responses: LlmConnection = {
-      ...conn('openai-responses-compatible', 'my-responses-relay'),
-      baseUrl: 'https://relay.example/v1',
-      models: [{ id: 'gpt-5-relay', apiProtocol: 'openai-responses' }],
+      ...custom('openai-responses'),
       modelOverrides: { 'gpt-5-relay': { serviceTier: 'fast' } },
     };
     assert.deepEqual(buildProviderOptions(responses, 'gpt-5-relay'), {
-      openai: {
-        store: false,
-        forceReasoning: true,
-        serviceTier: 'fast',
-        parallelToolCalls: true,
-      },
+      openai: { store: false, forceReasoning: true, serviceTier: 'fast' },
     });
-    assert.deepEqual(
-      buildProviderOptions(
-        { ...conn('openai-compatible', 'my-relay'), baseUrl: 'https://relay.example/v1' },
-        'fast-model',
-      ),
-      {},
-    );
   });
 
   test('Fast provider options mirror the pinned OpenAI SDK model gate', () => {
@@ -942,20 +1051,15 @@ describe('buildProviderOptions: openai-compatible namespace', () => {
     ] as const;
     for (const [modelId, supportsFast, supportsReasoningSummary] of cases) {
       const connection: LlmConnection = {
-        ...conn('openai-responses-compatible', 'my-responses-relay'),
-        baseUrl: 'https://relay.example/v1',
-        models: [{ id: modelId, apiProtocol: 'openai-responses' }],
+        ...custom('openai-responses'),
         modelOverrides: { [modelId]: { serviceTier: 'fast' } },
       };
       assert.deepEqual(buildProviderOptions(connection, modelId), {
         openai: {
           store: false,
           forceReasoning: true,
-          ...(supportsReasoningSummary
-            ? { reasoningSummary: 'auto', reasoningEffort: 'medium' }
-            : {}),
+          ...(supportsReasoningSummary ? { reasoningSummary: 'auto' } : {}),
           ...(supportsFast ? { serviceTier: 'fast' } : {}),
-          parallelToolCalls: true,
         },
       });
     }
@@ -964,9 +1068,7 @@ describe('buildProviderOptions: openai-compatible namespace', () => {
   test('Fast reaches the Responses request body for an OpenAI-named relay model', async () => {
     const bodies: Record<string, unknown>[] = [];
     const modelConnection: LlmConnection = {
-      ...conn('openai-responses-compatible', 'my-responses-relay'),
-      baseUrl: 'https://relay.example/v1',
-      models: [{ id: 'gpt-5-relay', apiProtocol: 'openai-responses' }],
+      ...custom('openai-responses'),
       modelOverrides: { 'gpt-5-relay': { serviceTier: 'fast' } },
     };
     const model = getAIModel({
@@ -1014,8 +1116,7 @@ describe('buildProviderOptions: openai-compatible namespace', () => {
       );
     };
     const declared: LlmConnection = {
-      ...conn('openai-compatible', 'my-relay'),
-      baseUrl: 'https://relay.example/v1',
+      ...custom('openai-chat'),
       modelOverrides: {
         'dsv4-flash': { thinkingLevels: ['minimal', 'low', 'medium', 'high', 'max'] },
       },
@@ -1039,6 +1140,58 @@ describe('buildProviderOptions: openai-compatible namespace', () => {
       false,
       JSON.stringify(result.warnings),
     );
+  });
+
+  test('one custom connection sends each model on its own wire with native thinking fields', async () => {
+    const requests: { url: string; body: Record<string, unknown> }[] = [];
+    const connection: LlmConnection = {
+      ...custom('openai-responses'),
+      modelOverrides: {
+        'gpt-5.5': { thinkingLevels: ['low', 'high'] },
+        'claude-opus-4-8': {
+          apiProtocol: 'anthropic-messages',
+          thinkingLevels: ['low', 'high', 'max'],
+        },
+      },
+    };
+    const captureFetch: typeof globalThis.fetch = async (input, init) => {
+      const url = String(input);
+      requests.push({ url, body: JSON.parse(String(init?.body)) as Record<string, unknown> });
+      const body = url.endsWith('/messages')
+        ? {
+            id: 'msg-1',
+            type: 'message',
+            role: 'assistant',
+            model: 'claude-opus-4-8',
+            content: [{ type: 'text', text: 'ok' }],
+            stop_reason: 'end_turn',
+            usage: { input_tokens: 1, output_tokens: 1 },
+          }
+        : { id: 'resp-1', object: 'response', model: 'gpt-5.5', output: [] };
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+    for (const [modelId, level] of [
+      ['gpt-5.5', 'high'],
+      ['claude-opus-4-8', 'max'],
+    ] as const) {
+      await getAIModel({
+        connection,
+        apiKey: 'relay-key',
+        modelId,
+        fetch: captureFetch,
+      }).doGenerate({
+        prompt: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+        providerOptions: buildProviderOptions(connection, modelId, level),
+      });
+    }
+    assert.equal(requests[0]?.url, 'https://relay.example/v1/responses');
+    assert.deepEqual(requests[0]?.body.reasoning, { effort: 'high', summary: 'auto' });
+    assert.equal(requests[1]?.url, 'https://relay.example/v1/messages');
+    assert.deepEqual(requests[1]?.body.thinking, { type: 'adaptive', display: 'summarized' });
+    assert.deepEqual(requests[1]?.body.output_config, { effort: 'max' });
   });
 
   test('built-in dashed provider effort reaches the chat request body without deprecation', async () => {
@@ -1122,7 +1275,7 @@ describe('buildProviderOptions: openai-compatible namespace', () => {
     });
     const result = await model.doGenerate({
       prompt: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
-      providerOptions: buildProviderOptions(connection, 'doubao-seed-2-0-pro-260215'),
+      providerOptions: buildProviderOptions(connection, 'doubao-seed-2-0-pro-260215', 'high'),
     });
     assert.equal(bodies.length, 1);
     assert.deepEqual(bodies[0]?.thinking, { type: 'enabled' });
@@ -1187,4 +1340,128 @@ test('Copilot Messages preserves bearer auth without the generic Anthropic beta 
       assert.equal(headers.get('x-api-key'), null);
     }
   }
+});
+
+describe('buildProviderOptions: Command Code thinking level', () => {
+  // The Provider API exposes no reasoning metadata, so these levels come from
+  // the static table in model-metadata.ts, ported from the reference CLI
+  // effort map. The switcher only appears when the table declares the model.
+  test('selectable efforts surface for the models the table accepts them on', () => {
+    assert.deepEqual(
+      [...thinkingVariantsForModel('commandcode', 'claude-fable-5-1')],
+      ['low', 'medium', 'high', 'xhigh', 'max'],
+    );
+    assert.deepEqual(
+      [...thinkingVariantsForModel('commandcode', 'moonshotai/Kimi-K3')],
+      ['low', 'high', 'max'],
+    );
+    assert.deepEqual(
+      [...thinkingVariantsForModel('commandcode', 'xai/grok-4.6')],
+      ['low', 'medium', 'high', 'xhigh'],
+    );
+  });
+
+  test('models that reason automatically offer no selector', () => {
+    // Tencent Hy3/Hy4 with no levels and the GLM-5.x-Fast siblings think with
+    // a depth the provider chooses, so the table must stay silent and the
+    // picker must stay hidden.
+    for (const modelId of ['tencent/hy3-paid', 'zai-org/GLM-5.2-Fast', 'zai-org/GLM-5']) {
+      assert.deepEqual([...thinkingVariantsForModel('commandcode', modelId)], []);
+      assert.deepEqual(buildProviderOptions(conn('commandcode'), modelId, 'high'), {});
+    }
+  });
+
+  test('an unknown model exposes nothing and sends nothing', () => {
+    assert.deepEqual([...thinkingVariantsForModel('commandcode', 'not-a-model')], []);
+    assert.deepEqual(buildProviderOptions(conn('commandcode'), 'not-a-model', 'high'), {});
+  });
+});
+
+describe('leastReasoningThinkingLevel', () => {
+  test('asks for the lowest declared effort where a dropped off would leave provider-default reasoning', () => {
+    const cases: ReadonlyArray<
+      readonly [LlmConnection['providerType'], string, ThinkingLevel, Record<string, unknown>]
+    > = [
+      ['openai', 'gpt-5', 'minimal', { openai: { reasoningEffort: 'minimal' } }],
+      ['openai', 'o3', 'low', { openai: { reasoningEffort: 'low' } }],
+      ['openai', 'gpt-6-sol', 'low', { openai: { reasoningEffort: 'low' } }],
+      ['openai-codex', 'gpt-6-astra', 'low', { openai: { reasoningEffort: 'low' } }],
+      ['openai', 'gpt-5.5', 'off', { openai: { reasoningEffort: 'none' } }],
+      [
+        'google',
+        'gemini-3.5-flash',
+        'minimal',
+        { google: { thinkingConfig: { thinkingLevel: 'minimal' } } },
+      ],
+      ['google', 'gemini-2.5-flash', 'off', { google: { thinkingConfig: { thinkingBudget: 0 } } }],
+    ];
+    for (const [providerType, modelId, level, wire] of cases) {
+      const connection = conn(providerType);
+      assert.equal(
+        leastReasoningThinkingLevel(connection, modelId),
+        level,
+        `${providerType}/${modelId}`,
+      );
+      const options = buildProviderOptions(connection, modelId, level) as Record<
+        string,
+        Record<string, unknown>
+      >;
+      for (const [namespace, expected] of Object.entries(wire)) {
+        for (const [key, value] of Object.entries(expected as Record<string, unknown>)) {
+          assert.deepEqual(
+            key === 'thinkingConfig'
+              ? Object.fromEntries(
+                  Object.keys(value as object).map((field) => [
+                    field,
+                    (options[namespace]?.thinkingConfig as Record<string, unknown> | undefined)?.[
+                      field
+                    ],
+                  ]),
+                )
+              : options[namespace]?.[key],
+            value,
+            `${providerType}/${modelId} must send ${namespace}.${key} explicitly`,
+          );
+        }
+      }
+    }
+  });
+
+  test('keeps off where an omitted parameter already means no extended reasoning', () => {
+    // Claude on Anthropic Messages: omitting effort/thinking is non-thinking,
+    // while the lowest effort would switch adaptive thinking on. That holds on
+    // a gateway serving Claude over the same wire.
+    for (const providerType of ['anthropic', 'opencode'] as const) {
+      const connection = conn(providerType);
+      assert.equal(
+        leastReasoningThinkingLevel(connection, 'claude-opus-4-8'),
+        'off',
+        `${providerType}/claude-opus-4-8`,
+      );
+      const options = (buildProviderOptions(connection, 'claude-opus-4-8', 'off').anthropic ??
+        {}) as Record<string, unknown>;
+      assert.equal(options.effort, undefined);
+      assert.equal(options.thinking, undefined);
+    }
+    // Models with no declared levels keep the previous request unchanged.
+    assert.equal(leastReasoningThinkingLevel(conn('openai'), 'gpt-4o'), 'off');
+  });
+
+  test('asks Kimi Coding Plan for its lowest effort, since it thinks by default when none is sent', () => {
+    // K3 and kimi-for-coding speak Anthropic Messages but are not Claude: an
+    // omitted level leaves the route on its provider default.
+    const kimi = conn('kimi-coding-plan', 'kimi-coding-plan');
+    for (const [modelId, thinking] of [
+      ['k3', { type: 'adaptive' }],
+      ['k3-256k', { type: 'adaptive' }],
+      ['kimi-for-coding', { type: 'enabled', budgetTokens: 1_024 }],
+    ] as const) {
+      const level = leastReasoningThinkingLevel(kimi, modelId);
+      assert.equal(level, 'low', modelId);
+      assert.deepEqual(buildProviderOptions(kimi, modelId, level).anthropic, {
+        thinking,
+        effort: 'low',
+      });
+    }
+  });
 });

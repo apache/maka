@@ -33,7 +33,9 @@
  * projection, or ledger logic lives here. Those arrive in later nodes.
  */
 
+import { decodeEventWaitProvenance, type EventWaitProvenance } from './event-wait-delivery.js';
 import { isWorkHubActionReceipt, type WorkHubActionReceipt } from './workhub-action-result.js';
+import { isToolCallOutcome } from './tool-result-status.js';
 import { isModelRetryDecision, type ModelRetryDecision } from './model-failure.js';
 
 import {
@@ -70,11 +72,8 @@ import {
   type OrchestrationMode,
 } from './orchestration.js';
 import { isToolMode, type ToolMode } from './tool-mode.js';
-import {
-  isRuntimeSystemNoteKind,
-  type PersistedBackendKind,
-  type RuntimeSystemNoteKind,
-} from './session.js';
+import { isExecutorId } from './executor-id.js';
+import { isSystemNoteKind, type PersistedBackendKind, type SystemNoteKind } from './session.js';
 import { decodeTurnOrigin, type TurnOrigin } from './turn-origin.js';
 import type { UserQuestionRequest } from './user-question.js';
 import {
@@ -181,6 +180,8 @@ export function isTerminalRuntimeEventStatus(value: unknown): boolean {
 // ============================================================================
 
 export interface RuntimeEventTextContent extends MessageContent {
+  /** Model-authored collapsed preview, independent of the full text. */
+  summary?: string;
   kind: 'text';
   /** Failed response fragment retained for display, never for model replay. */
   interrupted?: true;
@@ -225,6 +226,7 @@ export interface RuntimeEventFunctionResponseContent {
   name: string;
   result: unknown;
   isError?: boolean;
+  outcome?: import('./tool-result-status.js').ToolCallOutcome;
   providerExecuted?: boolean;
   /** Raw provider result retained for provider-native replay; never rendered directly. */
   providerOutput?: unknown;
@@ -243,7 +245,7 @@ export interface RuntimeEventFunctionResponseContent {
  */
 export interface RuntimeEventSystemNoteContent {
   kind: 'system_note';
-  note: RuntimeSystemNoteKind;
+  note: SystemNoteKind;
   /** Shape depends on `note`, exactly as it does on the transcript row. */
   data?: unknown;
 }
@@ -267,12 +269,21 @@ export interface RuntimeEventErrorContent {
 export type RuntimeInvocationRoute =
   | {
       provenance: 'runtime';
-      backendKind: PersistedBackendKind;
+      backendKind: Exclude<PersistedBackendKind, 'plugin-executor'>;
       llmConnectionId: string;
       llmConnectionSlug: string;
       modelId: string;
       /** Frozen provider endpoint and credential ownership; absent on non-provider runs. */
       providerStateIdentity?: `sha256:${string}`;
+    }
+  | {
+      provenance: 'runtime';
+      backendKind: 'plugin-executor';
+      executorId: string;
+      llmConnectionSlug: string;
+      modelId: string;
+      /** Frozen plugin package, entry point, and activation generation. */
+      providerStateIdentity: `sha256:${string}`;
     }
   | {
       provenance: 'unknown';
@@ -303,7 +314,7 @@ export type RuntimeInvocationRootAuthority =
   | { kind: 'user' }
   | { kind: 'context_compact' }
   | { kind: 'scheduled_task'; scheduledTaskId: string }
-  | { kind: 'goal'; goalId: string }
+  | { kind: 'goal'; goalId: string; eventWait?: EventWaitProvenance }
   | { kind: 'agent_graph_supervisor_wake'; wakeId: string; attemptId: string }
   | { kind: 'legacy_automation'; legacyAutomationId: string };
 
@@ -625,7 +636,10 @@ export interface RuntimeEventRefs {
   sourceRuntimeEventHighWater?: number;
 }
 
-/** Tool-owned contract for deciding what a later recovery phase may do. */
+/** Current tools only choose how to report an unknown result; neither mode retries an effect. */
+export type ToolOutcomeRecoveryMode = 'never_auto_retry' | 'outcome_unknown';
+
+/** Persisted dispatch metadata, including legacy modes; never authorizes recovery by itself. */
 export type ToolRecoveryMode =
   | 'replay_safe'
   | 'idempotent'
@@ -725,6 +739,7 @@ const RUNTIME_EVENT_SHAPE = defineObjectShape<RuntimeEvent>()(
 const TEXT_CONTENT_SHAPE = defineObjectShape<RuntimeEventTextContent>()(
   ['kind', 'text'],
   [
+    'summary',
     'displayText',
     'interrupted',
     'origin',
@@ -746,7 +761,7 @@ const FUNCTION_CALL_CONTENT_SHAPE = defineObjectShape<RuntimeEventFunctionCallCo
 );
 const FUNCTION_RESPONSE_CONTENT_SHAPE = defineObjectShape<RuntimeEventFunctionResponseContent>()(
   ['kind', 'id', 'name', 'result'],
-  ['isError', 'providerExecuted', 'providerOutput', 'modelProjection'],
+  ['isError', 'outcome', 'providerExecuted', 'providerOutput', 'modelProjection'],
 );
 const ERROR_CONTENT_SHAPE = defineObjectShape<RuntimeEventErrorContent>()(
   ['kind', 'message'],
@@ -760,11 +775,24 @@ const INVOCATION_OPENED_CONTENT_SHAPE = defineObjectShape<RuntimeEventInvocation
   ['kind', 'protocol', 'route', 'configuration', 'root', 'source'],
   ['lineage'],
 );
-const INVOCATION_ROUTE_RUNTIME_SHAPE = defineObjectShape<
-  Extract<RuntimeInvocationRoute, { provenance: 'runtime' }>
+const INVOCATION_ROUTE_RUNTIME_MODEL_SHAPE = defineObjectShape<
+  Extract<RuntimeInvocationRoute, { provenance: 'runtime'; llmConnectionId: string }>
 >()(
   ['provenance', 'backendKind', 'llmConnectionId', 'llmConnectionSlug', 'modelId'],
   ['providerStateIdentity'],
+);
+const INVOCATION_ROUTE_RUNTIME_EXECUTOR_SHAPE = defineObjectShape<
+  Extract<RuntimeInvocationRoute, { provenance: 'runtime'; backendKind: 'plugin-executor' }>
+>()(
+  [
+    'provenance',
+    'backendKind',
+    'executorId',
+    'llmConnectionSlug',
+    'modelId',
+    'providerStateIdentity',
+  ],
+  [],
 );
 const INVOCATION_ROUTE_UNKNOWN_SHAPE = defineObjectShape<
   Extract<RuntimeInvocationRoute, { provenance: 'unknown' }>
@@ -832,7 +860,7 @@ const INVOCATION_ROOT_SHAPES = {
   >()(['kind', 'scheduledTaskId'], []),
   goal: defineObjectShape<Extract<RuntimeInvocationRootAuthority, { kind: 'goal' }>>()(
     ['kind', 'goalId'],
-    [],
+    ['eventWait'],
   ),
   agent_graph_supervisor_wake: defineObjectShape<
     Extract<RuntimeInvocationRootAuthority, { kind: 'agent_graph_supervisor_wake' }>
@@ -1017,6 +1045,8 @@ export function decodeRuntimeEvent(value: unknown): RuntimeEvent {
       content: {
         kind: 'text',
         ...normalizeMessageContent(value.content as unknown as MessageContent),
+        ...(value.content.interrupted === true ? { interrupted: true as const } : {}),
+        ...(value.content.summary !== undefined ? { summary: value.content.summary } : {}),
         ...(value.content.origin !== undefined
           ? { origin: decodeTurnOrigin(value.content.origin) }
           : {}),
@@ -1047,6 +1077,7 @@ function isRuntimeEventContent(value: unknown): value is RuntimeEventContent {
     case 'text':
       if (
         !hasExactShape(value, TEXT_CONTENT_SHAPE) ||
+        (value.summary !== undefined && typeof value.summary !== 'string') ||
         (value.origin !== undefined && !isTurnOrigin(value.origin)) ||
         (value.steering !== undefined && value.steering !== true) ||
         (value.interrupted !== undefined && value.interrupted !== true) ||
@@ -1089,6 +1120,9 @@ function isRuntimeEventContent(value: unknown): value is RuntimeEventContent {
         typeof value.name === 'string' &&
         Object.hasOwn(value, 'result') &&
         (value.isError === undefined || typeof value.isError === 'boolean') &&
+        (value.outcome === undefined ||
+          (isToolCallOutcome(value.outcome) &&
+            (value.outcome !== 'success') === (value.isError === true))) &&
         (value.providerExecuted === undefined || typeof value.providerExecuted === 'boolean') &&
         (value.modelProjection === undefined ||
           decodesDurableToolResultProjection(value.modelProjection))
@@ -1106,7 +1140,7 @@ function isRuntimeEventContent(value: unknown): value is RuntimeEventContent {
       return (
         hasExactShape(value, SYSTEM_NOTE_CONTENT_SHAPE) &&
         typeof value.note === 'string' &&
-        isRuntimeSystemNoteKind(value.note)
+        isSystemNoteKind(value.note)
       );
     case 'invocation_opened':
       return isRuntimeInvocationOpened(value);
@@ -1157,8 +1191,15 @@ function isRuntimeInvocationRoute(value: unknown): value is RuntimeInvocationRou
     return false;
   }
   if (value.provenance === 'runtime') {
+    if (value.backendKind === 'plugin-executor') {
+      return (
+        hasExactShape(value, INVOCATION_ROUTE_RUNTIME_EXECUTOR_SHAPE) &&
+        isExecutorId(value.executorId) &&
+        isSha256Digest(value.providerStateIdentity)
+      );
+    }
     return (
-      hasExactShape(value, INVOCATION_ROUTE_RUNTIME_SHAPE) &&
+      hasExactShape(value, INVOCATION_ROUTE_RUNTIME_MODEL_SHAPE) &&
       isNonEmptyString(value.llmConnectionId) &&
       (value.providerStateIdentity === undefined || isSha256Digest(value.providerStateIdentity))
     );
@@ -1167,7 +1208,7 @@ function isRuntimeInvocationRoute(value: unknown): value is RuntimeInvocationRou
 }
 
 function isPersistedBackendKind(value: unknown): value is PersistedBackendKind {
-  return value === 'ai-sdk' || value === 'fake';
+  return value === 'ai-sdk' || value === 'plugin-executor' || value === 'fake';
 }
 
 function isRuntimeInvocationConfiguration(value: unknown): value is RuntimeInvocationConfiguration {
@@ -1199,7 +1240,11 @@ function isRuntimeInvocationRootAuthority(value: unknown): value is RuntimeInvoc
         isNonEmptyString(value.scheduledTaskId)
       );
     case 'goal':
-      return hasExactShape(value, INVOCATION_ROOT_SHAPES.goal) && isNonEmptyString(value.goalId);
+      return (
+        hasExactShape(value, INVOCATION_ROOT_SHAPES.goal) &&
+        isNonEmptyString(value.goalId) &&
+        isEventWaitProvenance(value.eventWait)
+      );
     case 'agent_graph_supervisor_wake':
       return (
         hasExactShape(value, INVOCATION_ROOT_SHAPES.agent_graph_supervisor_wake) &&
@@ -1603,4 +1648,14 @@ let __runtimeEventSeq = 0;
 export function createRuntimeEventId(prefix = 'rt-event'): string {
   __runtimeEventSeq += 1;
   return `${prefix}_${Date.now().toString(36)}_${__runtimeEventSeq.toString(36)}`;
+}
+
+function isEventWaitProvenance(value: unknown): boolean {
+  if (value === undefined) return true;
+  try {
+    decodeEventWaitProvenance(value);
+    return true;
+  } catch {
+    return false;
+  }
 }

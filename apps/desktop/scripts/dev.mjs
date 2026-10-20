@@ -42,6 +42,7 @@ import { fileURLToPath } from 'node:url';
 import { createServer } from 'vite';
 import { build as esbuildBuild } from 'esbuild';
 import { buildCursorOverlay } from '../../../scripts/build-cursor-overlay.mjs';
+import { buildExecutorPlugins } from './build-executor-plugins.mjs';
 import {
   createDevelopmentLaunchSession,
   handleDevelopmentLaunchOutcome,
@@ -98,6 +99,13 @@ const librariesBuild = runNodeTool(REPO_ROOT, TSC_CLI, ['--build', 'tsconfig.lib
 );
 await Promise.all([
   librariesBuild,
+  // Host stages the self-contained plugin.mjs entries, not tsc's index.js.
+  // Rebuild them after workspace dependencies so branch switches cannot load
+  // stale executor implementations (or fail on a clean checkout).
+  librariesBuild.then(() => buildExecutorPlugins()).then(
+    () => log('build', 'executor plugin bundles — done'),
+    (e) => { log('build', `executor plugin bundles — FAILED: ${e.message}`); throw e; },
+  ),
   librariesBuild.then(() => runNodeTool(REPO_ROOT, RUNTIME_WORKER_BUILD, [])).then(
     () => log('build', 'filesystem worker bundle — done'),
     (e) => { log('build', `filesystem worker bundle — FAILED: ${e.message}`); throw e; },

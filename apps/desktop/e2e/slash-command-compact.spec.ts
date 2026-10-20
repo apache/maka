@@ -34,9 +34,8 @@
  * invocation into the draft; what happens when that draft is submitted is a
  * Host round trip — `sessions.compact()`, a status change, a cleared composer
  * — and the thing it must not do is reach the model as an ordinary message.
- * That routing lives inline in `app-shell.tsx`, with no seam under it to hang
- * a renderer test on, and opening one there is what the architecture ratchet
- * exists to refuse.
+ * The Conversation owner's command and its notices are covered by
+ * `conversation-compaction.test.ts`; the Host round trip still needs Electron.
  */
 
 import { awaitSendReady, COMPOSER_INPUT, expect, test } from './fixtures';

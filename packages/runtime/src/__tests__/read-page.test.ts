@@ -18,12 +18,14 @@
  */
 
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { test } from 'node:test';
 import {
   readPage,
   readToolResultPage,
   resolveReadInput,
-  READ_PAGE_MAX_CHARS,
+  READ_PAGE_MAX_BYTES,
   type ReadInput,
 } from '../read-page.js';
 
@@ -46,7 +48,7 @@ test('default and explicit large ranges stay bounded and continue to the request
     const returned: string[] = [];
     while (input) {
       const page = readPage(lines.join('\n'), input);
-      assert.ok(JSON.stringify(page).length <= READ_PAGE_MAX_CHARS);
+      assert.ok(Buffer.byteLength(JSON.stringify(page)) <= READ_PAGE_MAX_BYTES);
       assert.ok(page.returnedLines > 0);
       returned.push(...page.content.split('\n'));
       assert.notDeepEqual(page.next, input);
@@ -63,7 +65,7 @@ test('a long Unicode line continues without loss and refuses changed content', (
   let input: ReadInput | null = { path: 'long.txt', offset: 1, limit: 1 };
   while (input) {
     const page = readPage(content, input);
-    assert.ok(JSON.stringify(page).length <= READ_PAGE_MAX_CHARS);
+    assert.ok(Buffer.byteLength(JSON.stringify(page)) <= READ_PAGE_MAX_BYTES);
     assert.ok(page.content.length > 0);
     assert.ok(!/[\uD800-\uDBFF]$/.test(page.content));
     pieces.push(page.content);
@@ -143,7 +145,7 @@ test('archive Read pages a long shell failure without losing output or execution
   let pages = 0;
   while (input) {
     const page = readToolResultPage(serialized, input);
-    assert.ok(JSON.stringify(page).length <= READ_PAGE_MAX_CHARS);
+    assert.ok(Buffer.byteLength(JSON.stringify(page)) <= READ_PAGE_MAX_BYTES);
     assert.equal(page.metadata?.status, 'failed');
     assert.equal(page.metadata?.exitCode, 7);
     assert.equal(page.metadata?.failureMessage, undefined);
@@ -168,10 +170,54 @@ test('archive Read preserves fields beside structured text across pages', () => 
     let recovered = '';
     while (input) {
       const page = readToolResultPage(serialized, input);
-      assert.ok(JSON.stringify(page).length <= READ_PAGE_MAX_CHARS);
+      assert.ok(Buffer.byteLength(JSON.stringify(page)) <= READ_PAGE_MAX_BYTES);
       recovered += page.content;
       input = page.next;
     }
     assert.deepEqual(JSON.parse(recovered), value);
+  }
+});
+
+test('small line ranges do not need a whole-file line index', async () => {
+  // 固定堆预算验证实际资源边界，不依赖耗时阈值或具体索引实现。
+  const { stdout } = await promisify(execFile)(
+    process.execPath,
+    [
+      '--max-old-space-size=64',
+      '--input-type=module',
+      '--eval',
+      `
+        import assert from 'node:assert/strict';
+        import { readPage } from ${JSON.stringify(new URL('../read-page.js', import.meta.url).href)};
+        const content = 'x\\n'.repeat(8_000_000);
+        const page = readPage(content, { path: 'log.txt', offset: 2_000_000, limit: 20 });
+        assert.equal(page.totalLines, 8_000_001);
+        assert.equal(page.offset, 2_000_000);
+        assert.equal(page.returnedLines, 20);
+        assert.equal(page.content, 'x\\n'.repeat(19) + 'x');
+        assert.equal(page.next, null);
+        console.log('bounded read passed');
+      `,
+    ],
+    { timeout: 30_000 },
+  );
+  assert.equal(stdout.trim(), 'bounded read passed');
+});
+
+test('line ranges preserve empty lines, trailing newlines and offsets beyond EOF', () => {
+  for (const content of ['', '\n', '\n\n', 'a\nb', 'a\nb\n', 'a\r\n😀\n\nlast']) {
+    const lines = content.split('\n');
+    for (let offset = 0; offset <= lines.length + 1; offset++) {
+      for (const limit of [undefined, 1, 2, 100]) {
+        const selected = lines.slice(offset, limit === undefined ? undefined : offset + limit);
+        assert.deepEqual(readPage(content, { path: 'file.txt', offset, limit }), {
+          content: selected.join('\n'),
+          offset,
+          returnedLines: selected.length,
+          totalLines: lines.length,
+          next: null,
+        });
+      }
+    }
   }
 });

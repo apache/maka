@@ -1,5 +1,5 @@
 diff --git a/node_modules/node-pty/lib/unixTerminal.js b/node_modules/node-pty/lib/unixTerminal.js
-index af2d24c..a16ab59 100644
+index af2d24c..35d9854 100644
 --- a/node_modules/node-pty/lib/unixTerminal.js
 +++ b/node_modules/node-pty/lib/unixTerminal.js
 @@ -65,6 +65,10 @@ var UnixTerminal = /** @class */ (function (_super) {
@@ -130,3 +130,59 @@ index af2d24c..a16ab59 100644
      };
      return CustomWriteStream;
  }());
+diff --git a/node_modules/node-pty/lib/windowsPtyAgent.js b/node_modules/node-pty/lib/windowsPtyAgent.js
+index 90ffd8f..919bbda 100644
+--- a/node_modules/node-pty/lib/windowsPtyAgent.js
++++ b/node_modules/node-pty/lib/windowsPtyAgent.js
+@@ -38,6 +38,7 @@ var WindowsPtyAgent = /** @class */ (function () {
+         this._useConptyDll = _useConptyDll;
+         this._innerPid = 0;
+         this._onError = new eventEmitter2_1.EventEmitter2();
++        this._onExit = new eventEmitter2_1.EventEmitter2();
+         if (!conptyNative) {
+             conptyNative = (0, utils_1.loadNativeModule)('conpty').module;
+         }
+@@ -96,6 +97,11 @@ var WindowsPtyAgent = /** @class */ (function () {
+         enumerable: false,
+         configurable: true
+     });
++    Object.defineProperty(WindowsPtyAgent.prototype, "onExit", {
++        get: function () { return this._onExit.event; },
++        enumerable: false,
++        configurable: true
++    });
+     Object.defineProperty(WindowsPtyAgent.prototype, "inSocket", {
+         get: function () { return this._inSocket; },
+         enumerable: false,
+@@ -246,6 +252,7 @@ var WindowsPtyAgent = /** @class */ (function () {
+     WindowsPtyAgent.prototype._$onProcessExit = function (exitCode) {
+         var _this = this;
+         this._exitCode = exitCode;
++        this._onExit.fire(exitCode);
+         if (!this._useConptyDll) {
+             this._flushDataAndCleanUp();
+             this._outSocket.on('data', function () { return _this._flushDataAndCleanUp(); });
+diff --git a/node_modules/node-pty/lib/windowsTerminal.js b/node_modules/node-pty/lib/windowsTerminal.js
+index cd658d0..3e7f00c 100644
+--- a/node_modules/node-pty/lib/windowsTerminal.js
++++ b/node_modules/node-pty/lib/windowsTerminal.js
+@@ -105,8 +105,18 @@ var WindowsTerminal = /** @class */ (function (_super) {
+             });
+             // Cleanup after the socket is closed.
+             _this._socket.on('close', function () {
+-                _this.emit('exit', _this._agent.exitCode);
+                 _this._close();
++                // The output pipe can close before the native process callback.
++                // Wait for its code instead of reporting an undefined exit.
++                if (_this._agent.exitCode === undefined) {
++                    var subscription = _this._agent.onExit(function (exitCode) {
++                        subscription.dispose();
++                        _this.emit('exit', exitCode);
++                    });
++                }
++                else {
++                    _this.emit('exit', _this._agent.exitCode);
++                }
+             });
+         });
+         _this._file = file;

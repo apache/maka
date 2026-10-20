@@ -30,7 +30,7 @@ import type {
   CredentialStatus,
   RuntimePolicy,
 } from "@maka/core/runtime-policy";
-import { SENSITIVE_PLACEHOLDER } from "@maka/core/settings/network-settings";
+import { isSensitivePlaceholder, SENSITIVE_PLACEHOLDER } from "@maka/core/settings/network-settings";
 import type {
   TestProxyInput,
   TestProxySettings,
@@ -63,6 +63,7 @@ type RuntimeHostSettingsClient = Pick<
   | "updateRuntimePolicyIf"
 >;
 
+const JEV_CREDENTIAL: CredentialLocator = { scope: 'jev', kind: 'api_key' };
 const PROXY_CREDENTIAL: CredentialLocator = {
   scope: "network_proxy",
   kind: "password",
@@ -262,16 +263,18 @@ async function testNetworkProxyWithoutLane(
 async function loadRuntimeHostSettingsWithoutLane(
   deps: RuntimeHostSettingsModuleDeps,
 ): Promise<RuntimeHostAppSettings> {
-  const [local, runtimePolicy, proxyCredential, webSearchCredential] =
+  const [local, runtimePolicy, proxyCredential, webSearchCredential, jevCredential] =
     await Promise.all([
       deps.settingsStore.get(),
       deps.client.queryRuntimePolicy(),
       deps.client.queryCredential(PROXY_CREDENTIAL),
       deps.client.queryCredential(WEB_SEARCH_CREDENTIAL),
+      deps.client.queryCredential(JEV_CREDENTIAL),
     ]);
   const policy = runtimePolicy.policy;
   return {
     ...local,
+    jev: { enabled: policy.jev?.enabled === true, apiKey: jevCredential?.configured ? SENSITIVE_PLACEHOLDER : '' },
     network: {
       proxy: {
         ...policy.networkProxy,
@@ -347,6 +350,19 @@ async function applyHostPatchWithoutLane(
   guard?: RuntimeHostSettingsUpdateGuard,
 ): Promise<number> {
   let skippedCredentials = 0;
+  if (patch.jev) {
+    const apiKey = patch.jev.apiKey;
+    const removingKey = typeof apiKey === "string" && !isSensitivePlaceholder(apiKey) && !apiKey.trim();
+    if (apiKey !== undefined && !isSensitivePlaceholder(apiKey)) {
+      if (apiKey.trim()) await setCredential(client, JEV_CREDENTIAL, apiKey.trim());
+      else await deleteCredential(client, JEV_CREDENTIAL);
+    }
+    if (patch.jev.enabled !== undefined || removingKey) {
+      await client.updateRuntimePolicy(() => ({
+        kind: 'set_jev', value: { enabled: removingKey ? false : patch.jev!.enabled === true },
+      }));
+    }
+  }
   if (patch.network?.proxy) {
     skippedCredentials += await updateNetworkProxy(client, patch.network.proxy);
   }
@@ -423,7 +439,7 @@ async function applyHostPatchWithoutLane(
       },
     }));
     const apiKey = webSearch.providers?.tavily?.apiKey;
-    if (apiKey !== undefined && apiKey !== SENSITIVE_PLACEHOLDER) {
+    if (apiKey !== undefined && !isSensitivePlaceholder(apiKey)) {
       if (apiKey.length === 0)
         await deleteCredential(client, WEB_SEARCH_CREDENTIAL);
       else await setCredential(client, WEB_SEARCH_CREDENTIAL, apiKey);

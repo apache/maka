@@ -17,4 +17,4 @@
  * under the License.
  */
 
-export { NEW_TASK_PENDING_KEY, selectPending, appendPending, removePending, removePendingItems, clearPending, type PendingByKey } from './features/conversation/index.js';
+export { NEW_TASK_PENDING_KEY, selectPending, appendPending, removePending, removePendingItems, clearPending } from './features/conversation/index.js';

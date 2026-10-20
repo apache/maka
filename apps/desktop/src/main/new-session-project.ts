@@ -26,16 +26,28 @@ export interface DesktopSessionWorkspaceInput {
 }
 
 interface DesktopSessionWorkspaceSelection {
-  current(): Promise<{ projectId: string | null | undefined; path: string }>;
-  select(projectId: unknown): Promise<{ project: { id: string } | null; path: string }>;
+  current(): Promise<{
+    projectId: string | null | undefined;
+    /** The implicit fallback path a projectless selection carries. */
+    path: string;
+  }>;
+  select(projectId: unknown): Promise<{ project: { id: string } | null }>;
   defaultProjectId?(): Promise<string | undefined>;
+}
+
+export interface DesktopSessionWorkspaceOptions {
+  readonly allowHostPath?: boolean;
+  /**
+   * Allocates a dedicated directory for a new projectless task.
+   */
+  readonly allocateDedicatedDirectory: () => Promise<string>;
 }
 
 export async function resolveDesktopSessionWorkspace(
   input: DesktopSessionWorkspaceInput,
   selection: DesktopSessionWorkspaceSelection,
   catalog: Pick<ProjectCatalog, 'register'>,
-  options: { readonly allowHostPath?: boolean } = {},
+  options: DesktopSessionWorkspaceOptions,
 ): Promise<WorkspaceTarget> {
   if (input.cwd) {
     if (input.projectId === null) {
@@ -52,7 +64,7 @@ export async function resolveDesktopSessionWorkspace(
   if (input.projectId !== undefined) {
     if (input.projectId === null) {
       if (options.allowHostPath === false) throw remoteProjectRequired();
-      return { kind: 'host_path', path: (await selection.current()).path };
+      return projectlessTaskWorkspace(undefined, options.allocateDedicatedDirectory);
     }
     // Session creation names a Project; it must not also mutate the Host's
     // persisted current-Project preference. The Runtime Host validates the
@@ -71,7 +83,30 @@ export async function resolveDesktopSessionWorkspace(
     return { kind: 'project', projectId: current.projectId };
   }
   if (options.allowHostPath === false) throw remoteProjectRequired();
-  return { kind: 'host_path', path: current.path };
+  return projectlessTaskWorkspace(
+    { kind: 'host_path', path: current.path },
+    options.allocateDedicatedDirectory,
+  );
+}
+
+/**
+ * The workspace a new projectless task binds to: `undefined` when the task
+ * was explicitly created with no Project, otherwise the selected target. A
+ * `host_path` here is never a choice — it is the implicit fallback resolved
+ * from the launch directory or install location — so a dedicated task
+ * directory replaces it. A Project passes through untouched.
+ *
+ * This is the single seam a configured default directory (#2322) must hook
+ * once that setting exists: resolve a usable configured default before
+ * `allocate`, and it keeps its precedence everywhere this function is used.
+ */
+export async function projectlessTaskWorkspace(
+  selected: WorkspaceTarget | undefined,
+  allocate: () => Promise<string>,
+): Promise<WorkspaceTarget> {
+  return selected === undefined || selected.kind === 'host_path'
+    ? { kind: 'host_path', path: await allocate() }
+    : selected;
 }
 
 function remoteProjectRequired(): Error {

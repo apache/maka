@@ -101,8 +101,8 @@ test('pullSteering drains queued messages at step boundaries as steering events'
     { id: 'lease-2', messageId: 'message-2', content: { text: 'and Y' } },
   ];
   const acked: string[] = [];
-  const steered: string[] = [];
-  let completedText = '';
+  const order: string[] = [];
+  const completions: string[] = [];
   for await (const event of backend.send({
     turnId: 'turn-1',
     text: 'hello',
@@ -110,14 +110,26 @@ test('pullSteering drains queued messages at step boundaries as steering events'
     pullSteering: () => (pending.length > 0 ? [pending.shift()!] : []),
     ackSteering: (leaseIds) => acked.push(...leaseIds),
   })) {
-    if (event.type === 'steering_message') steered.push(event.content.text);
-    if (event.type === 'text_complete') completedText = event.text;
+    if (event.type === 'steering_message') order.push(`steer:${event.content.text}`);
+    if (event.type === 'text_delta' && order.at(-1) !== `step:${event.messageId}`) {
+      order.push(`step:${event.messageId}`);
+    }
+    if (event.type === 'text_complete') {
+      order.push(`complete:${event.messageId}`);
+      completions.push(event.text);
+    }
   }
-  assert.deepEqual(steered, ['do X', 'and Y']);
+  // Like the real Runtime, steering never lands inside a step: each drained
+  // message precedes the step that answers it.
+  assert.deepEqual(
+    order.map((entry) => entry.replace(/:[0-9a-f-]{36}$/, '')),
+    ['steer:do X', 'step', 'complete', 'steer:and Y', 'step', 'complete'],
+  );
   // Delivery is acknowledged lease by lease.
   assert.deepEqual(acked, ['lease-1', 'lease-2']);
   // The fake acknowledges the steering it saw, proving it reached the model side.
-  assert.match(completedText, /Acknowledged steering: do X \| and Y/);
+  assert.match(completions[0]!, /Acknowledged steering: do X$/);
+  assert.equal(completions[1], 'Acknowledged steering: and Y');
 });
 
 test('a batch of leases settles per lease: delivered ones ack, undelivered ones nack', async () => {

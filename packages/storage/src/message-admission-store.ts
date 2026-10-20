@@ -32,6 +32,10 @@ import {
   submittedTurnIntentsEqual,
   type SubmittedTurnIntent,
 } from './submitted-turn-intent.js';
+import {
+  normalizeRootTurnSourceMessages,
+  type RootTurnSourceMessage,
+} from './agent-run-store-contract.js';
 
 const SAFE_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 
@@ -59,9 +63,7 @@ export interface PendingMessageAdmission {
   readonly admittedAt: number;
 }
 
-export interface ProvenRootMessageHandoff {
-  readonly messageId: string;
-  readonly content: MessageContent;
+export interface ProvenRootMessageHandoff extends RootTurnSourceMessage {
   readonly admittedAt: number;
 }
 
@@ -158,13 +160,14 @@ export function normalizePendingMessageAdmission(
 export function normalizeProvenRootMessageHandoff(
   handoff: ProvenRootMessageHandoff,
 ): ProvenRootMessageHandoff {
-  assertSafeId(handoff.messageId, 'Invalid proven Root Message identity');
   if (!Number.isSafeInteger(handoff.admittedAt) || handoff.admittedAt < 0) {
     throw new Error('Invalid proven Root Message timestamp');
   }
+  const { admittedAt, ...source } = handoff;
+  const normalized = normalizeRootTurnSourceMessages([source])[0]!;
   return Object.freeze({
-    ...handoff,
-    content: decodeMessageContent(handoff.content),
+    ...normalized,
+    admittedAt,
   });
 }
 

@@ -20,6 +20,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { countDiffLineStats } from '@maka/core/unified-diff';
 import { isInFlightToolStatus } from '@maka/core/tool-result-status';
+import { formatUserQuestionResult } from '@maka/core/tool-quiet-preview';
 import { type ToolResultContent } from '@maka/core/events';
 import { type UiLocale } from '@maka/core/ui-locale';
 import {
@@ -56,7 +57,6 @@ import {
   isCancelledToolResult,
   isPermissionDeniedToolResult,
   isRequiresBypassToolResult,
-  resultOwnsOwnPanel,
   withLiveStreamFallback,
 } from './tool-activity/result-projection.js';
 import { isSandboxDeniedTool } from './tool-activity/sandbox-denial.js';
@@ -78,6 +78,7 @@ import { cn } from './ui.js';
 import {
   describeLoadToolResult,
   formatToolIntent,
+  normalizeToolIntent,
   type LoadToolGroupKind,
 } from './tool-format.js';
 import {
@@ -97,6 +98,8 @@ import {
 } from './tool-activity/tool-result-preview.js';
 import { getToolActivityCopy } from './tool-activity/copy.js';
 import { dotForStatus, type StatusSemantic } from './status-vocabulary.js';
+import { RunningIndicator } from './running-indicator.js';
+import { MakaClientSlotOutlet, useMakaClientSlotOccupiedKeys } from './client-plugin-slots.js';
 
 /** Friendly card for tool-search and historical loader results. */
 function LoadToolResultPreview(props: {
@@ -172,6 +175,280 @@ function loadToolGroupIcon(kind: LoadToolGroupKind): LucideIcon {
   }
 }
 
+type DetailDecision = {
+  decorations: {
+    sandboxBlockedResult?: ToolResultContent;
+    requiresBypass: boolean;
+  };
+  body:
+    | {
+        kind: 'live';
+        chunks: ToolOutputChunk[];
+        heading?: string;
+        live: boolean;
+        truncated: boolean;
+      }
+    | {
+        kind: 'result';
+        result: ToolResultContent;
+        presentation: 'owned' | 'shared';
+        toolName: string;
+        args: unknown;
+        shellRunSource?: 'owned' | 'unavailable';
+      }
+    | {
+        kind: 'loadTool';
+        result: Extract<ToolResultContent, { kind: 'json' }>;
+        args: unknown;
+      }
+    | { kind: 'quietText'; body: string; title?: string }
+    | { kind: 'argsOnly'; text: string }
+    | { kind: 'none' };
+};
+
+function describeToolCall(
+  item: ToolActivityItem,
+  locale: UiLocale,
+  activityObserved: boolean,
+): DetailDecision {
+  const cancelled = isCancelledToolResult(item.result);
+  const requiresBypass = isRequiresBypassToolResult(item.result);
+  const permissionDenied = isPermissionDeniedToolResult(item.result);
+  const running = activityObserved && isInFlightToolStatus(toolActivityPresentationStatus(item));
+  const ptyControlResult = item.toolName === 'WriteStdin' && item.result?.kind === 'shell_run';
+  const loadToolResult = isConnectorTool(item.toolName) && item.result?.kind === 'json'
+    ? item.result
+    : undefined;
+  const resultOwnsPanel = item.result?.kind === 'terminal'
+    || item.result?.kind === 'shell_run'
+    || item.result?.kind === 'web_search'
+    || item.result?.kind === 'web_search_error'
+    || item.result?.kind === 'file_diff'
+    || item.result?.kind === 'rive_workflow';
+  const ownsPanel = Boolean(loadToolResult || resultOwnsPanel || requiresBypass);
+  const showResult = item.result !== undefined && !permissionDenied && !requiresBypass;
+  const displayResult = showResult && item.result
+    ? withLiveStreamFallback(item.result, item.outputChunks, {
+      truncated: item.outputTruncated === true,
+      locale,
+    })
+    : undefined;
+  const invocationLine = !permissionDenied && !ownsPanel
+    ? formatToolInvocationLine(item, locale)
+    : undefined;
+  const showLiveStream = !!item.outputChunks
+    && item.outputChunks.length > 0
+    && !ownsPanel
+    && (running || !item.result);
+  const sandboxBlocked = isSandboxDeniedTool(item);
+  const failedOutcome = item.status === 'errored' && !cancelled;
+  const decorations = {
+    ...(sandboxBlocked && failedOutcome && !ptyControlResult
+      ? { sandboxBlockedResult: displayResult ?? item.result }
+      : {}),
+    requiresBypass,
+  };
+
+  if (showResult && displayResult) {
+    if (loadToolResult) {
+      return {
+        decorations,
+        body: {
+          kind: 'loadTool',
+          result: loadToolResult,
+          args: item.args,
+        },
+      };
+    }
+    if (resultOwnsPanel) {
+      return {
+        decorations,
+        body: {
+          kind: 'result',
+          result: displayResult,
+          presentation: 'owned',
+          toolName: item.toolName,
+          args: item.args,
+          shellRunSource: item.shellRunSource,
+        },
+      };
+    }
+  }
+
+  if (showLiveStream && item.outputChunks) {
+    return {
+      decorations,
+      body: {
+        kind: 'live',
+        chunks: item.outputChunks,
+        heading: invocationLine,
+        live: running,
+        truncated: item.outputTruncated === true,
+      },
+    };
+  }
+
+  const userQuestionAnswers = !ownsPanel && item.toolName === 'AskUserQuestion' && displayResult?.kind === 'json'
+    ? formatUserQuestionResult(item.args ?? item.argsPreview, displayResult.value, locale)
+    : undefined;
+  if (userQuestionAnswers) {
+    return { decorations, body: { kind: 'quietText', body: userQuestionAnswers } };
+  }
+
+  if (!ownsPanel && displayResult?.kind === 'json') {
+    const quiet = formatQuietJsonValue(displayResult.value, locale);
+    // Keep structured quiet JSON raw: generic permission-text replacement
+    // could rewrite a path, command, or query in the headline.
+    return {
+      decorations,
+      body: {
+        kind: 'quietText',
+        body: quiet.body,
+        title: quiet.headline && quiet.headline !== invocationLine
+          ? quiet.headline
+          : invocationLine,
+      },
+    };
+  }
+
+  if (!ownsPanel && showResult && displayResult) {
+    return {
+      decorations,
+      body: {
+        kind: 'result',
+        result: displayResult,
+        presentation: 'shared',
+        toolName: item.toolName,
+        args: item.args,
+        shellRunSource: item.shellRunSource,
+      },
+    };
+  }
+
+  if (!ownsPanel && item.args && !permissionDenied && !invocationLine) {
+    return {
+      decorations,
+      body: {
+        kind: 'argsOnly',
+        text: formatQuietJsonValue(item.args, locale).body,
+      },
+    };
+  }
+
+  if (!ownsPanel && invocationLine) {
+    return {
+      decorations,
+      body: {
+        kind: 'quietText',
+        body: invocationLine,
+      },
+    };
+  }
+
+  return { decorations, body: { kind: 'none' } };
+}
+
+function toolCallHasDetail(
+  decision: DetailDecision,
+  target: string | undefined,
+  targetUsesIntent: boolean,
+): boolean {
+  if (decision.decorations.sandboxBlockedResult || decision.decorations.requiresBypass) return true;
+  const { body } = decision;
+  switch (body.kind) {
+    case 'none':
+      return false;
+    case 'quietText': {
+      const text = body.body.trim();
+      // Compare the uncapped body to the displayed (capped) target: a line cut
+      // by the row's cap still holds its tail only inside the detail panel.
+      return Boolean(body.title) || /[\r\n]/.test(text)
+        || (targetUsesIntent ? normalizeToolIntent(text) : firstToolTargetLine(text)) !== (target ?? '');
+    }
+    case 'argsOnly':
+      // Unlike a repeated invocation, full arguments can reveal information
+      // lost to the row's first-line/120-character cap.
+      return body.text.trim() !== target;
+    case 'result': {
+      const { result } = body;
+      if (result.kind === 'image' || result.kind === 'archived_tool_result') return false;
+      // A whitespace-only body would expand to an empty code block.
+      if (result.kind === 'text') return result.text.trim().length > 0;
+      if (result.kind === 'summary') return result.summarized.trim().length > 0;
+      return true;
+    }
+    default:
+      return true;
+  }
+}
+
+function ToolCallDetailBody(props: {
+  body: DetailDecision['body'];
+  actionIdentity: string;
+}) {
+  const { body } = props;
+  switch (body.kind) {
+    case 'live':
+      return (
+        <ToolOutputSurface
+          kind="live_stream"
+          heading={body.heading}
+          actionIdentity={props.actionIdentity}
+        >
+          <ToolOutputStream
+            chunks={body.chunks}
+            live={body.live}
+            truncated={body.truncated}
+          />
+        </ToolOutputSurface>
+      );
+    case 'quietText':
+      return (
+        <div data-slot="tool-output" className="maka-tool-output-stack">
+          <ToolCodeBlock
+            code={body.body}
+            title={body.title}
+            actionIdentity={props.actionIdentity}
+          />
+        </div>
+      );
+    case 'argsOnly':
+      return (
+        <div data-slot="tool-output" className="maka-tool-output-stack">
+          <ToolCodeBlock
+            code={body.text}
+            language="json"
+            actionIdentity={props.actionIdentity}
+          />
+        </div>
+      );
+    case 'loadTool':
+      return (
+        <LoadToolResultPreview
+          args={body.args}
+          value={body.result.value}
+          actionIdentity={props.actionIdentity}
+        />
+      );
+    case 'result': {
+      const preview = (
+        <ToolResultPreview
+          content={body.result}
+          toolName={body.toolName}
+          args={body.args}
+          shellRunSource={body.shellRunSource}
+          actionIdentity={props.actionIdentity}
+        />
+      );
+      return body.presentation === 'shared'
+        ? <div data-slot="tool-output" className="maka-tool-output-stack">{preview}</div>
+        : preview;
+    }
+    case 'none':
+      return null;
+  }
+}
+
 /**
  * What a tool row reveals when expanded: the sandbox banner, the invocation,
  * live output or the settled result preview. Exported because Astryx owns the
@@ -188,140 +465,23 @@ export function ToolCallDetail({
   onSwitchToBypassAndRetry?(): void | Promise<void>;
 }) {
   const locale = useUiLocale();
-  const cancelled = isCancelledToolResult(item.result);
-  const sandboxBlocked = isSandboxDeniedTool(item);
-  const requiresBypass = isRequiresBypassToolResult(item.result);
-  // Cancel is not a failure; stale errored+cancelled must not paint as failed.
-  const failedOutcome = item.status === 'errored' && !cancelled;
-  const permissionDenied = isPermissionDeniedToolResult(item.result);
-  const running = activityObserved && isInFlightToolStatus(toolActivityPresentationStatus(item));
-  const outputActionIdentity = [
+  const decision = describeToolCall(item, locale, activityObserved);
+  const actionIdentity = [
     computerActionLabel(item, locale) ?? resolveToolDisplayName(item, locale),
     item.intent ? formatToolIntent(item.intent) : undefined,
   ]
     .filter((value): value is string => Boolean(value))
     .join(' · ');
-  const ptyControlResult = item.toolName === 'WriteStdin' && item.result?.kind === 'shell_run';
-  const ownsPanel = resultOwnsOwnPanel(item) || requiresBypass;
-  // Sandbox only — ordinary failures use ChatToolCalls status=error on the row.
-  const showSandboxBanner = sandboxBlocked && failedOutcome && !ptyControlResult;
-  // Skip invocation when the owned panel already prints the command.
-  const invocationLine = !permissionDenied && !ownsPanel
-    ? formatToolInvocationLine(item, locale)
-    : undefined;
-  // Live stream or settled result — never both (owned panels use withLiveStreamFallback).
-  const showLiveStream = !!item.outputChunks
-    && item.outputChunks.length > 0
-    && !ownsPanel
-    && (running || !item.result);
-  const showResult = !!item.result && !permissionDenied && !requiresBypass;
-  const displayResult = showResult && item.result
-    ? withLiveStreamFallback(item.result, item.outputChunks, {
-      truncated: item.outputTruncated === true,
-      locale,
-    })
-    : undefined;
-  const quietJson =
-    displayResult?.kind === 'json'
-      ? formatQuietJsonValue(displayResult.value, locale)
-      : undefined;
-  // Drop headline when it duplicates the invocation (e.g. Write path === path).
-  const showInvocation = invocationLine !== undefined;
-  const resultHeadline = quietJson?.headline
-    && quietJson.headline !== invocationLine
-    ? quietJson.headline
-    : undefined;
-  // Live streaming has its own surface below, so this covers only the settled
-  // stack.
-  const hasSharedPanelContent =
-    !ownsPanel && !showLiveStream && (
-      showInvocation
-      || !!resultHeadline
-      || showResult
-      || (!!item.args && !permissionDenied && !invocationLine)
-    );
 
   return (
     <div className="maka-tool-call-detail">
-      {showSandboxBanner && (
-        <SandboxBlockedBanner result={displayResult ?? item.result} />
+      {decision.decorations.sandboxBlockedResult && (
+        <SandboxBlockedBanner result={decision.decorations.sandboxBlockedResult} />
       )}
-      {requiresBypass && (
+      {decision.decorations.requiresBypass && (
         <RequiresBypassBanner onSwitchToBypassAndRetry={onSwitchToBypassAndRetry} />
       )}
-      {showResult && ownsPanel && displayResult && (
-        isConnectorTool(item.toolName) && displayResult.kind === 'json' ? (
-          <LoadToolResultPreview
-            args={item.args}
-            value={displayResult.value}
-            actionIdentity={outputActionIdentity}
-          />
-        ) : (
-          <ToolResultPreview
-            content={displayResult}
-            toolName={item.toolName}
-            args={item.args}
-            shellRunSource={item.shellRunSource}
-            actionIdentity={outputActionIdentity}
-          />
-        )
-      )}
-      {/* Streaming uses the same surface the settled result will land in, so a
-          command does not change shape the moment it finishes. It used to be a
-          CodeBlock card for the command with the stream as loose text beside
-          it. */}
-      {showLiveStream && (
-        <ToolOutputSurface
-          kind="live_stream"
-          heading={showInvocation ? invocationLine : undefined}
-          actionIdentity={outputActionIdentity}
-        >
-          <ToolOutputStream
-            chunks={item.outputChunks!}
-            live={running}
-            truncated={item.outputTruncated === true}
-          />
-        </ToolOutputSurface>
-      )}
-      {hasSharedPanelContent && (
-        <div data-slot="tool-output" className="maka-tool-output-stack">
-          {(() => {
-            const argsBody = !showInvocation && !resultHeadline && item.args !== undefined
-              && !permissionDenied && !showResult
-              ? formatQuietJsonValue(item.args, locale).body
-              : undefined;
-            const body = quietJson?.body ?? argsBody;
-            const title = resultHeadline ?? (showInvocation ? invocationLine : undefined);
-            if (body) {
-              return (
-                <ToolCodeBlock
-                  code={body}
-                  // Only raw args dumps are JSON; quiet bodies stay untokenized.
-                  language={argsBody ? 'json' : undefined}
-                  title={title}
-                  actionIdentity={outputActionIdentity}
-                />
-              );
-            }
-            if (showInvocation && invocationLine && !showResult) {
-              return <ToolCodeBlock code={invocationLine} actionIdentity={outputActionIdentity} />;
-            }
-            if (showResult && !ownsPanel && displayResult) {
-              return (
-                <ToolResultPreview
-                  content={displayResult}
-                  toolName={item.toolName}
-                  actionIdentity={outputActionIdentity}
-                />
-              );
-            }
-            if (showInvocation && invocationLine) {
-              return <ToolCodeBlock code={invocationLine} actionIdentity={outputActionIdentity} />;
-            }
-            return null;
-          })()}
-        </div>
-      )}
+      <ToolCallDetailBody body={decision.body} actionIdentity={actionIdentity} />
     </div>
   );
 }
@@ -344,8 +504,9 @@ export function ToolTrow({
   onSwitchToBypassAndRetry?(): void | Promise<void>;
 }) {
   const locale = useUiLocale();
+  const detailPluginKeys = useMakaClientSlotOccupiedKeys('conversation.tool.detail');
   if (items.length === 0) return null;
-  const segments = toolTrowSegments(items, locale, activityObserved, onSwitchToBypassAndRetry);
+  const segments = toolTrowSegments(items, locale, activityObserved, detailPluginKeys, onSwitchToBypassAndRetry);
 
   // ChatToolCalls owns expandable tool evidence. Linked child sessions are
   // navigation targets instead, so they render through Astryx's compact List:
@@ -373,15 +534,6 @@ export function ToolTrow({
   );
 }
 
-/** Whether a visible, collapsed ChatToolCalls row owns the active spinner. */
-export function toolTrowHasVisibleSpinner(items: readonly ToolActivityItem[]): boolean {
-  return items.some((item, index) =>
-    !isLinkedAgentResult(item.result)
-    && isInFlightToolStatus(toolActivityPresentationStatus(item))
-    && (index === items.length - 1 || isLinkedAgentResult(items[index + 1]?.result)),
-  );
-}
-
 type LinkedAgentRow = {
   key: string;
   name: string;
@@ -401,6 +553,7 @@ function toolTrowSegments(
   items: ToolActivityItem[],
   locale: UiLocale,
   activityObserved: boolean,
+  detailPluginKeys: ReadonlySet<string>,
   onSwitchToBypassAndRetry?: () => void | Promise<void>,
 ): ToolTrowSegment[] {
   const segments: ToolTrowSegment[] = [];
@@ -419,6 +572,7 @@ function toolTrowSegments(
       item,
       locale,
       activityObserved,
+      detailPluginKeys.has(item.toolName),
       isComputerTool(item) && !computerActionLabelIncludesTarget(item)
         ? computerTarget
         : undefined,
@@ -449,20 +603,25 @@ function LinkedAgentList(props: {
         return (
           <ListItem
             key={row.key}
-            startContent={(
-              <StatusDot
-                variant={dotForStatus(linkedAgentStatusSemantic(row.status))}
-                label={status}
-                isPulsing={props.activityObserved && row.status === 'running'}
-              />
-            )}
+            startContent={
+              <span className="maka-subagent-session-signal">
+                {props.activityObserved && row.status === 'running' ? (
+                  <RunningIndicator label={status} />
+                ) : (
+                  <StatusDot
+                    variant={dotForStatus(linkedAgentStatusSemantic(row.status))}
+                    label={status}
+                  />
+                )}
+              </span>
+            }
             label={(
               <span className="maka-subagent-session-label">
-                <Text type="label" maxLines={1}>
+                <Text type="supporting" weight="medium" maxLines={1}>
                   {row.name}
                 </Text>
                 {row.target ? (
-                  <Text type="body" color="secondary" maxLines={1} className="maka-subagent-session-summary">
+                  <Text type="supporting" color="secondary" maxLines={1} className="maka-subagent-session-summary">
                     {row.target}
                   </Text>
                 ) : null}
@@ -493,9 +652,12 @@ function standardToolCall(
   item: ToolActivityItem,
   locale: UiLocale,
   activityObserved: boolean,
+  hasDetailPlugin: boolean,
   inferredTarget?: string,
   onSwitchToBypassAndRetry?: () => void | Promise<void>,
 ): ChatToolCallItem {
+  const target = collapsedToolTarget(item, locale, inferredTarget);
+  const decision = describeToolCall(item, locale, activityObserved);
   return {
     key: item.toolUseId,
     // The name is what a person reads to tell one call from the next, and for
@@ -504,22 +666,44 @@ function standardToolCall(
     // arguments says what happened instead.
     name: computerActionLabel(item, locale) ?? resolveToolDisplayName(item, locale),
     status: astryxToolStatus(item),
-    target: collapsedToolTarget(item, locale, inferredTarget),
+    target,
     duration: formatDuration(item.durationMs) ?? undefined,
     errorMessage: toolCallErrorMessage(item, locale),
     stats: item.progress && isInFlightToolStatus(toolActivityPresentationStatus(item))
       ? `${item.progress.current}/${item.progress.total}`
-      : outcomeWord(item, locale),
+      : item.result?.kind === 'archived_tool_result'
+        ? [
+            outcomeWord(item, locale),
+            getToolActivityCopy(locale).result.archivedStatus[item.result.status],
+          ]
+            .filter(Boolean)
+            .join(' · ')
+        : outcomeWord(item, locale),
     ...diffStats(itemDiffs(item)),
-    resultDetail: (
+    resultDetail: hasDetailPlugin || toolCallHasDetail(
+      decision, target, Boolean(item.intent),
+    ) ? (
       <ToolDetailReveal>
         <ToolCallDetail
           item={item}
           activityObserved={activityObserved}
           onSwitchToBypassAndRetry={onSwitchToBypassAndRetry}
         />
+        <MakaClientSlotOutlet
+          name="conversation.tool.detail"
+          owner={{
+            callId: item.toolUseId,
+            toolName: item.toolName,
+            status: toolActivityPresentationStatus(item),
+            ...(item.args === undefined ? {} : { args: item.args }),
+            ...(item.result === undefined ? {} : { result: item.result }),
+          }}
+          options={{
+            entryKey: item.toolName,
+          }}
+        />
       </ToolDetailReveal>
-    ),
+    ) : undefined,
   };
 }
 
@@ -540,7 +724,15 @@ function collapsedToolTarget(
   if (item.intent) return formatToolIntent(item.intent);
   const line = preferred ?? formatToolInvocationLine(item, locale);
   if (!line) return undefined;
-  const firstLine = line.split('\n')[0]!.trim();
+  return boundedToolTarget(line);
+}
+
+function firstToolTargetLine(line: string): string {
+  return line.split('\n')[0]!.trim();
+}
+
+function boundedToolTarget(line: string): string | undefined {
+  const firstLine = firstToolTargetLine(line);
   if (!firstLine) return undefined;
   return firstLine.length > 120 ? `${firstLine.slice(0, 119)}…` : firstLine;
 }

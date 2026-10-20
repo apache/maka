@@ -20,7 +20,7 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import type { RuntimeHostProfileKind } from '@maka/runtime-host/profile-kind';
-import { UNRESOLVED_NEW_TASK_DRAFT_KEY } from '../../renderer/new-task-reload-intent.js';
+import { UNRESOLVED_NEW_TASK_DRAFT_KEY } from '../../renderer/application/contracts/new-task-reload-intent.js';
 import {
   resolveProjectSelection,
   selectAvailableProfile,

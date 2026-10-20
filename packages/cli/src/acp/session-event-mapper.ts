@@ -25,30 +25,43 @@ import {
 } from '@agentclientprotocol/sdk';
 import type { SessionEvent } from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
+import { userFacingText } from '@maka/core/session';
+import type { InteractionPendingSnapshot, InteractionSnapshot } from '@maka/runtime-host/protocol';
+import { whileActive } from './active-promise.js';
+import { AcpToolEventMapper } from './tool-event-mapper.js';
 
 type StreamKind = 'text' | 'thinking';
 
 export interface AcpSessionEventMapperOptions {
   readonly sessionId: string;
   readonly notify: (notification: SessionNotification) => Promise<void>;
+  /** Ends projection delivery without waiting for a stalled client transport. */
+  readonly signal?: AbortSignal;
 }
 
 /** Serializes one ACP prompt's live projection delivery. */
 export class AcpSessionEventMapper {
   readonly #sessionId: string;
   readonly #notify: (notification: SessionNotification) => Promise<void>;
+  readonly #signal: AbortSignal | undefined;
   readonly #streams = new Map<string, string>();
+  readonly #tools: AcpToolEventMapper;
   #tail: Promise<unknown> = Promise.resolve();
-  #failure: RequestError | undefined;
+  #failure: unknown;
+  #failed = false;
 
   constructor(options: AcpSessionEventMapperOptions) {
     this.#sessionId = options.sessionId;
     this.#notify = options.notify;
+    this.#signal = options.signal;
+    this.#tools = new AcpToolEventMapper(
+      (update) => this.#deliver({ sessionId: this.#sessionId, update }),
+      this.#sessionId,
+    );
   }
 
   accept(event: SessionEvent): Promise<void> {
     return this.#enqueue(async () => {
-      if (this.#failure) throw this.#failure;
       switch (event.type) {
         case 'text_delta':
           await this.#acceptText(
@@ -70,6 +83,13 @@ export class AcpSessionEventMapper {
         case 'thinking_complete':
           await this.#acceptText('thinking', event.messageId, event.text);
           break;
+        case 'tool_start':
+        case 'tool_output_delta':
+        case 'tool_progress':
+        case 'tool_result_preview':
+        case 'tool_result':
+          await this.#tools.accept(event);
+          break;
         default:
           break;
       }
@@ -77,19 +97,110 @@ export class AcpSessionEventMapper {
   }
 
   replaceTranscript(turnId: string, messages: readonly StoredMessage[]): Promise<void> {
+    return this.acceptTranscriptMessages(turnId, messages);
+  }
+
+  /** Apply a bounded authoritative batch; absence from one batch never removes a tool. */
+  acceptTranscriptMessages(
+    turnId: string,
+    messages: readonly StoredMessage[],
+    ignoreOlder = false,
+  ): Promise<void> {
     return this.#enqueue(async () => {
-      if (this.#failure) throw this.#failure;
       for (const message of messages) {
-        if (message.turnId !== turnId || message.type !== 'assistant') continue;
-        await this.#acceptText('thinking', message.id, message.thinking?.text ?? '');
-        await this.#acceptText('text', message.id, message.text);
+        if (message.turnId !== turnId) continue;
+        if (message.type === 'assistant') {
+          const thinking = message.thinking?.text ?? '';
+          if (
+            !ignoreOlder ||
+            thinking.startsWith(this.#streams.get(streamKey('thinking', message.id)) ?? '')
+          )
+            await this.#acceptText('thinking', message.id, thinking);
+          if (
+            !ignoreOlder ||
+            message.text.startsWith(this.#streams.get(streamKey('text', message.id)) ?? '')
+          )
+            await this.#acceptText('text', message.id, message.text);
+        } else await this.#tools.acceptMessage(message);
       }
     });
   }
 
+  /** Replay one durable row in transcript order for session/load. */
+  acceptHistoricalMessage(message: StoredMessage): Promise<void> {
+    return this.#enqueue(async () => {
+      if (message.type === 'user') {
+        // ACP v1 has no mid-Turn steering update. Live projection omits these
+        // rows, so historical replay must not present them as new user turns.
+        if (message.steeringEventId) return;
+        const attachments = message.attachments ?? [];
+        const text = [
+          userFacingText(message),
+          ...attachments.map(
+            (attachment) =>
+              `[Attachment: ${attachment.name} (${attachment.mimeType}, ${attachment.bytes} bytes)]`,
+          ),
+        ]
+          .filter(Boolean)
+          .join('\n\n');
+        if (text) {
+          await this.#deliver({
+            sessionId: this.#sessionId,
+            update: {
+              sessionUpdate: 'user_message_chunk',
+              content: { type: 'text', text },
+              messageId: message.id,
+              ...(attachments.length || message.origin
+                ? {
+                    _meta: {
+                      ...(attachments.length
+                        ? { '_maka/attachments': structuredClone(attachments) }
+                        : {}),
+                      ...(message.origin
+                        ? { '_maka/origin': structuredClone(message.origin) }
+                        : {}),
+                    },
+                  }
+                : {}),
+            },
+          });
+        }
+      } else if (message.type === 'assistant') {
+        await this.#acceptText('thinking', message.id, message.thinking?.text ?? '');
+        await this.#acceptText('text', message.id, message.text);
+      } else {
+        await this.#tools.acceptMessage(message);
+      }
+    });
+  }
+
+  finishTools(
+    turnId: string,
+    terminalStatus: 'completed' | 'failed' | 'cancelled' = 'completed',
+  ): Promise<void> {
+    return this.#enqueue(() => this.#tools.finishTools(turnId, terminalStatus));
+  }
+
+  pendingInteraction(pending: InteractionPendingSnapshot): Promise<void> {
+    return this.#enqueue(() => this.#tools.pendingInteraction(pending));
+  }
+
+  resolvedInteraction(
+    resolved: InteractionSnapshot,
+    pending: InteractionPendingSnapshot,
+  ): Promise<void> {
+    return this.#enqueue(() => this.#tools.resolvedInteraction(resolved, pending));
+  }
+
   /** Waits until every notification already accepted by this mapper has settled. */
   flush(): Promise<void> {
-    return this.#tail.then(() => undefined);
+    return this.#tail.then(() => {
+      if (this.#failed) throw this.#failure;
+    });
+  }
+
+  textForMessage(kind: StreamKind, messageId: string): string | undefined {
+    return this.#streams.get(streamKey(kind, messageId));
   }
 
   async #acceptText(kind: StreamKind, hostMessageId: string, nextText: string): Promise<void> {
@@ -111,11 +222,27 @@ export class AcpSessionEventMapper {
       content: { type: 'text', text: chunk },
       messageId: hostMessageId,
     };
-    await this.#notify({ sessionId: this.#sessionId, update });
+    await this.#deliver({ sessionId: this.#sessionId, update });
+  }
+
+  async #deliver(notification: SessionNotification): Promise<void> {
+    if (this.#signal?.aborted) return;
+    const delivery = this.#notify(notification);
+    if (!this.#signal) return delivery;
+    await whileActive(delivery, this.#signal);
   }
 
   #enqueue<T>(operation: () => Promise<T>): Promise<T> {
-    const result = this.#tail.then(operation, operation);
+    const result = this.#tail.then(async () => {
+      if (this.#failed) throw this.#failure;
+      try {
+        return await operation();
+      } catch (error) {
+        this.#failure = error;
+        this.#failed = true;
+        throw error;
+      }
+    });
     this.#tail = result.then(
       () => undefined,
       () => undefined,
@@ -128,10 +255,7 @@ function deltaText(
   event: Extract<SessionEvent, { type: 'text_delta' | 'thinking_delta' }>,
   current = '',
 ): string {
-  return foldRuntimeHostAssistantDelta(current, {
-    startOffset: event.startOffset ?? current.length,
-    text: event.text,
-  }).text;
+  return foldRuntimeHostAssistantDelta(current, event).text;
 }
 
 function streamKey(kind: StreamKind, messageId: string): string {

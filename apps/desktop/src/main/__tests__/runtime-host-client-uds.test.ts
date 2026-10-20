@@ -216,8 +216,28 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
             });
             return { ok: true, result: projected };
           },
+          'session.remove.preview': async (input) => {
+            assert.deepEqual(input, {
+              sessionIds: ['session-ipc'],
+              measureBytes: true,
+              requireArchived: true,
+            });
+            return {
+              ok: true,
+              result: {
+                archivableSubtaskCount: 1,
+                removedSubtaskCount: 2,
+                worktreeCount: 3,
+                bytes: 4096,
+              },
+            };
+          },
           'session.remove': async (input) => {
             assert.ok(projected);
+            if (input.requireArchivedForMs !== undefined) {
+              // The Host's clock says the task is not old enough yet.
+              return { ok: true, result: { kind: 'too_recent', sessionId: input.sessionId } };
+            }
             if (restoreUnderNextRemove) {
               // Another window restored the task between the Client's read and
               // this write. The Host rejects the stale revision, which is what
@@ -256,6 +276,7 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
     acquireOperationalStateDatabase(base).close();
     const started = await startDesktopRuntimeHostCandidate({
       rootPath: base,
+      rootId: capability.rootId,
       candidateEntrypoint: new URL('file:///unused-runtime-host-candidate.js'),
       ipcMain: ipc,
       workspaceRoot: base,
@@ -280,8 +301,10 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
         workspace: { kind: 'host_path', path: base },
       }),
       resolveSessionCreateProject: async () => ({ kind: 'host_path', path: base }),
+      resolveExternalSessionImportWorkspace: async () => ({ kind: 'host_path', path: base }),
       emitSessionsChanged: (_hostId, reason, sessionId) => changes.push({ reason, sessionId }),
       completeDesktopInteractionTurn() {},
+      notifyRun: async () => {},
       createSessionCopyCleanup: () => ({
         ownCreation: (_creation, operation) => operation(),
         rejectCreation: async () => undefined,
@@ -322,6 +345,29 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
     assert.equal(updatedSession.revision, 2);
     await ipc.invoke('sessions:archive', 'session-ipc');
     assert.equal((await ipc.invoke('sessions:list') as Array<{ isArchived: boolean }>)[0]?.isArchived, true);
+    // The confirm's preview crosses the wire as one page of this Host's ids.
+    const previewInput = { sessionIds: ['session-ipc'], measureBytes: true, requireArchived: true };
+    assert.deepEqual(await ipc.invoke('sessions:removePreview', previewInput), {
+      archivableSubtaskCount: 1,
+      removedSubtaskCount: 2,
+      worktreeCount: 3,
+      bytes: 4096,
+    });
+    // The protocol codec, not a second IPC check, refuses a malformed input.
+    await assert.rejects(
+      ipc.invoke('sessions:removePreview', { sessionIds: 'session-ipc' }),
+      /Session remove preview/,
+    );
+    // An age filter's threshold reaches the Host, and its refusal keeps the task.
+    assert.deepEqual(
+      await ipc.invoke('sessions:remove', 'session-ipc', {
+        revisionFamily: true,
+        requireArchived: true,
+        requireArchivedForMs: 604_800_000,
+      }),
+      { disposition: 'too_recent', archivedSubtaskCount: 0 },
+    );
+    assert.equal((await ipc.invoke('sessions:list') as unknown[]).length, 1);
     // A purge sweep asks for the task it saw archived. Restored under it, the
     // deletion is called off rather than replayed at the fresh revision (#3050).
     restoreUnderNextRemove = true;
@@ -493,10 +539,6 @@ test('drives bounded Session domain projections through real UDS framing', async
             ok: true,
             result: { sessionId: input.sessionId, goal: null },
           }),
-          'deep-research.query': async (input) => ({
-            ok: true,
-            result: { kind: 'not_started', sessionId: input.sessionId, revision: 0 },
-          }),
           'runtime.resource.query': async (input) => ({
             ok: true,
             result: {
@@ -542,7 +584,6 @@ test('drives bounded Session domain projections through real UDS framing', async
       executions: [],
     });
     assert.equal(await ipc.invoke('goal:get', 'session-1'), null);
-    assert.equal(await ipc.invoke('deepResearch:get', 'session-1'), undefined);
     assert.deepEqual(await ipc.invoke('shell-runs:list', 'session-1'), []);
 
     await client.close();

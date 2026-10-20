@@ -64,7 +64,7 @@ describe('Computer Use host health', () => {
     assert.equal(computerUseServiceHealth('none', undefined).state, 'not_available');
   });
 
-  it('constructs a backend only when the local artifact matches the manifest hash', async () => {
+  it('constructs a backend only when the local artifact matches the manifest hash', async (t) => {
     const directory = await mkdtemp(join(tmpdir(), 'maka-cu-host-'));
     try {
       const binaryPath = join(directory, 'maka-cu');
@@ -126,16 +126,26 @@ describe('Computer Use host health', () => {
       });
       assert.equal(invalid.selected.backendId, 'none');
 
-      const linkedBinaryPath = join(directory, 'linked-maka-cu');
-      await symlink(binaryPath, linkedBinaryPath);
-      const linked = createComputerUseHost({
-        isPackaged: false,
-        resourcesPath: directory,
-        manifestPath,
-        binaryPath: linkedBinaryPath,
-        physicalInputRecentlyActive: () => false,
+      await t.test('rejects a symlinked binary', async (context) => {
+        const linkedBinaryPath = join(directory, 'linked-maka-cu');
+        try {
+          await symlink(binaryPath, linkedBinaryPath, 'file');
+        } catch (error) {
+          if (process.platform === 'win32' && (error as NodeJS.ErrnoException).code === 'EPERM') {
+            context.skip('File symlinks require Developer Mode or symlink privileges on Windows');
+            return;
+          }
+          throw error;
+        }
+        const linked = createComputerUseHost({
+          isPackaged: false,
+          resourcesPath: directory,
+          manifestPath,
+          binaryPath: linkedBinaryPath,
+          physicalInputRecentlyActive: () => false,
+        });
+        assert.equal(linked.selected.backendId, 'none');
       });
-      assert.equal(linked.selected.backendId, 'none');
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

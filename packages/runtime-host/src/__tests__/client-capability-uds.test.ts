@@ -126,6 +126,9 @@ test('unknown Client Capability loads, invokes, and rebinds after UDS reconnect'
     await client.status();
 
     const largeValue = 'x'.repeat(100_000);
+    // Code Mode appends its nested identity to a provider-owned call ID.
+    // This crosses both the entity-ID alphabet and its 128-character limit.
+    const toolCallId = `${'p'.repeat(128)}:nested:00000000-0000-4000-8000-000000000001`;
     let providerCloseCalls = 0;
     const provider: ClientCapabilityProvider = {
       offers: () => [
@@ -161,11 +164,18 @@ test('unknown Client Capability loads, invokes, and rebinds after UDS reconnect'
         },
       ],
       call: async (frame, { accept }) => {
+        assert.equal(frame.toolCallId, toolCallId);
         if (frame.toolName === 'reject_unknown') {
           throw new Error('Provider rejected before acceptance');
         }
         await accept({ kind: 'none' });
         return {
+          outcome:
+            frame.arguments.prefix === 'failure'
+              ? 'error'
+              : frame.arguments.prefix === 'aborted'
+                ? 'aborted'
+                : 'success',
           content: [
             {
               type: 'text',
@@ -201,7 +211,7 @@ test('unknown Client Capability loads, invokes, and rebinds after UDS reconnect'
       sessionId: 'session-uds',
       turnId: 'turn-uds',
       cwd: root,
-      toolCallId: 'tool-call-uds',
+      toolCallId,
       abortSignal: new AbortController().signal,
       emitOutput: () => undefined,
     };
@@ -236,13 +246,88 @@ test('unknown Client Capability loads, invokes, and rebinds after UDS reconnect'
 
     const result = await tool.impl({ prefix: 'from-uds' }, toolContext);
     assert.deepEqual(result, {
+      outcome: 'success',
       content: [{ type: 'text', text: `from-uds:${largeValue}` }],
     });
+    const failed = await tool.impl({ prefix: 'failure' }, toolContext);
+    assert.deepEqual(failed, {
+      outcome: 'error',
+      content: [{ type: 'text', text: `failure:${largeValue}` }],
+    });
+    const aborted = await tool.impl({ prefix: 'aborted' }, toolContext);
+    assert.deepEqual(aborted, {
+      outcome: 'aborted',
+      content: [{ type: 'text', text: `aborted:${largeValue}` }],
+    });
+    await client.status();
     await assert.rejects(
       async () => rejectedTool.impl({}, toolContext),
       (error: unknown) =>
         error instanceof ClientCapabilityInvocationError && error.code === 'provider_rejected',
     );
+
+    const scopedProvider = (sessionId: string, value: string): ClientCapabilityProvider => ({
+      offers: () => [
+        {
+          offerId: 'mcp_scope',
+          version: '0',
+          affinity: 'session',
+          hostPathAccess: 'none',
+          admission: 'mcp',
+          label: 'Session MCP',
+          tools: [{ serverId: 'same_server', name: 'same_tool', inputSchema: { type: 'object' } }],
+        },
+      ],
+      call: async (frame, options) => {
+        assert.equal(frame.sessionId, sessionId);
+        await options.accept({ kind: 'none' });
+        return { outcome: 'success', content: [{ type: 'text', text: value }] };
+      },
+    });
+    await Promise.all([
+      client.replaceClientCapabilities(scopedProvider('scope-a', 'from-a'), {
+        sessionId: 'scope-a',
+      }),
+      client.replaceClientCapabilities(scopedProvider('scope-b', 'from-b'), {
+        sessionId: 'scope-b',
+      }),
+    ]);
+    for (const sessionId of ['scope-a', 'scope-b']) {
+      assert.equal((await coordinator.bindSession(sessionId, client.connectionId)).ok, true);
+    }
+    const invokeScoped = async (sessionId: string) => {
+      const scoped = coordinator!.snapshotForSession(sessionId)!;
+      try {
+        const echo = scoped.tools.find(
+          (candidate) => candidate.name === mcpProxyToolName('same_server', 'same_tool'),
+        )!;
+        assert.ok(echo);
+        return await echo.impl({}, { ...toolContext, sessionId });
+      } finally {
+        scoped.release();
+      }
+    };
+    assert.deepEqual(await invokeScoped('scope-a'), {
+      outcome: 'success',
+      content: [{ type: 'text', text: 'from-a' }],
+    });
+    assert.deepEqual(await invokeScoped('scope-b'), {
+      outcome: 'success',
+      content: [{ type: 'text', text: 'from-b' }],
+    });
+    await client.replaceClientCapabilities(scopedProvider('scope-a', 'replacement-a'), {
+      sessionId: 'scope-a',
+    });
+    assert.deepEqual(await invokeScoped('scope-a'), {
+      outcome: 'success',
+      content: [{ type: 'text', text: 'replacement-a' }],
+    });
+    await client.unregisterClientCapabilities({ sessionId: 'scope-a' });
+    assert.deepEqual(await invokeScoped('scope-b'), {
+      outcome: 'success',
+      content: [{ type: 'text', text: 'from-b' }],
+    });
+    await client.unregisterClientCapabilities({ sessionId: 'scope-b' });
 
     const disconnectedClient = client;
     client = undefined;
@@ -269,9 +354,16 @@ test('unknown Client Capability loads, invokes, and rebinds after UDS reconnect'
     await client.replaceClientCapabilities({
       offers: provider.offers,
       call: async (frame, { accept }) => {
+        assert.equal(frame.toolCallId, toolCallId);
         await accept({ kind: 'none' });
         return {
-          content: [{ type: 'text', text: `reconnected:${String(frame.arguments.prefix)}` }],
+          outcome: 'success',
+          content: [
+            {
+              type: 'text',
+              text: `reconnected:${String(frame.arguments.prefix)}`,
+            },
+          ],
         };
       },
     });
@@ -285,6 +377,7 @@ test('unknown Client Capability loads, invokes, and rebinds after UDS reconnect'
     );
     assert.ok(reconnectedTool);
     assert.deepEqual(await reconnectedTool.impl({ prefix: 'from-uds' }, toolContext), {
+      outcome: 'success',
       content: [{ type: 'text', text: 'reconnected:from-uds' }],
     });
   } finally {

@@ -37,12 +37,21 @@ export interface GitReviewFile {
   deletions: number;
 }
 
-export interface GitReviewSnapshot {
+export interface GitReviewBaseBranchOption {
+  label: string;
+  /** Fully qualified branch ref, never a tag or an ambiguous revision. */
+  value: string;
+}
+
+export interface GitReviewBranchContext {
+  currentBranch: string | null;
+  baseBranchOptions: GitReviewBaseBranchOption[];
+}
+
+export interface GitReviewSnapshot extends GitReviewBranchContext {
   source: GitReviewSource;
   repositoryRoot: string;
-  currentBranch: string | null;
   baseBranch: string | null;
-  baseBranchOptions: string[];
   revision: string;
   files: GitReviewFile[];
   additions: number;
@@ -54,8 +63,15 @@ export type GitReviewReadResult =
   | { ok: true; snapshot: GitReviewSnapshot }
   | {
       ok: false;
+      /** Available even when computing the selected branch diff fails. */
+      branches?: GitReviewBranchContext;
+      /** The Session's recorded workspace, so guidance names its directory. */
+      workspace?: string;
+      /** Underlying read detail for `git_failed`; absent for capability states. */
+      detail?: string;
       reason:
         | 'workspace_unavailable'
+        | 'remote_workspace'
         | 'not_git_repository'
         | 'unborn_repository'
         | 'invalid_base_branch'

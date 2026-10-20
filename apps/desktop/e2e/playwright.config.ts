@@ -23,10 +23,11 @@ import { defineConfig } from '@playwright/test';
  * Playwright config for the desktop Electron E2E suite.
  *
  * Every test launches a real Electron window backed by the deterministic fake
- * backend (MAKA_E2E=1) against its OWN throwaway userData dir. One worker,
- * everywhere: what is left in this tier is here because it needs a native
- * window, and concurrent windows share OS focus, which invalidates exactly the
- * focus, pointer and geometry contracts that kept these tests here.
+ * backend (MAKA_E2E=1) against its OWN throwaway userData dir. What is left in
+ * this tier needs a native window, and one X server has one focus, pointer and
+ * stacking order — the contracts these tests assert. So N workers need N X
+ * servers, and the runner that starts them also passes Playwright its worker
+ * count. Direct invocations stay serial.
  * Deliberately no test count here — the previous note carried a stale one that
  * outlived two rounds of pruning. `playwright test --list` is the only figure
  * that cannot rot.

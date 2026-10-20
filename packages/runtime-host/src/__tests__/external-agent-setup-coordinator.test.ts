@@ -276,6 +276,31 @@ test('install admits an empty saved path, reports progress and checks without au
     await coordinator.close();
   }
 });
+
+test('successful login invalidates catalog even when the executable setting is unchanged', async () => {
+  let invalidations = 0;
+  const coordinator = new HostExternalAgentSetupCoordinator({
+    readPolicy: async () => policy,
+    platform: 'darwin',
+    arch: 'arm64',
+    acquireResidency: () => ({ release() {} }),
+    onCleanupFailure() {},
+    onSucceeded: () => {
+      invalidations++;
+    },
+    capabilities: { callService: async () => ({ kind: 'presented' }) },
+    run: async () => {},
+  });
+  try {
+    await coordinator.handlers['external_agents.setup.start'](input, context);
+    for (let i = 0; i < 30 && (await projection(coordinator)).phase !== 'succeeded'; i++)
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal((await projection(coordinator)).phase, 'succeeded');
+    assert.equal(invalidations, 1);
+  } finally {
+    await coordinator.close();
+  }
+});
 test('installation projection rejects invented progress, phase and output paths', () => {
   const base = {
     ...input,

@@ -28,7 +28,7 @@ import type {
 import type { SessionSummary, StoredMessage, TurnRecord } from '@maka/core/session';
 import type { UsageStats } from '@maka/core/settings';
 import type { RuntimeHostProfileKind } from '@maka/runtime-host/profile-kind';
-import { desktopSessionKey, type DesktopHostRef } from './runtime-host-identity.js';
+import { desktopSessionKey, parseDesktopSessionKey, type DesktopHostRef } from './runtime-host-identity.js';
 
 export interface DesktopSessionSummary extends SessionSummary {
   /** Client cache is readable history, not evidence of current Host execution. */
@@ -47,6 +47,22 @@ export interface DesktopSessionSummary extends SessionSummary {
 }
 
 export type DesktopSessionSummaryInput = SessionSummary & { readonly revision: number; readonly localState?: 'pending' | 'cached'; readonly localCreatedAt?: number };
+
+/**
+ * Catalog order is Host-owned (`activity_at DESC, session_id ASC`); a single
+ * row patched locally must sort exactly as a re-listed catalog would.
+ */
+export function compareDesktopSessionCatalogSummaries(
+  left: DesktopSessionSummary,
+  right: DesktopSessionSummary,
+): number {
+  const leftActivity = left.localState === 'pending' ? left.localCreatedAt : left.activityAt;
+  const rightActivity = right.localState === 'pending' ? right.localCreatedAt : right.activityAt;
+  if (leftActivity === undefined || rightActivity === undefined) {
+    throw new Error('Runtime Host Session Catalog activity is unavailable');
+  }
+  return rightActivity - leftActivity || left.id.localeCompare(right.id);
+}
 
 export type DesktopSessionUpdateFailureCode =
   | 'session_busy'
@@ -273,17 +289,56 @@ export function projectDesktopDailyReviewSummary(
   };
 }
 
-export function projectDesktopUsageStats(
+export function projectDesktopUsageActivity(
   host: DesktopHostRef,
-  stats: UsageStats,
-): UsageStats {
-  return {
-    ...stats,
-    logs: stats.logs.map((log) => ({
-      ...log,
-      ...(log.sessionId === undefined
-        ? {}
-        : { sessionId: projectSessionId(host, log.sessionId) }),
-    })),
-  };
+  logs: UsageStats['logs'],
+): UsageStats['logs'] {
+  return logs.map((log) => ({
+    ...log,
+    ...(log.sessionId === undefined
+      ? {}
+      : { sessionId: projectSessionId(host, log.sessionId) }),
+  }));
+}
+
+export function projectDesktopUsageStats(host: DesktopHostRef, stats: UsageStats): UsageStats {
+  return { ...stats, logs: projectDesktopUsageActivity(host, stats.logs) };
+}
+
+type AssociatedTopic = { targetSessionId: string; targetSessionKey: string; targetSessionName: string };
+type TopicDecision = AssociatedTopic | { targetSessionId: null };
+const isClearingReason = (reason: unknown) => reason === 'unrelated' || reason === 'overview' || reason === 'ambiguous';
+
+/** Topic identity comes only from a successful, validated tasks association receipt. */
+export function readWorkHubTopicAssociation(message: StoredMessage, expectedSessionId: string): AssociatedTopic | undefined;
+export function readWorkHubTopicAssociation(message: StoredMessage, expectedSessionId: string | null): TopicDecision | undefined;
+export function readWorkHubTopicAssociation(message: StoredMessage, expectedSessionId: string | null): TopicDecision | undefined {
+  if (message.type !== 'tool_result' || message.isError) return;
+  let result: unknown;
+  if (message.content.kind === 'json') result = message.content.value;
+  else if (message.content.kind === 'text') {
+    try { result = JSON.parse(message.content.text); } catch { return; }
+  }
+  if (result && typeof result === 'object' && 'isError' in result && result.isError) return;
+  if (result && typeof result === 'object' && 'structuredContent' in result) result = result.structuredContent;
+  if (!result || typeof result !== 'object' || !('operation' in result) || result.operation !== 'associate' ||
+    !('targetSessionId' in result) || result.targetSessionId !== expectedSessionId) return;
+  if (expectedSessionId === null) return 'reason' in result && isClearingReason(result.reason) ? { targetSessionId: null } : undefined;
+  if (!('targetSessionKey' in result) || typeof result.targetSessionKey !== 'string' ||
+    !('targetSessionName' in result) || typeof result.targetSessionName !== 'string') return;
+  try { if (parseDesktopSessionKey(result.targetSessionKey).sessionId !== expectedSessionId) return; }
+  catch { return; }
+  return { targetSessionId: expectedSessionId, targetSessionKey: result.targetSessionKey, targetSessionName: result.targetSessionName };
+}
+
+/** null is an explicit clearing request; undefined means no valid association request. */
+export function workHubAssociationTarget(message: StoredMessage): string | null | undefined {
+  if (message.type !== 'tool_call' || message.toolName !== 'mcp__desktop_workhub__tasks') return;
+  const args = message.args;
+  const request = args && typeof args === 'object' && 'request' in args ? args.request : undefined;
+  if (request && typeof request === 'object' && 'operation' in request && request.operation === 'associate' &&
+    'targetSessionId' in request) {
+    if (typeof request.targetSessionId === 'string') return request.targetSessionId;
+    if (request.targetSessionId === null && 'reason' in request && isClearingReason(request.reason)) return null;
+  }
 }

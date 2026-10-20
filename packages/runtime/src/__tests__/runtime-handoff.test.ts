@@ -259,8 +259,9 @@ for (const decision of [
         prepareConversationRuntimeLedgerCopy({
           sourceSessionId: session.id,
           sourceEvents,
-          // The paused run carries no terminal status yet, so the read model
-          // refuses to project the Session; the copy only reads the Turn its
+          // The read model classifies the pause as handed_off, but the copy
+          // preflight deliberately refuses handoff lineage until typed
+          // identity rewriting lands; the copy only reads the Turn its
           // messages name.
           copiedMessages: sourceEvents
             .map((event) => projectRuntimeEventUserMessage(event, event.id))
@@ -371,3 +372,211 @@ for (const decision of [
     }
   });
 }
+
+test('chained handoff parks planning at the original boundary as continuation_already_exists', {
+  timeout: 10_000,
+}, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-runtime-handoff-chain-'));
+  const owner = await tryAcquireInteractiveRootOwner(
+    await resolveStorageRoot({ path: root, kind: 'interactive' }),
+  );
+  assert.ok(owner);
+  const store = createSessionStore(root);
+  const runStore = createSqliteAgentRunStore(root);
+  const planStore = await openInteractivePlanStoreForWrite(owner.lease);
+  const runtimeEventStore = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
+  const originalEntered = deferred<void>();
+  const originalGo = deferred<void>();
+  const continuationEntered = deferred<void>();
+  const continuationGo = deferred<void>();
+  const executionAbort = new AbortController();
+  const backends = new BackendRegistry();
+  backends.register('ai-sdk', (ctx) => {
+    return new (class extends FakeBackend {
+      async prepareRunComposition(input: { runId: string; turnId: string }): Promise<void> {
+        await ctx.recordRunComposition!(
+          input.runId,
+          createRunCompositionSnapshot({
+            composerId: 'test.handoff',
+            composerRevision: '1',
+            sourceRevisions: [],
+            baseSystemPromptHash: `sha256:${'0'.repeat(64)}`,
+            toolCatalogHash: `sha256:${'0'.repeat(64)}`,
+            toolAvailabilityHash: `sha256:${'0'.repeat(64)}`,
+            baseProviderOptionsHash: `sha256:${'0'.repeat(64)}`,
+            toolNames: [],
+            contextWindow: null,
+          }),
+        );
+      }
+
+      override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+        if (!input.continuation) {
+          await this.prepareRunComposition({ runId: input.runId!, turnId: input.turnId });
+          originalEntered.resolve();
+          await originalGo.promise;
+          const result = await input.handoffBoundary!(executionAbort.signal, 2);
+          if (result === 'pause' && !executionAbort.signal.aborted) return;
+        } else {
+          continuationEntered.resolve();
+          await continuationGo.promise;
+          const result = await input.handoffBoundary!(executionAbort.signal, null);
+          if (result === 'pause' && !executionAbort.signal.aborted) return;
+        }
+        yield {
+          type: 'complete',
+          id: `complete-${input.runId}`,
+          turnId: input.turnId,
+          ts: Date.now(),
+          stopReason: 'end_turn',
+        };
+      }
+
+      override async stop(): Promise<void> {
+        executionAbort.abort();
+      }
+    })({ sessionId: ctx.sessionId });
+  });
+  let id = 0;
+  const deps = {
+    store,
+    runStore,
+    runtimeEventStore,
+    planStore,
+    backends,
+    safeBoundaryResumeEnabled: true,
+    toolBoundaryProtocol: 't1_after_preflight_v1' as const,
+    inspectContinuationSafety: async () => ({
+      workspaceIdentity: 'workspace-1',
+      backgroundOperationsSettled: true,
+      availableToolNames: [] as string[],
+    }),
+    newId: () => `id-${++id}`,
+    now: Date.now,
+  };
+  const kernel = new RuntimeKernel(deps);
+  const manager = new SessionManager({ ...deps, runtimeKernel: kernel });
+  const session = await manager.createSession({
+    cwd: root,
+    llmConnectionSlug: 'fake',
+    model: 'fake-model',
+    permissionMode: 'ask',
+    name: 'handoff-chain',
+  });
+  try {
+    await planStore.submitProposal({
+      sessionId: session.id,
+      turnId: 'proposal-turn',
+      title: 'work',
+      steps: [{ id: 'step-1', title: 'finish', description: 'finish the logical task' }],
+    });
+    const proposal = (await planStore.readState(session.id)).proposals[0]!;
+    await planStore.approveProposal({
+      sessionId: session.id,
+      proposalId: proposal.proposalId,
+      expectedRevision: proposal.revision,
+    });
+    const running = (async () => {
+      for await (const _ of manager.sendMessage(
+        session.id,
+        {
+          turnId: 'logical-turn',
+          text: 'continue work',
+          origin: { kind: 'goal', goalId: 'goal-1' },
+        },
+        { runId: 'original-run', durability: 'required' },
+      )) {
+        void _;
+      }
+    })();
+    void running.catch(() => {});
+    await originalEntered.promise;
+    const pause1 = {
+      protocol: 'runtime_handoff_pause_v1' as const,
+      handoffId: 'handoff-1',
+      hostEpoch: 'host-1',
+      rootRunId: 'original-run',
+      successorRunId: 'successor-run',
+      successorInvocationId: 'successor-run',
+      claimId: 'chained-claim-1',
+    };
+    const request1 = kernel.requestRunHandoff(
+      session.id,
+      'original-run',
+      pause1,
+      new AbortController().signal,
+    );
+    assert.ok(request1);
+    originalGo.resolve();
+    assert.equal(await request1.ready, true);
+    assert.equal(request1.commit(), true);
+    await running;
+    assert.deepEqual(
+      runtimeHandoffPause(
+        (await runtimeEventStore.readRunInvocation(session.id, 'original-run'))!.terminalEvent!,
+      ),
+      { ...pause1, remainingSteps: 2 },
+    );
+    await manager.recoverInterruptedSessions();
+
+    const plan1 = await manager.planAuthoritativeSafeBoundaryContinuation(session.id, {
+      sourceRunId: 'original-run',
+      purpose: 'handoff',
+    });
+    assert.ok(plan1.continuation, JSON.stringify(plan1));
+
+    const resume = (async () => {
+      for await (const _ of manager.resumeSafeBoundaryContinuation(plan1.continuation!)) {
+        void _;
+      }
+    })();
+    void resume.catch(() => {});
+    await continuationEntered.promise;
+    const pause2 = {
+      protocol: 'runtime_handoff_pause_v1' as const,
+      handoffId: 'handoff-2',
+      hostEpoch: 'host-2',
+      rootRunId: 'original-run',
+      successorRunId: 'successor-run-2',
+      successorInvocationId: 'successor-run-2',
+      claimId: 'chained-claim-2',
+    };
+    const request2 = kernel.requestRunHandoff(
+      session.id,
+      'successor-run',
+      pause2,
+      new AbortController().signal,
+    );
+    assert.ok(request2);
+    continuationGo.resolve();
+    assert.equal(await request2.ready, true);
+    assert.equal(request2.commit(), true);
+    await resume;
+    assert.deepEqual(
+      runtimeHandoffPause(
+        (await runtimeEventStore.readRunInvocation(session.id, 'successor-run'))!.terminalEvent!,
+      ),
+      { ...pause2, remainingSteps: null },
+    );
+
+    // The continuation target itself handed off: planning the same handoff at
+    // the original boundary finds a terminal continuation (handed_off), not
+    // an ambiguous one that needs repair.
+    const chainedPlan = await manager.planAuthoritativeSafeBoundaryContinuation(session.id, {
+      sourceRunId: 'original-run',
+      purpose: 'handoff',
+    });
+    assert.equal(chainedPlan.disposition, 'park');
+    assert.deepEqual(chainedPlan.rejectionReasons, ['continuation_already_exists']);
+  } finally {
+    originalGo.resolve();
+    continuationGo.resolve();
+    await kernel.disposeBackend(session.id).catch(() => {});
+    runtimeEventStore.close();
+    planStore.close();
+    await runStore.close?.();
+    await store.close?.();
+    await owner.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});

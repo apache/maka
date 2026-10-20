@@ -147,6 +147,9 @@ export function validateAddProviderDraft(draft: AddProviderDraft): AddProviderIs
   // missing one — it just has not composed it yet.
   const requiresBaseUrl = !defaults.baseUrl && !isCloudflareWorkersAi;
   if (requiresBaseUrl && !draft.baseUrl.trim()) return { field: 'baseUrl', reason: 'required' };
+  // Experimental first, deliberately: a provider that is both cannot be added
+  // at all, so telling the user to answer a question that would not unblock
+  // them would be the wrong of the two answers.
   if (defaults.status === 'phase3-experimental') return { field: 'form', reason: 'experimental' };
   return null;
 }

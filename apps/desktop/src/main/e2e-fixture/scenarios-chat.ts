@@ -20,6 +20,9 @@
 import type { SessionHeader, StoredMessage } from '@maka/core/session';
 import {
   header,
+  LARGE_HISTORY_REPLY_BYTES,
+  LARGE_HISTORY_SESSION_PREFIX,
+  LARGE_HISTORY_TURN_COUNTS,
   PARTIAL_HISTORY_SESSION_ID,
   PROMPT_RAIL_PROMPT_COUNT,
   PROMPT_RAIL_SESSION_ID,
@@ -125,6 +128,10 @@ export function promptRailSession(now: number): SessionHeader {
  * A plain multi-prompt conversation: no tools, no thinking, no usage rows.
  * The transcript perf suite measures against this, so every turn is just a
  * prompt and a reply long enough to push the transcript past the scrollport.
+ *
+ * Reply length has to vary the way a real transcript's does. A uniform reply
+ * lets the virtualizer estimate every unmounted row correctly, which is the one
+ * case where mounting a row above the reader cannot move them.
  */
 export function promptRailMessages(now: number): StoredMessage[] {
   const messages: StoredMessage[] = [];
@@ -143,12 +150,69 @@ export function promptRailMessages(now: number): StoredMessage[] {
       id: `msg-prompt-rail-assistant-${index}`,
       turnId,
       ts: ts + 1_000,
-      text: `第 ${index} 段回答。`.repeat(40),
+      text: promptRailReply(index),
       modelId: 'glm-5.1',
     });
   }
   return messages;
 }
+
+function promptRailReply(index: number): string {
+  const prose = `第 ${index} 段回答。`.repeat(4 + ((index * 7) % 60));
+  if (index % 5 !== 0) return prose;
+  const code = Array.from(
+    { length: 6 + ((index * 3) % 40) },
+    (_, line) => `  const step${line} = await pipeline.run(${index}, ${line});`,
+  ).join('\n');
+  return `${prose}\n\n\`\`\`ts\n${code}\n\`\`\`\n\n收尾说明。`;
+}
+/**
+ * Transcripts past the real 64 MiB read budget, for measuring what holding
+ * history costs. Prose rather than whitespace: these are weighed, not looked
+ * at, and collapsed padding would understate the renderer's share.
+ */
+export function largeHistorySessions(
+  now: number,
+): { header: SessionHeader; messages: StoredMessage[] }[] {
+  const reply = '这一步的实现、验证与遗留问题记录如下。'.repeat(
+    Math.ceil(LARGE_HISTORY_REPLY_BYTES / 54),
+  );
+  return LARGE_HISTORY_TURN_COUNTS.map((turns, seat) => {
+    const id = `${LARGE_HISTORY_SESSION_PREFIX}${seat + 1}`;
+    const messages: StoredMessage[] = [];
+    for (let index = 1; index <= turns; index += 1) {
+      const turnId = `turn-${id}-${index}`;
+      const ts = now - (turns + 1 - index) * 60_000;
+      messages.push({
+        type: 'user',
+        id: `msg-${id}-user-${index}`,
+        turnId,
+        ts,
+        text: `第 ${index} 个问题：请概括这一阶段的实现进展。`,
+      });
+      messages.push({
+        type: 'assistant',
+        id: `msg-${id}-assistant-${index}`,
+        turnId,
+        ts: ts + 1_000,
+        text: `第 ${index} 阶段。${reply}`,
+        modelId: 'glm-5.1',
+      });
+    }
+    return {
+      header: header({
+        id,
+        name: `大历史内存基准会话 ${seat + 1}`,
+        connection: 'zai-live',
+        model: 'glm-5.1',
+        now,
+        lastMessageAt: now - (seat + 1) * 60_000,
+      }),
+      messages,
+    };
+  });
+}
+
 export function partialHistorySession(now: number): SessionHeader {
   return header({
     id: PARTIAL_HISTORY_SESSION_ID,

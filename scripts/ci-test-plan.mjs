@@ -59,6 +59,8 @@ const RELEASE_CONTRACT_FILES = new Set([
   'scripts/audit-shipped-dependencies.mjs',
   'scripts/audit-shipped-dependencies.test.mjs',
   'scripts/package-macos.mjs',
+  'scripts/staple-macos-artifact.mjs',
+  'scripts/staple-macos-artifact.test.mjs',
   'scripts/package-macos-autoupdate-next.mjs',
   'scripts/package-macos-arm64-cli.mjs',
   'scripts/package-linux.mjs',
@@ -84,6 +86,7 @@ const RELEASE_CONTRACT_FILES = new Set([
   'scripts/product-nightly.test.mjs',
   'scripts/verify-packaged-app.mjs',
   'scripts/verify-packaged-app.test.mjs',
+  'scripts/macos-update-archive.test.mjs',
   'scripts/verify-windows-autoupdate.mjs',
   'scripts/verify-windows-installer-lifecycle.mjs',
   'scripts/verify-windows-x64.mjs',
@@ -156,6 +159,8 @@ const ASF_SOURCE_FILES = new Set([
   'docs/code-origin-audit.md',
   'package.json',
   'packages/eval/harbor/deepseek-harness-profile/cordis.patch.yml',
+  'scripts/apply-dependency-patches.mjs',
+  'scripts/apply-dependency-patches.test.mjs',
   'scripts/asf-license-headers.mjs',
   'scripts/asf-license-headers.test.mjs',
   'scripts/asf-source-release.mjs',
@@ -219,8 +224,11 @@ const SITE_SENTENCE_FILES = new Set(['README.md', 'README.zh-CN.md']);
 // evidence that the run it drives still works.
 const E2E_DRIVING_SCRIPTS = new Set([
   'apps/desktop/scripts/browser-observe-act-smoke.mjs',
+  'apps/desktop/scripts/workhub-browser-presentation-smoke.mjs',
   'scripts/audit-alignment.mjs',
   'scripts/ax-tree-audit.mjs',
+  'scripts/fixture-env.mjs',
+  'scripts/run-desktop-e2e-parallel.mjs',
 ]);
 
 // Scripts / paths that can break the built Storybook catalog. Product stories
@@ -235,6 +243,14 @@ const STORYBOOK_DRIVING_SCRIPTS = new Set([
 // .storybook/preview.tsx imports THEME_PALETTES from this module. Narrower
 // than "any packages/core change".
 const STORYBOOK_CORE_SETTINGS = 'packages/core/src/settings.ts';
+
+const ASTRYX_INVENTORY_CONTRACT_FILES = new Set([
+  'docs/astryx-surface-file-inventory.md',
+  'docs/astryx-surface-file-inventory.paths',
+  'scripts/check-astryx-surface-inventory.mjs',
+  'scripts/check-astryx-surface-inventory.test.mjs',
+  'scripts/generate-astryx-surface-inventory.mjs',
+]);
 
 function isStorybookCatalogPath(path) {
   if (path === 'apps/desktop/.storybook' || path.startsWith('apps/desktop/.storybook/'))
@@ -280,20 +296,12 @@ function isStorybookPath(path) {
  * Electron e2e should pay cold install/boot only when the real window surface
  * or e2e driver changed — not when only packages/ui unit tests changed.
  */
-function isAstryxSurfaceInventoryPath(path) {
-  if (
-    path === 'docs/astryx-surface-file-inventory.md' ||
-    path === 'docs/astryx-surface-file-inventory.paths' ||
-    path === 'scripts/generate-astryx-surface-inventory.mjs' ||
-    path === 'scripts/check-astryx-surface-inventory.mjs'
-  ) {
-    return true;
-  }
+function shouldRunAstryxSurfaceInventory(path) {
+  if (ASTRYX_INVENTORY_CONTRACT_FILES.has(path)) return true;
   if (isDocumentation(path)) return false;
-  if (path === 'apps/desktop/src/renderer' || path.startsWith('apps/desktop/src/renderer/')) {
-    return !isPackageTestPath(path);
-  }
-  return isUiProductSourcePath(path);
+  const desktopRenderer =
+    path === 'apps/desktop/src/renderer' || path.startsWith('apps/desktop/src/renderer/');
+  return desktopRenderer ? !isPackageTestPath(path) : isUiProductSourcePath(path);
 }
 
 /**
@@ -422,13 +430,17 @@ export function planTests(changedFiles, options = {}) {
   const full = forceFull || files.some((path) => FULL_SUITE_FILES.has(path));
   if (full) {
     const workspaces = [...graph.dirs];
+    const workflow = files.includes('.github/workflows/ci.yml');
     return {
-      appIcons: true,
+      // Neither verdict follows a dependency bump, but the workflow file owns
+      // both steps' commands, so editing it still runs them.
+      appIcons: forceFull || workflow || files.some((path) => isAppIconPath(path)),
       asfSource: true,
       astryxSurface: true,
       cliPackage: true,
       code: true,
-      deepseekHarnessToolchain: true,
+      deepseekHarnessToolchain:
+        forceFull || workflow || files.some((path) => DEEPSEEK_HARNESS_TOOLCHAIN_FILES.has(path)),
       e2e: true,
       full: true,
       releaseContract: true,
@@ -528,7 +540,7 @@ export function planTests(changedFiles, options = {}) {
   return {
     appIcons: files.some((path) => isAppIconPath(path)),
     asfSource: files.some((path) => isAsfSourcePath(path)),
-    astryxSurface: files.some((path) => isAstryxSurfaceInventoryPath(path)),
+    astryxSurface: files.some((path) => shouldRunAstryxSurfaceInventory(path)),
     cliPackage,
     code,
     deepseekHarnessToolchain: files.some((path) => DEEPSEEK_HARNESS_TOOLCHAIN_FILES.has(path)),
@@ -565,7 +577,7 @@ export function formatGitHubOutputs(plan) {
   return [
     `app_icons=${plan.appIcons}`,
     `asf_source=${plan.asfSource}`,
-    `astryx_surface=${plan.astryxSurface}`,
+    `astryx_surface=${Boolean(plan.astryxSurface)}`,
     `cli_package=${plan.cliPackage}`,
     `code=${plan.code}`,
     `deepseek_harness_toolchain=${plan.deepseekHarnessToolchain}`,

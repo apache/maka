@@ -96,7 +96,8 @@ test('includes bounded election evidence when startup times out before an endpoi
     },
   });
 
-  assert.match(error.message, /became ready/u);
+  assert.match(error.message, /Could not connect to a Runtime Host/u);
+  assert.doesNotMatch(error.message, /large workspaces/u);
   assert.match(error.message, /MAKA_RUNTIME_HOST_ELECTION_DEADLINE_MS/u);
   assert.match(error.message, /"sawEndpointConnected":false/u);
   assert.match(error.message, /"candidateLaunches":1/u);

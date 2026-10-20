@@ -48,4 +48,26 @@ describe('MCP credential retirement', () => {
     );
     assert.equal(mcpConfigChangeRetiresCredentials(stdio, { command: 'different-server' }), false);
   });
+
+  it('retires credentials when a static OAuth registration changes', () => {
+    const before = {
+      ...remote,
+      oauth: { issuer: 'https://issuer.example', clientId: 'client', clientSecret: 'secret' },
+    };
+    for (const oauth of [
+      undefined,
+      { ...before.oauth, issuer: 'https://other.example' },
+      { ...before.oauth, clientId: 'other' },
+      { ...before.oauth, clientSecret: 'replacement' },
+    ]) {
+      assert.equal(mcpConfigChangeRetiresCredentials(before, { ...remote, oauth }), true);
+    }
+    assert.equal(
+      mcpConfigChangeRetiresCredentials(before, {
+        ...before,
+        oauth: { ...before.oauth, scopes: ['read'] },
+      }),
+      false,
+    );
+  });
 });

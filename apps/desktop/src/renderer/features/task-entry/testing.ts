@@ -36,8 +36,10 @@ export {
   taskEntryDraftKey,
 } from './model/task-entry-selection.js';
 export { resolveWorkBoardStartTarget } from './model/work-board-target.js';
+export { folderOpenFailure } from './model/folder-open-failure.js';
 export type {
   TaskEntryCatalog,
+  TaskEntryFolderOpenResult,
   TaskEntryHost,
   TaskEntryServices,
 } from './ports.js';
@@ -45,15 +47,28 @@ export type {
 const noopSubscription = (): (() => void) => () => undefined;
 
 export function createFakeTaskEntryServices(
-  overrides: Partial<TaskEntryServices> = {},
+  overrides: { [Service in keyof TaskEntryServices]?: Partial<TaskEntryServices[Service]> } = {},
 ): TaskEntryServices {
   return {
     catalog: {
       getCatalog: async () => ({ defaultProfileId: 'local', hosts: [] }),
       subscribeChanges: noopSubscription,
       addProject: async () => ({ ok: false, reason: 'cancelled' }),
+      restoreProject: async () => ({ ok: false, reason: 'cancelled' }),
       relinkProject: async () => ({ ok: false, reason: 'cancelled' }),
+      renameProject: async () => undefined,
+      archiveProject: async () => undefined,
+      ...overrides.catalog,
     },
-    ...overrides,
+    sessions: {
+      relocateWorkspace: async () => ({ ok: false, reason: 'operation_unavailable' }),
+      relocateToDedicatedDirectory: async () => ({ ok: false, reason: 'operation_unavailable' }),
+      ...overrides.sessions,
+    },
+    folders: {
+      openProjectFolder: async () => ({ kind: 'opened' }),
+      openWorkspaceFolder: async () => ({ kind: 'opened' }),
+      ...overrides.folders,
+    },
   };
 }

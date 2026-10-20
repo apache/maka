@@ -27,6 +27,11 @@ export interface ServicesContext<S> {
   }) => ReactElement;
   /** Reads the mounted services; throws when the Provider is missing. */
   readonly useServices: () => S;
+  /**
+   * Reads the mounted services, or undefined when the Provider is missing. For
+   * a reader that has to keep working outside Desktop composition.
+   */
+  readonly useOptionalServices: () => S | undefined;
 }
 
 /**
@@ -52,5 +57,8 @@ export function createServicesContext<S>(providerName: string): ServicesContext<
     if (!services) throw new Error(`${providerName} is missing`);
     return services;
   }
-  return { Provider, useServices };
+  function useOptionalServices(): S | undefined {
+    return useContext(Context) ?? undefined;
+  }
+  return { Provider, useServices, useOptionalServices };
 }

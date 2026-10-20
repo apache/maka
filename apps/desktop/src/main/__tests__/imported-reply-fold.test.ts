@@ -56,7 +56,7 @@ test('completed OpenCode text followed by reasoning stays outside the process di
     const turn = turns[0]!;
     assert.equal(turn.status, 'completed');
     assert.deepEqual(turn.timeline.map((item) => item.kind), ['text', 'thinking']);
-    const folded = foldTimeline(turn.timeline);
+    const folded = foldTimeline(turn.timeline).entries;
     assert.deepEqual(folded.filter((item) => item.kind === 'text').map((item) => item.text), ['Visible final answer']);
     const process = folded.find((item) => item.kind === 'processing');
     assert.ok(process);

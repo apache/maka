@@ -26,10 +26,8 @@ import {
   type RuntimeHostManagedLaunchClaim,
   type RuntimeHostManagedProcessLaunch,
 } from '../operator/managed-deployment.js';
-import type { RuntimeHostCompositionSource } from './host-composition.js';
-import { RuntimeHostKernel } from './host-kernel.js';
-import { openRuntimeHostAccessAuthority } from './access-authority.js';
-import { startRuntimeHostAuthenticatedListenerSet } from './listener-set.js';
+import type { RuntimeHostCompositionSource } from './host-composition-source.js';
+import type { RuntimeHostKernel, RuntimeHostKernelOptions } from './host-kernel.js';
 
 export interface InteractiveRuntimeHostCandidateOptions {
   rootPath: string;
@@ -65,6 +63,10 @@ export async function startInteractiveRuntimeHostCandidate(
   createComposition: InteractiveRuntimeHostCompositionFactory,
   dependencies: InteractiveRuntimeHostCandidateDependencies = {},
 ): Promise<InteractiveRuntimeHostCandidateResult> {
+  const kernelModule = import('./host-kernel.js').then(
+    (module) => ({ kind: 'loaded' as const, module }),
+    (error: unknown) => ({ kind: 'failed' as const, error }),
+  );
   const capability = await resolveExistingStorageRoot({
     path: options.rootPath,
     kind: 'interactive',
@@ -81,36 +83,53 @@ export async function startInteractiveRuntimeHostCandidate(
   );
   if (!ownership) return { kind: 'loser' };
   const { owner, managedConfig } = ownership;
-  try {
-    const composition = await createComposition(managedConfig);
-    const websocket = managedConfig?.listeners.websocket;
-    const accessAuthority = websocket
-      ? await openRuntimeHostAccessAuthority(owner.controlDirectory)
-      : undefined;
-    const host = await RuntimeHostKernel.start({
-      owner,
-      lifecycleMode: 'ephemeral',
-      initialConnectionTimeoutMs: options.initialConnectionTimeoutMs,
-      idleGraceMs: options.idleGraceMs,
-      handshakeTimeoutMs: options.handshakeTimeoutMs,
-      generation: options.generation,
-      composition,
-      ...(options.initialClientAdmission
-        ? { initialClientAdmission: options.initialClientAdmission }
-        : {}),
-      ...(accessAuthority ? { accessAuthority } : {}),
-      ...(websocket && accessAuthority
-        ? {
-            listenerSetFactory: (input) =>
-              startRuntimeHostAuthenticatedListenerSet(input, {
-                websocket: { ...websocket, accessAuthority },
-              }),
-          }
-        : {}),
-    });
-    return { kind: 'winner', host };
-  } catch (error) {
-    if (!owner.closed) await owner.close();
-    throw error;
-  }
+  const prepared = await (async () => {
+    try {
+      const composition = await createComposition(managedConfig);
+      const loadedKernel = await kernelModule;
+      if (loadedKernel.kind === 'failed') throw loadedKernel.error;
+      const websocket = managedConfig?.listeners.websocket;
+      // Keep this the last fallible step: once opened, the authority passes
+      // straight to Kernel.start, which owns its cleanup.
+      const accessAuthority = websocket
+        ? await import('./access-authority.js').then(({ openRuntimeHostAccessAuthority }) =>
+            openRuntimeHostAccessAuthority(owner.controlDirectory),
+          )
+        : undefined;
+      const kernelOptions = {
+        owner,
+        lifecycleMode: 'ephemeral',
+        initialConnectionTimeoutMs: options.initialConnectionTimeoutMs,
+        idleGraceMs: options.idleGraceMs,
+        handshakeTimeoutMs: options.handshakeTimeoutMs,
+        generation: options.generation,
+        composition,
+        ...(options.initialClientAdmission
+          ? { initialClientAdmission: options.initialClientAdmission }
+          : {}),
+        ...(accessAuthority ? { accessAuthority } : {}),
+        ...(websocket && accessAuthority
+          ? {
+              listenerSetFactory: async (input) => {
+                const { startRuntimeHostAuthenticatedListenerSet } = await import(
+                  './listener-set.js'
+                );
+                return startRuntimeHostAuthenticatedListenerSet(input, {
+                  websocket: { ...websocket, accessAuthority },
+                });
+              },
+            }
+          : {}),
+      } satisfies RuntimeHostKernelOptions;
+      return { Kernel: loadedKernel.module.RuntimeHostKernel, options: kernelOptions };
+    } catch (error) {
+      if (!owner.closed) await owner.close();
+      throw error;
+    }
+  })();
+
+  // Kernel owns cleanup from here, including retaining the owner until process
+  // termination when startup cleanup exceeds its deadline.
+  const host = await prepared.Kernel.start(prepared.options);
+  return { kind: 'winner', host };
 }

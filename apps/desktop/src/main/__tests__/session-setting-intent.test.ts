@@ -22,7 +22,8 @@ import { afterEach, test } from 'node:test';
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
-import { useSessionSettingIntent } from '@maka/ui';
+import { useSessionSettingIntent, type SessionSettingIntentCatalog } from '@maka/ui';
+import { createObservableState } from '../../renderer/application/contracts/session-catalog/observable-state.js';
 
 type SessionSettingIntentController<Value> = ReturnType<
   typeof useSessionSettingIntent<{ setting: Value }>
@@ -68,10 +69,16 @@ test('Runtime leaving Plan after approval supersedes the committed Plan overlay'
   mountedRoot = root;
 
   let controller: SessionSettingIntentController<boolean> | undefined;
-  const render = async (catalogRevision: number, catalogValue: boolean) => {
+  const catalogRevision = createObservableState(0);
+  const catalog: SessionSettingIntentCatalog = {
+    revision: catalogRevision.getState,
+    subscribeChanged: catalogRevision.subscribe,
+  };
+  const render = async (revision: number, catalogValue: boolean) => {
     await act(async () => {
+      catalogRevision.replaceState(revision);
       root.render(createElement(Harness, {
-        catalogRevision,
+        catalog,
         catalogValue,
         capture: (next) => {
           controller = next;
@@ -155,17 +162,207 @@ test('rapid requests share the worker and settle only after the latest value com
   assert.equal(await latest, true);
 });
 
+function mountLatestIntentHarness(write: (sessionId: string, value: string) => Promise<boolean>) {
+  const { document, window } = parseHTML('<div id="root"></div>');
+  Object.assign(globalThis, {
+    document,
+    window,
+    HTMLElement: window.HTMLElement,
+    Node: window.Node,
+    IS_REACT_ACT_ENVIRONMENT: true,
+  });
+  const container = document.querySelector('#root');
+  assert.ok(container);
+  const root = createRoot(container);
+  mountedRoot = root;
+  const handle: { controller?: SessionSettingIntentController<string> } = {};
+  return {
+    handle,
+    render: () => act(async () => {
+      root.render(createElement(LatestIntentHarness, {
+        capture: (next) => {
+          handle.controller = next;
+        },
+        write,
+      }));
+    }),
+  };
+}
+
+test('#4695: settled waits for an in-flight write and reports its commit', async () => {
+  const write = deferred<boolean>();
+  const mounted = mountLatestIntentHarness(() => write.promise);
+  await mounted.render();
+  const controller = () => mounted.handle.controller!;
+
+  assert.equal(await controller().settled('session-1'), true, 'nothing pending settles at once');
+
+  await act(async () => {
+    void controller().request('setting', 'session-1', 'plan');
+  });
+  let settled: boolean | undefined;
+  const waiting = controller().settled('session-1').then((value) => {
+    settled = value;
+  });
+  // Another Session's pending write must not hold this Session's submission.
+  assert.equal(await controller().settled('session-2'), true);
+  await Promise.resolve();
+  assert.equal(settled, undefined, 'a send must not proceed while the write is in flight');
+
+  await act(async () => {
+    write.resolve(true);
+    await waiting;
+  });
+  assert.equal(settled, true);
+});
+
+test('#4695: settled reports false when the in-flight write does not commit', async () => {
+  const write = deferred<boolean>();
+  const mounted = mountLatestIntentHarness(() => write.promise);
+  await mounted.render();
+  const controller = () => mounted.handle.controller!;
+
+  await act(async () => {
+    void controller().request('setting', 'session-1', 'plan');
+  });
+  const waiting = controller().settled('session-1');
+  await act(async () => {
+    write.resolve(false);
+    await waiting;
+  });
+  assert.equal(await waiting, false);
+  // The failed intent is retired, so a later send is not blocked forever.
+  assert.equal(await controller().settled('session-1'), true);
+});
+
+type TwoChannelController = ReturnType<typeof useSessionSettingIntent<{ plan: string; orchestration: string }>>;
+
+function mountTwoChannels() {
+  const { document, window } = parseHTML('<div id="root"></div>');
+  Object.assign(globalThis, {
+    document,
+    window,
+    HTMLElement: window.HTMLElement,
+    Node: window.Node,
+    IS_REACT_ACT_ENVIRONMENT: true,
+  });
+  const container = document.querySelector('#root');
+  assert.ok(container);
+  const root = createRoot(container);
+  mountedRoot = root;
+  const writes = { plan: [] as Array<ReturnType<typeof deferred<boolean>>>, orchestration: [] as Array<ReturnType<typeof deferred<boolean>>> };
+  const handle: { controller?: TwoChannelController } = {};
+  function TwoChannelHarness() {
+    const writer = (channel: 'plan' | 'orchestration') => () => {
+      const result = deferred<boolean>();
+      writes[channel].push(result);
+      return result.promise;
+    };
+    handle.controller = useSessionSettingIntent<{ plan: string; orchestration: string }>({
+      catalog: { revision: () => 0, subscribeChanged: () => () => {} },
+      refreshCatalog: async () => {},
+      channels: {
+        plan: { write: writer('plan'), onWriteError: () => {} },
+        orchestration: { write: writer('orchestration'), onWriteError: () => {} },
+      },
+    });
+    return null;
+  }
+  return {
+    root,
+    writes,
+    controller: () => handle.controller!,
+    render: () => act(async () => { root.render(createElement(TwoChannelHarness)); }),
+  };
+}
+
+test('#4695 review: a write that starts and fails while a send waits still stops it', async () => {
+  const h = mountTwoChannels();
+  await h.render();
+  await act(async () => { void h.controller().request('orchestration', 'session-1', 'swarm'); });
+  const waiting = h.controller().settled('session-1');
+  // Plan is requested while the send waits on orchestration, and fails first.
+  await act(async () => { void h.controller().request('plan', 'session-1', 'plan'); });
+  await act(async () => { h.writes.plan[0]!.resolve(false); await Promise.resolve(); });
+  await act(async () => { h.writes.orchestration[0]!.resolve(true); });
+  assert.equal(await waiting, false);
+});
+
+test('#4695 review: a settlement begun at submit sees a failure that lands before it is awaited', async () => {
+  const h = mountTwoChannels();
+  await h.render();
+  await act(async () => { void h.controller().request('plan', 'session-1', 'plan'); });
+  const settlement = h.controller().beginSettlement('session-1');
+  // The Composer is still loading a Session reference when Plan fails.
+  await act(async () => { h.writes.plan[0]!.resolve(false); await Promise.resolve(); });
+  assert.equal(await settlement.settled(), false);
+  settlement.release();
+  // The attempt is over: a later explicit retry is not blocked by it.
+  assert.equal(await h.controller().settled('session-1'), true);
+});
+
+test('#4695 review: a released settlement ignores later writes', async () => {
+  const h = mountTwoChannels();
+  await h.render();
+  const settlement = h.controller().beginSettlement('session-1');
+  settlement.release();
+  await act(async () => { void h.controller().request('plan', 'session-1', 'plan'); });
+  await act(async () => { h.writes.plan[0]!.resolve(false); await Promise.resolve(); });
+  assert.equal(await settlement.settled(), true);
+});
+
+test('#4695 review: a write that throws settles false and does not block a retry', async () => {
+  const { document, window } = parseHTML('<div id="root"></div>');
+  Object.assign(globalThis, { document, window, HTMLElement: window.HTMLElement, Node: window.Node, IS_REACT_ACT_ENVIRONMENT: true });
+  const container = document.querySelector('#root');
+  assert.ok(container);
+  const root = createRoot(container);
+  mountedRoot = root;
+  let fail!: (error: Error) => void;
+  const write = new Promise<boolean>((_resolve, reject) => { fail = reject; });
+  const mounted = { controller: undefined as SessionSettingIntentController<string> | undefined };
+  await act(async () => {
+    root.render(createElement(LatestIntentHarness, {
+      capture: (next) => { mounted.controller = next; },
+      write: () => write,
+    }));
+  });
+  await act(async () => { void mounted.controller!.request('setting', 'session-1', 'plan'); });
+  const waiting = mounted.controller!.settled('session-1');
+  await act(async () => { fail(new Error('Host unavailable')); await waiting.catch(() => {}); });
+  assert.equal(await waiting, false);
+  assert.equal(await mounted.controller!.settled('session-1'), true);
+});
+
+for (const ending of ['rejected', 'cleared', 'unmounted'] as const) {
+  test(`#4695 review: settled resolves false, without hanging, when the write is ${ending} mid-wait`, async () => {
+    const h = mountTwoChannels();
+    await h.render();
+    await act(async () => { void h.controller().request('plan', 'session-1', 'plan'); });
+    const controller = h.controller();
+    const waiting = controller.settled('session-1');
+    await act(async () => {
+      if (ending === 'rejected') h.writes.plan[0]!.resolve(false);
+      if (ending === 'cleared') controller.clear('session-1');
+      if (ending === 'unmounted') h.root.unmount();
+    });
+    assert.equal(await waiting, false);
+    if (ending === 'unmounted') mountedRoot = undefined;
+    else assert.equal(await h.controller().settled('session-1'), true);
+  });
+}
+
 function Harness({
-  catalogRevision,
+  catalog,
   catalogValue,
   capture,
 }: {
-  catalogRevision: number;
+  catalog: SessionSettingIntentCatalog;
   catalogValue: boolean;
   capture(controller: SessionSettingIntentController<boolean>): void;
 }) {
   const controller = useSessionSettingIntent<{ setting: boolean }>({
-    catalogRevision,
+    catalog,
     refreshCatalog: async () => {
       throw new Error('catalog unavailable');
     },
@@ -190,7 +387,7 @@ function LatestIntentHarness({
   write(sessionId: string, value: string): Promise<boolean>;
 }) {
   const controller = useSessionSettingIntent<{ setting: string }>({
-    catalogRevision: 0,
+    catalog: { revision: () => 0, subscribeChanged: () => () => {} },
     refreshCatalog: async () => {},
     channels: {
       setting: {

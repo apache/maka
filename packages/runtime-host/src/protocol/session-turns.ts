@@ -40,13 +40,18 @@ export const SESSION_TURN_LANDMARK_RESULT_MAX_BYTES = 64 * 1024;
 
 export interface SessionTurnLandmark {
   readonly turnId: string;
+  /** No row of the Turn sits before this sequence. */
   readonly sequence: number;
+  /** Nor after this one. */
+  readonly lastSequence: number;
   readonly label: string;
 }
 
 export interface SessionTurnLandmarksQueryInput {
   readonly sessionId: string;
   readonly maxLandmarks: number;
+  /** Look up this one Turn instead of sampling the Session. */
+  readonly turnId: string | null;
 }
 
 export interface SessionTurnLandmarksQueryResult {
@@ -61,6 +66,7 @@ export function projectSessionTurnLandmarkForWire(
   return {
     turnId: requireEntityId(landmark.turnId, 'turnId'),
     sequence: requireCount(landmark.sequence, 'Session turn landmark sequence'),
+    lastSequence: requireCount(landmark.lastSequence, 'Session turn landmark last sequence'),
     label: truncateUtf8(landmark.label, SESSION_TURN_LANDMARK_LABEL_MAX_BYTES),
   };
 }
@@ -234,7 +240,12 @@ export const SESSION_TURNS_OPERATION_SPECS = {
     decodeInput: decodeSessionTurnLandmarksQueryInput,
     decodeOutput: decodeSessionTurnLandmarksQueryResult,
     assertOutputForInput: (input, output) => {
-      if (input.sessionId !== output.sessionId) {
+      if (
+        input.sessionId !== output.sessionId ||
+        output.landmarks.length > input.maxLandmarks ||
+        (input.turnId !== null &&
+          output.landmarks.some((landmark) => landmark.turnId !== input.turnId))
+      ) {
         throw invalidProtocolFrame('Session turn landmark query identity changed');
       }
     },
@@ -266,6 +277,7 @@ export function decodeSessionTurnLandmarksQueryInput(
   const input = requireExactRecord(value, 'Session turn landmark query input', [
     'sessionId',
     'maxLandmarks',
+    'turnId',
   ]);
   const maxLandmarks = requireCount(input.maxLandmarks, 'Session turn landmark limit');
   if (maxLandmarks < 1 || maxLandmarks > SESSION_TURN_LANDMARK_MAX_ITEMS) {
@@ -274,6 +286,7 @@ export function decodeSessionTurnLandmarksQueryInput(
   return {
     sessionId: requireEntityId(input.sessionId, 'sessionId'),
     maxLandmarks,
+    turnId: input.turnId === null ? null : requireEntityId(input.turnId, 'turnId'),
   };
 }
 
@@ -306,11 +319,13 @@ export function decodeSessionTurnLandmarksQueryResult(
       const landmark = requireExactRecord(value, 'Session turn landmark', [
         'turnId',
         'sequence',
+        'lastSequence',
         'label',
       ]);
       return {
         turnId: requireEntityId(landmark.turnId, 'turnId'),
         sequence: requireCount(landmark.sequence, 'Session turn landmark sequence'),
+        lastSequence: requireCount(landmark.lastSequence, 'Session turn landmark last sequence'),
         label: requireUtf8String(
           landmark.label,
           'Session turn landmark label',

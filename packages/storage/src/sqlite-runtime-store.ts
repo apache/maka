@@ -17,7 +17,25 @@
  * under the License.
  */
 
-import { createHash } from 'node:crypto';
+import type {
+  CommitToolPreparedInput,
+  CommitToolOutcomeInput,
+  ToolCommitResult,
+  SessionRuntimeEventEntry,
+  ToolOperationRecord,
+  UnsettledToolOperationRecord,
+  ImmutableRuntimePrefixProofReadBudget,
+} from './runtime-event-store-contract.js';
+export type {
+  CommitToolPreparedInput,
+  CommitToolOutcomeInput,
+  ToolCommitResult,
+  SessionRuntimeEventEntry,
+  ToolOperationRecord,
+  UnsettledToolOperationRecord,
+  ImmutableRuntimePrefixProofReadBudget,
+} from './runtime-event-store-contract.js';
+
 import { mkdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname } from 'node:path';
@@ -48,7 +66,6 @@ import {
   isPartialRuntimeEvent,
   isTerminalRuntimeEvent,
   runtimeEventInvocationOpening,
-  TOOL_BOUNDARY_PROTOCOL_V1,
   type RuntimeEvent,
   type RuntimeEventManagedWorkspaceMutationV2,
   type ToolRecoveryMode,
@@ -56,31 +73,45 @@ import {
 import {
   RunSealedError,
   RUNTIME_CONTINUATION_AUTHORITY_V1,
-  TOOL_RECOVERY_BUNDLE_CAPABILITY_V1,
   type ContinuationClaimResult,
   type ContinuationClaimStateV1,
   type RuntimeContinuationAuthorityStore,
-  type RuntimeRecoveryBundleCommit,
-  type RuntimeRecoveryBundleStore,
+  type RuntimeInvocationRecoveryInventoryEntry,
+  type RuntimeSessionEventSnapshot,
   type RuntimeWorkspaceVersionAuthorityStore,
 } from '@maka/core/runtime-event-store';
-import type {
-  RuntimeInvocationPageCursor,
-  RuntimeInvocationPageInput,
-  RuntimeInvocationPageResult,
-  RuntimeInvocationRecord,
-  RuntimeInvocationSearchResult,
+import {
+  mayBeTranscriptLedgerInvocationId,
+  type RuntimeInvocationPageCursor,
+  type RuntimeInvocationPageInput,
+  type RuntimeInvocationPageResult,
+  type RuntimeInvocationRecord,
+  type RuntimeInvocationSearchResult,
 } from '@maka/core/runtime-invocation';
-import { type ToolRecoveryDecisionFact } from '@maka/core/tool-recovery-fact';
-import { canonicalToolArgsHash, stableJsonStringify } from '@maka/core/tool-args-identity';
+import { stableJsonStringify } from '@maka/core/tool-args-identity';
+import {
+  type RuntimePartialSnapshot,
+  mergeRuntimePartialSnapshots,
+  groupRuntimePartialSnapshots,
+  compareRuntimePartialSnapshots,
+  partialRuntimeStream,
+  completedPartialRuntimeStreamKey,
+} from './runtime-partial-values.js';
+import {
+  assertPreparedInput,
+  assertOutcomeInput,
+  assertPreparedIdentity,
+  assertOutcomeIdentity,
+} from './tool-commit-validation.js';
 import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
 import {
   scanToolLedger,
+  referencedToolOperationIds,
   ToolLedgerCorruptionError,
   ToolLedgerRejectionError,
   validateGenericToolLedgerAppend,
-  validateToolLedgerEventLane,
   validateToolLedgerTransition,
+  type ToolLedgerTransitionKind,
 } from '@maka/core/tool-ledger-scanner';
 import {
   buildImmutableRuntimePrefix,
@@ -92,12 +123,11 @@ import {
   type ImmutableRuntimePrefixProofV1,
   type RuntimeBoundaryDigest,
 } from '@maka/core/runtime-boundary';
-import {
-  assertToolRecoveryEventBundle,
-  interpretScannedToolRecovery,
-} from '@maka/core/tool-recovery-bundle';
+import { interpretScannedToolRecovery } from '@maka/core/tool-recovery-bundle';
 import {
   configureSqliteRuntimeDatabase,
+  configureSqliteRuntimeAutoVacuumForNewDatabase,
+  configureSqliteRuntimeLockWait,
   migrateSqliteRuntimeDatabase,
   readUserVersion,
   RUNTIME_RECOVERY_AUTHORITY_CAPABILITY,
@@ -120,6 +150,7 @@ import {
 import type {
   ConversationCopyRuntimeEventBatch,
   ImmutableSteeringMessageProof,
+  RecoveryMessageEventQuery,
   RuntimeEventScanBudget,
   RuntimeEventScanResult,
 } from './agent-run-store.js';
@@ -130,14 +161,22 @@ import {
   type EvidenceReadBudget,
 } from './bounded-evidence.js';
 import type { OperationalStateDatabaseLease } from './operational-state-store.js';
+import {
+  assertFoldedSearchTerm,
+  recallFoldedMatchClause,
+  registerRecallFoldFunction,
+} from './recall-fold.js';
 import { immutableSteeringMessageId, isRuntimeStorageSafeId } from './runtime-event-invariants.js';
 import { assertNoReservedWorkspaceAuthorityAppend } from './runtime-event-authority.js';
 import {
+  rebuildTranscriptTurnExtents,
+  recordTranscriptTurnExtent,
   RuntimeTranscriptQuery,
   TERMINAL_RUNTIME_EVENT_SQL,
-  type RuntimeTranscriptInvocationHeader,
-  type RuntimeTranscriptInvocationRequest,
-  type RuntimeTranscriptLandmark,
+  type RuntimeTranscriptRun,
+  type RuntimeTranscriptRunRequest,
+  type RuntimeTranscriptTurn,
+  type RuntimeTranscriptTurnsRequest,
 } from './runtime-transcript-query.js';
 
 export { SQLITE_RUNTIME_SCHEMA_VERSION } from './sqlite-runtime-schema.js';
@@ -146,12 +185,18 @@ export type { ToolRecoveryMode } from '@maka/core/runtime-event';
 
 const RUNTIME_EVENT_SCAN_BATCH_SIZE = 128;
 const RUNTIME_PARTIAL_SEGMENT_TARGET_BYTES = 64 * 1024;
-
-export interface ImmutableRuntimePrefixProofReadBudget {
-  readonly maxEvents: number;
-  readonly maxBytes: number;
-  readonly maxRecordBytes: number;
-}
+const RECOVERY_MESSAGE_QUERY_BATCH_SIZE = 400;
+const IMMUTABLE_STEERING_SQL_PREDICATE = `
+  event_kind = 'text'
+  AND CASE
+    WHEN json_valid(payload_json)
+    THEN json_extract(payload_json, '$.partial')
+  END = 0
+  AND CASE
+    WHEN json_valid(payload_json)
+    THEN json_extract(payload_json, '$.content.steering')
+  END = 1
+`;
 
 function assertRuntimeEventScanBudget(budget: RuntimeEventScanBudget): void {
   for (const [name, value] of Object.entries(budget)) {
@@ -195,14 +240,15 @@ export type ToolJournalState =
   | 'reconcile_observed'
   | 'outcome_committed'
   | 'recovery_completed'
-  | 'recovery_parked';
+  | 'recovery_parked'
+  | 'abandoned'
+  | 'interrupted_unknown';
 
 export type SqliteRuntimeStoreFailpoint =
   | 'after_runtime_event_insert'
   | 'after_journal_event_insert'
-  | 'after_recovery_reconcile'
-  | 'after_recovery_outcome'
-  | 'after_recovery_decision'
+  | 'after_recovery_terminal_insert'
+  | 'after_recovery_terminal_projection'
   | 'after_continuation_claim_insert'
   | 'after_continuation_start_insert'
   | 'after_workspace_epoch_event_insert'
@@ -222,59 +268,13 @@ export interface SqliteRuntimeStoreOptions {
   databaseLease?: OperationalStateDatabaseLease;
 }
 
-export interface CommitToolPreparedInput {
-  operationId: string;
-  journalEventId: string;
-  runtimeEvent: RuntimeEvent;
-  dispatchRuntimeEvent: RuntimeEvent;
-  providerToolCallId: string;
-  toolName: string;
-  canonicalArgsHash: string;
-  recoveryMode: ToolRecoveryMode;
-  committedAt: number;
-}
-
-export interface CommitToolOutcomeInput {
-  operationId: string;
-  journalEventId: string;
-  runtimeEvent: RuntimeEvent;
-  committedAt: number;
-}
-
-export interface ToolCommitResult {
-  created: boolean;
-  runtimeEventSeq: number;
-}
-
 export interface RuntimeEventBatchImportResult {
   created: boolean[];
-}
-
-/** Storage-owned, immutable append position for an Event within one Session. */
-export interface SessionRuntimeEventEntry {
-  readonly ordinal: number;
-  readonly event: RuntimeEvent;
 }
 
 export interface ToolProjectionRebuildResult {
   operations: number;
   journalEvents: number;
-}
-
-export interface ToolOperationRecord {
-  operationId: string;
-  invocationId: string;
-  runId: string;
-  turnId: string;
-  providerToolCallId: string;
-  toolName: string;
-  canonicalArgsHash: string;
-  recoveryMode: ToolRecoveryMode;
-  currentState: 'prepared' | 'outcome_committed' | 'recovery_completed' | 'recovery_parked';
-  callEventId: string;
-  dispatchEventId?: string;
-  resultEventId?: string;
-  version: number;
 }
 
 export interface ToolJournalEventRecord {
@@ -300,20 +300,17 @@ export function createSqliteRuntimeStore(
 }
 
 export class SqliteRuntimeStore
-  implements
-    RuntimeRecoveryBundleStore,
-    RuntimeContinuationAuthorityStore,
-    RuntimeWorkspaceVersionAuthorityStore
+  implements RuntimeContinuationAuthorityStore, RuntimeWorkspaceVersionAuthorityStore
 {
   readonly durability = 'canonical' as const;
   readonly toolBoundaryProtocol = 't1_after_preflight_v1' as const;
-  readonly recoveryBundleCapability = TOOL_RECOVERY_BUNDLE_CAPABILITY_V1;
   readonly continuationAuthorityCapability = RUNTIME_CONTINUATION_AUTHORITY_V1;
   readonly workspaceVersionAuthorityCapability = WORKSPACE_VERSION_AUTHORITY_CAPABILITY_V1;
   private readonly db: DatabaseSync;
   private readonly databaseLease?: OperationalStateDatabaseLease;
-  private toolLedgerHealth: ToolLedgerHealth | undefined;
   private closed = false;
+  private readonly uncommittedEventSessions = new Set<string>();
+  private readonly eventCommitListeners = new Set<(sessionId: string) => void>();
 
   constructor(
     path: string,
@@ -329,9 +326,9 @@ export class SqliteRuntimeStore
       assertRecoveryAuthorityCapability(this.db);
       assertContinuationAuthorityCapability(this.db);
       assertWorkspaceVersionAuthorityCapability(this.db);
+      registerRecallFoldFunction(this.db);
       if (!options.readOnly) {
         this.registerWorkspaceBaselineAuthorityWriter();
-        this.refreshToolLedgerHealth();
       }
       return;
     }
@@ -349,15 +346,17 @@ export class SqliteRuntimeStore
           );
         }
       } else {
+        configureSqliteRuntimeLockWait(this.db);
+        configureSqliteRuntimeAutoVacuumForNewDatabase(this.db);
         configureSqliteRuntimeDatabase(this.db);
         migrateSqliteRuntimeDatabase(this.db);
       }
       assertRecoveryAuthorityCapability(this.db);
       assertContinuationAuthorityCapability(this.db);
       assertWorkspaceVersionAuthorityCapability(this.db);
+      registerRecallFoldFunction(this.db);
       if (!options.readOnly) {
         this.registerWorkspaceBaselineAuthorityWriter();
-        this.refreshToolLedgerHealth();
       }
     } catch (error) {
       this.db.close();
@@ -458,6 +457,96 @@ export class SqliteRuntimeStore
     await this.importRuntimeEvent(sessionId, runId, canonicalEvent);
   }
 
+  async ensureRecoveredTerminalRuntimeEventDurable(
+    sessionId: string,
+    runId: string,
+    event: RuntimeEvent,
+    unsettledOperationIds: readonly string[],
+  ): Promise<void> {
+    const terminal = canonicalizeRuntimeEventForStorage(event);
+    assertNoReservedToolLedgerFact(terminal);
+    if (
+      terminal.sessionId !== sessionId ||
+      terminal.runId !== runId ||
+      terminal.partial ||
+      !isTerminalRuntimeEvent(terminal) ||
+      terminal.status !== 'failed' ||
+      terminal.actions?.stateDelta?.recovered !== true ||
+      terminal.actions.stateDelta.recoveryReason !== 'outcome_unknown'
+    ) {
+      throw new Error('Unknown-outcome recovery requires a failed terminal RuntimeEvent');
+    }
+    const expected = new Set(unsettledOperationIds);
+    if (expected.size === 0 || expected.size !== unsettledOperationIds.length) {
+      throw new Error('Recovery terminal requires distinct unsettled operation ids');
+    }
+
+    this.transaction(() => {
+      const existing = this.readRuntimeEventJson(terminal.id);
+      if (existing !== undefined) {
+        assertStoredRuntimeEventEquals(terminal, existing);
+        const tail = this.db
+          .prepare(
+            'SELECT event_id FROM runtime_events WHERE session_id = ? AND run_id = ? ORDER BY event_seq DESC LIMIT 1',
+          )
+          .get(sessionId, runId) as { event_id: string } | undefined;
+        if (tail?.event_id !== terminal.id) {
+          throw new Error('Recovery terminal RuntimeEvent is not the immutable run tail');
+        }
+        const settled = this.db
+          .prepare(
+            "SELECT operation_id FROM tool_journal_events WHERE runtime_event_id = ? AND state IN ('abandoned', 'interrupted_unknown')",
+          )
+          .all(terminal.id) as { operation_id: string }[];
+        if (
+          settled.length !== expected.size ||
+          settled.some(({ operation_id }) => !expected.has(operation_id))
+        ) {
+          throw new Error('Recovery terminal settled operations do not match the durable ledger');
+        }
+        for (const operationId of expected) {
+          const operation = this.readToolOperationSync(operationId);
+          if (
+            !operation ||
+            operation.invocationId !== terminal.invocationId ||
+            operation.runId !== runId ||
+            operation.turnId !== terminal.turnId ||
+            operation.currentState !== terminalToolProjectionState(operation)
+          ) {
+            throw new Error(`Recovery terminal tool projection is incomplete: ${operationId}`);
+          }
+        }
+        return;
+      }
+
+      const pending = this.listUnsettledToolOperationsSync([sessionId]).filter(
+        (operation) => operation.invocationId === terminal.invocationId,
+      );
+      if (
+        pending.length !== expected.size ||
+        pending.some(
+          (operation) =>
+            !expected.has(operation.operationId) ||
+            operation.runId !== runId ||
+            operation.turnId !== terminal.turnId,
+        )
+      ) {
+        throw new Error('Recovery terminal unsettled operations do not match the durable ledger');
+      }
+      this.importRuntimeEventSync(terminal, true);
+      this.options.failpoint?.('after_recovery_terminal_insert');
+      const terminalRow = this.db
+        .prepare('SELECT event_id, event_seq, committed_at FROM runtime_events WHERE event_id = ?')
+        .get(terminal.id) as { event_id: string; event_seq: number; committed_at: number };
+      for (const operation of pending) {
+        if (!this.settleTerminalToolProjectionSync(operation, terminalRow)) {
+          throw new Error(`Recovery terminal precedes tool dispatch ${operation.operationId}`);
+        }
+      }
+      this.options.failpoint?.('after_recovery_terminal_projection');
+    });
+  }
+
   async importRuntimeEvent(
     sessionId: string,
     runId: string,
@@ -487,7 +576,11 @@ export class SqliteRuntimeStore
       if (events.some(isToolLedgerBearingEvent)) {
         this.assertToolLedgerTransition(events, 'generic_append');
       }
-      const created = events.map((event) => this.importRuntimeEventSync(event));
+      // Batch imports preserve already-persisted history, including legacy
+      // terminal/tool gaps that recovery will classify when projections are
+      // rebuilt. New terminal writes through appendRuntimeEvent must obey the
+      // unsettled-operation invariant below.
+      const created = events.map((event) => this.importRuntimeEventSync(event, true));
       return { created };
     });
   }
@@ -561,6 +654,85 @@ export class SqliteRuntimeStore
     return this.readRuntimeEventsSync(sessionId, runId);
   }
 
+  async readSessionRuntimeSnapshot(sessionId: string): Promise<RuntimeSessionEventSnapshot> {
+    assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
+    return this.readTransaction(() => {
+      const decodedEvents = new Map<string, RuntimeEvent>();
+      const openings = this.readInvocationOpeningsSync(
+        sessionId,
+        { direction: 'asc' },
+        decodedEvents,
+      );
+      const eventsByRun = new Map<string, RuntimeEvent[]>();
+      const durableEventOrdinalById = new Map<string, number>();
+      if (openings.length === 0) {
+        return { invocations: [], eventsByRun, durableEventOrdinalById };
+      }
+
+      // Read each payload once. The opening query already decoded its events;
+      // reuse those same objects. Global event_seq order also gives each run
+      // its immutable order and each invocation its first terminal fact.
+      const rows = this.db
+        .prepare(`
+        SELECT event_id, session_id, invocation_id, run_id, turn_id,
+          CASE WHEN event_kind = 'invocation_opened' THEN '' ELSE payload_json END AS payload_json
+        FROM runtime_events
+        WHERE session_id = ?
+        ORDER BY event_seq ASC, event_id ASC
+      `)
+        .all(sessionId) as unknown as RuntimeEventStorageRow[];
+      const terminalByInvocation = new Map<string, RuntimeEvent>();
+      for (const row of rows) {
+        const event = decodedEvents.get(row.event_id) ?? decodeRuntimeEventStorageRow(row);
+        const events = eventsByRun.get(event.runId) ?? [];
+        events.push(event);
+        eventsByRun.set(event.runId, events);
+        if (isTerminalRuntimeEvent(event) && !terminalByInvocation.has(event.invocationId)) {
+          terminalByInvocation.set(event.invocationId, event);
+        }
+      }
+
+      // Only identities and ordinals are needed here, not a second copy of
+      // every payload. Keep the same join and identity checks as the entry reader.
+      const ordinals = this.db
+        .prepare(`
+        SELECT o.ordinal, e.event_id, e.session_id
+        FROM runtime_session_event_ordinals o
+        JOIN runtime_events e ON e.event_id = o.event_id
+        WHERE o.session_id = ?
+        ORDER BY o.ordinal ASC
+      `)
+        .all(sessionId) as Array<{ ordinal: number; event_id: string; session_id: string }>;
+      for (const row of ordinals) {
+        if (!Number.isSafeInteger(row.ordinal) || row.ordinal < 1) {
+          throw new Error(`Invalid RuntimeEvent Session ordinal for ${sessionId}`);
+        }
+        if (row.session_id !== sessionId) {
+          throw new Error(`RuntimeEvent Session ordinal identity mismatch for ${row.event_id}`);
+        }
+        durableEventOrdinalById.set(row.event_id, row.ordinal);
+      }
+
+      const partialsByRun = new Map<string, RuntimePartialSnapshot[]>();
+      for (const partial of this.readRuntimePartialSnapshotsSync(sessionId)) {
+        const partials = partialsByRun.get(partial.event.runId) ?? [];
+        partials.push(partial);
+        partialsByRun.set(partial.event.runId, partials);
+      }
+      for (const [runId, partials] of partialsByRun) {
+        eventsByRun.set(
+          runId,
+          mergeRuntimePartialSnapshots(eventsByRun.get(runId) ?? [], partials),
+        );
+      }
+      const invocations = openings.map((opening) => {
+        const terminalEvent = terminalByInvocation.get(opening.invocationId);
+        return { ...opening, ...(terminalEvent ? { terminalEvent } : {}) };
+      });
+      return { invocations, eventsByRun, durableEventOrdinalById };
+    });
+  }
+
   private transcriptQuery(): RuntimeTranscriptQuery {
     return new RuntimeTranscriptQuery(this.db, (sessionId, invocationId) => {
       // By invocation rather than by run: both shelves key their opening on it,
@@ -579,31 +751,29 @@ export class SqliteRuntimeStore
     return this.readTransaction(() => this.transcriptQuery().highWater(sessionId));
   }
 
-  async readTranscriptInvocations<T>(
+  async readTranscriptRun<T>(
     sessionId: string,
-    request: RuntimeTranscriptInvocationRequest,
+    request: RuntimeTranscriptRunRequest,
     project: (
-      turn: RuntimeTranscriptInvocationHeader,
+      run: RuntimeTranscriptRun,
       events: Iterable<{ readonly ordinal: number; readonly event: RuntimeEvent }>,
     ) => T,
-  ): Promise<T[]> {
+  ): Promise<T | undefined> {
     assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
-    assertInvocationSearchLimit(request.limit);
-    return this.readTransaction(() =>
-      this.transcriptQuery().invocations(sessionId, request, project),
-    );
+    return this.readTransaction(() => this.transcriptQuery().run(sessionId, request, project));
   }
 
-  async readTranscriptLandmarks(
+  async readTranscriptTurns(
     sessionId: string,
-    throughOrdinal: number,
-    limit: number,
-  ): Promise<RuntimeTranscriptLandmark[]> {
+    request: RuntimeTranscriptTurnsRequest,
+  ): Promise<RuntimeTranscriptTurn[]> {
     assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
-    assertInvocationSearchLimit(limit);
-    return this.readTransaction(() =>
-      this.transcriptQuery().landmarks(sessionId, throughOrdinal, limit),
-    );
+    return this.readTransaction(() => this.transcriptQuery().turns(sessionId, request));
+  }
+
+  async readTranscriptTurnCrossing(sessionId: string, ordinal: number): Promise<boolean> {
+    assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
+    return this.readTransaction(() => this.transcriptQuery().crossing(sessionId, ordinal));
   }
 
   /**
@@ -624,6 +794,220 @@ export class SqliteRuntimeStore
         this.completeInvocationRecordSync(row),
       ),
     );
+  }
+
+  async listInvocationRecoveryInventory(
+    sessionIds: readonly string[],
+  ): Promise<RuntimeInvocationRecoveryInventoryEntry[]> {
+    const selectedSessionIds = [...new Set(sessionIds)];
+    for (const sessionId of selectedSessionIds) {
+      assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
+    }
+    if (selectedSessionIds.length === 0) return [];
+    const selectedJson = JSON.stringify(selectedSessionIds);
+    return this.readTransaction(() => {
+      const eventRows = this.db
+        .prepare(`
+          WITH selected(session_id) AS (SELECT value FROM json_each(?))
+          SELECT
+            opening.rowid AS opening_rowid,
+            opening.session_id AS session_id,
+            opening.invocation_id AS invocation_id,
+            1 AS from_events,
+            NULL AS run_id,
+            NULL AS turn_id,
+            NULL AS opened_at,
+            (
+              SELECT terminal.rowid
+              FROM runtime_events AS terminal INDEXED BY runtime_events_terminal
+              WHERE terminal.invocation_id = opening.invocation_id
+                AND ${TERMINAL_RUNTIME_EVENT_SQL.replaceAll('payload_json', 'terminal.payload_json')}
+              ORDER BY terminal.event_seq
+              LIMIT 1
+            ) AS terminal_rowid
+          FROM selected
+          JOIN runtime_events AS opening INDEXED BY runtime_events_by_session_kind
+            ON opening.session_id = selected.session_id
+            AND opening.event_kind = 'invocation_opened'
+        `)
+        .all(selectedJson) as unknown as RuntimeInvocationRecoveryInventoryRow[];
+      const legacyRows = this.db
+        .prepare(`
+          WITH selected(session_id) AS (SELECT value FROM json_each(?))
+          SELECT
+            NULL AS opening_rowid,
+            legacy.session_id AS session_id,
+            legacy.invocation_id AS invocation_id,
+            legacy.run_id AS run_id,
+            legacy.turn_id AS turn_id,
+            legacy.opened_at AS opened_at,
+            0 AS from_events,
+            (
+              SELECT terminal.rowid
+              FROM runtime_events AS terminal INDEXED BY runtime_events_terminal
+              WHERE terminal.invocation_id = legacy.invocation_id
+                AND ${TERMINAL_RUNTIME_EVENT_SQL.replaceAll('payload_json', 'terminal.payload_json')}
+              ORDER BY terminal.event_seq
+              LIMIT 1
+            ) AS terminal_rowid
+          FROM selected
+          JOIN runtime_legacy_invocation_openings AS legacy
+            ON legacy.session_id = selected.session_id
+          WHERE NOT EXISTS (
+              SELECT 1 FROM runtime_events AS opening
+              WHERE opening.invocation_id = legacy.invocation_id
+                AND opening.event_kind = 'invocation_opened'
+            )
+        `)
+        .all(selectedJson) as unknown as RuntimeInvocationRecoveryInventoryRow[];
+      const handoffRows = this.db
+        .prepare(`
+          WITH selected(session_id) AS (SELECT value FROM json_each(?))
+          SELECT
+            terminal.rowid AS terminal_rowid,
+            terminal.event_id AS event_id,
+            terminal.session_id AS session_id,
+            terminal.invocation_id AS invocation_id,
+            terminal.run_id AS run_id,
+            terminal.turn_id AS turn_id,
+            terminal.payload_json AS payload_json
+          FROM selected
+          JOIN runtime_events AS terminal INDEXED BY runtime_events_by_session_kind
+            ON terminal.session_id = selected.session_id
+            AND terminal.event_kind = 'invocation_end'
+          WHERE CASE
+            WHEN json_valid(terminal.payload_json)
+            THEN json_type(terminal.payload_json, '$.actions.handoffPause')
+          END IS NOT NULL
+        `)
+        .all(selectedJson) as unknown as RuntimeHandoffTerminalStorageRow[];
+      const handoffByRowId = new Map(handoffRows.map((row) => [row.terminal_rowid, row]));
+      const eventIdentity = this.db.prepare(`
+        SELECT event_id, session_id, invocation_id, run_id, turn_id, committed_at
+        FROM runtime_events
+        WHERE rowid = ?
+      `);
+      const eventCandidate = this.db.prepare(`
+        SELECT event_id, session_id, invocation_id, run_id, turn_id, committed_at, payload_json
+        FROM runtime_events
+        WHERE rowid = ?
+      `);
+      const legacyCandidate = this.db.prepare(`
+        SELECT opening_json
+        FROM runtime_legacy_invocation_openings
+        WHERE invocation_id = ?
+      `);
+      return [...eventRows, ...legacyRows]
+        .sort(
+          (a, b) =>
+            a.session_id.localeCompare(b.session_id) ||
+            a.invocation_id.localeCompare(b.invocation_id),
+        )
+        .map((row): RuntimeInvocationRecoveryInventoryEntry => {
+          const base = { sessionId: row.session_id, invocationId: row.invocation_id };
+          const handoff =
+            row.terminal_rowid === null ? undefined : handoffByRowId.get(row.terminal_rowid);
+          const needsCandidate = row.terminal_rowid === null || handoff !== undefined;
+          const needsIdentity =
+            needsCandidate || mayBeTranscriptLedgerInvocationId(row.invocation_id);
+          if (!needsIdentity) return base;
+
+          let identity: NonNullable<RuntimeInvocationRecoveryInventoryEntry['identity']>;
+          let openingJson: string | undefined;
+          let openingEventId: string | undefined;
+          if (row.from_events === 1) {
+            if (row.opening_rowid === null) {
+              throw new Error(`Runtime invocation opening row is missing: ${row.invocation_id}`);
+            }
+            const detail = (needsCandidate ? eventCandidate : eventIdentity).get(
+              row.opening_rowid,
+            ) as unknown as RuntimeInvocationRecoveryOpeningRow | undefined;
+            if (
+              !detail ||
+              detail.session_id !== row.session_id ||
+              detail.invocation_id !== row.invocation_id
+            ) {
+              throw new Error(`Runtime invocation opening identity changed: ${row.invocation_id}`);
+            }
+            identity = {
+              sessionId: detail.session_id,
+              invocationId: detail.invocation_id,
+              runId: detail.run_id,
+              turnId: detail.turn_id,
+              openedAt: detail.committed_at,
+            };
+            openingEventId = detail.event_id;
+            openingJson = detail.payload_json;
+          } else {
+            if (row.run_id === null || row.turn_id === null || row.opened_at === null) {
+              throw new Error(
+                `Legacy invocation opening identity is incomplete: ${row.invocation_id}`,
+              );
+            }
+            identity = {
+              sessionId: row.session_id,
+              invocationId: row.invocation_id,
+              runId: row.run_id,
+              turnId: row.turn_id,
+              openedAt: row.opened_at,
+            };
+            if (needsCandidate) {
+              openingJson = (
+                legacyCandidate.get(row.invocation_id) as { opening_json?: unknown } | undefined
+              )?.opening_json as string | undefined;
+            }
+          }
+          if (!needsCandidate) return { ...base, identity };
+          if (typeof openingJson !== 'string') {
+            throw new Error(`Runtime invocation opening payload is missing: ${row.invocation_id}`);
+          }
+
+          let opening: RuntimeInvocationRecord['opening'];
+          if (row.from_events === 1) {
+            const event = decodeRuntimeEventStorageRow({
+              event_id: openingEventId ?? '',
+              session_id: identity.sessionId,
+              invocation_id: identity.invocationId,
+              run_id: identity.runId,
+              turn_id: identity.turnId,
+              payload_json: openingJson,
+            });
+            const decoded = runtimeEventInvocationOpening(event);
+            if (!decoded) {
+              throw new Error(
+                `RuntimeEvent ${event.id} is indexed as an opening fact but is not one`,
+              );
+            }
+            opening = decoded;
+          } else {
+            opening = decodeRuntimeInvocationOpened(JSON.parse(openingJson));
+          }
+
+          let terminalEvent: RuntimeEvent | undefined;
+          if (handoff) {
+            if (
+              handoff.session_id !== identity.sessionId ||
+              handoff.invocation_id !== identity.invocationId ||
+              handoff.run_id !== identity.runId ||
+              handoff.turn_id !== identity.turnId
+            ) {
+              throw new Error(`Runtime handoff terminal identity changed: ${row.invocation_id}`);
+            }
+            terminalEvent = decodeRuntimeEventStorageRow(handoff);
+            if (!isTerminalRuntimeEvent(terminalEvent)) {
+              throw new Error(`Runtime handoff fact is not terminal: ${terminalEvent.id}`);
+            }
+          }
+          return {
+            ...base,
+            candidate: {
+              ...identity,
+              opening,
+              ...(terminalEvent ? { terminalEvent } : {}),
+            },
+          };
+        });
+    });
   }
 
   async readRunInvocation(
@@ -731,6 +1115,7 @@ export class SqliteRuntimeStore
       invocationId?: string;
       runId?: string;
     },
+    decodedEvents?: Map<string, RuntimeEvent>,
   ): Omit<RuntimeInvocationRecord, 'terminalEvent'>[] {
     const order = options.direction === 'desc' ? 'DESC' : 'ASC';
     const rows = this.db
@@ -814,6 +1199,7 @@ export class SqliteRuntimeStore
       if (!opening) {
         throw new Error(`RuntimeEvent ${event.id} is indexed as an opening fact but is not one`);
       }
+      decodedEvents?.set(event.id, event);
       return {
         sessionId: event.sessionId,
         invocationId: event.invocationId,
@@ -1040,17 +1426,19 @@ export class SqliteRuntimeStore
 
   private readRuntimePartialSnapshotsSync(
     sessionId: string,
-    runId: string,
+    runId?: string,
   ): RuntimePartialSnapshot[] {
     const partials = this.db
       .prepare(`
       SELECT stream_key, session_id, invocation_id, run_id, turn_id,
         payload_json, text_content, after_event_id
       FROM runtime_partial_snapshots
-      WHERE session_id = ? AND run_id = ?
+      WHERE session_id = ? ${runId === undefined ? '' : 'AND run_id = ?'}
       ORDER BY updated_at ASC, stream_key ASC
       `)
-      .all(sessionId, runId) as unknown as RuntimePartialStorageRow[];
+      .all(
+        ...(runId === undefined ? [sessionId] : [sessionId, runId]),
+      ) as unknown as RuntimePartialStorageRow[];
     const segmentText = new Map<string, string[]>();
     const segments = this.db
       .prepare(`
@@ -1058,10 +1446,13 @@ export class SqliteRuntimeStore
       FROM runtime_partial_segments AS segment
       INNER JOIN runtime_partial_snapshots AS snapshot
         ON snapshot.stream_key = segment.stream_key
-      WHERE snapshot.session_id = ? AND snapshot.run_id = ?
+      WHERE snapshot.session_id = ? ${runId === undefined ? '' : 'AND snapshot.run_id = ?'}
       ORDER BY segment.stream_key ASC, segment.segment_seq ASC
     `)
-      .iterate(sessionId, runId) as Iterable<{ stream_key: string; text_content: string }>;
+      .iterate(...(runId === undefined ? [sessionId] : [sessionId, runId])) as Iterable<{
+      stream_key: string;
+      text_content: string;
+    }>;
     let streamKey: string | undefined;
     let chunks: string[] = [];
     let tail: string[] = [];
@@ -1411,6 +1802,53 @@ export class SqliteRuntimeStore
     return row ? this.decodeContinuationClaimStateRow(row) : undefined;
   }
 
+  async listUnsettledContinuationClaimsForRecovery(
+    sessionIds: readonly string[],
+  ): Promise<ContinuationClaimStateV1[]> {
+    const selectedSessionIds = [...new Set(sessionIds)];
+    for (const sessionId of selectedSessionIds) {
+      assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
+    }
+    if (selectedSessionIds.length === 0) return [];
+    const rows = this.db
+      .prepare(`
+        WITH selected(session_id) AS (SELECT value FROM json_each(?))
+        SELECT
+          claim.claim_id,
+          claim.source_session_id,
+          claim.source_invocation_id,
+          claim.source_run_id,
+          claim.source_turn_id,
+          claim.source_event_high_water,
+          claim.source_prefix_digest,
+          claim.boundary_digest,
+          claim.boundary_json,
+          claim.provider_projection_version,
+          claim.provider_replay_digest,
+          claim.target_session_id,
+          claim.target_invocation_id,
+          claim.target_run_id,
+          claim.target_turn_id,
+          claim.target_opening_json,
+          claim.claimed_at,
+          claim.start_event_id,
+          claim.start_kind,
+          claim.protocol_version
+        FROM selected
+        JOIN runtime_continuation_claims AS claim
+          ON claim.target_session_id = selected.session_id
+        WHERE NOT EXISTS (
+          SELECT 1
+          FROM runtime_events AS terminal INDEXED BY runtime_events_terminal
+          WHERE terminal.invocation_id = claim.target_invocation_id
+            AND ${TERMINAL_RUNTIME_EVENT_SQL.replaceAll('payload_json', 'terminal.payload_json')}
+        )
+        ORDER BY claim.claimed_at ASC, claim.claim_id ASC
+      `)
+      .all(JSON.stringify(selectedSessionIds)) as unknown as ContinuationClaimStorageRow[];
+    return rows.map((row) => this.decodeContinuationClaimStateRow(row));
+  }
+
   async listContinuationClaimsForRecovery(sessionId: string): Promise<ContinuationClaimStateV1[]> {
     const rows = this.db
       .prepare(`
@@ -1507,27 +1945,203 @@ export class SqliteRuntimeStore
   ): Promise<ImmutableSteeringMessageProof | undefined> {
     assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
     assertRuntimeStorageSafeId(messageId, 'Invalid message id');
-    const matches = this.readImmutableSessionRuntimeEvents(sessionId).filter(
-      (event) => immutableSteeringMessageId(event) === messageId,
-    );
+    const matches = this.readImmutableSteeringMessageEvents(sessionId, messageId);
     if (matches.length > 1) {
       throw new Error(`Immutable steering message identity conflict: ${messageId}`);
     }
     return matches[0] ? Object.freeze({ event: matches[0] }) : undefined;
   }
 
-  async repairImmutableSteeringMessageProofsForRecovery(sessionId: string): Promise<void> {
-    assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
-    const messages = new Map<string, RuntimeEvent>();
-    for (const event of this.readImmutableSessionRuntimeEvents(sessionId)) {
-      const messageId = immutableSteeringMessageId(event);
-      if (!messageId) continue;
-      const existing = messages.get(messageId);
-      if (existing && !isDeepStrictEqual(existing, event)) {
-        throw new Error(`Immutable steering message identity conflict: ${messageId}`);
+  async readRecoveryMessageEvents(
+    input: RecoveryMessageEventQuery,
+  ): Promise<BoundedEvidenceReadResult<RuntimeEvent>> {
+    assertRuntimeStorageSafeId(input.sessionId, 'Invalid session id');
+    assertEvidenceReadBudget(input.budget);
+    const turnIds = distinctSafeRuntimeIds(input.turnIds, 'Invalid recovery Turn id');
+    const eventIds = distinctSafeRuntimeIds(input.eventIds, 'Invalid recovery event id');
+    const selectedEventIds = new Set<string>();
+    const measuredRows: Array<{ event_id: string; stored_bytes?: unknown }> = [];
+
+    const measureEventsById = (ids: readonly string[]): boolean => {
+      for (const batch of batches(ids, RECOVERY_MESSAGE_QUERY_BATCH_SIZE)) {
+        const placeholders = batch.map(() => '?').join(', ');
+        const rows = this.db
+          .prepare(`
+            SELECT event_id, session_id,
+                   length(CAST(payload_json AS BLOB)) AS stored_bytes
+              FROM runtime_events
+             WHERE event_id IN (${placeholders})
+          `)
+          .all(...batch) as Array<{
+          event_id?: unknown;
+          session_id?: unknown;
+          stored_bytes?: unknown;
+        }>;
+        for (const row of rows) {
+          if (typeof row.event_id !== 'string' || typeof row.session_id !== 'string') {
+            throw new Error('Invalid recovery RuntimeEvent measurement row');
+          }
+          if (row.session_id !== input.sessionId || selectedEventIds.has(row.event_id)) continue;
+          selectedEventIds.add(row.event_id);
+          measuredRows.push({ event_id: row.event_id, stored_bytes: row.stored_bytes });
+          if (measuredRows.length > input.budget.maxRecords) return false;
+        }
       }
-      messages.set(messageId, event);
+      return true;
+    };
+
+    if (!measureEventsById(eventIds)) return { status: 'limit_exceeded' };
+
+    const additionalTurnEventIds = new Set<string>();
+    for (const batch of batches(turnIds, RECOVERY_MESSAGE_QUERY_BATCH_SIZE)) {
+      const placeholders = batch.map(() => '?').join(', ');
+      const rows = this.db
+        .prepare(`
+          SELECT event_id
+            FROM runtime_events
+           WHERE session_id = ?
+             AND turn_id IN (${placeholders})
+             AND event_kind = 'text'
+             AND CASE
+               WHEN json_valid(payload_json)
+               THEN json_extract(payload_json, '$.partial')
+             END = 0
+             AND CASE
+               WHEN json_valid(payload_json)
+               THEN json_extract(payload_json, '$.role')
+             END = 'user'
+             AND coalesce(CASE
+               WHEN json_valid(payload_json)
+               THEN json_extract(payload_json, '$.content.steering')
+             END, 0) = 0
+           LIMIT ?
+        `)
+        .all(input.sessionId, ...batch, input.budget.maxRecords + 1) as Array<{
+        event_id?: unknown;
+      }>;
+      for (const row of rows) {
+        if (typeof row.event_id !== 'string') {
+          throw new Error('Invalid recovery RuntimeEvent identity row');
+        }
+        if (!selectedEventIds.has(row.event_id)) additionalTurnEventIds.add(row.event_id);
+        if (selectedEventIds.size + additionalTurnEventIds.size > input.budget.maxRecords) {
+          return { status: 'limit_exceeded' };
+        }
+      }
     }
+
+    if (!measureEventsById([...additionalTurnEventIds])) return { status: 'limit_exceeded' };
+    const measurement = measureEvidenceRows(
+      measuredRows,
+      input.budget,
+      'Invalid recovery RuntimeEvent evidence measurement row',
+    );
+    if (!measurement) return { status: 'limit_exceeded' };
+
+    const storedBytesById = new Map(
+      measuredRows.map((row) => [row.event_id, requireRuntimeEventScanCount(row.stored_bytes)]),
+    );
+    const events = new Map<string, RuntimeEvent>();
+    for (const batch of batches([...selectedEventIds], RECOVERY_MESSAGE_QUERY_BATCH_SIZE)) {
+      const placeholders = batch.map(() => '?').join(', ');
+      const rows = this.db
+        .prepare(`
+          SELECT event_id, session_id, invocation_id, run_id, turn_id, payload_json,
+                 length(CAST(payload_json AS BLOB)) AS stored_bytes
+            FROM runtime_events
+           WHERE event_id IN (${placeholders})
+        `)
+        .all(...batch) as unknown as Array<RuntimeEventStorageRow & { stored_bytes: number }>;
+      for (const row of rows) {
+        const event = decodeRuntimeEventStorageRow(row);
+        if (event.sessionId !== input.sessionId) continue;
+        if (storedBytesById.get(event.id) !== requireRuntimeEventScanCount(row.stored_bytes)) {
+          throw new Error('Recovery RuntimeEvent evidence changed while reading');
+        }
+        events.set(event.id, event);
+      }
+    }
+    if (events.size !== selectedEventIds.size) {
+      throw new Error('Recovery RuntimeEvent evidence changed while reading');
+    }
+
+    return {
+      status: 'complete',
+      records: [...events.values()].sort(
+        (left, right) =>
+          left.ts - right.ts ||
+          left.runId.localeCompare(right.runId) ||
+          left.id.localeCompare(right.id),
+      ),
+      ...measurement,
+    };
+  }
+
+  /**
+   * Narrows recall to the Sessions whose ledger could project a message
+   * containing one of the folded terms. The answer is a superset of the true
+   * matches, never an answer: the caller projects each candidate Session and
+   * re-runs the real predicate on the projected, redacted text.
+   *
+   * Every event payload is scanned, whatever its kind: a message's visible
+   * text — a user or model `text`, a `function_call` intent, the string values
+   * of a `function_response` result — is a JSON string value of the event that
+   * carries it, so a term inside the projected text is inside the payload
+   * (escaped forms excepted, which the caller routes around). Kinds that never
+   * project only cost the scan a little work.
+   *
+   * A Session with an in-flight partial stream is offered unconditionally: its
+   * arriving text lives in segments a per-row `instr` could straddle, and the
+   * read model presents that text as settled.
+   */
+  async listSessionsWithRuntimeEventText(
+    sessionIds: readonly string[],
+    terms: readonly string[],
+  ): Promise<string[]> {
+    if (sessionIds.length === 0 || terms.length === 0) return [];
+    for (const sessionId of sessionIds) assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
+    for (const term of terms) assertFoldedSearchTerm(term);
+    const sessions = sessionIds.map(() => '?').join(', ');
+    const rows = this.db
+      .prepare(
+        `
+        SELECT DISTINCT session_id
+          FROM runtime_events
+         WHERE session_id IN (${sessions})
+           AND (${recallFoldedMatchClause('payload_json', terms.length)})
+        UNION
+        SELECT DISTINCT session_id
+          FROM runtime_partial_snapshots
+         WHERE session_id IN (${sessions})
+        `,
+      )
+      .all(...sessionIds, ...terms, ...sessionIds) as Array<{ session_id?: unknown }>;
+    return rows.map((row) => {
+      if (typeof row.session_id !== 'string') throw new Error('Invalid recall candidate row');
+      return row.session_id;
+    });
+  }
+
+  /**
+   * How many ledger events could project to a searchable message, for
+   * recall's idf term. Counted by event kind rather than by projecting, so it
+   * is cheap and identical whichever path recall takes to find its hits.
+   */
+  async countRuntimeEventMessages(sessionIds: readonly string[]): Promise<number> {
+    if (sessionIds.length === 0) return 0;
+    for (const sessionId of sessionIds) assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
+    const sessions = sessionIds.map(() => '?').join(', ');
+    const row = this.db
+      .prepare(
+        `
+        SELECT count(*) AS total
+          FROM runtime_events
+         WHERE session_id IN (${sessions})
+           AND event_kind IN ('text', 'function_call', 'function_response')
+        `,
+      )
+      .get(...sessionIds) as { total?: unknown } | undefined;
+    return typeof row?.total === 'number' ? row.total : 0;
   }
 
   async readSessionRuntimeEvents(sessionId: string): Promise<RuntimeEvent[]> {
@@ -1554,6 +2168,16 @@ export class SqliteRuntimeStore
         a.event.id.localeCompare(b.event.id),
     );
     return ordered.map((item) => item.event);
+  }
+
+  /** Cheap durable content head; never loads transcript bodies or mutable streams. */
+  async readSessionHistoryRevision(sessionId: string): Promise<string> {
+    assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
+    const row = this.db
+      .prepare(`SELECT ordinal,event_id FROM runtime_session_event_ordinals
+      WHERE session_id=? ORDER BY ordinal DESC LIMIT 1`)
+      .get(sessionId);
+    return row ? `${row.ordinal}:${row.event_id}` : 'empty';
   }
 
   async readSessionRuntimeEventEntries(sessionId: string): Promise<SessionRuntimeEventEntry[]> {
@@ -1633,6 +2257,7 @@ export class SqliteRuntimeStore
         WHERE session_id = :sessionId
       `)
         .run({ sessionId });
+      rebuildTranscriptTurnExtents(this.db, sessionId);
     });
   }
 
@@ -2927,109 +3552,53 @@ export class SqliteRuntimeStore
     return this.transaction(() => this.commitToolOutcomeSync(canonicalInput));
   }
 
-  async commitToolRecoveryBundle(input: RuntimeRecoveryBundleCommit): Promise<void> {
-    const canonicalInput: RuntimeRecoveryBundleCommit = {
-      ...input,
-      reconcileRuntimeEvent: canonicalizeRuntimeEventForStorage(input.reconcileRuntimeEvent),
-      ...(input.outcomeRuntimeEvent
-        ? { outcomeRuntimeEvent: canonicalizeRuntimeEventForStorage(input.outcomeRuntimeEvent) }
-        : {}),
-      decisionRuntimeEvent: canonicalizeRuntimeEventForStorage(input.decisionRuntimeEvent),
-    };
-    assertNoReservedWorkspaceAuthorityAppend(canonicalInput.reconcileRuntimeEvent);
-    assertNoReservedWorkspaceAuthorityAppend(canonicalInput.decisionRuntimeEvent);
-    if (canonicalInput.outcomeRuntimeEvent) {
-      assertNoReservedWorkspaceAuthorityAppend(canonicalInput.outcomeRuntimeEvent);
-      assertNoReservedRecoveryFact(canonicalInput.outcomeRuntimeEvent);
-    }
-    this.transaction(() => {
-      const operation = this.readToolOperationSync(canonicalInput.operationId);
-      if (!operation) throw new Error(`Unknown tool operation ${canonicalInput.operationId}`);
-      if (!operation.dispatchEventId) {
-        throw new Error('Recovery bundle requires a durable dispatch RuntimeEvent');
-      }
-      assertToolRecoveryEventBundle({
-        operation: recoveryOperationIdentity(operation),
-        callEvent: this.readRequiredRuntimeEvent(operation.callEventId),
-        dispatchEvent: this.readRequiredRuntimeEvent(operation.dispatchEventId),
-        reconcileEvent: canonicalInput.reconcileRuntimeEvent,
-        outcomeEvent: canonicalInput.outcomeRuntimeEvent,
-        decisionEvent: canonicalInput.decisionRuntimeEvent,
-      });
-      assertStrictRuntimeEventOrder([
-        this.runtimeEventSeq(operation.callEventId),
-        this.runtimeEventSeq(operation.dispatchEventId),
-      ]);
-      this.assertToolLedgerTransition(
-        [
-          canonicalInput.reconcileRuntimeEvent,
-          ...(canonicalInput.outcomeRuntimeEvent ? [canonicalInput.outcomeRuntimeEvent] : []),
-          canonicalInput.decisionRuntimeEvent,
-        ],
-        'recovery_bundle',
-      );
-      if (operation.currentState !== 'prepared' || operation.resultEventId !== undefined) {
-        this.assertExactRecoveryBundleAlreadyCommitted(canonicalInput, operation);
-        return;
-      }
-
-      this.commitRecoveryFactSync(
-        operation,
-        canonicalInput.reconcileRuntimeEvent,
-        'reconcile_observed',
-      );
-      this.options.failpoint?.('after_recovery_reconcile');
-      if (canonicalInput.outcomeRuntimeEvent) {
-        this.commitToolOutcomeSync({
-          operationId: canonicalInput.operationId,
-          journalEventId: `${canonicalInput.operationId}_outcome`,
-          runtimeEvent: canonicalInput.outcomeRuntimeEvent,
-          committedAt: canonicalInput.outcomeRuntimeEvent.ts,
-        });
-        this.options.failpoint?.('after_recovery_outcome');
-      }
-
-      const decision = canonicalInput.decisionRuntimeEvent.actions?.toolRecovery;
-      if (!decision || decision.kind !== 'maka.tool.recovery_decision') {
-        throw new Error('Recovery bundle requires a recovery decision');
-      }
-      const current = this.readToolOperationSync(canonicalInput.operationId);
-      if (!current) throw new Error(`Unknown tool operation ${canonicalInput.operationId}`);
-      this.commitRecoveryFactSync(
-        current,
-        canonicalInput.decisionRuntimeEvent,
-        decision.payload.disposition === 'completed' ? 'recovery_completed' : 'recovery_parked',
-        decision.payload,
-      );
-      this.options.failpoint?.('after_recovery_decision');
-    });
-  }
-
   async readToolOperation(operationId: string): Promise<ToolOperationRecord | undefined> {
     return this.readToolOperationSync(operationId);
   }
 
-  async listUnsettledToolOperations(sessionId?: string): Promise<ToolOperationRecord[]> {
+  async listUnsettledToolOperations(
+    sessionIds?: string | readonly string[],
+  ): Promise<UnsettledToolOperationRecord[]> {
+    return this.listUnsettledToolOperationsSync(sessionIds);
+  }
+
+  private listUnsettledToolOperationsSync(
+    sessionIds?: string | readonly string[],
+  ): UnsettledToolOperationRecord[] {
+    const selectedSessionIds =
+      sessionIds === undefined
+        ? undefined
+        : [...new Set(typeof sessionIds === 'string' ? [sessionIds] : sessionIds)];
+    if (selectedSessionIds?.length === 0) return [];
     const query = `
-      SELECT operation_id, invocation_id, run_id, turn_id, provider_tool_call_id,
-        tool_name, canonical_args_hash, recovery_mode, current_state,
-        call_event_id, dispatch_event_id, result_event_id, version
+      SELECT call_event.session_id,
+        tool_operations.operation_id, tool_operations.invocation_id,
+        tool_operations.run_id, tool_operations.turn_id,
+        tool_operations.provider_tool_call_id, tool_operations.tool_name,
+        tool_operations.canonical_args_hash, tool_operations.recovery_mode,
+        tool_operations.current_state, tool_operations.call_event_id,
+        tool_operations.dispatch_event_id, tool_operations.result_event_id,
+        tool_operations.version
       FROM tool_operations
-      WHERE current_state = 'prepared'
-        AND result_event_id IS NULL
-        AND dispatch_event_id IS NOT NULL
+      JOIN runtime_events AS call_event
+        ON call_event.event_id = tool_operations.call_event_id
+      WHERE tool_operations.current_state = 'prepared'
+        AND tool_operations.result_event_id IS NULL
+        AND tool_operations.dispatch_event_id IS NOT NULL
         ${
-          sessionId === undefined
+          selectedSessionIds === undefined
             ? ''
-            : 'AND call_event_id IN (SELECT event_id FROM runtime_events WHERE session_id = ?)'
+            : 'AND call_event.session_id IN (SELECT value FROM json_each(?))'
         }
-      ORDER BY invocation_id ASC, operation_id ASC
+      ORDER BY tool_operations.invocation_id ASC, tool_operations.operation_id ASC
     `;
     const statement = this.db.prepare(query);
-    const rows = (sessionId === undefined
+    const rows = (selectedSessionIds === undefined
       ? statement.all()
-      : statement.all(sessionId)) as unknown as ToolOperationRow[];
-    return rows.map(toolOperationFromRow);
+      : statement.all(
+          JSON.stringify(selectedSessionIds),
+        )) as unknown as UnsettledToolOperationRow[];
+    return rows.map((row) => ({ sessionId: row.session_id, ...toolOperationFromRow(row) }));
   }
 
   async readToolJournal(operationId: string): Promise<ToolJournalEventRecord[]> {
@@ -3046,8 +3615,87 @@ export class SqliteRuntimeStore
     return rows.map(toolJournalRecordFromRow);
   }
 
+  /** Explicit full-workspace integrity audit and disposable projection rebuild. */
   async rebuildToolProjectionsFromRuntimeEvents(): Promise<ToolProjectionRebuildResult> {
     return this.transaction(() => this.rebuildToolProjectionsFromRuntimeEventsSync());
+  }
+
+  /** Rebuild one Session's disposable tool projections while its owner holds a fence. */
+  async rebuildToolProjectionsForSession(sessionId: string): Promise<void> {
+    await this.transaction(() => this.rebuildToolProjectionsFromRuntimeEventsSync(sessionId));
+  }
+
+  /**
+   * Repair terminal projections for unsettled tools without decoding the
+   * Session's full RuntimeEvent history. Bundle export is a compatibility
+   * boundary: unrelated historical payloads may be byte-preserved and newer
+   * or older than the RuntimeEvent schema understood by this build.
+   */
+  async rebuildTerminalToolProjectionsForSessions(sessionIds: readonly string[]): Promise<void> {
+    this.transaction(() => {
+      const operations = this.listUnsettledToolOperationsSync(sessionIds);
+      const firstTerminal = this.db.prepare(`
+        SELECT event_id, event_seq, committed_at
+        FROM runtime_events
+        WHERE session_id = ? AND invocation_id = ?
+          AND ${TERMINAL_RUNTIME_EVENT_SQL}
+        ORDER BY event_seq ASC, event_id ASC
+        LIMIT 1
+      `);
+      for (const operation of operations) {
+        const terminal = firstTerminal.get(operation.sessionId, operation.invocationId) as
+          | { event_id: string; event_seq: number; committed_at: number }
+          | undefined;
+        if (terminal) this.settleTerminalToolProjectionSync(operation, terminal);
+      }
+    });
+  }
+
+  private settleTerminalToolProjectionSync(
+    operation: UnsettledToolOperationRecord,
+    terminal: { event_id: string; event_seq: number; committed_at: number },
+  ): boolean {
+    if (!operation.dispatchEventId) return false;
+    const dispatch = this.db
+      .prepare(
+        'SELECT event_seq FROM runtime_events WHERE event_id = ? AND session_id = ? AND invocation_id = ?',
+      )
+      .get(operation.dispatchEventId, operation.sessionId, operation.invocationId) as
+      | { event_seq: number }
+      | undefined;
+    if (!dispatch || terminal.event_seq <= dispatch.event_seq) return false;
+
+    const state = terminalToolProjectionState(operation);
+    this.db
+      .prepare(`
+        INSERT INTO tool_journal_events (
+          journal_event_id, operation_id, invocation_id, run_id, turn_id, state,
+          runtime_event_id, canonical_args_hash, recovery_mode, committed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      .run(
+        journalEventIdFor(operation.operationId, terminal.event_id, state),
+        operation.operationId,
+        operation.invocationId,
+        operation.runId,
+        operation.turnId,
+        state,
+        terminal.event_id,
+        operation.canonicalArgsHash,
+        operation.recoveryMode,
+        terminal.committed_at,
+      );
+    const updated = this.db
+      .prepare(`
+        UPDATE tool_operations
+        SET current_state = ?, version = version + 1
+        WHERE operation_id = ? AND current_state = 'prepared' AND result_event_id IS NULL
+      `)
+      .run(state, operation.operationId);
+    if (updated.changes !== 1) {
+      throw new Error(`Tool operation projection changed: ${operation.operationId}`);
+    }
+    return true;
   }
 
   private rebuildToolProjectionsFromRuntimeEventsSync(
@@ -3067,6 +3715,17 @@ export class SqliteRuntimeStore
     >;
     const events = rows.map(decodeRuntimeEventStorageRow);
     const eventOrder = new Map(events.map((event, index) => [event.id, index] as const));
+    const runtimeInvocationKey = (event: RuntimeEvent): string =>
+      JSON.stringify([event.sessionId, event.invocationId]);
+    const terminalEventsByInvocation = new Map<string, RuntimeEvent>();
+    for (const event of events) {
+      if (
+        isTerminalRuntimeEvent(event) &&
+        !terminalEventsByInvocation.has(runtimeInvocationKey(event))
+      ) {
+        terminalEventsByInvocation.set(runtimeInvocationKey(event), event);
+      }
+    }
     const committedAt = new Map(
       rows.map((row, index) => [events[index]!.id, row.committed_at] as const),
     );
@@ -3130,6 +3789,24 @@ export class SqliteRuntimeStore
       }
       const reconcileEvent = recovery.kind === 'valid' ? recovery.reconcileEvent : undefined;
       const decisionEvent = recovery.kind === 'valid' ? recovery.decisionEvent : undefined;
+      const decision = recovery.kind === 'valid' ? recovery.decision : undefined;
+      const terminalEvent = terminalEventsByInvocation.get(runtimeInvocationKey(event));
+      const terminalAfterDispatch =
+        terminalEvent !== undefined &&
+        requireRuntimeEventOrder(eventOrder, terminalEvent.id) >
+          requireRuntimeEventOrder(eventOrder, event.id);
+      const abandoned =
+        !decision &&
+        !operation.responseEvent &&
+        dispatch.toolName === 'AskUserQuestion' &&
+        dispatch.recoveryMode === 'never_auto_retry' &&
+        terminalAfterDispatch;
+      // A terminal invocation closes the tool's execution window, but does not
+      // prove whether an external side effect completed. Preserve that
+      // uncertainty in the query projection without rewriting the immutable
+      // RuntimeEvent history.
+      const interruptedUnknown =
+        !decision && !operation.responseEvent && !abandoned && terminalAfterDispatch;
 
       this.db
         .prepare(`
@@ -3151,14 +3828,17 @@ export class SqliteRuntimeStore
         );
       journalEvents += 1;
       const response = operation.responseEvent;
-      const decision = recovery.kind === 'valid' ? recovery.decision : undefined;
       const currentState = decision
         ? decision.disposition === 'completed'
           ? 'recovery_completed'
           : 'recovery_parked'
         : response
           ? 'outcome_committed'
-          : 'prepared';
+          : abandoned
+            ? 'abandoned'
+            : interruptedUnknown
+              ? 'interrupted_unknown'
+              : 'prepared';
       const tail = [
         ...(reconcileEvent
           ? [{ event: reconcileEvent, state: 'reconcile_observed' as const }]
@@ -3174,6 +3854,12 @@ export class SqliteRuntimeStore
                     : ('recovery_completed' as const),
               },
             ]
+          : []),
+        ...(abandoned && terminalEvent
+          ? [{ event: terminalEvent, state: 'abandoned' as const }]
+          : []),
+        ...(interruptedUnknown && terminalEvent
+          ? [{ event: terminalEvent, state: 'interrupted_unknown' as const }]
           : []),
       ].sort(
         (a, b) =>
@@ -3212,7 +3898,7 @@ export class SqliteRuntimeStore
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `)
           .run(
-            journalEventIdFor(dispatch.operationId, item.event, item.state),
+            journalEventIdFor(dispatch.operationId, item.event.id, item.state),
             dispatch.operationId,
             item.event.invocationId,
             item.event.runId,
@@ -3300,57 +3986,6 @@ export class SqliteRuntimeStore
     return { created: true, runtimeEventSeq };
   }
 
-  private commitRecoveryFactSync(
-    operation: ToolOperationRecord,
-    event: RuntimeEvent,
-    state: 'reconcile_observed' | 'recovery_completed' | 'recovery_parked',
-    decision?: ToolRecoveryDecisionFact,
-  ): void {
-    this.insertRuntimeEvent(event, event.ts, false);
-    this.options.failpoint?.('after_runtime_event_insert');
-    this.insertToolJournalEvent(operation, event, state);
-    if (state === 'reconcile_observed') {
-      const updated = this.db
-        .prepare('UPDATE tool_operations SET version = version + 1 WHERE operation_id = ?')
-        .run(operation.operationId);
-      if (updated.changes !== 1) {
-        throw new Error(`Tool operation compare-and-set failed for ${operation.operationId}`);
-      }
-      return;
-    }
-
-    if (
-      state === 'recovery_completed' &&
-      (decision?.disposition !== 'completed' ||
-        operation.currentState !== 'outcome_committed' ||
-        operation.resultEventId !== decision.outcomeEventId)
-    ) {
-      throw new Error('Completed recovery decision does not match the persisted outcome');
-    }
-    if (
-      state === 'recovery_parked' &&
-      (decision?.disposition !== 'parked' ||
-        operation.currentState !== 'prepared' ||
-        operation.resultEventId !== undefined)
-    ) {
-      throw new Error('Parked recovery decision does not match the prepared operation');
-    }
-    const updated = this.db
-      .prepare(`
-      UPDATE tool_operations
-      SET current_state = ?, version = version + 1
-      WHERE operation_id = ? AND current_state = ?
-    `)
-      .run(
-        state,
-        operation.operationId,
-        state === 'recovery_completed' ? 'outcome_committed' : 'prepared',
-      );
-    if (updated.changes !== 1) {
-      throw new Error(`Tool operation compare-and-set failed for ${operation.operationId}`);
-    }
-  }
-
   private insertToolJournalEvent(
     operation: ToolOperationRecord,
     event: RuntimeEvent,
@@ -3381,54 +4016,47 @@ export class SqliteRuntimeStore
     this.options.failpoint?.('after_journal_event_insert');
   }
 
-  private assertExactRecoveryBundleAlreadyCommitted(
-    input: RuntimeRecoveryBundleCommit,
-    operation: ToolOperationRecord,
-  ): void {
-    const decision = input.decisionRuntimeEvent.actions?.toolRecovery;
-    const completed =
-      decision?.kind === 'maka.tool.recovery_decision' &&
-      decision.payload.disposition === 'completed';
-    if (
-      (completed &&
-        (!input.outcomeRuntimeEvent ||
-          operation.currentState !== 'recovery_completed' ||
-          operation.resultEventId !== input.outcomeRuntimeEvent.id)) ||
-      (!completed &&
-        (input.outcomeRuntimeEvent !== undefined ||
-          operation.currentState !== 'recovery_parked' ||
-          operation.resultEventId !== undefined))
-    ) {
-      throw new Error(`Tool operation ${operation.operationId} is already settled`);
-    }
-    for (const event of [
-      input.reconcileRuntimeEvent,
-      ...(input.outcomeRuntimeEvent ? [input.outcomeRuntimeEvent] : []),
-      input.decisionRuntimeEvent,
-    ]) {
-      const stored = this.readRuntimeEventJson(event.id);
-      if (stored === undefined) {
-        throw new Error(`Tool recovery bundle is incomplete for ${operation.operationId}`);
-      }
-      assertStoredRuntimeEventEquals(event, stored);
-    }
-  }
-
   private transaction<T>(operation: () => T): T {
-    if (this.databaseLease) return this.databaseLease.transaction('write', operation);
+    if (this.databaseLease) {
+      return this.databaseLease.transaction('write', operation);
+    }
     this.db.exec('BEGIN IMMEDIATE');
+    let result: T;
     try {
-      const result = operation();
+      result = operation();
       this.db.exec('COMMIT');
-      return result;
     } catch (error) {
       try {
         this.db.exec('ROLLBACK');
       } catch {
         // Preserve the protocol failure that caused rollback.
       }
+      this.settleEventCommits(false);
       throw error;
     }
+    this.settleEventCommits(true);
+    return result;
+  }
+
+  private noteEventCommit(sessionId: string): void {
+    if (this.uncommittedEventSessions.size === 0 && this.databaseLease) {
+      this.databaseLease.onTransactionSettled((committed) => this.settleEventCommits(committed));
+    }
+    this.uncommittedEventSessions.add(sessionId);
+  }
+
+  private settleEventCommits(committed: boolean): void {
+    const sessionIds = [...this.uncommittedEventSessions];
+    this.uncommittedEventSessions.clear();
+    if (!committed) return;
+    for (const sessionId of sessionIds) {
+      for (const listener of this.eventCommitListeners) listener(sessionId);
+    }
+  }
+
+  subscribeRuntimeEventCommits(listener: (sessionId: string) => void): () => void {
+    this.eventCommitListeners.add(listener);
+    return () => this.eventCommitListeners.delete(listener);
   }
 
   private readTransaction<T>(operation: () => T): T {
@@ -3655,70 +4283,88 @@ export class SqliteRuntimeStore
 
   private assertToolLedgerTransition(
     candidateEvents: readonly RuntimeEvent[],
-    expectedTransition: Parameters<typeof validateToolLedgerTransition>[0]['expectedTransition'],
+    expectedTransition: ToolLedgerTransitionKind,
   ): void {
-    this.assertWorkspaceToolLedgerHealthy();
-    // Tool-call identity is scoped by invocation. Reading unrelated invocations here turns
-    // concurrent subagents into repeated whole-workspace scans without strengthening the
-    // transition check; event and operation uniqueness remain enforced by SQLite keys.
-    const rows: RuntimeEventStorageRow[] = [];
-    const invocationIds = [...new Set(candidateEvents.map((event) => event.invocationId))].sort();
-    const readInvocation = this.db.prepare(`
-      SELECT event_id, session_id, invocation_id, run_id, turn_id, payload_json
-      FROM runtime_events
-      WHERE invocation_id = ?
-      ORDER BY event_seq ASC, event_id ASC
-    `);
-    for (const invocationId of invocationIds) {
-      rows.push(...(readInvocation.all(invocationId) as unknown as RuntimeEventStorageRow[]));
-    }
+    const canonicalEvents = candidateEvents.map(
+      (event) => encodeCanonicalRuntimeEvent(event).event,
+    );
     const validation = validateToolLedgerTransition({
-      existingEvents: rows.map(decodeRuntimeEventStorageRow),
-      candidateEvents: candidateEvents.map(canonicalizeRuntimeEventForStorage),
+      existingEvents: this.readToolLedgerDependencies(canonicalEvents),
+      candidateEvents: canonicalEvents,
       expectedTransition,
     });
     if (!validation.ok) {
+      if (validation.source === 'existing') {
+        throw new ToolLedgerCorruptionError(validation.code, validation.eventId);
+      }
       throw new ToolLedgerRejectionError(validation.code, validation.eventId);
     }
   }
 
-  private assertWorkspaceToolLedgerHealthy(): void {
-    const dataVersion = this.runtimeDataVersion();
-    if (!this.toolLedgerHealth || this.toolLedgerHealth.dataVersion !== dataVersion) {
-      this.refreshToolLedgerHealth();
+  private readToolLedgerDependencies(candidateEvents: readonly RuntimeEvent[]): RuntimeEvent[] {
+    const invocationIds = new Set(candidateEvents.map((event) => event.invocationId));
+    const operationIds = referencedToolOperationIds(candidateEvents);
+    const resolvedOperationIds = new Set<string>();
+    const loadedInvocationIds = new Set<string>();
+    const scopedEvents: Array<{ event: RuntimeEvent; eventSeq: number }> = [];
+    const readInvocation = this.db.prepare(`
+      SELECT event_id, session_id, invocation_id, run_id, turn_id, event_seq, payload_json
+      FROM runtime_events
+      WHERE invocation_id = ?
+      ORDER BY event_seq ASC, event_id ASC
+    `);
+
+    while (true) {
+      const pendingOperationIds = [...operationIds].filter(
+        (operationId) => !resolvedOperationIds.has(operationId),
+      );
+      if (pendingOperationIds.length > 0) {
+        for (const operationId of pendingOperationIds) resolvedOperationIds.add(operationId);
+        for (const invocationId of this.toolLedgerOperationInvocations(pendingOperationIds)) {
+          invocationIds.add(invocationId);
+        }
+      }
+
+      const pendingInvocationIds = [...invocationIds]
+        .filter((invocationId) => !loadedInvocationIds.has(invocationId))
+        .sort();
+      if (pendingInvocationIds.length === 0 && pendingOperationIds.length === 0) break;
+      for (const invocationId of pendingInvocationIds) {
+        loadedInvocationIds.add(invocationId);
+        const rows = readInvocation.all(invocationId) as unknown as RuntimeEventPrefixStorageRow[];
+        for (const row of rows) {
+          const event = decodeRuntimeEventStorageRow(row);
+          scopedEvents.push({ event, eventSeq: row.event_seq });
+          if (event.refs?.parentOperationId) operationIds.add(event.refs.parentOperationId);
+        }
+      }
     }
-    const health = this.toolLedgerHealth!;
-    if (health.decodeFailure) throw health.decodeFailure.error;
-    if (health.issue) {
-      // Pre-existing damage, not a bad candidate. Note the reach of "refused":
-      // this gate is only ever consulted for tool-bearing events, so a damaged
-      // ledger refuses tool facts and takes everything else. Callers that treat
-      // this as "the store is gone" are overreading it — see the note on the
-      // latch in `AgentRun.enqueueRuntimeEventStore`.
-      throw new ToolLedgerCorruptionError(health.issue.code, health.issue.eventId);
-    }
+
+    scopedEvents.sort(
+      (left, right) =>
+        left.event.invocationId.localeCompare(right.event.invocationId) ||
+        left.eventSeq - right.eventSeq ||
+        left.event.id.localeCompare(right.event.id),
+    );
+    return scopedEvents.map(({ event }) => event);
   }
 
-  private refreshToolLedgerHealth(): void {
-    const dataVersion = this.runtimeDataVersion();
-    try {
-      const rows = this.db
-        .prepare(`
-          SELECT event_id, session_id, invocation_id, run_id, turn_id, payload_json
-          FROM runtime_events
-          ORDER BY invocation_id ASC, event_seq ASC, event_id ASC
-        `)
-        .all() as unknown as RuntimeEventStorageRow[];
-      const scan = scanToolLedger(rows.map(decodeRuntimeEventStorageRow));
-      this.toolLedgerHealth = { dataVersion, issue: scan.issues[0] };
-    } catch (error) {
-      this.toolLedgerHealth = { dataVersion, decodeFailure: { error } };
-    }
-  }
-
-  private runtimeDataVersion(): number {
-    const row = this.db.prepare('PRAGMA data_version').get() as { data_version: number };
-    return row.data_version;
+  private toolLedgerOperationInvocations(operationIds: Iterable<string>): Set<string> {
+    const ids = [...new Set(operationIds)].sort();
+    if (ids.length === 0) return new Set();
+    const placeholders = ids.map(() => '?').join(', ');
+    const rows = this.db
+      .prepare(`
+        SELECT DISTINCT invocation_id
+        FROM runtime_events
+        WHERE event_kind = 'tool_dispatch'
+          AND CASE
+            WHEN json_valid(payload_json)
+              THEN json_extract(payload_json, '$.actions.toolDispatch.operationId')
+          END IN (${placeholders})
+      `)
+      .all(...ids) as Array<{ invocation_id: string }>;
+    return new Set(rows.map((row) => row.invocation_id));
   }
 
   private assertInvocationIdentity(events: readonly RuntimeEvent[]): void {
@@ -3880,7 +4526,10 @@ export class SqliteRuntimeStore
     }
   }
 
-  private importRuntimeEventSync(event: RuntimeEvent): boolean {
+  private importRuntimeEventSync(
+    event: RuntimeEvent,
+    allowLegacyTerminalWithUnsettledOperation = false,
+  ): boolean {
     const canonicalEvent = canonicalizeRuntimeEventForStorage(event);
     this.assertInvocationIdentity([canonicalEvent]);
     const partial = partialRuntimeStream(canonicalEvent);
@@ -3899,6 +4548,23 @@ export class SqliteRuntimeStore
     // consult either.
     if (!existing) {
       this.assertContinuationAuthorityAllowsEvent(canonicalEvent);
+      if (isTerminalRuntimeEvent(canonicalEvent) && !allowLegacyTerminalWithUnsettledOperation) {
+        const unresolved = this.db
+          .prepare(`
+            SELECT operation_id FROM tool_operations
+            WHERE invocation_id = ?
+              AND current_state = 'prepared'
+              AND result_event_id IS NULL
+              AND dispatch_event_id IS NOT NULL
+            LIMIT 1
+          `)
+          .get(canonicalEvent.invocationId) as { operation_id?: unknown } | undefined;
+        if (unresolved && typeof unresolved.operation_id === 'string') {
+          throw new Error(
+            `Cannot terminalize invocation ${canonicalEvent.invocationId} with unsettled tool operation ${unresolved.operation_id}`,
+          );
+        }
+      }
       this.assertRunNotSealed(canonicalEvent);
     }
     if (isToolLedgerBearingEvent(canonicalEvent)) {
@@ -3944,24 +4610,29 @@ export class SqliteRuntimeStore
   private assertImmutableSteeringMessageIdentity(event: RuntimeEvent): void {
     const messageId = immutableSteeringMessageId(event);
     if (!messageId) return;
-    const matches = this.readImmutableSessionRuntimeEvents(event.sessionId).filter(
-      (candidate) => immutableSteeringMessageId(candidate) === messageId,
-    );
+    const matches = this.readImmutableSteeringMessageEvents(event.sessionId, messageId);
     if (matches.some((candidate) => !isDeepStrictEqual(candidate, event))) {
       throw new Error(`Immutable steering message identity conflict: ${messageId}`);
     }
   }
 
-  private readImmutableSessionRuntimeEvents(sessionId: string): RuntimeEvent[] {
+  private readImmutableSteeringMessageEvents(sessionId: string, messageId: string): RuntimeEvent[] {
     const rows = this.db
       .prepare(`
-      SELECT event_id, session_id, invocation_id, run_id, turn_id, payload_json
-      FROM runtime_events
-      WHERE session_id = ?
-      ORDER BY committed_at ASC, event_id ASC
-    `)
-      .all(sessionId) as unknown as RuntimeEventStorageRow[];
-    return rows.map(decodeRuntimeEventStorageRow);
+        SELECT event_id, session_id, invocation_id, run_id, turn_id, payload_json
+          FROM runtime_events
+         WHERE session_id = ?
+           AND ${IMMUTABLE_STEERING_SQL_PREDICATE}
+           AND CASE
+             WHEN json_valid(payload_json)
+             THEN json_extract(payload_json, '$.refs.providerEventId')
+           END = ?
+         ORDER BY committed_at ASC, event_id ASC
+      `)
+      .all(sessionId, messageId) as unknown as RuntimeEventStorageRow[];
+    return rows
+      .map(decodeRuntimeEventStorageRow)
+      .filter((event) => immutableSteeringMessageId(event) === messageId);
   }
 
   private insertRuntimeEvent(
@@ -4032,6 +4703,12 @@ export class SqliteRuntimeStore
         VALUES (?, ?, ?)
       `)
       .run(canonicalEvent.sessionId, ordinal, canonicalEvent.id);
+    recordTranscriptTurnExtent(
+      this.db,
+      { ...canonicalEvent, kind: runtimeEventKind(canonicalEvent) },
+      ordinal,
+    );
+    this.noteEventCommit(canonicalEvent.sessionId);
     this.deleteCompletedPartialSnapshot(canonicalEvent);
     return next;
   }
@@ -4198,12 +4875,6 @@ export class SqliteRuntimeStore
   }
 }
 
-interface ToolLedgerHealth {
-  dataVersion: number;
-  issue?: ReturnType<typeof scanToolLedger>['issues'][number];
-  decodeFailure?: { error: unknown };
-}
-
 interface ToolOperationRow {
   operation_id: string;
   invocation_id: string;
@@ -4213,11 +4884,21 @@ interface ToolOperationRow {
   tool_name: string;
   canonical_args_hash: string;
   recovery_mode: ToolRecoveryMode;
-  current_state: 'prepared' | 'outcome_committed' | 'recovery_completed' | 'recovery_parked';
+  current_state:
+    | 'prepared'
+    | 'outcome_committed'
+    | 'recovery_completed'
+    | 'recovery_parked'
+    | 'abandoned'
+    | 'interrupted_unknown';
   call_event_id: string;
   dispatch_event_id: string | null;
   result_event_id: string | null;
   version: number;
+}
+
+interface UnsettledToolOperationRow extends ToolOperationRow {
+  session_id: string;
 }
 
 interface ToolJournalRow {
@@ -4270,115 +4951,6 @@ function toolJournalRecordFromRow(row: ToolJournalRow): ToolJournalEventRecord {
   };
 }
 
-function assertPreparedInput(input: CommitToolPreparedInput): void {
-  if (input.journalEventId !== `${input.operationId}_prepared`) {
-    throw new Error('T1 journal identity must be derived from the tool operation');
-  }
-  assertNoReservedRecoveryFact(input.runtimeEvent);
-  assertNoReservedRecoveryFact(input.dispatchRuntimeEvent);
-  const content = input.runtimeEvent.content;
-  if (content?.kind !== 'function_call')
-    throw new Error('T1 requires a function_call RuntimeEvent');
-  if (content.id !== input.providerToolCallId || content.name !== input.toolName) {
-    throw new Error('T1 RuntimeEvent identity does not match the tool operation');
-  }
-  let derivedArgsHash: string;
-  try {
-    derivedArgsHash = canonicalToolArgsHash(content.name, content.args);
-  } catch {
-    throw new Error('T1 argument hash does not match its canonical function call');
-  }
-  if (
-    derivedArgsHash !== input.canonicalArgsHash ||
-    validateToolLedgerEventLane(input.runtimeEvent).ok !== true
-  ) {
-    throw new Error('T1 argument hash does not match its canonical function call');
-  }
-  const dispatch = input.dispatchRuntimeEvent.actions?.toolDispatch;
-  if (
-    !dispatch ||
-    input.dispatchRuntimeEvent.content !== undefined ||
-    input.dispatchRuntimeEvent.partial ||
-    dispatch.operationId !== input.operationId ||
-    dispatch.providerToolCallId !== input.providerToolCallId ||
-    dispatch.toolName !== input.toolName ||
-    dispatch.canonicalArgsHash !== input.canonicalArgsHash ||
-    dispatch.recoveryMode !== input.recoveryMode ||
-    validateToolLedgerEventLane(input.dispatchRuntimeEvent).ok !== true
-  ) {
-    throw new Error('T1 requires a matching tool-dispatch RuntimeEvent');
-  }
-  assertSameRuntimeIdentity(input.runtimeEvent, input.dispatchRuntimeEvent, 'T1');
-}
-
-function assertOutcomeInput(input: CommitToolOutcomeInput): void {
-  if (input.journalEventId !== `${input.operationId}_outcome`) {
-    throw new Error('T2 journal identity must be derived from the tool operation');
-  }
-  assertNoReservedRecoveryFact(input.runtimeEvent);
-  const content = input.runtimeEvent.content;
-  if (content?.kind !== 'function_response') {
-    throw new Error('T2 requires a function_response RuntimeEvent');
-  }
-  if (
-    input.runtimeEvent.refs?.operationId !== input.operationId ||
-    input.runtimeEvent.refs?.toolCallId !== content.id
-  ) {
-    throw new Error(
-      'T2 requires operation and tool-call refs on the function_response RuntimeEvent',
-    );
-  }
-  if (validateToolLedgerEventLane(input.runtimeEvent).ok !== true) {
-    throw new Error('T2 requires one canonical function-response semantic lane');
-  }
-}
-
-function assertPreparedIdentity(
-  operation: ToolOperationRecord,
-  input: CommitToolPreparedInput,
-): void {
-  const event = input.runtimeEvent;
-  const matches =
-    operation.invocationId === event.invocationId &&
-    operation.runId === event.runId &&
-    operation.turnId === event.turnId &&
-    operation.providerToolCallId === input.providerToolCallId &&
-    operation.toolName === input.toolName &&
-    operation.canonicalArgsHash === input.canonicalArgsHash &&
-    operation.recoveryMode === input.recoveryMode &&
-    operation.callEventId === event.id &&
-    operation.dispatchEventId === input.dispatchRuntimeEvent.id;
-  if (!matches) throw new Error(`Tool operation identity conflict for ${input.operationId}`);
-}
-
-function assertSameRuntimeIdentity(
-  first: RuntimeEvent,
-  second: RuntimeEvent,
-  boundary: string,
-): void {
-  if (
-    first.sessionId !== second.sessionId ||
-    first.invocationId !== second.invocationId ||
-    first.runId !== second.runId ||
-    first.turnId !== second.turnId
-  ) {
-    throw new Error(`${boundary} RuntimeEvents do not share one execution identity`);
-  }
-}
-
-function assertOutcomeIdentity(operation: ToolOperationRecord, event: RuntimeEvent): void {
-  const content = event.content;
-  const matches =
-    content?.kind === 'function_response' &&
-    operation.invocationId === event.invocationId &&
-    operation.runId === event.runId &&
-    operation.turnId === event.turnId &&
-    operation.providerToolCallId === content.id &&
-    operation.toolName === content.name;
-  if (!matches)
-    throw new Error(`Tool operation outcome identity conflict for ${operation.operationId}`);
-}
-
 function assertRuntimeEventIdentity(event: RuntimeEvent): void {
   decodeRuntimeEvent(event);
   for (const [field, value] of Object.entries({
@@ -4405,12 +4977,6 @@ function canonicalizeRuntimeEventForStorage(event: RuntimeEvent): RuntimeEvent {
   return encodeCanonicalRuntimeEvent(event).event;
 }
 
-function assertNoReservedRecoveryFact(event: RuntimeEvent): void {
-  if (event.actions?.toolRecovery !== undefined) {
-    throw new Error('Tool recovery facts require the atomic recovery bundle writer');
-  }
-}
-
 function assertNoReservedToolLedgerFact(event: RuntimeEvent): void {
   assertNoReservedWorkspaceAuthorityAppend(event);
   if (event.actions?.continuationStart !== undefined) {
@@ -4419,7 +4985,7 @@ function assertNoReservedToolLedgerFact(event: RuntimeEvent): void {
   const validation = validateGenericToolLedgerAppend(event);
   if (validation.ok) return;
   if (validation.code === 'reserved_recovery_fact') {
-    throw new Error('Tool recovery facts require the atomic recovery bundle writer');
+    throw new Error('Historical tool recovery facts are read-only');
   }
   if (validation.code === 'reserved_tool_boundary_fact') {
     throw new Error('Durable tool facts require the atomic tool boundary writer');
@@ -4436,34 +5002,6 @@ function isToolLedgerBearingEvent(event: RuntimeEvent): boolean {
   );
 }
 
-function recoveryOperationIdentity(operation: ToolOperationRecord) {
-  if (!operation.dispatchEventId) {
-    throw new Error('Recovery bundle requires a durable dispatch RuntimeEvent');
-  }
-  return {
-    operationId: operation.operationId,
-    invocationId: operation.invocationId,
-    runId: operation.runId,
-    turnId: operation.turnId,
-    providerToolCallId: operation.providerToolCallId,
-    toolName: operation.toolName,
-    canonicalArgsHash: operation.canonicalArgsHash,
-    recoveryMode: operation.recoveryMode,
-    callEventId: operation.callEventId,
-    dispatchEventId: operation.dispatchEventId,
-  };
-}
-
-function assertStrictRuntimeEventOrder(eventSequences: readonly number[]): void {
-  if (
-    eventSequences.some(
-      (eventSequence, index) => index > 0 && eventSequence <= (eventSequences[index - 1] ?? -1),
-    )
-  ) {
-    throw new Error('Recovery facts violate canonical RuntimeEvent causal order');
-  }
-}
-
 function requireRuntimeEventOrder(
   eventOrder: ReadonlyMap<string, number>,
   eventId: string,
@@ -4473,12 +5011,27 @@ function requireRuntimeEventOrder(
   return order;
 }
 
+function terminalToolProjectionState(
+  operation: Pick<ToolOperationRecord, 'toolName' | 'recoveryMode'>,
+): 'abandoned' | 'interrupted_unknown' {
+  return operation.toolName === 'AskUserQuestion' && operation.recoveryMode === 'never_auto_retry'
+    ? 'abandoned'
+    : 'interrupted_unknown';
+}
+
 function journalEventIdFor(
   operationId: string,
-  event: RuntimeEvent,
+  eventId: string,
   state: Exclude<ToolJournalState, 'prepared'>,
 ): string {
-  return state === 'outcome_committed' ? `${operationId}_outcome` : `${event.id}_journal`;
+  if (state === 'outcome_committed') return `${operationId}_outcome`;
+  if (state === 'abandoned' || state === 'interrupted_unknown') {
+    // One invocation terminal can close multiple tool operations. Its journal
+    // fact is therefore unique per operation, unlike per-operation recovery
+    // events whose RuntimeEvent ids are already distinct.
+    return `${operationId}_${eventId}_journal`;
+  }
+  return `${eventId}_journal`;
 }
 
 function assertRecoveryAuthorityCapability(db: DatabaseSync): void {
@@ -4517,6 +5070,21 @@ function assertRuntimeStorageSafeId(value: string, message: string): void {
   if (!isRuntimeStorageSafeId(value)) throw new Error(message);
 }
 
+function distinctSafeRuntimeIds(values: readonly string[], message: string): string[] {
+  const result = new Set<string>();
+  for (const value of values) {
+    assertRuntimeStorageSafeId(value, message);
+    result.add(value);
+  }
+  return [...result];
+}
+
+function* batches<T>(values: readonly T[], size: number): Iterable<readonly T[]> {
+  for (let offset = 0; offset < values.length; offset += size) {
+    yield values.slice(offset, offset + size);
+  }
+}
+
 function assertInvocationSearchLimit(limit: number): void {
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 256) {
     throw new RangeError('Runtime invocation search limit must be an integer between 1 and 256');
@@ -4530,6 +5098,31 @@ interface RuntimeEventStorageRow {
   run_id: string;
   turn_id: string;
   payload_json: string;
+}
+
+interface RuntimeInvocationRecoveryInventoryRow {
+  opening_rowid: number | null;
+  session_id: string;
+  invocation_id: string;
+  run_id: string | null;
+  turn_id: string | null;
+  opened_at: number | null;
+  from_events: number;
+  terminal_rowid: number | null;
+}
+
+interface RuntimeInvocationRecoveryOpeningRow {
+  event_id: string;
+  session_id: string;
+  invocation_id: string;
+  run_id: string;
+  turn_id: string;
+  committed_at: number;
+  payload_json?: string;
+}
+
+interface RuntimeHandoffTerminalStorageRow extends RuntimeEventStorageRow {
+  terminal_rowid: number;
 }
 
 interface ManagedMutationReservationProjectionRow {
@@ -4912,128 +5505,6 @@ function decodeRuntimePartialStorageRow(row: RuntimePartialStorageRow): RuntimeE
 
 function decodeStoredRuntimeEvent(storedJson: string): RuntimeEvent {
   return decodeRuntimeEvent(JSON.parse(storedJson));
-}
-
-interface RuntimePartialSnapshot {
-  event: RuntimeEvent;
-  afterEventId?: string;
-}
-
-function mergeRuntimePartialSnapshots(
-  immutableEvents: readonly RuntimeEvent[],
-  snapshots: readonly RuntimePartialSnapshot[],
-): RuntimeEvent[] {
-  const { leading, afterEvent } = groupRuntimePartialSnapshots(snapshots);
-  const merged = leading.sort(compareRuntimePartialSnapshots).map(({ event }) => event);
-  for (const event of immutableEvents) {
-    merged.push(event);
-    const anchored = afterEvent.get(event.id);
-    if (!anchored) continue;
-    merged.push(...anchored.sort(compareRuntimePartialSnapshots).map((snapshot) => snapshot.event));
-    afterEvent.delete(event.id);
-  }
-  for (const orphaned of afterEvent.values()) {
-    merged.push(...orphaned.sort(compareRuntimePartialSnapshots).map((snapshot) => snapshot.event));
-  }
-  return merged;
-}
-
-function groupRuntimePartialSnapshots(snapshots: readonly RuntimePartialSnapshot[]): {
-  leading: RuntimePartialSnapshot[];
-  afterEvent: Map<string, RuntimePartialSnapshot[]>;
-} {
-  const leading: RuntimePartialSnapshot[] = [];
-  const afterEvent = new Map<string, RuntimePartialSnapshot[]>();
-  for (const snapshot of snapshots) {
-    if (!snapshot.afterEventId) {
-      leading.push(snapshot);
-      continue;
-    }
-    const grouped = afterEvent.get(snapshot.afterEventId) ?? [];
-    grouped.push(snapshot);
-    afterEvent.set(snapshot.afterEventId, grouped);
-  }
-  return { leading, afterEvent };
-}
-
-function compareRuntimePartialSnapshots(
-  left: RuntimePartialSnapshot,
-  right: RuntimePartialSnapshot,
-): number {
-  return left.event.ts - right.event.ts || left.event.id.localeCompare(right.event.id);
-}
-
-function partialRuntimeStream(event: RuntimeEvent):
-  | {
-      key: string;
-      snapshot: RuntimeEvent;
-      text: string;
-    }
-  | undefined {
-  if (!event.partial || event.status !== undefined || event.actions) return undefined;
-  const content = event.content;
-  let identity: string | undefined;
-  let text = '';
-  if (
-    content?.kind === 'text' &&
-    content.attachments === undefined &&
-    event.refs?.providerEventId &&
-    hasOnlyKeys(event.refs, ['providerEventId'])
-  ) {
-    identity = `${content.kind}:provider:${event.refs.providerEventId}`;
-    text = content.text;
-  } else if (
-    content?.kind === 'thinking' &&
-    content.signature === undefined &&
-    event.refs?.providerEventId &&
-    hasOnlyKeys(event.refs, ['providerEventId'])
-  ) {
-    identity = `${content.kind}:provider:${event.refs.providerEventId}`;
-    text = content.text;
-  } else if (!content && event.refs?.toolCallId && hasOnlyKeys(event.refs, ['toolCallId'])) {
-    identity = `tool:call:${event.refs.toolCallId}`;
-  }
-  if (!identity) return undefined;
-  const key = runtimePartialStreamKey(identity, event);
-  const snapshot =
-    content?.kind === 'text' || content?.kind === 'thinking'
-      ? { ...event, content: { ...content, text: '' } }
-      : event;
-  return { key, snapshot, text };
-}
-
-function completedPartialRuntimeStreamKey(event: RuntimeEvent): string | undefined {
-  if (event.partial) return undefined;
-  const content = event.content;
-  let identity: string | undefined;
-  if ((content?.kind === 'text' || content?.kind === 'thinking') && event.refs?.providerEventId) {
-    identity = `${content.kind}:provider:${event.refs.providerEventId}`;
-  } else if (content?.kind === 'function_response' && event.refs?.toolCallId) {
-    identity = `tool:call:${event.refs.toolCallId}`;
-  }
-  return identity ? runtimePartialStreamKey(identity, event) : undefined;
-}
-
-function runtimePartialStreamKey(identity: string, event: RuntimeEvent): string {
-  return createHash('sha256')
-    .update(
-      JSON.stringify([
-        identity,
-        event.sessionId,
-        event.invocationId,
-        event.runId,
-        event.turnId,
-        event.branch ?? null,
-        event.role,
-        event.author,
-      ]),
-    )
-    .digest('hex');
-}
-
-function hasOnlyKeys(value: object, allowed: readonly string[]): boolean {
-  const allowedSet = new Set(allowed);
-  return Object.keys(value).every((key) => allowedSet.has(key));
 }
 
 function decodeContinuationClaimRow(row: ContinuationClaimStorageRow): ContinuationClaimV1 {

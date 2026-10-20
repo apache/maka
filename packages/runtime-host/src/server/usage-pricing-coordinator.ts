@@ -19,7 +19,7 @@
 
 import { JsonArrayPageBudget } from './json-array-page-budget.js';
 
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type {
   PricingConfig,
   ToolInvocationRecord,
@@ -42,6 +42,7 @@ import {
   type InteractiveUsageStoresFailureClassification,
   type InteractiveUsageStoresWriter,
 } from '@maka/storage/usage-stores';
+import type { RunSettlementCoverage } from '@maka/storage/model-call-ledger';
 import { isSessionNotFoundError } from '@maka/storage/execution-stores';
 import {
   encodePricingQueryResult,
@@ -63,6 +64,8 @@ import {
   type UsageQueryResult,
 } from '../protocol/index.js';
 import type { UsagePricingOperationHandlerMap } from './operation-dispatcher.js';
+import type { UsageScreenRequest, UsageScreenResult } from '@maka/core/settings';
+import { finalizeUsageScreenResult } from '../protocol/usage-screen.js';
 import { RuntimePolicyActivationGate } from './runtime-policy-activation-gate.js';
 import {
   readCanonicalUsageBuckets,
@@ -78,6 +81,17 @@ export class HostUsagePricingCoordinator {
     'pricing.mutate': (input) => this.#mutatePricing(input),
   };
 
+  /**
+   * What the settlement window itself left unsettled (#5890) — hosted
+   * execution settlement's incompleteness check reads the same window as the
+   * totals it guards, minus the `no_run` sentinel rows. Deliberately off the
+   * operation handler map: the ledger-wide `usage.query` coverage keeps a
+   * different shape, so settlement scopes itself through this in-process seam.
+   */
+  async runSettlementCoverage(from: number, to: number): Promise<RunSettlementCoverage> {
+    return this.#stores.modelCalls.modelCallRunSettlementCoverage(from, to);
+  }
+
   readonly #stores: InteractiveUsageStoresWriter;
   readonly #requestDrain: () => void;
   readonly #activation: RuntimePolicyActivationGate;
@@ -87,6 +101,7 @@ export class HostUsagePricingCoordinator {
   // reserved-role, coordination, and legacy sessions the catalog omits.
   readonly #readSessionTitle?: (sessionId: string) => Promise<string | undefined>;
   #poisonDrainRequested = false;
+  readonly #screenGeneration = randomUUID();
 
   constructor(
     stores: InteractiveUsageStoresWriter,
@@ -133,6 +148,8 @@ export class HostUsagePricingCoordinator {
 
   async #queryUsage(input: UsageQueryInput): Promise<OperationOutcome<'usage.query'>> {
     try {
+      if (input.kind === 'screen' || input.kind === 'activity')
+        return { ok: true, result: await this.#queryScreen(input) };
       const now = Date.now();
       if (input.kind === 'summary') {
         const merged = mergeUsageSummary(
@@ -242,6 +259,40 @@ export class HostUsagePricingCoordinator {
     } catch (error) {
       return this.#mapReadFailure<'usage.query'>(error, 'Usage authority');
     }
+  }
+
+  async #queryScreen(input: UsageScreenRequest): Promise<UsageScreenResult> {
+    if (input.kind === 'screen') {
+      // The existing writer finishes repair before the synchronous read starts.
+      await this.#stores.modelCalls.catchUpModelCallProjection();
+    } else if (!input.revision.startsWith(`${this.#screenGeneration}_`)) {
+      return { kind: 'revision_changed' };
+    }
+    const result = await this.#stores.readUsageScreen(
+      input.kind === 'activity'
+        ? { ...input, revision: input.revision.slice(this.#screenGeneration.length + 1) }
+        : input,
+    );
+    if (result.kind !== 'screen' && result.kind !== 'activity') return result;
+    const page = result.kind === 'screen' ? result.screen : result.page;
+    page.revision = `${this.#screenGeneration}_${page.revision}`;
+    page.logs = page.logs.map((row) => ({
+      ...row,
+      id: projectIdentity(row.id),
+      provider: row.provider ? projectIdentity(row.provider) : '',
+      model: row.model ? projectIdentity(row.model) : '',
+      ...(row.toolName === undefined ? {} : { toolName: projectIdentity(row.toolName) }),
+      ...(row.sessionId === undefined ? {} : { sessionId: projectIdentity(row.sessionId) }),
+      ...(row.turnId === undefined ? {} : { turnId: projectIdentity(row.turnId) }),
+      ...(row.sessionName === undefined ? {} : { sessionName: projectText(row.sessionName) }),
+    }));
+    // Preserve complete collections: capacity is checked before codec/transport.
+    if (result.kind === 'screen') {
+      for (const row of result.screen.byProvider) row.provider = projectIdentity(row.provider);
+      for (const row of result.screen.byModel) row.model = projectIdentity(row.model);
+      for (const row of result.screen.byTool) row.tool = projectIdentity(row.tool);
+    }
+    return finalizeUsageScreenResult(result);
   }
 
   async #queryPricing(input: PricingQueryInput): Promise<OperationOutcome<'pricing.query'>> {

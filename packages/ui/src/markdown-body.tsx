@@ -29,7 +29,8 @@
  * product-specific trust boundaries around that renderer.
  */
 
-import { useCallback, useContext, useRef, type ReactNode } from 'react';
+import { MarkdownImage, createMarkdownImagePlugins } from './markdown-image.js';
+import { useCallback, useContext, useMemo, useRef, type ReactNode } from 'react';
 import {
   Markdown as AstryxMarkdown,
   type MarkdownComponents,
@@ -48,15 +49,14 @@ import { getSharedUiCopy } from './shared-ui-copy.js';
 import { MermaidDiagram } from './mermaid-diagram.js';
 import {
   createMarkdownMathCache,
-  MARKDOWN_MATH_PLUGINS,
+  MarkdownMath,
   prepareMarkdownMath,
 } from './markdown-math.js';
-import { parseAttachmentResourceRef } from '@maka/core/attachments';
-import { useAttachmentImageSource } from './attachment-image.js';
 
 const BASE_MARKDOWN_COMPONENTS = {
   link: MarkdownLink,
   image: MarkdownImage,
+  math: MarkdownMath,
 };
 
 export const MAX_AUTOMATIC_MERMAID_DIAGRAMS = 3;
@@ -143,6 +143,7 @@ const MARKDOWN_COMPONENTS = {
 
 export function MarkdownBody(props: {
   text: string;
+  imageDisplay?: 'image' | 'link';
   streaming?: boolean;
   settledText?: string;
   density?: 'default' | 'compact';
@@ -152,6 +153,7 @@ export function MarkdownBody(props: {
     (source: string) => prepareMarkdownMath(source, mathCache.current),
     [],
   );
+  const plugins = useMemo(() => createMarkdownImagePlugins(props.imageDisplay), [props.imageDisplay]);
   const budgetedText = props.streaming ? props.text : applyMermaidRenderBudget(props.text);
   const density = props.density ?? 'default';
   const components = props.streaming
@@ -194,7 +196,7 @@ export function MarkdownBody(props: {
         // the one combination neither half of the argument asks for.
         density={density}
         components={components}
-        inlinePlugins={MARKDOWN_MATH_PLUGINS}
+        plugins={plugins}
         isStreaming={props.streaming}
         settledText={props.settledText}
         transformSource={transformMathSource}
@@ -252,6 +254,9 @@ function MarkdownCode(props: {
       <CodeBlock
         code={props.code}
         language={props.language}
+        // Span highlighting avoids the higher CSS Highlight paint cost during
+        // transcript scrolling, including when virtualized code blocks remount.
+        highlightMode="spans"
         // Markdown fences are block content. Astryx defaults to fit-content
         // with a 400px floor, which leaves short-code fences visibly narrow
         // even when the surrounding transcript has room to stay readable.
@@ -266,37 +271,6 @@ function MarkdownCode(props: {
       />
     </div>
   );
-}
-
-function MarkdownImage(props: { src: string; alt: string }) {
-  const attachment = parseAttachmentResourceRef(props.src);
-  const attachmentSrc = useAttachmentImageSource(
-    attachment ? { artifactId: attachment.artifactId } : undefined,
-  );
-  if (attachment) {
-    if (!attachmentSrc) return <span>[{props.alt}]</span>;
-    return (
-      <img
-        className="maka-markdown-attachment-image"
-        src={attachmentSrc}
-        alt={props.alt}
-      />
-    );
-  }
-  if (!isSafeMarkdownImageUrl(props.src)) return <span>[{props.alt}]</span>;
-  // Remote images can be badges or sentence-level icons, so preserve Maka's
-  // existing inline presentation. Session attachments above are content
-  // previews and deliberately own a block presentation instead.
-  return <img src={props.src} alt={props.alt} style={{ display: 'inline-block' }} />;
-}
-
-function isSafeMarkdownImageUrl(url: string): boolean {
-  try {
-    const protocol = new URL(url).protocol;
-    return protocol === 'http:' || protocol === 'https:';
-  } catch {
-    return false;
-  }
 }
 
 /**

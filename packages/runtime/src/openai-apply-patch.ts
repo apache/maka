@@ -18,6 +18,12 @@
  */
 
 import { openai } from '@ai-sdk/openai';
+import { CODEX_PATCH_DESCRIPTION, CODEX_PATCH_GRAMMAR } from './codex-v4a-patch.js';
+
+export const codexApplyPatchProviderTool = openai.tools.customTool({
+  description: `${CODEX_PATCH_DESCRIPTION}\nPass raw patch text, not JSON.`,
+  format: { type: 'grammar', syntax: 'lark', definition: CODEX_PATCH_GRAMMAR },
+});
 
 export const openAiApplyPatchProviderTool = openai.tools.applyPatch({});
 const inputSchema = openAiApplyPatchProviderTool.inputSchema;

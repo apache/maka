@@ -133,6 +133,7 @@ const BIG_RESULT = 'x'.repeat(20_000) + 'BIG_RESULT_';
 interface ReactiveFixtureOptions {
   script: CallKind[];
   contextWindow?: number;
+  modelMaxOutputTokens?: number;
   declareContextWindow?: boolean;
   /**
    * A model that declares no context window, on a provider whose default
@@ -160,10 +161,14 @@ interface ReactiveFixtureOptions {
     | string
     | HistoryCompactProviderState
     | undefined;
+  /** The first checkpoint write throws, so that fold fails open without latching. */
+  failFirstCheckpointWrite?: boolean;
   /** Return and replay a Codex subscription V2 provider checkpoint. */
   providerNative?: boolean;
   /** Explicit send-level step budget forwarded to the backend. */
   maxSteps?: number;
+  /** Per provider-call reported usage, keyed by 1-based call number. */
+  usageByCall?: Record<number, { input: number; output: number }>;
   /** The FIRST tool step reports an unusable usage object (no token counts). */
   firstStepUsageMissing?: boolean;
   /** Tool-search availability with the deferred `Big` tool. */
@@ -239,6 +244,10 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
     inputTokens: { total: input, noCache: input, cacheRead: 0, cacheWrite: 0 },
     outputTokens: { total: output, text: output, reasoning: 0 },
   });
+  const usageOverride = (call: number): ReturnType<typeof usage> | undefined => {
+    const override = options.usageByCall?.[call];
+    return override ? usage(override.input, override.output) : undefined;
+  };
   const toolCallChunks = (
     call: number,
     toolName: string,
@@ -260,17 +269,22 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
       // An unusable first-step usage: the SDK accepts the object but the
       // adapter's normalization fails closed (undefined), the #972 shape.
       usage:
-        options.firstStepUsageMissing && call === 1
+        usageOverride(call) ??
+        (options.firstStepUsageMissing && call === 1
           ? ({ inputTokens: {}, outputTokens: {} } as ReturnType<typeof usage>)
-          : usage(100, 20),
+          : usage(100, 20)),
     },
   ];
-  const doneChunks = (): LanguageModelV4StreamPart[] => [
+  const doneChunks = (call: number): LanguageModelV4StreamPart[] => [
     { type: 'stream-start', warnings: [] },
     { type: 'text-start', id: 'text-1' },
     { type: 'text-delta', id: 'text-1', delta: 'done' },
     { type: 'text-end', id: 'text-1' },
-    { type: 'finish', finishReason: { unified: 'stop', raw: 'stop' }, usage: usage(120, 10) },
+    {
+      type: 'finish',
+      finishReason: { unified: 'stop', raw: 'stop' },
+      usage: usageOverride(call) ?? usage(120, 10),
+    },
   ];
   const streamForCall = (call: number): ReadableStream<LanguageModelV4StreamPart> => {
     const kind = options.script[call - 1];
@@ -426,7 +440,7 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
               ? toolCallChunks(call, 'tool_search', { query: 'Big' })
               : kind === 'gated'
                 ? toolCallChunks(call, 'Big', { q: 'run' })
-                : doneChunks();
+                : doneChunks(call);
     return simulateReadableStream({ chunks, initialDelayInMs: null, chunkDelayInMs: null });
   };
   const model = new MockLanguageModelV4({
@@ -608,6 +622,7 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
   };
 
   const midTurnEnabled = options.midTurnEnabled ?? true;
+  let firstWriteFailed = false;
   const summarizedSources: string[] = [];
   const durableReader = {
     loadTurnRuntimeEvents: async (turnId: string) => {
@@ -635,6 +650,10 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
               : reactiveStructuredSummary(input.source.foldedRuntimeEvents);
         },
         recordHistoryCompactCheckpoint: (checkpoint: HistoryCompactCheckpoint) => {
+          if (options.failFirstCheckpointWrite && recorded.length === 0 && !firstWriteFailed) {
+            firstWriteFailed = true;
+            throw new Error('disk full');
+          }
           recorded.push(checkpoint);
         },
         allowMidTurnHistoryCompaction: true,
@@ -669,7 +688,13 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
       models: [
         options.withoutContextWindow
           ? { id: 'mock-model-id' }
-          : { id: 'mock-model-id', contextWindow },
+          : {
+              id: 'mock-model-id',
+              contextWindow,
+              ...(options.modelMaxOutputTokens !== undefined
+                ? { maxOutputTokens: options.modelMaxOutputTokens }
+                : {}),
+            },
       ],
       ...(options.declareContextWindow
         ? { modelOverrides: { 'mock-model-id': { compactionThreshold: contextWindow } } }
@@ -1226,6 +1251,38 @@ describe('reactive overflow recovery in the streaming backend', () => {
     assert.equal(lastCall?.totalTokens, 250);
   });
 
+  test('lowers a 128K output cap on the request after overflow recovery', async () => {
+    const fixture = buildReactiveFixture({
+      script: ['tool', 'overflow', 'done'],
+      bigPriors: true,
+      modelMaxOutputTokens: 128_000,
+    });
+    await runTurn(fixture);
+
+    assert.equal(fixture.model.doStreamCalls.length, 3);
+    assert.equal(fixture.model.doStreamCalls[0]?.maxOutputTokens, 128_000);
+    assert.equal(fixture.model.doStreamCalls[1]?.maxOutputTokens, 128_000);
+    assert.equal(fixture.model.doStreamCalls[2]?.maxOutputTokens, 8_000);
+  });
+
+  test('sends no output cap on a Codex subscription retry after overflow recovery', async () => {
+    // Elsewhere recovery caps the retry at 8K; the Codex backend rejects any
+    // max_output_tokens, so the recovered request would fail with HTTP 400.
+    const fixture = buildReactiveFixture({
+      script: ['tool', 'overflow', 'done'],
+      bigPriors: true,
+      modelMaxOutputTokens: 128_000,
+      providerNative: true,
+    });
+    await runTurn(fixture);
+
+    assert.equal(complete(fixture)?.stopReason, 'end_turn');
+    assert.equal(fixture.model.doStreamCalls.length, 3);
+    for (const call of fixture.model.doStreamCalls) {
+      assert.equal(call?.maxOutputTokens, undefined);
+    }
+  });
+
   test('drops hydrated images before the single overflow retry without rerunning tools', async () => {
     const fixture = buildReactiveFixture({
       script: ['tool', 'overflow', 'done'],
@@ -1252,6 +1309,8 @@ describe('reactive overflow recovery in the streaming backend', () => {
   });
 
   test('surfaces a retryable second overflow after the image-only retry without another loop', async () => {
+    // Dropping the images spent this step's attempt, so the resend's own
+    // overflow is terminal.
     const fixture = buildReactiveFixture({
       script: ['tool', 'overflow503', 'overflow503'],
       imagePrior: true,
@@ -1726,7 +1785,7 @@ describe('reactive overflow recovery in the streaming backend', () => {
 
   test("a completed retry step's assistant text is never dropped by a post-retry compaction (review P1-A)", async () => {
     // Review round-2 P1-A repro: provider request boundaries and the Runtime's
-    // flushedSteps / replacedStepNumber state are send-level.
+    // flushedSteps / stepShaping state are send-level.
     // After a retry, a mismatched request-local boundary could satisfy the
     // durability wait before the retry step's text_complete is durable, and
     // because the
@@ -1832,8 +1891,8 @@ describe('reactive overflow recovery in the streaming backend', () => {
     });
     await runTurn(fixture);
 
-    // The latch permits exactly one compact-and-retry; the retry's overflow is
-    // terminal, not a third attempt.
+    // Both overflows are the same logical step, which has one attempt: the
+    // retry's overflow is terminal, not a third attempt.
     assert.equal(fixture.model.doStreamCalls.length, 3);
     assert.equal(complete(fixture)?.stopReason, 'error');
     assert.equal(
@@ -1842,6 +1901,169 @@ describe('reactive overflow recovery in the streaming backend', () => {
     );
     assert.equal(fixture.recorded.length, 1);
     assert.equal(fixture.llmCalls.at(-1)?.errorClass, 'context_overflow');
+  });
+
+  test('a terminal retry after the compaction still settles usage with its completed anchor (#5547)', async () => {
+    // Step 1 completes; step 2 overflows; the recovery compaction lands; the retry
+    // overflows terminally. Settlement persists the completed steps' usage
+    // row — after the compaction notes — and its anchor still describes the
+    // PRE-compaction request. The fact is kept whole: `completedAt` is what lets a
+    // reader order the anchor against the apply-time boundary instead of
+    // trusting ledger position.
+    const fixture = buildReactiveFixture({
+      script: ['tool', 'overflow', 'overflow'],
+      bigPriors: true,
+    });
+    await runTurn(fixture);
+
+    const usage = fixture.events.find((event) => event.type === 'token_usage') as
+      | {
+          type: 'token_usage';
+          lastRequestAnchor?: { inputTokens?: number; completedAt?: number };
+        }
+      | undefined;
+    assert.ok(usage);
+    assert.equal(typeof usage.lastRequestAnchor?.inputTokens, 'number');
+    assert.equal(typeof usage.lastRequestAnchor?.completedAt, 'number');
+    assert.equal(
+      fixture.messages.some(
+        (message) =>
+          (message as { type?: string; kind?: string }).type === 'system_note' &&
+          (message as { kind?: string }).kind === 'context_compaction_applied',
+      ),
+      true,
+    );
+  });
+
+  test('a post-compaction retry that completes keeps its request anchor', async () => {
+    // The healthy counterpart: the retry completed after the compaction, so the
+    // settlement usage row anchors the NEXT turn's baseline on real post-compaction
+    // input.
+    const fixture = buildReactiveFixture({
+      script: ['tool', 'overflow', 'done'],
+      bigPriors: true,
+    });
+    await runTurn(fixture);
+
+    const usage = fixture.events.find((event) => event.type === 'token_usage') as
+      | { type: 'token_usage'; lastRequestAnchor?: { inputTokens?: number } }
+      | undefined;
+    assert.ok(usage);
+    assert.equal(typeof usage.lastRequestAnchor?.inputTokens, 'number');
+  });
+
+  test('a proactive fold spends the step, so the same step does not fold again', async () => {
+    // The declared window is crossed before the second request, so that
+    // request is already the folded one when the provider rejects it. Reactive
+    // recovery on that rejection would fold the same step twice and resend the
+    // same floor.
+    const fixture = buildReactiveFixture({
+      script: ['tool', 'overflow', 'done'],
+      contextWindow: 100,
+      declareContextWindow: true,
+      bigPriors: true,
+    });
+    await runTurn(fixture);
+
+    assert.equal(fixture.model.doStreamCalls.length, 2);
+    assert.equal(fixture.recorded.length, 1);
+    assert.equal(complete(fixture)?.stopReason, 'error');
+    // The provider's own verdict is what ends the turn, and the note says the
+    // request was already folded when it was rejected.
+    assert.equal(fixture.llmCalls.at(-1)?.errorClass, 'context_overflow');
+    assert.equal(
+      fixture.messages.some(
+        (message) =>
+          (message as { type?: string; kind?: string }).type === 'system_note' &&
+          (message as { kind?: string }).kind === 'context_overflow_after_compaction',
+      ),
+      true,
+    );
+  });
+
+  test("a failed proactive fold leaves the reactive attempt to the provider's rejection", async () => {
+    // The proactive fold for the second request enters the module and loses its
+    // checkpoint write, so that request goes out with its full raw history. The
+    // rejection that follows is a rejection of unfolded history, and recovery is
+    // what the step has left: nothing was reshaped, so nothing was spent.
+    const fixture = buildReactiveFixture({
+      script: ['tool', 'overflow', 'done'],
+      contextWindow: 100,
+      declareContextWindow: true,
+      bigPriors: true,
+      failFirstCheckpointWrite: true,
+    });
+    await runTurn(fixture);
+
+    assert.equal(fixture.model.doStreamCalls.length, 3);
+    assert.equal(complete(fixture)?.stopReason, 'end_turn');
+    // One write lost, one kept: the fold that rescued the rejected request.
+    assert.equal(fixture.recorded.length, 1);
+    assert.equal(fixture.summarizerCalls(), 2);
+  });
+
+  test('a no_safe_completed_span fail-open does not block overflow recovery once the pool grows (#5790)', async () => {
+    // Step 1's large usage fires the proactive trigger while the durable pool
+    // is only the anchor plus one tool pair — a miss that never reached the
+    // summarizer yet (before the fix) latched the turn's failure flag. Step 2
+    // lands a second pair and reports a small usage so the proactive trigger
+    // stays quiet, then the third request overflows: recovery must re-read
+    // the grown ledger and fold instead of inheriting the earlier miss.
+    const fixture = buildReactiveFixture({
+      script: ['tool', 'tool', 'overflow', 'done'],
+      withoutPriorTurns: true,
+      declareContextWindow: true,
+      contextWindow: 190,
+      usageByCall: { 1: { input: 1_000, output: 50 }, 2: { input: 10, output: 5 } },
+    });
+    await runTurn(fixture);
+
+    // Recovery folded the grown pool and resent: the turn completes for real.
+    assert.equal(complete(fixture)?.stopReason, 'end_turn');
+    assert.equal(fixture.model.doStreamCalls.length, 4);
+    assert.equal(
+      fixture.events.some((event) => event.type === 'error'),
+      false,
+    );
+    assert.equal(fixture.summarizerCalls(), 1);
+    assert.equal(fixture.recorded.length, 1);
+    // The resent request carries the folded checkpoint, not the raw span.
+    const resent = JSON.stringify(fixture.model.doStreamCalls[3]?.prompt);
+    assert.match(resent, /REACTIVE_SUMMARY_SENTINEL/);
+  });
+
+  test('a later step that overflows again folds again after real progress', async () => {
+    // The budget is one attempt per logical step, not one per send. The first
+    // overflow folds and the retry succeeds; two more tool steps are accepted
+    // by the provider, and the overflow that follows them is a different step
+    // with new history behind it, so it gets its own fold instead of failing
+    // the turn.
+    const fixture = buildReactiveFixture({
+      script: ['tool', 'overflow', 'tool', 'tool', 'overflow', 'done'],
+      bigPriors: true,
+    });
+    await runTurn(fixture);
+
+    assert.equal(fixture.model.doStreamCalls.length, 6);
+    assert.equal(complete(fixture)?.stopReason, 'end_turn');
+    assert.equal(
+      fixture.events.some((event) => event.type === 'error'),
+      false,
+    );
+    assert.equal(fixture.recorded.length, 2);
+    assert.equal(fixture.summarizerCalls(), 2);
+    // No completed tool step was replayed across either retry.
+    assert.deepEqual(fixture.toolExecutions, ['one.md', 'one.md', 'one.md']);
+    // The second fold covers the steps accepted after the first one, so it is
+    // a fold of new history rather than a repeat of the same prefix.
+    assert.equal(
+      fixture.recorded[1]!.coverage.eventCount > fixture.recorded[0]!.coverage.eventCount,
+      true,
+    );
+    assert.notEqual(
+      fixture.recorded[1]!.coverage.through.runtimeEventId,
+      fixture.recorded[0]!.coverage.through.runtimeEventId,
+    );
   });
 
   test('no recovery seam means a context-length overflow ends as a real error', async () => {
@@ -2017,7 +2239,8 @@ describe('reactive overflow recovery in the streaming backend', () => {
 
       const note = fixture.messages.find(
         (message): message is { type: 'system_note'; kind: string; data?: unknown } =>
-          (message as { type?: string }).type === 'system_note',
+          (message as { type?: string }).type === 'system_note' &&
+          (message as { kind?: string }).kind === 'context_window_suggestion',
       );
       assert.equal(note?.kind, 'context_window_suggestion');
       assert.deepEqual(note?.data, {
@@ -2060,6 +2283,36 @@ describe('reactive overflow recovery in the streaming backend', () => {
     );
   });
 
+  test('an unfoldable overflow after an accepted fold still says the request was compacted', async () => {
+    // The fold that rescued the first overflow was accepted, so a later step's
+    // rejection is a rejection of already-compacted history — even though that
+    // step reshaped nothing of its own before being rejected (its own fold
+    // fails open). The note is about what the Turn has folded, not about what
+    // this step did.
+    let summarizerCall = 0;
+    const fixture = buildReactiveFixture({
+      script: ['tool', 'overflow', 'tool', 'overflow'],
+      bigPriors: true,
+      summarize: (input) => {
+        summarizerCall += 1;
+        return summarizerCall === 1
+          ? reactiveStructuredSummary(input.source.foldedRuntimeEvents)
+          : undefined;
+      },
+    });
+    await runTurn(fixture);
+
+    assert.equal(complete(fixture)?.stopReason, 'error');
+    assert.equal(fixture.recorded.length, 1);
+    assert.equal(summarizerCall, 2);
+    assert.equal(
+      fixture.messages.some(
+        (message) => (message as { kind?: string }).kind === 'context_overflow_after_compaction',
+      ),
+      true,
+    );
+  });
+
   test('a send that overflows once, folds and completes suggests nothing', async () => {
     const fixture = buildReactiveFixture({
       script: ['tool', 'overflow', 'done'],
@@ -2068,6 +2321,15 @@ describe('reactive overflow recovery in the streaming backend', () => {
     await runTurn(fixture);
     assert.equal(complete(fixture)?.stopReason, 'end_turn');
     // The fold itself is noted (context_compacted); the window suggestion is not.
+    // The compaction landed mid-turn, so its apply-time boundary row exists too.
+    assert.equal(
+      fixture.messages.some(
+        (message) =>
+          (message as { type?: string; kind?: string }).type === 'system_note' &&
+          (message as { kind?: string }).kind === 'context_compaction_applied',
+      ),
+      true,
+    );
     assert.equal(
       fixture.messages.some(
         (message) =>

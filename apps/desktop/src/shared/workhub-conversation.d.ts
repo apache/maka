@@ -31,6 +31,10 @@ export type WorkHubAnswerResult =
   | { readonly kind: 'unknown'; readonly originHostEpoch: string }
   | { readonly kind: 'not_admitted' };
 
+export type WorkHubCoordinationSessionResolution =
+  | { readonly sessionId: string }
+  | { readonly kind: 'model_required' };
+
 export type WorkHubPrepareAttachmentsResult =
   | { readonly ok: true; readonly attachments: AttachmentRef[] }
   | { readonly ok: false; readonly code: AttachmentIngestBlockedCode };

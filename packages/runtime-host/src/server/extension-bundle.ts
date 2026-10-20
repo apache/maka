@@ -260,6 +260,11 @@ export function extensionPackageContentDigest(
   return `sha256-${hash.digest('hex')}`;
 }
 
+/** Computes the canonical digest used by PluginPackageStore without installing the package. */
+export async function extensionPackageDirectoryContentDigest(root: string): Promise<string> {
+  return extensionPackageContentDigest(await readDirectory(root));
+}
+
 function safePath(value: string): string {
   if (
     !value ||
