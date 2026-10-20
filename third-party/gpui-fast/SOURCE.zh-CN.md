@@ -77,3 +77,7 @@ Window 可根据原 ClickInputState interruption 创建不可 clone 的 InputGes
 ## 列表行保留布局期的元素状态（2026-10-16）
 
 在上游合并前，回移上游拉取请求 [#73](https://github.com/longbridge/gpui-fast/pull/73)（提交 `97bff7005ef4e5971237fcf890262947cff21b46`）。某帧沿用列表滚动图层里的行时，该行在渲染和 `request_layout` 中取得的元素状态现在随行保存，并随其 prepaint 记录一起带入新帧；此前它们在第一次沿用该行的帧结束时被丢弃。gpui-kit 的 `TextView` 把超过 4 KB 的已解析文档存为这种状态，状态新建时在后台重新解析，所以在高于视口的 markdown 行内滚动时，该行会有一帧按空文档的高度布局。在另一列表的行布局期间布局的行（内层 `ListSizingBehavior::Infer` 列表的行）属于那一行，不再记成外层列表的行。改动在 `crates/gpui/src/fast/layers/lists.rs`，另有 `crates/gpui/src/fast/layout.rs` 中的一个访问函数，以及 `crates/gpui/src/fast/tests/layers_lists.rs` 中的六个 `layout_states` 测试。固定版本越过上游合并后，删除本节及改动。
+
+## 一次滚轮手势只滚动一个容器（2026-10-20）
+
+Maka 自己的改动。滚动容器嵌在另一个滚动容器里时（例如对话列表里的工具输出框），在它上面的一次滚轮或触控板手势（或一次触摸拖动）会让两者一起滚动，因为指针下每个 `Div` 和 `List` 的滚动监听器都会处理每个滚轮事件。现在 `Window` 持有一个 `ScrollLatch`（`crates/gpui/src/gestures.rs`）：指针下沿手势方向（增量较大的那一轴）真正滚动了的最内层容器取得这次手势，直到手势结束，滚到尽头也不放手。它外层的容器（监听器在它之后运行）把这次手势的事件留给它，滚动中移到指针下的容器也不接手。滚不动的容器让事件继续向外传，所以框已在尽头时，下一次手势交给页面，与浏览器的滚动链一致；vendored GPUI Kit 的 `ScrollableMask` 在边缘把事件交给外层容器的行为也保持不变。手势在以下情况结束：收到 `TouchPhase::Started` 事件、滚轮事件位置改变、或取得手势的容器 300 毫秒内没有处理它的事件。以 `TouchPhase::Started` 开始的手势，要在收到 `TouchPhase::Ended` 之后才会因停顿而结束，因为手指可能停在触控板上。事件仍会继续传播，滚动条等其他滚轮监听器照常收到。用滚轮另一轴滚动单轴容器的情况不参与，行为不变。`Div` 的滚轮监听器现在按本帧布局的范围钳制偏移（prepaint 原本就会这样钳制）。改动在 `gestures.rs`、`window.rs`、`elements/div.rs` 和 `elements/list.rs`，测试为 `elements/div.rs` 中九个、`elements/list.rs` 中两个。GPUI Kit 0.8.0（[#3500](https://github.com/longbridge/gpui-kit/pull/3500)）给自身滚动区域定的规则不同：指针下最内层的区域在捕获阶段取得每个事件（到尽头也是）并停止传播。固定版本升到 0.8.0 或更新时重新评估这项改动。

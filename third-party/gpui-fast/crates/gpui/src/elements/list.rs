@@ -7,11 +7,12 @@
 //!
 //! If all of your elements are the same height, see [`crate::UniformList`] for a simpler API
 
+use crate::gestures::{ScrollLatch, ScrollTurn};
 use crate::{
-    AnyElement, App, AvailableSpace, Bounds, ContentMask, DispatchPhase, Edges, Element, EntityId,
-    FocusHandle, GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId, IntoElement,
-    Overflow, Pixels, Point, ScrollDelta, ScrollWheelEvent, Size, Style, StyleRefinement, Styled,
-    Window, point, px, size,
+    AnyElement, App, AvailableSpace, Axis, Bounds, ContentMask, DispatchPhase, Edges, Element,
+    EntityId, FocusHandle, GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId,
+    IntoElement, Overflow, Pixels, Point, ScrollDelta, ScrollWheelEvent, Size, Style,
+    StyleRefinement, Styled, Window, point, px, size,
 };
 use collections::VecDeque;
 use refineable::Refineable as _;
@@ -916,6 +917,9 @@ impl StateInner {
         scroll_top.item_ix..cursor.start().count + 1
     }
 
+    /// Scrolls by `delta` from `scroll_top`, the top this frame laid out;
+    /// returns the new top, in pixels from the start, unless the list could
+    /// not scroll.
     fn scroll(
         &mut self,
         scroll_top: &ListOffset,
@@ -924,11 +928,11 @@ impl StateInner {
         current_view: EntityId,
         window: &mut Window,
         cx: &mut App,
-    ) {
+    ) -> Option<Pixels> {
         // Drop scroll events after a reset, since we can't calculate
         // the new logical scroll top without the item heights
         if self.reset {
-            return;
+            return None;
         }
 
         let padding = self.last_padding.unwrap_or_default();
@@ -979,6 +983,7 @@ impl StateInner {
 
         crate::fast::layers::invalidate::note_list_scrolled(window, &self.version, current_view);
         cx.notify(current_view);
+        Some(new_scroll_top)
     }
 
     pub(crate) fn logical_scroll_top(&self) -> ListOffset {
@@ -1712,18 +1717,41 @@ impl Element for List {
         let scroll_top = prepaint.layout.scroll_top;
         let hitbox_id = prepaint.hitbox.id;
         let mut accumulated_scroll_delta = ScrollDelta::default();
+        // The state's cell stays the same from frame to frame.
+        let owner = Rc::as_ptr(&list_state.0) as *const () as usize;
+        // Each event this frame scrolls from the top it laid out, by the
+        // deltas so far; whether one moved the list is against the last.
+        let mut last_top = list_state.0.borrow().scroll_top(&scroll_top);
         window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
             if phase == DispatchPhase::Bubble && hitbox_id.should_handle_scroll(window) {
+                // A scroll container inside the list may hold the gesture
+                // (`ScrollLatch`); its listener has run already.
+                let turn = window.scroll_latch.turn(owner);
+                if turn == ScrollTurn::Elsewhere {
+                    return;
+                }
                 accumulated_scroll_delta = accumulated_scroll_delta.coalesce(event.delta);
                 let pixel_delta = accumulated_scroll_delta.pixel_delta(px(20.));
-                list_state.0.borrow_mut().scroll(
+                let top = list_state.0.borrow_mut().scroll(
                     &scroll_top,
                     height,
                     pixel_delta,
                     current_view,
                     window,
                     cx,
-                )
+                );
+                let moved = top.is_some_and(|top| top != last_top);
+                if let Some(top) = top {
+                    last_top = top;
+                }
+                // It scrolls only vertically, so a sideways gesture is not
+                // its to take.
+                let along = ScrollLatch::axis(event.delta.pixel_delta(px(20.))) == Axis::Vertical;
+                if (moved && along) || turn == ScrollTurn::Held {
+                    window
+                        .scroll_latch
+                        .hold(owner, cx.background_executor().now());
+                }
             }
         });
 
@@ -3090,5 +3118,117 @@ mod test {
              the bottom of its track, even when content has grown during the drag \
              (so frozen_bottom < live_bottom)"
         );
+    }
+
+    #[gpui::test]
+    fn test_wheel_over_a_box_in_a_list_scrolls_only_the_box(cx: &mut TestAppContext) {
+        use crate::{
+            ParentElement as _, ScrollHandle, StatefulInteractiveElement as _, TouchPhase,
+        };
+
+        let cx = cx.add_empty_window();
+        // Five rows of 60px in a list 100px tall, all measured; the first is
+        // a box that scrolls 140px.
+        let state = ListState::new(5, crate::ListAlignment::Top, px(300.));
+        let boxed = ScrollHandle::new();
+
+        struct TestView(ListState, ScrollHandle);
+        impl Render for TestView {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let boxed = self.1.clone();
+                list(self.0.clone(), move |ix, _, _| {
+                    if ix == 0 {
+                        div()
+                            .id("box")
+                            .h(px(60.))
+                            .w_full()
+                            .overflow_y_scroll()
+                            .track_scroll(&boxed)
+                            .children((0..10).map(|_| div().h(px(20.)).w_full().flex_none()))
+                            .into_any()
+                    } else {
+                        div().h(px(60.)).w_full().into_any()
+                    }
+                })
+                .w_full()
+                .h_full()
+            }
+        }
+
+        let view = cx.update(|_, cx| cx.new(|_| TestView(state.clone(), boxed.clone())));
+        let mut wheel = |dy: f32, touch_phase| {
+            cx.draw(point(px(0.), px(0.)), size(px(100.), px(100.)), |_, _| {
+                view.clone().into_any_element()
+            });
+            cx.simulate_event(ScrollWheelEvent {
+                position: point(px(10.), px(10.)),
+                delta: ScrollDelta::Pixels(point(px(0.), px(-dy))),
+                touch_phase,
+                ..Default::default()
+            });
+        };
+        let list_top = |state: &ListState| {
+            let top = state.logical_scroll_top();
+            px(60.) * top.item_ix as f32 + top.offset_in_item
+        };
+
+        wheel(30., TouchPhase::Started);
+        wheel(200., TouchPhase::Moved);
+        assert_eq!((list_top(&state), -boxed.offset().y), (px(0.), px(140.)));
+
+        // The next gesture finds the box at its end and scrolls the list.
+        wheel(30., TouchPhase::Started);
+        assert_eq!((list_top(&state), -boxed.offset().y), (px(30.), px(140.)));
+        wheel(-20., TouchPhase::Moved);
+        assert_eq!((list_top(&state), -boxed.offset().y), (px(10.), px(140.)));
+    }
+
+    #[gpui::test]
+    fn test_a_sideways_gesture_over_a_list_is_not_the_lists(cx: &mut TestAppContext) {
+        use crate::{
+            InteractiveElement as _, ParentElement as _, ScrollHandle,
+            StatefulInteractiveElement as _, TouchPhase,
+        };
+
+        let cx = cx.add_empty_window();
+        // Five rows of 60px in a list 100px tall and 300px wide, in a strip
+        // 100px wide that scrolls it 200px sideways.
+        let state = ListState::new(5, crate::ListAlignment::Top, px(300.));
+        let strip = ScrollHandle::new();
+
+        struct TestView(ListState, ScrollHandle);
+        impl Render for TestView {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div()
+                    .id("strip")
+                    .flex()
+                    .size_full()
+                    .overflow_x_scroll()
+                    .track_scroll(&self.1)
+                    .child(
+                        list(self.0.clone(), |_, _, _| {
+                            div().h(px(60.)).w_full().into_any()
+                        })
+                        .w(px(300.))
+                        .h_full()
+                        .flex_none(),
+                    )
+            }
+        }
+
+        let view = cx.update(|_, cx| cx.new(|_| TestView(state.clone(), strip.clone())));
+        for (dx, dy, touch_phase) in [(30., 2., TouchPhase::Started), (30., 0., TouchPhase::Moved)]
+        {
+            cx.draw(point(px(0.), px(0.)), size(px(100.), px(100.)), |_, _| {
+                view.clone().into_any_element()
+            });
+            cx.simulate_event(ScrollWheelEvent {
+                position: point(px(10.), px(10.)),
+                delta: ScrollDelta::Pixels(point(px(-dx), px(-dy))),
+                touch_phase,
+                ..Default::default()
+            });
+        }
+        assert_eq!(strip.offset().x, px(-60.));
     }
 }

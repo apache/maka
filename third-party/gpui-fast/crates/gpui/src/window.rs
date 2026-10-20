@@ -1447,6 +1447,8 @@ pub struct Window {
     default_prevented: bool,
     pub(crate) mouse_position: Point<Pixels>,
     pub(crate) mouse_hit_test: HitTest,
+    /// The scroll container the current wheel gesture belongs to.
+    pub(crate) scroll_latch: crate::gestures::ScrollLatch,
     modifiers: Modifiers,
     capslock: Capslock,
     scale_factor: f32,
@@ -2367,6 +2369,7 @@ impl Window {
             default_prevented: true,
             mouse_position,
             mouse_hit_test: HitTest::default(),
+            scroll_latch: Default::default(),
             modifiers,
             capslock,
             scale_factor,
@@ -6349,6 +6352,13 @@ impl Window {
             crate::fast::layers::input::before_dispatch(self, cx, &event);
         }
 
+        if let PlatformInput::ScrollWheel(wheel) = &event {
+            self.scroll_latch.begin(
+                wheel.touch_phase,
+                wheel.position,
+                cx.background_executor().now(),
+            );
+        }
         if let Some(any_mouse_event) = event.mouse_event() {
             self.dispatch_mouse_event(any_mouse_event, cx);
         } else if let Some(any_key_event) = event.keyboard_event() {
@@ -6476,6 +6486,11 @@ impl Window {
         match gesture {
             RecognizedTouchGesture::Scroll(scroll_wheel) => {
                 self.mouse_position = scroll_wheel.position;
+                self.scroll_latch.begin(
+                    scroll_wheel.touch_phase,
+                    scroll_wheel.position,
+                    cx.background_executor().now(),
+                );
                 cx.propagate_event = true;
                 self.dispatch_mouse_event(&scroll_wheel, cx);
             }

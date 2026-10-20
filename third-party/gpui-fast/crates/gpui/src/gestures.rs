@@ -107,6 +107,104 @@ impl OngoingScroll {
     }
 }
 
+/// How long a scroll container keeps a wheel gesture without taking an event
+/// of it, once no finger is on the trackpad.
+pub(crate) const SCROLL_LATCH_IDLE: Duration = Duration::from_millis(300);
+
+/// Which scroll container a wheel gesture belongs to, so nested containers
+/// do not all move with it.
+///
+/// The innermost container under the pointer that moves along the gesture's
+/// axis takes the gesture, and keeps it until the gesture ends: the
+/// containers around it leave its events alone, and so do containers the
+/// scroll brings under the pointer. It keeps it at its end too, rather than
+/// passing the rest of a fling to the container around it. A container that
+/// cannot move lets the event pass outward, so a box at its end hands the
+/// next gesture to the page.
+///
+/// A gesture ends with the next [`TouchPhase::Started`], where the platform
+/// reports phases; when an event comes from another position, as the
+/// pointer moved; or once the container holding it has taken none of its
+/// events for [`SCROLL_LATCH_IDLE`], as a mouse wheel's ticks come without
+/// phases. A gesture that began with [`TouchPhase::Started`] does not end
+/// that way before its [`TouchPhase::Ended`], as a finger can rest on the
+/// trackpad.
+///
+/// Containers take their turns in the bubble phase, innermost first, and
+/// leave the event to propagate: other listeners, such as a scrollbar's,
+/// still see it. A container that scrolls on one axis with the wheel's other
+/// axis, as GPUI lets one do, takes no turn, and moves with the gesture as
+/// before.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct ScrollLatch {
+    /// The container holding the gesture, and when it last took an event.
+    holder: Option<(usize, Instant)>,
+    /// Where the last wheel event was.
+    position: Option<Point<Pixels>>,
+    /// Whether the gesture began with [`TouchPhase::Started`] and has not
+    /// had its [`TouchPhase::Ended`].
+    touching: bool,
+}
+
+/// What a scroll container may do with a wheel event, from [`ScrollLatch::turn`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ScrollTurn {
+    /// No container holds the gesture: scroll, and take it if that moved
+    /// this container along the gesture's axis.
+    Free,
+    /// This container holds the gesture: scroll, and take the event even if
+    /// that did not move.
+    Held,
+    /// Another container holds the gesture: leave the event to it.
+    Elsewhere,
+}
+
+impl ScrollLatch {
+    /// Called as a wheel event of `phase` at `position` begins to be
+    /// dispatched at `now`, before any container sees it: ends the gesture
+    /// the event does not belong to.
+    pub(crate) fn begin(&mut self, phase: TouchPhase, position: Point<Pixels>, now: Instant) {
+        let idle = !self.touching
+            && self
+                .holder
+                .is_some_and(|(_, at)| now.duration_since(at) >= SCROLL_LATCH_IDLE);
+        let pointer_moved = self
+            .position
+            .replace(position)
+            .is_some_and(|last| last != position);
+        if phase == TouchPhase::Started || idle || pointer_moved {
+            self.holder = None;
+            self.touching = false;
+        }
+        match phase {
+            TouchPhase::Started => self.touching = true,
+            TouchPhase::Ended | TouchPhase::Cancelled => self.touching = false,
+            TouchPhase::Moved => {}
+        }
+    }
+
+    /// The axis a wheel event moves along: a container takes the gesture
+    /// only by moving along it, so a diagonal tremor does not give a
+    /// vertical gesture to a container that scrolls sideways.
+    pub(crate) fn axis(delta: Point<Pixels>) -> Axis {
+        dominant_axis(delta)
+    }
+
+    /// What the container `owner` may do with the event being dispatched.
+    pub(crate) fn turn(&self, owner: usize) -> ScrollTurn {
+        match self.holder {
+            None => ScrollTurn::Free,
+            Some((holder, _)) if holder == owner => ScrollTurn::Held,
+            Some(_) => ScrollTurn::Elsewhere,
+        }
+    }
+
+    /// Notes that `owner` took an event of the gesture at `now`.
+    pub(crate) fn hold(&mut self, owner: usize, now: Instant) {
+        self.holder = Some((owner, now));
+    }
+}
+
 /// Feel constants consumed by gesture recognizers. Provided on a best-effort
 /// basis, depending on each platform's support, defaulting to GPUI's own
 /// (iOS flavored) values

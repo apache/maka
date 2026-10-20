@@ -15,8 +15,9 @@
 //! and Tailwind-like styling that you can use to build your own custom elements. Div is
 //! constructed by combining these two systems into an all-in-one element.
 
+use crate::gestures::{ScrollLatch, ScrollTurn};
 use crate::{
-    AccessibilityClickEvent, Action, AnyDrag, AnyElement, AnyTooltip, AnyView, App, Bounds,
+    AccessibilityClickEvent, Action, AnyDrag, AnyElement, AnyTooltip, AnyView, App, Axis, Bounds,
     ClickEvent, DispatchPhase, Display, Element, ElementId, Entity, EntityId, ExternalDragPayload,
     ExternalDragPayloadSource, FileDropEvent, FocusHandle, Global, GlobalElementId, Hitbox,
     HitboxBehavior, HitboxId, InspectorElementId, IntoElement, IsZero, KeyContext, KeyDownEvent,
@@ -3729,6 +3730,11 @@ impl Interactivity {
             let allow_concurrent_scroll = style.allow_concurrent_scroll;
             let restrict_scroll_to_axis = style.restrict_scroll_to_axis;
             let line_height = window.line_height();
+            // How far it can move, as laid out for this frame, so an event
+            // that would only push it past an edge is seen not to move it.
+            let scroll_max = self.max_scroll_offset(hitbox.bounds, style, window);
+            // The offset's cell stays the same from frame to frame.
+            let owner = Rc::as_ptr(&scroll_offset) as *const () as usize;
             let hitbox = hitbox.clone();
             let current_view = window.current_view();
             let subtrees = crate::fast::retained::enclosing_retained_subtrees(window);
@@ -3748,11 +3754,14 @@ impl Interactivity {
                             .filter(&mut delta, event.touch_phase);
                     }
 
+                    // Whether it scrolls with the wheel's other axis.
+                    let mut crosswise = false;
                     let mut delta_x = match overflow.x {
                         Overflow::Scroll if !delta.x.is_zero() => delta.x,
                         Overflow::Scroll
                             if !restrict_scroll_to_axis && overflow.y != Overflow::Scroll =>
                         {
+                            crosswise = !delta.y.is_zero();
                             delta.y
                         }
                         _ => Pixels::ZERO,
@@ -3762,10 +3771,15 @@ impl Interactivity {
                         Overflow::Scroll
                             if !restrict_scroll_to_axis && overflow.x != Overflow::Scroll =>
                         {
+                            crosswise = !delta.x.is_zero();
                             delta.x
                         }
                         _ => Pixels::ZERO,
                     };
+                    let turn = (!crosswise).then(|| window.scroll_latch.turn(owner));
+                    if turn == Some(ScrollTurn::Elsewhere) {
+                        return;
+                    }
                     if !allow_concurrent_scroll && !delta_x.is_zero() && !delta_y.is_zero() {
                         if delta_x.abs() > delta_y.abs() {
                             delta_y = Pixels::ZERO;
@@ -3773,9 +3787,25 @@ impl Interactivity {
                             delta_x = Pixels::ZERO;
                         }
                     }
-                    scroll_offset.y += delta_y;
-                    scroll_offset.x += delta_x;
-                    if *scroll_offset != old_scroll_offset {
+                    scroll_offset.y = (scroll_offset.y + delta_y).clamp(-scroll_max.y, px(0.));
+                    scroll_offset.x = (scroll_offset.x + delta_x).clamp(-scroll_max.x, px(0.));
+                    let moved = *scroll_offset != old_scroll_offset;
+                    let moved_along = match ScrollLatch::axis(delta) {
+                        Axis::Vertical => scroll_offset.y != old_scroll_offset.y,
+                        Axis::Horizontal => scroll_offset.x != old_scroll_offset.x,
+                    };
+                    // The gesture is this container's once it moves it along
+                    // the gesture's axis. The containers around it, whose
+                    // listeners run after this one, then leave the event
+                    // alone (`ScrollLatch`); other listeners still see it.
+                    if let Some(turn) = turn
+                        && (moved_along || turn == ScrollTurn::Held)
+                    {
+                        window
+                            .scroll_latch
+                            .hold(owner, cx.background_executor().now());
+                    }
+                    if moved {
                         if let Some(handle) = scroll_handle.as_ref().and_then(Weak::upgrade) {
                             let mut state = handle.borrow_mut();
                             state.note_reading_intent();
@@ -6453,5 +6483,301 @@ mod tests {
         assert_eq!(bounds("cell-0").origin.x, px(0.));
         assert_eq!(bounds("cell-1").origin.x, px(100.));
         assert_eq!(bounds("cell-2").origin.x, px(300.));
+    }
+
+    /// A page 200px tall that scrolls, holding 50px of rows, a box 100px
+    /// tall that scrolls `box_rows` rows of 20px, or as many columns 20px
+    /// wide sideways, and 400px of rows. Counts the wheel events the page's
+    /// own listener sees.
+    struct NestedScroll {
+        page: ScrollHandle,
+        boxed: ScrollHandle,
+        box_rows: usize,
+        sideways: bool,
+        page_wheel_events: Rc<Cell<usize>>,
+    }
+
+    impl Render for NestedScroll {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            let page_wheel_events = self.page_wheel_events.clone();
+            div().size_full().child(
+                div()
+                    .id("page")
+                    .w(px(200.))
+                    .h(px(200.))
+                    .overflow_y_scroll()
+                    .track_scroll(&self.page)
+                    .on_scroll_wheel(move |_, _, _| {
+                        page_wheel_events.set(page_wheel_events.get() + 1)
+                    })
+                    .child(div().w_full().h(px(50.)))
+                    .child(if self.sideways {
+                        div()
+                            .id("box")
+                            .flex()
+                            .w_full()
+                            .h(px(100.))
+                            .flex_none()
+                            .overflow_x_scroll()
+                            .track_scroll(&self.boxed)
+                            .children(
+                                (0..self.box_rows).map(|_| div().w(px(20.)).h_full().flex_none()),
+                            )
+                    } else {
+                        div()
+                            .id("box")
+                            .w_full()
+                            .h(px(100.))
+                            .flex_none()
+                            .overflow_y_scroll()
+                            .track_scroll(&self.boxed)
+                            .children(
+                                (0..self.box_rows).map(|_| div().w_full().h(px(20.)).flex_none()),
+                            )
+                    })
+                    .child(div().w_full().h(px(400.)).flex_none()),
+            )
+        }
+    }
+
+    /// Where the pointer is over the box before the page scrolls, and over
+    /// the page alone, 10px above the box.
+    const OVER_BOX: Point<Pixels> = point(px(20.), px(100.));
+    const OVER_PAGE: Point<Pixels> = point(px(20.), px(40.));
+
+    struct NestedScrollWindow {
+        window: AnyWindowHandle,
+        page: ScrollHandle,
+        boxed: ScrollHandle,
+        page_wheel_events: Rc<Cell<usize>>,
+    }
+
+    impl NestedScrollWindow {
+        fn open(cx: &mut TestAppContext, box_rows: usize) -> Self {
+            Self::open_with(cx, box_rows, false)
+        }
+
+        fn open_with(cx: &mut TestAppContext, box_rows: usize, sideways: bool) -> Self {
+            let page = ScrollHandle::new();
+            let boxed = ScrollHandle::new();
+            let page_wheel_events = Rc::new(Cell::new(0));
+            let window: AnyWindowHandle = cx
+                .add_window({
+                    let page = page.clone();
+                    let boxed = boxed.clone();
+                    let page_wheel_events = page_wheel_events.clone();
+                    move |_, _| NestedScroll {
+                        page,
+                        boxed,
+                        box_rows,
+                        sideways,
+                        page_wheel_events,
+                    }
+                })
+                .into();
+            cx.update_window(window, |_, window, cx| window.draw(cx).clear(cx))
+                .unwrap();
+            Self {
+                window,
+                page,
+                boxed,
+                page_wheel_events,
+            }
+        }
+
+        /// Dispatches a wheel event that moves the content up by `dy`, and
+        /// draws a frame.
+        fn wheel(
+            &self,
+            cx: &mut TestAppContext,
+            position: Point<Pixels>,
+            dy: f32,
+            touch_phase: TouchPhase,
+        ) {
+            self.wheel_xy(cx, position, 0., dy, touch_phase);
+        }
+
+        /// Dispatches a wheel event that moves the content left by `dx` and
+        /// up by `dy`, and draws a frame.
+        fn wheel_xy(
+            &self,
+            cx: &mut TestAppContext,
+            position: Point<Pixels>,
+            dx: f32,
+            dy: f32,
+            touch_phase: TouchPhase,
+        ) {
+            cx.update_window(self.window, |_, window, cx| {
+                window.dispatch_event(
+                    crate::PlatformInput::ScrollWheel(ScrollWheelEvent {
+                        position,
+                        delta: crate::ScrollDelta::Pixels(point(px(-dx), px(-dy))),
+                        modifiers: Default::default(),
+                        touch_phase,
+                    }),
+                    cx,
+                );
+                window.draw(cx).clear(cx);
+            })
+            .unwrap();
+        }
+
+        /// Dispatches a touch of `phase` at `position`, and draws a frame.
+        fn touch(&self, cx: &mut TestAppContext, position: Point<Pixels>, phase: TouchPhase) {
+            cx.update_window(self.window, |_, window, cx| {
+                window.dispatch_event(
+                    TouchEvent {
+                        id: TouchId(1),
+                        phase,
+                        position,
+                        predicted_position: None,
+                        force: None,
+                    }
+                    .to_platform_input(),
+                    cx,
+                );
+                window.draw(cx).clear(cx);
+            })
+            .unwrap();
+        }
+
+        /// How far the page and the box have scrolled.
+        fn offsets(&self) -> (Pixels, Pixels) {
+            (-self.page.offset().y, -self.boxed.offset().y)
+        }
+    }
+
+    #[gpui::test]
+    fn test_wheel_over_a_nested_box_scrolls_only_the_box(cx: &mut TestAppContext) {
+        let nested = NestedScrollWindow::open(cx, 20);
+        nested.wheel(cx, OVER_BOX, 30., TouchPhase::Started);
+        assert_eq!(nested.offsets(), (px(0.), px(30.)));
+        nested.wheel(cx, OVER_BOX, 30., TouchPhase::Moved);
+        assert_eq!(nested.offsets(), (px(0.), px(60.)));
+        // The page's own wheel listener still sees the events.
+        assert_eq!(nested.page_wheel_events.get(), 2);
+    }
+
+    #[gpui::test]
+    fn test_a_gesture_stays_with_a_nested_box_at_its_end(cx: &mut TestAppContext) {
+        // The box's 20 rows scroll 300px.
+        let nested = NestedScrollWindow::open(cx, 20);
+        nested.wheel(cx, OVER_BOX, 280., TouchPhase::Started);
+        nested.wheel(cx, OVER_BOX, 50., TouchPhase::Moved);
+        assert_eq!(nested.offsets(), (px(0.), px(300.)));
+        nested.wheel(cx, OVER_BOX, 50., TouchPhase::Moved);
+        nested.wheel(cx, OVER_BOX, 50., TouchPhase::Ended);
+        assert_eq!(nested.offsets(), (px(0.), px(300.)));
+
+        // The next gesture finds the box at its end and scrolls the page.
+        nested.wheel(cx, OVER_BOX, 40., TouchPhase::Started);
+        assert_eq!(nested.offsets(), (px(40.), px(300.)));
+        // Scrolling back over the box is the page's too, for this gesture.
+        nested.wheel(cx, OVER_BOX, -20., TouchPhase::Moved);
+        assert_eq!(nested.offsets(), (px(20.), px(300.)));
+        // The next gesture back scrolls the box.
+        nested.wheel(cx, OVER_BOX, -20., TouchPhase::Started);
+        assert_eq!(nested.offsets(), (px(20.), px(280.)));
+    }
+
+    #[gpui::test]
+    fn test_a_page_gesture_passes_over_a_nested_box(cx: &mut TestAppContext) {
+        let nested = NestedScrollWindow::open(cx, 20);
+        nested.wheel(cx, OVER_PAGE, 30., TouchPhase::Started);
+        assert_eq!(nested.offsets(), (px(30.), px(0.)));
+        // The box is now under the pointer, at y 20 to 120, and then at -10
+        // to 90.
+        nested.wheel(cx, OVER_PAGE, 30., TouchPhase::Moved);
+        nested.wheel(cx, OVER_PAGE, 30., TouchPhase::Moved);
+        assert_eq!(nested.offsets(), (px(90.), px(0.)));
+    }
+
+    #[gpui::test]
+    fn test_a_nested_box_that_fits_passes_the_wheel_out(cx: &mut TestAppContext) {
+        let nested = NestedScrollWindow::open(cx, 3);
+        nested.wheel(cx, OVER_BOX, 30., TouchPhase::Started);
+        nested.wheel(cx, OVER_BOX, 30., TouchPhase::Moved);
+        assert_eq!(nested.offsets(), (px(60.), px(0.)));
+    }
+
+    #[gpui::test]
+    fn test_a_gesture_ends_when_the_pointer_moves(cx: &mut TestAppContext) {
+        // A mouse wheel's ticks come as moves, without a start or an end.
+        let nested = NestedScrollWindow::open(cx, 20);
+        nested.wheel(cx, OVER_PAGE, 30., TouchPhase::Moved);
+        // Over the box now, which leaves the tick to the page.
+        nested.wheel(cx, OVER_PAGE, 30., TouchPhase::Moved);
+        assert_eq!(nested.offsets(), (px(60.), px(0.)));
+        nested.wheel(cx, point(px(25.), px(40.)), 30., TouchPhase::Moved);
+        assert_eq!(nested.offsets(), (px(60.), px(30.)));
+    }
+
+    #[gpui::test]
+    fn test_a_mouse_wheel_gesture_ends_after_a_pause(cx: &mut TestAppContext) {
+        let nested = NestedScrollWindow::open(cx, 20);
+        nested.wheel(cx, OVER_PAGE, 30., TouchPhase::Moved);
+        cx.executor()
+            .advance_clock(crate::gestures::SCROLL_LATCH_IDLE / 2);
+        // Over the box now, which leaves the tick to the page.
+        nested.wheel(cx, OVER_PAGE, 30., TouchPhase::Moved);
+        assert_eq!(nested.offsets(), (px(60.), px(0.)));
+
+        cx.executor()
+            .advance_clock(crate::gestures::SCROLL_LATCH_IDLE);
+        nested.wheel(cx, OVER_PAGE, 30., TouchPhase::Moved);
+        assert_eq!(nested.offsets(), (px(60.), px(30.)));
+    }
+
+    #[gpui::test]
+    fn test_a_finger_resting_on_the_trackpad_keeps_the_gesture(cx: &mut TestAppContext) {
+        let nested = NestedScrollWindow::open(cx, 20);
+        nested.wheel(cx, OVER_PAGE, 30., TouchPhase::Started);
+        nested.wheel(cx, OVER_PAGE, 30., TouchPhase::Moved);
+        // The box is under the pointer now, and the finger rests a while.
+        cx.executor()
+            .advance_clock(crate::gestures::SCROLL_LATCH_IDLE * 2);
+        nested.wheel(cx, OVER_PAGE, 30., TouchPhase::Moved);
+        assert_eq!(nested.offsets(), (px(90.), px(0.)));
+
+        // Once the finger is lifted, a pause ends the gesture.
+        nested.wheel(cx, OVER_PAGE, 0., TouchPhase::Ended);
+        cx.executor()
+            .advance_clock(crate::gestures::SCROLL_LATCH_IDLE);
+        nested.wheel(cx, OVER_PAGE, 30., TouchPhase::Moved);
+        assert_eq!(nested.offsets(), (px(90.), px(30.)));
+    }
+
+    #[gpui::test]
+    fn test_a_sideways_tremor_leaves_a_vertical_gesture_to_the_page(cx: &mut TestAppContext) {
+        // The box's 20 columns scroll 200px sideways.
+        let nested = NestedScrollWindow::open_with(cx, 20, true);
+        nested.wheel_xy(cx, OVER_BOX, 2., 30., TouchPhase::Started);
+        // Still over the box, at y 20 to 120.
+        nested.wheel(cx, OVER_BOX, 30., TouchPhase::Moved);
+        nested.wheel(cx, OVER_BOX, 30., TouchPhase::Moved);
+        assert_eq!(nested.offsets().0, px(90.));
+    }
+
+    #[gpui::test]
+    fn test_a_touch_pan_over_a_nested_box_scrolls_only_the_box(cx: &mut TestAppContext) {
+        let nested = NestedScrollWindow::open(cx, 20);
+        // A pan over the page, above the box.
+        nested.touch(cx, OVER_PAGE, TouchPhase::Started);
+        for y in [30., 20., 10., 0.] {
+            nested.touch(cx, point(px(20.), px(y)), TouchPhase::Moved);
+        }
+        nested.touch(cx, point(px(20.), px(0.)), TouchPhase::Ended);
+        let (page, boxed) = nested.offsets();
+        assert!(page > px(0.), "the pan scrolled the page");
+        assert_eq!(boxed, px(0.));
+
+        // The next pan starts over the box and scrolls only the box.
+        nested.touch(cx, OVER_BOX, TouchPhase::Started);
+        for y in [80., 60., 40.] {
+            nested.touch(cx, point(px(20.), px(y)), TouchPhase::Moved);
+        }
+        let (page_after, boxed) = nested.offsets();
+        assert_eq!(page_after, page);
+        assert!(boxed > px(0.), "the pan scrolled the box");
     }
 }
