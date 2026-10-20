@@ -579,10 +579,13 @@ test('assistant Bot synchronizes fresh wakes through recovery and restart and re
           (await readLedgerMessages(stores.runtimeEventStore, chat.id)).some(
             (message) =>
               message.type === 'assistant' &&
-              message.text.includes('Deterministic network failure'),
+              message.text ===
+                '助手消息处理暂时停止。消息已保留；请检查当前模型和连接，发送新消息可重试。',
           ),
         { timeoutMs: 7000, pollMs: 5 },
       );
+      const status: any = await assistant.call('assistant.status', { includeMemory: false });
+      assert.match(status.bot.error, /Deterministic network failure/);
       const after = await stores.sessionStore.readHeaderSnapshot(workerId);
       assert.deepEqual(after.labels, before.labels);
       assert.equal(after.permissionMode, before.permissionMode);

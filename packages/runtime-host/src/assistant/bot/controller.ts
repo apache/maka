@@ -182,7 +182,7 @@ export class BotController {
               id: `bot-error:${id}`,
               turnId: `assistant-output:error:${id}`,
               ts: Date.now(),
-              text: `助手消息处理暂时停止：${String(error)}。消息已保留；请检查当前模型和连接，发送新消息可重试。`,
+              text: '助手消息处理暂时停止。消息已保留；请检查当前模型和连接，发送新消息可重试。',
               modelId: 'assistant-bot',
             });
           });

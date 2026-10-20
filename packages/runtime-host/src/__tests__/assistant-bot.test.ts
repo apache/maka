@@ -648,7 +648,7 @@ for (const phase of ['preparation', 'execution'])
     let attempts = 0;
     const fail = async () => {
       attempts++;
-      throw Error('model unavailable');
+      throw Error('model unavailable: synthetic-api-key-marker /private/host/credentials');
     };
     if (phase === 'preparation') f.prepare(fail);
     else f.runner(fail);
@@ -657,7 +657,10 @@ for (const phase of ['preparation', 'execution'])
     await until(() => f.visible.some((message) => message.type === 'assistant'));
     const first = f.visible.filter((message) => message.type === 'assistant');
     assert.equal(first.length, 1);
-    assert.match(first[0].text, /model unavailable/);
+    assert.equal(
+      first[0].text,
+      '助手消息处理暂时停止。消息已保留；请检查当前模型和连接，发送新消息可重试。',
+    );
     assert.match(first[0].text, /消息已保留.*发送新消息可重试/);
     await new Promise((resolve) => setTimeout(resolve, 2200));
     assert.equal(attempts, 1);
@@ -684,7 +687,10 @@ test('failure bubbles retain the execution error across restart and publication 
   await f.send('original', '第一条');
   await until(() => f.visible.some((message) => message.type === 'assistant'));
   const failure = f.visible.find((message) => message.type === 'assistant');
-  assert.match(failure.text, /provider rejected the selected model/);
+  assert.equal(
+    failure.text,
+    '助手消息处理暂时停止。消息已保留；请检查当前模型和连接，发送新消息可重试。',
+  );
   // The first publication after restart can lose its response too.
   f.failAppend();
   await f.restart();
