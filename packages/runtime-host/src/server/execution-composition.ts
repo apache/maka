@@ -251,6 +251,7 @@ import { startHostModelMetadataRefresh } from './model-metadata-refresh.js';
 import { HostRuntimeResourceCoordinator } from './runtime-resource-coordinator.js';
 import { SessionAdmissionGate, type SessionAdmissionLease } from './session-admission-gate.js';
 import { workHubResultOrigin } from './workhub-result-coordinator.js';
+import { HostPersonalAssistantWorkspace } from './personal-assistant-workspace.js';
 import { HostSessionCatalogCoordinator } from './session-catalog-coordinator.js';
 import { SessionBackgroundActivityProjection } from './session-background-activity.js';
 import { SessionInteractionActivityProjection } from './session-interaction-activity.js';
@@ -324,6 +325,7 @@ export interface CreateExecutionRuntimeHostCompositionOptions {
   readonly initialization?: import('../client/connect-or-spawn.js').HostedRuntimeInitialization;
   readonly bootstrapRuntimePolicy?: boolean;
   readonly skillHomeDirectory?: string;
+  readonly assistantHomeDirectory?: string;
   readonly projectDirectoryRoots?: readonly PublishedProjectDirectoryRoot[];
   readonly imageArchiveLimits?: import('@maka/core/image-delivery').ImageArchiveLimits;
 }
@@ -458,6 +460,7 @@ export async function createExecutionRuntimeHostComposition(
           if (await interactions.hasPendingSession(workerId)) return 'deferred';
           return sessionCatalog.synchronizeAssistantBotModel(ownerId, workerId);
         },
+        allocateWorkspace: () => assistantWorkspace.allocate(),
         stopSessions: async () => {
           if (!rootCoordinator) return;
           const failures: unknown[] = [];
@@ -2608,6 +2611,13 @@ export async function createExecutionRuntimeHostComposition(
       ...(context.sessionAccessAuthority
         ? { sessionAccessAuthority: context.sessionAccessAuthority }
         : {}),
+    });
+    const assistantWorkspace = new HostPersonalAssistantWorkspace({
+      stateRoot: context.owner.capability.canonicalPath,
+      ...(options.assistantHomeDirectory ? { homeDirectory: options.assistantHomeDirectory } : {}),
+      projects: openedProjectCatalog,
+      membership: projectMembership,
+      projectChanged: () => hostChanges.publishProjectCatalog(),
     });
     const workHubTargetExecution = new HostWorkHubTargetExecutionAuthority({
       readSession: (sessionId) => stores.sessionStore.readHeaderRecordSnapshot(sessionId),

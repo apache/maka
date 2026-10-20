@@ -161,6 +161,48 @@ test('requires a Host Project for remote session creation', async () => {
   );
 });
 
+test('remote assistant fallback runs only after default/current Project resolution', async () => {
+  for (const preferences of [
+    { defaultProjectId: 'default', current: { projectId: 'current', path: '/client' } },
+    { current: { projectId: 'current', path: '/client' } },
+  ]) {
+    assert.deepEqual(
+      await resolveDesktopSessionWorkspace({}, selection(preferences), { register: unexpected }, {
+        allowHostPath: false,
+        allocateDedicatedDirectory: unexpected,
+        allocateHostProject: unexpected,
+      }),
+      { kind: 'project', projectId: 'defaultProjectId' in preferences ? 'default' : 'current' },
+    );
+  }
+  assert.deepEqual(
+    await resolveDesktopSessionWorkspace({}, selection({
+      defaultProjectId: 'missing', unavailableIds: ['missing'],
+    }), { register: unexpected }, {
+      allowHostPath: false,
+      allocateDedicatedDirectory: unexpected,
+      allocateHostProject: async () => ({ kind: 'project', projectId: 'host-allocated' }),
+    }),
+    { kind: 'project', projectId: 'host-allocated' },
+  );
+});
+
+test('remote fallback never accepts explicit Client paths or an explicit no-Project selection', async () => {
+  for (const input of [{ cwd: '/client/path' }, { projectId: null }, { cwd: '/client', projectId: null }]) {
+    await assert.rejects(resolveDesktopSessionWorkspace(input, selection(), { register: unexpected }, {
+      allowHostPath: false,
+      allocateDedicatedDirectory: unexpected,
+      allocateHostProject: unexpected,
+    }), /Select a project from the remote Runtime Host/);
+  }
+  const failure = Error('Host allocation failed');
+  await assert.rejects(resolveDesktopSessionWorkspace({}, selection(), { register: unexpected }, {
+    allowHostPath: false,
+    allocateDedicatedDirectory: unexpected,
+    allocateHostProject: async () => { throw failure; },
+  }), error => error === failure);
+});
+
 test('a projectless workspace target allocates; a Project selection never does', async () => {
   const allocated: string[] = [];
   const allocate = async () => {

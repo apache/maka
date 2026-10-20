@@ -53,6 +53,7 @@ type Dispose = () => void | Promise<void>;
 
 /** Shared Host capabilities retain invocation identity and source permissions. No plugin Fiber owns this service. */
 export interface AssistantDependencies {
+  allocateWorkspace?(): Promise<{ projectId: string }>;
   agents: PluginAgentService;
   llm: PluginLlmService;
   sessionQuery: PluginSessionQueryService;

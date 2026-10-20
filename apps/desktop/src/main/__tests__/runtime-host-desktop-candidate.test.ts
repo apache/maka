@@ -70,6 +70,7 @@ import { desktopSessionResourceKey } from '../../shared/runtime-host-identity.js
 import { deferred, waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 import { canRepairManagedRuntimeHostStartup } from '../runtime-host-startup-recovery.js';
 import type { DesktopTranscriptBatch } from '../../preload/transcript-contract.js';
+import { resolveDesktopSessionWorkspace } from '../new-session-project.js';
 import { ManagedArtifactPreview } from '../managed-artifact-preview.js';
 import { DesktopSessionLocalStore } from '../session-local-store.js';
 import { DesktopSessionLocalService } from '../session-local-service.js';
@@ -322,6 +323,45 @@ function createDesktopRuntimeHostCandidate(
     'local',
   );
 }
+
+test('remote assistant fallback requests workspace allocation from its connected Host only', async (t) => {
+  for (const kind of ['local', 'environment', 'remote'] as const) {
+    const ipc = ipcHarness();
+    const host = connectionHarness(kind);
+    let requests = 0;
+    const request = host.connection.request.bind(host.connection);
+    host.connection.request = (async (operation: any, input: any) => {
+      if (operation === 'personal-assistant.call') {
+        requests++;
+        assert.deepEqual(input, { method: 'assistant.allocate-workspace', input: {} });
+        return { value: { projectId: 'host-allocated' } };
+      }
+      return request(operation, input);
+    }) as typeof request;
+    const candidateDeps: DesktopRuntimeHostCandidateDeps = {
+      ...deps(ipc),
+      resolveSessionCreateProject: (input, _target, allocateHostProject) =>
+        resolveDesktopSessionWorkspace(
+          input,
+          {
+            current: async () => ({ projectId: null, path: '/client' }),
+            select: async () => ({ project: null }),
+          },
+          { register: async () => { throw Error('Unexpected Client register'); } },
+          {
+            allowHostPath: kind === 'local',
+            allocateDedicatedDirectory: async () => '/local/tasks/task-new',
+            ...(allocateHostProject ? { allocateHostProject } : {}),
+          },
+        ),
+    };
+    const candidate = await createCandidate(host.connection, candidateDeps, undefined, 'external', kind);
+    t.after(() => candidate.close());
+    await ipc.invoke('sessions:create', { labels: ['personal-assistant'] });
+    assert.equal(requests, kind === 'local' ? 0 : 1);
+    await candidate.close();
+  }
+});
 
 test('owns one complete Desktop candidate generation and can restart cleanly', async () => {
   const ipc = ipcHarness();
