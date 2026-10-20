@@ -6252,9 +6252,49 @@ function runtimeEnvironment(body: Record<string, unknown>): {
     .flatMap(({ content }) =>
       typeof content === 'string' ? [content] : (content ?? []).map(({ text }) => text ?? ''),
     )
-    .filter((text) => text.startsWith('Runtime Host environment for this turn'));
-  assert.equal(contexts.length, 1, JSON.stringify(body));
-  return JSON.parse(contexts[0]!.slice(contexts[0]!.indexOf('\n') + 1));
+    .filter((text) => text.startsWith('Runtime context (runtime.environment;'))
+    .map((text) => text.slice(text.indexOf('\n') + 1));
+  assert.ok(contexts.length > 0, JSON.stringify(body));
+  const current = contexts.at(-1)!;
+  assert.ok(current.startsWith('Runtime Host environment for this turn'));
+  return JSON.parse(current.slice(current.indexOf('\n') + 1));
+}
+
+// The provider fixture must reason about the current user turn: historical
+// context and successful association calls now remain in the request prefix.
+function workHubAssociationPending(body: Record<string, unknown>): boolean {
+  const input = Array.isArray(body.input) ? body.input : [];
+  const textOf = (item: any): string =>
+    typeof item.content === 'string'
+      ? item.content
+      : (item.content ?? []).map((part: any) => part.text ?? '').join('');
+  const currentUser = input.reduce(
+    (latest: number, item: any, index: number) =>
+      item.role === 'user' && !textOf(item).startsWith('Runtime context (') ? index : latest,
+    -1,
+  );
+  const hasInstruction = input.some(
+    (item: any) =>
+      item.role === 'user' &&
+      textOf(item).includes('Before answering or performing other work, record this turn'),
+  );
+  const current = input.slice(currentUser + 1);
+  const associations = new Set(
+    current
+      .filter(
+        (item: any) =>
+          item.type === 'function_call' &&
+          (item.name === 'exec' || item.name === 'mcp__desktop_workhub__tasks') &&
+          String(item.arguments).includes('associate'),
+      )
+      .map((item: any) => item.call_id),
+  );
+  return (
+    hasInstruction &&
+    !current.some(
+      (item: any) => item.type === 'function_call_output' && associations.has(item.call_id),
+    )
+  );
 }
 
 function responsesDeveloperPrompt(body: Record<string, unknown> | undefined): string | undefined {
@@ -6507,12 +6547,7 @@ async function handleProviderRequest(
   });
   if (request.url === '/v1/responses') {
     const serialized = JSON.stringify(body);
-    if (
-      workHubAssociation &&
-      JSON.stringify(body.input).includes(
-        'Before answering or performing other work, record this turn',
-      )
-    ) {
+    if (workHubAssociation && workHubAssociationPending(body)) {
       respondProviderResponsesAssociation(
         response,
         requests.length,

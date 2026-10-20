@@ -95,7 +95,8 @@ test('running task receives late amendments and Bot replies at the next model co
     const m = store.create({ sessionId: 'worker', cwd: root, title: '交接', request: '核查交接' });
     const activation = store.claim(m.id)!.matter.activation!;
     store.bindTurn(m.id, activation.id, 'live-turn');
-    const initial = controller.stepContext('worker', 'live-turn')!;
+    assert.match(controller.stepContext('worker', 'live-turn')!, /Runtime clock/);
+    const initial = controller.stepInboxContext('worker', 'live-turn')!;
     assert.doesNotMatch(initial, /不要制作材料/);
     store.ingest(m.id, { key: 'correction', source: 'user', text: '不要制作材料，只核查。' });
     store.ingest(m.id, {
@@ -104,12 +105,12 @@ test('running task receives late amendments and Bot replies at the next model co
       text: '已核对用户原话：不需要清单。',
     });
     const before = store.get(m.id);
-    const context = controller.stepContext('worker', 'live-turn')!;
+    const context = controller.stepInboxContext('worker', 'live-turn')!;
     assert.match(context, /不要制作材料，只核查/);
     assert.match(context, /已核对用户原话/);
     assert.match(context, /not new user authorization/);
     assert.equal(
-      controller.stepContext('worker', 'live-turn')!.split('Current task inbox')[1],
+      controller.stepInboxContext('worker', 'live-turn')!.split('Current task inbox')[1],
       context.split('Current task inbox')[1],
       'repeated model requests retain inputs',
     );
@@ -118,16 +119,23 @@ test('running task receives late amendments and Bot replies at the next model co
       before,
       'rendering does not observe, consume or settle inputs',
     );
-    assert.doesNotMatch(controller.stepContext('worker', 'other-turn')!, /不要制作材料/);
-    assert.equal(controller.stepContext('other-worker', 'live-turn'), undefined);
+    assert.equal(controller.stepInboxContext('worker', 'other-turn'), undefined);
+    assert.doesNotMatch(controller.stepContext('worker', 'live-turn')!, /Current task inbox/);
+    assert.equal(controller.stepInboxContext('other-worker', 'live-turn'), undefined);
+    const inboxBeforeObserve = controller.stepInboxContext('worker', 'live-turn');
     store.observe(m.id, activation.id);
+    assert.equal(
+      controller.stepInboxContext('worker', 'live-turn'),
+      inboxBeforeObserve,
+      'an observation/revision-only update must not resend unchanged Inbox',
+    );
     assert.match(
-      controller.stepContext('worker', 'live-turn')!,
+      controller.stepInboxContext('worker', 'live-turn')!,
       /不要制作材料/,
       'explicit observation must not erase live context',
     );
     store.control(m.id, 'cancel');
-    assert.equal(controller.stepContext('worker', 'live-turn'), undefined);
+    assert.equal(controller.stepInboxContext('worker', 'live-turn'), undefined);
   } finally {
     store.close();
     rmSync(root, { recursive: true, force: true });

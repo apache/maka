@@ -197,6 +197,8 @@ export interface RuntimeEventTextContent extends MessageContent {
    * current prompt or any historical user message verbatim).
    */
   steering?: true;
+  /** Host metadata replayed in place, never a user message or instruction. */
+  runtimeContextName?: string;
 }
 
 export interface RuntimeEventThinkingContent {
@@ -748,6 +750,7 @@ const TEXT_CONTENT_SHAPE = defineObjectShape<RuntimeEventTextContent>()(
     'quotes',
     'inlineReferences',
     'steering',
+    'runtimeContextName',
     'providerOptions',
   ],
 );
@@ -1051,6 +1054,9 @@ export function decodeRuntimeEvent(value: unknown): RuntimeEvent {
           ? { origin: decodeTurnOrigin(value.content.origin) }
           : {}),
         ...(value.content.steering === true ? { steering: true as const } : {}),
+        ...(value.content.runtimeContextName !== undefined
+          ? { runtimeContextName: value.content.runtimeContextName }
+          : {}),
       },
     } as unknown as RuntimeEvent;
   }
@@ -1080,6 +1086,9 @@ function isRuntimeEventContent(value: unknown): value is RuntimeEventContent {
         (value.summary !== undefined && typeof value.summary !== 'string') ||
         (value.origin !== undefined && !isTurnOrigin(value.origin)) ||
         (value.steering !== undefined && value.steering !== true) ||
+        (value.runtimeContextName !== undefined &&
+          (typeof value.runtimeContextName !== 'string' ||
+            value.runtimeContextName.length === 0)) ||
         (value.interrupted !== undefined && value.interrupted !== true) ||
         (value.providerOptions !== undefined && !isRecord(value.providerOptions))
       ) {

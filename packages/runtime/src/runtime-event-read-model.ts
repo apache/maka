@@ -949,6 +949,8 @@ function projectText(
   messages: StoredMessage[],
 ): boolean {
   if (event.content?.kind !== 'text') return false;
+  // Claimed by model replay only; internal context has no transcript row.
+  if (event.role === 'system' && event.content.runtimeContextName !== undefined) return true;
   if (event.role === 'user') {
     const message = projectRuntimeEventUserMessage(event, stableMessageId(event, state, 'user'));
     if (!message) return false;
