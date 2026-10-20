@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { readFileSync } from 'node:fs';
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
@@ -164,8 +166,7 @@ test('source sync → stale index → fresh original → discovery Inbox → Bot
           content: original.content.body.content,
         });
         await invoke('MatterSettle', {
-          expectedRevision: v.revision,
-          stateFile: v.files.draft,
+          note: readFileSync(v.files.draft, 'utf8'),
           disposition: 'complete',
           summary: '核对最新验收原文',
           reason: '验收及材料均确认',

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { TurnOrigin } from '@maka/core/turn-origin';
 import type { MessageContent } from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
@@ -54,6 +55,7 @@ type Dispose = () => void | Promise<void>;
 /** Shared Host capabilities retain invocation identity and source permissions. No plugin Fiber owns this service. */
 export interface AssistantDependencies {
   allocateWorkspace?(): Promise<{ projectId: string }>;
+  readRuntimeEvents?(sessionId: string, runId?: string): Promise<readonly RuntimeEvent[]>;
   agents: PluginAgentService;
   llm: PluginLlmService;
   sessionQuery: PluginSessionQueryService;
@@ -79,6 +81,7 @@ export interface AssistantModuleServices
   onStart(start: () => Dispose): void;
   tools: {
     register(tool: MakaTool): void;
+    filter?(filter: (sessionId: string, tools: readonly MakaTool[]) => readonly MakaTool[]): void;
     resolve(sessionId?: string, core?: readonly MakaTool[]): { tools: readonly MakaTool[] };
   };
   systemPrompt: {
@@ -91,6 +94,8 @@ export interface AssistantModuleServices
 
 class AssistantRuntime {
   readonly tools: MakaTool[] = [];
+  readonly toolFilters: ((sessionId: string, tools: readonly MakaTool[]) => readonly MakaTool[])[] =
+    [];
   readonly bot = new AssistantBotBridge();
   private readonly sections: PluginSystemPromptSection[] = [];
   private readonly contexts: PluginSystemPromptSection[] = [];
@@ -122,6 +127,7 @@ class AssistantRuntime {
       onClose: (dispose: Dispose) => this.disposers.push(dispose),
       onStart: (start: () => Dispose) => this.starters.push(start),
       tools: {
+        filter: (filter) => this.toolFilters.push(filter),
         register: (tool: MakaTool) => {
           if (this.tools.some((t) => t.name === tool.name))
             throw Error(`Duplicate assistant tool: ${tool.name}`);
@@ -468,6 +474,11 @@ export class PersonalAssistantService {
   }
   hasInboxMessage(sessionId: string, id: string) {
     return this.enabled && this.runtime!.bot.hasUserMessage(sessionId, id);
+  }
+  filterTools(sessionId: string, tools: readonly MakaTool[]): readonly MakaTool[] {
+    return this.enabled
+      ? this.runtime!.toolFilters.reduce((current, filter) => filter(sessionId, current), tools)
+      : tools;
   }
   toolCeiling(sessionId: string): readonly MakaTool[] | undefined {
     return this.enabled && this.runtime!.bot.isWorker(sessionId)

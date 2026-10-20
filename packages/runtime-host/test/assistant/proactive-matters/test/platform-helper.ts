@@ -140,6 +140,7 @@ export async function fixture(options: any = {}) {
     root,
     { 'proactive-matters': { tickMs: 20, ...options.config } },
     { 'proactive-matters': join(root, 'data') },
+    options.dependencies ?? {},
   );
   const { tools, prompts: systemPrompt, turns, remote, platform } = native;
   await until(async () => (await remote('matters.list')).ready);
@@ -167,6 +168,7 @@ export async function fixture(options: any = {}) {
     platform,
     driver,
     reviewCalls,
+    filterTools: native.filterTools,
     tools,
     systemPrompt,
     turns,

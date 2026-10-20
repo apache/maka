@@ -137,7 +137,7 @@ class Source implements EventWaitSourceAdapter {
   behavior: (input: EventWaitReadContext) => Promise<EventWaitObservationResult> = async () => ({
     kind: 'pending',
   });
-  validate(wait: EventWaitRecord) {
+  validate(wait: import('@maka/core/event-wait').ObservedEventWaitRecord) {
     if (wait.condition.parameters.invalid) throw new Error('Invalid parameters');
   }
   async read(input: EventWaitReadContext) {
@@ -1557,6 +1557,7 @@ test('adapter registry and policy reject unsupported contracts; observation has 
     'node:crypto',
     '@maka/core/event-wait',
     '@maka/storage/event-wait-authority',
+    './event-wait-observation-store.js',
     '@maka/storage/root-authority',
     './event-wait-adapter.js',
   ]);

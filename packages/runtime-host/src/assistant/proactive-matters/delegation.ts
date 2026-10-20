@@ -24,6 +24,7 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { taskDelivery } from './delivery.js';
+import { workerTools } from './settlement-context.js';
 import type { MatterStore } from './matter.js';
 import type { MatterController } from './controller.js';
 
@@ -40,6 +41,11 @@ export function registerDelegation(
       owner TEXT NOT NULL, task_key TEXT NOT NULL, session TEXT NOT NULL UNIQUE,
       title TEXT NOT NULL, request TEXT NOT NULL, PRIMARY KEY(owner,task_key));`);
   ctx.onClose(() => db.close());
+  ctx.tools.filter?.((sessionId: string, tools: any[]) =>
+    db.prepare('SELECT 1 FROM delegations WHERE session=?').get(sessionId)
+      ? workerTools(tools)
+      : tools,
+  );
   ctx.backgroundSessions?.register(() =>
     db
       .prepare('SELECT session FROM delegations')
@@ -65,6 +71,22 @@ export function registerDelegation(
     state: m.stateText,
     waitingFor: m.waitingFor,
     wakes: m.wakes,
+    condition: m.conditionWaitId
+      ? (() => {
+          const wait = store.conditions.read(m.conditionWaitId)?.record;
+          return wait
+            ? {
+                waitId: wait.waitId,
+                status: wait.status,
+                intervalMs: wait.condition.parameters.intervalMs,
+                attempts: wait.observation?.attempts ?? 0,
+                nextCheckAt: wait.observation?.nextPollAt ?? wait.createdAt,
+                lastObservedAt: wait.observation?.lastObservedAt ?? null,
+                diagnostic: wait.observation?.reason ?? null,
+              }
+            : null;
+        })()
+      : null,
     retryAt: m.retryAt,
     revision: m.revision,
     lastError: m.lastError,

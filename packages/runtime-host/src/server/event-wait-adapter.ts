@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { EventWaitRecord } from '@maka/core/event-wait';
+import type { ObservedEventWaitRecord } from '@maka/core/event-wait';
 
 export type EventWaitObservationResult = {
   /** Checkpoint only after the returned facts have been processed. */
@@ -53,7 +53,7 @@ export type EventWaitObservationAccess =
     };
 
 export interface EventWaitReadContext {
-  readonly wait: EventWaitRecord;
+  readonly wait: ObservedEventWaitRecord;
   readonly access: unknown;
   readonly cursor: string | null;
   readonly signal: AbortSignal;
@@ -76,7 +76,7 @@ export interface EventWaitSourceAdapter {
    */
   readonly reconciliation: 'snapshot' | 'history';
   /** Synchronous bounded parameter validation; no I/O or model reasoning. */
-  validate(wait: EventWaitRecord): void;
+  validate(wait: ObservedEventWaitRecord): void;
   read(input: EventWaitReadContext): Promise<EventWaitObservationResult>;
   /**
    * Resolves only after notification intake is ready. The manager then reads authoritative
@@ -114,7 +114,7 @@ export class EventWaitAdapterRegistry {
       this.#adapters.set(id, adapter);
     }
   }
-  get(wait: EventWaitRecord): EventWaitSourceAdapter | undefined {
+  get(wait: ObservedEventWaitRecord): EventWaitSourceAdapter | undefined {
     return this.#adapters.get(
       key(
         wait.resource.providerId,
@@ -124,7 +124,7 @@ export class EventWaitAdapterRegistry {
       ),
     );
   }
-  validate(wait: EventWaitRecord): EventWaitSourceAdapter {
+  validate(wait: ObservedEventWaitRecord): EventWaitSourceAdapter {
     const adapter = this.get(wait);
     if (!adapter) throw new TypeError('Unsupported event wait condition');
     adapter.validate(wait);
