@@ -7216,101 +7216,123 @@ test('prompt suggestions use the least reasoning each model accepts, reject trun
   }
 });
 
-test('prompt suggestions disable Kimi K3 thinking when refreshed metadata declares none', async (t) => {
-  const MODEL_ID = 'k3';
-  // Other Host tests refresh process-wide models.dev data. Pin this case to the
-  // current Kimi Code catalog shape and verify that `none` is sent explicitly.
-  installRefreshedModelMetadata({
-    'kimi-coding-plan': {
-      [MODEL_ID]: { thinkingOptions: { efforts: ['none', 'low', 'high', 'max'] } },
-    },
-  });
-  t.after(() => installRefreshedModelMetadata(undefined));
-  const base = await mkdtemp(join(tmpdir(), 'maka-host-kimi-suggestion-'));
-  const capability = await resolveStorageRoot({
-    path: join(base, 'interactive'),
-    kind: 'interactive',
-  });
-  const owner = await tryAcquireInteractiveRootOwner(capability);
-  assert.ok(owner);
-  if (!owner) return;
-
-  const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
-  const usage = await openInteractiveUsageStoresForWrite(owner.lease);
-  const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
-  try {
-    const created = await policy.connectionCatalog.create({
-      expectedCatalogRevision: 0,
-      connection: {
-        slug: 'kimi-coding-plan',
-        name: 'Kimi Coding Plan',
-        providerType: 'kimi-coding-plan',
-        enabled: true,
-        enabledModelIds: [MODEL_ID],
+for (const scenario of [
+  {
+    name: 'prompt suggestions disable Kimi K3 thinking when refreshed metadata declares none',
+    efforts: ['none', 'low', 'high', 'max'],
+    thinking: { type: 'disabled' },
+    effort: undefined,
+    maxTokens: 128,
+  },
+  {
+    name: 'prompt suggestions ask Kimi K3 for low effort when refreshed metadata has no none',
+    efforts: ['low', 'high', 'max'],
+    thinking: { type: 'adaptive' },
+    effort: 'low',
+    maxTokens: 1_024,
+  },
+]) {
+  test(scenario.name, async (t) => {
+    const MODEL_ID = 'k3';
+    // Host tests refresh process-wide models.dev data. Pin each catalog shape
+    // so both the `none` and lowest-effort request paths stay covered.
+    installRefreshedModelMetadata({
+      'kimi-coding-plan': {
+        [MODEL_ID]: { thinkingOptions: { efforts: scenario.efforts } },
       },
     });
-    assert.equal(created.kind, 'committed');
-    if (created.kind !== 'committed') return;
-    const connection = created.snapshot.connections[0];
-    assert.ok(connection);
-    if (!connection) return;
-    const credential = await policy.credentialVault.set({
-      locator: { scope: 'connection', connectionId: connection.connectionId, kind: 'api_key' },
-      expected: null,
-      secret: API_KEY,
+    t.after(() => installRefreshedModelMetadata(undefined));
+    const base = await mkdtemp(join(tmpdir(), 'maka-host-kimi-suggestion-'));
+    const capability = await resolveStorageRoot({
+      path: join(base, 'interactive'),
+      kind: 'interactive',
     });
-    assert.equal(credential.kind, 'committed');
-    await publishConnectionModel(policy, connection.connectionId, MODEL_ID);
-    const session = await execution.sessionStore.create({
-      cwd: capability.canonicalPath,
-      llmConnectionId: connection.connectionId,
-      llmConnectionSlug: 'kimi-coding-plan',
-      model: MODEL_ID,
-      permissionMode: 'ask',
-    });
+    const owner = await tryAcquireInteractiveRootOwner(capability);
+    assert.ok(owner);
+    if (!owner) return;
 
-    let requestBody: Record<string, unknown> = {};
-    const suggest = createHostPromptSuggestionModel({
-      runtimePolicy: policy,
-      oauthCredentials: new HostOAuthExecutionAuthority(policy),
-      usage,
-      requestDrain: () => assert.fail('prompt suggestion telemetry must not drain the Host'),
-      newId: () => 'kimi-suggestion',
-      createFetchTransport: () => ({
-        close: async () => {},
-        fetch: (async (_url, init) => {
-          requestBody = JSON.parse(String(init?.body));
-          return Response.json({
-            id: 'msg-1',
-            type: 'message',
-            role: 'assistant',
-            model: MODEL_ID,
-            content: [{ type: 'text', text: 'Yes, add the tests next.' }],
-            stop_reason: 'end_turn',
-            stop_sequence: null,
-            usage: { input_tokens: 7, output_tokens: 6 },
-          });
-        }) as typeof fetch,
-      }),
-    });
+    const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+    const usage = await openInteractiveUsageStoresForWrite(owner.lease);
+    const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
+    try {
+      const created = await policy.connectionCatalog.create({
+        expectedCatalogRevision: 0,
+        connection: {
+          slug: 'kimi-coding-plan',
+          name: 'Kimi Coding Plan',
+          providerType: 'kimi-coding-plan',
+          enabled: true,
+          enabledModelIds: [MODEL_ID],
+        },
+      });
+      assert.equal(created.kind, 'committed');
+      if (created.kind !== 'committed') return;
+      const connection = created.snapshot.connections[0];
+      assert.ok(connection);
+      if (!connection) return;
+      const credential = await policy.credentialVault.set({
+        locator: { scope: 'connection', connectionId: connection.connectionId, kind: 'api_key' },
+        expected: null,
+        secret: API_KEY,
+      });
+      assert.equal(credential.kind, 'committed');
+      await publishConnectionModel(policy, connection.connectionId, MODEL_ID);
+      const session = await execution.sessionStore.create({
+        cwd: capability.canonicalPath,
+        llmConnectionId: connection.connectionId,
+        llmConnectionSlug: 'kimi-coding-plan',
+        model: MODEL_ID,
+        permissionMode: 'ask',
+      });
 
-    const text = await suggest(
-      {
-        sessionId: session.id,
-        turnId: 'turn',
-        terminalEventId: 'terminal',
-        header: session,
-        messages: [],
-      },
-      new AbortController().signal,
-    );
+      let requestBody: Record<string, unknown> = {};
+      const suggest = createHostPromptSuggestionModel({
+        runtimePolicy: policy,
+        oauthCredentials: new HostOAuthExecutionAuthority(policy),
+        usage,
+        requestDrain: () => assert.fail('prompt suggestion telemetry must not drain the Host'),
+        newId: () => 'kimi-suggestion',
+        createFetchTransport: () => ({
+          close: async () => {},
+          fetch: (async (_url, init) => {
+            requestBody = JSON.parse(String(init?.body));
+            return Response.json({
+              id: 'msg-1',
+              type: 'message',
+              role: 'assistant',
+              model: MODEL_ID,
+              content: [{ type: 'text', text: 'Yes, add the tests next.' }],
+              stop_reason: 'end_turn',
+              stop_sequence: null,
+              usage: { input_tokens: 7, output_tokens: 6 },
+            });
+          }) as typeof fetch,
+        }),
+      });
 
-    assert.equal(text, 'Yes, add the tests next.');
-    assert.deepEqual(requestBody.thinking, { type: 'disabled' });
-    assert.equal(requestBody.effort, undefined);
-    assert.equal(requestBody.max_tokens, 128);
-  } finally {
-    await owner.close();
-    await rm(base, { recursive: true, force: true });
-  }
-});
+      const text = await suggest(
+        {
+          sessionId: session.id,
+          turnId: 'turn',
+          terminalEventId: 'terminal',
+          header: session,
+          messages: [],
+        },
+        new AbortController().signal,
+      );
+
+      assert.equal(text, 'Yes, add the tests next.');
+      assert.deepEqual(requestBody.thinking, scenario.thinking);
+      const serializedRequestBody = JSON.stringify(requestBody);
+      if (scenario.effort === undefined) {
+        assert.doesNotMatch(serializedRequestBody, /"effort"/);
+      } else {
+        assert.match(serializedRequestBody, /"effort":"low"/);
+      }
+      assert.equal(requestBody.max_tokens, scenario.maxTokens);
+    } finally {
+      await owner.close();
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+}
