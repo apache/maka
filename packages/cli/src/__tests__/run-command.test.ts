@@ -413,6 +413,63 @@ describe('maka run argument parsing', () => {
     assert.deepEqual(stderr, []);
   });
 
+  test('blocking stream errors retain the created Session identity and original Host error', async () => {
+    for (const json of [false, true]) {
+      const stdout: string[] = [];
+      const stderr: string[] = [];
+      let closed = false;
+      const session = sessionSummary();
+      const exit = await runMakaTextCliCore(
+        ['hello', ...(json ? ['--json'] : [])],
+        {
+          listSessions: async () => [],
+          createContext: async () => ({
+            runtime: {
+              createSession: async () => session,
+              readExecutionBoundary: async () => ({
+                kind: 'managed',
+                access: 'writable',
+                revision: 0,
+              }),
+              sendMessage: async function* () {
+                throw new RuntimeHostOperationError(
+                  'turn.start',
+                  'operation_unavailable',
+                  'Stream disconnected',
+                );
+              },
+              respondToSandboxBoundary: async () => {},
+              stopSession: async () => {},
+              setExecutionBoundaryKind: async () => {},
+            },
+            target: { connection: { slug: 'test' }, model: 'test' },
+            close: async () => {
+              closed = true;
+            },
+          }),
+        },
+        {
+          stdinIsTTY: () => true,
+          writeStdout: (text) => stdout.push(text),
+          writeStderr: (text) => stderr.push(text),
+        },
+      );
+      assert.equal(exit, 1);
+      assert.equal(closed, true);
+      if (json) {
+        assert.deepEqual(JSON.parse(stdout.join('')), {
+          sessionId: session.id,
+          error: 'Stream disconnected',
+          code: 'operation_unavailable',
+        });
+        assert.deepEqual(stderr, []);
+      } else {
+        assert.deepEqual(stdout, []);
+        assert.equal(stderr.join(''), 'maka run: Stream disconnected\n');
+      }
+    }
+  });
+
   test('completed status and stop receipts remain visible without --json', async () => {
     for (const flags of [[], ['--status'], ['--stop']]) {
       const stdout: string[] = [];

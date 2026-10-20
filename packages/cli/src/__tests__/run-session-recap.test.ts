@@ -227,9 +227,15 @@ test('external CLI combines queries and persists model changes before explicit c
     }
   };
   const cli = (...args: string[]) => {
-    const child = spawn(process.execPath, [fixturePath, root, '--session', sessionId, ...args], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    // Node 22 emits node:sqlite's experimental warning; keep stderr assertions
+    // strict for application errors across all supported Node versions.
+    const child = spawn(
+      process.execPath,
+      ['--disable-warning=ExperimentalWarning', fixturePath, root, '--session', sessionId, ...args],
+      {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
     children.add(child);
     let stdout = '';
     let stderr = '';

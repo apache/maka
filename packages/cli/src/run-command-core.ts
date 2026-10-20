@@ -588,7 +588,7 @@ export async function runMakaTextCliCore(
     graphActivity?.release();
     await stopPromise?.catch(() => undefined);
     if (!interrupted && !timedOut && !question) {
-      writeRunError(error, deps, parsed.options.json === true, parsed.options.sessionId);
+      writeRunError(error, deps, parsed.options.json === true, session.id);
     }
   } finally {
     removeSigint();
