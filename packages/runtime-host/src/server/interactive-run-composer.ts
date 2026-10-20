@@ -17,7 +17,9 @@
  * under the License.
  */
 
+import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
+import { STANDARD_SKILL_LOCATIONS } from '@maka/core/skill-locations';
 import {
   buildSideConversationSystemPromptFragment,
   isSideConversationSession,
@@ -100,6 +102,21 @@ const CHILD_INSTRUCTION_BOUNDARY = [
 ].join(' ');
 
 /**
+ * Scope labels for rendering {@link STANDARD_SKILL_LOCATIONS} as model-facing
+ * paths; `<project>`/`<workspace>` stay placeholders, user scope maps to `~`.
+ */
+const SKILL_SCOPE_BASE_LABEL = {
+  project: '<project>',
+  workspace: '<workspace>',
+  user: '~',
+} as const;
+
+const STANDARD_SKILL_LOCATION_HINT = STANDARD_SKILL_LOCATIONS.map((location) => {
+  const base = SKILL_SCOPE_BASE_LABEL[location.scope];
+  return `- ${location.scope}: \`${join(base, ...location.segments)}\``;
+}).join('\n');
+
+/**
  * Host-authoritative creation guidance. The catalog may be empty (or every
  * entry may be filtered out), so this fragment must not depend on catalog
  * contents; otherwise the model has to guess a data directory.
@@ -108,12 +125,14 @@ function buildSkillCreationPromptFragment(
   workspaceSkillDirectory: string | undefined,
 ): string | undefined {
   if (!workspaceSkillDirectory) return undefined;
+  const placeholderSkillPath = join(workspaceSkillDirectory, '<skill-id>', 'SKILL.md');
   return [
     '## Local Skill creation',
-    `The Host installs a default workspace Skill at \`${workspaceSkillDirectory}/<skill-id>/SKILL.md\`.`,
-    `- Write the new Skill directly to \`${workspaceSkillDirectory}/<skill-id>/SKILL.md\`; do not guess another Maka data directory.`,
+    `The Host installs a default workspace Skill at \`${placeholderSkillPath}\`.`,
+    `- Write the new Skill directly to \`${placeholderSkillPath}\`; do not guess another Maka data directory.`,
     '- Read that exact SKILL.md back and verify its content before reporting success.',
-    '- If the user explicitly asks for a project-level, user-level, or managed-source Skill, follow that scope and its authoritative path instead.',
+    '- If the user explicitly asks for a project-level, user-level, or managed-source Skill, follow that scope and its authoritative path instead:',
+    STANDARD_SKILL_LOCATION_HINT,
   ].join('\n');
 }
 

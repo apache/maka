@@ -290,9 +290,13 @@ test('main-session prompts name the Host Skill directory even with an empty cata
     cwd: '/maka-dev/workspaces/default',
   });
   assert.match(prompt.text ?? '', new RegExp(workspaceSkillDirectory, 'u'));
-  assert.match(prompt.text ?? '', /<skill-id>\/SKILL\.md/u);
+  assert.match(prompt.text ?? '', /<skill-id>[\\/]SKILL\.md/u);
   assert.match(prompt.text ?? '', /read .*SKILL\.md back/iu);
   assert.match(prompt.text ?? '', /project-level, user-level, or managed-source/iu);
+  assert.match(prompt.text ?? '', /<project>[\\/]\.maka[\\/]skills/u);
+  assert.match(prompt.text ?? '', /<project>[\\/]\.agents[\\/]skills/u);
+  assert.match(prompt.text ?? '', /~[\\/]\.maka[\\/]skills/u);
+  assert.match(prompt.text ?? '', /~[\\/]\.agents[\\/]skills/u);
 });
 
 test('child-agent prompts carry the Skill creation guidance', async () => {
@@ -318,7 +322,7 @@ test('child-agent prompts carry the Skill creation guidance', async () => {
   });
   assert.match(prompt.text ?? '', /CHILD_ROLE_INSTRUCTION/u);
   assert.match(prompt.text ?? '', new RegExp(workspaceSkillDirectory, 'u'));
-  assert.match(prompt.text ?? '', /<skill-id>\/SKILL\.md/u);
+  assert.match(prompt.text ?? '', /<skill-id>[\\/]SKILL\.md/u);
 });
 
 function tool(name: string): MakaTool {
