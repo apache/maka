@@ -51,6 +51,7 @@ import {
   type ExecutionBoundary,
 } from '@maka/core/sandbox-boundary';
 import { PROVIDER_REGISTRY } from '@maka/core/llm-connections';
+import { installRefreshedModelMetadata } from '@maka/core/model-metadata';
 import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 import {
   decodeRequestCompositionSnapshot,
@@ -7215,8 +7216,15 @@ test('prompt suggestions use the least reasoning each model accepts, reject trun
   }
 });
 
-test('prompt suggestions ask Kimi K3 for its lowest effort instead of its default thinking', async () => {
+test('prompt suggestions ask Kimi K3 for its lowest effort instead of its default thinking', async (t) => {
   const MODEL_ID = 'k3';
+  // Earlier Host tests refresh the process catalog; this case requires a model without off.
+  installRefreshedModelMetadata({
+    'kimi-coding-plan': {
+      [MODEL_ID]: { thinkingOptions: { efforts: ['low', 'high', 'max'] } },
+    },
+  });
+  t.after(() => installRefreshedModelMetadata(undefined));
   const base = await mkdtemp(join(tmpdir(), 'maka-host-kimi-suggestion-'));
   const capability = await resolveStorageRoot({
     path: join(base, 'interactive'),
