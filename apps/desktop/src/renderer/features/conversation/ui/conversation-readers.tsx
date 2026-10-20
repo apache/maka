@@ -57,8 +57,9 @@ type TranscriptProps = Pick<ChatProps,
   activeTurn: ReturnType<typeof chatTurnActivity>;
   sessionHealthModelPickerAvailable: boolean;
 };
-/** What the shell knows that the health notice's picker gate combines with the running Turn. */
+/** Shell-owned inputs for transcript action and health-notice gates. */
 type TranscriptGateInputs = {
+  activeSession?: ChatProps['activeSession'];
   /** The owner Session's execution boundary admits local interaction. */
   localInteractionAvailable: boolean;
   visible?: boolean;
@@ -74,7 +75,7 @@ export function ConversationTranscriptRegion<P extends object>(
   const turnReader = useComposerTurnReader();
   // Pending Turn-footer marks come from the submission owner that sets them.
   const deriveTurnPresentation = useAppShellTurnPresentation({
-    allowBranch: !turnReader.sharedSessionActive,
+    allowBranch: !turnReader.sharedSessionActive && !props.activeSession?.labels?.includes('personal-assistant'),
     activeId: turnReader.activeId,
     pendingTurnActions: turnReader.pendingTurnActions,
     uiLocale: useUiLocale(),
