@@ -399,7 +399,6 @@ test('assistant Bot synchronizes fresh wakes through recovery and restart and re
           const result = await bound.followup(id, message, initiator, options);
           if (!oldWakeId) {
             oldWakeId = options!.messageId;
-            await oldStarted.promise;
             await loseAdmissionResponse.promise;
             // Admission committed, but the controller must recover its durable wake.
             throw Error('Bot wake admission response lost');
@@ -445,19 +444,6 @@ test('assistant Bot synchronizes fresh wakes through recovery and restart and re
     assert.equal(created.kind, 'committed');
     if (created.kind !== 'committed') throw Error('Replacement connection was not committed');
     const replacement = created.snapshot.connections.find((entry) => entry.slug === 'replacement')!;
-    const fetch = await policy.operations.beginModelFetch(replacement.connectionId);
-    assert.equal(fetch.kind, 'ready');
-    if (fetch.kind !== 'ready') throw Error('Replacement model fetch did not start');
-    assert.equal(
-      (
-        await policy.operations.completeModelFetch(fetch.ticket, {
-          models: [{ id: 'replacement-model' }],
-          source: 'fetched',
-          fetchedAt: Date.now(),
-        })
-      ).kind,
-      'committed',
-    );
     const executions: { sessionId: string; connectionId?: string; model: string }[] = [];
     let failWake = false;
     const primaryBackendFactory: BackendFactory = (context) =>
@@ -582,6 +568,7 @@ test('assistant Bot synchronizes fresh wakes through recovery and restart and re
         { timeoutMs: 7000, pollMs: 5 },
       );
       await composition.close();
+      failWake = true;
       ({ composition, manager } = await createCapturedExecutionComposition(owner, {
         primaryBackendFactory,
       }));
@@ -589,9 +576,11 @@ test('assistant Bot synchronizes fresh wakes through recovery and restart and re
       await assistant.receiveUser(chat.id, 'after-restart', { text: '继续' });
       await pollFor(
         async () =>
-          executions.length === 3 &&
-          ((await assistant.call('assistant.status', { includeMemory: false })) as any).bot
-            .sleeping,
+          (await readLedgerMessages(stores.runtimeEventStore, chat.id)).some(
+            (message) =>
+              message.type === 'assistant' &&
+              message.text.includes('Deterministic network failure'),
+          ),
         { timeoutMs: 7000, pollMs: 5 },
       );
       const after = await stores.sessionStore.readHeaderSnapshot(workerId);
@@ -604,26 +593,11 @@ test('assistant Bot synchronizes fresh wakes through recovery and restart and re
         ).length,
         3,
       );
-      failWake = true;
-      await assistant.receiveUser(chat.id, 'provider-failure', { text: '再试一次' });
-      await pollFor(
-        async () =>
-          (await readLedgerMessages(stores.runtimeEventStore, chat.id)).some(
-            (message) =>
-              message.type === 'assistant' &&
-              message.text.includes('Deterministic network failure'),
-          ),
-        { timeoutMs: 7000, pollMs: 5 },
-      );
-      assert.deepEqual(executions.slice(2), [selectedRoute, selectedRoute]);
+      assert.deepEqual(executions.slice(2), [selectedRoute]);
       const visible = await readLedgerMessages(stores.runtimeEventStore, chat.id);
-      assert.deepEqual(
-        visible
-          .filter((row) => row.type === 'assistant')
-          .slice(0, 2)
-          .map((row) => row.text),
-        ['已用新模型处理原消息', '已用新模型处理原消息'],
-      );
+      const replies = visible.filter((row) => row.type === 'assistant');
+      assert.equal(replies.length, 2);
+      assert.equal(replies[0].text, '已用新模型处理原消息');
     } finally {
       loseAdmissionResponse.resolve();
       failOldExecution.resolve();

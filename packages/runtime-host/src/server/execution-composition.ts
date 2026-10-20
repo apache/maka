@@ -455,11 +455,7 @@ export async function createExecutionRuntimeHostComposition(
       join(context.owner.controlDirectory, 'personal-assistant'),
       {
         prepareBotWake: async (ownerId, workerId) => {
-          const [pending, boundaries] = await Promise.all([
-            stores.interactionStore.listPending({ sessionId: workerId }),
-            stores.sessionStore.listPendingSandboxBoundaryRequests(workerId),
-          ]);
-          if (pending.length || boundaries.length) return 'deferred';
+          if (await interactions.hasPendingSession(workerId)) return 'deferred';
           return sessionCatalog.synchronizeAssistantBotModel(ownerId, workerId);
         },
         stopSessions: async () => {
@@ -2280,12 +2276,12 @@ export async function createExecutionRuntimeHostComposition(
         });
       },
       resume: async (options, initiator) => {
+        if (options.prompt)
+          await submitAgentMessage(options.sessionId, options.prompt, 'next_turn', initiator);
         const session = (await visibleAgentSessions(initiator)).find(
           (item) => item.id === options.sessionId,
         );
         if (!session) throw new Error('Agent was not found');
-        if (options.prompt)
-          await submitAgentMessage(options.sessionId, options.prompt, 'next_turn', initiator);
         return describeAgent(session);
       },
       get: async (id, initiator) => {
