@@ -51,6 +51,7 @@ import {
   type ExecutionBoundary,
 } from '@maka/core/sandbox-boundary';
 import { PROVIDER_REGISTRY } from '@maka/core/llm-connections';
+import { installRefreshedModelMetadata } from '@maka/core/model-metadata';
 import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 import {
   decodeRequestCompositionSnapshot,
@@ -7215,8 +7216,16 @@ test('prompt suggestions use the least reasoning each model accepts, reject trun
   }
 });
 
-test('prompt suggestions ask Kimi K3 for its lowest effort instead of its default thinking', async () => {
+test('prompt suggestions disable Kimi K3 thinking when refreshed metadata declares none', async (t) => {
   const MODEL_ID = 'k3';
+  // Other Host tests refresh process-wide models.dev data. Pin this case to the
+  // current Kimi Code catalog shape and verify that `none` is sent explicitly.
+  installRefreshedModelMetadata({
+    'kimi-coding-plan': {
+      [MODEL_ID]: { thinkingOptions: { efforts: ['none', 'low', 'high', 'max'] } },
+    },
+  });
+  t.after(() => installRefreshedModelMetadata(undefined));
   const base = await mkdtemp(join(tmpdir(), 'maka-host-kimi-suggestion-'));
   const capability = await resolveStorageRoot({
     path: join(base, 'interactive'),
@@ -7297,17 +7306,9 @@ test('prompt suggestions ask Kimi K3 for its lowest effort instead of its defaul
     );
 
     assert.equal(text, 'Yes, add the tests next.');
-    assert.deepEqual(
-      requestBody.thinking,
-      { type: 'adaptive' },
-      'K3 must be sent an explicit thinking mode, not left on its default',
-    );
-    assert.match(
-      JSON.stringify(requestBody),
-      /"effort":"low"/,
-      'K3 must be asked for its lowest effort, not its default maximum',
-    );
-    assert.equal(requestBody.max_tokens, 1_024);
+    assert.deepEqual(requestBody.thinking, { type: 'disabled' });
+    assert.equal(requestBody.effort, undefined);
+    assert.equal(requestBody.max_tokens, 128);
   } finally {
     await owner.close();
     await rm(base, { recursive: true, force: true });

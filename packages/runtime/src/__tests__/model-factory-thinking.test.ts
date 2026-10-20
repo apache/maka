@@ -20,7 +20,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { PROVIDER_REGISTRY, type LlmConnection } from '@maka/core/llm-connections';
-import { lookupModelMetadata } from '@maka/core/model-metadata';
+import { installRefreshedModelMetadata, lookupModelMetadata } from '@maka/core/model-metadata';
 import { thinkingVariantsForModel, type ThinkingLevel } from '@maka/core/model-thinking';
 import { isRetiredProvider } from '@maka/core/provider-registry';
 
@@ -239,9 +239,38 @@ describe('buildProviderOptions: thinking level', () => {
     assert.deepEqual(buildProviderOptions(connection, 'k3', 'high'), {
       kimiCodingPlan: { reasoningEffort: 'high' },
     });
-    // Unsupported off follows the provider default.
+    // The bundled catalog has no off choice, so the provider default remains.
     assert.deepEqual(buildProviderOptions(connection, 'k3', 'off'), {});
     assert.deepEqual(buildProviderOptions(conn('kimi-coding-plan'), 'k3', 'off'), {});
+  });
+
+  test('Kimi Coding Plan emits disabled-thinking wires when refreshed metadata declares none', () => {
+    installRefreshedModelMetadata({
+      'kimi-coding-plan': {
+        k3: { thinkingOptions: { efforts: ['none', 'low', 'high', 'max'] } },
+      },
+    });
+    try {
+      assert.deepEqual(
+        [...thinkingVariantsForModel('kimi-coding-plan', 'k3')],
+        ['off', 'low', 'high', 'max'],
+      );
+      const kimi = conn('kimi-coding-plan');
+      assert.equal(leastReasoningThinkingLevel(kimi, 'k3'), 'off');
+      assert.deepEqual(buildProviderOptions(kimi, 'k3', 'off'), {
+        anthropic: { thinking: { type: 'disabled' } },
+      });
+
+      const openAi = {
+        ...kimi,
+        models: [{ id: 'k3', apiProtocol: 'openai-chat' as const }],
+      };
+      assert.deepEqual(buildProviderOptions(openAi, 'k3', 'off'), {
+        kimiCodingPlan: { reasoningEffort: 'none' },
+      });
+    } finally {
+      installRefreshedModelMetadata(undefined);
+    }
   });
 
   test('openai gpt-5.5 sends reasoningEffort (none for off, max for max); gpt-4o drops level', () => {
