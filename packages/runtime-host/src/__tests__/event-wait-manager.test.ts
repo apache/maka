@@ -98,6 +98,7 @@ class Clock implements EventWaitClock {
     await settle();
   }
 }
+
 test('eventually waits for delayed host work without advancing the observation clock', async () => {
   const clock = new Clock();
   let observationTimerRan = false;
@@ -4956,3 +4957,72 @@ for (const backend of ['Local', 'Memory'] as const) {
     assert.deepEqual(f.errors, []);
   });
 }
+
+for (const backend of ['Local', 'Memory'] as const) {
+  test(`${backend}: projection hints track observation semantics, not polling checkpoints`, async (t) => {
+    const f = await fixture(t, backend);
+    const r = await f.wait('wait-1', { deadlineAt: 10_000 });
+    const source = new Source();
+    const hints: EventWaitRecord[] = [];
+    let now = f.clock.now();
+    const manager = f.manager(source, {
+      clock: { now: () => now, schedule: () => () => {} },
+      onChanged: (record) => hints.push(record),
+    });
+    await manager.start();
+    await eventually(async () => (await f.read(r))?.observation?.outcome === 'pending');
+    await settle();
+    assert.equal(hints.length, 1);
+    const observe = async (result: EventWaitObservationResult, expectedHints: number) => {
+      const previous = (await f.read(r))!.observation!;
+      source.behavior = async () => result;
+      now = previous.nextPollAt;
+      await eventually(async () => {
+        await manager.reconcile();
+        const current = (await f.read(r))?.observation;
+        return current?.attempts === previous.attempts + 1 && current.outcome === result.kind;
+      });
+      await settle();
+      assert.equal(hints.length, expectedHints);
+    };
+    await observe({ kind: 'pending' }, 1);
+    await observe({ kind: 'unknown', reason: 'source_busy' }, 2);
+    await observe({ kind: 'unknown', reason: 'source_busy' }, 2);
+    await observe({ kind: 'unknown', reason: 'source_unreachable' }, 3);
+    await observe({ kind: 'pending' }, 4);
+    await observe(satisfied(), 5);
+    assert.equal(hints.at(-1)?.status, 'resolved');
+    assert.deepEqual(f.errors, []);
+  });
+}
+
+test('projection hints stay quiet across more than 512 pending waits', async (t) => {
+  const f = await fixture(t);
+  const waits: EventWaitRecord[] = [];
+  for (let n = 0; n < 513; n++) {
+    waits.push(await f.wait(`wait-${String(n).padStart(3, '0')}`, { deadlineAt: 60_000 }));
+  }
+  let now = f.clock.now();
+  const source = new Source();
+  const hints: string[] = [];
+  const manager = f.manager(source, {
+    clock: { now: () => now, schedule: () => () => {} },
+    policy: { ...policy, maxConcurrent: 1, maxLifetimeMs: 60_000 },
+    onChanged: (record) => hints.push(record.waitId),
+  });
+  await manager.start();
+  for (let step = 0; step < waits.length * 2; step++) {
+    await eventually(async () => {
+      await manager.reconcile();
+      const call = source.calls[step];
+      return !!call && (await f.read(call.wait))?.observation?.outcome === 'pending';
+    });
+    assert.equal(source.calls.length, step + 1);
+    now += policy.minIntervalMs;
+  }
+  await settle();
+  for (const wait of waits) assert.equal((await f.read(wait))?.observation?.attempts, 2);
+  assert.equal(new Set(hints).size, waits.length);
+  assert.equal(hints.length, waits.length, 'unchanged pending polls must not emit another hint');
+  assert.deepEqual(f.errors, []);
+});

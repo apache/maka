@@ -98,6 +98,9 @@ import {
 } from '@maka/runtime/agent-swarm-status-tool';
 import { SessionActivityRegistry } from '@maka/runtime/goal-turn-lifecycle';
 import { ShellRunProcessManager } from '@maka/runtime/shell-run-manager';
+import { ShellRunEventWaitAccess } from './shell-run-event-wait-access.js';
+import { ShellRunEventWaitAdapter } from './shell-run-event-wait-adapter.js';
+import { EventWaitAdapterRegistry } from './event-wait-adapter.js';
 import {
   resolveShellPlan,
   resolveTurnShellPlan,
@@ -1350,6 +1353,11 @@ export async function createExecutionRuntimeHostComposition(
         ...(scheduledTaskTool ? { scheduledTaskTool } : {}),
         planStore,
         goalTools: requireGoal(goal).tools,
+        eventWaitAvailable: () =>
+          backendContext.header.toolMode !== 'code_mode' &&
+          ['active', 'waiting'].includes(
+            requireGoal(goal).manager.get(backendContext.sessionId)?.status ?? '',
+          ),
         builtinTools,
         hostTools,
         resolveToolCeiling: (sessionId) => personalAssistant.toolCeiling(sessionId),
@@ -2490,8 +2498,17 @@ export async function createExecutionRuntimeHostComposition(
         requireGoal(goal).matchesActive(sessionId, checkpoint, controlLease),
     });
     goalExecutions = goalExecutionCoordinator;
+    const shellRunWaitAccess = new ShellRunEventWaitAccess(
+      openedShellRunStore,
+      stores.runtimeEventStore,
+    );
     goal = new HostGoalCoordinator({
-      ...(dependencies.eventWaitSources ? { eventWaitSources: dependencies.eventWaitSources } : {}),
+      eventWaitSources: dependencies.eventWaitSources ?? {
+        adapters: new EventWaitAdapterRegistry([
+          new ShellRunEventWaitAdapter(shellRunWaitAccess, shellRuns),
+        ]),
+        authorize: (wait, signal) => shellRunWaitAccess.authorize(wait, signal),
+      },
       store: openedGoalStore,
       stores,
       readSessionContext: async (sessionId) => {

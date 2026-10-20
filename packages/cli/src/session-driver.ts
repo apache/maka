@@ -246,6 +246,9 @@ export interface MakaSessionDriver {
    * concurrent control action mid-flight — for clear that is the desired end
    * state). Optional: drivers without a goal authority reject goal control.
    */
+  cancelGoalEventWait?(
+    input: import('@maka/runtime-host/protocol').GoalEventWaitCancelInput,
+  ): Promise<import('@maka/runtime-host/protocol').GoalEventWaitCancelResult>;
   controlGoal?(action: GoalControlAction): Promise<GoalProjection | null>;
   getContextDiagnostics?(): Promise<ContextDiagnostics>;
   getOrchestrationMode?(): OrchestrationMode;

@@ -66,6 +66,13 @@ export interface RuntimeEventReadStore {
   ): Promise<RuntimeInvocationPageResult>;
   readInvocation(sessionId: string, invocationId: string): Promise<RuntimeInvocationRecord>;
   readRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]>;
+  /** Immutable facts for one tool call, bounded independently of unrelated Run history. */
+  readToolProvenanceEvents(
+    sessionId: string,
+    runId: string,
+    toolCallId: string,
+    budget: EvidenceReadBudget,
+  ): Promise<BoundedEvidenceReadResult<RuntimeEvent>>;
   readRuntimeEventsBounded(
     sessionId: string,
     runId: string,
@@ -130,6 +137,12 @@ export async function openRuntimeEventReadPersistence(input: {
         store.readInvocation(sessionId, invocationId),
       readRuntimeEvents: (sessionId: string, runId: string) =>
         store.readRuntimeEvents(sessionId, runId),
+      readToolProvenanceEvents: (
+        sessionId: string,
+        runId: string,
+        toolCallId: string,
+        budget: EvidenceReadBudget,
+      ) => store.readToolProvenanceEvents(sessionId, runId, toolCallId, budget),
       readRuntimeEventsBounded: (sessionId: string, runId: string, budget: EvidenceReadBudget) =>
         store.readRuntimeEventsBounded(sessionId, runId, budget),
       readImmutableRuntimeEvents: (sessionId: string, runId: string) =>

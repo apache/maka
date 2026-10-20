@@ -107,6 +107,17 @@
   min-width: 0;
 }
 
+.maka-session-context__wait .maka-session-context__lead {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  overflow-wrap: anywhere;
+}
+
+.maka-session-context__wait {
+  overflow-wrap: anywhere;
+}
+
 .maka-session-context__goal-description {
   display: block;
   min-width: 0;

@@ -54,11 +54,18 @@ only after an explicit HTTP(S) probe succeeds; an omitted probe is
 `not_checked`, and a failed or policy-blocked probe is `unknown`. Consumers must
 not infer HTTP readiness from the process status alone.
 
-## Explicit event waits (internal)
+## Explicit event waits
 
-`event-wait-tool` exposes a composition seam for `WaitForEvent`. It is absent from
-production catalogs until a production adapter is provided. The tool requires a
-direct, exclusive tool step; a successful Host registration produces an in-memory
+`WaitForEvent` is available to AI SDK direct-tool Turns with an active Goal.
+The production source is a locally owned, same-Session managed background Bash
+task: `shell_run / background_task / terminal@1`, with an empty parameter object
+and its canonical `maka://runtime/background-tasks/<id>` reference. The Host verifies
+the task against its immutable invocation and tool call/dispatch/result facts;
+references, UI projections and process IDs are not access credentials. Code Mode
+may create a background task, but must return to direct mode to register a wait.
+ACP, nested Code Mode and plugin executors cannot register waits.
+
+The tool requires a direct, exclusive tool step; a successful Host registration produces an in-memory
 control receipt that ends the Turn with `event_wait` after persisting its result.
 Persisted JSON and ordinary tool output cannot manufacture that receipt.
 
@@ -86,6 +93,20 @@ and pauses the Goal. An explicit user resume starts a fresh continuation under a
 new control generation; it does not redeliver the old wait. If a Run already
 exists, its recovery follows the normal Runtime policy. This boundary does not
 provide transparent retry or exactly-once execution of external side effects.
+
+Terminal means completed, failed, timed out or cancelled, not necessarily successful.
+The continuation uses `Read` on the original reference to inspect output and exit
+status. Orphaned tasks produce `source_unavailable` and are never automatically
+restarted. Confirmed disappearance or revoked access closes the wait and pauses
+the Goal with a bounded diagnostic; temporary storage failures remain unknown.
+
+Goal projections include the current outstanding wait, its reason/deadline and
+observation or admission phase. `goal.event-wait.cancel` targets the original
+Goal, generation and wait ID plus Goal revision. It pauses the Goal and suppresses
+unadmitted delivery without stopping the background process. Repeated or stale
+requests report cancellation, admission or conflict without targeting newer work.
+ShellRun notifications only prompt authoritative rereads; observing a task does
+not take ownership of its sandbox, process lifetime or completion cleanup.
 
 ## Extension rules
 

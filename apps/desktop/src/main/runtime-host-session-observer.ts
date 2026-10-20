@@ -1952,7 +1952,8 @@ function sameGoal(
   return (
     next !== null &&
     previous.goalId === next.goalId &&
-    previous.revision === next.revision
+    previous.revision === next.revision &&
+    JSON.stringify(previous.eventWait) === JSON.stringify(next.eventWait)
   );
 }
 

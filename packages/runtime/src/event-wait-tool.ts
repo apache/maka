@@ -38,7 +38,7 @@ export interface EventWaitYieldReceipt {
 export function isEventWaitYieldReceipt(value: unknown): value is EventWaitYieldReceipt {
   return typeof value === 'object' && value !== null && receipts.has(value);
 }
-/** Internal composition seam. Never added to the production builtin tool catalog. */
+/** Host composition seam; exposed only with supported sources and valid Goal control. */
 export function buildEventWaitTool(
   register: (
     input: EventWaitRequest,
@@ -48,7 +48,7 @@ export function buildEventWaitTool(
   return {
     name: EVENT_WAIT_TOOL_NAME,
     description:
-      'Register a supported condition on an authorized resource and end this Turn. Host continues the Goal once a result or timeout is available.',
+      'Wait for a background Bash task in this Session and end this Turn. Requires an active Goal and direct tools. Use resource {providerId: "shell_run", connectionId: null, resourceType: "background_task", resourceId: the canonical maka://runtime/background-tasks/... ref}, condition {typeId: "terminal", version: 1, parameters: {}} and an explicit timeoutMs. Host continues the existing Goal when the task becomes terminal or the wait expires. Terminal does not mean command success or Goal achievement: inspect the result with Read. Expiry or cancelling the wait does not stop the task.',
     parameters: z
       .object({
         resource: z

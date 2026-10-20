@@ -22,6 +22,7 @@ import {
   GOAL_REASON_TEXT_LIMIT,
   type GoalState,
 } from '@maka/runtime/goal-state';
+import { GOAL_EVENT_WAIT_SUMMARY_LIMITS } from '../protocol/goal.js';
 import { decodeGoalProjection, type GoalProjection } from '../protocol/index.js';
 
 export function projectGoalState(goal: GoalState): GoalProjection {
@@ -41,16 +42,17 @@ export function projectGoalState(goal: GoalState): GoalProjection {
     lastReason: goal.lastReason ?? null,
     achievedAt: goal.achievedAt ?? null,
     pausedAt: goal.pausedAt ?? null,
+    eventWait: null,
   });
 }
 
-/** Reserves Session snapshot capacity for a Goal before one is created. */
+/** Reserves encoded snapshot capacity, including worst-case JSON escaping. */
 export function worstCaseGoalProjection(sessionId: string): GoalProjection {
   return {
     goalId: 'g'.repeat(128),
     revision: Number.MAX_SAFE_INTEGER,
     sessionId,
-    condition: '界'.repeat(GOAL_CONDITION_TEXT_LIMIT.codeUnits),
+    condition: '\u0000'.repeat(GOAL_CONDITION_TEXT_LIMIT.codeUnits),
     status: 'paused',
     setAt: Number.MAX_SAFE_INTEGER,
     iterations: Number.MAX_SAFE_INTEGER,
@@ -59,8 +61,27 @@ export function worstCaseGoalProjection(sessionId: string): GoalProjection {
     blockCap: Number.MAX_SAFE_INTEGER,
     tokenBudget: Number.MAX_SAFE_INTEGER,
     tokensSpent: Number.MAX_SAFE_INTEGER,
-    lastReason: '界'.repeat(GOAL_REASON_TEXT_LIMIT.codeUnits),
+    lastReason: '\u0000'.repeat(GOAL_REASON_TEXT_LIMIT.codeUnits),
     achievedAt: Number.MAX_SAFE_INTEGER,
     pausedAt: Number.MAX_SAFE_INTEGER,
+    eventWait: {
+      waitId: 'w'.repeat(128),
+      controlGeneration: Number.MAX_SAFE_INTEGER,
+      waitRevision: Number.MAX_SAFE_INTEGER,
+      resource: {
+        providerId: 'p'.repeat(128),
+        resourceType: 't'.repeat(128),
+        resourceId: '\u0000'.repeat(GOAL_EVENT_WAIT_SUMMARY_LIMITS.resourceIdBytes),
+      },
+      reason: '\u0000'.repeat(GOAL_REASON_TEXT_LIMIT.codeUnits),
+      deadlineAt: Number.MAX_SAFE_INTEGER,
+      phase: 'observing',
+      observation: {
+        state: 'unknown',
+        lastObservedAt: Number.MAX_SAFE_INTEGER,
+        reasonCode: '\u0000'.repeat(GOAL_EVENT_WAIT_SUMMARY_LIMITS.reasonCodeBytes),
+      },
+      outcome: null,
+    },
   };
 }

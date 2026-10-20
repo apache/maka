@@ -290,6 +290,13 @@ export interface ExecutionRuntimeEventReader {
   ): Promise<RuntimeInvocationPageResult>;
   readInvocation(sessionId: string, invocationId: string): Promise<RuntimeInvocationRecord>;
   readRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]>;
+  /** Immutable facts for one tool call, bounded independently of unrelated Run history. */
+  readToolProvenanceEvents(
+    sessionId: string,
+    runId: string,
+    toolCallId: string,
+    budget: EvidenceReadBudget,
+  ): Promise<BoundedEvidenceReadResult<RuntimeEvent>>;
   readRuntimeEventsBounded(
     sessionId: string,
     runId: string,
@@ -834,6 +841,8 @@ async function createExecutionStoresForWrite(
         : {}),
       scanRuntimeEvents: (sessionId, runId, budget, visit) =>
         run(() => runtimeEventStore.scanRuntimeEvents(sessionId, runId, budget, visit)),
+      readToolProvenanceEvents: (sessionId, runId, toolCallId, budget) =>
+        run(() => runtimeEventStore.readToolProvenanceEvents(sessionId, runId, toolCallId, budget)),
       readRuntimeEventsBounded: (sessionId, runId, budget) =>
         run(() => runtimeEventStore.readRuntimeEventsBounded(sessionId, runId, budget)),
       readImmutableRuntimeEvents: (sessionId, runId) =>
@@ -1005,6 +1014,8 @@ async function openExecutionStoresForRead<K extends StorageRootKind, E extends o
               run(() => runtimeEventStore.readSessionRuntimeSnapshot!(sessionId)),
           }
         : {}),
+      readToolProvenanceEvents: (sessionId, runId, toolCallId, budget) =>
+        run(() => runtimeEventStore.readToolProvenanceEvents(sessionId, runId, toolCallId, budget)),
       readRuntimeEventsBounded: (sessionId, runId, budget) =>
         run(() => runtimeEventStore.readRuntimeEventsBounded(sessionId, runId, budget)),
       readImmutableRuntimeEvents: (sessionId, runId) =>

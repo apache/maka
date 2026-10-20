@@ -106,6 +106,8 @@ export const DEFAULT_EVENT_WAIT_OBSERVATION_POLICY: EventWaitObservationPolicy =
   jitterRatio: 0.2,
 });
 export interface HostEventWaitObserverOptions {
+  /** Semantic projection hint only; pending polling does not broadcast activity. */
+  readonly onChanged?: (wait: EventWaitRecord) => void;
   readonly store: EventWaitObservationStore;
   readonly decodeRecord?: (value: unknown) => EventWaitRecord;
   readonly adapters: EventWaitAdapterRegistry;
@@ -522,7 +524,8 @@ export class HostEventWaitObserver {
   }
 
   async #observe(snapshot: EventWaitSnapshot, flight: Flight): Promise<void> {
-    let r = snapshot.record;
+    const projectionBefore = snapshot.record;
+    let r = projectionBefore;
     if (r.status !== 'waiting' || this.#closed) return;
     const cooldown = await this.#store.readSourceCooldown({
       providerId: r.resource.providerId,
@@ -579,7 +582,9 @@ export class HostEventWaitObserver {
       outcome: 'checking',
       cursor: previous?.cursor ?? null,
       eventKey: previous?.eventKey ?? null,
-      reason: null,
+      // Reconnecting projections still need the last completed observation's
+      // diagnostic while this reservation's source request is in flight.
+      reason: previous?.reason ?? null,
     };
     const claim = await this.#commit(snapshot, { ...r, updatedAt: now, observation: reserved });
     if (this.#closed || flight.controller.signal.aborted) return;
@@ -664,7 +669,10 @@ export class HostEventWaitObserver {
       !this.#subscriptions.get(r.waitId)?.controller.signal.aborted
     )
       this.#detach(r.waitId);
-    await this.#finish(snapshot, result, { retryAfterUntil: flight.retryAfterUntil });
+    await this.#finish(snapshot, result, {
+      retryAfterUntil: flight.retryAfterUntil,
+      projectionBefore,
+    });
   }
 
   #validateAccess(access: EventWaitObservationAccess): void {
@@ -1060,7 +1068,11 @@ export class HostEventWaitObserver {
   async #finish(
     snapshot: EventWaitSnapshot,
     result: EventWaitObservationResult,
-    options: { reason?: string; retryAfterUntil?: number } = {},
+    options: {
+      reason?: string;
+      retryAfterUntil?: number;
+      projectionBefore?: EventWaitRecord;
+    } = {},
   ): Promise<EventWaitSnapshot | null> {
     const r = snapshot.record;
     if (this.#closed || r.status !== 'waiting') return null;
@@ -1126,7 +1138,7 @@ export class HostEventWaitObserver {
         },
       };
     }
-    const committed = await this.#commit(snapshot, record);
+    const committed = await this.#commit(snapshot, record, options.projectionBefore);
     if (!committed || committed.record.status !== 'waiting') this.#detach(r.waitId);
     return committed;
   }
@@ -1277,6 +1289,7 @@ export class HostEventWaitObserver {
   async #commit(
     snapshot: EventWaitSnapshot,
     record: EventWaitRecord,
+    projectionBefore: EventWaitRecord = snapshot.record,
   ): Promise<EventWaitSnapshot | null> {
     if (this.#closed) return null;
     const result = await this.#store.commit({
@@ -1284,7 +1297,23 @@ export class HostEventWaitObserver {
       expectedAuthorityRevision: snapshot.authorityRevision,
       record,
     });
-    return result.kind === 'committed' ? result.snapshot : null;
+    if (result.kind !== 'committed') return null;
+    const after = result.snapshot.record;
+    // Compare durable semantics before the attempt, not its temporary checking
+    // reservation. Cache eviction must not turn unchanged polling into activity.
+    if (
+      (after.status !== 'waiting' || after.observation?.outcome !== 'checking') &&
+      (projectionBefore.status !== after.status ||
+        projectionBefore.observation?.outcome !== after.observation?.outcome ||
+        projectionBefore.observation?.reason !== after.observation?.reason)
+    ) {
+      try {
+        this.#options.onChanged?.(after);
+      } catch {
+        /* Projection hints are best effort. */
+      }
+    }
+    return result.snapshot;
   }
 
   async #expire(snapshot: EventWaitSnapshot): Promise<void> {

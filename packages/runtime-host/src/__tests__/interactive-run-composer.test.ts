@@ -664,3 +664,24 @@ test('WorkHub prepared capability execution also enforces and settles topic asso
   );
   await browser.prepareExecution!({}, context as never);
 });
+
+test('WaitForEvent catalog follows current Goal availability and defaults closed', () => {
+  let available = false;
+  const hostTools = [tool('WaitForEvent')];
+  assert.ok(
+    !createFixtureComposer({ hostTools }).tools.some((tool) => tool.name === 'WaitForEvent'),
+  );
+  const composer = createFixtureComposer({
+    hostTools,
+    eventWaitAvailable: () => available,
+    resolveAdditionalTools: () => [tool('WaitForEvent')],
+  });
+  assert.ok(!composer.resolveTools!().some((tool) => tool.name === 'WaitForEvent'));
+  available = true;
+  assert.equal(
+    composer.resolveTools!().find((tool) => tool.name === 'WaitForEvent'),
+    hostTools[0],
+  );
+  available = false;
+  assert.ok(!composer.resolveTools!().some((tool) => tool.name === 'WaitForEvent'));
+});
