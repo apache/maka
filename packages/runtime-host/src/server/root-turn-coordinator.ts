@@ -4073,7 +4073,9 @@ function isRuntimeSessionForwardedEvent(
     event.type === 'tool_result_preview' ||
     event.type === 'tool_result' ||
     event.type === 'steering_message' ||
+    (event.type === 'context_compaction_started' && event.scope !== 'turn') ||
     event.type === 'context_compaction_applied' ||
+    event.type === 'context_compaction_failed' ||
     event.type === 'provider_retry'
   );
 }

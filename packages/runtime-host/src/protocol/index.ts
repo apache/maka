@@ -109,7 +109,10 @@ export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
 // Re-check against main before merging; sibling PRs may use the same next epoch.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 236 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 237 as const;
+// 237: Session event frames add in-Turn context-compaction started/failed
+// events; the applied frame carries `compactionId` and `scope`. Older peers
+// reject the new event union or the added fields in their closed decoders.
 // 236: Goal event wait consumers include the assistant character and pet operations from main.
 // 235: Goal event wait consumers include the quick-discovery operations from main.
 // 233: Goal event wait consumers include the Session check-in operations from main.

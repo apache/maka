@@ -61,6 +61,8 @@ export function reconcileLiveTurnBuffer(buffer: LiveTurnBuffer, messages: readon
         }
       }
     }
-    return retained;
+    // Text handoff may have removed the last step. Recheck durable coverage so
+    // a covered compaction does not need another refresh to release the Turn.
+    return retained?.terminal ? reconcileTerminalLiveTurn(retained, messages) : retained;
   });
 }

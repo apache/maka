@@ -67,7 +67,9 @@ describe('session trace refresh policy', () => {
       'token_usage',
       'provider_retry',
       // A mid-turn compaction persists a boundary note the trace must show.
+      'context_compaction_started',
       'context_compaction_applied',
+      'context_compaction_failed',
       'complete',
       'error',
       'abort',

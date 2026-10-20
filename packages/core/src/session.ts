@@ -856,10 +856,14 @@ export function userFacingText(message: Pick<UserMessage, 'text' | 'displayText'
  * exactly the notes the runtime writes.
  */
 export function isUserVisibleSessionSystemNote(kind: string): boolean {
-  // `context_compaction_applied` is recorded the moment a compaction is applied —
-  // inside a still-running turn — so usage readers can order the boundary
-  // against request completions. `context_compacted` stays the display row.
-  return isRuntimeSystemNoteKind(kind) && kind !== 'context_compaction_applied';
+  // Applied/started are compaction lifecycle facts recorded inside a still-
+  // running turn. They drive the execution timeline; `context_compacted` stays
+  // the transcript note for legacy/manual display.
+  return (
+    isRuntimeSystemNoteKind(kind) &&
+    kind !== 'context_compaction_applied' &&
+    kind !== 'context_compaction_started'
+  );
 }
 
 /**
@@ -1310,6 +1314,7 @@ export interface TurnRecord {
  */
 export const RUNTIME_SYSTEM_NOTE_KINDS = [
   'context_compacted',
+  'context_compaction_started',
   'context_compaction_applied',
   'context_compaction_failed_open',
   'context_window_suggestion',
@@ -1356,10 +1361,12 @@ export interface SystemNoteMessage {
   kind: SystemNoteKind;
   /**
    * Shape depends on `kind`. `context_compaction_failed_open` carries
-   * `{ failOpenReason?: string }` — the reason the fold was refused (e.g.
-   * `coverage_miss`, `source_hash_mismatch`); when a turn is stopped before
-   * settlement, this note is the only durable record of the reason, because
-   * the `token_usage` diagnostic is never written (#4850).
+   * `{ failOpenReason?: string }` plus, for an in-Turn attempt,
+   * `{ compactionId, scope: 'step' }`. The reason records why the fold was
+   * refused (e.g. `coverage_miss`, `source_hash_mismatch`) or `interrupted`
+   * when the user cancelled it; when a turn is stopped before settlement, this
+   * note is the only durable record of the reason, because the `token_usage`
+   * diagnostic is never written (#4850).
    */
   data?: unknown;
 }

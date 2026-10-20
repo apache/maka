@@ -19,8 +19,64 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import type { StoredMessage } from '@maka/core/session';
 import { applyLiveTurnBufferEvent, reconcileLiveTurnBuffer, type LiveTurnBuffer } from '../live-turn-buffer.js';
 import { createTranscriptProjection } from '../transcript-projection.js';
+
+for (const outcome of ['compacted', 'failed', 'interrupted'] as const) {
+  test(`hands off a durable answer and ${outcome} compaction in one reconciliation`, () => {
+    let buffer = applyLiveTurnBufferEvent(undefined, {
+      type: 'context_compaction_started', id: 'start', turnId: 'a', ts: 1,
+      compactionId: 'compact-a', scope: 'step',
+    }, 'en');
+    const reason = outcome === 'interrupted' ? 'interrupted' : 'write_failed';
+    buffer = applyLiveTurnBufferEvent(buffer, outcome === 'compacted' ? {
+      type: 'context_compaction_applied', id: 'applied', turnId: 'a', ts: 2,
+      compactionId: 'compact-a', scope: 'step',
+    } : {
+      type: 'context_compaction_failed', id: 'failed', turnId: 'a', ts: 2,
+      compactionId: 'compact-a', scope: 'step', reason,
+    }, 'en');
+    buffer = applyLiveTurnBufferEvent(buffer, {
+      type: 'text_delta', id: 'delta', turnId: 'a', messageId: 'answer-a', ts: 3,
+      text: 'Answer', startOffset: 0,
+    }, 'en');
+    buffer = applyLiveTurnBufferEvent(buffer, {
+      type: 'complete', id: 'complete', turnId: 'a', ts: 4,
+      stopReason: outcome === 'interrupted' ? 'user_stop' : 'end_turn',
+    }, 'en');
+    assert.ok(buffer);
+
+    const messages: StoredMessage[] = [
+      {
+        type: 'system_note', id: 'compact-terminal', turnId: 'a', ts: 2,
+        kind: outcome === 'compacted' ? 'context_compaction_applied' : 'context_compaction_failed_open',
+        data: { compactionId: 'compact-a', scope: 'step', ...(outcome === 'compacted' ? {} : { failOpenReason: reason }) },
+      },
+      { type: 'assistant', id: 'answer-a', turnId: 'a', ts: 3, text: 'Answer', modelId: 'test' },
+      { type: 'turn_state', id: 'terminal-a', turnId: 'a', ts: 4, status: outcome === 'interrupted' ? 'aborted' : 'completed' },
+    ];
+
+    // Answer durability alone must not erase a compaction outcome still missing from history.
+    const pending = reconcileLiveTurnBuffer(buffer, messages.filter((message) => message.type !== 'system_note'));
+    assert.equal(pending?.[0]?.steps.length, 0);
+    assert.equal(pending?.[0]?.compactions?.[0]?.state, outcome);
+
+    assert.equal(reconcileLiveTurnBuffer(buffer, messages), undefined,
+      'complete history must finish both handoffs without another refresh or React effect');
+    assert.equal(reconcileLiveTurnBuffer(pending!, messages), undefined,
+      'a later durable compaction must release an outcome retained during the answer handoff');
+
+    const withSuccessor = applyLiveTurnBufferEvent(buffer, {
+      type: 'text_delta', id: 'next-delta', turnId: 'b', messageId: 'answer-b', ts: 5,
+      text: 'Next answer', startOffset: 0,
+    }, 'en');
+    const successor = withSuccessor?.find((turn) => turn.turnId === 'b');
+    const reconciled = reconcileLiveTurnBuffer(withSuccessor!, messages);
+    assert.equal(reconciled?.length, 1);
+    assert.equal(reconciled?.[0], successor, 'releasing the predecessor must preserve the live successor');
+  });
+}
 
 test('a successor and a delayed predecessor seed retain separate text and settlement', () => {
   let buffer: LiveTurnBuffer | undefined;
