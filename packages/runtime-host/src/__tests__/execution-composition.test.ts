@@ -5693,7 +5693,6 @@ test('assistant Host fallback registers a task workspace usable by ordinary Sess
   timeout: 30000,
 }, async () => {
   await withCompositionRoot(async ({ root, owner }) => {
-    await configureFakeDefaultTarget(owner);
     const home = join(root, 'isolated-home');
     await mkdir(home);
     const caller: ConnectionContext = {
@@ -5709,6 +5708,12 @@ test('assistant Host fallback registers a task workspace usable by ordinary Sess
     const call = (method: any, input: any = {}) =>
       captured.composition.handlers['personal-assistant.call']({ method, input }, caller);
     try {
+      const missingModel = await call('assistant.allocate-workspace');
+      assert.equal(missingModel.ok, false);
+      if (!missingModel.ok) assert.match(missingModel.error.message, /No default Session model/);
+      assert.equal((await captured.manager.listSessions()).length, 0);
+      await assert.rejects(stat(join(home, 'Maka')));
+      await configureFakeDefaultTarget(owner);
       const allocated = await call('assistant.allocate-workspace');
       assert.equal(allocated.ok, true, JSON.stringify(allocated));
       if (!allocated.ok) return;

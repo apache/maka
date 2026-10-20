@@ -2618,6 +2618,9 @@ export async function createExecutionRuntimeHostComposition(
       projects: openedProjectCatalog,
       membership: projectMembership,
       projectChanged: () => hostChanges.publishProjectCatalog(),
+      preflightSessionCreation: async () => {
+        await sessionCatalog.resolveDefaultCreateTarget();
+      },
     });
     const workHubTargetExecution = new HostWorkHubTargetExecutionAuthority({
       readSession: (sessionId) => stores.sessionStore.readHeaderRecordSnapshot(sessionId),

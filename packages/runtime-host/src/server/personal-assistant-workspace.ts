@@ -32,10 +32,14 @@ export class HostPersonalAssistantWorkspace {
       projects: Pick<ProjectCatalog, 'register'>;
       membership: HostProjectMembershipGate;
       projectChanged(): void;
+      preflightSessionCreation(): Promise<void>;
     },
   ) {}
 
   async allocate(): Promise<{ projectId: string }> {
+    // Validate the model and Host execution policy before creating durable
+    // project/filesystem state; a failed Session create must not leave a task.
+    await this.deps.preflightSessionCreation();
     // The Host resolves its own home. No Client-supplied path or Project enters
     // this operation; every component under home must be a real directory.
     const home = this.deps.homeDirectory ?? homedir();

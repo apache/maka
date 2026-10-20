@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import test, { type TestContext } from 'node:test';
-import { mkdir, mkdtemp, realpath, rm, symlink } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, stat, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { createProjectCatalog } from '@maka/storage/project-catalog';
@@ -43,6 +43,7 @@ async function fixture(t: TestContext) {
       projects: catalog,
       membership: new HostProjectMembershipGate(),
       projectChanged() {},
+      preflightSessionCreation: async () => {},
     });
   return { base, home, catalog, make };
 }
@@ -103,7 +104,26 @@ test('Host registration failure is propagated without selecting another Project'
     projectChanged() {
       throw Error('Must not publish');
     },
+    preflightSessionCreation: async () => {},
   });
   await assert.rejects(allocator.allocate(), (error) => error === failure);
+  assert.equal((await f.catalog.list()).length, 0);
+});
+
+test('a failed Session preflight leaves no task directory or registered Project', async (t) => {
+  const f = await fixture(t);
+  const failure = Error('No default Session model is configured');
+  const allocator = new HostPersonalAssistantWorkspace({
+    stateRoot: join(f.base, 'state'),
+    homeDirectory: f.home,
+    projects: f.catalog,
+    membership: new HostProjectMembershipGate(),
+    projectChanged() {},
+    preflightSessionCreation: async () => {
+      throw failure;
+    },
+  });
+  await assert.rejects(allocator.allocate(), (error) => error === failure);
+  await assert.rejects(stat(join(f.home, 'Maka')));
   assert.equal((await f.catalog.list()).length, 0);
 });
