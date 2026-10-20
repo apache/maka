@@ -58,6 +58,7 @@ describe('buildProviderOptions: thinking level', () => {
       [conn('kimi-coding-plan'), 'kimi-for-coding'],
       [{ ...conn('kimi-coding-plan'), models: [{ id: 'k3', apiProtocol: 'openai-chat' }] }, 'k3'],
       [conn('volcengine-ark'), 'doubao-seed-2-0-pro-260215'],
+      [conn('inception'), 'mercury-3'],
     ] satisfies readonly (readonly [LlmConnection, string])[]) {
       let body: Record<string, unknown> = {};
       await getAIModel({
@@ -443,6 +444,50 @@ describe('buildProviderOptions: thinking level', () => {
       thinkingBudget: 0,
     });
     assert.ok((g25.google as { safetySettings: unknown[] }).safetySettings.length > 0);
+  });
+
+  test('Inception serializes reasoning effort on the Chat Completions wire', async () => {
+    const connection = conn('inception');
+    let body: Record<string, unknown> = {};
+    const model = getAIModel({
+      connection,
+      modelId: 'mercury-3',
+      apiKey: 'test-key',
+      fetch: async (input, init) => {
+        assert.equal(String(input), 'https://api.inceptionlabs.ai/v1/chat/completions');
+        assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer test-key');
+        body = JSON.parse(String(init?.body));
+        return Response.json({
+          id: 'chatcmpl-inception',
+          object: 'chat.completion',
+          created: 1,
+          model: 'mercury-3',
+          choices: [
+            { index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' },
+          ],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        });
+      },
+    });
+    await model.doGenerate({
+      prompt: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+      providerOptions: buildProviderOptions(connection, 'mercury-3', 'high'),
+    });
+    assert.equal(body.model, 'mercury-3');
+    assert.equal(body.reasoning_effort, 'high');
+  });
+
+  test('Inception sends supported reasoning efforts and leaves the provider default alone', () => {
+    for (const id of ['mercury-3', 'mercury-2.5', 'mercury-2']) {
+      assert.deepEqual([...thinkingVariantsForModel('inception', id)], ['low', 'medium', 'high']);
+      assert.deepEqual(buildProviderOptions(conn('inception'), id), {});
+      assert.deepEqual(buildProviderOptions(conn('inception'), id, 'off'), {});
+      for (const effort of ['low', 'medium', 'high'] as const) {
+        assert.deepEqual(buildProviderOptions(conn('inception'), id, effort), {
+          inception: { reasoningEffort: effort },
+        });
+      }
+    }
   });
 
   test('openai-compatible sends reasoningEffort for effort levels and does not expose no-op off', () => {

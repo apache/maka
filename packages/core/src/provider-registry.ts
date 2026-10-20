@@ -856,6 +856,20 @@ const providerRegistry = {
     signupUrl: 'https://platform.openai.com/api-keys',
     catalogOrder: 10,
   },
+  inception: {
+    label: 'Inception',
+    baseUrl: 'https://api.inceptionlabs.ai/v1',
+    authKind: 'api_key',
+    fallbackModels: ['mercury-3', 'mercury-2.5', 'mercury-2'],
+    status: 'ready',
+    runtimeAdapter: { kind: 'openai-compatible' },
+    // The general /models list also includes non-chat Edit and Decide models.
+    modelDiscovery: { kind: 'protocol', path: 'chat/completions/models' },
+    category: 'overseas',
+    catalogGroup: 'api',
+    signupUrl: 'https://platform.inceptionlabs.ai',
+    catalogOrder: 10.5,
+  },
   google: {
     label: 'Google Gemini',
     menuLabel: 'Google',
