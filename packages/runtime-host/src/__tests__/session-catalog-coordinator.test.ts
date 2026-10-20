@@ -724,6 +724,119 @@ test('ordinary configuration rejects the WorkHub Coordination Session identity',
   assert.equal(fixture.drainRequests(), 0);
 });
 
+test('Assistant Bot resolves a legacy owner selection by slug and preserves worker policy', async () => {
+  const { llmConnectionId: _connectionId, ...owner } = sessionHeader('assistant', []);
+  const resolutions: Parameters<RuntimePolicy['operations']['resolveExecutionConnection']>[0][] =
+    [];
+  const fixture = createFixture({
+    header: {
+      llmConnectionId: 'previous-connection',
+      llmConnectionSlug: 'previous',
+      model: 'previous-model',
+      permissionMode: 'bypass',
+    },
+    stores: {
+      readHeaderRecordSnapshot: async (id) =>
+        id === owner.id
+          ? headerSnapshot(owner, 1)
+          : headerSnapshot(fixture.header(), fixture.revision()),
+    },
+    connection: { onResolve: (ref) => resolutions.push(ref) },
+  });
+
+  await fixture.coordinator.synchronizeAssistantBotModel(owner.id, fixture.sessionId);
+
+  assert.deepEqual(resolutions, [
+    { kind: 'catalog_slug', connectionSlug: 'test' },
+    { kind: 'bound', connectionId: 'connection-1', connectionSlug: 'test' },
+  ]);
+  assert.equal(fixture.header().llmConnectionId, 'connection-1');
+  assert.equal(fixture.header().model, 'model-1');
+  assert.equal(fixture.header().permissionMode, 'bypass');
+  assert.deepEqual(fixture.header().labels, ['user-label']);
+  assert.equal(fixture.revision(), 4);
+  assert.equal(fixture.drainRequests(), 0);
+});
+
+test('Assistant Bot leaves an unchanged legacy route intact without resolving a default', async () => {
+  const { llmConnectionId: _connectionId, ...owner } = sessionHeader('assistant', []);
+  const fixture = createFixture({
+    legacyConnectionIdentity: true,
+    stores: {
+      readHeaderRecordSnapshot: async (id) =>
+        id === owner.id
+          ? headerSnapshot(owner, 1)
+          : headerSnapshot(fixture.header(), fixture.revision()),
+    },
+    connection: { onResolve: () => assert.fail('An unchanged route does not need resolution') },
+  });
+
+  await fixture.coordinator.synchronizeAssistantBotModel(owner.id, fixture.sessionId);
+
+  assert.equal(fixture.header().llmConnectionId, undefined);
+  assert.equal(fixture.revision(), 3);
+});
+
+for (const mode of ['running', 'waiting_for_user', 'queued', 'claimed'] as const)
+  test(`Assistant Bot defers a ${mode} worker model change until its next idle wake`, async () => {
+    const owner = sessionHeader('assistant', []);
+    let busy = true;
+    const fixture = createFixture({
+      header: { model: 'previous-model' },
+      stores: {
+        readHeaderRecordSnapshot: async (id) =>
+          id === owner.id
+            ? headerSnapshot(owner, 1)
+            : headerSnapshot(
+                {
+                  ...fixture.header(),
+                  status:
+                    busy && (mode === 'running' || mode === 'waiting_for_user') ? mode : 'active',
+                },
+                fixture.revision(),
+              ),
+      },
+      isTurnBusy: () => busy && mode === 'queued',
+      manager: { runningTurnIds: () => (busy && mode === 'claimed' ? ['turn'] : []) },
+    });
+
+    await fixture.coordinator.synchronizeAssistantBotModel(owner.id, fixture.sessionId);
+    assert.equal(fixture.header().model, 'previous-model');
+    assert.equal(fixture.revision(), 3);
+
+    busy = false;
+    await fixture.coordinator.synchronizeAssistantBotModel(owner.id, fixture.sessionId);
+    assert.equal(fixture.header().model, 'model-1');
+    assert.equal(fixture.revision(), 4);
+    assert.equal(fixture.drainRequests(), 0);
+  });
+
+test('Assistant Bot clears stale thinking and follows the owner thinking level', async () => {
+  let owner = sessionHeader('assistant', []);
+  const fixture = createFixture({
+    header: { model: 'previous-model', thinkingLevel: 'high' },
+    stores: {
+      readHeaderRecordSnapshot: async (id) =>
+        id === owner.id
+          ? headerSnapshot(owner, 1)
+          : headerSnapshot(fixture.header(), fixture.revision()),
+    },
+    connection: {
+      providerType: 'custom',
+      modelOverrides: { 'model-1': { thinkingLevels: ['low', 'high'] } },
+    },
+  });
+
+  await fixture.coordinator.synchronizeAssistantBotModel(owner.id, fixture.sessionId);
+  assert.equal(fixture.header().model, 'model-1');
+  assert.equal(fixture.header().thinkingLevel, undefined);
+
+  owner = { ...owner, thinkingLevel: 'low' };
+  await fixture.coordinator.synchronizeAssistantBotModel(owner.id, fixture.sessionId);
+  assert.equal(fixture.header().thinkingLevel, 'low');
+  assert.equal(fixture.revision(), 5);
+});
+
 test('WorkHub model authority preserves its execution policy and uses versioned runtime configuration', async () => {
   const fixture = createFixture({
     header: {

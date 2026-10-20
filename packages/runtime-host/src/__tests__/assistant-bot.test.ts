@@ -636,7 +636,7 @@ test('mail arriving during a failed call resumes the blocked worker without anot
   assert.equal(f.visible.filter((m) => m.text === '已恢复处理').length, 1);
 });
 
-test('persistent model failures report error without a polling retry storm; fresh mail can retry', async (t) => {
+test('persistent model failures reach the conversation without a polling retry storm; fresh mail can retry', async (t) => {
   const f = await fixture();
   t.after(f.close);
   f.runner(async () => {
@@ -644,13 +644,179 @@ test('persistent model failures report error without a polling retry storm; fres
   });
   await f.send('first-failure', '你好');
   await until(async () => ((await f.service.call('assistant.binding', {})) as any).bot.error);
+  await until(() => f.visible.some((message) => message.type === 'assistant'));
+  const first = f.visible.filter((message) => message.type === 'assistant');
+  assert.equal(first.length, 1);
+  assert.match(first[0].text, /model unavailable/);
+  assert.match(first[0].text, /消息已保留.*发送新消息可重试/);
   await new Promise((resolve) => setTimeout(resolve, 2200));
   assert.equal(f.starts(), 1);
+  assert.equal(f.visible.filter((message) => message.type === 'assistant').length, 1);
   await f.send('second-attempt', '再试一次');
   await until(() => f.starts() === 2);
   await until(async () => ((await f.service.call('assistant.binding', {})) as any).bot.error);
   await new Promise((resolve) => setTimeout(resolve, 1200));
   assert.equal(f.starts(), 2);
+  const failures = f.visible.filter((message) => message.type === 'assistant');
+  assert.equal(failures.length, 2);
+  assert.notEqual(failures[0].id, failures[1].id);
+});
+
+test('failure bubbles survive an ambiguous publication and restart without losing the execution error', async (t) => {
+  const f = await fixture();
+  t.after(f.close);
+  f.runner(async () => {
+    f.failAppend();
+    throw Error('provider rejected the selected model');
+  });
+  await f.send('publication-failure', '你好');
+  await until(() => f.visible.some((message) => message.type === 'assistant'));
+  const failure = f.visible.find((message) => message.type === 'assistant');
+  assert.match(failure.text, /provider rejected the selected model/);
+  const delivered = () => {
+    const mailbox = new DatabaseSync(
+      join(f.directory, 'native', 'index-initiative', 'bot.sqlite'),
+      {
+        readOnly: true,
+      },
+    );
+    try {
+      return mailbox.prepare('SELECT delivered FROM outbox WHERE id=?').get(failure.id)?.delivered;
+    } finally {
+      mailbox.close();
+    }
+  };
+  assert.equal(delivered(), 0);
+  // The first publication after restart can lose its response too.
+  f.failAppend();
+  await f.restart();
+  await until(() => delivered() === 1);
+  const status: any = await f.service.call('assistant.binding', {});
+  assert.match(status.bot.error, /provider rejected the selected model/);
+  assert.doesNotMatch(status.bot.error, /connection lost after commit/);
+  assert.deepEqual(
+    f.visible.filter((message) => message.type === 'assistant'),
+    [failure],
+  );
+  assert.equal(f.starts(), 1);
+});
+
+test('fresh mail still executes after a pending failure bubble repeatedly loses its publication response', async (t) => {
+  const f = await fixture();
+  t.after(f.close);
+  f.runner(async () => {
+    f.failAppend();
+    throw Error('provider unavailable before fresh mail');
+  });
+  await f.send('original', '第一条');
+  await until(() => f.visible.some((message) => message.type === 'assistant'));
+  const failure = f.visible.find((message) => message.type === 'assistant');
+  let recovered = false;
+  f.runner(async ({ invoke }) => {
+    assert.deepEqual(
+      (await invoke('InboxCheck')).items.map((message: any) => message.id),
+      ['original', 'fresh'],
+    );
+    await invoke('SendUser', {
+      messageId: 'publication-recovered',
+      messages: [{ text: '已恢复处理' }],
+    });
+    await invoke('Sleep');
+    recovered = true;
+  });
+  // Fresh input is durably accepted even when receive cannot flush the old bubble.
+  f.failAppend();
+  await assert.rejects(f.send('fresh', '继续'), /connection lost after commit/);
+  // The scheduler must retry publication without latching this unattempted input.
+  f.failAppend();
+  await until(async () => {
+    const status: any = await f.service.call('assistant.binding', {});
+    return status.bot.wakeError?.includes('connection lost after commit');
+  });
+  const pending: any = await f.service.call('assistant.binding', {});
+  assert.equal(pending.bot.error, null);
+  assert.equal(f.starts(), 1);
+  assert.equal(f.visible.filter((message) => message.type === 'assistant').length, 1);
+  await until(() => recovered);
+  await until(async () => ((await f.service.call('assistant.binding', {})) as any).bot.sleeping);
+  assert.equal(f.starts(), 2);
+  assert.deepEqual(
+    f.visible.filter((message) => message.type === 'assistant').map((message) => message.text),
+    [failure.text, '已恢复处理'],
+  );
+});
+
+test('a contained Bot failure reports the current wake provider error instead of an older turn failure', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'maka-bot-provider-error-'));
+  const store = new BotStore(directory);
+  store.set('worker', 'worker');
+  store.post({ id: 'mail', type: 'user_message', source: 'user', content: 'hello' });
+  const visible: any[] = [];
+  let status = 'idle';
+  let submitted = false;
+  let transcriptReads = 0;
+  const agent = {
+    snapshot: async () => ({ agent: { status }, pendingInteractions: 0 }),
+    messageExecution: async () =>
+      submitted ? { state: 'owned', turnId: 'failed-turn' } : { state: 'not_admitted' },
+    followup: async () => {
+      submitted = true;
+      status = 'running';
+      return { disposition: 'turn_started', turnId: 'failed-turn' };
+    },
+    whenIdle: async () => {
+      status = 'blocked';
+    },
+    transcript: async () => {
+      transcriptReads++;
+      return [
+        {
+          type: 'turn_state',
+          turnId: 'old-turn',
+          errorClass: 'unknown',
+          failureMessage: 'old failure',
+        },
+        {
+          type: 'turn_state',
+          turnId: 'failed-turn',
+          errorClass: 'provider_unavailable',
+          failureMessage: 'provider 404: model has no eligible provider',
+        },
+        {
+          type: 'turn_state',
+          turnId: 'unrelated-turn',
+          errorClass: 'unknown',
+          failureMessage: 'unrelated failure',
+        },
+      ];
+    },
+    cancel: async () => {},
+  };
+  const controller = new BotController(
+    {
+      agents: {
+        withInvocation: async (_: unknown, fn: () => unknown) => fn(),
+        resume: async () => agent,
+      },
+      appendConversation: async (_: string, message: any) => {
+        visible.push(message);
+      },
+    } as any,
+    { fence() {}, get: () => ({ sessionId: 'owner', cwd: directory }) } as any,
+    store,
+  );
+  t.after(async () => {
+    await controller.close();
+    store.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  controller.start();
+  await until(() => visible.length === 1);
+  assert.match(store.get<string>('error')!, /provider 404: model has no eligible provider/);
+  assert.match(visible[0].text, /provider 404: model has no eligible provider/);
+  assert.doesNotMatch(visible[0].text, /old failure|unrelated failure/);
+  assert.equal(transcriptReads, 1);
+  assert.equal(store.batch(0).items.length, 1, 'the failed wake retains its Inbox input');
 });
 
 test('blocked worker with a genuine pending interaction is not restarted by new mail', async (t) => {

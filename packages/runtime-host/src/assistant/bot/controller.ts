@@ -24,6 +24,7 @@ import { ASSISTANT_BACKGROUND_SESSION_LABEL } from '@maka/core/session';
 import type { MessageContent } from '@maka/core/events';
 import type { AssistantModuleServices } from '../service.js';
 import type { InitiativeStore } from '../index-initiative/store.js';
+import { executionFailure } from '../execution-outcome.js';
 import { BotStore, type InboxInput } from './store.js';
 
 const UNREAD_SLEEP_FEEDBACK =
@@ -168,14 +169,33 @@ export class BotController {
     }
     const attemptedThrough = this.store.head();
     this.running = this.run()
-      .catch((error) => {
+      .catch(async (error) => {
         if (!this.abort.signal.aborted) {
           this.store.transaction(() => {
+            // Retrying an undelivered error bubble must retain the original
+            // execution failure and its durable publication identity.
+            if (
+              this.store.get('error') &&
+              this.store.get<number>('errorThrough') === attemptedThrough
+            )
+              return;
             this.store.set('error', String(error));
             // Mail arriving during a failed execution must still trigger a new
             // attempt. Do not latch the failure against that newer input.
             this.store.set('errorThrough', attemptedThrough);
+            const id = randomUUID();
+            this.store.queueVisible({
+              type: 'assistant',
+              id: `bot-error:${id}`,
+              turnId: `assistant-output:error:${id}`,
+              ts: Date.now(),
+              text: `助手消息处理暂时停止：${String(error)}。消息已保留；请检查当前模型和连接，发送新消息可重试。`,
+              modelId: 'assistant-bot',
+            });
           });
+          // A publication may have committed before its response was lost.
+          // Keep the outbox entry for the next tick without replacing the failure.
+          await this.flush().catch(() => {});
         }
       })
       .finally(() => {
@@ -183,7 +203,15 @@ export class BotController {
       });
   }
   private async run() {
-    await this.flush();
+    try {
+      await this.flush();
+    } catch (error) {
+      // Pending publication is retried independently of model execution. A
+      // delivery failure cannot consume the retry triggered by fresh Inbox mail.
+      if (!this.abort.signal.aborted) this.store.set('wakeError', String(error));
+      return;
+    }
+    this.store.set('wakeError', null);
     if (this.store.get('error')) {
       const errorThrough = this.store.get<number>('errorThrough');
       if (errorThrough !== undefined && this.store.head() <= errorThrough) return;
@@ -288,10 +316,26 @@ export class BotController {
       }
       const finalStatus = ((await agent.snapshot()) as any)?.agent?.status;
       this.store.set('wake', null);
-      if (['aborted', 'blocked', 'waiting_for_user'].includes(finalStatus))
-        throw Error('Bot stopped: ' + finalStatus);
-      if (!this.store.get('sleepTurn'))
-        throw Error('Bot ended without Sleep; send a new message to retry');
+      if (
+        ['aborted', 'blocked', 'waiting_for_user'].includes(finalStatus) ||
+        !this.store.get('sleepTurn')
+      ) {
+        let message = ['aborted', 'blocked', 'waiting_for_user'].includes(finalStatus)
+          ? 'Bot stopped: ' + finalStatus
+          : 'Bot ended without Sleep; send a new message to retry';
+        // A contained provider failure can settle whenIdle normally. Resolve
+        // this wake's latest execution rather than reporting a stale turn error.
+        if (wake) {
+          const execution: any = await agent
+            .messageExecution(wake.messageId)
+            .catch(() => undefined);
+          if (execution?.state === 'owned' && execution.turnId) {
+            const failure = await executionFailure(agent, execution.turnId).catch(() => undefined);
+            if (failure) message = failure.message;
+          }
+        }
+        throw Error(message);
+      }
     } finally {
       this.activeAgent = undefined;
     }

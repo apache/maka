@@ -2272,12 +2272,23 @@ export async function createExecutionRuntimeHostComposition(
         });
       },
       resume: async (options, initiator) => {
-        if (options.prompt)
-          await submitAgentMessage(options.sessionId, options.prompt, 'next_turn', initiator);
         const session = (await visibleAgentSessions(initiator)).find(
           (item) => item.id === options.sessionId,
         );
         if (!session) throw new Error('Agent was not found');
+        if (personalAssistant.botOwnerFor(options.sessionId) === initiator.sessionId) {
+          const [pending, boundaries] = await Promise.all([
+            stores.interactionStore.listPending({ sessionId: options.sessionId }),
+            stores.sessionStore.listPendingSandboxBoundaryRequests(options.sessionId),
+          ]);
+          if (!pending.length && !boundaries.length)
+            await sessionCatalog.synchronizeAssistantBotModel(
+              initiator.sessionId,
+              options.sessionId,
+            );
+        }
+        if (options.prompt)
+          await submitAgentMessage(options.sessionId, options.prompt, 'next_turn', initiator);
         return describeAgent(session);
       },
       get: async (id, initiator) => {

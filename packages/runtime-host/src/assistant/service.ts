@@ -463,6 +463,9 @@ export class PersonalAssistantService {
   isConversation(sessionId: string) {
     return this.enabled && this.runtime!.bot.isConversation(sessionId);
   }
+  botOwnerFor(sessionId: string): string | undefined {
+    return this.enabled ? this.runtime!.bot.ownerFor(sessionId) : undefined;
+  }
   hasInboxMessage(sessionId: string, id: string) {
     return this.enabled && this.runtime!.bot.hasUserMessage(sessionId, id);
   }

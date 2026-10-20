@@ -370,6 +370,221 @@ test('assistant messages enter a durable Inbox through real Host admission witho
   });
 });
 
+test('assistant Bot reuses its history with the visible model and connection after switching and restarting', {
+  timeout: 30000,
+}, async (t) => {
+  let assistant!: PersonalAssistantService;
+  const recover = PersonalAssistantService.prototype.recover;
+  t.mock.method(
+    PersonalAssistantService.prototype,
+    'recover',
+    function (this: PersonalAssistantService, ...args: Parameters<typeof recover>) {
+      assistant = this;
+      return recover.apply(this, args);
+    },
+  );
+  await withCompositionRoot(async ({ root, owner }) => {
+    const originalConnectionId = await configureFakeDefaultTarget(owner, [
+      'fake-model',
+      'replacement-model',
+    ]);
+    let policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+    const catalog = await policy.connectionCatalog.getSnapshot();
+    const created = await policy.connectionCatalog.create({
+      expectedCatalogRevision: catalog.revision,
+      connection: {
+        slug: 'replacement',
+        name: 'Replacement',
+        providerType: 'ollama',
+        enabled: true,
+        enabledModelIds: ['replacement-model'],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') throw Error('Replacement connection was not committed');
+    const replacement = created.snapshot.connections.find((entry) => entry.slug === 'replacement')!;
+    const fetch = await policy.operations.beginModelFetch(replacement.connectionId);
+    assert.equal(fetch.kind, 'ready');
+    if (fetch.kind !== 'ready') throw Error('Replacement model fetch did not start');
+    assert.equal(
+      (
+        await policy.operations.completeModelFetch(fetch.ticket, {
+          models: [{ id: 'replacement-model' }],
+          source: 'fetched',
+          fetchedAt: Date.now(),
+        })
+      ).kind,
+      'committed',
+    );
+    const executions: { sessionId: string; connectionId?: string; model: string }[] = [];
+    const primaryBackendFactory: BackendFactory = (context) =>
+      new (class extends FakeBackend {
+        override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+          executions.push({
+            sessionId: context.sessionId,
+            connectionId: context.header.llmConnectionId,
+            model: context.header.model,
+          });
+          if (context.header.model === 'fake-model') {
+            yield* super.send({ ...input, text: '__e2e_error__:network' });
+            return;
+          }
+          const invoke = (name: string, raw: unknown = {}) => {
+            const tool = assistant.tools.find((entry) => entry.name === name)!;
+            return tool.impl(raw, {
+              sessionId: context.sessionId,
+              turnId: input.turnId,
+              cwd: root,
+              toolCallId: randomUUID(),
+              abortSignal: new AbortController().signal,
+              emitOutput() {},
+            });
+          };
+          await invoke('InboxCheck');
+          await invoke('SendUser', {
+            messageId: `reply-${input.turnId}`,
+            messages: [{ text: `已通过 ${context.header.llmConnectionSlug} 恢复处理` }],
+          });
+          await invoke('Sleep');
+          assert.deepEqual(
+            await assistant.beforeFinish({
+              sessionId: context.sessionId,
+              turnId: input.turnId,
+              signal: new AbortController().signal,
+            }),
+            { allow: true },
+          );
+          yield* super.send({ ...input, text: 'done' });
+        }
+      })(context);
+    let { composition, manager } = await createCapturedExecutionComposition(owner, {
+      primaryBackendFactory,
+    });
+    const caller: ConnectionContext = {
+      hostEpoch: 'execution-composition-test',
+      connectionId: 'assistant-model-test',
+      principal: 'local_os_user',
+      acquireResidency: () => ({ release() {} }),
+    };
+    let stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const call = async (method: 'assistant.bind' | 'assistant.status', input: unknown = {}) => {
+      const result = await composition.handlers['personal-assistant.call'](
+        { method, input },
+        caller,
+      );
+      assert.equal(result.ok, true, JSON.stringify(result));
+      return result.result.value as any;
+    };
+    try {
+      const chat = await manager.createSession({
+        cwd: root,
+        llmConnectionId: originalConnectionId,
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'ask',
+        labels: ['personal-assistant'],
+      });
+      await call('assistant.bind', { sessionId: chat.id });
+      const send = async (number: number) => {
+        const result = await composition.handlers['turn.message.submit'](
+          {
+            originHostEpoch: caller.hostEpoch,
+            sessionId: chat.id,
+            messageId: `model-attempt-${number}`,
+            content: { text: `尝试 ${number}` },
+            placement: 'current_turn',
+          },
+          caller,
+        );
+        assert.equal(result.ok, true, JSON.stringify(result));
+        await waitFor(async () => {
+          const status = await call('assistant.status', { includeMemory: false });
+          const visible = await readLedgerMessages(stores.runtimeEventStore, chat.id);
+          return (
+            executions.length === number &&
+            (number === 1 ? !!status.bot.error : status.bot.sleeping && !status.bot.error) &&
+            visible.filter((row) => row.type === 'assistant').length === number
+          );
+        }, 7000).catch(async (error) => {
+          throw new Error(
+            JSON.stringify({
+              attempt: number,
+              executions,
+              bot: (await call('assistant.status', { includeMemory: false })).bot,
+              visible: await readLedgerMessages(stores.runtimeEventStore, chat.id),
+            }),
+            { cause: error },
+          );
+        });
+      };
+      await send(1);
+      assert.match(
+        (await readLedgerMessages(stores.runtimeEventStore, chat.id))
+          .filter((row) => row.type === 'assistant')
+          .map((row) => row.text)
+          .join('\n'),
+        /Deterministic network failure/,
+      );
+      const workerId = executions[0].sessionId;
+      const workerBefore = await stores.sessionStore.readHeaderSnapshot(workerId);
+      const select = async (connectionId: string, connectionSlug: string) => {
+        const current = await stores.sessionStore.readHeaderRecordSnapshot(chat.id);
+        const changed = await composition.handlers['session.configuration.update'](
+          {
+            sessionId: chat.id,
+            expectedRevision: current.revision,
+            patch: {
+              modelTarget: {
+                kind: 'explicit',
+                connectionId,
+                connectionSlug,
+                model: 'replacement-model',
+              },
+            },
+          },
+          caller,
+        );
+        assert.equal(changed.ok, true, JSON.stringify(changed));
+        if (changed.ok) assert.equal(changed.result.kind, 'committed');
+      };
+      await select(originalConnectionId, 'fake');
+      await send(2);
+      await select(replacement.connectionId, 'replacement');
+      await composition.close();
+      ({ composition, manager } = await createCapturedExecutionComposition(owner, {
+        primaryBackendFactory,
+      }));
+      stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+      await send(3);
+      assert.deepEqual(
+        (await readLedgerMessages(stores.runtimeEventStore, chat.id))
+          .filter((row) => row.type === 'assistant')
+          .slice(1)
+          .map((row) => row.text),
+        ['已通过 fake 恢复处理', '已通过 replacement 恢复处理'],
+      );
+      assert.deepEqual(executions, [
+        { sessionId: workerId, connectionId: originalConnectionId, model: 'fake-model' },
+        { sessionId: workerId, connectionId: originalConnectionId, model: 'replacement-model' },
+        { sessionId: workerId, connectionId: replacement.connectionId, model: 'replacement-model' },
+      ]);
+      const workerAfter = await stores.sessionStore.readHeaderSnapshot(workerId);
+      assert.deepEqual(workerAfter.labels, workerBefore.labels);
+      assert.equal(workerAfter.permissionMode, workerBefore.permissionMode);
+      assert.equal(workerAfter.parentSessionId, chat.id);
+      const workerHistory = await readLedgerMessages(stores.runtimeEventStore, workerId);
+      assert.equal(workerHistory.filter((row) => row.type === 'user').length, 3);
+      assert.equal(
+        (await policy.connectionCatalog.getSnapshot()).defaultTarget?.connectionId,
+        originalConnectionId,
+      );
+    } finally {
+      await composition.close();
+    }
+  });
+});
+
 test('assistant master switch gates real Host execution and stops only assistant sessions', {
   timeout: 20000,
 }, async () => {

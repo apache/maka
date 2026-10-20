@@ -420,6 +420,91 @@ export class HostSessionCatalogCoordinator {
     if (!outcome.ok) throw new Error(outcome.error.message);
   }
 
+  /** Keep the hidden Bot on its owner's selected model without replacing its history. */
+  async synchronizeAssistantBotModel(ownerId: string, workerId: string): Promise<void> {
+    await this.#admission.runMany([ownerId, workerId], async (lease) => {
+      const [owner, worker] = await Promise.all([
+        this.#stores.readHeaderRecordSnapshot(ownerId),
+        this.#stores.readHeaderRecordSnapshot(workerId),
+      ]);
+      // A wake may observe a still-running worker. Leave that execution and its
+      // pending interactions intact; the next idle wake will synchronize it.
+      if (
+        this.#manager.runningTurnIds(workerId).length ||
+        this.#isTurnBusy?.(workerId) ||
+        worker.header.status === 'running' ||
+        worker.header.status === 'waiting_for_user'
+      )
+        return;
+      if (
+        !owner.header.executorId &&
+        !worker.header.executorId &&
+        owner.header.llmConnectionId === worker.header.llmConnectionId &&
+        owner.header.llmConnectionSlug === worker.header.llmConnectionSlug &&
+        owner.header.model === worker.header.model &&
+        owner.header.thinkingLevel === worker.header.thinkingLevel
+      )
+        return;
+      if (owner.header.executorId) {
+        if (
+          owner.header.executorId === worker.header.executorId &&
+          owner.header.model === worker.header.model &&
+          owner.header.executorConfig?.model === worker.header.executorConfig?.model &&
+          owner.header.executorConfig?.mode === worker.header.executorConfig?.mode &&
+          owner.header.thinkingLevel === worker.header.thinkingLevel
+        )
+          return;
+        throw new SessionOperationFailure(
+          'operation_unavailable',
+          'Assistant Bot cannot synchronize the selected external agent',
+        );
+      }
+      let connectionId = owner.header.llmConnectionId;
+      if (connectionId === undefined) {
+        // Older headers identify their selected connection by slug alone. Do
+        // not substitute the Host default for that explicit user selection.
+        const selected = await this.#runtimePolicy.operations.resolveExecutionConnection({
+          kind: 'catalog_slug',
+          connectionSlug: owner.header.llmConnectionSlug,
+        });
+        if (selected.kind !== 'ready')
+          throw new SessionOperationFailure(
+            'operation_unavailable',
+            'Assistant model connection is unavailable',
+          );
+        connectionId = selected.connection.connectionId;
+      }
+      const outcome = await this.#updateConfiguration(
+        {
+          sessionId: workerId,
+          expectedRevision: worker.revision,
+          patch: {
+            modelTarget: {
+              kind: 'explicit',
+              connectionId,
+              connectionSlug: owner.header.llmConnectionSlug,
+              model: owner.header.model,
+            },
+            thinkingLevel: owner.header.thinkingLevel ?? null,
+          },
+        },
+        'ordinary',
+        lease,
+      );
+      if (!outcome.ok) {
+        // Execution claims can race the idle observation. The transition
+        // authority refuses them without disposing a live backend.
+        if (outcome.error.code === 'session_busy') return;
+        throw new Error(outcome.error.message);
+      }
+      if (outcome.result.kind !== 'committed')
+        throw new SessionOperationFailure(
+          'operation_conflict',
+          'Assistant Bot configuration changed during model synchronization',
+        );
+    });
+  }
+
   /** WorkHub Action Gate path; callers cannot bypass the typed operation outcome. */
   createForWorkHub(input: SessionCreateInput): Promise<OperationOutcome<'session.create'>> {
     return this.#create(input);
@@ -801,6 +886,7 @@ export class HostSessionCatalogCoordinator {
   async #updateConfiguration(
     input: SessionConfigurationUpdateInput,
     authority: 'ordinary' | 'workhub' = 'ordinary',
+    admittedLease?: SessionAdmissionLease,
   ): Promise<OperationOutcome<'session.configuration.update'>> {
     if (authority === 'ordinary' && isWorkHubCoordinationSessionId(input.sessionId)) {
       return configurationFailure(
@@ -808,7 +894,9 @@ export class HostSessionCatalogCoordinator {
         'WorkHub Coordination Session configuration requires WorkHub authority',
       );
     }
-    return this.#admission.run(input.sessionId, async (lease) => {
+    const update = async (
+      lease: SessionAdmissionLease,
+    ): Promise<OperationOutcome<'session.configuration.update'>> => {
       let commitAttempted = false;
       let confirmedExecutor: SessionHeader | undefined;
       try {
@@ -945,7 +1033,10 @@ export class HostSessionCatalogCoordinator {
           'Session configuration update outcome is unknown',
         );
       }
-    });
+    };
+    return admittedLease
+      ? this.#admission.runAdmitted(input.sessionId, admittedLease, () => update(admittedLease))
+      : this.#admission.run(input.sessionId, update);
   }
 
   async #reconcileExecutorAfterFailedCommit(previous: SessionHeader): Promise<void> {
