@@ -526,6 +526,39 @@ function buildStaticModelMetadata(active: ModelsDevMetadata): ModelsDevMetadata 
       },
     },
     openai: OPENAI_GPT6_MODEL_OVERRIDES,
+    // Inception is absent from the models.dev snapshot. Bootstrap chat facts
+    // from https://docs.inceptionlabs.ai/get-started/models and
+    // https://docs.inceptionlabs.ai/capabilities/reasoning-efforts.
+    // `instant` has no Maka thinking level; expose only the shared effort tiers.
+    inception: {
+      'mercury-3': {
+        displayName: 'Mercury 3',
+        contextWindow: 1_000_000,
+        maxOutputTokens: 131_072,
+        structuredOutput: true,
+        modalities: { input: ['text'], output: ['text'] },
+        capabilities: { vision: false, reasoning: true, functionCalling: true },
+        thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      },
+      'mercury-2.5': {
+        displayName: 'Mercury 2.5',
+        contextWindow: 260_000,
+        maxOutputTokens: 65_536,
+        structuredOutput: true,
+        modalities: { input: ['text'], output: ['text'] },
+        capabilities: { vision: false, reasoning: true, functionCalling: true },
+        thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      },
+      'mercury-2': {
+        displayName: 'Mercury 2',
+        contextWindow: 128_000,
+        maxOutputTokens: 50_000,
+        structuredOutput: true,
+        modalities: { input: ['text'], output: ['text'] },
+        capabilities: { vision: false, reasoning: true, functionCalling: true },
+        thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      },
+    },
     'claude-subscription': claudeSubscriptionModelMetadata(active),
     // The Command Code Provider-API plan rides the same effort table.
     commandcode: COMMAND_CODE_MODEL_METADATA,

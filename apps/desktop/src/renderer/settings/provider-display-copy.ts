@@ -109,6 +109,11 @@ export const PROVIDER_DISPLAY_COPY = {
     'zh-TW': { name: 'OpenAI', description: 'OpenAI 官方 API 連線', badge: 'API' },
     en: { name: 'OpenAI', description: 'Official OpenAI API access.', badge: 'API' },
   },
+  inception: {
+    'zh-CN': { name: 'Inception', description: 'Inception 官方 Mercury 模型 API 接入', badge: 'API' },
+    'zh-TW': { name: 'Inception', description: 'Inception 官方 Mercury 模型 API 連線', badge: 'API' },
+    en: { name: 'Inception', description: 'Official Inception Mercury model API access.', badge: 'API' },
+  },
   google: {
     'zh-CN': { name: 'Google Gemini', description: 'Google AI Studio 接入', badge: 'API' },
     'zh-TW': { name: 'Google Gemini', description: 'Google AI Studio API 連線', badge: 'API' },
