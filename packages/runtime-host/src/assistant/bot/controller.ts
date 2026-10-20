@@ -255,7 +255,17 @@ export class BotController {
           let resolution: any;
           try {
             resolution = await agent.messageExecution(wake.messageId);
-            if (resolution?.state === 'not_admitted') {
+          } catch (error) {
+            this.store.set('wakeError', String(error));
+            return;
+          }
+          if (resolution?.state === 'not_admitted') {
+            // Only a new admission may change the execution model. Recovering
+            // an owned or pending wake must keep observing that execution.
+            const prepared = await this.ctx.prepareBotWake(this.owner()!, this.worker()!);
+            if (prepared === 'deferred') return;
+            this.ready();
+            try {
               const admitted: any = await agent.followup(wake.text, { messageId: wake.messageId });
               if (!['turn_started', 'followup'].includes(admitted?.disposition))
                 throw Error('Bot wake was not admitted');
@@ -263,11 +273,11 @@ export class BotController {
                 this.store.set('wakeError', null);
                 break;
               }
+            } catch (error) {
+              // Retry reconciliation on the next scheduler tick, keeping the submission identity.
+              this.store.set('wakeError', String(error));
+              return;
             }
-          } catch (error) {
-            // Retry reconciliation on the next scheduler tick, keeping the submission identity.
-            this.store.set('wakeError', String(error));
-            return;
           }
           this.store.set('wakeError', null);
           if (resolution?.state === 'owned') {

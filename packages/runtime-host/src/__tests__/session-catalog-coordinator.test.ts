@@ -744,7 +744,10 @@ test('Assistant Bot resolves a legacy owner selection by slug and preserves work
     connection: { onResolve: (ref) => resolutions.push(ref) },
   });
 
-  await fixture.coordinator.synchronizeAssistantBotModel(owner.id, fixture.sessionId);
+  assert.equal(
+    await fixture.coordinator.synchronizeAssistantBotModel(owner.id, fixture.sessionId),
+    'ready',
+  );
 
   assert.deepEqual(resolutions, [
     { kind: 'catalog_slug', connectionSlug: 'test' },
@@ -771,7 +774,10 @@ test('Assistant Bot leaves an unchanged legacy route intact without resolving a 
     connection: { onResolve: () => assert.fail('An unchanged route does not need resolution') },
   });
 
-  await fixture.coordinator.synchronizeAssistantBotModel(owner.id, fixture.sessionId);
+  assert.equal(
+    await fixture.coordinator.synchronizeAssistantBotModel(owner.id, fixture.sessionId),
+    'ready',
+  );
 
   assert.equal(fixture.header().llmConnectionId, undefined);
   assert.equal(fixture.revision(), 3);
@@ -800,12 +806,18 @@ for (const mode of ['running', 'waiting_for_user', 'queued', 'claimed'] as const
       manager: { runningTurnIds: () => (busy && mode === 'claimed' ? ['turn'] : []) },
     });
 
-    await fixture.coordinator.synchronizeAssistantBotModel(owner.id, fixture.sessionId);
+    assert.equal(
+      await fixture.coordinator.synchronizeAssistantBotModel(owner.id, fixture.sessionId),
+      'deferred',
+    );
     assert.equal(fixture.header().model, 'previous-model');
     assert.equal(fixture.revision(), 3);
 
     busy = false;
-    await fixture.coordinator.synchronizeAssistantBotModel(owner.id, fixture.sessionId);
+    assert.equal(
+      await fixture.coordinator.synchronizeAssistantBotModel(owner.id, fixture.sessionId),
+      'ready',
+    );
     assert.equal(fixture.header().model, 'model-1');
     assert.equal(fixture.revision(), 4);
     assert.equal(fixture.drainRequests(), 0);
@@ -827,12 +839,18 @@ test('Assistant Bot clears stale thinking and follows the owner thinking level',
     },
   });
 
-  await fixture.coordinator.synchronizeAssistantBotModel(owner.id, fixture.sessionId);
+  assert.equal(
+    await fixture.coordinator.synchronizeAssistantBotModel(owner.id, fixture.sessionId),
+    'ready',
+  );
   assert.equal(fixture.header().model, 'model-1');
   assert.equal(fixture.header().thinkingLevel, undefined);
 
   owner = { ...owner, thinkingLevel: 'low' };
-  await fixture.coordinator.synchronizeAssistantBotModel(owner.id, fixture.sessionId);
+  assert.equal(
+    await fixture.coordinator.synchronizeAssistantBotModel(owner.id, fixture.sessionId),
+    'ready',
+  );
   assert.equal(fixture.header().thinkingLevel, 'low');
   assert.equal(fixture.revision(), 5);
 });

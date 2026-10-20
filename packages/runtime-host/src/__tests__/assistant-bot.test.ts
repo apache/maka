@@ -64,11 +64,13 @@ async function fixture(readAvatarImage?: AssistantDependencies['readAvatarImage'
   let queryFailures = 0;
   let cancelQueued = false;
   let loseSubmitResponse = false;
+  let prepareBotWake: AssistantDependencies['prepareBotWake'] = async () => 'ready';
   const executions = new Map<string, string>();
   const submittedIds: string[] = [];
   let invocation: any;
   let service: PersonalAssistantService;
   const dependencies = {
+    prepareBotWake: (ownerId: string, workerId: string) => prepareBotWake(ownerId, workerId),
     readAvatarImage,
     agents,
     llm,
@@ -223,6 +225,9 @@ async function fixture(readAvatarImage?: AssistantDependencies['readAvatarImage'
     },
     runner: (fn: typeof runner) => {
       runner = fn;
+    },
+    prepare: (fn: AssistantDependencies['prepareBotWake']) => {
+      prepareBotWake = fn;
     },
     queueWake: () => {
       queueNext = true;
@@ -555,7 +560,7 @@ test('same call retries replay the batch; uncommitted Sleep never loses mail aft
   const store = new BotStore(dir);
   t.after(() => store.close());
   const binding = { fence() {}, get: () => ({ sessionId: 'owner' }) } as any;
-  const bot = new BotController({} as any, binding, store);
+  const bot = new BotController({ prepareBotWake: async () => 'ready' } as any, binding, store);
   store.post({ id: 'one', type: 'user_message', source: 'user', content: 'hello' });
   const batch = bot.checkInbox('call-1', 50);
   store.post({ id: 'two', type: 'task_update', source: 'task', content: 'done' });
@@ -636,31 +641,38 @@ test('mail arriving during a failed call resumes the blocked worker without anot
   assert.equal(f.visible.filter((m) => m.text === '已恢复处理').length, 1);
 });
 
-test('persistent model failures reach the conversation without a polling retry storm; fresh mail can retry', async (t) => {
-  const f = await fixture();
-  t.after(f.close);
-  f.runner(async () => {
-    throw Error('model unavailable');
+for (const phase of ['preparation', 'execution'])
+  test(`persistent ${phase} failures reach the conversation without a polling retry storm; fresh mail can retry`, async (t) => {
+    const f = await fixture();
+    t.after(f.close);
+    let attempts = 0;
+    const fail = async () => {
+      attempts++;
+      throw Error('model unavailable');
+    };
+    if (phase === 'preparation') f.prepare(fail);
+    else f.runner(fail);
+    await f.send('first-failure', '你好');
+    await until(async () => ((await f.service.call('assistant.binding', {})) as any).bot.error);
+    await until(() => f.visible.some((message) => message.type === 'assistant'));
+    const first = f.visible.filter((message) => message.type === 'assistant');
+    assert.equal(first.length, 1);
+    assert.match(first[0].text, /model unavailable/);
+    assert.match(first[0].text, /消息已保留.*发送新消息可重试/);
+    await new Promise((resolve) => setTimeout(resolve, 2200));
+    assert.equal(attempts, 1);
+    assert.equal(f.starts(), phase === 'execution' ? 1 : 0);
+    assert.equal(f.visible.filter((message) => message.type === 'assistant').length, 1);
+    await f.send('second-attempt', '再试一次');
+    await until(() => attempts === 2);
+    await until(async () => ((await f.service.call('assistant.binding', {})) as any).bot.error);
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    assert.equal(attempts, 2);
+    assert.equal(f.starts(), phase === 'execution' ? 2 : 0);
+    const failures = f.visible.filter((message) => message.type === 'assistant');
+    assert.equal(failures.length, 2);
+    assert.notEqual(failures[0].id, failures[1].id);
   });
-  await f.send('first-failure', '你好');
-  await until(async () => ((await f.service.call('assistant.binding', {})) as any).bot.error);
-  await until(() => f.visible.some((message) => message.type === 'assistant'));
-  const first = f.visible.filter((message) => message.type === 'assistant');
-  assert.equal(first.length, 1);
-  assert.match(first[0].text, /model unavailable/);
-  assert.match(first[0].text, /消息已保留.*发送新消息可重试/);
-  await new Promise((resolve) => setTimeout(resolve, 2200));
-  assert.equal(f.starts(), 1);
-  assert.equal(f.visible.filter((message) => message.type === 'assistant').length, 1);
-  await f.send('second-attempt', '再试一次');
-  await until(() => f.starts() === 2);
-  await until(async () => ((await f.service.call('assistant.binding', {})) as any).bot.error);
-  await new Promise((resolve) => setTimeout(resolve, 1200));
-  assert.equal(f.starts(), 2);
-  const failures = f.visible.filter((message) => message.type === 'assistant');
-  assert.equal(failures.length, 2);
-  assert.notEqual(failures[0].id, failures[1].id);
-});
 
 test('failure bubbles survive an ambiguous publication and restart without losing the execution error', async (t) => {
   const f = await fixture();
@@ -794,6 +806,7 @@ test('a contained Bot failure reports the current wake provider error instead of
   };
   const controller = new BotController(
     {
+      prepareBotWake: async () => 'ready',
       agents: {
         withInvocation: async (_: unknown, fn: () => unknown) => fn(),
         resume: async () => agent,
@@ -1204,6 +1217,7 @@ test('restart reconciles a persisted queued wake without resubmitting or reading
     },
   };
   const ctx = {
+    prepareBotWake: async () => 'ready',
     agents: {
       withInvocation: async (_: unknown, fn: () => unknown) => fn(),
       resume: async () => agent,
@@ -1246,8 +1260,8 @@ test('a completed Sleep clears an ambiguous wake error without submitting again'
   assert.equal(f.starts(), 1);
 });
 
-for (const interruptedStatus of ['idle', 'active', 'aborted', 'blocked']) {
-  test(`restart resumes an owned wake with ${interruptedStatus} worker without losing mail`, async (t) => {
+for (const interruptedStatus of ['running', 'idle', 'active', 'aborted', 'blocked']) {
+  test(`restart resumes an owned wake with ${interruptedStatus} worker on the selected route without losing mail`, async (t) => {
     const dir = await mkdtemp(join(tmpdir(), 'bot-owned-recovery-'));
     let store = new BotStore(dir);
     store.set('worker', 'worker');
@@ -1257,17 +1271,22 @@ for (const interruptedStatus of ['idle', 'active', 'aborted', 'blocked']) {
     store = new BotStore(dir);
     let submissions = 0;
     let status = interruptedStatus;
+    let deferred = false;
+    let route = { connection: 'old-connection', model: 'old-model' };
     if (status === 'blocked')
       store.set('error', 'Error: Bot requires attention in its worker Session');
     let controller: BotController;
     const agent = {
       snapshot: async () => ({ agent: { status }, pendingInteractions: 0 }),
-      messageExecution: async (id: string) => ({
-        state: id === 'old-wake' ? 'owned' : 'not_admitted',
-      }),
+      messageExecution: async (id: string) => {
+        // The previous execution can settle after resume's initial snapshot.
+        if (id === 'old-wake' && status === 'running') status = 'idle';
+        return { state: id === 'old-wake' ? 'owned' : 'not_admitted' };
+      },
       followup: async (_text: string, options: { messageId: string }) => {
         assert.notEqual(options.messageId, 'old-wake');
         assert.equal(options.messageId, store.get<any>('wake').messageId);
+        assert.deepEqual(route, { connection: 'new-connection', model: 'new-model' });
         submissions++;
         status = 'running';
         return { disposition: 'turn_started' };
@@ -1282,6 +1301,17 @@ for (const interruptedStatus of ['idle', 'active', 'aborted', 'blocked']) {
     };
     controller = new BotController(
       {
+        prepareBotWake: async (ownerId: string, workerId: string) => {
+          assert.equal(ownerId, 'owner');
+          assert.equal(workerId, 'worker');
+          assert.notEqual(status, 'running');
+          if (interruptedStatus === 'running' && !deferred) {
+            deferred = true;
+            return 'deferred';
+          }
+          route = { connection: 'new-connection', model: 'new-model' };
+          return 'ready';
+        },
         agents: {
           withInvocation: async (_: unknown, fn: () => unknown) => fn(),
           resume: async () => agent,
@@ -1298,6 +1328,8 @@ for (const interruptedStatus of ['idle', 'active', 'aborted', 'blocked']) {
     controller.start();
     await until(() => controller.isSleeping());
     assert.equal(submissions, 1);
+    assert.deepEqual(route, { connection: 'new-connection', model: 'new-model' });
+    assert.equal(deferred, interruptedStatus === 'running');
     assert.equal(store.get('error') ?? null, null);
     assert.equal(store.get('wake'), null);
   });
@@ -1329,6 +1361,7 @@ test('omitted wake resolution is retried without replacing its submission identi
   };
   controller = new BotController(
     {
+      prepareBotWake: async () => 'ready',
       agents: {
         withInvocation: async (_: unknown, fn: () => unknown) => fn(),
         resume: async () => agent,

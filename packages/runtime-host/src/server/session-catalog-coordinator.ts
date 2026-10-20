@@ -421,21 +421,24 @@ export class HostSessionCatalogCoordinator {
   }
 
   /** Keep the hidden Bot on its owner's selected model without replacing its history. */
-  async synchronizeAssistantBotModel(ownerId: string, workerId: string): Promise<void> {
-    await this.#admission.runMany([ownerId, workerId], async (lease) => {
+  async synchronizeAssistantBotModel(
+    ownerId: string,
+    workerId: string,
+  ): Promise<'ready' | 'deferred'> {
+    return this.#admission.runMany([ownerId, workerId], async (lease) => {
       const [owner, worker] = await Promise.all([
         this.#stores.readHeaderRecordSnapshot(ownerId),
         this.#stores.readHeaderRecordSnapshot(workerId),
       ]);
       // A wake may observe a still-running worker. Leave that execution and its
-      // pending interactions intact; the next idle wake will synchronize it.
+      // pending interactions intact and require preparation again before admission.
       if (
         this.#manager.runningTurnIds(workerId).length ||
         this.#isTurnBusy?.(workerId) ||
         worker.header.status === 'running' ||
         worker.header.status === 'waiting_for_user'
       )
-        return;
+        return 'deferred';
       if (
         !owner.header.executorId &&
         !worker.header.executorId &&
@@ -444,7 +447,7 @@ export class HostSessionCatalogCoordinator {
         owner.header.model === worker.header.model &&
         owner.header.thinkingLevel === worker.header.thinkingLevel
       )
-        return;
+        return 'ready';
       if (owner.header.executorId) {
         if (
           owner.header.executorId === worker.header.executorId &&
@@ -453,7 +456,7 @@ export class HostSessionCatalogCoordinator {
           owner.header.executorConfig?.mode === worker.header.executorConfig?.mode &&
           owner.header.thinkingLevel === worker.header.thinkingLevel
         )
-          return;
+          return 'ready';
         throw new SessionOperationFailure(
           'operation_unavailable',
           'Assistant Bot cannot synchronize the selected external agent',
@@ -494,7 +497,7 @@ export class HostSessionCatalogCoordinator {
       if (!outcome.ok) {
         // Execution claims can race the idle observation. The transition
         // authority refuses them without disposing a live backend.
-        if (outcome.error.code === 'session_busy') return;
+        if (outcome.error.code === 'session_busy') return 'deferred';
         throw new Error(outcome.error.message);
       }
       if (outcome.result.kind !== 'committed')
@@ -502,6 +505,7 @@ export class HostSessionCatalogCoordinator {
           'operation_conflict',
           'Assistant Bot configuration changed during model synchronization',
         );
+      return 'ready';
     });
   }
 

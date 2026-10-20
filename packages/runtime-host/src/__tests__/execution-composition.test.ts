@@ -585,6 +585,224 @@ test('assistant Bot reuses its history with the visible model and connection aft
   });
 });
 
+test('assistant Bot synchronizes a fresh wake after recovering a running wake that ends', {
+  timeout: 30000,
+}, async (t) => {
+  let assistant!: PersonalAssistantService;
+  const recover = PersonalAssistantService.prototype.recover;
+  t.mock.method(
+    PersonalAssistantService.prototype,
+    'recover',
+    function (this: PersonalAssistantService, ...args: Parameters<typeof recover>) {
+      assistant = this;
+      return recover.apply(this, args);
+    },
+  );
+  const oldStarted = deferred();
+  const loseAdmissionResponse = deferred();
+  const failOldExecution = deferred();
+  let oldWakeId: string | undefined;
+  let recoveredRunningWake = false;
+  const bind = PluginAgentService.prototype.bindRuntime;
+  t.mock.method(
+    PluginAgentService.prototype,
+    'bindRuntime',
+    function (this: PluginAgentService, bound: PluginAgentRuntime) {
+      return bind.call(this, {
+        ...bound,
+        async followup(id, message, initiator, options) {
+          const result = await bound.followup(id, message, initiator, options);
+          if (!oldWakeId) {
+            oldWakeId = options!.messageId;
+            await oldStarted.promise;
+            await loseAdmissionResponse.promise;
+            // Admission committed, but the controller must recover its durable wake.
+            throw Error('Bot wake admission response lost');
+          }
+          return result;
+        },
+        async messageExecution(id, messageId, initiator) {
+          const result = await bound.messageExecution!(id, messageId, initiator);
+          if (
+            messageId === oldWakeId &&
+            (result as any).state === 'owned' &&
+            !recoveredRunningWake
+          ) {
+            assert.equal(((await bound.snapshot(id, initiator)) as any).agent.status, 'running');
+            recoveredRunningWake = true;
+            // The recovered run saw a busy worker. Finish it before the controller
+            // inspects its status and creates a new wake in this same run.
+            failOldExecution.resolve();
+            await pollFor(
+              async () => ((await bound.snapshot(id, initiator)) as any).agent.status !== 'running',
+              { timeoutMs: 7000, pollMs: 5 },
+            );
+          }
+          return result;
+        },
+      });
+    },
+  );
+  await withCompositionRoot(async ({ root, owner }) => {
+    const originalConnectionId = await configureFakeDefaultTarget(owner);
+    const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+    const catalog = await policy.connectionCatalog.getSnapshot();
+    const created = await policy.connectionCatalog.create({
+      expectedCatalogRevision: catalog.revision,
+      connection: {
+        slug: 'replacement',
+        name: 'Replacement',
+        providerType: 'ollama',
+        enabled: true,
+        enabledModelIds: ['replacement-model'],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') throw Error('Replacement connection was not committed');
+    const replacement = created.snapshot.connections.find((entry) => entry.slug === 'replacement')!;
+    const fetch = await policy.operations.beginModelFetch(replacement.connectionId);
+    assert.equal(fetch.kind, 'ready');
+    if (fetch.kind !== 'ready') throw Error('Replacement model fetch did not start');
+    assert.equal(
+      (
+        await policy.operations.completeModelFetch(fetch.ticket, {
+          models: [{ id: 'replacement-model' }],
+          source: 'fetched',
+          fetchedAt: Date.now(),
+        })
+      ).kind,
+      'committed',
+    );
+    const executions: { sessionId: string; connectionId?: string; model: string }[] = [];
+    const { composition, manager } = await createCapturedExecutionComposition(owner, {
+      primaryBackendFactory: (context) =>
+        new (class extends FakeBackend {
+          override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+            executions.push({
+              sessionId: context.sessionId,
+              connectionId: context.header.llmConnectionId,
+              model: context.header.model,
+            });
+            if (context.header.model === 'fake-model') {
+              oldStarted.resolve();
+              await failOldExecution.promise;
+              yield* super.send({ ...input, text: '__e2e_error__:network' });
+              return;
+            }
+            const invoke = (name: string, raw: unknown = {}) => {
+              const tool = assistant.tools.find((entry) => entry.name === name)!;
+              return tool.impl(raw, {
+                sessionId: context.sessionId,
+                turnId: input.turnId,
+                cwd: root,
+                toolCallId: randomUUID(),
+                abortSignal: new AbortController().signal,
+                emitOutput() {},
+              });
+            };
+            await invoke('InboxCheck');
+            await invoke('SendUser', {
+              messageId: 'recovered-wake-reply',
+              messages: [{ text: '已用新模型处理原消息' }],
+            });
+            await invoke('Sleep');
+            assert.deepEqual(
+              await assistant.beforeFinish({
+                sessionId: context.sessionId,
+                turnId: input.turnId,
+                signal: new AbortController().signal,
+              }),
+              { allow: true },
+            );
+            yield* super.send({ ...input, text: 'done' });
+          }
+        })(context),
+    });
+    const caller: ConnectionContext = {
+      hostEpoch: 'execution-composition-test',
+      connectionId: 'assistant-wake-recovery-test',
+      principal: 'local_os_user',
+      acquireResidency: () => ({ release() {} }),
+    };
+    try {
+      const chat = await manager.createSession({
+        cwd: root,
+        llmConnectionId: originalConnectionId,
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'ask',
+        labels: ['personal-assistant'],
+      });
+      const bound = await composition.handlers['personal-assistant.call'](
+        { method: 'assistant.bind', input: { sessionId: chat.id } },
+        caller,
+      );
+      assert.equal(bound.ok, true, JSON.stringify(bound));
+      const submitted = await composition.handlers['turn.message.submit'](
+        {
+          originHostEpoch: caller.hostEpoch,
+          sessionId: chat.id,
+          messageId: 'recover-original-inbox-message',
+          content: { text: '请用选中的模型处理这条消息' },
+          placement: 'current_turn',
+        },
+        caller,
+      );
+      assert.equal(submitted.ok, true, JSON.stringify(submitted));
+      await oldStarted.promise;
+      const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      const current = await stores.sessionStore.readHeaderRecordSnapshot(chat.id);
+      const selected = await composition.handlers['session.configuration.update'](
+        {
+          sessionId: chat.id,
+          expectedRevision: current.revision,
+          patch: {
+            modelTarget: {
+              kind: 'explicit',
+              connectionId: replacement.connectionId,
+              connectionSlug: 'replacement',
+              model: 'replacement-model',
+            },
+          },
+        },
+        caller,
+      );
+      assert.equal(selected.ok, true, JSON.stringify(selected));
+      if (selected.ok) assert.equal(selected.result.kind, 'committed');
+      loseAdmissionResponse.resolve();
+      await pollFor(() => executions.length === 2, { timeoutMs: 7000, pollMs: 5 });
+      assert.equal(recoveredRunningWake, true);
+      assert.deepEqual(executions, [
+        {
+          sessionId: executions[0].sessionId,
+          connectionId: originalConnectionId,
+          model: 'fake-model',
+        },
+        {
+          sessionId: executions[0].sessionId,
+          connectionId: replacement.connectionId,
+          model: 'replacement-model',
+        },
+      ]);
+      await pollFor(
+        async () =>
+          ((await assistant.call('assistant.status', { includeMemory: false })) as any).bot
+            .sleeping,
+        { timeoutMs: 7000, pollMs: 5 },
+      );
+      const visible = await readLedgerMessages(stores.runtimeEventStore, chat.id);
+      assert.deepEqual(
+        visible.filter((row) => row.type === 'assistant').map((row) => row.text),
+        ['已用新模型处理原消息'],
+      );
+    } finally {
+      loseAdmissionResponse.resolve();
+      failOldExecution.resolve();
+      await composition.close();
+    }
+  });
+});
+
 test('assistant master switch gates real Host execution and stops only assistant sessions', {
   timeout: 20000,
 }, async () => {

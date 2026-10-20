@@ -47,6 +47,7 @@ async function fixture(enabled: boolean | null = null) {
   const pluginTools = new PluginToolService(ctx, { agents });
   const marked: string[][] = [];
   const dependencies = {
+    prepareBotWake: async () => 'ready' as const,
     stopSessions: async () => {},
     markBackgroundSessions: async (ids: readonly string[]) => {
       marked.push([...ids]);
