@@ -2070,7 +2070,7 @@ const BLOCK_CHARS = 32 * 1024;
 
 /**
  * Tool input or output: 12/20 mono on the code fill, 256px of text that
- * scrolls, under an optional label.
+ * scrolls with a bar of its own, under an optional label.
  */
 function codeBlock(id, label, content, m) {
   const trimmed = content.replace(/\s+$/, '');
@@ -2093,19 +2093,27 @@ function codeBlock(id, label, content, m) {
     .when(label !== null, (el) => el.child(text(label, 'small', m.inkMuted)))
     .child(
       div()
-        .id(id)
+        .relative()
         .w_full()
-        .max_h(276)
-        .overflow_y_scroll()
-        .px(12)
-        .py(10)
-        .rounded(10)
-        .bg(m.code)
-        .text_size(12)
-        .line_height('20px')
-        .font_family('Menlo')
-        .text_color(m.ink)
-        .child(shown),
+        .child(
+          div()
+            .id(id)
+            .w_full()
+            .max_h(276)
+            .overflow_y_scroll()
+            .px(12)
+            .py(10)
+            .rounded(10)
+            .bg(m.code)
+            .text_size(12)
+            .line_height('20px')
+            .font_family('Menlo')
+            .text_color(m.ink)
+            .child(shown),
+        )
+        // Placed beside the box rather than with overflow_y_scrollbar, whose
+        // content would keep the box's max_h and so never overflow.
+        .child(Scrollbar.vertical(id).absolute().inset_0()),
     );
 }
 
