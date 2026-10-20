@@ -104,23 +104,26 @@ test('uuidv5 follows RFC 4122', () => {
   // python.org under the DNS namespace is the reference example every
   // conforming implementation agrees on (verified against python's uuid5).
   assert.equal(uuidv5(DNS_NAMESPACE, 'python.org'), '886313e1-3b8a-5372-9b90-0c9aee199e5d');
-  assert.match(uuidv5(DNS_NAMESPACE, 'example.org'), /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  assert.match(
+    uuidv5(DNS_NAMESPACE, 'example.org'),
+    /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+  );
 });
 
 test('executable UUIDs are deterministic and distinguish every input', () => {
   const base = deterministicExecutableUuid('com.maka.desktop', 'Maka', CPU_TYPE_ARM64);
   assert.equal(base, deterministicExecutableUuid('com.maka.desktop', 'Maka', CPU_TYPE_ARM64));
-  assert.notEqual(base, deterministicExecutableUuid('com.maka.desktop', 'Maka Helper', CPU_TYPE_ARM64));
+  assert.notEqual(
+    base,
+    deterministicExecutableUuid('com.maka.desktop', 'Maka Helper', CPU_TYPE_ARM64),
+  );
   assert.notEqual(base, deterministicExecutableUuid('com.maka.desktop', 'Maka', CPU_TYPE_X86_64));
   assert.notEqual(base, deterministicExecutableUuid('com.other.app', 'Maka', CPU_TYPE_ARM64));
 });
 
 test('rewriting a thin Mach-O replaces only the LC_UUID payload', () => {
-  rewrittenLike(
-    thinMachO(CPU_TYPE_ARM64, OLD_UUID),
-    'com.maka.desktop',
-    'Maka',
-    () => deterministicExecutableUuid('com.maka.desktop', 'Maka', CPU_TYPE_ARM64),
+  rewrittenLike(thinMachO(CPU_TYPE_ARM64, OLD_UUID), 'com.maka.desktop', 'Maka', () =>
+    deterministicExecutableUuid('com.maka.desktop', 'Maka', CPU_TYPE_ARM64),
   );
 });
 
