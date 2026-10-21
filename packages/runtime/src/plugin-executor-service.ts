@@ -44,7 +44,7 @@ import {
 } from './plugin-runtime.js';
 import { PluginScopeRegistry } from './plugin-scope-registry.js';
 
-const MAX_EXECUTOR_COMPLETION_TEXT_BYTES = 256 * 1024;
+export const MAX_EXECUTOR_COMPLETION_TEXT_BYTES = 256 * 1024;
 
 declare module './plugin-kernel.js' {
   interface Context {

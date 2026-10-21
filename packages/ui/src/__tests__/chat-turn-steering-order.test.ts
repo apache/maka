@@ -97,6 +97,43 @@ test('renders steering where it arrived in the assistant timeline', () => {
   }
 });
 
+test('keeps the first steering message in a resumed Turn at its timeline position', () => {
+  const messages: StoredMessage[] = [
+    { type: 'user', id: 'original-user', turnId: 'original-turn', ts: 1, text: 'original request' },
+    { type: 'assistant', id: 'before-steer', turnId: 'resumed-turn', ts: 10, modelId: 'mock', text: 'work before the steer' },
+    { type: 'user', id: 'first-steer', turnId: 'resumed-turn', ts: 11, text: 'remember to commit after each point', steeringEventId: 'steer-event' },
+    { type: 'assistant', id: 'after-steer', turnId: 'resumed-turn', ts: 12, modelId: 'mock', text: 'work after the steer' },
+  ];
+  const turn = materializeTurns(messages, 'en').find((candidate) => candidate.turnId === 'resumed-turn');
+  assert.ok(turn);
+  assert.equal(turn.user, undefined, 'a resumed Turn does not get a synthetic opening prompt');
+  assert.deepEqual(
+    turn.timeline.map((item) => item.kind === 'user' ? `user:${item.message.text}` : `${item.kind}:${'text' in item ? item.text : ''}`),
+    [
+      'text:work before the steer',
+      'user:remember to commit after each point',
+      'text:work after the steer',
+    ],
+  );
+
+  const markup = renderToStaticMarkup(
+    createElement(LocaleProvider, {
+      locale: 'en',
+      children: createElement(TurnView, { turn }),
+    }),
+  );
+  const visibleText = parseHTML(`<html><body>${markup}</body></html>`).document.body.textContent ?? '';
+  const positions = [
+    'work before the steer',
+    'remember to commit after each point',
+    'work after the steer',
+  ].map((text) => visibleText.indexOf(text));
+  assert.ok(
+    positions[0]! < positions[1]! && positions[1]! < positions[2]!,
+    `expected before < steer < after; positions=${positions.join(',')}; visible=${visibleText}`,
+  );
+});
+
 test('holds queued steering in the transcript while old output continues, then renders its real reply boundary', async () => {
   const messages: StoredMessage[] = [{ type: 'user', id: 'original', turnId: 'turn-1', ts: 1, text: 'request' }];
   const pending = { id: 'steer', ts: 2, text: 'inserted instruction', transientPlacement: 'transcript' as const };

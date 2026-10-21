@@ -63,6 +63,7 @@ const request = z
       'assistant.enablement',
       'assistant.set-enabled',
       'assistant.binding',
+      'assistant.allocate-workspace',
       'assistant.avatar',
       'assistant.avatar-image',
       'assistant.original',

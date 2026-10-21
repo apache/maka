@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { matterInput } from './settlement-context.js';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { Matter, MatterStore } from './matter.js';
@@ -38,7 +39,10 @@ export class MatterController {
   constructor(
     readonly ctx: MatterServices,
     readonly store: MatterStore,
-    readonly options: { tickMs?: number } = {},
+    readonly options: {
+      tickMs?: number;
+      observer?: { start(): Promise<void>; close(): Promise<void> };
+    } = {},
   ) {}
 
   start() {
@@ -98,6 +102,12 @@ export class MatterController {
     if (!this.ready) {
       this.store.recover();
       this.ready = true;
+    }
+    try {
+      await this.options.observer?.start();
+    } catch (error) {
+      // Observation failure must not block time fallbacks or unrelated Matter work.
+      this.lastError = String(error);
     }
     this.store.enqueueDue();
     for (const m of this.store.list()) {
@@ -301,12 +311,9 @@ export class MatterController {
       return undefined;
     const snapshot = this.store.get(m.id);
     const workspace = this.store.workspace(m.id, m.activation.id);
-    return `Current task inbox (persisted inputs, not a new delegation; refreshed before every model request). User entries are user requirements; coordinator entries are assistant-authored amendments and bot_clarification entries are coordinator answers; both are coordinator context, not new user authorization. Reassess your next action against these inputs. Read MatterRead before submitting so its revision and observed input boundary are current. Rendering this context does not acknowledge or consume inputs.\n${JSON.stringify(
+    return `Current task inbox (persisted inputs, not a new delegation; refreshed before every model request). User entries are user requirements; coordinator entries are assistant-authored amendments and bot_clarification entries are coordinator answers; both are coordinator context, not new user authorization. Reassess your next action against these inputs. Settlement checks the exact delivered input boundary automatically. Rendering this context does not acknowledge or consume inputs.\n${JSON.stringify(
       {
-        matterId: m.id,
-        activationId: m.activation.id,
-        events: snapshot.events,
-        pendingEventCount: snapshot.pendingEventCount,
+        ...matterInput(snapshot),
         inboxFile: workspace.files.inbox,
       },
     )}`;
@@ -343,6 +350,7 @@ export class MatterController {
     this.active = false;
     clearTimeout(this.timer);
     await this.ticking;
+    await this.options.observer?.close();
     // Fence writes before retiring this service’s run observers.
     for (const id of this.runs.keys()) {
       const m = this.store.get(id).matter;

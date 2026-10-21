@@ -20,8 +20,10 @@
 import { randomUUID } from 'node:crypto';
 import {
   decodeEventWaitRecord,
+  decodeObservedEventWaitRecord,
   EVENT_WAIT_LIMITS,
-  type EventWaitRecord,
+  type ObservedEventWaitRecord as EventWaitRecord,
+  type EventWaitRecord as GoalEventWaitRecord,
   type EventWaitObservation,
 } from '@maka/core/event-wait';
 import {
@@ -31,9 +33,12 @@ import {
   eventWaitSourceKey,
   type ExtendEventWaitSourceCooldownInput,
   type InteractiveEventWaitAuthorityWriter,
-  type EventWaitSnapshot,
   type ReadEventWaitInput,
 } from '@maka/storage/event-wait-authority';
+import type {
+  EventWaitObservationStore,
+  ObservationWaitSnapshot as EventWaitSnapshot,
+} from './event-wait-observation-store.js';
 import { StorageRootAuthorityError } from '@maka/storage/root-authority';
 import {
   EventWaitAdapterRegistry,
@@ -100,8 +105,9 @@ export const DEFAULT_EVENT_WAIT_OBSERVATION_POLICY: EventWaitObservationPolicy =
   maxSourceCooldowns: 1024,
   jitterRatio: 0.2,
 });
-export interface HostEventWaitManagerOptions {
-  readonly store: InteractiveEventWaitAuthorityWriter;
+export interface HostEventWaitObserverOptions {
+  readonly store: EventWaitObservationStore;
+  readonly decodeRecord?: (value: unknown) => EventWaitRecord;
   readonly adapters: EventWaitAdapterRegistry;
   /** Trusted composition must check current Session/Goal identity and source access. */
   readonly authorize: (
@@ -163,9 +169,9 @@ const addTime = (now: number, delay: number): number =>
  * Ready candidates normally use durable observation age. Failed preparations get a bounded
  * traversal by immutable ID, so neither failed writes nor cache capacity can pin selection.
  */
-export class HostEventWaitManager {
-  readonly #store: InteractiveEventWaitAuthorityWriter;
-  readonly #options: HostEventWaitManagerOptions;
+export class HostEventWaitObserver {
+  readonly #store: EventWaitObservationStore;
+  readonly #options: HostEventWaitObserverOptions;
   readonly #clock: EventWaitClock;
   readonly #policy: EventWaitObservationPolicy;
   readonly #flights = new Map<string, Flight>();
@@ -191,8 +197,8 @@ export class HostEventWaitManager {
   #closed = false;
   #ready = false;
 
-  constructor(options: HostEventWaitManagerOptions) {
-    this.#store = authenticateInteractiveEventWaitAuthorityWriter(options.store);
+  constructor(options: HostEventWaitObserverOptions) {
+    this.#store = options.store;
     this.#options = options;
     this.#clock = options.clock ?? systemClock;
     this.#policy = { ...DEFAULT_EVENT_WAIT_OBSERVATION_POLICY, ...options.policy };
@@ -200,7 +206,11 @@ export class HostEventWaitManager {
       if (name === 'jitterRatio') {
         if (!Number.isFinite(value) || value < 0 || value > 1)
           throw new TypeError('Invalid wait jitter');
-      } else if (!Number.isSafeInteger(value) || value < 1 || value > 2_147_483_647)
+      } else if (
+        !Number.isSafeInteger(value) ||
+        value < 1 ||
+        (name !== 'maxLifetimeMs' && value > 2_147_483_647)
+      )
         throw new TypeError(`Invalid wait policy: ${name}`);
     }
     if (
@@ -217,9 +227,13 @@ export class HostEventWaitManager {
       throw new TypeError('Inconsistent event wait policy');
   }
 
+  #decode(value: unknown): EventWaitRecord {
+    return (this.#options.decodeRecord ?? decodeObservedEventWaitRecord)(value);
+  }
+
   /** Validates the supported template only; PR3 owns registration authorization and yield. */
   validate(wait: EventWaitRecord): void {
-    const record = decodeEventWaitRecord(wait);
+    const record = this.#decode(wait);
     if (record.deadlineAt - record.createdAt > this.#policy.maxLifetimeMs)
       throw new TypeError('Event wait exceeds maximum lifetime');
     this.#options.adapters.validate(record);
@@ -229,7 +243,7 @@ export class HostEventWaitManager {
   async checkSourceAccess(
     wait: EventWaitRecord,
     parent: AbortSignal,
-    authorize: HostEventWaitManagerOptions['authorize'],
+    authorize: HostEventWaitObserverOptions['authorize'],
   ): Promise<EventWaitObservationAccess> {
     const unknown = { kind: 'unknown' as const, reason: 'authorization_unavailable' };
     const source = sourceKey(wait);
@@ -961,7 +975,7 @@ export class HostEventWaitManager {
       eventKey: null,
       reason: null,
     };
-    decodeEventWaitRecord({
+    this.#decode({
       ...r,
       updatedAt: now,
       observation: {
@@ -1429,5 +1443,44 @@ export class HostEventWaitManager {
       }
     })();
     return this.#close;
+  }
+}
+
+/** Existing Goal entry point retains authenticated storage and strict Goal record validation. */
+export interface HostEventWaitManagerOptions
+  extends Omit<HostEventWaitObserverOptions, 'store' | 'decodeRecord' | 'authorize'> {
+  readonly store: InteractiveEventWaitAuthorityWriter;
+  readonly authorize: (
+    wait: GoalEventWaitRecord,
+    signal: AbortSignal,
+  ) => Promise<EventWaitObservationAccess>;
+}
+export class HostEventWaitManager extends HostEventWaitObserver {
+  override checkSourceAccess(
+    wait: GoalEventWaitRecord,
+    signal: AbortSignal,
+    authorize: HostEventWaitManagerOptions['authorize'],
+  ): Promise<EventWaitObservationAccess> {
+    return super.checkSourceAccess(wait, signal, (record, signal) =>
+      authorize(decodeEventWaitRecord(record), signal),
+    );
+  }
+  constructor(options: HostEventWaitManagerOptions) {
+    const store = authenticateInteractiveEventWaitAuthorityWriter(options.store);
+    super({
+      ...options,
+      decodeRecord: decodeEventWaitRecord,
+      authorize: (wait, signal) => options.authorize(decodeEventWaitRecord(wait), signal),
+      store: {
+        read: (input) => store.read(input),
+        listByStatus: (input) => store.listByStatus(input),
+        listForObservation: (input) => store.listForObservation(input),
+        readSourceCooldown: (input) => store.readSourceCooldown(input),
+        extendSourceCooldown: (input) => store.extendSourceCooldown(input),
+        reserveSourceDispatch: (input) => store.reserveSourceDispatch(input),
+        completeSourceDispatch: (input) => store.completeSourceDispatch(input),
+        commit: (input) => store.commit({ ...input, record: decodeEventWaitRecord(input.record) }),
+      },
+    });
   }
 }

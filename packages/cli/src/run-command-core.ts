@@ -33,7 +33,7 @@ import type { SessionSummary } from '@maka/core/session';
 import { normalizeUserSessionName } from '@maka/core/session-name';
 import type { CreateSessionRequest } from './session-driver.js';
 import { selectMakaRunSession } from './run-session-selection.js';
-import { sessionEventSandboxBoundaryFailureReason } from './sandbox-boundary-failure.js';
+import { RuntimeHostOperationError } from '@maka/runtime-host/client';
 import { resolveMakaWorkspaceRoot } from './workspace-root.js';
 
 export interface MakaRunOptions {
@@ -43,6 +43,7 @@ export interface MakaRunOptions {
   json?: true;
   status?: true;
   result?: true;
+  recap?: true;
   resumeExecution?: true;
   stop?: true;
   sandboxDecision?: 'allow' | 'deny';
@@ -150,7 +151,6 @@ const VALUE_FLAGS = new Set([
   'project',
 ]);
 
-const REPEATABLE_VALUE_FLAGS = new Set<string>();
 const BOOLEAN_FLAGS = new Set([
   'continue',
   'yolo',
@@ -160,6 +160,7 @@ const BOOLEAN_FLAGS = new Set([
   'json',
   'status',
   'result',
+  'recap',
   'queue',
   'steer',
   'stop',
@@ -184,18 +185,16 @@ export function parseMakaRunArgs(argv: readonly string[]): ParseMakaRunArgsResul
     if (!literal && arg.startsWith('--')) {
       const name = arg.slice(2);
       if (BOOLEAN_FLAGS.has(name) || (name === 'resume' && selectsSession)) {
-        if (booleanFlags.has(name)) return { kind: 'error', message: `option repeated: ${arg}` };
         booleanFlags.add(name);
         continue;
       }
       if (!VALUE_FLAGS.has(name)) return { kind: 'error', message: `unknown option: ${arg}` };
-      if (!REPEATABLE_VALUE_FLAGS.has(name) && flags.has(name)) {
-        return { kind: 'error', message: `option repeated: ${arg}` };
-      }
       const value = argv[index + 1];
       if (value === undefined || value.startsWith('--')) {
         return { kind: 'error', message: `option ${arg} needs a value` };
       }
+      if (flags.has(name) && flags.get(name) !== value)
+        return { kind: 'error', message: `conflicting values for ${arg}` };
       flags.set(name, value);
       index += 1;
       continue;
@@ -220,8 +219,9 @@ export function parseMakaRunArgs(argv: readonly string[]): ParseMakaRunArgsResul
     return { kind: 'error', message: '--queue and --steer cannot be used together' };
   }
   const actions =
-    Number(booleanFlags.has('status')) +
+    Number(booleanFlags.has('status') && !booleanFlags.has('recap')) +
     Number(booleanFlags.has('result')) +
+    Number(booleanFlags.has('recap')) +
     Number(flags.has('answer')) +
     Number(resumeExecution) +
     Number(booleanFlags.has('stop')) +
@@ -230,7 +230,7 @@ export function parseMakaRunArgs(argv: readonly string[]): ParseMakaRunArgsResul
   if (actions > 1)
     return {
       kind: 'error',
-      message: 'choose one of --status, --result, --answer, --approve, --deny, --resume or --stop',
+      message: 'choose one Session action, or combine --status with --recap',
     };
   if ((booleanFlags.has('approve') || booleanFlags.has('deny')) && booleanFlags.has('yolo'))
     return {
@@ -247,16 +247,40 @@ export function parseMakaRunArgs(argv: readonly string[]): ParseMakaRunArgsResul
       message: '--session cannot be combined with --continue or --project',
     };
   }
+  if (sessionId) {
+    const override = ['cwd', 'timeout', 'graph'].find(
+      (name) => flags.has(name) || booleanFlags.has(name),
+    );
+    if (override)
+      return {
+        kind: 'error',
+        message: `--${override} cannot be used with --session; use saved settings or legacy --resume <id> for run configuration`,
+      };
+    if (
+      flags.has('max-steps') &&
+      (!positional.length || actions || booleanFlags.has('queue') || booleanFlags.has('steer'))
+    )
+      return {
+        kind: 'error',
+        message: '--max-steps requires a Session prompt without --queue/--steer',
+      };
+  }
   if (actions && positional.length)
     return { kind: 'error', message: 'session actions do not accept a prompt' };
   if ((booleanFlags.has('queue') || booleanFlags.has('steer')) && (!positional.length || actions)) {
     return { kind: 'error', message: '--queue and --steer require a prompt' };
   }
   if (
-    (booleanFlags.has('status') || booleanFlags.has('result') || booleanFlags.has('stop')) &&
+    (booleanFlags.has('status') ||
+      booleanFlags.has('result') ||
+      booleanFlags.has('recap') ||
+      booleanFlags.has('stop')) &&
     (booleanFlags.has('wait') || booleanFlags.has('no-wait'))
   ) {
-    return { kind: 'error', message: '--status, --result and --stop do not accept wait options' };
+    return {
+      kind: 'error',
+      message: '--status, --result, --recap and --stop do not accept wait options',
+    };
   }
   if (booleanFlags.has('graph') && booleanFlags.has('no-wait')) {
     return { kind: 'error', message: '--graph must wait for its final result' };
@@ -318,6 +342,7 @@ export function parseMakaRunArgs(argv: readonly string[]): ParseMakaRunArgsResul
       ...(booleanFlags.has('json') ? { json: true as const } : {}),
       ...(booleanFlags.has('status') ? { status: true as const } : {}),
       ...(booleanFlags.has('result') ? { result: true as const } : {}),
+      ...(booleanFlags.has('recap') ? { recap: true as const } : {}),
       ...(resumeExecution ? { resumeExecution: true as const } : {}),
       ...(booleanFlags.has('stop') ? { stop: true as const } : {}),
       ...(booleanFlags.has('approve')
@@ -361,7 +386,10 @@ export async function runMakaTextCliCore(
     return 0;
   }
   if (parsed.kind === 'error') {
-    deps.writeStderr(`maka run: ${parsed.message}\n\n${makaRunHelpText(deps.cliCommand())}\n`);
+    const optionArgs = argv.includes('--') ? argv.slice(0, argv.indexOf('--')) : argv;
+    writeRunError(parsed.message, deps, optionArgs.includes('--json'));
+    if (!optionArgs.includes('--json'))
+      deps.writeStderr(`Run \`${deps.cliCommand()} run --help\` for usage.\n`);
     return 2;
   }
 
@@ -374,7 +402,7 @@ export async function runMakaTextCliCore(
       if (options.prompt !== undefined || options.stdinPrompt)
         options.prompt = await resolveRunPrompt(options, deps);
       const result = await deps.runSession(options, deps);
-      writeSessionResult(result, deps, options.json === true);
+      writeSessionResult(result, deps, options.json === true || options.status === true);
       const returnsTaskOutcome =
         options.prompt !== undefined ||
         options.answers !== undefined ||
@@ -384,7 +412,7 @@ export async function runMakaTextCliCore(
         options.result;
       return result.status === 'failed' && returnsTaskOutcome ? 1 : 0;
     } catch (error) {
-      deps.writeStderr(`maka run: ${errorMessage(error)}\n`);
+      writeRunError(error, deps, parsed.options.json === true, parsed.options.sessionId);
       return error instanceof RunSessionInterrupted ? 130 : 1;
     }
   }
@@ -420,12 +448,12 @@ export async function runMakaTextCliCore(
       },
     );
   } catch (error) {
-    deps.writeStderr(`maka run: ${errorMessage(error)}\n`);
+    writeRunError(error, deps, parsed.options.json === true, parsed.options.sessionId);
     return 2;
   }
 
   let outcome: MakaRunOutcome | undefined;
-  let boundaryFailure = false;
+  let unavailableSandboxRequest = false;
   let context: MakaRunContext;
   try {
     context = await deps.createContext({
@@ -456,12 +484,11 @@ export async function runMakaTextCliCore(
       ...(parsed.options.hostProfileId ? { hostProfileId: parsed.options.hostProfileId } : {}),
       ...(parsed.options.projectId ? { projectId: parsed.options.projectId } : {}),
       runOutcomeObserver: (result) => {
-        if (result.sandboxBoundary === 'unresolved') boundaryFailure = true;
         outcome = result;
       },
     });
   } catch (error) {
-    deps.writeStderr(`maka run: ${errorMessage(error)}\n`);
+    writeRunError(error, deps, parsed.options.json === true, parsed.options.sessionId);
     return 2;
   }
 
@@ -495,7 +522,7 @@ export async function runMakaTextCliCore(
     }
   } catch (error) {
     await context.close();
-    deps.writeStderr(`maka run: ${errorMessage(error)}\n`);
+    writeRunError(error, deps, parsed.options.json === true, parsed.options.sessionId);
     return 2;
   }
 
@@ -543,23 +570,11 @@ export async function runMakaTextCliCore(
         : {}),
     })) {
       if (event.type === 'sandbox_boundary_request') {
-        boundaryFailure = true;
-        deps.writeStderr(
-          'maka run: sandbox boundary expansion is unavailable in non-interactive mode\n',
-        );
+        unavailableSandboxRequest = true;
         await context.runtime.respondToSandboxBoundary(session.id, {
           requestId: event.requestId,
           decision: 'deny',
         });
-      }
-      const sandboxFailureReason = sessionEventSandboxBoundaryFailureReason(event);
-      if (sandboxFailureReason) {
-        boundaryFailure = true;
-        deps.writeStderr(
-          sandboxFailureReason === 'requires_bypass'
-            ? 'maka run: sandbox bypass requires an explicit --yolo\n'
-            : 'maka run: sandbox boundary expansion is unavailable in non-interactive mode\n',
-        );
       }
     }
     graphActivity?.release();
@@ -573,7 +588,7 @@ export async function runMakaTextCliCore(
     graphActivity?.release();
     await stopPromise?.catch(() => undefined);
     if (!interrupted && !timedOut && !question) {
-      deps.writeStderr(`maka run: ${errorMessage(error)}\n`);
+      writeRunError(error, deps, parsed.options.json === true, session.id);
     }
   } finally {
     removeSigint();
@@ -583,7 +598,12 @@ export async function runMakaTextCliCore(
 
   if (interrupted) return 130;
   if (timedOut) {
-    deps.writeStderr(`maka run: timed out after ${parsed.options.timeoutMs}ms\n`);
+    writeRunError(
+      `timed out after ${parsed.options.timeoutMs}ms`,
+      deps,
+      parsed.options.json === true,
+      session.id,
+    );
     return 1;
   }
   if (question) {
@@ -591,9 +611,17 @@ export async function runMakaTextCliCore(
     return 0;
   }
   if (streamFailed) return 1;
-  if (boundaryFailure) return 1;
+  if (unavailableSandboxRequest) {
+    writeRunError(
+      'sandbox boundary expansion is unavailable in non-interactive mode',
+      deps,
+      parsed.options.json === true,
+      session.id,
+    );
+    return 1;
+  }
   if (!outcome) {
-    deps.writeStderr('maka run: runtime produced no outcome\n');
+    writeRunError('runtime produced no outcome', deps, parsed.options.json === true, session.id);
     return 1;
   }
   if (outcome.status === 'running') {
@@ -624,10 +652,32 @@ export function writeSessionResult(
   deps: Pick<MakaRunDeps, 'writeStdout' | 'writeStderr'>,
   json: boolean,
 ): void {
-  if (json || result.status !== 'completed' || result.finalOutput === undefined)
-    deps.writeStdout(`${JSON.stringify(result)}\n`);
-  else deps.writeStdout(withTrailingNewline(result.finalOutput));
-  if (result.status === 'failed' && result.error) deps.writeStderr(`maka run: ${result.error}\n`);
+  if (result.error && result.recap === undefined && !json) {
+    deps.writeStderr(`maka run: ${result.error}\n`);
+    return;
+  }
+  const text = result.recap ?? (result.status === 'completed' ? result.finalOutput : undefined);
+  deps.writeStdout(
+    json || text === undefined ? `${JSON.stringify(result)}\n` : withTrailingNewline(text),
+  );
+}
+
+function writeRunError(
+  error: unknown,
+  deps: Pick<MakaRunDeps, 'writeStdout' | 'writeStderr'>,
+  json: boolean,
+  sessionId?: string,
+): void {
+  const message = errorMessage(error);
+  if (json) {
+    deps.writeStdout(
+      `${JSON.stringify({
+        ...(sessionId ? { sessionId } : {}),
+        error: message,
+        ...(error instanceof RuntimeHostOperationError ? { code: error.code } : {}),
+      })}\n`,
+    );
+  } else deps.writeStderr(`maka run: ${message}\n`);
 }
 
 async function resolveRunPrompt(options: MakaRunOptions, deps: MakaRunDeps): Promise<string> {
@@ -650,44 +700,59 @@ async function canonicalDirectory(input: string): Promise<string> {
 function makaRunHelpText(cliCommand: string): string {
   return [
     `Usage: ${cliCommand} run [PROMPT] [options]`,
-    `       ${cliCommand} -p [PROMPT] [options]`,
+    `       ${cliCommand} run --session <id> [PROMPT | ACTION] [options]`,
     '',
-    'Input:',
-    '  -                         Read the complete prompt from stdin',
-    '  PROMPT with piped stdin   Use PROMPT as instruction and stdin as context',
+    'Ordinary runs wait and print the final answer. For parent-agent coordination:',
+    `  ${cliCommand} run "Inspect this project" --no-wait`,
+    `  ${cliCommand} run --session <id> --wait --json`,
     '',
-    'Options:',
-    '  --cwd <path>              Working directory (default: current directory)',
-    '  --connection <slug>       Model connection to use',
-    '  --host <profile-id>       Connect through a saved Runtime Host profile',
-    '  --project <project-id>    Select an existing Project on a remote Host',
-    '  --model <id>              Model to use',
-    '  --thinking <level>        off|on|minimal|low|medium|high|xhigh|max|default',
-    '  --timeout <seconds>       Invocation timeout',
-    '  --max-steps <count>       Tool-step cap',
-    '  --yolo                    Grant full access; Session controls otherwise inherit saved access',
-    '  --session <session-id>    Select a Session (without a prompt: show its status)',
-    '  --wait                    Wait for this message/current Turn; return input/approval early',
-    '  --no-wait                 Submit and return (Host-owned execution only)',
-    '  --status                  Read current Session status without executing',
+    'Execution and output:',
+    '  --no-wait                 Submit and return a JSON receipt (persistent Host required)',
+    '  --wait                    Wait for this message/current Turn (default for prompts)',
+    '  --json                    Return JSON, including final answers and recaps',
+    '  --host <profile-id>       Use the same saved Host profile for every Session call',
+    '',
+    'Session actions (--session <id>; model settings below persist before the action):',
+    '  [no action]               Show status, or save supplied model settings without running',
+    '  --status                  Read status, pending questions/approvals, and execution boundary',
+    '  --recap                   Summarize recorded progress with a separate model call',
     '  --result                  Read the latest Turn result without waiting',
-    '  --stop                    Request stop for the current Turn (no --yolo needed)',
     '  --answer <json-array>     Answer the current AskUser, e.g. ["Yes",null]',
-    '  --approve                 Approve the single pending sandbox expansion',
-    '  --deny                    Deny the single pending sandbox expansion',
-    '  --queue                   Queue this prompt as its own next Turn (default)',
-    '  --steer                   Add this prompt to the current execution',
-    '  --json                    Return a structured result, including the Session ID',
-    '  --session <id> --resume   Safely resume stopped execution',
-    '  --resume <session-id>     Legacy Session selector (prefer --session)',
-    '  --continue                Continue the latest compatible task for cwd',
-    '  --graph                   Run this turn in Graph Mode and wait for graph completion',
+    '  --approve / --deny        Decide the single pending sandbox expansion',
+    '  PROMPT                    Queue a new Turn; --steer targets ongoing execution',
+    '  --resume                  Safely continue stopped execution',
+    '  --stop                    Request stop for the current Turn',
+    '',
+    'Model settings (creation or persistent Session updates):',
+    '  --connection <slug>       Select a model connection; otherwise keep the saved account',
+    '  --model <id>              Select a model; otherwise keep the saved model',
+    '  --thinking <level>        off|on|minimal|low|medium|high|xhigh|max|default',
+    '',
+    'Run settings (creation or legacy --resume <id>):',
+    '  --cwd <path>              Working directory (default: current directory)',
+    '  --timeout <seconds>       Invocation timeout',
+    '  --max-steps <count>       Tool-step cap; also supported for an idle Session prompt',
+    '  --project <project-id>    Select an existing Project on a remote Host',
+    '  --graph                   Run in Graph Mode and wait for graph completion',
+    '  --yolo                    Explicitly grant full access, including on Session execution',
+    '',
+    'Input and compatibility:',
+    '  -                         Read the prompt from stdin; piped stdin otherwise adds context',
+    '  --queue                   Explicit spelling of the default Session prompt placement',
+    '  --steer                   Deliver this prompt to ongoing execution',
+    '  --resume <session-id>     Legacy blocking selector; permits run-setting overrides',
+    '  --continue                Legacy selector for the latest compatible task in cwd',
+    `  ${cliCommand} -p [PROMPT]  Alias for run`,
     '  -h, --help                Show help',
     '',
-    'Session controls inherit saved permissions; --yolo explicitly grants full access.',
-    '--status reports the execution boundary; a read-only prompt does not restrict permissions.',
-    'Legacy --resume <id> still requires --yolo for a full-access Session.',
-    '--approve/--deny decide a sandbox request without changing the Session to full access.',
+    'Receipts, status, and pending interactions are JSON without an extra --json.',
+    'Check status, not just exit 0: needs_input/needs_approval require a caller decision.',
+    'finalOutput is a task result; recap is progress; submission is admission; configuration is saved settings.',
+    'Combine --status --recap for a JSON snapshot with both state and progress.',
+    '--status/--result/--recap/--stop do not accept wait flags. Recap consumes model usage.',
+    'Errors are brief text on stderr by default; --json returns structured errors on stdout.',
+    'Session controls inherit bypass access too; a read-only prompt does not restrict it.',
+    'Legacy --resume <id> requires --yolo for bypass. --approve/--deny do not switch to bypass.',
   ].join('\n');
 }
 

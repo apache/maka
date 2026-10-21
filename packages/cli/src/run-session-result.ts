@@ -23,11 +23,15 @@ import type {
 } from '@maka/core/interaction';
 import type { InteractionPendingSnapshot, TurnProviderRetry } from '@maka/runtime-host/protocol';
 import type { ExecutionBoundarySummary } from '@maka/core/sandbox-boundary';
+import type { ThinkingLevel } from '@maka/core/model-thinking';
 
 export interface MakaRunSessionResult {
   sessionId: string;
   status: 'running' | 'needs_input' | 'needs_approval' | 'completed' | 'failed' | 'idle';
   finalOutput?: string;
+  /** Model-generated snapshot of recorded progress, independent of the Turn's final output. */
+  recap?: string;
+  configuration?: { connection: string; model: string; thinking: ThinkingLevel | null };
   error?: string;
   questions?: readonly InteractionQuestion[];
   pendingQuestionCount?: number;

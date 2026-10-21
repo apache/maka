@@ -37,6 +37,8 @@ interface DesktopSessionWorkspaceSelection {
 
 export interface DesktopSessionWorkspaceOptions {
   readonly allowHostPath?: boolean;
+  /** Host-owned fallback for an implicit assistant workspace, after Project preferences. */
+  readonly allocateHostProject?: () => Promise<WorkspaceTarget>;
   /**
    * Allocates a dedicated directory for a new projectless task.
    */
@@ -82,7 +84,10 @@ export async function resolveDesktopSessionWorkspace(
   if (typeof current.projectId === 'string') {
     return { kind: 'project', projectId: current.projectId };
   }
-  if (options.allowHostPath === false) throw remoteProjectRequired();
+  if (options.allowHostPath === false) {
+    if (options.allocateHostProject) return options.allocateHostProject();
+    throw remoteProjectRequired();
+  }
   return projectlessTaskWorkspace(
     { kind: 'host_path', path: current.path },
     options.allocateDedicatedDirectory,

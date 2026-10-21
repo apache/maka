@@ -428,12 +428,13 @@ function claudeThinkingOptions(modelId: string, level: ThinkingLevel | undefined
  * those paths an omitted parameter already means no extended thinking, while
  * the lowest effort would switch adaptive thinking on. That holds for Claude,
  * not for every Anthropic Messages route: Kimi's K3 and kimi-for-coding think
- * by default when no level is sent.
+ * by default when no level is sent. K3 can declare an explicit `none` effort;
+ * when it does, the provider builder maps `'off'` to disabled thinking.
  *
- * Everywhere else a dropped `'off'` omits the effort parameter, and the
- * provider then runs its default reasoning (medium on GPT-5, GPT-6 and o3,
- * dynamic on Gemini 3). So this returns the model's lowest declared level
- * instead, which the wire builders send explicitly.
+ * When a model declares effort levels but no `none`, a dropped `'off'` omits
+ * the effort parameter and the provider runs its default reasoning (medium on
+ * GPT-5, GPT-6 and o3, dynamic on Gemini 3). So this returns the model's
+ * lowest declared level instead, which the wire builders send explicitly.
  */
 export function leastReasoningThinkingLevel(
   connection: RuntimeExecutionConnection,
@@ -487,7 +488,16 @@ function buildThinkingProviderOptions(
       }
       return buildFamilyWire(connection, modelId, level, thinkingOptions, runtime);
     case 'kimi-coding-plan': {
-      if (!level || level === 'off' || level === 'on') return {};
+      if (!level || level === 'on') return {};
+      if (level === 'off') {
+        // A refreshed Kimi Code catalog may declare `none`. Omitting the
+        // control leaves K3 at its default reasoning level, so send the
+        // provider's explicit disabled-thinking wire when that choice exists.
+        if (!thinkingOptions?.efforts?.includes('none')) return {};
+        return runtime.wire === 'openai-chat'
+          ? { kimiCodingPlan: { reasoningEffort: 'none' } }
+          : { anthropic: { thinking: { type: 'disabled' as const } } };
+      }
       if (runtime.wire === 'openai-chat') {
         // The kimiCodingPlan provider-options namespace is the
         // openai-compatible adapter name; ai-sdk resolves its camelCase
@@ -529,6 +539,16 @@ function buildThinkingProviderOptions(
         connection.providerType === 'anthropic' ? claudeThinkingOptions(modelId, level) : undefined;
       if (level === 'off' && thinkingOptions?.offBehavior === 'anthropic-thinking-disabled') {
         reasoning = { thinking: { type: 'disabled' as const } };
+      } else if (
+        (connection.providerType === 'MiniMax' || connection.providerType === 'MiniMax-cn') &&
+        (modelId === 'MiniMax-M3.1-Flash' || (modelId === 'MiniMax-M3' && level === 'on'))
+      ) {
+        reasoning = {
+          thinking: { type: 'adaptive' as const },
+          ...(modelId === 'MiniMax-M3.1-Flash'
+            ? { effort: level && level !== 'off' && level !== 'on' ? level : 'max' }
+            : {}),
+        };
       } else if (summarizedThinking) {
         reasoning = summarizedThinking;
       } else if (level && level !== 'off' && level !== 'on') {

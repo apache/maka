@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { readMatterRuntimeEvents } from '../assistant/proactive-matters/settlement-context.js';
 import { markAssistantBackgroundSessions } from '../assistant/background-sessions.js';
 import { PersonalAssistantService, ASSISTANT_LEGACY_PACKAGES } from '../assistant/service.js';
 import { createAssistantMessageReader } from './session-transcript-reader.js';
@@ -251,6 +252,7 @@ import { startHostModelMetadataRefresh } from './model-metadata-refresh.js';
 import { HostRuntimeResourceCoordinator } from './runtime-resource-coordinator.js';
 import { SessionAdmissionGate, type SessionAdmissionLease } from './session-admission-gate.js';
 import { workHubResultOrigin } from './workhub-result-coordinator.js';
+import { HostPersonalAssistantWorkspace } from './personal-assistant-workspace.js';
 import { HostSessionCatalogCoordinator } from './session-catalog-coordinator.js';
 import { SessionBackgroundActivityProjection } from './session-background-activity.js';
 import { SessionInteractionActivityProjection } from './session-interaction-activity.js';
@@ -324,6 +326,7 @@ export interface CreateExecutionRuntimeHostCompositionOptions {
   readonly initialization?: import('../client/connect-or-spawn.js').HostedRuntimeInitialization;
   readonly bootstrapRuntimePolicy?: boolean;
   readonly skillHomeDirectory?: string;
+  readonly assistantHomeDirectory?: string;
   readonly projectDirectoryRoots?: readonly PublishedProjectDirectoryRoot[];
   readonly imageArchiveLimits?: import('@maka/core/image-delivery').ImageArchiveLimits;
 }
@@ -454,6 +457,11 @@ export async function createExecutionRuntimeHostComposition(
     const personalAssistant = (assistant = new PersonalAssistantService(
       join(context.owner.controlDirectory, 'personal-assistant'),
       {
+        prepareBotWake: async (ownerId, workerId) => {
+          if (await interactions.hasPendingSession(workerId)) return 'deferred';
+          return sessionCatalog.synchronizeAssistantBotModel(ownerId, workerId);
+        },
+        allocateWorkspace: () => assistantWorkspace.allocate(),
         stopSessions: async () => {
           if (!rootCoordinator) return;
           const failures: unknown[] = [];
@@ -507,6 +515,12 @@ export async function createExecutionRuntimeHostComposition(
           });
         },
         markBackgroundSessions: (ids) => markAssistantBackgroundSessions(stores.sessionStore, ids),
+        readRuntimeEvents: async (sessionId, runId) =>
+          runId
+            ? readMatterRuntimeEvents(stores.runtimeEventStore, sessionId, runId)
+            : (await stores.runtimeEventStore.readSessionRuntimeEventEntries(sessionId)).map(
+                (entry) => entry.event,
+              ),
         agents: pluginAgents,
         llm: pluginLlm,
         sessionQuery: pluginSessionQuery,
@@ -1342,14 +1356,16 @@ export async function createExecutionRuntimeHostComposition(
         resolveRootTools: async (sessionId) => {
           await assertAssistantSessionEnabled(sessionId);
           return [
-            ...personalAssistant.tools,
+            ...personalAssistant.filterTools(sessionId, personalAssistant.tools),
             ...(sessionId === WORKHUB_COORDINATION_SESSION_ID && workHubResults && workHubInspection
               ? [workHubResults.tool, workHubInspection]
               : await requireGraphCoordinator(graphCoordinator).toolsForSession(sessionId)),
           ];
         },
-        resolvePluginTools: (sessionId, coreTools) =>
-          pluginTools.resolveContributions(sessionId, coreTools),
+        resolvePluginTools: (sessionId, coreTools) => {
+          const resolved = pluginTools.resolveContributions(sessionId, coreTools);
+          return { ...resolved, tools: personalAssistant.filterTools(sessionId, resolved.tools) };
+        },
         resolvePluginSystemPrompt: async (sessionId, promptContext, baseText) => {
           const assembly = await pluginSystemPrompt.assemble(
             {
@@ -2604,6 +2620,16 @@ export async function createExecutionRuntimeHostComposition(
       ...(context.sessionAccessAuthority
         ? { sessionAccessAuthority: context.sessionAccessAuthority }
         : {}),
+    });
+    const assistantWorkspace = new HostPersonalAssistantWorkspace({
+      stateRoot: context.owner.capability.canonicalPath,
+      ...(options.assistantHomeDirectory ? { homeDirectory: options.assistantHomeDirectory } : {}),
+      projects: openedProjectCatalog,
+      membership: projectMembership,
+      projectChanged: () => hostChanges.publishProjectCatalog(),
+      preflightSessionCreation: async () => {
+        await sessionCatalog.resolveDefaultCreateTarget();
+      },
     });
     const workHubTargetExecution = new HostWorkHubTargetExecutionAuthority({
       readSession: (sessionId) => stores.sessionStore.readHeaderRecordSnapshot(sessionId),

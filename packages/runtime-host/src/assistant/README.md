@@ -25,6 +25,14 @@ The Runtime Host owns three built-in services: memory indexes, durable Matters, 
 
 The feature defaults **off**, including installations with existing assistant data. Enable **通用 → 启用个人助手** in Settings, beside the WorkHub switch, to expose the sidebar entry and start the three services on that Host. The switch is shared by clients of the same Host, not a desktop-only visibility preference. Its labeled conversation is excluded from the ordinary Session rail and palette. WorkHub remains separate. Opening the assistant does not import history, create indexes, enable discovery or call a model.
 
+## Conversation workspace
+
+Personal Assistant keeps the existing Session creation rules: use the configured default Project when applicable, then the Host's current Project preference. A local Host with no Project still allocates its existing `~/Maka/tasks/task-*` directory (`~/Maka Dev/tasks/task-*` for development).
+
+Only when an implicit assistant creation on WSL or a remote Host has no resolvable Project, Desktop calls `assistant.allocate-workspace` on that Host. The Host allocates a fresh task directory in its own home and registers its Project identity for ordinary Session creation. It never adopts an arbitrary existing Project or accepts a Client directory. Standard Host development profiles use `~/Maka Dev/tasks/task-*`; other Host profiles use `~/Maka/tasks/task-*`. The connecting Desktop does not choose a remote Host's namespace. Allocation failure is reported without falling back to the Client filesystem. Client and Host must both support compatibility epoch 226.
+
+Existing assistant bindings retain their conversation, cwd, model and history. Opening them does not allocate another directory or migrate files. This change does not alter ordinary task creation or explicit remote workspace validation.
+
 ## Master switch
 
 `personal-assistant/enablement.json` stores the Host-owned feature switch. When absent, the personal assistant is enabled by default. An explicit `enabled: false` is preserved across restarts; while disabled, the Host does not import the modules, open their databases, adopt old plugin data, register assistant tools/prompts/finish checks, or run any assistant schedulers. Initialization failures leave the assistant unavailable with an error exposed in Settings, preserve stored preferences/data, and do not fail Host recovery. After fixing the configuration, enabling in Settings retries initialization. The two allowlisted desktop operations `assistant.enablement` and `assistant.set-enabled` remain available; feature operations reject while disabled.

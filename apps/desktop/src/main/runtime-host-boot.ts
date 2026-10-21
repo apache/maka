@@ -1185,7 +1185,7 @@ const createLocalRuntimeHostManager = () => createRuntimeHostDesktopManager(
     resolveBotCreateTarget: async (target) => ({
       workspace: await currentDesktopWorkspaceTarget(target),
     }),
-    resolveSessionCreateProject: async (input, target) => {
+    resolveSessionCreateProject: async (input, target, allocateHostProject) => {
       const currentTarget = requireRuntimePolicyTarget(target);
       return resolveDesktopSessionWorkspace(
         input,
@@ -1202,6 +1202,7 @@ const createLocalRuntimeHostManager = () => createRuntimeHostDesktopManager(
         {
           allowHostPath: !runtimeHostProfileUsesHostWorkspace(target.kind),
           allocateDedicatedDirectory: () => managedTaskDirectories.allocate(),
+          ...(allocateHostProject ? { allocateHostProject } : {}),
         },
       );
     },

@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { readFileSync } from 'node:fs';
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { rm } from 'node:fs/promises';
@@ -51,8 +53,7 @@ test('finished model failure with zero pending interactions releases activation 
       await f.invoke(
         'MatterSettle',
         {
-          expectedRevision: v.revision,
-          stateFile: v.files.draft,
+          note: readFileSync(v.files.draft, 'utf8'),
           disposition: 'complete',
           summary: '重新核验完成',
           reason: '证据满足目标',
@@ -198,8 +199,7 @@ test('after backoff the controller resumes the original task and commits once', 
       await f.invoke(
         'MatterSettle',
         {
-          expectedRevision: view.revision,
-          stateFile: view.files.draft,
+          note: readFileSync(view.files.draft, 'utf8'),
           disposition: 'complete',
           summary: '从已有记录恢复完成',
           reason: '目标已满足',

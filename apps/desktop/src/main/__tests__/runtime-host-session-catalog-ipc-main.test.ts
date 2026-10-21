@@ -82,6 +82,37 @@ test('session creation forwards the caller name for a mode that carries none', a
   );
 });
 
+test('only implicit assistant creation receives a Host fallback and keeps Project precedence', async () => {
+  const creates: SessionCreateInput[] = [];
+  const ipc = ipcHarness();
+  const deps = createDeps(creates);
+  let current: string | null = 'host-current';
+  let allocations = 0;
+  deps.allocateAssistantWorkspace = async () => {
+    allocations++;
+    return { kind: 'project', projectId: 'host-allocated' };
+  };
+  deps.resolveCreateProject = (input, allocateHostProject) => resolveDesktopSessionWorkspace(
+    input,
+    { current: async () => ({ projectId: current, path: 'C:\\client' }), select: async () => ({ project: null }) },
+    { register: async () => { throw Error('Client path must not be registered'); } },
+    { allowHostPath: false, allocateDedicatedDirectory: async () => { throw Error('Client allocation must not run'); },
+      ...(allocateHostProject ? { allocateHostProject } : {}) },
+  );
+  registerRuntimeHostSessionCatalogIpc(deps, ipc as unknown as IpcMain);
+  await ipc.invoke('sessions:create', { labels: ['personal-assistant'] });
+  assert.equal(allocations, 0);
+  assert.deepEqual(creates[0]!.workspace, { kind: 'project', projectId: 'host-current' });
+  current = null;
+  await assert.rejects(ipc.invoke('sessions:create', {}), /Select a project from the remote/);
+  await assert.rejects(ipc.invoke('sessions:create', { cwd: '/client', labels: ['personal-assistant'] }), /Select a project from the remote/);
+  assert.equal(allocations, 0);
+  await ipc.invoke('sessions:create', { labels: ['personal-assistant'] });
+  assert.equal(allocations, 1);
+  assert.deepEqual(creates[1]!.workspace, { kind: 'project', projectId: 'host-allocated' });
+  assert.deepEqual(creates[1]!.labels, ['personal-assistant']);
+});
+
 test('session creation forwards a plugin executor model without a native model target', async () => {
   const creates: SessionCreateInput[] = [];
   const ipc = ipcHarness();

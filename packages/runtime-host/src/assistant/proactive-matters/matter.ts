@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import type { MatterConditions } from './condition-store.js';
+
 /** Durable follow-ups. The body is agent-maintained working state, not a plan schema. */
 export const MATTER_STATE_MAX_BYTES = 24 * 1024;
 export const MATTER_REQUEST_MAX_LENGTH = 8000;
@@ -68,6 +70,7 @@ export interface Matter {
   revision: number;
   status: MatterStatus;
   wakes: MatterWake[];
+  conditionWaitId?: string | null;
   waitingFor?: string | null;
   activation: MatterActivation | null;
   runCount: number;
@@ -97,6 +100,7 @@ export interface MatterSettleInput {
   stateText: string;
   disposition: 'continue' | 'wait' | 'complete';
   wakes?: MatterWake[];
+  condition?: { checkerId: string; intervalMs: number };
   waitingFor?: string;
   reason: string;
   /** Agent-authored account of this activation, appended to history by the host. */
@@ -136,19 +140,23 @@ export interface MatterReview {
   input: MatterSettleInput;
   snapshot: MatterSnapshot;
   userInputs: unknown[];
-  draftPath: string;
+  draftPath?: string;
   verdict?: MatterReviewVerdict;
   committed?: boolean;
 }
 
 /** A single transaction owns state, event acknowledgement, wakes and updates. */
 export interface MatterStore {
+  readonly conditions: MatterConditions;
+  adoptDeliveredInput(id: string, activationId: string, basis: string, eventCursor: number): Matter;
+  submittedInput(operationId: string): MatterSettleInput | undefined;
+  saveSubmission(operationId: string, input: MatterSettleInput): void;
   beginReview(
     id: string,
     activationId: string,
     input: MatterSettleInput,
     operationId: string,
-    draftPath: string,
+    draftPath?: string,
   ): MatterReview;
   recordReview(review: MatterReview, verdict: MatterReviewVerdict): void;
   authorizeSession(sessionId: string): void;

@@ -167,6 +167,7 @@ export interface DesktopRuntimeHostCandidateDeps {
   readonly resolveSessionCreateProject: (
     input: Pick<CreateSessionRequestInput, "cwd" | "projectId">,
     target: DesktopRuntimeHostTargetPolicy,
+    allocateHostProject?: () => Promise<WorkspaceTarget>,
   ) => Promise<WorkspaceTarget>;
   /** Resolves the selected import destination on the target Host. */
   readonly resolveExternalSessionImportWorkspace: (
@@ -961,7 +962,21 @@ export async function createDesktopRuntimeHostCandidate(
           client,
           queryExecutors: (input) => client.request('plugin.executor.query', input),
           runningTurnIds: (sessionId) => sessionObserver.observedRunningTurnIds(sessionId),
-          resolveCreateProject: (input) => deps.resolveSessionCreateProject(input, target),
+          resolveCreateProject: (input, allocateHostProject) =>
+            deps.resolveSessionCreateProject(input, target, allocateHostProject),
+          ...(runtimeHostProfileUsesHostWorkspace(target.kind)
+            ? {
+                allocateAssistantWorkspace: async (): Promise<WorkspaceTarget> => {
+                  const result = await client.request('personal-assistant.call', {
+                    method: 'assistant.allocate-workspace', input: {},
+                  });
+                  const value = result.value as { projectId?: unknown } | null;
+                  if (!value || typeof value.projectId !== 'string' || !value.projectId)
+                    throw new Error('Runtime Host returned an invalid assistant Project');
+                  return { kind: 'project', projectId: value.projectId };
+                },
+              }
+            : {}),
           ...(deps.taskDirectories && !runtimeHostProfileUsesHostWorkspace(target.kind)
             ? { dedicatedTaskDirectory: deps.taskDirectories }
             : {}),

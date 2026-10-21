@@ -47,6 +47,10 @@ async function fixture(enabled: boolean | null = null) {
   const pluginTools = new PluginToolService(ctx, { agents });
   const marked: string[][] = [];
   const dependencies = {
+    prepareBotWake: async () => 'ready' as const,
+    allocateWorkspace: async (): Promise<{ projectId: string }> => {
+      throw Error('Not configured');
+    },
     stopSessions: async () => {},
     markBackgroundSessions: async (ids: readonly string[]) => {
       marked.push([...ids]);
@@ -394,6 +398,7 @@ test('explicitly disabled stays cold: no legacy adoption, databases, tools, prom
   );
   for (const method of [
     'assistant.binding',
+    'assistant.allocate-workspace',
     'assistant.bind',
     'assistant.control',
     'assistant.recover',
@@ -514,3 +519,22 @@ for (const preference of ['{broken', JSON.stringify({ enabled: true })]) {
     await assert.rejects(f.service.call('assistant.status', {}), /disabled/);
   });
 }
+
+test('assistant workspace allocation accepts no Client path and leaves binding creation unchanged', async (t) => {
+  const f = await fixture(true);
+  t.after(f.close);
+  let allocations = 0;
+  f.dependencies.allocateWorkspace = async () => {
+    allocations++;
+    return { projectId: 'host-project' };
+  };
+  await f.service.recover(f.legacy, []);
+  f.service.start();
+  await assert.rejects(f.service.call('assistant.allocate-workspace', { cwd: '/client/path' }));
+  assert.equal(allocations, 0);
+  assert.deepEqual(await f.service.call('assistant.allocate-workspace', {}), {
+    projectId: 'host-project',
+  });
+  assert.equal(allocations, 1);
+  assert.equal(((await f.service.call('assistant.binding', {})) as any).state, null);
+});
