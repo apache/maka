@@ -456,6 +456,12 @@ for (const [status, prompt] of [
         catalogChanges++;
         if (frame.attention) attention.push(frame.attention);
       });
+      const subscription = await client.openSessionSubscription({
+        sessionId: fixture.sessionId,
+        transcript: { kind: 'none' },
+      });
+      const probe = new SubscriptionProbe(subscription);
+      await subscription.ready();
       // Changing the durable label is enough; sidebar visibility is not a notification policy.
       for (const labels of [[ASSISTANT_BACKGROUND_SESSION_LABEL], []]) {
         const catalog = await client.request('session.catalog.query', {
@@ -480,10 +486,32 @@ for (const [status, prompt] of [
         );
         const terminal = await waitForTerminalTurn(client, fixture.sessionId, turnId);
         assert.equal(terminal.status, status);
+        await probe.waitFor(
+          (frame) =>
+            frame.kind === 'subscription.session_projection' &&
+            frame.snapshot.rootTurn?.turnId === turnId &&
+            frame.snapshot.rootTurn.status === status,
+          'terminal projection was not published',
+        );
+        // Terminal projection is broadcast before the awaited catalog callback.
+        // Metadata writes share its SessionAdmission lane, so this response fences
+        // that callback and its catalog frames for both positive and negative checks.
+        const settled = await client.request('session.catalog.query', {
+          kind: 'get',
+          sessionId: fixture.sessionId,
+        });
+        if (settled.kind !== 'session' || !settled.session) throw Error('Session missing');
+        await client.request('session.metadata.update', {
+          sessionId: fixture.sessionId,
+          expectedRevision: settled.session.revision,
+          patch: { isFlagged: false },
+        });
         assert.ok(catalogChanges > before);
         assert.equal(attention.length, labels.length ? 0 : 1);
       }
       unsubscribe();
+      await subscription.close();
+      await probe.done;
       await client.close();
       await fixture.stopHost(host);
     });
