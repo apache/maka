@@ -57,7 +57,7 @@ Index reads expose shared usage guidance. `MemoryIndexContent` defaults to direc
 
 ## Proactive instructions
 
-Heartbeats always use `PROACTIVE_TASK` from code. `InitiativeEnable` configures cadence only; there is no custom prompt setting. New bindings do not save instructions, and recovery removes the obsolete `state.instructions` field while preserving the conversation and scheduling state. After updating and restarting the Host, existing bindings use the current product prompt automatically. The discovery scheduler retains its cadence. Exploration runs in a separate background Session, reports findings through `DiscoveryReport`, and never writes directly to the user conversation.
+Heartbeats always use `PROACTIVE_TASK` from code. `InitiativeEnable` configures cadence only; there is no custom prompt setting. New bindings do not save instructions, and recovery removes the obsolete `state.instructions` field while preserving the conversation and scheduling state. After updating and restarting the Host, existing bindings use the current product prompt automatically. The discovery scheduler retains its cadence. Each heartbeat runs discovery followed by judgement, in two persistent background Sessions. Discovery saves candidates through `DiscoveryCandidates` to a private report file; judgement reads that file and may investigate further before reporting through `DiscoveryReport` to the Bot. Neither worker writes directly to the user conversation. A failed/interrupted judgement retains its report for the next check; source history and existing indexes are unchanged. The original discovery criteria remain in `PROACTIVE_TASK`, split between these two roles.
 
 ## Verification
 

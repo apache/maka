@@ -131,7 +131,8 @@ test('DiscoveryReport reports real mailbox rejection, success and storage failur
   store.control('check');
   store.claim();
   store.update((s) => {
-    s.discoverySession = 'discovery';
+    s.judgementSession = 'discovery';
+    s.active.phase = 'judgement';
   });
   t.after(async () => {
     await stop();

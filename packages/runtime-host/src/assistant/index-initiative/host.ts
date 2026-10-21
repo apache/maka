@@ -45,8 +45,34 @@ export async function initializeInitiative(
   initializeBot(ctx, directory, store);
   registerAssistant(ctx, store, controller);
   ctx.backgroundSessions.register(() =>
-    store.get()?.discoverySession ? [store.get().discoverySession] : [],
+    [store.get()?.discoverySession, store.get()?.judgementSession].filter(Boolean),
   );
+  ctx.turns.beforeFinish({
+    name: 'index-initiative.candidates',
+    check: ({ sessionId }) => {
+      const s = store.get();
+      if (
+        s?.active?.phase === 'discovery' &&
+        s.discoverySession === sessionId &&
+        !s.candidateReport
+      )
+        return {
+          allow: false,
+          feedback:
+            '本轮发现还没有交接报告。请用 DiscoveryCandidates 保存发现及其依据；没有合适线索也如实记录，然后结束。',
+        };
+      return { allow: true };
+    },
+  });
+  ctx.tools.register({
+    name: 'DiscoveryCandidates',
+    description:
+      '将本轮发现及其依据保存为报告文件，交给判断会话继续调查和决定是否推荐。这里不向用户或 Bot 发消息；即使没有合适线索也如实记录。每轮提交一份完整报告，返回文件路径。',
+    parameters: z.object({ text: z.string().trim().min(1) }),
+    categoryHint: 'file_write',
+    executionSemantics: 'exclusive_step',
+    impl: (input: any, call: any) => store.saveCandidates(call.sessionId, input.text),
+  });
   ctx.tools.register({
     name: 'DiscoveryReport',
     description:
@@ -57,7 +83,11 @@ export async function initializeInitiative(
     impl: (input: any, call: any) => {
       controller.ready();
       const state = store.get();
-      if (!state?.active || state.discoverySession !== call.sessionId)
+      if (
+        !state?.active ||
+        state.active.phase !== 'judgement' ||
+        state.judgementSession !== call.sessionId
+      )
         throw Error('Not the active exploration worker');
       const id = `discovery:${state.active.id}:${call.toolCallId}`;
       const reported = ctx.bot.post(state.sessionId, {
@@ -82,7 +112,7 @@ export async function initializeInitiative(
     executionSemantics: 'parallel',
     impl: async (input: any, call: any) => {
       const state = store.get();
-      if (!state || call.sessionId !== state.discoverySession)
+      if (!state || ![state.discoverySession, state.judgementSession].includes(call.sessionId))
         throw Error('Not the exploration worker');
       return controller.asOwner(state, async () => {
         const snapshot: any = await ctx.sessionQuery.read(state.sessionId);
@@ -175,7 +205,9 @@ export async function initializeInitiative(
     order: 810,
     text: ({ sessionId }) =>
       store.get()?.discoverySession === sessionId
-        ? '你是独立的主动探索 Agent。通过可用工具调查。值得交流的发现用 DiscoveryReport 交给个人助手 Bot，由它和用户交流；没有合适内容可以直接结束。这里不是用户聊天框，不要委派执行任务。'
-        : undefined,
+        ? '你负责发现线索，使用可用工具调查，用 DiscoveryCandidates 保存报告交给判断会话。不要调用 DiscoveryReport 或委派执行任务；这里不是用户聊天框。'
+        : store.get()?.judgementSession === sessionId
+          ? '你负责阅读发现报告、调查和判断。值得交流的发现用 DiscoveryReport 交给 Bot；没有合适内容可以结束。这里不是用户聊天框，不要委派执行任务。'
+          : undefined,
   });
 }

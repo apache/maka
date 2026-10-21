@@ -128,6 +128,10 @@ test('source sync → stale index → fresh original → discovery Inbox → Bot
     f.setRunner(async ({ id: sessionId, prompt, invoke }: any) => {
       try {
         if (prompt.startsWith('Runtime heartbeat')) {
+          if (!prompt.includes('报告文件：')) {
+            await invoke('DiscoveryCandidates', { text: '请核对演示验收和离线材料。' });
+            return;
+          }
           assert.notEqual(sessionId, 'owner');
           const index = await invoke('MemoryIndexRead', { indexId: id });
           assert.equal(index.freshness.coveredCursor, boundary);

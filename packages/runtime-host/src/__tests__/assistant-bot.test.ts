@@ -33,7 +33,7 @@ import { HostPluginDataRuntime } from '../server/plugin-data-runtime.js';
 import { DatabaseSync } from 'node:sqlite';
 import { BotController } from '../assistant/bot/controller.js';
 import { BotStore } from '../assistant/bot/store.js';
-import { PROACTIVE_TASK } from '../assistant/index-initiative/prompt.js';
+import { DISCOVERY_TASK } from '../assistant/index-initiative/prompt.js';
 import { MESSAGE_OPERATION_SPECS } from '../protocol/message.js';
 
 async function until(fn: () => unknown | Promise<unknown>) {
@@ -409,7 +409,11 @@ test('independent discovery retains the exact prompt and reports through Inbox, 
     processed = false;
   f.runner(async ({ prompt, invoke }) => {
     if (prompt.includes('Runtime heartbeat')) {
-      assert.ok(prompt.includes(PROACTIVE_TASK));
+      if (!prompt.includes('报告文件：')) {
+        assert.ok(prompt.includes(DISCOVERY_TASK));
+        await invoke('DiscoveryCandidates', { text: '日程冲突，需要判断。' });
+        return;
+      }
       await invoke('DiscoveryReport', { text: '已核实：明天的两个日程冲突。' });
       reported = true;
     } else {
@@ -430,7 +434,11 @@ test('independent discovery retains the exact prompt and reports through Inbox, 
   await until(() => reported && processed);
   assert.equal(f.visible.length, 1);
   assert.equal(f.visible[0].text, '明天两个安排冲突，要一起调整吗？');
-  assert.equal(f.sessions.size, 3, 'visible chat, Bot, and exploration have separate Sessions');
+  assert.equal(
+    f.sessions.size,
+    4,
+    'visible chat, Bot, discovery and judgement have separate Sessions',
+  );
 });
 
 test('Inbox persistence preserves all types and history; batches return bounded bodies without processing state', async (t) => {

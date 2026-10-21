@@ -115,29 +115,7 @@ export class InitiativeController {
   async dispatch() {
     const s = this.store.get();
     if ((!s?.enabled && !s?.checkRequested) || s.active || s.nextAt > Date.now()) return;
-    const agent = await this.asOwner(s, async () => {
-      let sessionId = s.discoverySession;
-      if (!sessionId) {
-        const label = `assistant-discovery:${s.sessionId}`;
-        const matches = (await this.ctx.sessionQuery.list()).filter((item: any) =>
-          item.labels?.includes(label),
-        );
-        if (matches.length > 1) throw Error('Multiple exploration workers found');
-        sessionId =
-          matches[0]?.id ??
-          (
-            await this.ctx.agents.create({
-              background: true,
-              name: '个人助手 · 主动发现',
-              labels: [label, ASSISTANT_BACKGROUND_SESSION_LABEL],
-            })
-          ).sessionId;
-        this.store.update((current) => {
-          current.discoverySession = sessionId;
-        });
-      }
-      return this.ctx.agents.resume({ sessionId });
-    });
+    const agent = await this.worker(s, s.candidateReport ? 'judgement' : 'discovery');
     const snapshot = await agent.snapshot();
     if (snapshot?.agent?.status === 'running' || awaitingUser(snapshot)) return;
     this.ready();
@@ -147,26 +125,68 @@ export class InitiativeController {
       this.running = undefined;
     });
   }
+  private async worker(s: any, phase: 'discovery' | 'judgement') {
+    return this.asOwner(s, async () => {
+      const field = phase === 'discovery' ? 'discoverySession' : 'judgementSession';
+      let sessionId = s[field];
+      if (!sessionId) {
+        const label = `assistant-${phase}:${s.sessionId}`;
+        const matches = (await this.ctx.sessionQuery.list()).filter((item: any) =>
+          item.labels?.includes(label),
+        );
+        if (matches.length > 1) throw Error(`Multiple ${phase} workers found`);
+        sessionId =
+          matches[0]?.id ??
+          (
+            await this.ctx.agents.create({
+              background: true,
+              name: phase === 'discovery' ? '个人助手 · 主动发现' : '个人助手 · 发现判断',
+              labels: [label, ASSISTANT_BACKGROUND_SESSION_LABEL],
+            })
+          ).sessionId;
+        this.store.update((current) => {
+          current[field] = sessionId;
+        });
+      }
+      return this.ctx.agents.resume({ sessionId });
+    });
+  }
+  private async execute(agent: any, state: any) {
+    this.ready();
+    this.activeAgent = agent;
+    const admitted = await agent.followup(wake(state));
+    if (!['turn_started', 'followup'].includes(admitted?.disposition))
+      throw Error('Host rejected proactive wake');
+    while (
+      admitted.disposition === 'followup' &&
+      !JSON.stringify(await agent.transcript()).includes(`Heartbeat ID: ${state.active.id}`)
+    )
+      await delay(25, undefined, { signal: this.abort.signal });
+    await agent.whenIdle(this.abort.signal);
+    const snapshot = await agent.snapshot();
+    const status = snapshot?.agent?.status;
+    if (['aborted', 'blocked', 'waiting_for_user'].includes(status) || awaitingUser(snapshot))
+      throw Error(`Heartbeat ended with ${status}; inspect before resuming`);
+    this.ready();
+  }
   async run(agent: any, state: any) {
     const id = state.active.id;
     this.activeAgent = agent;
     try {
-      const admitted = await agent.followup(wake(state));
-      if (!['turn_started', 'followup'].includes(admitted?.disposition))
-        throw Error('Host rejected proactive wake');
-      const completion = async () => {
-        // Queued admission is not completion; wait for its input to enter Session history.
-        while (
-          admitted.disposition === 'followup' &&
-          !JSON.stringify(await agent.transcript()).includes(`Heartbeat ID: ${id}`)
-        )
-          await delay(25, undefined, { signal: this.abort.signal });
-        await agent.whenIdle(this.abort.signal);
-      };
-      await completion();
-      const status = (await agent.snapshot())?.agent?.status;
-      if (['aborted', 'blocked', 'waiting_for_user'].includes(status))
-        throw Error(`Heartbeat ended with ${status}; inspect before resuming`);
+      await this.execute(agent, state);
+      if (state.active.phase === 'discovery') {
+        const next = this.store.update((s) => {
+          if (s.active?.id !== id) throw Error('Heartbeat ownership changed');
+          if (!s.candidateReport)
+            throw Error('Discovery finished without a report; judgement was not started');
+          s.active.phase = 'judgement';
+        });
+        const judge = await this.worker(next, 'judgement');
+        const snapshot = await judge.snapshot();
+        if (snapshot?.agent?.status === 'running' || awaitingUser(snapshot))
+          throw Error('Judgement worker is busy or awaiting user input; report retained');
+        await this.execute(judge, this.store.get());
+      }
       this.store.finish(id);
     } catch (e) {
       try {

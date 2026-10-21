@@ -22,7 +22,7 @@ import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { join } from 'node:path';
 import { fixture, until } from './fixture.js';
-import { PROACTIVE_TASK } from '../../../../src/assistant/index-initiative/prompt.js';
+import { DISCOVERY_TASK } from '../../../../src/assistant/index-initiative/prompt.js';
 
 test('first open binds one ordinary chat without import, indexing, model calls or heartbeat', async () => {
   const f = await fixture();
@@ -64,7 +64,7 @@ test('UI enable checks immediately, status exposes failure without disabling sch
   try {
     await f.remote('assistant.bind', { sessionId: 'owner' });
     f.setRunner(async ({ prompt }: any) => {
-      assert.ok(prompt.includes(PROACTIVE_TASK), 'new UI binding uses the new default');
+      assert.ok(prompt.includes(DISCOVERY_TASK), 'new UI binding uses the new default');
       checks++;
       throw Error('test provider unavailable');
     });
@@ -75,8 +75,10 @@ test('UI enable checks immediately, status exposes failure without disabling sch
     assert.equal(s.enabled, true);
     assert.equal(s.intervalMs, 3600000);
     assert.match(s.lastError, /provider unavailable/);
-    f.setRunner(async () => {
+    f.setRunner(async ({ prompt, invoke }: any) => {
+      if (prompt.includes('报告文件：')) return;
       checks++;
+      await invoke('DiscoveryCandidates', { text: 'No candidate worth reporting' });
     });
     await f.remote('assistant.control', { action: 'enable', intervalMinutes: 30 });
     await until(async () => (await f.remote('assistant.status')).state.lastCheckedAt);
@@ -218,7 +220,7 @@ test('actual heartbeat ignores obsolete saved instructions and the configuration
     }
     await f.invoke('InitiativeControl', { action: 'check' });
     await until(async () => prompts.length === 1 && !(await f.invoke('InitiativeStatus')).active);
-    assert.ok(prompts[0].includes(PROACTIVE_TASK));
+    assert.ok(prompts[0].includes(DISCOVERY_TASK));
     assert.ok(!prompts[0].includes(obsolete));
     // Enable no longer silently accepts a cadence or obsolete prompt override.
     await assert.rejects(
@@ -233,7 +235,7 @@ test('actual heartbeat ignores obsolete saved instructions and the configuration
     await f.invoke('InitiativeEnable', {});
     await f.remote('assistant.control', { action: 'enable', intervalMinutes: 60 });
     await until(async () => prompts.length === 2 && !(await f.invoke('InitiativeStatus')).active);
-    assert.ok(prompts[1].includes(PROACTIVE_TASK));
+    assert.ok(prompts[1].includes(DISCOVERY_TASK));
     assert.ok(!prompts[1].includes(obsolete));
   } finally {
     await f.close();

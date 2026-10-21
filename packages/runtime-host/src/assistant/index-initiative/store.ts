@@ -18,7 +18,7 @@
  */
 
 import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, writeFileSync, renameSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
@@ -26,7 +26,7 @@ import { randomUUID } from 'node:crypto';
 export class InitiativeStore {
   db: DatabaseSync;
   constructor(
-    directory: string,
+    readonly directory: string,
     readonly owner: string,
   ) {
     mkdirSync(directory, { recursive: true });
@@ -101,6 +101,8 @@ export class InitiativeStore {
         version: 2,
         ...binding,
         discoverySession: old?.discoverySession,
+        judgementSession: old?.judgementSession,
+        candidateReport: old?.candidateReport,
         intervalMs,
         enabled,
         revision: (old?.revision ?? 0) + 1,
@@ -172,7 +174,11 @@ export class InitiativeStore {
   claim() {
     return this.update((s) => {
       if ((!s?.enabled && !s?.checkRequested) || s.active || s.nextAt > Date.now()) return;
-      s.active = { id: randomUUID(), startedAt: Date.now() };
+      s.active = {
+        id: randomUUID(),
+        startedAt: Date.now(),
+        phase: s.candidateReport ? 'judgement' : 'discovery',
+      };
       s.revision++;
       this.log('heartbeat', { id: s.active.id });
     });
@@ -181,6 +187,7 @@ export class InitiativeStore {
     return this.update((s) => {
       if (s?.active?.id !== id) return;
       s.active = null;
+      if (!error) delete s.candidateReport;
       s.revision++;
       s.lastError = error ?? null;
       s.nextAt = Date.now() + s.intervalMs; // host cadence; never model-selected
@@ -194,6 +201,29 @@ export class InitiativeStore {
       }
       s.checkRequested = false;
       this.log(error ? 'interrupted' : 'finished', { id, error });
+    });
+  }
+  saveCandidates(sessionId: string, text: string) {
+    return this.transaction(() => {
+      this.fence();
+      const s = this.get();
+      if (!s?.active || s.active.phase !== 'discovery' || s.discoverySession !== sessionId)
+        throw Error('Not the active discovery worker');
+      if (s.candidateReport) {
+        if (readFileSync(s.candidateReport.path, 'utf8') !== text)
+          throw Error('This heartbeat already submitted its report');
+        return s.candidateReport;
+      }
+      const directory = join(this.directory, 'reports');
+      mkdirSync(directory, { recursive: true, mode: 0o700 });
+      const path = join(directory, `${s.active.id}.md`);
+      const temporary = `${path}.${randomUUID()}.tmp`;
+      writeFileSync(temporary, text, { mode: 0o600 });
+      renameSync(temporary, path);
+      s.candidateReport = { path, heartbeatId: s.active.id, createdAt: Date.now() };
+      this.save(s);
+      this.log('candidates', s.candidateReport);
+      return s.candidateReport;
     });
   }
   control(action: string) {
