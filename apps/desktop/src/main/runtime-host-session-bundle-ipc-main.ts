@@ -18,7 +18,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import type { IpcMain } from 'electron';
+import type { IpcMain, WebContents } from 'electron';
 import type { SessionChangedReason } from '@maka/core/session';
 import { RuntimeHostOperationError } from '@maka/runtime-host/client';
 import type {
@@ -53,12 +53,12 @@ interface DialogController {
     title?: string;
     defaultPath?: string;
     filters?: Array<{ name: string; extensions: string[] }>;
-  }): Promise<{ canceled: boolean; filePath?: string }>;
+  }, sender?: WebContents): Promise<{ canceled: boolean; filePath?: string }>;
   showOpenDialog(options: {
     title?: string;
     properties?: string[];
     filters?: Array<{ name: string; extensions: string[] }>;
-  }): Promise<{ canceled: boolean; filePaths: string[] }>;
+  }, sender?: WebContents): Promise<{ canceled: boolean; filePaths: string[] }>;
 }
 
 export interface RuntimeHostSessionBundleIpcDeps {
@@ -84,7 +84,7 @@ export function registerRuntimeHostSessionBundleIpc(
     const picked = await deps.mainWindowController.showSaveDialog({
       defaultPath: `${bundleFileName(suggestedName)}.${BUNDLE_EXTENSION}`,
       filters: [{ name: 'Maka session', extensions: [BUNDLE_EXTENSION] }],
-    });
+    }, _event.sender);
     if (picked.canceled || !picked.filePath) {
       return { ok: false, reason: 'canceled' } satisfies SessionBundleExportIpcResult;
     }
@@ -109,11 +109,11 @@ export function registerRuntimeHostSessionBundleIpc(
     }
   });
 
-  ipcMain.handle('session-bundle:import', async () => {
+  ipcMain.handle('session-bundle:import', async (_event) => {
     const picked = await deps.mainWindowController.showOpenDialog({
       properties: ['openFile'],
       filters: [{ name: 'Maka session', extensions: [BUNDLE_EXTENSION] }],
-    });
+    }, _event.sender);
     const source = picked.filePaths[0];
     if (picked.canceled || !source) {
       return { ok: false, reason: 'canceled' } satisfies SessionBundleImportIpcResult;

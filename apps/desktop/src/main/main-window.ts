@@ -18,7 +18,7 @@
  */
 
 import { MAIN_WINDOW_DROP_GUARD_SCRIPT } from './main-window-drop-guard.js';
-import { app, BrowserWindow, dialog, nativeTheme, screen, shell, type View, webFrameMain } from 'electron';
+import { app, BrowserWindow, dialog, nativeTheme, screen, shell, webFrameMain } from 'electron';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { appIconForTheme, type AppSettings } from '@maka/core/settings';
@@ -40,6 +40,7 @@ import { isDarkAppearance, isThemePreference, toNativeThemeSource } from './them
 import { createWindowRevealGate, type WindowRevealMode } from './window-reveal.js';
 import { createWindowsMaximizeRendererSync } from './windows-maximize-renderer-sync.js';
 import { auxiliaryWindowRegistry } from './auxiliary-window-registry.js';
+import { workspaceWindowRegistry } from './workspace-window-registry.js';
 import {
   parseDesktopSessionResourceKey,
 } from '../shared/runtime-host-identity.js';
@@ -48,15 +49,14 @@ type SettingsReader = {
   get(): Promise<AppSettings>;
 };
 
-export interface MainWindowController {
+export interface WorkspaceWindowController {
   createWindow(signal: AbortSignal): Promise<void>;
   /**
    * Reload only the crashed main Renderer, preserving the Desktop process,
    * Runtime Host, background services, and current BrowserWindow.
    */
   reloadMainRenderer(): Promise<boolean>;
-  send(channel: string, ...args: unknown[]): void;
-  isMainRenderer(contents: Electron.WebContents): boolean;
+  isRenderer(contents: Electron.WebContents): boolean;
   // PR-SHOW-AFTER-FIRST-COMMIT: reveal the hidden window after the renderer's
   // first React commit. Idempotent + e2e-fixture-safe (see notifyRendererReady).
   notifyRendererReady(
@@ -66,10 +66,6 @@ export interface MainWindowController {
   setTitlebarControlsVisible(sender: Electron.WebContents, visible: unknown): void;
   setThemeSource(sender: Electron.WebContents, themePref: unknown): void;
   setTitleBarOverlayTheme(sender: Electron.WebContents, theme: unknown): void;
-  showOpenDialog(options: Electron.OpenDialogOptions): Promise<Electron.OpenDialogReturnValue>;
-  showSaveDialog(options: Electron.SaveDialogOptions): Promise<Electron.SaveDialogReturnValue>;
-  getBrowserViews(parentForSession: (sessionId: string) => Electron.View | undefined): BrowserViewManager<BrowserViewController>;
-  disposeBrowserViews(): Promise<void>;
   hasOpenWindows(): boolean;
   focus(): void;
   /**
@@ -111,14 +107,12 @@ interface MainWindowControllerDeps {
   onWindowConstructed?: () => void;
 }
 
-let mainWindow: BrowserWindow | null = null;
-let browserViews: BrowserViewManager<BrowserViewController> | undefined;
 
 /** Broadcast once to each live owned renderer, even if the main window is closed.
  * Returns whether at least one IPC send was issued, not a renderer acknowledgment. */
 export function safeSendToRenderer(channel: string, ...args: unknown[]): boolean {
   const recipients = new Set(auxiliaryWindowRegistry.renderers());
-  if (mainWindow && !mainWindow.isDestroyed()) recipients.add(mainWindow.webContents);
+  for (const entry of workspaceWindowRegistry.entries()) recipients.add(entry.window.webContents);
   let emitted = false;
   for (const contents of recipients) {
     if (!contents.isDestroyed()) {
@@ -169,9 +163,128 @@ const titleBarOverlayOptions = (
   height: TITLEBAR_OVERLAY_HEIGHT,
 });
 
+export interface MainWindowController extends Omit<WorkspaceWindowController, 'isRenderer'> {
+  readonly registry: typeof workspaceWindowRegistry;
+  isMainRenderer(contents: Electron.WebContents): boolean;
+  isWorkspaceRenderer(contents: Electron.WebContents): boolean;
+  browserWindowFor(sender: Electron.WebContents): BrowserWindow | undefined;
+  send(channel: string, ...args: unknown[]): void;
+  sendCommand(channel: string, ...args: unknown[]): boolean;
+  showOpenDialog(options: Electron.OpenDialogOptions, sender?: Electron.WebContents): Promise<Electron.OpenDialogReturnValue>;
+  showSaveDialog(options: Electron.SaveDialogOptions, sender?: Electron.WebContents): Promise<Electron.SaveDialogReturnValue>;
+  getBrowserViews(parentForSession: (sessionId: string) => Electron.View | undefined): BrowserViewManager<BrowserViewController>;
+  disposeBrowserViews(): Promise<void>;
+}
+
+/** Application-scoped service. Every workspace uses the same window implementation. */
 export function createMainWindowController(deps: MainWindowControllerDeps): MainWindowController {
-  const { workspaceRoot, e2eFixture, settingsStore } = deps;
+  const main = createWorkspaceWindowController(deps);
+  let browserViews: BrowserViewManager<BrowserViewController> | undefined;
   const liveBrowserScopes = new Map<string, { hostId: string; targetEpoch: string }>();
+  function getBrowserViews(
+    parentForSession: (sessionId: string) => Electron.View | undefined,
+  ): BrowserViewManager<BrowserViewController> {
+    if (!browserViews) {
+      browserViews = new BrowserViewManager<BrowserViewController>({
+        create: (sessionId) => {
+          const parent = parentForSession(sessionId);
+          if (!parent) throw new Error('Embedded browser used without an active renderer parent.');
+          return new BrowserViewController(parent, sessionId, (sid, state) => {
+            const ref = parseDesktopSessionResourceKey(sid);
+            safeSendToRenderer(
+              'browser:state',
+              { hostId: ref.hostId, targetEpoch: ref.targetEpoch },
+              { sessionId: ref.sessionId, state },
+            );
+          });
+        },
+        onLiveChange: (sessionIds) => {
+          const groups = new Map<string, ReturnType<typeof parseDesktopSessionResourceKey>[]>();
+          for (const sessionId of sessionIds) {
+            const ref = parseDesktopSessionResourceKey(sessionId);
+            const key = JSON.stringify([ref.targetEpoch, ref.hostId]);
+            const group = groups.get(key) ?? [];
+            group.push(ref);
+            groups.set(key, group);
+          }
+          const keys = new Set([...liveBrowserScopes.keys(), ...groups.keys()]);
+          for (const key of keys) {
+            const group = groups.get(key) ?? [];
+            const first = group[0];
+            const scope = first
+              ? { hostId: first.hostId, targetEpoch: first.targetEpoch }
+              : liveBrowserScopes.get(key);
+            if (!scope) continue;
+            safeSendToRenderer(
+              'browser:live',
+              scope,
+              { sessionIds: group.map(({ sessionId }) => sessionId) },
+            );
+            if (first) liveBrowserScopes.set(key, scope);
+            else liveBrowserScopes.delete(key);
+          }
+        },
+      });
+    }
+    return browserViews;
+  }
+
+  async function disposeBrowserViews(): Promise<void> {
+    await browserViews?.disposeAll();
+  }
+
+  function resolveDialogParent(sender?: Electron.WebContents): BrowserWindow | undefined {
+    if (!sender) return workspaceWindowRegistry.active()?.window;
+    const workspace = workspaceWindowRegistry.forSender(sender);
+    if (workspace) return workspace.window;
+    if (!auxiliaryWindowRegistry.rendererParent(sender)) return undefined;
+    const parent = BrowserWindow.fromWebContents(sender);
+    return parent && !parent.isDestroyed() ? parent : undefined;
+  }
+
+  return {
+    ...main,
+    registry: workspaceWindowRegistry,
+    isMainRenderer: (contents) => main.isRenderer(contents),
+    isWorkspaceRenderer: (contents) => workspaceWindowRegistry.forSender(contents) !== undefined,
+    browserWindowFor: (sender) => workspaceWindowRegistry.forSender(sender)?.window,
+    send: safeSendToRenderer,
+    sendCommand: (channel, ...args) => workspaceWindowRegistry.sendCommand(channel, ...args),
+    hasOpenWindows: () => workspaceWindowRegistry.entries().length > 0,
+    notifyRendererReady(sender, frame) {
+      workspaceWindowRegistry.forSender(sender)?.controller.notifyRendererReady(sender, frame);
+    },
+    setTitlebarControlsVisible(sender, visible) {
+      workspaceWindowRegistry.forSender(sender)?.controller.setTitlebarControlsVisible(sender, visible);
+    },
+    setThemeSource(sender, theme) {
+      workspaceWindowRegistry.forSender(sender)?.controller.setThemeSource(sender, theme);
+    },
+    setTitleBarOverlayTheme(sender, theme) {
+      workspaceWindowRegistry.forSender(sender)?.controller.setTitleBarOverlayTheme(sender, theme);
+    },
+    showOpenDialog(options, sender) {
+      const parent = resolveDialogParent(sender);
+      if (sender && !parent) return Promise.resolve({ canceled: true, filePaths: [] });
+      return parent ? dialog.showOpenDialog(parent, options) : dialog.showOpenDialog(options);
+    },
+    showSaveDialog(options, sender) {
+      const parent = resolveDialogParent(sender);
+      if (sender && !parent) return Promise.resolve({ canceled: true, filePath: '' });
+      return parent ? dialog.showSaveDialog(parent, options) : dialog.showSaveDialog(options);
+    },
+    getBrowserViews,
+    disposeBrowserViews,
+    isFocused: () => workspaceWindowRegistry.focused() !== undefined,
+  };
+}
+
+function createWorkspaceWindowController(
+  deps: MainWindowControllerDeps,
+): WorkspaceWindowController {
+  let mainWindow: BrowserWindow | null = null;
+  let creatingWindow: Promise<void> | undefined;
+  const { workspaceRoot, e2eFixture, settingsStore } = deps;
 
   // PR-SHOW-AFTER-FIRST-COMMIT: windows launched hidden (`hidden` covers
   // e2e-fixture capture and E2E — see main.ts) must never be revealed;
@@ -227,59 +340,16 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
     });
   };
 
-  function getBrowserViews(
-    parentForSession: (sessionId: string) => Electron.View | undefined,
-  ): BrowserViewManager<BrowserViewController> {
-    if (!browserViews) {
-      browserViews = new BrowserViewManager<BrowserViewController>({
-        create: (sessionId) => {
-          const parent = parentForSession(sessionId);
-          if (!parent) throw new Error('Embedded browser used without an active renderer parent.');
-          return new BrowserViewController(parent, sessionId, (sid, state) => {
-            const ref = parseDesktopSessionResourceKey(sid);
-            safeSendToRenderer(
-              'browser:state',
-              { hostId: ref.hostId, targetEpoch: ref.targetEpoch },
-              { sessionId: ref.sessionId, state },
-            );
-          });
-        },
-        onLiveChange: (sessionIds) => {
-          const groups = new Map<string, ReturnType<typeof parseDesktopSessionResourceKey>[]>();
-          for (const sessionId of sessionIds) {
-            const ref = parseDesktopSessionResourceKey(sessionId);
-            const key = JSON.stringify([ref.targetEpoch, ref.hostId]);
-            const group = groups.get(key) ?? [];
-            group.push(ref);
-            groups.set(key, group);
-          }
-          const keys = new Set([...liveBrowserScopes.keys(), ...groups.keys()]);
-          for (const key of keys) {
-            const group = groups.get(key) ?? [];
-            const first = group[0];
-            const scope = first
-              ? { hostId: first.hostId, targetEpoch: first.targetEpoch }
-              : liveBrowserScopes.get(key);
-            if (!scope) continue;
-            safeSendToRenderer(
-              'browser:live',
-              scope,
-              { sessionIds: group.map(({ sessionId }) => sessionId) },
-            );
-            if (first) liveBrowserScopes.set(key, scope);
-            else liveBrowserScopes.delete(key);
-          }
-        },
-      });
-    }
-    return browserViews;
+  function createWindow(signal: AbortSignal): Promise<void> {
+    if (creatingWindow) return creatingWindow;
+    if (mainWindow && !mainWindow.isDestroyed()) return Promise.resolve();
+    const operation = createWindowNow(signal);
+    creatingWindow = operation;
+    void operation.finally(() => { if (creatingWindow === operation) creatingWindow = undefined; }).catch(() => undefined);
+    return operation;
   }
 
-  async function disposeBrowserViews(): Promise<void> {
-    await browserViews?.disposeAll();
-  }
-
-  async function createWindow(signal: AbortSignal): Promise<void> {
+  async function createWindowNow(signal: AbortSignal): Promise<void> {
     if (signal.aborted) return;
     // Restore previously-saved bounds when available; first launch and
     // legacy installs both fall back to the default 1240x820 frame. After
@@ -425,6 +495,7 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
     );
     mainWindowShutdownSignal = signal;
     observeRendererProcess(mainWindow, signal);
+    workspaceWindowRegistry.register({ context: { kind: 'main', windowId: String(mainWindow.id) }, window: mainWindow, controller });
     deps.onWindowConstructed?.();
     // The designed `.maka-preload` surface is the loading UI: reveal on the
     // first painted frame instead of waiting out the whole React mount.
@@ -522,7 +593,7 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
         : { ...mainWindow.getBounds(), isMaximized: false };
       void writeSavedBounds(workspaceRoot, final);
     });
-    mainWindow.once('closed', () => deps.onClosed?.());
+    mainWindow.once('closed', () => { mainWindow = null; deps.onClosed?.(); });
 
     // Dev-server cache hygiene (issue #4775) — see main-renderer-dev-cache.ts
     // for why a stale immutable dep-chunk graph must never survive into a new
@@ -540,12 +611,12 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
     // remain hidden for their whole lifecycle.
     armShowFallbackTimer(mainWindow);
     if (process.env.MAKA_REAL_WINDOW_SMOKE === '1') {
-      emitRealWindowSmokeDiagnostic('after-load');
-      setTimeout(() => emitRealWindowSmokeDiagnostic('settled-1000ms'), 1000);
+      emitRealWindowSmokeDiagnostic(mainWindow, 'after-load');
+      setTimeout(() => emitRealWindowSmokeDiagnostic(mainWindow, 'settled-1000ms'), 1000);
     }
   }
 
-  return {
+  const controller: WorkspaceWindowController = {
     createWindow,
     async reloadMainRenderer() {
       const target = mainWindow;
@@ -609,8 +680,7 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
         }
       }
     },
-    send: safeSendToRenderer,
-    isMainRenderer: (contents) => !!mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents === contents,
+    isRenderer: (contents) => !!mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents === contents,
     notifyRendererReady(sender, senderFrame) {
       if (!mainWindow || mainWindow.isDestroyed() || sender !== mainWindow.webContents) return;
       const recovery = rendererRecoveryReadiness;
@@ -649,18 +719,6 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
       if (!isTitleBarOverlayTheme(theme)) return;
       mainWindow.setTitleBarOverlay(titleBarOverlayOptions(theme.isDark, theme.backgroundColor));
     },
-    showOpenDialog(options) {
-      return mainWindow
-        ? dialog.showOpenDialog(mainWindow, options)
-        : dialog.showOpenDialog(options);
-    },
-    showSaveDialog(options) {
-      return mainWindow
-        ? dialog.showSaveDialog(mainWindow, options)
-        : dialog.showSaveDialog(options);
-    },
-    getBrowserViews,
-    disposeBrowserViews,
     hasOpenWindows() {
       return mainWindow !== null && !mainWindow.isDestroyed();
     },
@@ -706,6 +764,7 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
       return !!mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused();
     },
   };
+  return controller;
 }
 
 function rendererFrameIdentity(frame: Electron.WebFrameMain): MainRendererFrameIdentity {
@@ -767,8 +826,7 @@ function e2eFixtureWindowBounds(
   return defaults;
 }
 
-function emitRealWindowSmokeDiagnostic(stage: string): void {
-  const target = mainWindow;
+function emitRealWindowSmokeDiagnostic(target: BrowserWindow | null, stage: string): void {
   if (!target) {
     console.log(`[real-window-smoke] diagnostic ${JSON.stringify({ stage, windowExists: false })}`);
     return;

@@ -105,7 +105,7 @@ export function registerRuntimeHostConfigIpc(
         title: CONFIG_DIALOG_COPY[deps.uiLocale()].exportTitle,
         defaultPath: `maka-config-${today}.json`,
         filters: [{ name: 'Maka Config', extensions: ['json'] }],
-      });
+      }, _event.sender);
       if (result.canceled || !result.filePath) {
         return { ok: false as const, reason: 'canceled' as const };
       }
@@ -134,7 +134,7 @@ export function registerRuntimeHostConfigIpc(
         title: CONFIG_DIALOG_COPY[deps.uiLocale()].importTitle,
         properties: ['openFile'],
         filters: [{ name: 'Maka Config', extensions: ['json'] }],
-      });
+      }, _event.sender);
       const filePath = result.filePaths?.[0];
       if (result.canceled || !filePath) {
         return { ok: false as const, reason: 'canceled' as const };

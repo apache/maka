@@ -74,10 +74,10 @@ export function registerAppClientIpc(
 ): void {
   const { mainWindowController, e2eFixture, updateService } = deps;
   targetIpc.handle('window:popupMenu', (event, input: unknown) => {
-    if (!mainWindowController.isMainRenderer(event.sender) || event.senderFrame !== event.sender.mainFrame) {
-      throw new Error('Native menus require the main renderer');
+    if (!mainWindowController.isWorkspaceRenderer(event.sender) || event.senderFrame !== event.sender.mainFrame) {
+      throw new Error('Native menus require a workspace renderer');
     }
-    const window = mainWindowController.browserWindow();
+    const window = mainWindowController.browserWindowFor(event.sender);
     return window ? popupNativeMenu(window, input) : null;
   });
   targetIpc.handle('window:setTitlebarControlsVisible', (event, visible: unknown): void => {

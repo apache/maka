@@ -625,11 +625,12 @@ test('rejects unowned/subframe IPC and buffers navigation until main subscribes'
   h.controller.dispose();
 });
 
-test('application broadcasts include registered auxiliary renderers', async () => {
+test('application broadcasts reach each live workspace and auxiliary renderer once', async () => {
   const entry = fileURLToPath(new URL('../../../src/main/main-window.ts', import.meta.url));
   const output = await build({ entryPoints: [entry], bundle: false, write: false, format: 'cjs', platform: 'node', define: { 'import.meta.dirname': JSON.stringify('/app/dist/main') } });
   const module = { exports: {} as { createMainWindowController: typeof createMainWindowController } };
   const auxiliaries = new Set<Electron.WebContents>();
+  const workspaces = new Set<Electron.WebContents>();
   runInNewContext(output.outputFiles[0]!.text, {
     module, exports: module.exports, process,
     require: (specifier: string) => specifier.endsWith('/auxiliary-window-registry.js')
@@ -638,7 +639,13 @@ test('application broadcasts include registered auxiliary renderers', async () =
           renderers: () => [...auxiliaries],
         },
       }
-      : { createWindowRevealGate: () => ({}) },
+      : specifier.endsWith('/workspace-window-registry.js')
+        ? {
+          workspaceWindowRegistry: {
+            entries: () => [...workspaces].map((webContents) => ({ window: { webContents } })),
+          },
+        }
+        : { createWindowRevealGate: () => ({}) },
   });
   const controller = module.exports.createMainWindowController({
     workspaceRoot: '/workspace', e2eFixture: null, revealMode: 'hidden',
@@ -650,12 +657,37 @@ test('application broadcasts include registered auxiliary renderers', async () =
     isDestroyed: () => false,
     send: (channel: string) => { messages.push(channel); },
   }) as unknown as Electron.WebContents;
+  const workspaceMessages: string[] = [];
+  const workspaceRenderer = Object.assign(new EventEmitter(), {
+    isDestroyed: () => false,
+    send: (channel: string) => { workspaceMessages.push(channel); },
+  }) as unknown as Electron.WebContents;
+  const auxiliaryMessages: string[] = [];
+  const auxiliaryRenderer = Object.assign(new EventEmitter(), {
+    isDestroyed: () => false,
+    send: (channel: string) => { auxiliaryMessages.push(channel); },
+  }) as unknown as Electron.WebContents;
+  const destroyedRenderer = Object.assign(new EventEmitter(), {
+    isDestroyed: () => true,
+    send: () => { assert.fail('A destroyed renderer cannot receive broadcasts'); },
+  }) as unknown as Electron.WebContents;
   auxiliaries.add(renderer);
-  controller.send('settings:changed');
+  auxiliaries.add(auxiliaryRenderer);
+  workspaces.add(renderer);
+  workspaces.add(workspaceRenderer);
+  workspaces.add(destroyedRenderer);
+  assert.equal(controller.send('settings:changed'), true);
   assert.deepEqual(messages, ['settings:changed']);
+  assert.deepEqual(workspaceMessages, ['settings:changed']);
+  assert.deepEqual(auxiliaryMessages, ['settings:changed']);
   auxiliaries.delete(renderer);
-  controller.send('settings:changed');
+  auxiliaries.delete(auxiliaryRenderer);
+  workspaces.delete(renderer);
+  workspaces.delete(workspaceRenderer);
+  assert.equal(controller.send('settings:changed'), false);
   assert.deepEqual(messages, ['settings:changed']);
+  assert.deepEqual(workspaceMessages, ['settings:changed']);
+  assert.deepEqual(auxiliaryMessages, ['settings:changed']);
 });
 
 test('control shows a passive card only after it is painted and preserves manual conversation geometry', async () => {

@@ -216,10 +216,9 @@ test('routes the first-paint IPC only to the active Renderer recovery listener',
     mainWindowSource.indexOf('setTitlebarControlsVisible(sender', readyHandlerStart),
   );
   const reloadStart = mainWindowSource.indexOf('    async reloadMainRenderer() {');
-  const reloadHandler = mainWindowSource.slice(
-    reloadStart,
-    mainWindowSource.indexOf('    send: safeSendToRenderer', reloadStart),
-  );
+  const reloadEnd = mainWindowSource.indexOf('    isRenderer:', reloadStart);
+  assert.ok(reloadStart >= 0 && reloadEnd > reloadStart);
+  const reloadHandler = mainWindowSource.slice(reloadStart, reloadEnd);
 
   assert.match(
     ipcHandler,
