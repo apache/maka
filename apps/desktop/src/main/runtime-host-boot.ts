@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { linkedSubagentParentSessionId } from '@maka/core/session';
+import { isSideConversationSession } from '@maka/core/side-conversation';
 import { createAssistantWebBackend } from './assistant-web-backend.js';
 import { startAssistantWebServer } from './assistant-web-server.js';
 import { resolveDesktopWslHostHandoff } from './runtime-host-wsl-handoff.js';
@@ -24,6 +26,9 @@ import {
   app,
   autoUpdater as nativeAutoUpdater,
   type BrowserWindow,
+  type WebContents,
+  View,
+  dialog,
   clipboard,
   ipcMain,
   Menu,
@@ -58,6 +63,7 @@ import {
   loadOrCreateRuntimeHostClientInstanceId,
   listRuntimeHostWslDistributions,
   runtimeHostProfileAccess,
+  projectSessionCatalogSummary,
   RuntimeHostProfileConnectionError,
 } from "@maka/runtime-host/client";
 import {
@@ -276,10 +282,15 @@ import {
 } from "./startup-context.js";
 import { registerWorkspaceSearchIpc } from "./workspace-search-ipc-main.js";
 import {
+  desktopSessionKey,
+  parseDesktopSessionKey,
   parseDesktopSessionResourceKey,
   requireDesktopTargetScope,
   type DesktopTargetScope,
 } from "../shared/runtime-host-identity.js";
+
+import { SessionWindowGroups } from './session-window-group.js';
+import { createSessionWindowCoordinator, registerSessionWindowIpc } from './session-window-coordinator.js';
 
 const MANAGED_UPDATE_RECONNECT_TIMEOUT_MS = 10_000;
 bootContext.prepareToQuit = prepareRuntimeHostDesktopQuit;
@@ -449,10 +460,6 @@ const permissionOverlay = createPermissionOverlayMain({
   resolveLocale: () => desktopLocale.resolve(),
   revealMode,
 });
-mainWindowDelegates.onMainWindowClose = () => {
-  native.computerUseOverlay.destroyAll();
-  native.computerUsePip.destroyAll();
-};
 const attachmentApprovals = createAttachmentApprovalRegistry();
 /**
  * Dedicated task directories live in the user-owned `~/Maka/tasks` root —
@@ -488,12 +495,18 @@ const sessionLocal = new DesktopSessionLocalService(sessionLocalStore, {
     const target = localSessionTarget(state);
     return target ? [target] : [];
   }),
-  changed: localSessionChanged,
+  changed: (scope, sessionId) => {
+    sessionWindows.refreshOwnership();
+    localSessionChanged(scope, sessionId);
+  },
   onError: (error) => console.error('[session-local] background synchronization failed:', error),
 });
+const sessionWindowGroups = new SessionWindowGroups();
+const sessionWindowLifetime = new AbortController();
+
 registerDesktopSessionLocalIpc({
   ipcMain, service: sessionLocal, approvals: attachmentApprovals, resizeImage: resizeImageForAttachment,
-  changed: localSessionChanged,
+  changed: (scope, sessionId) => { sessionWindows.refreshOwnership(); localSessionChanged(scope, sessionId); },
   resolveWorkspace: async (target, input) => {
     const context = runtimePolicyTargetsByEpoch.get(target.scope.targetEpoch);
     if (!context?.isActive()) throw new Error('Select a cached project before creating an offline task');
@@ -817,7 +830,72 @@ const browserIpc = registerBrowserIpc({
   mainWindowController,
   auxiliaryWindowRegistry,
   isHostActive: (scope) => runtimeHostManager?.ownsScope(scope) === true,
+  canUseSession: (sender, id) => sessionWindows.canUseSession(sender, id),
+  parkingParent: new View(),
 });
+const sessionWindows = createSessionWindowCoordinator({
+  windows: mainWindowController, signal: sessionWindowLifetime.signal,
+  ensureMainWindow: () => quitCoordinator.focusOrCreateWindow(),
+  isQuitting: () => quitCoordinator.isQuitting(),
+  resolveGroup: async (id) => {
+    const { hostId } = parseDesktopSessionKey(id);
+    const state = runtimeHostManager?.entries().find((entry) => entry.hostId === hostId);
+    if (!state) throw new Error('Session Host is unavailable');
+    const cached = sessionLocal.catalog().find((entry) => entry.scope.hostId === hostId)?.sessions ?? [];
+    sessionWindowGroups.update(hostId, cached);
+    // The existing local catalog supplies known ancestry. Only a newly created
+    // member missing from that catalog needs a targeted Host read.
+    let missing: string | undefined = id;
+    const seen = new Set<string>();
+    while (missing && !sessionWindowGroups.has(missing) && !seen.has(missing)) {
+      seen.add(missing);
+      if (state.readiness !== 'ready') throw new Error('Session is unavailable');
+      const session = await state.candidate.client.getSession(parseDesktopSessionKey(missing).sessionId);
+      if (!session) throw new Error('Session is unavailable');
+      sessionWindowGroups.update(hostId, [projectSessionCatalogSummary(session)]);
+      const parent = linkedSubagentParentSessionId(session)
+        ?? session.revisionRootSessionId ?? (isSideConversationSession(session.labels) ? session.parentSessionId : undefined);
+      missing = parent ? desktopSessionKey({ hostId, sessionId: parent }) : undefined;
+    }
+    return sessionWindowGroups.resolve(id, []);
+  },
+  knownGroups: () => {
+    for (const entry of sessionLocal.catalog()) sessionWindowGroups.update(entry.scope.hostId, entry.sessions);
+    return sessionWindowGroups.all();
+  },
+  confirmClose: async (sender) => {
+    const zh = (await desktopLocale.resolve()).startsWith('zh');
+    const options = {
+      type: 'warning' as const, title: 'Maka',
+      message: zh ? '关闭窗口并丢弃未发送的内容？' : 'Close this window and discard unsent content?',
+      buttons: zh ? ['取消', '丢弃并关闭'] : ['Cancel', 'Discard and close'],
+      defaultId: 0, cancelId: 0,
+    };
+    const window = mainWindowController.browserWindowFor(sender);
+    const result = await (window ? dialog.showMessageBox(window, options) : dialog.showMessageBox(options));
+    return result.response === 1;
+  },
+  transferResources: async ({ group, source, target }) => {
+    browserIpc.transferSessions(group.sessionIds, source, target);
+    const sessionId = native.computerUsePip.currentSessionId();
+    if (sessionId && group.sessionIds.includes(desktopSessionKey(parseDesktopSessionResourceKey(sessionId)))) native.computerUsePip.clearForSession(sessionId);
+  },
+  releaseResources: (sender) => {
+    browserIpc.releaseRenderer(sender);
+    const sessionId = native.computerUsePip.currentSessionId();
+    if (sessionId) {
+      const owner = sessionWindows.ownerForSession(desktopSessionKey(parseDesktopSessionResourceKey(sessionId)));
+      if (owner === sender || (!owner && mainWindowController.isMainRenderer(sender))) native.computerUsePip.clearForSession(sessionId);
+    }
+  },
+  onError: (error, sender) => {
+    console.error('[session-window]', error);
+    const options = { type: 'error' as const, title: 'Maka', message: error instanceof Error ? error.message : String(error) };
+    const window = sender && mainWindowController.browserWindowFor(sender);
+    void (window ? dialog.showMessageBox(window, options) : dialog.showMessageBox(options));
+  },
+});
+registerSessionWindowIpc(sessionWindows, ipcMain);
 let workHubEnabled = false;
 const workHubPresentation = createWorkHubPresentation({
   isEnabled: () => workHubEnabled,
@@ -852,10 +930,10 @@ const windowsAppTray = createWindowsAppTray({
   quit: () => app.quit(),
   onError: (error) => console.error('[tray]', error),
 });
-mainWindowDelegates.onMainWindowClosed = () => {
+mainWindowDelegates.onWorkspaceWindowClosed = () => {
   // A hidden WorkHub host window can keep window-all-closed from firing.
   // Without a tray, use the existing quit flow; cancelling it restores Maka.
-  if (process.platform !== 'darwin' && !windowsAppTray.hasTray()) app.quit();
+  if (!mainWindowController.hasOpenWindows() && process.platform !== 'darwin' && !windowsAppTray.hasTray()) app.quit();
 };
 const mcpCapabilityPublisher = createCapabilityRevisionPublisher(() =>
   mcpManager.toolSnapshot().revision,
@@ -1024,6 +1102,7 @@ const notifyRun = createRunNotifier({
   locale: desktopLocale,
   mainWindowController,
   e2e: isE2e,
+
 });
 
 const sessionCopyOwnerProcessId = randomUUID();
@@ -1217,6 +1296,13 @@ const createLocalRuntimeHostManager = () => createRuntimeHostDesktopManager(
           transcriptInitialHistoryBytes: PARTIAL_HISTORY_TRANSCRIPT_BYTES,
         }
       : {}),
+    canUseSession: async (senderId, scope, sessionId) => {
+      const sender = mainWindowController.registry.entries().find((entry) => entry.window.webContents.id === senderId)?.window.webContents;
+      if (!sender) return false;
+      const key = desktopSessionKey({ ...scope, sessionId });
+      await sessionWindows.refreshGroup(key);
+      return sessionWindows.canUseSession(sender, key);
+    },
     retireCancelledMessages: (scope, sessionId, messageIds) =>
       sessionLocal.retireCancelledMessages(scope, sessionId, messageIds),
     failNotAdmittedMessages: (scope, sessionId, messageIds) =>
@@ -1254,7 +1340,7 @@ const createLocalRuntimeHostManager = () => createRuntimeHostDesktopManager(
       if (localTarget) {
         sessionLocal.connectionChanged(localTarget);
         sessionLocalStore.bindAuthority(localTarget.profileId, localTarget.partition);
-        if (state.readiness === 'unavailable' && state.error instanceof RuntimeHostProfileConnectionError && state.error.reason === 'credential_rejected') sessionLocal.purge(localTarget);
+        if (state.readiness === 'unavailable' && state.error instanceof RuntimeHostProfileConnectionError && state.error.reason === 'credential_rejected') { sessionLocal.purge(localTarget); sessionWindowGroups.forgetHost(state.hostId); }
       }
       sessionLocal.wake();
       const event = runtimeHostTargetEvent(state);
@@ -1298,7 +1384,8 @@ const createLocalRuntimeHostManager = () => createRuntimeHostDesktopManager(
     },
     onTargetRemoved: (state) => {
       const localTarget = localSessionTarget(state);
-      if (localTarget) sessionLocal.purge(localTarget);
+      if (localTarget) { sessionLocal.purge(localTarget); }
+      sessionWindowGroups.forgetHost(state.hostId);
       mainWindowController.send("runtime-host-profiles:changed", {
         ...runtimeHostTargetEvent(state),
         readiness: "unavailable",
@@ -2059,7 +2146,7 @@ function registerPersistentClientIpc(): void {
     }),
   );
   registerDesktopDiagnosticsIpc({ ipcMain, ...desktopDiagnostics });
-  ipcMain.handle('directories:pick', async () => {
+  ipcMain.handle('directories:pick', async (event) => {
     const local = runtimeHostManager?.entries().find(
       (state) => state.target.profile.kind === 'local',
     );
@@ -2068,7 +2155,7 @@ function registerPersistentClientIpc(): void {
     const result = await mainWindowController.showOpenDialog({
       title: nativeFileDialogCopy(await desktopLocale.resolve()).referenceFolder,
       properties: ['openDirectory'],
-    });
+    }, event.sender);
     if (result.canceled || !result.filePaths[0]) return { ok: false, reason: 'cancelled' };
     return { ok: true, reference: { hostId, path: result.filePaths[0] } };
   });
@@ -2076,7 +2163,7 @@ function registerPersistentClientIpc(): void {
     const result = await mainWindowController.showOpenDialog({
       title: nativeFileDialogCopy(await desktopLocale.resolve()).addAttachments,
       properties: ["openFile", "multiSelections"],
-    });
+    }, event.sender);
     if (result.canceled || !result.filePaths[0])
       return { ok: false, reason: "cancelled" };
     const { stat } = await import("node:fs/promises");
@@ -2148,7 +2235,10 @@ function emitSessionsChanged(
 ): void {
   sessionLocal.changed(scope);
   if (reason === 'deleted' && sessionId) {
-    try { sessionLocal.removeSession(sessionLocal.target(scope), sessionId); } catch { /* A retired target cannot repopulate its cache. */ }
+    try {
+      const target = sessionLocal.target(scope);
+      sessionLocal.removeSession(target, sessionId);
+    } catch { /* A retired target cannot repopulate its cache. */ }
   }
   const event: SessionChangedEvent = {
     reason,
@@ -2203,7 +2293,9 @@ async function prepareRuntimeHostDesktopQuit(): Promise<'ready' | 'cancelled'> {
       return dialog.decisions[response] === 'quit';
     },
   });
-  if (preparation === 'ready') mainWindowController.browserWindow()?.destroy();
+  if (preparation === 'ready') {
+    for (const entry of mainWindowController.registry.entries()) entry.window.destroy();
+  }
   return preparation;
 }
 
@@ -2212,6 +2304,8 @@ function closeRuntimeHostDesktop(): Promise<void> {
 }
 
 async function disposeRuntimeHostDesktop(): Promise<void> {
+  sessionWindowLifetime.abort();
+  sessionWindows.dispose();
   await assistantWebStart;
   await assistantWebServer?.close().catch((error: unknown) => console.error('[assistant-web] shutdown failed:', error));
   sessionLocal.close();

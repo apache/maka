@@ -2779,8 +2779,12 @@ const makaBridge = {
     ): Promise<SessionRemovePreviewResult> {
       return previewDesktopSessionRemoval(sessionIds, options);
     },
-    cleanupSessionCopy(sessionId: string): Promise<void> {
-      return invokeSessionRuntimeHost('sessions:cleanupSessionCopy', sessionId);
+    async cleanupSessionCopy(sessionId, recovery): Promise<void> {
+      const session = await runtimeHostSessionRef(sessionId);
+      const source = recovery && parseDesktopSessionKey(recovery.sourceSessionId);
+      if (source && source.hostId !== session.scope.hostId) throw new Error('Side conversation belongs to another Host');
+      return invokeWhenReady('sessions:cleanupSessionCopy', session.scope, session.sessionId,
+        recovery && { sourceSessionId: source!.sessionId, attachmentIds: recovery.attachmentIds });
     },
     async abandonSessionCopy(sourceSessionId: string, copyId: string): Promise<void> {
       const source = await runtimeHostSessionRef(sourceSessionId);
@@ -3886,6 +3890,24 @@ const makaBridge = {
     },
   },
   appWindow: {
+    context: () => invokeWhenReady('session-window:context'),
+    ownership: () => invokeWhenReady('session-window:ownership'),
+    subscribeSessionWindowOwnership(handler) {
+      const listener = (_event: Electron.IpcRendererEvent, snapshot: import('../shared/session-window-contract.js').SessionWindowOwnership) => handler(snapshot);
+      ipcRenderer.on('session-window:ownership', listener);
+      return () => ipcRenderer.off('session-window:ownership', listener);
+    },
+    routeSession: (navigation) => invokeWhenReady('session-window:route', navigation),
+    openSessionWindow: (sessionId) => invokeWhenReady('session-window:open', sessionId),
+    openInMainWindow: () => invokeWhenReady('session-window:open-main'),
+    sessionWindowReady: () => invokeWhenReady('session-window:ready'),
+    subscribeSessionWindowCommand(handler) {
+      const listener = (_event: Electron.IpcRendererEvent, command: import('../shared/session-window-contract.js').SessionWindowCommand) => handler(command);
+      ipcRenderer.on('session-window:command', listener);
+      return () => ipcRenderer.off('session-window:command', listener);
+    },
+    ackSessionWindowCommand: (reply) => invokeWhenReady('session-window:reply', reply),
+    commandMain: (command) => invokeWhenReady('session-window:command-main', command),
     popupMenu(input: import('../shared/native-menu.js').NativeMenuRequest): Promise<string | null> {
       return invokeWhenReady('window:popupMenu', input);
     },

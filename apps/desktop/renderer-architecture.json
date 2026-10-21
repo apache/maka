@@ -348,6 +348,7 @@
         "ConversationMessageConsumer",
         "ConversationProvider",
         "ConversationTranscriptRegion",
+        "ConversationWindowState",
         "NEW_TASK_PENDING_KEY",
         "PlanExecutionSurface",
         "PlanProvider",
@@ -456,8 +457,9 @@
     },
     "src/renderer/features/session-navigation/index.ts": {
       "appShell": [
+        "SessionNavigationCommands",
         "SessionNavigationProvider",
-        "createSessionOpenCommand",
+        "createSessionNavigationCommands",
         "sessionRailLayoutStore",
         "useSessionNavigationReads"
       ],
@@ -472,6 +474,16 @@
       ],
       "composition": [
         "SessionSettingsServicesProvider"
+      ]
+    },
+    "src/renderer/features/session-windows/index.ts": {
+      "appShell": [
+        "SessionWindowBinding",
+        "SessionWindowEmptyState",
+        "SessionWindowRoot"
+      ],
+      "composition": [
+        "SessionWindowServicesProvider"
       ]
     },
     "src/renderer/features/storage-usage/index.ts": {
@@ -535,7 +547,7 @@
           "@maka/ui": 1
         },
         "importSpecifiers": 0,
-        "nonTriviaTokens": 122
+        "nonTriviaTokens": 117
       },
       "src/renderer/app-shell-command-actions.ts": {
         "importDeclarations": 4,
@@ -559,7 +571,7 @@
           "react": 1
         },
         "importSpecifiers": 7,
-        "nonTriviaTokens": 2143
+        "nonTriviaTokens": 2117
       },
       "src/renderer/app-shell-copy.ts": {
         "importDeclarations": 1,
@@ -621,7 +633,7 @@
           "react": 1
         },
         "importSpecifiers": 7,
-        "nonTriviaTokens": 843
+        "nonTriviaTokens": 841
       },
       "src/renderer/app-shell-overlays.tsx": {
         "importDeclarations": 4,
@@ -650,10 +662,10 @@
         "nonTriviaTokens": 780
       },
       "src/renderer/app-shell.tsx": {
-        "importDeclarations": 34,
+        "importDeclarations": 33,
         "bridgePaths": {},
         "environmentCapabilities": {
-          "window.requestAnimationFrame": 3
+          "window.requestAnimationFrame": 2
         },
         "hookCalls": {
           "useActiveExecutionBoundary": 1,
@@ -663,8 +675,7 @@
           "useAppShellPersistenceEffects": 1,
           "useAppShellProjectContext": 1,
           "useAppShellSessionWorkspace": 1,
-          "useLayoutEffect": 1,
-          "useRef": 4,
+          "useRef": 3,
           "useSessionNavigationReads": 1,
           "useSessionSettingIntent": 1,
           "useShellAppearance": 1,
@@ -708,6 +719,7 @@
           "./features/session-collaboration": 1,
           "./features/session-navigation": 1,
           "./features/session-settings": 1,
+          "./features/session-windows/index.js": 1,
           "./features/storage-usage/index.js": 1,
           "./features/task-entry": 1,
           "./features/workbar": 1,
@@ -734,13 +746,12 @@
           "@astryxdesign/core/AppShell": 1,
           "@maka/core/onboarding-milestone": 1,
           "@maka/core/session": 1,
-          "@maka/core/session-revisions": 1,
           "@maka/core/ui-locale": 1,
           "@maka/ui": 1,
           "react": 1
         },
-        "importSpecifiers": 43,
-        "nonTriviaTokens": 7274
+        "importSpecifiers": 41,
+        "nonTriviaTokens": 7244
       },
       "src/renderer/use-app-shell-session-list.ts": {
         "importDeclarations": 3,

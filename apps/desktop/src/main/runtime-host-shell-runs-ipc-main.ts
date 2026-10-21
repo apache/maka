@@ -78,6 +78,7 @@ export function registerRuntimeHostShellRunsIpc(
     client: RuntimeHostShellRunsClient;
     terminalCloses: TerminalCloseIntents;
     newId?: () => string;
+    canUseSession?: (target: RuntimeHostSessionObserverTarget, sessionId: string) => boolean | Promise<boolean>;
     sessionObserver: {
       observe(
         sessionId: string,
@@ -97,9 +98,11 @@ export function registerRuntimeHostShellRunsIpc(
     deps.client,
     newId,
     deps.sessionObserver,
+    deps.canUseSession,
   );
-  ipcMain.handle('shell-runs:start', async (_event, sessionId: unknown) => {
+  ipcMain.handle('shell-runs:start', async (event, sessionId: unknown) => {
     const normalizedSessionId = requiredId(sessionId, 'Session');
+    await controllers.assertOwner(event.sender as RuntimeHostSessionObserverTarget, normalizedSessionId);
     const launchId = `${DESKTOP_TERMINAL_LAUNCH_PREFIX}${newId()}`;
     const started = await deps.client.startRuntimeResource({
       sessionId: normalizedSessionId,
@@ -120,19 +123,20 @@ export function registerRuntimeHostShellRunsIpc(
       event.sender as RuntimeHostSessionObserverTarget,
     ),
   );
-  ipcMain.handle('shell-runs:detach', (_event, value: unknown) =>
-    controllers.detach(runtimeResourceIdentity(value, 'detach')),
+  ipcMain.handle('shell-runs:detach', (event, value: unknown) =>
+    controllers.detach(runtimeResourceIdentity(value, 'detach'), event.sender as RuntimeHostSessionObserverTarget),
   );
-  ipcMain.handle('shell-runs:write', (_event, value: unknown) =>
-    controllers.control(runtimeResourceControl(value)),
+  ipcMain.handle('shell-runs:write', (event, value: unknown) =>
+    controllers.control(runtimeResourceControl(value), event.sender as RuntimeHostSessionObserverTarget),
   );
   handleReconnectableRead(ipcMain, 'shell-runs:recover', (_event, sessionId: unknown) => {
     const id = requiredId(sessionId, 'Session');
     return closes.recover(id, () => deps.client.listRuntimeResources(id));
   });
-  ipcMain.handle('shell-runs:stop', (_event, value: unknown) => {
+  ipcMain.handle('shell-runs:stop', async (event, value: unknown) => {
     const input = runtimeResourceIdentity(value, 'stop');
-    return closes.stop(input, () => controllers.stop(input));
+    await controllers.assertOwner(event.sender as RuntimeHostSessionObserverTarget, input.sessionId);
+    return closes.stop(input, () => controllers.stop(input, event.sender as RuntimeHostSessionObserverTarget));
   });
 
   return { close: () => controllers.close() };
@@ -171,6 +175,7 @@ interface RuntimeResourceControllerState {
   readonly controllerId: string;
   readonly observerId: string;
   nextSequence: number;
+  target?: RuntimeHostSessionObserverTarget;
 }
 
 class RuntimeResourceControllers {
@@ -202,6 +207,7 @@ class RuntimeResourceControllers {
       ): Promise<unknown>;
       unobserve(observerId: string): Promise<void>;
     },
+    private readonly canUseSession?: (target: RuntimeHostSessionObserverTarget, sessionId: string) => boolean | Promise<boolean>,
   ) {
     this.#client = client;
     this.#newId = newId;
@@ -213,20 +219,32 @@ class RuntimeResourceControllers {
     target: RuntimeHostSessionObserverTarget,
   ): Promise<ShellRunPtySnapshot> {
     return this.#run(input, async () => {
+      await this.assertOwner(target, input.sessionId);
       const state = this.#state(input);
+      if (state.target && state.target !== target) await this.#releaseObservation(state);
+      state.target = target;
       await this.#sessionObserver.observe(input.sessionId, state.observerId, target, false, input.ref);
       return this.#acquire(input, state);
     });
   }
 
-  control(input: RuntimeResourceControl) {
+  async assertOwner(target: RuntimeHostSessionObserverTarget, sessionId: string): Promise<void> {
+    if (this.canUseSession && !await this.canUseSession(target, sessionId)) {
+      throw new Error('Session is displayed in another window');
+    }
+  }
+
+  control(input: RuntimeResourceControl, target: RuntimeHostSessionObserverTarget) {
     return this.#run(input, async () => {
+      await this.assertOwner(target, input.sessionId);
       let state = this.#states.get(resourceIdentity(input));
       if (!state) {
         state = this.#state(input);
         await this.#acquire(input, state);
       }
       if (!state) throw new Error('Runtime Resource controller was not acquired');
+      if (state.target && state.target !== target) throw new Error('Terminal belongs to another window');
+      state.target = target;
       const sequence = state.nextSequence;
       await this.#client.controlRuntimeResource({
         sessionId: input.sessionId,
@@ -239,10 +257,10 @@ class RuntimeResourceControllers {
     });
   }
 
-  detach(input: RuntimeResourceIdentity): Promise<void> {
+  detach(input: RuntimeResourceIdentity, target: RuntimeHostSessionObserverTarget): Promise<void> {
     return this.#run(input, async () => {
       const state = this.#states.get(resourceIdentity(input));
-      if (!state) return;
+      if (!state || state.target !== target) return;
       await this.#client.releaseRuntimeResourceController({
         ...input,
         controllerId: state.controllerId,
@@ -252,8 +270,9 @@ class RuntimeResourceControllers {
     });
   }
 
-  stop(input: RuntimeResourceIdentity): Promise<void> {
+  stop(input: RuntimeResourceIdentity, target: RuntimeHostSessionObserverTarget): Promise<void> {
     return this.#run(input, async () => {
+      await this.assertOwner(target, input.sessionId);
       await this.#client.stopRuntimeResource(input);
       const state = this.#states.get(resourceIdentity(input));
       this.#states.delete(resourceIdentity(input));

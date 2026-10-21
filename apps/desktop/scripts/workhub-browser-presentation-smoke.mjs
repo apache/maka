@@ -29,9 +29,9 @@ import { createServer } from 'node:http';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { app, BrowserWindow, desktopCapturer, screen } from 'electron';
+import { app, BrowserWindow, desktopCapturer, screen, View } from 'electron';
 import { createWorkHubPresentation } from '../dist/main/workhub-presentation.js';
-import { desktopSessionResourceKey } from '../dist/shared/runtime-host-identity.js';
+import { desktopSessionKey, desktopSessionResourceKey } from '../dist/shared/runtime-host-identity.js';
 import { registerBrowserIpc } from '../dist/main/browser-ipc-main.js';
 import { BrowserViewController } from '../dist/main/browser/controller.js';
 import { BrowserViewManager } from '../dist/main/browser/view-manager.js';
@@ -74,18 +74,22 @@ async function run() {
   });
   presentation.registerIpc();
   presentation.attachMainWindow(main);
+  const isMainRenderer = (wc) => !main.isDestroyed() && wc === main.webContents;
   registerBrowserIpc({
     mainWindowController: {
       getBrowserViews: (resolve) => {
         parentForSession = resolve;
         return views;
       },
-      isMainRenderer: (wc) => !main.isDestroyed() && wc === main.webContents,
+      isMainRenderer,
+      isWorkspaceRenderer: isMainRenderer,
     },
     auxiliaryWindowRegistry: {
       rendererParent: (wc) => wc === owner ? ownerParent : undefined,
     },
     isHostActive: (ref) => ref.hostId === scope.hostId && ref.targetEpoch === scope.targetEpoch,
+    canUseSession: (wc, id) => isMainRenderer(wc) && id === desktopSessionKey({ ...scope, sessionId }),
+    parkingParent: new View(),
   });
   const host = { visible: true, rect: { x: 0, y: 0, width: 470, height: 700 } };
   const rect = { x: 500, y: 80, width: 430, height: 560 };

@@ -23,6 +23,7 @@ export interface AppQuitEvent {
 
 export interface AppQuitCoordinator {
   focusOrCreateWindow(): Promise<void>;
+  isQuitting(): boolean;
   handleBeforeQuit(event: AppQuitEvent): void;
 }
 
@@ -55,6 +56,7 @@ export function createAppQuitCoordinator(deps: AppQuitCoordinatorDeps): AppQuitC
   };
 
   return {
+    isQuitting: () => phase !== 'running',
     focusOrCreateWindow,
     handleBeforeQuit(event): void {
       if (phase === 'ready-to-exit') return;

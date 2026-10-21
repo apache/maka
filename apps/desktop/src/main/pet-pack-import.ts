@@ -208,11 +208,11 @@ export function registerPetPackIpc(input: {
       }
     },
   );
-  input.ipcMain.handle('pets:importLocalDirectory', async (): Promise<PetPackImportResult> => {
+  input.ipcMain.handle('pets:importLocalDirectory', async (event): Promise<PetPackImportResult> => {
     const selection = await input.mainWindowController.showOpenDialog({
       title: nativeFileDialogCopy(await input.resolveLocale()).importCustomPet,
       properties: ['openDirectory'],
-    });
+    }, event.sender);
     if (selection.canceled || selection.filePaths.length === 0) {
       return { ok: false, reason: 'cancelled' };
     }

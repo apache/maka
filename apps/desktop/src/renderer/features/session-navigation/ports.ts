@@ -151,6 +151,7 @@ export interface SessionNavigationServices {
  */
 export interface SessionNavigationPorts {
   sessionsRef: RefObject<ReadonlyArray<SessionSummary>>;
+  openInNewWindow?(sessionId: string): Promise<void>;
   acquireAutomaticQueryBlock(sessionIds: readonly string[]): { release(): void };
   clearSessionRendererState(sessionId: string): void;
   refreshSessions(): Promise<ReadonlyArray<SessionSummary>>;

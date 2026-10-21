@@ -209,7 +209,6 @@ describe('Overlays feature boundary', () => {
       }
     }
     assert.deepEqual(imports.sort(), [
-      'src/renderer/app-shell-command-actions.ts: Command',
       'src/renderer/app-shell-command-actions.ts: OverlayPaletteActions',
       'src/renderer/app-shell-overlays.tsx: *',
       'src/renderer/app-shell-overlays.tsx: OverlaysShellProjection',

@@ -45,7 +45,7 @@ import { Spinner } from '@astryxdesign/core/Spinner';
 import { Tab, TabList } from '@astryxdesign/core/TabList';
 import type { SessionSummary } from '@maka/core/session';
 import type { WorkBoardItem, WorkBoardLinkedSession } from '@maka/core/work-board';
-import { QuoteCompanionPanel } from '../tools/side-chat/quote-companion-panel';
+import { QuoteCompanionPanel } from '../tools/side-chat/quote-companion-panel.js';
 import {
   type SessionWorkbarTab,
   type SessionWorkbarTabKind,
@@ -54,14 +54,14 @@ import {
   terminalRefFromWorkbarTab,
   reduceWorkbarPanels,
   projectWorkbarPanelsForSession,
-} from '../model/workbar-tabs';
+} from '../model/workbar-tabs.js';
 import {
   workbarToolsForWorkspace,
   workbarToolDefinition,
   type WorkbarToolDefinition,
-} from '../model/workbar-tool-definitions';
+} from '../model/workbar-tool-definitions.js';
 import type { WorkbarTogglePosition } from '@maka/core/settings';
-import { WorkbarToggle } from './workbar-toggle';
+import { WorkbarToggle } from './workbar-toggle.js';
 import { WorkbarEdgeToggle } from '../../../application/contracts/workbar-edge-toggle.js';
 import { WorkBoardPanel } from '../../../work-board-panel.js';
 import { getShellCopy } from '../../../locales/shell-copy.js';
@@ -461,6 +461,15 @@ export function WorkbarSurface(props: {
   const positionedTabs = placements.flatMap((placement) =>
     allowedPanels[placement].tabs.map((tab) => ({ placement, tab })),
   );
+  // A restored layout controls visible tools, not ownership of another
+  // Session's live side chat. Keep those records mounted until explicit close
+  // or transfer removes them, including while the main selection is empty.
+  for (const quote of props.quotes ?? []) {
+    const id = `side-chat:${quote.id}`;
+    if (!positionedTabs.some(({ tab }) => tab.id === id)) {
+      positionedTabs.push({ placement: 'right', tab: { id, kind: 'side-chat' } });
+    }
+  }
 
   return (
     <div className="maka-workbar-workspace-contents">
@@ -524,7 +533,7 @@ export function WorkbarSurface(props: {
         const selected = !showingLauncher && activeTab?.id === tab.id;
         const active = panelVisible && selected;
         let content: ReactNode = null;
-        if (tab.kind !== 'terminal' && !props.sessionId) return null;
+        if (tab.kind !== 'terminal' && tab.kind !== 'side-chat' && !props.sessionId) return null;
         if (tab.kind === 'review') {
           content = (
             <Suspense fallback={<WorkbarPanelLoading label={copy.review} />}>

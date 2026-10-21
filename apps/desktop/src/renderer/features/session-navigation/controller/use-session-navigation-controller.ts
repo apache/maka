@@ -17,7 +17,8 @@
  * under the License.
  */
 
-import { useCallback, useLayoutEffect, useMemo, useRef } from 'react';
+import { useCallback, useMemo } from 'react';
+import { useSessionNavigationRowActions } from './use-session-navigation-row-actions.js';
 import type { ProjectRecord } from '@maka/core/project';
 import type { SessionSummary } from '@maka/core/session';
 import { runtimeHostProfileUsesHostWorkspace } from '@maka/runtime-host/profile-kind';
@@ -46,7 +47,6 @@ import type {
 } from '../ports.js';
 import { useSessionNavigationServices } from '../services-context.js';
 import {
-  createSessionNavigationRowActions,
   type SessionNavigationRowActions,
 } from './session-row-actions.js';
 
@@ -88,48 +88,8 @@ export function useSessionNavigationController(
   const locale = useUiLocale();
   const { sessions: service } = useSessionNavigationServices();
   const { ports, rail } = input;
-
-  // One subscription, not one per field: every field here is read, so a split
-  // would buy no granularity, and the store replaces its state only when a
-  // field actually moved — the identity IS the comparison.
   const layout = useExternalStoreSelector(sessionRailLayoutStore, selectRailLayout);
-
-  // The ports are commands, so their identity is not information. Published on
-  // commit and called through the ref, they can carry whatever the shell
-  // rebuilt this render without the rail hearing about it — which is what lets
-  // the row actions below be built once, per locale, instead of per render.
-  //
-  // This is one indirection in one place, and it replaces the alternative the
-  // shell was drifting towards: hand-stabilising every function that happens to
-  // be upstream of the rail, where a single ordinary `function` declaration
-  // anywhere in the chain silently undoes the whole thing (#4109).
-  const portsRef = useRef(ports);
-  const pendingSessionRowActionsRef = useRef(new Set<string>());
-  useLayoutEffect(() => {
-    portsRef.current = ports;
-  });
-
-  const commands = useMemo(
-    () =>
-      createSessionNavigationRowActions({
-        uiLocale: locale,
-        acquireAutomaticQueryBlock: (sessionIds) =>
-          portsRef.current.acquireAutomaticQueryBlock(sessionIds),
-        clearSessionRendererState: (sessionId) =>
-          portsRef.current.clearSessionRendererState(sessionId),
-        pendingSessionRowActionsRef,
-        refreshSessions: () => portsRef.current.refreshSessions(),
-        service,
-        sessionsRef: portsRef.current.sessionsRef,
-        toastApi: {
-          success: (title, description) => portsRef.current.toastApi.success(title, description),
-          error: (title, description, details, target) =>
-            portsRef.current.toastApi.error(title, description, details, target),
-          confirm: (options) => portsRef.current.toastApi.confirm(options),
-        },
-      }),
-    [locale, service],
-  );
+  const commands = useSessionNavigationRowActions(ports, service);
 
   const groups = useMemo(
     () =>

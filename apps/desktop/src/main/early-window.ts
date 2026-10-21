@@ -85,7 +85,7 @@ export const workspaceRoot = join(
 // controller reads them lazily so the window never waits on that wiring.
 export const mainWindowDelegates = {
   onMainWindowClose: (): void => {},
-  onMainWindowClosed: (): void => {},
+  onWorkspaceWindowClosed: (): void => {},
 };
 
 export const desktopDiagnostics: DesktopDiagnosticsDeps = {
@@ -256,7 +256,7 @@ export const mainWindowController = createMainWindowController({
     window?.on('restore', settingsRecovery.onWindowReady);
   },
   onClose: () => mainWindowDelegates.onMainWindowClose(),
-  onClosed: () => mainWindowDelegates.onMainWindowClosed(),
+  onClosed: () => mainWindowDelegates.onWorkspaceWindowClosed(),
   onRendererProcessGone: async (details) => {
     const diagnosticInput = createDesktopMainRendererDiagnosticInput({
       title: "Maka main Renderer process exited unexpectedly",
@@ -277,7 +277,8 @@ export const mainWindowController = createMainWindowController({
       if (await mainWindowController.reloadMainRenderer()) return;
       if (!mainWindowController.browserWindow()) break;
     }
-    app.quit();
+    mainWindowController.browserWindow()?.destroy();
+    if (!mainWindowController.hasOpenWindows()) app.quit();
   },
 });
 resolveBrowserDialogParent = () => {
@@ -291,7 +292,7 @@ export const quitCoordinator = createAppQuitCoordinator({
   prepareToQuit: () => bootContext.prepareToQuit?.() ?? Promise.resolve("ready" as const),
   cleanup: () => bootContext.cleanup?.() ?? Promise.resolve(),
   focusOrCreateWindow: (signal) => {
-    if (mainWindowController.hasOpenWindows()) mainWindowController.focus();
+    if (mainWindowController.browserWindow()) mainWindowController.focus();
     else return mainWindowController.createWindow(signal);
   },
   onPreparationError: (error) => {

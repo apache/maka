@@ -102,9 +102,14 @@ apps/desktop/src/renderer/features/session-collaboration/ui/session-turn-request
 apps/desktop/src/renderer/features/session-navigation/services-context.tsx
 apps/desktop/src/renderer/features/session-navigation/ui/archived-task-scope.tsx
 apps/desktop/src/renderer/features/session-navigation/ui/session-history-navigation.tsx
+apps/desktop/src/renderer/features/session-navigation/ui/session-navigation-commands.tsx
 apps/desktop/src/renderer/features/session-navigation/ui/session-navigation-provider.tsx
 apps/desktop/src/renderer/features/session-settings/services-context.tsx
 apps/desktop/src/renderer/features/session-settings/ui/session-settings-provider.tsx
+apps/desktop/src/renderer/features/session-windows/services-context.tsx
+apps/desktop/src/renderer/features/session-windows/ui/session-window-binding.tsx
+apps/desktop/src/renderer/features/session-windows/ui/session-window-empty-state.tsx
+apps/desktop/src/renderer/features/session-windows/ui/session-window-root.tsx
 apps/desktop/src/renderer/features/storage-usage/services-context.tsx
 apps/desktop/src/renderer/features/storage-usage/ui/archive-retention-notices.tsx
 apps/desktop/src/renderer/features/storage-usage/ui/archive-retention-section.tsx

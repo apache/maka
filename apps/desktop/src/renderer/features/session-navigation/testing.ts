@@ -34,7 +34,7 @@ export { SessionNavigationServicesProvider } from './services-context.js';
 export {
   createSessionNavigationRowActions,
 } from './controller/session-row-actions.js';
-export { createSessionOpenCommand } from './controller/session-open-command.js';
+export { createSessionOpenCommand, createSessionNavigationCommands } from './controller/session-open-command.js';
 export {
   useSessionNavigationController,
   type SessionNavigationController,

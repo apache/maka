@@ -52,6 +52,7 @@ export function useConversationTarget() {
   const queueSurface = useMemo(() => shellQueueSurface(queue), [queue]);
   return {
     setActiveId: commands.setActiveId,
+    readSelectionRevision: commands.readSelectionRevision,
     startNewSession: commands.startNewSession,
     clearOwnedSessionState: commands.clearOwnedSessionState,
     isSessionSelected: commands.isSessionSelected,

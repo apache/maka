@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { bindSideConversationReadiness } from './side-conversation-readiness.js';
 import { useEffect, useRef, useState } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
 import {
@@ -112,6 +113,7 @@ export function QuoteCompanionPanel(props: {
   const draftKey = `quote-companion:${props.panelId}`;
   const {
     pendingAttachments,
+    hasPendingContextFor,
     pickAttachments,
     attachFilePaths,
     restoreAttachments,
@@ -178,6 +180,11 @@ export function QuoteCompanionPanel(props: {
       input.focus();
     },
   });
+  const readiness = useRef<() => boolean>(() => true);
+  readiness.current = () => companion.hasContent || companion.processing || Boolean(companion.activeTurn)
+    || Boolean(props.quotes.length || props.initialPrompt?.trim()) || hasPendingContextFor([draftKey])
+    || !composerRef.current || composerRef.current.hasPendingAction() || Boolean(composerRef.current.getText().trim());
+  useEffect(() => bindSideConversationReadiness(props.panelId, () => readiness.current()), [props.panelId]);
   useEffect(() => {
     props.onContentStateChange?.(props.panelId, companion.hasContent);
   }, [companion.hasContent, props.onContentStateChange, props.panelId]);

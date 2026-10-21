@@ -63,8 +63,8 @@ through `SessionNavigationPorts`, which the shell composes.
 - `useSessionNavigationReads` is the shell's own narrow read: the rail
   projection it also needs for the command palette, the branch banner, the
   revision navigation, and the rail's width. It holds no state.
-- `createSessionOpenCommand` composes an explicit Session jump out of the
-  shell's own actions.
+- `createSessionNavigationCommands` routes Session jumps through the window
+  owner and composes local Session, new-task, Project, and WorkHub navigation.
 - `sessionRailLayoutStore` owns collapse, width, and grouping mode, with the
   existing persistence keys.
 

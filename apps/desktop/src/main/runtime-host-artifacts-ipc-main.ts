@@ -168,7 +168,7 @@ export function registerRuntimeHostArtifactsIpc(
       const result = await deps.mainWindowController.showSaveDialog({
         title: ARTIFACT_DIALOG_COPY[deps.uiLocale()].saveAs(artifact.name),
         defaultPath: artifact.name,
-      });
+      }, _event.sender);
       if (result.canceled || !result.filePath) {
         return { ok: false, reason: "canceled" };
       }

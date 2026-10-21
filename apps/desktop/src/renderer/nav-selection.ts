@@ -115,6 +115,7 @@ export function parseNavigationState(raw: string | null): NavigationState {
   }
 }
 
-export function readNavigationState(): NavigationState {
+export function readNavigationState(restore = true): NavigationState {
+  if (!restore) return defaultNavigationState();
   return parseNavigationState(safeLocalStorageGet('maka-nav-selection-v1'));
 }

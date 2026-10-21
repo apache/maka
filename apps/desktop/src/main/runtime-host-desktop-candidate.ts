@@ -132,6 +132,7 @@ import {
 type CandidateIpcMain = ReconnectableReadIpcMain & Pick<IpcMain, "removeHandler">;
 
 export interface DesktopRuntimeHostCandidateDeps {
+  readonly canUseSession?: (senderId: number, scope: DesktopTargetScope, sessionId: string) => boolean | Promise<boolean>;
   readonly resolveWslOperator?: ReturnType<typeof createDesktopRuntimeHostWslOperatorResolver>;
   readonly terminalCloses?: import('./terminal-close-intents.js').TerminalCloseIntents;
   readonly retireCancelledMessages?: (scope: DesktopTargetScope, sessionId: string, messageIds: readonly string[]) => void;
@@ -795,6 +796,7 @@ export async function createDesktopRuntimeHostCandidate(
         {
           client,
           terminalCloses,
+          canUseSession: deps.canUseSession ? (sender, id) => deps.canUseSession!(sender.id, scope, id) : undefined,
           sessionObserver,
           emitModeChanged,
           ...(deps.renderer ? { sendToRenderer } : {}),

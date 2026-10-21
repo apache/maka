@@ -254,6 +254,11 @@ export function useComposerSubmission<Owner extends ComposerSurfaceOwner>(input:
   );
 
   const shellCommands = useMemo<ComposerSubmissionCommands>(() => ({
+    hasPendingEdit: (ids) => {
+      const draft = revisionDraftRef.current;
+      return Boolean(draft && (ids.includes(draft.sourceSessionId) || ids.includes(draft.draftSessionId)))
+        || ids.some((id) => Boolean(retractedWorkspaceReferencesRef.current[id]?.length));
+    },
     beginEditUserMessage: (turnId) => revision.beginEditUserMessage(turnId),
     handleTurnFooterAction: (turnId, actionId) => turn.handleTurnFooterAction(turnId, actionId),
     clearPendingTurnActions: (sessionId) => turnActionRegistry.clearForSession(sessionId),

@@ -84,6 +84,10 @@
     "zh-tw-locale.spec.ts": {
       "tests": 1,
       "electron": "the locale is a persisted Host setting and only takes effect through a renderer reload"
+    },
+    "session-windows.spec.ts": {
+      "tests": 2,
+      "electron": "revealing an existing hidden BrowserWindow, native close and main recreation, real WebContentsView identity across renderer/main transfer, and restart with neither restored session windows nor persisted handoff drafts"
     }
   }
 }

@@ -52,6 +52,7 @@ export function useWorkbarLayoutState(
   activeSessionId: string | undefined,
   authoritativeSessionIds: ReadonlySet<string> | undefined,
   compact: boolean,
+  persistLayout = true,
 ) {
   const [state, dispatch] = useReducer(
     reduceWorkbarLayout,
@@ -194,25 +195,25 @@ export function useWorkbarLayoutState(
 
   useEffect(() => {
     const handle = window.setTimeout(() => {
-      persistWorkbarLayout(stateRef.current, 'right-size');
+      if (persistLayout) persistWorkbarLayout(stateRef.current, 'right-size');
     }, LAYOUT_PERSIST_DEBOUNCE_MS);
     return () => window.clearTimeout(handle);
-  }, [state.rightWidth]);
+  }, [state.rightWidth, persistLayout]);
   useEffect(() => {
-    persistWorkbarLayout(stateRef.current, 'right-visibility');
-  }, [state.collapsedBySession]);
+    if (persistLayout) persistWorkbarLayout(stateRef.current, 'right-visibility');
+  }, [state.collapsedBySession, persistLayout]);
   useEffect(() => {
     const handle = window.setTimeout(() => {
-      persistWorkbarLayout(stateRef.current, 'bottom-size');
+      if (persistLayout) persistWorkbarLayout(stateRef.current, 'bottom-size');
     }, LAYOUT_PERSIST_DEBOUNCE_MS);
     return () => window.clearTimeout(handle);
-  }, [state.bottomHeight]);
+  }, [state.bottomHeight, persistLayout]);
   useEffect(() => {
-    persistWorkbarLayout(stateRef.current, 'bottom-visibility');
-  }, [state.bottomOpen]);
+    if (persistLayout) persistWorkbarLayout(stateRef.current, 'bottom-visibility');
+  }, [state.bottomOpen, persistLayout]);
   useEffect(() => {
-    persistWorkbarLayout(stateRef.current, 'topology');
-  }, [state.panels]);
+    if (persistLayout) persistWorkbarLayout(stateRef.current, 'topology');
+  }, [state.panels, persistLayout]);
 
   const setWorkbarCollapsed = useCallback(
     (next: SetStateAction<boolean>) => {

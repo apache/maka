@@ -274,6 +274,7 @@ test('StagedComposer keeps the submitted recovery attachment while waiting for S
     assert.ok(form);
     form.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
   });
+  assert.equal(view.composer.current!.hasPendingAction(), true, 'the handoff guard includes reference preparation');
   await act(() => view.removeAttachment());
   assert.deepEqual(released, [], 'early Composer ownership protects the approval before onSend starts');
   assert.deepEqual(submissions, []);
@@ -282,7 +283,9 @@ test('StagedComposer keeps the submitted recovery attachment while waiting for S
     sources: [{ type: 'approval', approvalId: 'local-recovery:waiting-reference', name: 'recovered.txt' }],
     replaces: 'paused-original',
   }], 'the later factory must submit the content captured by the original send');
+  assert.equal(view.composer.current!.hasPendingAction(), true, 'the handoff guard includes pending admission');
   await act(async () => { finishAdmission(false); await sent; });
+  assert.equal(view.composer.current!.hasPendingAction(), false);
   assert.deepEqual(released, [['local-recovery:waiting-reference']]);
 });
 
@@ -411,6 +414,7 @@ async function mountNavigatingRecovery(text = 'original text') {
     return createElement(Fragment, null,
       editor && createElement(StagedComposer, {
         ref: queue.composer, draftKey, disabled,
+        pendingSessionReferences: mentions.pendingSessionReferences,
         onSend: async (body, metadata, context) => { sent.push({ text: body, metadata, staging: context }); return false; },
         onStop() {}, stagingEnabled: true, canStageContext: true, contextPickEnabled: true,
         directoryPickerEnabled: true, allowAttachmentOnlySend: true,
@@ -883,6 +887,53 @@ test('Desktop backs the attachment port with the bridge reader; AppShell no long
   assert.equal(createDesktopComposerStagingServices(bridge).readBytes, readBytes);
   const shell = readFileSync(fileURLToPath(new URL('../../../src/renderer/app-shell.tsx', import.meta.url)), 'utf8');
   assert.deepEqual(shell.split('\n').filter((line) => /\battachments\s*\.\s*readBytes\b|\bonReadAttachmentBytes\b/.test(line)), []);
+});
+
+for (const kind of ['attachments', 'directories', 'quotes'] as const) {
+  test(`window handoff detects ${kind} on a non-displayed family member`, async () => {
+    const view = await mount();
+    await act(() => {
+      if (kind === 'quotes') view.commands.addQuote({ text: 'unsent quote' });
+      else view.stage(kind === 'attachments' ? { attachments: [attachment] }
+        : { directoryReferences: [{ hostId: 'host-a', path: '/work/source' }] });
+    });
+    await view.render('draft-b');
+    assert.equal(view.commands.hasPendingContext(['draft-b']), false);
+    assert.equal(view.commands.hasPendingContext(['draft-a', 'draft-b']), true);
+    await view.render('draft-a');
+    await act(() => {
+      const submitted = view.commands.captureSubmission();
+      submitted.clearSubmittedContext(submitted.submittableAttachments);
+      submitted.clearQuotes();
+    });
+    assert.equal(view.commands.hasPendingContext(['draft-a', 'draft-b']), false);
+  });
+}
+
+test('pending session-reference chips block moving or silently closing an otherwise empty composer', async () => {
+  const h = await mountNavigatingRecovery();
+  await act(async () => h.mentions.onPickSessionReference!({ id: 'draft-b', name: 'B' }));
+  assert.equal(h.composer.current!.getText(), '');
+  assert.equal(h.commands.hasPendingContext(['draft-a']), false);
+  assert.equal(h.composer.current!.hasPendingAction(), true);
+  await act(() => h.mentions.onRemovePendingSessionReference('draft-b'));
+  assert.equal(h.composer.current!.hasPendingAction(), false);
+});
+
+test('local Edit recovery blocks handoff until its existing claim settles, including background A', async () => {
+  const h = await mountNavigatingRecovery();
+  await h.edit();
+  assert.equal(h.composer.current!.getText(), '');
+  assert.equal(h.commands.hasPendingContext(['draft-a']), false);
+  assert.equal(h.composer.current!.hasPendingAction(), true);
+  await h.render('draft-b');
+  assert.equal(h.composer.current!.hasPendingAction(), true);
+  await h.fail();
+  assert.equal(h.composer.current!.hasPendingAction(), false);
+  await h.render('draft-a'); await h.edit(); await h.complete();
+  assert.equal(h.composer.current!.hasPendingAction(), false);
+  assert.equal(h.composer.current!.captureDrafts(['draft-a'])[0]?.replacesMessageId, 'original');
+  assert.equal(h.commands.hasPendingContext(['draft-a']), true);
 });
 
 test('#4695 review: StagedComposer begins the setting settlement at submit, before Session references load', async () => {

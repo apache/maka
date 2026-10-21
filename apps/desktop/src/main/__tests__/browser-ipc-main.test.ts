@@ -158,14 +158,20 @@ test('browser IPC isolates owned renderer documents and their native parents', a
         await controller?.dispose();
       },
     };
+    const workspaceRenderers = new Set<unknown>([main]);
+    let sessionOwner: unknown = main;
     const mainWindowController = {
+      isWorkspaceRenderer: (contents: unknown) => workspaceRenderers.has(contents),
       getBrowserViews: (resolve: typeof parentResolver) => {
         parentResolver = resolve;
         return manager;
       },
       isMainRenderer: (contents: Electron.WebContents) => contents === main as unknown as Electron.WebContents,
     };
+    const parkingParent = { getVisible: () => false } as Electron.View;
     const browserIpc = registerBrowserIpc({
+      parkingParent,
+      canUseSession: (contents, id) => !id.includes(WORKHUB_COORDINATION_SESSION_ID) && (!id.includes('main-session') || contents === sessionOwner),
       mainWindowController: mainWindowController as never,
       auxiliaryWindowRegistry: {
         rendererParent: (contents: Electron.WebContents) =>
@@ -358,8 +364,7 @@ test('browser IPC isolates owned renderer documents and their native parents', a
     assert.equal(controllers.get(mainKey), mainController, 'destroying WorkHub preserves the main browser session');
     assert.equal(mainController.disposed, false);
 
-    // Closing Main destroys its WebContents before selection cleanup runs.
-    // Electron rejects fromWebContents on that destroyed native object.
+    // Collapsing the browser keeps the selected Session's background lease.
     emit('browser:active-session', main, scope, 'main-session', 'main-document', 6);
     emit('browser:setViewport', main, scope, { sessionId: 'main-session', rect: mainRect }, 'main-document', 6);
     emit('browser:setViewport', main, scope, { sessionId: 'main-session', rect: null }, 'main-document', 6);
@@ -389,10 +394,51 @@ test('browser IPC isolates owned renderer documents and their native parents', a
     resolveNext({ scope, sessionId: 'replacement' });
     await new Promise<void>((resolve) => setImmediate(resolve));
     assert.equal(await browserViewHost().canDrive(mainKey, 'observe'), false);
+
+    // Transfer the selected page after the pending-selection scenario settles.
+    emit('browser:active-session', main, scope, 'main-session', 'main-document', 13);
+    emit('browser:setViewport', main, scope, { sessionId: 'main-session', rect: mainRect }, 'main-document', 13);
+    const child = new FakeRenderer('child-frame');
+    const childWindow = new FakeWindow();
+    const childParent = { getVisible: () => true } as Electron.View;
+    childWindow.contentView = childParent;
+    windows.set(child, childWindow);
+    workspaceRenderers.add(child);
+    emit('browser:document-ready', child, 'child-document');
+    emit('browser:active-session', child, scope, WORKHUB_COORDINATION_SESSION_ID, 'child-document', 1);
+    await invoke('browser:navigate', child, scope, WORKHUB_COORDINATION_SESSION_ID, 'https://forbidden-presenter.example/');
+    assert.equal(controllers.has(coordinationKey), false, 'a child cannot recreate or present the WorkHub Coordination browser');
+    emit('browser:document-ready', child, 'child-document-owning-session');
+    sessionOwner = child;
+    browserIpc.transferSessions([JSON.stringify([scope.hostId, 'main-session'])], main as never, child as never);
+    emit('browser:active-session', child, scope, 'main-session', 'child-document-owning-session', 1);
+    emit('browser:setViewport', child, scope, { sessionId: 'main-session', rect: mainRect }, 'child-document-owning-session', 1);
+    emit('browser:active-session', main, scope, 'main-session', 'main-document', 14);
+    emit('browser:setViewport', main, scope, { sessionId: 'main-session', rect: mainRect }, 'main-document', 14);
+    await invoke('browser:navigate', main, scope, 'main-session', 'https://late-source.example/');
+    assert.equal(mainController.parent, childParent, 'late source selection cannot steal the destination page');
+    assert.deepEqual(mainController.navigations, ['https://main.example/']);
+    childWindow.minimized = true;
+    browserIpc.refreshVisibility();
+    assert.equal(await browserViewHost().canDrive(mainKey, 'mutate'), true, 'the selected child follows the same background policy as Main');
+    emit('browser:hide-active-session', child, 'child-document-owning-session', 2);
+    assert.equal(await browserViewHost().canDrive(mainKey, 'mutate'), false, 'clearing the child selection revokes background access after transfer');
+    childWindow.minimized = false;
+    emit('browser:active-session', child, scope, 'main-session', 'child-document-owning-session', 3);
+    emit('browser:setViewport', child, scope, { sessionId: 'main-session', rect: mainRect }, 'child-document-owning-session', 3);
+    // Closing Main destroys its WebContents before selection cleanup runs.
+    // Electron rejects fromWebContents on that destroyed native object.
     assert.doesNotThrow(() => main.destroy());
     await new Promise<void>((resolve) => setImmediate(resolve));
-    assert.equal(mainController.disposed, true, 'closing Main still releases its owned browser page');
+    assert.equal(mainController.parent, childParent, 'source destruction leaves the native page with its new owner');
+    assert.equal(mainController.disposed, false);
+    assert.doesNotThrow(() => child.destroy());
+    assert.equal(mainController.disposed, false, 'closing a workspace preserves the task browser page');
+    assert.equal(mainController.parent, parkingParent, 'pages leave the destroyed window');
     assert.equal(await browserViewHost().canDrive(mainKey, 'observe'), false);
+    assert.equal(await browserViewHost().canDrive(mainKey, 'mutate'), false);
+    await browserIpc.retireTarget(scope);
+    assert.equal(mainController.disposed, true, 'retiring the Host still releases its browser resources');
     assert.equal(mainWindow.listenerCount('close'), 0, 'renderer teardown removes window listeners');
   } finally {
     hooks.deregister();

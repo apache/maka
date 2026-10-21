@@ -22,6 +22,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Search,
+  SquareArrowDownLeft,
 } from '@maka/ui/icons';
 import {
   IconButton,
@@ -83,7 +84,7 @@ function ChromeColumnToggle(props: {
 }
 
 function AppShellTopbarActions(props: {
-  copy: { windowActions: string; searchConversations: string; expandSidebar: string; collapseSidebar: string };
+  copy: { windowActions: string; searchConversations: string; expandSidebar: string; collapseSidebar: string; openInMainWindow?: string };
   sidebarCollapsed: boolean;
   onToggleSidebar(): void;
   onOpenSearchModal(): void;
@@ -119,14 +120,31 @@ function AppShellTopbarActions(props: {
 
 /** Keep the native drag surface mounted while Settings owns its controls. */
 export function WindowTitlebar(props: ComponentProps<typeof AppShellTopbarActions> & {
+  standalone?: boolean;
+  returningToMain?: boolean;
+  onOpenInMainWindow?(): void;
   obscured: boolean;
   modalOpen: boolean;
   settingsOpen: boolean;
   children: ReactNode;
+  workbarActions?: ReactNode;
 }) {
   return (
     <header className="maka-window-titlebar" aria-hidden={props.obscured || undefined} inert={props.modalOpen || undefined}>
-      {!props.settingsOpen && <><AppShellTopbarActions {...props} />{props.children}</>}
+      {!props.settingsOpen && <>
+        {!props.standalone && <AppShellTopbarActions {...props} />}
+        {props.children}
+        {props.standalone && props.onOpenInMainWindow && (
+          <div className="maka-open-main-window">
+            <Tooltip content={props.copy.openInMainWindow}>
+              <IconButton label={props.copy.openInMainWindow ?? ''} icon={<ChromeIcon icon={SquareArrowDownLeft} />}
+                variant="ghost" size="sm" className="maka-titlebar-action"
+                isDisabled={props.returningToMain} onClick={props.onOpenInMainWindow} />
+            </Tooltip>
+          </div>
+        )}
+        {props.workbarActions}
+      </>}
     </header>
   );
 }

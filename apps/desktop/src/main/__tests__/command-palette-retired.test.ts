@@ -133,3 +133,19 @@ for (const locale of ['en', 'zh-CN'] as const) {
       (locale === 'zh-CN' ? '脱敏日志 · 仅写入剪贴板' : 'Redacted logs · clipboard only'));
   });
 }
+
+test('a session window offers local task tools and main-window entry points without other workspaces', () => {
+  const commands = buildCommandList({
+    locale: 'en', activeSessionId: 'A', themePref: 'auto', connections: [], defaultSlug: null,
+    allowGlobalNavigation: false,
+    onNewChat() {}, onOpenSideChat() {}, onOpenSettings() {}, onOpenSettingsSection() {},
+    onOpenShortcuts() {}, onSetTheme() {}, onSelectModule() {}, onStartScheduledTask() {}, onOpenWorkspace() {},
+  });
+  const ids = commands.map((command) => command.id);
+  assert.ok(ids.includes('action:side-chat'));
+  assert.ok(ids.includes('action:new-chat'));
+  assert.ok(ids.includes('action:open-settings'));
+  assert.ok(!ids.some((id) => id.startsWith('nav:')));
+  assert.ok(!ids.includes('action:new-scheduled-task'));
+  assert.ok(!ids.includes('diag:open-workspace'));
+});

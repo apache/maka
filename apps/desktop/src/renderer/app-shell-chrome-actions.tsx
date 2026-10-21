@@ -24,13 +24,10 @@ import { WindowTitlebar } from './shell/window-titlebar';
 import { WorkbarTitlebarActions } from './features/workbar';
 
 /** Localize the shell frame without giving its presentation layer state. */
-export function AppShellTitlebar({ workbar, children, ...props }: Omit<ComponentProps<typeof WindowTitlebar>, 'copy'> & {
+export function AppShellTitlebar({ workbar, workbarActions = workbar && <WorkbarTitlebarActions {...workbar} />, ...props }: Omit<ComponentProps<typeof WindowTitlebar>, 'copy'> & {
   workbar?: ComponentProps<typeof WorkbarTitlebarActions>;
 }) {
   return (
-    <WindowTitlebar {...props} copy={getShellCopy(useUiLocale()).chrome}>
-      {children}
-      {workbar && <WorkbarTitlebarActions {...workbar} />}
-    </WindowTitlebar>
+    <WindowTitlebar {...props} copy={getShellCopy(useUiLocale()).chrome} workbarActions={workbarActions} />
   );
 }

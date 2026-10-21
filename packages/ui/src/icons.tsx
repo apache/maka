@@ -173,6 +173,7 @@ export {
   ShieldCheck,
   Sparkles,
   Square,
+  SquareArrowDownLeft,
   SquarePen,
   SquareTerminal,
   Sun,

@@ -1220,16 +1220,18 @@ function shellRunUpdate(overrides: Partial<ShellRunUpdate> = {}): ShellRunUpdate
 type IpcHandler = Parameters<Pick<IpcMain, 'handle'>['handle']>[1];
 
 function ipcHarness() {
+  let sender = { id: 1 };
   const handlers = new Map<string, IpcHandler>();
   return {
     handle(channel: string, handler: IpcHandler) {
       assert.equal(handlers.has(channel), false, `duplicate handler: ${channel}`);
       handlers.set(channel, handler);
     },
+    setSender(id: number) { sender = { id }; },
     async invoke(channel: string, ...args: unknown[]): Promise<unknown> {
       const handler = handlers.get(channel);
       assert.ok(handler, `missing handler: ${channel}`);
-      return handler({} as never, ...args);
+      return handler({ sender } as never, ...args);
     },
   };
 }
@@ -1405,4 +1407,44 @@ test('plan control channels return the Host error code across the IPC boundary',
     );
     assert.deepEqual(changed, [], `${scenario.channel} must not report a mode change`);
   }
+});
+
+
+test('moving a terminal transfers its observer and rejects late source input and detach without stopping the PTY', async () => {
+  const ipc = ipcHarness();
+  const events: string[] = [];
+  let owner = 1;
+  const pty = { sessionId: 'session-1', ref: 'pty-1', sequence: 5, buffer: 'still running', size: { cols: 80, rows: 24 } };
+  const handle = registerDomainsIpc({
+    client: domainClient({
+      acquireRuntimeResourceController: async (input) => { events.push('acquire:' + input.controllerId); return { controllerId: input.controllerId, nextSequence: 8, pty }; },
+      controlRuntimeResource: async (input) => { events.push('input:' + input.sequence); return { controllerId: input.controllerId, sequence: input.sequence }; },
+      releaseRuntimeResourceController: async (input) => { events.push('release'); return { controllerId: input.controllerId, released: true }; },
+      stopRuntimeResource: async () => { events.push('stop'); return {}; },
+    }),
+    canUseSession: (target) => target.id === owner,
+    sessionObserver: {
+      observe: async (_id, _observer, target) => { events.push('observe:' + target.id); },
+      unobserve: async () => { events.push('unobserve'); },
+    },
+    emitModeChanged() {}, newId: () => 'transfer',
+  }, ipc);
+  const identity = { sessionId: 'session-1', ref: pty.ref };
+  await ipc.invoke('shell-runs:attach', identity);
+  owner = 2;
+  ipc.setSender(2);
+  assert.deepEqual(await ipc.invoke('shell-runs:attach', identity), pty);
+  ipc.setSender(1);
+  await ipc.invoke('shell-runs:detach', identity);
+  await assert.rejects(ipc.invoke('shell-runs:write', { ...identity, input: 'late' }), /another window/);
+  await assert.rejects(ipc.invoke('shell-runs:attach', identity), /another window/);
+  ipc.setSender(2);
+  // A real renderer retains its WebContents identity across invokes.
+  await ipc.invoke('shell-runs:attach', identity);
+  await ipc.invoke('shell-runs:write', { ...identity, size: { cols: 100, rows: 30 } });
+  assert.equal(events.includes('release'), false);
+  assert.equal(events.includes('stop'), false);
+  assert.equal(events.at(-1), 'input:8');
+  assert.ok(events.indexOf('unobserve') < events.indexOf('observe:2'));
+  await handle.close();
 });

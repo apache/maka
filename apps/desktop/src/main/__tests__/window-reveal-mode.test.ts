@@ -162,8 +162,21 @@ describe('createWindowRevealGate', () => {
     gate.markReady(win);
     assert.deepEqual(win.calls, ['showInactive']);
     // A focus request after readiness must not raise the app either.
+    win.minimized = true;
     gate.requestFocus(win);
     assert.deepEqual(win.calls, ['showInactive']);
+    assert.equal(win.minimized, true);
+  });
+
+  it('restores an already-ready minimized product window before showing and focusing it', () => {
+    const gate = createWindowRevealGate('active');
+    const win = fakeWindow();
+    gate.markReady(win);
+    win.minimized = true;
+    win.calls.length = 0;
+    gate.requestFocus(win);
+    assert.deepEqual(win.calls, ['restore', 'show', 'focus']);
+    assert.equal(win.minimized, false);
   });
 
   it('reveals inactively before maximizing, so the maximize cannot raise the app', () => {

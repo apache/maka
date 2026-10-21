@@ -992,3 +992,31 @@ test('Escape inside a layer above the rail is not the rail\'s to take', async ()
     await harness.dispose();
   }
 });
+
+for (const menu of ['context', 'more'] as const) {
+  test(`${menu} menu opens its task in a new window without selecting it in the current window`, async () => {
+    const windowTasks: string[] = [];
+    const harness = await mount({ activeId: 'a', rowActions: {
+      ...ROW_ACTIONS, onOpenInNewWindow: (id) => { windowTasks.push(id); },
+    } });
+    try {
+      if (menu === 'context') await harness.rightClickRow('b');
+      else await harness.openRowMenu('b');
+      const index = harness.menuLabels().indexOf('Open in new window');
+      assert.ok(index >= 0);
+      await harness.clickMenuItem(index);
+      assert.deepEqual(windowTasks, ['b']);
+      assert.deepEqual(harness.opened, []);
+    } finally { await harness.dispose(); }
+  });
+}
+
+test('bulk task selection does not offer opening multiple windows', async () => {
+  const harness = await mount({ selectedIds: ['a', 'b'], rowActions: {
+    ...ROW_ACTIONS, onOpenInNewWindow: () => undefined,
+  } });
+  try {
+    await harness.rightClickRow('a');
+    assert.ok(!harness.menuLabels().includes('Open in new window'));
+  } finally { await harness.dispose(); }
+});
