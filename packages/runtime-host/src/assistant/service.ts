@@ -95,6 +95,7 @@ export interface AssistantModuleServices
 
 class AssistantRuntime {
   readonly tools: MakaTool[] = [];
+  private readonly internalTools: MakaTool[] = [];
   readonly toolFilters: ((sessionId: string, tools: readonly MakaTool[]) => readonly MakaTool[])[] =
     [];
   readonly bot = new AssistantBotBridge();
@@ -142,12 +143,10 @@ class AssistantRuntime {
         register: (tool: MakaTool) => {
           if (this.tools.some((t) => t.name === tool.name))
             throw Error(`Duplicate assistant tool: ${tool.name}`);
-          this.tools.push({
+          const internalTool: MakaTool = {
             ...tool,
             impl: (input, call) => {
               if (this.closing) throw Error('Personal assistant is shutting down');
-              if (!this.hasSessionAccess(call.sessionId))
-                throw Error('Personal assistant tools are unavailable in this session');
               const scoped = {
                 ...call,
                 ...(BOT_DELEGATION_TOOLS.has(tool.name) && this.bot.ownerFor(call.sessionId)
@@ -165,10 +164,24 @@ class AssistantRuntime {
                 );
               });
             },
+          };
+          this.internalTools.push(internalTool);
+          this.tools.push({
+            ...internalTool,
+            impl: (input, call) => {
+              if (this.closing) throw Error('Personal assistant is shutting down');
+              if (!this.hasSessionAccess(call.sessionId))
+                throw Error('Personal assistant tools are unavailable in this session');
+              return internalTool.impl(input, call);
+            },
           });
         },
+        // Only Host module APIs use this resolver. They retain the caller's source
+        // permissions (e.g. ordinary-chat original links) without exposing model tools.
         resolve: (sessionId?: string) =>
-          sessionId ? this.dependencies.resolveTools(sessionId, this.tools) : { tools: this.tools },
+          sessionId
+            ? this.dependencies.resolveTools(sessionId, this.internalTools)
+            : { tools: this.internalTools },
       },
       systemPrompt: {
         section: (value: PluginSystemPromptSection) => this.sections.push(value),
