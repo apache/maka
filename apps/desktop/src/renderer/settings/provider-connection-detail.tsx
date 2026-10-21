@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   Badge,
   Banner,
@@ -154,6 +154,36 @@ type EditingRow =
   | 'add-model'
   | null;
 
+/** Publishes the sticky Save bar's height to the settings pane, which spends
+ *  it as `scroll-padding-block-end` (provider-editor.css).
+ *
+ *  The bar hangs over the bottom of the pane, and the model rows scroll in a
+ *  viewport of their own: tabbing from one row's control to the next scrolls
+ *  that viewport, and no amount of scrolling inside it can move a row out from
+ *  under a bar stuck to the pane. With the padding in place the pane itself
+ *  scrolls the focused control clear of the bar. Measured rather than tokenized
+ *  because the bar wraps at narrow widths, the same way the composer dock's
+ *  clearance is measured in `use-focused-preview.ts`. */
+function useSaveBarScrollClearance(enabled: boolean) {
+  const barRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const bar = barRef.current;
+    const pane = bar?.closest<HTMLElement>('.settingsMainPane');
+    if (!bar || !pane) return;
+    const measure = () => {
+      pane.style.setProperty('--provider-models-save-bar-space', `${Math.ceil(bar.getBoundingClientRect().height)}px`);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(bar);
+    return () => {
+      observer.disconnect();
+      pane.style.removeProperty('--provider-models-save-bar-space');
+    };
+  }, [enabled]);
+  return barRef;
+}
+
 function ConnectionDetailInner(props: ConnectionDetailProps) {
   const reportHostError = useRuntimeHostSettingsErrorReporter();
   const locale = useUiLocale();
@@ -208,6 +238,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     remove,
     refreshAfterRelogin,
   } = useConnectionDetail(props);
+  const saveBarRef = useSaveBarScrollClearance(retired);
   const entryById = new Map(modelChoices.map((entry) => [entry.id, entry]));
   // One row is a form at a time, the way the settings-sidebar template does it.
   // Opening a row discards the other's draft: leaving an abandoned draft in
@@ -871,7 +902,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
         </SettingsActions>
       </SettingsSection>
       {!retired && (
-        <div className="providerModelsSaveBar" role="group" aria-label={copy.modelSelection}>
+        <div ref={saveBarRef} className="providerModelsSaveBar" role="group" aria-label={copy.modelSelection}>
           <span role="status">{hasEnabledModelChanges ? copy.modelsUnsaved : copy.modelsSaved}</span>
           <HStack gap={2}>
             <Button variant="secondary" label={copy.cancel} isDisabled={!hasEnabledModelChanges || allActionsBusy}
