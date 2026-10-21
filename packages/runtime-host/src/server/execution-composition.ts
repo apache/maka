@@ -1548,7 +1548,10 @@ export async function createExecutionRuntimeHostComposition(
           (sessionId === WORKHUB_COORDINATION_SESSION_ID && workHubResults && workHubInspection
             ? Promise.resolve([workHubResults.tool, workHubInspection])
             : requireGraphCoordinator(graphCoordinator).toolsForSession(sessionId)
-          ).then((tools) => [...personalAssistant.tools, ...tools]),
+          ).then((tools) => [
+            ...personalAssistant.filterTools(sessionId, personalAssistant.tools),
+            ...tools,
+          ]),
           planStore.readState(sessionId),
         ]);
         const { runtimePolicy, surface } = await resolveInteractiveToolSurface({
