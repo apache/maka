@@ -55,13 +55,15 @@ Wait when ready for the next interaction or result; avoid repeated status pollin
 ```sh
 maka run --session "$session" --status
 maka run --session "$session" --recap --json
-maka run --session "$session" "Inspect the tests next" --no-wait
+maka run --session "$session" "Inspect the tests next" --json
 maka run --session "$session" "Focus on the parser" --steer --no-wait
 ```
 
 Status returns lifecycle and pending interactions; `--status --recap` returns both state/boundary and progress as JSON. If installed help advertises `--recap`, use it to summarize recorded progress during execution. Each recap calls the model independently and can lag execution; it is neither final output nor a direct worker reply. Portable `session-export` is not a progress query.
 
-An added prompt queues by default; `--queue` is optional. `submission` confirms admission, while `status` describes the observed Session, possibly an earlier Turn. Service current questions/approvals before expecting queued work to execute. Status and admission receipts already return JSON; use `--json` on waits/results/recaps to keep their output structured.
+For an idle Session, send the next prompt and wait as above; `--no-wait` is only needed when intentionally detaching. If the Session is still busy, submit the follow-up with `--no-wait`, then use Session-only waits to handle the current Turn's questions/approvals before queued work can execute. Waiting on the new prompt does not return an earlier Turn's interactions.
+
+An added prompt queues by default; `--queue` is optional. `submission` confirms admission, while `status` describes the observed Session, possibly an earlier Turn. Status and admission receipts already return JSON; use `--json` on waits/results/recaps to keep their output structured.
 
 ## Handle decisions and interruption
 

@@ -56,7 +56,7 @@ Permission requests, MCP forms, and other unsupported kinds remain waiting when 
 
 ## Queue, steering, and Inbox
 
-For coordination, submit a follow-up with `--no-wait`, then use Session-only wait/answer calls. Each queued message gets its own later Turn. Omit `--no-wait` and use `--json` only when following that message's exact result while separately servicing earlier Turns: that wait does not return an earlier Turn's AskUser and can leave the queue blocked.
+If the Session is idle, send the next prompt with `--json` and wait for its result or interaction. If it is busy, submit a follow-up with `--no-wait`, then use Session-only wait/answer calls to service the current Turn. Each queued message gets its own later Turn. Waiting on a follow-up selects that message's result and does not return an earlier Turn's AskUser, so it can leave the queue blocked.
 
 Steering is delivered at Host execution boundaries and can carry over if it misses the current Turn. Admission does not prove consumption. Steer with `--wait` observes the Turn selected on attachment. `--result` reads the latest Turn, not an arbitrary previous assignment.
 
