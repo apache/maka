@@ -1180,14 +1180,16 @@ export async function createExecutionRuntimeHostComposition(
       async (sessionId, attention) => {
         if (attention) {
           try {
+            const header = await stores.sessionStore.readHeaderSnapshot(sessionId);
             if (
+              header.labels?.includes(ASSISTANT_BACKGROUND_SESSION_LABEL) ||
               (await runtimePolicyStores.runtimePolicy.getSnapshot()).policy.privacy.incognitoActive
             ) {
               attention = undefined;
             }
           } catch (error) {
             attention = undefined;
-            console.warn('[runtime-host] Could not read notification privacy policy', error);
+            console.warn('[runtime-host] Could not read notification policy', error);
           }
         }
         hostChanges.publishSessionCatalog(sessionId, attention);

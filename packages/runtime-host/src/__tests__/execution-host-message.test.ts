@@ -40,7 +40,7 @@ import { TOOL_BOUNDARY_PROTOCOL_V1 } from '@maka/core/runtime-event';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import type { MessageContent } from '@maka/core/events';
 import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
-import type { StoredMessage } from '@maka/core/session';
+import { ASSISTANT_BACKGROUND_SESSION_LABEL, type StoredMessage } from '@maka/core/session';
 import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import {
@@ -49,6 +49,7 @@ import {
   commitTerminalRunWithRuntimeFact,
 } from '@maka/runtime/terminal-run-commit';
 import {
+  FAKE_ERROR_PROMPT_PREFIX,
   FAKE_ASK_SANDBOX_BOUNDARY_PROMPT,
   FAKE_ASK_USER_QUESTION_PROMPT,
   FAKE_WAIT_FOR_STEERING_PROMPT,
@@ -440,6 +441,54 @@ test('an unopened Session completion reaches the Host catalog feed once', async 
   });
 });
 
+for (const [status, prompt] of [
+  ['completed', 'complete this worker turn'],
+  ['failed', FAKE_ERROR_PROMPT_PREFIX + 'worker failure'],
+] as const)
+  test(`assistant background turns keep catalog and ${status} facts without attention`, async () => {
+    await withExecutionRoot(async (fixture) => {
+      const host = await fixture.startHost();
+      const client = await connectClient(fixture.root);
+      const attention: unknown[] = [];
+      let catalogChanges = 0;
+      const unsubscribe = client.subscribeSessionCatalogChanges((frame) => {
+        if (frame.sessionId !== fixture.sessionId) return;
+        catalogChanges++;
+        if (frame.attention) attention.push(frame.attention);
+      });
+      // Changing the durable label is enough; sidebar visibility is not a notification policy.
+      for (const labels of [[ASSISTANT_BACKGROUND_SESSION_LABEL], []]) {
+        const catalog = await client.request('session.catalog.query', {
+          kind: 'get',
+          sessionId: fixture.sessionId,
+        });
+        assert.equal(catalog.kind, 'session');
+        if (catalog.kind !== 'session' || !catalog.session) throw Error('Session missing');
+        await client.request('session.metadata.update', {
+          sessionId: fixture.sessionId,
+          expectedRevision: catalog.session.revision,
+          patch: { labels },
+        });
+        const before = catalogChanges;
+        const turnId = randomUUID();
+        requireStartedTurn(
+          await client.request('turn.start', {
+            sessionId: fixture.sessionId,
+            turnId,
+            content: { text: prompt },
+          }),
+        );
+        const terminal = await waitForTerminalTurn(client, fixture.sessionId, turnId);
+        assert.equal(terminal.status, status);
+        assert.ok(catalogChanges > before);
+        assert.equal(attention.length, labels.length ? 0 : 1);
+      }
+      unsubscribe();
+      await client.close();
+      await fixture.stopHost(host);
+    });
+  });
+
 test('Host privacy changes suppress completion attention without suppressing catalog updates', async () => {
   await withExecutionRoot(async (fixture) => {
     const host = await fixture.startHost();
@@ -479,10 +528,11 @@ test('Host privacy changes suppress completion attention without suppressing cat
   });
 });
 
-for (const [name, prompt, incognitoActive] of [
+for (const [name, prompt, incognitoActive, background = false] of [
   ['question', FAKE_ASK_USER_QUESTION_PROMPT, false],
   ['sandbox boundary', FAKE_ASK_SANDBOX_BOUNDARY_PROMPT, false],
   ['private question', FAKE_ASK_USER_QUESTION_PROMPT, true],
+  ['background question', FAKE_ASK_USER_QUESTION_PROMPT, false, true],
 ] as const) {
   test(`a pending ${name} reaches catalog subscribers as waiting_for_user`, async () => {
     await withExecutionRoot(async (fixture) => {
@@ -499,6 +549,18 @@ for (const [name, prompt, incognitoActive] of [
           ).kind,
           'committed',
         );
+      }
+      if (background) {
+        const catalog = await client.request('session.catalog.query', {
+          kind: 'get',
+          sessionId: fixture.sessionId,
+        });
+        if (catalog.kind !== 'session' || !catalog.session) throw Error('Session missing');
+        await client.request('session.metadata.update', {
+          sessionId: fixture.sessionId,
+          expectedRevision: catalog.session.revision,
+          patch: { labels: [ASSISTANT_BACKGROUND_SESSION_LABEL] },
+        });
       }
       let observedWaiting!: () => void;
       const waiting = new Promise<void>((resolve) => {
@@ -538,8 +600,9 @@ for (const [name, prompt, incognitoActive] of [
         turnId,
         runId: started.runId,
       });
-      assert.equal(attention.length, incognitoActive ? 0 : 1);
-      if (!incognitoActive) assert.equal((attention[0] as { kind: string }).kind, 'waiting');
+      assert.equal(attention.length, incognitoActive || background ? 0 : 1);
+      if (!incognitoActive && !background)
+        assert.equal((attention[0] as { kind: string }).kind, 'waiting');
       unsubscribe();
       await Promise.all(reads);
       await client.close();
