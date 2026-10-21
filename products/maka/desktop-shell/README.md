@@ -34,7 +34,7 @@ just build
 # Or: just build --release
 ```
 
-This builds the CLI and shell and stages the complete app beside the executable. `--target TRIPLE` selects another Rust target. Native packages carry `bin/maka`, `bin/maka-desktop-shell` and `bin/app/` (plus Windows executable suffixes and its service helper). Bare shell startup resolves the adjacent app, including when launched from another working directory.
+This builds the CLI and shell and stages the complete app beside the executable. On macOS it stages `Maka.app` beside `maka` instead: the shell in `Contents/MacOS`, the app in `Contents/Resources/app`, and an `Info.plist` and icon (from `assets/logo.png`), so the system shows the window as Maka with its icon. `maka desktop` starts the shell in that bundle, so after rebuilding the shell with Cargo alone, run `just build` again to refresh it. `--target TRIPLE` selects another Rust target. Native packages carry `bin/maka`, `bin/maka-desktop-shell` and `bin/app/` (plus Windows executable suffixes and its service helper); the macOS package carries `bin/maka` and `bin/Maka.app/`. The packaged shell started without arguments finds its app beside it, or inside its bundle on macOS, including when launched from another working directory.
 
 Use the owned launcher:
 

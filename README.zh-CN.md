@@ -36,7 +36,7 @@ just setup
 just run
 ```
 
-`just run` 打开终端产品，首次确认当前工作目录并安装内置工具与技能，后续重开已保存的应用。`just run --help` 查看 CLI 命令。`just build --release` 生成 `target/release/maka`、`maka-desktop-shell` 及相邻的 `app/` 目录，Windows 可执行文件使用 `.exe` 后缀。构建入口支持 `--release` 和 `--target`。Node.js 在构建时为 CLI 打包提供商 SDK，CLI 在内嵌 V8 中运行 JavaScript，桌面 shell 通过 QuickJS 执行 app。用 `just run application run --root PATH --deployment UUID --connections FILE` 启动已校验的终端组合，编写和安装方式见[普通 Agent 产品](products/maka/bundle/README.zh-CN.md)。
+`just run` 打开终端产品，首次确认当前工作目录并安装内置工具与技能，后续重开已保存的应用。`just run --help` 查看 CLI 命令。`just build --release` 生成 `target/release/maka`、`maka-desktop-shell` 及相邻的 `app/` 目录，Windows 可执行文件使用 `.exe` 后缀，macOS 上桌面 shell 和 app 放在 `Maka.app` 中。构建入口支持 `--release` 和 `--target`。Node.js 在构建时为 CLI 打包提供商 SDK，CLI 在内嵌 V8 中运行 JavaScript，桌面 shell 通过 QuickJS 执行 app。用 `just run application run --root PATH --deployment UUID --connections FILE` 启动已校验的终端组合，编写和安装方式见[普通 Agent 产品](products/maka/bundle/README.zh-CN.md)。
 
 在 WSL 中，`just run` 构建不含本地 `native-desktop` 能力及其 Linux X11 依赖的 CLI，Computer Use 默认选择 Windows 桌面。源码构建需通过 `MAKA_CUA_WINDOWS_EXECUTABLE` 指定匹配的 Windows `maka.exe`，使用 WSL 可见的绝对路径。`MAKA_CUA_BUILD_MODE=auto|native|bridge` 控制开发构建选择，设置方法见 [Computer Use](platform/computer-use/README.zh-CN.md)。`just build` 和发布打包仍构建完整原生产品，包含桌面 shell 及其 Linux GUI 依赖。
 

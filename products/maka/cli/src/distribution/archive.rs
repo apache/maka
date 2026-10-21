@@ -64,7 +64,7 @@ struct Member {
 fn allowed(target: Target, name: &str) -> bool {
     required(target).any(|member| member == name)
         || matches!(name, "README.md" | "README.zh-CN.md")
-        || (name.starts_with("bin/app/") && maka_packages::validate_path(name).is_ok())
+        || (in_app(target, name) && maka_packages::validate_path(name).is_ok())
 }
 
 fn required(target: Target) -> impl Iterator<Item = &'static str> {
@@ -75,11 +75,27 @@ fn required(target: Target) -> impl Iterator<Item = &'static str> {
         "THIRD_PARTY_NOTICES.txt",
         target.executable(),
         target.desktop_executable(),
-        "bin/app/gpui-shell.json",
-        "bin/app/main.js",
     ]
     .into_iter()
+    .chain(target.desktop_members().iter().copied())
     .chain(target.service_executable())
+}
+
+/// Optional authored app files, the only members that may be empty.
+fn in_app(target: Target, name: &str) -> bool {
+    name.strip_prefix(target.desktop_app())
+        .is_some_and(|name| name.starts_with('/'))
+}
+
+/// The package root, a parent of a required member, or a directory in the app.
+fn directory(target: Target, name: &str) -> bool {
+    name.is_empty()
+        || required(target).any(|member| {
+            member
+                .strip_prefix(name)
+                .is_some_and(|rest| rest.starts_with('/'))
+        })
+        || (in_app(target, name) && maka_packages::validate_path(name).is_ok())
 }
 
 pub(super) fn cached(
@@ -117,7 +133,7 @@ pub(super) fn cached(
             return Err("native package cache integrity mismatch".into());
         }
     }
-    verify_app_members(directory, "bin/app", &receipt.files)?;
+    verify_app_members(directory, target.desktop_tree(), &receipt.files)?;
     validate_package(directory, target, version)?;
     Ok(Some(receipt.integrity))
 }
@@ -127,8 +143,9 @@ fn verify_app_members(
     name: &str,
     files: &BTreeMap<String, Member>,
 ) -> Result<(), HostError> {
-    // Optional script imports can execute files absent from the original archive.
-    // Check the actual app tree as well as the receipt's required bytes.
+    // Optional script imports can execute files absent from the original archive,
+    // and macOS reads more of a bundle than its Info.plist. Check the actual tree
+    // as well as the receipt's required bytes.
     for entry in fs::read_dir(directory.join(name))? {
         let entry = entry?;
         let filename = entry.file_name();
@@ -174,13 +191,16 @@ pub(super) fn publish(
         let path = entry.path_bytes();
         let path = std::str::from_utf8(&path)?.to_owned();
         if entry.header().entry_type().is_dir()
-            && (matches!(
-                path.as_str(),
-                "package/" | "package/bin/" | "package/bin/app/"
-            ) || path.strip_prefix("package/bin/app/").is_some_and(|name| {
-                name.strip_suffix('/')
-                    .is_some_and(|name| maka_packages::validate_path(name).is_ok())
-            }))
+            && path
+                .strip_prefix("package/")
+                .and_then(|name| {
+                    if name.is_empty() {
+                        Some(name)
+                    } else {
+                        name.strip_suffix('/')
+                    }
+                })
+                .is_some_and(|name| directory(target, name))
             && entry.size() == 0
         {
             continue;
@@ -198,7 +218,7 @@ pub(super) fn publish(
             || !entry.header().entry_type().is_file()
             || files.contains_key(name)
             || (entry.size() == 0
-                && (!name.starts_with("bin/app/") || required(target).any(|member| member == name)))
+                && (!in_app(target, name) || required(target).any(|member| member == name)))
             || entry.size() > limit
         {
             return Err(
@@ -311,7 +331,7 @@ pub(super) fn import_directory(
             MAX_TEXT_BYTES
         };
         if (expected.size == 0
-            && (!name.starts_with("bin/app/") || required(target).any(|member| member == name)))
+            && (!in_app(target, name) || required(target).any(|member| member == name)))
             || expected.size > limit
         {
             return Err("transferred native package member exceeds its size limit".into());

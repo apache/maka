@@ -34,7 +34,7 @@ just build
 # 或：just build --release
 ```
 
-构建生成 CLI、shell 及可执行文件旁的完整 app。`--target TRIPLE` 可选择其他 Rust 目标。原生包包含 `bin/maka`、`bin/maka-desktop-shell` 和 `bin/app/`，Windows 可执行文件带后缀并附带 service helper。无参数启动 shell 时会从可执行文件旁找到 app，不依赖工作目录。
+构建生成 CLI、shell 及可执行文件旁的完整 app。macOS 上改为在 `maka` 旁生成 `Maka.app`：shell 位于 `Contents/MacOS`，app 位于 `Contents/Resources/app`，另有 `Info.plist` 和图标（取自 `assets/logo.png`），系统因此把窗口显示为 Maka 并使用其图标。`maka desktop` 启动的是 bundle 内的 shell，所以只用 Cargo 重新构建 shell 之后，要再运行一次 `just build` 来更新它。`--target TRIPLE` 可选择其他 Rust 目标。原生包包含 `bin/maka`、`bin/maka-desktop-shell` 和 `bin/app/`，Windows 可执行文件带后缀并附带 service helper；macOS 原生包包含 `bin/maka` 和 `bin/Maka.app/`。打包的 shell 无参数启动时会从可执行文件旁（macOS 上为所在 bundle 内）找到 app，不依赖工作目录。
 
 通过持有原始 Host 客户端的启动器运行：
 

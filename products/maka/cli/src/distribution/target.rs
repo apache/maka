@@ -84,11 +84,42 @@ impl Target {
         }
     }
 
+    // On macOS the shell runs from inside `Maka.app`, so the system shows the
+    // bundle's name and icon for it.
     pub fn desktop_executable(self) -> &'static str {
-        if self == Self::Win32X64 {
-            "bin/maka-desktop-shell.exe"
-        } else {
-            "bin/maka-desktop-shell"
+        match self {
+            Self::DarwinArm64 | Self::DarwinX64 => "bin/Maka.app/Contents/MacOS/maka-desktop-shell",
+            Self::LinuxArm64Gnu | Self::LinuxX64Gnu => "bin/maka-desktop-shell",
+            Self::Win32X64 => "bin/maka-desktop-shell.exe",
+        }
+    }
+
+    /// The directory whose complete file tree the receipt records.
+    pub fn desktop_tree(self) -> &'static str {
+        match self {
+            Self::DarwinArm64 | Self::DarwinX64 => "bin/Maka.app",
+            _ => "bin/app",
+        }
+    }
+
+    /// The authored app the shell finds from its own location.
+    pub fn desktop_app(self) -> &'static str {
+        match self {
+            Self::DarwinArm64 | Self::DarwinX64 => "bin/Maka.app/Contents/Resources/app",
+            _ => "bin/app",
+        }
+    }
+
+    /// Files the desktop needs besides its executable.
+    pub fn desktop_members(self) -> &'static [&'static str] {
+        match self {
+            Self::DarwinArm64 | Self::DarwinX64 => &[
+                "bin/Maka.app/Contents/Info.plist",
+                "bin/Maka.app/Contents/Resources/Maka.icns",
+                "bin/Maka.app/Contents/Resources/app/gpui-shell.json",
+                "bin/Maka.app/Contents/Resources/app/main.js",
+            ],
+            _ => &["bin/app/gpui-shell.json", "bin/app/main.js"],
         }
     }
 

@@ -27,7 +27,7 @@
 npm install --global @maka-agent/cli@rust-preview
 ```
 
-The launcher selects the matching native executable and forwards arguments, standard I/O and exit status. Exact-version optional dependencies carry the CLI, `maka-desktop-shell` and its authored `app/` sidecar. The preview targets macOS arm64, Linux x64 with glibc, and Windows x64. WSL uses the Linux executable with a matching Windows helper for Computer Use.
+The launcher selects the matching native executable and forwards arguments, standard I/O and exit status. Exact-version optional dependencies carry the CLI, `maka-desktop-shell` and its authored `app/` sidecar; on macOS the shell and app are inside `Maka.app`. The preview targets macOS arm64, Linux x64 with glibc, and Windows x64. WSL uses the Linux executable with a matching Windows helper for Computer Use.
 
 The `latest` tags remain empty placeholders, including the separate `maka-agent` package. They contain no CLI, runtime, dependencies or install scripts. The placeholder source lives in [placeholder](placeholder/README.md); preview artifacts must stay on `rust-preview`.
 

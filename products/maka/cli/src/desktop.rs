@@ -25,6 +25,16 @@ use std::{path::PathBuf, process::ExitCode};
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
+/// The shell beside this launcher. macOS shows a process with the name and icon
+/// of the bundle its executable is in, so there it runs from inside `Maka.app`.
+pub(crate) const SHELL: &str = if cfg!(target_os = "macos") {
+    "Maka.app/Contents/MacOS/maka-desktop-shell"
+} else if cfg!(windows) {
+    "maka-desktop-shell.exe"
+} else {
+    "maka-desktop-shell"
+};
+
 #[derive(clap::Args)]
 #[command(version)]
 pub(super) struct Args {
@@ -64,11 +74,7 @@ impl Args {
         if stop.is_cancelled() {
             return Ok(0);
         }
-        let executable = std::env::current_exe()?.with_file_name(if cfg!(windows) {
-            "maka-desktop-shell.exe"
-        } else {
-            "maka-desktop-shell"
-        });
+        let executable = std::env::current_exe()?.with_file_name(SHELL);
         let mut child = Command::new(&executable)
             .env("MAKA_HOST_ENDPOINT", &registered.endpoint)
             .env("MAKA_HOST_EPOCH", registered.host_epoch.to_string())

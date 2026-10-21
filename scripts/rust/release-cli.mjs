@@ -31,7 +31,7 @@ import {
 } from '../asf-source-release.mjs';
 import { npmSpawnOptions } from '../npm-spawn.mjs';
 import { parseProductReleaseVersion } from '../release-version.mjs';
-import { buildCli, rustTarget } from './build-cli.mjs';
+import { buildCli, desktopShell, rustTarget } from './build-cli.mjs';
 import { nativeCliTargets, packNativeCli } from './pack-cli.mjs';
 import { verifyNotices } from './notices.mjs';
 import { buildV8 } from './build-v8.mjs';
@@ -187,10 +187,7 @@ export async function releaseNativeCli({ source, keys, target, validator, output
     });
     if (native) {
       const { stdout } = await run(
-        join(
-          dirname(binary),
-          platform.os === 'win32' ? 'maka-desktop-shell.exe' : 'maka-desktop-shell',
-        ),
+        join(dirname(binary), desktopShell(platform.os)),
         ['--version'],
         {
           timeout: 15_000,

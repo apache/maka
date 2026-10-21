@@ -24,6 +24,7 @@ import { basename, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { npmSpawnOptions } from '../npm-spawn.mjs';
+import { desktopShell } from './build-cli.mjs';
 import { readPreviewRelease } from './publish-cli.mjs';
 
 const run = promisify(execFile);
@@ -62,13 +63,7 @@ export async function verifyRelease(directory) {
     if (stdout.trim() !== 'maka ' + native.source.version)
       throw new Error('Installed launcher reports another source version');
     const desktop = await run(
-      join(
-        stage,
-        'node_modules',
-        native.name,
-        'bin',
-        process.platform === 'win32' ? 'maka-desktop-shell.exe' : 'maka-desktop-shell',
-      ),
+      join(stage, 'node_modules', native.name, 'bin', desktopShell(process.platform)),
       ['--version'],
       options,
     );

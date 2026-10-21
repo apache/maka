@@ -39,7 +39,15 @@ fn launcher(directory: &Path) -> PathBuf {
 }
 
 fn shell(directory: &Path) -> PathBuf {
-    let executable = directory.join("maka-desktop-shell");
+    shell_at(directory.join(if cfg!(target_os = "macos") {
+        "Maka.app/Contents/MacOS/maka-desktop-shell"
+    } else {
+        "maka-desktop-shell"
+    }))
+}
+
+fn shell_at(executable: PathBuf) -> PathBuf {
+    std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
     std::fs::write(&executable,
         "#!/bin/sh\nprintf '%s\n' \"$MAKA_HOST_ENDPOINT\" \"$MAKA_HOST_EPOCH\" \"$$\" \"$#\"\nread status || exit 1\nexit \"$status\"\n",
     ).unwrap();
@@ -202,6 +210,8 @@ async fn desktop_shell_spawn_failure_ignores_path_and_releases_its_host() {
         let decoy = directory.path().join("path");
         std::fs::create_dir(&decoy).unwrap();
         shell(&decoy);
+        // What a lookup by bare name would find.
+        shell_at(decoy.join("maka-desktop-shell"));
         let fixture = CandidateFixture::new(directory.path().join("root"));
         let result = Command::new(&executable)
             .args(["desktop", "--root"])

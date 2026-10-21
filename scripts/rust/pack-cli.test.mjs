@@ -31,7 +31,17 @@ test('native archives carry the shell and exact authored app rather than a stale
   try {
     const app = join(root, 'products/maka/desktop-shell/app');
     await mkdir(join(app, 'icons'), { recursive: true });
-    await writeFile(join(app, 'gpui-shell.json'), '{"entry":"main.js"}');
+    await writeFile(
+      join(app, 'gpui-shell.json'),
+      '{"id":"org.apache.maka.desktop","name":"Maka","version":"0.1.0","entry":"main.js"}',
+    );
+    const png = Buffer.alloc(33);
+    Buffer.from('\x89PNG\r\n\x1a\n', 'latin1').copy(png);
+    png.write('IHDR', 12, 'latin1');
+    png.writeUInt32BE(1024, 16);
+    png.writeUInt32BE(1024, 20);
+    await mkdir(join(root, 'assets'));
+    await writeFile(join(root, 'assets/logo.png'), png);
     await writeFile(join(app, 'main.js'), 'authored source application');
     await writeFile(join(app, 'icons/logo.svg'), '<svg>source icon</svg>');
     await mkdir(join(root, 'packages/cli'), { recursive: true });
@@ -63,17 +73,29 @@ test('native archives carry the shell and exact authored app rather than a stale
       const archive = value('--archive');
       const files = execFileSync('tar', ['-tzf', archive], {encoding:'utf8'}).trim().split('\n');
       const windows = value('--target') === 'win32-x64';
-      assert.ok(files.includes('package/bin/' + (windows ? 'maka-desktop-shell.exe' : 'maka-desktop-shell')));
+      const macos = value('--target') === 'darwin-arm64';
+      const bundle = 'package/bin/Maka.app/Contents/';
+      const app = macos ? bundle + 'Resources/app/' : 'package/bin/app/';
+      const shell = macos ? bundle + 'MacOS/maka-desktop-shell' : 'package/bin/' + (windows ? 'maka-desktop-shell.exe' : 'maka-desktop-shell');
+      assert.equal(execFileSync('tar', ['-xOf', archive, shell], {encoding:'utf8'}), shell.split('/').pop() + ' bytes');
+      if (process.platform !== 'win32') assert.match(execFileSync('tar', ['-tvzf', archive, shell], {encoding:'utf8'}), /^-rwx/);
       assert.equal(files.includes('package/bin/maka-service.exe'), windows);
+      assert.equal(files.some((file) => file.startsWith('package/bin/Maka.app/')), macos);
+      assert.equal(files.some((file) => file.startsWith('package/bin/app/')), !macos);
+      assert.equal(files.includes('package/bin/maka-desktop-shell'), !macos && !windows);
       assert.ok(!files.includes('package/bin/maka-desktop'));
-      assert.ok(!files.includes('package/bin/app/stale.js'));
-      assert.equal(execFileSync('tar', ['-xOf', archive, 'package/bin/app/main.js'], {encoding:'utf8'}), 'authored source application');
-      assert.equal(execFileSync('tar', ['-xOf', archive, 'package/bin/app/icons/logo.svg'], {encoding:'utf8'}), '<svg>source icon</svg>');
+      assert.ok(!files.includes(app + 'stale.js'));
+      assert.equal(execFileSync('tar', ['-xOf', archive, app + 'main.js'], {encoding:'utf8'}), 'authored source application');
+      assert.equal(execFileSync('tar', ['-xOf', archive, app + 'icons/logo.svg'], {encoding:'utf8'}), '<svg>source icon</svg>');
+      if (macos) {
+        assert.match(execFileSync('tar', ['-xOf', archive, bundle + 'Info.plist'], {encoding:'utf8'}), /<key>CFBundleIdentifier<\/key>\n  <string>org.apache.maka.desktop<\/string>/);
+        assert.equal(execFileSync('tar', ['-xOf', archive, bundle + 'Resources/Maka.icns']).subarray(0, 4).toString(), 'icns');
+      }
       assert.equal(execFileSync('tar', ['-xOf', archive, 'package/THIRD_PARTY_NOTICES.txt'], {encoding:'utf8'}), 'reviewed THIRD_PARTY_NOTICES.txt');
     `,
     );
     process.chdir(root);
-    for (const target of ['linux-x64-gnu', 'win32-x64']) {
+    for (const target of ['darwin-arm64', 'linux-x64-gnu', 'win32-x64']) {
       const result = await packNativeCli({
         target,
         version: '0.2.0-rust-preview.fixture',
@@ -85,7 +107,13 @@ test('native archives carry the shell and exact authored app rather than a stale
       });
       const receipt = JSON.parse(await readFile(join(root, 'output', target + '.json'), 'utf8'));
       assert.equal(receipt.integrity, result.integrity);
-      const main = execFileSync('tar', ['-xOf', result.archive, 'package/bin/app/main.js']);
+      const main = execFileSync('tar', [
+        '-xOf',
+        result.archive,
+        target === 'darwin-arm64'
+          ? 'package/bin/Maka.app/Contents/Resources/app/main.js'
+          : 'package/bin/app/main.js',
+      ]);
       assert.equal(main.toString(), 'authored source application');
     }
   } finally {
