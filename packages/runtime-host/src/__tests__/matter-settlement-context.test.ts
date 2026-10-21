@@ -264,3 +264,19 @@ test('observation-only revision changes do not invalidate unchanged delivered ta
   assert.ok(f.store.get(f.id).matter.revision > prior);
   assert.equal((await f.submit(complete, false)).status, 'completed');
 });
+
+test('inherited tool IDs cannot substitute for the current physical run call', (t) => {
+  const f = fixture(t);
+  f.call.runId = 'successor';
+  f.deliver();
+  const inheritedCall = {
+    sessionId: f.call.sessionId,
+    turnId: f.call.turnId,
+    runId: 'predecessor',
+    content: { kind: 'function_call', id: f.call.toolCallId },
+  };
+  f.events.push(inheritedCall);
+  assert.equal(deliveredMatterInput(f.events, f.call), undefined);
+  f.events.push({ ...inheritedCall, runId: 'successor' });
+  assert.equal(deliveredMatterInput(f.events, f.call)?.activationId, f.activation);
+});

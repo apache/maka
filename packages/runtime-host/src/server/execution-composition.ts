@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { readMatterRuntimeEvents } from '../assistant/proactive-matters/settlement-context.js';
 import { markAssistantBackgroundSessions } from '../assistant/background-sessions.js';
 import { PersonalAssistantService, ASSISTANT_LEGACY_PACKAGES } from '../assistant/service.js';
 import { createAssistantMessageReader } from './session-transcript-reader.js';
@@ -516,7 +517,7 @@ export async function createExecutionRuntimeHostComposition(
         markBackgroundSessions: (ids) => markAssistantBackgroundSessions(stores.sessionStore, ids),
         readRuntimeEvents: async (sessionId, runId) =>
           runId
-            ? stores.runtimeEventStore.readRuntimeEvents(sessionId, runId)
+            ? readMatterRuntimeEvents(stores.runtimeEventStore, sessionId, runId)
             : (await stores.runtimeEventStore.readSessionRuntimeEventEntries(sessionId)).map(
                 (entry) => entry.event,
               ),

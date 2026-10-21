@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { readLogicalRuntimeExecutionForRun } from '@maka/core/runtime-logical-execution';
+import { readRunInvocation, type RuntimeEventStore } from '@maka/core/runtime-event-store';
 import { createHash } from 'node:crypto';
 import type { MatterSnapshot } from './matter.js';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
@@ -61,7 +63,11 @@ export function deliveredMatterInput(events: readonly RuntimeEvent[], call: Maka
       continue;
     const content = event.content;
     if (!content) continue;
-    if (content.kind === 'function_call' && content.id === call.toolCallId) {
+    if (
+      content.kind === 'function_call' &&
+      content.id === call.toolCallId &&
+      (call.runId === undefined || event.runId === call.runId)
+    ) {
       if (!delivered) return undefined;
       try {
         // Runtime may prepend its metadata wrapper before the task's own header.
@@ -110,4 +116,29 @@ export function workerTools<T extends { name: string }>(tools: readonly T[]): T[
   return tools.filter(
     (tool) => !tool.name.startsWith('Matter') || MATTER_WORKER_TOOLS.has(tool.name),
   );
+}
+
+/** Read only the authenticated handoff lineage, in replay order. */
+export async function readMatterRuntimeEvents(
+  store: Parameters<typeof readLogicalRuntimeExecutionForRun>[0] &
+    Pick<RuntimeEventStore, 'readRuntimeEvents'>,
+  sessionId: string,
+  runId: string,
+): Promise<readonly RuntimeEvent[]> {
+  const run = await readRunInvocation(store, sessionId, runId);
+  if (!run) return [];
+  if (run.opening.source.kind !== 'handoff') return store.readRuntimeEvents(sessionId, runId);
+  const logical = await readLogicalRuntimeExecutionForRun(store, {
+    sessionId,
+    runId,
+    turnId: run.turnId,
+  });
+  if (!logical) return [];
+  // The core reader verifies seals, claims and successor openings. Do not
+  // include unrelated session history or later successors of this caller.
+  const precedingRuns = logical.runIds.slice(0, logical.runIds.indexOf(runId));
+  const inherited = await Promise.all(
+    precedingRuns.map((id) => store.readImmutableRuntimeEvents(sessionId, id)),
+  );
+  return [...inherited.flat(), ...(await store.readRuntimeEvents(sessionId, runId))];
 }
