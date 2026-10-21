@@ -4794,7 +4794,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
             state.entries.push({
               kind: 'notice',
               level: 'info',
-              text: 'Wait for the current action to finish, then cancel the wait.',
+              text: TUI_COPY_RESOURCES.goal[locale].cancelWaitBusy,
             });
             requestRender();
             return;
@@ -4805,7 +4805,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
             state.entries.push({
               kind: 'notice',
               level: 'info',
-              text: 'No cancellable event wait.',
+              text: TUI_COPY_RESOURCES.goal[locale].noCancellableWait,
             });
             requestRender();
             return;
@@ -4826,8 +4826,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
               level: 'info',
               text:
                 result.outcome === 'cancelled' || result.outcome === 'already_cancelled'
-                  ? 'Wait cancelled. Goal paused; the background task keeps running.'
-                  : 'The wait changed or its continuation was admitted. Use /goal to inspect the current state.',
+                  ? TUI_COPY_RESOURCES.goal[locale].waitCancelled
+                  : TUI_COPY_RESOURCES.goal[locale].waitChanged,
             });
             requestRender();
           });
@@ -4840,7 +4840,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           state.entries.push({
             kind: 'notice',
             level: 'error',
-            text: 'Usage: /goal [pause|resume|clear|cancel-wait]',
+            text: TUI_COPY_RESOURCES.goal[locale].usage,
           });
           requestRender();
           return;
