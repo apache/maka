@@ -3169,8 +3169,22 @@ for (const scenario of ['success', 'failure', 'timeout', 'stop', 'cancel-wait', 
         const repeat = await f.goal.handlers['goal.event-wait.cancel'](target, operationContext());
         assert.equal(repeat.ok && repeat.result.outcome, 'already_cancelled');
         assert.equal(f.shellRuns!.liveCount(), 1);
-      } else if (scenario === 'stop')
+      } else if (scenario === 'stop') {
+        await waitFor(
+          async () => {
+            try {
+              return (
+                (await readFile(join(f.owner.capability.canonicalPath, 'starts'), 'utf8')) === '1'
+              );
+            } catch (error) {
+              if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+              throw error;
+            }
+          },
+          { timeoutMs: 5000 },
+        );
         await f.shellRuns!.stopBackgroundTask(f.sessionId, ref, new AbortController().signal);
+      }
       if (scenario !== 'timeout' && scenario !== 'stop')
         await writeFile(join(f.owner.capability.canonicalPath, 'release'), 'ready');
       await waitFor(
