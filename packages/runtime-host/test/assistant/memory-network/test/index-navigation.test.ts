@@ -407,3 +407,165 @@ test('source addition rejects a competing host before changing indexes', async (
   assert.equal(s.index(id).revision, 0);
   assert.deepEqual(s.index(id).sources, ['external']);
 });
+
+test('list refreshes each shared source once, with concurrent sources and sequential pages', async (t) => {
+  const { f, s, index, ref } = await setup(t);
+  const scans = new Map<string, number>(),
+    auth = new Map<string, number>();
+  const entered = new Set<string>();
+  let release!: () => void,
+    parallel = false;
+  const barrier = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const timer = setTimeout(release, 1000);
+  t.after(() => clearTimeout(timer));
+  for (const source of ['parallel-a', 'parallel-b']) {
+    ref(source, 'one');
+    f.sources.register({
+      id: source,
+      description: source,
+      scope: {},
+      queryHelp: '{}',
+      enumerate: async (cursor) => {
+        scans.set(source, (scans.get(source) ?? 0) + 1);
+        if (!cursor) {
+          entered.add(source);
+          if (entered.size === 2) {
+            parallel = true;
+            release();
+          }
+          await barrier;
+          return {
+            items: [{ id: 'one', revision: 'v1', kind: 'text', locator: {} }],
+            next: 'page2',
+          };
+        }
+        assert.equal(cursor, 'page2');
+        return { items: [] };
+      },
+      authorize: async (objects) => {
+        auth.set(source, (auth.get(source) ?? 0) + 1);
+        return objects.map((o) => o.id);
+      },
+      query: async () => ({ items: [] }),
+      read: async () => {
+        throw Error('must not read bodies');
+      },
+    });
+  }
+  const ids = [
+    index('A', ['parallel-a']),
+    index('B', ['parallel-a', 'parallel-b']),
+    index('C', ['parallel-b']),
+  ];
+  const result = await f.invoke('MemoryIndexList', {});
+  assert.equal(parallel, true);
+  assert.deepEqual([...scans.values()], [2, 2]);
+  assert.deepEqual([...auth.values()], [3, 3]);
+  for (const id of ids) {
+    const row = result.find((x: any) => x.id === id);
+    assert.equal(row.unavailable, undefined);
+    assert(row.freshness.observedCursor);
+    assert.equal(s.boundary(id), null);
+    assert.equal(s.work(id), undefined);
+  }
+  assert.equal(f.llmCalls.length, 0);
+  assert.equal(f.workers.size, 0);
+});
+
+test('shared refresh failures preserve old observations and isolate unrelated indexes', async (t) => {
+  const { f, s, index, ref } = await setup(t);
+  let fail = false,
+    scans = 0;
+  ref('flaky', 'one');
+  f.sources.register({
+    id: 'flaky',
+    description: 'flaky',
+    scope: {},
+    queryHelp: '{}',
+    enumerate: async () => {
+      scans++;
+      if (fail) throw Error('scan unavailable');
+      return { items: [{ id: 'one', revision: 'v1', kind: 'text', locator: {} }] };
+    },
+    authorize: async (objects) => objects.map((o) => o.id),
+    query: async () => ({ items: [] }),
+    read: async () => {
+      throw Error('no bodies');
+    },
+  });
+  const a = index('A', ['flaky']),
+    b = index('B', ['flaky']),
+    c = index('C', ['external']);
+  await f.invoke('MemoryIndexList', {});
+  const previous = [a, b].map((id) => s.worker(id));
+  fail = true;
+  const result = await f.invoke('MemoryIndexList', {});
+  assert.equal(scans, 2);
+  for (const [position, id] of [a, b].entries()) {
+    const fresh = result.find((x: any) => x.id === id).freshness;
+    assert.equal(fresh.knownPending, null);
+    assert.match(fresh.lastCheckError, /scan unavailable/);
+    assert.equal(fresh.observedCursor, previous[position].latestCursor);
+    assert.equal(fresh.lastCheckedAt, previous[position].lastCheckedAt);
+  }
+  assert.equal(result.find((x: any) => x.id === c).unavailable, undefined);
+  fail = false;
+  const recovered = await f.invoke('MemoryIndexList', {});
+  assert.equal(scans, 3);
+  assert.equal(recovered.find((x: any) => x.id === a).freshness.lastCheckError, null);
+});
+
+test('shared history refresh reads each changed session once and keeps index session scopes', async (t) => {
+  const { f, s } = await setup(t);
+  const a = s.create('A', 'events', ['chat-a'], ['maka']).id;
+  const b = s.create('B', 'events', ['chat-b'], ['maka']).id;
+  await f.invoke('MemoryIndexList', {});
+  assert.deepEqual([...f.reads].sort(), ['chat-a', 'chat-b']);
+  const aCursor = s.cursor(s.worker(a).latestCursor);
+  const bCursor = s.cursor(s.worker(b).latestCursor);
+  assert.notEqual(aCursor.id, bCursor.id);
+  f.sessions.get('chat-a')!.push({ id: 'a2', type: 'user', text: 'Update' });
+  await f.invoke('MemoryIndexList', {});
+  assert.deepEqual([...f.reads].sort(), ['chat-a', 'chat-a', 'chat-b']);
+  assert.equal(s.worker(b).latestCursor, bCursor.id);
+});
+
+test('a later index reuses an already completed source refresh within the same list', async (t) => {
+  const { f, index, ref } = await setup(t);
+  let release!: () => void,
+    sharedChecks = 0,
+    sharedScans = 0;
+  const finished = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  for (const source of ['shared', 'slow-gate']) {
+    ref(source, 'one');
+    f.sources.register({
+      id: source,
+      description: source,
+      scope: {},
+      queryHelp: '{}',
+      enumerate: async () => {
+        if (source === 'shared') sharedScans++;
+        return { items: [{ id: 'one', revision: 'v1', kind: 'text', locator: {} }] };
+      },
+      authorize: async (objects) => {
+        if (source === 'shared' && ++sharedChecks === 3) setTimeout(release, 10);
+        if (source === 'slow-gate') await finished;
+        return objects.map((o) => o.id);
+      },
+      query: async () => ({ items: [] }),
+      read: async () => {
+        throw Error('no bodies');
+      },
+    });
+  }
+  index('first', ['shared']);
+  index('later', ['shared', 'slow-gate']);
+  const result = await f.invoke('MemoryIndexList', {});
+  assert.equal(sharedScans, 1);
+  assert.equal(sharedChecks, 3);
+  assert(result.every((row: any) => !row.unavailable));
+});

@@ -67,6 +67,16 @@ export type EventWaitJsonValue =
   | readonly EventWaitJsonValue[]
   | { readonly [key: string]: EventWaitJsonValue };
 
+export type EventWaitDelivery =
+  | {
+      readonly kind: 'admitted';
+      readonly turnId: string;
+      readonly runId: string;
+      readonly userMessageId: string;
+      readonly at: number;
+    }
+  | { readonly kind: 'suppressed'; readonly at: number; readonly reason: string };
+
 export interface EventWaitBase {
   readonly schemaVersion: 1;
   readonly waitId: string;
@@ -90,6 +100,7 @@ export interface EventWaitBase {
   readonly updatedAt: number;
   readonly deadlineAt: number;
   readonly observation?: EventWaitObservation;
+  readonly delivery?: EventWaitDelivery;
 }
 
 export interface EventWaitResolution {
@@ -118,6 +129,8 @@ export type EventWaitLifecycle =
   | { readonly status: 'expired'; readonly expiredAt: number };
 
 export type EventWaitRecord = EventWaitBase & EventWaitLifecycle;
+/** Source observation has no dependency on the task owner's lifecycle. */
+export type ObservedEventWaitRecord = Omit<EventWaitBase, 'goalControlLease'> & EventWaitLifecycle;
 export type EventWaitStatus = EventWaitRecord['status'];
 
 const encoder = new TextEncoder();
@@ -274,6 +287,15 @@ export function eventWaitDeliveryKey(waitId: string): string {
 
 /** Correlation only: decoding does not authenticate Goal ownership or external truth. */
 export function decodeEventWaitRecord(value: unknown): EventWaitRecord {
+  return decodeWaitRecord(value, true) as EventWaitRecord;
+}
+
+/** Owner-free observation record. Ownership is checked by the supplied store and authorizer. */
+export function decodeObservedEventWaitRecord(value: unknown): ObservedEventWaitRecord {
+  return decodeWaitRecord(value, false);
+}
+
+function decodeWaitRecord(value: unknown, goal: boolean): ObservedEventWaitRecord {
   const root = object(json(value, EVENT_WAIT_LIMITS.recordBytes, 16, 2048), 'record');
   const lifecycleKeys =
     root.status === 'waiting'
@@ -291,7 +313,7 @@ export function decodeEventWaitRecord(value: unknown): EventWaitRecord {
       'schemaVersion',
       'waitId',
       'sessionId',
-      'goalControlLease',
+      ...(goal ? ['goalControlLease'] : []),
       'sourceTurnId',
       'sourceToolCallId',
       'resource',
@@ -303,10 +325,12 @@ export function decodeEventWaitRecord(value: unknown): EventWaitRecord {
       'status',
       ...lifecycleKeys,
     ],
-    root.status === 'cancelled' ? ['priorResolution', 'observation'] : ['observation'],
+    root.status === 'cancelled'
+      ? ['priorResolution', 'observation', 'delivery']
+      : ['observation', 'delivery'],
   );
   if (r.schemaVersion !== EVENT_WAIT_SCHEMA_VERSION) invalid('schemaVersion');
-  const lease = shape(r.goalControlLease, ['goalId', 'generation']);
+  const lease = goal ? shape(r.goalControlLease, ['goalId', 'generation']) : undefined;
   const resource = shape(r.resource, ['providerId', 'connectionId', 'resourceType', 'resourceId']);
   const condition = shape(r.condition, ['typeId', 'version', 'parameters']);
   const parameters = object(
@@ -318,14 +342,18 @@ export function decodeEventWaitRecord(value: unknown): EventWaitRecord {
     ),
     'parameters',
   ) as Record<string, EventWaitJsonValue>;
-  const base: EventWaitBase = {
+  const base = {
     schemaVersion: EVENT_WAIT_SCHEMA_VERSION,
     waitId: id(r.waitId, 'waitId'),
     sessionId: id(r.sessionId, 'sessionId'),
-    goalControlLease: {
-      goalId: id(lease.goalId, 'goalId'),
-      generation: integer(lease.generation, 'generation'),
-    },
+    ...(lease
+      ? {
+          goalControlLease: {
+            goalId: id(lease.goalId, 'goalId'),
+            generation: integer(lease.generation, 'generation'),
+          },
+        }
+      : {}),
     sourceTurnId: id(r.sourceTurnId, 'sourceTurnId'),
     sourceToolCallId: text(
       r.sourceToolCallId,
@@ -348,7 +376,7 @@ export function decodeEventWaitRecord(value: unknown): EventWaitRecord {
     createdAt: integer(r.createdAt, 'createdAt'),
     updatedAt: integer(r.updatedAt, 'updatedAt'),
     deadlineAt: integer(r.deadlineAt, 'deadlineAt'),
-  };
+  } satisfies Omit<EventWaitBase, 'goalControlLease'> & { goalControlLease?: GoalControlLease };
   if (
     r.deliveryKey !== base.deliveryKey ||
     base.updatedAt < base.createdAt ||
@@ -360,6 +388,36 @@ export function decodeEventWaitRecord(value: unknown): EventWaitRecord {
     if (result < base.createdAt || result > upper) invalid('lifecycle time');
     return result;
   };
+  if (r.delivery !== undefined) {
+    const d = object(r.delivery, 'delivery');
+    if (r.status === 'waiting') invalid('delivery before resolution');
+    const terminalAt =
+      r.status === 'resolved' ? r.resolvedAt : r.status === 'expired' ? r.expiredAt : r.cancelledAt;
+    if (time(d.at) < time(terminalAt)) invalid('delivery before terminal fact');
+    if (d.kind === 'admitted') {
+      shape(d, ['kind', 'turnId', 'runId', 'userMessageId', 'at']);
+      if (r.status !== 'resolved' && r.status !== 'expired') invalid('admission without result');
+      Object.assign(base, {
+        delivery: {
+          kind: 'admitted',
+          turnId: id(d.turnId, 'delivery turn'),
+          runId: id(d.runId, 'delivery run'),
+          userMessageId: id(d.userMessageId, 'delivery message'),
+          at: time(d.at),
+        },
+      });
+    } else {
+      shape(d, ['kind', 'at', 'reason']);
+      if (d.kind !== 'suppressed') invalid('delivery kind');
+      Object.assign(base, {
+        delivery: {
+          kind: 'suppressed',
+          at: time(d.at),
+          reason: text(d.reason, 'delivery reason', EVENT_WAIT_LIMITS.reasonBytes),
+        },
+      });
+    }
+  }
   if (Object.hasOwn(r, 'observation')) {
     const x = shape(r.observation, [
       'schemaVersion',
@@ -477,15 +535,36 @@ export function decodeEventWaitRecord(value: unknown): EventWaitRecord {
 }
 
 export function assertEventWaitTransition(previous: EventWaitRecord, next: EventWaitRecord): void {
-  const a = decodeEventWaitRecord(previous);
-  const b = decodeEventWaitRecord(next);
+  const a = decodeEventWaitRecord(previous),
+    b = decodeEventWaitRecord(next);
+  if (JSON.stringify(a.goalControlLease) !== JSON.stringify(b.goalControlLease))
+    invalid('immutable goalControlLease');
+  const { goalControlLease: _a, ...before } = a;
+  const { goalControlLease: _b, ...after } = b;
+  assertObservedEventWaitTransition(before, after);
+}
+
+export function assertObservedEventWaitTransition(
+  previous: ObservedEventWaitRecord,
+  next: ObservedEventWaitRecord,
+): void {
+  const a = decodeObservedEventWaitRecord(previous);
+  const b = decodeObservedEventWaitRecord(next);
   const same = (x: unknown, y: unknown) => JSON.stringify(x) === JSON.stringify(y);
   if (same(a, b)) return;
+  if (a.delivery) invalid('immutable delivery');
+  if (b.delivery) {
+    const { delivery: _delivery, updatedAt: _updatedAt, ...rest } = b;
+    const { updatedAt: _previousTime, ...prior } = a;
+    if (same(rest, prior) && b.updatedAt >= a.updatedAt) return;
+    const { delivery: _acknowledgement, ...observation } = b;
+    assertObservedEventWaitTransition(a, observation);
+    return;
+  }
   for (const field of [
     'schemaVersion',
     'waitId',
     'sessionId',
-    'goalControlLease',
     'sourceTurnId',
     'sourceToolCallId',
     'resource',

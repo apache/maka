@@ -19,6 +19,7 @@
 
 import { useEffect, useReducer, type ReactElement, type ReactNode } from 'react';
 import {
+  Button,
   ButtonGroup,
   Icon,
   IconButton,
@@ -46,6 +47,8 @@ export interface SessionContextRevision {
 
 interface SessionContextGoalBase {
   condition: string;
+  pauseReason?: string;
+  eventWait?: { label: string; detail: string; cancelLabel: string; cancelDescription: string; onCancel(): void };
   iterations: number;
   maxIterations: number;
   /** Epoch ms when the goal was armed; the chip derives wall-clock elapsed. */
@@ -106,7 +109,7 @@ export function SessionContextLayer(props: {
     // currently executing. Both must be visually still; only paused needs an
     // attention tone.
     const paused = goal.status === 'paused';
-    const waiting = goal.status === 'waiting';
+    const waiting = goal.status === 'waiting' || goal.eventWait !== undefined;
     const elapsedMs = paused
       ? Math.max(0, goal.pausedAt - goal.setAt)
       : Math.max(0, Date.now() - goal.setAt);
@@ -337,6 +340,17 @@ export function SessionContextLayer(props: {
           {props.actions}
         </div>
       </div>
+      {props.goal?.eventWait ? (
+        <div className="maka-session-context__inner maka-session-context__wait" role="status">
+          <div className="maka-session-context__lead">
+            <Text type="supporting">{props.goal.eventWait.label}</Text>
+            <Text type="supporting" color="secondary">{props.goal.eventWait.detail}</Text>
+          </div>
+          <Tooltip content={props.goal.eventWait.cancelDescription}>
+            <Button size="sm" label={props.goal.eventWait.cancelLabel} onClick={props.goal.eventWait.onCancel} />
+          </Tooltip>
+        </div>
+      ) : props.goal?.pauseReason ? <div className="maka-session-context__inner maka-session-context__wait"><Text type="supporting" color="secondary">{props.goal.pauseReason}</Text></div> : null}
     </LayoutHeader>
   );
 }

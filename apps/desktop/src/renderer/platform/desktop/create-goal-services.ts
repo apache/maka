@@ -30,6 +30,7 @@ export function createDesktopGoalServices(
     goal: {
       get: (sessionId) => bridge.goal.get(sessionId),
       arm: (sessionId, request) => bridge.goal.arm(sessionId, request),
+      cancelEventWait: (input) => bridge.goal.cancelEventWait(input),
       clear: (sessionId) => bridge.goal.clear(sessionId),
       pause: (sessionId) => bridge.goal.pause(sessionId),
       resume: (sessionId) => bridge.goal.resume(sessionId),

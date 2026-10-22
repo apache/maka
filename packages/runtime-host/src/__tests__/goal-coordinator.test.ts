@@ -201,7 +201,7 @@ test('one Host Goal is shared across clients with CAS control and crash-clear re
     assert.equal(acquired, 2);
     coordinator.beginDrain();
     assert.equal(released, 2);
-    assert.equal(coordinator.readProjection(session.id), null);
+    assert.equal(await coordinator.readProjection(session.id), null);
     await coordinator.close();
     assert.equal(released, 2, 'close must not release Goal residency twice');
 
@@ -309,10 +309,10 @@ test('session retirement forgets a terminal Goal without recreating deleted auth
     });
     await coordinator.prepareRecovery();
 
-    const beforeRetirement = coordinator.readProjection(session.id);
+    const beforeRetirement = await coordinator.readProjection(session.id);
     const rolledBack = await coordinator.beginSessionRetirement([session.id], 'archive');
     rolledBack.rollback();
-    assert.deepEqual(coordinator.readProjection(session.id), beforeRetirement);
+    assert.deepEqual(await coordinator.readProjection(session.id), beforeRetirement);
     assert.ok(await goalStore.read(session.id), 'rollback preserves durable Goal authority');
 
     const retirement = await coordinator.beginSessionRetirement([session.id], 'archive');
@@ -323,7 +323,7 @@ test('session retirement forgets a terminal Goal without recreating deleted auth
     );
     retirement.commit();
 
-    assert.equal(coordinator.readProjection(session.id), null);
+    assert.equal(await coordinator.readProjection(session.id), null);
     assert.equal(await goalStore.read(session.id), null);
     await coordinator.close();
     assert.equal(drainRequests, 0);
@@ -1504,7 +1504,7 @@ test('a Goal armed but never carried by a Turn does not start itself after a res
 
     assert.equal(admitted, false, 'the restart admitted a Turn for a Goal no Turn had carried');
     assert.equal(evaluated, false, 'the restart evaluated a Goal no Turn had carried');
-    const goal = restarted.readProjection(session.id);
+    const goal = await restarted.readProjection(session.id);
     assert.equal(goal?.status, 'active', 'the armed Goal survives the restart untouched');
     assert.equal(goal?.iterations, 0, 'and no Turn ran for it');
     await restarted.close();
@@ -1739,7 +1739,7 @@ test('an arm admitted before the drain creates no Goal after it', async () => {
     const outcome = await arming;
     assert.equal(outcome.ok, false, 'a draining Host answered an arm with success');
     assert.equal(outcome.ok === false && outcome.error.code, 'host_draining');
-    assert.equal(host.readProjection(session.id), null, 'the drained Host holds a new Goal');
+    assert.equal(await host.readProjection(session.id), null, 'the drained Host holds a new Goal');
     for (let tick = 0; tick < 20; tick += 1) await new Promise((r) => setImmediate(r));
     assert.equal(await goalStore.read(session.id), null, 'the drain persisted a new Goal');
     await host.close();

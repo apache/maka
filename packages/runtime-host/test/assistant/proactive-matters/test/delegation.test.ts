@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { readFileSync } from 'node:fs';
+
 import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -53,11 +55,33 @@ test('delegate retries reuse child; wait and user amendment stay independent of 
     d.onFollowup = async (id, prompt, turn) => {
       try {
         assert.notEqual(id, 'session-1');
+        const available = f.filterTools(id, [...f.tools.resolve(id, []).tools, { name: 'Bash' }]);
+        assert.ok(available.some((tool: any) => tool.name === 'Bash'));
+        assert.ok(
+          available.some(
+            (tool: any) => tool.name === 'MatterSettle' && tool.discovery === 'direct',
+          ),
+        );
+        assert.ok(
+          !available.some((tool: any) =>
+            ['MatterDelegate', 'MatterTaskMessage', 'MatterTaskControl', 'MatterReply'].includes(
+              tool.name,
+            ),
+          ),
+        );
+        assert.ok(
+          f
+            .filterTools('session-1', f.tools.resolve('session-1', []).tools)
+            .some((tool: any) => tool.name === 'MatterDelegate'),
+        );
         runs++;
         const m = (await f.remote('matters.list')).matters.find((m: any) => m.sessionId === id);
         const v = await f.invoke('MatterRead', { activationId: m.activation.id }, turn, id);
         const inbox = await f.invoke('MatterReadFile', { path: v.files.inbox }, turn, id);
-        if (runs === 2) assert.match(JSON.stringify(inbox), /只验证测试环境/);
+        if (runs === 2) {
+          assert.match(JSON.stringify(inbox), /只验证测试环境/);
+          assert.match(JSON.stringify(inbox), /coordinator/);
+        }
         await f.invoke(
           'MatterWriteFile',
           {
@@ -70,8 +94,7 @@ test('delegate retries reuse child; wait and user amendment stay independent of 
         await f.invoke(
           'MatterSettle',
           {
-            expectedRevision: v.revision,
-            stateFile: v.files.draft,
+            note: readFileSync(v.files.draft, 'utf8'),
             disposition: runs === 1 ? 'wait' : 'complete',
             ...(runs === 1
               ? { waitingFor: '等待供应商结果', wakes: [{ kind: 'at', at: Date.now() + 60000 }] }
@@ -214,8 +237,7 @@ test('completed task reaches its idle parent without heartbeat and is admitted o
         await f.invoke(
           'MatterSettle',
           {
-            expectedRevision: v.revision,
-            stateFile: v.files.draft,
+            note: readFileSync(v.files.draft, 'utf8'),
             disposition: 'complete',
             reason: '已验收',
             summary: '读取验收记录',
@@ -293,8 +315,7 @@ for (const accepted of [false, true])
           await f.invoke(
             'MatterSettle',
             {
-              expectedRevision: v.revision,
-              stateFile: v.files.draft,
+              note: readFileSync(v.files.draft, 'utf8'),
               disposition: 'complete',
               reason: '已完成',
               summary: '已核对',
@@ -358,8 +379,7 @@ test('busy parent defers feedback; an accepted but missing reply survives restar
       await f.invoke(
         'MatterSettle',
         {
-          expectedRevision: v.revision,
-          stateFile: v.files.draft,
+          note: readFileSync(v.files.draft, 'utf8'),
           disposition: 'complete',
           reason: '证据完整',
           summary: '验收核对',
@@ -435,8 +455,7 @@ test('waiting for user approval remains active and is visible to the owner', asy
       await f.invoke(
         'MatterSettle',
         {
-          expectedRevision: v.revision,
-          stateFile: v.files.draft,
+          note: readFileSync(v.files.draft, 'utf8'),
           disposition: 'complete',
           reason: '已完成',
           summary: '已核对',
@@ -507,8 +526,7 @@ test('quiet interim progress is not an error or replayed for changed waiting det
       await f.invoke(
         'MatterSettle',
         {
-          expectedRevision: v.revision,
-          stateFile: v.files.draft,
+          note: readFileSync(v.files.draft, 'utf8'),
           disposition: runs < 3 ? 'wait' : 'complete',
           reason: '核对实际证据',
           summary: '只读检查',
@@ -613,8 +631,7 @@ test('legacy runTimeoutMs cannot cancel a live review or evidence repair before 
         id,
       );
       const submission = {
-        expectedRevision: v.revision,
-        stateFile: v.files.draft,
+        note: readFileSync(v.files.draft, 'utf8'),
         disposition: 'complete',
         reason: 'Work finished',
         summary: 'Report ready',

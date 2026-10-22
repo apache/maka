@@ -89,6 +89,23 @@ test('new runtime databases use incremental vacuum before operational schema cre
   }
 });
 
+test('an operational opener configures the empty file left by another connection', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-empty-open-'));
+  const first = new DatabaseSync(join(root, 'runtime.sqlite'));
+  try {
+    const lease = acquireOperationalStateDatabase(root);
+    try {
+      assert.equal(lease.database.prepare('PRAGMA auto_vacuum').get()?.auto_vacuum, 2);
+      assert.equal(first.prepare('PRAGMA auto_vacuum').get()?.auto_vacuum, 2);
+    } finally {
+      lease.close();
+    }
+  } finally {
+    first.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('workflow 12 upgrade adds wait storage atomically and preserves every released row and schema scope', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-operational-workflow-12-'));
   const databasePath = join(root, 'runtime.sqlite');
@@ -196,6 +213,7 @@ test('workflow 12 upgrade adds wait storage atomically and preserves every relea
         [
           'workflow_event_waits_by_session',
           'workflow_event_waits_by_status',
+          'workflow_event_waits_delivery',
           'workflow_event_waits_observation_order',
           'workflow_event_waits_one_active_session',
           'workflow_event_waits_pending',

@@ -297,6 +297,14 @@ export class GoalManager {
     });
   }
 
+  adoptAuthority(goal: GoalState, controlLease: GoalControlLease): void {
+    if (goal.id !== controlLease.goalId) throw new Error('Invalid Goal authority');
+    this.goals.set(goal.sessionId, {
+      state: Object.freeze({ ...goal }),
+      controlLease: Object.freeze({ ...controlLease }),
+    });
+  }
+
   matchesControlLease(sessionId: string, lease: GoalControlLease): boolean {
     return sameGoalControlLease(this.goals.get(sessionId)?.controlLease, lease);
   }

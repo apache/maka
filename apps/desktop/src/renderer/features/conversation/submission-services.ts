@@ -48,7 +48,7 @@ export interface ConversationMessageCommand {
 export type ConversationMessageSubmission =
   | {
       readonly ok: true;
-      readonly disposition: 'turn_started' | 'steering' | 'followup' | 'locally_saved';
+      readonly disposition: 'turn_started' | 'steering' | 'followup' | 'locally_saved' | 'inbox';
       readonly turnId?: string;
       readonly attachments: AttachmentRef[];
       readonly inlineReferences: InlineReference[];

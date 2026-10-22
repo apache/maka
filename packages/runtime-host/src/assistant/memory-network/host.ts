@@ -36,7 +36,6 @@ export async function initializeMemory(
     tickMs: 30000,
     intervalMs: 43200000,
     retryMs: 60000,
-    runTimeoutMs: 600000,
   })) {
     const value = config[key] ?? fallback;
     if (!Number.isSafeInteger(value) || value < 1 || value > 2147483647)
@@ -194,14 +193,18 @@ export async function initializeMemory(
   );
   register(
     'MemoryIndexList',
-    'List a compact directory of ALL available index IDs, names, organizing criteria and essential freshness. Use MemoryIndexRead for the complete document directory, MemoryIndexContent for batch/full reading or search. Automatically refreshes source observations before returning, updating freshness/knownPending; does not organize the index or advance coveredCursor.',
+    'List a compact directory of ALL available index IDs, names, organizing criteria and essential freshness. Use MemoryIndexRead for the complete document directory, MemoryIndexContent for batch/full reading or search. Automatically refreshes each distinct source once per list call, with different sources refreshed concurrently, updating freshness/knownPending; does not organize the index or advance coveredCursor.',
     z.object({}),
     async () => {
       await ctx.sessionQuery.historyList();
       const results = [];
-      for (const { covered, view, sessions, ...index } of store.list()) {
+      const indexes = store.list();
+      const observations = await controller.observeMany(indexes.map((index) => index.id));
+      for (const [position, { covered, view, sessions, ...index }] of indexes.entries()) {
         try {
-          const allowed = await controller.observe(index.id);
+          const observation = observations[position];
+          if (observation.status === 'rejected') throw observation.reason;
+          const allowed = observation.value;
           store.assertIndexVisible(index.id, allowed);
           const f = controller.freshness(index.id, allowed);
           results.push({
@@ -243,7 +246,7 @@ export async function initializeMemory(
   );
   register(
     'MemoryIndexCreate',
-    'Standardize a request to organize an index: natural-language criterion plus an exact history cursor from MemoryRange. Runs an ordinary independent Maka Agent with its normal tools. It chooses searches, types and organization; no batch queue or content schema. Returns background progress immediately by default; use MemoryIndexRead to inspect completion. Set background=false only when explicitly waiting for the full result. New source arrivals remain incremental.',
+    'Create an index from the user’s organizing requirements and a source-range cursor from MemoryRange. Starts a background organizing job by default; returns its identity and admission/progress, not a guarantee of completion. The index Agent chooses how to read and organize. New indexes join the shared maintenance schedule (12 hours by default). All participating indexes are maintained by one Agent per owner, which decides what needs changing; MemoryIndexControl configure changes the shared interval. Completion/failure feedback goes to the owning assistant. background=false waits for the result.',
     z.object({
       name: z.string().min(1).max(160),
       instructions: z.string().min(1).max(8000),
@@ -280,7 +283,7 @@ export async function initializeMemory(
   );
   register(
     'MemoryIndexCreateGroup',
-    'Organize numbered index definitions in ONE independent Agent Session. The Agent chooses order and reuses reads; criteria, ranges and checkpoints remain independent. Existing members accept number/indexId. A group occupies one job; capacity returns unstarted IDs for explicit retry. Background by default.',
+    'Create or continue several numbered indexes in one organizing job. Each index retains its own requirements, content and coverage; existing members use number/indexId. Returns member IDs and job admission; capacity rejection includes unstarted IDs for retry. Background by default. New indexes join the shared maintenance schedule (12 hours by default). Completion/failure feedback goes to the owning assistant; one member completing does not complete the group.',
     z.object({
       cursor: id,
       indexes: z
@@ -384,7 +387,7 @@ export async function initializeMemory(
   );
   register(
     'MemoryIndexMaintain',
-    'Ask the ordinary background Agent to continue organizing this index from its exact saved range. A grouped member reuses its one group job. Preserves unfinished work. Reevaluate time-dependent criteria even without source changes; unchanged content need not be rewritten. background=true returns admission/capacity immediately; default waits. Readers remain independent.',
+    'Run one organizing round for an existing index, reusing its unfinished range or shared group job. Does not change the maintenance schedule. Time-dependent criteria are reevaluated even without new source data. background=true returns job admission immediately; otherwise waits for the result. Use existing job progress/feedback to follow an active round rather than starting duplicate work.',
     z.object({ indexId: id, background: z.boolean().default(false) }),
     async (input: any, call: any) => {
       await visible(input.indexId);
@@ -399,18 +402,37 @@ export async function initializeMemory(
   );
   register(
     'MemoryIndexControl',
-    'Configure periodic index maintenance. Default interval is 12 hours. Each due round reevaluates the criterion against current UTC, even without source changes, so rolling windows can expire old entries. pause stops future scheduled checks (an active round may finish); resume schedules the next check after intervalMs. configure changes the interval without enabling a paused index. MemoryIndexMaintain runs one round now without changing this schedule setting.',
+    'Configure the GLOBAL index maintenance interval with action=configure and intervalMs (indexId optional); this affects all indexes and does not enable paused indexes. One shared timer hands participating indexes to one organizing Agent, which decides what needs updating or can be handled together. With indexId, pause excludes that index from future rounds but lets active work finish; resume rejoins the shared schedule without resetting its clock. stop requires indexId, cancels its active shared organizing job and disables maintenance for ALL indexes in that job (or its creation group if idle). Contents and checkpoints are preserved. Returns affected state; it does not create a separate follow-up or user reminder. Use MemoryIndexMaintain for one immediate round.',
     z.object({
-      indexId: id,
-      action: z.enum(['pause', 'resume', 'configure']),
+      indexId: id.optional(),
+      action: z.enum(['pause', 'resume', 'configure', 'stop']),
       intervalMs: z.number().int().min(1).max(2147483647).optional(),
     }),
     async (input: any, call: any) => {
+      if (!input.indexId) {
+        if (input.action !== 'configure' || input.intervalMs === undefined)
+          throw Error('Without indexId, use configure with intervalMs for the shared schedule');
+        for (const index of store.list())
+          store.assertIndexVisible(index.id, await visible(index.id));
+        controller.configureSchedule(input.intervalMs);
+        return {
+          schedule: controller.scheduleInfo(),
+          effect: { target: 'global_index_maintenance', action: 'configure' },
+        };
+      }
       const allowed = await visible(input.indexId);
       store.assertIndexVisible(input.indexId, allowed);
       await controller.attach(input.indexId, call);
-      controller.control(input.indexId, input.action, input.intervalMs);
-      return controller.summary(input.indexId, allowed);
+      await controller.control(input.indexId, input.action, input.intervalMs);
+      return {
+        ...controller.summary(input.indexId, allowed),
+        schedule: controller.scheduleInfo(),
+        effect: {
+          target: input.intervalMs !== undefined ? 'global_index_maintenance' : 'index_maintenance',
+          action: input.action,
+          indexId: input.indexId,
+        },
+      };
     },
     true,
   );

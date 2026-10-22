@@ -90,7 +90,7 @@ export class InitiativeStore {
       return s;
     });
   }
-  configure(binding: { sessionId: string; cwd: string }, intervalMs: number) {
+  configure(binding: { sessionId: string; cwd: string }, intervalMs: number, enabled = true) {
     return this.transaction(() => {
       this.fence();
       const old = this.get();
@@ -100,10 +100,11 @@ export class InitiativeStore {
       const s = {
         version: 2,
         ...binding,
+        discoverySession: old?.discoverySession,
         intervalMs,
-        enabled: true,
+        enabled,
         revision: (old?.revision ?? 0) + 1,
-        nextAt: Date.now() + intervalMs,
+        nextAt: enabled ? Date.now() + intervalMs : null,
         active: null,
         lastError: null,
         lastCheckedAt: old?.lastCheckedAt ?? null,

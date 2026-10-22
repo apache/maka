@@ -484,6 +484,12 @@ type ShellCopy = {
     resumeFailedFallback: string;
     goalClearFailedTitle: string;
     goalClearFailedFallback: string;
+    goalEventWaitPending: string;
+    goalEventWaitUnknown: string;
+    goalEventWaitReady: string;
+    goalEventWaitCancel: string;
+    goalEventWaitCancelDescription: string;
+    goalEventWaitConflict: string;
     goalPauseFailedTitle: string;
     goalPauseFailedFallback: string;
     goalResumeFailedTitle: string;
@@ -1237,6 +1243,12 @@ const shellCopyByLocaleZhCn: ShellCopy = {
       resumeFailedFallback: '无法继续这一轮，请检查任务状态后重试。',
       goalClearFailedTitle: '停止目标失败',
       goalClearFailedFallback: '目标仍可能继续运行，请立即重试。',
+      goalEventWaitPending: '正在等待后台任务',
+      goalEventWaitUnknown: '暂时无法核验后台任务状态',
+      goalEventWaitReady: '结果已就绪，等待继续处理',
+      goalEventWaitCancel: '取消等待并暂停',
+      goalEventWaitCancelDescription: '取消等待并暂停目标；后台任务继续运行。',
+      goalEventWaitConflict: '等待已变化或已开始继续执行，状态正在刷新。',
       goalPauseFailedTitle: '暂停目标失败',
       goalPauseFailedFallback: '目标可能仍在自动续行，请立即重试。',
       goalResumeFailedTitle: '恢复目标失败',
@@ -1774,6 +1786,12 @@ const shellCopyByLocaleZhTw: ShellCopy = {
       resumeFailedFallback: '無法啟動安全恢復，請檢查任務狀態後重試。',
       goalClearFailedTitle: '停止目標失敗',
       goalClearFailedFallback: '目標仍可能繼續執行，請立即重試。',
+      goalEventWaitPending: '正在等待背景工作',
+      goalEventWaitUnknown: '暫時無法核驗背景工作狀態',
+      goalEventWaitReady: '結果已就緒，等待繼續處理',
+      goalEventWaitCancel: '取消等待並暫停',
+      goalEventWaitCancelDescription: '取消等待並暫停目標；背景工作繼續執行。',
+      goalEventWaitConflict: '等待已變更或已開始繼續執行，狀態正在更新。',
       goalPauseFailedTitle: '暫停目標失敗',
       goalPauseFailedFallback: '目標可能仍在自動續行，請立即重試。',
       goalResumeFailedTitle: '恢復目標失敗',
@@ -2360,6 +2378,12 @@ const shellCopyByLocaleEn: ShellCopy = {
       resumeFailedFallback: 'This turn could not be continued. Check the task state and try again.',
       goalClearFailedTitle: 'Could not stop the goal',
       goalClearFailedFallback: 'The goal may still be running. Try again now.',
+      goalEventWaitPending: 'Waiting for background task',
+      goalEventWaitUnknown: 'Background task state temporarily unverifiable',
+      goalEventWaitReady: 'Result available, waiting to continue',
+      goalEventWaitCancel: 'Cancel wait and pause',
+      goalEventWaitCancelDescription: 'Cancel the wait and pause the Goal. The background task keeps running.',
+      goalEventWaitConflict: 'The wait changed or its continuation was admitted. Refreshing status.',
       goalPauseFailedTitle: 'Could not pause the goal',
       goalPauseFailedFallback: 'The goal may still be continuing. Try again now.',
       goalResumeFailedTitle: 'Could not resume the goal',

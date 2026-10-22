@@ -24,7 +24,10 @@ import { z } from 'zod';
 import { createMatterStore } from './store.js';
 import { MatterController } from './controller.js';
 import { buildMatterTools } from './tools.js';
-import { MATTER_INSTRUCTIONS, buildMatterStepContext } from './prompt.js';
+import { createMatterObserver } from './condition-observer.js';
+import { conditionReader, runCondition } from './condition.js';
+import { deliveredMatterInput } from './settlement-context.js';
+import { MATTER_INSTRUCTIONS } from './prompt.js';
 
 const startInput = z.object({
   title: z.string().trim().min(1).max(120),
@@ -50,6 +53,9 @@ export async function initializeMatters(
   const controller = new MatterController(ctx, store, {
     tickMs: config.tickMs ?? 5000,
   });
+  controller.options.observer = createMatterObserver(ctx, store, controller.owner, (error) => {
+    controller.lastError = String(error);
+  });
   ctx.onClose(() => store.close());
   const activate = () => {
     controller.start();
@@ -66,7 +72,7 @@ export async function initializeMatters(
   ctx.tools.register({
     name: 'MatterStart',
     description:
-      'Start durable follow-up only in a session opened from the long-task dialog. Read returned file paths, work normally, then write draft.md and MatterSettle. One follow-up per conversation.',
+      'Start durable follow-up only in a session opened from the long-task dialog. Read returned file paths, work normally, then call MatterSettle with the result. One follow-up per conversation.',
     parameters: startInput,
     categoryHint: 'file_write',
     executionSemantics: 'exclusive_step',
@@ -74,6 +80,15 @@ export async function initializeMatters(
   });
   for (const tool of buildMatterTools({
     store,
+    deliveredInput: async (call) =>
+      deliveredMatterInput((await ctx.readRuntimeEvents?.(call.sessionId, call.runId)) ?? [], call),
+    testCondition: (definition, call) =>
+      runCondition(
+        definition,
+        null,
+        conditionReader(ctx, call),
+        AbortSignal.any([call.abortSignal, AbortSignal.timeout(30_000)]),
+      ),
     review: (submission) => reviewMatter(ctx, submission),
     changed() {},
     authorize() {
@@ -125,19 +140,20 @@ export async function initializeMatters(
       return {
         allow: false,
         feedback:
-          'This follow-up turn has no exit decision yet. Keep doing useful work, or write draft.md and call MatterSettle with continue, wait (a concrete waitingFor condition and future check time), or complete.',
+          'This follow-up turn has no exit decision yet. Keep doing useful work, or call MatterSettle with continue, wait (a concrete waitingFor condition and future check time), or complete.',
       };
     },
   });
   ctx.systemPrompt.context({
     name: 'proactive-matters.clock',
     order: 800,
-    text: ({ sessionId }: any) => {
-      const m = store.forSession(sessionId);
-      return m && !['completed', 'cancelled'].includes(m.status)
-        ? buildMatterStepContext()
-        : undefined;
-    },
+    text: ({ sessionId, turnId }: any) => controller.stepContext(sessionId, turnId),
+  });
+
+  ctx.systemPrompt.context({
+    name: 'proactive-matters.inbox',
+    order: 801,
+    text: ({ sessionId, turnId }: any) => controller.stepInboxContext(sessionId, turnId),
   });
 
   // Internal service operations. Desktop protocol exposes only the assistant's owner-bound API.

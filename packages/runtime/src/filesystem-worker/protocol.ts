@@ -18,17 +18,14 @@
  */
 
 import { z } from 'zod';
-import {
-  isFileMutationObservation,
-  type FileMutationObservation,
-} from '@maka/core/file-mutation-evidence';
+import { FileMutationGuardSchema } from '../file-mutation-guard-contract.js';
 import { readContinuationSchema, readPageSchema } from '../read-page.js';
 import { validateSandboxBoundaryExpansion } from '@maka/core/sandbox-boundary';
 import { GREP_MAX_LINES, GREP_MAX_LINES_PER_FILE, GREP_MAX_MATCH_BYTES } from '../grep-search.js';
 
-// v13 adds Write/Edit preparation and guarded execution to v12 chat image reads.
+// v14 replaces persisted-evidence observations with transient content guards.
 // Older workers must be rejected rather than silently discard mutation guards.
-export const FILESYSTEM_WORKER_PROTOCOL_VERSION = 13 as const;
+export const FILESYSTEM_WORKER_PROTOCOL_VERSION = 14 as const;
 
 /** The single authority on which operation kinds are writes. Shared by the
  * client (permission/identity decisions) and the worker (operation guards) so
@@ -127,7 +124,7 @@ export const FilesystemWorkerOperationSchema = z.union([
       cwd,
       path,
       content: z.string(),
-      observation: z.custom<FileMutationObservation>(isFileMutationObservation).optional(),
+      guard: FileMutationGuardSchema.optional(),
     })
     .strict(),
   z.object({ kind: z.literal('prepare_write'), cwd, path, content: z.string() }).strict(),
@@ -157,7 +154,7 @@ export const FilesystemWorkerOperationSchema = z.union([
       path,
       oldString: z.string(),
       newString: z.string(),
-      observation: z.custom<FileMutationObservation>(isFileMutationObservation).optional(),
+      guard: FileMutationGuardSchema.optional(),
     })
     .strict(),
   z
@@ -209,7 +206,7 @@ export const FilesystemWorkerResultSchema = z.discriminatedUnion('kind', [
   z
     .object({
       kind: z.enum(['prepare_write', 'prepare_edit']),
-      observation: z.custom<FileMutationObservation>(isFileMutationObservation).optional(),
+      guard: FileMutationGuardSchema.optional(),
     })
     .strict(),
   readPageSchema.extend({ kind: z.literal('read') }).strict(),

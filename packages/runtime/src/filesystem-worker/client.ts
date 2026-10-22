@@ -18,7 +18,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import type { FileMutationDirectories } from '@maka/core/file-mutation-evidence';
+import type { FileMutationDirectories } from '../file-mutation-guard-contract.js';
 import { lstat, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -101,7 +101,7 @@ export interface FilesystemWorkerExecuteInput {
   permissionProfile?: PermissionProfile;
   abortSignal?: AbortSignal;
   /**
-   * The caller's T0 observation, see `FilesystemWorkerExpectedIdentity`.
+   * The caller's T0 guard, see `FilesystemWorkerExpectedIdentity`.
    *
    * REQUIRED for write operations: the client throws at runtime when a write
    * arrives without one, so a JavaScript caller (which TypeScript cannot
@@ -380,7 +380,7 @@ export class FilesystemWorkerClient {
     if (
       operation.kind === 'prepare_write' ||
       operation.kind === 'prepare_edit' ||
-      ((operation.kind === 'write' || operation.kind === 'edit') && operation.observation)
+      ((operation.kind === 'write' || operation.kind === 'edit') && operation.guard)
     ) {
       try {
         hostDirectories = {
@@ -395,15 +395,15 @@ export class FilesystemWorkerClient {
           'Write directories could not be observed.',
         );
       }
-      if ((operation.kind === 'write' || operation.kind === 'edit') && operation.observation) {
-        const observation = operation.observation;
+      if ((operation.kind === 'write' || operation.kind === 'edit') && operation.guard) {
+        const guard = operation.guard;
         if (
-          observation.workspace.path !== canonicalCwd ||
-          observation.target.path !== target.enforcementPath ||
-          observation.workspace.identity.dev !== hostDirectories.workspace.dev ||
-          observation.workspace.identity.ino !== hostDirectories.workspace.ino ||
-          observation.target.parentIdentity.dev !== hostDirectories.parent.dev ||
-          observation.target.parentIdentity.ino !== hostDirectories.parent.ino
+          guard.workspace.path !== canonicalCwd ||
+          guard.target.path !== target.enforcementPath ||
+          guard.workspace.identity.dev !== hostDirectories.workspace.dev ||
+          guard.workspace.identity.ino !== hostDirectories.workspace.ino ||
+          guard.target.parentIdentity.dev !== hostDirectories.parent.dev ||
+          guard.target.parentIdentity.ino !== hostDirectories.parent.ino
         ) {
           throw clientError(
             'path_changed',

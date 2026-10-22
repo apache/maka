@@ -20,13 +20,14 @@
 import { searchFiles, GrepSearchError, type GrepRunner } from '../grep-search.js';
 import {
   prepareFileMutation,
+  FileMutationEditConflict,
   executePreparedFileMutation,
   buildFileEditResult,
   executePreparedFileWrite,
   buildFileWriteResult,
-} from '../file-mutation-evidence.js';
+} from '../file-mutation-guard.js';
 import { promises as fs } from 'node:fs';
-import type { FileMutationDirectories } from '@maka/core/file-mutation-evidence';
+import type { FileMutationDirectories } from '../file-mutation-guard-contract.js';
 import { globFiles } from '../glob-search.js';
 import { dirname, isAbsolute, parse, resolve } from 'node:path';
 import { isPathInside } from '../path-containment.js';
@@ -134,7 +135,7 @@ export async function executeFilesystemOperation(
         'Write',
         operationBoundary,
       );
-      const observation = await prepareFileMutation(
+      const guard = await prepareFileMutation(
         operation.cwd,
         path,
         operation.kind === 'prepare_write'
@@ -142,7 +143,7 @@ export async function executeFilesystemOperation(
           : { kind: 'edit', oldString: operation.oldString, newString: operation.newString },
         dependencies.hostDirectories,
       );
-      return { kind: operation.kind, ...(observation ? { observation } : {}) };
+      return { kind: operation.kind, ...(guard ? { guard } : {}) };
     }
     case 'read': {
       const path = await resolveExistingAllowed(
@@ -188,12 +189,12 @@ export async function executeFilesystemOperation(
         'Write',
         operationBoundary,
       );
-      if (operation.observation) {
+      if (operation.guard) {
         return executePreparedFileWrite(
           operation.cwd,
           path,
           operation.content,
-          operation.observation,
+          operation.guard,
           dependencies.hostDirectories,
         );
       }
@@ -289,12 +290,12 @@ export async function executeFilesystemOperation(
         'write',
         operationBoundary,
       );
-      if (operation.observation)
+      if (operation.guard)
         return executePreparedFileMutation(
           operation.cwd,
           path,
           operation,
-          operation.observation,
+          operation.guard,
           dependencies.hostDirectories,
         );
       const handle = await openStableTarget({
@@ -486,7 +487,7 @@ function normalizeOperationError(error: unknown): FilesystemOperationError {
   if (error instanceof StableWriteFailure) {
     return operationError(error.code, error.message);
   }
-  if (error instanceof ApplyPatchRejectedError) {
+  if (error instanceof ApplyPatchRejectedError || error instanceof FileMutationEditConflict) {
     return operationError('edit_conflict', error.message);
   }
   const code = nodeErrorCode(error);

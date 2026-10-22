@@ -18,8 +18,8 @@
  */
 
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -45,8 +45,65 @@ test('Windows launchers set Node mode before starting the entry', () => {
   assert.equal(launchers.command, join(dir, 'opencli-mcp.cmd'));
   assert.equal(
     readFileSync(launchers.host, 'utf8'),
-    '@echo off\r\nset ELECTRON_RUN_AS_NODE=1\r\n"C:\\Maka\\Maka.exe" "C:\\Maka\\main.js" host\r\n',
+    '@echo off\r\nsetlocal DisableDelayedExpansion\r\nfor /f "tokens=2 delims=:." %%c in (\'chcp\') do set "MAKA_OPENCLI_CODE_PAGE=%%c"\r\nchcp 65001 >nul\r\nset ELECTRON_RUN_AS_NODE=1\r\n"C:\\Maka\\Maka.exe" "C:\\Maka\\main.js" host\r\nset "MAKA_OPENCLI_EXIT_CODE=%ERRORLEVEL%"\r\nchcp %MAKA_OPENCLI_CODE_PAGE% >nul\r\nexit /b %MAKA_OPENCLI_EXIT_CODE%\r\n',
   );
+});
+
+test('Windows launchers preserve Unicode and batch metacharacters without adding protocol output', { skip: process.platform !== 'win32' }, (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'maka-opencli-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const directory = join(root, '中文 %MAKA_LAUNCHER_TEST% !MAKA_LAUNCHER_TEST! & files');
+  mkdirSync(directory);
+  const entry = join(directory, 'entry.mjs');
+  writeFileSync(entry, 'console.log(JSON.stringify({ args: process.argv.slice(2), node: process.env.ELECTRON_RUN_AS_NODE })); process.exitCode = 23;');
+  writeOpencliLaunchers(directory, 'win32', process.execPath, entry);
+  for (const page of [936, 65001]) {
+    for (const [file, mode] of [['opencli-mcp.cmd', 'stdio'], ['opencli-mcp-host.cmd', 'host']]) {
+      // CALL returns to the same console, where the caller must retain its code
+      // page as well as the child's exit status. Keep diagnostics off stdout.
+      writeFileSync(join(directory, 'caller.cmd'), `@echo off\r\nchcp ${page} >nul\r\ncall ${file}\r\nset "childExit=%errorlevel%"\r\nchcp >code-page.txt\r\nexit /b %childExit%\r\n`);
+      const result = spawnSync(process.env.ComSpec ?? 'cmd.exe', ['/d', '/v:on', '/s', '/c', 'caller.cmd'], {
+        cwd: directory,
+        env: { ...process.env, MAKA_LAUNCHER_TEST: 'expanded' },
+        encoding: 'utf8',
+        windowsHide: true,
+        windowsVerbatimArguments: true,
+        timeout: 10_000,
+      });
+      assert.ifError(result.error);
+      assert.equal(result.status, 23, result.stderr);
+      assert.equal(result.stderr, '');
+      assert.deepEqual(JSON.parse(result.stdout), { args: [mode], node: '1' });
+      assert.equal(Number(readFileSync(join(directory, 'code-page.txt'), 'utf8').match(/:\s*(\d+)/u)?.[1]), page);
+    }
+  }
+});
+
+test('Windows launchers restore code pages reported with localized trailing punctuation', { skip: process.platform !== 'win32' }, (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'maka-opencli-locale-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const entry = join(directory, 'entry.mjs');
+  writeFileSync(entry, 'process.stdout.write("protocol"); process.exitCode = 23;');
+  for (const page of [850, 936, 65001]) {
+    const launchers = writeOpencliLaunchers(directory, 'win32', process.execPath, entry);
+    // Simulate only the localized query response; cmd.exe still executes the
+    // generated parser, changes the real code page and restores it on return.
+    const script = readFileSync(launchers.command, 'utf8');
+    assert.ok(script.includes("in ('chcp')"));
+    writeFileSync(launchers.command, script.replace("in ('chcp')", `in ('echo Aktive Codepage: ${page}.')`));
+    writeFileSync(join(directory, 'caller.cmd'), `@echo off\r\nchcp ${page} >nul\r\ncall opencli-mcp.cmd\r\nset "childExit=%errorlevel%"\r\nchcp >code-page.txt\r\nexit /b %childExit%\r\n`);
+    const result = spawnSync(process.env.ComSpec ?? 'cmd.exe', ['/d', '/v:on', '/c', 'caller.cmd'], {
+      cwd: directory,
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 10_000,
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status, 23, result.stderr);
+    assert.equal(result.stderr, '');
+    assert.equal(result.stdout, 'protocol');
+    assert.equal(Number(readFileSync(join(directory, 'code-page.txt'), 'utf8').match(/:\s*(\d+)/u)?.[1]), page);
+  }
 });
 
 test('the host manifest goes to Chrome and existing browsers, never over another live install', () => {
@@ -97,7 +154,10 @@ test('Windows opens the store page in installed Chrome, not the default browser'
   const chrome = join(local, 'Google', 'Chrome', 'Application', 'chrome.exe');
   const received = join(local, 'received-url');
   mkdirSync(dirname(chrome), { recursive: true });
-  writeFileSync(chrome, `#!/bin/sh\nprintf '%s' "$1" > '${received}'\n`, { mode: 0o755 });
+  // The test polls for `received`, so the URL must be published atomically:
+  // a redirect would create the file before printf writes it and the poll
+  // could observe an empty file.
+  writeFileSync(chrome, `#!/bin/sh\nprintf '%s' "$1" > '${received}.tmp'\nmv '${received}.tmp' '${received}'\n`, { mode: 0o755 });
   const url = 'https://chromewebstore.google.com/detail/opencli';
   const defaultBrowser: string[] = [];
   const openExternal = async (target: string) => {

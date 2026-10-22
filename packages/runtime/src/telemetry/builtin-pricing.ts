@@ -79,11 +79,34 @@ const LOCAL_PRICING_SUPPLEMENT: readonly PricingConfig[] = [
   },
 ];
 
+// https://platform.minimax.io/docs/pricing/overview.md (USD per million tokens).
+// M3 uses Standard <=512k estimates. This flat schema cannot represent its
+// >512k rates (0.60/2.40/0.12) or Priority's 1.5x multiplier.
+const MINIMAX_RELEASE_PRICING: readonly PricingConfig[] = ['MiniMax', 'MiniMax-cn'].flatMap(
+  (provider) => [
+    {
+      modelKey: `${provider}:MiniMax-M3.1-Flash`,
+      inputUsdPer1M: 0.15,
+      outputUsdPer1M: 0.6,
+      cacheReadUsdPer1M: 0.015,
+    },
+    {
+      modelKey: `${provider}:MiniMax-M3`,
+      inputUsdPer1M: 0.3,
+      outputUsdPer1M: 1.2,
+      cacheReadUsdPer1M: 0.06,
+    },
+  ],
+);
+const releasePricingKeys = new Set(MINIMAX_RELEASE_PRICING.map(({ modelKey }) => modelKey));
 const generatedPricingKeys = new Set(GENERATED_MODEL_PRICING.map(({ modelKey }) => modelKey));
 
 export const BUILTIN_PRICING: readonly PricingConfig[] = [
-  ...GENERATED_MODEL_PRICING,
-  ...LOCAL_PRICING_SUPPLEMENT.filter(({ modelKey }) => !generatedPricingKeys.has(modelKey)),
+  ...MINIMAX_RELEASE_PRICING,
+  ...GENERATED_MODEL_PRICING.filter(({ modelKey }) => !releasePricingKeys.has(modelKey)),
+  ...LOCAL_PRICING_SUPPLEMENT.filter(
+    ({ modelKey }) => !generatedPricingKeys.has(modelKey) && !releasePricingKeys.has(modelKey),
+  ),
 ];
 
 const byKey = new Map(BUILTIN_PRICING.map((pricing) => [pricing.modelKey, pricing]));

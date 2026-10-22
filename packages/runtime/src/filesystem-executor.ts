@@ -29,8 +29,8 @@
 // "full access" stricter than ask mode, which grants :slash_tmp outright (#2083).
 
 import { Buffer } from 'node:buffer';
-import { buildFileWriteResult, buildFileEditResult } from './file-mutation-evidence.js';
-import type { FileMutationObservation } from '@maka/core/file-mutation-evidence';
+import { buildFileWriteResult, buildFileEditResult } from './file-mutation-guard.js';
+import type { FileMutationGuard } from './file-mutation-guard-contract.js';
 import { readPage } from './read-page.js';
 import { formatJsonText } from './format-json.js';
 import { lstat, realpath, stat } from 'node:fs/promises';
@@ -126,7 +126,7 @@ export interface FilesystemExecutor {
 }
 
 export interface PreparedFilesystemMutation {
-  observation?: FileMutationObservation;
+  guard?: FileMutationGuard;
   execute(): Promise<FilesystemResult>;
   cancel(): void;
 }
@@ -310,7 +310,7 @@ export function createBoundaryFilesystemExecutor(
           ? { executionBoundary: structuredClone(input.executionBoundary) }
           : {}),
       };
-      // Keep an immutable private copy: neither caller nor evidence consumers own execution args.
+      // Keep an immutable private copy: the caller never owns execution args.
       const operation = structuredClone(call.operation);
       const { key, canonicalPath } = await writeLockTarget(call, operation.path);
       const expectedIdentity = await captureIdentityAtLockAcquisition(canonicalPath, true);
@@ -341,16 +341,14 @@ export function createBoundaryFilesystemExecutor(
         );
         if (prepared.kind !== (operation.kind === 'write' ? 'prepare_write' : 'prepare_edit'))
           throw new Error('Invalid Write preparation response');
-        const observation = prepared.observation
-          ? structuredClone(prepared.observation)
-          : undefined;
+        const guard = prepared.guard ? structuredClone(prepared.guard) : undefined;
         if (
-          observation &&
+          guard &&
           (expectedIdentity
-            ? observation.before.kind !== 'file' ||
-              observation.before.identity.dev !== expectedIdentity.dev ||
-              observation.before.identity.ino !== expectedIdentity.ino
-            : observation.before.kind !== 'missing')
+            ? guard.before.kind !== 'file' ||
+              guard.before.identity.dev !== expectedIdentity.dev ||
+              guard.before.identity.ino !== expectedIdentity.ino
+            : guard.before.kind !== 'missing')
         ) {
           throw new StableWriteFailure(
             'path_changed',
@@ -360,7 +358,7 @@ export function createBoundaryFilesystemExecutor(
         call.abortSignal?.throwIfAborted();
         call.abortSignal?.addEventListener('abort', cancel, { once: true });
         return {
-          ...(observation ? { observation: structuredClone(observation) } : {}),
+          ...(guard ? { guard: structuredClone(guard) } : {}),
           cancel,
           async execute() {
             if (state !== 'prepared') throw new Error('Prepared Write has already settled');
@@ -369,7 +367,7 @@ export function createBoundaryFilesystemExecutor(
             call.abortSignal?.removeEventListener('abort', cancel);
             try {
               return await run(
-                { ...call, operation: { ...operation, ...(observation ? { observation } : {}) } },
+                { ...call, operation: { ...operation, ...(guard ? { guard } : {}) } },
                 expectedIdentity,
               );
             } catch (error) {
@@ -483,7 +481,7 @@ function createWorkspaceFilesystemExecutor(
       switch (operation.kind) {
         case 'prepare_write':
         case 'prepare_edit': {
-          const observation =
+          const guard =
             workspace.prepareMutation && workspace.executePreparedMutation
               ? await workspace.prepareMutation({
                   cwd,
@@ -499,7 +497,7 @@ function createWorkspaceFilesystemExecutor(
                   scope,
                 })
               : undefined;
-          return { kind: operation.kind, ...(observation ? { observation } : {}) };
+          return { kind: operation.kind, ...(guard ? { guard } : {}) };
         }
         case 'read': {
           const { path } = await workspace.resolveExistingPath({
@@ -523,7 +521,7 @@ function createWorkspaceFilesystemExecutor(
           };
         }
         case 'write': {
-          if (operation.observation) {
+          if (operation.guard) {
             if (!workspace.executePreparedMutation)
               throw new Error('Prepared Write executor unavailable');
             return workspace.executePreparedMutation({
@@ -531,7 +529,7 @@ function createWorkspaceFilesystemExecutor(
               path: operation.path,
               mutation: operation,
               scope,
-              observation: operation.observation,
+              guard: operation.guard,
             });
           }
           const { path } = await workspace.resolveWritablePath({
@@ -613,7 +611,7 @@ function createWorkspaceFilesystemExecutor(
           return { kind: 'apply_patch', ok: true, path: patched.path };
         }
         case 'edit': {
-          if (operation.observation) {
+          if (operation.guard) {
             if (!workspace.executePreparedMutation)
               throw new Error('Prepared Edit executor unavailable');
             return workspace.executePreparedMutation({
@@ -621,7 +619,7 @@ function createWorkspaceFilesystemExecutor(
               path: operation.path,
               mutation: operation,
               scope,
-              observation: operation.observation,
+              guard: operation.guard,
             });
           }
           const { path } = await workspace.resolveExistingPath({

@@ -626,6 +626,11 @@ function validateNonTextInputs(candidateRoot, identity, entries) {
     if (compiledFormat) {
       throw new Error(`Compiled artifact ${entry} has forbidden ${compiledFormat} content`);
     }
+    for (const match of contents.toString('utf8').matchAll(/\bAGFzbQ[A-Za-z0-9+/]{4,}={0,2}/gu)) {
+      if (compiledArtifactFormat(Buffer.from(match[0], 'base64')) === 'WASM') {
+        throw new Error(`Compiled artifact ${entry} has forbidden Base64 WASM content`);
+      }
+    }
     try {
       const text = decoder.decode(contents);
       const basename = entry.slice(entry.lastIndexOf('/') + 1);

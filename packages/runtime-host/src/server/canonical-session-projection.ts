@@ -65,14 +65,14 @@ export interface CanonicalSessionProjectionReaderOptions {
   readonly stores: CanonicalSessionProjectionStores;
   readonly rootAdmissions: RootAdmissionOwner;
   readonly messages: Pick<HostMessageCoordinator, 'projection'>;
-  readonly readGoal?: (sessionId: string) => GoalProjection | null;
+  readonly readGoal?: (sessionId: string) => GoalProjection | null | Promise<GoalProjection | null>;
 }
 
 export class CanonicalSessionProjectionReader {
   readonly #stores: CanonicalSessionProjectionStores;
   readonly #rootAdmissions: RootAdmissionOwner;
   readonly #messages: Pick<HostMessageCoordinator, 'projection'>;
-  readonly #readGoal: (sessionId: string) => GoalProjection | null;
+  readonly #readGoal: (sessionId: string) => GoalProjection | null | Promise<GoalProjection | null>;
 
   constructor(options: CanonicalSessionProjectionReaderOptions) {
     this.#stores = options.stores;
@@ -114,9 +114,10 @@ export class CanonicalSessionProjectionReader {
       await this.#stores.interactionStore.listSessionPending(sessionId),
       await this.#stores.sessionStore.listPendingSandboxBoundaryRequests(sessionId),
     );
-    // The Session lane barrier must remain held through this final synchronous read.
+    // Keep the Session lane across the asynchronous Goal/wait read and the
+    // final queue projection; neither read can authorize a second admission.
+    const goal = await this.#readGoal(sessionId);
     const queue = this.#messages.projection(sessionId);
-    const goal = this.#readGoal(sessionId);
     const session: SessionContinuityIdentity = {
       sessionId: header.id,
       metadataRevision,

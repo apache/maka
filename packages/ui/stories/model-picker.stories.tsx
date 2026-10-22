@@ -17,758 +17,246 @@
  * under the License.
  */
 
-import { useState, type ReactNode } from 'react';
+import { useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, userEvent, waitFor, within } from 'storybook/test';
-import type { ProviderType } from '@maka/core/llm-connections';
 import type { ExecutorCatalogEntry, ExecutorSelection } from '@maka/core/executor-catalog';
-import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { SessionSummary } from '@maka/core/session';
-import { ChatModelSwitcher, ModelChipStatic, NewChatModelPicker, ThinkingLevelSelector } from '../src/chat-model-switcher.js';
-import {
-  exactModelChoiceValue,
-  modelChoiceValue,
-  modelMenuGroups,
-  type ChatModelChoice,
-} from '../src/chat-model-helpers.js';
-import { ModelPicker } from '../src/model-picker.js';
+import type { ThinkingLevel } from '@maka/core/model-thinking';
+import { ProviderBrandMark } from '../../../apps/desktop/src/renderer/settings/provider-brand-marks.js';
 import { Composer } from '../src/composer.js';
-import { getConversationCopy } from '../src/conversation-copy.js';
+import { ModelPicker } from '../src/model-picker.js';
+import { modelChoiceValue, modelMenuGroups, type ChatModelChoice } from '../src/chat-model-helpers.js';
 import { useUiLocale } from '../src/locale-context.js';
-
-// Fidelity convention (#1433): every story below names the real app path
-// that reaches it. See apps/desktop/stories/FIDELITY.md.
+import * as React from 'react';
+import codexClient from '../../../scripts/plugins/codex-app-server-executor/client.js?raw';
+import { MakaClientPluginSdkModule, MakaClientSlotCore, MakaClientSlotProvider } from '../src/client-plugin-slots.js';
+import type { MakaClientPluginContext } from '../src/client-plugin-runtime.js';
 
 const meta = {
   title: 'Product/Model Picker',
   parameters: { layout: 'padded' },
 } satisfies Meta;
-
 export default meta;
-
 type Story = StoryObj<typeof meta>;
 
-function choice(
-  connectionSlug: string,
-  providerType: ChatModelChoice['providerType'],
-  providerLabel: string,
-  model: string,
-  label: string,
-): ChatModelChoice {
-  return { connectionId: `connection-${connectionSlug}`, connectionSlug, providerType, providerLabel, model, label, isDefault: false, thinkingLevels: [] };
-}
-
 const CHOICES: ChatModelChoice[] = [
-  choice('openai-main', 'openai', 'OpenAI', 'gpt-5', 'GPT-5'),
-  choice('openai-main', 'openai', 'OpenAI', 'gpt-5-mini', 'GPT-5 mini'),
-  choice('openai-main', 'openai', 'OpenAI', 'o3', 'o3'),
-  choice('anthropic-team', 'anthropic', 'Anthropic', 'claude-opus-4-1', 'Claude Opus 4.1'),
-  choice('anthropic-team', 'anthropic', 'Anthropic', 'claude-sonnet-4', 'Claude Sonnet 4'),
-  choice('google-lab', 'google', 'Google Gemini', 'gemini-3-pro', 'Gemini 3 Pro'),
-  choice('fireworks', 'custom', 'Fireworks', 'accounts/fireworks/models/deepseek-v4-flash-0731', 'accounts/fireworks/models/deepseek-v4-flash-0731'),
+  { connectionId: 'openai-main', connectionSlug: 'openai-main', connectionName: 'OpenAI', providerType: 'openai',
+    providerLabel: 'OpenAI', model: 'gpt-6.1-sol', label: 'GPT-6.1 Sol', isDefault: true,
+    contextWindow: 1_048_576, thinkingLevels: ['low', 'medium', 'high', 'xhigh'] },
+  { connectionId: 'openai-main', connectionSlug: 'openai-main', connectionName: 'OpenAI', providerType: 'openai',
+    providerLabel: 'OpenAI', model: 'gpt-6-astra', label: 'GPT-6 Astra', isDefault: false, thinkingLevels: ['low', 'medium', 'high'] },
+  { connectionId: 'anthropic', connectionSlug: 'anthropic', connectionName: 'Anthropic', providerType: 'anthropic',
+    providerLabel: 'Anthropic', model: 'claude-opus-5-5', label: 'Claude Opus 5.5', isDefault: false, thinkingLevels: ['low', 'medium', 'high'] },
+  { connectionId: 'anthropic', connectionSlug: 'anthropic', connectionName: 'Anthropic', providerType: 'anthropic',
+    providerLabel: 'Anthropic', model: 'claude-sonnet-5', label: 'Claude Sonnet 5', isDefault: false, thinkingLevels: ['low', 'high'] },
+  { connectionId: 'google', connectionSlug: 'google', connectionName: 'Google Gemini', providerType: 'google',
+    providerLabel: 'Google Gemini', model: 'gemini-3.8-pro', label: 'Gemini 3.8 Pro', isDefault: false, thinkingLevels: ['low', 'high'] },
 ];
-
-// Canonical user-facing ladder when a model offers the common set.
-const THINKING_LEVELS: ThinkingLevel[] = ['off', 'low', 'medium', 'high', 'xhigh'];
-
-// A workspace with far more connections than any reference screen probes. Two
-// OpenAI keys share a provider, so `modelMenuGroups` disambiguates their
-// headings with the connection slug.
-const MANY_CHOICES: ChatModelChoice[] = (
-  [
-    { slug: 'openai-main', type: 'openai', label: 'OpenAI', models: ['gpt-5', 'gpt-5-mini', 'gpt-5-nano', 'o3', 'o4-mini', 'gpt-4.1'] },
-    { slug: 'openai-alt', type: 'openai', label: 'OpenAI', models: ['gpt-5', 'o3'] },
-    { slug: 'anthropic-team', type: 'anthropic', label: 'Anthropic', models: ['claude-opus-4-1', 'claude-sonnet-4', 'claude-haiku-4-5'] },
-    { slug: 'google-lab', type: 'google', label: 'Google Gemini', models: ['gemini-3-pro', 'gemini-3-flash'] },
-    { slug: 'deepseek-main', type: 'deepseek', label: 'DeepSeek', models: ['deepseek-chat', 'deepseek-reasoner'] },
-    { slug: 'moonshot-main', type: 'moonshot', label: 'Moonshot', models: ['kimi-k2-0711', 'kimi-k1-8k'] },
-    { slug: 'relay', type: 'custom', label: 'Custom relay', models: ['vendor/alpha', 'vendor/beta', 'vendor/gamma'] },
-  ] satisfies Array<{ slug: string; type: ProviderType; label: string; models: string[] }>
-).flatMap((group) => group.models.map((model) => choice(group.slug, group.type, group.label, model, model)));
-
-// Real over-length ids from models.dev (2026-03): the ids that outgrow the
-// popup are path-style — `accounts/<provider>/models/<model>` on Fireworks or
-// namespaced slugs on OpenRouter — where the tail is the actual model name.
-const LONG_CHOICES: ChatModelChoice[] = [
-  {
-    connectionId: 'connection-fireworks',
-    connectionSlug: 'fireworks',
-    providerType: 'custom',
-    providerLabel: 'Fireworks',
-    connectionName: 'Fireworks',
-    model: 'accounts/fireworks/models/deepseek-v4-flash-0731',
-    label: 'accounts/fireworks/models/deepseek-v4-flash-0731',
-    description: 'DeepSeek V4 Flash 0731',
-    isDefault: false,
-    thinkingLevels: [],
-  },
-  {
-    connectionId: 'connection-fireworks',
-    connectionSlug: 'fireworks',
-    providerType: 'custom',
-    providerLabel: 'Fireworks',
-    connectionName: 'Fireworks',
-    model: 'accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b',
-    label: 'accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b',
-    isDefault: false,
-    thinkingLevels: [],
-  },
-  {
-    connectionId: 'connection-openrouter',
-    connectionSlug: 'openrouter',
-    providerType: 'custom',
-    providerLabel: 'OpenRouter',
-    connectionName: 'OpenRouter',
-    model: 'cognitivecomputations/dolphin-mistral-24b-venice-edition',
-    label: 'cognitivecomputations/dolphin-mistral-24b-venice-edition',
-    isDefault: false,
-    thinkingLevels: [],
-  },
-];
-
-function providerMark(type: ProviderType) {
-  const labels: Partial<Record<ProviderType, string>> = {
-    openai: 'O',
-    anthropic: 'A',
-    google: 'G',
-    'custom': 'R',
-  };
-  return <span style={{ fontSize: 11, fontWeight: 700 }}>{labels[type] ?? 'M'}</span>;
-}
-
-function choiceValue(choice: ChatModelChoice) {
-  return exactModelChoiceValue(choice.connectionId, choice.connectionSlug, choice.model);
-}
-
-function selectedLabel(value: string) {
-  return CHOICES.find((choice) => choiceValue(choice) === value)?.label ?? value;
-}
-
-function choiceForTarget(input: { llmConnectionId: string; llmConnectionSlug: string; model: string }) {
-  return CHOICES.find(
-    (choice) =>
-      choice.connectionId === input.llmConnectionId &&
-      choice.connectionSlug === input.llmConnectionSlug &&
-      choice.model === input.model,
-  );
-}
-
-function ModelPickerFrame(props: { initialValue?: string }) {
-  const [value, setValue] = useState(props.initialValue ?? choiceValue(CHOICES[4]!));
-  return (
-    <div style={{ width: 460 }}>
-      <NewChatModelPicker
-        label={selectedLabel(value)}
-        choices={CHOICES}
-        currentValue={value}
-        currentProviderType="anthropic"
-        renderProviderMark={providerMark}
-        onPick={(next) => {
-          const nextChoice = choiceForTarget(next);
-          if (nextChoice) setValue(choiceValue(nextChoice));
-        }}
-      />
-    </div>
-  );
-}
-
-// Real path: chat → composer footer model control.
-export const Default: Story = {
-  render: () => <ModelPickerFrame />,
-};
-
-const ANTIGRAVITY_CATALOG: readonly ExecutorCatalogEntry[] = [{
-  id: 'antigravity-acp',
-  displayName: 'Antigravity',
-  readiness: 'ready',
+const CATALOG: readonly ExecutorCatalogEntry[] = [{
+  id: 'antigravity', displayName: 'Antigravity', readiness: 'ready',
   models: [
-    { id: 'gemini-3.8-flash-low', name: 'Gemini 3.8 Flash (Low)', providerType: 'google' },
-    { id: 'gemini-3.8-flash-medium', name: 'Gemini 3.8 Flash (Medium)', providerType: 'google' },
-    { id: 'gemini-3.8-flash-high', name: 'Gemini 3.8 Flash (High)', providerType: 'google' },
-    { id: 'gemini-3.1-pro-low', name: 'Gemini 3.1 Pro (Low)', providerType: 'google' },
-    { id: 'gemini-pro-agent', name: 'Gemini 3.1 Pro (High)', providerType: 'google' },
+    { id: 'flash-low', name: 'Gemini 3.8 Flash (Low)', providerType: 'google' },
+    { id: 'flash-high', name: 'Gemini 3.8 Flash (High)', providerType: 'google' },
+    { id: 'pro-high', name: 'Gemini 3.8 Pro', providerType: 'google' },
   ],
-  modelGroups: [
-    { id: 'flash', name: 'Gemini 3.8 Flash', variants: [
-      { modelId: 'gemini-3.8-flash-low', level: 'low' },
-      { modelId: 'gemini-3.8-flash-medium', level: 'medium' },
-      { modelId: 'gemini-3.8-flash-high', level: 'high' },
-    ] },
-    { id: 'pro', name: 'Gemini 3.1 Pro', variants: [
-      { modelId: 'gemini-3.1-pro-low', level: 'low' },
-      { modelId: 'gemini-pro-agent', level: 'high' },
-    ] },
-  ],
-  currentModel: 'gemini-3.8-flash-high',
-  supportsAttachments: false,
-  supportsModelChange: true,
+  modelGroups: [{ id: 'flash', name: 'Gemini 3.8 Flash', variants: [
+    { modelId: 'flash-low', level: 'low' }, { modelId: 'flash-high', level: 'high' },
+  ] }],
+  currentModel: 'flash-high', supportsModelChange: true, supportsAttachments: true,
 }];
+const brand = (type: ChatModelChoice['providerType']) => <ProviderBrandMark type={type} />;
 
-// Real path: new task → composer footer model trigger. The ready catalog is a
-// fixture using model IDs observed from official ACP 1.1.1; no Agent runs here.
-function ExecutorPickerFrame({ loading, existing = false }: { loading: boolean; existing?: boolean }) {
-  const [selection, setSelection] = useState<ExecutorSelection | undefined>(existing
-    ? { executorId: 'antigravity-acp', configuration: { model: 'gemini-3.8-flash-high' } }
-    : undefined);
-  return <div style={{ width: 780, maxWidth: '100%', marginTop: 360 }}>
+function PickerFrame(props: {
+  existing?: boolean;
+  external?: boolean;
+  choices?: ChatModelChoice[];
+  catalog?: readonly ExecutorCatalogEntry[];
+  plugin?: boolean;
+}) {
+  const choices = props.choices ?? CHOICES;
+  const [choice, setChoice] = useState(choices[0]!);
+  const [thinking, setThinking] = useState<ThinkingLevel | undefined>('high');
+  const [target, setTarget] = useState<import('../src/client-plugin-slots.js').MakaClientExecutorTarget>();
+  const [core] = useState(() => {
+    const slots = new MakaClientSlotCore();
+    if (props.plugin) {
+      let factory!: (require: (id: string) => unknown) => { apply(context: { slots: MakaClientSlotCore; remote: MakaClientPluginContext['remote'] }): void };
+      new Function('window', codexClient)({ __MakaModuleLoader__: { load: (entry: { factory: typeof factory }) => { factory = entry.factory; } } });
+      factory(id => {
+        if (id === 'react') return React;
+        if (id === '@maka/ui/client-plugin') return MakaClientPluginSdkModule;
+        throw new Error(`Unknown client module: ${id}`);
+      }).apply({ slots, remote: { call: async () => [{ model: 'gpt-6-astra', displayName: 'GPT-6 Astra', defaultReasoningEffort: 'high', supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'high' }] }] } as unknown as MakaClientPluginContext['remote'] });
+    }
+    return slots;
+  });
+  const [selection, setSelection] = useState<ExecutorSelection | undefined>(props.external
+    ? { executorId: 'antigravity', configuration: { model: 'flash-high' } } : undefined);
+  const session = props.existing ? {
+    id: 'model-picker-preview', model: choice.model, llmConnectionId: choice.connectionId,
+    llmConnectionSlug: choice.connectionSlug, status: 'active', permissionMode: 'ask',
+  } as SessionSummary : undefined;
+  const pick = (target: { llmConnectionId: string; model: string }) => {
+    const next = choices.find(item => item.connectionId === target.llmConnectionId && item.model === target.model);
+    if (next) { setChoice(next); setThinking(undefined); }
+  };
+  return <MakaClientSlotProvider core={core}><div style={{ width: 680, maxWidth: '100%', marginTop: 380 }}>
     <Composer
-      executorPicker={{
-        catalog: loading ? [] : ANTIGRAVITY_CATALOG,
-        loading,
-        fixed: existing,
-        selection,
-        onSelect: setSelection,
-        onSetup: () => {},
-        onRetry: () => {},
-        onNewTask: () => {},
-      }}
-      activeSession={existing ? {
-        id: 'storybook-external-session', name: 'External session',
-        isFlagged: false, isArchived: false, labels: [], hasUnread: false,
-        status: 'active', backend: 'plugin-executor', connectionLocked: true, llmConnectionSlug: '',
-        model: selection?.configuration.model ?? '', permissionMode: 'ask',
+      activeSession={session}
+      modelLabel={choice.label} activeModelLabel={choice.label} activeModel={choice.model}
+      activeModelConnectionId={choice.connectionId} activeModelConnectionSlug={choice.connectionSlug}
+      modelChoices={choices}
+      newChatModel={{ llmConnectionId: choice.connectionId, llmConnectionSlug: choice.connectionSlug, model: choice.model }}
+      activeThinkingLevels={choice.thinkingLevels} activeThinkingLevel={thinking}
+      newChatThinkingLevels={choice.thinkingLevels} newChatThinkingLevel={thinking}
+      onThinkingLevelChange={setThinking} onNewChatThinkingLevelChange={setThinking}
+      onModelChange={pick} onPickNewChatModel={pick}
+      executorTarget={target} onExecutorTargetChange={props.plugin ? next => { setSelection(undefined); setTarget(next); } : undefined}
+      executorPicker={!props.existing || props.external ? {
+        catalog: props.catalog ?? CATALOG, selection, fixed: props.existing,
+        onSelect: next => { setSelection(next); setTarget(undefined); }, onSetup: () => undefined, onRetry: () => undefined, onNewTask: () => undefined,
       } : undefined}
-      renderProviderMark={providerMark}
-      modelChoices={CHOICES}
-      newChatModel={{ llmConnectionId: 'connection-openai-main', llmConnectionSlug: 'openai-main', model: 'gpt-5' }}
-      onPickNewChatModel={() => {}}
-      onSend={() => {}}
-      onStop={() => {}}
+      renderProviderMark={brand}
+      onSend={() => undefined} onStop={() => undefined}
     />
-  </div>;
+  </div></MakaClientSlotProvider>;
 }
 
-// Real path: new-task composer → model picker while external discovery is pending.
-export const ExecutorCatalogLoading: Story = {
-  render: () => <ExecutorPickerFrame loading />,
-  play: async () => {
-    const body = within(document.body);
-    await userEvent.click(await body.findByRole('button', { name: /选择模型|選擇模型|Choose model/ }));
-    await waitFor(() => expect(body.getByText(/正在读取执行者与模型|正在讀取執行者與模型|Loading agents and models/)).toBeVisible());
-  },
+async function openModels(canvasElement: HTMLElement) {
+  const trigger = canvasElement.querySelector<HTMLElement>('.maka-model-switcher-trigger button')!;
+  await userEvent.click(trigger);
+  const page = within(canvasElement.ownerDocument.body);
+  await waitFor(() => expect(page.getByRole('listbox')).toBeVisible());
+  const search = page.getByRole('combobox', { expanded: true });
+  await userEvent.click(search);
+  await expect(search).toHaveFocus();
+  return page;
+}
+
+// Real path: an existing native task → composer model and effort controls.
+export const Default: Story = {
+  render: () => <PickerFrame existing />,
 };
 
-// Real path: new-task composer → model picker → native or external model search
-// with no matches → clear search; the Composer owns click-to-focus behavior.
+// Real path: new task → select a native connection or an external Agent in one grouped list.
 export const ExecutorCatalogReady: Story = {
-  render: () => <ExecutorPickerFrame loading={false} />,
-  play: async () => {
-    const body = within(document.body);
-    await userEvent.click(await body.findByRole('button', { name: /选择模型|選擇模型|Choose model/ }));
-    const recoverSearch = async () => {
-      const search = await body.findByRole('combobox');
-      const count = body.getAllByRole('option').length;
-      await userEvent.click(search);
-      await userEvent.type(search, 'no-such-model-6103');
-      const title = await body.findByRole('heading', { name: /没有匹配的模型|沒有符合的模型|No matching models/ });
-      const empty = title.closest<HTMLElement>('[role="status"]')!;
-      await expect(empty).toHaveClass('astryx-empty-state');
-      await expect(empty).toHaveTextContent(/没有匹配的模型|沒有符合的模型|No matching models/);
-      await expect(body.queryAllByRole('option')).toHaveLength(0);
-      const clear = within(empty).getByRole('button', { name: /清除搜索|清除搜尋|Clear search/ });
-      await expect(clear.closest('[role="listbox"]')).toBeNull();
-      await userEvent.click(clear);
-      await waitFor(() => expect(search).toHaveValue(''));
-      // Browser focus catches the composer's parent click handler reclaiming it.
-      await expect(search).toHaveFocus();
-      await expect(body.getAllByRole('option')).toHaveLength(count);
-      await expect(empty).not.toBeInTheDocument();
-      await userEvent.keyboard('{ArrowDown}');
-      await expect(search).toHaveAttribute('aria-activedescendant', expect.stringMatching(/item-0$/));
-    };
-    await recoverSearch();
-    await userEvent.click(await body.findByRole('button', { name: 'Antigravity' }));
-    await recoverSearch();
-    // Selecting the entry mounts the thinking control beside the trigger, so
-    // the footer reflows and the panel's group view lands a frame later.
-    await waitFor(() => expect(body.getByText('Gemini 3.8 Flash')).toBeVisible());
-    await waitFor(() => expect(body.getByText('Gemini 3.1 Pro')).toBeVisible());
+  render: () => <PickerFrame />,
+  play: async ({ canvasElement }) => {
+    const page = await openModels(canvasElement);
+    await expect(await page.findByRole('group', { name: 'Antigravity' })).toBeVisible();
+    await expect(page.getByRole('group', { name: 'OpenAI' })).toBeVisible();
+    const search = page.getByRole('combobox', { expanded: true });
+    await userEvent.type(search, 'Flash');
+    await userEvent.click(await page.findByRole('option', { name: /Gemini 3.8 Flash/ }));
+    await waitFor(() => expect(canvasElement.querySelector('.maka-model-switcher-trigger')).toHaveTextContent('Gemini 3.8 Flash'));
+    await expect(canvasElement.querySelector('.maka-thinking-level-selector')).toHaveTextContent(/High|高/);
+    await openModels(canvasElement);
   },
 };
 
-// Real path: existing external Agent conversation → composer model trigger.
-// Reuse the real Composer frame to check search focus and native popup geometry.
+// Real path: a new task with the Codex extension enabled and an ACP Agent configured.
+export const CodexAndAcp: Story = {
+  render: () => <PickerFrame plugin />,
+  play: async ({ canvasElement }) => {
+    const page = await openModels(canvasElement);
+    await expect(await page.findByRole('group', { name: 'Codex' })).toBeVisible();
+    await expect(page.getByRole('group', { name: 'Antigravity' })).toBeVisible();
+    await expect(page.getByRole('group', { name: 'OpenAI' })).toBeVisible();
+    const codexOption = within(page.getByRole('group', { name: 'Codex' })).getByRole('option', { name: 'GPT-6 Astra' });
+    await expect(codexOption.querySelector('svg')).not.toBeNull();
+    await expect(canvasElement.querySelectorAll('.maka-model-switcher-trigger')).toHaveLength(1);
+    await userEvent.click(codexOption);
+    await waitFor(() => expect(canvasElement.querySelector('.maka-model-switcher-trigger')).toHaveTextContent('Codex · GPT-6 Astra'));
+    await expect(canvasElement.querySelector('.maka-thinking-level-selector')).toHaveTextContent(/High|高/);
+    await openModels(canvasElement);
+  },
+};
+
+// Real path: a new task selects a ready ACP Agent while another configured Agent requires sign-in.
+export const UnselectedUnavailableAgentNarrow: Story = {
+  render: () => <PickerFrame catalog={[CATALOG[0]!, {
+    id: 'claude', displayName: 'Claude Agent', readiness: 'authentication_required',
+    models: [], supportsModelChange: false, supportsAttachments: false,
+  }]} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByRole('button', { name: /Go to sign in|前往登录/ })).toBeVisible();
+    const label = canvasElement.querySelector<HTMLElement>('.maka-composer-model-label')!;
+    await waitFor(() => expect(label.scrollWidth).toBeLessThanOrEqual(label.clientWidth + 1));
+    const page = await openModels(canvasElement);
+    await userEvent.click(page.getByRole('option', { name: /Gemini 3.8 Flash/ }));
+    await waitFor(() => expect(canvasElement.querySelector('.maka-model-switcher-trigger')).toHaveTextContent('Antigravity · Gemini 3.8 Flash'));
+    await expect(canvas.getByRole('button', { name: /Go to sign in|前往登录/ })).toBeVisible();
+    await expect(canvasElement.querySelector('.maka-executor-notice')).toHaveTextContent('Claude Agent');
+    await openModels(canvasElement);
+  },
+};
+
+// Real path: an existing external Agent task → change its model without changing executor.
 export const ExistingExecutorConversation: Story = {
-  render: () => <ExecutorPickerFrame loading={false} existing />,
-  play: async () => {
-    const body = within(document.body);
-    const trigger = await body.findByRole('button', { name: /Gemini 3.8 Flash/ });
-    await userEvent.click(trigger);
-    const search = await body.findByRole('combobox', { expanded: true });
-    await userEvent.click(search);
-    await userEvent.type(search, 'Pro');
-    await expect(search).toHaveFocus();
-    await expect(body.getAllByRole('option')).toHaveLength(1);
-    await userEvent.keyboard('{ArrowDown}{Enter}');
-    await waitFor(() => expect(trigger).toHaveTextContent('Gemini 3.1 Pro'));
-    await userEvent.click(trigger);
-    await waitFor(() => expect(body.getAllByRole('option')).toHaveLength(2));
-    await expect(document.querySelector('.maka-executor-picker-rail')).toBeNull();
-    const popup = document.querySelector<HTMLElement>('.astryx-selector-popup')!;
-    await expect(popup.getBoundingClientRect().width).toBeLessThanOrEqual(340);
-    for (const row of body.getAllByRole('option')) {
-      await expect(row.querySelector('.modelPickerChatOption')).not.toBeNull();
-    }
-    await userEvent.keyboard('{Escape}');
-    await waitFor(() => expect(trigger).toHaveFocus());
-    await userEvent.click(trigger);
-  },
-};
-
-// Real path: an existing conversation -> composer footer model control. The
-// cache notice belongs inside this picker's open decision surface; the resting
-// trigger and the new-chat picker below stay quiet. Activating the notice row
-// acknowledges it for the Session and leaves the list open.
-export const ExistingConversation: Story = {
-  render: function ExistingConversationRender() {
-    const [activeChoice, setActiveChoice] = useState(CHOICES[4]!);
-    const activeSession = {
-      id: 'storybook-model-switch',
-      name: 'Model switch warning',
-      isFlagged: false,
-      isArchived: false,
-      labels: [],
-      hasUnread: false,
-      status: 'active',
-      backend: 'ai-sdk',
-      llmConnectionId: activeChoice.connectionId,
-      llmConnectionSlug: activeChoice.connectionSlug,
-      connectionLocked: true,
-      model: activeChoice.model,
-      permissionMode: 'ask',
-    } satisfies SessionSummary;
-    return (
-      <div style={{ width: 460, maxWidth: '100%' }}>
-        <ChatModelSwitcher
-          activeSession={activeSession}
-          activeModelLabel={activeChoice.label}
-          currentProviderType="anthropic"
-          choices={CHOICES}
-          hasConversationHistory
-          renderProviderMark={providerMark}
-          onChange={(next) => {
-            const nextChoice = choiceForTarget(next);
-            if (nextChoice) setActiveChoice(nextChoice);
-          }}
-        />
-      </div>
-    );
-  },
-  play: async ({ canvasElement, globals }) => {
-    const english = globals.locale === 'en';
-    const warning = english
-      ? 'Switching may rebuild the provider prompt cache, making the next request slower or more expensive.'
-      : '切换模型可能需要重建服务商提示缓存，使下一次请求更慢或成本更高。';
-    // The row's accessible name is the warning plus its "select to dismiss" line.
-    const noticeName = (name: string) => name.startsWith(warning);
-    const triggerName = /切换当前任务模型|Switch model for this task/;
-    const trigger = () => within(canvasElement).getByRole('button', { name: triggerName });
-    const body = within(document.body);
-
-    await userEvent.click(trigger());
-    // The cache notice leads the open list as a regular row, announced by its
-    // option text — reachable, and activating it is the acknowledgement.
-    const notice = await body.findByRole('option', { name: noticeName });
-    await expect(notice).not.toHaveAttribute('aria-disabled', 'true');
-
-    await userEvent.keyboard('{Escape}');
-    // Closing restores focus to the same trigger next frame, and is not an
-    // acknowledgement: the notice is back on reopen.
-    await waitFor(() => expect(trigger()).toHaveFocus());
-    await userEvent.keyboard('{ArrowDown}');
-    await body.findByRole('option', { name: noticeName });
-    // Opening with ArrowDown highlights the first row, the notice; Enter on it
-    // is the keyboard acknowledgement (a click on the row is the pointer one).
-    await userEvent.keyboard('{Enter}');
-
-    // Acknowledged: the list is open again without the notice, the model rows
-    // are still there, and nothing was switched.
-    await waitFor(() => expect(trigger()).toHaveAttribute('aria-expanded', 'true'));
-    await body.findByRole('option', { name: /Claude Sonnet 4/ });
-    await expect(body.queryByRole('option', { name: noticeName })).toBeNull();
-    await expect(trigger()).toHaveTextContent('Claude Sonnet 4');
-
-    // The acknowledgement holds for the Session across close and reopen.
-    await userEvent.keyboard('{Escape}');
-    await waitFor(() => expect(trigger()).toHaveFocus());
-    await userEvent.keyboard('{ArrowDown}');
-    await body.findByRole('option', { name: /Claude Sonnet 4/ });
-    await expect(body.queryByRole('option', { name: noticeName })).toBeNull();
-  },
-};
-
-// Real path: an existing but still-empty Session. There is no conversation
-// prefix to abandon yet, so this stays as quiet as the new-chat picker.
-export const EmptyConversation: Story = {
-  render: () => (
-    <div style={{ width: 460, maxWidth: '100%' }}>
-      <ChatModelSwitcher
-        activeSession={{
-          id: 'storybook-empty-model-switch',
-          name: 'Empty conversation',
-          isFlagged: false,
-          isArchived: false,
-          labels: [],
-          hasUnread: false,
-          status: 'active',
-          backend: 'ai-sdk',
-          llmConnectionId: 'connection-anthropic-team',
-          llmConnectionSlug: 'anthropic-team',
-          connectionLocked: false,
-          model: 'claude-sonnet-4',
-          permissionMode: 'ask',
-        }}
-        activeModelLabel="Claude Sonnet 4"
-        currentProviderType="anthropic"
-        choices={CHOICES}
-        renderProviderMark={providerMark}
-        onChange={() => undefined}
-      />
-    </div>
-  ),
+  render: () => <PickerFrame existing external />,
   play: async ({ canvasElement }) => {
-    const trigger = within(canvasElement).getByRole('button', {
-      name: /切换当前任务模型|Switch model for this task/,
-    });
-    await userEvent.click(trigger);
-    // No conversation history, so the cache warning row does not lead the list.
-    await within(document.body).findByRole('option', { name: /Claude Sonnet 4/ });
-    await expect(
-      within(document.body).queryByRole('option', { name: /prompt cache|提示缓存/ }),
-    ).not.toBeInTheDocument();
+    const page = await openModels(canvasElement);
+    await expect(await page.findByRole('group', { name: 'Antigravity' })).toBeVisible();
+    await expect(page.queryByRole('group', { name: 'OpenAI' })).toBeNull();
   },
 };
 
-// Real path: Settings → 通用 before any provider exposes a model choice.
-// The 260px frame stands in for the one part that cannot be imported from
-// this package: the desktop's `select.css` sizes the trigger to 260px via
-// `.settingsRows .settingsModelPickerTrigger`, which only exists in the
-// renderer's stylesheet. Size and state are the production ones.
-export const EmptyCatalog: Story = {
-  render: () => (
-    <div style={{ width: 260 }}>
-      <ModelPicker
-        groups={[]}
-        value=""
-        ariaLabel="默认模型"
-        disabled
-        onValueChange={async () => {}}
-      />
-    </div>
-  ),
-};
+const MANY_CHOICES = Array.from({ length: 5 }, (_, i) => CHOICES.map(choice => ({
+  ...choice, connectionId: choice.connectionId + '-' + i, connectionSlug: choice.connectionSlug + '-' + i,
+  connectionName: (choice.connectionName ?? choice.providerLabel) + ' ' + (i + 1),
+})) ).flat();
 
-// Real path: Settings → 通用 → 默认模型 with the full multi-connection catalog.
-// The Selector carries search — the answer to "找不到模型" that the wheel
-// dropped.
-export const SettingsCatalog: Story = {
-  render: function SettingsCatalogRender() {
-    // The settings catalog is slug-scoped (modelChoiceValue), unlike the
-    // session switcher's connection-id-scoped exact values.
-    const [value, setValue] = useState(
-      modelChoiceValue(MANY_CHOICES[4]!.connectionSlug, MANY_CHOICES[4]!.model),
-    );
-    return (
-      <div style={{ width: 260 }}>
-        <ModelPicker
-          groups={modelMenuGroups(MANY_CHOICES, 'zh-CN')}
-          value={value}
-          leadingOption={{ value: '', label: '未设置' }}
-          renderProviderMark={providerMark}
-          ariaLabel="默认模型"
-          onValueChange={setValue}
-        />
-      </div>
-    );
-  },
-  play: async ({ canvasElement }) => {
-    await userEvent.click(within(canvasElement).getByRole('button'));
-    // Search narrows a 19-model catalog to the typed match.
-    await userEvent.keyboard('gamma');
-    await within(document.body).findByRole('option', { name: /vendor\/gamma/ });
-  },
-};
-
-// Real path: quiet composer left footer — model + adjacent thinking menu.
-export const ThinkingLevelSeparate: Story = {
-  render: function ThinkingLevelSeparateRender() {
-    const [value, setValue] = useState(choiceValue(CHOICES[4]!));
-    const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel | undefined>('medium');
-    return (
-      <div className="maka-model-selection-controls" style={{ width: 'max-content' }}>
-        <NewChatModelPicker
-          label={selectedLabel(value)}
-          choices={CHOICES}
-          currentValue={value}
-          currentProviderType="anthropic"
-          renderProviderMark={providerMark}
-          onPick={(next) => {
-            const nextChoice = choiceForTarget(next);
-            if (nextChoice) setValue(choiceValue(nextChoice));
-          }}
-        />
-        <ThinkingLevelSelector
-          levels={THINKING_LEVELS}
-          current={thinkingLevel}
-          onChange={setThinkingLevel}
-        />
-      </div>
-    );
-  },
-  play: async ({ canvasElement }) => {
-    const thinking = within(canvasElement).getByRole('combobox', { name: /思考级别/ });
-    await userEvent.click(thinking);
-    const medium = await within(document.body).findByRole('option', { name: '中' });
-    await expect(medium).toHaveAttribute('aria-selected', 'true');
-  },
-};
-
-// Real path: composer left footer when no connection yields a usable model —
-// what a failed / offline / unauthorised catalog fetch all collapse to. The
-// picker cannot exist without choices, so the composer swaps in an honest
-// "configure a connection" chip (ModelChipStatic's onOpenSettings button)
-// rather than a dropdown with nothing behind it.
-export const NoModelsAvailable: Story = {
-  render: function NoModelsAvailableRender() {
-    const copy = getConversationCopy(useUiLocale()).composer;
-    return (
-      <div className="maka-model-selection-controls" style={{ width: 'max-content' }}>
-        <ModelChipStatic label={copy.selectModel} onOpenSettings={() => {}} />
-      </div>
-    );
-  },
-  play: async ({ canvasElement }) => {
-    // It is a real button into Settings, not inert text wearing a dead chevron.
-    await expect(
-      within(canvasElement).getByRole('button', {
-        name: /配置模型连接|Configure model connections/,
-      }),
-    ).toBeInTheDocument();
-  },
-};
-
-// Real path: home / new-chat model control for a workspace with many configured
-// connections — the breadth #3446 F5 says a single reference screen never
-// exercises. Two OpenAI keys land in the same provider, so their headings carry
-// the disambiguating slug suffix.
+// Real path: native task with many configured connections → searchable groups.
 export const ManyConnections: Story = {
-  render: function ManyConnectionsRender() {
-    const [value, setValue] = useState(choiceValue(MANY_CHOICES[0]!));
-    return (
-      <div style={{ width: 460, maxWidth: '100%' }}>
-        <NewChatModelPicker
-          label={MANY_CHOICES.find((candidate) => choiceValue(candidate) === value)?.label ?? value}
-          choices={MANY_CHOICES}
-          currentValue={value}
-          currentProviderType="openai"
-          renderProviderMark={providerMark}
-          onPick={(next) => {
-            const picked = MANY_CHOICES.find(
-              (candidate) =>
-                candidate.connectionId === next.llmConnectionId &&
-                candidate.connectionSlug === next.llmConnectionSlug &&
-                candidate.model === next.model,
-            );
-            if (picked) setValue(choiceValue(picked));
-          }}
-        />
-      </div>
-    );
-  },
+  render: () => <PickerFrame existing choices={MANY_CHOICES} />,
   play: async ({ canvasElement }) => {
-    const trigger = within(canvasElement).getByRole('button', {
-      name: /选择新任务模型|Choose a model for the new task/,
-    });
-    await userEvent.click(trigger);
-    const menu = within(document.body);
-    // Every connection is its own labelled group and the last group's model is
-    // reachable in the menu's accessibility tree. This drives the visual state;
-    // selection behaviour and scroll geometry are contracts left to focused
-    // tests / e2e, not asserted here.
-    const groups = await menu.findAllByRole('group');
-    await expect(groups.length).toBeGreaterThanOrEqual(7);
-    await menu.findByRole('option', { name: /vendor\/gamma/ });
+    const page = await openModels(canvasElement);
+    const groups = await page.findAllByRole('group');
+    await expect(groups.length).toBeGreaterThan(10);
+    const search = page.getByRole('combobox', { expanded: true });
+    await userEvent.type(search, 'Astra');
+    await expect(await page.findAllByRole('option')).toHaveLength(5);
+    await expect(search).toHaveFocus();
   },
 };
 
-const SUFFIX_CHOICES = ['low', 'high'].map((suffix) => ({
-  ...LONG_CHOICES[0]!,
-  model: `${LONG_CHOICES[0]!.model}-${suffix}`,
-  label: `${LONG_CHOICES[0]!.label}-${suffix}`,
+const LONG_CHOICES: ChatModelChoice[] = [0, 1].map(index => ({
+  ...CHOICES[0]!, model: 'accounts/fireworks/models/deepseek-v4-flash-0731-' + (index ? 'high' : 'low'),
+  label: 'accounts/fireworks/models/deepseek-v4-flash-0731-' + (index ? 'high' : 'low'),
+  providerType: 'custom', providerLabel: 'Fireworks', connectionName: 'Fireworks',
 }));
 
-const COMPOSER_LABEL_CHOICES = [...SUFFIX_CHOICES, { ...SUFFIX_CHOICES[0]!, model: 'gpt-5', label: 'GPT-5' }];
-
-function LongModelNameComposer({ kind }: { kind: 'existing' | 'new' | 'unified' }) {
-  const existing = kind === 'existing';
-  const [selected, setSelected] = useState(SUFFIX_CHOICES[0]!);
-  const onPick = (input: { model: string }) => {
-    const next = COMPOSER_LABEL_CHOICES.find((candidate) => candidate.model === input.model);
-    if (next) setSelected(next);
-  };
-  const target = {
-    llmConnectionId: selected.connectionId,
-    llmConnectionSlug: selected.connectionSlug,
-    model: selected.model,
-  };
-  const session = {
-    ...target,
-    id: 'storybook-long-model',
-    name: 'Long model name',
-    isFlagged: false,
-    isArchived: false,
-    labels: [],
-    hasUnread: false,
-    status: 'active',
-    backend: 'ai-sdk',
-    connectionLocked: false,
-    permissionMode: 'ask',
-  } satisfies SessionSummary;
-  return (
-    <section aria-label={kind === 'unified' ? 'Unified picker' : existing ? 'Existing conversation' : 'New conversation'}>
-      <Composer
-        activeSession={existing ? session : undefined}
-        activeModelLabel={selected.label}
-        activeProviderType="custom"
-        newChatModel={target}
-        newChatProviderType="custom"
-        modelLabel={selected.label}
-        modelChoices={COMPOSER_LABEL_CHOICES}
-        executorPicker={kind === 'unified' ? {
-          catalog: [],
-          onSelect: () => undefined,
-          onSetup: () => undefined,
-          onRetry: () => undefined,
-          onNewTask: () => undefined,
-        } : undefined}
-        renderProviderMark={providerMark}
-        onModelChange={onPick}
-        onPickNewChatModel={onPick}
-        onSend={() => undefined}
-        onStop={() => undefined}
-      />
-    </section>
-  );
-}
-
-// Real path: a custom relay exposes two path-like model IDs differing only in
-// their suffix. Each panel uses the production Composer that owns the trigger's
-// width cap: an existing native session (the unified options menu), the
-// standalone new-chat fallback, and the unified home / side-chat default picker.
-// The stacked arrangement is a review scaffold, not a single application screen.
+// Real path: a native task selects a long relay model name; the production Composer owns truncation.
 export const LongModelNames: Story = {
-  render: () => (
-    <div style={{ width: 460, maxWidth: '100%', display: 'grid', gap: 24 }}>
-      <LongModelNameComposer kind="existing" />
-      <LongModelNameComposer kind="new" />
-      <LongModelNameComposer kind="unified" />
-    </div>
-  ),
+  render: () => <PickerFrame existing choices={LONG_CHOICES} />,
   play: async ({ canvasElement }) => {
-    await document.fonts.ready;
-    for (const name of ['Existing conversation', 'New conversation', 'Unified picker']) {
-      const panel = within(canvasElement).getByRole('region', { name });
-      const trigger = within(panel).getByRole('button', {
-        name: (label) => label.includes(SUFFIX_CHOICES[0]!.label),
-      });
-      const expectEndEllipsis = async (fullName: string) => {
-        await expect(trigger).toHaveAccessibleName(new RegExp(fullName));
-        await expect(trigger.querySelector('.modelPickerProviderMark')).toBeNull();
-        const label = trigger.querySelector<HTMLElement>('.maka-composer-model-label');
-        if (!label?.firstChild) throw new Error('Missing selected model label');
-        await expect(label).toHaveTextContent(fullName);
-        await expect(label).toHaveAttribute('title', fullName);
-        const style = getComputedStyle(label);
-        await expect(style.textOverflow).toBe('ellipsis');
-        await expect(style.overflow).toBe('hidden');
-        await expect(style.direction).toBe('ltr');
-        await expect(style.textAlign).toBe('left');
-        await expect(label.scrollWidth).toBeGreaterThan(label.clientWidth);
-        const clip = label.getBoundingClientRect();
-        const range = document.createRange();
-        range.setStart(label.firstChild, 0);
-        range.setEnd(label.firstChild, 'accounts/'.length);
-        const prefix = range.getBoundingClientRect();
-        await expect(prefix.width).toBeGreaterThan(0);
-        await expect(prefix.left).toBeCloseTo(clip.left, 0);
-        await expect(prefix.right).toBeLessThanOrEqual(clip.right);
-        // The suffix is clipped at the right edge; hover and the accessible
-        // name still expose the complete model ID after each selection.
-        range.selectNodeContents(label);
-        await expect(range.getBoundingClientRect().right).toBeGreaterThan(clip.right);
-      };
-      await expectEndEllipsis(SUFFIX_CHOICES[0]!.label);
-      // An open Session picks through the unified menu's Model submenu; the
-      // new-task panels keep their searchable picker until phase 2 of #5787.
-      const openChoice = async (choiceName: string | RegExp) => {
-        await userEvent.click(trigger);
-        const page = within(document.body);
-        if (name !== 'Existing conversation') return page.findByRole('option', { name: choiceName });
-        await userEvent.click(await page.findByRole('menuitem', { name: /^(模型|Model)/ }));
-        return page.findByRole('menuitemradio', { name: choiceName });
-      };
-      await userEvent.click(await openChoice('GPT-5'));
-      await waitFor(() => expect(trigger).toHaveAttribute('aria-expanded', 'false'));
-      await waitFor(() => expect(trigger.querySelector('.maka-composer-model-label')).toHaveTextContent(/^GPT-5$/));
-      await expect(trigger).toHaveAccessibleName(/GPT-5/);
-      const shortLabel = trigger.querySelector<HTMLElement>('.maka-composer-model-label')!;
-      const shortRange = document.createRange();
-      shortRange.selectNodeContents(shortLabel);
-      await expect(shortRange.getBoundingClientRect().left).toBeCloseTo(shortLabel.getBoundingClientRect().left, 0);
-      await expect(shortRange.getBoundingClientRect().right).toBeLessThanOrEqual(shortLabel.getBoundingClientRect().right + 1);
-      const option = await openChoice(new RegExp(SUFFIX_CHOICES[1]!.label));
-      await expect(option.querySelector('.modelPickerProviderMark')).not.toBeNull();
-      await userEvent.click(option);
-      await waitFor(() => expect(trigger).toHaveAttribute('aria-expanded', 'false'));
-      await expectEndEllipsis(SUFFIX_CHOICES[1]!.label);
-    }
+    const trigger = canvasElement.querySelector<HTMLElement>('.maka-model-switcher-trigger')!;
+    const label = trigger.querySelector<HTMLElement>('.maka-composer-model-label')!;
+    await expect(label).toHaveAttribute('title', LONG_CHOICES[0]!.label);
+    await expect(getComputedStyle(label).textOverflow).toBe('ellipsis');
+    await expect(trigger.textContent).not.toContain('1M');
+    const page = await openModels(canvasElement);
+    const list = await page.findByRole('listbox');
+    await waitFor(() => expect(list.getBoundingClientRect().right).toBeLessThanOrEqual(window.innerWidth));
+    await expect(list.getBoundingClientRect().left).toBeGreaterThanOrEqual(0);
   },
 };
 
-// Real path: an existing Session whose connection is still configured but whose
-// pinned model was dropped from that connection's catalog. ChatModelSwitcher
-// surfaces the unknown current model as a leading row above the connection's
-// remaining models (the `leadingOption` branch), labelled with the raw model id
-// the session carries — not a hand-written label, and without removing the
-// connection itself.
-export const StaleCurrentModel: Story = {
-  render: function StaleCurrentModelRender() {
-    return (
-      <div style={{ width: 460, maxWidth: '100%' }}>
-        <ChatModelSwitcher
-          activeSession={{
-            id: 'storybook-stale-model',
-            name: 'Retired model',
-            isFlagged: false,
-            isArchived: false,
-            labels: [],
-            hasUnread: false,
-            status: 'active',
-            backend: 'ai-sdk',
-            llmConnectionId: 'connection-anthropic-team',
-            llmConnectionSlug: 'anthropic-team',
-            connectionLocked: false,
-            model: 'claude-opus-3-retired',
-            permissionMode: 'ask',
-          }}
-          activeModelLabel="claude-opus-3-retired"
-          currentProviderType="anthropic"
-          choices={CHOICES}
-          renderProviderMark={providerMark}
-          onChange={() => undefined}
-        />
-      </div>
-    );
-  },
-  play: async ({ canvasElement }) => {
-    const trigger = within(canvasElement).getByRole('button', {
-      name: /切换当前任务模型|Switch model for this task/,
-    });
-    await userEvent.click(trigger);
-    const menu = within(document.body);
-    // The dropped model leads the menu as the current selection…
-    await menu.findByRole('option', { name: /claude-opus-3-retired/ });
-    // …while its connection's remaining models still follow underneath.
-    await menu.findByRole('option', { name: /Claude Sonnet 4/ });
+// Real path: a selected external Agent requires sign-in; its history remains available.
+export const UnavailableAgent: Story = {
+  render: () => <PickerFrame existing external catalog={[{ ...CATALOG[0]!, readiness: 'authentication_required' }]} />,
+};
+
+// Real path: Settings → Subagents → select a model from the same Astryx option catalog.
+export const SettingsCatalog: Story = {
+  render: function SettingsCatalogRender() {
+    const locale = useUiLocale();
+    const [value, setValue] = useState(modelChoiceValue('openai-main', 'gpt-6.1-sol'));
+    return <div style={{ width: 360, maxWidth: '100%' }}><ModelPicker
+      groups={modelMenuGroups(CHOICES, locale)} value={value} onValueChange={setValue}
+      renderProviderMark={brand} ariaLabel="Model"
+    /></div>;
   },
 };

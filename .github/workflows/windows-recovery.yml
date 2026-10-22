@@ -32,6 +32,8 @@ name: Windows recovery
 # regression this lane has caught that no other lane could have. That second
 # group is generated rather than curated, because a hand-picked list cannot be
 # shown to be complete and this one has to be.
+# The CLI project-root parser is also included: node:path.isAbsolute has native
+# Windows behavior without a win32 literal in the caller.
 #
 # What is deliberately absent is the portable rest of those workspaces. Every
 # source directory in the closure used to be here, which put this lane on 118 of
@@ -61,11 +63,24 @@ on:
       - 'scripts/clean-build.mjs'
       - 'scripts/clean-paths.mjs'
       - 'scripts/windows-runtime-host-local-ipc-trust.ps1'
+      # The desktop launcher executes cmd.exe with native console code pages.
+      - 'apps/desktop/src/main/opencli-chrome.ts'
+      - 'apps/desktop/src/main/__tests__/opencli-chrome.test.ts'
       # Every file in the import closure of the suites below that branches on
       # `process.platform === 'win32'`. Generated, not curated:
       # `scripts/windows-package-source-closure.test.mjs` recomputes this set
       # from the dist tests the steps run and fails on any difference in either
-      # direction.
+      # direction, including the CLI's native path parser described above.
+      - 'packages/cli/src/__tests__/runtime-host-service-manager.test.ts'
+      - 'packages/cli/src/runtime-host-cli-installation.ts'
+      - 'packages/cli/src/runtime-host-cli.ts'
+      - 'packages/cli/src/runtime-host-lifecycle-transaction.ts'
+      - 'packages/cli/src/runtime-host-managed-deployment.ts'
+      - 'packages/cli/src/runtime-host-package-deployment.ts'
+      - 'packages/cli/src/runtime-host-peer-artifact.ts'
+      - 'packages/cli/src/runtime-host-service-management-command.ts'
+      - 'packages/cli/src/runtime-host-update-command.ts'
+      - 'packages/cli/src/runtime-host-windows-task-launcher-artifact.ts'
       - 'packages/core/src/diagnostic-log.ts'
       - 'packages/runtime-host/src/__tests__/control-endpoint.test.ts'
       - 'packages/runtime-host/src/__tests__/fixtures/endpoint-hygiene.ts'
@@ -73,6 +88,7 @@ on:
       - 'packages/runtime-host/src/__tests__/skill-catalog-repository.test.ts'
       - 'packages/runtime-host/src/__tests__/skill-catalog-transaction.test.ts'
       - 'packages/runtime-host/src/__tests__/skill-catalog-two-client-uds.test.ts'
+      - 'packages/runtime-host/src/__tests__/ssh-operator-activation.test.ts'
       - 'packages/runtime-host/src/assistant/proactive-matters/files.ts'
       - 'packages/runtime-host/src/client/client-instance-identity.ts'
       - 'packages/runtime-host/src/client/host-profile.ts'
@@ -101,7 +117,7 @@ on:
       - 'packages/runtime/src/__tests__/runtime-resume-crash.test.ts'
       - 'packages/runtime/src/__tests__/shell-owner-death.test.ts'
       - 'packages/runtime/src/builtin-tools.ts'
-      - 'packages/runtime/src/file-mutation-evidence.ts'
+      - 'packages/runtime/src/file-mutation-guard.ts'
       - 'packages/runtime/src/file-stable-write.ts'
       - 'packages/runtime/src/filesystem-worker/client.ts'
       - 'packages/runtime/src/filesystem-worker/launch-spec.ts'
@@ -133,6 +149,7 @@ on:
       - 'packages/storage/src/session-bundle-file-service.ts'
       - 'packages/storage/src/sqlite-long-term-memory-store.ts'
       - 'packages/storage/src/stable-storage.ts'
+      - 'packages/storage/src/workspace-root.ts'
       - '.github/workflows/windows-recovery.yml'
   # Unfiltered on purpose: required_status_checks is `strict: false`, so a pull
   # request goes green against a stale base and only the merged result proves
@@ -176,7 +193,7 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "24"
+          node-version: "24.22.1"
           cache: npm
 
       - name: Install dependencies
@@ -184,6 +201,10 @@ jobs:
 
       - name: Build test artifacts
         run: npm.cmd run build:test
+
+      - name: Verify Windows opencli launchers
+        shell: pwsh
+        run: node.exe --test apps/desktop/dist/main/__tests__/opencli-chrome.test.js
 
       - name: Verify managed dependency alternate streams
         shell: pwsh
@@ -199,6 +220,14 @@ jobs:
             Write-Error 'Managed dependency ADS gate did not run exactly three passing Windows tests'
             exit 1
           }
+
+      # The remaining service-manager tests exercise POSIX service backends.
+      - name: Verify native Runtime Host project-root parsing
+        shell: pwsh
+        run: >-
+          node.exe --test
+          --test-name-pattern="uses native Host paths consistently|parses the bounded managed service"
+          packages/cli/dist/__tests__/runtime-host-service-manager.test.js
 
       - name: Verify root initialization replacement race
         shell: pwsh
@@ -221,6 +250,13 @@ jobs:
           node.exe --test packages/runtime-host/dist/__tests__/control-endpoint.test.js
           ./scripts/windows-runtime-host-local-ipc-trust.ps1
 
+      # The POSIX command execution case in this suite requires a POSIX host.
+      - name: Verify Windows SSH operator arguments and activation
+        shell: pwsh
+        run: >-
+          node.exe --test --test-name-pattern="Windows SSH operator|SSH activation"
+          packages/runtime-host/dist/__tests__/ssh-operator-activation.test.js
+
       - name: Verify Skill catalog on Windows
         shell: pwsh
         run: |
@@ -234,8 +270,8 @@ jobs:
           $exitCode = $LASTEXITCODE
           if ($exitCode -ne 0) { exit $exitCode }
           $output = Get-Content "$env:RUNNER_TEMP/skill-catalog.tap"
-          if ($output -notcontains '# tests 94' -or $output -notcontains '# pass 94' -or $output -notcontains '# skipped 0') {
-            Write-Error 'Skill catalog gate did not run exactly 94 passing Windows tests'
+          if ($output -notcontains '# tests 95' -or $output -notcontains '# pass 95' -or $output -notcontains '# skipped 0') {
+            Write-Error 'Skill catalog gate did not run exactly 95 passing Windows tests'
             exit 1
           }
 

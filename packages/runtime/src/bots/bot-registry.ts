@@ -19,6 +19,7 @@
 
 import { EventEmitter } from 'node:events';
 import {
+  resolveBotMessageHandling,
   type BotChannelSettings,
   type BotChatSettings,
   type BotProvider,
@@ -45,6 +46,7 @@ import { WechatBridge } from './wechat-bridge.js';
 import { WeComBotBridge } from './wecom-bridge.js';
 
 export interface BotRegistryDeps {
+  wechatContextDirectory?: string;
   onIncomingMessage: (message: BotIncomingMessage) => void;
   onStatusChange: (status: BotStatus) => void;
 }
@@ -109,7 +111,22 @@ export class BotRegistry {
   async sendTypingIndicator(platform: BotPlatform, chatId: string): Promise<boolean> {
     const bridge = this.bridges.get(platform) as (BotBridge & Partial<SendCapable>) | undefined;
     if (!bridge || typeof bridge.sendTypingIndicator !== 'function') return false;
-    return bridge.sendTypingIndicator(chatId);
+    return bridge.sendTypingIndicator(chatId).catch(() => false);
+  }
+
+  async cancelTypingIndicator(platform: BotPlatform, chatId: string): Promise<boolean> {
+    const bridge = this.bridges.get(platform) as (BotBridge & Partial<SendCapable>) | undefined;
+    if (!bridge?.cancelTypingIndicator) return false;
+    return bridge.cancelTypingIndicator(chatId).catch(() => false);
+  }
+
+  async getMessageReadStatus(platform: BotPlatform, messageId: string, userId: string) {
+    const bridge = this.bridges.get(platform) as (BotBridge & Partial<SendCapable>) | undefined;
+    return (
+      (await bridge
+        ?.getMessageReadStatus?.(messageId, userId)
+        .catch(() => ({ state: 'unknown' as const }))) ?? { state: 'unknown' as const }
+    );
   }
 
   async stopAll(): Promise<void> {
@@ -123,7 +140,12 @@ export class BotRegistry {
 
   private async applySettingsNow(settings: BotChatSettings): Promise<void> {
     await Promise.all(
-      BOT_PROVIDERS.map((provider) => this.reconcileOne(provider, settings.channels[provider])),
+      BOT_PROVIDERS.map((provider) =>
+        this.reconcileOne(provider, {
+          ...settings.channels[provider],
+          messageHandling: resolveBotMessageHandling(settings, provider),
+        }),
+      ),
     );
   }
 
@@ -168,7 +190,7 @@ export class BotRegistry {
 
     const bridge =
       platform === 'wechat'
-        ? new WechatBridge(settings)
+        ? new WechatBridge(settings, this.deps.wechatContextDirectory)
         : platform === 'wecom'
           ? new WeComBotBridge(settings)
           : platform === 'feishu'

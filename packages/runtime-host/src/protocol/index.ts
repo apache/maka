@@ -107,7 +107,17 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 222 as const;
+// Re-check against main before merging; sibling PRs may use the same next epoch.
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 227 as const;
+// 227: Goal projections carry eventWait and support goal.event-wait.cancel.
+// Older peers cannot decode the wait summary or cancel a specific wait.
+// 226: assistant.allocate-workspace allocates a Host-owned fallback for projectless assistants.
+// 225: Goal successor transcript origins carry typed event-wait provenance.
+// Older peers reject the additional field in the strict stored-message decoder.
+// 224: Assistant conversation admission supports Inbox receipts without a model Turn,
+// inbox execution-query resolutions, external connector provenance and message summaries.
+// Existing bot turn.start producers also carry strict external_connector provenance.
+// Also adds assistant.avatar/assistant.avatar-image and the bot block on assistant.binding.
 // 222: Built-in personal assistant operations and the Host-owned default-off
 // master switch require matching Client and Host support.
 // 221: Epoch-220 peers do not support `artifact.image.resolve` or its image
@@ -908,3 +918,9 @@ function requireReplacement(value: unknown): HostIncompatible['replacement'] {
   if (value === 'blocked_by_residency' || value === 'wait_for_idle_exit') return value;
   throw invalidProtocolFrame('Invalid replacement disposition');
 }
+
+export type {
+  GoalEventWaitProjection,
+  GoalEventWaitCancelInput,
+  GoalEventWaitCancelResult,
+} from './goal.js';

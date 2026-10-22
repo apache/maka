@@ -20,16 +20,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import {
-  ASSISTANT_ROLE,
-  PROACTIVE_TASK,
-} from '../../../../src/assistant/index-initiative/prompt.js';
+import { PROACTIVE_TASK } from '../../../../src/assistant/index-initiative/prompt.js';
+import { BOT_ROLE } from '../../../../src/assistant/bot/host.js';
 test('proactive instructions match the approved text verbatim and retain the assistant contract', () => {
   assert.equal(
     createHash('sha256').update(PROACTIVE_TASK).digest('hex'),
     '73b4559e6c2d37ff6638938e54cc22759cfbcb44cf5dc02a1ab511a9c609bd22',
   );
-  assert.match(ASSISTANT_ROLE, /没有索引也正常交流/);
-  assert.match(ASSISTANT_ROLE, /只有转交工具成功后/);
-  assert.match(ASSISTANT_ROLE, /另写记事本（用户明确要求的本地诊断记录除外）/);
+  assert.match(BOT_ROLE, /SendUser/);
+  assert.match(BOT_ROLE, /Sleep/);
+  assert.match(BOT_ROLE, /MatterDelegate/);
 });

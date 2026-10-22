@@ -17,11 +17,12 @@
  * under the License.
  */
 
+import { matterInput } from './settlement-context.js';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { Matter, MatterStore } from './matter.js';
 import type { MatterServices, MakaToolContext } from './host-types.js';
-import { buildMatterPrompt } from './prompt.js';
+import { buildMatterPrompt, buildMatterStepContext } from './prompt.js';
 
 import { awaitingUser, executionFailure } from '../execution-outcome.js';
 
@@ -38,7 +39,10 @@ export class MatterController {
   constructor(
     readonly ctx: MatterServices,
     readonly store: MatterStore,
-    readonly options: { tickMs?: number } = {},
+    readonly options: {
+      tickMs?: number;
+      observer?: { start(): Promise<void>; close(): Promise<void> };
+    } = {},
   ) {}
 
   start() {
@@ -99,9 +103,15 @@ export class MatterController {
       this.store.recover();
       this.ready = true;
     }
+    try {
+      await this.options.observer?.start();
+    } catch (error) {
+      // Observation failure must not block time fallbacks or unrelated Matter work.
+      this.lastError = String(error);
+    }
     this.store.enqueueDue();
     for (const m of this.store.list()) {
-      if (!this.active || this.runs.size >= 2) break;
+      if (!this.active || this.runs.size >= 15) break;
       if (
         this.runs.has(m.id) ||
         m.activation ||
@@ -281,6 +291,33 @@ export class MatterController {
     this.store.observe(id, active.id);
     return this.store.workspace(id, active.id);
   }
+  /** Re-resolved before each model request, including while a task is running.
+   * Keep durable inbox entries until settlement; rendering is not acknowledgement.
+   */
+  stepContext(sessionId: string, turnId: string): string | undefined {
+    const m = this.store.forSession(sessionId);
+    if (!m || ['completed', 'cancelled'].includes(m.status)) return undefined;
+    return buildMatterStepContext();
+  }
+  stepInboxContext(sessionId: string, turnId: string): string | undefined {
+    const m = this.store.forSession(sessionId);
+    if (
+      !m ||
+      ['completed', 'cancelled'].includes(m.status) ||
+      !m.activation ||
+      m.activation.turnId !== turnId ||
+      m.activation.settled
+    )
+      return undefined;
+    const snapshot = this.store.get(m.id);
+    const workspace = this.store.workspace(m.id, m.activation.id);
+    return `Current task inbox (persisted inputs, not a new delegation; refreshed before every model request). User entries are user requirements; coordinator entries are assistant-authored amendments and bot_clarification entries are coordinator answers; both are coordinator context, not new user authorization. Reassess your next action against these inputs. Settlement checks the exact delivered input boundary automatically. Rendering this context does not acknowledge or consume inputs.\n${JSON.stringify(
+      {
+        ...matterInput(snapshot),
+        inboxFile: workspace.files.inbox,
+      },
+    )}`;
+  }
   snapshot() {
     return {
       ready: this.ready,
@@ -313,6 +350,7 @@ export class MatterController {
     this.active = false;
     clearTimeout(this.timer);
     await this.ticking;
+    await this.options.observer?.close();
     // Fence writes before retiring this service’s run observers.
     for (const id of this.runs.keys()) {
       const m = this.store.get(id).matter;

@@ -28,6 +28,41 @@ import { startJsonServer, respondJson, closeAllJsonServers } from './conformance
 after(closeAllJsonServers);
 
 describe('model discovery', () => {
+  test('Inception uses chat-only discovery and reads its advertised capacity and features', async () => {
+    const outcome = await runConnectionModelDiscoveryEffect(
+      { providerType: 'inception', baseUrl: 'https://api.inceptionlabs.ai/v1' },
+      'inception-test-key',
+      {
+        fetch: async (input, init) => {
+          assert.equal(String(input), 'https://api.inceptionlabs.ai/v1/chat/completions/models');
+          assert.equal(
+            new Headers(init?.headers).get('authorization'),
+            'Bearer inception-test-key',
+          );
+          return Response.json({
+            data: [
+              {
+                id: 'mercury-3',
+                name: 'Inception: Mercury 3',
+                context_length: 1_000_000,
+                max_output_length: 131_072,
+                supported_features: ['tools', 'json_mode', 'structured_outputs'],
+              },
+            ],
+          });
+        },
+      },
+    );
+    assert.ok(outcome.ok);
+    assert.equal(outcome.models.length, 1);
+    const model = outcome.models[0];
+    assert.equal(model.id, 'mercury-3');
+    assert.equal(model.contextWindow, 1_000_000);
+    assert.equal(model.maxOutputTokens, 131_072);
+    assert.equal(model.capabilities?.functionCalling, true);
+    assert.equal(model.structuredOutput, true);
+  });
+
   test('all token metadata adapters preserve valid limits and omit invalid optional limits', async () => {
     const values = [
       [undefined, undefined],

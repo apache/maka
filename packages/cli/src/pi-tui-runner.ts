@@ -4789,6 +4789,50 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           return;
         }
         const action = parts[1];
+        if (parts.length === 2 && action === 'cancel-wait') {
+          if (busy) {
+            state.entries.push({
+              kind: 'notice',
+              level: 'info',
+              text: TUI_COPY_RESOURCES.goal[locale].cancelWaitBusy,
+            });
+            requestRender();
+            return;
+          }
+          const goal = input.driver.getGoal?.();
+          const wait = goal?.eventWait;
+          if (!goal || !wait || !input.driver.cancelGoalEventWait) {
+            state.entries.push({
+              kind: 'notice',
+              level: 'info',
+              text: TUI_COPY_RESOURCES.goal[locale].noCancellableWait,
+            });
+            requestRender();
+            return;
+          }
+          // Capture the displayed identity before any await; never retarget retries.
+          const target = {
+            sessionId: goal.sessionId,
+            goalId: goal.goalId,
+            controlGeneration: wait.controlGeneration,
+            waitId: wait.waitId,
+            expectedGoalRevision: goal.revision,
+          };
+          void runControl(async () => {
+            const result = await input.driver.cancelGoalEventWait!(target);
+            currentGoal = result.goal;
+            state.entries.push({
+              kind: 'notice',
+              level: 'info',
+              text:
+                result.outcome === 'cancelled' || result.outcome === 'already_cancelled'
+                  ? TUI_COPY_RESOURCES.goal[locale].waitCancelled
+                  : TUI_COPY_RESOURCES.goal[locale].waitChanged,
+            });
+            requestRender();
+          });
+          return;
+        }
         if (
           parts.length !== 2 ||
           (action !== 'pause' && action !== 'resume' && action !== 'clear')
@@ -4796,7 +4840,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           state.entries.push({
             kind: 'notice',
             level: 'error',
-            text: 'Usage: /goal [pause|resume|clear]',
+            text: TUI_COPY_RESOURCES.goal[locale].usage,
           });
           requestRender();
           return;

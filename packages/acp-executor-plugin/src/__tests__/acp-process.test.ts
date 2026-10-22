@@ -313,12 +313,15 @@ for (const prompt of ['wait', 'refusal', 'ignore-cancel', 'crash']) {
       }
       assert.equal(values.get('task')?.phase, 'committed');
       const terminalEvents: string[] = [];
+      let stopping: Promise<void> | undefined;
       for await (const event of backend.send({ turnId: 'stopped', text: prompt })) {
         terminalEvents.push(event.type);
-        if (event.type === 'text_delta') await backend.stop('user_stop');
+        // Keep draining while Stop waits for the final updates to be consumed.
+        if (event.type === 'text_delta' && !stopping) stopping = backend.stop('user_stop');
         if (event.type === 'complete')
           assert.equal(values.get('task')?.phase, 'prompt_pending', 'delivery alone cannot commit');
       }
+      await stopping;
       assert.equal(terminalEvents.at(-1), 'complete');
       assert.ok(terminalEvents.includes(['crash', 'refusal'].includes(prompt) ? 'error' : 'abort'));
       const settled = prompt === 'wait' || prompt === 'refusal';

@@ -1325,6 +1325,53 @@ test('a Message dispatched in a released epoch is settled from the Host, never r
   assert.equal(store.get('authority', 'message-1')?.result?.disposition, 'turn_started');
 });
 
+test('an assistant Inbox receipt survives a released epoch without replaying or inventing a Turn', async (t) => {
+  const { store, beforeClose } = await database(t);
+  const submissions: TurnMessageSubmitInput[] = [];
+  const queried: string[][] = [];
+  const target: DesktopSessionLocalTarget = {
+    partition: 'authority',
+    profileId: 'profile',
+    scope: { hostId: 'root', targetEpoch: 'target-1' },
+    client: {
+      ...client('epoch-2'),
+      async queryMessageExecutions(input) {
+        queried.push([...input.messageIds]);
+        return {
+          resolutions: [
+            { messageId: 'message-1', state: 'inbox' },
+          ],
+        };
+      },
+    },
+    submit: async (input) => {
+      submissions.push(input);
+      return accepted;
+    },
+  };
+  const service = new DesktopSessionLocalService(store, {
+    targets: () => [target],
+    changed() {},
+    onError: (error) => assert.fail(String(error)),
+  });
+  beforeClose.push(() => service.close());
+  // Dispatch once in the previous epoch, then lose the answer the way a Host
+  // restart does: the local copy is left `unknown` with a dead dispatch epoch.
+  const dispatched = store.enqueue('authority', intent());
+  store.update({
+    ...dispatched,
+    state: 'unknown',
+    intent: { ...dispatched.intent, originHostEpoch: 'epoch-1' },
+  });
+  service.wake();
+  await waitFor(() => store.get('authority', 'message-1')?.state === 'accepted');
+  assert.deepEqual(queried, [['message-1']]);
+  // The old epoch's submit is never replayed: that answer can only be
+  // `outcome_unknown`, which would freeze the copy forever.
+  assert.deepEqual(submissions, []);
+  assert.equal(store.get('authority', 'message-1')?.result?.disposition, 'inbox');
+});
+
 test('a stale-epoch Message the Host never admitted is retired so later sends proceed', async (t) => {
   const { store, beforeClose } = await database(t);
   const submissions: string[] = [];

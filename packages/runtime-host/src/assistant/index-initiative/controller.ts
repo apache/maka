@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { ASSISTANT_BACKGROUND_SESSION_LABEL } from '@maka/core/session';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { InitiativeStore } from './store.js';
@@ -32,6 +33,15 @@ export class InitiativeController {
   private activeAgent?: any;
   ticking?: Promise<void>;
   enabling = false;
+  private bindingResolution?: Promise<void>;
+  get bindingReady(): Promise<void> {
+    // Share in-flight work and successful resolution, but let the next caller
+    // retry a failed startup lookup without restarting the Host.
+    return (this.bindingResolution ??= this.resolveBinding().catch((error) => {
+      this.bindingResolution = undefined;
+      throw error;
+    }));
+  }
   constructor(
     readonly ctx: any,
     readonly store: InitiativeStore,
@@ -45,11 +55,25 @@ export class InitiativeController {
       this.owned = owned;
     };
     acquire();
+    // Observe startup failure; API callers can retry the lookup later.
+    void this.bindingReady.catch(() => {});
     this.heartbeat = setInterval(acquire, 10000);
     this.heartbeat.unref?.();
     this.timer = setInterval(() => void this.tick(), this.config.tickMs);
     this.timer.unref?.();
     void this.tick();
+  }
+  private async resolveBinding() {
+    if (this.store.get() || !this.owned) return;
+    const matches = (await this.ctx.sessionQuery.list()).filter((s: any) =>
+      s.labels?.includes('personal-assistant'),
+    );
+    if (matches.length > 1) throw Error('Multiple assistant conversations found');
+    if (!matches.length) return; // First creation is resolved by assistant.bind.
+    const session = matches[0];
+    if (!session.cwd) throw Error('Assistant conversation has no Host cwd');
+    this.ready();
+    this.store.bind({ sessionId: session.id, cwd: session.cwd });
   }
   ready() {
     this.abort.signal.throwIfAborted();
@@ -91,7 +115,29 @@ export class InitiativeController {
   async dispatch() {
     const s = this.store.get();
     if ((!s?.enabled && !s?.checkRequested) || s.active || s.nextAt > Date.now()) return;
-    const agent = await this.asOwner(s, () => this.ctx.agents.resume({ sessionId: s.sessionId }));
+    const agent = await this.asOwner(s, async () => {
+      let sessionId = s.discoverySession;
+      if (!sessionId) {
+        const label = `assistant-discovery:${s.sessionId}`;
+        const matches = (await this.ctx.sessionQuery.list()).filter((item: any) =>
+          item.labels?.includes(label),
+        );
+        if (matches.length > 1) throw Error('Multiple exploration workers found');
+        sessionId =
+          matches[0]?.id ??
+          (
+            await this.ctx.agents.create({
+              background: true,
+              name: '个人助手 · 主动发现',
+              labels: [label, ASSISTANT_BACKGROUND_SESSION_LABEL],
+            })
+          ).sessionId;
+        this.store.update((current) => {
+          current.discoverySession = sessionId;
+        });
+      }
+      return this.ctx.agents.resume({ sessionId });
+    });
     const snapshot = await agent.snapshot();
     if (snapshot?.agent?.status === 'running' || awaitingUser(snapshot)) return;
     this.ready();
@@ -128,7 +174,6 @@ export class InitiativeController {
         if (this.store.get()?.active?.id === id) {
           const message = String(e);
           this.store.finish(id, message);
-          // Shared foreground Session: do not cancel a user's concurrent turn.
         }
       } catch {
         /* A newer owner fences writes and cancellation. */
@@ -138,22 +183,38 @@ export class InitiativeController {
     }
   }
   async enable(input: any, call: any) {
+    await this.bindingReady;
     this.ready();
     if (this.enabling) throw Error('Initiative configuration is already in progress');
     this.enabling = true;
     try {
       const old = this.store.get();
-      if (old && old.sessionId !== call.sessionId)
+      if (!old || old.sessionId !== call.sessionId)
         throw Error('Only the assistant conversation may configure heartbeats');
+      if (old?.enabled && input.intervalMinutes === undefined) return old;
       const s = this.store.configure(
-        { sessionId: call.sessionId, cwd: call.cwd },
-        input.intervalMinutes * 60000,
+        { sessionId: old.sessionId, cwd: old.cwd },
+        input.intervalMinutes === undefined
+          ? (old?.intervalMs ?? 1800000)
+          : input.intervalMinutes * 60000,
       );
       void this.tick();
       return s;
     } finally {
       this.enabling = false;
     }
+  }
+  async configure(input: { intervalMinutes: number }, call: any) {
+    await this.bindingReady;
+    this.ready();
+    const old = this.store.get();
+    if (!old || old.sessionId !== call.sessionId)
+      throw Error('Only the assistant conversation may configure heartbeats');
+    return this.store.configure(
+      { sessionId: old.sessionId, cwd: old.cwd },
+      input.intervalMinutes * 60000,
+      old?.enabled ?? false,
+    );
   }
   async control(action: string, call: any) {
     this.ready();

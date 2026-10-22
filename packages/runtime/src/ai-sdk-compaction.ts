@@ -796,7 +796,8 @@ export class AiSdkCompaction {
       headAnchor,
       priorContentEvents,
       input.runtimeContextInvocations ?? [],
-      resolveDeclaredContextWindow(this.input.connection, this.input.modelId),
+      resolveDeclaredContextWindow(this.input.connection, this.input.modelId) ??
+        policy.historyCompact.midTurn.fallbackThresholdTokens,
     );
     // Seed the turn's FIRST request with the last request the provider
     // actually counted, so step 0 is judged by the same real number as every
@@ -819,12 +820,12 @@ export class AiSdkCompaction {
   /**
    * Request-projection stage for proactive compaction: before each request of
    * one turn, compare the baseline — the last provider-accepted request's real
-   * input plus real output tokens — against the context window the user
-   * declared, and over it fold a safe completed prefix into a durable
-   * checkpoint, continuing the turn on `[compact block, verbatim head anchor]`.
+   * input plus real output tokens — against the user's compaction target or
+   * explicit Host fallback. Crossing it folds a safe completed prefix into a
+   * durable checkpoint, continuing on `[compact block, verbatim head anchor]`.
    *
    * Nothing here estimates whether a request fits: the baseline is the
-   * provider's own count, the window is the user's own number, and the part of
+   * provider's own count, the target is a policy choice, and the part of
    * the next request neither describes (tool results, user text, images
    * appended since) is judged by the provider when the request goes out. This
    * hook never terminates the turn: every failure fails open with a diagnostic
@@ -900,7 +901,7 @@ export class AiSdkCompaction {
         return keepProjection();
       };
       // One trigger, one real signal: the baseline plus the room the next reply
-      // needs crossed the window the user declared. A cut reply is deliberately
+      // needs crossed the user target or Host fallback. A cut reply is deliberately
       // not a trigger — see the note on `finishReason: length` in the backend.
       // The next request is at least the baseline, and its reply needs room on
       // top of it. The room is measured from the last reply the model actually

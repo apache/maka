@@ -83,7 +83,8 @@ on:
       - 'packages/runtime/src/child-fd-input.ts'
       - 'packages/runtime/src/child-process-lifecycle.ts'
       - 'packages/runtime/src/edit-replace.ts'
-      - 'packages/runtime/src/file-mutation-evidence.ts'
+      - 'packages/runtime/src/file-mutation-guard.ts'
+      - 'packages/runtime/src/file-mutation-guard-contract.ts'
       - 'packages/runtime/src/file-stable-write.ts'
       - 'packages/runtime/src/image-file.ts'
       - 'packages/runtime/src/process-tree-terminator.ts'
@@ -92,12 +93,10 @@ on:
       - 'packages/core/src/absolute-path.ts'
       - 'packages/core/src/artifacts.ts'
       - 'packages/core/src/attachments.ts'
-      - 'packages/core/src/file-mutation-evidence.ts'
       - 'packages/core/src/permission-profile.ts'
       - 'packages/core/src/permission-profile-compiler.ts'
       - 'packages/core/src/sandbox-boundary.ts'
       - 'packages/core/src/serialized-byte-length.ts'
-      - 'packages/core/src/tool-args-identity.ts'
       - 'packages/core/src/windows-path.ts'
       - 'experiments/windows-sandbox/launcher/**'
       - 'experiments/windows-sandbox/*.ps1'
@@ -141,7 +140,7 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '24'
+          node-version: '24.22.1'
           cache: npm
 
       - name: Install dependencies

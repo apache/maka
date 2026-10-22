@@ -29,13 +29,16 @@ import type { ContextBudgetPolicy } from './context-budget.js';
 export interface BuildDefaultContextBudgetPolicyOptions {
   name?: string;
   modelId?: string;
+  /** Optional surface policy; never overrides the user's model threshold. */
+  fallbackCompactionThresholdTokens?: number;
 }
 
 /**
  * The shipped context-budget policy. It carries no history budget and no
  * reserve: whether a request fits is the provider's answer, and the only
- * proactive threshold is the context window the user declared for the model
+ * default proactive threshold is the one the user declared for the model
  * (see `resolveDeclaredContextWindow`), read by the compaction seam itself.
+ * A Host may opt a long-lived surface into a fallback target.
  * What remains here are content policies — how one oversized Tool Result
  * enters the request — and the compaction switches (#4559).
  */
@@ -46,13 +49,19 @@ export function buildDefaultContextBudgetPolicy(
     /-default-history-budget$/,
     '',
   );
+  const fallback = options.fallbackCompactionThresholdTokens;
   return {
     name: options.name ?? 'default-history-budget',
     toolResultPrune: { enabled: true },
     historyCompact: {
       enabled: true,
       highWaterName: `${surfaceName}-history-compact`,
-      midTurn: { enabled: true },
+      midTurn: {
+        enabled: true,
+        ...(typeof fallback === 'number' && Number.isFinite(fallback) && fallback > 0
+          ? { fallbackThresholdTokens: fallback }
+          : {}),
+      },
     },
   };
 }

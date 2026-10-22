@@ -98,6 +98,7 @@ export function BotChatOverview(props: {
             options={[
               { value: 'task', label: copy.separateTask },
               { value: 'workhub', label: 'WorkHub' },
+              { value: 'assistant', label: copy.personalAssistant },
             ]}
             onChange={(value) => props.onMessageHandlingChange?.(value as BotMessageHandling)}
           />}

@@ -38,13 +38,15 @@ import {
 } from '../session-event-runtime-mapper.js';
 import type { RuntimeEventMapContext } from '../session-event-runtime-mapper.js';
 import { applyRuntimeEventContextBudget } from '../context-budget.js';
-import type {
-  HistoryCompactCheckpoint,
-  HistoryCompactProviderState,
+import {
+  buildHistoryCompactCheckpoint,
+  type HistoryCompactCheckpoint,
+  type HistoryCompactProviderState,
 } from '../history-compact-checkpoint.js';
 import {
   archiveTransitionFor,
   EMPTY_PROJECTION_SNAPSHOT,
+  sectionedSummary,
 } from './history-compact-test-fixtures.js';
 import type { LoadedModelProjectionTransitions } from '../model-projection-transition-ledger.js';
 import type { ContextBudgetDiagnostic } from '@maka/core/usage-stats/types';
@@ -122,6 +124,7 @@ interface MidTurnFixtureOptions {
    * instead of the hand-built one, so a test can exercise the shipped default.
    */
   useRuntimeDefaultPolicy?: boolean;
+  fallbackCompactionThresholdTokens?: number;
   summarize?: (
     input: HistoryCompactSummaryInput,
   ) =>
@@ -131,6 +134,7 @@ interface MidTurnFixtureOptions {
     | undefined;
   /** Return and replay a Codex subscription V2 provider checkpoint. */
   providerNative?: boolean;
+  loadCheckpoint?: () => HistoryCompactCheckpoint | undefined;
   branch?: string;
   /** Omit the prior turns so the compaction pool has no safe completed span. */
   withoutPriorTurns?: boolean;
@@ -598,6 +602,7 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
       ? buildDefaultContextBudgetPolicy({
           name: 'runtime-default-mid-turn',
           modelId: 'mock-model-id',
+          fallbackCompactionThresholdTokens: options.fallbackCompactionThresholdTokens,
         })
       : {
           name: 'mid-turn-test',
@@ -657,6 +662,7 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
       if (options.record) return options.record(checkpoint);
       recorded.push(checkpoint);
     },
+    ...(options.loadCheckpoint ? { loadHistoryCompactCheckpoint: options.loadCheckpoint } : {}),
     ...(options.loadTransitions ? { loadModelProjectionTransitions: options.loadTransitions } : {}),
     loadTurnRuntimeEvents: async (turnId) => {
       fixture.ledgerReads += 1;
@@ -766,9 +772,9 @@ function assertRequestContextPreserved(fixture: MidTurnFixture): void {
         ? message.content.flatMap((part) => (part.type === 'text' ? [part.text] : []))
         : [],
     );
-    assert.equal(texts.filter((text) => text === 'ACTIVE_REQUEST_CONTEXT').length, 1);
+    assert.equal(texts.filter((text) => text.includes('ACTIVE_REQUEST_CONTEXT')).length, 1);
   }
-  assert.doesNotMatch(JSON.stringify(fixture.ledger), /ACTIVE_REQUEST_CONTEXT/u);
+  assert.match(JSON.stringify(fixture.ledger), /ACTIVE_REQUEST_CONTEXT/u);
 }
 
 function compactionDecisions(
@@ -880,9 +886,9 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
       runtimeEventId: 'anchor-1',
       turnId: 'turn-1',
     });
-    // Coverage: [prior-user, prior-model, anchor, call-1, result-1] — all of
+    // Coverage: [prior-user, prior-model, anchor, runtime-context, call-1, result-1] — all of
     // them durable in the ledger before the checkpoint was recorded.
-    assert.equal(checkpoint.coverage.eventCount, 5);
+    assert.equal(checkpoint.coverage.eventCount, 6);
 
     // The next step's prompt is [compact block, verbatim head anchor, preserved active span].
     const thirdPrompt = promptJson(fixture, 2);
@@ -906,6 +912,24 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     assert.equal(midTurnDecision?.decision, 'replaced');
     assert.equal(midTurnDecision?.reason, 'context_limit');
     assert.deepEqual(midTurnDecision?.boundaryIds, [checkpoint.checkpointId]);
+  });
+
+  test('seeds Codex mid-turn compaction from the replayed text checkpoint (#6154)', async () => {
+    let previous: HistoryCompactCheckpoint | undefined;
+    const fixture = buildFixture({ providerNative: true, loadCheckpoint: () => previous });
+    previous = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: fixture.priorEvents,
+      summary: sectionedSummary('PORTABLE_SEED'),
+    });
+    await runFixtureTurn(fixture, consumer);
+
+    assert.match(promptJson(fixture, 0), /PORTABLE_SEED/);
+    assert.doesNotMatch(promptJson(fixture, 0), /PRIOR_FACT/);
+    assert.equal(fixture.recorded.length, 1);
+    assert.equal(fixture.recorded[0]?.previousCheckpointId, previous.checkpointId);
+    assert.equal(fixture.recorded[0]?.version, 3);
+    assert.match(promptJson(fixture, 2), /MID_TURN_ENCRYPTED_STATE/);
   });
 
   test('replays a Codex V2 mid-turn checkpoint as native provider state', async () => {
@@ -1774,6 +1798,35 @@ describe('mid-turn capacity default-on safety guards (issue #882 PR 3)', () => {
     assert.equal(fixture.summarizerCalls, 0);
     const complete = events.find((event) => event.type === 'complete');
     assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'end_turn');
+  });
+
+  test('a Host fallback compacts a long turn without a user threshold and keeps tool execution intact', async () => {
+    const fixture = buildFixture({
+      useRuntimeDefaultPolicy: true,
+      declareContextWindow: false,
+      fallbackCompactionThresholdTokens: 190,
+    });
+    await runFixtureTurn(fixture);
+    assert.equal(fixture.recorded.length, 1);
+    assert.equal(fixture.recorded[0]?.phase, 'mid_turn');
+    assert.match(promptJson(fixture, 2), /MID_TURN_SUMMARY_SENTINEL/);
+    assert.ok(promptJson(fixture, 2).includes(ANCHOR_TEXT));
+    assert.deepEqual(fixture.toolExecutions, ['one.md', 'two.md']);
+    assert.equal(
+      fixture.events.some((event) => event.type === 'error'),
+      false,
+    );
+  });
+
+  test('an explicit user threshold takes precedence over the Host fallback', async () => {
+    const fixture = buildFixture({
+      useRuntimeDefaultPolicy: true,
+      contextWindow: 100_000,
+      fallbackCompactionThresholdTokens: 190,
+    });
+    await runFixtureTurn(fixture);
+    assert.equal(fixture.summarizerCalls, 0);
+    assert.deepEqual(fixture.toolExecutions, ['one.md', 'two.md']);
   });
 
   test('treats a /models context window as metadata unless the user declares it', async () => {

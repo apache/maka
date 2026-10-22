@@ -239,6 +239,7 @@ async function mountRevisionWorld(): Promise<RevisionWorld> {
   let pendingSend: Promise<boolean | void> | undefined;
   const sendPendingFlags: boolean[] = [];
   const ports: RevisionSendPorts<TurnRevisionDraft> = {
+    captureSubmitSurface: () => () => true,
     shellCopy: {
       sideChatUnavailableTitle: '',
       sideChatUnavailableDescription: '',
@@ -473,6 +474,111 @@ test('submit releases attachment ownership when sending throws', async () => {
     });
     await assert.rejects(onSend('edited message'), /send failed/);
     assert.deepEqual(events, ['retain', 'pending:true', 'release', 'pending:false']);
+  } finally {
+    world.restoreWindow();
+  }
+});
+
+// #4695 review: an edit-and-resend copies the source Session's settings, so
+// the Plan write the user saw at submit must settle before that copy.
+for (const outcome of [true, false]) {
+  test(`#4695: a revision waits for the submit's setting writes before copying (${outcome ? 'committed' : 'failed'})`, async () => {
+    const world = await mountRevisionWorld();
+    try {
+      const events: string[] = [];
+      let settle!: (ok: boolean) => void;
+      // One attempt: every read of it sees the same result.
+      const attempt = new Promise<boolean>((resolve) => { settle = resolve; });
+      const settlement = { settled: () => attempt };
+      const onSend = createRevisionAwareOnSend({
+        ...world.ports,
+        revisionDraftRef: { current: { draftSessionId: SESSION_1, sourceSessionId: SESSION_1 } as never },
+        activeIdRef: { current: SESSION_1 },
+        prepareRevisionSend: async () => { events.push('copy'); return true; },
+        setNewTaskSendPending: () => {},
+        send: async () => { events.push('send'); return true; },
+      });
+      const sent = onSend('edited message', undefined, undefined, settlement);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      assert.deepEqual(events, [], 'nothing may copy or send while the Plan write is pending');
+      settle(outcome);
+      const result = await sent;
+      if (outcome) {
+        assert.notEqual(result, false);
+        assert.deepEqual(events, ['copy', 'send']);
+      } else {
+        assert.equal(result, false, 'a failed setting write keeps the draft');
+        assert.deepEqual(events, [], 'no copy is made from a failed Plan attempt');
+      }
+    } finally {
+      world.restoreWindow();
+    }
+  });
+}
+
+// #4695 review round 2: navigation keeps the Session id, so the wait must
+// re-check the surface and selection captured before it.
+test('#4695: a submit that navigates away while settings settle sends nothing', async () => {
+  const world = await mountRevisionWorld();
+  try {
+    let onSurface = true;
+    let captured = 0;
+    let settle!: (ok: boolean) => void;
+    const outcome = new Promise<boolean>((resolve) => { settle = resolve; });
+    const settlement = { settled: () => outcome };
+    const sends: string[] = [];
+    const onSend = createRevisionAwareOnSend({
+      ...world.ports,
+      activeIdRef: { current: SESSION_1 },
+      captureSubmitSurface: () => { captured += 1; return () => onSurface; },
+      setNewTaskSendPending: () => {},
+      send: async (text) => { sends.push(text); return true; },
+    });
+    const sent = onSend('start by submitting a plan', undefined, undefined, settlement);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(captured, 1, 'the surface is captured before the wait');
+    onSurface = false; // e.g. Extensions: same Session id, different surface
+    settle(true);
+    assert.equal(await sent, false);
+    assert.deepEqual(sends, []);
+  } finally {
+    world.restoreWindow();
+  }
+});
+
+test('#4695: a source write that fails while the revision copy is prepared stops the send', async () => {
+  const world = await mountRevisionWorld();
+  try {
+    const events: string[] = [];
+    const outcomes = [true, false];
+    const settlement = { settled: async () => outcomes.shift() ?? false };
+    const onSend = createRevisionAwareOnSend({
+      ...world.ports,
+      revisionDraftRef: { current: { draftSessionId: SESSION_1, sourceSessionId: SESSION_1 } as never },
+      activeIdRef: { current: SESSION_1 },
+      prepareRevisionSend: async () => { events.push('copy'); return true; },
+      setNewTaskSendPending: () => {},
+      send: async () => { events.push('send'); return true; },
+    });
+    assert.equal(await onSend('edited message', undefined, undefined, settlement), false);
+    assert.deepEqual(events, ['copy'], 'the prepared child is kept for an explicit retry, but nothing is sent');
+  } finally {
+    world.restoreWindow();
+  }
+});
+
+test('#4695: local slash commands do not wait on setting writes', async () => {
+  const world = await mountRevisionWorld();
+  try {
+    const settlement = { settled: () => new Promise<boolean>(() => {}) };
+    const onSend = createRevisionAwareOnSend({
+      ...world.ports,
+      activeIdRef: { current: SESSION_1 },
+      setNewTaskSendPending: () => {},
+      getActiveOrchestrationMode: () => 'default',
+      send: async () => assert.fail('/swarm status must not send'),
+    });
+    assert.equal(await onSend('/swarm status', undefined, undefined, settlement), true);
   } finally {
     world.restoreWindow();
   }

@@ -22,6 +22,7 @@ import { mkdtemp, rm, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, type TestContext } from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 import {
   EVENT_WAIT_LIMITS,
   eventWaitDeliveryKey,
@@ -55,9 +56,12 @@ async function settle() {
   for (let n = 0; n < 40; n++) await new Promise<void>((resolve) => setImmediate(resolve));
 }
 async function eventually(check: () => Promise<boolean> | boolean) {
-  for (let n = 0; n < 100; n++) {
+  // Host I/O needs wall-clock time; immediate turns can exhaust before it completes.
+  // Keep the injected observation clock fixed so timeout/Retry-After assertions remain exact.
+  const deadline = performance.now() + 5_000;
+  while (performance.now() < deadline) {
     if (await check()) return;
-    await settle();
+    await delay(5);
   }
   assert.fail('Condition did not settle without advancing the observation clock');
 }
@@ -94,6 +98,27 @@ class Clock implements EventWaitClock {
     await settle();
   }
 }
+
+test('eventually waits for delayed host work without advancing the observation clock', async () => {
+  const clock = new Clock();
+  let observationTimerRan = false;
+  clock.schedule(() => {
+    observationTimerRan = true;
+  }, 1);
+  let completed = false;
+  const work = delay(200).then(() => {
+    completed = true;
+  });
+  try {
+    await eventually(() => completed);
+    assert.equal(clock.now(), 1_000);
+    assert.equal(observationTimerRan, false);
+    assert.equal(clock.timers.size, 1);
+  } finally {
+    await work;
+  }
+});
+
 const satisfied = (key = 'event-1'): EventWaitObservationResult => ({
   kind: 'satisfied',
   receiptKey: key,
@@ -113,7 +138,7 @@ class Source implements EventWaitSourceAdapter {
   behavior: (input: EventWaitReadContext) => Promise<EventWaitObservationResult> = async () => ({
     kind: 'pending',
   });
-  validate(wait: EventWaitRecord) {
+  validate(wait: import('@maka/core/event-wait').ObservedEventWaitRecord) {
     if (wait.condition.parameters.invalid) throw new Error('Invalid parameters');
   }
   async read(input: EventWaitReadContext) {
@@ -240,7 +265,7 @@ async function fixture(
       managers.push(manager);
       return manager;
     },
-    async read(r: EventWaitRecord) {
+    async read(r: Pick<EventWaitRecord, 'sessionId' | 'waitId'>) {
       return (await stores.eventWaitStore.read({ sessionId: r.sessionId, waitId: r.waitId }))
         ?.record;
     },
@@ -1533,6 +1558,7 @@ test('adapter registry and policy reject unsupported contracts; observation has 
     'node:crypto',
     '@maka/core/event-wait',
     '@maka/storage/event-wait-authority',
+    './event-wait-observation-store.js',
     '@maka/storage/root-authority',
     './event-wait-adapter.js',
   ]);
@@ -4848,3 +4874,155 @@ for (const stage of ['claim', 'budget', 'unsupported'] as const) {
     });
   }
 }
+
+for (const backend of ['Local', 'Memory'] as const) {
+  test(`${backend}: bridge authorization shares durable source cooldowns and recovers progress`, async (t) => {
+    const f = await fixture(t, backend);
+    const r = await f.wait();
+    const manager = f.manager(new Source());
+    const signal = new AbortController().signal;
+    let calls = 0;
+    const authorize = async (): Promise<EventWaitObservationAccess> => {
+      calls++;
+      return calls === 1
+        ? { kind: 'unknown', reason: 'throttled', retryAfterMs: 600 }
+        : { kind: 'allowed', context: null };
+    };
+    assert.equal((await manager.checkSourceAccess(r, signal, authorize)).kind, 'unknown');
+    assert.equal(
+      await f.stores.eventWaitStore.readSourceCooldown({
+        providerId: r.resource.providerId,
+        connectionId: r.resource.connectionId,
+      }),
+      1600,
+    );
+    for (let n = 0; n < 4; n++)
+      assert.equal((await manager.checkSourceAccess(r, signal, authorize)).kind, 'unknown');
+    assert.equal(calls, 1);
+    const other = { ...r, resource: { ...r.resource, connectionId: 'other' } };
+    assert.equal((await manager.checkSourceAccess(other, signal, authorize)).kind, 'allowed');
+    assert.equal(calls, 2);
+    await f.reopen();
+    const recovered = f.manager(new Source());
+    assert.equal((await recovered.checkSourceAccess(r, signal, authorize)).kind, 'unknown');
+    assert.equal(calls, 2);
+    await f.clock.advance(600);
+    // Delivery of an expired wait must remain possible after the source cooldown.
+    const expired = {
+      ...r,
+      status: 'expired' as const,
+      updatedAt: 1500,
+      expiredAt: 1500,
+      deadlineAt: 1500,
+    };
+    assert.equal((await recovered.checkSourceAccess(expired, signal, authorize)).kind, 'allowed');
+    assert.equal(calls, 3);
+    assert.equal((await f.read(r))?.observation, undefined);
+    assert.deepEqual(f.errors, []);
+  });
+
+  test(`${backend}: interrupted bridge authorization retains capacity and late Retry-After`, async (t) => {
+    const f = await fixture(t, backend);
+    const r = await f.wait();
+    const source = new Source();
+    const manager = f.manager(source);
+    const response = deferred<EventWaitObservationAccess>();
+    let calls = 0;
+    const authorize = async () => {
+      calls++;
+      return response.promise;
+    };
+    const pending = manager.checkSourceAccess(r, new AbortController().signal, authorize);
+    await eventually(() => calls === 1);
+    await f.clock.advance(policy.readTimeoutMs);
+    assert.equal((await pending).kind, 'unknown');
+    assert.equal(
+      (await manager.checkSourceAccess(r, new AbortController().signal, authorize)).kind,
+      'unknown',
+    );
+    assert.equal(calls, 1);
+    response.resolve({ kind: 'unknown', reason: 'late throttling', retryAfterMs: 600 });
+    await eventually(
+      async () =>
+        (await f.stores.eventWaitStore.readSourceCooldown({
+          providerId: r.resource.providerId,
+          connectionId: r.resource.connectionId,
+        })) === 1680,
+    );
+    await manager.start();
+    await f.clock.advance(599);
+    assert.equal(source.calls.length, 0);
+    await f.clock.advance(21);
+    await eventually(() => source.calls.length === 1);
+    assert.deepEqual(f.errors, []);
+  });
+}
+
+for (const backend of ['Local', 'Memory'] as const) {
+  test(`${backend}: projection hints track observation semantics, not polling checkpoints`, async (t) => {
+    const f = await fixture(t, backend);
+    const r = await f.wait('wait-1', { deadlineAt: 10_000 });
+    const source = new Source();
+    const hints: EventWaitRecord[] = [];
+    let now = f.clock.now();
+    const manager = f.manager(source, {
+      clock: { now: () => now, schedule: () => () => {} },
+      onChanged: (record) => hints.push(record),
+    });
+    await manager.start();
+    await eventually(async () => (await f.read(r))?.observation?.outcome === 'pending');
+    await settle();
+    assert.equal(hints.length, 1);
+    const observe = async (result: EventWaitObservationResult, expectedHints: number) => {
+      const previous = (await f.read(r))!.observation!;
+      source.behavior = async () => result;
+      now = previous.nextPollAt;
+      await eventually(async () => {
+        await manager.reconcile();
+        const current = (await f.read(r))?.observation;
+        return current?.attempts === previous.attempts + 1 && current.outcome === result.kind;
+      });
+      await settle();
+      assert.equal(hints.length, expectedHints);
+    };
+    await observe({ kind: 'pending' }, 1);
+    await observe({ kind: 'unknown', reason: 'source_busy' }, 2);
+    await observe({ kind: 'unknown', reason: 'source_busy' }, 2);
+    await observe({ kind: 'unknown', reason: 'source_unreachable' }, 3);
+    await observe({ kind: 'pending' }, 4);
+    await observe(satisfied(), 5);
+    assert.equal(hints.at(-1)?.status, 'resolved');
+    assert.deepEqual(f.errors, []);
+  });
+}
+
+test('projection hints stay quiet across more than 512 pending waits', async (t) => {
+  const f = await fixture(t);
+  const waits: EventWaitRecord[] = [];
+  for (let n = 0; n < 513; n++) {
+    waits.push(await f.wait(`wait-${String(n).padStart(3, '0')}`, { deadlineAt: 60_000 }));
+  }
+  let now = f.clock.now();
+  const source = new Source();
+  const hints: string[] = [];
+  const manager = f.manager(source, {
+    clock: { now: () => now, schedule: () => () => {} },
+    policy: { ...policy, maxConcurrent: 1, maxLifetimeMs: 60_000 },
+    onChanged: (record) => hints.push(record.waitId),
+  });
+  await manager.start();
+  for (let step = 0; step < waits.length * 2; step++) {
+    await eventually(async () => {
+      await manager.reconcile();
+      const call = source.calls[step];
+      return !!call && (await f.read(call.wait))?.observation?.outcome === 'pending';
+    });
+    assert.equal(source.calls.length, step + 1);
+    now += policy.minIntervalMs;
+  }
+  await settle();
+  for (const wait of waits) assert.equal((await f.read(wait))?.observation?.attempts, 2);
+  assert.equal(new Set(hints).size, waits.length);
+  assert.equal(hints.length, waits.length, 'unchanged pending polls must not emit another hint');
+  assert.deepEqual(f.errors, []);
+});

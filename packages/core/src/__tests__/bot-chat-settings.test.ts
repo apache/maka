@@ -24,6 +24,7 @@ import {
   BOT_PROVIDERS,
   mergeBotChatSettings,
   normalizeBotChatSettings,
+  resolveBotMessageHandling,
   parseAllowedUserIdsFromText,
 } from '../bot-chat-settings.js';
 import { SENSITIVE_PLACEHOLDER } from '../settings/network-settings.js';
@@ -104,4 +105,54 @@ test('remote message handling defaults safely and survives channel edits and rel
     normalizeBotChatSettings(defaults, { channels: edited.channels }).messageHandling,
     'task',
   );
+});
+
+test('WeChat inherits the default and preserves explicit legacy routing choices', () => {
+  const defaults = createDefaultBotChatSettings();
+  assert.equal(defaults.channels.wechat.messageHandling, undefined);
+  for (const mode of ['task', 'workhub', 'assistant'] as const) {
+    const configured = mergeBotChatSettings(defaults, {
+      channels: { wechat: { messageHandling: mode } },
+    });
+    assert.equal(
+      normalizeBotChatSettings(configured, configured).channels.wechat.messageHandling,
+      mode,
+    );
+  }
+});
+
+test('Feishu inherits the default and retains explicit per-channel routing', () => {
+  const defaults = createDefaultBotChatSettings();
+  assert.equal(defaults.channels.feishu.messageHandling, undefined);
+  for (const mode of ['assistant', 'task', 'workhub'] as const) {
+    const saved = mergeBotChatSettings(defaults, {
+      channels: { feishu: { messageHandling: mode } },
+    });
+    assert.equal(normalizeBotChatSettings(saved, saved).channels.feishu.messageHandling, mode);
+  }
+});
+
+test('all providers inherit the global target or preserve an explicit channel override', () => {
+  for (const provider of BOT_PROVIDERS) {
+    for (const mode of ['task', 'workhub', 'assistant'] as const) {
+      const defaults = createDefaultBotChatSettings();
+      const global = mergeBotChatSettings(defaults, { messageHandling: mode });
+      const saved = normalizeBotChatSettings(global, global);
+      assert.equal(resolveBotMessageHandling(saved, provider), mode);
+      const override = mergeBotChatSettings(saved, {
+        channels: { [provider]: { messageHandling: 'task' } },
+      });
+      assert.equal(
+        resolveBotMessageHandling(normalizeBotChatSettings(override, override), provider),
+        'task',
+      );
+      const inherited = mergeBotChatSettings(override, {
+        channels: { [provider]: { messageHandling: undefined } },
+      });
+      assert.equal(
+        resolveBotMessageHandling(normalizeBotChatSettings(inherited, inherited), provider),
+        mode,
+      );
+    }
+  }
 });

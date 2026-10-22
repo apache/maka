@@ -17,25 +17,18 @@
  * under the License.
  */
 
+import { readFileSync } from 'node:fs';
+
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fixture, until, sleep, AgentDriver } from './platform-helper.js';
 async function settle(f: any, view: any, turn = 'turn-initial', complete = false) {
-  await f.invoke(
-    'MatterWriteFile',
-    {
-      path: view.files.draft,
-      content: '当前事实：已检查。\n计划：根据新情况复查。\n退出：等待变化。',
-    },
-    turn,
-  );
   return f.invoke(
     'MatterSettle',
     {
-      expectedRevision: view.revision,
-      stateFile: view.files.draft,
+      note: '当前事实：已检查。退出：等待变化或完成。',
       disposition: complete ? 'complete' : 'wait',
       waitingFor: complete ? undefined : '等待外部检查结果',
       wakes: complete ? [] : [{ kind: 'at', at: Date.now() + 250 }],
@@ -116,7 +109,7 @@ test('native Host starts without plugins; same session wakes, refreshes files, c
   assert.equal(f.driver.calls.filter((c: any) => c.op === 'followup').length, count);
   const tool = f.tools.resolve('session-1', []).tools.find((t: any) => t.name === 'MatterRead');
   await f.close();
-  assert.throws(() => tool.impl({}, {}), /shutting down/);
+  await assert.rejects(() => tool.impl({}, {}), /shutting down/);
 });
 test('waiting state and authorized session binding recover through native Host restart', async (t) => {
   let f = await fixture();
@@ -231,12 +224,15 @@ test('ordinary Plan mode excludes every mutating Matter tool, including activati
     'MatterControl',
     'MatterRead',
     'MatterCheckpoint',
+    'MatterConditionTest',
     'MatterSettle',
     'MatterWriteFile',
     'MatterDelegate',
     'MatterDelegationRecover',
     'MatterFeedbackRetry',
     'MatterAdopt',
+    'MatterAskBot',
+    'MatterReply',
     'MatterTaskMessage',
     'MatterTaskControl',
   ];
@@ -328,4 +324,91 @@ test('Client bridge rejects removed mutation RPCs with valid generation and payl
   assert.deepEqual(await f.remote('matters.list'), before);
   // The session's authorized agent tools remain the only interactive write surface.
   await f.invoke('MatterControl', { action: 'cancel' });
+});
+
+test('native condition tools test real source, wait without a model, then resume the same task', async (t) => {
+  const f = await fixture();
+  t.after(async () => {
+    await f.close();
+    await rm(f.root, { recursive: true, force: true });
+  });
+  let ready = false,
+    reads = 0,
+    wakeError: unknown;
+  f.ctx
+    .extend({
+      maka: {
+        rootId: 'profile',
+        packageId: 'test-shipment',
+        entryId: 'test-shipment',
+        generation: 1,
+      },
+    })
+    .sources.register({
+      id: 'shipment',
+      description: 'Test supplier updates',
+      queryHelp: 'query returns current shipment metadata',
+      scope: { account: 'test' },
+      enumerate: async () => ({ items: [] }),
+      query: async () => {
+        reads++;
+        return {
+          items: ready
+            ? [{ id: 'parcel', revision: 'shipped', kind: 'shipment', locator: { id: 'parcel' } }]
+            : [],
+        };
+      },
+      authorize: async (items: any[]) => items.map((x) => x.id),
+      read: async (object: any) => ({ status: 'ok', object, content: 'Shipment confirmed' }),
+    });
+  const first = await f.invoke('MatterStart', {
+    title: 'Shipment',
+    request: 'Inspect shipment after supplier confirms it',
+  });
+  const checked = await f.invoke('MatterConditionTest', {
+    code: 'const page=await tools.SourceQuery({source:"shipment",query:{}}); return {status:page.items.length ? "triggered":"pending",reason:page.items.length ? "Shipment confirmed":"No confirmation"};',
+    input: {},
+  });
+  assert.equal(checked.result.status, 'pending');
+  assert.equal(reads, 1);
+  await f.invoke('MatterWriteFile', {
+    path: first.files.draft,
+    content: 'Supplier has not confirmed shipment yet.',
+  });
+  await f.invoke('MatterSettle', {
+    note: readFileSync(first.files.draft, 'utf8'),
+    disposition: 'wait',
+    wakes: [{ kind: 'at', at: Date.now() + 60000 }],
+    condition: { checkerId: checked.checkerId, intervalMs: 1000 },
+    waitingFor: 'Supplier confirms shipment',
+    reason: 'Cannot inspect an unavailable shipment',
+    summary: 'Queried shipment source',
+  });
+  f.driver.onFollowup = async (id: string, prompt: string, turn: string) => {
+    try {
+      assert.equal(id, 'session-1');
+      assert.match(prompt, /condition observation/);
+      const view = await f.invoke('MatterRead', {}, turn);
+      const inbox = await f.invoke('MatterReadFile', { path: view.files.inbox }, turn);
+      assert.match(inbox.content, /Shipment confirmed/);
+      await settle(f, view, turn, true);
+    } catch (error) {
+      wakeError = error;
+    } finally {
+      f.driver.end();
+    }
+  };
+  ready = true;
+  f.driver.end();
+  await until(
+    async () => wakeError || (await f.remote('matters.list')).matters[0].status === 'completed',
+    10000,
+  );
+  if (wakeError) throw wakeError;
+  assert.equal(f.driver.calls.filter((x: any) => x.op === 'followup').length, 1);
+  assert.equal(
+    f.reviewCalls.length,
+    2,
+    'model called only for wait and complete review, not condition observations',
+  );
 });

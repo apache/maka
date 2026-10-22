@@ -51,11 +51,48 @@ function goal(overrides: Partial<GoalProjection> = {}): GoalProjection {
     lastReason: null,
     achievedAt: null,
     pausedAt: null,
+    eventWait: null,
     ...overrides,
   };
 }
 
 describe('pi-goal display helpers', () => {
+  test('wait summaries distinguish uncertainty and admission without claiming success', () => {
+    const waiting = goal({
+      eventWait: {
+        waitId: 'wait-1',
+        controlGeneration: 1,
+        waitRevision: 2,
+        resource: {
+          providerId: 'shell_run',
+          resourceType: 'background_task',
+          resourceId: 'maka://runtime/background-tasks/task-1',
+        },
+        reason: 'Inspect the test result',
+        deadlineAt: 60000,
+        phase: 'observing',
+        observation: { state: 'unknown', lastObservedAt: 1000, reasonCode: 'observation_failed' },
+        outcome: null,
+      },
+    });
+    const lines = goalSummaryLines(waiting, 1000).join('\n');
+    assert.match(lines, /temporarily unverifiable/);
+    assert.match(lines, /Observation: observation_failed/);
+    assert.match(lines, /maka:\/\/runtime\/background-tasks\/task-1/);
+    assert.match(lines, /cancel-wait pauses the Goal; the background task keeps running/);
+    const ready = goal({
+      eventWait: {
+        ...waiting.eventWait!,
+        phase: 'awaiting_admission',
+        observation: null,
+        outcome: 'satisfied',
+      },
+    });
+    assert.match(goalSummaryLines(ready, 1000).join('\n'), /Result available; waiting to continue/);
+    assert.match(goalStatusLineText(ready, 1000), /awaiting continuation/);
+    assert.doesNotMatch(goalSummaryLines(ready, 1000).join('\n'), /tests passed/i);
+  });
+
   test('strips generic ESC character-set sequences from displayed text', () => {
     assert.equal(stripAnsi('\x1b(0goal'), 'goal');
   });

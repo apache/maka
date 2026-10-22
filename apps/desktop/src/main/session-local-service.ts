@@ -798,6 +798,8 @@ export class DesktopSessionLocalService {
         },
         error: undefined,
       });
+    } else if (resolution?.state === 'inbox') {
+      this.store.update({ ...current, state: 'accepted', result: { disposition: 'inbox', skillInvocation: EMPTY_SKILL_INVOCATION }, error: undefined });
     } else if (resolution?.state === 'pending') {
       // The Host durably holds a queued admission for it. Delivery succeeded;
       // the Host queue owns the ordering, so this local copy yields.

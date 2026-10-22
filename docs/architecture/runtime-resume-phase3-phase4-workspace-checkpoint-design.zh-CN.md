@@ -19,6 +19,9 @@
 
 # Runtime Resume Phase 3–4 实施路线
 
+> **2026-10-16 退役说明：** 本文涉及工具专属 reconciliation、recovery bundle 写入及其后续 PR 的内容保留为历史设计，不再是当前实施要求。没有生产工具提供完整的 reconciliation 合同，公开 bundle writer 和预设工具恢复能力已清理。已有 recovery facts 仍保留读取、复制与投影重建兼容。当前合同是结束旧执行、保留未知事实、禁止自动重放，由新的明确用户轮检查现状；详见[当前恢复架构](./runtime-resume-architecture.zh-CN.md#未知结果与历史-recovery-bundle)。
+
+
 > 路线更新（2026-08-29）：旧 Git executable managed-workspace path 已删除，后续 workspace 主线从
 > **Gitoxide data plane** 重新建立 production admission。本文保留 Recovery/Continuation 已落地协议与旧路线的历史论证；
 > 新实现不再以通用 per-file checkpoint、native manifest、CAS object store 或旧 Git CLI owner 为前置。
@@ -481,46 +484,6 @@ sandbox、one-call grant 和 abort boundary 的执行所有权。
 PR C 沿用 PR A 的 durable vocabulary：`matches_expected_state` 可 finalize；
 `matches_prior_state`、`diverged`、`unreadable` 均提交 terminal parked decision。UI 直接展示
 durable reason code（如 `reconcile_matches_prior_state`），不维护第二套展示层状态名。
-
-#### PR C 的首个实现切片：Write/Edit 的 T1 evidence
-
-单文件 Write/Edit 的 evidence 由拥有文件权限的 executor 产生，位于
-`RuntimeEvent.actions.toolDispatch.fileMutationEvidence`。它随 call、dispatch 和 journal
-通过现有 `commitToolPrepared` 事务原子提交；不新增恢复数据库或独立持久化回调。
-
-契约为 `builtin.Write.utf8` / `builtin.Edit.utf8` version 1，evidence kind 为
-`file_state_v1`，算法分别为 `overwrite_utf8_v1` / `unique_replace_utf8_v1`。
-记录包含 canonical cwd 的目录身份、canonical target 与父目录身份、before 的文件身份、
-字节数和 SHA-256（Write 允许 missing）、expected-after 的字节数和 SHA-256，以及
-production-shaped result。外层 digest 绑定 session、invocation、run、turn、operation、
-provider call、dispatch event 和 canonical args hash。decoder 拒绝未知 contract、算法、
-工具替换、digest 改写与跨操作替换；没有新字段的历史事件仍可读取。
-
-执行顺序：获取现有写锁 → 非变更 prepare → T1 → guarded mutation → T2。
-worker 协议 v13 在上游 v12 聊天图片读取协议基础上增加 `prepare_write` / `prepare_edit`，继续使用一次请求一个进程。
-prepare 不创建文件，也不跨 T1 持有 worker 文件句柄。Edit prepare 与执行都调用生产
-`computeEditedSource`，保留 exact/fuzzy 唯一匹配语义，并共享结果构造；执行前检查
-before，重新计算后核对 expected-after 与结果，再通过已验证句柄写入。
-
-filesystem client 在宿主侧捕获目录身份，在 dispatch 前及 worker 返回后复核。
-仅 Linux mount namespace 通过 request 传递宿主身份；missing Write 的 pinned mount source
-必须与证据中的父目录身份一致。原生 worker 直接复核目录。missing target 只在 T1 后
-exclusive create；Edit 不创建目标。取消、prepare/T1 失败和结束均释放写锁，execution 只能消费一次。
-
-观察边界为可读取的 regular UTF-8 文件，before/after 各最多 1 MiB，result JSON 最多
-256 KiB；沿用 canonical target 路径规则，最终打开时不跟随新链接。不支持的观察
-（包括没有此能力的外部 executor）不记录 evidence，沿用保守的普通执行路径。
-本地 backend 保留 image-path 策略。会话复制保留历史 observation，重新绑定新事件身份及 digest；
-复制不会赋予执行权限，也不会改变 recovery mode。
-
-本切片固定 `never_auto_retry`，没有 Host-owned executable contract registry、observer/reconciler、
-恢复扫描或 Host 生命周期接线，不调用 `commitToolRecoveryBundle`。重启后可读取 T1 evidence，
-不能据此宣布恢复成功或自动重做。进程内锁不排斥 Bash 或外部程序，复核与写入之间仍有
-外部并发窗口；本契约不是通用 filesystem transaction 或跨进程 CAS。
-
-测试入口：`packages/runtime/src/__tests__/file-mutation-evidence.test.ts` 与
-`conversation-copy.test.ts`，覆盖两种工具的 T1 回滚、崩溃窗口重开/rebuild、外部改写、
-身份/证据替换、取消、生产结果一致性、真实一次性 worker 及会话复制身份重绑定。
 
 ### PR D — Host owner lifecycle
 

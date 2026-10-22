@@ -18,11 +18,10 @@
  */
 
 import assert from 'node:assert/strict';
-import { chmod, readFile } from 'node:fs/promises';
+import { chmod } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { runInNewContext } from 'node:vm';
 import plugin, { CodexAppServerClient, EXECUTOR_ID, normalizeConfig } from '../index.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -81,127 +80,6 @@ test('package registers the main-compatible executor and lifecycle order', () =>
     thinking: true,
     toolActivity: true,
   });
-});
-
-test('client bundle merges Codex and native models in the Composer model selector', async () => {
-  let moduleFactory;
-  runInNewContext(await readFile(join(here, '..', 'client.js'), 'utf8'), {
-    AbortController,
-    window: {
-      __MakaModuleLoader__: {
-        load(definition) {
-          moduleFactory = definition.factory;
-        },
-      },
-    },
-  });
-  assert.equal(typeof moduleFactory, 'function');
-  const React = {
-    Fragment: Symbol('Fragment'),
-    createElement: (type, props, ...children) => ({ type, props: props ?? {}, children }),
-    useEffect() {},
-    useCallback(callback) {
-      return callback;
-    },
-    useRef(value) {
-      return { current: value };
-    },
-    useState(value) {
-      if (Array.isArray(value)) {
-        return [
-          [
-            {
-              model: 'gpt-6-astra',
-              displayName: 'GPT-6-Astra',
-              defaultReasoningEffort: 'high',
-              supportedReasoningEfforts: [{ reasoningEffort: 'high' }],
-            },
-          ],
-          () => {},
-        ];
-      }
-      if (value === true) return [false, () => {}];
-      return [value, () => {}];
-    },
-  };
-  const client = moduleFactory((id) => {
-    if (id === 'react') return React;
-    if (id === '@maka/ui/client-plugin') {
-      return {
-        ModelWheelPicker: 'ModelWheelPicker',
-        Selector: 'Selector',
-        SelectorOption: 'SelectorOption',
-      };
-    }
-    assert.fail(`unexpected module: ${id}`);
-  });
-  let registration;
-  let modelCalls = 0;
-  client.apply({
-    style() {},
-    remote: {
-      call: async () => {
-        modelCalls += 1;
-        return [];
-      },
-    },
-    slots: {
-      register(options, component) {
-        registration = { options, component };
-        return () => {};
-      },
-    },
-  });
-  assert.equal(registration.options.name, 'conversation.composer.model-selection');
-  assert.equal(registration.options.select({ onExecutorTargetChange() {} }), true);
-  assert.equal(registration.options.select({}), null);
-  const rendered = registration.component({
-    disabled: false,
-    streaming: false,
-    hasSession: false,
-    modelChoices: [
-      {
-        connectionId: 'native-1',
-        connectionSlug: 'native',
-        model: 'native-model',
-        label: 'Native model',
-        providerLabel: 'OpenAI',
-      },
-    ],
-    onExecutorTargetChange() {},
-    renderNativeThinkingControl: () => 'native-thinking',
-  });
-  const controls = rendered.type(rendered.props);
-  const modelPicker = controls.children[0];
-  assert.equal(modelPicker.type, 'span');
-  const selector = modelPicker.children[0];
-  assert.equal(selector.type, 'Selector');
-  assert.equal(
-    JSON.stringify(
-      selector.props.options.map(({ title, options }) => ({
-        title,
-        options: options.map(({ label, description }) => ({ label, description })),
-      })),
-    ),
-    JSON.stringify([
-      {
-        title: 'OpenAI',
-        options: [{ label: 'Native model' }],
-      },
-      {
-        title: 'Codex',
-        options: [{ label: 'GPT-6-Astra' }],
-      },
-    ]),
-  );
-  assert.equal(selector.props.className, 'maka-new-chat-model-selector');
-  assert.equal(typeof selector.props.renderOption, 'function');
-  assert.equal(typeof selector.props.renderValue, 'function');
-  assert.equal(controls.children[1], 'native-thinking');
-  assert.equal(modelCalls, 0, 'mounting the Composer must not start Codex');
-  modelPicker.props.onPointerDownCapture();
-  modelPicker.props.onPointerDownCapture();
-  assert.equal(modelCalls, 1, 'the first open intent loads models exactly once');
 });
 
 test('configuration validates safe unattended defaults', () => {

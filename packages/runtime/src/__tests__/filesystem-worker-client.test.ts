@@ -36,7 +36,7 @@ import { afterEach, describe, test } from 'node:test';
 import { createManagedExecutionBoundary } from '@maka/core/sandbox-boundary';
 import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 import { MAX_READ_IMAGE_BYTES } from '@maka/core/attachments';
-import { prepareFileWrite } from '../file-mutation-evidence.js';
+import { prepareFileWrite } from '../file-mutation-guard.js';
 import { executeFilesystemWorkerRequest } from '../filesystem-worker/operations.js';
 import {
   canReadPath,
@@ -142,13 +142,13 @@ describe('filesystem worker client permission snapshots', () => {
   test('a prepared Write rejects substituted host directory identity before worker launch', async () => {
     const workspace = await temporaryDirectory('maka-worker-prepare-host-');
     const path = join(workspace, 'notes.txt');
-    const observation = await prepareFileWrite(workspace, path, 'after');
-    assert.ok(observation);
-    observation.workspace.identity.ino += '1';
+    const guard = await prepareFileWrite(workspace, path, 'after');
+    assert.ok(guard);
+    guard.workspace.identity.ino += '1';
     const { client, requests } = fakeClient();
     await assert.rejects(
       client.execute({
-        operation: { kind: 'write', path, content: 'after', observation },
+        operation: { kind: 'write', path, content: 'after', guard },
         cwd: workspace,
         mode: 'ask',
         expectedIdentity: 'missing',
@@ -166,8 +166,8 @@ describe('filesystem worker client permission snapshots', () => {
       const previous = join(cwd, 'previous');
       const path = join(parent, 'target.txt');
       await mkdir(parent);
-      const observation = await prepareFileWrite(cwd, path, 'after');
-      assert.ok(observation);
+      const guard = await prepareFileWrite(cwd, path, 'after');
+      assert.ok(guard);
       const swap = async () => {
         await rename(parent, previous);
         await mkdir(parent);
@@ -212,7 +212,7 @@ describe('filesystem worker client permission snapshots', () => {
       });
       await assert.rejects(
         client.execute({
-          operation: { kind: 'write', path, content: 'after', observation },
+          operation: { kind: 'write', path, content: 'after', guard },
           cwd,
           mode: 'ask',
           expectedIdentity: 'missing',
@@ -238,8 +238,8 @@ describe('filesystem worker client permission snapshots', () => {
     const parent = join(cwd, 'parent');
     await mkdir(parent);
     const path = join(parent, 'target.txt');
-    const observation = await prepareFileWrite(cwd, path, 'after');
-    assert.ok(observation);
+    const guard = await prepareFileWrite(cwd, path, 'after');
+    assert.ok(guard);
     let transformed = false;
     const manager = new SandboxManager([]);
     const transform = manager.transform.bind(manager);
@@ -271,7 +271,7 @@ describe('filesystem worker client permission snapshots', () => {
     });
     await assert.rejects(
       client.execute({
-        operation: { kind: 'write', path, content: 'after', observation },
+        operation: { kind: 'write', path, content: 'after', guard },
         cwd,
         mode: 'ask',
         expectedIdentity: 'missing',

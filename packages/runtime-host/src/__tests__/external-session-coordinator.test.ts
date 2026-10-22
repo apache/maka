@@ -1209,6 +1209,32 @@ test('retries a retained staged Session during a later recovery', async (t) => {
   assert.equal(fixture.readHeader('imported-1')?.transcriptLedgerVersion, 1);
 });
 
+test('prepares explicit imported images before publishing the destination Session', async () => {
+  const fixture = coordinatorFixture([
+    adapterFixture({
+      readSession: async (sourceSessionId) => ({
+        sourceSessionId,
+        metadata: { name: 'Image-only import', cwd: '/external' },
+        messages: [
+          { type: 'user', id: 'image-user', turnId: 'source-turn', ts: 1, text: '[Image]' },
+        ],
+        sourceImages: [{ messageId: 'image-user', path: '/missing-original.png' }],
+      }),
+    }),
+  ]);
+  const outcome = await fixture.coordinator.handlers['external-session.import'](
+    { adapterId: 'codex', sourceSessionId: 'source-0' },
+    context,
+  );
+  assert.equal(outcome.ok, true);
+  const user = fixture.creates[0]?.messages[0];
+  assert.equal(user?.type, 'user');
+  if (user?.type !== 'user') throw new Error('Missing imported user message');
+  assert.match(user.text, /^\[Image\]/);
+  assert.match(user.text, /1 imported image attachment\(s\) unavailable/);
+  assert.equal(user.attachments, undefined);
+});
+
 function coordinatorFixture(
   adapters: readonly ExternalSessionAdapter[],
   storeOverrides: Partial<
@@ -1246,13 +1272,16 @@ function coordinatorFixture(
     externalOrigin,
     options,
   ) => {
-    options?.onCommitStarted?.();
     sequence += 1;
     const header = {
       ...sessionHeader(`imported-${sequence}`, input.cwd, input.name ?? 'Imported'),
       transcriptLedgerVersion: 0 as const,
     };
-    creates.push({ input, messages, externalOrigin });
+    const preparedMessages = options?.prepareMessages
+      ? await options.prepareMessages(header.id, messages)
+      : messages;
+    options?.onCommitStarted?.();
+    creates.push({ input, messages: preparedMessages, externalOrigin });
     records.set(header.id, {
       header,
       revision: 1,

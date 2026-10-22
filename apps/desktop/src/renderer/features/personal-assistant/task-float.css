@@ -1,0 +1,63 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+/* A sibling overlay keeps task updates outside transcript scroll authority. */
+.personal-assistant-chat-frame { position: relative; display: flex; flex: 1; min-width: 0; min-height: 0; }
+.personal-assistant-chat-frame[hidden] { display: none; }
+.assistant-task-float { position: absolute; z-index: 20; top: 12px; right: 16px; width: 256px; max-width: calc(100% - 32px); border: 1px solid var(--border); border-radius: 15px; background: var(--background); color: var(--foreground); box-shadow: 0 6px 24px #0000000d; overflow: hidden; font-family: inherit; }
+.assistant-task-float button { color: inherit; font: inherit; border: 0; background: transparent; cursor: pointer; }
+.assistant-task-float button:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; border-radius: 6px; }
+.assistant-task-float button:disabled { opacity: .3; cursor: default; }
+.assistant-task-float header { display: flex; align-items: center; gap: 7px; padding: 9px 11px 4px; }
+.assistant-task-brand { display: grid; place-items: center; width: 22px; height: 22px; flex-shrink: 0; border-radius: 7px; background: var(--foreground); color: var(--background); font-size: 15px; font-weight: 650; }
+.assistant-task-float header strong { flex: 1; font-size: 14px; font-weight: 600; }
+.assistant-task-float header button { display: grid; place-items: center; width: 24px; height: 24px; color: var(--muted-foreground); }
+.assistant-task-counts { padding: 0 11px 9px; font-size: 11px; line-height: 17px; color: var(--muted-foreground); }
+.assistant-task-list { padding: 0 10px; }
+.assistant-task-float .assistant-task-row { display: block; height: auto; width: 100%; padding: 10px 1px; text-align: start; border-top: 1px solid var(--border); }
+.assistant-task-row:hover { background: var(--muted); }
+.assistant-task-heading { display: flex; align-items: baseline; gap: 8px; }
+.assistant-task-heading strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; line-height: 20px; font-weight: 550; }
+.assistant-task-heading time { flex-shrink: 0; color: var(--muted-foreground); font-size: 11px; line-height: 17px; font-variant-numeric: tabular-nums; }
+.assistant-task-progress { display: flex; align-items: center; gap: 6px; margin-top: 4px; font-size: 12px; line-height: 18px; color: var(--muted-foreground); }
+.assistant-task-progress > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.assistant-task-progress b { font-weight: 400; }
+.assistant-task-progress i { width: 5px; height: 5px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
+.assistant-task-progress.is-running { --task-status-color: #367be1; }
+.assistant-task-progress.is-waiting { --task-status-color: #bf8522; }
+.assistant-task-progress.is-queued { --task-status-color: #8b6acb; }
+.assistant-task-progress.is-attention { --task-status-color: #df6157; }
+.assistant-task-progress.is-paused { --task-status-color: #6f8b9d; }
+.assistant-task-progress.is-completed { --task-status-color: #289b76; }
+.assistant-task-progress.is-cancelled { --task-status-color: #8a8e98; }
+.assistant-task-progress i, .assistant-task-progress b { color: var(--task-status-color); }
+.assistant-task-progress b { padding: 1px 4px; border-radius: 4px; background: color-mix(in srgb, var(--task-status-color) 10%, transparent); }
+.assistant-task-float .assistant-task-completed-toggle { padding: 4px 0; font-size: 11px; color: var(--muted-foreground); }
+.assistant-task-float .assistant-task-completed-toggle:hover, .assistant-task-float .assistant-task-completed-toggle[aria-pressed=true] { color: var(--foreground); }
+.assistant-task-float footer { display: flex; align-items: center; justify-content: space-between; padding: 5px 10px; border-top: 1px solid var(--border); color: var(--muted-foreground); font-size: 11px; }
+.assistant-task-float nav { display: flex; align-items: center; gap: 3px; }
+.assistant-task-float nav button { display: grid; place-items: center; width: 28px; height: 25px; }
+.assistant-task-float.is-collapsed { width: 208px; border-radius: 13px; }
+.assistant-task-float .assistant-task-pill { height: auto; display: flex; align-items: center; gap: 7px; width: 100%; padding: 9px 10px; font-size: 11px !important; }
+.assistant-task-pill > span:first-child > span:nth-child(2) { flex: 1; min-width: 0; text-align: start; }
+.assistant-task-detail { border-top: 1px solid var(--border); padding: 8px 1px 12px; max-height: 280px; overflow-y: auto; overflow-wrap: anywhere; }
+.assistant-task-detail strong { display: block; font-size: 13px; margin-top: 8px; }
+.assistant-task-detail small { display: block; color: var(--muted-foreground); font-size: 11px; margin-top: 4px; }
+.assistant-task-detail p, .assistant-task-empty { font-size: 12px; line-height: 1.6; color: var(--muted-foreground); }
+.assistant-task-float .assistant-task-back { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--muted-foreground); }

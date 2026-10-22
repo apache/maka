@@ -17,6 +17,12 @@
  * under the License.
  */
 
+import type {
+  RegisterGoalWaitInput,
+  SettleGoalWaitInput,
+  QueueGoalWaitInput,
+  GoalWaitSnapshot,
+} from './event-wait-bridge.js';
 import {
   decodeEventWaitRecord,
   type EventWaitRecord,
@@ -61,6 +67,7 @@ export interface ListSessionEventWaitsInput extends ListPendingEventWaitsInput {
 /** A fact query, not an acknowledgement or a delivery queue. */
 export interface ListEventWaitsByStatusInput extends ListPendingEventWaitsInput {
   readonly status: EventWaitStatus;
+  readonly deliveryOutstanding?: true;
 }
 export interface EventWaitPage {
   readonly items: readonly EventWaitSnapshot[];
@@ -107,6 +114,9 @@ export interface EventWaitAuthorityRepository {
   reserveSourceDispatch(input: ReserveEventWaitSourceDispatchInput): MaybePromise<boolean>;
   completeSourceDispatch(input: CompleteEventWaitSourceDispatchInput): MaybePromise<number>;
   commit(input: CommitEventWaitInput): MaybePromise<CommitEventWaitResult>;
+  registerGoalWait(input: RegisterGoalWaitInput): MaybePromise<GoalWaitSnapshot>;
+  settleGoalWait(input: SettleGoalWaitInput): MaybePromise<GoalWaitSnapshot>;
+  queueGoalWait(input: QueueGoalWaitInput): MaybePromise<GoalWaitSnapshot>;
   close(): MaybePromise<void>;
 }
 const writerBrand: unique symbol = Symbol('InteractiveEventWaitAuthorityWriter');
@@ -129,6 +139,9 @@ export interface InteractiveEventWaitAuthorityWriter {
   reserveSourceDispatch(input: ReserveEventWaitSourceDispatchInput): Promise<boolean>;
   completeSourceDispatch(input: CompleteEventWaitSourceDispatchInput): Promise<number>;
   commit(input: CommitEventWaitInput): Promise<CommitEventWaitResult>;
+  registerGoalWait(input: RegisterGoalWaitInput): Promise<GoalWaitSnapshot>;
+  settleGoalWait(input: SettleGoalWaitInput): Promise<GoalWaitSnapshot>;
+  queueGoalWait(input: QueueGoalWaitInput): Promise<GoalWaitSnapshot>;
   close(): Promise<void>;
 }
 export function authenticateInteractiveEventWaitAuthorityWriter(
@@ -157,6 +170,9 @@ export async function openInteractiveEventWaitAuthorityForWrite(
       'reserveSourceDispatch',
       'completeSourceDispatch',
       'commit',
+      'registerGoalWait',
+      'settleGoalWait',
+      'queueGoalWait',
       'close',
     ].some((k) => typeof Reflect.get(repository, k) !== 'function')
   ) {
@@ -241,6 +257,18 @@ export async function openInteractiveEventWaitAuthorityForWrite(
       // Capture before the async lease check, so caller mutation cannot change a queued write.
       const normalized = normalizeEventWaitCommit(input);
       return run(() => repository.commit(normalized));
+    },
+    registerGoalWait: (input: RegisterGoalWaitInput) => {
+      const captured = structuredClone(input);
+      return run(() => repository.registerGoalWait(captured));
+    },
+    settleGoalWait: (input: SettleGoalWaitInput) => {
+      const captured = structuredClone(input);
+      return run(() => repository.settleGoalWait(captured));
+    },
+    queueGoalWait: (input: QueueGoalWaitInput) => {
+      const captured = structuredClone(input);
+      return run(() => repository.queueGoalWait(captured));
     },
     close: () =>
       (closeTask ??= (async () => {
@@ -345,7 +373,9 @@ export function normalizeEventWaitCommit(input: CommitEventWaitInput): CommitEve
   };
 }
 export function validateEventWaitStatusPage(input: ListEventWaitsByStatusInput): void {
-  exactInput(input, ['status', 'limit'], ['afterWaitId']);
+  exactInput(input, ['status', 'limit'], ['afterWaitId', 'deliveryOutstanding']);
+  if (input.deliveryOutstanding !== undefined && input.deliveryOutstanding !== true)
+    throw new TypeError('Invalid delivery filter');
   if (!['waiting', 'resolved', 'expired', 'cancelled'].includes(input.status))
     throw new TypeError('Invalid event wait status');
   validateEventWaitPage({

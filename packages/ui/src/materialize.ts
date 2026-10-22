@@ -341,6 +341,7 @@ export type TurnTimelineItem =
     }
   | {
       kind: "text";
+      summary?: string;
       interrupted?: true;
       text: string;
       messageId: string;
@@ -759,7 +760,10 @@ export function materializeTurns(
     else messagesByTurn.set(turnId, [message]);
     if (message.type === "user") {
       const user = chatItemFromUserMessage(message);
-      if (!turn.user) {
+      // A resumed Turn starts without a new root prompt. Its first user row can
+      // therefore be a steering message, which belongs at its event position
+      // in the timeline instead of being promoted to the Turn's opening prompt.
+      if (!turn.user && message.steeringEventId === undefined) {
         turn.user = user;
       }
     } else if (message.type === "assistant") {
@@ -1021,16 +1025,17 @@ function buildTurnTimeline(
 ): TurnTimelineItem[] {
   const raw: TurnTimelineItem[] = [];
   let pending: ToolActivityItem[] = [];
-  let sawUser = false;
+  let sawRootUser = false;
   const flushTools = (items: ToolActivityItem[]): void => {
     if (items.length > 0) raw.push({ kind: "tools", items });
   };
   for (const message of turnMessages) {
     if (message.type === "user") {
-      if (!sawUser) {
-        sawUser = true;
+      if (message.steeringEventId === undefined && !sawRootUser) {
+        sawRootUser = true;
         continue;
       }
+      if (message.steeringEventId === undefined) sawRootUser = true;
       flushTools(pending);
       pending = [];
       raw.push({
@@ -1077,6 +1082,7 @@ function buildTurnTimeline(
             raw.push({
               kind: "text",
               text: message.text,
+              ...(message.summary !== undefined ? { summary: message.summary } : {}),
               ...(message.interrupted ? { interrupted: true } : {}),
               messageId: rowId,
               ts: message.ts,
@@ -1101,6 +1107,7 @@ function buildTurnTimeline(
           raw.push({
             kind: "text",
             text: message.text,
+              ...(message.summary !== undefined ? { summary: message.summary } : {}),
             ...(message.interrupted ? { interrupted: true } : {}),
             messageId: rowId,
             ts: message.ts,

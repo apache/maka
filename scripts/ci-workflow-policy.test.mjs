@@ -715,7 +715,7 @@ test('the recovery lane leaves the suites it executes to the required test lane'
       [...workflow.matchAll(/packages[/\\]([^/\\]+)[/\\]dist[/\\]/gu)].map((match) => match[1]),
     ),
   ].sort();
-  assert.deepEqual(executed, ['runtime', 'runtime-host', 'storage']);
+  assert.deepEqual(executed, ['cli', 'runtime', 'runtime-host', 'storage']);
 
   // None of that closure belongs in the filter. These suites are ordinary
   // TypeScript, so `test` runs them on Linux on every pull request and fails
@@ -943,8 +943,8 @@ test('Windows recovery executes the complete Skill catalog suite', () => {
   assert.match(recovery, /skill-catalog-repository\.test\.js/u);
   assert.match(recovery, /skill-catalog-transaction\.test\.js/u);
   assert.match(recovery, /skill-catalog-two-client-uds\.test\.js/u);
-  assert.match(recovery, /# tests 94/u);
-  assert.match(recovery, /# pass 94/u);
+  assert.match(recovery, /# tests 95/u);
+  assert.match(recovery, /# pass 95/u);
   assert.match(recovery, /# skipped 0/u);
 });
 

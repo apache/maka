@@ -4194,7 +4194,11 @@ export class SessionManager {
     let diagnostic: Record<string, unknown>;
     let workspaceIdentity: string | undefined;
     if (input.execution.kind === 'goal') {
-      root = { kind: 'goal', goalId: input.execution.goalId };
+      root = {
+        kind: 'goal',
+        goalId: input.execution.goalId,
+        ...(input.execution.eventWait ? { eventWait: input.execution.eventWait } : {}),
+      };
       recoveryReason = 'goal_internal_admission_without_run';
       diagnostic = {
         executionKind: input.execution.kind,

@@ -55,7 +55,10 @@ export const localExecutionPersistenceProvider: ExecutionPersistenceProvider = O
       closes.push(() => operational.close());
       const graphControlStore = createAgentGraphControlStore(canonicalPath);
       closes.push(() => graphControlStore.close());
-      const eventWaitStore = createSqliteEventWaitAuthority(canonicalPath);
+      const eventWaitStore = createSqliteEventWaitAuthority(
+        canonicalPath,
+        runtime.runtimeEventStore,
+      );
       closes.push(() => eventWaitStore.close());
       const goalStore = createSqliteGoalAuthority(canonicalPath);
       closes.push(() => goalStore.close());

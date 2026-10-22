@@ -159,6 +159,8 @@ const ASF_SOURCE_FILES = new Set([
   'docs/code-origin-audit.md',
   'package.json',
   'packages/eval/harbor/deepseek-harness-profile/cordis.patch.yml',
+  'scripts/apply-dependency-patches.mjs',
+  'scripts/apply-dependency-patches.test.mjs',
   'scripts/asf-license-headers.mjs',
   'scripts/asf-license-headers.test.mjs',
   'scripts/asf-source-release.mjs',

@@ -159,6 +159,11 @@ export class SkillCatalogRepositoryError extends Error {
 export interface CanonicalSkillInventorySnapshot {
   readonly revision: SkillCatalogRevision;
   readonly projectRoot: string;
+  /**
+   * Host-authoritative directory for a default workspace Skill. Models create
+   * Skills here; it is the same `<root>/skills` directory the catalog scans.
+   */
+  readonly workspaceSkillDirectory: string;
   readonly inventory: readonly ScannedSkill[];
   readonly diagnostics: readonly SkillScanDiagnostic[];
   readonly discoveryDiagnostics: readonly SkillDiscoveryDiagnostic[];
@@ -463,6 +468,7 @@ export class SkillCatalogRepository {
         const publicationNamespace = await readPublicationNamespace(root);
         return buildSnapshot({
           projectRoot,
+          workspaceSkillDirectory: join(root, 'skills'),
           scan,
           managedSourcesRoot: this.#managedSourcesRoot,
           publicationNamespace,
@@ -743,6 +749,7 @@ export class SkillCatalogRepository {
 
 async function buildSnapshot(input: {
   projectRoot: string;
+  workspaceSkillDirectory: string;
   scan: SkillScanResult;
   managedSourcesRoot: string;
   publicationNamespace: PublicationNamespace;
@@ -909,7 +916,13 @@ async function buildSnapshot(input: {
       effectiveMigration,
     }),
   );
-  const model = freezeModelSnapshot(revision, input.projectRoot, input.scan, effectiveMigration);
+  const model = freezeModelSnapshot(
+    revision,
+    input.projectRoot,
+    input.workspaceSkillDirectory,
+    input.scan,
+    effectiveMigration,
+  );
   return Object.freeze({
     revision,
     projectRoot: input.projectRoot,
@@ -1343,6 +1356,7 @@ function canonicalRevisionFacts(input: {
 function freezeModelSnapshot(
   revision: SkillCatalogRevision,
   projectRoot: string,
+  workspaceSkillDirectory: string,
   scan: SkillScanResult,
   migration: SkillPreferenceMigration | null,
 ): CanonicalSkillInventorySnapshot {
@@ -1374,6 +1388,7 @@ function freezeModelSnapshot(
   return Object.freeze({
     revision,
     projectRoot,
+    workspaceSkillDirectory,
     inventory: Object.freeze(inventory),
     diagnostics: Object.freeze(diagnostics),
     discoveryDiagnostics: Object.freeze(discoveryDiagnostics),

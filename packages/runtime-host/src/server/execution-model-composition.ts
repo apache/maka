@@ -18,6 +18,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { ASSISTANT_BACKGROUND_SESSION_LABEL } from '@maka/core/session';
 import { createRunCompositionSnapshot } from '@maka/core/run-composition';
 import { resolveModelVisionSupport } from '@maka/core/model-metadata';
 import { modelOverride } from '@maka/core/model-thinking';
@@ -407,6 +408,16 @@ async function buildHostAiSdkBackend(
         contextBudget: buildDefaultContextBudgetPolicy({
           name: 'runtime-host-default-history-budget',
           modelId: target.model,
+          // The persistent Bot cannot depend on a provider rejecting its ever-growing
+          // history. Ordinary sessions retain their existing opt-in policy. The
+          // runtime gives an explicit user threshold precedence over this fallback.
+          ...(input.context.header.labels?.includes(ASSISTANT_BACKGROUND_SESSION_LABEL) &&
+          input.context.header.labels.some((label) => label.startsWith('assistant-bot:')) &&
+          contextWindow !== undefined
+            ? {
+                fallbackCompactionThresholdTokens: Math.floor(contextWindow * 0.8),
+              }
+            : {}),
         }),
         supportsVision: resolveModelVisionSupport(
           target.connection.providerType,

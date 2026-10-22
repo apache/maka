@@ -598,8 +598,11 @@ test('Tavily IPC round-trips preserve the vault key for current and legacy masks
     assert.equal(secret, 'stored-tavily-key');
     assert.equal(revision, 1);
   }
-  await update({}, { webSearch: { providers: { tavily: { apiKey: 'replacement-key' } } } });
+  await update({}, { webSearch: { providers: { tavily: { apiKey: '  replacement-key\n' } } } });
   assert.equal(secret, 'replacement-key');
+  await update({}, { webSearch: { providers: { tavily: { apiKey: '   ' } } } });
+  assert.equal(secret, undefined);
+  await update({}, { webSearch: { providers: { tavily: { apiKey: 'replacement-key' } } } });
   await update({}, { webSearch: { providers: { tavily: { apiKey: '' } } } });
   assert.equal(secret, undefined);
   const cleared = await get({}) as ReturnType<typeof createDefaultSettings>;

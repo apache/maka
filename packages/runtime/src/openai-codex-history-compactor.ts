@@ -27,6 +27,7 @@ import {
   canContinueHistoryCompactCheckpointForModel,
   historyCompactCheckpointToModelMessage,
   isProviderHistoryCompactCheckpoint,
+  projectHistoryCompactCheckpointReplay,
   type HistoryCompactProviderState,
 } from './history-compact-checkpoint.js';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
@@ -70,7 +71,6 @@ export function buildOpenAiCodexHistoryCompactor(options: BuildOpenAiCodexHistor
       const previous = input.previousCheckpoint;
       const canContinuePrevious =
         previous &&
-        isProviderHistoryCompactCheckpoint(previous) &&
         canContinueHistoryCompactCheckpointForModel(
           previous,
           { providerType: 'openai-codex' },
@@ -80,6 +80,17 @@ export function buildOpenAiCodexHistoryCompactor(options: BuildOpenAiCodexHistor
       const events = canContinuePrevious
         ? (input.newlyFoldedRuntimeEvents ?? [])
         : input.source.foldedRuntimeEvents;
+      // Match ordinary replay after a text-compacted session switches to
+      // Codex: summarize the portable checkpoint plus its tail, without
+      // resurrecting the already-folded source history (#6154).
+      const replayEvents =
+        canContinuePrevious && !isProviderHistoryCompactCheckpoint(previous)
+          ? projectHistoryCompactCheckpointReplay(
+              previous,
+              input.source.foldedRuntimeEvents.slice(0, previous.coverage.eventCount),
+              events,
+            )
+          : events;
       const providerReasoningReplayEventIds = compatibleProviderReasoningReplayEventIds(
         events,
         input.source.invocations,
@@ -88,10 +99,10 @@ export function buildOpenAiCodexHistoryCompactor(options: BuildOpenAiCodexHistor
         input.runId,
       );
       const projectedMessages = openAiCodexCompactionMessages(
-        events,
+        replayEvents,
         providerReasoningReplayEventIds,
       );
-      if (canContinuePrevious) {
+      if (canContinuePrevious && isProviderHistoryCompactCheckpoint(previous)) {
         projectedMessages.unshift(historyCompactCheckpointToModelMessage(previous));
       }
       // Whether this input fits the compaction endpoint is its own answer;

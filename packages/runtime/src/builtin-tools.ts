@@ -436,7 +436,6 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
           ...filesystemCall(ctx),
         });
         return {
-          ...(prepared.observation ? { fileMutationObservation: prepared.observation } : {}),
           cancel: () => prepared.cancel(),
           execute: async () => writeToolOutput(await prepared.execute()),
         };
@@ -471,7 +470,6 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
           ...filesystemCall(ctx),
         });
         return {
-          ...(prepared.observation ? { fileMutationObservation: prepared.observation } : {}),
           cancel: () => prepared.cancel(),
           execute: async () => editToolOutput(await prepared.execute()),
         };
