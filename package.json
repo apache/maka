@@ -9,8 +9,8 @@
   "packageManager": "npm@11.19.0",
   "releaseToolchain": {
     "appleTeamIdentifier": "FABM2QUA8Q",
-    "node": "24.18.1",
-    "nodeDarwinArm64Sha256": "1d60b703fe5d7e7072489be8187f430f1a095a658c31e5e1e281331a5873fac3"
+    "node": "24.22.1",
+    "nodeDarwinArm64Sha256": "654ba79de6155647e22321932b45f2a1ccb705976cc337c9b8e278beb085a628"
   },
   "type": "module",
   "workspaces": [
