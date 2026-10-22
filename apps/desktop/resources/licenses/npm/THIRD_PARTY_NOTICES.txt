@@ -1454,9 +1454,9 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ================================================================================
 
-Package: @modelcontextprotocol/client@2.2.0
-Declared license: MIT
-Selected license: MIT
+Package: @modelcontextprotocol/client@2.3.0
+Declared license: Apache-2.0
+Selected license: Apache-2.0
 Repository: git+https://github.com/modelcontextprotocol/typescript-sdk.git
 
 --- LICENSE ---
@@ -1904,9 +1904,9 @@ the full license text.
 
 ================================================================================
 
-Package: @modelcontextprotocol/core@2.1.0
-Declared license: MIT
-Selected license: MIT
+Package: @modelcontextprotocol/core@2.3.0
+Declared license: Apache-2.0
+Selected license: Apache-2.0
 Repository: git+https://github.com/modelcontextprotocol/typescript-sdk.git
 
 --- LICENSE ---
@@ -2129,9 +2129,9 @@ the full license text.
 
 ================================================================================
 
-Package: @modelcontextprotocol/core@2.2.0
-Declared license: MIT
-Selected license: MIT
+Package: @modelcontextprotocol/core@2.3.1
+Declared license: Apache-2.0
+Selected license: Apache-2.0
 Repository: git+https://github.com/modelcontextprotocol/typescript-sdk.git
 
 --- LICENSE ---
@@ -2579,9 +2579,9 @@ the full license text.
 
 ================================================================================
 
-Package: @modelcontextprotocol/server@2.1.0
-Declared license: MIT
-Selected license: MIT
+Package: @modelcontextprotocol/server@2.3.1
+Declared license: Apache-2.0
+Selected license: Apache-2.0
 Repository: git+https://github.com/modelcontextprotocol/typescript-sdk.git
 
 --- LICENSE ---
@@ -10182,7 +10182,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ================================================================================
 
-Package: follow-redirects@1.16.0
+Package: follow-redirects@1.16.1
 Declared license: MIT
 Selected license: MIT
 Repository: git+ssh://git@github.com/follow-redirects/follow-redirects.git
@@ -10820,7 +10820,7 @@ SOFTWARE.
 
 ================================================================================
 
-Package: hono@4.13.7
+Package: hono@4.13.13
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/honojs/hono.git

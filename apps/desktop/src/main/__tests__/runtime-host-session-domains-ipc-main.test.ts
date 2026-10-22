@@ -113,6 +113,7 @@ test('goal:arm reconciles a lost dispatched response without dispatching again',
         tokensAtStart: 0,
         tokensNow: 120,
         tokensBaselinePending: false,
+        eventWait: null,
       },
       matchesRequestedState: true,
     },
@@ -307,6 +308,7 @@ test('goal:arm reconciliation reports different, missing, and unavailable author
         tokensAtStart: 0,
         tokensNow: 120,
         tokensBaselinePending: false,
+        eventWait: null,
       },
       matchesRequestedState: false,
     },
@@ -485,6 +487,7 @@ test('adapts Host Goal, Task, and Resource projections', async () => {
     tokensAtStart: 0,
     tokensNow: 120,
     tokensBaselinePending: false,
+    eventWait: null,
   });
   await ipc.invoke('goal:clear', 'session-1');
   await ipc.invoke('goal:pause', 'session-1');
@@ -1152,6 +1155,7 @@ function baseGoalProjection() {
     lastReason: null,
     achievedAt: null,
     pausedAt: null,
+    eventWait: null,
   };
 }
 
@@ -1405,4 +1409,24 @@ test('plan control channels return the Host error code across the IPC boundary',
     );
     assert.deepEqual(changed, [], `${scenario.channel} must not report a mode change`);
   }
+});
+
+
+test('wait cancellation preserves the exact renderer target and rejects cross-Session routing', async () => {
+  const calls: unknown[] = [];
+  const wait = { waitId: 'wait-1', controlGeneration: 5, waitRevision: 2,
+    resource: { providerId: 'shell_run', resourceType: 'background_task', resourceId: 'maka://runtime/background-tasks/task' },
+    reason: 'Inspect tests', deadlineAt: 100, phase: 'observing' as const,
+    observation: { state: 'pending' as const, lastObservedAt: 10, reasonCode: null }, outcome: null };
+  const ipc = ipcHarness();
+  registerDomainsIpc({ client: domainClient({
+    queryGoal: async () => ({ sessionId: 'session-1', goal: { ...goalProjection(), eventWait: wait } }),
+    cancelGoalEventWait: async (target) => { calls.push(target); return { sessionId: target.sessionId, outcome: 'conflict', goal: null }; },
+  }), emitModeChanged() {} }, ipc);
+  assert.deepEqual((await ipc.invoke('goal:get', 'session-1') as { eventWait: unknown }).eventWait, wait);
+  const target = { sessionId: 'session-1', goalId: 'goal-1', controlGeneration: 5, waitId: 'wait-1', expectedGoalRevision: 3 };
+  assert.deepEqual(await ipc.invoke('goal:cancel-event-wait', 'session-1', target), { sessionId: 'session-1', outcome: 'conflict', goal: null });
+  await assert.rejects(ipc.invoke('goal:cancel-event-wait', 'another', target));
+  await assert.rejects(ipc.invoke('goal:cancel-event-wait', 'session-1', { ...target, waitId: undefined }));
+  assert.deepEqual(calls, [target]);
 });

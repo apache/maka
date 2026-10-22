@@ -43,6 +43,7 @@ export function createFakeGoalServices(
       arm: async () => {
         throw new Error('Fake goal.arm is not configured');
       },
+      cancelEventWait: async (input) => ({ sessionId: input.sessionId, outcome: 'conflict', goal: null }),
       clear: async () => undefined,
       pause: async () => undefined,
       resume: async () => undefined,

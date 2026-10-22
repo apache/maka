@@ -986,7 +986,7 @@ export class MemoryController {
       {
         sessionId: w.ownerSessionId,
         cwd: w.cwd,
-        turnId: `memory:${this.owner}`,
+        turnId: `memory-${this.owner}`,
         toolCallId: randomUUID(),
         abortSignal: this.abort.signal,
       },

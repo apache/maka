@@ -63,7 +63,6 @@ import {
   type YieldAgentGraphToolResult,
 } from './stream-graph-supervisor-tools.js';
 import type {
-  ModelFinishReason,
   ModelMessage,
   ModelStepOutcome,
   ModelToolSet,
@@ -619,8 +618,13 @@ export class AiSdkTurn {
   readonly abortController = new AbortController();
   readonly activeTools: Map<string, string>;
   aborted = false;
-  loopStopRequested = false;
-  loopStopReason: CompleteEvent['stopReason'] | undefined;
+  private stopRequested = false;
+  private turnYield:
+    | 'event_wait'
+    | 'plan_handoff'
+    | 'graph_yield'
+    | 'permission_handoff'
+    | undefined;
   private handoffPaused = false;
   watchdog: StreamWatchdog | null = null;
   runTrace: RunTrace | null = null;
@@ -665,14 +669,18 @@ export class AiSdkTurn {
   }
 
   requestStop(reason: 'user_stop' | 'redirect', mode: 'immediate' | 'after_step'): void {
+    this.stopRequested = true;
     if (mode === 'after_step') {
-      this.loopStopRequested = true;
       this.runTrace?.abortRequested(reason);
       return;
     }
     this.aborted = true;
     this.abortController.abort();
     this.runTrace?.abortRequested(reason);
+  }
+
+  private get loopStopReason(): CompleteEvent['stopReason'] | undefined {
+    return this.stopRequested ? 'user_stop' : this.turnYield;
   }
 
   async endAbortedTools(): Promise<void> {
@@ -1517,8 +1525,8 @@ export class AiSdkTurn {
         let requestMessages: ModelMessage[] = messages;
         let finishFeedback: string | undefined;
         let result: ModelStreamResult;
-        let providerOutcome: ModelStepOutcome;
-        let finishReason: ModelFinishReason = 'stop';
+        let providerOutcome: ModelStepOutcome | undefined;
+        let terminalStopReason: CompleteEvent['stopReason'] | undefined;
         let terminalProviderError: unknown;
         agentLoop: for (;;) {
           ({ plan, providerTools, modelTools, nestedTools } = snapshotStepTools());
@@ -1630,6 +1638,7 @@ export class AiSdkTurn {
           );
           let overflowRecoveryMaxOutputTokens: number | undefined;
           let providerAttempt = 0;
+          let pendingRetryReason: ProviderRetryEvent['reason'] | undefined;
           const returnedToolCalls: ToolCallPart[] = [];
           const providerToolInputs = new Map<string, unknown>();
           let providerStepUsage: NormalizedUsage | undefined;
@@ -1677,6 +1686,24 @@ export class AiSdkTurn {
             // rebuilt in place by overflow recovery, and the boundary it folded
             // under must travel with that rebuild, not with the step.
             const historyCompactBoundary = requestHistoryCompactBoundary();
+            // Stop can arrive during handoff, retry backoff, or overflow recovery.
+            if (this.loopStopReason) {
+              terminalStopReason = this.loopStopReason;
+              break agentLoop;
+            }
+            if (pendingRetryReason) {
+              queue.push({
+                type: 'provider_retry',
+                id: this.deps.newId(),
+                turnId,
+                ts: this.deps.now(),
+                phase: 'started',
+                attempt: providerAttempt,
+                maxAttempts: MAX_PROVIDER_ATTEMPTS_PER_STEP,
+                reason: pendingRetryReason,
+              } satisfies ProviderRetryEvent);
+              pendingRetryReason = undefined;
+            }
             result = await this.deps.modelAdapter.startStream({
               model,
               messages: dispatchMessages,
@@ -2025,7 +2052,7 @@ export class AiSdkTurn {
                 )
               )
                 sawUnusableStepUsage = true;
-              if (this.loopStopRequested) {
+              if (this.loopStopReason) {
                 terminalProviderError = failure;
                 terminalProviderErrorReason =
                   lastCompletedStepHadToolResult && failure.kind === 'timeout'
@@ -2154,16 +2181,7 @@ export class AiSdkTurn {
                   reason,
                 } satisfies ProviderRetryEvent);
                 await this.deps.providerRetrySleep(delayMs, turnAbortController.signal);
-                queue.push({
-                  type: 'provider_retry',
-                  id: this.deps.newId(),
-                  turnId,
-                  ts: this.deps.now(),
-                  phase: 'started',
-                  attempt: nextAttempt,
-                  maxAttempts,
-                  reason,
-                } satisfies ProviderRetryEvent);
+                pendingRetryReason = reason;
                 continue;
               }
               // Unrecoverable (not context-length, this step's attempt spent,
@@ -2192,7 +2210,7 @@ export class AiSdkTurn {
           const providerStepId = currentStepMessageId;
 
           if (providerOutcome.kind !== 'completed') throw providerOutcome.failure;
-          finishReason = providerOutcome.finishReason;
+          const finishReason = providerOutcome.finishReason;
           await queue.waitUntilConsumedThroughCurrent();
 
           let toolRequestedFinish = false;
@@ -2295,8 +2313,7 @@ export class AiSdkTurn {
                 !settlement.providerError &&
                 isEventWaitYieldReceipt(settlement.result)
               ) {
-                this.loopStopReason = 'event_wait';
-                this.loopStopRequested = true;
+                this.turnYield = 'event_wait';
               }
               if (isPlanToolResult(settlement.result)) {
                 this.handlePlanToolResult(settlement.result, queue);
@@ -2315,9 +2332,7 @@ export class AiSdkTurn {
             await queue.waitUntilConsumedThroughCurrent();
 
             const continuationWillRun =
-              (maxSteps === undefined || runtimeSteps < maxSteps) &&
-              !this.loopStopRequested &&
-              !this.aborted;
+              (maxSteps === undefined || runtimeSteps < maxSteps) && !this.loopStopReason;
             if (continuationWillRun && providerOutcome.continuation === 'pending') {
               const persistedProjection = await loadDurableTurnProjection();
               const responseMessages = persistedOpenAiResponsesStepMessages(
@@ -2338,21 +2353,6 @@ export class AiSdkTurn {
             ...(providerStepUsage ? { usage: providerStepUsage } : {}),
           });
           lastCompletedStepHadToolResult = returnedToolCalls.length > 0;
-          // Finish only after the tool result is durably consumed. The Host can
-          // veto completion (for example, new Inbox input raced with Sleep).
-          if (toolRequestedFinish && !this.aborted && !this.loopStopRequested) {
-            const decision = await this.deps.backend.beforeTurnFinish?.({
-              sessionId: this.deps.backend.sessionId,
-              turnId,
-              signal: turnAbortController.signal,
-            });
-            if (!decision || decision.allow) {
-              finishReason = 'stop';
-              this.deps.modelAdapter.clearContinuation(this.turnId);
-              break agentLoop;
-            }
-            finishFeedback = decision.feedback;
-          }
           const stepLimitReached = maxSteps !== undefined && runtimeSteps >= maxSteps;
           if (
             sandboxBoundaryFinalizationStep ||
@@ -2360,35 +2360,24 @@ export class AiSdkTurn {
               (toolRuntime.shouldFinalizeSandboxBoundary() ||
                 toolRuntime.hasSandboxBoundaryDenial()))
           ) {
-            this.loopStopReason = 'permission_handoff';
-            this.loopStopRequested = true;
+            this.turnYield = 'permission_handoff';
           }
-          const mayTakeAnotherStep = !stepLimitReached && !this.loopStopRequested && !this.aborted;
-          if (returnedToolCalls.length > 0 && mayTakeAnotherStep) {
-            if (
-              (await input.handoffBoundary?.(
-                turnAbortController.signal,
-                maxSteps === undefined ? null : maxSteps - runtimeSteps,
-              )) === 'pause'
-            ) {
-              this.handoffPaused = true;
-              break agentLoop;
-            }
-            if (this.aborted || this.loopStopRequested) break agentLoop;
-            currentStepMessageId = this.deps.newId();
-            continue agentLoop;
-          }
+          let finishCandidateReason: CompleteEvent['stopReason'] | undefined =
+            returnedToolCalls.length > 0 && !toolRequestedFinish
+              ? undefined
+              : toolRequestedFinish
+                ? 'end_turn'
+                : this.deps.modelAdapter.mapFinishReason(finishReason);
           // Enforce Host prerequisites locally: some providers reject required
           // tool_choice in thinking mode. Never silently complete without the
           // receipt; replay the draft and per-step reminder for bounded repair.
           if (
             returnedToolCalls.length === 0 &&
             resolvedSystemPrompt.requireToolCall &&
-            !this.loopStopRequested &&
-            !this.aborted
+            !this.loopStopReason
           ) {
             if (
-              !mayTakeAnotherStep ||
+              stepLimitReached ||
               !this.deps.backend.loadTurnRuntimeEvents ||
               ++missingPrerequisiteAttempts > 2
             ) {
@@ -2396,90 +2385,54 @@ export class AiSdkTurn {
                 'Required turn prerequisite was not recorded; cannot complete this response.',
               );
             }
-            await queue.waitUntilConsumedThroughCurrent();
-            if (
-              (await input.handoffBoundary?.(
-                turnAbortController.signal,
-                maxSteps === undefined ? null : maxSteps - runtimeSteps,
-              )) === 'pause'
-            ) {
-              this.handoffPaused = true;
-              break agentLoop;
-            }
-            if (this.aborted || this.loopStopRequested) break agentLoop;
-            currentStepMessageId = this.deps.newId();
-            continue agentLoop;
+            finishCandidateReason = undefined;
           }
-          // Continuing the turn needs the durable current-run reader, for the
-          // same reason the tool-call edge above demands it: the next request
-          // has to carry the assistant output this step just produced, and only
-          // the ledger projection has it. The no-reader fallback at the top of
-          // the loop appends steering alone, which would ask the model to
-          // redirect work it cannot see. Without a reader this edge is skipped
-          // rather than throwing — the turn still completes and the Host folds
-          // the message into the next Turn, which is today's behaviour.
-          if (mayTakeAnotherStep && this.deps.backend.loadTurnRuntimeEvents) {
-            // Last chance for a steer that landed after this turn's final
-            // tool-call boundary — including the only boundary a tool-free
-            // turn has, which precedes the model's first token. Without it the
-            // message is never pulled at all, and whether Steer works would
-            // depend on the model happening to call a tool afterwards (#3529).
-            // A step-limited turn deliberately skips this: its budget is spent,
-            // and the Host folds the message into the next Turn instead.
+          // The Host carries steering left unconsumed here into the next Turn.
+          if (
+            finishCandidateReason !== undefined &&
+            !toolRequestedFinish &&
+            !stepLimitReached &&
+            !this.loopStopReason &&
+            this.deps.backend.loadTurnRuntimeEvents
+          ) {
             const injectedBefore = this.injectedSteeringMessages.length;
             await this.drainSteeringInto(input, queue);
-            // Re-read the stop flags: the drain awaits a durable push, so an
-            // `after_step` stop or an abort can land while it is in flight, and
-            // `mayTakeAnotherStep` is stale by now. Stop wins — the message is
-            // already durable, so the Host folds it into the next Turn.
-            if (
-              this.injectedSteeringMessages.length > injectedBefore &&
-              !this.loopStopRequested &&
-              !this.aborted
-            ) {
-              await queue.waitUntilConsumedThroughCurrent();
-              if (
-                (await input.handoffBoundary?.(
-                  turnAbortController.signal,
-                  maxSteps === undefined ? null : maxSteps - runtimeSteps,
-                )) === 'pause'
-              ) {
-                this.handoffPaused = true;
-                break agentLoop;
-              }
-              if (this.aborted || this.loopStopRequested) break agentLoop;
-              currentStepMessageId = this.deps.newId();
-              continue agentLoop;
-            }
+            if (this.injectedSteeringMessages.length > injectedBefore)
+              finishCandidateReason = undefined;
           }
-          if (
-            mayTakeAnotherStep &&
-            returnedToolCalls.length === 0 &&
-            this.deps.backend.beforeTurnFinish &&
-            this.deps.backend.loadTurnRuntimeEvents &&
-            this.deps.modelAdapter.mapFinishReason(finishReason) === 'end_turn'
-          ) {
-            const decision = await this.deps.backend.beforeTurnFinish({
+          // Finishing needs Host approval even when no continuation is possible.
+          if (finishCandidateReason === 'end_turn' && !this.loopStopReason) {
+            const finishDecision = await this.deps.backend.beforeTurnFinish?.({
               sessionId: this.deps.backend.sessionId,
               turnId,
               signal: turnAbortController.signal,
             });
-            if (!decision.allow && !this.aborted && !this.loopStopRequested) {
-              if (
-                (await input.handoffBoundary?.(
-                  turnAbortController.signal,
-                  maxSteps === undefined ? null : maxSteps - runtimeSteps,
-                )) === 'pause'
-              ) {
-                this.handoffPaused = true;
-                break agentLoop;
-              }
-              finishFeedback = decision.feedback;
-              currentStepMessageId = this.deps.newId();
-              continue agentLoop;
+            if (finishDecision && !finishDecision.allow) {
+              finishFeedback = finishDecision.feedback;
+              finishCandidateReason = undefined;
+            } else if (toolRequestedFinish) {
+              this.deps.modelAdapter.clearContinuation(this.turnId);
             }
           }
-          break agentLoop;
+          terminalStopReason =
+            this.loopStopReason ??
+            finishCandidateReason ??
+            (stepLimitReached ? 'step_limit' : undefined);
+          if (terminalStopReason) break agentLoop;
+          if (!this.deps.backend.loadTurnRuntimeEvents) {
+            throw new Error('durable current-run reader is required for turn continuation');
+          }
+          await queue.waitUntilConsumedThroughCurrent();
+          if (
+            (await input.handoffBoundary?.(
+              turnAbortController.signal,
+              maxSteps === undefined ? null : maxSteps - runtimeSteps,
+            )) === 'pause'
+          ) {
+            this.handoffPaused = true;
+            break agentLoop;
+          }
+          currentStepMessageId = this.deps.newId();
         }
 
         // Refine Tool Availability against the final active set. Deferred
@@ -2499,7 +2452,7 @@ export class AiSdkTurn {
         // silently drop prior requests. An unusable sample in ANY request fails
         // the whole record closed (#972).
         try {
-          const attemptTotalUsage = providerOutcome.usage;
+          const attemptTotalUsage = providerOutcome?.usage;
           tokenUsage = sawUnusableStepUsage ? undefined : (completedStepUsage ?? attemptTotalUsage);
           if (tokenUsage) {
             tokenUsageCostUsd = this.deps.providerTelemetry.normalizedUsageCostUsd(tokenUsage);
@@ -2605,11 +2558,8 @@ export class AiSdkTurn {
         // Usage above still belongs to this physical attempt. Its Runtime owner
         // seals the drained stream; no complete/abort event ends the logical Turn.
         if (this.handoffPaused) return;
-        const stopReason =
-          this.loopStopReason ??
-          (maxSteps !== undefined && finishReason === 'tool-calls'
-            ? 'step_limit'
-            : this.mapFinishReason(finishReason));
+        const stopReason = this.loopStopReason ?? terminalStopReason;
+        if (!stopReason) throw new Error('Turn ended without a terminal decision');
         trace.modelStreamCompleted(stopReason);
         const completeEvent = {
           type: 'complete',
@@ -2785,7 +2735,7 @@ export class AiSdkTurn {
         })),
         isFatalToolError: isRuntimeCommitBoundaryError,
         callTool: async (name, input, signal) => {
-          if (this.loopStopRequested)
+          if (this.loopStopReason)
             throw new Error('The turn has yielded; no further tools may run.');
           const tool = snapshot.get(name);
           if (!tool) throw new Error(`Tool "${name}" is not active or nestable in this cell`);
@@ -2848,8 +2798,7 @@ export class AiSdkTurn {
         revision: proposal.revision,
         storeVersion: result.storeVersion,
       });
-      this.loopStopReason = 'plan_handoff';
-      this.loopStopRequested = true;
+      this.turnYield = 'plan_handoff';
       return;
     }
 
@@ -2872,12 +2821,7 @@ export class AiSdkTurn {
       liveOperatorCount: result.liveOperatorCount,
       reason: result.reason,
     });
-    this.loopStopReason = 'graph_yield';
-    this.loopStopRequested = true;
-  }
-
-  private mapFinishReason(reason: ModelFinishReason): CompleteEvent['stopReason'] {
-    return this.deps.modelAdapter.mapFinishReason(reason);
+    this.turnYield = 'graph_yield';
   }
 
   private makeErrorEvent(turnId: string, err: unknown, reasonOverride?: string): ErrorEvent {

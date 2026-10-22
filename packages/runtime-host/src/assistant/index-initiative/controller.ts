@@ -84,7 +84,7 @@ export class InitiativeController {
       {
         sessionId: s.sessionId,
         cwd: s.cwd,
-        turnId: `initiative:${this.store.owner}`,
+        turnId: `initiative-${this.store.owner}`,
         toolCallId: randomUUID(),
         abortSignal: this.abort.signal,
       },

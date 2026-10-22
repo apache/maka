@@ -143,6 +143,7 @@ test('delegate retries reuse child; wait and user amendment stay independent of 
       ).allow,
       true,
     );
+    await f.remote('matters.authorize-session', { sessionId: 'other' });
     await assert.rejects(f.invoke('MatterTasks', { id: a.id }, 'x', 'other'), /outside/);
     assert.deepEqual((await f.invoke('MatterTasks', {}, 'x', 'other')).items, []);
     await f.invoke('MatterTaskMessage', { id: a.id, text: '改为只验证测试环境，不用生产环境。' });
@@ -171,6 +172,7 @@ test('parent cancellation stops only its task and rejects late worker writes', a
   try {
     const a = await f.invoke('MatterDelegate', { taskKey: 'a', title: 'A', request: '只读跟进 A' });
     await until(() => d.calls.some((x: any) => x.op === 'followup'));
+    await f.remote('matters.authorize-session', { sessionId: 'other' });
     await assert.rejects(
       f.invoke('MatterTaskControl', { id: a.id, action: 'cancel' }, 'x', 'other'),
       /outside/,
@@ -272,6 +274,8 @@ test('legacy task adoption is explicit and cannot steal another conversation tas
   try {
     const v = await f.invoke('MatterStart', { title: '旧任务', request: '历史任务' });
     const id = (await f.remote('matters.list')).matters[0].id;
+    await f.remote('matters.authorize-session', { sessionId: 'other' });
+    await f.remote('matters.authorize-session', { sessionId: 'assistant' });
     assert.equal((await f.invoke('MatterOverview', {}, 'read', 'assistant')).legacy.length, 1);
     await f.invoke('MatterAdopt', { id }, 'adopt', 'assistant');
     assert.equal((await f.invoke('MatterTasks', {}, 'read', 'assistant')).items.length, 1);
@@ -419,6 +423,7 @@ test('busy parent defers feedback; an accepted but missing reply survives restar
       (n: any) => n.phase === 'awaiting_reply',
     );
     assert.ok(notification);
+    await f.remote('matters.authorize-session', { sessionId: 'other' });
     await assert.rejects(
       f.invoke('MatterFeedbackRetry', { notificationId: notification.id }, 'retry', 'other'),
       /不属于/,

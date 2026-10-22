@@ -68,6 +68,9 @@ export async function initializeMatters(
     if (!m) throw new Error('This session has no follow-up');
     return m;
   };
+  ctx.tools.registerSessionAccess?.(
+    (sessionId) => store.isAuthorizedSession(sessionId) || !!store.forSession(sessionId),
+  );
   registerDelegation(ctx, location.value, store, controller);
   ctx.tools.register({
     name: 'MatterStart',

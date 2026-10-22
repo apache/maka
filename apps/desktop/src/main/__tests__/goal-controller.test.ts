@@ -265,3 +265,26 @@ describe('useGoalController', () => {
     assert.deepEqual(calls, ['resume:a', 'clear:a']);
   });
 });
+
+
+it('cancellation captures the displayed wait and refreshes a conflict without retargeting', async () => {
+  const { root } = installReactRenderer();
+  const defaults = createFakeGoalServices();
+  const targets: unknown[] = [];
+  const errors: string[] = [];
+  let reads = 0;
+  const eventWait = { waitId: 'wait-a', controlGeneration: 3, waitRevision: 4,
+    resource: { providerId: 'shell_run', resourceType: 'background_task', resourceId: 'maka://runtime/background-tasks/task' },
+    reason: 'Inspect output', deadlineAt: 10000, phase: 'observing' as const,
+    observation: { state: 'unknown' as const, lastObservedAt: 100, reasonCode: 'source_read_failed' }, outcome: null };
+  const services = createFakeGoalServices({ goal: { ...defaults.goal,
+    get: async () => { reads++; return { ...goal('a'), eventWait: { ...eventWait, waitId: reads === 1 ? 'wait-a' : 'wait-b' } }; },
+    cancelEventWait: async (target) => { targets.push(target); return { sessionId: 'a', outcome: 'conflict', goal: null }; },
+  } });
+  await act(async () => renderController(root, services, input('a', errors)));
+  assert.equal(controller().selectors.indicator?.eventWait?.label, 'Background task state temporarily unverifiable');
+  await act(async () => controller().selectors.indicator?.eventWait?.onCancel());
+  assert.deepEqual(targets, [{ sessionId: 'a', goalId: 'goal-a', expectedGoalRevision: 1, controlGeneration: 3, waitId: 'wait-a' }]);
+  assert.equal(reads, 2);
+  assert.equal(errors.length, 1);
+});

@@ -21,7 +21,7 @@
 
 Refs #4677 and #5038. These two independent workflows collect baselines; they have no schedule or timing merge gate. Run **Performance frontend** or **Performance protocol** from Actions after the workflow exists on the default branch, selecting the desired ref. Download the `performance-*-<sha>` artifact and read the JSON alongside the job summary. Compare explicit commits with identical fixtures and environment; a shared-runner result alone is not a regression verdict.
 
-Both lanes use the existing free `ubuntu-24.04` GitHub-hosted x64 runner, one measurement process at a time, Node 24.18.1 and `npm ci`. Electron is pinned by the repository (43.4.1 at introduction); Playwright/Chromium comes from the lockfile and browser install. JSON records actual OS, CPU, memory, Node and image version; browser results record the browser version. Runner hardware is not dedicated and its image can change. Reject comparisons across different environments and repeat suspicious results.
+Both lanes use the existing free `ubuntu-24.04` GitHub-hosted x64 runner, one measurement process at a time, Node 24.22.1 and `npm ci`. Electron is pinned by the repository (43.4.1 at introduction); Playwright/Chromium comes from the lockfile and browser install. JSON records actual OS, CPU, memory, Node and image version; browser results record the browser version. Runner hardware is not dedicated and its image can change. Reject comparisons across different environments and repeat suspicious results.
 
 ## Reproduce
 

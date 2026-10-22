@@ -109,6 +109,7 @@ on:
       - 'packages/runtime-host/src/protocol/skill-catalog.ts'
       - 'packages/runtime-host/src/server/access-credential-store.ts'
       - 'packages/runtime-host/src/server/host-resource-probe.ts'
+      - 'packages/runtime-host/src/server/session-checkpoint-publication.ts'
       - 'packages/runtime-host/src/server/skill-catalog-repository.ts'
       - 'packages/runtime-host/src/server/skill-catalog-transaction.ts'
       - 'packages/runtime/src/__tests__/owned-child-process.test.ts'
@@ -143,6 +144,9 @@ on:
       - 'packages/storage/src/marker-file.ts'
       - 'packages/storage/src/memory-bundle-io.ts'
       - 'packages/storage/src/native-file-lock.ts'
+      - 'packages/storage/src/process-lifetime-owner.ts'
+      - 'packages/storage/src/production-session-snapshot.ts'
+      - 'packages/storage/src/quiescent-session-snapshot.ts'
       - 'packages/storage/src/root-authority.ts'
       - 'packages/storage/src/runtime-policy/document-io.ts'
       - 'packages/storage/src/session-bundle-file-service.ts'
@@ -192,7 +196,7 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "24"
+          node-version: "24.22.1"
           cache: npm
 
       - name: Install dependencies

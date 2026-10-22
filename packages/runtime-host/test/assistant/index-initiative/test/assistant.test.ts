@@ -104,13 +104,18 @@ test('original reader uses an existing chat, pages original content, and does no
       recordId: 'project',
     });
     const ref = history.items[0].ref;
-    const first = await f.remote('assistant.original', { sessionId: 'owner', ref });
+    f.workers.set('ordinary-reader', { status: 'idle', transcript: [] });
+    await assert.rejects(
+      f.invokeAs('ordinary-reader', 'MemoryOriginal', { ref }),
+      /unavailable in this session/,
+    );
+    const first = await f.remote('assistant.original', { sessionId: 'ordinary-reader', ref });
     assert.equal(first.ref, ref);
     assert.equal(first.status, 'ok');
     assert.equal(first.text.length, 24000);
     assert.equal(first.nextOffset, 24000);
     const next = await f.remote('assistant.original', {
-      sessionId: 'owner',
+      sessionId: 'ordinary-reader',
       ref,
       offset: first.nextOffset,
     });
@@ -119,10 +124,10 @@ test('original reader uses an existing chat, pages original content, and does no
     assert.equal((await f.remote('assistant.binding')).state, null);
     await assert.rejects(f.remote('assistant.original', { sessionId: 'missing', ref }), /Host/);
     await assert.rejects(
-      f.remote('assistant.original', { sessionId: 'owner', ref: 'unknown' }),
+      f.remote('assistant.original', { sessionId: 'ordinary-reader', ref: 'unknown' }),
       /Unknown original/,
     );
-    assert.equal(f.workers.size, 1);
+    assert.equal(f.workers.size, 2);
   } finally {
     await f.close();
   }

@@ -26,6 +26,7 @@ import {
 import { z } from 'zod';
 import { MatterReviewInvalidated } from './review.js';
 import type { ReviewVerdict } from './review.js';
+import { isPendingActivationTurnId } from './matter.js';
 import type { MatterReview, MatterStore } from './matter.js';
 import type { MakaTool, MakaToolContext } from './host-types.js';
 
@@ -106,7 +107,7 @@ export function buildMatterTools(deps: MatterToolsDeps): MakaTool[] {
           m &&
           m.activation &&
           m.activation.id === input.activationId &&
-          m.activation.turnId.startsWith('pending:')
+          isPendingActivationTurnId(m.activation.turnId)
         )
           deps.store.bindTurn(m.id, input.activationId, ctx.turnId);
         const o = own(ctx);

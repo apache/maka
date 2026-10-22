@@ -166,6 +166,7 @@ export interface InteractiveRunComposerInput {
   ) => Promise<ResolvedRunPrompt>;
   readonly scheduledTaskTool?: MakaTool;
   readonly goalTools?: readonly MakaTool[];
+  readonly eventWaitAvailable?: () => boolean;
   readonly parentAgentTools?: readonly MakaTool[];
   readonly plan?: {
     readonly store: PlanStore;
@@ -219,29 +220,34 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
   const topicGate =
     input.toolProfile === 'workhub-coordination-v2' ? createWorkHubTopicGate() : undefined;
   const resolveTools = (): readonly MakaTool[] => {
-    const stableHostTools = [...defaultTools, ...clientCapabilityTools];
+    const stableHostTools = [...defaultTools, ...clientCapabilityTools].filter(
+      (tool) => tool.name !== 'WaitForEvent' || input.eventWaitAvailable?.() === true,
+    );
     const additionalTools = hasToolCeiling
       ? []
       : (input.resolveAdditionalTools?.(stableHostTools) ?? []);
     const candidateTools = projectHostedExecutionTools(
-      [...stableHostTools, ...additionalTools].map((tool) =>
-        tool.name === 'AskUserQuestion'
-          ? {
-              ...tool,
-              description: returnMissingInformation()
-                ? 'Report missing information to the coordinating Agent. Returns immediately without asking or waiting for the user.'
-                : tool.description,
-              impl: async (raw, context) =>
-                returnMissingInformation()
-                  ? {
-                      status: 'missing_information',
-                      questions: raw,
-                      message:
-                        'The user has not been asked. Return these missing requirements in your reply to the coordinator. Continue independent work if possible, then end this Turn.',
-                    }
-                  : tool.impl(raw, context),
-            }
-          : tool,
+      // This control tool must retain the Host implementation and its trusted
+      // yield receipt; a dynamic plugin cannot fill a temporarily hidden slot.
+      [...stableHostTools, ...additionalTools.filter((tool) => tool.name !== 'WaitForEvent')].map(
+        (tool) =>
+          tool.name === 'AskUserQuestion'
+            ? {
+                ...tool,
+                description: returnMissingInformation()
+                  ? 'Report missing information to the coordinating Agent. Returns immediately without asking or waiting for the user.'
+                  : tool.description,
+                impl: async (raw, context) =>
+                  returnMissingInformation()
+                    ? {
+                        status: 'missing_information',
+                        questions: raw,
+                        message:
+                          'The user has not been asked. Return these missing requirements in your reply to the coordinator. Continue independent work if possible, then end this Turn.',
+                      }
+                    : tool.impl(raw, context),
+              }
+            : tool,
       ),
       input.toolProfile,
     );
@@ -575,6 +581,7 @@ export function createInteractiveRunComposerFactory(
           : {}),
         ...(input.scheduledTaskTool ? { scheduledTaskTool: input.scheduledTaskTool } : {}),
         ...(input.goalTools ? { goalTools: input.goalTools } : {}),
+        ...(input.eventWaitAvailable ? { eventWaitAvailable: input.eventWaitAvailable } : {}),
         ...(parentAgentTools ? { parentAgentTools } : {}),
         ...(planState && input.planStore
           ? {

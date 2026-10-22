@@ -239,6 +239,10 @@ export interface MakaSessionDriver {
   subscribeGoalChanges?(listener: (goal: GoalProjection | null) => void): () => void;
   /** Fires when the attached Session's committed Todo projection is invalidated. */
   subscribeTodoChanges?(listener: (sessionId: string) => void): () => void;
+  /** Cancels the specified wait and pauses its Goal without stopping the background task. */
+  cancelGoalEventWait?(
+    input: import('@maka/runtime-host/protocol').GoalEventWaitCancelInput,
+  ): Promise<import('@maka/runtime-host/protocol').GoalEventWaitCancelResult>;
   /**
    * Applies a goal control action (pause/resume/clear) with optimistic
    * revision retry, mirroring the desktop client. Resolves with the resulting

@@ -1187,5 +1187,9 @@ function runChannelOperation<T>(
  */
 function sameGoalProjection(a: GoalProjection | null, b: GoalProjection | null): boolean {
   if (a === null || b === null) return a === b;
-  return a.goalId === b.goalId && a.revision === b.revision;
+  return (
+    a.goalId === b.goalId &&
+    a.revision === b.revision &&
+    JSON.stringify(a.eventWait) === JSON.stringify(b.eventWait)
+  );
 }

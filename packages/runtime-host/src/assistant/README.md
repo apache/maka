@@ -59,6 +59,10 @@ Index reads expose shared usage guidance. `MemoryIndexContent` defaults to direc
 
 Heartbeats always use `PROACTIVE_TASK` from code. `InitiativeEnable` configures cadence only; there is no custom prompt setting. New bindings do not save instructions, and recovery removes the obsolete `state.instructions` field while preserving the conversation and scheduling state. After updating and restarting the Host, existing bindings use the current product prompt automatically. The discovery scheduler retains its cadence. Each heartbeat runs discovery followed by judgement, in two persistent background Sessions. Discovery saves candidates through `DiscoveryCandidates` to a private report file; judgement reads that file and may investigate further before reporting through `DiscoveryReport` to the Bot. Neither worker writes directly to the user conversation. A failed/interrupted judgement retains its report for the next check; source history and existing indexes are unchanged. The original discovery criteria remain in `PROACTIVE_TASK`, split between these two roles.
 
+## Turn identities
+
+Background turns (heartbeats, Matter wakes, task notifications, bot-delivered messages) run under Host turn ids. The Host admits a turn id only when it matches `^[A-Za-z0-9_-]{1,128}$` (`requireEntityId`), and the desktop can branch from any turn it can read. Use dashes as separators, never colons, and hash caller-supplied text instead of embedding it (see `bot/turn-ids.ts`). The desktop disables Branch on turns whose id the Host would reject. Transcripts written before this rule keep colon-form ids, so readers must accept both forms (`isPendingActivationTurnId`, and the input-receipt check in `execution-composition.ts`).
+
 ## Verification
 
 Run `npm run build --workspace @maka/runtime-host`, `npm run test:assistant --workspace @maka/runtime-host`, and the native service/platform tests in `dist/__tests__`. The behavioral tests now start the native service directly. Their external-source test still installs the real Feishu source plugin. Mock models are used; no paid model test is started. The assistant suite is also part of the Host's normal `test:dist` command.

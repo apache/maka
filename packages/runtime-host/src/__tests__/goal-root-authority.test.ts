@@ -29,13 +29,22 @@ import { deferred, withTimeout } from '@maka/core/test-only/async-primitives';
 import { MockLanguageModelV4, convertArrayToReadableStream } from 'ai/test';
 import type { LanguageModelV4StreamPart } from '@ai-sdk/provider';
 import { AiSdkBackend } from '@maka/runtime/ai-sdk-backend';
+import { buildBuiltinTools } from '@maka/runtime/builtin-tools';
+import { ShellRunProcessManager } from '@maka/runtime/shell-run-manager';
+import { defaultShellPlan } from '@maka/runtime/shell-detect';
+import { openInteractiveShellRunStoreForWrite } from '@maka/storage/shell-run-authority';
+import { ShellRunEventWaitAccess } from '../server/shell-run-event-wait-access.js';
+import { ShellRunEventWaitAdapter } from '../server/shell-run-event-wait-adapter.js';
 import { createExternalExecutionBoundary } from '@maka/core/sandbox-boundary';
 import { EventWaitAdapterRegistry } from '../server/event-wait-adapter.js';
 import type { HostGoalEventWaitSources } from '../server/goal-event-waits.js';
 import { waitFor } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { fileURLToPath } from 'node:url';
+import { mkdir, mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
 import { backup, DatabaseSync } from 'node:sqlite';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -546,6 +555,8 @@ test('restart rejects a Goal Run carrying delegated execution lineage', async ()
 });
 
 interface Fixture {
+  readonly shellRuns?: ShellRunProcessManager;
+  readonly shellStore?: Awaited<ReturnType<typeof openInteractiveShellRunStoreForWrite>>;
   readonly owner: InteractiveRootOwner;
   readonly base: string;
   readonly stores: InteractiveExecutionStoresWriter;
@@ -558,6 +569,7 @@ interface Fixture {
   readonly manager: SessionManager;
   readonly messages: HostMessageCoordinator;
   readonly sessionAdmission: SessionAdmissionGate;
+  readonly continuity: SessionContinuityCoordinator;
   readonly drainRequested: () => boolean;
   waitForGoalStatus(status: GoalStatus): Promise<GoalState>;
   close(): Promise<void>;
@@ -568,11 +580,15 @@ type GoalStatus = GoalState['status'];
 
 async function createFixture(
   options: {
+    base?: string;
+    sessionId?: string;
     recoverAdmissions?: boolean;
     persistenceProvider?: ExecutionPersistenceProvider | 'local';
     registerBackend?: (backends: BackendRegistry) => void;
     model?: MockLanguageModelV4;
     eventWaitSources?: HostGoalEventWaitSources;
+    shellRuns?: boolean;
+    shellRunWaitReader?: Pick<NonNullable<Fixture['shellStore']>, 'readShellRun'>;
     onEvaluate?: () => unknown;
     onGoalProjection?: (goal: HostGoalCoordinator, sessionId: string) => void;
     afterWaitMutation?: (stage: 'register' | 'settle' | 'queue') => Promise<void>;
@@ -580,7 +596,7 @@ async function createFixture(
     beforeReadContext?: () => Promise<void>;
   } = {},
 ): Promise<Fixture> {
-  const base = await mkdtemp(join(tmpdir(), 'maka-goal-root-'));
+  const base = options.base ?? (await mkdtemp(join(tmpdir(), 'maka-goal-root-')));
   const capability = await resolveStorageRoot({ path: join(base, 'root'), kind: 'interactive' });
   const owner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(owner);
@@ -591,6 +607,30 @@ async function createFixture(
       : (options.persistenceProvider ??
         (options.afterWaitMutation ? createMemoryExecutionPersistenceProvider() : undefined));
   const stores = await openInteractiveExecutionStoresForWrite(owner.lease, provider);
+  const shellStore = options.shellRuns
+    ? await openInteractiveShellRunStoreForWrite(owner.lease)
+    : undefined;
+  const shellRuns = shellStore
+    ? new ShellRunProcessManager({ store: shellStore, newId: randomUUID, now: Date.now })
+    : undefined;
+  const shellAccess = shellStore
+    ? new ShellRunEventWaitAccess(
+        options.shellRunWaitReader ?? shellStore,
+        stores.runtimeEventStore,
+      )
+    : undefined;
+  const waitSources =
+    options.eventWaitSources ??
+    (shellRuns && shellAccess
+      ? {
+          adapters: new EventWaitAdapterRegistry([
+            new ShellRunEventWaitAdapter(shellAccess, shellRuns),
+          ]),
+          authorize: (wait: import('@maka/core/event-wait').EventWaitRecord, signal: AbortSignal) =>
+            shellAccess.authorize(wait, signal),
+          policy: { minIntervalMs: 10, pollIntervalMs: 30, jitterRatio: 0 },
+        }
+      : undefined);
   const waits = stores.eventWaitStore;
   const goalStores = options.afterWaitMutation
     ? {
@@ -626,13 +666,15 @@ async function createFixture(
       }
     : stores;
   const goalStore = await openInteractiveGoalAuthorityForWrite(owner.lease);
-  const session = await stores.sessionStore.create({
-    cwd: capability.canonicalPath,
-    llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
-    llmConnectionSlug: 'fake',
-    model: 'fake-model',
-    permissionMode: 'ask',
-  });
+  const session = options.sessionId
+    ? await stores.sessionStore.readHeaderSnapshot(options.sessionId)
+    : await stores.sessionStore.create({
+        cwd: capability.canonicalPath,
+        llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: options.shellRuns ? 'bypass' : 'ask',
+      });
   const admission = new SessionAdmissionGate();
   const rootAdmissions = new RootAdmissionOwner(
     options.afterRootAdmission
@@ -732,7 +774,18 @@ async function createFixture(
             modelId: 'fake-model',
             modelFactory: () => options.model!,
             providerStateIdentity: `sha256:${'a'.repeat(64)}`,
-            tools: [...requireGoal(goal).tools],
+            tools: [
+              ...requireGoal(goal).tools,
+              ...(shellRuns
+                ? buildBuiltinTools({
+                    shellRuns,
+                    runtimeResources: shellRuns,
+                    backgroundTasks: shellRuns,
+                    ptyControls: shellRuns,
+                    declareSandboxBoundary: false,
+                  })
+                : []),
+            ],
             runtimeCommitSink: stores.runtimeEventStore,
             loadTurnRuntimeEvents: context.loadTurnRuntimeEvents,
             loadModelProjectionTransitions: context.loadModelProjectionTransitions,
@@ -802,7 +855,7 @@ async function createFixture(
     newId: randomUUID,
   });
   goal = new HostGoalCoordinator({
-    ...(options.eventWaitSources ? { eventWaitSources: options.eventWaitSources } : {}),
+    ...(waitSources ? { eventWaitSources: waitSources } : {}),
     store: goalStore,
     stores: goalStores,
     readSessionContext: async (sessionId) => {
@@ -835,6 +888,7 @@ async function createFixture(
   const goalCoordinator = goal;
 
   return {
+    ...(shellRuns ? { shellRuns, shellStore: shellStore! } : {}),
     owner,
     base,
     stores,
@@ -848,6 +902,7 @@ async function createFixture(
     messages,
     sessionAdmission: admission,
     drainRequested: () => requestedDrain,
+    continuity,
     waitForGoalStatus: (status) =>
       new Promise<GoalState>((resolve, reject) => {
         let timeout: NodeJS.Timeout | undefined;
@@ -877,6 +932,8 @@ async function createFixture(
         await messages.close();
         await interactions.close();
         continuity?.close();
+        await shellRuns?.terminateAll();
+        await shellStore?.close();
         await goalStore.close();
         await stores.sessionStore.close?.();
         await owner.close();
@@ -1084,7 +1141,18 @@ for (const [alreadySatisfied, busy, deferAccess, cancel] of [
       )!;
       assert.equal(source.terminalEvent?.actions?.stateDelta?.stopReason, 'event_wait');
       if (cancel) {
-        await f.goal.eventWaitBridge!.cancel(f.sessionId, wait.record.waitId);
+        const goal = f.goal.manager.get(f.sessionId)!;
+        const result = await f.goal.handlers['goal.event-wait.cancel'](
+          {
+            sessionId: f.sessionId,
+            goalId: goal.id,
+            expectedGoalRevision: goal.revision,
+            waitId: wait.record.waitId,
+            controlGeneration: wait.record.goalControlLease.generation,
+          },
+          operationContext(),
+        );
+        assert.equal(result.ok && result.result.outcome, 'cancelled');
         for (let i = 0; i < 3; i++) await f.goal.eventWaitBridge!.reconcile();
         assert.equal(f.goal.manager.get(f.sessionId)?.status, 'paused');
         assert.equal(
@@ -1287,6 +1355,79 @@ async function startEventWait(f: Fixture, maxIterations = 50) {
   );
   assert.equal(submitted.ok, true);
 }
+
+test('Goal drain stops event wait observation before waiting for close', async () => {
+  const readEntered = deferred();
+  const releaseRead = deferred();
+  let readSignal: AbortSignal | undefined;
+  let subscriptionsClosed = 0;
+  let reads = 0;
+  let modelCalls = 0;
+  const f = await createFixture({
+    model: eventWaitModel(() => modelCalls++),
+    eventWaitSources: {
+      authorize: async () => ({ kind: 'allowed', context: null }),
+      adapters: new EventWaitAdapterRegistry([
+        {
+          providerId: 'test',
+          resourceType: 'job',
+          conditionType: 'done',
+          conditionVersion: 1,
+          reconciliation: 'snapshot',
+          validate() {},
+          subscribe: async () => ({
+            close() {
+              subscriptionsClosed++;
+            },
+          }),
+          read: async ({ signal }) => {
+            reads++;
+            readSignal = signal;
+            readEntered.resolve();
+            await releaseRead.promise;
+            return { kind: 'satisfied', receiptKey: 'late-terminal', evidenceRefs: [] };
+          },
+        },
+      ]),
+    },
+  });
+  try {
+    await startEventWait(f);
+    await readEntered.promise;
+    await waitFor(
+      async () => (await f.goalStore.read(f.sessionId))?.record.activeEventWait?.settled === true,
+      { timeoutMs: 5000 },
+    );
+    await f.coordinator.whenIdle(f.sessionId);
+    const before = (
+      await f.stores.eventWaitStore.listSession({ sessionId: f.sessionId, limit: 10 })
+    ).items[0]!;
+    const callsBeforeDrain = modelCalls;
+
+    // Host operation draining can delay close. Observation must stop at this
+    // synchronous boundary, without turning shutdown into business cancellation.
+    f.goal.beginDrain();
+    f.goal.beginDrain();
+    assert.equal(readSignal?.aborted, true);
+    assert.equal(subscriptionsClosed, 1);
+    releaseRead.resolve();
+    await f.goal.close();
+
+    const after = (await f.stores.eventWaitStore.read({
+      sessionId: f.sessionId,
+      waitId: before.record.waitId,
+    }))!;
+    assert.equal(after.record.status, 'waiting');
+    assert.equal(after.record.observation?.attempts, before.record.observation?.attempts);
+    assert.equal(after.record.delivery, undefined);
+    assert.equal(reads, 1);
+    assert.equal(modelCalls, callsBeforeDrain);
+    assert.equal(subscriptionsClosed, 1);
+  } finally {
+    releaseRead.resolve();
+    await f.close();
+  }
+});
 
 test('observer cancellation releases the Goal gate without restarting work', async () => {
   let calls = 0,
@@ -2876,3 +3017,968 @@ for (const provider of ['memory', 'sqlite'] as const)
         }
       }
     });
+
+// Match the actual platform shell while preserving Node paths containing spaces.
+function shellNodeCommand(script: string): string {
+  const payload = Buffer.from(script).toString('base64');
+  const bootstrap = `eval(Buffer.from('${payload}','base64').toString('utf8'))`;
+  const shell = defaultShellPlan();
+  if (shell.kind === 'powershell' || shell.kind === 'pwsh') {
+    const quote = (value: string) => `'${value.replaceAll("'", "''")}'`;
+    return `& ${quote(process.execPath)} -e ${quote(bootstrap)}`;
+  }
+  if (shell.kind === 'cmd') return `"${process.execPath}" -e "${bootstrap}"`;
+  const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+  return `${quote(process.execPath)} -e ${quote(bootstrap)}`;
+}
+
+for (const scenario of ['success', 'failure', 'timeout', 'stop', 'cancel-wait', 'pty'] as const) {
+  test(`builtin background Bash event wait: ${scenario}`, { timeout: 20000 }, async () => {
+    let calls = 0,
+      evaluations = 0;
+    let f: Fixture;
+    let ref = '';
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls++;
+        let name: string | undefined, args: unknown;
+        if (calls === 1) {
+          name = 'Bash';
+          const script = `const fs=require("fs");fs.appendFileSync("starts","1");const t=setInterval(()=>{if(fs.existsSync("release")){clearInterval(t);console.log("task-output");process.exit(${scenario === 'failure' ? 7 : 0})}},10)`;
+          args = {
+            command: shellNodeCommand(script),
+            run_in_background: true,
+            ...(scenario === 'pty' ? { pty: true } : {}),
+            timeout_ms: scenario === 'timeout' ? 1000 : 10000,
+          };
+        } else if (calls === 2) {
+          ref = (await f.shellStore!.listSessionShellRuns(f.sessionId))[0]!.shellRunId;
+          ref = `maka://runtime/background-tasks/${ref}`;
+          name = 'WaitForEvent';
+          args = {
+            resource: {
+              providerId: 'shell_run',
+              resourceType: 'background_task',
+              connectionId: null,
+              resourceId: ref,
+            },
+            condition: { typeId: 'terminal', version: 1, parameters: {} },
+            reason: 'Inspect the finished tests',
+            timeoutMs: 60000,
+          };
+        } else if (calls === 3) {
+          name = 'Read';
+          args = { path: ref };
+        }
+        return {
+          stream: convertArrayToReadableStream<LanguageModelV4StreamPart>([
+            { type: 'stream-start', warnings: [] },
+            ...(name
+              ? [
+                  {
+                    type: 'tool-call' as const,
+                    toolCallId: `call-${calls}`,
+                    toolName: name,
+                    input: JSON.stringify(args),
+                  },
+                ]
+              : []),
+            {
+              type: 'finish',
+              finishReason: { unified: name ? 'tool-calls' : 'stop', raw: 'stop' },
+              usage: {
+                inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
+                outputTokens: { total: 2, text: 2, reasoning: 0 },
+              },
+            },
+          ]),
+        };
+      },
+    });
+    f = await createFixture({ shellRuns: true, model, onEvaluate: () => evaluations++ });
+    try {
+      await f.goal.recover();
+      f.goal.manager.create(f.sessionId, 'Run tests and inspect the result', { armed: true });
+      await f.goal.handlers['goal.query']({ sessionId: f.sessionId }, operationContext());
+      const started = await f.messages.handlers['turn.message.submit'](
+        {
+          originHostEpoch: 'goal-root-epoch',
+          sessionId: f.sessionId,
+          messageId: 'shell-wait-start',
+          content: { text: 'Start tests and wait' },
+          placement: 'current_turn',
+        },
+        operationContext(),
+      );
+      assert.equal(started.ok, true);
+      await waitFor(
+        async () => {
+          const a = await f.goalStore.read(f.sessionId);
+          if (a?.record.goal.status === 'paused' || a?.record.goal.status === 'achieved')
+            throw new Error(JSON.stringify(a));
+          return a?.record.activeEventWait?.settled === true;
+        },
+        { timeoutMs: 10000 },
+      );
+      const projection = await f.goal.readProjection(f.sessionId);
+      assert.ok(projection?.eventWait);
+      assert.equal(calls, 2);
+      assert.equal(evaluations, 0);
+      await waitFor(() => f.coordinator.readRootState(f.sessionId).kind === 'idle', {
+        timeoutMs: 5000,
+      });
+      const waitId = projection.eventWait.waitId;
+      if (scenario === 'success' || scenario === 'pty' || scenario === 'cancel-wait') {
+        await waitFor(
+          async () => {
+            const wait = await f.stores.eventWaitStore.read({ sessionId: f.sessionId, waitId });
+            return (wait?.record.observation?.attempts ?? 0) >= 3;
+          },
+          { timeoutMs: 5000 },
+        );
+        assert.equal(calls, 2, 'Repeated observation cannot invoke the work model');
+        assert.equal(evaluations, 0, 'Repeated observation cannot invoke the Goal evaluator');
+        assert.equal(f.coordinator.readRootState(f.sessionId).kind, 'idle');
+      }
+      const originalTarget = {
+        sessionId: f.sessionId,
+        goalId: projection.goalId,
+        controlGeneration: projection.eventWait.controlGeneration,
+        waitId,
+        expectedGoalRevision: projection.revision,
+      };
+      const stale = await f.goal.handlers['goal.event-wait.cancel'](
+        { ...originalTarget, expectedGoalRevision: projection.revision + 1 },
+        operationContext(),
+      );
+      assert.equal(stale.ok && stale.result.outcome, 'conflict');
+      assert.equal(f.goal.manager.get(f.sessionId)?.status, 'active');
+      if (scenario === 'cancel-wait') {
+        const target = {
+          sessionId: f.sessionId,
+          goalId: projection.goalId,
+          controlGeneration: projection.eventWait.controlGeneration,
+          waitId,
+          expectedGoalRevision: projection.revision,
+        };
+        const cancelled = await f.goal.handlers['goal.event-wait.cancel'](
+          target,
+          operationContext(),
+        );
+        assert.equal(cancelled.ok && cancelled.result.outcome, 'cancelled');
+        const repeat = await f.goal.handlers['goal.event-wait.cancel'](target, operationContext());
+        assert.equal(repeat.ok && repeat.result.outcome, 'already_cancelled');
+        assert.equal(f.shellRuns!.liveCount(), 1);
+      } else if (scenario === 'stop')
+        await f.shellRuns!.stopBackgroundTask(f.sessionId, ref, new AbortController().signal);
+      if (scenario !== 'timeout' && scenario !== 'stop')
+        await writeFile(join(f.owner.capability.canonicalPath, 'release'), 'ready');
+      await waitFor(
+        async () =>
+          (await f.shellStore!.listSessionShellRuns(f.sessionId)).every(
+            (r) => !['starting', 'running'].includes(r.status),
+          ),
+        { timeoutMs: 10000 },
+      );
+      if (scenario !== 'cancel-wait') {
+        await f.waitForGoalStatus('achieved');
+        assert.equal(calls, 4);
+        const wait = await f.stores.eventWaitStore.read({ sessionId: f.sessionId, waitId });
+        assert.equal(wait?.record.status, 'resolved');
+        assert.equal(wait?.record.delivery?.kind, 'admitted');
+        const already = await f.goal.handlers['goal.event-wait.cancel'](
+          originalTarget,
+          operationContext(),
+        );
+        assert.equal(already.ok && already.result.outcome, 'already_admitted');
+        assert.equal(f.goal.manager.get(f.sessionId)?.status, 'achieved');
+        const task = (await f.shellStore!.listSessionShellRuns(f.sessionId))[0]!;
+        assert.equal(
+          task.status,
+          scenario === 'failure'
+            ? 'failed'
+            : scenario === 'timeout'
+              ? 'timed_out'
+              : scenario === 'stop'
+                ? 'cancelled'
+                : 'completed',
+        );
+        const events = await f.stores.runtimeEventStore.readSessionRuntimeEvents(f.sessionId);
+        const result = events.find(
+          (e) => e.content?.kind === 'function_response' && e.content.name === 'Read',
+        )?.content;
+        assert.ok(result?.kind === 'function_response' && !result.isError, JSON.stringify(result));
+        await f.goal.eventWaitBridge!.reconcile();
+        assert.equal(calls, 4);
+      } else {
+        await f.goal.eventWaitBridge!.reconcile();
+        assert.equal(calls, 2);
+      }
+      assert.equal(await readFile(join(f.owner.capability.canonicalPath, 'starts'), 'utf8'), '1');
+      assert.equal(f.drainRequested(), false);
+    } finally {
+      await f.close();
+    }
+  });
+}
+
+// This subprocess owns the real Root, Goal, SQLite and process manager. SIGKILL
+// bypasses graceful cleanup; the durable marker detects command redispatch.
+test('ShellRun crash fixture', { skip: !process.env.MAKA_SHELL_WAIT_CRASH_ROOT }, async () => {
+  const base = process.env.MAKA_SHELL_WAIT_CRASH_ROOT!;
+  let f: Fixture,
+    calls = 0;
+  const model = new MockLanguageModelV4({
+    doStream: async () => {
+      calls++;
+      const script =
+        'const fs=require("fs");fs.appendFileSync("starts","1");fs.writeFileSync("process-id",String(process.pid));const t=setInterval(()=>{if(fs.existsSync("release")){clearInterval(t);fs.writeFileSync("done","1");console.log("recovered-result")}},10)';
+      const task =
+        calls === 2 ? (await f.shellStore!.listSessionShellRuns(f.sessionId))[0] : undefined;
+      const name = calls === 1 ? 'Bash' : 'WaitForEvent';
+      const args =
+        calls === 1
+          ? {
+              command: shellNodeCommand(script),
+              run_in_background: true,
+              timeout_ms: 120000,
+            }
+          : {
+              resource: {
+                providerId: 'shell_run',
+                resourceType: 'background_task',
+                connectionId: null,
+                resourceId: `maka://runtime/background-tasks/${task!.shellRunId}`,
+              },
+              condition: { typeId: 'terminal', version: 1, parameters: {} },
+              reason: 'Verify after recovery',
+              timeoutMs: 120000,
+            };
+      assert.ok(calls <= 2, 'The child must not continue before the crash');
+      return modelToolStep(name, args, `crash-call-${calls}`);
+    },
+  });
+  f = await createFixture({ base, shellRuns: true, model });
+  await f.goal.recover();
+  f.goal.manager.create(f.sessionId, 'Verify the original task', { armed: true });
+  await f.goal.handlers['goal.query']({ sessionId: f.sessionId }, operationContext());
+  assert.equal(
+    (
+      await f.messages.handlers['turn.message.submit'](
+        {
+          originHostEpoch: 'goal-root-epoch',
+          sessionId: f.sessionId,
+          messageId: 'crash-start',
+          content: { text: 'Start once' },
+          placement: 'current_turn',
+        },
+        operationContext(),
+      )
+    ).ok,
+    true,
+  );
+  await waitFor(
+    async () => (await f.goalStore.read(f.sessionId))?.record.activeEventWait?.settled === true,
+    { timeoutMs: 10000 },
+  );
+  await waitFor(() => f.coordinator.readRootState(f.sessionId).kind === 'idle', {
+    timeoutMs: 5000,
+  });
+  const task = (await f.shellStore!.listSessionShellRuns(f.sessionId))[0]!;
+  const wait = (await f.stores.eventWaitStore.listSession({ sessionId: f.sessionId, limit: 10 }))
+    .items[0]!.record;
+  // Hold observation at a real durable boundary, before terminal notification.
+  await f.goal.eventWaitBridge!.close();
+  if (process.env.MAKA_SHELL_WAIT_CRASH_PHASE === 'terminal') {
+    await writeFile(join(f.owner.capability.canonicalPath, 'release'), 'ready');
+    await waitFor(
+      async () =>
+        (await f.shellStore!.readShellRun(f.sessionId, task.shellRunId)).status === 'completed',
+      { timeoutMs: 5000 },
+    );
+  }
+  await writeFile(
+    join(base, 'ready.json'),
+    JSON.stringify({
+      sessionId: f.sessionId,
+      waitId: wait.waitId,
+      ref: `maka://runtime/background-tasks/${task.shellRunId}`,
+      taskId: task.shellRunId,
+    }),
+  );
+  const keepAlive = setInterval(() => {}, 1000);
+  try {
+    await new Promise<void>(() => {});
+  } finally {
+    clearInterval(keepAlive);
+  }
+});
+
+for (const phase of ['running', 'terminal'] as const)
+  test(`ShellRun process crash recovery from ${phase} does not redispatch`, {
+    timeout: 25000,
+  }, async () => {
+    const base = await mkdtemp(join(tmpdir(), 'maka-shell-crash-'));
+    const child = spawn(
+      process.execPath,
+      [
+        '--test',
+        // Node 22 exposes the same isolation mode under its experimental flag.
+        process.versions.node.startsWith('22.')
+          ? '--experimental-test-isolation=none'
+          : '--test-isolation=none',
+        '--test-name-pattern=^ShellRun crash fixture$',
+        fileURLToPath(import.meta.url),
+      ],
+      {
+        env: {
+          ...process.env,
+          MAKA_SHELL_WAIT_CRASH_ROOT: base,
+          MAKA_SHELL_WAIT_CRASH_PHASE: phase,
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
+    let output = '';
+    child.stdout.on('data', (chunk) => (output += chunk));
+    child.stderr.on('data', (chunk) => (output += chunk));
+    let f: Fixture | undefined;
+    try {
+      let marker: { sessionId: string; waitId: string; ref: string; taskId: string } | undefined;
+      await waitFor(
+        async () => {
+          if (child.exitCode !== null) throw new Error(output);
+          try {
+            marker = JSON.parse(await readFile(join(base, 'ready.json'), 'utf8'));
+            return true;
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+            throw error;
+          }
+        },
+        { timeoutMs: 12000 },
+      );
+      assert.ok(marker);
+      const exited = once(child, 'exit');
+      child.kill('SIGKILL');
+      await exited;
+      let calls = 0;
+      f = await createFixture({
+        base,
+        sessionId: marker.sessionId,
+        shellRuns: true,
+        recoverAdmissions: false,
+        model: new MockLanguageModelV4({
+          doStream: async () =>
+            ++calls === 1
+              ? modelToolStep('Read', { path: marker!.ref }, 'recovery-read')
+              : modelToolStep(),
+        }),
+      });
+      assert.equal(
+        await f.shellRuns!.recoverOrphanedSession(f.sessionId),
+        phase === 'running' ? 1 : 0,
+      );
+      await f.coordinator.prepareRecovery();
+      await f.manager.recoverInterruptedSessionsStrict(f.stores);
+      await f.coordinator.recover();
+      await f.messages.recoverPendingAfterHostRestart([f.sessionId]);
+      await f.goal.recover();
+      await f.waitForGoalStatus('achieved');
+      const wait = (await f.stores.eventWaitStore.read({
+        sessionId: f.sessionId,
+        waitId: marker.waitId,
+      }))!.record;
+      assert.equal(wait.status, 'resolved');
+      assert.equal(
+        wait.status === 'resolved' && wait.resolution.outcome,
+        phase === 'running' ? 'source_unavailable' : 'satisfied',
+      );
+      assert.equal(wait.delivery?.kind, 'admitted');
+      assert.equal(calls, 2);
+      assert.equal(
+        (await f.shellStore!.readShellRun(f.sessionId, marker.taskId)).status,
+        phase === 'running' ? 'orphaned' : 'completed',
+      );
+      await f.goal.eventWaitBridge!.reconcile();
+      assert.equal(calls, 2);
+      assert.equal(await readFile(join(base, 'root', 'starts'), 'utf8'), '1');
+      // An orphan may still be alive: release the original process using its fixture
+      // signal, not Runtime PID takeover. The test process may have died with its
+      // parent; either its own completion marker or ESRCH establishes test cleanup.
+      await writeFile(join(base, 'root', 'release'), 'ready');
+      const processId = Number(await readFile(join(base, 'root', 'process-id'), 'utf8'));
+      await waitFor(
+        async () => {
+          try {
+            if ((await readFile(join(base, 'root', 'done'), 'utf8')) === '1') return true;
+          } catch {
+            /* Not finished. */
+          }
+          try {
+            process.kill(processId, 0);
+            return false;
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === 'ESRCH') return true;
+            throw error;
+          }
+        },
+        { timeoutMs: 5000 },
+      );
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) {
+        const exited = once(child, 'exit');
+        child.kill('SIGKILL');
+        await exited;
+      }
+      if (f) await f.close();
+      else {
+        await writeFile(join(base, 'root', 'release'), 'ready').catch(() => {});
+        await rm(base, { recursive: true, force: true });
+      }
+    }
+  });
+
+function modelToolStep(name?: string, args?: unknown, id = 'call') {
+  return {
+    stream: convertArrayToReadableStream<LanguageModelV4StreamPart>([
+      { type: 'stream-start', warnings: [] },
+      ...(name
+        ? [
+            {
+              type: 'tool-call' as const,
+              toolCallId: id,
+              toolName: name,
+              input: JSON.stringify(args),
+            },
+          ]
+        : []),
+      {
+        type: 'finish',
+        finishReason: { unified: name ? 'tool-calls' : 'stop', raw: 'stop' },
+        usage: {
+          inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
+          outputTokens: { total: 2, text: 2, reasoning: 0 },
+        },
+      },
+    ]),
+  };
+}
+
+test('a real background completion without wait registration does not invoke a model or evaluator', {
+  timeout: 15000,
+}, async () => {
+  let calls = 0,
+    evaluations = 0;
+  const f = await createFixture({
+    shellRuns: true,
+    onEvaluate: () => evaluations++,
+    model: new MockLanguageModelV4({
+      doStream: async () => {
+        calls++;
+        return calls === 1
+          ? modelToolStep('Bash', {
+              command: shellNodeCommand(
+                'const fs=require("fs");fs.appendFileSync("starts","1");const t=setInterval(()=>{if(fs.existsSync("release"))clearInterval(t)},10)',
+              ),
+              run_in_background: true,
+              timeout_ms: 10000,
+            })
+          : modelToolStep();
+      },
+    }),
+  });
+  try {
+    await f.goal.recover();
+    assert.equal(
+      (
+        await f.messages.handlers['turn.message.submit'](
+          {
+            originHostEpoch: 'goal-root-epoch',
+            sessionId: f.sessionId,
+            messageId: 'ordinary-background',
+            content: { text: 'Run a task' },
+            placement: 'current_turn',
+          },
+          operationContext(),
+        )
+      ).ok,
+      true,
+    );
+    await f.coordinator.whenIdle(f.sessionId);
+    assert.equal(calls, 2);
+    await writeFile(join(f.owner.capability.canonicalPath, 'release'), 'ready');
+    await waitFor(
+      async () =>
+        (await f.shellStore!.listSessionShellRuns(f.sessionId))[0]?.status === 'completed',
+      { timeoutMs: 5000 },
+    );
+    await f.goal.eventWaitBridge!.reconcile();
+    assert.equal(calls, 2);
+    assert.equal(evaluations, 0);
+    assert.equal(
+      (await f.stores.eventWaitStore.listSession({ sessionId: f.sessionId, limit: 10 })).items
+        .length,
+      0,
+    );
+    assert.equal(await readFile(join(f.owner.capability.canonicalPath, 'starts'), 'utf8'), '1');
+  } finally {
+    await f.close();
+  }
+});
+
+test('a stale wait cancellation cannot pause a replacement Goal and wait', {
+  timeout: 15000,
+}, async () => {
+  let calls = 0;
+  const f = await createFixture({
+    model: new MockLanguageModelV4({
+      doStream: async () =>
+        modelToolStep(
+          'WaitForEvent',
+          {
+            resource: {
+              providerId: 'test',
+              connectionId: null,
+              resourceType: 'job',
+              resourceId: 'job',
+            },
+            condition: { typeId: 'done', version: 1, parameters: {} },
+            reason: 'Wait for this Goal',
+            timeoutMs: 60000,
+          },
+          `replacement-wait-${++calls}`,
+        ),
+    }),
+    eventWaitSources: eventWaitSources(async () => ({ kind: 'allowed', context: null })),
+  });
+  try {
+    await startEventWait(f);
+    await waitFor(
+      async () => (await f.goalStore.read(f.sessionId))?.record.activeEventWait?.settled === true,
+      { timeoutMs: 5000 },
+    );
+    await waitFor(() => f.coordinator.readRootState(f.sessionId).kind === 'idle', {
+      timeoutMs: 5000,
+    });
+    const before = (await f.goal.readProjection(f.sessionId))!;
+    const target = {
+      sessionId: f.sessionId,
+      goalId: before.goalId,
+      expectedGoalRevision: before.revision,
+      controlGeneration: before.eventWait!.controlGeneration,
+      waitId: before.eventWait!.waitId,
+    };
+    assert.equal(
+      (await f.goal.handlers['goal.event-wait.cancel'](target, operationContext())).ok,
+      true,
+    );
+    const paused = f.goal.manager.get(f.sessionId)!;
+    assert.equal(
+      (
+        await f.goal.handlers['goal.control'](
+          {
+            sessionId: f.sessionId,
+            goalId: paused.id,
+            expectedRevision: paused.revision,
+            action: 'clear',
+          },
+          operationContext(),
+        )
+      ).ok,
+      true,
+    );
+    assert.equal(
+      f.goal.manager.create(f.sessionId, 'Replacement work', { armed: true }).kind,
+      'created',
+    );
+    await f.goal.handlers['goal.query']({ sessionId: f.sessionId }, operationContext());
+    // Registration shares the observer's source budget. The prior observation
+    // reserves a minimum interval even when its wait is cancelled.
+    await waitFor(
+      async () =>
+        Date.now() >=
+        ((await f.stores.eventWaitStore.readSourceCooldown({
+          providerId: 'test',
+          connectionId: null,
+        })) ?? 0),
+      { timeoutMs: 5000 },
+    );
+    assert.equal(
+      (
+        await f.messages.handlers['turn.message.submit'](
+          {
+            originHostEpoch: 'goal-root-epoch',
+            sessionId: f.sessionId,
+            messageId: 'replacement-wait',
+            content: { text: 'Wait again' },
+            placement: 'current_turn',
+          },
+          operationContext(),
+        )
+      ).ok,
+      true,
+    );
+    await waitFor(
+      async () => {
+        const gate = (await f.goalStore.read(f.sessionId))?.record.activeEventWait;
+        return !!gate?.settled && gate.waitId !== target.waitId;
+      },
+      { timeoutMs: 5000 },
+    );
+    const current = await f.goal.readProjection(f.sessionId);
+    const retry = await f.goal.handlers['goal.event-wait.cancel'](target, operationContext());
+    assert.equal(retry.ok && retry.result.outcome, 'already_cancelled');
+    assert.equal(f.goal.manager.get(f.sessionId)?.status, 'active');
+    assert.equal(
+      (await f.goal.readProjection(f.sessionId))?.eventWait?.waitId,
+      current?.eventWait?.waitId,
+    );
+  } finally {
+    await f.close();
+  }
+});
+
+test('an already failed background task from an earlier Turn can register and deliver', {
+  timeout: 15000,
+}, async () => {
+  let f: Fixture,
+    calls = 0,
+    ref = '';
+  f = await createFixture({
+    shellRuns: true,
+    model: new MockLanguageModelV4({
+      doStream: async () => {
+        calls++;
+        if (calls === 1)
+          return modelToolStep(
+            'Bash',
+            { command: shellNodeCommand('process.exit(7)'), run_in_background: true },
+            'earlier-bash',
+          );
+        if (calls === 3)
+          return modelToolStep(
+            'WaitForEvent',
+            {
+              resource: {
+                providerId: 'shell_run',
+                resourceType: 'background_task',
+                connectionId: null,
+                resourceId: ref,
+              },
+              condition: { typeId: 'terminal', version: 1, parameters: {} },
+              reason: 'Inspect earlier failure',
+              timeoutMs: 60000,
+            },
+            'later-wait',
+          );
+        if (calls === 4) return modelToolStep('Read', { path: ref }, 'read-failure');
+        return modelToolStep();
+      },
+    }),
+  });
+  try {
+    await f.goal.recover();
+    const submit = (messageId: string) =>
+      f.messages.handlers['turn.message.submit'](
+        {
+          originHostEpoch: 'goal-root-epoch',
+          sessionId: f.sessionId,
+          messageId,
+          content: { text: messageId },
+          placement: 'current_turn',
+        },
+        operationContext(),
+      );
+    assert.equal((await submit('earlier-task')).ok, true);
+    await f.coordinator.whenIdle(f.sessionId);
+    await waitFor(
+      async () => (await f.shellStore!.listSessionShellRuns(f.sessionId))[0]?.status === 'failed',
+      { timeoutMs: 5000 },
+    );
+    const task = (await f.shellStore!.listSessionShellRuns(f.sessionId))[0]!;
+    ref = `maka://runtime/background-tasks/${task.shellRunId}`;
+    f.goal.manager.create(f.sessionId, 'Read the earlier result', { armed: true });
+    await f.goal.handlers['goal.query']({ sessionId: f.sessionId }, operationContext());
+    assert.equal((await submit('later-wait')).ok, true);
+    await f.waitForGoalStatus('achieved');
+    const wait = (await f.stores.eventWaitStore.listSession({ sessionId: f.sessionId, limit: 10 }))
+      .items[0]!.record;
+    assert.notEqual(wait.sourceTurnId, task.sourceTurnId);
+    assert.equal(wait.status, 'resolved');
+    assert.equal(wait.status === 'resolved' && wait.resolution.outcome, 'satisfied');
+    assert.equal(wait.delivery?.kind, 'admitted');
+    assert.equal(calls, 5);
+    const source = (await f.stores.runtimeEventStore.listSessionInvocations(f.sessionId)).find(
+      (r) => r.turnId === wait.sourceTurnId,
+    )!;
+    assert.equal(source.terminalEvent?.actions?.stateDelta?.stopReason, 'event_wait');
+    assert.equal((await f.shellStore!.listSessionShellRuns(f.sessionId)).length, 1);
+  } finally {
+    await f.close();
+  }
+});
+
+for (const outcome of ['pending', 'unknown'] as const) {
+  test(`ShellRun reconnect during ${outcome} recheck retains the last observation without polling frames`, {
+    timeout: 15000,
+  }, async () => {
+    const readStarted = deferred<void>();
+    const releaseRead = deferred<void>();
+    let f: Fixture;
+    let calls = 0,
+      projections = 0,
+      projectionFrames = 0;
+    let mode: 'normal' | 'fault' | 'held' = 'normal';
+    f = await createFixture({
+      shellRuns: true,
+      shellRunWaitReader: {
+        readShellRun: async (sessionId, shellRunId) => {
+          if (mode === 'held') {
+            readStarted.resolve();
+            await releaseRead.promise;
+          }
+          if (mode !== 'normal') throw new Error('Transient source read failure');
+          return f.shellStore!.readShellRun(sessionId, shellRunId);
+        },
+      },
+      onGoalProjection: () => projections++,
+      model: new MockLanguageModelV4({
+        doStream: async () => {
+          calls++;
+          if (calls === 1)
+            return modelToolStep(
+              'Bash',
+              {
+                command: shellNodeCommand(
+                  'const fs=require("fs");const t=setInterval(()=>{if(fs.existsSync("release"))clearInterval(t)},10)',
+                ),
+                run_in_background: true,
+                timeout_ms: 30000,
+              },
+              'recheck-bash',
+            );
+          if (calls === 2) {
+            const task = (await f.shellStore!.listSessionShellRuns(f.sessionId))[0]!;
+            return modelToolStep(
+              'WaitForEvent',
+              {
+                resource: {
+                  providerId: 'shell_run',
+                  connectionId: null,
+                  resourceType: 'background_task',
+                  resourceId: `maka://runtime/background-tasks/${task.shellRunId}`,
+                },
+                condition: { typeId: 'terminal', version: 1, parameters: {} },
+                reason: 'Inspect the background result',
+                timeoutMs: 60000,
+              },
+              'recheck-wait',
+            );
+          }
+          return modelToolStep();
+        },
+      }),
+    });
+    try {
+      await startEventWait(f);
+      await waitFor(
+        async () => (await f.goalStore.read(f.sessionId))?.record.activeEventWait?.settled === true,
+        { timeoutMs: 5000 },
+      );
+      await waitFor(() => f.coordinator.readRootState(f.sessionId).kind === 'idle', {
+        timeoutMs: 5000,
+      });
+      mode = outcome === 'unknown' ? 'fault' : 'normal';
+      await waitFor(
+        async () =>
+          (await f.goal.readProjection(f.sessionId))?.eventWait?.observation?.state === outcome,
+        { timeoutMs: 5000 },
+      );
+      const first = (await f.goal.readProjection(f.sessionId))!.eventWait!;
+      assert.equal(
+        first.observation?.reasonCode,
+        outcome === 'unknown' ? 'observation_failed' : null,
+      );
+      mode = 'held';
+      await withTimeout(readStarted.promise, 5000, 'recheck did not start');
+      const reserved = (await f.stores.eventWaitStore.read({
+        sessionId: f.sessionId,
+        waitId: first.waitId,
+      }))!;
+      assert.equal(reserved.record.observation?.outcome, 'checking');
+      f.continuity.attachConnection('recheck-client', {
+        send: async (frame) => {
+          if (frame.kind === 'subscription.session_projection') projectionFrames++;
+        },
+      });
+      const context = {
+        ...operationContext(),
+        connectionId: 'recheck-client',
+        principal: 'local_owner',
+        principalKind: 'local_owner' as const,
+      };
+      const opened = await f.continuity.handlers['subscription.open'](
+        { sessionId: f.sessionId, transcript: { kind: 'none' } },
+        context,
+      );
+      assert.ok(opened.ok);
+      assert.deepEqual(opened.result.snapshot.goal?.eventWait?.observation, first.observation);
+      await f.continuity.handlers['subscription.ready'](
+        { subscriptionId: opened.result.subscriptionId },
+        context,
+      );
+      const count = projections;
+      mode = outcome === 'unknown' ? 'fault' : 'normal';
+      releaseRead.resolve();
+      await waitFor(
+        async () => {
+          const row = await f.stores.eventWaitStore.read({
+            sessionId: f.sessionId,
+            waitId: first.waitId,
+          });
+          return (
+            row?.record.observation?.attempts === reserved.record.observation!.attempts &&
+            row.record.observation.outcome === outcome
+          );
+        },
+        { timeoutMs: 5000 },
+      );
+      const current = (await f.goal.readProjection(f.sessionId))!.eventWait!;
+      assert.equal(current.observation?.state, outcome);
+      assert.equal(current.observation?.reasonCode, first.observation?.reasonCode);
+      assert.equal(projections, count);
+      assert.equal(projectionFrames, 0);
+      assert.equal(calls, 2);
+      assert.equal(f.shellRuns!.liveCount(), 1);
+      assert.equal(f.drainRequested(), false);
+    } finally {
+      releaseRead.resolve();
+      await writeFile(join(f.owner.capability.canonicalPath, 'release'), 'ready');
+      await f.close();
+    }
+  });
+}
+
+for (const [sourceChange, expectedReason] of [
+  ['missing', 'The awaited background task record is missing. The command was not restarted.'],
+  ['revoked', 'Access to the awaited background task was revoked.'],
+  ['provenance', 'The awaited background Bash source can no longer be verified.'],
+] as const) {
+  test(`final ShellRun admission preserves the ${sourceChange} source diagnostic`, {
+    timeout: 15000,
+  }, async () => {
+    let f: Fixture;
+    let calls = 0,
+      evaluations = 0,
+      sourceChanged = false;
+    let successorTurnId: string | undefined;
+    f = await createFixture({
+      shellRuns: true,
+      shellRunWaitReader: {
+        readShellRun: async (sessionId, shellRunId) => {
+          if (sourceChanged && sourceChange === 'missing')
+            throw Object.assign(new Error('Task row disappeared'), { code: 'ENOENT' });
+          const record = await f.shellStore!.readShellRun(sessionId, shellRunId);
+          if (!sourceChanged) return record;
+          return sourceChange === 'revoked'
+            ? { ...record, visibility: 'user' }
+            : { ...record, sourceToolCallId: 'unverifiable-call' };
+        },
+      },
+      onEvaluate: () => evaluations++,
+      model: new MockLanguageModelV4({
+        doStream: async () => {
+          calls++;
+          if (calls === 1)
+            return modelToolStep(
+              'Bash',
+              {
+                command: shellNodeCommand('process.exit(0)'),
+                run_in_background: true,
+              },
+              'source-bash',
+            );
+          if (calls === 2) {
+            const task = (await f.shellStore!.listSessionShellRuns(f.sessionId))[0]!;
+            return modelToolStep(
+              'WaitForEvent',
+              {
+                resource: {
+                  providerId: 'shell_run',
+                  connectionId: null,
+                  resourceType: 'background_task',
+                  resourceId: `maka://runtime/background-tasks/${task.shellRunId}`,
+                },
+                condition: { typeId: 'terminal', version: 1, parameters: {} },
+                reason: 'Inspect the background result',
+                timeoutMs: 60000,
+              },
+              'source-wait',
+            );
+          }
+          return modelToolStep();
+        },
+      }),
+    });
+    const bridge = f.goal.eventWaitBridge!;
+    const authorize = bridge.authorizeAdmission.bind(bridge);
+    bridge.authorizeAdmission = async (sessionId, pending) => {
+      // The result is already queued. Synchronize with the durable read budget,
+      // then change only the source reader before the real final access check.
+      await waitFor(
+        async () =>
+          Date.now() >=
+          ((await f.stores.eventWaitStore.readSourceCooldown({
+            providerId: 'shell_run',
+            connectionId: null,
+          })) ?? 0),
+        { timeoutMs: 5000 },
+      );
+      successorTurnId = pending.execution.turnId;
+      sourceChanged = true;
+      return authorize(sessionId, pending);
+    };
+    try {
+      await f.goal.recover();
+      f.goal.manager.create(f.sessionId, 'Inspect background command', { armed: true });
+      await f.goal.handlers['goal.query']({ sessionId: f.sessionId }, operationContext());
+      const submitted = await f.messages.handlers['turn.message.submit'](
+        {
+          originHostEpoch: 'goal-root-epoch',
+          sessionId: f.sessionId,
+          messageId: 'admission-source-change',
+          content: { text: 'Run and wait' },
+          placement: 'current_turn',
+        },
+        operationContext(),
+      );
+      assert.equal(submitted.ok, true);
+      await f.waitForGoalStatus('paused');
+      await f.goal.handlers['goal.query']({ sessionId: f.sessionId }, operationContext());
+      const persisted = (await f.goalStore.read(f.sessionId))!.record;
+      assert.equal(sourceChanged, true);
+      assert.equal(persisted.goal.lastReason, expectedReason);
+      assert.equal(persisted.goal.iterations, 1);
+      assert.equal(persisted.activeEventWait, undefined);
+      assert.equal(persisted.pendingContinuation, null);
+      const wait = (
+        await f.stores.eventWaitStore.listSession({
+          sessionId: f.sessionId,
+          limit: 10,
+        })
+      ).items[0]!.record;
+      assert.equal(wait.delivery?.kind, 'suppressed');
+      assert.ok(successorTurnId);
+      assert.equal(
+        await f.stores.agentRunStore.readRootTurnAdmission(f.sessionId, successorTurnId),
+        undefined,
+      );
+      assert.equal(calls, 2);
+      assert.equal(evaluations, 0);
+      assert.equal(f.drainRequested(), false);
+    } finally {
+      await f.close();
+    }
+  });
+}

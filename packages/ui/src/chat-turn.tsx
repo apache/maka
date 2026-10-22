@@ -25,6 +25,7 @@ import { TranscriptDisclosure } from './transcript-disclosure.js';
 import { Markdown } from './markdown.js';
 import { formatTurnDuration } from './chat-display-helpers.js';
 import { formatAbsoluteTimestamp } from '@maka/core/relative-time';
+import { isAssistantInputTurnId } from '@maka/core/assistant-turn-ids';
 import { isTimeDrivenMotionEnabled, isProgressiveStreamingEnabled } from './streaming-presentation.js';
 import { ImageMessageProvider } from './image-delivery.js';
 import { computerRunningLabel } from './tool-activity/computer-action-label.js';
@@ -538,7 +539,7 @@ export const TurnView = memo(function TurnView(props: {
     turn.timeline.length > 0 ||
     !!props.liveStreaming ||
     (turn.user !== undefined &&
-      !turn.turnId.startsWith('assistant-input:') &&
+      !isAssistantInputTurnId(turn.turnId) &&
       turn.statusSource === 'recorded' && turn.status !== 'running');
   const runningToolLabel = computerRunningLabel(turn.tools, locale);
   const conversationSegments = useMemo(

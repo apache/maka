@@ -11363,6 +11363,7 @@ Slug openai-work<cursor>
       lastReason: 'tests still failing',
       achievedAt: null,
       pausedAt: null,
+      eventWait: null,
     };
 
     test('/goal prints the live goal summary and the status line carries the indicator', async () => {

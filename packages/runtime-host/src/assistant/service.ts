@@ -81,6 +81,7 @@ export interface AssistantModuleServices
   onStart(start: () => Dispose): void;
   tools: {
     register(tool: MakaTool): void;
+    registerSessionAccess?(allows: (sessionId: string) => boolean): void;
     filter?(filter: (sessionId: string, tools: readonly MakaTool[]) => readonly MakaTool[]): void;
     resolve(sessionId?: string, core?: readonly MakaTool[]): { tools: readonly MakaTool[] };
   };
@@ -94,9 +95,20 @@ export interface AssistantModuleServices
 
 class AssistantRuntime {
   readonly tools: MakaTool[] = [];
+  private readonly internalTools: MakaTool[] = [];
   readonly toolFilters: ((sessionId: string, tools: readonly MakaTool[]) => readonly MakaTool[])[] =
     [];
   readonly bot = new AssistantBotBridge();
+  private readonly backgroundSessions: (() => readonly string[])[] = [];
+  private readonly sessionAccess: ((sessionId: string) => boolean)[] = [];
+  hasSessionAccess(sessionId: string) {
+    return (
+      this.bot.isConversation(sessionId) ||
+      this.bot.isWorker(sessionId) ||
+      this.backgroundSessions.some((read) => read().includes(sessionId)) ||
+      this.sessionAccess.some((allows) => allows(sessionId))
+    );
+  }
   private readonly sections: PluginSystemPromptSection[] = [];
   private readonly contexts: PluginSystemPromptSection[] = [];
   private readonly checks: TurnFinishCheck[] = [];
@@ -119,19 +131,19 @@ class AssistantRuntime {
   async recover(legacy: HostPluginDataRuntime, entries: readonly MakaCompositionEntryInspection[]) {
     if (this.initialized) throw Error('Personal assistant already initialized');
     const settings = await this.loadSettings(legacy, entries);
-    const backgroundSessions: (() => readonly string[])[] = [];
     const services: AssistantModuleServices = {
       bot: this.bot,
-      backgroundSessions: { register: (read) => backgroundSessions.push(read) },
+      backgroundSessions: { register: (read) => this.backgroundSessions.push(read) },
       ...this.dependencies,
       onClose: (dispose: Dispose) => this.disposers.push(dispose),
       onStart: (start: () => Dispose) => this.starters.push(start),
       tools: {
         filter: (filter) => this.toolFilters.push(filter),
+        registerSessionAccess: (allows) => this.sessionAccess.push(allows),
         register: (tool: MakaTool) => {
           if (this.tools.some((t) => t.name === tool.name))
             throw Error(`Duplicate assistant tool: ${tool.name}`);
-          this.tools.push({
+          const internalTool: MakaTool = {
             ...tool,
             impl: (input, call) => {
               if (this.closing) throw Error('Personal assistant is shutting down');
@@ -152,10 +164,24 @@ class AssistantRuntime {
                 );
               });
             },
+          };
+          this.internalTools.push(internalTool);
+          this.tools.push({
+            ...internalTool,
+            impl: (input, call) => {
+              if (this.closing) throw Error('Personal assistant is shutting down');
+              if (!this.hasSessionAccess(call.sessionId))
+                throw Error('Personal assistant tools are unavailable in this session');
+              return internalTool.impl(input, call);
+            },
           });
         },
+        // Only Host module APIs use this resolver. They retain the caller's source
+        // permissions (e.g. ordinary-chat original links) without exposing model tools.
         resolve: (sessionId?: string) =>
-          sessionId ? this.dependencies.resolveTools(sessionId, this.tools) : { tools: this.tools },
+          sessionId
+            ? this.dependencies.resolveTools(sessionId, this.internalTools)
+            : { tools: this.internalTools },
       },
       systemPrompt: {
         section: (value: PluginSystemPromptSection) => this.sections.push(value),
@@ -183,7 +209,7 @@ class AssistantRuntime {
       ] as const)
         await initialize(services, settings[name].directory, settings[name].config);
       await this.dependencies.markBackgroundSessions([
-        ...new Set(backgroundSessions.flatMap((read) => read())),
+        ...new Set(this.backgroundSessions.flatMap((read) => read())),
       ]);
       this.initialized = true;
     } catch (error) {
@@ -476,9 +502,13 @@ export class PersonalAssistantService {
     return this.enabled && this.runtime!.bot.hasUserMessage(sessionId, id);
   }
   filterTools(sessionId: string, tools: readonly MakaTool[]): readonly MakaTool[] {
-    return this.enabled
-      ? this.runtime!.toolFilters.reduce((current, filter) => filter(sessionId, current), tools)
-      : tools;
+    if (!this.enabled) return tools;
+    const runtime = this.runtime!;
+    const nativeNames = new Set(runtime.tools.map((tool) => tool.name));
+    const allowed = runtime.hasSessionAccess(sessionId)
+      ? tools
+      : tools.filter((tool) => !nativeNames.has(tool.name));
+    return runtime.toolFilters.reduce((current, filter) => filter(sessionId, current), allowed);
   }
   toolCeiling(sessionId: string): readonly MakaTool[] | undefined {
     return this.enabled && this.runtime!.bot.isWorker(sessionId)

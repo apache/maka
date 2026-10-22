@@ -20,6 +20,7 @@
 import { matterInput } from './settlement-context.js';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
+import { isPendingActivationTurnId } from './matter.js';
 import type { Matter, MatterStore } from './matter.js';
 import type { MatterServices, MakaToolContext } from './host-types.js';
 import { buildMatterPrompt, buildMatterStepContext } from './prompt.js';
@@ -74,7 +75,7 @@ export class MatterController {
       {
         sessionId,
         cwd,
-        turnId: `matter-host:${this.owner}`,
+        turnId: `matter-host-${this.owner}`,
         toolCallId: `matter-host:${randomUUID()}`,
         abortSignal: this.stopping.signal,
         emitOutput: () => {},
@@ -159,7 +160,7 @@ export class MatterController {
           const latest = this.store.get(m.id).matter;
           if (
             latest.activation?.id === activationId &&
-            latest.activation.turnId.startsWith('pending:')
+            isPendingActivationTurnId(latest.activation.turnId)
           )
             this.store.bindTurn(m.id, activationId, result.turnId);
         } else if (result.disposition === 'followup') queued = true;
@@ -168,7 +169,7 @@ export class MatterController {
       // A queued wake binds via MatterRead(activationId). Never re-submit an uncertain wake.
       const completion = async () => {
         if (queued) {
-          while (this.store.get(m.id).matter.activation?.turnId.startsWith('pending:')) {
+          while (isPendingActivationTurnId(this.store.get(m.id).matter.activation?.turnId)) {
             await delay(25, undefined, { signal: this.stopping.signal });
           }
         }
@@ -200,7 +201,7 @@ export class MatterController {
       // A live activation has no wall-clock deadline. Runtime failures and explicit
       // user/Host cancellation still end it through the ordinary completion path.
       await completion();
-      if (this.store.get(m.id).matter.activation?.turnId.startsWith('pending:'))
+      if (isPendingActivationTurnId(this.store.get(m.id).matter.activation?.turnId))
         throw new Error(
           'Queued wake ended without claiming its activation; inspect conversation before resuming',
         );
@@ -210,7 +211,7 @@ export class MatterController {
       const live = this.store.get(m.id).matter;
       if (
         live.activation?.id === activationId &&
-        live.activation.turnId.startsWith('pending:') &&
+        isPendingActivationTurnId(live.activation.turnId) &&
         /Runtime Host is not ready for Plugin Agent messages/.test(String(e))
       ) {
         this.store.deferAdmission(m.id, activationId, String(e));

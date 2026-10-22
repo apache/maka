@@ -24,6 +24,22 @@ export const MATTER_STATE_MAX_BYTES = 24 * 1024;
 export const MATTER_REQUEST_MAX_LENGTH = 8000;
 export const MATTER_SESSION_LABEL = 'matter';
 
+/**
+ * Background turns are admitted as Host turn ids, which must match
+ * `^[A-Za-z0-9_-]{1,128}$` (see `requireEntityId`). Colons are therefore not
+ * used as separators. Activations bound before that rule still carry the
+ * legacy `pending:` marker, so both prefixes are recognized.
+ */
+export const PENDING_ACTIVATION_TURN_PREFIX = 'pending-';
+const LEGACY_PENDING_ACTIVATION_TURN_PREFIX = 'pending:';
+export function isPendingActivationTurnId(turnId: string | null | undefined): boolean {
+  return (
+    turnId != null &&
+    (turnId.startsWith(PENDING_ACTIVATION_TURN_PREFIX) ||
+      turnId.startsWith(LEGACY_PENDING_ACTIVATION_TURN_PREFIX))
+  );
+}
+
 export type MatterStatus = 'active' | 'waiting' | 'paused' | 'completed' | 'cancelled';
 export type MatterWake = { kind: 'at'; at: number };
 export interface MatterFileContext {

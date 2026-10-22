@@ -1372,6 +1372,42 @@ export class SqliteRuntimeStore
     return true;
   }
 
+  async readToolProvenanceEvents(
+    sessionId: string,
+    runId: string,
+    toolCallId: string,
+    budget: EvidenceReadBudget,
+  ): Promise<BoundedEvidenceReadResult<RuntimeEvent>> {
+    assertEvidenceReadBudget(budget);
+    assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
+    assertRuntimeStorageSafeId(runId, 'Invalid run id');
+    return this.readTransaction(() => {
+      // Select immutable call/T1/T2 facts only. Unrelated output never consumes the
+      // proof budget, and sizes are checked before payloads cross into JavaScript.
+      const predicate = `session_id = ? AND run_id = ? AND (
+      json_extract(payload_json, '$.content.id') = ? OR
+      json_extract(payload_json, '$.refs.toolCallId') = ? OR
+      json_extract(payload_json, '$.actions.toolDispatch.providerToolCallId') = ?
+    )`;
+      const parameters = [sessionId, runId, toolCallId, toolCallId, toolCallId];
+      const rows = this.db
+        .prepare(`SELECT length(CAST(payload_json AS BLOB)) AS stored_bytes
+      FROM runtime_events WHERE ${predicate} ORDER BY event_seq, event_id LIMIT ?`)
+        .all(...parameters, budget.maxRecords + 1);
+      const measurement = measureEvidenceRows(rows, budget, 'Invalid tool provenance measurement');
+      if (!measurement) return { status: 'limit_exceeded' };
+      const facts = this.db
+        .prepare(`SELECT event_id, session_id, invocation_id, run_id, turn_id, payload_json
+      FROM runtime_events WHERE ${predicate} ORDER BY event_seq, event_id LIMIT ?`)
+        .all(...parameters, budget.maxRecords + 1) as unknown as RuntimeEventStorageRow[];
+      return {
+        status: 'complete',
+        records: facts.map(decodeRuntimeEventStorageRow),
+        ...measurement,
+      };
+    });
+  }
+
   async readRuntimeEventsBounded(
     sessionId: string,
     runId: string,

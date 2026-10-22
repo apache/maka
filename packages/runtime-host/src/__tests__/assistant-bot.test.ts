@@ -298,6 +298,11 @@ test('Bot receives bodies in batches, may consult history, sends multiple messag
     ['第一条', '第二条', '好，我来安排。', '有结果再告诉你。'],
   );
   const tools = f.service.toolCeiling(f.invocation.id)!.map((tool) => tool.name);
+  const available = f.service
+    .filterTools(f.invocation.id, f.service.tools)
+    .map((tool) => tool.name);
+  assert.ok(available.includes('MatterDelegate'));
+  assert.ok(available.includes('InboxCheck'));
   assert.ok(tools.includes('MatterDelegate'));
   assert.ok(tools.includes('SendUser'));
   assert.ok(tools.includes('InboxCheck'));
