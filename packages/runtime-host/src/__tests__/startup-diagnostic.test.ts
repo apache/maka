@@ -69,7 +69,7 @@ test('preserves a bounded redacted Candidate startup diagnostic in the private c
     assert.match(diagnostic.errorChain[1]?.message ?? '', /windows_pipe_acl/u);
     assert.match(diagnostic.errorChain[1]?.message ?? '', /acl_apply/u);
     assert.deepEqual(diagnostic.logs, ['startup token=[redacted]', 'endpoint setup failed']);
-    assert.equal((await stat(selectedPath)).mode & 0o077, 0);
+    if (process.platform !== 'win32') assert.equal((await stat(selectedPath)).mode & 0o077, 0);
 
     const otherDiagnostic = await readCandidateStartupDiagnostic(rootId, otherAttemptId);
     assert.equal(otherDiagnostic?.reason, 'internal_startup_failure');

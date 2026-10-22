@@ -725,7 +725,11 @@ async function withStores(
   if (!owner) throw new Error('Unable to acquire test root');
   try {
     const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
-    await run(capability.canonicalPath, stores);
+    try {
+      await run(capability.canonicalPath, stores);
+    } finally {
+      await stores.sessionStore.close?.();
+    }
   } finally {
     await owner.close();
     await rm(base, { recursive: true, force: true });

@@ -190,35 +190,6 @@ pub fn run(pipe_name: &str, manifest_path: &str) -> Result<u8, String> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{parent_process_id, validate_owner_process};
-    use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::Storage::FileSystem::SYNCHRONIZE;
-    use windows_sys::Win32::System::Threading::{
-        GetCurrentProcessId, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-    };
-
-    #[test]
-    fn resolves_a_real_parent_process_without_self_binding() {
-        let parent = parent_process_id().expect("test harness parent process");
-        let current = unsafe { GetCurrentProcessId() };
-        assert_ne!(parent, 0);
-        assert_ne!(parent, current);
-    }
-
-    #[test]
-    fn validates_a_real_parent_process_before_waiting_on_it() {
-        let parent = parent_process_id().expect("test harness parent process");
-        let handle =
-            unsafe { OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, 0, parent) };
-        assert!(!handle.is_null(), "OpenProcess(test harness parent)");
-        let result = validate_owner_process(handle, parent);
-        unsafe { CloseHandle(handle) };
-        result.expect("parent process identity must be pinned before waiting");
-    }
-}
-
 fn connect(pipe_name: &str) -> Result<HANDLE, String> {
     let name = wide(pipe_name);
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -316,4 +287,33 @@ fn wide(value: &str) -> Vec<u16> {
 
 fn last_error(operation: &str) -> String {
     format!("{operation} failed: {}", std::io::Error::last_os_error())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parent_process_id, validate_owner_process};
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::Storage::FileSystem::SYNCHRONIZE;
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentProcessId, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    #[test]
+    fn resolves_a_real_parent_process_without_self_binding() {
+        let parent = parent_process_id().expect("test harness parent process");
+        let current = unsafe { GetCurrentProcessId() };
+        assert_ne!(parent, 0);
+        assert_ne!(parent, current);
+    }
+
+    #[test]
+    fn validates_a_real_parent_process_before_waiting_on_it() {
+        let parent = parent_process_id().expect("test harness parent process");
+        let handle =
+            unsafe { OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, 0, parent) };
+        assert!(!handle.is_null(), "OpenProcess(test harness parent)");
+        let result = validate_owner_process(handle, parent);
+        unsafe { CloseHandle(handle) };
+        result.expect("parent process identity must be pinned before waiting");
+    }
 }

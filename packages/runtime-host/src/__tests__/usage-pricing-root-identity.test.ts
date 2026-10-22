@@ -46,8 +46,8 @@ test('a deleted live root marker requests poison drain exactly once', async () =
   const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
   const owner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(owner);
+  const stores = await openInteractiveUsageStoresForWrite(owner.lease);
   try {
-    const stores = await openInteractiveUsageStoresForWrite(owner.lease);
     let drainRequests = 0;
     const coordinator = new HostUsagePricingCoordinator(
       stores,
@@ -77,6 +77,7 @@ test('a deleted live root marker requests poison drain exactly once', async () =
     );
     assert.equal(drainRequests, 1);
   } finally {
+    await stores.close();
     await owner.close();
     await rm(join(resolveRootControlNamespace(), capability.rootId), {
       recursive: true,

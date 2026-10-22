@@ -390,8 +390,15 @@ async function withForgedHandshakePeer(
     hostEpoch,
   });
   const serverTask = deferred<void>();
+  let accepting = false;
   let endpointConnected = false;
   const server = createServer((socket) => {
+    // Windows ACL preparation opens the named pipe before the real client.
+    // This control probe is not the handshake peer exercised by the test.
+    if (!accepting) {
+      socket.destroy();
+      return;
+    }
     endpointConnected = true;
     void serve(new FramedTransport(socket), hostEpoch, capability.rootId).then(
       serverTask.resolve,
@@ -402,6 +409,7 @@ async function withForgedHandshakePeer(
     if (options.expectConnection !== false) {
       await listen(server, endpoint.path);
       if (options.prepareAfterListen !== false) await endpoint.prepareAfterListen();
+      accepting = true;
     }
     await writeHostRegistration(controlDirectory, {
       kind: 'maka-runtime-host',

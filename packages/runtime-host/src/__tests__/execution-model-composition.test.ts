@@ -165,7 +165,7 @@ const COMPACT_SUMMARY_TEXT = [
 ].join('\n');
 const CLIENT_CAPABILITY_RESULT_TEXT = 'HOSTED_CLIENT_CAPABILITY_RESULT_SENTINEL';
 const CHILD_AGENT_RESULT_TEXT = 'HOSTED_CHILD_AGENT_RESULT_SENTINEL';
-const MAX_IMPLEMENTATION_CHILD_PTY_READS = 5;
+const MAX_IMPLEMENTATION_CHILD_PTY_READS = 100;
 const MIN_IMPLEMENTATION_CHILD_REQUESTS = 6;
 const MAX_IMPLEMENTATION_CHILD_REQUESTS =
   MIN_IMPLEMENTATION_CHILD_REQUESTS + MAX_IMPLEMENTATION_CHILD_PTY_READS - 1;
@@ -4138,6 +4138,7 @@ test('production Host publishes and retires an implementation child patch', asyn
         context,
       ),
       context,
+      20_000,
     );
     const parentRun = await readInvocation(execution, parent.id, terminal.runId);
     const parentRunEvents = await execution.agentRunStore.readEvents(parent.id, terminal.runId);
@@ -4322,10 +4323,10 @@ test('Host auxiliary calls preserve resolved DeepSeek reasoning settings', async
   assert.ok(owner);
   if (!owner) return;
 
+  const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+  const usage = await openInteractiveUsageStoresForWrite(owner.lease);
+  const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
   try {
-    const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
-    const usage = await openInteractiveUsageStoresForWrite(owner.lease);
-    const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
     const created = await policy.connectionCatalog.create({
       expectedCatalogRevision: 0,
       connection: {
@@ -4381,6 +4382,8 @@ test('Host auxiliary calls preserve resolved DeepSeek reasoning settings', async
     assert.equal(request.authorization, `Bearer ${API_KEY}`);
     assert.deepEqual(request.body.reasoning, { effort: 'high' });
   } finally {
+    await execution.sessionStore.close?.();
+    await usage.close();
     await owner.close();
     await provider.close();
     await rm(base, { recursive: true, force: true });
@@ -4397,10 +4400,10 @@ test('WorkHub routing reuses the saved Session model and calls Intent before bou
   const owner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(owner);
   if (!owner) return;
+  const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+  const usage = await openInteractiveUsageStoresForWrite(owner.lease);
+  const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
   try {
-    const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
-    const usage = await openInteractiveUsageStoresForWrite(owner.lease);
-    const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
     const created = await policy.connectionCatalog.create({
       expectedCatalogRevision: 0,
       connection: {
@@ -4477,6 +4480,8 @@ test('WorkHub routing reuses the saved Session model and calls Intent before bou
     assert.ok(logs.rows.some((row) => row.callKind === 'workhub_intent'));
     assert.ok(logs.rows.some((row) => row.callKind === 'workhub_recall'));
   } finally {
+    await execution.sessionStore.close?.();
+    await usage.close();
     await owner.close();
     await provider.close();
     await rm(base, { recursive: true, force: true });
@@ -5765,6 +5770,7 @@ async function waitForTerminal(
   turnId: string,
   initial: TurnSnapshot,
   context: ConnectionContext,
+  timeoutMs = 5_000,
 ): Promise<TurnSnapshot> {
   let snapshot = initial;
   await waitFor(
@@ -5775,7 +5781,7 @@ async function waitForTerminal(
       snapshot = queried.result;
       return isTerminal(snapshot);
     },
-    { timeoutMs: 5_000, pollMs: 10, message: 'Hosted real-model Turn did not become terminal' },
+    { timeoutMs, pollMs: 10, message: 'Hosted real-model Turn did not become terminal' },
   );
   return snapshot;
 }
@@ -6808,9 +6814,15 @@ async function handleProviderRequest(
           'PTY child did not publish its input response',
         );
         flow.ptyReadCount += 1;
-        respondProviderToolCall(response, streamRequestIndex, 'Read', {
-          path: requireRuntimeResourceRef(body),
-        });
+        // Yield between observations so ConPTY can publish its asynchronous
+        // startup/output. A tight fake-provider loop exhausts reads first.
+        setTimeout(
+          () =>
+            respondProviderToolCall(response, streamRequestIndex, 'Read', {
+              path: requireRuntimeResourceRef(body),
+            }),
+          50,
+        );
         return;
       }
       flow.stopRequested = true;

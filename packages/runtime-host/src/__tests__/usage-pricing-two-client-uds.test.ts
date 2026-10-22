@@ -45,6 +45,7 @@ import {
   resolveRootControlNamespace,
   resolveStorageRoot,
   StorageRootAuthorityError,
+  STORAGE_ROOT_MARKER_FILE,
   tryAcquireInteractiveRootOwner,
   type StorageRootLease,
   type InteractiveRootOwner,
@@ -283,8 +284,11 @@ test('pricing root identity failure requests drain while expected failures do no
     );
     assert.equal(drainRequests, 0);
 
-    const movedRoot = `${root}-moved`;
-    await rename(root, movedRoot);
+    // Windows holds open SQLite files in the live root. Moving its marker still
+    // invalidates the same authority without requiring POSIX directory rename.
+    const movedSource = process.platform === 'win32' ? join(root, STORAGE_ROOT_MARKER_FILE) : root;
+    const movedRoot = `${movedSource}-moved`;
+    await rename(movedSource, movedRoot);
     assert.deepEqual(
       await coordinator.handlers['pricing.mutate'](
         {
@@ -302,7 +306,7 @@ test('pricing root identity failure requests drain while expected failures do no
       },
     );
     assert.equal(drainRequests, 1);
-    await rename(movedRoot, root);
+    await rename(movedRoot, movedSource);
   });
 });
 

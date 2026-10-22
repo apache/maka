@@ -18,7 +18,9 @@
  */
 
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { mock, test } from 'node:test';
+import childProcess, { type SpawnOptions } from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -63,9 +65,26 @@ app.connect(ndJsonStream(Writable.toWeb(process.stdout),Readable.toWeb(process.s
 `;
   await writeFile(executable, source, { mode: 0o700 });
   await writeFile(join(root, 'localharness_external'), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+  // Windows does not execute shebang scripts. Adapt only this fixture's entry
+  // to an explicit Node invocation; retain real pipes, SDK traffic and teardown.
+  const spawn = childProcess.spawn;
+  const spawnMock =
+    process.platform === 'win32'
+      ? mock.method(
+          childProcess,
+          'spawn',
+          (file: string, args: readonly string[], options: SpawnOptions) =>
+            file === executable
+              ? spawn(process.execPath, [executable, ...args], options)
+              : spawn(file, args, options),
+        )
+      : undefined;
+  syncBuiltinESMExports();
   try {
     await run(executable, root);
   } finally {
+    spawnMock?.mock.restore();
+    syncBuiltinESMExports();
     await rm(root, { recursive: true, force: true });
   }
 }

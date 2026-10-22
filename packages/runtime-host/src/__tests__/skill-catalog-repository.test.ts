@@ -954,7 +954,7 @@ test('managed update blocks a symlink redirected outside its discovery root afte
   const skillsDirectory = join(fixture.root, 'skills');
   const linkedSkill = join(skillsDirectory, sourceId);
   await mkdir(skillsDirectory, { recursive: true });
-  await symlink(containedSkill, linkedSkill, 'dir');
+  await symlink(containedSkill, linkedSkill, process.platform === 'win32' ? 'junction' : 'dir');
 
   const outsideSkill = await createSkill(
     await tempDirectory('maka-skill-symlink-race-outside-'),
@@ -978,7 +978,7 @@ test('managed update blocks a symlink redirected outside its discovery root afte
       if (!redirectAfterScan) return;
       redirectAfterScan = false;
       await rm(linkedSkill);
-      await symlink(outsideSkill, linkedSkill, 'dir');
+      await symlink(outsideSkill, linkedSkill, process.platform === 'win32' ? 'junction' : 'dir');
     },
   });
   const snapshot = await start(repository, fixture.project, 'governance');

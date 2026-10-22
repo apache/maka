@@ -21,6 +21,7 @@ import { waitFor } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { pathToFileURL } from 'node:url';
 import { join, relative } from 'node:path';
 import { setImmediate as waitForImmediate } from 'node:timers/promises';
 import { test } from 'node:test';
@@ -171,7 +172,7 @@ module.exports = {
               },
       subscribeRoutes: () => () => undefined,
     });
-    const native = await import(nativePath);
+    const native = await import(pathToFileURL(nativePath).href);
     const phases: string[] = [];
     const abort = new AbortController();
     const pending = client.connect(peerConnectInput('pending'), abort.signal, (phase) => {
@@ -467,7 +468,7 @@ module.exports = {
       webRtcStunUrls: [],
     });
     assert.equal(endpoint.peerId, 'peer');
-    const native = await import(modulePath);
+    const native = await import(pathToFileURL(modulePath).href);
     assert.deepEqual(native.default.starts, [{ keyPath: 'unused', webRtcStunUrls: [] }]);
     assert.equal(
       await ensureRuntimeHostPeerIdentity({

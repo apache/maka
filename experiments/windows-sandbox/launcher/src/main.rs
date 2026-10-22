@@ -36,6 +36,7 @@ mod broker_pipe_security;
 mod broker_pipe_security_tests;
 #[cfg(test)]
 mod broker_pipe_tests;
+mod producer_supervisor;
 mod protocol;
 #[cfg(test)]
 mod protocol_tests;
@@ -76,6 +77,23 @@ fn run() -> Result<u8, String> {
     let first = args.next().ok_or_else(|| {
         "usage: maka-windows-sandbox [--atomic|--broker-validate] <request.json>".to_owned()
     })?;
+    if first == "--producer-breakaway-probe" {
+        if args.next().is_some() {
+            return Err("--producer-breakaway-probe does not accept arguments".to_owned());
+        }
+        return producer_supervisor::breakaway_probe();
+    }
+    if first == "--producer-supervise" {
+        let request_path = args.next().ok_or("missing producer request")?;
+        let report_path = args.next().ok_or("missing producer report")?;
+        if args.next().is_some() {
+            return Err("--producer-supervise accepts request and report paths".to_owned());
+        }
+        let source = fs::read_to_string(request_path).map_err(|error| error.to_string())?;
+        let request: LaunchRequest =
+            serde_json::from_str(&source).map_err(|error| error.to_string())?;
+        return producer_supervisor::run(&request, std::path::Path::new(&report_path));
+    }
     if first == "--self-probe" {
         if args.next().is_some() {
             return Err("--self-probe does not accept arguments".to_owned());

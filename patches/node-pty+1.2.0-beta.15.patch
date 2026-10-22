@@ -162,6 +162,17 @@ index 90ffd8f..919bbda 100644
          if (!this._useConptyDll) {
              this._flushDataAndCleanUp();
              this._outSocket.on('data', function () { return _this._flushDataAndCleanUp(); });
+@@ -268,6 +268,10 @@ var WindowsPtyAgent = /** @class */ (function () {
+         this._inSocket.readable = false;
+         this._outSocket.readable = false;
+         this._outSocket.destroy();
++        // Natural exit must release the input handle and output worker too.
++        // Closing only the output socket leaves Node alive after the exit event.
++        this._inSocket.destroy();
++        this._conoutSocketWorker.dispose();
+     };
+     return WindowsPtyAgent;
+ }());
 diff --git a/node_modules/node-pty/lib/windowsTerminal.js b/node_modules/node-pty/lib/windowsTerminal.js
 index cd658d0..3e7f00c 100644
 --- a/node_modules/node-pty/lib/windowsTerminal.js

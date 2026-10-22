@@ -170,3 +170,21 @@ Storage authority 与后续 producer/supply-chain 切片都只是堆叠地基；
 合法 link，最终 storage authority 与 worker 仍负责 target containment；Windows 继续拒绝 reparse point。
 
 验证时必须执行 storage build、focused authority tests、真实 Windows ADS test，以及四个 child-process crash failpoint。后续 PR 不得通过放宽本 authority 的 fail-closed 规则来提高采用率。
+
+## 7. Producer 基础层交付状态（Refs #4326）
+
+Runtime Host 内部的 `managed-dependency-producer.ts` 已提供 Windows/Linux 离线 npm producer runner；这补齐上文 PR 2 的执行基础层，不改变 PR 1 的 storage authority 接口，也不启用 Desktop 的生产 consumer。macOS 在准备 staging 之前返回 `unsupported`。
+
+调用方显式提供 Node、npm CLI、supervisor 的绝对路径、manifest/lockfile bytes 和独占 staging。Windows 复用 Rust launcher 的原子 Job 绑定、禁止 breakaway、owner 控制管道 EOF 回收及 empty-Job 检查；Linux 使用 bubblewrap PID namespace，PID 1 退出触发内核回收后代，并核对 bubblewrap 的最终退出报告。取消、超时与正常结束都必须经过同一退出确认边界；发出终止请求不构成证明。缺失监管能力不降级为直接启动 npm。
+
+runner 返回 `completed`、`failed` 或 `unsettled`。前两者证明进程已退出，调用方才能发布或清理；`unsettled` 保留 staging，不得转换为现有 `provision()` 的普通 rejection，否则 authority 会提前删除 staging。生产 adapter 的 quarantine/Host 生命周期接线仍待 PR 4。当前 storage 交接测试只覆盖已确认退出的结果；没有安装生产 capability 或 consumer。
+
+固定执行 `npm ci --offline --ignore-scripts --no-audit --no-fund`，以预填充缓存测试 registry-shaped lockfile v3，使用 staging 内的配置、缓存和临时目录，清空继承环境中的 npm token、代理和用户配置。Windows 的私有 `USERPROFILE` 相对固定 staging cwd 解析，避免 libuv 深路径 home 查询溢出；配置、缓存和临时路径保持绝对路径。Windows ACL 检查和 icacls 操作支持 npm 缓存长路径，仍拒绝 hardlink/reparse point。测试 Node 必须是独立普通文件，不能直接使用 npm `node` 包创建的 hardlink。
+
+默认期限 10 分钟、逻辑字节 2 GiB、条目 250,000（包含 root、scratch 和复制的缓存）；测试可传入较小值。每次扫描完成 250 ms 后调度下一次扫描，确保不重叠；确认退出后追加最终扫描。扫描只检测超限，不预留磁盘、不保证瞬时使用绝不超限。Linux 不跟随 symlink，计量 link 文本并允许 npm `.bin`；最终 target containment 仍由 storage authority 校验。输出持续排空，仅保留 64 KiB，截断时丢弃末尾不完整行，返回脱敏后的最多 4,096 字符诊断。
+
+Linux 当前只读挂载 host filesystem 并隔离网络；这不是完整的未来 hermetic filesystem policy。Bundled runtime 身份与供应链、在线 registry 获取策略、打包发布、完整 Host 生命周期及 Desktop 功能均未交付。不得据此关闭 #4326 或宣称 M1.3 已可用。
+
+验证入口：先构建 core/storage/runtime/runtime-host，在真实 Windows 上构建 `experiments/windows-sandbox/launcher`；Linux 安装支持 PID/user/network namespace 的 bubblewrap。设置 `MAKA_PRODUCER_SUPERVISOR` 与 `MAKA_TEST_NPM_CLI` 为绝对路径，运行 `node --test scripts/managed-dependency-producer.integration.test.mjs`。未设置环境变量的 native 测试会跳过，不能计为平台通过。对应 unit tests 位于 runtime-host 的 `managed-dependency-producer.test.ts`，现有 authority/crash 测试继续验证 receipt、清理和 Windows ADS。
+
+Windows 进程树证据分两层记录：AppContainer 集成 fixture 在当前环境拒绝普通后代创建；`windows_job_tests.rs` 则在真实原子绑定的 Job 中明确启动后代，关闭全部 stdio 后持续写入。后者调用生产使用的 `settle_job`，验证主进程先退出和取消时都必须获得空 Job，再确认没有后续写入；还在无 AppContainer 的条件下验证 breakaway 被 Job 拒绝。它验证 Job 监管边界，不宣称已经证明 AppContainer 允许后代，也没有为生产增加绕过 AppContainer 的路径。
