@@ -67,6 +67,18 @@ const LOCAL_PRICING_SUPPLEMENT: readonly PricingConfig[] = [
     outputUsdPer1M: 2.19,
     cacheReadUsdPer1M: 0.14,
   },
+  {
+    modelKey: 'meta:muse-spark-1.3',
+    inputUsdPer1M: 1.25,
+    outputUsdPer1M: 4.25,
+    cacheReadUsdPer1M: 0.15,
+  },
+  {
+    modelKey: 'meta:muse-spark-1.3-contributor',
+    inputUsdPer1M: 0.1,
+    outputUsdPer1M: 0.2,
+    cacheReadUsdPer1M: 0.002,
+  },
   { modelKey: 'moonshot:kimi-k2', inputUsdPer1M: 0.6, outputUsdPer1M: 2.5 },
   { modelKey: 'zai-coding-plan:glm-4.7', inputUsdPer1M: 0.6, outputUsdPer1M: 2.2 },
   { modelKey: 'zai-coding-plan:glm-4.6', inputUsdPer1M: 0.6, outputUsdPer1M: 2.2 },
