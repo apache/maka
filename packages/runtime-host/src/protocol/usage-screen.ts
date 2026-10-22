@@ -18,12 +18,14 @@
  */
 
 import {
+  isUsageHeatmapRange,
   isUsageScreenSearch,
   isUsageTimestamp,
   type UsageScreenRequest,
   type UsageScreenResult,
   type UsageScreenQuery,
   type UsageScreenFailure,
+  type UsageHeatmapRange,
 } from '@maka/core/settings';
 import { requireExactRecord, requireRecord, requireShapedRecord, requireCount } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
@@ -66,11 +68,53 @@ function query(value: unknown): UsageScreenQuery {
     status: v.status as UsageScreenQuery['status'],
   };
 }
+
+function heatmapRange(value: unknown): UsageHeatmapRange {
+  const range = requireExactRecord(value, 'Usage heatmap range', ['dayStarts', 'to']);
+  if (!isUsageHeatmapRange(range)) return fail();
+  return { dayStarts: [...range.dayStarts], to: range.to };
+}
+
+function assertHeatmap(value: unknown, range?: UsageHeatmapRange): void {
+  const heatmap = requireExactRecord(value, 'Usage heatmap', [
+    'days',
+    'through',
+    'hasIncompleteUsage',
+  ]);
+  if (
+    !Array.isArray(heatmap.days) ||
+    heatmap.days.length < 1 ||
+    heatmap.days.length > 366 ||
+    typeof heatmap.hasIncompleteUsage !== 'boolean'
+  )
+    return fail();
+  const dayStarts: number[] = [];
+  for (const value of heatmap.days) {
+    const day = requireExactRecord(value, 'Usage heatmap day', [
+      'start',
+      'tokens',
+      'successfulRequests',
+    ]);
+    dayStarts.push(timestamp(day.start));
+    requireCount(day.tokens, 'Usage heatmap tokens');
+    requireCount(day.successfulRequests, 'Usage heatmap successful requests');
+  }
+  const actual = heatmapRange({ dayStarts, to: heatmap.through });
+  if (
+    range &&
+    (actual.to !== range.to || JSON.stringify(dayStarts) !== JSON.stringify(range.dayStarts))
+  )
+    return fail();
+}
 export function decodeUsageScreenRequest(value: unknown): UsageScreenRequest {
   const v = requireRecord(value, 'Usage screen request');
   if (v.kind === 'screen') {
     requireExactRecord(v, 'Usage screen request', ['kind', 'query']);
     return { kind: 'screen', query: query(v.query) };
+  }
+  if (v.kind === 'heatmap') {
+    requireExactRecord(v, 'Usage heatmap request', ['kind', 'range', 'revision']);
+    return { kind: 'heatmap', range: heatmapRange(v.range), revision: token(v.revision) };
   }
   requireExactRecord(v, 'Usage activity request', [
     'kind',
@@ -124,6 +168,11 @@ function freezeResult(value: unknown): void {
 function measureResult(value: UsageScreenResult): number | UsageScreenFailure {
   const known = measuredResults.get(value);
   if (known !== undefined) return known;
+  if (value.kind === 'heatmap') {
+    if (value.heatmap.days.length > 366 || bytes(value.heatmap) > USAGE_SCREEN_SECTION_MAX_BYTES)
+      return { kind: 'screen_response_too_large', section: 'heatmap' };
+    return bytes(value);
+  }
   if (value.kind !== 'screen' && value.kind !== 'activity') return bytes(value);
   const page = value.kind === 'screen' ? value.screen : value.page;
   const tooLarge = (
@@ -189,6 +238,7 @@ export function decodeUsageScreenResult(value: unknown): UsageScreenResult {
         'model_breakdown',
         'tool_breakdown',
         'pricing',
+        'heatmap',
         'activity_page',
         'screen',
         'message',
@@ -196,6 +246,14 @@ export function decodeUsageScreenResult(value: unknown): UsageScreenResult {
     )
       return fail();
     return v as unknown as UsageScreenResult;
+  }
+  if (v.kind === 'heatmap') {
+    requireExactRecord(v, 'Usage heatmap result', ['kind', 'revision', 'heatmap']);
+    token(v.revision);
+    assertHeatmap(v.heatmap);
+    const result = v as unknown as UsageScreenResult;
+    if (usageScreenCapacity(result)) return fail();
+    return result;
   }
   const isScreen = v.kind === 'screen';
   if (!isScreen && v.kind !== 'activity') return fail();
@@ -312,6 +370,10 @@ export function assertUsageScreenResult(
       JSON.stringify(output.screen.query) !== JSON.stringify(input.query)
     )
       return fail();
+  } else if (input.kind === 'heatmap') {
+    if (output.kind === 'revision_changed') return;
+    if (output.kind !== 'heatmap' || output.revision !== input.revision) return fail();
+    assertHeatmap(output.heatmap, input.range);
   } else if (output.kind !== 'revision_changed') {
     if (
       output.kind !== 'activity' ||

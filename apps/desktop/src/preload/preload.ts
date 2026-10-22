@@ -3699,12 +3699,13 @@ const makaBridge = {
       return invokeWhenReady('settings:testBotChannel', provider);
     },
     async usageStats(
-      range?: UsageRange | Extract<UsageScreenRequest, {kind: 'activity'}>,
+      range?: UsageRange | Extract<UsageScreenRequest, {kind: 'activity' | 'heatmap'}>,
       host?: DesktopRuntimeHostRef,
       query?: UsageScreenQuery,
     ): Promise<UsageStats | UsageScreenResult> {
       const scope = await selectedRuntimeHostScope(host);
       if (range && typeof range === 'object') {
+        if (range.kind === 'heatmap') return invokeWhenReady('usage:heatmap', scope, range) as Promise<UsageScreenResult>;
         const result = await invokeWhenReady('usage:activity', scope, range) as UsageScreenResult;
         return result.kind === 'activity'
           ? {...result, page: {...result.page, logs: projectDesktopUsageActivity(scope, result.page.logs)}}

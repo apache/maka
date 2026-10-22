@@ -412,7 +412,9 @@ async function dispatchTypedOperation<K extends OperationKey>(
   if (
     frame.operation === 'usage.query' &&
     frame.ok &&
-    (frame.result.kind === 'screen' || frame.result.kind === 'activity') &&
+    (frame.result.kind === 'screen' ||
+      frame.result.kind === 'activity' ||
+      frame.result.kind === 'heatmap') &&
     usageScreenMessageBytes(frame.requestId, frame.result) > RUNTIME_HOST_MAX_MESSAGE_BYTES
   ) {
     return {

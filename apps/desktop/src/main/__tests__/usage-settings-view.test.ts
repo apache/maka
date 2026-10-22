@@ -35,6 +35,7 @@ import {
   type UsageStats,
   type UsageScreenQuery,
   type UsageScreenResult,
+  type UsageScreenRequest,
 } from '@maka/core/settings';
 import {
   UsageFeatureScope,
@@ -46,6 +47,7 @@ import {
 
 function statsWithRequests(totalRequests: number): UsageStats {
   return {
+    navigation: {activityTotal: 0, revision: 'fixture', queryIdentity: 'fixture', nextCursor: null, query: {range: {from: 0, to: 1}, search: '', status: 'all'}},
     summary: {
       totalRequests,
       totalCostUsd: 0,
@@ -166,6 +168,11 @@ function tree(opts: {
   });
 }
 
+const loadUsageHeatmap: UsageServices['loadUsageHeatmap'] = async (input) => ({
+  kind: 'heatmap', revision: input.revision,
+  heatmap: {days: input.range.dayStarts.map(start => ({start, tokens: 0, successfulRequests: 0})), through: input.range.to, hasIncompleteUsage: false},
+});
+
 const flush = async () => {
   await Promise.resolve();
   await Promise.resolve();
@@ -199,6 +206,7 @@ describe('Usage feature scope', () => {
         usage: { range: 'all', activeTab: 'providers', showDetails: true },
       });
       const services: UsageServices = {
+        loadUsageHeatmap,
         loadUsageStats: async () => stats,
         updateUsageSettings: async (patch) => mergeSettings(base, { usage: patch }).usage,
       };
@@ -277,6 +285,7 @@ describe('Usage feature scope', () => {
       { model: 'model-a', requests: 1, tokens: 12_647_391, costUsd: 1 },
     ];
     const services: UsageServices = {
+    loadUsageHeatmap,
       loadUsageStats: async () => stats,
       updateUsageSettings: async (patch) => mergeSettings(base, { usage: patch }).usage,
     };
@@ -335,6 +344,7 @@ describe('Usage feature scope', () => {
     });
     const loads = new Map<UsageRange, Deferred<UsageStats | null>>();
     const services: UsageServices = {
+    loadUsageHeatmap,
       loadUsageStats: (range) => {
         const d = deferred<UsageStats | null>();
         loads.set(range, d);
@@ -390,6 +400,7 @@ describe('Usage feature scope', () => {
     });
     const loads = new Map<UsageRange, Deferred<UsageStats | null>>();
     const services: UsageServices = {
+    loadUsageHeatmap,
       loadUsageStats: (range) => {
         const d = deferred<UsageStats | null>();
         loads.set(range, d);
@@ -443,6 +454,7 @@ describe('Usage feature scope', () => {
     const loads = new Map<string, Deferred<UsageStats | null>>();
     let generation = 1;
     const services: UsageServices = {
+    loadUsageHeatmap,
       loadUsageStats: (range) => {
         const d = deferred<UsageStats | null>();
         loads.set(`${generation}:${range}`, d);
@@ -485,6 +497,7 @@ describe('Usage feature scope', () => {
     });
     const loads = new Map<UsageRange, Deferred<UsageStats | null>>();
     const services: UsageServices = {
+    loadUsageHeatmap,
       loadUsageStats: (range) => {
         const d = deferred<UsageStats | null>();
         loads.set(range, d);
@@ -534,6 +547,7 @@ describe('Usage feature scope', () => {
     const loads = new Map<string, Deferred<UsageStats | null>>();
     let generation = 1;
     const services: UsageServices = {
+    loadUsageHeatmap,
       loadUsageStats: (range) => {
         const d = deferred<UsageStats | null>();
         loads.set(`${generation}:${range}`, d);
@@ -584,6 +598,7 @@ describe('Usage feature scope', () => {
     });
     const loads = new Map<UsageRange, Deferred<UsageStats | null>>();
     const services: UsageServices = {
+    loadUsageHeatmap,
       loadUsageStats: (range) => {
         const d = deferred<UsageStats | null>();
         loads.set(range, d);
@@ -656,6 +671,7 @@ describe('Usage feature scope', () => {
     });
     const loads = new Map<UsageRange, Deferred<UsageStats | null>>();
     const services: UsageServices = {
+    loadUsageHeatmap,
       loadUsageStats: (range) => {
         const d = deferred<UsageStats | null>();
         loads.set(range, d);
@@ -730,6 +746,7 @@ it('same-revision filters supersede both old screens and continuations and retai
   const page = deferred<UsageScreenResult>();
   let pageCalls = 0;
   const services: UsageServices = {
+    loadUsageHeatmap,
     loadUsageStats: async (_range, query) => {assert.ok(query); const response = deferred<UsageStats | null>(); loads.push({query, response}); return response.promise;},
     loadUsageActivity: () => {pageCalls++; return page.promise;},
     updateUsageSettings: async () => createDefaultSettings().usage,
@@ -762,6 +779,7 @@ it('revision change retains the complete screen, blocks paging, and refresh inst
   const Probe = () => {scope = useUsageStats('all'); return null;};
   let revision = 'A'; let calls = 0;
   const services: UsageServices = {
+    loadUsageHeatmap,
     loadUsageStats: async (_range, query) => {assert.ok(query); const value = navigable(revision === 'A' ? 10 : 20, query, revision); value.navigation!.revision = revision; return value;},
     loadUsageActivity: async () => {calls++; return {kind: 'revision_changed'};},
     updateUsageSettings: async () => createDefaultSettings().usage,
@@ -783,6 +801,7 @@ it('capacity failure never retries and retains the original query until a comple
   const Probe = () => {scope = useUsageStats('all'); return null;};
   let fail = true; let calls = 0;
   const services: UsageServices = {
+    loadUsageHeatmap,
     loadUsageStats: async (_range, query) => {calls++; assert.ok(query); if (fail) return {kind: 'screen_response_too_large', section: 'pricing'}; return navigable(10, query, 'old');},
     loadUsageActivity: async () => {throw new Error('must not continue');},
     updateUsageSettings: async () => createDefaultSettings().usage,
@@ -815,6 +834,7 @@ it('numbered pages are present initially and jumping to the last page keeps the 
   const row = (id: string) => ({id, ts: 1, kind: 'model' as const, provider: 'p', model: id,
     inputTokens: 0, outputTokens: 0, status: 'success' as const});
   const services: UsageServices = {
+    loadUsageHeatmap,
     loadUsageStats: async (_range, query) => {
       assert.ok(query);
       return {...navigable(101, query, 'query'), logs: Array.from({length: 50}, (_, i) => row(`first-${i}`))};
@@ -869,7 +889,9 @@ it('debounces search edits, refreshes immediately, and cancels pending queries o
     usage: {range: 'all', activeTab: 'requests', showDetails: true},
   });
   const queries: UsageScreenQuery[] = [];
+  const annualQueries: Extract<UsageScreenRequest, {kind: 'heatmap'}>[] = [];
   const services: UsageServices = {
+    loadUsageHeatmap: async (input) => {annualQueries.push(input); return loadUsageHeatmap(input);},
     loadUsageStats: async (_range, query) => {
       assert.ok(query);
       queries.push(query);
@@ -901,6 +923,7 @@ it('debounces search edits, refreshes immediately, and cancels pending queries o
   await tick(1);
   assert.deepEqual(queries.map((query) => query.search), ['', 'ab']);
   assert.deepEqual(queries[1]!.range, queries[0]!.range, 'typing preserves time bounds');
+  assert.deepEqual(annualQueries[1]!.range, annualQueries[0]!.range, 'typing preserves the annual snapshot bounds');
 
   await render(' AB  ');
   await tick(250);
@@ -947,6 +970,7 @@ for (const failure of ['revision_changed', 'screen_response_too_large', 'filter_
     });
     let calls = 0;
     const services: UsageServices = {
+    loadUsageHeatmap,
       loadUsageStats: async (_range, query) => {
         assert.ok(query);
         if (failure === 'filter_error' && query.status === 'error') throw new Error('filter failed');
@@ -1019,5 +1043,173 @@ for (const failure of ['revision_changed', 'screen_response_too_large', 'filter_
     assert.match(container.textContent ?? '', /second-0/);
     assert.equal(calls, expectedCalls, 'cached navigation never requests another Host page');
     await act(async () => root.unmount());
+  });
+}
+
+it('renders ready statistics and records while the annual heatmap is pending, and isolates annual failure', async () => {
+  const {container, root} = setupDom();
+  const annual = deferred<UsageScreenResult>();
+  let annualCalls = 0;
+  let pageCalls = 0;
+  const settings = mergeSettings(createDefaultSettings(), {
+    usage: {range: 'all', activeTab: 'requests', showDetails: true},
+  });
+  const row = (id: string) => ({id, ts: 1, kind: 'model' as const, provider: 'p', model: id,
+    inputTokens: 10, outputTokens: 20, status: 'success' as const});
+  const services: UsageServices = {
+    loadUsageStats: async (_range, query) => {
+      assert.ok(query);
+      return {...navigable(51, query, 'query'), logs: Array.from({length: 50}, (_, i) => row(`ready-${i}`))};
+    },
+    loadUsageHeatmap: async (input) => {
+      annualCalls++;
+      assert.equal(input.revision, 'same-revision');
+      return annual.promise;
+    },
+    loadUsageActivity: async () => {
+      pageCalls++;
+      return {kind: 'activity', page: {revision: 'same-revision', queryIdentity: 'query', nextCursor: null, logs: [row('last-record')]}};
+    },
+    updateUsageSettings: async () => settings.usage,
+  };
+  try {
+    await act(async () => {root.render(tree({active: true, settings, targetKey: 'host', services})); await flush();});
+    assert.equal(annualCalls, 1);
+    assert.match(container.textContent ?? '', /ready-0/);
+    assert.match(container.textContent ?? '', /51/);
+    assert.ok(container.querySelector('[role="status"][aria-label="Loading usage activity"]'));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="Go to page 2"]')!.click();
+      await flush();
+    });
+    assert.equal(pageCalls, 1, 'annual loading never holds activity pagination');
+    assert.match(container.textContent ?? '', /last-record/);
+    await act(async () => {annual.reject(new Error('annual query failed')); await flush();});
+    assert.match(container.textContent ?? '', /Unable to load usage activity/);
+    assert.doesNotMatch(container.textContent ?? '', /Unable to load Usage/);
+    assert.match(container.textContent ?? '', /last-record/);
+    assert.equal(container.querySelector('[role="status"][aria-label="Loading usage activity"]'), null);
+  } finally {
+    await act(async () => root.unmount());
+  }
+});
+
+it('refresh resolves before the heatmap, and stale annual data requires a new complete revision', async () => {
+  const {root} = setupDom();
+  let scope!: ReturnType<typeof useUsageStats>;
+  const Probe = () => {scope = useUsageStats('all'); return null;};
+  const requests: {input: Extract<UsageScreenRequest, {kind: 'heatmap'}>; response: Deferred<UsageScreenResult>}[] = [];
+  let revision = 'A';
+  const services: UsageServices = {
+    loadUsageStats: async (_range, query) => {
+      assert.ok(query);
+      const stats = navigable(revision === 'A' ? 10 : 20, query, 'query');
+      stats.navigation!.revision = revision;
+      return stats;
+    },
+    loadUsageHeatmap: async (input) => {
+      const response = deferred<UsageScreenResult>();
+      requests.push({input, response});
+      return response.promise;
+    },
+    updateUsageSettings: async () => createDefaultSettings().usage,
+  };
+  try {
+    await act(async () => {root.render(scopeTree(services, Probe)); await flush();});
+    let refreshed = false;
+    await act(async () => {void scope.reload('all').then(() => {refreshed = true;}); await flush();});
+    assert.equal(refreshed, true, 'refresh completion does not await annual data');
+    assert.equal(scope.state, 'ready');
+    assert.equal(scope.stats?.summary.totalRequests, 10);
+    assert.equal((() => scope.heatmap.status)(), 'loading');
+    await act(async () => {requests[0]!.response.resolve({kind: 'revision_changed'}); await flush();});
+    assert.equal((() => scope.heatmap.status)(), 'stale');
+    assert.equal(scope.state, 'ready');
+    assert.equal(scope.stats?.summary.totalRequests, 10);
+    revision = 'B';
+    await act(async () => {await scope.reload('all');});
+    assert.equal(requests[1]!.input.revision, 'B');
+    await act(async () => {requests[1]!.response.resolve(await loadUsageHeatmap(requests[1]!.input)); await flush();});
+    assert.equal(scope.stats?.summary.totalRequests, 20);
+    assert.equal((() => scope.heatmap.status)(), 'ready');
+  } finally {
+    await act(async () => root.unmount());
+  }
+});
+
+it('fences annual replies across same-revision filters and Host replacement', async () => {
+  const {root} = setupDom();
+  let scope!: ReturnType<typeof useUsageStats>;
+  const Probe = () => {scope = useUsageStats('all'); return null;};
+  const requests: {input: Extract<UsageScreenRequest, {kind: 'heatmap'}>; response: Deferred<UsageScreenResult>}[] = [];
+  const services: UsageServices = {
+    loadUsageStats: async (_range, query) => {assert.ok(query); return navigable(10, query, query.search);},
+    loadUsageHeatmap: async (input) => {
+      const response = deferred<UsageScreenResult>();
+      requests.push({input, response});
+      return response.promise;
+    },
+    updateUsageSettings: async () => createDefaultSettings().usage,
+  };
+  try {
+    await act(async () => {root.render(scopeTree(services, Probe)); await flush();});
+    await act(async () => {await scope.reload('all');});
+    await act(async () => {await scope.reload('all', {search: 'new', status: 'all'}, true);});
+    assert.deepEqual(requests[1]!.input.range, requests[0]!.input.range);
+    await act(async () => {requests[0]!.response.resolve(await loadUsageHeatmap(requests[0]!.input)); await flush();});
+    assert.equal((() => scope.heatmap.status)(), 'loading', 'same-revision prior filter response cannot install');
+    assert.equal(scope.stats?.navigation?.query.search, 'new');
+    await act(async () => {root.render(scopeTree(services, Probe, 'hostB:1')); await flush();});
+    await act(async () => {requests[1]!.response.reject(new Error('old Host error')); await flush();});
+    assert.equal(scope.stats, null);
+    assert.equal((() => scope.heatmap.status)(), 'loading', 'late Host errors cannot install');
+    await act(async () => {await scope.reload('all');});
+    await act(async () => {requests[2]!.response.resolve(await loadUsageHeatmap(requests[2]!.input)); await flush();});
+    assert.equal((() => scope.heatmap.status)(), 'ready');
+  } finally {
+    await act(async () => root.unmount());
+  }
+});
+
+for (const capacity of [false, true]) {
+  it(`stops a canceled annual placeholder when a replacement screen ${capacity ? 'exceeds capacity' : 'fails'}`, async () => {
+    const {root} = setupDom();
+    let scope!: ReturnType<typeof useUsageStats>;
+    const Probe = () => {scope = useUsageStats('all'); return null;};
+    const annual = deferred<UsageScreenResult>();
+    let annualInput!: Extract<UsageScreenRequest, {kind: 'heatmap'}>;
+    let fail = false;
+    const services: UsageServices = {
+      loadUsageStats: async (_range, query) => {
+        assert.ok(query);
+        if (fail) {
+          if (capacity) return {kind: 'screen_response_too_large', section: 'pricing'};
+          throw new Error('replacement failed');
+        }
+        return navigable(10, query, 'query');
+      },
+      loadUsageHeatmap: async (input) => {annualInput = input; return annual.promise;},
+      updateUsageSettings: async () => createDefaultSettings().usage,
+    };
+    try {
+      await act(async () => {root.render(scopeTree(services, Probe)); await flush();});
+      await act(async () => {await scope.reload('all');});
+      assert.equal((() => scope.heatmap.status)(), 'loading');
+      fail = true;
+      await act(async () => {await scope.reload('all');});
+      assert.equal(scope.state, 'error');
+      assert.equal(scope.stats?.summary.totalRequests, 10);
+      assert.equal((() => scope.heatmap.status)(), 'error');
+      await act(async () => {annual.resolve(await loadUsageHeatmap(annualInput)); await flush();});
+      assert.equal((() => scope.heatmap.status)(), 'error', 'canceled reply does not replace the terminal state');
+      fail = false;
+      await act(async () => {await scope.reload('all');});
+      assert.equal((() => scope.heatmap.status)(), 'ready');
+      fail = true;
+      await act(async () => {await scope.reload('all');});
+      assert.equal((() => scope.heatmap.status)(), 'ready', 'a completed annual chart is retained with its previous screen');
+    } finally {
+      await act(async () => root.unmount());
+    }
   });
 }

@@ -148,7 +148,7 @@ export class HostUsagePricingCoordinator {
 
   async #queryUsage(input: UsageQueryInput): Promise<OperationOutcome<'usage.query'>> {
     try {
-      if (input.kind === 'screen' || input.kind === 'activity')
+      if (input.kind === 'screen' || input.kind === 'activity' || input.kind === 'heatmap')
         return { ok: true, result: await this.#queryScreen(input) };
       const now = Date.now();
       if (input.kind === 'summary') {
@@ -269,10 +269,14 @@ export class HostUsagePricingCoordinator {
       return { kind: 'revision_changed' };
     }
     const result = await this.#stores.readUsageScreen(
-      input.kind === 'activity'
+      input.kind !== 'screen'
         ? { ...input, revision: input.revision.slice(this.#screenGeneration.length + 1) }
         : input,
     );
+    if (result.kind === 'heatmap') {
+      result.revision = `${this.#screenGeneration}_${result.revision}`;
+      return finalizeUsageScreenResult(result);
+    }
     if (result.kind !== 'screen' && result.kind !== 'activity') return result;
     const page = result.kind === 'screen' ? result.screen : result.page;
     page.revision = `${this.#screenGeneration}_${page.revision}`;

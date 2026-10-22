@@ -93,6 +93,7 @@ test('one screen call atomically supplies totals, complete groups, pricing, and 
   const stats = (await h.get('settings:usageStats')!(event, 'all', query)) as UsageStats;
   assert.deepEqual(calls, [{ kind: 'screen', query }]);
   assert.equal(stats.summary.totalRequests, 151);
+  assert.equal('heatmap' in stats, false, 'annual aggregation is a separate request');
   assert.equal(stats.logs.length, 1, 'does not drain activity');
   assert.deepEqual(
     stats.byProvider,
@@ -113,6 +114,7 @@ test('initial All load fixes its time bound before dispatch', async () => {
   await h.get('settings:usageStats')!(event, 'all');
   assert.ok(sent?.kind === 'screen');
   assert.equal(sent.query.range.from, 0);
+  assert.equal('heatmap' in sent.query, false);
   assert.ok(sent.query.range.to >= before && sent.query.range.to <= Date.now());
 });
 test('capacity failure is surfaced without retry, fallback, or partial reads', async () => {
@@ -165,4 +167,35 @@ test('independent summary response cannot masquerade as a complete screen', asyn
     page: { revision: 'r', queryIdentity: 'q', logs: [], nextCursor: null },
   }));
   await assert.rejects(h.get('settings:usageStats')!(event, 'all'), /invalid Usage projection/);
+});
+
+test('annual IPC forwards fixed day boundaries and the displayed screen revision', async () => {
+  const input = { kind: 'heatmap' as const, range: { dayStarts: [0], to: 100 }, revision: 'revision' };
+  const heatmap = { days: [{ start: 0, tokens: 30, successfulRequests: 1 }], through: 100, hasIncompleteUsage: false };
+  for (const result of [
+    { kind: 'heatmap', revision: 'revision', heatmap },
+    { kind: 'revision_changed' },
+    { kind: 'screen_response_too_large', section: 'heatmap' },
+  ] as const) {
+    const h = handlers(async (actual) => {
+      assert.deepEqual(actual, input);
+      return result;
+    });
+    assert.deepEqual(await h.get('usage:heatmap')!(event, input), result);
+  }
+});
+
+test('annual IPC rejects other requests before dispatch and rejects unrelated results', async () => {
+  let calls = 0;
+  const h = handlers(async () => {
+    calls++;
+    return { kind: 'screen', screen: screen() };
+  });
+  await assert.rejects(h.get('usage:heatmap')!(event, { kind: 'screen', query }), /invalid Usage projection/);
+  assert.equal(calls, 0);
+  await assert.rejects(
+    h.get('usage:heatmap')!(event, { kind: 'heatmap', range: { dayStarts: [0], to: 100 }, revision: 'revision' }),
+    /invalid Usage projection/,
+  );
+  assert.equal(calls, 1);
 });

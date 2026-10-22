@@ -30,7 +30,10 @@ import {
 } from 'react';
 import { useMountedRef, useToast } from '@maka/ui';
 import { resolveUsageRange } from '@maka/core/model-call-usage-projection';
+import { resolveUsageHeatmapRange } from '@maka/core/settings';
 import type {
+  UsageHeatmap,
+  UsageHeatmapRange,
   UsageRange,
   UsageStats,
   UsageScreenFailure,
@@ -51,9 +54,15 @@ export interface UsagePagingProgress {
   readonly loadedRecords: number;
   readonly targetRecords: number;
 }
+export type UsageHeatmapState =
+  | { readonly status: 'loading' }
+  | { readonly status: 'ready'; readonly value: UsageHeatmap }
+  | { readonly status: 'error'; readonly message: string | null }
+  | { readonly status: 'stale' };
 interface UsageScopeValue {
   readonly services: UsageServices;
   readonly snapshot: UsageSnapshot | null;
+  readonly heatmap: UsageHeatmapState;
   readonly targetKey: string;
   readonly state: 'ready' | 'loading' | 'stale' | 'error';
   readonly error: string | null;
@@ -80,6 +89,7 @@ export const UsageFeatureScope = forwardRef<
   const toast = useToast();
   const mountedRef = useMountedRef();
   const [snapshot, setSnapshot] = useState<UsageSnapshot | null>(null);
+  const [heatmap, setHeatmap] = useState<UsageHeatmapState>({ status: 'loading' });
   const [state, setState] = useState<UsageScopeValue['state']>('ready');
   const [error, setError] = useState<string | null>(null);
   const [failure, setFailure] = useState<CapacityFailure | null>(null);
@@ -89,7 +99,7 @@ export const UsageFeatureScope = forwardRef<
   const ticketRef = useRef(0);
   const blockedRef = useRef(false);
   const pagingRef = useRef(false);
-  const resolvedRef = useRef<{ range: UsageRange; query: UsageScreenQuery } | null>(null);
+  const resolvedRef = useRef<{ range: UsageRange; query: UsageScreenQuery; heatmap: UsageHeatmapRange } | null>(null);
   const { targetKey, services, loadErrorTitle, describeError } = props;
   const clear = () => {
     ticketRef.current += 1;
@@ -97,6 +107,7 @@ export const UsageFeatureScope = forwardRef<
     pagingRef.current = false;
     resolvedRef.current = null;
     setSnapshot(null);
+    setHeatmap({ status: 'loading' });
     setState('ready');
     setError(null);
     setFailure(null);
@@ -107,6 +118,29 @@ export const UsageFeatureScope = forwardRef<
     setRenderedTargetKey(targetKey);
     clear();
   }
+
+  const loadHeatmap = useCallback(async (range: UsageHeatmapRange, revision: string | undefined, ticket: number) => {
+    try {
+      if (!revision) throw new Error('Usage screen revision is missing');
+      const result = await services.loadUsageHeatmap({ kind: 'heatmap', range, revision });
+      if (!mountedRef.current || ticket !== ticketRef.current) return;
+      if (result.kind === 'revision_changed') {
+        setHeatmap({ status: 'stale' });
+        return;
+      }
+      if (result.kind === 'screen_response_too_large') {
+        setHeatmap({ status: 'error', message: null });
+        return;
+      }
+      if (result.kind !== 'heatmap' || result.revision !== revision) {
+        throw new Error('Invalid Usage heatmap response');
+      }
+      setHeatmap({ status: 'ready', value: result.heatmap });
+    } catch (error) {
+      if (!mountedRef.current || ticket !== ticketRef.current) return;
+      setHeatmap({ status: 'error', message: describeError(error) });
+    }
+  }, [services, mountedRef, describeError]);
 
   const reload = useCallback(
     async (
@@ -122,35 +156,45 @@ export const UsageFeatureScope = forwardRef<
       setFailure(null);
       setPaging(false);
       setPagingProgress(null);
+      const now = Date.now();
+      const heatmapRange = preserveRange && resolvedRef.current
+        ? resolvedRef.current.heatmap
+        : resolveUsageHeatmapRange(now);
       const query: UsageScreenQuery = {
         range:
           preserveRange && resolvedRef.current?.range === range
             ? resolvedRef.current.query.range
-            : resolveUsageRange(range, Date.now()),
+            : resolveUsageRange(range, now),
         search: filters.search.trim().toLowerCase(),
         status: filters.status,
       };
-      resolvedRef.current = { range, query };
+      resolvedRef.current = { range, query, heatmap: heatmapRange };
       try {
         const value = await services.loadUsageStats(range, query);
         if (!mountedRef.current || ticket !== ticketRef.current) return;
         if (value && 'kind' in value) {
           setState('error');
           setFailure(value);
+          setHeatmap((current) => current.status === 'loading' ? {status: 'error', message: null} : current);
           return;
         }
         setSnapshot({ value, installation: ticket });
         setState('ready');
         blockedRef.current = false;
+        setHeatmap({ status: 'loading' });
+        // The main result is ready immediately; the annual query does not hold
+        // refresh completion or activity pagination open. Both share its revision.
+        if (value) void loadHeatmap(heatmapRange, value.navigation?.revision, ticket);
       } catch (error) {
         if (!mountedRef.current || ticket !== ticketRef.current) return;
         setState('error');
         const message = describeError(error);
         setError(message);
+        setHeatmap((current) => current.status === 'loading' ? {status: 'error', message: null} : current);
         toast.error(loadErrorTitle, message);
       }
     },
-    [services, loadErrorTitle, describeError, toast, mountedRef],
+    [services, loadErrorTitle, describeError, toast, mountedRef, loadHeatmap],
   );
 
   const loadMore = useCallback(
@@ -236,6 +280,7 @@ export const UsageFeatureScope = forwardRef<
     () => ({
       services,
       snapshot,
+      heatmap,
       targetKey,
       state,
       error,
@@ -248,6 +293,7 @@ export const UsageFeatureScope = forwardRef<
     [
       services,
       snapshot,
+      heatmap,
       targetKey,
       state,
       error,

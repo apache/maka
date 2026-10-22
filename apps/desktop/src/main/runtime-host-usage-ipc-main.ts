@@ -73,6 +73,13 @@ export function registerRuntimeHostUsageIpc(
     if (result.kind !== "activity" && result.kind !== "revision_changed" && result.kind !== "screen_response_too_large") throw invalidUsageProjection();
     return result;
   });
+  handleReconnectableRead(deps.ipcMain, "usage:heatmap", async (_event, input: unknown) => {
+    const request = decodeUsageQueryInput(input);
+    if (request.kind !== "heatmap") throw invalidUsageProjection();
+    const result = await deps.client.queryUsage(request);
+    if (result.kind !== "heatmap" && result.kind !== "revision_changed" && result.kind !== "screen_response_too_large") throw invalidUsageProjection();
+    return result;
+  });
   handleReconnectableRead(
     deps.ipcMain,
     "usage:summary",
@@ -165,8 +172,9 @@ async function loadUsageStats(
   range: UsageRange,
   query?: UsageScreenQuery,
 ): Promise<UsageStats | Extract<UsageScreenFailure, {kind: 'screen_response_too_large'}>> {
+  const now = Date.now();
   const result = await client.queryUsage({kind: "screen", query: query ?? {
-    range: resolveUsageRange(range, Date.now()), search: "", status: "all",
+    range: resolveUsageRange(range, now), search: "", status: "all",
   }});
   if (result.kind === "screen_response_too_large") return result;
   if (result.kind !== "screen") throw invalidUsageProjection();

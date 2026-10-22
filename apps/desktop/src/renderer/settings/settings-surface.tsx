@@ -416,7 +416,7 @@ function SettingsSurfaceContent(
   // Settings surface. `usageScopeRef.fenceTarget()` rejects an in-flight old-Host
   // load synchronously at a Host change, before React re-renders the new target.
   const usageScopeRef = useRef<UsageScopeHandle>(null);
-  const readUsage = (range: UsageRange | Extract<UsageScreenRequest, {kind: 'activity'}>, query?: UsageScreenQuery) =>
+  const readUsage = (range: UsageRange | Extract<UsageScreenRequest, {kind: 'activity' | 'heatmap'}>, query?: UsageScreenQuery) =>
     selectedRuntimeHost ? window.maka.settings.usageStats(range, selectedRuntimeHost, query) : Promise.resolve(null);
   const usageServices = {
     loadUsageStats: async (range: UsageRange, query?: UsageScreenQuery) => {
@@ -427,6 +427,11 @@ function SettingsSurfaceContent(
     loadUsageActivity: async (input: Extract<UsageScreenRequest, {kind: 'activity'}>) => {
       const result = await readUsage(input);
       if (!result || !('kind' in result)) throw new Error('Invalid Usage activity response');
+      return result;
+    },
+    loadUsageHeatmap: async (input: Extract<UsageScreenRequest, {kind: 'heatmap'}>) => {
+      const result = await readUsage(input);
+      if (!result || !('kind' in result)) throw new Error('Invalid Usage heatmap response');
       return result;
     },
     updateUsageSettings: (patch: Partial<AppSettings['usage']>) =>

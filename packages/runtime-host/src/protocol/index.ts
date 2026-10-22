@@ -108,7 +108,9 @@ export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
 // Re-check against main before merging; sibling PRs may use the same next epoch.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 226 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 227 as const;
+// 227: Usage queries add independent revision-bound annual heatmap requests,
+// results, and heatmap-specific failure sections.
 // 226: assistant.allocate-workspace allocates a Host-owned fallback for projectless assistants.
 // 225: Goal successor transcript origins carry typed event-wait provenance.
 // Older peers reject the additional field in the strict stored-message decoder.

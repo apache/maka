@@ -54,6 +54,48 @@ const REQUEST_TIMEOUT_MS = 1_000;
 
 const mismatchCases = [
   {
+    name: 'heatmap revision',
+    operation: 'usage.query',
+    input: { kind: 'heatmap', revision: 'screen_revision', range: { dayStarts: [0], to: 1000 } },
+    result: {
+      kind: 'heatmap',
+      revision: 'other_revision',
+      heatmap: {
+        days: [{ start: 0, tokens: 10, successfulRequests: 1 }],
+        through: 1000,
+        hasIncompleteUsage: false,
+      },
+    },
+  },
+  {
+    name: 'heatmap range',
+    operation: 'usage.query',
+    input: { kind: 'heatmap', revision: 'screen_revision', range: { dayStarts: [0], to: 1000 } },
+    result: {
+      kind: 'heatmap',
+      revision: 'screen_revision',
+      heatmap: {
+        days: [{ start: 0, tokens: 10, successfulRequests: 1 }],
+        through: 999,
+        hasIncompleteUsage: false,
+      },
+    },
+  },
+  {
+    name: 'screen receiving annual heatmap',
+    operation: 'usage.query',
+    input: { kind: 'screen', query: { range: { from: 0, to: 1000 }, search: '', status: 'all' } },
+    result: {
+      kind: 'heatmap',
+      revision: 'screen_revision',
+      heatmap: {
+        days: [{ start: 0, tokens: 10, successfulRequests: 1 }],
+        through: 1000,
+        hasIncompleteUsage: false,
+      },
+    },
+  },
+  {
     name: 'usage offset',
     operation: 'usage.query',
     input: {

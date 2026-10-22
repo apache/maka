@@ -18,6 +18,7 @@
  */
 
 
+import { resolveUsageHeatmapRange } from '@maka/core/settings';
 import { useRef, useState } from 'react';
 import { createPersonalAssistantServices, PersonalAssistantServicesProvider } from '../../src/renderer/features/personal-assistant/index.js';
 import { createAssistantSessionVisibility, AssistantSessionVisibilityProvider } from '../../src/renderer/application/contracts/session-catalog/assistant-session-visibility.js';
@@ -31,10 +32,9 @@ import type {
   ThemePalette,
   ThemePreference,
   UpdateAppSettingsResult,
-  UsageRange,
+  UsageHeatmap,
   UsageStats,
   UsageScreenQuery,
-  UsageScreenRequest,
   UsageScreenResult,
 } from '@maka/core/settings';
 import { EMPTY_USAGE_PROVENANCE } from '@maka/core/usage-ledger-merge';
@@ -348,6 +348,17 @@ const STORY_USAGE_PROVENANCE = {
   },
 };
 
+const heatmapRange = resolveUsageHeatmapRange(NOW);
+const usageHeatmap: UsageHeatmap = {
+  through: NOW,
+  hasIncompleteUsage: false,
+  days: heatmapRange.dayStarts.map((start, index) => {
+    const active = index > 210 && index % 11 !== 0;
+    const successfulRequests = active ? 12 + (index * 37) % 275 : 0;
+    return {start, successfulRequests, tokens: successfulRequests * (1800 + (index % 9) * 4700)};
+  }),
+};
+
 const usageStats: UsageStats = {
   summary: {
     totalRequests: 420,
@@ -442,6 +453,22 @@ const multiModelUsageStats: UsageStats = {
   ],
   provenance: STORY_USAGE_PROVENANCE,
 };
+
+/** Model the Host's filtered activity response; the precomputed headline fixtures stay unchanged. */
+function usageStoryScreen(stats: UsageStats, requestedQuery?: UsageScreenQuery): UsageStats {
+  const query = requestedQuery ?? {range: {from: 0, to: NOW}, search: '', status: 'all'};
+  const search = query.search.toLowerCase();
+  const logs = stats.logs.filter(log =>
+    log.ts >= query.range.from && log.ts <= query.range.to
+    && (query.status === 'all' || log.status === query.status)
+    && (!search || [log.model, log.provider, log.toolName ?? ''].some(value => value.toLowerCase().includes(search))),
+  );
+  return {...stats, logs, navigation: {
+    activityTotal: logs.length,
+    revision: stats.summary.totalRequests === 0 ? 'story-empty' : 'story',
+    queryIdentity: JSON.stringify(query), query, nextCursor: null,
+  }};
+}
 
 function makeMemoryEntry(input: {
   id: string;
@@ -866,7 +893,15 @@ const makaBridge = {
     },
     subscribeClientChanged: () => () => undefined,
     subscribeExternalChanged: () => () => undefined,
-    usageStats: async (): Promise<UsageStats> => usageStats,
+    usageStats: async (input?: Parameters<typeof window.maka.settings.usageStats>[0], _host?: unknown, query?: UsageScreenQuery): Promise<UsageStats | UsageScreenResult> => {
+      if (typeof input === 'object' && input.kind === 'heatmap') return {
+        kind: 'heatmap', revision: input.revision,
+        heatmap: input.revision === 'story-empty'
+          ? {...usageHeatmap, days: usageHeatmap.days.map(day => ({...day, tokens: 0, successfulRequests: 0}))}
+          : usageHeatmap,
+      };
+      return usageStoryScreen(usageStats, query);
+    },
     bots: {
       listStatuses: async () => ({}),
       subscribeStatusChanges: () => () => undefined,
@@ -1746,7 +1781,10 @@ function withUsageStoryBridge(
       ): Promise<UpdateAppSettingsResult> => ({
         settings: mergeSettings(settings, patch),
       }),
-      usageStats: async (): Promise<UsageStats> => ({ ...stats, logs: [...stats.logs] }),
+      usageStats: async (input?: Parameters<typeof window.maka.settings.usageStats>[0], _host?: unknown, query?: UsageScreenQuery): Promise<UsageStats | UsageScreenResult> => {
+        if (typeof input === 'object' && input.kind === 'heatmap') return makaBridge.settings.usageStats(input);
+        return usageStoryScreen(stats, query);
+      },
     },
   } satisfies Record<string, unknown>);
 }
@@ -1756,14 +1794,16 @@ function withUsageConsistencyBridge(outcome: 'stale' | 'capacity' | 'page' = 'st
   return withScopedMakaBridge({...makaBridge, settings: {...makaBridge.settings,
     get: async () => settings,
     update: async (patch: Parameters<typeof window.maka.settings.update>[0]): Promise<UpdateAppSettingsResult> => ({settings: mergeSettings(settings, patch)}),
-    usageStats: async (range?: UsageRange | Extract<UsageScreenRequest, {kind: 'activity'}>, _host?: unknown, query?: UsageScreenQuery): Promise<UsageStats | UsageScreenResult> => {
+    usageStats: async (range?: Parameters<typeof window.maka.settings.usageStats>[0], _host?: unknown, query?: UsageScreenQuery): Promise<UsageStats | UsageScreenResult> => {
+      if (typeof range === 'object' && range.kind === 'heatmap') return makaBridge.settings.usageStats(range);
       if (typeof range === 'object') return outcome === 'page'
         ? {kind: 'activity', page: {revision: range.revision, queryIdentity: range.queryIdentity,
-          logs: usageLogs.slice(50), nextCursor: null}}
+          logs: usageStoryScreen(usageStats, range.query).logs.slice(50), nextCursor: null}}
         : {kind: 'revision_changed'};
       if (outcome === 'capacity' && query?.search) return {kind: 'screen_response_too_large', section: 'pricing'};
-      return {...usageStats, logs: usageLogs.slice(0, 50), navigation: {activityTotal: usageLogs.length, revision: 'revision-A', queryIdentity: 'query-A', nextCursor: 'next-page',
-        query: query ?? {range: {from: 0, to: Date.now()}, search: '', status: 'all'}}};
+      const screen = usageStoryScreen(usageStats, query);
+      return {...screen, logs: screen.logs.slice(0, 50), navigation: {...screen.navigation!,
+        revision: 'revision-A', queryIdentity: 'query-A', nextCursor: screen.logs.length > 50 ? 'next-page' : null}};
     },
   }} satisfies Record<string, unknown>);
 }
@@ -2713,6 +2753,54 @@ export const UsagePagedActivity: Story = {
     await userEvent.click(pageTwo!);
     await expect(await canvas.findByText(USAGE_PAGINATION_SENTINEL)).toBeVisible();
     await expect(await canvas.findByRole('button', {name: /next page|下一页|下一頁/i})).toBeDisabled();
+
+    // Keyboard details remain visible without covering the focused daily cell.
+    const chart = canvasElement.querySelector<HTMLElement>('.settingsUsageActivity');
+    expect(chart).not.toBeNull();
+    expect(within(chart!).queryByRole('radiogroup')).toBeNull();
+    chart!.scrollIntoView({block: 'center'});
+    const points = chart!.querySelectorAll<HTMLElement>('[data-activity-index]');
+    points[points.length - 1]!.focus();
+    await userEvent.keyboard('{ArrowLeft}');
+    const focusedPoint = chart!.querySelector<HTMLElement>('[data-activity-index]:focus');
+    expect(focusedPoint).not.toBeNull();
+    await waitFor(() => {
+      const tip = within(document.body).getAllByRole('tooltip').at(-1);
+      expect(tip).toBeVisible();
+      expect(within(tip!).getByText(copy.heatmap.tokens)).toBeVisible();
+      expect(within(tip!).getByText(copy.heatmap.requests)).toBeVisible();
+      const box = focusedPoint!.getBoundingClientRect();
+      expect(focusedPoint!.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2))).toBe(true);
+    });
+  },
+};
+// Real path: Settings → Usage after the summary and request list arrive, while the annual query is still running.
+export const UsageActivityLoading: Story = {
+  decorators: [withScopedMakaBridge({
+    ...makaBridge,
+    settings: {
+      ...makaBridge.settings,
+      usageStats: (input?: Parameters<typeof window.maka.settings.usageStats>[0], host?: unknown, query?: UsageScreenQuery): Promise<UsageStats | UsageScreenResult> => {
+        if (typeof input === 'object' && input.kind === 'heatmap') return new Promise(() => {});
+        return makaBridge.settings.usageStats(input, host, query);
+      },
+    },
+  } satisfies Record<string, unknown>)],
+  render: () => <SettingsStory section="usage" />,
+  play: async ({canvasElement, globals}) => {
+    const canvas = within(canvasElement);
+    const copy = getUsageSettingsCopy(globals.locale === 'en' ? 'en' : globals.locale === 'zh-TW' ? 'zh-TW' : 'zh-CN');
+    await expect(await canvas.findByText('420')).toBeVisible();
+    await waitForStoryCondition(() => canvas.queryByRole('table', {name: copy.tables.requestsAria}) !== null || canvas.queryByRole('button', {name: copy.showDetails}) !== null, 'Usage details were not available');
+    const details = canvas.queryByRole('button', {name: copy.showDetails});
+    if (details) await userEvent.click(details);
+    await expect(await canvas.findByRole('table', {name: copy.tables.requestsAria})).toBeVisible();
+    const chart = await canvas.findByRole('status', {name: copy.heatmap.loading});
+    await expect(chart).toBeVisible();
+    const bounds = chart.getBoundingClientRect();
+    expect(bounds.width).toBeGreaterThan(500);
+    expect(bounds.height).toBeGreaterThan(60);
+    expect(chart.querySelectorAll('.settingsUsageActivityCell').length).toBeGreaterThanOrEqual(365);
   },
 };
 // Real path: Settings → Usage → Next page after a Usage write changes the revision.
@@ -2964,8 +3052,10 @@ const withUsagePersistedRangeBridge = (() => {
       ): Promise<UpdateAppSettingsResult> => ({
         settings: mergeSettings(clientSettings, patch),
       }),
-      usageStats: async (range?: UsageRange): Promise<UsageStats> =>
-        range === 'all' ? usageStats : emptyUsageStats,
+      usageStats: async (input?: Parameters<typeof window.maka.settings.usageStats>[0], _host?: unknown, query?: UsageScreenQuery): Promise<UsageStats | UsageScreenResult> => {
+        if (typeof input === 'object' && input.kind === 'heatmap') return makaBridge.settings.usageStats(input);
+        return usageStoryScreen(input === 'all' ? usageStats : emptyUsageStats, query);
+      },
     },
   } satisfies Record<string, unknown>);
 })();
