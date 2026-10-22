@@ -29,8 +29,11 @@
 // "full access" stricter than ask mode, which grants :slash_tmp outright (#2083).
 
 import { Buffer } from 'node:buffer';
-import { buildFileWriteResult, buildFileEditResult } from './file-mutation-guard.js';
-import type { FileMutationGuard } from './file-mutation-guard-contract.js';
+import {
+  buildFileWriteResult,
+  buildFileEditResult,
+  fileMutationInputEligible,
+} from './file-mutation-guard.js';
 import { readPage } from './read-page.js';
 import { formatJsonText } from './format-json.js';
 import { lstat, realpath, stat } from 'node:fs/promises';
@@ -126,7 +129,6 @@ export interface FilesystemExecutor {
 }
 
 export interface PreparedFilesystemMutation {
-  guard?: FileMutationGuard;
   execute(): Promise<FilesystemResult>;
   cancel(): void;
 }
@@ -312,6 +314,7 @@ export function createBoundaryFilesystemExecutor(
       };
       // Keep an immutable private copy: the caller never owns execution args.
       const operation = structuredClone(call.operation);
+      const eligible = fileMutationInputEligible(operation);
       const { key, canonicalPath } = await writeLockTarget(call, operation.path);
       const expectedIdentity = await captureIdentityAtLockAcquisition(canonicalPath, true);
       const release = await acquireFileWriteLock(key, call.abortSignal);
@@ -329,12 +332,11 @@ export function createBoundaryFilesystemExecutor(
             ...call,
             operation:
               operation.kind === 'write'
-                ? { kind: 'prepare_write', path: operation.path, content: operation.content }
+                ? { kind: 'prepare_write', path: operation.path, eligible }
                 : {
                     kind: 'prepare_edit',
                     path: operation.path,
-                    oldString: operation.oldString,
-                    newString: operation.newString,
+                    eligible,
                   },
           },
           expectedIdentity,
@@ -358,7 +360,6 @@ export function createBoundaryFilesystemExecutor(
         call.abortSignal?.throwIfAborted();
         call.abortSignal?.addEventListener('abort', cancel, { once: true });
         return {
-          ...(guard ? { guard: structuredClone(guard) } : {}),
           cancel,
           async execute() {
             if (state !== 'prepared') throw new Error('Prepared Write has already settled');
@@ -486,14 +487,10 @@ function createWorkspaceFilesystemExecutor(
               ? await workspace.prepareMutation({
                   cwd,
                   path: operation.path,
-                  mutation:
-                    operation.kind === 'prepare_write'
-                      ? { kind: 'write', content: operation.content }
-                      : {
-                          kind: 'edit',
-                          oldString: operation.oldString,
-                          newString: operation.newString,
-                        },
+                  preparation: {
+                    kind: operation.kind === 'prepare_write' ? 'write' : 'edit',
+                    eligible: operation.eligible,
+                  },
                   scope,
                 })
               : undefined;

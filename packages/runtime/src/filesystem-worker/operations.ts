@@ -23,7 +23,6 @@ import {
   FileMutationEditConflict,
   executePreparedFileMutation,
   buildFileEditResult,
-  executePreparedFileWrite,
   buildFileWriteResult,
 } from '../file-mutation-guard.js';
 import { promises as fs } from 'node:fs';
@@ -138,9 +137,10 @@ export async function executeFilesystemOperation(
       const guard = await prepareFileMutation(
         operation.cwd,
         path,
-        operation.kind === 'prepare_write'
-          ? { kind: 'write', content: operation.content }
-          : { kind: 'edit', oldString: operation.oldString, newString: operation.newString },
+        {
+          kind: operation.kind === 'prepare_write' ? 'write' : 'edit',
+          eligible: operation.eligible,
+        },
         dependencies.hostDirectories,
       );
       return { kind: operation.kind, ...(guard ? { guard } : {}) };
@@ -190,10 +190,10 @@ export async function executeFilesystemOperation(
         operationBoundary,
       );
       if (operation.guard) {
-        return executePreparedFileWrite(
+        return executePreparedFileMutation(
           operation.cwd,
           path,
-          operation.content,
+          { kind: 'write', content: operation.content },
           operation.guard,
           dependencies.hostDirectories,
         );

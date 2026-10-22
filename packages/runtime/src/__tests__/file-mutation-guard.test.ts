@@ -27,13 +27,18 @@ import { createSqliteRuntimeStore } from '@maka/storage/sqlite-runtime-store';
 import type { RuntimeCommitSink, ToolPreparedCommit } from '../runtime-commit-sink.js';
 import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 import { buildBuiltinTools } from '../builtin-tools.js';
-import { createLocalWorkspaceExecutor } from '../workspace-executor.js';
+import { createLocalWorkspaceExecutor, LocalWorkspaceExecutor } from '../workspace-executor.js';
 import { createBoundaryFilesystemExecutor } from '../filesystem-executor.js';
 import {
   FILE_MUTATION_MAX_BYTES,
   FileMutationGuardSchema,
+  type FileMutationGuard,
 } from '../file-mutation-guard-contract.js';
-import { prepareFileWrite, executePreparedFileMutation } from '../file-mutation-guard.js';
+import {
+  prepareFileMutation,
+  fileMutationInputEligible,
+  executePreparedFileMutation,
+} from '../file-mutation-guard.js';
 import { runFilesystemWorkerProcess } from '../filesystem-worker/process-runner.js';
 import {
   FILESYSTEM_WORKER_PROTOCOL_VERSION,
@@ -180,7 +185,6 @@ test('prepared and ordinary local Write retain identical result shapes', async (
   call.operation.path = join(f.cwd, 'image.png');
   await writeFile(call.operation.path, 'text with an image extension');
   const prepared = await f.filesystem.prepareMutation(call);
-  assert.equal(prepared.guard, undefined);
   const result = await prepared.execute();
   assert.equal(result.kind === 'write' && result.diff, undefined);
 });
@@ -204,7 +208,6 @@ test('prepared Edit keeps exact and fuzzy production results and rejects ambiguo
     };
     await writeFile(f.path, source!);
     const prepared = await f.filesystem.prepareMutation(call);
-    assert.ok(prepared.guard);
     assert.equal(await readFile(f.path, 'utf8'), source);
     const result = await prepared.execute();
     assert.equal(result.kind, 'edit');
@@ -216,7 +219,6 @@ test('prepared Edit keeps exact and fuzzy production results and rejects ambiguo
   }
   await writeFile(f.path, 'before before');
   const ambiguous = await f.filesystem.prepareMutation(f.call());
-  assert.ok(ambiguous.guard);
   await assert.rejects(ambiguous.execute(), /not unique/);
   assert.equal(await readFile(f.path, 'utf8'), 'before before');
 });
@@ -240,16 +242,67 @@ test('Edit cancellation, identity substitution and duplicate execution preserve 
   assert.equal(await readFile(f.path, 'utf8'), 'outside');
 });
 
+test('input eligibility preserves UTF-8 byte limits for both mutation kinds', () => {
+  const boundary = 'é'.repeat(FILE_MUTATION_MAX_BYTES / 2);
+  for (const [content, eligible] of [
+    [boundary, true],
+    [boundary + 'x', false],
+    ['\ud800', false],
+  ] as const) {
+    assert.equal(fileMutationInputEligible({ kind: 'write', content }), eligible);
+    assert.equal(
+      fileMutationInputEligible({ kind: 'edit', oldString: content, newString: 'after' }),
+      eligible,
+    );
+    assert.equal(
+      fileMutationInputEligible({ kind: 'edit', oldString: 'before', newString: content }),
+      eligible,
+    );
+  }
+});
+
+for (const kind of ['write', 'edit'] as const) {
+  test(`${kind}: ineligible input keeps ordinary execution after content changes`, async (t) => {
+    const f = await fixture(t, kind);
+    await writeFile(f.path, 'before\n');
+    const content = 'x'.repeat(FILE_MUTATION_MAX_BYTES + 1);
+    const call = {
+      ...f.call(),
+      operation:
+        kind === 'write'
+          ? { kind, path: f.path, content }
+          : { kind, path: f.path, oldString: 'before', newString: content },
+    };
+    const prepared = await f.filesystem.prepareMutation(call);
+    await writeFile(f.path, 'before external\n');
+    const result = await prepared.execute();
+    assert.equal(
+      await readFile(f.path, 'utf8'),
+      kind === 'write' ? content : content + ' external\n',
+    );
+    await writeFile(f.path, 'before external\n');
+    assert.deepEqual(await f.filesystem.execute(call), result);
+  });
+}
+
 test('invalid UTF-8, oversized content, and unsupported executor guards stay conservative', async (t) => {
   const f = await fixture(t);
   await writeFile(f.path, Buffer.from([0xff, 0xfe]));
-  assert.equal(await prepareFileWrite(f.cwd, f.path, 'after'), undefined);
   assert.equal(
-    await prepareFileWrite(f.cwd, f.path, 'a'.repeat(FILE_MUTATION_MAX_BYTES + 1)),
+    await prepareFileMutation(f.cwd, f.path, { kind: 'write', eligible: true }),
+    undefined,
+  );
+  assert.equal(
+    await prepareFileMutation(f.cwd, f.path, {
+      kind: 'write',
+      eligible: fileMutationInputEligible({
+        kind: 'write',
+        content: 'a'.repeat(FILE_MUTATION_MAX_BYTES + 1),
+      }),
+    }),
     undefined,
   );
   const prepared = await f.filesystem.prepareMutation(f.call());
-  assert.equal(prepared.guard, undefined);
   await prepared.execute();
   assert.equal(await readFile(f.path, 'utf8'), 'after\n');
   const unsupported = createBoundaryFilesystemExecutor({
@@ -259,7 +312,6 @@ test('invalid UTF-8, oversized content, and unsupported executor guards stay con
     }),
   });
   const fallback = await unsupported.prepareMutation(f.call());
-  assert.equal(fallback.guard, undefined);
   await fallback.execute();
 });
 
@@ -334,17 +386,34 @@ for (const kind of ['write', 'edit'] as const) {
   });
 }
 
-test('caller arguments and returned guard cannot mutate the private prepared execution', async (t) => {
-  const f = await fixture(t);
-  await writeFile(f.path, 'before\n');
-  const call = f.call();
-  const prepared = await f.filesystem.prepareMutation(call);
-  assert.ok(prepared.guard);
-  if (call.operation.kind === 'write') call.operation.content = 'wrong';
-  prepared.guard.target.path = join(f.cwd, 'wrong.txt');
-  await prepared.execute();
-  assert.equal(await readFile(f.path, 'utf8'), 'after\n');
-});
+for (const kind of ['write', 'edit'] as const) {
+  test(`${kind}: prepared execution hides its guard and isolates caller/backend objects`, async (t) => {
+    const f = await fixture(t, kind);
+    await writeFile(f.path, 'before\n');
+    const workspace = new LocalWorkspaceExecutor();
+    const prepare = workspace.prepareMutation.bind(workspace);
+    let backendGuard: FileMutationGuard | undefined;
+    const filesystem = createBoundaryFilesystemExecutor({
+      workspace: Object.assign(workspace, {
+        prepareMutation: async (...args: Parameters<typeof prepare>) => {
+          backendGuard = await prepare(...args);
+          return backendGuard;
+        },
+      }),
+    });
+    const call = f.call();
+    const prepared = await filesystem.prepareMutation(call);
+    assert.deepEqual(Object.keys(prepared).sort(), ['cancel', 'execute']);
+    assert.ok(backendGuard);
+    backendGuard.target.path = join(f.cwd, 'wrong.txt');
+    call.operation.path = join(f.cwd, 'wrong.txt');
+    if (call.operation.kind === 'write') call.operation.content = 'wrong';
+    else call.operation.newString = 'wrong';
+    await prepared.execute();
+    assert.equal(await readFile(f.path, 'utf8'), 'after\n');
+    await assert.rejects(readFile(join(f.cwd, 'wrong.txt')), { code: 'ENOENT' });
+  });
+}
 
 test('parent replacement is rejected without touching the replacement file', async (t) => {
   const f = await fixture(t);
@@ -366,7 +435,7 @@ test('parent replacement is rejected without touching the replacement file', asy
 
 test('guard shape rejects legacy evidence and cross-tool reuse before mutation', async (t) => {
   const f = await fixture(t);
-  const guard = await prepareFileWrite(f.cwd, f.path, 'after');
+  const guard = await prepareFileMutation(f.cwd, f.path, { kind: 'write', eligible: true });
   assert.ok(guard);
   assert.equal(
     FileMutationGuardSchema.safeParse({ ...guard, after: { bytes: 5, digest: 'unused' } }).success,
@@ -421,10 +490,38 @@ for (const kind of ['write', 'edit'] as const) {
       assert.equal(result.exitCode, 0, result.stderrTail);
       return parseFilesystemWorkerResponse(JSON.parse(result.stdout));
     };
-    const prepared = await run({
+    const preparationOperation = {
+      kind: kind === 'write' ? 'prepare_write' : 'prepare_edit',
+      path: f.path,
+      cwd: f.cwd,
+      eligible: true,
+    };
+    const declined = await run({
       ...request,
-      operation: { ...operation, kind: kind === 'write' ? 'prepare_write' : 'prepare_edit' },
+      operation: { ...preparationOperation, eligible: false },
     });
+    assert.ok(
+      declined.ok &&
+        (declined.result.kind === 'prepare_write' || declined.result.kind === 'prepare_edit'),
+    );
+    assert.equal(declined.result.guard, undefined);
+    const deniedCwd = join(f.cwd, 'restricted');
+    await mkdir(deniedCwd);
+    const denied = await run({
+      ...request,
+      operation: { ...preparationOperation, cwd: deniedCwd, eligible: false },
+      operationBoundary: {
+        filesystem: { entries: [{ path: f.path, access: 'read', scope: 'exact' }] },
+      },
+    });
+    assert.ok(!denied.ok && denied.error.code === 'path_denied');
+    const payloadRejected = await run({
+      ...request,
+      operation: { ...operation, ...preparationOperation },
+    });
+    assert.ok(!payloadRejected.ok && payloadRejected.error.code === 'invalid_request');
+    assert.equal(await readFile(f.path, 'utf8'), 'before\n');
+    const prepared = await run({ ...request, operation: preparationOperation });
     assert.ok(
       prepared.ok &&
         (prepared.result.kind === 'prepare_write' || prepared.result.kind === 'prepare_edit') &&
@@ -434,8 +531,10 @@ for (const kind of ['write', 'edit'] as const) {
     assert.equal(await readFile(f.path, 'utf8'), 'before\n');
     assert.equal('result' in guard, false);
     assert.equal('after' in guard, false);
-    const legacy = await run({ ...request, version: 13, operation: { ...operation, guard } });
-    assert.equal(legacy.ok, false);
+    for (const version of [12, 13, 14]) {
+      const legacy = await run({ ...request, version, operation: { ...operation, guard } });
+      assert.equal(legacy.ok, false);
+    }
     assert.equal(await readFile(f.path, 'utf8'), 'before\n');
     await writeFile(f.path, 'outside\n');
     const rejected = await run({ ...request, operation: { ...operation, guard } });
@@ -454,7 +553,7 @@ for (const kind of ['write', 'edit'] as const) {
           await writeFile(f.path, content);
           const preparation = await run({
             ...request,
-            operation: { ...operation, kind: 'prepare_edit' },
+            operation: { kind: 'prepare_edit', path: f.path, cwd: f.cwd, eligible: true },
           });
           assert.ok(preparation.ok && preparation.result.kind === 'prepare_edit');
           assert.ok(preparation.result.guard);

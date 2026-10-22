@@ -22,6 +22,7 @@ import { exec } from 'node:child_process';
 import type {
   FileMutationGuard,
   FileMutation,
+  FileMutationPreparation,
   FileWriteResult,
   FileEditResult,
 } from './file-mutation-guard-contract.js';
@@ -176,7 +177,7 @@ export interface WorkspacePreparedMutationExecutor {
   prepareMutation(input: {
     cwd: string;
     path: string;
-    mutation: FileMutation;
+    preparation: FileMutationPreparation;
     scope: WorkspacePathScope;
   }): Promise<FileMutationGuard | undefined>;
   executePreparedMutation(input: {
@@ -381,7 +382,7 @@ export class LocalWorkspaceExecutor implements WorkspaceExecutor {
     const { path } = await canonicalPathInScope(cwd, input.path, 'Write', input.scope);
     // Match the local executor's binary/image result policy.
     if (isSupportedImagePath(path)) return undefined;
-    return prepareFileMutation(cwd, path, input.mutation);
+    return prepareFileMutation(cwd, path, input.preparation);
   }
 
   async executePreparedMutation(

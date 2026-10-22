@@ -36,7 +36,7 @@ import { afterEach, describe, test } from 'node:test';
 import { createManagedExecutionBoundary } from '@maka/core/sandbox-boundary';
 import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 import { MAX_READ_IMAGE_BYTES } from '@maka/core/attachments';
-import { prepareFileWrite } from '../file-mutation-guard.js';
+import { prepareFileMutation } from '../file-mutation-guard.js';
 import { executeFilesystemWorkerRequest } from '../filesystem-worker/operations.js';
 import {
   canReadPath,
@@ -87,13 +87,22 @@ describe('filesystem worker client permission snapshots', () => {
     const { client, requests } = fakeClient();
     for (const kind of ['prepare_write', 'write'] as const) {
       await client.execute({
-        operation: { kind, path: 'notes.txt', content: 'after' },
+        operation:
+          kind === 'prepare_write'
+            ? { kind, path: 'notes.txt', eligible: true }
+            : { kind, path: 'notes.txt', content: 'after' },
         cwd: workspace,
         mode: 'ask',
         expectedIdentity: 'missing',
       });
     }
     assert.equal(requests[0]!.operation.kind, 'prepare_write');
+    assert.deepEqual(Object.keys(requests[0]!.operation).sort(), [
+      'cwd',
+      'eligible',
+      'kind',
+      'path',
+    ]);
     assert.deepEqual(requests[0]!.operationBoundary, requests[1]!.operationBoundary);
     assert.deepEqual(requests[0]!.expectedTarget, requests[1]!.expectedTarget);
     assert.equal(requests[0]!.expectedTarget.access, 'write');
@@ -109,40 +118,51 @@ describe('filesystem worker client permission snapshots', () => {
     const { client, requests } = fakeClient();
     for (const kind of ['prepare_edit', 'edit'] as const) {
       await client.execute({
-        operation: { kind, path, oldString: 'before', newString: 'after' },
+        operation:
+          kind === 'prepare_edit'
+            ? { kind, path, eligible: true }
+            : { kind, path, oldString: 'before', newString: 'after' },
         cwd,
         mode: 'ask',
         expectedIdentity: { dev: String(stat.dev), ino: String(stat.ino) },
       });
     }
+    assert.deepEqual(Object.keys(requests[0]!.operation).sort(), [
+      'cwd',
+      'eligible',
+      'kind',
+      'path',
+    ]);
     assert.deepEqual(requests[0]!.operationBoundary, requests[1]!.operationBoundary);
     assert.deepEqual(requests[0]!.expectedTarget, requests[1]!.expectedTarget);
     assert.equal(requests[0]!.expectedTarget.access, 'write');
     assert.equal(requests[0]!.hostDirectories, undefined);
   });
 
-  test('a read-only profile cannot prepare an Edit', async () => {
-    const cwd = await temporaryDirectory('maka-edit-prepare-denied-');
-    const path = join(cwd, 'notes.txt');
-    await writeFile(path, 'before');
-    const { client, requests } = fakeClient();
-    await assert.rejects(
-      client.execute({
-        operation: { kind: 'prepare_edit', path, oldString: 'before', newString: 'after' },
-        cwd,
-        permissionProfile: createReadOnlyPermissionProfile(),
-        expectedIdentity: 'unchecked',
-      }),
-      (error: unknown) =>
-        error instanceof FilesystemWorkerClientError && error.reason === 'path_denied',
-    );
-    assert.deepEqual(requests, []);
-  });
+  for (const eligible of [true, false]) {
+    test(`a read-only profile cannot prepare an Edit (eligible=${eligible})`, async () => {
+      const cwd = await temporaryDirectory('maka-edit-prepare-denied-');
+      const path = join(cwd, 'notes.txt');
+      await writeFile(path, 'before');
+      const { client, requests } = fakeClient();
+      await assert.rejects(
+        client.execute({
+          operation: { kind: 'prepare_edit', path, eligible },
+          cwd,
+          permissionProfile: createReadOnlyPermissionProfile(),
+          expectedIdentity: 'unchecked',
+        }),
+        (error: unknown) =>
+          error instanceof FilesystemWorkerClientError && error.reason === 'path_denied',
+      );
+      assert.deepEqual(requests, []);
+    });
+  }
 
   test('a prepared Write rejects substituted host directory identity before worker launch', async () => {
     const workspace = await temporaryDirectory('maka-worker-prepare-host-');
     const path = join(workspace, 'notes.txt');
-    const guard = await prepareFileWrite(workspace, path, 'after');
+    const guard = await prepareFileMutation(workspace, path, { kind: 'write', eligible: true });
     assert.ok(guard);
     guard.workspace.identity.ino += '1';
     const { client, requests } = fakeClient();
@@ -166,7 +186,7 @@ describe('filesystem worker client permission snapshots', () => {
       const previous = join(cwd, 'previous');
       const path = join(parent, 'target.txt');
       await mkdir(parent);
-      const guard = await prepareFileWrite(cwd, path, 'after');
+      const guard = await prepareFileMutation(cwd, path, { kind: 'write', eligible: true });
       assert.ok(guard);
       const swap = async () => {
         await rename(parent, previous);
@@ -238,7 +258,7 @@ describe('filesystem worker client permission snapshots', () => {
     const parent = join(cwd, 'parent');
     await mkdir(parent);
     const path = join(parent, 'target.txt');
-    const guard = await prepareFileWrite(cwd, path, 'after');
+    const guard = await prepareFileMutation(cwd, path, { kind: 'write', eligible: true });
     assert.ok(guard);
     let transformed = false;
     const manager = new SandboxManager([]);
@@ -290,7 +310,7 @@ describe('filesystem worker client permission snapshots', () => {
     const { client, requests } = fakeClient();
     await assert.rejects(
       client.execute({
-        operation: { kind: 'prepare_write', path: 'notes.txt', content: 'after' },
+        operation: { kind: 'prepare_write', path: 'notes.txt', eligible: true },
         cwd: workspace,
         permissionProfile: createReadOnlyPermissionProfile(),
         expectedIdentity: 'missing',

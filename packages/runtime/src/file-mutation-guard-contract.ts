@@ -54,6 +54,11 @@ export interface FileMutationDirectories {
   workspace: FileIdentity;
   parent: FileIdentity;
 }
+/** Eligibility is computed from the owning executor's private argument snapshot. */
+export interface FileMutationPreparation {
+  kind: 'write' | 'edit';
+  eligible: boolean;
+}
 export type FileMutation =
   | { kind: 'write'; content: string }
   | { kind: 'edit'; oldString: string; newString: string };

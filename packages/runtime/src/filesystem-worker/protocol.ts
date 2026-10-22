@@ -23,9 +23,9 @@ import { readContinuationSchema, readPageSchema } from '../read-page.js';
 import { validateSandboxBoundaryExpansion } from '@maka/core/sandbox-boundary';
 import { GREP_MAX_LINES, GREP_MAX_LINES_PER_FILE, GREP_MAX_MATCH_BYTES } from '../grep-search.js';
 
-// v14 replaces persisted-evidence observations with transient content guards.
+// v15 removes mutation content from preparation requests; only input eligibility crosses.
 // Older workers must be rejected rather than silently discard mutation guards.
-export const FILESYSTEM_WORKER_PROTOCOL_VERSION = 14 as const;
+export const FILESYSTEM_WORKER_PROTOCOL_VERSION = 15 as const;
 
 /** The single authority on which operation kinds are writes. Shared by the
  * client (permission/identity decisions) and the worker (operation guards) so
@@ -127,14 +127,13 @@ export const FilesystemWorkerOperationSchema = z.union([
       guard: FileMutationGuardSchema.optional(),
     })
     .strict(),
-  z.object({ kind: z.literal('prepare_write'), cwd, path, content: z.string() }).strict(),
+  z.object({ kind: z.literal('prepare_write'), cwd, path, eligible: z.boolean() }).strict(),
   z
     .object({
       kind: z.literal('prepare_edit'),
       cwd,
       path,
-      oldString: z.string(),
-      newString: z.string(),
+      eligible: z.boolean(),
     })
     .strict(),
   z

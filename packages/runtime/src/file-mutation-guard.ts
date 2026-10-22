@@ -25,6 +25,7 @@ import {
   FILE_MUTATION_MAX_BYTES,
   FileMutationGuardSchema,
   type FileMutation,
+  type FileMutationPreparation,
   type FileWriteResult,
   type FileEditResult,
   type FileIdentity,
@@ -133,13 +134,26 @@ function transform(path: string, mutation: FileMutation, previous: string | unde
   return { content: edited.content, result: buildFileEditResult(path, previous, edited) };
 }
 
+/** Pure input eligibility check, before any file observation or content transport. */
+export function fileMutationInputEligible(mutation: FileMutation): boolean {
+  const inputs =
+    mutation.kind === 'write' ? [mutation.content] : [mutation.oldString, mutation.newString];
+  return inputs.every(
+    (input) =>
+      Buffer.byteLength(input, 'utf8') <= FILE_MUTATION_MAX_BYTES &&
+      Buffer.from(input, 'utf8').toString('utf8') === input,
+  );
+}
+
 /** Called only after the owning executor has authorized and canonicalized both paths. */
 export async function prepareFileMutation(
   cwd: string,
   path: string,
-  mutation: FileMutation,
+  preparation: FileMutationPreparation,
   hostDirectories?: FileMutationDirectories,
 ): Promise<FileMutationGuard | undefined> {
+  // Authorization still runs before this helper, including for ineligible inputs.
+  if (!preparation.eligible) return;
   // Unsupported targets retain ordinary execution, without a content guard.
   try {
     const workspace = {
@@ -183,32 +197,12 @@ export async function prepareFileMutation(
         await handle.close();
       }
     }
-    if (mutation.kind === 'edit' && before.kind === 'missing') return;
-    // Bound request strings too, without computing Edit's future content or result.
-    const inputs =
-      mutation.kind === 'write' ? [mutation.content] : [mutation.oldString, mutation.newString];
-    if (
-      inputs.some(
-        (input) =>
-          Buffer.byteLength(input, 'utf8') > FILE_MUTATION_MAX_BYTES ||
-          Buffer.from(input, 'utf8').toString('utf8') !== input,
-      )
-    )
-      return;
-    const guard: FileMutationGuard = { kind: mutation.kind, workspace, target, before };
+    if (preparation.kind === 'edit' && before.kind === 'missing') return;
+    const guard: FileMutationGuard = { kind: preparation.kind, workspace, target, before };
     return FileMutationGuardSchema.safeParse(guard).success ? guard : undefined;
   } catch {
     return undefined;
   }
-}
-
-export function prepareFileWrite(
-  cwd: string,
-  path: string,
-  content: string,
-  directories?: FileMutationDirectories,
-) {
-  return prepareFileMutation(cwd, path, { kind: 'write', content }, directories);
 }
 
 /** Validate through the descriptor that will be mutated, before any truncate. */
@@ -283,18 +277,8 @@ export async function executePreparedFileMutation(
     await writeThroughHandle(handle, next.content);
     const visibility = await hostVisibilityAfterWrite(path, handle);
     if (visibility) throw visibility;
-    return structuredClone(next.result);
+    return next.result;
   } finally {
     await handle.close();
   }
-}
-
-export function executePreparedFileWrite(
-  cwd: string,
-  path: string,
-  content: string,
-  guard: FileMutationGuard,
-  directories?: FileMutationDirectories,
-) {
-  return executePreparedFileMutation(cwd, path, { kind: 'write', content }, guard, directories);
 }
