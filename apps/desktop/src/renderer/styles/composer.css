@@ -84,6 +84,18 @@
   min-height: calc(1lh + 2 * var(--maka-editor-padding-block));
 }
 
+/* A line break at the very end of the draft — Shift+Enter at the tail, a
+   multi-line insert ending in one, a restored draft ending in "\n" — gets no
+   line box under Astryx's `white-space: pre-wrap` (#5811): the editor stays
+   one line short of the caret and, at the max-rows cap, cannot scroll toward
+   a line with no box. break-spaces gives every preserved break a real box.
+   `!important` because Astryx ships its pre-wrap through a stylex utility at
+   (3,1,0) specificity (`.x126k92a:not(#\#)` thrice) that no plain Maka
+   selector beats. */
+.maka-composer-editor > [contenteditable] {
+  white-space: break-spaces !important;
+}
+
 /* The expanded sidebar already exposes WorkHub. Keep this fallback only
    when that navigation is collapsed, using the shell's sidebar authority. */
 .appFrame[data-sidebar-state='expanded'] .maka-return-workhub {
