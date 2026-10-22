@@ -75,6 +75,14 @@ const DEFAULT_CONFIG_OPTIONS: Array<Extract<SessionConfigOption, { type: 'select
   },
   {
     type: 'select',
+    id: 'model',
+    name: 'Model',
+    category: 'model',
+    currentValue: 'default',
+    options: [{ value: 'default', name: 'default' }],
+  },
+  {
+    type: 'select',
     id: 'thinking_level',
     name: 'Thinking level',
     category: 'thought_level',
@@ -5955,7 +5963,7 @@ describe('ACP Session registry', () => {
 
     assert.deepEqual(
       response.configOptions?.map(({ id }) => id),
-      ['permission_mode', 'collaboration_mode', 'orchestration_mode'],
+      ['permission_mode', 'model', 'collaboration_mode', 'orchestration_mode'],
     );
     await registry.dispose();
   });
@@ -6179,6 +6187,444 @@ describe('ACP Session registry', () => {
       configOptions: configOptions({ permission_mode: 'bypass', thinking_level: 'high' }),
     });
     await registry.dispose();
+  });
+
+  test('refuses to steer a Session with no running turn', async () => {
+    const requests: Array<{ operation: string; input: unknown }> = [];
+    const connection = fakeConnection({
+      request: async (operation, input) => {
+        requests.push({ operation, input });
+        if (operation === 'session.create') return catalogSession('session-idle');
+        return {};
+      },
+      openSessionSubscriptionOnce: async () =>
+        ({
+          snapshot: continuitySnapshot('session-idle'),
+          close: async () => undefined,
+        }) as never,
+    });
+    Object.assign(connection, { hostEpoch: 'host-1' });
+    const registry = new AcpSessionRegistry({
+      connect: async () => connection,
+      newSessionId: () => 'session-idle',
+    });
+    await registry.create({ cwd: TEST_CWD, mcpServers: [] });
+
+    await assert.rejects(
+      registry.inject({
+        sessionId: 'session-idle',
+        mode: 'steer',
+        content: [{ type: 'text', text: 'steer nothing' }],
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof RequestError);
+        assert.equal(error.code, -32010);
+        assert.deepEqual(error.data, { reason: 'no_running_turn' });
+        return true;
+      },
+    );
+    // The precondition is checked before admission: no hidden turn may start.
+    assert.deepEqual(
+      requests.filter(({ operation }) => operation === 'turn.message.submit'),
+      [],
+    );
+    await registry.dispose();
+  });
+
+  test('admits a steer into the running turn', async () => {
+    const requests: Array<{ operation: string; input: unknown }> = [];
+    const connection = fakeConnection({
+      request: async (operation, input) => {
+        requests.push({ operation, input });
+        if (operation === 'session.create') return catalogSession('session-live');
+        if (operation === 'turn.message.submit') return { disposition: 'steering' };
+        return {};
+      },
+      openSessionSubscriptionOnce: async () =>
+        ({
+          snapshot: continuitySnapshot('session-live', {
+            rootTurn: runningTurn('session-live', 'turn-1'),
+          }),
+          close: async () => undefined,
+        }) as never,
+    });
+    Object.assign(connection, { hostEpoch: 'host-1' });
+    const registry = new AcpSessionRegistry({
+      connect: async () => connection,
+      newSessionId: () => 'session-live',
+      newTurnId: () => 'message-1',
+    });
+    await registry.create({ cwd: TEST_CWD, mcpServers: [] });
+
+    assert.deepEqual(
+      await registry.inject({
+        sessionId: 'session-live',
+        mode: 'steer',
+        content: [{ type: 'text', text: 'steer the run' }],
+      }),
+      { messageId: 'message-1' },
+    );
+    const submit = requests.find(({ operation }) => operation === 'turn.message.submit');
+    assert.equal((submit?.input as { placement?: string } | undefined)?.placement, 'current_turn');
+    // The identity travels with the submit so admission can re-check it; the
+    // pre-check alone would leave the turn-completion race open.
+    assert.equal(
+      (submit?.input as { expectedTurnId?: string } | undefined)?.expectedTurnId,
+      'turn-1',
+    );
+    await registry.dispose();
+  });
+
+  test('a steer whose turn ends during admission answers -32010', async () => {
+    const connection = fakeConnection({
+      request: async (operation) => {
+        if (operation === 'session.create') return catalogSession('session-race');
+        if (operation === 'turn.message.submit') {
+          // What the Host answers when the expected Turn is no longer running.
+          throw new RuntimeHostOperationError(
+            'turn.message.submit',
+            'operation_conflict',
+            'Session has no running Turn to steer',
+          );
+        }
+        return {};
+      },
+      openSessionSubscriptionOnce: async () =>
+        ({
+          snapshot: continuitySnapshot('session-race', {
+            rootTurn: runningTurn('session-race', 'turn-1'),
+          }),
+          close: async () => undefined,
+        }) as never,
+    });
+    Object.assign(connection, { hostEpoch: 'host-1' });
+    const registry = new AcpSessionRegistry({
+      connect: async () => connection,
+      newSessionId: () => 'session-race',
+    });
+    await registry.create({ cwd: TEST_CWD, mcpServers: [] });
+
+    await assert.rejects(
+      registry.inject({
+        sessionId: 'session-race',
+        mode: 'steer',
+        content: [{ type: 'text', text: 'too late' }],
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof RequestError);
+        assert.equal(error.code, -32010);
+        assert.deepEqual(error.data, { reason: 'no_running_turn' });
+        return true;
+      },
+    );
+    await registry.dispose();
+  });
+
+  test('revoking an injected message retracts that entry and leaves the rest queued', async () => {
+    const requests: Array<{ operation: string; input: unknown }> = [];
+    const connection = fakeConnection({
+      request: async (operation, input) => {
+        requests.push({ operation, input });
+        if (operation === 'session.create') return catalogSession('session-revoke');
+        if (operation === 'queue.entry.retract') return { queueRevision: 2 };
+        return {};
+      },
+      openSessionSubscriptionOnce: async () =>
+        ({
+          snapshot: {
+            queue: {
+              hostEpoch: 'host-1',
+              queueRevision: 1,
+              steering: [],
+              followup: [
+                queuedMessage('entry-a', 'message-a', 'A'),
+                queuedMessage('entry-b', 'message-b', 'B'),
+              ],
+            },
+          },
+          close: async () => undefined,
+        }) as never,
+    });
+    Object.assign(connection, { hostEpoch: 'host-1' });
+    const registry = new AcpSessionRegistry({
+      connect: async () => connection,
+      newSessionId: () => 'session-revoke',
+      newMutationId: () => 'mutation-1',
+    });
+    await registry.create({ cwd: TEST_CWD, mcpServers: [] });
+
+    await registry.revokeInject({ sessionId: 'session-revoke', messageId: 'message-a' });
+
+    assert.deepEqual(
+      requests.filter(({ operation }) => operation === 'queue.entry.retract'),
+      [
+        {
+          operation: 'queue.entry.retract',
+          input: {
+            originHostEpoch: 'host-1',
+            sessionId: 'session-revoke',
+            entryId: 'entry-a',
+            retractId: 'mutation-1',
+          },
+        },
+      ],
+    );
+    // The whole-queue operation would have taken B with it.
+    assert.deepEqual(
+      requests.filter(({ operation }) => operation === 'queue.retract'),
+      [],
+    );
+    await registry.dispose();
+  });
+
+  test('revoking an unknown message id mutates nothing', async () => {
+    const requests: Array<{ operation: string; input: unknown }> = [];
+    const connection = fakeConnection({
+      request: async (operation, input) => {
+        requests.push({ operation, input });
+        if (operation === 'session.create') return catalogSession('session-revoke');
+        return {};
+      },
+      openSessionSubscriptionOnce: async () =>
+        ({
+          snapshot: {
+            queue: {
+              hostEpoch: 'host-1',
+              queueRevision: 1,
+              steering: [queuedMessage('entry-a', 'message-a', 'A')],
+              followup: [queuedMessage('entry-b', 'message-b', 'B')],
+            },
+          },
+          close: async () => undefined,
+        }) as never,
+    });
+    Object.assign(connection, { hostEpoch: 'host-1' });
+    const registry = new AcpSessionRegistry({
+      connect: async () => connection,
+      newSessionId: () => 'session-revoke',
+    });
+    await registry.create({ cwd: TEST_CWD, mcpServers: [] });
+
+    await assert.rejects(
+      registry.revokeInject({ sessionId: 'session-revoke', messageId: 'message-gone' }),
+      (error: unknown) => {
+        assert.ok(error instanceof RequestError);
+        assert.equal(error.code, -32002);
+        assert.deepEqual(error.data, { messageId: 'message-gone' });
+        return true;
+      },
+    );
+    assert.deepEqual(
+      requests.filter(({ operation }) => operation.startsWith('queue.')),
+      [],
+    );
+    await registry.dispose();
+  });
+
+  test('streams live assistant replies for a queued follow-up turn after prompt completes without load or resume', async () => {
+    const sessionId = 'session-followup-live';
+    const subscription = new FakeSubscription(continuitySnapshot(sessionId));
+    const notifications: SessionNotification[] = [];
+    const replayNotifications: SessionNotification[] = [];
+    const turn1Started = deferred<void>();
+    const releaseTurn1 = deferred<void>();
+    let ids = 0;
+    const connection = fakeConnection({
+      request: async (operation, input) => {
+        if (operation === 'session.create') return catalogSession(sessionId);
+        if (operation === 'session.catalog.query')
+          return { kind: 'session', session: catalogSession(sessionId) };
+        if (operation === 'turn.start') {
+          const turnId = (input as { turnId: string }).turnId;
+          const turn1 = runningTurn(sessionId, turnId);
+          subscription.setRoot(turn1);
+          turn1Started.resolve();
+          void releaseTurn1.promise.then(() => {
+            subscription.appendText(turnId, turn1.runId, 'first reply', true);
+            subscription.publishTranscript([
+              {
+                type: 'assistant',
+                id: `message-${turnId}`,
+                turnId,
+                ts: 1,
+                text: 'first reply',
+                modelId: 'test-model',
+              },
+            ]);
+            subscription.setRoot(completedTurn(sessionId, turnId));
+          });
+          return {
+            kind: 'started',
+            turn: turn1,
+            skillInvocation: { loaded: [], failed: [], receipts: [] },
+          };
+        }
+        if (operation === 'turn.message.submit') return { disposition: 'followup' };
+        if (operation === 'turn.stop') return {};
+        throw new Error(`Unexpected operation ${operation}`);
+      },
+      openSessionSubscriptionOnce: async () => subscription,
+    });
+    Object.assign(connection, { hostEpoch: 'host-1' });
+    const registry = new AcpSessionRegistry({
+      connect: async () => connection,
+      newSessionId: () => sessionId,
+      newTurnId: () => `id-${++ids}`,
+    });
+    try {
+      await registry.create({ cwd: TEST_CWD, mcpServers: [] });
+      const prompting = registry.prompt(
+        { sessionId, prompt: [{ type: 'text', text: 'initial question' }] },
+        promptContext(notifications),
+      );
+      await turn1Started.promise;
+
+      const injected = await registry.inject({
+        sessionId,
+        mode: 'queue',
+        content: [{ type: 'text', text: 'queued follow-up' }],
+      });
+      assert.deepEqual(injected, { messageId: 'id-2' });
+
+      releaseTurn1.resolve();
+      assert.deepEqual(await prompting, { stopReason: 'end_turn' });
+
+      const followupTurn = runningTurn(sessionId, 'turn-2');
+      subscription.setRoot(followupTurn);
+      subscription.appendText('turn-2', followupTurn.runId, 'follow-up ');
+      subscription.appendText('turn-2', followupTurn.runId, 'follow-up answer', true);
+
+      await waitFor(
+        () =>
+          notifications
+            .flatMap(({ update }) =>
+              update.sessionUpdate === 'agent_message_chunk' && update.content.type === 'text'
+                ? [update.content.text]
+                : [],
+            )
+            .join('') === 'first replyfollow-up answer',
+      );
+
+      subscription.publishTranscript([
+        {
+          type: 'assistant',
+          id: 'message-turn-2',
+          turnId: 'turn-2',
+          ts: 2,
+          text: 'follow-up answer',
+          modelId: 'test-model',
+        },
+      ]);
+      await registry.load(
+        { sessionId, cwd: TEST_CWD, mcpServers: [] },
+        promptContext(replayNotifications),
+      );
+      assert.deepEqual(
+        replayNotifications.filter(({ update }) => update.sessionUpdate === 'agent_message_chunk'),
+        [],
+      );
+      subscription.setRoot(completedTurn(sessionId, 'turn-2'));
+    } finally {
+      releaseTurn1.resolve();
+      await registry.dispose();
+    }
+  });
+
+  test('presents an interaction from the queued follow-up Turn to the client', async () => {
+    const sessionId = 'session-followup-interaction';
+    const subscription = new FakeSubscription(continuitySnapshot(sessionId));
+    const notifications: SessionNotification[] = [];
+    const turn1Started = deferred<void>();
+    const releaseTurn1 = deferred<void>();
+    let presented = 0;
+    let ids = 0;
+    const pendingQuestion = {
+      schemaVersion: 1,
+      interactionId: 'followup-question',
+      sessionId,
+      turnId: 'turn-2',
+      runId: 'run-turn-2',
+      revision: 1,
+      status: 'pending',
+      outcome: null,
+      request: {
+        kind: 'question',
+        toolUseId: 'followup-tool',
+        questions: [{ question: 'Continue?', options: [{ label: 'Yes' }] }],
+      },
+    } as const;
+    const connection = fakeConnection({
+      request: async (operation, input) => {
+        if (operation === 'session.create') return catalogSession(sessionId);
+        if (operation === 'session.catalog.query')
+          return { kind: 'session', session: catalogSession(sessionId) };
+        // Presentation re-queries the authority before opening a dialog.
+        if (operation === 'interaction.query') return pendingQuestion;
+        if (operation === 'turn.start') {
+          const turnId = (input as { turnId: string }).turnId;
+          const turn1 = runningTurn(sessionId, turnId);
+          subscription.setRoot(turn1);
+          turn1Started.resolve();
+          void releaseTurn1.promise.then(() => {
+            subscription.setRoot(completedTurn(sessionId, turnId));
+          });
+          return {
+            kind: 'started',
+            turn: turn1,
+            skillInvocation: { loaded: [], failed: [], receipts: [] },
+          };
+        }
+        if (operation === 'turn.message.submit') return { disposition: 'followup' };
+        if (operation === 'turn.stop') return {};
+        throw new Error(`Unexpected operation ${operation}`);
+      },
+      openSessionSubscriptionOnce: async () => subscription,
+    });
+    Object.assign(connection, { hostEpoch: 'host-1' });
+    const registry = new AcpSessionRegistry({
+      connect: async () => connection,
+      newSessionId: () => sessionId,
+      newTurnId: () => `id-${++ids}`,
+    });
+    const context = {
+      ...promptContext(notifications),
+      interactions: {
+        capabilities: { elicitation: { form: {} } },
+        createElicitation: async () => {
+          presented += 1;
+          return new Promise<never>(() => undefined);
+        },
+        requestPermission: async () => {
+          presented += 1;
+          return new Promise<never>(() => undefined);
+        },
+      },
+    };
+    try {
+      await registry.create({ cwd: TEST_CWD, mcpServers: [] });
+      const prompting = registry.prompt(
+        { sessionId, prompt: [{ type: 'text', text: 'initial question' }] },
+        context,
+      );
+      await turn1Started.promise;
+      await registry.inject({
+        sessionId,
+        mode: 'queue',
+        content: [{ type: 'text', text: 'queued follow-up' }],
+      });
+      releaseTurn1.resolve();
+      assert.deepEqual(await prompting, { stopReason: 'end_turn' });
+
+      const followup = runningTurn(sessionId, 'turn-2');
+      subscription.setRoot(followup);
+      subscription.project({ interactions: { pending: [pendingQuestion] } });
+      // The Turn exists because this client queued it, so its permission
+      // requests are this client's to answer — otherwise the Turn stalls.
+      await waitFor(() => presented >= 1);
+    } finally {
+      releaseTurn1.resolve();
+      await registry.dispose();
+    }
   });
 
   test('rereads the Session after one revision conflict before retrying', async () => {
@@ -7470,6 +7916,20 @@ function catalogSession(
     orchestrationMode: 'default',
     ...overrides,
   };
+}
+
+function queuedMessage(
+  entryId: string,
+  messageId: string,
+  text: string,
+): {
+  entryId: string;
+  messageId: string;
+  content: { text: string };
+  placement: 'next_turn';
+  state: 'queued';
+} {
+  return { entryId, messageId, content: { text }, placement: 'next_turn', state: 'queued' };
 }
 
 function configOptions(

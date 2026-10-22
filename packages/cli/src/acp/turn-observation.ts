@@ -42,6 +42,10 @@ export class AcpTurnObservation {
   terminalOutcome?: { status: 'completed' | 'failed' | 'cancelled'; failureClass?: string };
   /** Keep the Host transport alive until a requested Stop has settled. */
   stopTask?: Promise<void>;
+  /** Settles once transcript seeding and stream attachment have completed. */
+  startup?: Promise<void>;
+  /** Observe output without claiming interaction or Stop authority over the Turn. */
+  readOnly: boolean;
   cancelled = false;
   finished = false;
   #muteDepth = 0;
@@ -51,11 +55,13 @@ export class AcpTurnObservation {
     sessionId: string;
     turnId: string;
     runId?: string;
+    readOnly?: boolean;
     notify: ConstructorParameters<typeof AcpSessionEventMapper>[0]['notify'];
   }) {
     this.sessionId = options.sessionId;
     this.turnId = options.turnId;
     this.runId = options.runId;
+    this.readOnly = options.readOnly ?? false;
     this.mapper = new AcpSessionEventMapper({
       sessionId: options.sessionId,
       notify: async (notification) => {
@@ -139,7 +145,7 @@ export class AcpTurnObservation {
 
   start(channel: RuntimeHostSessionChannel): Promise<StopReason> {
     this.attachment = channel;
-    this.transcript = channel.trackPromptTranscript(this.turnId);
+    this.transcript ??= channel.trackPromptTranscript(this.turnId);
     const task = this.consume(channel.eventsForTurn(this.turnId));
     void task.catch(() => undefined);
     return task;

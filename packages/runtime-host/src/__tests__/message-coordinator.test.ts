@@ -491,6 +491,48 @@ test('a retry that changes exact-Turn intent is a conflict, not the earlier succ
   assert.equal(fixture.startCalls(), 1);
 });
 
+test('an expected Turn that has ended refuses the submit instead of starting a new Turn', async () => {
+  const fixture = createFixture();
+  fixture.setRootState({ kind: 'idle' });
+  const late = await fixture.coordinator.handlers['turn.message.submit'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      messageId: 'late-steer',
+      content: { text: 'too late to steer' },
+      placement: 'current_turn',
+      expectedTurnId: 'ended-turn',
+    },
+    operationContext(),
+  );
+
+  assert.equal(late.ok, false);
+  if (!late.ok) assert.equal(late.error.code, 'operation_conflict');
+  // The whole point: a steer whose target is gone must not become new work.
+  assert.equal(fixture.startCalls(), 0);
+});
+
+test('a steer carrying the running Turn identity is admitted as steering', async () => {
+  const fixture = createFixture();
+  fixture.coordinator.reserveRootTurn(ROOT);
+  fixture.coordinator.bindRun(ROOT);
+  const steered = await fixture.coordinator.handlers['turn.message.submit'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      messageId: 'live-steer',
+      content: { text: 'steer the run' },
+      placement: 'current_turn',
+      expectedTurnId: ROOT.turnId,
+    },
+    operationContext(),
+  );
+
+  assert.equal(steered.ok, true);
+  if (steered.ok) assert.equal(steered.result.disposition, 'steering');
+  assert.equal(fixture.startCalls(), 0);
+});
+
 test('message query reports only durable cancellation proof', async () => {
   const fixture = createFixture();
   fixture.coordinator.reserveRootTurn(ROOT);

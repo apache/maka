@@ -115,6 +115,13 @@ export interface TurnMessageSubmitInput {
   readonly placement: MessagePlacement;
   readonly skillIds?: readonly string[];
   readonly turnOrchestration?: TurnOrchestration;
+  /**
+   * The Turn the caller means to steer. Admission fails when that Turn is no
+   * longer running, so a steer cannot silently become a new Turn — the caller
+   * decided while it was still running, and only the Host can decide atomically.
+   * Absent means "no expectation", which keeps older callers on today's rules.
+   */
+  readonly expectedTurnId?: string;
 }
 
 export type TurnMessageSubmitResult = {
@@ -273,7 +280,7 @@ function decodeTurnMessageSubmitInput(value: unknown): TurnMessageSubmitInput {
     value,
     'turn.message.submit input',
     ['originHostEpoch', 'sessionId', 'messageId', 'content', 'placement'],
-    ['skillIds', 'turnOrchestration', 'externalSource'],
+    ['skillIds', 'turnOrchestration', 'externalSource', 'expectedTurnId'],
   );
   const externalSource =
     record.externalSource === undefined ? undefined : decodeTurnOrigin(record.externalSource);
@@ -281,6 +288,10 @@ function decodeTurnMessageSubmitInput(value: unknown): TurnMessageSubmitInput {
     throw invalidProtocolFrame('Invalid external connector source');
   const skillIds = decodeSkillIds(record.skillIds);
   const placement = requireMessagePlacement(record.placement);
+  const expectedTurnId =
+    record.expectedTurnId === undefined
+      ? undefined
+      : requireEntityId(record.expectedTurnId, 'expectedTurnId');
   const turnOrchestration =
     record.turnOrchestration !== undefined
       ? decodeTurnOrchestration(record.turnOrchestration)
@@ -297,6 +308,7 @@ function decodeTurnMessageSubmitInput(value: unknown): TurnMessageSubmitInput {
     content: decodeMessageAdmissionContent(record.content, skillIds.length > 0),
     ...(externalSource?.kind === 'external_connector' ? { externalSource } : {}),
     placement,
+    ...(expectedTurnId === undefined ? {} : { expectedTurnId }),
     ...(skillIds.length > 0 ? { skillIds } : {}),
     ...(turnOrchestration !== undefined ? { turnOrchestration } : {}),
   };

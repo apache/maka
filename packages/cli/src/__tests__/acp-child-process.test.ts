@@ -144,7 +144,13 @@ describe('Maka ACP child process', () => {
           protocolVersion: 1,
           agentCapabilities: {
             loadSession: true,
-            sessionCapabilities: { list: {}, resume: {}, close: {} },
+            sessionCapabilities: {
+              list: {},
+              resume: {},
+              close: {},
+              // Unstable injection proposal: declared, not part of v1.
+              inject: { modes: ['queue', 'steer'], steerInStream: ['finish'] },
+            },
             _meta: { '_maka/goalPlan': { version: 1 } },
           },
           authMethods: [],
@@ -192,6 +198,7 @@ describe('Maka ACP child process', () => {
             (first.configOptions ?? []).map((option) => [option.id, option.currentValue]),
             [
               ['permission_mode', 'bypass'],
+              ['model', 'relay-basic'],
               ['collaboration_mode', 'agent'],
               ['orchestration_mode', 'default'],
             ],
@@ -205,6 +212,7 @@ describe('Maka ACP child process', () => {
             (configured.configOptions ?? []).map((option) => [option.id, option.currentValue]),
             [
               ['permission_mode', 'bypass'],
+              ['model', 'relay-basic'],
               ['collaboration_mode', 'plan'],
               ['orchestration_mode', 'default'],
             ],
@@ -273,6 +281,7 @@ describe('Maka ACP child process', () => {
             (created.configOptions ?? []).map(({ id, currentValue }) => [id, currentValue]),
             [
               ['permission_mode', 'bypass'],
+              ['model', 'relay-reasoner'],
               ['thinking_level', 'default'],
               ['collaboration_mode', 'agent'],
               ['orchestration_mode', 'default'],
@@ -310,6 +319,7 @@ describe('Maka ACP child process', () => {
             (configuredOptions ?? []).map(({ id, currentValue }) => [id, currentValue]),
             [
               ['permission_mode', 'ask'],
+              ['model', 'relay-reasoner'],
               ['thinking_level', 'high'],
               ['collaboration_mode', 'plan'],
               ['orchestration_mode', 'swarm'],

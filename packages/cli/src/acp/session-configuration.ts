@@ -35,6 +35,76 @@ interface AcpSessionConfigSpec {
   readonly options: readonly (readonly [string, string])[];
 }
 
+/** One model the session's connection offers, as the Host resolved it. */
+export interface AcpModelChoice {
+  readonly id: string;
+  readonly name?: string;
+}
+
+/** Everything a model-valued request needs, from the session and its catalogue. */
+export interface AcpSessionModelConfigContext {
+  readonly connectionId: string;
+  readonly connectionSlug: string;
+  readonly currentModel: string;
+  readonly models: readonly AcpModelChoice[];
+}
+
+/**
+ * `model` is a category the ACP spec reserves for the model selector, alongside
+ * `mode`, `model_config` and `thought_level`
+ * (https://agentclientprotocol.com/protocol/v1/session-config-options#option-categories).
+ * Categories without a leading `_` belong to the spec, so this one is
+ * deliberately not namespaced like the `_maka/*` extensions below.
+ */
+const MODEL_CONFIG_ID = 'model';
+const MODEL_SPEC_NAME = 'Model';
+const MODEL_CATEGORY = 'model';
+
+/**
+ * The models a session may offer and accept from one connection: the ones that
+ * connection has enabled, plus whatever the session already runs on. One rule
+ * for the picker and for validation — the Host refuses a model it has not
+ * enabled, so offering it would advertise a dead choice.
+ */
+export function offerableModelChoices(
+  connection:
+    | {
+        readonly catalogEntries: readonly { readonly id: string; readonly displayName?: string }[];
+        readonly enabledModelIds: readonly string[];
+      }
+    | undefined,
+  currentModel: string,
+): AcpModelChoice[] {
+  const enabled = new Set(connection?.enabledModelIds ?? []);
+  return (connection?.catalogEntries ?? [])
+    .filter(({ id }) => enabled.has(id) || id === currentModel)
+    .map(({ id, displayName }) => ({ id, name: displayName ?? id }));
+}
+
+/**
+ * The values a session may select.
+ *
+ * A locked connection is locked to a **connection**, not to a model: the Host
+ * records `connectionLocked` on the first durable message and on every model
+ * change (`session-catalog-coordinator.ts`), and it does not refuse a
+ * same-connection switch afterwards. Collapsing the picker to `currentModel`
+ * would therefore leave one entry for the rest of the session, which is why the
+ * lock does not narrow this list.
+ */
+function modelValues(models: readonly AcpModelChoice[], currentModel: string): string[] {
+  const offered = [...new Set(models.map(({ id }) => id).filter((id) => id.length > 0))];
+  return offered.length > 0 ? offered : [currentModel];
+}
+
+function modelOptions(
+  models: readonly AcpModelChoice[],
+  currentModel: string,
+): readonly (readonly [string, string])[] {
+  return modelValues(models, currentModel).map(
+    (id) => [id, models.find((model) => model.id === id)?.name ?? id] as const,
+  );
+}
+
 const PERMISSION_NAMES: Readonly<Record<PermissionMode, string>> = {
   explore: 'Explore',
   ask: 'Ask',
@@ -99,9 +169,27 @@ const CONFIG_SPECS = [
 export function projectAcpSessionConfigOptions(
   session: SessionCatalogProjection,
   thinkingLevels: readonly ThinkingLevel[],
+  models: readonly AcpModelChoice[] = [],
 ): SessionConfigOption[] {
   return [
     configOption(PERMISSION_SPEC, session.permissionMode),
+    // A Session without an LLM connection (plugin executor) has no catalogue to
+    // choose from, and validation refuses a model request for exactly that
+    // reason. Projecting the option anyway would advertise a choice that cannot
+    // ever be committed.
+    ...(session.llmConnectionId === null
+      ? []
+      : [
+          configOption(
+            {
+              id: MODEL_CONFIG_ID,
+              name: MODEL_SPEC_NAME,
+              category: MODEL_CATEGORY,
+              options: modelOptions(models, session.model),
+            },
+            session.model,
+          ),
+        ]),
     ...(thinkingLevels.length === 0
       ? []
       : [
@@ -146,9 +234,28 @@ export class AcpSessionConfigInputError extends Error {
   }
 }
 
+/**
+ * Model values are session-scoped (they depend on the session's connection
+ * catalogue), so they cannot be validated without a context. Callers use this
+ * to defer them to the layer that has one.
+ */
+export function isAcpModelConfigOption(configId: string): boolean {
+  return configId === MODEL_CONFIG_ID;
+}
+
 export function validateAcpSessionConfigOptionRequest(
   request: SetSessionConfigOptionRequest,
+  modelContext?: AcpSessionModelConfigContext,
 ): asserts request is SetSessionConfigOptionRequest & { readonly value: string } {
+  if (request.configId === MODEL_CONFIG_ID) {
+    if (!modelContext) throw new AcpSessionConfigInputError('configId', 'unsupported');
+    if (typeof request.value !== 'string')
+      throw new AcpSessionConfigInputError('value', 'invalid_type');
+    if (!modelValues(modelContext.models, modelContext.currentModel).includes(request.value)) {
+      throw new AcpSessionConfigInputError('value', 'unsupported');
+    }
+    return;
+  }
   const spec = CONFIG_SPECS.find(({ id }) => id === request.configId);
   if (!spec) throw new AcpSessionConfigInputError('configId', 'unsupported');
   if (typeof request.value !== 'string')
@@ -160,8 +267,27 @@ export function validateAcpSessionConfigOptionRequest(
 
 export function createAcpSessionConfigPatch(
   request: SetSessionConfigOptionRequest,
+  modelContext?: AcpSessionModelConfigContext,
 ): SessionConfigurationPatch {
-  validateAcpSessionConfigOptionRequest(request);
+  validateAcpSessionConfigOptionRequest(request, modelContext);
+  if (request.configId === MODEL_CONFIG_ID) {
+    // Non-null: validation above rejects a model request without a context.
+    const context = modelContext as AcpSessionModelConfigContext;
+    return {
+      modelTarget: {
+        kind: 'explicit',
+        connectionId: context.connectionId,
+        connectionSlug: context.connectionSlug,
+        model: request.value,
+      },
+      // A thinking level belongs to the model it was chosen for: switching
+      // keeps it and the Host would refuse a target that cannot honour it, so
+      // the switch clears it. Selecting the model already in effect must not —
+      // a client re-sending `currentValue` would otherwise drop `high` to the
+      // default for no reason.
+      ...(request.value === context.currentModel ? {} : { thinkingLevel: null }),
+    };
+  }
   switch (request.configId) {
     case 'permission_mode':
       return { permissionMode: request.value as SessionConfigurationPatch['permissionMode'] };

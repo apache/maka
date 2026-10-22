@@ -108,7 +108,11 @@ export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
 // Re-check against main before merging; sibling PRs may use the same next epoch.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 226 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 227 as const;
+// 227: turn.message.submit accepts an optional `expectedTurnId`. The input decoder
+// rejects unknown fields, so a Client that sends it cannot admit a message to an
+// older Host: the pair has to refuse each other at the handshake instead of
+// failing mid-steer with a closed connection.
 // 226: assistant.allocate-workspace allocates a Host-owned fallback for projectless assistants.
 // 225: Goal successor transcript origins carry typed event-wait provenance.
 // Older peers reject the additional field in the strict stored-message decoder.

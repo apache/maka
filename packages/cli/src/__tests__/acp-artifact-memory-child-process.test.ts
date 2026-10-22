@@ -463,7 +463,13 @@ test('official ACP SDK exports and deletes a multipart Artifact through the real
         );
       });
     },
-    { startRuntimeHost: true, model: { id: 'artifact-fixture', thinkingLevels: [] } },
+    {
+      startRuntimeHost: true,
+      // A multipart upload plus deletes against a real Host; on a loaded CI
+      // runner the 15s client-operation default is not enough headroom.
+      timeoutMs: 45_000,
+      model: { id: 'artifact-fixture', thinkingLevels: [] },
+    },
   );
 });
 

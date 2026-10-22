@@ -24,7 +24,7 @@ import {
   type RuntimeHostConnection,
 } from '@maka/runtime-host/client';
 import { createMakaAcpAgent } from './maka-acp-agent.js';
-import { AcpSessionRegistry } from './session-registry.js';
+import { AcpSessionRegistry, type AcpSessionRegistryConnection } from './session-registry.js';
 import { connectRuntimeHostCliConnection } from '../runtime-host-cli-context.js';
 
 export interface MakaAcpStdioServerInput {
@@ -57,7 +57,7 @@ export async function runMakaAcpStdioServer(
         await context.close().catch(() => undefined);
         throw new Error('ACP requires a reconnecting Runtime Host connection');
       }
-      return {
+      const acpConnection: AcpSessionRegistryConnection = {
         reconnecting: true,
         request: connection.request.bind(connection) as RuntimeHostConnection['request'],
         openSessionSubscription: connection.openSessionSubscription.bind(connection),
@@ -69,6 +69,16 @@ export async function runMakaAcpStdioServer(
           connection.subscribeConnectionAvailability(listener),
         close: () => context.close(),
       };
+      // Message admission carries the Host epoch; the ACP-facing interface does
+      // not list it, so it is attached rather than widening every fixture. It
+      // stays a getter on purpose: the reconnecting connection replaces its
+      // epoch when a new Host takes over, and a copied value would keep signing
+      // admissions with the epoch that no longer exists.
+      Object.defineProperty(acpConnection, 'hostEpoch', {
+        get: () => connection.hostEpoch,
+        configurable: true,
+      });
+      return acpConnection;
     },
   });
   const stdin = dependencies.stdin ?? process.stdin;

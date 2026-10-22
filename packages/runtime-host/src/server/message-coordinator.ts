@@ -1387,6 +1387,15 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
             'Remove unsupported attachments or choose another executor.',
           );
         const rootState = await this.#root.readRootState(input.sessionId);
+        if (
+          input.expectedTurnId !== undefined &&
+          (rootState.kind !== 'active' || rootState.turnId !== input.expectedTurnId)
+        ) {
+          // The caller steered a Turn that has since ended. Starting a new one
+          // here would be work nobody asked for, so refuse at admission rather
+          // than let a pre-check race decide it.
+          return failure('operation_conflict', 'Session has no running Turn to steer');
+        }
         if (header.idleOnly && rootState.kind !== 'idle')
           return failure('session_busy', 'External executor accepts messages only while idle');
         if (this.#failStopped) {

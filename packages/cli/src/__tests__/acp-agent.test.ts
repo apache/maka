@@ -31,7 +31,13 @@ describe('Maka ACP agent', () => {
           protocolVersion: 1,
           agentCapabilities: {
             loadSession: true,
-            sessionCapabilities: { list: {}, resume: {}, close: {} },
+            sessionCapabilities: {
+              list: {},
+              resume: {},
+              close: {},
+              // Unstable injection proposal: declared, not part of v1.
+              inject: { modes: ['queue', 'steer'], steerInStream: ['finish'] },
+            },
             _meta: { '_maka/goalPlan': { version: 1 } },
           },
           authMethods: [],
@@ -424,6 +430,8 @@ function fakeSessionRegistry(
     },
     load: async () => ({}),
     resume: async () => ({}),
+    inject: async () => ({ messageId: 'injected-message' }),
+    revokeInject: async () => ({}),
     resumeTurn: async () => ({
       kind: 'parked' as const,
       plan: {
