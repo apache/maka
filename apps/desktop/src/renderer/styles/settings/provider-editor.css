@@ -125,8 +125,8 @@
    it. Needed since the model rows scroll in a viewport of their own: focus
    moving down the list scrolls that viewport, which cannot move a row out from
    beneath a bar stuck to the pane. The height is published by
-   `provider-connection-detail.tsx`; without it the padding is nothing, so the
-   other settings pages are untouched. */
+   `features/connection-settings/models-save-bar-clearance.ts`; where it is absent
+   the padding is nothing, so the other settings pages are untouched. */
 .settingsMainPane {
   scroll-padding-block-end: var(--provider-models-save-bar-space, 0px);
 }
