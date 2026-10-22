@@ -3323,7 +3323,10 @@ for (const phase of ['running', 'terminal'] as const)
       process.execPath,
       [
         '--test',
-        '--test-isolation=none',
+        // Node 22 exposes the same isolation mode under its experimental flag.
+        process.versions.node.startsWith('22.')
+          ? '--experimental-test-isolation=none'
+          : '--test-isolation=none',
         '--test-name-pattern=^ShellRun crash fixture$',
         fileURLToPath(import.meta.url),
       ],

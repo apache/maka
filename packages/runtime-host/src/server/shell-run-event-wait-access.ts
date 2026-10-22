@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { EventWaitRecord } from '@maka/core/event-wait';
+import type { ObservedEventWaitRecord } from '@maka/core/event-wait';
 import type { ShellRunRecord, ShellRunStore } from '@maka/core/shell-run';
 import { validateToolLedgerEventLane } from '@maka/core/tool-ledger-scanner';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
@@ -48,7 +48,7 @@ export type ShellRunWaitRead =
   | { kind: 'allowed'; fact: ShellRunWaitFact }
   | { kind: 'revoked'; reason: string };
 
-export function validateShellRunWait(wait: EventWaitRecord): string {
+export function validateShellRunWait(wait: ObservedEventWaitRecord): string {
   const target = parseShellRunResourceRef(wait.resource.resourceId);
   if (
     !target ||
@@ -73,12 +73,15 @@ export class ShellRunEventWaitAccess {
     >,
   ) {}
 
-  async authorize(wait: EventWaitRecord, signal: AbortSignal): Promise<EventWaitObservationAccess> {
+  async authorize(
+    wait: ObservedEventWaitRecord,
+    signal: AbortSignal,
+  ): Promise<EventWaitObservationAccess> {
     const result = await this.read(wait, signal);
     return result.kind === 'allowed' ? { kind: 'allowed', context: null } : result;
   }
 
-  async read(wait: EventWaitRecord, signal: AbortSignal): Promise<ShellRunWaitRead> {
+  async read(wait: ObservedEventWaitRecord, signal: AbortSignal): Promise<ShellRunWaitRead> {
     const taskId = validateShellRunWait(wait);
     signal.throwIfAborted();
     let task: ShellRunRecord;

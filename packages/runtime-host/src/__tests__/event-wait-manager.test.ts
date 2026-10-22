@@ -265,7 +265,7 @@ async function fixture(
       managers.push(manager);
       return manager;
     },
-    async read(r: EventWaitRecord) {
+    async read(r: Pick<EventWaitRecord, 'sessionId' | 'waitId'>) {
       return (await stores.eventWaitStore.read({ sessionId: r.sessionId, waitId: r.waitId }))
         ?.record;
     },

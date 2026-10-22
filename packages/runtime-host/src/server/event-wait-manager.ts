@@ -1477,8 +1477,9 @@ export class HostEventWaitObserver {
 
 /** Existing Goal entry point retains authenticated storage and strict Goal record validation. */
 export interface HostEventWaitManagerOptions
-  extends Omit<HostEventWaitObserverOptions, 'store' | 'decodeRecord' | 'authorize'> {
+  extends Omit<HostEventWaitObserverOptions, 'store' | 'decodeRecord' | 'authorize' | 'onChanged'> {
   readonly store: InteractiveEventWaitAuthorityWriter;
+  readonly onChanged?: (wait: GoalEventWaitRecord) => void;
   readonly authorize: (
     wait: GoalEventWaitRecord,
     signal: AbortSignal,
@@ -1500,6 +1501,7 @@ export class HostEventWaitManager extends HostEventWaitObserver {
       ...options,
       decodeRecord: decodeEventWaitRecord,
       authorize: (wait, signal) => options.authorize(decodeEventWaitRecord(wait), signal),
+      onChanged: (wait) => options.onChanged?.(decodeEventWaitRecord(wait)),
       store: {
         read: (input) => store.read(input),
         listByStatus: (input) => store.listByStatus(input),
