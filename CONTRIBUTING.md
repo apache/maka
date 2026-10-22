@@ -68,7 +68,7 @@ npm test             # all workspaces, or: npm --workspace @maka/core run test:d
 
 Use `dev:worktree` when developing multiple checkouts or testing changes to stored data formats. It starts with a separate configuration and keeps using the same data directory for that checkout. See [worktree development profiles](./apps/desktop/README.md#worktree-development-profiles) for locations and overrides.
 
-Building a single workspace only succeeds when its dependencies are already built — when unsure, build from the root. Tests run against compiled output in `dist/`, so `test:dist` covers whatever the last build produced; rebuild before running it. `npm test` from the root does both.
+Building a single workspace only succeeds when its dependencies are already built — when unsure, build from the root. Tests run against compiled output in `dist/`, so `test:dist` covers whatever the last build produced; rebuild before running it. `npm test` from the root does both. If `npm run build` reports compiled tests with no matching source after a pull or branch switch, run `npm run rebuild` to clear old output and incremental build state.
 
 Before pushing, match CI locally:
 
