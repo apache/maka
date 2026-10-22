@@ -18,8 +18,8 @@
  */
 
 /**
- * Rewrites the LC_UUID load command of every Mach-O in a packaged macOS app
- * bundle (#6026).
+ * Rewrites the LC_UUID load command of the main and helper executables of a
+ * packaged macOS app bundle (#6026).
  *
  * electron-builder renames Electron's executable files but never relinks them,
  * so every shipped binary keeps the UUID burned into it by Electron's build:
@@ -28,12 +28,22 @@
  * LC_UUID, so Maka shares a privacy identity with every other Electron 43
  * install and never gets an entry of its own.
  *
+ * Scope: regular files under `*.app/Contents/MacOS` — the main executable and
+ * the helpers, the binaries NECP keys on. `Electron Framework`, the dylibs,
+ * `chrome_crashpad_handler` and ShipIt keep Electron's own UUIDs; symbolizing
+ * their crash reports keeps working unchanged.
+ *
  * The replacement is UUIDv5 (SHA-1, RFC 4122) over the app id, the executable
- * file name and the slice's CPU type — deterministic, so repackaging the same
- * inputs yields the same identity, and running the rewrite twice changes
- * nothing. It runs from the `afterPack` hook, which is before code signing:
- * the signature then covers the rewritten bytes, and notarization sees a
- * self-consistent bundle.
+ * file name, the slice's CPU type and the slice's original UUID. The original
+ * UUID is the native-build discriminator (Apple TN3178): two Electron builds
+ * of the same version carry different originals, so they stay distinguishable
+ * after the rewrite, and repackaging the same Electron dist yields the same
+ * identity. The trade-off: Electron's published dSYMs no longer match the
+ * rewritten executables, so the hook writes `lc-uuid-map.json` next to the
+ * bundle mapping every original UUID to its replacement for crash
+ * diagnostics. It runs from the `afterPack` hook, which is before code
+ * signing: the signature then covers the rewritten bytes, and notarization
+ * sees a self-consistent bundle.
  */
 
 import { createHash } from 'node:crypto';
@@ -68,6 +78,11 @@ const CPU_TYPE_NAMES = new Map([
   [0x0100000c, 'arm64'],
 ]);
 
+function formatUuid(bytes) {
+  const hex = bytes.toString('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
+
 export function uuidv5(namespaceUuid, name) {
   const digest = createHash('sha1')
     .update(Buffer.from(namespaceUuid.replaceAll('-', ''), 'hex'))
@@ -85,11 +100,16 @@ function cpuTypeName(cpuType) {
 
 /**
  * The deterministic replacement UUID for one executable slice: distinct per
- * app, per executable and per architecture, yet stable across rebuilds.
+ * app, per executable, per architecture and per native build (via the slice's
+ * original UUID), yet stable across rebuilds of the same Electron dist.
  */
-export function deterministicExecutableUuid(appId, executableName, cpuType) {
-  // '/' cannot appear in a file name, so the joined name is unambiguous.
-  return uuidv5(MAKA_UUID_NAMESPACE, `${appId}/${executableName}/${cpuTypeName(cpuType)}`);
+export function deterministicExecutableUuid(appId, executableName, cpuType, originalUuid) {
+  // '/' cannot appear in a file name or a UUID, so the joined name is
+  // unambiguous.
+  return uuidv5(
+    MAKA_UUID_NAMESPACE,
+    `${appId}/${executableName}/${cpuTypeName(cpuType)}/${originalUuid}`,
+  );
 }
 
 /**
@@ -137,15 +157,19 @@ function thinLcUuidLocations(buffer, base) {
 
 /**
  * Replaces every LC_UUID payload in `buffer` in place; the buffer length and
- * all other bytes are left exactly as they were.
+ * all other bytes are left exactly as they were. Returns one record per
+ * rewritten payload, keyed by CPU type, with the original and replacement
+ * UUIDs.
  */
 export function rewriteBufferUuids(buffer, appId, executableName) {
+  const mapping = [];
   for (const { offset, cpuType } of machoLcUuidLocations(buffer)) {
-    Buffer.from(
-      deterministicExecutableUuid(appId, executableName, cpuType).replaceAll('-', ''),
-      'hex',
-    ).copy(buffer, offset);
+    const original = formatUuid(buffer.subarray(offset, offset + UUID_SIZE));
+    const rewritten = deterministicExecutableUuid(appId, executableName, cpuType, original);
+    Buffer.from(rewritten.replaceAll('-', ''), 'hex').copy(buffer, offset);
+    mapping.push({ cpuType: cpuTypeName(cpuType), original, rewritten });
   }
+  return mapping;
 }
 
 async function rewriteExecutableFile(path, appId) {
@@ -153,8 +177,9 @@ async function rewriteExecutableFile(path, appId) {
   if (machoLcUuidLocations(buffer).length === 0) {
     throw new Error(`no LC_UUID load command in packaged executable ${path}`);
   }
-  rewriteBufferUuids(buffer, appId, basename(path));
+  const mapping = rewriteBufferUuids(buffer, appId, basename(path));
   await writeFile(path, buffer);
+  return mapping;
 }
 
 async function findAppBundleExecutables(directory) {
@@ -178,9 +203,10 @@ async function findAppBundleExecutables(directory) {
 
 /**
  * The electron-builder `afterPack` hook: rewrites the main executable and
- * every helper executable of the packaged macOS app. Runs before signing, so
- * the new UUIDs are covered by the signature. Other platforms have no Mach-O
- * to fix and are untouched.
+ * every helper executable of the packaged macOS app and writes the
+ * original-to-rewritten UUID map next to the bundle for crash diagnostics.
+ * Runs before signing, so the new UUIDs are covered by the signature. Other
+ * platforms have no Mach-O to fix and are untouched.
  */
 export async function rewritePackagedMacosUuids(context) {
   if (context.electronPlatformName !== 'darwin') return;
@@ -189,7 +215,11 @@ export async function rewritePackagedMacosUuids(context) {
   if (executables.length === 0) {
     throw new Error(`no .app bundle found under ${context.appOutDir}`);
   }
+  const map = {};
   for (const executable of executables) {
-    await rewriteExecutableFile(executable, appId);
+    map[executable] = await rewriteExecutableFile(executable, appId);
   }
+  const mapPath = join(context.appOutDir, 'lc-uuid-map.json');
+  await writeFile(mapPath, `${JSON.stringify(map, null, 2)}\n`);
+  return map;
 }

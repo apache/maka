@@ -20,7 +20,7 @@
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { test } from 'node:test';
 import {
   deterministicExecutableUuid,
@@ -83,16 +83,27 @@ function fatMachO(slices) {
   return buffer;
 }
 
+/** Formats 16 raw bytes as the canonical dashed lowercase UUID form. */
+function dashedUuid(bytes) {
+  const hex = bytes.toString('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
+
 /** Rewrites `buffer` and asserts everything but the UUID payloads survived. */
 function rewrittenLike(original, appId, executableName, uuidFor) {
   const rewritten = Buffer.from(original);
   const expected = Buffer.from(original);
-  const locations = machoLcUuidLocations(rewritten);
+  const locations = machoLcUuidLocations(original);
   assert.ok(locations.length > 0, 'fixture must carry an LC_UUID');
   for (const { offset, cpuType } of locations) {
-    const uuid = uuidFor(cpuType);
-    rewritten.write(uuid.replaceAll('-', ''), offset, 'hex');
-    expected.write(uuid.replaceAll('-', ''), offset, 'hex');
+    // Only `expected` gets the target bytes: pre-writing them into `rewritten`
+    // would let a no-op rewrite pass the comparison below. The slice's ORIGINAL
+    // UUID is the native-build discriminator, so it feeds the derivation.
+    expected.write(
+      uuidFor(cpuType, dashedUuid(original.subarray(offset, offset + 16))).replaceAll('-', ''),
+      offset,
+      'hex',
+    );
   }
   rewriteBufferUuids(rewritten, appId, executableName);
   assert.equal(rewritten.length, original.length, 'file size must not change');
@@ -111,19 +122,44 @@ test('uuidv5 follows RFC 4122', () => {
 });
 
 test('executable UUIDs are deterministic and distinguish every input', () => {
-  const base = deterministicExecutableUuid('com.maka.desktop', 'Maka', CPU_TYPE_ARM64);
-  assert.equal(base, deterministicExecutableUuid('com.maka.desktop', 'Maka', CPU_TYPE_ARM64));
+  const original = OLD_UUID.toString('hex');
+  const base = deterministicExecutableUuid('com.maka.desktop', 'Maka', CPU_TYPE_ARM64, original);
+  assert.equal(
+    base,
+    deterministicExecutableUuid('com.maka.desktop', 'Maka', CPU_TYPE_ARM64, original),
+  );
   assert.notEqual(
     base,
-    deterministicExecutableUuid('com.maka.desktop', 'Maka Helper', CPU_TYPE_ARM64),
+    deterministicExecutableUuid('com.maka.desktop', 'Maka Helper', CPU_TYPE_ARM64, original),
   );
-  assert.notEqual(base, deterministicExecutableUuid('com.maka.desktop', 'Maka', CPU_TYPE_X86_64));
-  assert.notEqual(base, deterministicExecutableUuid('com.other.app', 'Maka', CPU_TYPE_ARM64));
+  assert.notEqual(
+    base,
+    deterministicExecutableUuid('com.maka.desktop', 'Maka', CPU_TYPE_X86_64, original),
+  );
+  assert.notEqual(
+    base,
+    deterministicExecutableUuid('com.other.app', 'Maka', CPU_TYPE_ARM64, original),
+  );
+  // Two different Electron builds of the same version stay distinguishable
+  // (Apple TN3178): their native originals differ, so the replacements do too.
+  assert.notEqual(
+    base,
+    deterministicExecutableUuid(
+      'com.maka.desktop',
+      'Maka',
+      CPU_TYPE_ARM64,
+      'a16a76f57ae254c59b4b0032949b1d91',
+    ),
+  );
 });
 
 test('rewriting a thin Mach-O replaces only the LC_UUID payload', () => {
-  rewrittenLike(thinMachO(CPU_TYPE_ARM64, OLD_UUID), 'com.maka.desktop', 'Maka', () =>
-    deterministicExecutableUuid('com.maka.desktop', 'Maka', CPU_TYPE_ARM64),
+  rewrittenLike(
+    thinMachO(CPU_TYPE_ARM64, OLD_UUID),
+    'com.maka.desktop',
+    'Maka',
+    (_cpuType, original) =>
+      deterministicExecutableUuid('com.maka.desktop', 'Maka', CPU_TYPE_ARM64, original),
   );
 });
 
@@ -135,7 +171,8 @@ test('rewriting a fat Mach-O gives each architecture its own UUID', () => {
     ]),
     'com.maka.desktop',
     'Maka',
-    (cpuType) => deterministicExecutableUuid('com.maka.desktop', 'Maka', cpuType),
+    (cpuType, original) =>
+      deterministicExecutableUuid('com.maka.desktop', 'Maka', cpuType, original),
   );
   assert.equal(locations.length, 2);
   assert.notEqual(
@@ -145,12 +182,36 @@ test('rewriting a fat Mach-O gives each architecture its own UUID', () => {
   );
 });
 
-test('rewriting is idempotent', () => {
-  const once = thinMachO(CPU_TYPE_ARM64, OLD_UUID);
-  rewriteBufferUuids(once, 'com.maka.desktop', 'Maka');
-  const twice = Buffer.from(once);
-  rewriteBufferUuids(twice, 'com.maka.desktop', 'Maka');
-  assert.deepEqual(twice, once);
+test('repackaging the same Electron dist yields the same identity', () => {
+  // The original UUID feeds the derivation, so feeding a REWRITTEN buffer back
+  // in derives a different (still stable) identity by design — the hook always
+  // starts from electron's pristine dist. What must hold: the same original
+  // always lands on the same replacement.
+  const first = thinMachO(CPU_TYPE_ARM64, OLD_UUID);
+  rewriteBufferUuids(first, 'com.maka.desktop', 'Maka');
+  const second = thinMachO(CPU_TYPE_ARM64, OLD_UUID);
+  rewriteBufferUuids(second, 'com.maka.desktop', 'Maka');
+  assert.deepEqual(second, first);
+});
+
+test('rewrites record the original UUID per rewritten slice', () => {
+  const mapping = rewriteBufferUuids(
+    thinMachO(CPU_TYPE_ARM64, OLD_UUID),
+    'com.maka.desktop',
+    'Maka',
+  );
+  assert.deepEqual(mapping, [
+    {
+      cpuType: 'arm64',
+      original: dashedUuid(OLD_UUID),
+      rewritten: deterministicExecutableUuid(
+        'com.maka.desktop',
+        'Maka',
+        CPU_TYPE_ARM64,
+        dashedUuid(OLD_UUID),
+      ),
+    },
+  ]);
 });
 
 test('the afterPack hook rewrites the app and every helper executable', async () => {
@@ -174,7 +235,12 @@ test('the afterPack hook rewrites the app and every helper executable', async ()
 
   for (const [path, name] of executables) {
     const bytes = await readFile(path);
-    const expected = deterministicExecutableUuid('com.maka.desktop', name, CPU_TYPE_ARM64);
+    const expected = deterministicExecutableUuid(
+      'com.maka.desktop',
+      name,
+      CPU_TYPE_ARM64,
+      dashedUuid(OLD_UUID),
+    );
     const [location] = machoLcUuidLocations(bytes);
     assert.equal(
       bytes.subarray(location.offset, location.offset + 16).toString('hex'),
@@ -182,6 +248,51 @@ test('the afterPack hook rewrites the app and every helper executable', async ()
       `${path} must carry the deterministic UUID`,
     );
   }
+});
+
+test('the afterPack hook records the rewritten-to-original UUID map', async () => {
+  // Electron's published dSYMs are keyed by the ORIGINAL build UUID (Apple
+  // TN3178): without a retained mapping, a rewritten executable can never be
+  // symbolicated. The map lands NEXT TO the bundle so it stays out of the
+  // signed/notarized payload.
+  const root = await mkdtemp(join(tmpdir(), 'maka-lc-uuid-'));
+  const bundle = join(root, 'Maka.app');
+  const helper = join(
+    bundle,
+    'Contents',
+    'Frameworks',
+    'Maka Helper.app',
+    'Contents',
+    'MacOS',
+    'Maka Helper',
+  );
+  const main = join(bundle, 'Contents', 'MacOS', 'Maka');
+  for (const path of [main, helper]) {
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, thinMachO(CPU_TYPE_ARM64, OLD_UUID));
+  }
+
+  const map = await rewritePackagedMacosUuids({
+    electronPlatformName: 'darwin',
+    appOutDir: root,
+    packager: { appInfo: { id: 'com.maka.desktop', productFilename: 'Maka' } },
+  });
+
+  for (const path of [main, helper]) {
+    const rewritten = deterministicExecutableUuid(
+      'com.maka.desktop',
+      basename(path),
+      CPU_TYPE_ARM64,
+      dashedUuid(OLD_UUID),
+    );
+    assert.deepEqual(
+      map[path],
+      [{ cpuType: 'arm64', original: dashedUuid(OLD_UUID), rewritten }],
+      `${path}'s rewritten UUID must map back to the original build`,
+    );
+  }
+  const persisted = JSON.parse(await readFile(join(root, 'lc-uuid-map.json'), 'utf8'));
+  assert.deepEqual(persisted, map, 'the persisted file must match the returned map');
 });
 
 test('the afterPack hook leaves non-macOS targets alone', async () => {
