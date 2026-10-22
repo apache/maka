@@ -22,7 +22,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Notebook, importLegacy } from '../../../../src/assistant/index-initiative/notebook.js';
+import { Notebook } from '../../../../src/assistant/index-initiative/notebook.js';
 
 const time = '2026-10-22T10:00:00Z';
 const note = (id = 'tea', tags = ['tea']) => ({
@@ -233,28 +233,29 @@ test('whole draft is atomic and operation retries do not duplicate records', (t)
   );
   assert.equal(b.topics().has('rollback'), false);
 });
-test('legacy import preserves text, exact sources, links, and recording time without inventing occurrence dates', (t) => {
+test('notes preserve sources, links, and recording time without inventing occurrence dates', (t) => {
   const b = new Notebook(':memory:', () => time);
   t.after(() => b.close());
-  const legacy = {
-    nodes: [
-      {
-        id: 'old',
-        title: '旧经历',
-        entries: [
-          {
-            at: '2026-09-01T00:00:00Z',
-            text: '一月剪辑过短片。',
-            refs: ['memory-original:abc', 'https://example.org/article'],
-            related: ['other'],
-          },
-        ],
-      },
-      { id: 'other', title: '其他认识', entries: [{ at: time, text: '另一条认识。' }] },
-    ],
+  const old = {
+    topicId: 'old',
+    title: '旧经历',
+    text: '一月剪辑过短片。',
+    occurredAt: null,
+    sources: ['memory-original:abc', 'https://example.org/article'],
+    related: ['other'],
   };
-  importLegacy(b, legacy);
-  importLegacy(b, legacy);
+  b.appendNote(old, 'old-note', '2026-09-01T00:00:00Z');
+  b.appendNote(old, 'old-note', '2026-09-01T00:00:00Z');
+  b.appendNote(
+    {
+      topicId: 'other',
+      title: '其他认识',
+      text: '另一条认识。',
+      occurredAt: null,
+      sources: ['历史记录'],
+    },
+    'other-note',
+  );
   assert.equal(b.events('note').length, 2);
   assert.equal(b.topics().get('old').notes[0].occurredAt, null);
   assert.equal(b.topics().get('old').notes[0].recordedAt, '2026-09-01T00:00:00Z');
@@ -384,23 +385,28 @@ test('judgement can send several directions without adding notes, including cont
 test('restored occurrence time and recording time stay distinct and visible, with explicit unknowns', (t) => {
   const b = new Notebook(':memory:', () => time);
   t.after(() => b.close());
-  importLegacy(b, {
-    nodes: [
-      {
-        id: 'old',
-        title: '旧事项',
-        entries: [
-          {
-            at: '2026-10-22T10:00:00Z',
-            text: '5月做过的项目',
-            refs: ['历史记录'],
-            occurredAt: '5月（项目开发）',
-          },
-          { at: '2026-10-22T10:00:00Z', text: '没有日期的资料', refs: ['旧资料'] },
-        ],
-      },
-    ],
-  });
+  b.appendNote(
+    {
+      topicId: 'old',
+      title: '旧事项',
+      text: '5月做过的项目',
+      occurredAt: '5月（项目开发）',
+      sources: ['历史记录'],
+    },
+    'dated-note',
+    '2026-10-22T10:00:00Z',
+  );
+  b.appendNote(
+    {
+      topicId: 'old',
+      title: '旧事项',
+      text: '没有日期的资料',
+      occurredAt: null,
+      sources: ['旧资料'],
+    },
+    'undated-note',
+    '2026-10-22T10:00:00Z',
+  );
   const notes = b.topics().get('old').notes;
   assert.equal(notes[0].occurredAt, '5月（项目开发）');
   assert.equal(notes[0].recordedAt, '2026-10-22T10:00:00Z');

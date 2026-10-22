@@ -398,33 +398,3 @@ export class Notebook {
     return lines.join('\n') + '\n';
   }
 }
-
-export function importLegacy(book: Notebook, legacy: any, id = 'legacy-import') {
-  const digest = fingerprint(legacy);
-  const old = book.event(id);
-  if (old) {
-    requireThat(old.payload.digest === digest, 'Legacy import content changed');
-    return;
-  }
-  book.transaction(() => {
-    for (const n of legacy.nodes)
-      n.entries.forEach((e: any, i: number) => {
-        // Discovery time is deliberately NOT promoted to occurrence time.
-        const sources = e.refs ?? [];
-        book.appendNote(
-          {
-            topicId: n.id,
-            title: n.title,
-            text: e.text,
-            occurredAt: e.occurredAt ?? null,
-            sources: sources.length ? sources : ['既有记事本（未注明原始来源）'],
-            tags: [n.id],
-            related: e.related ?? [],
-          },
-          `${id}:${n.id}:${i}`,
-          e.at,
-        );
-      });
-    book.put(id, 'legacy-import', { digest });
-  });
-}
