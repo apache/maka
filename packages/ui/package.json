@@ -28,18 +28,18 @@
     "test:images:browser": "npm run build && node --test scripts/markdown-images.browser.test.mjs"
   },
   "dependencies": {
-    "@astryxdesign/core": "0.6.3",
+    "@astryxdesign/core": "0.7.1",
     "@maka/core": "0.1.0",
     "clsx": "^2.1.1",
-    "katex": "0.18.9",
-    "lucide-react": "^1.48.0",
+    "katex": "0.19.0",
+    "lucide-react": "^1.59.0",
     "mermaid": "^11.17.2",
-    "react": "^19.3.0",
-    "react-dom": "^19.3.0",
-    "virtua": "0.52.7"
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "virtua": "0.53.5"
   },
   "devDependencies": {
-    "@playwright/test": "^1.63.0",
+    "@playwright/test": "^1.64.1",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "esbuild": "^0.28.2",
