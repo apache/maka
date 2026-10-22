@@ -39,3 +39,5 @@ export const legacyAssistantInputTurnId = (messageId: string) => `assistant-inpu
 export const assistantOutputTurnId = (batchId: string) => `assistant-output-${digest(batchId)}`;
 export const assistantBatchOutputTurnId = (batchId: string, index: number) =>
   `assistant-output-batch-${digest(batchId)}-${index}`;
+// The id is a fresh UUID minted by the bot, so it needs no hashing.
+export const assistantErrorOutputTurnId = (id: string) => `assistant-output-error-${id}`;

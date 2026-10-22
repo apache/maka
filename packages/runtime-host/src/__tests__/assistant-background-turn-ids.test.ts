@@ -20,8 +20,10 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { describe, it } from 'node:test';
+import { isAssistantInputTurnId, isAssistantOutputTurnId } from '@maka/core/assistant-turn-ids';
 import {
   assistantBatchOutputTurnId,
+  assistantErrorOutputTurnId,
   assistantInputTurnId,
   assistantOutputTurnId,
   legacyAssistantInputTurnId,
@@ -54,6 +56,19 @@ describe('assistant background turn ids', () => {
         );
       }
     }
+  });
+
+  it('is classified by the shared predicates the UI uses for every producer', () => {
+    for (const raw of CALLER_TEXT) {
+      assert.equal(isAssistantInputTurnId(assistantInputTurnId(raw)), true, raw);
+      assert.equal(isAssistantOutputTurnId(assistantOutputTurnId(raw)), true, raw);
+      assert.equal(isAssistantOutputTurnId(assistantBatchOutputTurnId(raw, 0)), true, raw);
+    }
+    assert.equal(isAssistantOutputTurnId(assistantErrorOutputTurnId(randomUUID())), true);
+    // Legacy transcript ids stay recognized; ordinary turn ids are not classified as assistant.
+    assert.equal(isAssistantInputTurnId(legacyAssistantInputTurnId('m1')), true);
+    assert.equal(isAssistantInputTurnId('turn-1'), false);
+    assert.equal(isAssistantOutputTurnId('turn-1'), false);
   });
 
   it('keeps a retried batch on the same turn id and separates messages within a batch', () => {
