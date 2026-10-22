@@ -28,6 +28,7 @@ test('footer no longer exposes Regenerate', () => {
   assert.deepEqual(
     deriveTurnFooterActions({
       status: 'completed',
+      turnId: 'turn-1',
       hasContent: true,
       locale: 'en',
     }).map((action) => action.id),
@@ -36,6 +37,7 @@ test('footer no longer exposes Regenerate', () => {
   assert.deepEqual(
     deriveTurnFooterActions({
       status: 'running',
+      turnId: 'turn-1',
       hasContent: false,
       locale: 'en',
     }).map((action) => action.id),

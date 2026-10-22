@@ -20,6 +20,7 @@
 import { readMatterRuntimeEvents } from '../assistant/proactive-matters/settlement-context.js';
 import { markAssistantBackgroundSessions } from '../assistant/background-sessions.js';
 import { PersonalAssistantService, ASSISTANT_LEGACY_PACKAGES } from '../assistant/service.js';
+import { assistantInputTurnId, legacyAssistantInputTurnId } from '../assistant/bot/turn-ids.js';
 import { createAssistantMessageReader } from './session-transcript-reader.js';
 import { createImageFileReader } from '@maka/runtime/image-file-reader';
 import { ChatImageDeliveryService } from './chat-image-delivery.js';
@@ -3524,7 +3525,10 @@ export async function createExecutionRuntimeHostComposition(
               const visible = new Set(
                 (await stores.sessionStore.readMessagesSnapshot(input.sessionId))
                   .filter(
-                    (row) => row.type === 'user' && row.turnId === `assistant-input:${row.id}`,
+                    (row) =>
+                      row.type === 'user' &&
+                      (row.turnId === assistantInputTurnId(row.id) ||
+                        row.turnId === legacyAssistantInputTurnId(row.id)),
                   )
                   .map((row) => row.id),
               );

@@ -167,7 +167,7 @@ export function taskDelivery(ctx: any, db: any, store: any, controller: any) {
           {
             sessionId: n.owner,
             cwd,
-            turnId: `task-notification:${n.id}`,
+            turnId: `task-notification-${n.id}`,
             toolCallId: randomUUID(),
             abortSignal: abort.signal,
           },

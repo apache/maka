@@ -159,7 +159,7 @@ describe('Conversation ownership', () => {
       { ...row('C'), name: '个人助手' },
     ]);
     const turns: TurnViewModel[] = [{
-      turnId: 'assistant-output:reply', status: 'completed', tools: [], notes: [], startedAt: 1,
+      turnId: 'assistant-output-reply', status: 'completed', tools: [], notes: [], startedAt: 1,
       timeline: [{ kind: 'text', text: 'Reply to copy', messageId: 'reply', complete: true }],
     }];
     for (const id of ['A', 'B', 'C', 'B', 'A']) {

@@ -77,6 +77,7 @@ export interface DesktopConversationCopy {
     labels: Record<'branch' | 'copy', string>;
     pending: string;
     branchRunning: string;
+    branchUnavailable: string;
     branchAborted: string;
     branch: string;
     copy: string;
@@ -365,7 +366,7 @@ const COPY = resolveUiMessageCatalog(defineShippedUiMessageCatalog<DesktopConver
         provider_retired: '当前任务绑定的连接，其登录方式已从 Maka 移除，无法用于发送。请到 设置 · 模型 改用其他连接后新建任务。',
       },
     },
-    footer: { labels: { branch: '分支', copy: '复制' }, pending: '正在处理…', branchRunning: '当前回答仍在进行中，结束后再分支', branchAborted: '从中断前的上下文分支出新任务', branch: '基于此回答的上下文分支出新任务', copy: '复制回答到剪贴板', copyEmpty: '此回答尚无可复制的内容' },
+    footer: { labels: { branch: '分支', copy: '复制' }, pending: '正在处理…', branchRunning: '当前回答仍在进行中，结束后再分支', branchUnavailable: '这是个人助手的后台回合，无法从它分支', branchAborted: '从中断前的上下文分支出新任务', branch: '基于此回答的上下文分支出新任务', copy: '复制回答到剪贴板', copyEmpty: '此回答尚无可复制的内容' },
     lineage: { regeneratedFrom: '重新生成自旧回答', regeneratedFromTooltip: '这是重新生成的并行回答，点击查看被保留的旧回答', regeneratedTo: '已重新生成 → 新回答', regeneratedToTooltip: '点击跳转到重新生成的新回答' },
     workbar: {
       ariaLabel: '任务工作栏',
@@ -615,7 +616,7 @@ const COPY = resolveUiMessageCatalog(defineShippedUiMessageCatalog<DesktopConver
         provider_retired: '目前任務繫結的連線，其登入方式已從 Maka 移除，無法用於傳送。請到 設定 · 模型 改用其他連線後建立任務。',
       },
     },
-    footer: { labels: { branch: '分支', copy: '複製' }, pending: '正在處理…', branchRunning: '目前回答仍在進行中，結束後再分支', branchAborted: '從中斷前的上下文分支出新任務', branch: '基於此回答的上下文分支出新任務', copy: '複製回答到剪貼簿', copyEmpty: '此回答尚無可複製的內容' },
+    footer: { labels: { branch: '分支', copy: '複製' }, pending: '正在處理…', branchRunning: '目前回答仍在進行中，結束後再分支', branchUnavailable: '這是個人助理的背景回合，無法從它分支', branchAborted: '從中斷前的上下文分支出新任務', branch: '基於此回答的上下文分支出新任務', copy: '複製回答到剪貼簿', copyEmpty: '此回答尚無可複製的內容' },
     lineage: { regeneratedFrom: '重新生成自舊回答', regeneratedFromTooltip: '這是重新生成的並行回答，點選檢視被保留的舊回答', regeneratedTo: '已重新生成 → 新回答', regeneratedToTooltip: '點選跳轉到重新生成的新回答' },
     workbar: {
       ariaLabel: '任務工作欄',
@@ -856,7 +857,7 @@ const COPY = resolveUiMessageCatalog(defineShippedUiMessageCatalog<DesktopConver
         provider_retired: 'The sign-in this task\u2019s connection uses was removed from Maka, so it cannot send. Switch to another connection in Settings · Models, then start a new task.',
       },
     },
-    footer: { labels: { branch: 'Branch', copy: 'Copy' }, pending: 'Working…', branchRunning: 'Wait for the current response to finish before branching', branchAborted: 'Branch from the context before the interruption', branch: 'Branch a new task from this response', copy: 'Copy response to clipboard', copyEmpty: 'This response has no content to copy' },
+    footer: { labels: { branch: 'Branch', copy: 'Copy' }, pending: 'Working…', branchRunning: 'Wait for the current response to finish before branching', branchUnavailable: 'This is a background assistant turn and cannot be branched', branchAborted: 'Branch from the context before the interruption', branch: 'Branch a new task from this response', copy: 'Copy response to clipboard', copyEmpty: 'This response has no content to copy' },
     lineage: { regeneratedFrom: 'Regenerated from previous response', regeneratedFromTooltip: 'This is a parallel regenerated response; click to view the retained previous response', regeneratedTo: 'Regenerated → New response', regeneratedToTooltip: 'Jump to the regenerated response' },
     workbar: {
       ariaLabel: 'Task workbar',

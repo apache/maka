@@ -21,6 +21,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
 import type { StoredMessage } from '@maka/core/session';
+import { assistantBatchOutputTurnId, assistantOutputTurnId } from './turn-ids.js';
 
 export type InboxType = 'user_message' | 'discovery' | 'task_update' | 'system_event';
 export interface InboxInput {
@@ -218,7 +219,9 @@ export class BotStore {
           type: 'assistant',
           id,
           turnId:
-            texts.length === 1 ? `assistant-output:${suffix}` : `assistant-output:batch:${suffix}`,
+            texts.length === 1
+              ? assistantOutputTurnId(batchId)
+              : assistantBatchOutputTurnId(batchId, index),
           ts: timestamp,
           text,
           ...(summary !== undefined ? { summary } : {}),
