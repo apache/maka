@@ -36,7 +36,11 @@ export async function initializeInitiative(
   const location = { value: directory };
   const store = new InitiativeStore(location.value, randomUUID());
   const controller = new InitiativeController(ctx, store, limits);
-  ctx.onClose(() => store.close());
+
+  ctx.onClose(() => {
+    controller.notebook.close();
+    store.close();
+  });
   const activate = () => {
     controller.start();
     return () => controller.close();
@@ -47,59 +51,6 @@ export async function initializeInitiative(
   ctx.backgroundSessions.register(() =>
     [store.get()?.discoverySession, store.get()?.judgementSession].filter(Boolean),
   );
-  ctx.turns.beforeFinish({
-    name: 'index-initiative.candidates',
-    check: ({ sessionId }) => {
-      const s = store.get();
-      if (
-        s?.active?.phase === 'discovery' &&
-        s.discoverySession === sessionId &&
-        !s.candidateReport
-      )
-        return {
-          allow: false,
-          feedback:
-            '本轮发现还没有交接报告。请用 DiscoveryCandidates 保存发现及其依据；没有合适线索也如实记录，然后结束。',
-        };
-      return { allow: true };
-    },
-  });
-  ctx.tools.register({
-    name: 'DiscoveryCandidates',
-    description:
-      '将本轮发现及其依据保存为报告文件，交给判断会话继续调查和决定是否推荐。这里不向用户或 Bot 发消息；即使没有合适线索也如实记录。每轮提交一份完整报告，返回文件路径。',
-    parameters: z.object({ text: z.string().trim().min(1) }),
-    categoryHint: 'file_write',
-    executionSemantics: 'exclusive_step',
-    impl: (input: any, call: any) => store.saveCandidates(call.sessionId, input.text),
-  });
-  ctx.tools.register({
-    name: 'DiscoveryReport',
-    description:
-      '此方法用于提交准备向用户发送的主动发现。请按直接与用户交流的标准组织内容，自行判断哪些信息值得用户知道，并保留必要依据和不确定性。Bot 会负责转达和适配当前对话，不要向 Bot 写“精选几条、其余可以不说”等表达建议。提交成功只表示已交给 Bot，不代表用户已经收到。',
-    parameters: z.object({ text: z.string().trim().min(1).max(24000) }),
-    categoryHint: 'file_write',
-    executionSemantics: 'exclusive_step',
-    impl: (input: any, call: any) => {
-      controller.ready();
-      const state = store.get();
-      if (
-        !state?.active ||
-        state.active.phase !== 'judgement' ||
-        state.judgementSession !== call.sessionId
-      )
-        throw Error('Not the active exploration worker');
-      const id = `discovery:${state.active.id}:${call.toolCallId}`;
-      const reported = ctx.bot.post(state.sessionId, {
-        id,
-        type: 'discovery',
-        source: call.sessionId,
-        content: input.text,
-      });
-      if (!reported) throw Error('Bot did not accept the discovery report');
-      return { reported, sentToUser: false };
-    },
-  });
   ctx.tools.register({
     name: 'DiscoveryContext',
     description:
@@ -204,10 +155,8 @@ export async function initializeInitiative(
     name: 'index-initiative.discovery',
     order: 810,
     text: ({ sessionId }) =>
-      store.get()?.discoverySession === sessionId
-        ? '你负责发现线索，使用可用工具调查，用 DiscoveryCandidates 保存报告交给判断会话。不要调用 DiscoveryReport 或委派执行任务；这里不是用户聊天框。'
-        : store.get()?.judgementSession === sessionId
-          ? '你负责阅读发现报告、调查和判断。值得交流的发现用 DiscoveryReport 交给 Bot；没有合适内容可以结束。这里不是用户聊天框，不要委派执行任务。'
-          : undefined,
+      [store.get()?.discoverySession, store.get()?.judgementSession].includes(sessionId)
+        ? '你在主动助手的后台会话中运行。通过普通文件工具读取共享记事本、写本轮增量；用户交流由 Bot 负责。只读调查，不委派执行任务，不自行安排心跳。'
+        : undefined,
   });
 }

@@ -19,6 +19,7 @@
 
 import { readFileSync } from 'node:fs';
 
+import { output, note } from '../../index-initiative/test/notebook-output.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
@@ -128,8 +129,8 @@ test('source sync → stale index → fresh original → discovery Inbox → Bot
     f.setRunner(async ({ id: sessionId, prompt, invoke }: any) => {
       try {
         if (prompt.startsWith('Runtime heartbeat')) {
-          if (!prompt.includes('报告文件：')) {
-            await invoke('DiscoveryCandidates', { text: '请核对演示验收和离线材料。' });
+          if (prompt.includes('Phase: discovery')) {
+            await output(prompt, { notes: [note] });
             return;
           }
           assert.notEqual(sessionId, 'owner');
@@ -138,7 +139,11 @@ test('source sync → stale index → fresh original → discovery Inbox → Bot
           const q = await invoke('MemorySourceQuery', { source, query: {} });
           const original = await invoke('MemoryOriginal', { ref: q.items[0].ref });
           assert.equal(original.content.body.content, body);
-          await invoke('DiscoveryReport', { text: '演示验收和离线材料都已确认，可以准备演示。' });
+          await output(prompt, {
+            messages: [
+              { text: '演示验收和离线材料都已确认，可以准备演示。', topicIds: [note.topicId] },
+            ],
+          });
           return;
         }
         if (prompt.startsWith('Inbox 有新消息')) {

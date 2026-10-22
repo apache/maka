@@ -21,37 +21,33 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile, stat } from 'node:fs/promises';
 import { fixture, until } from './fixture.js';
+import { output, view, note } from './notebook-output.js';
 import { InitiativeStore } from '../../../../src/assistant/index-initiative/store.js';
+import { Notebook } from '../../../../src/assistant/index-initiative/notebook.js';
 
-test('two persistent workers hand off a file without leaking candidates to Bot or judge prompt', async () => {
+test('two persistent workers share append-only knowledge, not a fixed candidate report', async () => {
   const f = await fixture();
   try {
     await f.remote('assistant.bind', { sessionId: 'owner' });
     const discoveries: string[] = [],
       judgements: string[] = [],
       paths: string[] = [];
-    const text = 'Private candidate evidence: investigate the new exhibition.';
-    f.setRunner(async ({ id, prompt, invoke }: any) => {
-      if (!prompt.includes('报告文件：')) {
+    f.setRunner(async ({ id, prompt, invoke, finish }: any) => {
+      const path = view(prompt);
+      paths.push(path);
+      assert.equal((await stat(path)).mode & 0o777, 0o600);
+      assert.equal((await finish()).allow, true, 'ordinary agent finish, no content approval');
+      if (prompt.includes('Phase: discovery')) {
         discoveries.push(id);
-        await assert.rejects(invoke('DiscoveryReport', { text }), /active/);
-        const report = await invoke('DiscoveryCandidates', { text });
-        paths.push(report.path);
-        assert.equal(await readFile(report.path, 'utf8'), text);
-        assert.equal((await stat(report.path)).mode & 0o777, 0o600);
-        assert.deepEqual(await invoke('DiscoveryCandidates', { text }), report);
-        await assert.rejects(
-          invoke('DiscoveryCandidates', { text: 'different' }),
-          /already submitted/,
-        );
+        assert.equal(prompt.includes('从生活和工作等多个方面出发'), discoveries.length === 1);
+        assert.doesNotMatch(prompt, /10 个|六个|DiscoveryCandidates/);
+        await output(prompt, { notes: discoveries.length === 1 ? [note] : [] });
       } else {
         judgements.push(id);
-        assert.equal(discoveries.length, judgements.length);
-        assert.ok(prompt.includes(paths.at(-1)));
-        assert.ok(!prompt.includes(text));
-        await assert.rejects(invoke('DiscoveryCandidates', { text }), /active/);
+        assert.match(await readFile(path, 'utf8'), /用户曾关注摄影展/);
+        assert.ok(!prompt.includes(note.text), 'the notebook is read from file');
         await invoke('DiscoveryContext', {});
-        // Nothing merits a user message; ordinary completion is valid for judgement.
+        await output(prompt);
       }
     });
     for (let i = 0; i < 2; i++) {
@@ -64,90 +60,86 @@ test('two persistent workers hand off a file without leaking candidates to Bot o
     assert.equal(new Set(discoveries).size, 1);
     assert.equal(new Set(judgements).size, 1);
     assert.notEqual(discoveries[0], judgements[0]);
-    assert.equal(new Set(paths).size, 2);
-    const configured = await f.invoke('InitiativeConfigure', { intervalMinutes: 90 });
-    assert.equal(configured.judgementSession, judgements[0]);
-    assert.equal(configured.discoverySession, discoveries[0]);
-    assert.equal(configured.candidateReport, undefined);
+    for (const path of paths) await assert.rejects(readFile(path), /ENOENT/);
     assert.deepEqual(f.workers.get('owner').transcript, []);
   } finally {
     await f.close();
   }
 });
-
-test('judgement failure resumes saved report, without rerunning discovery', async () => {
+test('judgement failure resumes shared notebook without repeating discovery', async () => {
   const f = await fixture();
+  let discoveries = 0,
+    judgements = 0;
   try {
     await f.remote('assistant.bind', { sessionId: 'owner' });
-    let discovered = 0,
-      judged = 0,
-      path = '';
-    f.setRunner(async ({ prompt, invoke }: any) => {
-      if (!prompt.includes('报告文件：')) {
-        discovered++;
-        path = (await invoke('DiscoveryCandidates', { text: 'Unresolved candidate' })).path;
+    f.setRunner(async ({ prompt }: any) => {
+      if (prompt.includes('Phase: discovery')) {
+        discoveries++;
+        await output(prompt, { notes: [note] });
       } else {
-        judged++;
-        assert.ok(prompt.includes(path));
-        if (judged === 1) throw Error('provider unavailable');
+        judgements++;
+        assert.match(await readFile(view(prompt), 'utf8'), /用户曾关注摄影展/);
+        if (judgements === 1) throw Error('provider unavailable');
+        await output(prompt);
       }
     });
     await f.invoke('InitiativeControl', { action: 'check' });
     await until(async () => (await f.invoke('InitiativeStatus')).lastError);
-    assert.equal((await f.invoke('InitiativeStatus')).candidateReport.path, path);
+    assert.equal((await f.invoke('InitiativeStatus')).pendingJudgement, true);
     await f.invoke('InitiativeConfigure', { intervalMinutes: 90 });
     await f.invoke('InitiativeControl', { action: 'check' });
-    await until(async () => judged === 2 && !(await f.invoke('InitiativeStatus')).active);
-    assert.equal(discovered, 1);
+    await until(async () => judgements === 2 && !(await f.invoke('InitiativeStatus')).active);
+    assert.equal(discoveries, 1);
     assert.equal((await f.invoke('InitiativeStatus')).lastError, null);
-    assert.equal((await f.invoke('InitiativeStatus')).candidateReport, undefined);
   } finally {
     await f.close();
   }
 });
-
-test('missing report is a visible failure and never starts judgement', async () => {
+test('missing output is a visible execution error, empty notes are allowed', async () => {
   const f = await fixture();
   try {
     await f.remote('assistant.bind', { sessionId: 'owner' });
     f.setRunner(async () => {});
     await f.invoke('InitiativeControl', { action: 'check' });
     await until(async () => (await f.invoke('InitiativeStatus')).lastError);
-    const state = await f.invoke('InitiativeStatus');
-    assert.match(state.lastError, /without a report/);
-    assert.equal(state.judgementSession, undefined);
+    assert.match((await f.invoke('InitiativeStatus')).lastError, /operations.json/);
+    assert.equal((await f.invoke('InitiativeStatus')).judgementSession, undefined);
   } finally {
     await f.close();
   }
 });
-
-test('restart preserves report and both worker bindings without clearing indexes or changing cadence', async () => {
+test('restart preserves shared notes and pending judgement with both role bindings', async () => {
   const f = await fixture();
   try {
-    const s = new InitiativeStore(f.root + '/restart-state', 'test-owner');
-    assert.ok(s.lease());
+    const dir = f.root + '/restart-state';
+    const s = new InitiativeStore(dir, 'a');
+    s.lease();
     s.bind({ sessionId: 'owner', cwd: f.root });
     s.configure({ sessionId: 'owner', cwd: f.root }, 5400000);
     s.update((v) => {
-      v.discoverySession = 'discovery';
-      v.judgementSession = 'judge';
+      v.discoverySession = 'd';
+      v.judgementSession = 'j';
+      v.pendingJudgement = true;
     });
+    const book = new Notebook(dir + '/notebook.sqlite');
+    book.appendNote(note, 'note');
+    book.close();
     s.control('check');
     s.claim();
-    const report = s.saveCandidates('discovery', 'Saved report');
     s.release();
     s.close();
-    const resumed = new InitiativeStore(f.root + '/restart-state', 'new-owner');
-    assert.ok(resumed.lease());
-    resumed.recover();
-    assert.equal(resumed.get().intervalMs, 5400000);
-    assert.equal(resumed.get().judgementSession, 'judge');
-    assert.deepEqual(resumed.get().candidateReport, report);
-    resumed.control('check');
-    assert.equal(resumed.claim().active.phase, 'judgement');
-    assert.equal(await readFile(report.path, 'utf8'), 'Saved report');
-    resumed.release();
-    resumed.close();
+    const next = new InitiativeStore(dir, 'b');
+    next.lease();
+    next.recover();
+    next.control('check');
+    assert.equal(next.claim().active.phase, 'judgement');
+    assert.equal(next.get().intervalMs, 5400000);
+    assert.equal(next.get().discoverySession, 'd');
+    const restored = new Notebook(dir + '/notebook.sqlite');
+    assert.match(restored.render(), /用户曾关注摄影展/);
+    restored.close();
+    next.release();
+    next.close();
   } finally {
     await f.close();
   }

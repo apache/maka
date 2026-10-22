@@ -22,6 +22,7 @@ import assert from 'node:assert/strict';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { copyFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
+import { output } from './notebook-output.js';
 import { DISCOVERY_TASK } from '../../../../src/assistant/index-initiative/prompt.js';
 import { fixture as unboundFixture, until } from './fixture.js';
 
@@ -33,14 +34,17 @@ async function fixture(options: any = {}) {
   const setRunner = f.setRunner;
   f.setRunner = (fn: any) =>
     setRunner(async (call: any) => {
-      if (call.prompt.includes('报告文件：')) return; // Controlled judgement elects silence.
+      if (call.prompt.includes('Phase: judgement')) {
+        await output(call.prompt);
+        return;
+      } // Controlled judgement elects silence.
       await fn(call);
-      await call.invoke('DiscoveryCandidates', { text: 'Controlled discovery evidence' });
+      await output(call.prompt);
     });
   return f;
 }
 
-test('heartbeat uses an independent exploration Session and exits normally without checkpoint or notebook', async () => {
+test('heartbeat uses an independent exploration Session and exits normally without a candidate-report finish hook', async () => {
   const f = await fixture();
   let checks = 0;
   try {
@@ -48,8 +52,6 @@ test('heartbeat uses an independent exploration Session and exits normally witho
       assert.notEqual(id, 'owner');
       assert.match(prompt, /Runtime heartbeat/);
       assert.ok(prompt.includes(DISCOVERY_TASK), 'default instructions reach the actual heartbeat');
-      assert.equal((await finish()).allow, false);
-      await invoke('DiscoveryCandidates', { text: 'Controlled discovery evidence' });
       assert.equal((await finish()).allow, true);
       checks++;
     });
@@ -170,9 +172,9 @@ test('heartbeat carries UTC time and instructions without copying native convers
       const started = Date.now();
       await f.invoke('InitiativeControl', { action: 'check' });
       await until(async () => !!prompt && !(await f.invoke('InitiativeStatus')).active);
-      assert.ok(prompt.includes(DISCOVERY_TASK));
+      assert.equal(prompt.includes(DISCOVERY_TASK), round === 0);
       assert.match(prompt, /Heartbeat ID:/);
-      const now = /Now \(UTC\): (.+)/.exec(prompt)![1];
+      const now = /当前 UTC 时间：(.+)/.exec(prompt)![1];
       assert.match(now, /Z$/);
       assert.ok(Date.parse(now) >= started && Date.parse(now) <= Date.now());
       assert.doesNotMatch(prompt, /最近的历史交流|previous-message-|visible-message-/);

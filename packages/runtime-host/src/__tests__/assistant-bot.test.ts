@@ -414,12 +414,29 @@ test('independent discovery retains the exact prompt and reports through Inbox, 
     processed = false;
   f.runner(async ({ prompt, invoke }) => {
     if (prompt.includes('Runtime heartbeat')) {
-      if (!prompt.includes('报告文件：')) {
+      if (prompt.includes('Phase: discovery')) {
         assert.ok(prompt.includes(DISCOVERY_TASK));
-        await invoke('DiscoveryCandidates', { text: '日程冲突，需要判断。' });
+        await writeFile(
+          /完成后把增量操作写入 (.+)，格式：/.exec(prompt)![1],
+          JSON.stringify({
+            notes: [
+              {
+                topicId: 'calendar',
+                title: '日程',
+                text: '日程冲突，需要判断。',
+                sources: ['日历'],
+              },
+            ],
+          }),
+        );
         return;
       }
-      await invoke('DiscoveryReport', { text: '已核实：明天的两个日程冲突。' });
+      await writeFile(
+        /完成后把增量操作写入 (.+)，格式：/.exec(prompt)![1],
+        JSON.stringify({
+          messages: [{ text: '已核实：明天的两个日程冲突。', topicIds: ['calendar'] }],
+        }),
+      );
       reported = true;
     } else {
       const rows = await invoke('InboxCheck');

@@ -22,9 +22,14 @@ import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { InitiativeStore } from './store.js';
 import { awaitingUser } from '../execution-outcome.js';
-import { wake } from './prompt.js';
+import { wakeInput, DISCOVERY_TASK, JUDGEMENT_TASK, NOTEBOOK_RULES } from './prompt.js';
+import { Notebook } from './notebook.js';
+import { createHash } from 'node:crypto';
+import { mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync } from 'node:fs';
+import { join } from 'node:path';
 
 export class InitiativeController {
+  readonly notebook: Notebook;
   abort = new AbortController();
   timer: any;
   heartbeat: any;
@@ -46,7 +51,51 @@ export class InitiativeController {
     readonly ctx: any,
     readonly store: InitiativeStore,
     readonly config: any,
-  ) {}
+  ) {
+    const path = join(store.directory, 'notebook.sqlite');
+    this.notebook = new Notebook(path);
+    chmodSync(path, 0o600);
+  }
+  private async refreshFeedback(state: any) {
+    const snapshot = await this.asOwner(state, () => this.ctx.sessionQuery.read(state.sessionId));
+    if (!snapshot) throw Error('Assistant conversation unavailable; cannot refresh feedback');
+    this.ready();
+    for (const message of snapshot.messages ?? []) {
+      if (!message.id || message.origin || !['user', 'assistant'].includes(message.type)) continue;
+      const text = message.displayText ?? message.text;
+      if (typeof text !== 'string' || !text.trim()) continue;
+      const id = `conversation:${message.id}`;
+      if (this.notebook.event(id)) continue;
+      // Host-owned conversation data, never a model-supplied feedback or delivery assertion.
+      const at =
+        message.ts != null && Number.isFinite(new Date(message.ts).getTime())
+          ? new Date(message.ts).toISOString()
+          : new Date().toISOString();
+      if (message.type === 'user') this.notebook.recordFeedback({ id, text, at });
+      else this.notebook.put(id, 'conversation', { text, messageId: message.id }, at);
+    }
+  }
+  private forwardPrepared(state: any) {
+    for (const event of this.notebook.events('prepared')) {
+      const id = `${event.id}:reported`;
+      if (this.notebook.event(id)) continue;
+      // A new user message must be considered before an old recommendation is handed off.
+      if (
+        event.payload.feedbackRevision !== this.notebook.revision() ||
+        this.notebook.pendingFeedback().length
+      )
+        continue;
+      this.ready();
+      const accepted = this.ctx.bot.post(state.sessionId, {
+        id: event.id,
+        type: 'discovery',
+        source: state.judgementSession,
+        content: event.payload.text,
+      });
+      if (!accepted) throw Error('Bot did not accept the discovery report');
+      this.notebook.put(id, 'reported', { preparedId: event.id, text: event.payload.text });
+    }
+  }
   start() {
     const acquire = () => {
       const owned = this.store.lease();
@@ -115,7 +164,10 @@ export class InitiativeController {
   async dispatch() {
     const s = this.store.get();
     if ((!s?.enabled && !s?.checkRequested) || s.active || s.nextAt > Date.now()) return;
-    const agent = await this.worker(s, s.candidateReport ? 'judgement' : 'discovery');
+    const agent = await this.worker(
+      s,
+      s.pendingJudgement || s.candidateReport ? 'judgement' : 'discovery',
+    );
     const snapshot = await agent.snapshot();
     if (snapshot?.agent?.status === 'running' || awaitingUser(snapshot)) return;
     this.ready();
@@ -154,7 +206,29 @@ export class InitiativeController {
   private async execute(agent: any, state: any) {
     this.ready();
     this.activeAgent = agent;
-    const admitted = await agent.followup(wake(state));
+    await this.refreshFeedback(state);
+    const role = state.active.phase === 'discovery' ? 'exploration' : 'judgement';
+    const directory = join(this.store.directory, 'notebook-wakes', state.active.id, role);
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const viewPath = join(directory, 'notebook.md');
+    const outputPath = join(directory, 'operations.json');
+    const revision = this.notebook.revision();
+    const version = createHash('sha256')
+      .update((role === 'exploration' ? DISCOVERY_TASK : JUDGEMENT_TASK) + '\n' + NOTEBOOK_RULES)
+      .digest('hex');
+    writeFileSync(viewPath, this.notebook.render(), { mode: 0o600 });
+    let input = wakeInput({
+      role,
+      now: new Date().toISOString(),
+      viewPath,
+      outputPath,
+      first: state.promptVersions?.[role] !== version,
+    });
+    if (role === 'judgement' && state.candidateReport?.path)
+      input += `\n升级前保留的历史报告：${state.candidateReport.path}。它是参考材料，不是指定候选或当前指令。`;
+    const admitted = await agent.followup(
+      `Runtime heartbeat, not a new human request.\nHeartbeat ID: ${state.active.id}\nPhase: ${state.active.phase}\n${input}`,
+    );
     if (!['turn_started', 'followup'].includes(admitted?.disposition))
       throw Error('Host rejected proactive wake');
     while (
@@ -168,6 +242,20 @@ export class InitiativeController {
     if (['aborted', 'blocked', 'waiting_for_user'].includes(status) || awaitingUser(snapshot))
       throw Error(`Heartbeat ended with ${status}; inspect before resuming`);
     this.ready();
+    this.store.update((s) => {
+      (s.promptVersions ??= {})[role] = version;
+    });
+    await this.refreshFeedback(state);
+    const draft = JSON.parse(readFileSync(outputPath, 'utf8'));
+    this.notebook.commitDraft({
+      role,
+      operationId: `${state.active.id}:${role}`,
+      expectedFeedbackRevision: revision,
+      draft,
+    });
+    // Only the shared notebook survives. Do not expose the other worker's private output files.
+    rmSync(directory, { recursive: true, force: true });
+    if (role === 'judgement') this.forwardPrepared(state);
   }
   async run(agent: any, state: any) {
     const id = state.active.id;
@@ -177,14 +265,13 @@ export class InitiativeController {
       if (state.active.phase === 'discovery') {
         const next = this.store.update((s) => {
           if (s.active?.id !== id) throw Error('Heartbeat ownership changed');
-          if (!s.candidateReport)
-            throw Error('Discovery finished without a report; judgement was not started');
+          s.pendingJudgement = true;
           s.active.phase = 'judgement';
         });
         const judge = await this.worker(next, 'judgement');
         const snapshot = await judge.snapshot();
         if (snapshot?.agent?.status === 'running' || awaitingUser(snapshot))
-          throw Error('Judgement worker is busy or awaiting user input; report retained');
+          throw Error('Judgement worker is busy or awaiting user input; notebook retained');
         await this.execute(judge, this.store.get());
       }
       this.store.finish(id);

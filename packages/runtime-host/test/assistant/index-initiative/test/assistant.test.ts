@@ -22,6 +22,7 @@ import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { join } from 'node:path';
 import { fixture, until } from './fixture.js';
+import { output } from './notebook-output.js';
 import { DISCOVERY_TASK } from '../../../../src/assistant/index-initiative/prompt.js';
 
 test('first open binds one ordinary chat without import, indexing, model calls or heartbeat', async () => {
@@ -76,9 +77,12 @@ test('UI enable checks immediately, status exposes failure without disabling sch
     assert.equal(s.intervalMs, 3600000);
     assert.match(s.lastError, /provider unavailable/);
     f.setRunner(async ({ prompt, invoke }: any) => {
-      if (prompt.includes('报告文件：')) return;
+      if (prompt.includes('Phase: judgement')) {
+        await output(prompt);
+        return;
+      }
       checks++;
-      await invoke('DiscoveryCandidates', { text: 'No candidate worth reporting' });
+      await output(prompt);
     });
     await f.remote('assistant.control', { action: 'enable', intervalMinutes: 30 });
     await until(async () => (await f.remote('assistant.status')).state.lastCheckedAt);
@@ -240,7 +244,11 @@ test('actual heartbeat ignores obsolete saved instructions and the configuration
     await f.invoke('InitiativeEnable', {});
     await f.remote('assistant.control', { action: 'enable', intervalMinutes: 60 });
     await until(async () => prompts.length === 2 && !(await f.invoke('InitiativeStatus')).active);
-    assert.ok(prompts[1].includes(DISCOVERY_TASK));
+    assert.ok(
+      !prompts[1].includes(DISCOVERY_TASK),
+      'unchanged instructions remain in the persistent Session',
+    );
+    assert.match(prompts[1], /记事本：/);
     assert.ok(!prompts[1].includes(obsolete));
   } finally {
     await f.close();

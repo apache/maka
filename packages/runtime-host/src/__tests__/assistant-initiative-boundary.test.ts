@@ -24,8 +24,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { InitiativeStore } from '../assistant/index-initiative/store.js';
-import { InitiativeController } from '../assistant/index-initiative/controller.js';
 import { initializeInitiative } from '../assistant/index-initiative/host.js';
+import { InitiativeController } from '../assistant/index-initiative/controller.js';
 import { AssistantBotBridge } from '../assistant/bot/bridge.js';
 import { publishBotConversationMessage } from '../assistant/bot/conversation.js';
 import { decodeTurnOrigin } from '@maka/core/turn-origin';
@@ -102,45 +102,29 @@ test('empty or ambiguous discovery cannot assign configuration ownership to a ca
   }
 });
 
-test('DiscoveryReport reports real mailbox rejection, success and storage failure', async (t) => {
-  const dir = await directory(t);
-  const tools = new Map<string, any>();
-  const closers: any[] = [];
-  const starters: any[] = [];
-  const bot = new AssistantBotBridge();
-  await initializeInitiative(
-    {
-      bot,
-      systemPrompt: { section() {}, context() {} },
-      turns: { beforeFinish() {} },
-      tools: { register: (tool: any) => tools.set(tool.name, tool) },
-      api: { register() {} },
-      onClose: (fn: any) => closers.push(fn),
-      onStart: (fn: any) => starters.push(fn),
-      sessionQuery: { list: async () => [] },
-      backgroundSessions: { register() {} },
-    } as any,
-    dir,
-  );
-  const stop = starters[0]();
-  const db = new DatabaseSync(join(dir, 'initiative.sqlite'));
-  const owner = String(db.prepare('SELECT owner FROM lease WHERE id=1').get()!.owner);
-  db.close();
-  const store = new InitiativeStore(dir, owner);
+test('prepared notebook messages require actual mailbox acceptance, preserve retry identity and never claim delivery', async (t) => {
+  const dir = await directory(t),
+    store = new InitiativeStore(dir, 'host'),
+    bot = new AssistantBotBridge();
+  store.lease();
   store.bind({ sessionId: 'owner', cwd: dir });
-  store.control('check');
-  store.claim();
-  store.update((s) => {
-    s.judgementSession = 'discovery';
-    s.active.phase = 'judgement';
-  });
-  t.after(async () => {
-    await stop();
+  const controller = new InitiativeController({ bot }, store, { tickMs: 60000 });
+  t.after(() => {
+    controller.notebook.close();
     store.close();
-    for (const close of closers.reverse()) close();
   });
-  const report = tools.get('DiscoveryReport');
-  const call = { sessionId: 'discovery', toolCallId: 'report-1' };
+  const book = controller.notebook;
+  book.commitDraft({
+    role: 'judgement',
+    operationId: 'round',
+    expectedFeedbackRevision: 0,
+    draft: {
+      notes: [{ topicId: 'tea', title: '茶', text: '茶会', sources: ['公告'] }],
+      messages: [{ text: '发现茶会', topicIds: ['tea'] }],
+    },
+  });
+  const forward = () =>
+    (controller as any).forwardPrepared({ sessionId: 'owner', judgementSession: 'judge' });
   let accepted = 0;
   const endpoint = (owner: string, post: () => void) => ({
     owner: () => owner,
@@ -151,29 +135,29 @@ test('DiscoveryReport reports real mailbox rejection, success and storage failur
     post,
   });
   bot.register(
-    endpoint('other-conversation', () => {
+    endpoint('other', () => {
       accepted++;
     }),
   );
-  assert.throws(() => report.impl({ text: 'discovery' }, call), /did not accept/);
+  assert.throws(forward, /did not accept/);
   assert.equal(accepted, 0);
-  bot.register(
-    endpoint('owner', () => {
-      accepted++;
-    }),
-  );
-  assert.deepEqual(report.impl({ text: 'discovery' }, call), { reported: true, sentToUser: false });
-  assert.equal(accepted, 1);
   bot.register(
     endpoint('owner', () => {
       throw Error('mailbox write failed');
     }),
   );
-  assert.throws(() => report.impl({ text: 'discovery' }, call), /mailbox write failed/);
-  assert.throws(
-    () => report.impl({ text: 'discovery' }, { ...call, sessionId: 'unrelated' }),
-    /Not the active/,
+  assert.throws(forward, /mailbox write failed/);
+  assert.equal(book.events('reported').length, 0);
+  bot.register(
+    endpoint('owner', () => {
+      accepted++;
+    }),
   );
+  forward();
+  forward();
+  assert.equal(accepted, 1);
+  assert.equal(book.events('reported').length, 1);
+  assert.equal(book.events('delivery').length, 0);
 });
 
 test('copied external conversation is host-authored and retry cannot erase its provenance', async () => {
