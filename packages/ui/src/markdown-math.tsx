@@ -85,13 +85,21 @@ const pendingLinkScans = new WeakMap<MarkdownMathCache, PendingLinkScan>();
 export function prepareMarkdownMath(
   source: string,
   cache: MarkdownMathCache,
+  {
+    isComplete = false,
+  }: {
+    // A completed render has no future chunks, so an unterminated label or
+    // reference identifier can never become a link. In that case its text is
+    // ordinary prose and display math must keep rendering.
+    isComplete?: boolean;
+  } = {},
 ): string {
   // The caller currently supplies a full string rather than an append token,
   // so proving that a rewrite did not occur requires this prefix check. It
   // keeps the scanner on the changing tail; it does not make the full-string
   // identity check itself incremental.
   const extendsPrevious = source.startsWith(cache.source);
-  if (!extendsPrevious) {
+  if (!extendsPrevious || isComplete) {
     pendingLinkScans.delete(cache);
   } else {
     const pending = pendingLinkScans.get(cache);
@@ -149,6 +157,7 @@ export function prepareMarkdownMath(
   const translatedTail = translateMarkdownMath(source.slice(sourceStart), {
     startsAtLineStart: sourceStart === 0 || source[sourceStart - 1] === '\n',
     priorTextChar: cache.text[textStart - 1],
+    isComplete,
     leadingBackslashes: countPrecedingBackslashes(source, sourceStart),
     linePrefix,
     onLinkPending: (info) => {
@@ -233,6 +242,7 @@ type TranslateMarkdownMathOptions = {
   allowDisplayMath?: boolean;
   protectEscapedBrackets?: boolean;
   isFinalSegment?: boolean;
+  isComplete?: boolean;
   leadingBackslashes?: number;
   linePrefix?: string;
   onLinkPending?: (info: PendingLinkInfo) => void;
@@ -257,6 +267,7 @@ function translateMarkdownMath(
     allowDisplayMath = true,
     protectEscapedBrackets = false,
     isFinalSegment = false,
+    isComplete = false,
     leadingBackslashes = 0,
     linePrefix = '',
     onLinkPending,
@@ -384,8 +395,10 @@ function translateMarkdownMath(
         // Only unclosed labels/identifiers keep display math suppressed while
         // they remain pending; an unclosed inline tail does not, because its
         // destination is copied verbatim and following prose must keep normal
-        // display-math handling.
-        if (link.pendingInfo.kind === 'label' && link.pendingInfo.ref) {
+        // display-math handling. In a completed render nothing can close the
+        // identifier later, so it owns no following text and display math must
+        // render again.
+        if (link.pendingInfo.kind === 'label' && link.pendingInfo.ref && !isComplete) {
           allowDisplayMath = false;
         }
       }
@@ -920,7 +933,12 @@ function readMarkdownLink(
         pendingInfo: { kind: 'label', labelState: refScan.state, ref: true },
       };
     }
-    if (refScan.kind === 'invalid') return match(refScan.end);
+    if (refScan.kind === 'invalid') {
+      // No closing `]` exists before the line break, so this is not a
+      // reference link. Settle only the first label and rescan the rest as
+      // ordinary prose, which keeps display math in that tail visible.
+      return match(labelEnd + 1);
+    }
     return {
       ...match(refScan.end + 1),
       refLabelStart: labelEnd + 2,
@@ -1106,7 +1124,7 @@ function scanInlineTail(source: string, st: TailScanState): TailScanResult {
         st.checkBlank = true;
         return { kind: 'pending', state: st };
       }
-      if (source[st.index + 1] === '\\n') {
+      if (source[st.index + 1] === '\n') {
         return { kind: 'invalid', end: st.index };
       }
       st.index++;

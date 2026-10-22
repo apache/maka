@@ -151,8 +151,10 @@ export function MarkdownBody(props: {
 }) {
   const mathCache = useRef(createMarkdownMathCache());
   const transformMathSource = useCallback(
-    (source: string) => prepareMarkdownMath(source, mathCache.current),
-    [],
+    (source: string) => prepareMarkdownMath(source, mathCache.current, {
+      isComplete: !props.streaming,
+    }),
+    [props.streaming],
   );
   const plugins = useMemo(() => createMarkdownImagePlugins(props.imageDisplay), [props.imageDisplay]);
   const budgetedText = props.streaming ? props.text : applyMermaidRenderBudget(props.text);

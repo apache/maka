@@ -1383,3 +1383,44 @@ it('preserves reference-identifier context during speculative streaming without 
   }));
   assert.doesNotMatch(markup, /maka-math-display|katex-display/);
 });
+
+it('renders display math after an unterminated reference identifier in completed messages', () => {
+  const sources = [
+    'para [a][unfinished\n\\[x^2\\]\n',
+    'para [l][r\n\\[x^2\\]\n\nnext',
+  ];
+
+  for (const source of sources) {
+    const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+      locale: 'en',
+      children: createElement(MarkdownBody, { text: source, streaming: false }),
+    }));
+    assert.match(markup, /class="maka-math maka-math-display"/, source);
+    assert.match(markup, /class="katex-display"/, source);
+
+    const streamCache = createMarkdownMathCache();
+    for (let end = 1; end <= source.length; end++) {
+      prepareMarkdownMath(source.slice(0, end), streamCache);
+    }
+    const afterStreaming = prepareMarkdownMath(source, streamCache, { isComplete: true });
+    const fresh = prepareMarkdownMath(source, createMarkdownMathCache(), { isComplete: true });
+    assert.equal(afterStreaming, fresh, `Completed render diverged after streaming: ${source}`);
+    assert.match(afterStreaming, /\$\$/, `Completed render lost display math: ${source}`);
+  }
+});
+
+it('matches one-shot and incremental scans when an inline tail splits immediately after a newline', () => {
+  const source = 'prefix [label](unfinished\n\nnext $x$ and \\(y\\)';
+  const oneshot = prepareMarkdownMath(source, createMarkdownMathCache());
+
+  for (let split = 1; split < source.length; split++) {
+    if (source[split - 1] !== '\n') continue;
+    const cache = createMarkdownMathCache();
+    prepareMarkdownMath(source.slice(0, split), cache);
+    assert.equal(
+      prepareMarkdownMath(source, cache),
+      oneshot,
+      `Incremental mismatch after a newline split at ${split}`,
+    );
+  }
+});
