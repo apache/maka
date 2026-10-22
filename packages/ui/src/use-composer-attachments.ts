@@ -549,6 +549,14 @@ export function useComposerAttachments(options: {
     for (const item of staged) lifecycle.stagedKeys.add(item.stagingKey);
   }
 
+  /** Removes and returns one owner key's pending attachments, so the revision
+   * lifecycle can re-key a plate (#5109). */
+  function clearAttachmentsAt(ownerKey: string): readonly PendingAttachment[] {
+    const removed = selectPending(pendingStateRef.current.attachments, ownerKey);
+    updateAttachments(ownerKey, (map) => ({ ...map, [ownerKey]: [] }));
+    return removed;
+  }
+
   /** Restore Main-owned recovery approvals and Host references without consuming either source. */
   function restoreMessageContext(ownerKey: string, _hostId: string | undefined, input: {
     attachments: readonly AttachmentRef[];
@@ -666,6 +674,7 @@ export function useComposerAttachments(options: {
     clearSubmittedContext,
     clearSubmittedAttachments,
     clearAllAttachments,
+    clearAttachmentsAt,
     // Acquire before the send's first await; end in finally, after successful
     // submission clears only its captured staging keys. Failed sends keep drafts.
     retainAttachments: (attachments: readonly PendingAttachment[] | undefined) =>

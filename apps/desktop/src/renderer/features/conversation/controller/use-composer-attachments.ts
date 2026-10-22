@@ -55,6 +55,8 @@ export function useComposerAttachments(options: Omit<Parameters<typeof useShared
     attachments: attachments.submittableAttachments ?? [],
     restoreQuotes: quotes.restoreQuotes,
     clearQuotes: quotes.clearQuotes,
+    restoreAttachments: attachments.restoreAttachments,
+    clearAttachments: attachments.clearAttachmentsAt,
   });
   return { ...attachments, ...quotes, restoreQueuedDraftContext, stagedContext,
     captureContext: mutations.capture, markDraftChanged: mutations.changed };

@@ -866,7 +866,10 @@ export function registerRuntimeHostSessionExecutionIpc(
         sourceTurnId: normalized.sourceTurnId,
       });
       deps.emitSessionsChanged("created", revision.id);
-      return toDesktopHostSessionSummary(revision);
+      return {
+        ...toDesktopHostSessionSummary(revision),
+        ...(revision.stagedAttachments ? { stagedAttachments: revision.stagedAttachments } : {}),
+      };
     },
   );
   return async (sessionId) => {

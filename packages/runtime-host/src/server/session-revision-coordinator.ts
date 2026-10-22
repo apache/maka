@@ -424,6 +424,25 @@ export class HostSessionRevisionCoordinator {
       messages: slice.messages,
       runtimeEvents,
     });
+    // The edited turn sits outside the copied slice, so its own attachments
+    // are not carried by the transcript copy. A revision stages them into the
+    // new Session anyway (#5109): the client re-attaches the rewritten refs to
+    // the replacement submit.
+    const editedTurnAttachments =
+      kind === 'revision' && input.sourceTurnId !== undefined
+        ? source.messages.flatMap((message) =>
+            message.turnId === input.sourceTurnId && message.type === 'user'
+              ? (message.attachments ?? [])
+              : [],
+          )
+        : [];
+    const editedTurnArtifactIds = new Set(
+      editedTurnAttachments.flatMap((attachment) =>
+        attachment.ref.kind === 'session_file' && attachment.ref.sessionId === input.sourceSessionId
+          ? [attachment.ref.relativePath]
+          : [],
+      ),
+    );
     const missingGraphChildSessionIds = linkedChildCopyAdmissionSessionIds({
       sourceSessionId: input.sourceSessionId,
       sessionHeaders,
@@ -541,8 +560,10 @@ export class HostSessionRevisionCoordinator {
         sourceSessionId: input.sourceSessionId,
         targetSessionId: input.targetSessionId,
         turnIds: copyTurnIds,
-        ...(referencedSessionFileIds.size > 0
-          ? { includeArtifactIds: [...referencedSessionFileIds] }
+        ...(referencedSessionFileIds.size > 0 || editedTurnArtifactIds.size > 0
+          ? {
+              includeArtifactIds: [...referencedSessionFileIds, ...editedTurnArtifactIds],
+            }
           : {}),
         ...(linkedReferences.snapshots.size > 0
           ? {
@@ -593,11 +614,35 @@ export class HostSessionRevisionCoordinator {
           copiedMessages.some((message) => message.type === 'user'),
       });
       await this.options.continuity.refreshCanonical(input.targetSessionId, lease);
+      // Only refs that actually landed in the target are staged; a missed
+      // rewrite stays off the list and the client keeps its fail-closed gate
+      // for that attachment instead of submitting a dangling reference.
+      const stagedAttachments = editedTurnAttachments.flatMap((attachment) => {
+        if (
+          attachment.ref.kind !== 'session_file' ||
+          attachment.ref.sessionId !== input.sourceSessionId
+        ) {
+          return [];
+        }
+        const relativePath = artifactCopy.relativePaths.get(attachment.ref.relativePath);
+        if (!relativePath) return [];
+        return [
+          {
+            ...attachment,
+            ref: {
+              kind: 'session_file' as const,
+              sessionId: input.targetSessionId,
+              relativePath,
+            },
+          },
+        ];
+      });
       return copySuccess({
         kind: 'committed',
         session: projectSessionCatalogRecord(
           await this.#stores.sessionStore.readCatalogRecord(input.targetSessionId),
         ),
+        ...(stagedAttachments.length > 0 ? { stagedAttachments } : {}),
       });
     } catch (error) {
       console.error(
