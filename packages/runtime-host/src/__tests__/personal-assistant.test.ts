@@ -48,6 +48,9 @@ async function fixture(enabled: boolean | null = null) {
   const marked: string[][] = [];
   const dependencies = {
     prepareBotWake: async () => 'ready' as const,
+    allocateWorkspace: async (): Promise<{ projectId: string }> => {
+      throw Error('Not configured');
+    },
     stopSessions: async () => {},
     markBackgroundSessions: async (ids: readonly string[]) => {
       marked.push([...ids]);
@@ -112,6 +115,54 @@ test('absent preference enables native tools and APIs without installing plugins
   // Existing model turns may finish their tool work during drain; close fences it.
   await f.service.close();
   assert.throws(() => read.impl({}, {} as any), /shutting down/);
+});
+
+test('ordinary sessions cannot discover or invoke native assistant tools, including cached handles', async (t) => {
+  const f = await fixture();
+  t.after(f.close);
+  const initiative = new InitiativeStore(join(f.directory, 'index-initiative'), 'seed');
+  initiative.lease();
+  initiative.bind({ sessionId: 'assistant-owner', cwd: f.root });
+  initiative.release();
+  initiative.close();
+  const matters = createMatterStore(join(f.directory, 'proactive-matters'));
+  matters.authorizeSession('long-task');
+  matters.create({
+    sessionId: 'task-worker',
+    cwd: f.root,
+    title: 'Task',
+    request: 'Verify result',
+  });
+  matters.close();
+  await f.service.recover(f.legacy, []);
+  const core = { name: 'Bash' } as any;
+  const catalog = [core, ...f.service.tools];
+  const ordinarySessions = ['ordinary', 'ordinary-child', 'unregistered-background'];
+  await t.test('tool discovery excludes native assistant capabilities', () => {
+    for (const sessionId of ordinarySessions)
+      assert.deepEqual(f.service.filterTools(sessionId, catalog), [core]);
+  });
+  await t.test(
+    'cached tool handles reject ordinary callers before running their implementation',
+    () => {
+      for (const sessionId of ordinarySessions)
+        for (const tool of f.service.tools)
+          assert.throws(
+            () => tool.impl({}, { sessionId } as any),
+            /Personal assistant tools are unavailable in this session/,
+            tool.name,
+          );
+    },
+  );
+  for (const sessionId of ['assistant-owner', 'long-task', 'task-worker']) {
+    const names = f.service.filterTools(sessionId, catalog).map((tool) => tool.name);
+    assert.ok(names.includes('Bash'));
+    assert.ok(names.includes('MemoryIndexRead'));
+    assert.ok(names.includes('MatterRead'));
+  }
+  assert.ok(
+    f.service.filterTools('assistant-owner', catalog).some((t) => t.name === 'MatterDelegate'),
+  );
 });
 
 test('legacy data path and assistant conversation are adopted in place and persist after restart', async (t) => {
@@ -266,6 +317,9 @@ test('adopting all three stores preserves coverage, references, unfinished group
     try {
       await service.recover(f.legacy, entries as any);
       assert.deepEqual([...f.marked.at(-1)!].sort(), ['old-task', 'old-worker']);
+      for (const sessionId of ['old-assistant', 'old-task', 'old-worker'])
+        assert.ok(service.filterTools(sessionId, service.tools).length > 0, sessionId);
+      assert.deepEqual(service.filterTools('ordinary', service.tools), []);
       service.start();
       assert.deepEqual(((await service.call('assistant.binding', {})) as any).state, savedBinding);
       const state = (await service.call('matters.list', {})) as any;
@@ -395,6 +449,7 @@ test('explicitly disabled stays cold: no legacy adoption, databases, tools, prom
   );
   for (const method of [
     'assistant.binding',
+    'assistant.allocate-workspace',
     'assistant.bind',
     'assistant.control',
     'assistant.recover',
@@ -515,3 +570,22 @@ for (const preference of ['{broken', JSON.stringify({ enabled: true })]) {
     await assert.rejects(f.service.call('assistant.status', {}), /disabled/);
   });
 }
+
+test('assistant workspace allocation accepts no Client path and leaves binding creation unchanged', async (t) => {
+  const f = await fixture(true);
+  t.after(f.close);
+  let allocations = 0;
+  f.dependencies.allocateWorkspace = async () => {
+    allocations++;
+    return { projectId: 'host-project' };
+  };
+  await f.service.recover(f.legacy, []);
+  f.service.start();
+  await assert.rejects(f.service.call('assistant.allocate-workspace', { cwd: '/client/path' }));
+  assert.equal(allocations, 0);
+  assert.deepEqual(await f.service.call('assistant.allocate-workspace', {}), {
+    projectId: 'host-project',
+  });
+  assert.equal(allocations, 1);
+  assert.equal(((await f.service.call('assistant.binding', {})) as any).state, null);
+});

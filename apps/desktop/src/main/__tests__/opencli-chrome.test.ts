@@ -154,7 +154,10 @@ test('Windows opens the store page in installed Chrome, not the default browser'
   const chrome = join(local, 'Google', 'Chrome', 'Application', 'chrome.exe');
   const received = join(local, 'received-url');
   mkdirSync(dirname(chrome), { recursive: true });
-  writeFileSync(chrome, `#!/bin/sh\nprintf '%s' "$1" > '${received}'\n`, { mode: 0o755 });
+  // The test polls for `received`, so the URL must be published atomically:
+  // a redirect would create the file before printf writes it and the poll
+  // could observe an empty file.
+  writeFileSync(chrome, `#!/bin/sh\nprintf '%s' "$1" > '${received}.tmp'\nmv '${received}.tmp' '${received}'\n`, { mode: 0o755 });
   const url = 'https://chromewebstore.google.com/detail/opencli';
   const defaultBrowser: string[] = [];
   const openExternal = async (target: string) => {

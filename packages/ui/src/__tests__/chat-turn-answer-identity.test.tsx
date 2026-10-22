@@ -1051,14 +1051,18 @@ test('WorkHub feedback is a system notice without a user message bubble', async 
 });
 
 
-test('assistant Inbox receipt renders the user message without a fake completed reply', async () => {
-  const { container, root } = domRoot();
-  const turn = { ...turnWith([]), turnId: 'assistant-input:receipt-1',
-    status: 'completed' as const, statusSource: 'recorded' as const };
-  await act(() => root.render(<LocaleProvider locale="zh-CN"><TurnView turn={turn} /></LocaleProvider>));
-  assert.match(container.textContent ?? '', /ask/);
-  assert.doesNotMatch(container.textContent ?? '', /Completed|已完成|Copy answer/i);
-});
+// Both the current dash-form id and the legacy colon-form id must be recognized:
+// receipts already in transcripts keep the legacy form.
+for (const turnId of ['assistant-input-3f9c2a8b1d0e4f6a9b7c5d3e1f2a4b6c', 'assistant-input:receipt-1']) {
+  test(`assistant Inbox receipt (${turnId}) renders the user message without a fake completed reply`, async () => {
+    const { container, root } = domRoot();
+    const turn = { ...turnWith([]), turnId,
+      status: 'completed' as const, statusSource: 'recorded' as const };
+    await act(() => root.render(<LocaleProvider locale="zh-CN"><TurnView turn={turn} /></LocaleProvider>));
+    assert.match(container.textContent ?? '', /ask/);
+    assert.doesNotMatch(container.textContent ?? '', /Completed|已完成|Copy answer/i);
+  });
+}
 
 
 test('host avatar appears on assistant messages and can change without changing the conversation', async () => {

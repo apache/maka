@@ -25,7 +25,7 @@ export class MatterReviewInvalidated extends Error {
   readonly code = 'MATTER_REVIEW_INVALIDATED';
   constructor() {
     super(
-      'MATTER_REVIEW_INVALIDATED: Review evidence changed. Call MatterRead, read the refreshed files, reassess and resubmit.',
+      'MATTER_REVIEW_INVALIDATED: Task information changed or was not delivered to this model call. Reassess the refreshed task context on your next step and resubmit.',
     );
   }
 }

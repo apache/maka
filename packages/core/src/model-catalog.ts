@@ -37,6 +37,7 @@ import {
   providerSupportsModelDiscovery,
 } from './llm-connections.js';
 import { isRetiredProvider } from './provider-retirement.js';
+import { MINIMAX_TEXT_MODEL_IDS } from './models-dev-projection.js';
 import { lookupModelMetadata, resolveModelVisionSupport } from './model-metadata.js';
 import {
   modelOverride,
@@ -132,7 +133,7 @@ export function buildModelCatalogEntries(input: BuildModelCatalogInput): ModelCa
   // shape of a failed or not-yet-run discovery. It must not hide the static
   // fallback catalog from the picker. An empty fetched array is different: it
   // is an authoritative provider response and should remain empty.
-  const rawModels =
+  let rawModels: ModelInfo[] =
     liveModels !== undefined && (liveModels.length > 0 || modelSource === 'fetched')
       ? liveModels
       : (input.fallbackModels ?? []).map((id) => ({
@@ -140,6 +141,26 @@ export function buildModelCatalogEntries(input: BuildModelCatalogInput): ModelCa
           ...displayNameForKnownModel(input.providerType, id),
         }));
   const savedModelIds = normalizedIdSet(input.savedModelIds);
+  if (input.providerType === 'MiniMax' || input.providerType === 'MiniMax-cn') {
+    // Discovery can lag a release. Keep the current direct text pair first,
+    // preserving custom/non-text entries and restoring saved legacy IDs below.
+    const discovered = new Map(rawModels.map((model) => [model.id, model]));
+    rawModels = [
+      ...MINIMAX_TEXT_MODEL_IDS.map((id) => ({
+        ...discovered.get(id),
+        id,
+        ...lookupModelMetadata(input.providerType, id),
+      })),
+      ...rawModels.filter(
+        (model) =>
+          !MINIMAX_TEXT_MODEL_IDS.some((id) => id === model.id) &&
+          (!/^MiniMax-(?:M1|M2|Text)(?:[.-]|$)/i.test(model.id) ||
+            model.id === normalizedDefaultModel ||
+            savedModelIds.has(model.id) ||
+            (model.modalities?.output && !model.modalities.output.includes('text'))),
+      ),
+    ];
+  }
   const ctx: EntryContext = { input, normalizedDefaultModel };
   const seen = new Set<string>();
   const entries = rawModels

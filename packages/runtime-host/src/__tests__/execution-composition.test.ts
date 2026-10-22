@@ -4991,6 +4991,7 @@ async function createCapturedExecutionComposition(
       RuntimeHostCompositionContext,
       'retainUntilProcessExit' | 'requestDrain'
     >;
+    readonly assistantHomeDirectory?: string;
     readonly safeBoundaryResume?: boolean;
     readonly onWorkHubResult?: (input: BackendSendInput) => void;
     readonly primaryBackendFactory?: BackendFactory;
@@ -5030,7 +5031,11 @@ async function createCapturedExecutionComposition(
           : {}),
         ...options.context,
       },
-      {},
+      {
+        ...(options.assistantHomeDirectory
+          ? { assistantHomeDirectory: options.assistantHomeDirectory }
+          : {}),
+      },
       {
         generateSessionTitle: options.generateSessionTitle,
         primaryBackendFactory: (context) =>
@@ -5680,6 +5685,73 @@ test('disabling during Bot publication fences the uncommitted message and permit
     } finally {
       release.resolve();
       await composition.close();
+    }
+  });
+});
+
+test('assistant Host fallback registers a task workspace usable by ordinary Session creation and binding', {
+  timeout: 30000,
+}, async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const home = join(root, 'isolated-home');
+    await mkdir(home);
+    const caller: ConnectionContext = {
+      hostEpoch: 'assistant-workspace-test',
+      connectionId: 'desktop',
+      principal: 'local_owner',
+      principalKind: 'local_owner',
+      acquireResidency: () => ({ release() {} }),
+    };
+    let captured = await createCapturedExecutionComposition(owner, {
+      assistantHomeDirectory: home,
+    });
+    const call = (method: any, input: any = {}) =>
+      captured.composition.handlers['personal-assistant.call']({ method, input }, caller);
+    try {
+      const missingModel = await call('assistant.allocate-workspace');
+      assert.equal(missingModel.ok, false);
+      if (!missingModel.ok) assert.match(missingModel.error.message, /No default Session model/);
+      assert.equal((await captured.manager.listSessions()).length, 0);
+      await assert.rejects(stat(join(home, 'Maka')));
+      await configureFakeDefaultTarget(owner);
+      const allocated = await call('assistant.allocate-workspace');
+      assert.equal(allocated.ok, true, JSON.stringify(allocated));
+      if (!allocated.ok) return;
+      const { projectId } = allocated.result.value as { projectId: string };
+      const created = await captured.composition.handlers['session.create'](
+        {
+          sessionId: 'assistant-fallback-chat',
+          workspace: { kind: 'project', projectId },
+          name: '个人助手',
+          modelTarget: { kind: 'default' },
+          labels: ['personal-assistant'],
+        },
+        caller,
+      );
+      assert.equal(created.ok, true, JSON.stringify(created));
+      assert.equal(
+        (await call('assistant.bind', { sessionId: 'assistant-fallback-chat' })).ok,
+        true,
+      );
+      const binding = await call('assistant.binding');
+      assert.equal(binding.ok, true);
+      const sessions = await captured.manager.listSessions();
+      assert.equal(sessions.length, 1);
+      const chat = sessions[0]!;
+      assert.equal(chat.id, 'assistant-fallback-chat');
+      assert.match(chat.cwd!, /[/\\]Maka[/\\]tasks[/\\]task-[^/\\]+$/);
+      assert.ok(chat.cwd!.startsWith(home));
+      assert.deepEqual(chat.labels, ['personal-assistant']);
+      await captured.composition.close();
+      captured = await createCapturedExecutionComposition(owner, { assistantHomeDirectory: home });
+      const restored = await call('assistant.binding');
+      assert.equal(restored.ok, true);
+      if (binding.ok && restored.ok) {
+        assert.deepEqual((restored.result.value as any).state, (binding.result.value as any).state);
+      }
+      assert.equal((await captured.manager.listSessions()).length, 1);
+    } finally {
+      await captured.composition.close();
     }
   });
 });

@@ -1764,6 +1764,26 @@ export class ToolRuntime {
       }
     } catch (err) {
       if (err instanceof RuntimeCommitBoundaryError) throw err;
+      if (err instanceof RuntimeInteractionClosedError) {
+        // A durable interaction closure is a known tool cancellation, not an
+        // unknown effect. Land T2 before propagating the control signal: the
+        // caller may now terminalize the invocation, which seals its ledger.
+        output.flush();
+        await this.writeSyntheticToolResult(
+          toolUseId,
+          turnId,
+          tool.name,
+          formatSyntheticToolErrorText(err),
+          queue,
+          undefined,
+          undefined,
+          undefined,
+          activityIdentity,
+          durableAttempt,
+          'aborted',
+        );
+        throw err;
+      }
       if (isInteractionControlError(err)) throw err;
       output.flush();
       const sandboxError = serializeSandboxError(err);

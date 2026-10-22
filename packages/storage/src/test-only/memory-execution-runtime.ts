@@ -804,6 +804,20 @@ export function createMemoryRuntimeStore(a: MemoryExecutionAuthority): Execution
             : null,
       };
     },
+    readToolProvenanceEvents: async (sessionId, runId, toolCallId, budget) =>
+      a.read((s) =>
+        bounded(
+          immutable(s, sessionId, runId).filter(
+            (event) =>
+              ((event.content?.kind === 'function_call' ||
+                event.content?.kind === 'function_response') &&
+                event.content.id === toolCallId) ||
+              event.refs?.toolCallId === toolCallId ||
+              event.actions?.toolDispatch?.providerToolCallId === toolCallId,
+          ),
+          budget,
+        ),
+      ),
     readRuntimeEventsBounded: async (sessionId, runId, budget) =>
       bounded(await store.readRuntimeEvents(sessionId, runId), budget),
     scanRuntimeEvents: async (sessionId, runId, budget, visit) => {

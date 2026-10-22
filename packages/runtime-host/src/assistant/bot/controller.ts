@@ -26,6 +26,7 @@ import type { AssistantModuleServices } from '../service.js';
 import type { InitiativeStore } from '../index-initiative/store.js';
 import { executionFailure } from '../execution-outcome.js';
 import { BotStore, type InboxInput } from './store.js';
+import { assistantErrorOutputTurnId, assistantInputTurnId } from './turn-ids.js';
 
 const UNREAD_SLEEP_FEEDBACK =
   '本次未能休眠：你读取 Inbox 后又收到新消息，或上一批还有未投递消息。请调用 InboxCheck 接收正文，再自行决定如何处理；不要求回复或完成每件事，之后可再次调用 Sleep。';
@@ -110,7 +111,7 @@ export class BotController {
         type: 'user',
         ...(origin ? { origin } : {}),
         id,
-        turnId: `assistant-input:${id}`,
+        turnId: assistantInputTurnId(id),
         ts: Date.now(),
       },
     );
@@ -180,7 +181,7 @@ export class BotController {
             this.store.queueVisible({
               type: 'assistant',
               id: `bot-error:${id}`,
-              turnId: `assistant-output:error:${id}`,
+              turnId: assistantErrorOutputTurnId(id),
               ts: Date.now(),
               text: '助手消息处理暂时停止。消息已保留；请检查当前模型和连接，发送新消息可重试。',
               modelId: 'assistant-bot',

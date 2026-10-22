@@ -81,7 +81,10 @@ export interface RuntimeHostSessionCatalogIpcDeps {
   runningTurnIds: (sessionId: string) => readonly string[];
   resolveCreateProject: (
     input: Pick<CreateSessionRequestInput, 'cwd' | 'projectId'>,
+    allocateHostProject?: () => Promise<WorkspaceTarget>,
   ) => Promise<WorkspaceTarget>;
+  /** Present only for a Host that owns its workspace filesystem. */
+  allocateAssistantWorkspace?: () => Promise<WorkspaceTarget>;
   /**
    * Dedicated task-directory authority for the explicit relocation
    * correction. Absent on Hosts that cannot provision Client directories —
@@ -155,10 +158,13 @@ export function registerRuntimeHostSessionCatalogIpc(
     pendingCleanup.add(sessionId);
   });
   ipcMain.handle('sessions:create', async (_event, input?: CreateSessionRequestInput) => {
-    const workspace = await deps.resolveCreateProject({
-      ...(input?.cwd === undefined ? {} : { cwd: input.cwd }),
-      ...(input?.projectId === undefined ? {} : { projectId: input.projectId }),
-    });
+    const workspace = await deps.resolveCreateProject(
+      {
+        ...(input?.cwd === undefined ? {} : { cwd: input.cwd }),
+        ...(input?.projectId === undefined ? {} : { projectId: input.projectId }),
+      },
+      input?.labels?.includes('personal-assistant') ? deps.allocateAssistantWorkspace : undefined,
+    );
     const session = await deps.client.createSession(resolveDesktopSessionCreateInput(input, newId(), workspace));
     deps.emitSessionsChanged('created', session.id);
     return toDesktopHostSessionSummary(session);

@@ -440,9 +440,9 @@ async function applyHostPatchWithoutLane(
     }));
     const apiKey = webSearch.providers?.tavily?.apiKey;
     if (apiKey !== undefined && !isSensitivePlaceholder(apiKey)) {
-      if (apiKey.length === 0)
-        await deleteCredential(client, WEB_SEARCH_CREDENTIAL);
-      else await setCredential(client, WEB_SEARCH_CREDENTIAL, apiKey);
+      if (apiKey.trim())
+        await setCredential(client, WEB_SEARCH_CREDENTIAL, apiKey.trim());
+      else await deleteCredential(client, WEB_SEARCH_CREDENTIAL);
     }
   }
   if (patch.subagents) {

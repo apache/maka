@@ -53,6 +53,7 @@
 
 ### Upgrade notes
 
+- CLI scripts that parse structured errors must pass `--json`: errors then appear only on stdout, without a duplicate on stderr. Without `--json`, failed `maka run` results print a brief error only on stderr. Use the exit code to detect failure (#6171).
 - Update Desktop, CLI and remote Runtime Hosts together. The Runtime Host compatibility epoch is 224 (217 in 0.2.1); mismatched peers cannot connect.
 - Back up configuration and workspace data before upgrading if rollback is needed. This release adds durable assistant and event-wait state; older releases must not reuse data written by a newer Host without a verified downgrade path.
 - This release continues the TypeScript Runtime Host and Electron desktop. The Rust Host and GPUI desktop remain on the separate `rust-preview` development branch.

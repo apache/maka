@@ -77,6 +77,7 @@ import {
 import {
   CONTEXT_OFFLOAD_DATABASE_NAME,
   CONTEXT_OFFLOAD_VALUES_DIRECTORY_NAME,
+  SqliteContextOffloadStore,
 } from './sqlite-context-offload-store.js';
 import {
   acquireOperationalStateDatabase,
@@ -343,46 +344,51 @@ export async function exportSessionBundleState(
   return withOfflineContextSnapshot(
     input.stateRoot,
     (contextLocked) =>
-      withBundleArtifactWriterLock(input.stateRoot, input.lease, async (stateRoot) => {
-        const destinationRoot = resolve(input.destinationRoot);
-        await assertDestinationMissing(destinationRoot);
-        const stagingRoot = `${destinationRoot}.${process.pid}.${randomUUID()}.tmp`;
-        try {
-          await mkdir(stagingRoot, { recursive: true, mode: 0o700 });
-          // Take the private copy BEFORE anything is read. `lease.backup()` is
-          // what freezes the content; every decision after this -- schema, the
-          // subtree, the artifact list, quiescence, the manifest -- is made
-          // against this one file, so the bundle cannot describe two moments.
-          const databasePath = resolveInside(stagingRoot, OPERATIONAL_STATE_DATABASE_NAME);
-          await backupOperationalState(stateRoot, databasePath);
-          const plan = await planSessionBundleExport({ ...input, stateRoot, databasePath });
-          for (const entry of plan.entries) {
-            if (entry.source === 'context_snapshot' || entry.source === 'filtered_runtime_sqlite') {
-              continue;
+      withBundleArtifactWriterLock(input.stateRoot, input.lease, async (stateRoot) =>
+        runWithContextValueMutation(stateRoot, async () => {
+          const destinationRoot = resolve(input.destinationRoot);
+          await assertDestinationMissing(destinationRoot);
+          const stagingRoot = `${destinationRoot}.${process.pid}.${randomUUID()}.tmp`;
+          try {
+            await mkdir(stagingRoot, { recursive: true, mode: 0o700 });
+            // Take the private copy BEFORE anything is read. `lease.backup()` is
+            // what freezes the content; every decision after this -- schema, the
+            // subtree, the artifact list, quiescence, the manifest -- is made
+            // against this one file, so the bundle cannot describe two moments.
+            const databasePath = resolveInside(stagingRoot, OPERATIONAL_STATE_DATABASE_NAME);
+            await backupOperationalState(stateRoot, databasePath);
+            const plan = await planSessionBundleExport({ ...input, stateRoot, databasePath });
+            for (const entry of plan.entries) {
+              if (
+                entry.source === 'context_snapshot' ||
+                entry.source === 'filtered_runtime_sqlite'
+              ) {
+                continue;
+              }
+              const destination = resolveInside(stagingRoot, entry.relativePath);
+              if (entry.kind === 'directory') {
+                await mkdir(destination, { recursive: true });
+                continue;
+              }
+              await mkdir(dirname(destination), { recursive: true });
+              await copyArtifactFile(plan.stateRoot, entry.relativePath, destination);
             }
-            const destination = resolveInside(stagingRoot, entry.relativePath);
-            if (entry.kind === 'directory') {
-              await mkdir(destination, { recursive: true });
-              continue;
-            }
-            await mkdir(dirname(destination), { recursive: true });
-            await copyArtifactFile(plan.stateRoot, entry.relativePath, destination);
+            await filterBackedUpDatabase(databasePath, plan.sessionIds, {
+              omitDiagnostics: input.omitDiagnostics === true,
+              requireQuiescent: input.requireQuiescent === true,
+              omitEventWaits: input.omitEventWaits === true,
+            });
+            await copyContextSnapshot(stateRoot, stagingRoot, contextLocked, plan.sessionIds);
+            await validateContextSnapshot(stagingRoot);
+            await mkdir(dirname(plan.destinationRoot), { recursive: true });
+            await rename(stagingRoot, plan.destinationRoot);
+            return plan;
+          } catch (error) {
+            await rm(stagingRoot, { recursive: true, force: true }).catch(() => {});
+            throw error;
           }
-          await filterBackedUpDatabase(databasePath, plan.sessionIds, {
-            omitDiagnostics: input.omitDiagnostics === true,
-            requireQuiescent: input.requireQuiescent === true,
-            omitEventWaits: input.omitEventWaits === true,
-          });
-          await copyContextSnapshot(stateRoot, stagingRoot, contextLocked, plan.sessionIds);
-          await validateContextSnapshot(stagingRoot);
-          await mkdir(dirname(plan.destinationRoot), { recursive: true });
-          await rename(stagingRoot, plan.destinationRoot);
-          return plan;
-        } catch (error) {
-          await rm(stagingRoot, { recursive: true, force: true }).catch(() => {});
-          throw error;
-        }
-      }),
+        }),
+      ),
     input.lease ? { lease: input.lease } : {},
   );
 }
@@ -514,6 +520,20 @@ async function filterBackedUpDatabase(
       .all() as Array<{ name?: unknown }>;
     for (const row of tables) {
       if (typeof row.name !== 'string' || PORTABLE_GLOBAL_TABLES.has(row.name)) continue;
+      if (row.name === EVENT_WAIT_SOURCE_TABLE && !options.omitEventWaits) {
+        // A checkpoint must retain the source throttle/reservation constraining
+        // its waits, not merely their cursors. Select by Session explicitly so
+        // this is independent of SQLite's table iteration order. Unrelated
+        // sources are not part of this checkpoint's closure.
+        database
+          .prepare(`DELETE FROM ${EVENT_WAIT_SOURCE_TABLE} WHERE source_key NOT IN (
+          SELECT json_array(json_extract(record_json, '$.resource.providerId'),
+            json_extract(record_json, '$.resource.connectionId'))
+          FROM ${EVENT_WAIT_TABLE} WHERE session_id IN (${sessionIds.map(() => '?').join(', ')})
+        )`)
+          .run(...sessionIds);
+        continue;
+      }
       if (options.omitEventWaits && row.name === EVENT_WAIT_TABLE) {
         // Keep the schema while leaving root-owned wait authority behind.
         database.exec(`DELETE FROM ${quoteIdentifier(row.name)}`);
@@ -705,6 +725,7 @@ const LOCAL_SEQUENCE_COLUMNS = new Map([
 ]);
 
 const EVENT_WAIT_TABLE = 'workflow_event_waits';
+const EVENT_WAIT_SOURCE_TABLE = 'workflow_event_wait_source_cooldowns';
 
 const PORTABLE_GLOBAL_TABLES = new Set([
   'operational_schema_migrations',
@@ -1035,8 +1056,9 @@ export async function importSessionBundleState(
           // a Session already visible whose bytes never arrived -- and which a
           // retry could not fix, because the ids are now taken.
           const artifacts = await copyBundleArtifacts(bundleStateRoot, stateRoot);
+          let contextRefs: number | undefined;
           try {
-            const contextRefs = await mergeBundleContext(
+            contextRefs = await mergeBundleContext(
               bundleStateRoot,
               stateRoot,
               contextLocked,
@@ -1045,10 +1067,25 @@ export async function importSessionBundleState(
             const inserted = mergeBundleDatabase(lease, bundleDatabasePath);
             return { sessionIds: inserted, artifactFiles: artifacts.copied, contextRefs };
           } catch (error) {
-            // Take back only what this attempt created. Anything already there
-            // belongs to someone else, or to an earlier attempt that the next
-            // one will recognise.
-            for (const path of artifacts.created) await rm(path, { force: true }).catch(() => {});
+            // A failure after COMMIT (for example while detaching the bundle)
+            // must not remove bytes the published Session now references.
+            try {
+              const present = lease.database.prepare(
+                'SELECT 1 FROM session_metadata WHERE session_id = ?',
+              );
+              const unpublished = sessionIds.filter((id) => present.get(id) === undefined);
+              if (contextRefs !== undefined && contextRefs > 0) {
+                await releaseUnpublishedBundleContext(stateRoot, unpublished);
+              }
+              for (const path of artifacts.created) {
+                const artifactPath = relative(resolveInside(stateRoot, 'artifacts'), path);
+                if (unpublished.some((id) => isArtifactPathForSession(artifactPath, id))) {
+                  await rm(path, { force: true }).catch(() => {});
+                }
+              }
+            } catch {
+              // Preserve the import error if storage also refuses cleanup.
+            }
             throw error;
           }
         } finally {
@@ -1329,7 +1366,8 @@ export function listSessionBundleMergeTables(target: DatabaseSync): SessionBundl
       TRIGGER_MAINTAINED_TABLES.has(name) ||
       // Older bundles and snapshots can contain wait rows. Import is a
       // Session transfer, so it must independently refuse to copy them.
-      name === EVENT_WAIT_TABLE
+      name === EVENT_WAIT_TABLE ||
+      name === EVENT_WAIT_SOURCE_TABLE
     ) {
       continue;
     }
@@ -1502,20 +1540,37 @@ async function mergeBundleContextDatabase(
         database.exec(
           'INSERT OR IGNORE INTO main.context_blobs SELECT * FROM bundle.context_blobs',
         );
+        // The payload files are already published. Adopt their representation
+        // when the target still holds the same bytes inline after a v2 upgrade,
+        // so retiring the last reference also collects the imported file.
+        database.exec(`
+          UPDATE main.context_blobs AS target
+          SET storage_kind = 'managed_file', payload = source.payload
+          FROM bundle.context_blobs AS source
+          WHERE target.blob_id = source.blob_id
+            AND target.storage_kind = 'inline'
+            AND source.storage_kind = 'managed_file'
+        `);
         // A retry re-inserts the same rows. Skipping an identical one is what
         // makes the second attempt work; skipping a DIFFERENT row that happens
         // to share an id would hide a real collision, so the two are separated.
         const colliding = database
           .prepare(`
             SELECT b.ref_id FROM bundle.context_refs b
-            JOIN main.context_refs m USING(ref_id)
-            WHERE m.session_id <> b.session_id OR m.blob_id <> b.blob_id
+            JOIN main.context_refs m ON m.ref_id = b.ref_id OR (
+              m.session_id = b.session_id AND m.owner_kind = b.owner_kind AND m.owner_id = b.owner_id
+            )
+            WHERE m.ref_id <> b.ref_id OR m.session_id <> b.session_id
+              OR m.owner_kind <> b.owner_kind OR m.owner_id <> b.owner_id
+              OR m.blob_id <> b.blob_id OR m.media_type <> b.media_type
+              OR m.created_at <> b.created_at
+            LIMIT 1
           `)
-          .all() as Array<{ ref_id?: unknown }>;
-        if (colliding.length > 0) {
+          .get() as { ref_id: string } | undefined;
+        if (colliding) {
           throw new SessionBundleImportError(
             'conflict',
-            `Context reference already names different content: ${String(colliding[0]?.ref_id)}`,
+            `Context reference already names different content: ${colliding.ref_id}`,
           );
         }
         database.exec('INSERT OR IGNORE INTO main.context_refs SELECT * FROM bundle.context_refs');
@@ -1565,6 +1620,32 @@ async function mergeBundleContextDatabase(
     database.close();
   }
   return countContextRefs(targetContext, sessionIds);
+}
+
+async function releaseUnpublishedBundleContext(
+  stateRoot: string,
+  sessionIds: readonly string[],
+): Promise<void> {
+  if (sessionIds.length === 0) return;
+  await runWithContextValueMutation(stateRoot, async () => {
+    // Reuse retirement's accounting and GC candidate updates. Retirement does
+    // not add payloads, so it needs no write quota.
+    const store = new SqliteContextOffloadStore(
+      resolveInside(stateRoot, CONTEXT_OFFLOAD_DATABASE_NAME),
+      {
+        limits: {
+          ownerMaxBytes: { read_image_snapshot: 0, tool_result_archive: 0 },
+          sessionLogicalBytes: 0,
+          workspacePhysicalBytes: 0,
+        },
+      },
+    );
+    try {
+      for (const sessionId of sessionIds) await store.retireSession(sessionId);
+    } finally {
+      store.close();
+    }
+  });
 }
 
 /**

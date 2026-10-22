@@ -17,15 +17,11 @@
  * under the License.
  */
 
-import { isDeepStrictEqual } from 'node:util';
 import { failureClassFromCompleteStopReason, type SessionEvent } from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
 import type { MakaRunOutcome } from './run-command-core.js';
 
-type StoredToolCall = Extract<StoredMessage, { type: 'tool_call' }>;
-
 type TurnOutcomeObservation =
-  | { readonly kind: 'tool_call'; readonly call: StoredToolCall }
   | { readonly kind: 'output'; readonly text: string; readonly source: 'live' | 'stored' }
   | {
       readonly kind: 'terminal';
@@ -48,24 +44,18 @@ type TerminalOutcomeObservation = Extract<TurnOutcomeObservation, { kind: 'termi
 
 export class TurnOutcomeClassifier {
   readonly #outcomeId: string;
-  readonly #recoverStoredRetries: boolean;
-  readonly #calls = new Map<string, StoredToolCall>();
   readonly #unresolvedSandboxFailures = new Set<string>();
   #finalOutput: string | undefined;
   #finalOutputFromLive = false;
   #terminal: TerminalOutcomeObservation | undefined;
 
-  constructor(outcomeId: string, options: { recoverStoredRetries?: boolean } = {}) {
+  constructor(outcomeId: string) {
     this.#outcomeId = outcomeId;
-    this.#recoverStoredRetries = options.recoverStoredRetries === true;
   }
 
   accept(observation: TurnOutcomeObservation | undefined): void {
     switch (observation?.kind) {
       case undefined:
-        return;
-      case 'tool_call':
-        if (this.#recoverStoredRetries) this.#calls.set(observation.call.id, observation.call);
         return;
       case 'output':
         // A subscriber is delivered in Host order, so the stream's last answer
@@ -85,29 +75,6 @@ export class TurnOutcomeClassifier {
         if (observation.outcome === 'sandbox_failure') {
           this.#unresolvedSandboxFailures.add(observation.toolUseId);
         }
-        if (observation.outcome === 'success' && this.#recoverStoredRetries) {
-          const retry = this.#calls.get(observation.toolUseId);
-          for (const id of this.#unresolvedSandboxFailures) {
-            const failed = this.#calls.get(id);
-            // Full durable arguments and a different provider step distinguish
-            // a retry from an unrelated success or a same-step parallel sibling.
-            // One successful retry reconciles one failed call, never all failures.
-            if (
-              retry?.stepId &&
-              failed?.stepId &&
-              retry.stepId !== failed.stepId &&
-              retry.toolName === failed.toolName &&
-              retry.args !== undefined &&
-              failed.args !== undefined &&
-              isDeepStrictEqual(retry.args, failed.args)
-            ) {
-              this.#unresolvedSandboxFailures.delete(id);
-              break;
-            }
-          }
-        }
-        // Blocking run keeps its original denial protection. Session results
-        // opt into durable retry evidence, since their boundary can be approved.
         return;
       }
     }
@@ -166,7 +133,6 @@ export function observationFromSessionEvent(
 }
 
 function observationFromStoredMessage(message: StoredMessage): TurnOutcomeObservation | undefined {
-  if (message.type === 'tool_call') return { kind: 'tool_call', call: message };
   if (message.type === 'assistant' && message.text.trim().length > 0) {
     return { kind: 'output', text: message.text, source: 'stored' };
   }
@@ -188,7 +154,7 @@ function observationFromStoredMessage(message: StoredMessage): TurnOutcomeObserv
       status: 'failed',
       failure: {
         class: message.errorClass ?? 'runtime_error',
-        message: message.failureMessage ?? 'Turn failed',
+        message: message.failureMessage ?? message.errorClass ?? 'Turn failed',
       },
     };
   }

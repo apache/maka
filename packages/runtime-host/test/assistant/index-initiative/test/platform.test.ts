@@ -57,7 +57,7 @@ test('heartbeat uses an independent exploration Session and exits normally witho
     assert.ok((await f.invoke('InitiativeStatus')).nextAt > Date.now());
     await assert.rejects(
       f.invokeAs('other', 'InitiativeControl', { action: 'check' }),
-      /conversation/,
+      /unavailable in this session/,
     );
   } finally {
     await f.close();

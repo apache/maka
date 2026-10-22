@@ -121,12 +121,26 @@ export function safeSendToRenderer(channel: string, ...args: unknown[]): boolean
   if (mainWindow && !mainWindow.isDestroyed()) recipients.add(mainWindow.webContents);
   let emitted = false;
   for (const contents of recipients) {
-    if (!contents.isDestroyed()) {
-      contents.send(channel, ...args);
+    const frame = liveMainFrame(contents);
+    if (frame) {
+      frame.send(channel, ...args);
       emitted = true;
     }
   }
   return emitted;
+}
+
+function liveMainFrame(contents: Electron.WebContents): Electron.WebFrameMain | undefined {
+  if (contents.isDestroyed()) return undefined;
+  try {
+    const frame = contents.mainFrame;
+    return frame.isDestroyed() ? undefined : frame;
+  } catch {
+    // WebContents can outlive its Renderer generation. Electron may dispose
+    // the main frame between process loss/navigation and the replacement
+    // document, so broadcasts wait for the next live generation.
+    return undefined;
+  }
 }
 
 // The close button's centre sits on the same vertical line as the sidebar's

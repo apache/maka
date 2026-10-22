@@ -22,81 +22,92 @@ import { test } from 'node:test';
 import type { StoredMessage } from '@maka/core/session';
 import { acceptStoredTurn, TurnOutcomeClassifier } from '../run-turn-outcome.js';
 
-const call = (
-  id: string,
-  stepId: string | undefined,
-  args: unknown = { url: 'https://example.test' },
-  toolName = 'Fetch',
-): Extract<StoredMessage, { type: 'tool_call' }> => ({
-  type: 'tool_call',
-  id,
+const denied: StoredMessage = {
+  type: 'tool_result',
+  id: 'denied',
+  toolUseId: 'write',
   turnId: 'turn',
   ts: 1,
-  toolName,
-  args,
-  ...(stepId ? { stepId } : {}),
-});
-const result = (toolUseId: string, failed: boolean): StoredMessage => ({
-  type: 'tool_result',
-  id: toolUseId + '-result',
-  toolUseId,
-  turnId: 'turn',
-  ts: 2,
-  isError: failed,
-  content: failed
-    ? { kind: 'text', text: 'Denied', sandboxFailure: { reason: 'sandbox_boundary_required' } }
-    : { kind: 'text', text: 'Success' },
-});
-function classify(messages: StoredMessage[], recoverStoredRetries = true) {
-  const classifier = new TurnOutcomeClassifier('turn', { recoverStoredRetries });
+  isError: true,
+  content: {
+    kind: 'text',
+    text: 'Permission denied',
+    sandboxFailure: { reason: 'sandbox_boundary_required' },
+  },
+};
+
+test('a tool denial does not replace a completed Runtime terminal or final answer', () => {
+  const classifier = new TurnOutcomeClassifier('turn');
   acceptStoredTurn(
     classifier,
-    [...messages, { type: 'turn_state', id: 'end', turnId: 'turn', ts: 9, status: 'completed' }],
+    [
+      denied,
+      {
+        type: 'assistant',
+        modelId: 'test-model',
+        id: 'answer',
+        turnId: 'turn',
+        ts: 2,
+        text: 'Permission was denied; no file was written.',
+      },
+      { type: 'turn_state', id: 'end', turnId: 'turn', ts: 3, status: 'completed' },
+    ],
     'turn',
   );
-  return classifier.outcome('fail').sandboxBoundary;
-}
-test('Session result recognizes an exact tool retry in a later step', () => {
-  const messages = [call('a', 'step1'), result('a', true), call('b', 'step2'), result('b', false)];
-  assert.equal(classify(messages), 'none');
-  assert.equal(classify(messages, false), 'unresolved', 'blocking policy must still deny recovery');
+  const outcome = classifier.outcome('pending');
+  assert.equal(outcome?.status, 'completed');
+  assert.equal(outcome?.finalOutput, 'Permission was denied; no file was written.');
+  assert.equal(outcome?.failure, undefined);
 });
-for (const [name, retry] of [
-  ['same-step sibling', call('b', 'step1')],
-  ['different arguments', call('b', 'step2', { url: 'https://other.test' })],
-  ['different tool', call('b', 'step2', { url: 'https://example.test' }, 'Read')],
-  ['missing step', call('b', undefined)],
-  ['missing arguments', { ...call('b', 'step2'), args: undefined }],
-] as const)
-  test(`Session recovery preserves failure after ${name}`, () => {
-    assert.equal(
-      classify([call('a', 'step1'), result('a', true), retry, result('b', false)]),
-      'unresolved',
-    );
+
+test('a real Runtime failure retains its original error after a tool denial', () => {
+  const classifier = new TurnOutcomeClassifier('turn');
+  acceptStoredTurn(
+    classifier,
+    [
+      denied,
+      {
+        type: 'turn_state',
+        id: 'end',
+        turnId: 'turn',
+        ts: 3,
+        status: 'failed',
+        errorClass: 'provider_error',
+        failureMessage: 'Insufficient credits',
+      },
+    ],
+    'turn',
+  );
+  assert.deepEqual(classifier.outcome('pending')?.failure, {
+    class: 'provider_error',
+    message: 'Insufficient credits',
   });
-test('one successful retry does not clear a second failed call', () => {
-  assert.equal(
-    classify([
-      call('a', 'step1'),
-      call('c', 'step1'),
-      result('a', true),
-      result('c', true),
-      call('b', 'step2'),
-      result('b', false),
-    ]),
-    'unresolved',
-  );
 });
-test('a later sandbox failure remains unresolved after a recovered call', () => {
-  assert.equal(
-    classify([
-      call('a', 'step1'),
-      result('a', true),
-      call('b', 'step2'),
-      result('b', false),
-      call('c', 'step3'),
-      result('c', true),
-    ]),
-    'unresolved',
+
+test('a tool denial is not a terminal event', () => {
+  const classifier = new TurnOutcomeClassifier('turn');
+  acceptStoredTurn(classifier, [denied], 'turn');
+  assert.equal(classifier.outcome('pending'), undefined);
+});
+
+test('a Runtime failure without a message preserves its stored failure class', () => {
+  const classifier = new TurnOutcomeClassifier('turn');
+  acceptStoredTurn(
+    classifier,
+    [
+      {
+        type: 'turn_state',
+        id: 'end',
+        turnId: 'turn',
+        ts: 3,
+        status: 'failed',
+        errorClass: 'tool_step_cap_reached',
+      },
+    ],
+    'turn',
   );
+  assert.deepEqual(classifier.outcome('pending')?.failure, {
+    class: 'tool_step_cap_reached',
+    message: 'tool_step_cap_reached',
+  });
 });

@@ -140,9 +140,13 @@ export async function fixture(options: any = {}) {
     root,
     { 'proactive-matters': { tickMs: 20, ...options.config } },
     { 'proactive-matters': join(root, 'data') },
+    options.dependencies ?? {},
   );
   const { tools, prompts: systemPrompt, turns, remote, platform } = native;
   await until(async () => (await remote('matters.list')).ready);
+  // Business-flow fixtures explicitly admit their coordinator; ordinary callers remain denied.
+  if (!(await remote('matters.list')).matters.some((m: any) => m.sessionId === 'session-1'))
+    await remote('matters.authorize-session', { sessionId: 'session-1' });
   const invoke = async (
     name: string,
     input: any = {},
@@ -167,6 +171,7 @@ export async function fixture(options: any = {}) {
     platform,
     driver,
     reviewCalls,
+    filterTools: native.filterTools,
     tools,
     systemPrompt,
     turns,

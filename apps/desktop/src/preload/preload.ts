@@ -3210,11 +3210,22 @@ const makaBridge = {
     },
   },
   goal: {
-    get(sessionId: string): Promise<GoalState | null> {
+    get(sessionId: string): Promise<import('../shared/goal-arm.js').DesktopGoal | null> {
       return invokeProjectedSessionRuntimeHost('goal:get', sessionId);
     },
     arm(sessionId: string, goal: GoalArmRequest): Promise<GoalArmOutcome> {
       return invokeProjectedSessionRuntimeHost('goal:arm', sessionId, goal);
+    },
+    async cancelEventWait(input: import('@maka/runtime-host/protocol').GoalEventWaitCancelInput): Promise<import('@maka/runtime-host/protocol').GoalEventWaitCancelResult> {
+      const target = { ...input };
+      const session = await runtimeHostSessionRef(target.sessionId);
+      const result = await invokeWhenReady(
+        'goal:cancel-event-wait',
+        session.scope,
+        session.sessionId,
+        { ...target, sessionId: session.sessionId },
+      ) as import('@maka/runtime-host/protocol').GoalEventWaitCancelResult;
+      return projectProtocolSessionIds(session.scope.hostId, result);
     },
     clear(sessionId: string): Promise<void> {
       return invokeSessionRuntimeHost('goal:clear', sessionId);

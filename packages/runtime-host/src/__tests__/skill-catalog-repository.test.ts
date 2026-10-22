@@ -28,7 +28,16 @@ import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, test } from 'node:test';
@@ -493,6 +502,14 @@ test('one unreadable managed source child makes the Host catalog fail closed', a
   } finally {
     await restoreReadAccess();
   }
+});
+
+test('canonical model snapshot exposes the Host-authoritative workspace Skill directory', async () => {
+  const fixture = await createFixture();
+  const repository = fixture.repository();
+  const model = await repository.readCanonicalModelInventory({ projectRoot: fixture.project });
+  assert.equal(model.workspaceSkillDirectory, join(await realpath(fixture.root), 'skills'));
+  assert.equal(Object.isFrozen(model), true);
 });
 
 test('starter creation uses the shared template and reuses the lowest valid starter', async () => {

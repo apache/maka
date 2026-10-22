@@ -141,3 +141,67 @@ test('running task receives late amendments and Bot replies at the next model co
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('observer startup failure does not block ordinary Matter dispatch', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'matter-observer-failure-'));
+  const store = createMatterStore(root);
+  let started = 0;
+  const m = store.create({
+    cwd: root,
+    title: 'normal task',
+    request: 'Finish immediate work',
+    sessionId: 'worker',
+  });
+  const agent = {
+    snapshot: async () => ({ agent: { status: 'idle' } }),
+    followup: async () => {
+      started++;
+      return { disposition: 'turn_started', turnId: 'turn' };
+    },
+    whenIdle: async () => {
+      const current = store.get(m.id).matter;
+      if (current.activation && !current.activation.settled)
+        store.settle(
+          m.id,
+          current.activation.id,
+          {
+            expectedRevision: current.revision,
+            stateText: 'done',
+            disposition: 'complete',
+            summary: 'done',
+            reason: 'done',
+          },
+          'done',
+        );
+    },
+    cancel: async () => {},
+  };
+  const controller = new MatterController(
+    {
+      agents: {
+        withInvocation: (_: unknown, fn: () => unknown) => fn(),
+        resume: async () => agent,
+      },
+    } as any,
+    store,
+    {
+      tickMs: 60000,
+      observer: {
+        start: async () => {
+          throw Error('observation storage temporarily unavailable');
+        },
+        close: async () => {},
+      },
+    },
+  );
+  try {
+    controller.start();
+    await controller.tick();
+    assert.equal(started, 1);
+    assert.match(controller.lastError!, /observation/);
+  } finally {
+    await controller.close();
+    store.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});

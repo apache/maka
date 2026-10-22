@@ -284,6 +284,13 @@ export interface DurableRuntimeEventStore extends RuntimeEventStore {
     budget: RuntimeEventScanBudget,
     visit: (events: readonly RuntimeEvent[]) => void,
   ): Promise<RuntimeEventScanResult>;
+  /** Immutable facts for one tool call, bounded independently of unrelated Run history. */
+  readToolProvenanceEvents(
+    sessionId: string,
+    runId: string,
+    toolCallId: string,
+    budget: EvidenceReadBudget,
+  ): Promise<BoundedEvidenceReadResult<RuntimeEvent>>;
   readRuntimeEventsBounded(
     sessionId: string,
     runId: string,

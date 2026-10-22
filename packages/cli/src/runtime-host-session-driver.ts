@@ -1293,6 +1293,13 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     return () => this.#todoChangeListeners.delete(listener);
   }
 
+  async cancelGoalEventWait(
+    input: import('@maka/runtime-host/protocol').GoalEventWaitCancelInput,
+  ): Promise<import('@maka/runtime-host/protocol').GoalEventWaitCancelResult> {
+    if (input.sessionId !== this.#sessionId) throw new Error('Wait belongs to another Session');
+    return this.#request('goal.event-wait.cancel', input);
+  }
+
   async controlGoal(action: GoalControlAction): Promise<GoalProjection | null> {
     const sessionId = this.#sessionId;
     if (!sessionId) return null;

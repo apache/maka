@@ -19,6 +19,7 @@
 
 import type { ModelInfo, ProviderType, ProviderRuntimeAdapter } from './llm-connections.js';
 import type { ThinkingOptions } from './model-thinking.js';
+import { withMiniMaxTextCatalog } from './models-dev-projection.js';
 import {
   GENERATED_MODELS_DEV_METADATA,
   GENERATED_MODELS_DEV_MODEL_PROVIDER_OVERRIDES,
@@ -64,7 +65,7 @@ let refreshedMetadata: ModelsDevMetadata | undefined;
  */
 export function installRefreshedModelMetadata(metadata: ModelsDevMetadata | undefined): void {
   if (metadata !== undefined) assertWireTokenLimits(metadata);
-  refreshedMetadata = metadata;
+  refreshedMetadata = metadata === undefined ? undefined : withMiniMaxTextCatalog(metadata);
 }
 
 /**
@@ -509,6 +510,12 @@ const COMMAND_CODE_MODEL_METADATA: Record<string, ModelMetadata> = {
   'MiniMaxAI/MiniMax-M3': { thinkingOptions: { efforts: ['low', 'medium', 'high'] } },
 };
 
+const MINIMAX_MODEL_OVERRIDES: Record<string, ModelMetadata> = {
+  'MiniMax-M3': {
+    thinkingOptions: { toggle: true, offBehavior: 'anthropic-thinking-disabled' },
+  },
+};
+
 // Facts that models.dev cannot express: provider wire controls and
 // access-path-specific aliases/limits. Standard model facts stay generated.
 //
@@ -516,6 +523,8 @@ const COMMAND_CODE_MODEL_METADATA: Record<string, ModelMetadata> = {
 // derived from a provider's catalog cover models a refresh introduced.
 function buildStaticModelMetadata(active: ModelsDevMetadata): ModelsDevMetadata {
   return {
+    MiniMax: MINIMAX_MODEL_OVERRIDES,
+    'MiniMax-cn': MINIMAX_MODEL_OVERRIDES,
     anthropic: ANTHROPIC_MODEL_OVERRIDES,
     opencode: {
       'claude-sonnet-4-5': {

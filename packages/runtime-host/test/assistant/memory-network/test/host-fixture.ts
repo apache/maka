@@ -178,6 +178,8 @@ export async function fixture(config: any = {}) {
     { 'memory-network': config, 'proactive-matters': { tickMs: 60000 } },
     { 'memory-network': join(root, 'data') },
   );
+  // Business-flow fixtures explicitly admit their coordinator; ordinary callers remain denied.
+  await native.remote('matters.authorize-session', { sessionId: 'agent-chat' });
   const { tools, prompts: systemPrompt, platform } = native;
   const invokeAs = async (sessionId: string, name: string, input: any) => {
     const tool = tools.resolve(sessionId, []).tools.find((x: any) => x.name === name);

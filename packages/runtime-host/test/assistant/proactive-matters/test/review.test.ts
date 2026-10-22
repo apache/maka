@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { readFileSync } from 'node:fs';
+
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -171,8 +173,7 @@ test('four rejected settlements remain active and a corrected fifth submission s
   const view = await f.invoke('MatterStart', { title: 'Deliver', request: 'Deliver the report' });
   await f.invoke('MatterWriteFile', { path: view.files.draft, content: 'Report delivered' });
   const input = {
-    expectedRevision: view.revision,
-    stateFile: view.files.draft,
+    note: readFileSync(view.files.draft, 'utf8'),
     disposition: 'complete',
     summary: 'Sent report',
     reason: 'Done',
@@ -226,8 +227,7 @@ test('Host invalidation retries without a rejection; model JSON cannot request t
   });
   const view = await f.invoke('MatterStart', { title: 'Check', request: 'Check report' });
   const input = {
-    expectedRevision: view.revision,
-    stateFile: view.files.draft,
+    note: readFileSync(view.files.draft, 'utf8'),
     disposition: 'complete',
     summary: 'Checked',
     reason: 'Done',
@@ -457,8 +457,7 @@ test('a user amendment through MatterMessage during model review prevents the ol
   });
   const view = await f.invoke('MatterStart', { title: 'Review', request: 'Deliver design' });
   const result = await f.invoke('MatterSettle', {
-    expectedRevision: view.revision,
-    stateFile: view.files.draft,
+    note: readFileSync(view.files.draft, 'utf8'),
     disposition: 'complete',
     summary: 'Done',
     reason: 'Delivered',
@@ -519,7 +518,7 @@ for (const newRequirement of [false, true]) {
   });
 }
 
-test('continue bypasses the reviewer but preserves revision checks and continuation', async (t) => {
+test('continue submits directly without reviewer or model-supplied revision', async (t) => {
   const f = await fixture({ review: async () => assert.fail('continue must not call reviewer') });
   t.after(async () => {
     f.driver.end();
@@ -529,20 +528,17 @@ test('continue bypasses the reviewer but preserves revision checks and continuat
   const view = await f.invoke('MatterStart', { title: 'Deliver', request: 'Deliver report' });
   await f.invoke('MatterWriteFile', { path: view.files.draft, content: 'More work remains' });
   const input = {
-    expectedRevision: view.revision,
-    stateFile: view.files.draft,
+    note: readFileSync(view.files.draft, 'utf8'),
     disposition: 'continue',
     summary: 'Prepared report',
     reason: 'Continue writing',
   };
-  await assert.rejects(
-    f.invoke('MatterSettle', { ...input, expectedRevision: view.revision + 100 }),
-  );
-  assert.equal((await f.remote('matters.list')).matters[0].status, 'active');
-  await f.invoke('MatterSettle', {
-    ...input,
-    expectedRevision: (await f.invoke('MatterRead')).revision,
-  });
+  const schema = f.tools
+    .resolve('session-1', [])
+    .tools.find((tool: any) => tool.name === 'MatterSettle').parameters;
+  assert.equal(schema.shape.expectedRevision, undefined);
+  assert.equal(schema.shape.stateFile, undefined);
+  await f.invoke('MatterSettle', input);
   const db = new DatabaseSync(join(f.root, 'data', 'matters.sqlite'));
   try {
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM matter_reviews').get()!.n, 0);

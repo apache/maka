@@ -63,6 +63,12 @@ import type { HostResidencyKind } from './host-residency-registry.js';
 import type { GoalOperationHandlerMap } from './operation-dispatcher.js';
 import { projectGoalState } from './goal-projection.js';
 import {
+  GOAL_EVENT_WAIT_SUMMARY_LIMITS,
+  type GoalEventWaitCancelInput,
+  type GoalEventWaitCancelResult,
+} from '../protocol/goal.js';
+import { truncateUtf8 } from '@maka/core/diagnostic-log';
+import {
   type HostedExecutionAuthority,
   type HostedExecutionCompletion,
   type HostedExecutionCompletionObserver,
@@ -115,6 +121,7 @@ export class HostGoalCoordinator {
     'goal.query': (input) => this.#query(input.sessionId),
     'goal.arm': (input) => this.#arm(input),
     'goal.control': (input) => this.#control(input),
+    'goal.event-wait.cancel': (input) => this.#cancelEventWait(input),
   };
 
   readonly manager: GoalManager;
@@ -239,6 +246,7 @@ export class HostGoalCoordinator {
             agentRunStore: options.stores.agentRunStore,
           },
           authority: (sessionId) => this.#authorityBySession.get(sessionId),
+          changed: this.#onProjectionChanged,
           mutate: (sessionId, operation) => this.#mutateWait(sessionId, operation),
           settleAdditional: (sessionId, tokensNow, controlLease) =>
             this.#mutateGoal(async () => {
@@ -262,9 +270,13 @@ export class HostGoalCoordinator {
           canRegister: (sessionId, turnId) =>
             this.continuation.mutationStanding(sessionId, turnId).kind === 'held',
           deliver: (pending) => this.continuation.recoverPendingContinuation(pending),
-          pause: (sessionId, reason, controlLease) =>
+          pause: (sessionId, reason, controlLease, waitId) =>
             this.#mutateGoal(async () => {
-              if (!this.manager.matchesControlLease(sessionId, controlLease)) return;
+              if (
+                !this.manager.matchesControlLease(sessionId, controlLease) ||
+                this.#authorityBySession.get(sessionId)?.record.activeEventWait?.waitId !== waitId
+              )
+                return;
               this.manager.pause(sessionId, { reason });
               this.continuation.invalidateSession(sessionId);
             }),
@@ -349,9 +361,148 @@ export class HostGoalCoordinator {
     await this.eventWaitBridge?.start();
   }
 
-  readProjection(sessionId: string): GoalProjection | null {
+  readProjection(sessionId: string): Promise<GoalProjection | null> {
+    // Canonical/query callers hold the Session lane. Do not wait for the
+    // mutation lane here: a committed wait write can have a delayed receipt
+    // while Root admission must still publish and start. #project rechecks the
+    // adopted binding after I/O and excludes durably admitted/suppressed waits.
+    return this.#project(sessionId);
+  }
+
+  async #project(sessionId: string): Promise<GoalProjection | null> {
+    const authority = this.#authorityBySession.get(sessionId);
+    const gate = authority?.record.activeEventWait;
+    const wait =
+      gate && this.#stores.eventWaitStore
+        ? await this.#stores.eventWaitStore.read({ sessionId, waitId: gate.waitId })
+        : undefined;
     const goal = this.manager.get(sessionId);
-    return goal ? projectGoalState(goal) : null;
+    if (!goal) return null;
+    const projection = projectGoalState(goal);
+    const current = this.#authorityBySession.get(sessionId);
+    if (
+      !wait ||
+      !gate ||
+      !current ||
+      current.record.activeEventWait?.waitId !== gate.waitId ||
+      !sameGoalControlLease(current.record.controlLease, wait.record.goalControlLease) ||
+      !this.manager.matchesControlLease(sessionId, wait.record.goalControlLease) ||
+      wait.record.delivery ||
+      wait.record.status === 'cancelled' ||
+      !['active', 'waiting'].includes(goal.status)
+    )
+      return projection;
+    const r = wait.record,
+      observation = r.observation;
+    // Checking is an attempt reservation, not a new source fact. Its retained
+    // checkpoint describes the last completed observation until this read settles.
+    const observationOutcome =
+      observation?.outcome === 'checking' && observation.lastObservedAt !== null
+        ? observation.consecutiveErrors > 0
+          ? 'unknown'
+          : 'pending'
+        : observation?.outcome;
+    return {
+      ...projection,
+      eventWait: {
+        waitId: r.waitId,
+        controlGeneration: r.goalControlLease.generation,
+        waitRevision: wait.authorityRevision,
+        resource: {
+          providerId: r.resource.providerId,
+          resourceType: r.resource.resourceType,
+          resourceId: truncateUtf8(
+            r.resource.resourceId,
+            GOAL_EVENT_WAIT_SUMMARY_LIMITS.resourceIdBytes,
+            '…',
+          ),
+        },
+        reason: gate.reason,
+        deadlineAt: r.deadlineAt,
+        phase: r.status === 'waiting' ? 'observing' : 'awaiting_admission',
+        observation:
+          r.status !== 'waiting'
+            ? null
+            : {
+                state:
+                  observationOutcome === 'unknown'
+                    ? 'unknown'
+                    : observationOutcome === 'pending'
+                      ? 'pending'
+                      : 'checking',
+                lastObservedAt: observation?.lastObservedAt ?? null,
+                reasonCode: observation?.reason
+                  ? truncateUtf8(
+                      observation.reason,
+                      GOAL_EVENT_WAIT_SUMMARY_LIMITS.reasonCodeBytes,
+                      '…',
+                    )
+                  : null,
+              },
+        outcome:
+          r.status === 'resolved'
+            ? r.resolution.outcome
+            : r.status === 'expired'
+              ? 'expired'
+              : null,
+      },
+    };
+  }
+
+  #cancelEventWait(
+    input: GoalEventWaitCancelInput,
+  ): Promise<OperationOutcome<'goal.event-wait.cancel'>> {
+    return this.#sessionAdmission.run(input.sessionId, () =>
+      this.#mutateGoal(async () => {
+        if (this.#draining) return hostDraining();
+        let header;
+        try {
+          header = await this.#stores.sessionStore.readHeaderSnapshot(input.sessionId);
+        } catch (error) {
+          if (isSessionNotFoundError(error)) return notFound('Session does not exist');
+          throw error;
+        }
+        if (header.isArchived) return sessionArchived('Archived Session cannot cancel a wait');
+        const wait = await this.#stores.eventWaitStore?.read({
+          sessionId: input.sessionId,
+          waitId: input.waitId,
+        });
+        const current = this.#authorityBySession.get(input.sessionId)?.record;
+        let outcome: GoalEventWaitCancelResult['outcome'] = 'conflict';
+        if (
+          wait?.record.goalControlLease.goalId === input.goalId &&
+          wait.record.goalControlLease.generation === input.controlGeneration
+        ) {
+          if (wait.record.delivery?.kind === 'admitted') outcome = 'already_admitted';
+          else if (
+            wait.record.status === 'cancelled' ||
+            wait.record.delivery?.kind === 'suppressed'
+          )
+            outcome = 'already_cancelled';
+          else if (
+            current?.activeEventWait?.waitId === input.waitId &&
+            current.goal.id === input.goalId &&
+            current.controlLease.generation === input.controlGeneration &&
+            current.goal.revision === input.expectedGoalRevision
+          ) {
+            this.manager.pause(input.sessionId, {
+              reason: 'Event wait cancelled. The background task keeps running.',
+            });
+            this.continuation.invalidateSession(input.sessionId);
+            await this.#flushGoalPersistence();
+            outcome = 'cancelled';
+          }
+        }
+        return {
+          ok: true,
+          result: {
+            sessionId: input.sessionId,
+            outcome,
+            goal: await this.#project(input.sessionId),
+          },
+        };
+      }),
+    );
   }
 
   beginObservedTurn(sessionId: string, turnId: string): GoalObservedTurnStart {
@@ -510,7 +661,7 @@ export class HostGoalCoordinator {
       }
       return {
         ok: true,
-        result: { sessionId, goal: this.readProjection(sessionId) },
+        result: { sessionId, goal: await this.readProjection(sessionId) },
       };
     });
   }
