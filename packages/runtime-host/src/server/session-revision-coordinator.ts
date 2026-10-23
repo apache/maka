@@ -624,7 +624,14 @@ export class HostSessionRevisionCoordinator {
         ) {
           return [];
         }
-        const relativePath = artifactCopy.relativePaths.get(attachment.ref.relativePath);
+        // A user upload's ref names the upload's Artifact record id, which the
+        // copy reports under `artifactIds`; only path-named Artifacts land in
+        // `relativePaths`. Look the id up first, matching the transcript
+        // rewriter's order, so an uploaded attachment is staged too (#6246
+        // review) instead of being copied and then dropped off the response.
+        const sourceId = attachment.ref.relativePath;
+        const relativePath =
+          artifactCopy.artifactIds.get(sourceId) ?? artifactCopy.relativePaths.get(sourceId);
         if (!relativePath) return [];
         return [
           {

@@ -552,6 +552,45 @@ async function verifyConcurrentRevisionAuthority(
     );
 
     const sourceAfterRevision = await querySession(tui, sourceSessionId);
+    // A revision of the upload turn itself (#5109): the edited turn's own
+    // attachment is a user upload whose ref names the Artifact record id, which
+    // the copy reports under `artifactIds`, not `relativePaths` — the committed
+    // response must still stage the rewritten ref (#6246 review).
+    const uploadedTurnRevision = await desktop.request('session.revision.create', {
+      sourceSessionId,
+      targetSessionId: 'staged-upload-revision-target',
+      sourceTurnId: 'turn-1',
+      expectedSourceRevision: sourceAfterRevision.revision,
+    });
+    assert.equal(uploadedTurnRevision.kind, 'committed');
+    if (uploadedTurnRevision.kind !== 'committed') assert.fail('Revision must commit');
+    assert.equal(uploadedTurnRevision.stagedAttachments?.length, 1);
+    const stagedUpload = uploadedTurnRevision.stagedAttachments?.[0];
+    assert.equal(stagedUpload?.name, 'source.txt');
+    assert.equal(stagedUpload?.ref.kind, 'session_file');
+    if (stagedUpload?.ref.kind !== 'session_file')
+      assert.fail('Staged ref must stay session-backed');
+    assert.equal(stagedUpload.ref.sessionId, 'staged-upload-revision-target');
+    assert.notEqual(stagedUpload.ref.relativePath, 'source-artifact');
+    assert.deepEqual(
+      await desktop.request('artifact.query', {
+        kind: 'read_text',
+        sessionId: 'staged-upload-revision-target',
+        artifactId: stagedUpload.ref.relativePath,
+      }),
+      {
+        kind: 'text',
+        sessionId: 'staged-upload-revision-target',
+        artifactId: stagedUpload.ref.relativePath,
+        preview: { ok: true, text: 'retained bytes' },
+      },
+    );
+    assert.deepEqual(
+      await desktop.request('session.revision.abandon', {
+        targetSessionId: 'staged-upload-revision-target',
+      }),
+      { kind: 'abandoned', sessionId: 'staged-upload-revision-target' },
+    );
     const staleExpectedRevision = sourceAfterRevision.revision + 1;
     const stale = await tui.request('session.revision.create', {
       ...revisionInput,
