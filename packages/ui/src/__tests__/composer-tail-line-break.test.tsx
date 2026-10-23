@@ -89,6 +89,15 @@ async function harness() {
       caret.container = editor;
       caret.offset = editor.childNodes.length;
     },
+    /** The shape Chromium leaves after a real Shift+Enter at the tail under
+     *  `break-spaces`: the inserted break is a literal `\n` text node and the
+     *  caret parks at its offset 0. */
+    async draftEndingInNewlineText(text: string) {
+      await this.draft(text);
+      await act(async () => { editor.appendChild(document.createTextNode('\n')); });
+      caret.container = editor.lastChild!;
+      caret.offset = 0;
+    },
     capAt(scrollHeight: number) {
       Object.defineProperty(editor, 'scrollHeight', { configurable: true, value: scrollHeight });
     },
@@ -130,6 +139,23 @@ test('a caret parked past a trailing break still counts as the tail', async () =
   h.capAt(220);
   await h.press({ shiftKey: true });
   assert.equal(h.editor.scrollTop, 220);
+});
+
+test('a caret parked before trailing newline text still counts as the tail', async () => {
+  const h = await harness();
+  await h.draftEndingInNewlineText('abc');
+  h.capAt(220);
+  await h.press({ shiftKey: true });
+  assert.equal(h.editor.scrollTop, 220);
+});
+
+test('a caret before a newline that carries text stays mid-draft', async () => {
+  const h = await harness();
+  await h.draft('\nbc', 0);
+  h.capAt(220);
+  await h.press({ shiftKey: true });
+  assert.deepEqual(h.lineBreaks, ['insertLineBreak']);
+  assert.equal(h.editor.scrollTop, 0);
 });
 
 test('a multi-line insert ending in a break reveals the tail line', async () => {

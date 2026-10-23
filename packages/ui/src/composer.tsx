@@ -176,14 +176,16 @@ function rendersNoCharacters(node: Node): boolean {
 
 /** Whether the collapsed caret sits after everything the draft renders (only
  *  characterless nodes may remain; a caret parked before a trailing `<br>` —
- *  the restored-`"abc\n"`-draft shape — still counts). */
+ *  the restored-`"abc\n"`-draft shape — or before trailing `\n` text — the
+ *  shape Chromium leaves after a real Shift+Enter under `break-spaces`, the
+ *  break sitting as a text node ahead of the caret (#5811) — still counts). */
 function caretAtContentEnd(editable: HTMLElement): boolean {
   const selection = document.getSelection();
   if (!selection || !selection.isCollapsed || selection.rangeCount === 0) return false;
   const { startContainer, startOffset } = selection.getRangeAt(0);
   if (!editable.contains(startContainer)) return false;
   if (startContainer.nodeType === Node.TEXT_NODE
-    && startOffset < (startContainer.nodeValue?.length ?? 0)) return false;
+    && /[^\n]/.test((startContainer.nodeValue ?? '').slice(startOffset))) return false;
   for (let node: Node | null = startContainer; node;) {
     const rest = node === startContainer && node.nodeType !== Node.TEXT_NODE
       ? (node.childNodes[startOffset] ?? null)
