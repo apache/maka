@@ -2334,10 +2334,16 @@ const makaBridge = {
      * The single session-creation channel (#1433). `mode` names a
      * product intent — main derives the permission boundary, name and
      * labels it implies (`create-session-input.ts`); the renderer cannot
-     * reach a boundary like `explore` by asking for it directly.
+     * reach a boundary like `explore` by asking for it directly. A Session
+     * created beside another stays on that Session's Host, never the active one.
      */
-    async create(input?: CreateSessionRequestInput): Promise<DesktopSessionSummary> {
-      const scope = await activeRuntimeHostRef();
+    async create(
+      input?: CreateSessionRequestInput,
+      options?: { readonly besideSessionId?: string },
+    ): Promise<DesktopSessionSummary> {
+      const scope = options?.besideSessionId
+        ? (await runtimeHostSessionRef(options.besideSessionId)).scope
+        : await activeRuntimeHostRef();
       return createDesktopSessionOnScope(scope, input);
     },
     async send(sessionId, command) {

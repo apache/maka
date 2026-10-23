@@ -37,12 +37,11 @@ export async function runCheckinAction(
     deps.openSession(card.sessionId);
     return 'done';
   }
-  if (card.action !== 'new_session') {
-    const revision = await deps.port.readRevision(card.sessionId).catch(() => undefined);
-    if (revision !== card.sessionRevision) {
-      if (revision !== undefined) deps.openSession(card.sessionId);
-      return 'stale';
-    }
+  // A new task beside the source is no exception: its instruction is just as old.
+  const revision = await deps.port.readRevision(card.sessionId).catch(() => undefined);
+  if (revision !== card.sessionRevision) {
+    if (revision !== undefined) deps.openSession(card.sessionId);
+    return 'stale';
   }
   try {
     switch (card.action) {

@@ -179,6 +179,11 @@ test('a card made against an older revision only opens its Session', async () =>
   assert.equal(await runCheckinAction(card({ action: 'resume' }), run.deps), 'stale');
   assert.deepEqual(run.calls, []);
 
+  // A new task beside a source that moved on would start superseded work.
+  run = actionDeps({ revision: 9, started: 'session-new' });
+  assert.equal(await runCheckinAction(card({ action: 'new_session' }), run.deps), 'stale');
+  assert.deepEqual(run.calls, ['open:session-a']);
+
   run = actionDeps({ sent: false });
   assert.equal(await runCheckinAction(card(), run.deps), 'failed');
   assert.deepEqual(run.calls, ['send:session-a:Write tests for the upload retries.', 'open:session-a']);
@@ -204,7 +209,10 @@ test('the desktop check-in port opens a new task beside its source and quotes it
         llmConnectionSlug: 'openai',
         model: 'gpt-x',
       }),
-      create: async (input: unknown) => { calls.push(['create', input]); return { id: 'session-new' }; },
+      create: async (input: unknown, options: unknown) => {
+        calls.push(['create', input, options]);
+        return { id: 'session-new' };
+      },
       readSnapshot: async () => ({
         reference: { sessionId: 'session-a', sessionName: 'Upload retries' },
         text: 'Tail of the source Session',
@@ -231,6 +239,8 @@ test('the desktop check-in port opens a new task beside its source and quotes it
         llmConnectionSlug: 'openai',
         model: 'gpt-x',
       },
+      // Created on the source's Host, not whichever Host is active now.
+      { besideSessionId: 'session-a' },
     ],
     ['send', 'session-new', 'Write the tests.', 1],
     ['generate', { effectId: 'e1', since: null }],

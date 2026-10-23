@@ -111,13 +111,17 @@ function createDesktopCheckinPort(bridge: Pick<MakaBridge, 'sessions'>): Convers
     startSession: async (sourceSessionId, text) => {
       const source = await bridge.sessions.get(sourceSessionId);
       if (!source) return undefined;
-      const created = await bridge.sessions.create({
-        ...(source.cwd ? { cwd: source.cwd } : {}),
-        ...(source.projectId !== undefined ? { projectId: source.projectId } : {}),
-        ...(source.llmConnectionId ? { llmConnectionId: source.llmConnectionId } : {}),
-        llmConnectionSlug: source.llmConnectionSlug,
-        model: source.model,
-      });
+      // A card can outlive a Host switch: the new task belongs on its source's Host.
+      const created = await bridge.sessions.create(
+        {
+          ...(source.cwd ? { cwd: source.cwd } : {}),
+          ...(source.projectId !== undefined ? { projectId: source.projectId } : {}),
+          ...(source.llmConnectionId ? { llmConnectionId: source.llmConnectionId } : {}),
+          llmConnectionSlug: source.llmConnectionSlug,
+          model: source.model,
+        },
+        { besideSessionId: sourceSessionId },
+      );
       const snapshot = await bridge.sessions.readSnapshot(sourceSessionId).catch(() => undefined);
       const sent = await bridge.sessions.send(created.id, {
         type: 'send',
