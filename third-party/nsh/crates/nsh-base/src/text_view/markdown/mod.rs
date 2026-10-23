@@ -44,11 +44,20 @@ use super::{
 /// How deep blocks and inline content are read: deeper content is text.
 const MAX_DEPTH: usize = 32;
 
+/// A whole-source fallback and parsed blocks have different logical owners.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum ProjectionKind {
+    LiteralWholeDocument,
+    #[default]
+    Parsed,
+}
+
 /// One native publication: the document and the ranges of its actual root rows.
 /// This is not part of the app-authored document or the JS document format.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct Projection {
     pub(super) document: Document,
+    pub(super) kind: ProjectionKind,
     /// Original UTF-8 bytes captured by this parse, before lexical repair.
     pub(super) raw_len: u64,
     /// One interval set per block, then one for the combined footnotes row.
@@ -120,6 +129,7 @@ pub(super) fn parse(parser: &Parser, source: &str, mapped: bool) -> Projection {
     }
     Projection {
         document: Document { blocks, footnotes },
+        kind: ProjectionKind::Parsed,
         raw_len,
         rows: rows.into(),
     }
@@ -422,10 +432,10 @@ impl<'a> Converter<'a> {
                 continue;
             };
             self.source = source;
-            if self.mapped {
-                if let Some(position) = &def.position {
-                    ranges.extend(source.ranges(position.start.offset..position.end.offset));
-                }
+            if self.mapped
+                && let Some(position) = &def.position
+            {
+                ranges.extend(source.ranges(position.start.offset..position.end.offset));
             }
             let mut children = Vec::new();
             self.blocks_into(&def.children, &mut children);

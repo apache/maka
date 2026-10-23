@@ -1899,7 +1899,7 @@ fn source_reading_waits_for_its_virtualized_row_without_capturing_another_docume
                             source_len: 16000,
                             projection_len: 3200,
                             rows: (0..20)
-                                .map(|row| vec![row * 160..(row + 1) * 160])
+                                .map(|row| std::iter::once(row * 160..(row + 1) * 160).collect())
                                 .collect::<Vec<_>>()
                                 .into(),
                             ..Default::default()
@@ -1931,7 +1931,7 @@ fn source_reading_waits_for_its_virtualized_row_without_capturing_another_docume
                         source_len: 16000,
                         projection_len: 3200,
                         rows: (0..20)
-                            .map(|row| vec![row * 160..(row + 1) * 160])
+                            .map(|row| std::iter::once(row * 160..(row + 1) * 160).collect())
                             .collect::<Vec<_>>()
                             .into(),
                         ..Default::default()
@@ -2014,7 +2014,7 @@ fn source_reading_waits_for_its_virtualized_row_without_capturing_another_docume
                         source_len: 16000,
                         projection_len: 16000,
                         rows: (0..100)
-                            .map(|row| vec![row * 160..(row + 1) * 160])
+                            .map(|row| std::iter::once(row * 160..(row + 1) * 160).collect())
                             .collect::<Vec<_>>()
                             .into(),
                         ..Default::default()
@@ -18451,7 +18451,13 @@ fn a_page_list_in_a_cell_of_a_list_follows_that_list() {
                     source_len: 80,
                     projection_len: 80,
                     rows: (0..100)
-                        .map(|index| if index == 40 { vec![0..80] } else { Vec::new() })
+                        .map(|index| {
+                            if index == 40 {
+                                std::iter::once(0..80).collect()
+                            } else {
+                                Vec::new()
+                            }
+                        })
                         .collect::<Vec<_>>()
                         .into(),
                     ..Default::default()

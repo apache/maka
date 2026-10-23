@@ -19,7 +19,7 @@
 
 //! One component-owned parser worker. Source effects replace the latest work;
 //! an already-started blocking parse is allowed to finish before the next starts.
-use super::markdown::Projection;
+use super::markdown::{Projection, ProjectionKind};
 use super::view::{TextViewEvent, TextViewProps};
 use super::{Block, Document, Inline, MarkdownExtension, MarkdownOptions, MarkdownPlugins, Parser};
 use nsh_core::ui::{Owner, Stored, prelude::*, stored};
@@ -79,11 +79,12 @@ impl Request {
                         content: vec![Inline::text(source.to_string())],
                         segments: super::markdown::source::literal(0, source),
                     }])]),
+                    kind: ProjectionKind::LiteralWholeDocument,
                     raw_len,
                     rows: vec![if raw_len == 0 {
                         Vec::new()
                     } else {
-                        vec![0..raw_len]
+                        std::iter::once(0..raw_len).collect()
                     }]
                     .into(),
                 }

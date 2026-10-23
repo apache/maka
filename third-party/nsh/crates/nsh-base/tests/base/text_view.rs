@@ -21,7 +21,7 @@
 use nsh_base::text_view::{Block, ParseContext, mdast};
 use nsh_base::{MarkdownPlugin, MarkdownPlugins, text_view};
 use nsh_core::{
-    Size,
+    ListContentStyle, MountItem, NodeId, Size,
     ui::{EngineContext, Root, engine_context, prelude::*},
 };
 use nsh_engine::EngineConfig;
@@ -274,4 +274,169 @@ fn nested_code_keeps_the_wrap_control_and_copies_the_exact_grown_body() {
     assert!(!app.screen().selected("Wrap code").unwrap());
     app.press("Copy code").unwrap();
     assert_eq!(app.screen().clipboard(), Some("first\n\tsecond  \n"));
+}
+
+#[component]
+fn OffscreenParagraphs() -> impl IntoElement {
+    provide_context((*engine_context::<MarkdownPlugins>().expect("test plugins")).clone());
+    let page = element_ref();
+    let extent = signal(0.0f32);
+    // The labels occupy one parsed line each. Their URLs make the actual
+    // literal larger than all thirty parsed rows' initial size estimates,
+    // including with the headless engine's approximate line wrapping.
+    let path = "segment/".repeat(48);
+    let source = (0..30)
+        .map(|index| format!("[Paragraph{index:02}](https://example.invalid/{path}{index})"))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    view()
+        .flex_col()
+        .w_full()
+        .h_full()
+        .child(
+            view()
+                .flex_row()
+                .h(px(20.0))
+                .child(
+                    view()
+                        .test_id("far")
+                        .w(px(60.0))
+                        .h(px(20.0))
+                        .on_press(move || page.scroll_to_end(false))
+                        .child(text("Far")),
+                )
+                .child(
+                    view()
+                        .test_id("top")
+                        .w(px(60.0))
+                        .h(px(20.0))
+                        .on_press(move || {
+                            page.scroll_to(nsh_core::geometry::point(px(0.0), px(0.0)), false)
+                        })
+                        .child(text("Top")),
+                )
+                .child(text(move || format!("extent {:.0}", extent.get())).text_size(px(10.0))),
+        )
+        .child(
+            scroll()
+                .element_ref(&page)
+                .h(px(200.0))
+                .w_full()
+                .child(
+                    view()
+                        .flex_col()
+                        .w_full()
+                        .on_layout(move |frame: &nsh_core::Bounds<Points>| {
+                            extent.set(frame.size.height.0)
+                        })
+                        .child(
+                            text_view()
+                                .source_id("offscreen-paragraphs")
+                                .markdown(source)
+                                .content_style(ListContentStyle {
+                                    row_gap: px(16.0),
+                                    ..Default::default()
+                                }),
+                        ),
+                )
+                // Stay outside the 200pt viewport and its 200pt overscan
+                // even when parsing adds 29 rows of 50pt plus 16pt gaps:
+                // 2400 - 200 - 200 > 29 * (50 + 16).
+                .child(view().h(px(2400.0))),
+        )
+}
+
+#[derive(Default)]
+struct ObservedParagraphs {
+    literal: Option<NodeId>,
+    first: Option<(NodeId, f32)>,
+}
+
+#[test]
+fn an_offscreen_parsed_paragraph_does_not_inherit_the_whole_literal_rows_height() {
+    let gate = Arc::new(Gate::default());
+    let plugins = MarkdownPlugins::new().with(Paused(gate.clone()));
+    let observed = Arc::new(Mutex::new(ObservedParagraphs::default()));
+    let mut app = Headless::start(EngineConfig {
+        viewport: Size::new(px(500.0), px(220.0)),
+        context: EngineContext::default().with(plugins),
+        ..EngineConfig::new(Root::of::<OffscreenParagraphs>())
+    })
+    .unwrap();
+    let _release = Release(gate.clone());
+    {
+        let observed = observed.clone();
+        app.observe(move |_, batch| {
+            for item in &batch.items {
+                if let MountItem::Text {
+                    id, text, content, ..
+                } = item
+                {
+                    let mut observed = observed.lock().unwrap();
+                    if text.text.starts_with("[Paragraph00](") {
+                        observed.literal.get_or_insert(*id);
+                    } else if text.text == "Paragraph00" {
+                        observed.first = Some((*id, content.size.height.0));
+                    }
+                }
+            }
+        });
+    }
+    let extent = |screen: &nsh_testing::Screen| {
+        screen.texts().into_iter().find_map(|text| {
+            text.strip_prefix("extent ")
+                .and_then(|height| height.parse::<f32>().ok())
+        })
+    };
+    // Thirty unmeasured parsed rows, plus their twenty-nine exact gaps.
+    let parsed_upper = 30.0 * 50.0 + 29.0 * 16.0;
+    gate.entered(1);
+    app.wait_until(
+        "the complete literal has its actual measured extent",
+        Duration::from_secs(5),
+        |screen| extent(screen).is_some_and(|height| height > parsed_upper),
+    )
+    .unwrap();
+    let literal_extent = extent(app.screen()).unwrap();
+    let literal_node = observed
+        .lock()
+        .unwrap()
+        .literal
+        .expect("the actual literal Text");
+    app.press("id:far").unwrap();
+    app.wait_for_gone("text:/Paragraph00/", Duration::from_secs(5))
+        .unwrap();
+
+    gate.release(usize::MAX);
+    gate.entered(30);
+    // Wait for any actual layout publication, including the wrong larger
+    // extent. The bound below is the assertion, rather than the wait target.
+    app.wait_until(
+        "the offscreen parsed document publishes its extent",
+        Duration::from_secs(5),
+        |screen| extent(screen).is_some_and(|height| height != literal_extent),
+    )
+    .unwrap();
+    let parsed_extent = extent(app.screen()).unwrap();
+    assert!(
+        parsed_extent <= parsed_upper,
+        "the offscreen parsed tree kept a literal measurement: raw {literal_extent}, parsed {parsed_extent}, upper {parsed_upper}"
+    );
+    assert_eq!(app.screen().matches("text:Paragraph00"), Ok(false));
+
+    app.press("id:top").unwrap();
+    app.wait_for("text:Paragraph00").unwrap();
+    let (first_node, first_height) = observed
+        .lock()
+        .unwrap()
+        .first
+        .expect("the parsed first Text");
+    assert_ne!(
+        first_node, literal_node,
+        "the parsed row needs its own native owner"
+    );
+    assert!(
+        first_height > 0.0 && first_height <= 50.0,
+        "a single-line parsed paragraph has its actual small geometry: {first_height}"
+    );
 }

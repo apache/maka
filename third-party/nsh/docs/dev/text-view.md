@@ -40,6 +40,7 @@ colored with the theme's tokens; the app restyles each part over it.
   rows with point-valued padding and gaps (default `rowGap: 11.25`). A supplied value replaces the complete content
   layout, so `{}` and `{ rowGap: 0 }` both select zero gap. Root `classes` / `styles` own outer geometry and text
   appearance; document content spacing belongs to `contentStyle`.
+  A whole-source literal fallback has its own row identity; parsed blocks do not inherit its size or callbacks.
   The native Markdown publication also carries its captured source length and each root row's canonical ranges,
   collected by the same converter. `VirtualList::source_rows` publishes this immutable index as `ListSourceRows`;
   the current input supplies the complete source length. The surrounding reader keeps its one source pin while

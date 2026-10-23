@@ -1,7 +1,7 @@
 //! Reading anchors use the final shaped source lines, not recycled node ids.
 //! The list keeps the one pin; this module only derives its geometry index.
 
-use super::{Core, Key, Kind, LeafContext, NO_KEY, TextEngine, content_box};
+use super::{Core, Key, Kind, LeafContext, NO_KEY, Node, TextEngine, content_box};
 use crate::text_source::{SourceGeometry, SourcePoint, SourcePosition, SourceRow};
 
 struct Seat {
@@ -63,7 +63,8 @@ impl<M: TextEngine> Core<M> {
             .find_map(|(cell, _)| self.source_provider_in(cell, point))
     }
 
-    fn source_provider_in(&self, key: Key, point: &SourcePoint) -> Option<Key> {
+    /// Source ownership does not require a provider's layout to be ready.
+    fn source_node(&self, key: Key) -> Option<&Node> {
         let node = self.nodes.get(key as usize)?;
         if node.kind.is_root() || self.displays_none(key) {
             return None;
@@ -77,8 +78,15 @@ impl<M: TextEngine> Core<M> {
                 || scroll.offset.1 != 0.0
                 || !scroll.pending.is_empty())
         {
+            // An independent vertical reader's offsets are not reflow of
+            // this reader. Disabled wrapped code stays in its source subtree.
             return None;
         }
+        Some(node)
+    }
+
+    fn source_provider_in(&self, key: Key, point: &SourcePoint) -> Option<Key> {
+        let node = self.source_node(key)?;
         if let Some(list) = &node.list {
             if list
                 .source_rows
@@ -241,27 +249,12 @@ impl<M: TextEngine> Core<M> {
         target: Option<(Key, u32)>,
         out: &mut Vec<Seat>,
     ) {
-        let Some(node) = self.nodes.get(key as usize) else {
+        let Some(node) = self.source_node(key) else {
             return;
         };
         let Some(layout) = node.layout else { return };
-        if node.kind.is_root() || self.displays_none(key) {
-            return;
-        }
         let frame = self.rounded_layout(layout);
         let parent_list = node.list.as_ref().is_some_and(|list| list.parent);
-        if let Some(scroll) = &node.scroll
-            && !parent_list
-            && !scroll.horizontal
-            && (node.kind == Kind::List
-                || scroll.behavior.enabled
-                || scroll.offset.1 != 0.0
-                || !scroll.pending.is_empty())
-        {
-            // An independent vertical reader's offsets are not reflow of
-            // its outer reader. Disabled wrapped code is not such an owner.
-            return;
-        }
         if node.view_style.overflow_hidden || node.scroll.is_some() {
             clip = (clip.0.max(y), clip.1.min(y + frame.size.height));
             if clip.0 >= clip.1 {

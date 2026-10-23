@@ -17,7 +17,7 @@ use nsh_core::{
     },
 };
 
-use super::markdown::Projection;
+use super::markdown::{Projection, ProjectionKind};
 use super::parse::{DocumentState, SourceOrigin};
 use super::{
     Alert, Block, CodeBlock, ColumnAlign, CustomNode, Document, Image, ImageLength, Inline,
@@ -368,7 +368,7 @@ pub fn TextView(props: TextViewProps, cx: Scope<TextViewEvent>) -> impl IntoElem
                     d.blocks
                         .get(index)
                         .cloned()
-                        .map(|block| DocumentRow::Block(index, block))
+                        .map(|block| DocumentRow::Block(d.kind, index, block))
                         .or_else(|| {
                             (index == d.blocks.len() && !d.footnotes.is_empty())
                                 .then_some(DocumentRow::Footnotes)
@@ -385,7 +385,7 @@ pub fn TextView(props: TextViewProps, cx: Scope<TextViewEvent>) -> impl IntoElem
                 // logical block, so its old callbacks cannot address a row
                 // that the cell starts showing later.
                 let content = match item.get_untracked() {
-                    DocumentRow::Block(index, _) => {
+                    DocumentRow::Block(_, index, _) => {
                         let last = computed(move || document.with(|d| index + 1 == d.blocks.len()));
                         let before = computed(move || {
                             document.with(|d| {
@@ -393,7 +393,7 @@ pub fn TextView(props: TextViewProps, cx: Scope<TextViewEvent>) -> impl IntoElem
                             })
                         });
                         let block = computed(move || match item.get() {
-                            DocumentRow::Block(_, block) => block,
+                            DocumentRow::Block(_, _, block) => block,
                             DocumentRow::Footnotes => unreachable!(),
                         });
                         cx.block(block, index.to_string(), last, before)
@@ -428,7 +428,7 @@ pub fn TextView(props: TextViewProps, cx: Scope<TextViewEvent>) -> impl IntoElem
                 d.blocks
                     .iter()
                     .enumerate()
-                    .map(|(index, block)| DocumentRowKey::Block(index, row_kind(block)))
+                    .map(|(index, block)| DocumentRowKey::block(d.kind, index, block))
                     .chain((!d.footnotes.is_empty()).then_some(DocumentRowKey::Footnotes))
                     .collect::<Vec<_>>()
             })
@@ -457,18 +457,29 @@ fn default_content_style() -> ListContentStyle {
 
 #[derive(Clone, PartialEq)]
 enum DocumentRow {
-    Block(usize, Block),
+    Block(ProjectionKind, usize, Block),
     Footnotes,
 }
 #[derive(Clone, PartialEq, Eq, Hash)]
 enum DocumentRowKey {
+    LiteralWholeDocument,
     Block(usize, String),
     Footnotes,
+}
+impl DocumentRowKey {
+    fn block(projection: ProjectionKind, index: usize, block: &Block) -> Self {
+        match projection {
+            ProjectionKind::LiteralWholeDocument => Self::LiteralWholeDocument,
+            ProjectionKind::Parsed => Self::Block(index, row_kind(block)),
+        }
+    }
 }
 impl DocumentRow {
     fn key(&self) -> DocumentRowKey {
         match self {
-            Self::Block(index, block) => DocumentRowKey::Block(*index, row_kind(block)),
+            Self::Block(projection, index, block) => {
+                DocumentRowKey::block(*projection, *index, block)
+            }
             Self::Footnotes => DocumentRowKey::Footnotes,
         }
     }
