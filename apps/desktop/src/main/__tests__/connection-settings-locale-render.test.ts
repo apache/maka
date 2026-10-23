@@ -559,6 +559,22 @@ function deferred<T>() {
   return { promise, resolve: resolvePromise, reject: rejectPromise };
 }
 
+test('connection detail keys its default action apart from the detail it sits beside', async (context) => {
+  const errorLog = context.mock.method(console, 'error', () => undefined);
+  const harness = installRenderer();
+  const connection = relayConnection();
+  const bridge = connectionDetailBridge({
+    hasSecret: async () => true,
+    getSnapshot: async () => ({ connections: [connection], defaultConnection: 'relay-a', chatModelChoices: [] }),
+  });
+  await harness.render('zh-CN', providersPanel(bridge, connection.slug));
+  assert.ok(harness.document.querySelector('[data-maka-contract="connection-detail"]'));
+  const duplicateKeys = errorLog.mock.calls
+    .map((call) => call.arguments.map(String).join(' '))
+    .filter((message) => message.includes('same key'));
+  assert.deepEqual(duplicateKeys, []);
+});
+
 test('setting a default with one enabled model commits directly', async () => {
   const harness = installRenderer();
   const connection = { ...relayConnection(), defaultModel: '' };
