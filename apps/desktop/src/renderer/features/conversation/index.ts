@@ -20,7 +20,7 @@
 export { resolveTaskReadinessModelTarget } from './model/task-readiness-notice.js';
 export type { AppShellSessionUiStateController } from './model/session-ui-state.js';
 export type { SessionUiReads } from './model/session-ui-reads.js';
-export type { ConversationHostChange, ConversationCheckinMemory, ConversationCheckinPort, ConversationServices } from './ports.js';
+export type { ConversationHostChange, ConversationCheckinPort, ConversationServices } from './ports.js';
 export { ConversationServicesProvider } from './services.js';
 export { CheckinDefaultModelHint, CheckinEnableSwitch } from './ui/checkin-setting.js';
 
