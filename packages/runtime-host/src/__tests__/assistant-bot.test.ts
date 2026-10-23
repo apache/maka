@@ -45,6 +45,8 @@ import {
   createSessionEventMapMemory,
   mapSessionEventToRuntimeEvent,
 } from '@maka/runtime/session-event-runtime-mapper';
+import { createInteractiveRunComposer } from '../server/interactive-run-composer.js';
+import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
 
 async function until(fn: () => unknown | Promise<unknown>, timeout = 7000) {
   const deadline = Date.now() + timeout;
@@ -675,12 +677,38 @@ test('independent discovery retains the exact prompt and reports through Inbox, 
     if (prompt.includes('Runtime heartbeat')) {
       if (prompt.includes('Phase: discovery')) {
         assert.ok(prompt.includes(DISCOVERY_TASK));
-        const foreign = { name: 'FeishuSearch' } as any;
-        const names = f.service
-          .filterTools(id, [...f.service.tools, foreign])
-          .map((tool) => tool.name);
-        assert.deepEqual(new Set(names), new Set([...DISCOVERY_TOOLS, 'FeishuSearch']));
         assert.equal(f.service.toolCeiling(id), undefined);
+        const unused = () => Promise.reject(Error('not used'));
+        const foreign = [
+          { name: 'FeishuSearch', categoryHint: 'read' },
+          { name: 'FeishuSend', categoryHint: 'network_send' },
+          { name: 'FeishuUntyped' },
+        ] as any[];
+        // Production composition: built-in tools plus the root/plugin tools, then the session filter.
+        const compose = (filtered: boolean) =>
+          createInteractiveRunComposer({
+            runtimePolicy: { revision: 0, policy: createDefaultRuntimePolicy() },
+            skills: {} as any,
+            memory: {} as any,
+            sessionTodo: {} as any,
+            builtinTools: {
+              shellRuns: { runForegroundBash: unused, runBackgroundBash: unused },
+              backgroundTasks: { stopBackgroundTask: unused },
+              ptyControls: { writeStdin: unused },
+            },
+            hostTools: [...f.service.filterTools(id, f.service.tools), ...foreign],
+            ...(filtered ? { filterTools: (tools) => f.service.filterTools(id, tools) } : {}),
+          }).tools.map((tool) => tool.name);
+        const unfiltered = compose(false);
+        for (const name of ['Bash', 'Edit', 'Write', 'FeishuSend', 'FeishuUntyped'])
+          assert.ok(unfiltered.includes(name), name);
+        const names = compose(true);
+        for (const name of ['Bash', 'Edit', 'Write', 'FeishuSend', 'FeishuUntyped'])
+          assert.ok(!names.includes(name), name);
+        for (const name of ['Read', 'Grep', 'Glob', 'FeishuSearch', ...DISCOVERY_TOOLS])
+          assert.ok(names.includes(name), name);
+        const native = new Set(f.service.tools.map((tool) => tool.name));
+        assert.deepEqual(new Set(names.filter((name) => native.has(name))), DISCOVERY_TOOLS);
         await writeFile(
           /完成后把增量操作写入 (.+)，格式：/.exec(prompt)![1],
           JSON.stringify({
