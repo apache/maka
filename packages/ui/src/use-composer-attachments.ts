@@ -549,6 +549,18 @@ export function useComposerAttachments(options: {
     for (const item of staged) lifecycle.stagedKeys.add(item.stagingKey);
   }
 
+  /** Appends already-staged pending items verbatim — the revision lifecycle's
+   * restorer (#5109). The items go on the plate untouched, keeping the staging
+   * keys they were created with so the cancel path can still pick the edit's
+   * own entries out; running them through {@link restoreAttachments} would
+   * re-wrap each pending item as a source ref, losing its display name and
+   * size and stranding the real ref one level down (#6246 review). */
+  function restorePendingAttachments(ownerKey: string, items: readonly PendingAttachment[]): void {
+    if (!lifecycle.mounted || items.length === 0) return;
+    updateAttachments(ownerKey, (map) => appendPending(map, ownerKey, items));
+    for (const item of items) lifecycle.stagedKeys.add(item.stagingKey);
+  }
+
   /** Removes and returns one owner key's pending attachments, so the revision
    * lifecycle can re-key a plate (#5109). */
   function clearAttachmentsAt(ownerKey: string): readonly PendingAttachment[] {
@@ -668,6 +680,7 @@ export function useComposerAttachments(options: {
     pickAttachments,
     attachFilePaths,
     restoreAttachments,
+    restorePendingAttachments,
     restoreMessageContext,
     restoreDirectories,
     removeAttachment,
