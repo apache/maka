@@ -112,7 +112,6 @@ allow-git = [
   "https://github.com/microsoft/mxc",
   "https://github.com/maka-agent/cua",
   "https://github.com/longbridge/gpui-fast",
-  "https://github.com/longbridge/gpui-kit",
   "https://github.com/proptest-rs/proptest",
   "https://github.com/zed-industries/font-kit",
   "https://github.com/zed-industries/scap",

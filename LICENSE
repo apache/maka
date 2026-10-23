@@ -316,14 +316,6 @@ Copyright 2022 - 2025 Zed Industries, Inc.
 Original license texts, finite file provenance and modifications are recorded in
 third-party/gpui-fast/{LICENSE,LICENSE-APACHE,upstream.json,SOURCE.md}.
 
-GPUI Kit Base and Shell sources (adapted, Apache License 2.0)
-
-third-party/gpui-kit contains gpui-base and gpui-shell from
-https://github.com/longbridge/gpui-kit at revision
-77ff6f794dca3bcee2e90977cedf12a64aed17e4. Upstream license texts,
-original hashes and the bounded local modifications are recorded in
-third-party/gpui-kit/{LICENSE-APACHE,LICENSE-DOCS.md,upstream.json,SOURCE.md}.
-
 NSH native shell sources (Apache License 2.0)
 
 third-party/nsh contains NSH from https://github.com/M4n5ter/nsh at revision

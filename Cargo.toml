@@ -16,7 +16,7 @@
 # under the License.
 
 [workspace]
-exclude = ["third-party/nsh", "third-party/gpui-fast", "third-party/async-io", "third-party/gix-index", "third-party/sqlx-sqlite", "third-party/image-webp", "third-party/llrt-crypto", "third-party/termina"]
+exclude = ["third-party/nsh", "third-party/gpui-fast", "third-party/async-io", "third-party/gix-index", "third-party/sqlx-sqlite", "third-party/image-webp", "third-party/termina"]
 default-members = ["products/maka/cli", "platform/python-runtime"]
 members = [
     "plugins/agent/facts",
@@ -31,9 +31,6 @@ members = [
     "plugins/workspace/workspace-processes/native",
     "plugins/workspace/workspace-files/native",
     "plugins/workspace/support",
-    "third-party/gpui-kit/crates/base",
-    "third-party/gpui-kit/crates/shell",
-    "third-party/gpui-kit/crates/shell/rquickjs-compat",
     "products/maka/acp",
     "plugins/agent/engine",
     "plugins/agent/native",
@@ -127,7 +124,6 @@ maka-workspace-api = { path = "plugins/workspace/api" }
 maka-agent-authority = { path = "plugins/agent/authority" }
 maka-web-api = { path = "plugins/workspace/workspace-web/api" }
 maka-agent-api = { path = "plugins/agent/api" }
-gpui-shell = { path = "third-party/gpui-kit/crates/shell", default-features = false, features = ["gpui-fast", "quickjs"] }
 maka-transport = { path = "platform/transport" }
 cua-driver-sdk = { git = "https://github.com/maka-agent/cua", rev = "79c9b58a1b61f66ae966635c464e54cb2c8151d6" }
 cua-driver-contract = { git = "https://github.com/maka-agent/cua", rev = "79c9b58a1b61f66ae966635c464e54cb2c8151d6" }
@@ -218,8 +214,6 @@ gix-index = { path = "third-party/gix-index" }
 image-webp = { path = "third-party/image-webp" }
 sqlx-sqlite = { path = "third-party/sqlx-sqlite" }
 async-io = { path = "third-party/async-io" }
-# gpui-shell and LLRT share one quickjs-jit VM through this facade, as in gpui-kit.
-rquickjs = { path = "third-party/gpui-kit/crates/shell/rquickjs-compat" }
 
 gpui-fast = { path = "third-party/gpui-fast/crates/gpui" }
 gpui-fast-macos = { path = "third-party/gpui-fast/crates/gpui_macos" }
@@ -229,10 +223,3 @@ gpui-fast-linux = { path = "third-party/gpui-fast/crates/gpui_linux" }
 gpui-fast-wgpu = { path = "third-party/nsh/third-party/gpui-wgpu" }
 icy_sixel = { path = "third-party/nsh/third-party/icy_sixel" }
 gpui-pre-scheduler = { path = "third-party/gpui-fast/crates/scheduler" }
-
-[patch."https://github.com/longbridge/gpui-kit"]
-gpui-base = { path = "third-party/gpui-kit/crates/base" }
-
-# Keep the desktop VM's LLRT identity while backporting upstream RSA type annotations.
-[patch."https://github.com/awslabs/llrt"]
-llrt_crypto = { path = "third-party/llrt-crypto" }
