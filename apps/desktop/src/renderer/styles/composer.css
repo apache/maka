@@ -745,11 +745,14 @@
 .maka-composer-next-prompt {
   position: relative; z-index: 1; align-self: start; overflow: hidden;
   display: block; width: 100%; height: auto; margin: 0; border: 0;
-  /* Match ChatComposerInput's editable and placeholder typography tokens. */
+  /* Match ChatComposerInput's editable and placeholder typography tokens —
+     `white-space` included: the editable takes break-spaces (#5811, above),
+     and the suggestion overlays the same grid cell, so a pre-wrap mirror
+     wraps trailing whitespace differently and the reserved height drifts. */
   padding: var(--spacing-1);
   font-family: var(--font-family-body); font-size: var(--text-body-size);
   font-weight: inherit; font-style: inherit; letter-spacing: inherit; line-height: 22px;
-  white-space: pre-wrap; word-break: break-word; text-align: start;
+  white-space: break-spaces; word-break: break-word; text-align: start;
   background: transparent; color: var(--color-text-secondary); pointer-events: none;
 }
 @media (pointer: coarse) {
