@@ -367,6 +367,98 @@ describe('revision lifecycle (#5109)', () => {
     );
   });
 
+  it('cancelling drops the carried attachment but keeps the user addition (#6246 review)', async () => {
+    const sourceRef: AttachmentRef = {
+      kind: 'code',
+      name: 'source.txt',
+      mimeType: 'text/plain',
+      bytes: 14,
+      ref: { kind: 'session_file', sessionId: 'session-1', relativePath: 'a/src' },
+    };
+    const staged = emptyStagedLog();
+    const h = createEnv({
+      messages: [userMessage('turn-1', 'with attachment', { attachments: [sourceRef] })],
+      staged,
+    });
+    const actions = createRevisionActions(h.env);
+
+    actions.beginEditUserMessage('turn-1');
+    // During the edit the user stages a file of their own beside the carried
+    // one; the cancel undoes the edit, not the user's own staging.
+    const userItem: PendingAttachment = {
+      stagingKey: 'user-added',
+      displayName: 'new.txt',
+      mimeType: 'text/plain',
+      kind: 'code',
+      size: 3,
+      source: {
+        type: 'retained',
+        attachment: {
+          ...sourceRef,
+          name: 'new.txt',
+          ref: { kind: 'session_file', sessionId: 'session-1', relativePath: 'a/new' },
+        },
+      },
+    };
+    staged.attachments.push(userItem);
+    staged.attachmentBuckets.get('session-1')?.push(userItem);
+    await actions.cancelRevisionDraft();
+
+    assert.deepEqual(
+      staged.attachments.map((item) => item.displayName),
+      ['new.txt'],
+      'the edit-owned source attachment is dropped; the user addition survives',
+    );
+  });
+
+  it('cancelling a prepared edit still drops the carried attachment after its ref was rewritten (#6246 review)', async () => {
+    const sourceRef: AttachmentRef = {
+      kind: 'code',
+      name: 'source.txt',
+      mimeType: 'text/plain',
+      bytes: 14,
+      ref: { kind: 'session_file', sessionId: 'session-1', relativePath: 'a/src' },
+    };
+    const targetRef: AttachmentRef = {
+      ...sourceRef,
+      ref: { kind: 'session_file', sessionId: 'session-2', relativePath: 'a/tgt' },
+    };
+    const staged = emptyStagedLog();
+    const h = createEnv({
+      messages: [userMessage('turn-1', 'with attachment', { attachments: [sourceRef] })],
+      staged,
+      stagedAttachments: [targetRef],
+    });
+    const actions = createRevisionActions(h.env);
+
+    actions.beginEditUserMessage('turn-1');
+    assert.equal(await actions.prepareRevisionSend('with attachment'), true);
+    const userItem: PendingAttachment = {
+      stagingKey: 'user-added',
+      displayName: 'new.txt',
+      mimeType: 'text/plain',
+      kind: 'code',
+      size: 3,
+      source: {
+        type: 'retained',
+        attachment: {
+          ...sourceRef,
+          name: 'new.txt',
+          ref: { kind: 'session_file', sessionId: 'session-2', relativePath: 'a/new' },
+        },
+      },
+    };
+    staged.attachments.push(userItem);
+    staged.attachmentBuckets.get('session-2')?.push(userItem);
+    await actions.cancelRevisionDraft();
+
+    assert.deepEqual(
+      staged.attachments.map((item) => item.displayName),
+      ['new.txt'],
+      'the ref rewrite must not hide the edit-owned entry from the cancel',
+    );
+  });
+
   it('keeps a quote added on the branch child when a prepared edit is cancelled', async () => {
     const staged = emptyStagedLog();
     const h = createEnv({

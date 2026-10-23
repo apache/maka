@@ -64,6 +64,10 @@ export type TurnRevisionDraftBase<Phase> = {
   previousComposerText: string;
   originalQuotes: readonly QuoteRef[];
   originalAttachments: readonly AttachmentRef[];
+  /** Staging keys of the entries the edit staged itself, so the cancel path
+   *  can drop them by identity: their refs mutate across prepare's rewrite,
+   *  but the staging key survives it (#6246 review). */
+  editOwnedStagingKeys: readonly string[];
 };
 
 
@@ -103,23 +107,25 @@ function quoteKey(quote: QuoteRef): string {
 /**
  * Snapshot the source message's context at edit start and restage its quotes
  * and attachments under the edit's owner key, so the gate can later tell the
- * edit's own staging from the user's.
+ * edit's own staging from the user's. The restaged items go onto the plate
+ * verbatim (the surface's restorer appends them untouched), so their staging
+ * keys name the edit's own entries for the cancel path.
  */
 export function stageRevisionSourceContext(
   staged: Pick<RevisionStagedContext, 'restoreQuotes' | 'restoreAttachments'>,
   ownerKey: string,
   message: { quotes?: readonly QuoteRef[]; attachments?: readonly AttachmentRef[] },
-): RevisionStagedSource {
+): RevisionStagedSource & { editOwnedStagingKeys: readonly string[] } {
   const sourceQuotes = [...(message.quotes ?? [])];
   if (sourceQuotes.length > 0) staged.restoreQuotes(ownerKey, sourceQuotes);
   const sourceAttachments = [...(message.attachments ?? [])];
-  if (sourceAttachments.length > 0) {
-    staged.restoreAttachments(
-      ownerKey,
-      sourceAttachments.map(retainedAttachmentToPending),
-    );
-  }
-  return { originalQuotes: sourceQuotes, originalAttachments: sourceAttachments };
+  const stagedItems = sourceAttachments.map(retainedAttachmentToPending);
+  if (stagedItems.length > 0) staged.restoreAttachments(ownerKey, stagedItems);
+  return {
+    originalQuotes: sourceQuotes,
+    originalAttachments: sourceAttachments,
+    editOwnedStagingKeys: stagedItems.map((item) => item.stagingKey),
+  };
 }
 
 /**
@@ -158,7 +164,7 @@ export function clearRevisionStagedContext(
   >,
   ownerKeys: readonly string[],
   editOwnedQuotes: readonly QuoteRef[],
-  editOwnedAttachments: readonly AttachmentRef[] = [],
+  editOwnedStagingKeys: readonly string[] = [],
 ): void {
   const keys = [...new Set(ownerKeys)];
   const owned = new Map<string, number>();
@@ -179,18 +185,17 @@ export function clearRevisionStagedContext(
     if (ownedCount <= 0) kept.push(quote);
   }
   if (keys.length > 0 && kept.length > 0) staged.restoreQuotes(keys[0], kept);
-  // Attachments: the edit's own entries (matched by their source ref) are
-  // dropped; anything else on the plates was staged by the user during the
-  // edit and survives on the first owner key. ponytail: count-based survival
-  // can mirror the quote logic if duplicated user additions matter.
-  const editOwnedRefs = new Set(editOwnedAttachments.map((ref) => JSON.stringify(ref)));
+  // Attachments: the edit's own entries are dropped by staging key — the
+  // identity that survives prepare's ref rewrite. Matching the source ref's
+  // JSON cannot work: the rewritten entry no longer carries the source shape,
+  // and the ref nested in a pending item is not the whole ref the snapshot
+  // holds (#6246 review). Anything else on the plates was staged by the user
+  // during the edit and survives on the first owner key. ponytail: count-based
+  // survival can mirror the quote logic if duplicated user additions matter.
+  const editOwnedKeys = new Set(editOwnedStagingKeys);
   const dropped: PendingAttachment[] = [];
   for (const ownerKey of keys) dropped.push(...staged.clearAttachments(ownerKey));
-  const keptAttachments = dropped.filter(
-    (item) =>
-      item.source.type !== 'retained' ||
-      !editOwnedRefs.has(JSON.stringify(item.source.attachment.ref)),
-  );
+  const keptAttachments = dropped.filter((item) => !editOwnedKeys.has(item.stagingKey));
   if (keys.length > 0 && keptAttachments.length > 0) {
     staged.restoreAttachments(keys[0], keptAttachments);
   }
@@ -373,11 +378,11 @@ export function createRevisionActions<
       revisionCopyKey(sessionId, turnId),
       turnId,
     );
-    const { originalQuotes, originalAttachments } = stageRevisionSourceContext(
-      staged,
-      sessionId,
-      userMessage,
-    );
+    const {
+      originalQuotes,
+      originalAttachments,
+      editOwnedStagingKeys,
+    } = stageRevisionSourceContext(staged, sessionId, userMessage);
     commitRevisionDraft({
       sourceSessionId: sessionId,
       sourceTurnId: copyAttempt.sourceTurnId,
@@ -387,6 +392,7 @@ export function createRevisionActions<
       previousComposerText: composerRef.current?.getText() ?? '',
       originalQuotes,
       originalAttachments,
+      editOwnedStagingKeys,
     });
     composerRef.current?.setText(prompt);
     composerRef.current?.focus();
@@ -612,7 +618,7 @@ export function createRevisionActions<
       stagedContext(),
       [draft.sourceSessionId, draft.draftSessionId],
       draft.originalQuotes,
-      draft.originalAttachments,
+      draft.editOwnedStagingKeys,
     );
     composerRef.current?.setDraft(draft.sourceSessionId, draft.previousComposerText);
     if (draft.draftSessionId !== draft.sourceSessionId) {
