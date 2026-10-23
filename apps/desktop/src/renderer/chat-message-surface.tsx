@@ -24,6 +24,7 @@ import { type SettingsSection } from '@maka/core/settings';
 import {
   ChatView,
   ChatViewGoalProjectionConsumer,
+  EmptyChatHero,
   useUiLocale,
   type LiveTurnProjection,
 } from '@maka/ui';
@@ -32,7 +33,7 @@ import { OnboardingHero } from './onboarding-hero';
 import type { SessionHealthNoticeView, SessionUiReads } from './features/conversation/index.js';
 import type { WorkspaceReadinessRecovery } from './workspace-readiness-recovery';
 import { getShellCopy } from './locales/shell-copy';
-import { StagedQuoteChatView, TaskReadinessNoticeConsumer } from './features/conversation/index.js';
+import { CheckinHome, StagedQuoteChatView, TaskReadinessNoticeConsumer } from './features/conversation/index.js';
 import { useExternalStoreSelector } from './application/contracts/session-catalog/use-external-store-selector.js';
 import { ChatRecoveryNotice, SessionHealthRecoveryNotice } from './chat-recovery-notice';
 
@@ -197,6 +198,17 @@ export function ChatMessageSurface({
           onSkip={onSkip}
         />
       </div>
+    ) : activeSessionId === undefined ? (
+      // The new-task screen is where a returning user lands; check-in cards
+      // join the greeting there and nowhere else.
+      <CheckinHome
+        hero={
+          <EmptyChatHero
+            onPromptSuggestion={chatViewRest.onPromptSuggestion}
+            userLabel={chatViewRest.userLabel}
+          />
+        }
+      />
     ) : undefined;
 
   return (

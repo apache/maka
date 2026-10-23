@@ -1,0 +1,285 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+/* Pinned to the top right corner of the chat, whatever the window's width.
+   The empty state is a centred box that does not scroll, so the strip is
+   placed against the chat layout, the nearest positioned ancestor, instead of
+   flowing above the greeting. */
+.maka-checkin {
+  position: absolute;
+  inset-block-start: var(--space-4);
+  inset-inline-end: var(--space-4);
+  z-index: 2;
+  max-width: calc(100% - 2 * var(--space-4));
+  display: grid;
+  justify-items: end;
+  gap: var(--space-2);
+}
+
+.maka-checkin-status {
+  margin: 0;
+  font: var(--maka-text-supporting);
+  color: var(--muted-foreground);
+  text-align: end;
+}
+
+/* A check-in in progress: three dots that stretch into a pill in turn. The
+   box keeps its width, so the dots breathe in place. They wait a moment
+   before showing, so a check-in that ends at once never flickers. */
+.maka-checkin-dots {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1-5);
+  width: 3rem;
+  height: 1.5rem;
+  animation: maka-checkin-dots-in 160ms ease 400ms both;
+}
+
+@keyframes maka-checkin-dots-in {
+  from {
+    opacity: 0;
+  }
+}
+
+.maka-checkin-dots > [aria-hidden] {
+  width: 0.375rem;
+  height: 0.375rem;
+  border-radius: var(--radius-full);
+  background: var(--muted-foreground);
+  opacity: 0.35;
+  animation: maka-checkin-dot 1.2s ease-in-out infinite;
+}
+
+.maka-checkin-dots > [aria-hidden]:nth-child(3) {
+  animation-delay: 150ms;
+}
+
+.maka-checkin-dots > [aria-hidden]:nth-child(4) {
+  animation-delay: 300ms;
+}
+
+@keyframes maka-checkin-dot {
+  0%,
+  60%,
+  100% {
+    width: 0.375rem;
+    opacity: 0.35;
+  }
+  30% {
+    width: 1rem;
+    opacity: 0.9;
+  }
+}
+
+.maka-checkin-cards {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-3);
+}
+
+/* Taller than wide. At rest the surface is a faint see-through tint and the
+   text stays solid, so it reads as a suggestion without losing contrast;
+   hover or keyboard focus makes it opaque where it stands. */
+.maka-checkin-card {
+  position: relative;
+  box-sizing: border-box;
+  width: 13rem;
+  height: 15rem;
+  display: grid;
+  /* A zero-minimum column: no button row may widen the card and push the
+     close button off its corner. */
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: var(--border-width-hairline) solid
+    color-mix(in srgb, var(--card-border-color) 55%, transparent);
+  border-radius: var(--radius-surface);
+  /* A faint tint of the text colour reads as glass on light and dark alike. */
+  background: color-mix(in srgb, var(--foreground) 3.5%, transparent);
+  backdrop-filter: blur(6px);
+  text-align: start;
+  transition:
+    background-color 160ms ease,
+    border-color 160ms ease,
+    box-shadow 160ms ease;
+  animation: maka-checkin-card-in 260ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.maka-checkin-cards > li:nth-child(2) > .maka-checkin-card {
+  animation-delay: 60ms;
+}
+
+.maka-checkin-cards > li:nth-child(3) > .maka-checkin-card {
+  animation-delay: 120ms;
+}
+
+.maka-checkin-cards > li:nth-child(4) > .maka-checkin-card {
+  animation-delay: 180ms;
+}
+
+@keyframes maka-checkin-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(-0.5rem) scale(0.98);
+  }
+}
+
+/* Keyboard focus only: a clicked button keeps focus, and :focus-within would
+   hold the card open after the pointer has left. */
+.maka-checkin-card:hover,
+.maka-checkin-card:has(:focus-visible) {
+  border-color: var(--card-border-color);
+  background: var(--card-bg);
+  box-shadow: var(--shadow-low);
+}
+
+/* The title opens the card, the close button in its corner. */
+.maka-checkin-card-header {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-1);
+}
+
+.maka-checkin-card-title {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font: var(--maka-text-heading-5);
+  color: var(--foreground);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* The button is taller than a line of the title; it overhangs into the
+   card's padding instead of pushing the title down. */
+.maka-checkin-card-dismiss {
+  flex: none;
+  margin-block-start: calc(-1 * var(--space-1));
+  margin-inline-end: calc(-1 * var(--space-1-5));
+}
+
+/* What the action will do. Long text stops at the card's height and fades;
+   the details below carry all of it. */
+.maka-checkin-card-action {
+  margin: 0;
+  min-height: 0;
+  overflow: hidden;
+  font: var(--maka-text-supporting);
+  color: var(--muted-foreground);
+  overflow-wrap: anywhere;
+  mask-image: linear-gradient(to bottom, black 70%, transparent);
+}
+
+.maka-checkin-card-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.maka-checkin-card-instead {
+  color: var(--muted-foreground);
+}
+
+/* The full action, where it came from and why, under the card on hover or
+   keyboard focus. It waits a beat so a pointer passing over the strip opens
+   nothing, and it grows leftwards from the card's edge: the row hugs the
+   right of the reading column. */
+.maka-checkin-card-details {
+  position: absolute;
+  inset-block-start: calc(100% + var(--space-2));
+  inset-inline-end: 0;
+  z-index: 3;
+  box-sizing: border-box;
+  width: 20rem;
+  max-width: calc(100vw - 2 * var(--space-4));
+  display: grid;
+  gap: var(--space-1-5);
+  padding: var(--space-3);
+  border: var(--border-width-hairline) solid var(--card-border-color);
+  border-radius: var(--radius-surface);
+  background: var(--surface-overlay);
+  box-shadow: var(--elevation-overlay);
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 120ms ease,
+    visibility 0s linear 120ms;
+}
+
+.maka-checkin-card:hover .maka-checkin-card-details,
+.maka-checkin-card:has(:focus-visible) .maka-checkin-card-details {
+  visibility: visible;
+  opacity: 1;
+  transition-delay: 350ms, 350ms;
+}
+
+.maka-checkin-card-details p,
+.maka-checkin-card-details blockquote {
+  margin: 0;
+  font: var(--maka-text-supporting);
+  overflow-wrap: anywhere;
+}
+
+.maka-checkin-card-details .maka-checkin-card-details-title {
+  font: var(--maka-text-heading-5);
+  color: var(--foreground);
+}
+
+.maka-checkin-card-details-session,
+.maka-checkin-card-details-label {
+  color: var(--muted-foreground);
+}
+
+.maka-checkin-card-details-action {
+  color: var(--foreground);
+  white-space: pre-wrap;
+}
+
+.maka-checkin-card-details-evidence {
+  padding-inline-start: var(--space-2);
+  border-inline-start: var(--border-width-hairline) solid var(--border);
+  color: var(--muted-foreground);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .maka-checkin-card,
+  .maka-checkin-card-details {
+    transition: none;
+    animation: none;
+  }
+
+  .maka-checkin-dots,
+  .maka-checkin-dots > [aria-hidden] {
+    animation: none;
+  }
+
+  .maka-checkin-dots > [aria-hidden] {
+    opacity: 0.6;
+  }
+}

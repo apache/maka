@@ -38,3 +38,15 @@ export function useComposerTurnReader() {
   if (!reader) throw new Error('ComposerSubmissionProvider is required');
   return reader;
 }
+
+/** Opening a Session from inside the conversation surface, outside the Composer's own sends. */
+export interface ConversationNavigation {
+  openSession(sessionId: string): void;
+}
+
+export const ConversationNavigationContext = createContext<ConversationNavigation | undefined>(
+  undefined,
+);
+export function useConversationNavigation(): ConversationNavigation | undefined {
+  return useContext(ConversationNavigationContext);
+}
