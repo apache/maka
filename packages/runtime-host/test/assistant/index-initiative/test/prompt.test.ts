@@ -45,3 +45,16 @@ test('proactive instructions match the approved text verbatim and retain the ass
   assert.match(BOT_ROLE, /Sleep/);
   assert.match(BOT_ROLE, /MatterDelegate/);
 });
+
+test('every judgement wake asks for autonomous investigation of the whole notebook', () => {
+  for (const first of [true, false]) {
+    const input = wakeInput({
+      role: 'judgement',
+      now: '2026-10-23T00:00:00Z',
+      viewPath: '/private/notebook.md',
+      outputPath: '/private/operations.json',
+      first,
+    });
+    assert.match(input, /基于整份记事本自主调查并判断，不只看本轮新增内容/);
+  }
+});

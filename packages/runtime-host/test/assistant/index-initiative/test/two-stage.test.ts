@@ -144,3 +144,105 @@ test('restart preserves shared notes and pending judgement with both role bindin
     await f.close();
   }
 });
+
+test('archived workers are excluded from discovery and replaced when already bound', async () => {
+  const f = await fixture();
+  try {
+    await f.remote('assistant.bind', { sessionId: 'owner' });
+    for (const phase of ['discovery', 'judgement'])
+      f.workers.set(`archived-${phase}`, {
+        status: 'idle',
+        isArchived: true,
+        labels: [`assistant-${phase}:owner`],
+      });
+    const seen: string[] = [];
+    f.setRunner(async ({ id, prompt }: any) => {
+      assert.equal(f.workers.get(id).isArchived, undefined);
+      seen.push(id);
+      if (seen.length <= 4) {
+        assert.match(prompt, /你是/); // Replacement sessions receive role instructions again.
+      }
+      await output(prompt);
+    });
+    const run = async () => {
+      const expected = seen.length + 2;
+      await f.invoke('InitiativeControl', { action: 'check' });
+      await until(
+        async () => !(await f.invoke('InitiativeStatus')).active && seen.length === expected,
+      );
+      const state = await f.invoke('InitiativeStatus');
+      assert.equal(state.lastError, null);
+      return state;
+    };
+    const first = await run();
+    for (const id of [first.discoverySession, first.judgementSession])
+      f.workers.get(id).isArchived = true;
+    const second = await run();
+    assert.notEqual(second.discoverySession, first.discoverySession);
+    assert.notEqual(second.judgementSession, first.judgementSession);
+    const third = await run();
+    assert.equal(third.discoverySession, second.discoverySession);
+    assert.equal(third.judgementSession, second.judgementSession);
+    assert.equal(seen.length, 6);
+    for (const id of [
+      first.discoverySession,
+      first.judgementSession,
+      'archived-discovery',
+      'archived-judgement',
+    ])
+      assert.equal(f.workers.get(id).isArchived, true);
+  } finally {
+    await f.close();
+  }
+});
+
+test('repaired judgement reaches the actual Bot SendUser conversation exactly once', async () => {
+  const f = await fixture();
+  let judgements = 0;
+  const text = '报名窗口今天关闭，确认后及时报名。';
+  try {
+    await f.remote('assistant.bind', { sessionId: 'owner' });
+    f.setRunner(async ({ prompt, invoke }: any) => {
+      if (prompt.startsWith('Inbox 有新消息')) {
+        const batch = await invoke('InboxCheck', {});
+        for (const item of batch.items) {
+          assert.equal(item.type, 'discovery');
+          await invoke('SendUser', {
+            messageId: `recovery:${item.id}`,
+            messages: [{ text: JSON.parse(item.content), discoveryIds: [item.id] }],
+          });
+        }
+        await invoke('Sleep', {});
+      } else if (prompt.includes('Phase: discovery')) {
+        await output(prompt, { notes: [note] });
+      } else {
+        judgements++;
+        if (judgements === 2) assert.match(prompt, /不在待发送队列/);
+        await output(prompt, {
+          feedbackDecisions:
+            judgements === 1
+              ? [{ feedbackId: 'raw-history-id', understanding: 'old user request', rules: [] }]
+              : [],
+          messages: [{ text, topicIds: [note.topicId] }],
+        });
+      }
+    });
+    await f.invoke('InitiativeControl', { action: 'check' });
+    await until(async () => {
+      const binding = await f.remote('assistant.binding');
+      if (binding.bot?.error || binding.bot?.wakeError) throw Error(JSON.stringify(binding.bot));
+      return (
+        judgements >= 2 &&
+        !binding.state.active &&
+        !binding.state.checkRequested &&
+        binding.bot?.sleeping &&
+        f.workers.get('owner').transcript.some((m: any) => m.text === text)
+      );
+    });
+    assert.equal(judgements, 2);
+    assert.equal((await f.invoke('InitiativeStatus')).lastError, null);
+    assert.equal(f.workers.get('owner').transcript.filter((m: any) => m.text === text).length, 1);
+  } finally {
+    await f.close();
+  }
+});

@@ -20,8 +20,10 @@
 import { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
 
+export class NotebookValidationError extends Error {}
+
 const requireThat = (ok: unknown, message: string) => {
-  if (!ok) throw Error(message);
+  if (!ok) throw new NotebookValidationError(message);
 };
 const nonempty = (x: any) => typeof x === 'string' && x.trim().length > 0;
 const strings = (x: any) => Array.isArray(x) && x.every(nonempty);
@@ -85,12 +87,23 @@ export class Notebook {
         .run(id, kind, at, JSON.stringify(payload)).lastInsertRowid,
     );
   }
+  feedback() {
+    // Legacy conversation imports had no delivery relationship. Retain their events
+    // for audit, but do not treat ordinary chats or their inferred rules as feedback.
+    return this.events('feedback').filter(
+      (e) => this.event(e.payload.replyTo ?? '')?.kind === 'delivery',
+    );
+  }
+  feedbackResolutions() {
+    const valid = new Set(this.feedback().map((e) => e.id));
+    return this.events('feedback-resolution').filter((e) => valid.has(e.payload.feedbackId));
+  }
   revision() {
-    return this.events('feedback').at(-1)?.seq ?? 0;
+    return this.feedback().at(-1)?.seq ?? 0;
   }
   pendingFeedback() {
     const settled = new Set(this.events('feedback-resolution').map((e) => e.payload.feedbackId));
-    return this.events('feedback').filter((e) => !settled.has(e.id));
+    return this.feedback().filter((e) => !settled.has(e.id));
   }
   topics() {
     const topics = new Map<string, any>();
@@ -107,7 +120,7 @@ export class Notebook {
     const topic = this.topics().get(topicId);
     requireThat(topic, 'Unknown topic');
     let current: any = { status: 'open', reason: null, feedbackId: null };
-    for (const e of this.events('feedback-resolution').sort(
+    for (const e of this.feedbackResolutions().sort(
       (a, b) => this.event(a.payload.feedbackId).seq - this.event(b.payload.feedbackId).seq,
     ))
       for (const rule of e.payload.rules) {
@@ -140,11 +153,10 @@ export class Notebook {
     replyTo?: string | null;
   }) {
     requireThat(nonempty(text) && iso(at), 'Feedback text and time required');
-    if (replyTo)
-      requireThat(
-        this.event(replyTo)?.kind === 'delivery',
-        'Feedback reply must reference an actual delivery',
-      );
+    requireThat(
+      this.event(replyTo ?? '')?.kind === 'delivery',
+      'Feedback reply must reference an actual delivery',
+    );
     return this.put(id, 'feedback', { text, replyTo }, at);
   }
   appendNote(note: any, id: string, recordedAt = this.clock()) {
@@ -186,7 +198,9 @@ export class Notebook {
     const { feedbackId, understanding, rules } = resolution;
     const feedback = this.event(feedbackId);
     requireThat(
-      feedback?.kind === 'feedback' && nonempty(understanding) && Array.isArray(rules),
+      this.feedback().some((e) => e.id === feedbackId) &&
+        nonempty(understanding) &&
+        Array.isArray(rules),
       'Real user feedback and interpretation required',
     );
     requireThat(
@@ -353,13 +367,16 @@ export class Notebook {
       '## 用户反馈',
     ];
     const pending = new Set(this.pendingFeedback().map((x) => x.id));
-    for (const f of this.events('feedback'))
+    for (const f of this.feedback())
       lines.push(
-        `- ${f.at}｜${f.id}｜${pending.has(f.id) ? '待理解' : '已理解'}${f.payload.replyTo ? '｜回复 ' + f.payload.replyTo : ''}\n  ${f.payload.text}`,
+        `- ${f.at}｜${f.id}｜${pending.has(f.id) ? '待理解' : '已理解'}${f.payload.replyTo ? '｜回复 ' + f.payload.replyTo + '｜主题：' + this.event(f.payload.replyTo).payload.topicIds.join('、') : ''}\n  ${f.payload.text}`,
       );
-    if (!this.events('feedback').length) lines.push('暂无用户反馈。');
-    const rules = this.events('feedback-resolution').flatMap((e) =>
-      e.payload.rules.map((r: any) => ({ ...r, feedbackId: e.payload.feedbackId })),
+    if (!this.feedback().length) lines.push('暂无用户反馈。');
+    const rules = this.feedbackResolutions().flatMap((e) =>
+      e.payload.rules.map((r: any) => ({
+        ...r,
+        feedbackId: e.payload.feedbackId,
+      })),
     );
     if (rules.length) {
       lines.push('', '## 用户反馈的范围与依据');
@@ -393,8 +410,6 @@ export class Notebook {
     }
     lines.push('', '## 已交给 Bot 的文案（不代表已送达）');
     for (const e of this.events('reported')) lines.push(`- ${e.at}：${e.payload.text}`);
-    lines.push('', '## 用户实际收到的助手交流');
-    for (const e of this.events('conversation')) lines.push(`- ${e.at}：${e.payload.text}`);
     return lines.join('\n') + '\n';
   }
 }

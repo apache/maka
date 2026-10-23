@@ -57,9 +57,9 @@ export function wakeInput({
   first?: boolean;
 }) {
   if (!['exploration', 'judgement'].includes(role)) throw Error('Unknown role');
-  const contract = `用工具读取笔记并按需自主调查。完成后把增量操作写入 ${outputPath}，格式：
+  const contract = `${role === 'judgement' ? '基于整份记事本自主调查并判断，不只看本轮新增内容。' : '用工具读取笔记并按需自主调查。'}完成后把增量操作写入 ${outputPath}，格式：
 {"notes":[{"topicId":"已有主题ID或新ID","title":"主题名","text":"简短认识","occurredAt":null,"sources":["信息来源"],"tags":["方向标签"],"related":["可选的相关主题ID"]}],"feedbackDecisions":[{"feedbackId":"用户反馈ID","understanding":"对反馈的理解","rules":[{"quote":"反馈原话中的依据","status":"open|deferred|closed","reason":"原因","resumeAt":null,"topicIds":["作用主题"],"tags":["作用方向"]}]}],"messages":[{"text":"完整消息","topicIds":["涉及主题"]}]}。
 occurredAt可写已知的发生时间或范围，不知道就null。无需填满各数组；输出只包含本次增量，不复制整本笔记。主题和方向标签可按内容新增，相关用户反馈仍需考虑。${role === 'exploration' ? '只填写notes，另外两个数组留空。' : '没有待整理反馈时feedbackDecisions留空；只有用户明确表达状态变化才写rules，否则记理解和有价值的信息即可。关闭方向可能涉及多个主题，方向标签可同时作用于以后相关主题。'}
-最终回复结果文件路径。`;
+提交与送达以当前记事本记录为准，写过结果文件不代表已提交或已发送。最终回复结果文件路径。`;
   return `${first ? (role === 'exploration' ? DISCOVERY_TASK : JUDGEMENT_TASK) + '\n\n' + NOTEBOOK_RULES + '\n\n' : ''}当前 UTC 时间：${now}\n记事本：${viewPath}\n${contract}`;
 }

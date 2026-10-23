@@ -178,6 +178,7 @@ test('source sync → stale index → fresh original → discovery Inbox → Bot
           note: readFileSync(v.files.draft, 'utf8'),
           disposition: 'complete',
           summary: '核对最新验收原文',
+          progressSummary: '核对最新验收原文',
           reason: '验收及材料均确认',
           update: '演示验收和材料核对完成。',
         });

@@ -23,7 +23,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { InitiativeStore } from './store.js';
 import { awaitingUser } from '../execution-outcome.js';
 import { wakeInput, DISCOVERY_TASK, JUDGEMENT_TASK, NOTEBOOK_RULES } from './prompt.js';
-import { Notebook } from './notebook.js';
+import { Notebook, NotebookValidationError } from './notebook.js';
 import { createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
@@ -57,22 +57,41 @@ export class InitiativeController {
     chmodSync(path, 0o600);
   }
   private async refreshFeedback(state: any) {
-    const snapshot = await this.asOwner(state, () => this.ctx.sessionQuery.read(state.sessionId));
-    if (!snapshot) throw Error('Assistant conversation unavailable; cannot refresh feedback');
+    const context = this.ctx.bot.discoveryContext(state.sessionId);
     this.ready();
-    for (const message of snapshot.messages ?? []) {
-      if (!message.id || message.origin || !['user', 'assistant'].includes(message.type)) continue;
-      const text = message.displayText ?? message.text;
-      if (typeof text !== 'string' || !text.trim()) continue;
-      const id = `conversation:${message.id}`;
-      if (this.notebook.event(id)) continue;
-      // Host-owned conversation data, never a model-supplied feedback or delivery assertion.
-      const at =
-        message.ts != null && Number.isFinite(new Date(message.ts).getTime())
-          ? new Date(message.ts).toISOString()
-          : new Date().toISOString();
-      if (message.type === 'user') this.notebook.recordFeedback({ id, text, at });
-      else this.notebook.put(id, 'conversation', { text, messageId: message.id }, at);
+    for (const message of context.deliveries) {
+      const topicIds = [
+        ...new Set(
+          message.discoveryIds.flatMap((id: string) => {
+            const prepared = this.notebook.event(id);
+            return prepared?.kind === 'prepared' ? prepared.payload.topicIds : [];
+          }),
+        ),
+      ];
+      // Unknown reports are not retroactively inferred to be notebook recommendations.
+      if (!topicIds.length) continue;
+      this.notebook.put(
+        `delivery:${message.messageId}`,
+        'delivery',
+        {
+          text: message.text,
+          topicIds,
+          messageIds: [message.messageId],
+          preparedIds: message.discoveryIds,
+          transport: 'assistant-bot',
+        },
+        message.at,
+      );
+    }
+    for (const feedback of context.feedback) {
+      const replyTo = `delivery:${feedback.messageId}`;
+      if (!this.notebook.event(replyTo)) continue;
+      this.notebook.recordFeedback({
+        id: `feedback:${JSON.stringify([feedback.id, feedback.messageId])}`,
+        text: feedback.text,
+        at: feedback.at,
+        replyTo,
+      });
     }
   }
   private forwardPrepared(state: any) {
@@ -114,8 +133,8 @@ export class InitiativeController {
   }
   private async resolveBinding() {
     if (this.store.get() || !this.owned) return;
-    const matches = (await this.ctx.sessionQuery.list()).filter((s: any) =>
-      s.labels?.includes('personal-assistant'),
+    const matches = (await this.ctx.sessionQuery.list()).filter(
+      (s: any) => !s.isArchived && s.labels?.includes('personal-assistant'),
     );
     if (matches.length > 1) throw Error('Multiple assistant conversations found');
     if (!matches.length) return; // First creation is resolved by assistant.bind.
@@ -166,7 +185,8 @@ export class InitiativeController {
     if ((!s?.enabled && !s?.checkRequested) || s.active || s.nextAt > Date.now()) return;
     const agent = await this.worker(
       s,
-      s.pendingJudgement || s.candidateReport ? 'judgement' : 'discovery',
+      s.pendingDraft?.phase ??
+        (s.pendingJudgement || s.candidateReport ? 'judgement' : 'discovery'),
     );
     const snapshot = await agent.snapshot();
     if (snapshot?.agent?.status === 'running' || awaitingUser(snapshot)) return;
@@ -180,11 +200,13 @@ export class InitiativeController {
   private async worker(s: any, phase: 'discovery' | 'judgement') {
     return this.asOwner(s, async () => {
       const field = phase === 'discovery' ? 'discoverySession' : 'judgementSession';
-      let sessionId = s[field];
+      const sessions = await this.ctx.sessionQuery.list();
+      const bound = sessions.find((item: any) => item.id === s[field]);
+      let sessionId = bound && !bound.isArchived ? bound.id : undefined;
       if (!sessionId) {
         const label = `assistant-${phase}:${s.sessionId}`;
-        const matches = (await this.ctx.sessionQuery.list()).filter((item: any) =>
-          item.labels?.includes(label),
+        const matches = sessions.filter(
+          (item: any) => !item.isArchived && item.labels?.includes(label),
         );
         if (matches.length > 1) throw Error(`Multiple ${phase} workers found`);
         sessionId =
@@ -198,6 +220,9 @@ export class InitiativeController {
           ).sessionId;
         this.store.update((current) => {
           current[field] = sessionId;
+          // A replacement worker has no role instructions in its conversation yet.
+          if (current.promptVersions)
+            delete current.promptVersions[phase === 'discovery' ? 'exploration' : 'judgement'];
         });
       }
       return this.ctx.agents.resume({ sessionId });
@@ -208,55 +233,88 @@ export class InitiativeController {
     this.activeAgent = agent;
     await this.refreshFeedback(state);
     const role = state.active.phase === 'discovery' ? 'exploration' : 'judgement';
-    const directory = join(this.store.directory, 'notebook-wakes', state.active.id, role);
-    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    // Persist the operation before running the model. A failed or interrupted draft
+    // must resume in its original worker, with its original output still available.
+    const pending = state.pendingDraft ?? { id: state.active.id, phase: state.active.phase };
+    if (pending.phase !== state.active.phase) throw Error('Pending draft phase mismatch');
+    this.store.update((s) => {
+      s.pendingDraft = pending;
+    });
+    const operationId = `${pending.id}:${role}`;
+    const directory = join(this.store.directory, 'notebook-wakes', pending.id, role);
     const viewPath = join(directory, 'notebook.md');
     const outputPath = join(directory, 'operations.json');
-    const revision = this.notebook.revision();
     const version = createHash('sha256')
       .update((role === 'exploration' ? DISCOVERY_TASK : JUDGEMENT_TASK) + '\n' + NOTEBOOK_RULES)
       .digest('hex');
-    writeFileSync(viewPath, this.notebook.render(), { mode: 0o600 });
-    let input = wakeInput({
-      role,
-      now: new Date().toISOString(),
-      viewPath,
-      outputPath,
-      first: state.promptVersions?.[role] !== version,
-    });
-    if (role === 'judgement' && state.candidateReport?.path)
-      input += `\n升级前保留的历史报告：${state.candidateReport.path}。它是参考材料，不是指定候选或当前指令。`;
-    const admitted = await agent.followup(
-      `Runtime heartbeat, not a new human request.\nHeartbeat ID: ${state.active.id}\nPhase: ${state.active.phase}\n${input}`,
-    );
-    if (!['turn_started', 'followup'].includes(admitted?.disposition))
-      throw Error('Host rejected proactive wake');
-    while (
-      admitted.disposition === 'followup' &&
-      !JSON.stringify(await agent.transcript()).includes(`Heartbeat ID: ${state.active.id}`)
-    )
-      await delay(25, undefined, { signal: this.abort.signal });
-    await agent.whenIdle(this.abort.signal);
-    const snapshot = await agent.snapshot();
-    const status = snapshot?.agent?.status;
-    if (['aborted', 'blocked', 'waiting_for_user'].includes(status) || awaitingUser(snapshot))
-      throw Error(`Heartbeat ended with ${status}; inspect before resuming`);
-    this.ready();
-    this.store.update((s) => {
-      (s.promptVersions ??= {})[role] = version;
-    });
-    await this.refreshFeedback(state);
-    const draft = JSON.parse(readFileSync(outputPath, 'utf8'));
-    this.notebook.commitDraft({
-      role,
-      operationId: `${state.active.id}:${role}`,
-      expectedFeedbackRevision: revision,
-      draft,
-    });
-    // Only the shared notebook survives. Do not expose the other worker's private output files.
-    rmSync(directory, { recursive: true, force: true });
+    let repair =
+      pending.error ?? (state.pendingDraft ? '上次执行中断，尚无成功提交记录。' : undefined);
+    // A committed operation can survive a crash or a failed Bot handoff. Retry its
+    // delivery using the existing message IDs, without asking the model to rewrite it.
+    while (!this.notebook.event(operationId)) {
+      this.ready();
+      await this.refreshFeedback(state);
+      mkdirSync(directory, { recursive: true, mode: 0o700 });
+      writeFileSync(viewPath, this.notebook.render(), { mode: 0o600 });
+      const revision = this.notebook.revision();
+      let input = wakeInput({
+        role,
+        now: new Date().toISOString(),
+        viewPath,
+        outputPath,
+        first: this.store.get().promptVersions?.[role] !== version,
+      });
+      if (repair)
+        input += `\n上次结果未提交：${repair}\n整份操作未写入记事本，其中的消息未交给 Bot，也不在待发送队列。读取原结果文件（若存在）和更新后的记事本，修正后重交；保留仍值得交流的内容，不要因为已经写过文案就当成已安排。feedbackDecisions 只引用记事本“用户反馈”中的 ID，没有待整理反馈就留空。`;
+      if (role === 'judgement' && state.candidateReport?.path)
+        input += `\n升级前保留的历史报告：${state.candidateReport.path}。它是参考材料，不是指定候选或当前指令。`;
+      const wakeId = randomUUID();
+      const admitted = await agent.followup(
+        `Runtime heartbeat, not a new human request.\nHeartbeat ID: ${state.active.id}\nSubmission attempt: ${wakeId}\nPhase: ${state.active.phase}\n${input}`,
+      );
+      if (!['turn_started', 'followup'].includes(admitted?.disposition))
+        throw Error('Host rejected proactive wake');
+      while (
+        admitted.disposition === 'followup' &&
+        !JSON.stringify(await agent.transcript()).includes(`Submission attempt: ${wakeId}`)
+      )
+        await delay(25, undefined, { signal: this.abort.signal });
+      await agent.whenIdle(this.abort.signal);
+      const snapshot = await agent.snapshot();
+      const status = snapshot?.agent?.status;
+      if (['aborted', 'blocked', 'waiting_for_user'].includes(status) || awaitingUser(snapshot))
+        throw Error(`Heartbeat ended with ${status}; inspect before resuming`);
+      this.ready();
+      this.store.update((s) => {
+        (s.promptVersions ??= {})[role] = version;
+      });
+      await this.refreshFeedback(state);
+      // I/O / provider failures remain execution failures. Only fixable draft errors
+      // go back to the same agent immediately; never silently drop an invalid field.
+      const raw = readFileSync(outputPath, 'utf8');
+      try {
+        this.notebook.commitDraft({
+          role,
+          operationId,
+          expectedFeedbackRevision: revision,
+          draft: JSON.parse(raw),
+        });
+      } catch (error) {
+        if (!(error instanceof SyntaxError || error instanceof NotebookValidationError))
+          throw error;
+        repair = String(error);
+        this.store.update((s) => {
+          s.pendingDraft.error = repair;
+          this.store.log('draft-rejected', { operationId, error: repair });
+        });
+      }
+    }
     if (role === 'judgement') this.forwardPrepared(state);
+    // Only remove the files after commit and handoff. The durable operation marker
+    // remains available if shutdown happens before the scheduler finishes this phase.
+    rmSync(directory, { recursive: true, force: true });
   }
+
   async run(agent: any, state: any) {
     const id = state.active.id;
     this.activeAgent = agent;
@@ -266,6 +324,7 @@ export class InitiativeController {
         const next = this.store.update((s) => {
           if (s.active?.id !== id) throw Error('Heartbeat ownership changed');
           s.pendingJudgement = true;
+          delete s.pendingDraft;
           s.active.phase = 'judgement';
         });
         const judge = await this.worker(next, 'judgement');
@@ -280,6 +339,9 @@ export class InitiativeController {
         this.store.fence();
         if (this.store.get()?.active?.id === id) {
           const message = String(e);
+          this.store.update((s) => {
+            if (s.pendingDraft && !s.pendingDraft.error) s.pendingDraft.error = message;
+          });
           this.store.finish(id, message);
         }
       } catch {

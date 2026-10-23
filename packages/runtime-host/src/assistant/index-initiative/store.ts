@@ -104,6 +104,7 @@ export class InitiativeStore {
         judgementSession: old?.judgementSession,
         candidateReport: old?.candidateReport,
         pendingJudgement: old?.pendingJudgement,
+        pendingDraft: old?.pendingDraft,
         promptVersions: old?.promptVersions,
         intervalMs,
         enabled,
@@ -179,7 +180,9 @@ export class InitiativeStore {
       s.active = {
         id: randomUUID(),
         startedAt: Date.now(),
-        phase: s.pendingJudgement || s.candidateReport ? 'judgement' : 'discovery',
+        phase:
+          s.pendingDraft?.phase ??
+          (s.pendingJudgement || s.candidateReport ? 'judgement' : 'discovery'),
       };
       s.revision++;
       this.log('heartbeat', { id: s.active.id });
@@ -192,6 +195,7 @@ export class InitiativeStore {
       if (!error) {
         delete s.candidateReport;
         delete s.pendingJudgement;
+        delete s.pendingDraft;
       }
       s.revision++;
       s.lastError = error ?? null;

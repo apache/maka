@@ -52,7 +52,25 @@ const resolveFeedback = (feedbackId, rules) => ({
   rules,
 });
 const commit = (b, id, d, role = 'judgement', revision = b.revision()) =>
-  b.commitDraft({ role, operationId: id, expectedFeedbackRevision: revision, draft: d });
+  b.commitDraft({
+    role,
+    operationId: id,
+    expectedFeedbackRevision: revision,
+    draft: d,
+  });
+// State tests start with an already-delivered recommendation, not arbitrary chat.
+function recordFeedback(b, input) {
+  if (!input.replyTo) {
+    const id = `prior-delivery:${input.id}`;
+    b.put(id, 'delivery', {
+      text: '先前主动推荐',
+      topicIds: ['tea'],
+      messageIds: [id],
+    });
+    input = { ...input, replyTo: id };
+  }
+  return b.recordFeedback(input);
+}
 function fixture(t) {
   const b = new Notebook(':memory:', () => time);
   t.after(() => b.close());
@@ -77,7 +95,10 @@ test('research may append context but cannot change state or invent user feedbac
 test('explicit broad feedback applies to multiple existing and future topics', (t) => {
   const b = fixture(t);
   commit(b, 'more', draft([note('oolong'), note('coffee', ['coffee'])]), 'exploration');
-  b.recordFeedback({ id: 'f', text: '我不喝茶了，不用再推荐喝茶相关的东西。' });
+  recordFeedback(b, {
+    id: 'f',
+    text: '我不喝茶了，不用再推荐喝茶相关的东西。',
+  });
   commit(b, 'close', draft([], [resolveFeedback('f', [rule('我不喝茶了')])]));
   assert.equal(b.state('tea').status, 'closed');
   assert.equal(b.state('oolong').status, 'closed');
@@ -89,9 +110,9 @@ test('explicit broad feedback applies to multiple existing and future topics', (
 test('scope-specific user reopening overrides only that scope and preserves old facts', (t) => {
   const b = fixture(t);
   commit(b, 'more', draft([note('oolong')]), 'exploration');
-  b.recordFeedback({ id: 'f', text: '不喝茶了' });
+  recordFeedback(b, { id: 'f', text: '不喝茶了' });
   commit(b, 'close', draft([], [resolveFeedback('f', [rule('不喝茶了')])]));
-  b.recordFeedback({ id: 'f2', text: '乌龙茶可以继续推荐' });
+  recordFeedback(b, { id: 'f2', text: '乌龙茶可以继续推荐' });
   commit(
     b,
     'open',
@@ -110,7 +131,7 @@ test('scope-specific user reopening overrides only that scope and preserves old 
 });
 test('deferral requires reason or time; closure requires reason and a real quote', (t) => {
   const b = fixture(t);
-  b.recordFeedback({ id: 'f', text: '暂时别推荐茶，明天再说' });
+  recordFeedback(b, { id: 'f', text: '暂时别推荐茶，明天再说' });
   for (const r of [
     rule('别推荐茶', 'deferred', [], ['tea'], '', null),
     rule('别推荐茶', 'closed', [], ['tea'], '', null),
@@ -137,7 +158,7 @@ test('deferral requires reason or time; closure requires reason and a real quote
 test('pending feedback remains visible to both roles; stale work cannot commit', (t) => {
   const b = fixture(t),
     revision = b.revision();
-  b.recordFeedback({ id: 'f', text: '这是给朋友看的，不是我的爱好' });
+  recordFeedback(b, { id: 'f', text: '这是给朋友看的，不是我的爱好' });
   assert.match(b.render(), /这是给朋友看的/);
   assert.match(b.render(), /待理解/);
   assert.throws(
@@ -196,7 +217,7 @@ test('prepared, failed and unconfirmed sends are not sent; confirmed receipts ar
   assert.equal(count, 1);
   assert.equal(b.state('tea').displayStatus, 'sent');
   assert.equal(b.state('tea').status, 'open');
-  b.recordFeedback({ id: 'f', text: '不喝茶了', replyTo: id + ':delivered' });
+  recordFeedback(b, { id: 'f', text: '不喝茶了', replyTo: id + ':delivered' });
   commit(b, 'f-close', draft([], [resolveFeedback('f', [rule('不喝茶了')])]));
   assert.equal(b.state('tea').displayStatus, 'closed');
   assert.equal(b.state('tea').receipts.length, 1);
@@ -206,7 +227,7 @@ test('new feedback after preparation prevents stale delivery', async (t) => {
   const {
     preparedIds: [id],
   } = commit(b, 'p', draft([], [], [{ text: '一条内容', topicIds: ['tea'] }]));
-  b.recordFeedback({ id: 'f', text: '先别发推荐' });
+  recordFeedback(b, { id: 'f', text: '先别发推荐' });
   let called = false;
   await assert.rejects(
     b.deliver(
@@ -270,7 +291,7 @@ test('state, feedback, and receipts survive reopen', async (t) => {
   const path = join(dir, 'state.sqlite');
   let b = new Notebook(path, () => time);
   commit(b, 'init', draft([note()]), 'exploration');
-  b.recordFeedback({ id: 'f', text: '不喝茶了' });
+  recordFeedback(b, { id: 'f', text: '不喝茶了' });
   commit(b, 'close', draft([], [resolveFeedback('f', [rule('不喝茶了')])]));
   b.close();
   b = new Notebook(path, () => time);
@@ -281,7 +302,10 @@ test('state, feedback, and receipts survive reopen', async (t) => {
 test('a feedback message can contain several changes and simple context without fabricated bans', (t) => {
   const b = fixture(t);
   commit(b, 'more', draft([note('coffee', ['coffee'])]), 'exploration');
-  b.recordFeedback({ id: 'f', text: '茶不喝了，咖啡这周忙先别推荐。旧简历是朋友的。' });
+  recordFeedback(b, {
+    id: 'f',
+    text: '茶不喝了，咖啡这周忙先别推荐。旧简历是朋友的。',
+  });
   commit(
     b,
     'multi',
@@ -317,7 +341,10 @@ test('acknowledging closed and deferred topics commits feedback, context, and me
     draft([note('coffee', ['coffee']), note('reading', ['reading'])]),
     'exploration',
   );
-  b.recordFeedback({ id: 'f', text: '不喝茶了，咖啡最近睡不好先别推荐，小说可以继续。' });
+  recordFeedback(b, {
+    id: 'f',
+    text: '不喝茶了，咖啡最近睡不好先别推荐，小说可以继续。',
+  });
   const result = commit(
     b,
     'ack',
@@ -352,7 +379,7 @@ test('acknowledging closed and deferred topics commits feedback, context, and me
     async () => ({ delivered: true, messageIds: ['ack-visible'] }),
     'test-bridge',
   );
-  assert.equal(b.events('delivery').length, 1);
+  assert.equal(b.events('delivery').length, 2);
   assert.equal(b.state('tea').status, 'closed');
   assert.equal(b.state('coffee').status, 'deferred');
   assert.equal(b.state('reading').status, 'open');
@@ -361,7 +388,7 @@ test('acknowledging closed and deferred topics commits feedback, context, and me
 test('judgement can send several directions without adding notes, including context about a closed topic', async (t) => {
   const b = fixture(t);
   commit(b, 'more', draft([note('reading', ['reading'])]), 'exploration');
-  b.recordFeedback({ id: 'f', text: '不喝茶了' });
+  recordFeedback(b, { id: 'f', text: '不喝茶了' });
   commit(b, 'close', draft([], [resolveFeedback('f', [rule('不喝茶了')])]));
   const count = b.events('note').length;
   const { preparedIds } = commit(
@@ -379,7 +406,7 @@ test('judgement can send several directions without adding notes, including cont
   for (const id of preparedIds)
     await b.deliver(id, async () => ({ delivered: true, messageIds: [id] }), 'test-bridge');
   assert.equal(b.events('note').length, count);
-  assert.equal(b.events('delivery').length, 2);
+  assert.equal(b.events('delivery').length, 3);
   assert.equal(b.state('tea').status, 'closed');
 });
 test('restored occurrence time and recording time stay distinct and visible, with explicit unknowns', (t) => {
@@ -416,4 +443,28 @@ test('restored occurrence time and recording time stay distinct and visible, wit
   assert.match(rendered, /发生时间：未知｜记录时间：2026-10-22T10:00:00Z/);
   assert.match(rendered, /状态：开放/);
   assert.match(rendered, /不表示事情仍在进行/);
+});
+
+test('unlinked legacy chats and interpretations remain stored but do not pollute notebook or block judgement', (t) => {
+  const b = fixture(t);
+  b.put('ordinary', 'feedback', { text: '普通聊天内容', replyTo: null });
+  b.put('ordinary-resolution', 'feedback-resolution', {
+    feedbackId: 'ordinary',
+    understanding: '历史错误解释',
+    rules: [rule('普通聊天内容')],
+  });
+  b.put('old-assistant', 'conversation', { text: '普通助手聊天内容' });
+  assert.equal(b.revision(), 0);
+  assert.deepEqual(b.pendingFeedback(), []);
+  assert.equal(b.state('tea').status, 'open');
+  assert.doesNotMatch(b.render(), /普通聊天内容|普通助手聊天内容|历史错误解释/);
+  assert.equal(b.events('feedback').length, 1);
+  assert.equal(b.events('conversation').length, 1);
+  assert.throws(() => b.recordFeedback({ id: 'unlinked', text: '你好' }), /actual delivery/);
+  assert.throws(
+    () => commit(b, 'invalid-resolution', draft([], [resolveFeedback('ordinary', [])])),
+    /Real user feedback/,
+  );
+  const result = commit(b, 'ok', draft([], [], [{ text: '有用的新发现', topicIds: ['tea'] }]));
+  assert.equal(result.preparedIds.length, 1);
 });

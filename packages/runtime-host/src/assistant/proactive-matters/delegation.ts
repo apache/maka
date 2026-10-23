@@ -97,6 +97,16 @@ export function registerDelegation(
       .slice(0, 10)
       .map(({ id, text, createdAt }) => ({ id, text, createdAt })),
   });
+  // UI polling must not transport working notes, requests or report history.
+  const preview = (m: any) => ({
+    id: m.id,
+    sessionId: m.sessionId,
+    title: m.title,
+    status: m.status,
+    summary: m.progressSummary ?? '',
+    updatedAt: m.updatedAt,
+    retryAt: m.retryAt ?? null,
+  });
   const creating = new Set<string>();
   const creationLabel = (row: any) => `matter-creation:${String(row.session).slice(9)}`;
   const recover = async (row: any, call: any) => {
@@ -135,9 +145,9 @@ export function registerDelegation(
         const snapshot = (await (await controller.agent(m.sessionId)).snapshot()) as
           | { agent?: { status?: string } }
           | undefined;
-        items.push({ ...describe(m), runtimeStatus: snapshot?.agent?.status });
-      } catch (error) {
-        items.push({ ...describe(m), runtimeError: String(error) });
+        items.push({ ...preview(m), runtimeStatus: snapshot?.agent?.status });
+      } catch {
+        items.push({ ...preview(m), runtimeError: true });
       }
     }
     return items;
@@ -165,7 +175,7 @@ export function registerDelegation(
     });
   register(
     'MatterOverview',
-    'Read this conversation tasks, feedback status and unassigned legacy tasks. Does not adopt or change anything.',
+    'Read this conversation tasks, feedback status and unassigned legacy tasks as a compact directory with AI-authored progress summaries (at most 30 characters). Full task content is available through MatterTasks with an ID. Does not adopt or change anything.',
     z.object({}),
     false,
     async (_: any, call: any) => {
@@ -177,7 +187,7 @@ export function registerDelegation(
         legacy: store
           .list()
           .filter((m) => !rows.some((r) => r.session === m.sessionId))
-          .map(describe),
+          .map(preview),
         notifications: delivery.status(owner),
       };
     },
