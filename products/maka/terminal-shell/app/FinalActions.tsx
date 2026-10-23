@@ -20,7 +20,6 @@
 import { createText, UiError, errorText, message as uiMessage } from './text';
 import { tr } from './locale';
 import { cleanup, computed, inputAction, signal, Text, View } from 'nsh';
-import type { YNode } from 'nsh';
 import { Button } from 'nsh/base';
 import { host } from './host';
 import { sameValue } from '../../../../plugins/shared/value';
@@ -59,7 +58,6 @@ export function FinalActions(props: {
   const pending = signal(false);
   const notice = createText();
   const usage = signal<Target | null>(null);
-  let usageButton: YNode | undefined;
   let alive = true;
   cleanup(() => {
     alive = false;
@@ -112,7 +110,6 @@ export function FinalActions(props: {
   const closeUsage = (original: Target | null) => {
     if (!alive || original === null || !sameValue(usage(), original)) return;
     usage.set(null);
-    usageButton?.focus();
   };
   const details = () => {
     const row = props.row();
@@ -160,9 +157,6 @@ export function FinalActions(props: {
           <Icon name="fork" color={C.muted} />
         </Button>
         <Button
-          ref={(node) => {
-            usageButton = node;
-          }}
           style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
           accessibilityLabel={tr("View this turn's model usage")}
           tooltip={tr("View this turn's model usage")}
