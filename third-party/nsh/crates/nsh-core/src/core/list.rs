@@ -662,7 +662,7 @@ impl ListState {
                 self.splice_anchor -= delta;
             } else {
                 let delta = self.item_at(moved_to) - from_top - self.natural_offset();
-                self.offset += delta;
+                self.compensate_layout_offset(delta);
                 self.splice_anchor += delta;
             }
         }
@@ -766,9 +766,19 @@ impl ListState {
         }
     }
 
+    /// A layout correction changes the offset's coordinate basis, keeping
+    /// its previous distance from the end. Inverted lists instead integrate
+    /// end changes in `anchor_end`, separately from their visible-row correction.
+    pub(super) fn compensate_layout_offset(&mut self, by: f32) {
+        self.offset += by;
+        if !self.inverted {
+            self.anchored_end += by;
+        }
+    }
+
     /// A parent-viewport list already arranged this owner correction.
     pub(super) fn anchor_by(&mut self, by: f32) {
-        self.offset += by;
+        self.compensate_layout_offset(by);
         if let Some(Pin::Following { at, .. } | Pin::Reading { at, .. }) = &mut self.pin {
             *at += by;
         }
@@ -2265,6 +2275,15 @@ mod tests {
         l.offset += anchor;
         assert_eq!(anchor + l.anchor_end(), 0.0);
         assert_eq!(l.offset, offset);
+        // A forwarded parent correction shares the same inverted integral
+        // contract; returning that measured row to its old size cancels too.
+        let offset = l.offset;
+        let anchor = l.measured(0, 50.0);
+        assert_eq!(anchor, 30.0);
+        l.anchor_by(anchor);
+        assert_eq!(anchor + l.anchor_end(), 0.0);
+        assert_eq!(l.offset, offset);
+        assert_eq!(on_screen(&l, 8), before);
         // At the start, what arrives there shows (a chat's new message).
         let mut c = list(100, 50.0, 400.0);
         c.set_inverted(true);
@@ -2361,6 +2380,29 @@ mod tests {
         l.measured(99, 120.0);
         assert_eq!(l.anchor_end(), 0.0);
         assert_eq!(l.offset, 1000.0);
+        // A child list first corrects overestimated rows above the reader;
+        // its remaining rows then make the containing row taller overall.
+        let mut child = list(20, 50.0, 400.0);
+        child.set_follow_end(Some(10.0));
+        child.anchor_end();
+        child.reported(600.0, 0);
+        child.anchor_by(-100.0);
+        child.measured(19, 250.0);
+        assert_eq!(child.anchor_end(), 300.0);
+        assert_eq!(child.offset, 800.0);
+
+        // An insertion before a reader well away from the end keeps its
+        // source in view; the correction itself is no reason to follow end.
+        let mut prepended = list(20, 50.0, 400.0);
+        prepended.set_follow_end(Some(10.0));
+        prepended.anchor_end();
+        prepended.reported(100.0, 0);
+        prepended.splice(0, 0, 12);
+        assert_eq!(prepended.offset, 700.0);
+        assert_eq!(prepended.take_splice_anchor(), 600.0);
+        assert_eq!(prepended.anchor_end(), 0.0);
+        assert_eq!(prepended.offset, 700.0);
+
         // Without the option, nothing follows.
         let mut m = list(100, 50.0, 400.0);
         m.anchor_end();

@@ -18019,6 +18019,82 @@ fn a_page_list_in_a_cell_of_a_list_follows_that_list() {
             .is_none_or(|batch| page_scrolls(&batch).is_empty())
     );
 
+    // At the end, the child's estimates shrink above the viewport while
+    // its last row grows more. The owner follows the total size change,
+    // including the next layout round in which the spacer resizes its cell.
+    c.apply(Op::SetProp {
+        id: 2,
+        prop: Prop::FollowEnd(Some(px(32.0))),
+    })
+    .unwrap();
+    c.apply(Op::Command {
+        id: 2,
+        command: Command::ScrollToEnd { animated: false },
+    })
+    .unwrap();
+    c.commit();
+    render_binds(&mut c, &mut next_id, &mut cells, 50.0);
+    c.commit();
+    assert_eq!(c.nodes[key as usize].list.as_ref().unwrap().offset, 4740.0);
+    let above = cells[bound_slot(&c, 4, 90) as usize];
+    let last = cells[bound_slot(&c, 4, 99) as usize];
+    c.apply(style_op(above, &[("height", StyleValue::Number(10.0))]))
+        .unwrap();
+    c.apply(style_op(last, &[("height", StyleValue::Number(150.0))]))
+        .unwrap();
+    let batch = c.commit().unwrap();
+    assert_eq!(scroll_content(&batch, 2), Some(5200.0));
+    assert_eq!(c.nodes[key as usize].list.as_ref().unwrap().offset, 4800.0);
+    assert_eq!(
+        page_scrolls(&batch)
+            .iter()
+            .filter(|(to, _)| !to)
+            .map(|(_, by)| by)
+            .sum::<f32>(),
+        60.0
+    );
+    assert!(
+        c.commit()
+            .is_none_or(|batch| page_scrolls(&batch).is_empty())
+    );
+
+    // The same measurements while reading above the end preserve the
+    // source glyph's position, rather than pulling the reader to the tail.
+    c.set_scroll_offset(2, point(px(0.0), px(2120.0)), u32::MAX);
+    c.commit();
+    render_binds(&mut c, &mut next_id, &mut cells, 50.0);
+    c.commit();
+    let point = crate::text_source::SourcePoint {
+        id: "page/item-40".into(),
+        byte: 0,
+    };
+    let owner = c.nodes[key as usize].list.as_ref().unwrap();
+    assert_eq!(
+        owner.source_geometry.position(&point).unwrap() - owner.offset,
+        20.0
+    );
+    let above = cells[bound_slot(&c, 4, 38) as usize];
+    let below = cells[bound_slot(&c, 4, 45) as usize];
+    c.apply(style_op(above, &[("height", StyleValue::Number(10.0))]))
+        .unwrap();
+    c.apply(style_op(below, &[("height", StyleValue::Number(150.0))]))
+        .unwrap();
+    let batch = c.commit().unwrap();
+    assert_eq!(
+        page_scrolls(&batch)
+            .iter()
+            .filter(|(to, _)| !to)
+            .map(|(_, by)| by)
+            .sum::<f32>(),
+        -40.0
+    );
+    let owner = c.nodes[key as usize].list.as_ref().unwrap();
+    assert_eq!(owner.offset, 2080.0);
+    assert_eq!(
+        owner.source_geometry.position(&point).unwrap() - owner.offset,
+        20.0
+    );
+
     // Released, the outer list leaves the inner one without a view.
     c.apply(Op::Remove {
         parent: ROOT_ID,

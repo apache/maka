@@ -6106,7 +6106,7 @@ impl<M: TextEngine> Core<M> {
         // Not on the first layout: there is nothing to clamp yet.
         let grew = outer.is_none() && list.viewport > 0.0 && main > list.viewport;
         list.viewport = main;
-        list.offset += anchor;
+        list.compensate_layout_offset(anchor);
         // A splice above the viewport already moved the offset.
         anchor += list.take_splice_anchor();
         if outer.is_none() {
