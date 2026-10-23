@@ -2164,14 +2164,15 @@ async fn real_agent_history_and_live_stream_render_and_the_app_sends_once() {
         let wheel_row = wheel.lines().position(|line| line.contains(&wheel_marker)).unwrap();
         let reading_row = wheel.lines().position(|line| line.contains(&boundary_tail)).unwrap();
         assert!(!cancelled.accessibility_snapshot().iter().any(|node| node.label.contains(&added_marker)));
+        assert!(cancelled.accessibility_snapshot().iter().any(|node| node.label.contains(&boundary_tail) && node.label.contains("**bold**")), "the held prefix must still leave the reading source literal");
         evidence("history-home-wheel-before-final-page", &wheel);
         evidence("history-home-wheel-before-final-page-ax", &format!("{:#?}", cancelled.accessibility_snapshot()));
         support::evidence_cells("history-home-wheel-before-final-page", &cancelled);
         gate.release();
-        // AX includes mounted overscan. This newly prepended paragraph proves
-        // the final reply and all its promise continuations reached a real
-        // native commit; a wire write alone would not provide that barrier.
-        let retained = wait_view_state(&mut cancelled, |view, _| view.accessibility_snapshot().iter().any(|node| node.label.contains(&added_marker))).await;
+        // The completed prefix either mounts its first paragraph or formats
+        // the visible original tail. Both prove a real native publication;
+        // virtualized paragraphs outside the reader need not be mounted.
+        let retained = wait_view_state(&mut cancelled, |view, _| view.accessibility_snapshot().iter().any(|node| node.label.contains(&added_marker) || (node.label.starts_with(&boundary_tail) && !node.label.contains("**bold**")))).await;
         evidence("history-home-wheel-final-page-published", &retained);
         evidence("history-home-wheel-final-page-published-ax", &format!("{:#?}", cancelled.accessibility_snapshot()));
         support::evidence_cells("history-home-wheel-final-page-published", &cancelled);
