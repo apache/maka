@@ -109,6 +109,17 @@ class AssistantRuntime {
       this.sessionAccess.some((allows) => allows(sessionId))
     );
   }
+  /**
+   * The only visibility policy. Catalogs and execution both use it, so a tool hidden
+   * from a Session cannot run in that Session either.
+   */
+  visibleTools(sessionId: string, tools: readonly MakaTool[]): readonly MakaTool[] {
+    const nativeNames = new Set(this.tools.map((tool) => tool.name));
+    const allowed = this.hasSessionAccess(sessionId)
+      ? tools
+      : tools.filter((tool) => !nativeNames.has(tool.name));
+    return this.toolFilters.reduce((current, filter) => filter(sessionId, current), allowed);
+  }
   private readonly sections: PluginSystemPromptSection[] = [];
   private readonly contexts: PluginSystemPromptSection[] = [];
   private readonly checks: TurnFinishCheck[] = [];
@@ -172,6 +183,8 @@ class AssistantRuntime {
               if (this.closing) throw Error('Personal assistant is shutting down');
               if (!this.hasSessionAccess(call.sessionId))
                 throw Error('Personal assistant tools are unavailable in this session');
+              if (!this.visibleTools(call.sessionId, [tool]).length)
+                throw Error('Personal assistant tool is unavailable in this session');
               return internalTool.impl(input, call);
             },
           });
@@ -503,12 +516,7 @@ export class PersonalAssistantService {
   }
   filterTools(sessionId: string, tools: readonly MakaTool[]): readonly MakaTool[] {
     if (!this.enabled) return tools;
-    const runtime = this.runtime!;
-    const nativeNames = new Set(runtime.tools.map((tool) => tool.name));
-    const allowed = runtime.hasSessionAccess(sessionId)
-      ? tools
-      : tools.filter((tool) => !nativeNames.has(tool.name));
-    return runtime.toolFilters.reduce((current, filter) => filter(sessionId, current), allowed);
+    return this.runtime!.visibleTools(sessionId, tools);
   }
   toolCeiling(sessionId: string): readonly MakaTool[] | undefined {
     return this.enabled && this.runtime!.bot.isWorker(sessionId)
