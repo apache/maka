@@ -27,6 +27,7 @@ import { parseHTML } from 'linkedom';
 import { act, createElement, type ComponentType, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { AstryxLocaleProvider, LocaleProvider, ToastProvider } from '@maka/ui';
+import type { ModelOverride } from '@maka/core/model-thinking';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { ProjectedLlmConnection, ProviderType } from '@maka/core/llm-connections';
 import type { PeerMeshQueryResult } from '@maka/runtime-host/protocol';
@@ -47,6 +48,13 @@ interface DetailController {
   addDeclaredModel(id: string, profile: Record<string, never>): Promise<boolean>;
 }
 interface RenderModules {
+  AddModelDialog: ComponentType<{
+    isOpen: boolean;
+    onOpenChange(open: boolean): void;
+    providerType: ProviderType;
+    existingModelIds: readonly string[];
+    onSubmit(id: string, profile: ModelOverride): Promise<boolean>;
+  }>;
   SettingsNavigationGuard: ComponentType<{ children: ReactNode | ((navigate: (action: () => void) => Promise<void>) => ReactNode) }>;
   SettingsDismissal: ComponentType<{ onClose(): void; children: ReactNode }>;
   useConnectionDetail(props: {
@@ -120,6 +128,7 @@ before(async () => {
   await build({
     stdin: {
       contents: [
+        "export { AddModelDialog } from './features/connection-settings/index';",
         "export { SettingsNavigationGuard, SettingsDismissal } from './application/contracts/settings-presentation/index';",
         "export { useConnectionDetail } from './settings/use-connection-detail';",
         "export { ProvidersPanel } from './settings/providers-panel';",
@@ -671,6 +680,84 @@ test('multiple enabled models require a choice, and an empty catalog offers mode
   await clickText(harness.document.querySelector('dialog[open]')!, '手动添加模型');
   assert.match(harness.document.querySelector('dialog[open]')!.textContent!, /模型 ID/);
 });
+
+test('add-model threshold follows final capacity until the user edits it, then saves the explicit value', async () => {
+  const harness = await addModelThresholdHarness();
+  await harness.change('模型 ID', 'unknown-model');
+  assert.equal(harness.input('压缩阈值').value, '');
+  await harness.change('上下文窗口', '500000');
+  assert.equal(harness.input('压缩阈值').value, '450000');
+  await harness.change('输入上限', '300000');
+  assert.equal(harness.input('压缩阈值').value, '270000');
+  await harness.change('上下文窗口', '600000');
+  assert.equal(harness.input('压缩阈值').value, '270000');
+  await harness.change('压缩阈值', '123000');
+  await harness.change('输入上限', '350000');
+  assert.equal(harness.input('压缩阈值').value, '123000');
+  await harness.submit();
+  assert.deepEqual(harness.saved, [{ id: 'unknown-model', profile: {
+    contextWindow: 600000, inputLimit: 350000, compactionThreshold: 123000,
+  } }]);
+});
+
+test('clearing the add-model suggestion stays disabled through later capacity edits and saves no threshold', async () => {
+  const harness = await addModelThresholdHarness();
+  await harness.change('模型 ID', 'unknown-model');
+  await harness.change('上下文窗口', '500000');
+  assert.equal(harness.input('压缩阈值').value, '450000');
+  await harness.change('压缩阈值', '');
+  await harness.change('上下文窗口', '600000');
+  assert.equal(harness.input('压缩阈值').value, '');
+  await harness.submit();
+  assert.equal(harness.saved[0]?.profile.compactionThreshold, undefined);
+  assert.equal(harness.saved[0]?.profile.contextWindow, 600000);
+});
+
+test('add-model uses known Codex capacity, while unknown capacity remains opt-in', async () => {
+  const harness = await addModelThresholdHarness();
+  await harness.change('模型 ID', 'gpt-5.5');
+  assert.equal(harness.input('压缩阈值').value, '244800');
+  await harness.submit();
+  assert.equal(harness.saved[0]?.profile.compactionThreshold, 244800);
+  await harness.change('模型 ID', 'unknown-model');
+  assert.equal(harness.input('压缩阈值').value, '');
+  await harness.submit();
+  assert.equal(harness.saved.length, 2);
+  assert.equal(harness.saved[1]?.profile.compactionThreshold, undefined);
+});
+
+async function addModelThresholdHarness() {
+  const harness = installRenderer();
+  const saved: Array<{ id: string; profile: ModelOverride }> = [];
+  await harness.render('zh-CN', createElement(components.AddModelDialog, {
+    isOpen: true, onOpenChange() {}, providerType: 'openai-codex', existingModelIds: [],
+    onSubmit: async (id, profile) => { saved.push({ id, profile }); return true; },
+  }));
+  function input(name: string): HTMLInputElement {
+    const label = [...harness.document.querySelectorAll('label')].find((label) => label.textContent.startsWith(name));
+    assert.ok(label, `missing field label: ${name}`);
+    const field = harness.document.getElementById(label.getAttribute('for')!);
+    assert.ok(field, `missing input: ${name}`);
+    return field as HTMLInputElement;
+  }
+  function reactProps(element: Element): Record<string, unknown> {
+    const key = Object.keys(element).find((key) => key.startsWith('__reactProps$'));
+    assert.ok(key);
+    return (element as unknown as Record<string, Record<string, unknown>>)[key]!;
+  }
+  return { ...harness, saved, input,
+    async change(name: string, value: string) {
+      const onChange = reactProps(input(name)).onChange as (event: { target: { value: string } }) => void;
+      await act(async () => onChange({ target: { value } }));
+    },
+    async submit() {
+      const form = harness.document.querySelector('dialog[open] form');
+      assert.ok(form);
+      const onSubmit = reactProps(form).onSubmit as (event: { preventDefault(): void }) => void;
+      await act(async () => onSubmit({ preventDefault() {} }));
+    },
+  };
+}
 
 function providersPanel(bridge: ConnectionsBridge, slug: string, key?: string) {
   return createElement(components.RuntimeHostSettingsTarget, {
