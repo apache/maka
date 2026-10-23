@@ -50,6 +50,8 @@ import {
 } from './history-compact-test-fixtures.js';
 import type { LoadedModelProjectionTransitions } from '../model-projection-transition-ledger.js';
 import type { ContextBudgetDiagnostic } from '@maka/core/usage-stats/types';
+import { buildOpenAiCodexHistoryCompactor } from '../openai-codex-history-compactor.js';
+import { testInvocationRecord } from './invocation-fixture.js';
 import { HistoryCompactSummarizerError } from '../history-compact-error.js';
 import { buildLlmHistorySummarizer } from '../history-compact-summarizer.js';
 import type { HistoryCompactSummaryInput } from '../ai-sdk-compaction-contract.js';
@@ -631,16 +633,16 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
       // The real summarizer is what carries the accounting the backend hands
       // it, so the metered case must go through it rather than a stub.
       if (options.meteredSummarizer) return await meteredSummarize(input);
-      const summary = options.providerNative
-        ? ({
-            kind: 'openai_codex_remote_v2',
-            connectionId: 'test-connection-id',
-            modelId: 'mock-model-id',
-            itemId: 'cmp_mid_turn',
-            encryptedContent: 'MID_TURN_ENCRYPTED_STATE',
-          } satisfies HistoryCompactProviderState)
-        : options.summarize
-          ? await options.summarize(input)
+      const summary = options.summarize
+        ? await options.summarize(input)
+        : options.providerNative
+          ? ({
+              kind: 'openai_codex_remote_v2',
+              connectionId: 'test-connection-id',
+              modelId: 'mock-model-id',
+              itemId: 'cmp_mid_turn',
+              encryptedContent: 'MID_TURN_ENCRYPTED_STATE',
+            } satisfies HistoryCompactProviderState)
           : `## Goal\nMID_TURN_SUMMARY_SENTINEL\n\n## Progress\n${
               // Padded proportionally so the write gate's size floor passes
               // for large folds while small folds keep a compact replacement.
@@ -1600,6 +1602,125 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'end_turn');
   });
 }
+
+describe('encrypted reasoning in native history compaction', () => {
+  for (const mode of ['manual', 'automatic'] as const) {
+    test(`${mode} compaction preserves empty-plaintext reasoning and enforces route admission`, async () => {
+      const identity = `sha256:${'1'.repeat(64)}` as const;
+      const reasoning = (id: string, runId: string): RuntimeEvent => ({
+        ...runtimeTextEvent(id, 'turn-0', 'model', ''),
+        runId,
+        content: {
+          kind: 'thinking',
+          text: '',
+          providerOptions: {
+            openai: { itemId: id, reasoningEncryptedContent: `encrypted-${id}` },
+          },
+        },
+      });
+      const compatible = reasoning('rs-compatible', 'source-run');
+      const incompatible = reasoning('rs-incompatible', 'other-run');
+      const otherProvider = reasoning('rs-other-provider', 'provider-run');
+      const unknown = reasoning('rs-unknown', 'unknown-run');
+      const hidden = {
+        ...reasoning('rs-hidden', 'source-run'),
+        modelVisibility: 'hidden' as const,
+      };
+      const empty: RuntimeEvent = {
+        ...reasoning('rs-empty', 'source-run'),
+        content: { kind: 'thinking', text: '' },
+      };
+      const nativeModel = new MockLanguageModelV4({
+        doStream: async () => ({
+          stream: simulateReadableStream<LanguageModelV4StreamPart>({
+            chunks: [
+              { type: 'stream-start', warnings: [] },
+              {
+                type: 'custom',
+                kind: 'openai.compaction',
+                providerMetadata: {
+                  openai: {
+                    itemId: 'cmp-native',
+                    encryptedContent: 'NATIVE_CHECKPOINT_STATE',
+                  },
+                },
+              },
+              {
+                type: 'finish',
+                finishReason: { unified: 'stop', raw: 'stop' },
+                usage: {
+                  inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                  outputTokens: { total: 1, text: 0, reasoning: 0 },
+                },
+              },
+            ],
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        }),
+      });
+      const native = buildOpenAiCodexHistoryCompactor({
+        resolveModel: () => nativeModel,
+        connectionId: 'test-connection-id',
+        modelId: 'mock-model-id',
+        providerStateIdentity: identity,
+      });
+      const fixture: MidTurnFixture = buildFixture({
+        providerNative: true,
+        summarize: native,
+        extraPriorEvents: [compatible, incompatible, otherProvider, unknown, hidden, empty],
+        priorInvocations: (
+          [
+            ['source-run', identity, 'mock-model-id'],
+            ['other-run', identity, 'other-model'],
+            ['provider-run', `sha256:${'2'.repeat(64)}`, 'mock-model-id'],
+          ] as const
+        ).map(([runId, providerStateIdentity, modelId]) =>
+          testInvocationRecord({
+            sessionId: 'session-1',
+            runId,
+            turnId: 'turn-0',
+            outcome: 'completed',
+            opening: {
+              route: {
+                provenance: 'runtime',
+                backendKind: 'ai-sdk',
+                llmConnectionId: 'test-connection-id',
+                llmConnectionSlug: 'codex-subscription',
+                modelId,
+                providerStateIdentity,
+              },
+            },
+          }),
+        ),
+        loadCheckpoint: () => fixture.recorded.at(-1),
+      });
+      if (mode === 'manual') {
+        const result = await fixture.backend.compactHistory({
+          turnId: 'turn-compact',
+          runId: 'compact-run',
+          runtimeContext: fixture.priorEvents,
+          runtimeContextInvocations: fixture.priorInvocations,
+        });
+        assert.equal(result.outcome.kind, 'compacted');
+      }
+      await runFixtureTurn(fixture, 'slow');
+      const compactPrompt = JSON.stringify(nativeModel.doStreamCalls[0]?.prompt);
+      assert.match(compactPrompt, /encrypted-rs-compatible/);
+      assert.doesNotMatch(
+        compactPrompt,
+        /rs-incompatible|rs-other-provider|rs-unknown|rs-hidden|rs-empty/,
+      );
+      assert.equal(nativeModel.doStreamCalls[0]?.providerOptions?.openai?.compactionTrigger, true);
+      assert.match(fixture.summarizedSources[0]!, /rs-compatible/);
+      assert.doesNotMatch(fixture.summarizedSources[0]!, /rs-hidden|rs-empty/);
+      const replayPrompt = promptJson(fixture, mode === 'manual' ? 0 : 2);
+      assert.match(replayPrompt, /NATIVE_CHECKPOINT_STATE/);
+      assert.doesNotMatch(replayPrompt, /encrypted-rs-compatible/);
+      assert.deepEqual(fixture.toolExecutions, ['one.md', 'two.md']);
+    });
+  }
+});
 
 describe('mid-turn capacity compaction in the streaming backend', () => {
   defineMidTurnSuite('immediate');

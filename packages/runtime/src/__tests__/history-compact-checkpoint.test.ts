@@ -23,6 +23,7 @@ import type { AgentRunEvent, AgentRunStore } from '@maka/core/agent-run';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import {
   buildHistoryCompactCheckpoint,
+  isHistoryCompactContentEvent,
   canContinueHistoryCompactCheckpointForModel,
   canReplayHistoryCompactCheckpointForModel,
   canReplaceHistoryCompactCheckpoint,
@@ -67,6 +68,37 @@ const STRUCTURED_SUMMARY = [
 ].join('\n');
 
 describe('history compact checkpoint', () => {
+  test('distinguishes opaque reasoning content from empty or incomplete items', () => {
+    const event: RuntimeEvent = {
+      ...textEvent(0),
+      role: 'model',
+      author: 'agent',
+      content: {
+        kind: 'thinking',
+        text: '',
+        providerOptions: {
+          openai: { itemId: 'rs-1', reasoningEncryptedContent: 'encrypted-reasoning' },
+        },
+      },
+    };
+    assert.equal(isHistoryCompactContentEvent(event), true);
+    assert.equal(isHistoryCompactContentEvent({ ...event, modelVisibility: 'hidden' }), false);
+    for (const openai of [
+      undefined,
+      { itemId: 'rs-1' },
+      { itemId: 'rs-1', reasoningEncryptedContent: '' },
+      { reasoningEncryptedContent: 'encrypted' },
+    ]) {
+      assert.equal(
+        isHistoryCompactContentEvent({
+          ...event,
+          content: { kind: 'thinking', text: '', providerOptions: { openai } },
+        }),
+        false,
+      );
+    }
+  });
+
   test('rejects provider-native state from a recreated same-slug connection', () => {
     const providerState = {
       kind: 'openai_codex_remote_v2' as const,

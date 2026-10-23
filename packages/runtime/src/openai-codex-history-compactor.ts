@@ -180,7 +180,9 @@ export function shouldFallbackFromOpenAiCodexHistoryCompaction(
 ): boolean {
   if (abortSignal?.aborted || hasAbortCause(error)) return false;
   if (!(error instanceof HistoryCompactSummarizerError)) return false;
-  if (error.reason === 'input_too_large' || error.reason === 'invalid_provider_state') return true;
+  // Capacity errors must reach the planner's same-route accepted-prefix
+  // retry, which preserves native compaction and the uncovered tail.
+  if (error.reason === 'invalid_provider_state') return true;
   if (error.reason !== 'provider_error') return false;
   return providerFailureDiagnostic(error).errorClass === 'request_rejected';
 }
