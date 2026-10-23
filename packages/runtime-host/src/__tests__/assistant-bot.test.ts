@@ -34,6 +34,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { BotController } from '../assistant/bot/controller.js';
 import { BotStore } from '../assistant/bot/store.js';
 import { DISCOVERY_TASK } from '../assistant/index-initiative/prompt.js';
+import { DISCOVERY_TOOLS } from '../assistant/bot/capabilities.js';
 import { MESSAGE_OPERATION_SPECS } from '../protocol/message.js';
 
 async function until(fn: () => unknown | Promise<unknown>) {
@@ -412,10 +413,16 @@ test('independent discovery retains the exact prompt and reports through Inbox, 
   t.after(f.close);
   let reported = false,
     processed = false;
-  f.runner(async ({ prompt, invoke }) => {
+  f.runner(async ({ id, prompt, invoke }) => {
     if (prompt.includes('Runtime heartbeat')) {
       if (prompt.includes('Phase: discovery')) {
         assert.ok(prompt.includes(DISCOVERY_TASK));
+        const foreign = { name: 'FeishuSearch' } as any;
+        const names = f.service
+          .filterTools(id, [...f.service.tools, foreign])
+          .map((tool) => tool.name);
+        assert.deepEqual(new Set(names), new Set([...DISCOVERY_TOOLS, 'FeishuSearch']));
+        assert.equal(f.service.toolCeiling(id), undefined);
         await writeFile(
           /完成后把增量操作写入 (.+)，格式：/.exec(prompt)![1],
           JSON.stringify({
