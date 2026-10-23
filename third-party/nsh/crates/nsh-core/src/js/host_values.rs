@@ -705,9 +705,9 @@ mod content_style_tests {
         assert_eq!(
             host.read(content.to_js(&host).unwrap()),
             Some(json!({
-                "paddingTop": 9.0, "paddingRight": 6.0,
-                "paddingBottom": 4.0, "paddingLeft": 6.0,
-                "rowGap": 16.0, "columnGap": 12.0,
+                "paddingTop": 9, "paddingRight": 6,
+                "paddingBottom": 4, "paddingLeft": 6,
+                "rowGap": 16, "columnGap": 12,
             }))
         );
         let invalid = host.value(json!({ "rowGap": "10%" }));

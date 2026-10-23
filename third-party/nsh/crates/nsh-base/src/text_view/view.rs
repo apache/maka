@@ -2669,6 +2669,16 @@ mod tests {
         })
         .unwrap();
         app.wait_for("label:Wrap code").unwrap();
+        let first_wrap = app
+            .screen()
+            .press_target("label:Wrap code")
+            .unwrap()
+            .unwrap();
+        let first_details = app
+            .screen()
+            .press_target("text:Disclosure")
+            .unwrap()
+            .unwrap();
         assert!(app.screen().selected("label:Wrap code").unwrap());
         app.press("label:Wrap code").unwrap();
         assert!(!app.screen().selected("label:Wrap code").unwrap());
@@ -2678,11 +2688,30 @@ mod tests {
         app.wait_for("link pressed 1").unwrap();
         app.press("id:bottom").unwrap();
         app.wait_for("viewport tail").unwrap();
+        // Detached cells keep their last logical content until reused. A
+        // larger viewport binds the middle rows as well, reusing those cells.
+        app.set_viewport(Size::new(px(500.0), px(1800.0))).unwrap();
+        app.wait_for("filler 30").unwrap();
         app.press("id:old-link").unwrap();
         app.wait_for("link live false").unwrap();
+        app.set_viewport(Size::new(px(500.0), px(500.0))).unwrap();
         app.press("id:top").unwrap();
         app.wait_for("label:Wrap code").unwrap();
         assert!(!app.screen().selected("label:Wrap code").unwrap());
+        assert_ne!(
+            app.screen()
+                .press_target("label:Wrap code")
+                .unwrap()
+                .unwrap(),
+            first_wrap
+        );
+        assert_ne!(
+            app.screen()
+                .press_target("text:Disclosure")
+                .unwrap()
+                .unwrap(),
+            first_details
+        );
         app.wait_for("disclosed child").unwrap();
         app.press("text:saved link").unwrap();
         app.wait_for("link pressed 2").unwrap();
