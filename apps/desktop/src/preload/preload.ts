@@ -2488,6 +2488,25 @@ const makaBridge = {
       const session = await runtimeHostSessionRef(sessionId);
       return invokeWhenReady('sessions:generatePromptSuggestion', session.scope, session.sessionId);
     },
+    async generateCheckin(input: {
+      effectId: string;
+      since: number | null;
+    }): Promise<import('@maka/runtime-host/protocol').SessionCheckinGenerateResult> {
+      const scope = await activeRuntimeHostRef();
+      const result = (await invokeWhenReady(
+        'sessions:generateCheckin',
+        scope,
+        input,
+      )) as import('@maka/runtime-host/protocol').SessionCheckinGenerateResult;
+      if (result.kind !== 'generated') return result;
+      return {
+        ...result,
+        cards: result.cards.map((card) => ({
+          ...card,
+          sessionId: desktopSessionKey({ hostId: scope.hostId, sessionId: card.sessionId }),
+        })),
+      };
+    },
     async readSnapshot(
       sessionId: string,
       options?: { maxChars?: number },
