@@ -860,7 +860,17 @@ function effectiveDigestEvent(event: RuntimeEvent): unknown {
 
 /** True when the event carries model-visible content the compact projection counts. */
 export function isHistoryCompactContentEvent(event: RuntimeEvent): boolean {
-  return event.modelVisibility !== 'hidden' && estimateRuntimeEventChars(event) > 0;
+  if (event.modelVisibility === 'hidden') return false;
+  // A Responses reasoning item can carry only encrypted content. Text sizing
+  // does not decide whether that payload exists; route admission still runs
+  // when the compacted history is materialized for the selected model.
+  if (event.content?.kind === 'thinking') {
+    const openai = event.content.providerOptions?.openai as
+      | { itemId?: unknown; reasoningEncryptedContent?: unknown }
+      | undefined;
+    if (nonEmpty(openai?.itemId) && nonEmpty(openai?.reasoningEncryptedContent)) return true;
+  }
+  return estimateRuntimeEventChars(event) > 0;
 }
 
 function validHistoryCompactProviderState(value: unknown): value is HistoryCompactProviderState {

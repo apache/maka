@@ -26,6 +26,7 @@ import type { LlmConnection } from '@maka/core/llm-connections';
 import type { SessionHeader } from '@maka/core/session';
 import type { SessionEvent } from '@maka/core/events';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type { ContextBudgetDiagnostic } from '@maka/core/usage-stats/types';
 import type { RuntimeContinuationMetadata } from '@maka/core/backend-types';
 import { z } from 'zod';
 import type { ModelCallCommit } from '@maka/core/agent-run';
@@ -202,6 +203,7 @@ interface ReactiveFixtureOptions {
 }
 
 interface ReactiveLlmCall {
+  contextBudget?: ContextBudgetDiagnostic;
   status?: string;
   errorClass?: string;
   inputTokens?: number;
@@ -490,7 +492,12 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
               isError: false,
             },
           },
-          runtimeTextEvent('prior-model', 'turn-0', 'model', 'screenshot inspected'),
+          runtimeTextEvent(
+            'prior-model',
+            'turn-0',
+            'model',
+            `screenshot inspected ${'q'.repeat(priorChars)}`,
+          ),
         ]
       : [
           runtimeTextEvent(
@@ -1318,20 +1325,106 @@ describe('reactive overflow recovery in the streaming backend', () => {
     );
   });
 
-  test('surfaces a retryable second overflow after the image-only retry without another loop', async () => {
-    // Dropping the images spent this step's attempt, so the resend's own
-    // overflow is terminal.
+  test('compacts after the image-omitted retry still overflows and keeps the current tail', async () => {
     const fixture = buildReactiveFixture({
-      script: ['tool', 'overflow503', 'overflow503'],
+      script: ['tool', 'overflow', 'overflow', 'done'],
       imagePrior: true,
+      bigPriors: true,
+      currentImage: true,
+      liveImageResult: true,
+    });
+    await runTurn(fixture, 'slow');
+
+    assert.equal(complete(fixture)?.stopReason, 'end_turn');
+    assert.equal(fixture.model.doStreamCalls.length, 4);
+    assert.equal(fixture.summarizerCalls(), 1);
+    assert.equal(fixture.recorded.length, 1);
+    assert.deepEqual(fixture.toolExecutions, ['one.md']);
+    const prompts = fixture.model.doStreamCalls.map((call) => JSON.stringify(call.prompt));
+    assert.equal(prompts[1]!.match(/"mediaType":"image\/png"/g)?.length, 3);
+    assert.equal(prompts[2]!.match(/"mediaType":"image\/png"/g)?.length, 2);
+    assert.match(prompts[3]!, /REACTIVE_SUMMARY_SENTINEL/);
+    assert.match(prompts[3]!, new RegExp(ANCHOR_TEXT));
+    assert.match(prompts[3]!, /tool-1/);
+    assert.equal(prompts[3]!.match(/"mediaType":"image\/png"/g)?.length, 2);
+    assert.doesNotMatch(prompts[3]!, /screenshot inspected/);
+    const recoveryDecisions = fixture.llmCalls
+      .at(-1)
+      ?.contextBudget?.compactionDecisions?.filter((decision) => decision.reason === 'overflow');
+    assert.deepEqual(
+      recoveryDecisions?.map(({ boundaryKind, decision }) => ({ boundaryKind, decision })),
+      [
+        { boundaryKind: 'imageOmission', decision: 'replaced' },
+        { boundaryKind: 'historyCompact', decision: 'replaced' },
+      ],
+    );
+  });
+
+  test('keeps image omissions when a smaller accepted compaction prefix leaves the image in the tail', async () => {
+    let attempts = 0;
+    const fixture = buildReactiveFixture({
+      script: ['overflow', 'overflow', 'done'],
+      imagePrior: true,
+      summarize: (input) => {
+        if (++attempts === 1) throw new HistoryCompactSummarizerError('input_too_large');
+        return reactiveStructuredSummary(input.source.foldedRuntimeEvents);
+      },
+    });
+    fixture.priorEvents.unshift(
+      runtimeTextEvent('older-user', 'turn-older', 'user', 'OLDER_PREFIX '.repeat(500)),
+    );
+    const last = fixture.priorEvents.length - 1;
+    fixture.priorEvents[last] = { ...fixture.priorEvents[last]!, runId: 'other-route' };
+    fixture.priorInvocations.push(
+      priorRunInvocation('run-1', 'test-connection-id', 'mock-model-id'),
+    );
+    await runTurn(fixture);
+
+    assert.equal(complete(fixture)?.stopReason, 'end_turn');
+    assert.equal(fixture.model.doStreamCalls.length, 3);
+    assert.equal(fixture.summarizerCalls(), 2);
+    assert.deepEqual(fixture.toolExecutions, []);
+    const prompt = JSON.stringify(fixture.model.doStreamCalls[2]?.prompt);
+    assert.match(prompt, /REACTIVE_SUMMARY_SENTINEL/);
+    assert.match(prompt, /prior-image-call/);
+    assert.match(prompt, /omitted after provider context overflow/);
+    assert.doesNotMatch(prompt, /"mediaType":"image\/png"/);
+    assert.doesNotMatch(prompt, /OLDER_PREFIX/);
+  });
+
+  test('stops after an image omission and one fold when inference still overflows', async () => {
+    const fixture = buildReactiveFixture({
+      script: ['tool', 'overflow503', 'overflow503', 'overflow503'],
+      imagePrior: true,
+      bigPriors: true,
     });
     await runTurn(fixture);
 
-    assert.equal(fixture.model.doStreamCalls.length, 3);
+    assert.equal(fixture.model.doStreamCalls.length, 4);
     assert.equal(complete(fixture)?.stopReason, 'error');
     assert.deepEqual(fixture.toolExecutions, ['one.md']);
-    assert.equal(fixture.summarizerCalls(), 0);
+    assert.equal(fixture.summarizerCalls(), 1);
+    assert.equal(fixture.recorded.length, 1);
+    assert.equal(fixture.llmCalls.at(-1)?.errorClass, 'context_overflow');
+  });
+
+  test('surfaces the overflow when compaction after image omission fails', async () => {
+    const fixture = buildReactiveFixture({
+      script: ['tool', 'overflow', 'overflow'],
+      imagePrior: true,
+      bigPriors: true,
+      summarize: () => {
+        throw new HistoryCompactSummarizerError('provider_error');
+      },
+    });
+    await runTurn(fixture);
+
+    assert.equal(complete(fixture)?.stopReason, 'error');
+    assert.equal(fixture.model.doStreamCalls.length, 3);
+    assert.equal(fixture.summarizerCalls(), 1);
     assert.equal(fixture.recorded.length, 0);
+    assert.deepEqual(fixture.toolExecutions, ['one.md']);
+    assert.equal(fixture.llmCalls.at(-1)?.errorClass, 'context_overflow');
   });
 
   test('keeps only the historical image omitted after the overflow retry returns a tool call', async () => {

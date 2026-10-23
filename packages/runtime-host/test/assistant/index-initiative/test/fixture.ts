@@ -248,6 +248,7 @@ export async function fixture(options: any = {}) {
     workers,
     sessions,
     invokeAs,
+    filterTools: native.filterTools,
     remote: native.remote,
     send: (id: string, text: string) => native.send('owner', id, { text }),
     cancels: () => cancels,

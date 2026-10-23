@@ -24,6 +24,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AcpExecutor, type AcpAgentAdapter, type AcpContinuityRecord } from '../index.js';
 import { readWorkspaceTextFile } from '../acp-filesystem.js';
+import { createAcpConnection, type AcpConnectionOwner } from '../acp-process.js';
 import { Context } from '@maka/runtime/plugin-kernel';
 import { PluginExecutorService } from '@maka/runtime/plugin-executor-service';
 import { PluginExecutorBackend } from '@maka/runtime/plugin-executor-backend';
@@ -207,6 +208,85 @@ test('real stdio retains a conversation and returns original question option ids
     await f.dispose();
   }
 });
+
+for (const retry of ['refresh', 'shutdown'] as const) {
+  test(`real catalog ${retry} retries cleanup and terminates the retained process and helper`, {
+    skip: process.platform === 'win32',
+  }, async () => {
+    const f = await fixture();
+    const pidsPath = join(f.root, 'probe-pids.jsonl');
+    await writeFile(
+      f.script,
+      `
+const cleanupHelper = require('node:child_process').spawn(process.execPath,
+  ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+require('node:fs').appendFileSync(${JSON.stringify(pidsPath)},
+  JSON.stringify([process.pid, cleanupHelper.pid]) + '\\n');
+${program}`,
+    );
+    const owners: AcpConnectionOwner[] = [];
+    let attempts = 0;
+    const executor = new AcpExecutor(
+      {
+        id: 'cleanup-fixture',
+        displayName: 'Cleanup fixture',
+        configure: () => ({ launch: { executable: process.execPath, args: [f.script] } }),
+      },
+      {},
+      {
+        createConnection: (input) => {
+          const owner = createAcpConnection(input);
+          owners.push(owner);
+          if (owners.length > 1) return owner;
+          return {
+            ...owner,
+            dispose: async () => {
+              attempts++;
+              // Fail before termination so both real OS processes remain alive.
+              if (attempts <= 2) throw new Error('Injected transient cleanup failure');
+              await owner.dispose();
+            },
+          };
+        },
+      },
+    );
+    const pids = async (): Promise<number[]> =>
+      (await readFile(pidsPath, 'utf8'))
+        .trim()
+        .split('\n')
+        .flatMap((line) => JSON.parse(line));
+    const input = { cwd: f.root, signal: new AbortController().signal };
+    try {
+      assert.equal((await executor.discover(input)).readiness, 'unavailable');
+      const first = await pids();
+      assert.equal(first.length, 2);
+      for (const pid of first) process.kill(pid, 0);
+      if (retry === 'refresh') {
+        assert.equal(
+          (await executor.discover({ ...input, refresh: true })).readiness,
+          'unavailable',
+        );
+        assert.equal(owners.length, 1);
+        for (const pid of first) process.kill(pid, 0);
+        assert.equal((await executor.discover({ ...input, refresh: true })).readiness, 'ready');
+        assert.equal(owners.length, 2);
+      } else {
+        await assert.rejects(executor.dispose(), /ACP process cleanup failed/u);
+        for (const pid of first) process.kill(pid, 0);
+        await Promise.all([executor.dispose(), executor.dispose()]);
+        assert.equal(owners.length, 1);
+      }
+      await executor.dispose();
+      assert.equal(attempts, 3);
+      for (const pid of await pids()) assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
+    } finally {
+      // A failed assertion must not leave the intentionally retained real process behind.
+      await Promise.all(owners.map((owner) => owner.dispose()));
+      await executor.dispose();
+      await f.dispose();
+    }
+  });
+}
 
 test('real stdio restores the same Session in a new process after durable acknowledgement', async () => {
   const f = await fixture();

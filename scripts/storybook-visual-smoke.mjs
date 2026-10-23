@@ -178,6 +178,19 @@ export function catalogJobs(
           viewport: { width, height: 900 },
         }));
       }
+      // Refresh failures must preserve both single-row and wrapped Composer layouts in every shipped locale.
+      if (entry.id === 'product-shell-official-appshell--new-chat-catalog-refresh-failure') {
+        return ['en', 'zh-CN', 'zh-TW'].flatMap((locale) =>
+          [RENDER_VIEWPORT, NARROW_RENDER_VIEWPORT].map((viewport) => ({
+            storyId: entry.id,
+            colorScheme: 'light',
+            forcedColors: 'none',
+            palette: 'default',
+            locale,
+            viewport,
+          })),
+        );
+      }
       // These diagnostics must wrap in both locales at the reading measure
       // and in a narrow Desktop window; toolbar defaults cover neither matrix.
       if (entry.id === 'product-shell-official-appshell--long-system-notes') {

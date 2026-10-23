@@ -233,6 +233,7 @@ import { join } from 'node:path';
 import { toRuntimePolicyProxy } from './runtime-policy-proxy.js';
 import { AcpSetupError } from './acp/connection.js';
 import { installAntigravity } from './acp/antigravity-install.js';
+import { ANTIGRAVITY_ACP_EXECUTOR_ID } from '@maka/antigravity-acp-plugin';
 import { createProxiedFetchTransport } from '@maka/runtime/network/scoped-fetch-transport';
 import { HostExternalAgentSetupCoordinator } from './external-agent-setup-coordinator.js';
 import { HostOAuthCoordinator, type HostOAuthCoordinatorInput } from './oauth-coordinator.js';
@@ -463,7 +464,12 @@ export async function createExecutionRuntimeHostComposition(
             ...(header.executorConfig ? { configuration: header.executorConfig } : {}),
           });
         }
-        return pluginExecutors.catalog({ cwd: input.cwd, refresh: input.refresh });
+        return pluginExecutors.catalog({
+          cwd: input.cwd,
+          refresh: input.refresh,
+          executorId: input.executorId,
+          listOnly: input.listOnly,
+        });
       },
     );
 
@@ -1959,7 +1965,7 @@ export async function createExecutionRuntimeHostComposition(
         context.requestDrain();
       },
       onSucceeded: () => {
-        pluginExecutors.invalidateCatalog();
+        pluginExecutors.invalidateCatalog(ANTIGRAVITY_ACP_EXECUTOR_ID);
         hostChanges.publishConfiguration();
       },
       capabilities: clientCapabilities,
@@ -2589,7 +2595,8 @@ export async function createExecutionRuntimeHostComposition(
     });
     async function applyRuntimePolicyMutationEffects(): Promise<void> {
       try {
-        pluginExecutors.invalidateCatalog();
+        // Reconciliation replaces only changed agent configurations. Unrelated
+        // policy edits must not discard every provider's persistent catalog.
         await builtinExternalAgentPlugins.reconcile();
         await requireMemory(memory).refreshAfterPolicyMutation();
       } catch (error) {

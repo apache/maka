@@ -1305,10 +1305,10 @@ export class AiSdkCompaction {
   /**
    * Reactive overflow recovery (issue #882 PR 2): the second line of defense.
    * When a provider rejects a request with a context-length error, fold the
-   * durable turn ledger and resend — once per step: a step that a fold or an
-   * image omission has already reshaped gets no second recovery, so the
-   * resend's own rejection is terminal, while a step the provider has since
-   * accepted earns a fresh attempt. Returns the compacted messages to resend,
+   * durable turn ledger and resend. Each step may omit historical images once,
+   * then fold once; a rejection after the fold is terminal. A step the
+   * provider has since accepted earns a fresh recovery sequence. Returns the
+   * compacted messages to resend,
    * or undefined when recovery is impossible or already spent, in which case
    * the caller surfaces the real provider error rather than a fabricated
    * success or a locally synthesized verdict (the provider — not the runtime —
@@ -1331,13 +1331,15 @@ export class AiSdkCompaction {
     abortSignal?: AbortSignal;
   }): Promise<{ messages: ModelMessage[] } | undefined> {
     const state = input.midTurnState;
-    if (!state || state.stepShaping.has('fold') || state.stepShaping.has('omit_images')) {
+    if (!state || state.stepShaping.has('fold')) {
       return undefined;
     }
 
     const eligibleImages = collectHistoricalImageToolResults(state.priorContentEvents);
-    const imageOmission = omitHistoricalImageToolResults(input.currentMessages, eligibleImages);
-    if (imageOmission.omittedParts > 0) {
+    const imageOmission = state.stepShaping.has('omit_images')
+      ? undefined
+      : omitHistoricalImageToolResults(input.currentMessages, eligibleImages);
+    if (imageOmission && imageOmission.omittedParts > 0) {
       state.stepShaping.add('omit_images');
       for (const toolCallId of imageOmission.omittedToolCallIds) {
         const image = eligibleImages.get(toolCallId);
@@ -1346,6 +1348,17 @@ export class AiSdkCompaction {
         // back into the very history the provider just rejected.
         if (image) state.omittedImageToolResults.set(toolCallId, image);
       }
+      input.onDiagnosticPatch(
+        compactionDecisionDiagnosticPatch({
+          stage: 'activeStep',
+          sourceKind: 'providerMessages',
+          decision: 'replaced',
+          phase: state.compactionPhase(input.stepNumber),
+          boundaryKind: 'imageOmission',
+          coverage: { toolCallIds: [...imageOmission.omittedToolCallIds] },
+          reason: 'overflow',
+        }),
+      );
       state.baselineTokens = undefined;
       return { messages: imageOmission.messages };
     }
@@ -1400,7 +1413,13 @@ export class AiSdkCompaction {
     // The fold replaced the request; the baseline described the rejected one.
     state.stepShaping.add('fold');
     state.baselineTokens = undefined;
-    return { messages: outcome.replacementMessages };
+    return {
+      messages:
+        projectHistoricalImageOmissions(
+          outcome.replacementMessages,
+          state.omittedImageToolResults,
+        ) ?? outcome.replacementMessages,
+    };
   }
 }
 
@@ -1494,7 +1513,7 @@ export class MidTurnCapacityCompactState {
   /**
    * What has reshaped the request since the last one a provider accepted. The
    * turn clears it at that acceptance; overflow recovery reads it so a request
-   * that was already folded or stripped of images is not reshaped again.
+   * is folded at most once, after an optional image omission.
    */
   readonly stepShaping = new Set<'fold' | 'omit_images'>();
   /**

@@ -1031,7 +1031,8 @@ export interface MakaBridge {
   };
 
   newTasks: {
-    getExecutors(target: DesktopNewTaskTarget, cwd: string, refresh?: boolean): Promise<readonly import('@maka/core/executor-catalog').ExecutorCatalogEntry[]>;
+    getExecutors(target: DesktopNewTaskTarget, cwd: string, refresh?: boolean, executorId?: string): Promise<readonly import('@maka/core/executor-catalog').ExecutorCatalogEntry[]>;
+    listExecutors(target: DesktopNewTaskTarget, cwd: string): Promise<readonly import('@maka/core/executor-catalog').ExecutorCatalogEntry[]>;
     getCatalog(): Promise<DesktopNewTaskCatalog>;
     subscribeChanges(handler: () => void): () => void;
     addProject(host: DesktopNewTaskHostRef, name?: string): Promise<

@@ -18,13 +18,13 @@
  */
 
 import { useEffect, useState, type ReactNode } from 'react';
-import { Button, Stack } from '@astryxdesign/core';
+import { Button, Spinner, Stack } from '@astryxdesign/core';
 import { Selector, SelectorOption, type SelectorOptionType } from '@astryxdesign/core/Selector';
 import type { ExecutorCatalogEntry, ExecutorConfiguration, ExecutorSelection } from '@maka/core/executor-catalog';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { ProviderType } from '@maka/core/llm-connections';
 import { type UiLocale, defineShippedUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
-import { Settings, ICON_SIZE } from './icons.js';
+import { RefreshCcw, Settings, ICON_SIZE } from './icons.js';
 import { ComposerModelLabel } from './composer-model-label.js';
 import { buildModelPickerOptions, providerMarkIcon, renderChatModelPickerOption } from './model-picker-internals.js';
 import { exactModelChoiceValue, modelMenuGroups, type ChatModelChoice } from './chat-model-helpers.js';
@@ -34,6 +34,7 @@ import { getSharedUiCopy } from './shared-ui-copy.js';
 import { getConversationCopy } from './conversation-copy.js';
 import { usePendingSelection } from './use-pending-selection.js';
 import type { MakaClientExecutorTarget } from './client-plugin-slots.js';
+import { useToast } from './toast.js';
 
 export interface ComposerModelContribution {
   readonly id: string;
@@ -57,15 +58,23 @@ export interface ComposerExecutorPicker {
   fixed?: boolean;
   disabled?: boolean;
   loading?: boolean;
+  loadingIds?: readonly string[];
   error?: string;
   onSelect(selection: ExecutorSelection | undefined): void | Promise<void>;
   onSetup(executorId?: string): void;
-  onRetry(): void;
+  onRetry(executorId?: string): void;
   onNewTask(): void;
   onRestore?(): void | Promise<void>;
 }
 
+function isExecutorLoading(executor: ComposerExecutorPicker, id: string): boolean {
+  return executor.loadingIds ? executor.loadingIds.includes(id) : !!executor.loading;
+}
+
 interface ExecutorCopy {
+  loading: string;
+  refresh: string;
+  refreshFailed: string;
   nativeOperations: string;
   manage: string;
   signIn: string;
@@ -87,6 +96,9 @@ interface ExecutorCopy {
 
 const EXECUTOR_COPY = resolveUiMessageCatalog(defineShippedUiMessageCatalog<ExecutorCopy>()({
   en: {
+    loading: 'Loading models…',
+    refresh: 'Refresh models',
+    refreshFailed: 'Could not refresh models. Please try again later.',
     nativeOperations: 'This operation requires Maka. Start a new Maka task.',
     manage: 'Manage external agents',
     signIn: 'Go to sign in',
@@ -107,6 +119,9 @@ const EXECUTOR_COPY = resolveUiMessageCatalog(defineShippedUiMessageCatalog<Exec
     mode: 'Mode',
   },
   'zh-CN': {
+    loading: '正在获取模型…',
+    refresh: '刷新模型',
+    refreshFailed: '模型列表刷新失败，请稍后再试。',
     nativeOperations: '此操作仅支持 Maka。请新建 Maka 任务。',
     manage: '管理外部 Agent',
     signIn: '前往登录',
@@ -126,6 +141,9 @@ const EXECUTOR_COPY = resolveUiMessageCatalog(defineShippedUiMessageCatalog<Exec
     mode: '模式',
   },
   'zh-TW': {
+    loading: '正在取得模型…',
+    refresh: '重新整理模型',
+    refreshFailed: '模型清單重新整理失敗，請稍後再試。',
     nativeOperations: '此操作僅支援 Maka。請建立 Maka 任務。',
     manage: '管理外部 Agent',
     signIn: '前往登入',
@@ -148,6 +166,12 @@ const EXECUTOR_COPY = resolveUiMessageCatalog(defineShippedUiMessageCatalog<Exec
 
 export function executorCopy(locale: UiLocale): ExecutorCopy {
   return EXECUTOR_COPY[locale];
+}
+
+function ExecutorRefreshFailure({ name, message }: { name: string; message: string }) {
+  const toast = useToast();
+  useEffect(() => { toast.error(message, name); }, [toast, message, name]);
+  return null;
 }
 
 
@@ -226,11 +250,9 @@ export function ComposerModelPicker(props: {
   const selected = catalog.find(entry => entry.id === executor?.selection?.executorId);
   const selectedModel = executor?.selection?.configuration.model ?? selected?.currentModel;
   const group = selected && executorModelGroup(selected, selectedModel);
-  const modelLabel = contributed ? contributedModel?.label ?? props.executorTarget?.model ?? copy.default : executor?.selection
+  const label = contributed ? contributedModel?.label ?? props.executorTarget?.model ?? copy.default : executor?.selection
     ? group?.name ?? selected?.models.find(model => model.id === selectedModel)?.name ?? selectedModel ?? copy.default
     : props.label;
-  const label = !executor?.fixed && (contributed || executor?.selection)
-    ? `${contributed?.label ?? selected?.displayName ?? executor?.selection?.executorId} · ${modelLabel}` : modelLabel;
   const authoritative = contributed ? JSON.stringify([contributed.id, props.executorTarget?.model ?? '']) : executor?.selection
     ? selected ? externalValue(selected, selectedModel) : JSON.stringify([executor.selection.executorId, selectedModel ?? ''])
     : props.value ?? (props.choices.length === 0 && !executor ? '__maka_model_display__' : '');
@@ -271,7 +293,7 @@ export function ComposerModelPicker(props: {
     options.push({
       type: 'section',
       title: entry.displayName,
-      options: entry.readiness === 'ready' ? entry.models.flatMap(model => {
+      options: [...(entry.readiness === 'ready' ? entry.models.flatMap(model => {
         const family = executorModelGroup(entry, model.id);
         if (family && entry.models.find(candidate => family.variants.some(variant => variant.modelId === candidate.id))?.id !== model.id) return [];
         const value = externalValue(entry, model.id);
@@ -284,7 +306,8 @@ export function ComposerModelPicker(props: {
           icon: providerMarkIcon(model.providerType, props.renderProviderMark) ?? executor?.renderExecutorMark?.(entry),
           disabled: !!executor?.fixed && !entry.supportsModelChange,
         }];
-      }) : [{ value: JSON.stringify([entry.id, 'unavailable']), label: copy[entry.readiness], disabled: true }],
+      }) : executor && isExecutorLoading(executor, entry.id) ? [] : [{ value: JSON.stringify([entry.id, 'unavailable']), label: copy[entry.readiness], disabled: true }]),
+      ...(executor && isExecutorLoading(executor, entry.id) ? [{ value: JSON.stringify([entry.id, 'loading']), label: copy.loading, disabled: true, icon: <Spinner size="sm" /> }] : [])],
     });
   }
   if (authoritative && !actions.has(authoritative) && !props.hideUnavailableCurrentOption) {
@@ -307,7 +330,8 @@ export function ComposerModelPicker(props: {
     executor?.onSelect({ executorId: executor.selection!.executorId, configuration: executor.fixed || (configuration.model !== undefined && configuration.model !== selectedModel)
       ? configuration : { ...executor.selection!.configuration, ...configuration } });
   const mode = executor?.selection?.configuration.mode ?? selected?.currentMode;
-  const recoveryEntries = catalog.filter(entry => entry.readiness !== 'ready');
+  const recoveryEntries = catalog.filter(entry => entry.readiness !== 'ready'
+    && !(entry.readiness === 'unavailable' && executor && isExecutorLoading(executor, entry.id)));
   return <>
     {/* Keep portaled search clicks from focusing the composer editor. */}
     <Stack direction="horizontal" className="maka-model-picker-root"
@@ -326,7 +350,7 @@ export function ComposerModelPicker(props: {
         variant="ghost" size="sm" placement="above"
         presentation={props.presentation}
         isReadOnly={props.isReadOnly || displayOnly}
-        isLoading={executor?.loading || contribution?.loading}
+        isLoading={contributed ? contribution?.loading : !!executor?.selection && isExecutorLoading(executor, executor.selection.executorId)}
         isDisabled={disabled || entryDisabled}
         disabledMessage={props.disabledReason}
         isDefaultOpen={!!props.openNonce || reopen}
@@ -374,12 +398,20 @@ export function ComposerModelPicker(props: {
       className="maka-executor-mode-selector"
       onChange={value => { void commit(() => externalConfiguration({ mode: value })); }}
     />}
+    {executor && !executor.fixed && selected?.readiness === 'ready' && <Button
+      label={selected.displayName + ': ' + copy.refresh} tooltip={selected.displayName + ': ' + copy.refresh}
+      variant="ghost" size="sm" isIconOnly icon={<RefreshCcw size={ICON_SIZE.control} />}
+      isLoading={isExecutorLoading(executor, selected.id)}
+      isDisabled={disabled || props.isReadOnly || isExecutorLoading(executor, selected.id)}
+      onClick={() => executor.onRetry(selected.id)} />}
     {executor && !executor.fixed && <Button label={copy.manage} tooltip={copy.manage}
       variant="ghost" size="sm" isIconOnly icon={<Settings size={ICON_SIZE.control} />}
       onClick={() => executor.onSetup()} />}
     {!executor && !actions.size && props.onOpenSettings && <Button
       label={modelCopy.configureTitle} variant="ghost" size="sm"
       icon={<Settings size={ICON_SIZE.control} />} onClick={props.onOpenSettings} />}
+    {executor && catalog.filter(entry => entry.refreshFailed && !isExecutorLoading(executor, entry.id)).map(entry =>
+      <ExecutorRefreshFailure key={entry.id} name={entry.displayName} message={copy.refreshFailed} />)}
     {recoveryEntries.map(entry => <span key={entry.id} className="maka-executor-notice" role="status">
       {entry.displayName + ': ' + copy[entry.readiness as Exclude<typeof entry.readiness, 'ready'>]}
       {executor && (entry.readiness === 'restorable' || entry.readiness === 'restore_failed') ? <Button
@@ -390,13 +422,13 @@ export function ComposerModelPicker(props: {
         : executor && entry.readiness === 'authentication_required' ? <Button
           label={copy.signIn} variant="ghost" size="sm" onClick={() => executor.onSetup(entry.id)} />
         : executor && entry.readiness !== 'restoring' ? <Button
-          label={copy.retry} variant="ghost" size="sm" isLoading={executor.loading} onClick={executor.onRetry} />
+          label={copy.retry} variant="ghost" size="sm" isLoading={isExecutorLoading(executor, entry.id)} onClick={() => executor.onRetry(entry.id)} />
         : null}
     </span>)}
     {(failed || invalid || executor?.error || (unavailable && !selected) || contribution?.error) && <span className="maka-executor-notice" role="status">
       {contribution?.error ? contribution.label + ': ' + copy.unavailable : unavailable && !selected ? copy.unavailable : invalid ? copy.invalid : copy.selectionFailed}
       {contribution?.error && <Button label={copy.retry} variant="ghost" size="sm" isLoading={contribution.loading} onClick={contribution.onLoad} />}
-      {executor && !contribution?.error && <Button label={copy.retry} variant="ghost" size="sm" isLoading={executor.loading} onClick={executor.onRetry} />}
+      {executor && !contribution?.error && <Button label={copy.retry} variant="ghost" size="sm" isLoading={executor.error ? executor.loading : !!executor.selection && isExecutorLoading(executor, executor.selection.executorId)} onClick={() => executor.onRetry(executor.error ? undefined : executor.selection?.executorId)} />}
     </span>}
   </>;
 }

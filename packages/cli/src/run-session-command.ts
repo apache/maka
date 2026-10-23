@@ -36,6 +36,22 @@ import type { MakaRunEnvironmentDeps, MakaRunOptions } from './run-command-core.
 import { RunSessionInterrupted, type MakaRunSessionResult } from './run-session-result.js';
 import { TurnOutcomeClassifier, acceptStoredTurn } from './run-turn-outcome.js';
 
+/** Session controls that must verify ownership before mutating a Host-owned Turn. */
+export function sessionControlRequiresExecutionBoundary(
+  options: Pick<
+    MakaRunOptions,
+    'prompt' | 'answers' | 'resumeExecution' | 'sandboxDecision' | 'stop'
+  >,
+): boolean {
+  return (
+    options.prompt !== undefined ||
+    options.answers !== undefined ||
+    options.resumeExecution === true ||
+    options.sandboxDecision !== undefined ||
+    options.stop === true
+  );
+}
+
 /** Session commands observe Host-owned execution; they never publish client MCP. */
 export async function runMakaSessionCommand(
   connection: RuntimeHostConnection,
@@ -47,6 +63,7 @@ export async function runMakaSessionCommand(
   const executing =
     options.prompt !== undefined || options.answers !== undefined || options.resumeExecution;
   const decidingSandbox = options.sandboxDecision !== undefined;
+  const controllingTurn = sessionControlRequiresExecutionBoundary(options);
   if ((executing || decidingSandbox) && !allowDetach)
     throw new Error(
       'Session control execution requires a persistent installation; use the blocking legacy run path for temporary npx invocations',
@@ -119,7 +136,7 @@ export async function runMakaSessionCommand(
     let admittedQueueRevision: number | undefined;
     let admittedQueueEpoch: string | undefined;
     let fullAccess = false;
-    if (executing) {
+    if (controllingTurn) {
       const boundary = await connection.request('session.execution_boundary.query', { sessionId });
       assertActive();
       if (boundary.kind === 'external')
