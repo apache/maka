@@ -5065,41 +5065,37 @@ export const CompletedProcessExpanded: Story = {
 };
 
 
-function EventWaitContextStory(props: { label: string }) {
-  return <GoalContextStory goal={{ condition: 'Run the background tests and inspect their result',
-    status: 'active', iterations: 1, maxIterations: 12, setAt: Date.now() - 60000, onPause: noop, onClear: noop,
-    eventWait: { label: props.label, detail: 'Inspect the finished tests · maka://runtime/background-tasks/95ff8bdc-23bb-43ea-aea9-5d82c8d939fe · Oct 20, 2026, 10:00',
-      cancelLabel: 'Cancel wait and pause', cancelDescription: 'Cancel the wait and pause the Goal. The background task keeps running.', onCancel: noop } }} />;
+const PARALLEL_EVENT_WAIT_IDS = ['a', 'b'].map((value) => `wait_${value.repeat(64)}`);
+
+function ParallelEventWaitsStory() {
+  const [waits, setWaits] = useState(PARALLEL_EVENT_WAIT_IDS);
+  return <ComposedShell session={{ streaming: true }} chat={{
+    eventWaitIndicators: waits.map((id) => ({
+      id, label: 'Waiting for external event', detail: 'Background build process',
+      cancelLabel: 'Cancel wait', cancelDescription: 'Cancel this wait. The underlying work keeps running.',
+      onCancel: () => setWaits((current) => current.filter((wait) => wait !== id)),
+    })),
+  }} />;
 }
 
-async function assertEventWaitLayout({ canvasElement }: { canvasElement: HTMLElement }) {
-  const canvas = within(canvasElement);
-  const button = await canvas.findByRole('button', { name: 'Cancel wait and pause' });
-  const row = button.closest('.maka-session-context__wait')!;
-  expect(row.scrollWidth).toBeLessThanOrEqual(row.clientWidth + 1);
-  expect(button.getBoundingClientRect().right).toBeLessThanOrEqual(canvasElement.getBoundingClientRect().right + 1);
-  await userEvent.hover(button);
-  await expect(within(document.body).findByRole('tooltip')).resolves.toHaveTextContent('background task keeps running');
-  await userEvent.unhover(button);
-}
-
-// Real path: a Goal Turn starts builtin background Bash, calls WaitForEvent and
-// yields. The existing ChatView context layer renders the Host wait projection.
-export const SessionContextEventWait: Story = {
-  render: () => <EventWaitContextStory label="Waiting for background task" />,
-  play: assertEventWaitLayout,
-};
-
-// Real path: the Host cannot currently read the task source, so the existing
-// outstanding wait is unknown. The narrow smoke viewport exercises wrapping.
-export const SessionContextEventWaitUnknownNarrow: Story = {
-  render: () => <EventWaitContextStory label="Background task state temporarily unverifiable" />,
-  play: assertEventWaitLayout,
-};
-
-// Real path: the terminal fact is durable while a user Turn owns Root admission.
-// The wait remains visible until its existing continuation can be admitted.
-export const SessionContextEventWaitReady: Story = {
-  render: () => <EventWaitContextStory label="Result available, waiting to continue" />,
-  play: assertEventWaitLayout,
+// Real path: an admitted Goal Turn opens two waits for the same ShellRun, then the user clears the Goal.
+// The fixture supplies the remaining Session projections to the production ChatView frame.
+export const ParallelEventWaitsAfterGoalClear: Story = {
+  render: () => <ParallelEventWaitsStory />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    for (const id of PARALLEL_EVENT_WAIT_IDS) {
+      await expect(canvas.getByRole('button', { name: `Cancel wait ${id}` })).toBeVisible();
+      await expect(canvas.getByText(id)).toBeVisible();
+    }
+    await expect(canvas.getAllByText('Background build process')).toHaveLength(2);
+    const rows = canvasElement.querySelectorAll('.maka-session-context__wait');
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      const cancel = row.querySelector('button')!.getBoundingClientRect();
+      const frame = row.getBoundingClientRect();
+      expect(cancel.left).toBeGreaterThanOrEqual(frame.left);
+      expect(cancel.right).toBeLessThanOrEqual(frame.right);
+    }
+  },
 };

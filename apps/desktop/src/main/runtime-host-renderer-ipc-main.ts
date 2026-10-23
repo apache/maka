@@ -88,6 +88,10 @@ function request(
   value: unknown,
 ): Promise<unknown> {
   switch (operation) {
+    case 'session.event-waits.query':
+      return client.request(operation, HOST_OPERATION_SPECS[operation].decodeInput(value));
+    case 'session.event-wait.cancel':
+      return client.request(operation, HOST_OPERATION_SPECS[operation].decodeInput(value));
     case 'context.diagnostics.query':
       return client.request(operation, HOST_OPERATION_SPECS[operation].decodeInput(value));
     case 'personal-assistant.call':

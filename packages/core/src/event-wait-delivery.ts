@@ -17,75 +17,42 @@
  * under the License.
  */
 
-import { defineObjectShape, hasExactShape, isRecord } from './record-schema.js';
+import { isRecord } from './record-schema.js';
 
-/** Correlation data, never proof of permission to register or admit a Turn. */
-export interface EventWaitProvenance {
+/** A naturally completed Goal Turn has no suspended tool call. */
+export interface GoalWaitingProvenance {
   readonly waitId: string;
-  readonly deliveryKey: string;
   readonly sourceTurnId: string;
-  readonly sourceToolCallId: string;
   readonly generation: number;
-  readonly outcome: 'satisfied' | 'invalidated' | 'source_unavailable' | 'expired';
   readonly resultDigest: `sha256:${string}`;
 }
-const shape = defineObjectShape<EventWaitProvenance>()(
-  [
-    'waitId',
-    'deliveryKey',
-    'sourceTurnId',
-    'sourceToolCallId',
-    'generation',
-    'outcome',
-    'resultDigest',
-  ],
-  [],
-);
-export function decodeEventWaitProvenance(value: unknown): EventWaitProvenance {
+
+export function decodeGoalWaitingProvenance(value: unknown): GoalWaitingProvenance {
   if (
     !isRecord(value) ||
-    !hasExactShape(value, shape) ||
+    Object.keys(value).sort().join() !== 'generation,resultDigest,sourceTurnId,waitId' ||
     typeof value.waitId !== 'string' ||
     !/^[A-Za-z0-9_-]{1,128}$/.test(value.waitId) ||
-    value.deliveryKey !== `event-wait/${value.waitId}` ||
     typeof value.sourceTurnId !== 'string' ||
     !/^[A-Za-z0-9_-]{1,128}$/.test(value.sourceTurnId) ||
-    typeof value.sourceToolCallId !== 'string' ||
-    !value.sourceToolCallId ||
-    new TextEncoder().encode(value.sourceToolCallId).byteLength > 512 ||
     !Number.isSafeInteger(value.generation) ||
     (value.generation as number) < 0 ||
-    !['satisfied', 'invalidated', 'source_unavailable', 'expired'].includes(
-      value.outcome as string,
-    ) ||
     typeof value.resultDigest !== 'string' ||
     !/^sha256:[a-f0-9]{64}$/.test(value.resultDigest)
-  ) {
-    throw new TypeError('Invalid event wait provenance');
-  }
-  return Object.freeze({
-    waitId: value.waitId,
-    deliveryKey: value.deliveryKey,
-    sourceTurnId: value.sourceTurnId,
-    sourceToolCallId: value.sourceToolCallId,
-    generation: value.generation,
-    outcome: value.outcome,
-    resultDigest: value.resultDigest,
-  }) as EventWaitProvenance;
+  )
+    throw new TypeError('Invalid Goal waiting provenance');
+  return Object.freeze({ ...value }) as unknown as GoalWaitingProvenance;
 }
 
-export function sameEventWaitProvenance(
-  a: EventWaitProvenance | undefined,
-  b: EventWaitProvenance | undefined,
+export function sameGoalWaitingProvenance(
+  a: GoalWaitingProvenance | undefined,
+  b: GoalWaitingProvenance | undefined,
 ): boolean {
   if (!a || !b) return a === b;
   return (
     a.waitId === b.waitId &&
-    a.deliveryKey === b.deliveryKey &&
     a.sourceTurnId === b.sourceTurnId &&
-    a.sourceToolCallId === b.sourceToolCallId &&
     a.generation === b.generation &&
-    a.outcome === b.outcome &&
     a.resultDigest === b.resultDigest
   );
 }

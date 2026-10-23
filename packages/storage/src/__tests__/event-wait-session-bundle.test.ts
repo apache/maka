@@ -24,6 +24,8 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { after, test } from 'node:test';
 import { eventWaitDeliveryKey, type EventWaitRecord } from '@maka/core/event-wait';
+import type { GoalAuthorityRecord } from '@maka/core/goal';
+import type { ConsumerEventWaitRecord } from '@maka/core/event-wait';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
 import { openInteractiveExecutionStoresForWrite } from '../execution-stores.js';
 import {
@@ -153,10 +155,13 @@ for (const mode of ['portable', 'snapshot'] as const) {
           [],
           'import must not activate source dispatch reservations',
         );
-        assert.deepEqual(await target.stores.eventWaitStore.listPending({ limit: 200 }), {
-          items: [targetCommit.snapshot],
-          nextCursor: null,
-        });
+        assert.deepEqual(
+          await target.stores.eventWaitStore.listByStatus({ status: 'waiting', limit: 200 }),
+          {
+            items: [targetCommit.snapshot],
+            nextCursor: null,
+          },
+        );
         assert.deepEqual(
           await target.stores.eventWaitStore.read(identity(targetRecord)),
           targetCommit.snapshot,
@@ -193,7 +198,7 @@ function waiting(
     schemaVersion: 1,
     waitId,
     sessionId,
-    goalControlLease: { goalId: 'goal-1', generation: 0 },
+
     sourceTurnId: 'turn-1',
     sourceToolCallId: 'call-1',
     resource: {
@@ -296,4 +301,130 @@ async function withRoots(
       await rm(base, { recursive: true, force: true });
     }
   }
+}
+
+for (const mode of ['portable', 'snapshot'] as const) {
+  test(`${mode} Session Bundle removes natural Goal observation linkage as well as consumer rows`, async () => {
+    await withRoots(async ({ source, target, configRoot, bundleRoot }) => {
+      const session = await source.stores.sessionStore.create(
+        sessionInput(source.root, 'Natural waiting'),
+      );
+      const original = waiting(session.id, 'natural-wait');
+      const goalControlLease = { goalId: 'goal', generation: 0 };
+      const {
+        sourceToolCallId: _tool,
+        observation: _observation,
+        delivery: _delivery,
+        ...base
+      } = original;
+      const record: ConsumerEventWaitRecord = {
+        ...base,
+        schemaVersion: 2,
+        deadlineAt: null,
+        consumer: {
+          kind: 'goal_waiting',
+          sourceRunId: 'source-run',
+          completionEventId: 'completed',
+          goalControlLease,
+          goalRevision: 1,
+        },
+      };
+      const goal: GoalAuthorityRecord = {
+        schemaVersion: 1,
+        controlLease: goalControlLease,
+        currentExecution: null,
+        goal: {
+          id: goalControlLease.goalId,
+          revision: 1,
+          sessionId: session.id,
+          condition: 'Observe external completion',
+          status: 'waiting',
+          setAt: 1,
+          iterations: 1,
+          maxIterations: 50,
+          consecutiveNoProgress: 0,
+          blockCap: 8,
+          tokensAtStart: 0,
+          tokensNow: 0,
+          tokensBaselinePending: true,
+        },
+        pendingContinuation: {
+          checkpoint: { goalId: goalControlLease.goalId, revision: 1 },
+          controlLease: goalControlLease,
+          triggeringTurnId: record.sourceTurnId,
+          prompt: 'Continue after external completion',
+          observation: {
+            waitId: record.waitId,
+            resource: record.resource,
+            condition: record.condition,
+            deadlineAt: null,
+            sourceRunId: 'source-run',
+            completionEventId: 'completed',
+          },
+        },
+      };
+      await source.stores.runtimeEventStore.appendRuntimeEvent(session.id, 'source-run', {
+        id: 'completed',
+        sessionId: session.id,
+        runId: 'source-run',
+        turnId: record.sourceTurnId,
+        invocationId: 'source-invocation',
+        partial: false,
+        ts: 10,
+        role: 'system',
+        author: 'system',
+        status: 'completed',
+        actions: { endInvocation: true },
+      });
+      assert.equal(
+        (
+          await source.stores.goalStore.commit({
+            sessionId: session.id,
+            expectedAuthorityRevision: null,
+            record: goal,
+          })
+        ).kind,
+        'committed',
+      );
+      await source.stores.eventWaitStore.registerGoalWaitingWait({ record });
+      await exportSessionBundleState({
+        stateRoot: source.root,
+        configRoot,
+        destinationRoot: bundleRoot,
+        sessionId: session.id,
+        lease: source.owner.lease,
+        ...(mode === 'portable'
+          ? {
+              requireQuiescent: true,
+              includeSubtree: true,
+              omitDiagnostics: true,
+              omitEventWaits: true,
+            }
+          : {}),
+      });
+      await importSessionBundleState({
+        stateRoot: target.root,
+        bundleStateRoot: bundleRoot,
+        lease: target.owner.lease,
+      });
+      const imported = (await target.stores.goalStore.read(session.id))!.record;
+      assert.equal(imported.goal.status, 'paused');
+      assert.equal(imported.pendingContinuation, null);
+      assert.equal(imported.controlLease.generation, goalControlLease.generation + 1);
+      assert.deepEqual(
+        (await target.stores.eventWaitStore.listAny({ sessionId: session.id, limit: 10 })).items,
+        [],
+      );
+      assert.deepEqual((await source.stores.goalStore.read(session.id))!.record, goal);
+      assert.equal(
+        (
+          await source.stores.eventWaitStore.readAny({
+            sessionId: session.id,
+            waitId: record.waitId,
+          })
+        )?.record.status,
+        'waiting',
+      );
+    });
+  });
 }

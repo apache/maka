@@ -43,7 +43,9 @@ export interface HostRunComposer {
   readonly composerRevision: string;
   readonly tools: readonly MakaTool[];
   /** Reads the current scoped Tool surface before each logical model step. */
-  readonly resolveTools?: () => readonly MakaTool[];
+  readonly resolveTools?: (
+    identity?: Parameters<NonNullable<AiSdkBackendInput['resolveTools']>>[0],
+  ) => readonly MakaTool[];
   readonly toolAvailability?: ToolAvailabilityConfig;
   readonly resolveSystemPrompt: (context: HostModelPromptContext) => Promise<ResolvedRunPrompt>;
   readonly planTraceContext?: AiSdkBackendInput['planTraceContext'];

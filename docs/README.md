@@ -51,6 +51,7 @@ This page is the authority map for Maka documentation. Code and contract tests r
 
 ### Runtime and Eval
 
+- [Goal event wait consumers](./goal-event-wait-consumers.md) ([中文](./goal-event-wait-consumers.zh-CN.md))
 - [SessionTodo lifecycle](./session-todo-lifecycle.md)
 - [Desktop message queue](./desktop-message-queue.md)
 - [Work Board contract](./work-board-contract.md)

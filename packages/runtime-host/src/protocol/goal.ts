@@ -36,12 +36,6 @@ import { invalidProtocolFrame } from './errors.js';
 import { defineOperation } from './operation-spec.js';
 
 export const GOAL_RESULT_MAX_BYTES = 16 * 1024;
-/** Display bounds; canonical ShellRun references fit in full. */
-export const GOAL_EVENT_WAIT_SUMMARY_LIMITS = Object.freeze({
-  resourceIdBytes: 512,
-  reasonCodeBytes: 128,
-});
-
 const QUERY_ERRORS = [
   'host_not_ready',
   'host_draining',
@@ -70,39 +64,6 @@ export interface GoalProjection {
   readonly lastReason: string | null;
   readonly achievedAt: number | null;
   readonly pausedAt: number | null;
-  readonly eventWait: GoalEventWaitProjection | null;
-}
-
-export interface GoalEventWaitProjection {
-  readonly waitId: string;
-  readonly controlGeneration: number;
-  readonly waitRevision: number;
-  readonly resource: {
-    readonly providerId: string;
-    readonly resourceType: string;
-    readonly resourceId: string;
-  };
-  readonly reason: string;
-  readonly deadlineAt: number;
-  readonly phase: 'observing' | 'awaiting_admission';
-  readonly observation: {
-    readonly state: 'checking' | 'pending' | 'unknown';
-    readonly lastObservedAt: number | null;
-    readonly reasonCode: string | null;
-  } | null;
-  readonly outcome: 'satisfied' | 'invalidated' | 'source_unavailable' | 'expired' | null;
-}
-export interface GoalEventWaitCancelInput {
-  readonly sessionId: string;
-  readonly goalId: string;
-  readonly controlGeneration: number;
-  readonly waitId: string;
-  readonly expectedGoalRevision: number;
-}
-export interface GoalEventWaitCancelResult {
-  readonly sessionId: string;
-  readonly outcome: 'cancelled' | 'already_cancelled' | 'already_admitted' | 'conflict';
-  readonly goal: GoalProjection | null;
 }
 
 export interface GoalQueryInput {
@@ -152,17 +113,6 @@ export interface GoalControlResult {
 }
 
 export const GOAL_OPERATION_SPECS = {
-  'goal.event-wait.cancel': defineOperation({
-    mode: 'control',
-    availability: 'ready',
-    errors: CONTROL_ERRORS,
-    decodeInput: decodeGoalEventWaitCancelInput,
-    decodeOutput: decodeGoalEventWaitCancelResult,
-    assertOutputForInput(input, output) {
-      if (input.sessionId !== output.sessionId)
-        throw invalidProtocolFrame('Wait cancellation belongs to another Session');
-    },
-  }),
   'goal.query': defineOperation({
     mode: 'query',
     availability: 'ready',
@@ -218,7 +168,6 @@ export function decodeGoalProjection(value: unknown): GoalProjection {
     'lastReason',
     'achievedAt',
     'pausedAt',
-    'eventWait',
   ]);
   const condition = requireUtf8String(
     record.condition,
@@ -245,7 +194,6 @@ export function decodeGoalProjection(value: unknown): GoalProjection {
     lastReason,
     achievedAt: requireNullableCount(record.achievedAt, 'Goal achievedAt'),
     pausedAt: requireNullableCount(record.pausedAt, 'Goal pausedAt'),
-    eventWait: record.eventWait === null ? null : decodeGoalEventWaitProjection(record.eventWait),
   };
 }
 
@@ -370,119 +318,4 @@ function requireNullablePositiveCount(value: unknown, label: string): number | n
 function requireNullableCount(value: unknown, label: string): number | null {
   if (value === null) return null;
   return requireCount(value, label);
-}
-
-export function decodeGoalEventWaitProjection(value: unknown): GoalEventWaitProjection {
-  const r = requireExactRecord(value, 'Goal event wait', [
-    'waitId',
-    'controlGeneration',
-    'waitRevision',
-    'resource',
-    'reason',
-    'deadlineAt',
-    'phase',
-    'observation',
-    'outcome',
-  ]);
-  const resource = requireExactRecord(r.resource, 'Wait resource', [
-    'providerId',
-    'resourceType',
-    'resourceId',
-  ]);
-  if (r.phase !== 'observing' && r.phase !== 'awaiting_admission')
-    throw invalidProtocolFrame('Invalid wait phase');
-  if (
-    r.outcome !== null &&
-    r.outcome !== 'satisfied' &&
-    r.outcome !== 'invalidated' &&
-    r.outcome !== 'source_unavailable' &&
-    r.outcome !== 'expired'
-  )
-    throw invalidProtocolFrame('Invalid wait outcome');
-  let observation: GoalEventWaitProjection['observation'] = null;
-  if (r.observation !== null) {
-    const o = requireExactRecord(r.observation, 'Wait observation', [
-      'state',
-      'lastObservedAt',
-      'reasonCode',
-    ]);
-    if (o.state !== 'checking' && o.state !== 'pending' && o.state !== 'unknown')
-      throw invalidProtocolFrame('Invalid observation state');
-    observation = {
-      state: o.state,
-      lastObservedAt: requireNullableCount(o.lastObservedAt, 'Observation time'),
-      reasonCode:
-        o.reasonCode === null
-          ? null
-          : requireUtf8String(
-              o.reasonCode,
-              'Observation reason',
-              GOAL_EVENT_WAIT_SUMMARY_LIMITS.reasonCodeBytes,
-            ),
-    };
-  }
-  if (
-    (r.phase === 'observing' && (observation === null || r.outcome !== null)) ||
-    (r.phase === 'awaiting_admission' && (observation !== null || r.outcome === null))
-  )
-    throw invalidProtocolFrame('Inconsistent wait phase');
-  const reason = requireNullableGoalReason(r.reason);
-  if (reason === null) throw invalidProtocolFrame('Invalid wait reason');
-  return {
-    waitId: requireEntityId(r.waitId, 'waitId'),
-    controlGeneration: requireCount(r.controlGeneration, 'Control generation'),
-    waitRevision: requireCount(r.waitRevision, 'Wait revision'),
-    resource: {
-      providerId: requireWaitTypeId(resource.providerId, 'Wait provider'),
-      resourceType: requireWaitTypeId(resource.resourceType, 'Wait resource type'),
-      resourceId: requireUtf8String(
-        resource.resourceId,
-        'Wait reference',
-        GOAL_EVENT_WAIT_SUMMARY_LIMITS.resourceIdBytes,
-      ),
-    },
-    reason,
-    deadlineAt: requireCount(r.deadlineAt, 'Wait deadline'),
-    phase: r.phase,
-    observation,
-    outcome: r.outcome,
-  };
-}
-function decodeGoalEventWaitCancelInput(value: unknown): GoalEventWaitCancelInput {
-  const r = requireExactRecord(value, 'Wait cancellation', [
-    'sessionId',
-    'goalId',
-    'controlGeneration',
-    'waitId',
-    'expectedGoalRevision',
-  ]);
-  return {
-    sessionId: requireEntityId(r.sessionId, 'sessionId'),
-    goalId: requireEntityId(r.goalId, 'goalId'),
-    waitId: requireEntityId(r.waitId, 'waitId'),
-    controlGeneration: requireCount(r.controlGeneration, 'Control generation'),
-    expectedGoalRevision: requireCount(r.expectedGoalRevision, 'Goal revision'),
-  };
-}
-function decodeGoalEventWaitCancelResult(value: unknown): GoalEventWaitCancelResult {
-  requireEncodedByteLimit(value, 'Wait cancellation result', GOAL_RESULT_MAX_BYTES);
-  const r = requireExactRecord(value, 'Wait cancellation result', ['sessionId', 'outcome', 'goal']);
-  if (
-    r.outcome !== 'cancelled' &&
-    r.outcome !== 'already_cancelled' &&
-    r.outcome !== 'already_admitted' &&
-    r.outcome !== 'conflict'
-  )
-    throw invalidProtocolFrame('Invalid cancellation outcome');
-  const sessionId = requireEntityId(r.sessionId, 'sessionId');
-  const goal = r.goal === null ? null : decodeGoalProjection(r.goal);
-  if (goal && goal.sessionId !== sessionId)
-    throw invalidProtocolFrame('Wait cancellation Goal belongs to another Session');
-  return { sessionId, outcome: r.outcome, goal };
-}
-
-function requireWaitTypeId(value: unknown, label: string): string {
-  const id = requireUtf8String(value, label, 128);
-  if (!/^[A-Za-z0-9_.-]{1,128}$/.test(id)) throw invalidProtocolFrame(`Invalid ${label}`);
-  return id;
 }

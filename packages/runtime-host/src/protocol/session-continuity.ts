@@ -49,6 +49,10 @@ import {
   type MessageContent,
   type TurnSnapshot,
 } from './turn.js';
+import {
+  decodeSessionEventWaitsProjection,
+  type SessionEventWaitsProjection,
+} from './event-wait.js';
 import { decodeGoalProjection, type GoalProjection } from './goal.js';
 import { decodeRuntimeResourceRef } from './runtime-resource.js';
 import {
@@ -100,6 +104,7 @@ export interface SessionContinuitySnapshot {
   projectionRevision: number;
   rootTurn: TurnSnapshot | null;
   goal: GoalProjection | null;
+  eventWaits?: SessionEventWaitsProjection;
   queue: SessionMessageQueueProjection;
   interactions: SessionInteractionProjection;
 }
@@ -253,7 +258,7 @@ export interface SessionTranscriptAdvancedFrame extends SubscriptionEnvelope {
   throughSequence: number;
 }
 
-export const SESSION_DOMAINS = ['todo', 'plan', 'usage', 'runtime_resource'] as const;
+export const SESSION_DOMAINS = ['todo', 'plan', 'usage', 'runtime_resource', 'event_wait'] as const;
 export type SessionDomain = (typeof SESSION_DOMAINS)[number];
 export const SESSION_RUNTIME_RESOURCE_CHANGES_MAX = 64;
 
@@ -613,6 +618,9 @@ export function decodeSessionContinuitySnapshot(value: unknown): SessionContinui
     'goal',
     'queue',
     'interactions',
+    ...(value && typeof value === 'object' && Object.hasOwn(value, 'eventWaits')
+      ? ['eventWaits']
+      : []),
   ]);
   if (record.schemaVersion !== SESSION_CONTINUITY_SCHEMA_VERSION) {
     throw invalidProtocolFrame('Unsupported Session continuity snapshot schema');
@@ -627,12 +635,19 @@ export function decodeSessionContinuitySnapshot(value: unknown): SessionContinui
   if (goal !== null && goal.sessionId !== session.sessionId) {
     throw invalidProtocolFrame('Session continuity Goal belongs to a different Session');
   }
+  const eventWaits =
+    record.eventWaits === undefined
+      ? undefined
+      : decodeSessionEventWaitsProjection(record.eventWaits);
+  if (eventWaits?.items.some((wait) => wait.sessionId !== session.sessionId))
+    throw invalidProtocolFrame('Session event wait belongs to a different Session');
   return {
     schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
     session,
     projectionRevision: requirePositiveCount(record.projectionRevision, 'projectionRevision'),
     rootTurn,
     goal,
+    ...(eventWaits === undefined ? {} : { eventWaits }),
     queue: decodeSessionMessageQueueProjection(record.queue),
     interactions,
   };

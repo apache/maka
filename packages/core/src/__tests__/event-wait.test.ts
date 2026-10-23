@@ -19,10 +19,6 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { decodeEventWaitProvenance } from '../event-wait-delivery.js';
-import { markPersisted } from '../persisted-value.js';
-import { decodeCanonicalMessage, decodeStoredMessage, type StoredMessage } from '../session.js';
-import { decodeTurnOrigin } from '../turn-origin.js';
 import {
   assertEventWaitTransition,
   decodeEventWaitRecord,
@@ -31,60 +27,12 @@ import {
   type EventWaitRecord,
 } from '../event-wait.js';
 
-for (const withoutNodeGlobals of [false, true])
-  test(`event-wait provenance and messages retain UTF-8 bounds without Node globals=${withoutNodeGlobals}`, () => {
-    const savedBuffer = Object.getOwnPropertyDescriptor(globalThis, 'Buffer');
-    if (withoutNodeGlobals) Reflect.deleteProperty(globalThis, 'Buffer');
-    try {
-      const provenance = {
-        waitId: 'wait_1',
-        deliveryKey: 'event-wait/wait_1',
-        sourceTurnId: 'source_1',
-        sourceToolCallId: 'call_1',
-        generation: 0,
-        outcome: 'satisfied',
-        resultDigest: `sha256:${'a'.repeat(64)}`,
-      } as const;
-      for (const sourceToolCallId of ['a'.repeat(512), 'é'.repeat(256), '🚀'.repeat(128)]) {
-        const bounded = { ...provenance, sourceToolCallId };
-        assert.deepEqual(decodeEventWaitProvenance(bounded), bounded);
-        assert.throws(
-          () => decodeEventWaitProvenance({ ...bounded, sourceToolCallId: sourceToolCallId + 'a' }),
-          TypeError,
-        );
-      }
-      for (const outcome of [
-        'satisfied',
-        'invalidated',
-        'source_unavailable',
-        'expired',
-      ] as const) {
-        const eventWait = { ...provenance, outcome };
-        const origin = { kind: 'goal', goalId: 'goal_1', eventWait } as const;
-        const message: StoredMessage = {
-          type: 'user',
-          id: 'message_1',
-          turnId: 'next_1',
-          ts: 1,
-          text: 'Continue the existing Goal',
-          origin,
-        };
-        assert.deepEqual(decodeTurnOrigin(origin), origin);
-        assert.deepEqual(decodeCanonicalMessage(message), message);
-        assert.deepEqual(decodeStoredMessage(markPersisted(message)), message);
-      }
-    } finally {
-      if (withoutNodeGlobals && savedBuffer)
-        Object.defineProperty(globalThis, 'Buffer', savedBuffer);
-    }
-  });
-
 function waiting(): Extract<EventWaitRecord, { status: 'waiting' }> {
   return {
     schemaVersion: 1,
     waitId: 'wait_1',
     sessionId: 'session_1',
-    goalControlLease: { goalId: 'goal_1', generation: 0 },
+
     sourceTurnId: 'turn_1',
     sourceToolCallId: 'call:1',
     resource: {
@@ -189,7 +137,7 @@ test('ASCII identifiers use their full strings and exported bounds', () => {
     ...waiting(),
     waitId: validId,
     sessionId: validId,
-    goalControlLease: { goalId: validId, generation: Number.MAX_SAFE_INTEGER },
+
     sourceTurnId: validId,
     deliveryKey: eventWaitDeliveryKey(validId),
     resource: {
@@ -223,7 +171,7 @@ test('fixed shapes require every field and reject extensions at every level', ()
     delete missing[key];
     assert.throws(() => decodeEventWaitRecord(missing), TypeError);
   }
-  for (const field of ['goalControlLease', 'resource', 'condition'] as const) {
+  for (const field of ['resource', 'condition'] as const) {
     for (const key of Object.keys(record[field])) {
       const missing: Record<string, unknown> = { ...record[field] };
       delete missing[key];
@@ -628,7 +576,7 @@ test('maximum legal field combinations retain room for every terminal transition
     schemaVersion: 1,
     waitId: identifier,
     sessionId: identifier,
-    goalControlLease: { goalId: identifier, generation: maximum },
+
     sourceTurnId: identifier,
     sourceToolCallId: quoted(limit.toolCallIdBytes),
     resource: {
@@ -698,32 +646,6 @@ test('maximum legal field combinations retain room for every terminal transition
     assert.ok(Buffer.byteLength(JSON.stringify(cancelled)) <= limit.recordBytes);
     assert.deepEqual(decodeEventWaitRecord(cancelled), cancelled);
     assertEventWaitTransition(completed, cancelled);
-    const suppressed = {
-      ...cancelled,
-      delivery: { kind: 'suppressed' as const, at: maximum, reason },
-    };
-    assertEventWaitTransition(completed, suppressed);
-    assert.ok(Buffer.byteLength(JSON.stringify(suppressed)) <= limit.recordBytes);
-    const admitted = {
-      ...completed,
-      updatedAt: maximum,
-      delivery: {
-        kind: 'admitted' as const,
-        turnId: identifier,
-        runId: identifier,
-        userMessageId: identifier,
-        at: maximum,
-      },
-    };
-    assertEventWaitTransition(completed, admitted);
-    assert.throws(
-      () =>
-        assertEventWaitTransition(admitted, {
-          ...admitted,
-          delivery: { ...admitted.delivery, runId: 'changed' },
-        }),
-      /immutable delivery/,
-    );
     assert.throws(() => decodeEventWaitRecord({ ...cancelled, reason: `${reason}x` }), /reason/);
   }
 });

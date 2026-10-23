@@ -107,3 +107,26 @@ test('a waiting goal reads as waiting without looking active or paused', () => {
   assert.ok(!markup.includes('Resume autonomous goal'));
   assert.ok(markup.includes('12K / 100K'));
 });
+
+test('parallel waits stay visible after the Goal is cleared, without a synthetic Goal', () => {
+  const markup = renderToStaticMarkup(<LocaleProvider locale="en"><SessionContextLayer eventWaits={[
+    { id: 'one', label: 'Waiting for external event', detail: 'job-one', cancelLabel: 'Cancel wait', cancelDescription: 'Cancel this wait', onCancel() {} },
+    { id: 'two', label: 'Result available', detail: 'job-two', cancelLabel: 'Cancel wait', cancelDescription: 'Cancel this wait', onCancel() {} },
+  ]} /></LocaleProvider>);
+  assert.match(markup, /job-one/);
+  assert.match(markup, /job-two/);
+  assert.equal((markup.match(/class="maka-session-context__inner maka-session-context__wait"/g) ?? []).length, 2);
+  assert.equal((markup.match(/>Cancel wait</g) ?? []).length, 2);
+  assert.ok(!markup.includes('data-has-goal="true"'));
+  assert.ok(!markup.includes('Pause autonomous goal'));
+});
+
+test('same-target waits expose their stable identity and distinct cancel names', () => {
+  const markup = renderToStaticMarkup(<LocaleProvider locale="en"><SessionContextLayer eventWaits={[
+    'wait_A', 'wait_B',
+  ].map((id) => ({ id, label: 'Waiting for external event', detail: 'shared-shell-run', cancelLabel: 'Cancel wait', cancelDescription: 'Cancel this wait', onCancel() {} }))} /></LocaleProvider>);
+  for (const id of ['wait_A', 'wait_B']) {
+    assert.ok(markup.includes(`>${id}</span>`), 'the stable target is visible');
+    assert.ok(markup.includes(`aria-label="Cancel wait ${id}"`), 'the action names its captured target');
+  }
+});

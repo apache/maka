@@ -844,3 +844,57 @@ function largestFittingFollowupQueue(
   }
   return queue(lower);
 }
+
+test('optional wait previews yield capacity to canonical facts and return when they fit', async () => {
+  await withStores(async (root, stores) => {
+    const session = await stores.sessionStore.create(sessionInput(root));
+    const waits: import('../protocol/index.js').SessionEventWaitsProjection = {
+      items: Array.from({ length: 64 }, (_, index) => ({
+        sessionId: session.id,
+        waitId: `wait-${index}`,
+        sourceTurnId: 'turn',
+        consumer: {
+          kind: 'tool_invocation',
+          runId: 'run',
+          invocationId: 'invocation',
+          operationId: `operation-${index}`,
+        },
+        resource: { providerId: 'test', resourceType: 'job', resourceId: 'job'.repeat(80) },
+        deadlineAt: null,
+        phase: 'observing',
+        observation: 'pending',
+        reasonCode: null,
+      })),
+      nextCursor: null,
+    };
+    const messages = createMessages(session.id, stores);
+    const reader = new CanonicalSessionProjectionReader({
+      stores,
+      rootAdmissions: new RootAdmissionOwner(stores.agentRunStore),
+      messages,
+      readEventWaits: async () => waits,
+    });
+    const canonical = await reader.read(session.id);
+    assert.ok(canonical);
+    assert.deepEqual(createSessionContinuitySnapshot(canonical, 1).eventWaits, waits);
+    const queue: SessionMessageQueueProjection = {
+      ...canonical.queue,
+      queueRevision: 1,
+      followup: [
+        {
+          entryId: 'entry',
+          messageId: 'message',
+          placement: 'next_turn',
+          state: 'queued',
+          content: { text: '界'.repeat(11_000) },
+        },
+      ],
+    };
+    assert.equal(await reader.fitsCandidate(session.id, { queue }), true);
+    const bounded = createSessionContinuitySnapshot({ ...canonical, queue }, 2);
+    assert.equal(bounded.eventWaits, undefined);
+    assert.deepEqual(bounded.queue, queue);
+    assert.equal(waits.items.length, 64, 'preview omission does not change the source collection');
+    assert.deepEqual(createSessionContinuitySnapshot(canonical, 3).eventWaits, waits);
+  });
+});

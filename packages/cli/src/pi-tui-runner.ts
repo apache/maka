@@ -4499,7 +4499,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   type TuiSlashCommandId = SlashCommandIdForSurface<'tui'>;
   type TuiSlashCommandHandler = Omit<MakaSlashCommand, 'name' | 'aliases'>;
 
-  const showGoalSummary = () => {
+  const showGoalSummary = async () => {
     // Read the live projection at request time: /goal is the one place the
     // user asks for the state *right now*.
     if (!input.driver.getGoal) {
@@ -4511,11 +4511,33 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       requestRender();
       return;
     }
+    const sessionId = input.driver.getSessionId();
+    const waits = input.driver.queryEventWaits
+      ? await input.driver.queryEventWaits()
+      : (input.driver.getEventWaits?.() ?? []);
+    if (input.driver.getSessionId() !== sessionId) return;
     const goal = input.driver.getGoal();
     state.entries.push({
       kind: 'notice',
       level: 'info',
-      text: goal ? goalSummaryLines(goal, Date.now()).join('\n') : 'No goal set.',
+      text: [
+        goal ? goalSummaryLines(goal, Date.now()).join('\n') : 'No goal set.',
+        ...waits.map((wait) => {
+          const copy = TUI_COPY_RESOURCES.goal[locale];
+          const observations = {
+            checking: copy.waitChecking,
+            pending: copy.waitPending,
+            unknown: copy.waitUnknown,
+          };
+          const label =
+            wait.phase === 'result_ready'
+              ? copy.waitResultReady
+              : wait.observation === null
+                ? copy.waitObserving
+                : observations[wait.observation];
+          return `${wait.waitId}: ${label} · ${wait.resource.resourceId}${wait.deadlineAt === null ? '' : ` · ${Math.abs(wait.deadlineAt) <= 8.64e15 ? new Date(wait.deadlineAt).toISOString() : String(wait.deadlineAt)}`}`;
+        }),
+      ].join('\n'),
     });
     requestRender();
   };
@@ -4785,50 +4807,54 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           // Read-only, so no runControl busy gate: an autonomous loop keeps
           // the session busy almost by definition, and that is exactly when
           // the user wants to inspect it.
-          showGoalSummary();
+          void showGoalSummary().catch((error) => {
+            state.entries.push({ kind: 'notice', level: 'error', text: String(error) });
+            requestRender();
+          });
           return;
         }
         const action = parts[1];
-        if (parts.length === 2 && action === 'cancel-wait') {
-          if (busy) {
-            state.entries.push({
-              kind: 'notice',
-              level: 'info',
-              text: TUI_COPY_RESOURCES.goal[locale].cancelWaitBusy,
-            });
+        if (
+          (parts.length === 2 || parts.length === 3) &&
+          action === 'cancel-wait' &&
+          input.driver.cancelSessionEventWait
+        ) {
+          void (async () => {
+            const waits = input.driver.queryEventWaits
+              ? await input.driver.queryEventWaits()
+              : (input.driver.getEventWaits?.() ?? []);
+            const wait = parts[2]
+              ? waits.find((candidate) => candidate.waitId === parts[2])
+              : waits.length === 1
+                ? waits[0]
+                : undefined;
+            if (!wait) {
+              state.entries.push({
+                kind: 'notice',
+                level: 'info',
+                text:
+                  waits.length > 1
+                    ? `${TUI_COPY_RESOURCES.goal[locale].chooseWait}\n${waits.map((candidate) => `${candidate.waitId} · ${candidate.resource.resourceId}`).join('\n')}`
+                    : TUI_COPY_RESOURCES.goal[locale].noCancellableWait,
+              });
+            } else {
+              const result = await input.driver.cancelSessionEventWait!({
+                sessionId: wait.sessionId,
+                waitId: wait.waitId,
+                consumer: wait.consumer,
+              });
+              state.entries.push({
+                kind: 'notice',
+                level: 'info',
+                text:
+                  result.outcome === 'cancelled'
+                    ? TUI_COPY_RESOURCES.goal[locale].sessionWaitCancelled
+                    : TUI_COPY_RESOURCES.goal[locale].waitChanged,
+              });
+            }
             requestRender();
-            return;
-          }
-          const goal = input.driver.getGoal?.();
-          const wait = goal?.eventWait;
-          if (!goal || !wait || !input.driver.cancelGoalEventWait) {
-            state.entries.push({
-              kind: 'notice',
-              level: 'info',
-              text: TUI_COPY_RESOURCES.goal[locale].noCancellableWait,
-            });
-            requestRender();
-            return;
-          }
-          // Capture the displayed identity before any await; never retarget retries.
-          const target = {
-            sessionId: goal.sessionId,
-            goalId: goal.goalId,
-            controlGeneration: wait.controlGeneration,
-            waitId: wait.waitId,
-            expectedGoalRevision: goal.revision,
-          };
-          void runControl(async () => {
-            const result = await input.driver.cancelGoalEventWait!(target);
-            currentGoal = result.goal;
-            state.entries.push({
-              kind: 'notice',
-              level: 'info',
-              text:
-                result.outcome === 'cancelled' || result.outcome === 'already_cancelled'
-                  ? TUI_COPY_RESOURCES.goal[locale].waitCancelled
-                  : TUI_COPY_RESOURCES.goal[locale].waitChanged,
-            });
+          })().catch((error) => {
+            state.entries.push({ kind: 'notice', level: 'error', text: String(error) });
             requestRender();
           });
           return;

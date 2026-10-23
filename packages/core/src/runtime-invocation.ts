@@ -26,7 +26,7 @@
  * writer could set independently of the events.
  */
 
-import { sameEventWaitProvenance, type EventWaitProvenance } from './event-wait-delivery.js';
+import { sameGoalWaitingProvenance, type GoalWaitingProvenance } from './event-wait-delivery.js';
 import type { TurnOrigin, WorkHubResultOrigin } from './turn-origin.js';
 import type { AgentGraphIntentClaim } from './agent-graph-control.js';
 import type {
@@ -273,7 +273,11 @@ export type RootExecutionDescriptor =
       executionFingerprint?: `sha256:${string}`;
     }
   | { kind: 'legacy_automation'; automationId: string }
-  | { kind: 'goal'; goalId: string; eventWait?: EventWaitProvenance }
+  | {
+      kind: 'goal';
+      goalId: string;
+      goalWaiting?: GoalWaitingProvenance;
+    }
   | {
       kind: 'agent_graph_supervisor_wake';
       graphId: string;
@@ -393,7 +397,7 @@ export function invocationMatchesHostedRootExecution(
       return (
         root.kind === 'goal' &&
         root.goalId === execution.goalId &&
-        sameEventWaitProvenance(root.eventWait, execution.eventWait) &&
+        sameGoalWaitingProvenance(root.goalWaiting, execution.goalWaiting) &&
         source.kind === 'fresh' &&
         lineageIsExactly(lineage, {})
       );

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { decodeEventWaitProvenance, type EventWaitProvenance } from './event-wait-delivery.js';
+import { decodeGoalWaitingProvenance, type GoalWaitingProvenance } from './event-wait-delivery.js';
 import { defineObjectShape, hasExactShape, isRecord } from './record-schema.js';
 
 /** Non-user trigger source for a turn. */
@@ -42,7 +42,11 @@ export type TurnOrigin =
   | CloudActivationOrigin
   | { kind: 'scheduled_task'; scheduledTaskId: string }
   | { kind: 'legacy_automation'; automationId: string }
-  | { kind: 'goal'; goalId: string; eventWait?: EventWaitProvenance }
+  | {
+      kind: 'goal';
+      goalId: string;
+      goalWaiting?: GoalWaitingProvenance;
+    }
   | {
       kind: 'agent_graph';
       graphId: string;
@@ -74,7 +78,7 @@ const LEGACY_AUTOMATION_ORIGIN_SHAPE = defineObjectShape<LegacyAutomationOrigin>
   ['kind', 'automationId'],
   [],
 );
-const GOAL_ORIGIN_SHAPE = defineObjectShape<GoalOrigin>()(['kind', 'goalId'], ['eventWait']);
+const GOAL_ORIGIN_SHAPE = defineObjectShape<GoalOrigin>()(['kind', 'goalId'], ['goalWaiting']);
 const AGENT_GRAPH_ORIGIN_SHAPE = defineObjectShape<AgentGraphOrigin>()(
   ['kind', 'graphId', 'wakeId', 'attemptId'],
   [],
@@ -147,9 +151,9 @@ export function decodeTurnOrigin(value: unknown): TurnOrigin | undefined {
       return {
         kind: 'goal',
         goalId: value.goalId,
-        ...(value.eventWait === undefined
+        ...(value.goalWaiting === undefined
           ? {}
-          : { eventWait: decodeEventWaitProvenance(value.eventWait) }),
+          : { goalWaiting: decodeGoalWaitingProvenance(value.goalWaiting) }),
       };
     } catch {
       return undefined;

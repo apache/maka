@@ -47,6 +47,7 @@ export interface GoalControllerCommands {
 export interface GoalControllerSelectors {
   active: boolean;
   indicator?: GoalIndicator;
+  eventWaitIndicators?: ComponentProps<typeof ChatView>['eventWaitIndicators'];
 }
 
 export interface UseGoalControllerInput {
@@ -67,6 +68,7 @@ export function useGoalController(
   const locale = useUiLocale();
   const copy = getShellCopy(locale).app;
   const { goal: service } = useGoalServices();
+  const [eventWaits, setEventWaits] = useState<import('@maka/runtime-host/protocol').SessionEventWaitProjection[]>([]);
   const [activeGoal, setActiveGoal] = useState<LiveGoalState | null>(null);
   const [dialogSessionId, setDialogSessionId] = useState<string>();
   const refreshRef = useRef<{ sessionId: string; refresh(): void } | undefined>(undefined);
@@ -76,19 +78,21 @@ export function useGoalController(
     const sessionId = input.activeSessionId;
     if (!sessionId) {
       setActiveGoal(null);
+      setEventWaits([]);
       return;
     }
 
     setActiveGoal(null);
+    setEventWaits([]);
     let disposed = false;
     let refreshSequence = 0;
     const refresh = (): void => {
       const sequence = ++refreshSequence;
-      void service
-        .get(sessionId)
-        .then((goal) => {
+      void Promise.all([service.get(sessionId), service.getEventWaits?.(sessionId) ?? Promise.resolve([])])
+        .then(([goal, waits]) => {
           if (disposed || sequence !== refreshSequence) return;
           setActiveGoal(goal && isLiveGoal(goal) ? goal : null);
+          setEventWaits(waits);
         })
         .catch(() => {
           if (!disposed && sequence === refreshSequence) setActiveGoal(null);
@@ -141,37 +145,24 @@ export function useGoalController(
     [],
   );
 
+  const eventWaitIndicators = useMemo<ComponentProps<typeof ChatView>['eventWaitIndicators']>(() => eventWaits.map((wait) => ({
+    id: wait.waitId,
+    label: wait.phase === 'result_ready' ? copy.goalEventWaitReady : wait.observation === 'unknown' ? copy.goalEventWaitUnknown : copy.goalEventWaitPending,
+    detail: [wait.resource.resourceId, wait.reasonCode, wait.deadlineAt === null ? null : Math.abs(wait.deadlineAt) <= 8.64e15 ? new Date(wait.deadlineAt).toLocaleString(locale) : String(wait.deadlineAt)].filter(Boolean).join(' · '),
+    cancelLabel: copy.sessionEventWaitCancel,
+    cancelDescription: copy.sessionEventWaitCancelDescription,
+    onCancel: () => runExclusiveControl(`${wait.sessionId}/${wait.waitId}`, async () => {
+      const result = await service.cancelSessionEventWait?.({ sessionId: wait.sessionId, waitId: wait.waitId, consumer: wait.consumer });
+      if (refreshRef.current?.sessionId === wait.sessionId) refreshRef.current.refresh();
+      if (result?.outcome === 'conflict') throw new Error(copy.goalEventWaitConflict);
+    }, (error) => reportControlFailure(wait.sessionId, error, copy.goalPauseFailedTitle, copy.goalPauseFailedFallback)),
+  })), [eventWaits, copy, locale, service, runExclusiveControl, reportControlFailure]);
+
   const indicator = useMemo<GoalIndicator | undefined>(() => {
     if (!activeGoal) return undefined;
     const common = {
       condition: activeGoal.condition,
       ...(activeGoal.status === 'paused' && activeGoal.lastReason ? { pauseReason: activeGoal.lastReason } : {}),
-      ...(activeGoal.eventWait ? { eventWait: {
-        label: activeGoal.eventWait.phase === 'awaiting_admission'
-          ? copy.goalEventWaitReady
-          : activeGoal.eventWait.observation?.state === 'unknown'
-            ? copy.goalEventWaitUnknown
-            : copy.goalEventWaitPending,
-        detail: [
-          activeGoal.eventWait.reason,
-          activeGoal.eventWait.resource.resourceId,
-          ...(activeGoal.eventWait.observation?.state === 'unknown' && activeGoal.eventWait.observation.reasonCode
-            ? [activeGoal.eventWait.observation.reasonCode] : []),
-          new Date(activeGoal.eventWait.deadlineAt).toLocaleString(locale),
-        ].join(' · '),
-        cancelLabel: copy.goalEventWaitCancel,
-        cancelDescription: copy.goalEventWaitCancelDescription,
-        onCancel: () => {
-          const wait = activeGoal.eventWait!;
-          runExclusiveControl(activeGoal.sessionId, async () => {
-            const result = await service.cancelEventWait({ sessionId: activeGoal.sessionId, goalId: activeGoal.id,
-              controlGeneration: wait.controlGeneration, waitId: wait.waitId, expectedGoalRevision: activeGoal.revision });
-            if (refreshRef.current?.sessionId === activeGoal.sessionId) refreshRef.current.refresh();
-            if (result.outcome === 'conflict' || result.outcome === 'already_admitted')
-              throw new Error(copy.goalEventWaitConflict);
-          }, (error) => reportControlFailure(activeGoal.sessionId, error, copy.goalPauseFailedTitle, copy.goalPauseFailedFallback));
-        },
-      } } : {}),
       iterations: activeGoal.iterations,
       maxIterations: activeGoal.maxIterations,
       setAt: activeGoal.setAt,
@@ -260,9 +251,10 @@ export function useGoalController(
       commands: { openDialog },
       selectors: {
         active: activeGoal !== null,
+        eventWaitIndicators,
         ...(indicator ? { indicator } : {}),
       },
     }),
-    [activeGoal, arm, closeDialog, dialogSessionId, indicator, openDialog],
+    [activeGoal, arm, closeDialog, dialogSessionId, indicator, eventWaitIndicators, openDialog],
   );
 }

@@ -68,7 +68,7 @@ import {
   isTurnOrchestrationSource,
   type TurnOrchestration,
 } from '@maka/core/orchestration';
-import { decodeEventWaitProvenance } from '@maka/core/event-wait-delivery';
+import { decodeGoalWaitingProvenance } from '@maka/core/event-wait-delivery';
 import { validateGenericToolLedgerAppend } from '@maka/core/tool-ledger-scanner';
 
 export const SAFE_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
@@ -1254,7 +1254,7 @@ export function normalizeRootExecutionDescriptor(value: unknown): RootExecutionD
       !hasExactKeys(value, [
         'kind',
         'goalId',
-        ...(value.eventWait === undefined ? [] : ['eventWait']),
+        ...(value.goalWaiting === undefined ? [] : ['goalWaiting']),
       ]) ||
       typeof value.goalId !== 'string' ||
       !isSafeId(value.goalId)
@@ -1264,9 +1264,9 @@ export function normalizeRootExecutionDescriptor(value: unknown): RootExecutionD
     return Object.freeze({
       kind: 'goal',
       goalId: value.goalId,
-      ...(value.eventWait === undefined
+      ...(value.goalWaiting === undefined
         ? {}
-        : { eventWait: decodeEventWaitProvenance(value.eventWait) }),
+        : { goalWaiting: decodeGoalWaitingProvenance(value.goalWaiting) }),
     });
   }
   if (value.kind === 'agent_graph_supervisor_wake') {

@@ -1489,9 +1489,6 @@ export class DesktopRuntimeHostClient {
     return this.request("usage.query", input);
   }
 
-  cancelGoalEventWait(input: OperationInput<"goal.event-wait.cancel">): Promise<OperationOutput<"goal.event-wait.cancel">> {
-    return this.request("goal.event-wait.cancel", input);
-  }
 
   queryGoal(sessionId: string): Promise<OperationOutput<"goal.query">> {
     return this.request("goal.query", { sessionId });

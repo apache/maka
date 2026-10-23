@@ -37,7 +37,6 @@ import {
 } from './recall-candidates.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import { setTimeout as delay } from 'node:timers/promises';
 import type {
   ActiveInteractionRequestEvent,
   SessionEvent,
@@ -3193,11 +3192,13 @@ export class SessionManager {
       }
       await this.assertClaimedAgentGraphPrompt(child.id, claim.targetTurnId, input.prompt);
       await notifyReady();
-      while (
+      if (
         !run.terminalEvent &&
         this.runtimeKernel.hasActiveRun?.(child.id, run.runId, run.turnId)
       ) {
-        await delay(25, undefined, input.abortSignal ? { signal: input.abortSignal } : undefined);
+        if (!this.runtimeKernel.waitForRunExit)
+          throw new Error('Runtime Run observation is unavailable');
+        await this.runtimeKernel.waitForRunExit(child.id, run.runId, run.turnId, input.abortSignal);
         run = await this.readInvocation(child.id, claim.targetRunId);
       }
       if (!run.terminalEvent) {
@@ -3719,11 +3720,10 @@ export class SessionManager {
     if (!run) return undefined;
     await notifyReady();
 
-    while (
-      !run.terminalEvent &&
-      this.runtimeKernel.hasActiveRun?.(child.id, run.runId, run.turnId)
-    ) {
-      await delay(25, undefined, input.abortSignal ? { signal: input.abortSignal } : undefined);
+    if (!run.terminalEvent && this.runtimeKernel.hasActiveRun?.(child.id, run.runId, run.turnId)) {
+      if (!this.runtimeKernel.waitForRunExit)
+        throw new Error('Runtime Run observation is unavailable');
+      await this.runtimeKernel.waitForRunExit(child.id, run.runId, run.turnId, input.abortSignal);
       run = await this.readInvocation(child.id, spawn.initialRunId);
     }
     if (!run.terminalEvent) {
@@ -4197,7 +4197,7 @@ export class SessionManager {
       root = {
         kind: 'goal',
         goalId: input.execution.goalId,
-        ...(input.execution.eventWait ? { eventWait: input.execution.eventWait } : {}),
+        ...(input.execution.goalWaiting ? { goalWaiting: input.execution.goalWaiting } : {}),
       };
       recoveryReason = 'goal_internal_admission_without_run';
       diagnostic = {

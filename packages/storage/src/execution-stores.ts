@@ -476,9 +476,17 @@ async function createExecutionStoresForWrite(
     if (
       !persistence.eventWaitStore ||
       [
+        'readAny',
+        'listAny',
+        'listAnyForObservation',
+        'commitAny',
+        'registerInvocationWait',
+        'acknowledgeInvocationWaitResult',
+        'retireInvocationWait',
+        'registerGoalWaitingWait',
+        'acknowledgeGoalWaitingAdmission',
         'read',
         'listSession',
-        'listPending',
         'listByStatus',
         'listForObservation',
         'readSourceCooldown',
@@ -492,9 +500,24 @@ async function createExecutionStoresForWrite(
       throw new TypeError('Execution persistence requires an eventWaitStore');
     }
     eventWaitStore = await openInteractiveEventWaitAuthorityForWrite(lease, {
+      readAny: (input) => run(async () => persistence.eventWaitStore.readAny(input)),
+      listAny: (input) => run(async () => persistence.eventWaitStore.listAny(input)),
+      listAnyForObservation: (input) =>
+        run(async () => persistence.eventWaitStore.listAnyForObservation(input)),
+      commitAny: (input) => run(async () => persistence.eventWaitStore.commitAny(input)),
+      registerInvocationWait: (input) =>
+        run(async () => persistence.eventWaitStore.registerInvocationWait(input)),
+      acknowledgeInvocationWaitResult: (input) =>
+        run(async () => persistence.eventWaitStore.acknowledgeInvocationWaitResult(input)),
+      retireInvocationWait: (input) =>
+        run(async () => persistence.eventWaitStore.retireInvocationWait(input)),
+      registerGoalWaitingWait: (input) =>
+        run(async () => persistence.eventWaitStore.registerGoalWaitingWait(input)),
+      acknowledgeGoalWaitingAdmission: (input) =>
+        run(async () => persistence.eventWaitStore.acknowledgeGoalWaitingAdmission(input)),
+
       read: (input) => run(async () => persistence.eventWaitStore.read(input)),
       listSession: (input) => run(async () => persistence.eventWaitStore.listSession(input)),
-      listPending: (input) => run(async () => persistence.eventWaitStore.listPending(input)),
       listByStatus: (input) => run(async () => persistence.eventWaitStore.listByStatus(input)),
       listForObservation: (input) =>
         run(async () => persistence.eventWaitStore.listForObservation(input)),
@@ -506,10 +529,6 @@ async function createExecutionStoresForWrite(
         run(async () => persistence.eventWaitStore.reserveSourceDispatch(input)),
       completeSourceDispatch: (input) =>
         run(async () => persistence.eventWaitStore.completeSourceDispatch(input)),
-      registerGoalWait: (input) =>
-        run(async () => persistence.eventWaitStore.registerGoalWait(input)),
-      settleGoalWait: (input) => run(async () => persistence.eventWaitStore.settleGoalWait(input)),
-      queueGoalWait: (input) => run(async () => persistence.eventWaitStore.queueGoalWait(input)),
       commit: (input) => run(async () => persistence.eventWaitStore.commit(input)),
       close: () => {},
     });

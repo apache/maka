@@ -20,7 +20,7 @@
 import type { MakaBridge } from '../../../preload/bridge-contract.js';
 import type { GoalServices } from '../../features/goals';
 
-export type DesktopGoalBridge = Pick<MakaBridge, 'goal' | 'sessions'>;
+export type DesktopGoalBridge = Pick<MakaBridge, 'goal' | 'sessions'> & Partial<Pick<MakaBridge, 'runtimeHost'>>;
 
 /** The only Desktop-to-Goals adapter. */
 export function createDesktopGoalServices(
@@ -28,9 +28,21 @@ export function createDesktopGoalServices(
 ): GoalServices {
   return {
     goal: {
+      ...(bridge.runtimeHost ? {
+        getEventWaits: async (sessionId: string) => {
+          const items: import('@maka/runtime-host/protocol').SessionEventWaitProjection[] = [];
+          let cursor: string | undefined;
+          do {
+            const page = await bridge.runtimeHost!.query('session.event-waits.query', { sessionId, ...(cursor ? { afterWaitId: cursor } : {}) });
+            items.push(...page.items);
+            cursor = page.nextCursor ?? undefined;
+          } while (cursor);
+          return items;
+        },
+        cancelSessionEventWait: (input: import('@maka/runtime-host/protocol').SessionEventWaitCancelInput) => bridge.runtimeHost!.command('session.event-wait.cancel', input),
+      } : {}),
       get: (sessionId) => bridge.goal.get(sessionId),
       arm: (sessionId, request) => bridge.goal.arm(sessionId, request),
-      cancelEventWait: (input) => bridge.goal.cancelEventWait(input),
       clear: (sessionId) => bridge.goal.clear(sessionId),
       pause: (sessionId) => bridge.goal.pause(sessionId),
       resume: (sessionId) => bridge.goal.resume(sessionId),
