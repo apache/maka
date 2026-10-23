@@ -93,7 +93,6 @@ const LICENSE_SELECTIONS = new Map([
   ['(MPL-2.0 OR Apache-2.0)', 'Apache-2.0'],
 ]);
 const LICENSE_METADATA_OVERRIDES = new Map([
-  ['khroma@2.1.0', 'MIT'],
   // Declares the ambiguous legacy "BSD"; the shipped LICENSE is BSD-3-Clause.
   ['css-mediaquery@0.1.2', 'BSD-3-Clause'],
 ]);
@@ -183,24 +182,6 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.`;
 
-// These exact tarballs omit a LICENSE file but include the same complete MIT
-// block in README.md. Keep the upstream wording and version-specific notice;
-// neither the package author nor its contributor list is a license authority.
-const README_MIT_TEXT = (copyrightNotice) => `(The MIT License)
-
-${copyrightNotice}
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the 'Software'), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.`;
-
-const MIT_TEXT_OVERRIDES = new Map([
-  ['fastdom@1.0.12', README_MIT_TEXT('Copyright (c) 2016 Wilson Page <wilsonpage@me.com>')],
-  ['strictdom@1.0.1', README_MIT_TEXT('Copyright (c) 2013 Wilson Page <wilsonpage@me.com>')],
-]);
-
 function readJson(path) {
   return JSON.parse(readFileSync(path, 'utf8'));
 }
@@ -279,8 +260,6 @@ function overrideLicenseText(packageKey, selectedLicense) {
     }
     return normalizeText(apacheText);
   }
-  const exactMitText = MIT_TEXT_OVERRIDES.get(packageKey);
-  if (selectedLicense === 'MIT' && exactMitText) return exactMitText;
   const copyrightNotice = MIT_COPYRIGHT_OVERRIDES.get(packageKey);
   if (selectedLicense === 'MIT' && copyrightNotice) return MIT_TEXT(copyrightNotice);
   return undefined;
