@@ -23,391 +23,137 @@ import { act, Profiler } from 'react';
 import { createRoot } from 'react-dom/client';
 import { installDom, settleEffects } from './mermaid-test-dom.js';
 import { LocaleProvider } from '../locale-context.js';
-import {
-  MERMAID_RENDER_CACHE_LIMIT,
-  MermaidDiagram,
-} from '../mermaid-diagram.js';
+import { MERMAID_RENDER_CACHE_LIMIT, MermaidDiagram } from '../mermaid-diagram.js';
 
-function diagram(code: string) {
-  return (
-    <LocaleProvider locale="en">
-      <MermaidDiagram code={code} density="default" />
-    </LocaleProvider>
-  );
-}
-
-test('preserves custom Mermaid attribute selectors after SVG ids are namespaced', async () => {
+test('renders Pele templates with isolated references and retains them across theme changes and remounts', async () => {
   const dom = installDom();
-  const mermaid = (await import('mermaid')).default;
-  const originalRender = mermaid.render;
-  let renderCalls = 0;
-  mermaid.render = (...args) => {
-    renderCalls += 1;
-    return originalRender(...args);
-  };
-  const code = [
-    '%%{init: {"themeCSS": "[id=\\"actor1\\"] { opacity: 0.25; }"}}%%',
-    'sequenceDiagram',
-    'Alice->>Bob: Hello',
-  ].join('\n');
-  const actorId = () => {
-    const svg = dom.document.querySelector('.maka-mermaid-svg > svg');
-    assert.ok(svg, 'real Mermaid output should render');
-    const actor = svg.querySelector('line[data-et="life-line"][name="Bob"]');
-    assert.ok(actor?.id, 'the sequence actor should retain an id');
-    assert.notEqual(actor.id, 'actor1', 'the instance should namespace Mermaid ids');
-    assert.ok(
-      Array.from(svg.querySelectorAll('style')).some((style) =>
-        (style.textContent ?? '').includes(`[id="${actor.id}"]`)),
-      'custom themeCSS should follow the namespaced actor id',
-    );
-    return actor.id;
-  };
+  const code = 'flowchart LR\nsubgraph 服务\nA[开始<br/>第二行] --> B[完成]\nend';
+  const view = () => <LocaleProvider locale="en">
+    <MermaidDiagram code={code} density="default" />
+    <MermaidDiagram code={code} density="compact" />
+    <MermaidDiagram code={'sankey-beta\n开始,完成,3\n开始,其他,2'} density="default" />
+    <MermaidDiagram code={'sankey-beta\n开始,完成,3\n开始,其他,2'} density="compact" />
+  </LocaleProvider>;
+  const svgs = () => Array.from(dom.document.querySelectorAll('.maka-mermaid-svg > svg'));
+  const ids = () => Array.from(dom.document.querySelectorAll('.maka-mermaid-svg [id]'), node => node.id);
   let root = createRoot(dom.document.querySelector('#root')!);
-
-  try {
-    await act(async () => root.render(diagram(code)));
-    await settleEffects();
-    const firstActorId = actorId();
-
-    await act(async () => root.unmount());
-    const remount = dom.document.createElement('div');
-    dom.document.body.appendChild(remount);
-    root = createRoot(remount);
-    await act(async () => root.render(diagram(code)));
-    await settleEffects();
-    assert.notEqual(actorId(), firstActorId, 'a cached remount should instantiate fresh ids');
-    assert.equal(renderCalls, 1, 'the custom-theme template should come from the render cache');
-  } finally {
-    await act(async () => root.unmount());
-    mermaid.render = originalRender;
-    dom.restore();
-  }
-});
-
-test('renders repeated real Mermaid diagrams across remounts and themes', async () => {
-  const dom = installDom();
-  const mermaid = (await import('mermaid')).default;
-  const originalRender = mermaid.render;
-  let renderCalls = 0;
-  mermaid.render = (...args) => {
-    renderCalls += 1;
-    return originalRender(...args);
-  };
-  const suffix = Date.now();
-  const flowchartCode = `flowchart LR\nflow_${suffix}_a --> flow_${suffix}_b`;
-  const sequenceCode = `sequenceDiagram\nAlice->>Bob: Hello ${suffix}`;
-  const view = () => (
-    <LocaleProvider locale="en">
-      <MermaidDiagram code={flowchartCode} density="default" />
-      <MermaidDiagram code={flowchartCode} density="compact" />
-      <MermaidDiagram code={sequenceCode} density="default" />
-      <MermaidDiagram code={sequenceCode} density="compact" />
-    </LocaleProvider>
-  );
-  const renderedSvgs = () =>
-    Array.from(dom.document.querySelectorAll<SVGSVGElement>('.maka-mermaid-svg > svg'));
-  const styleText = (svg: SVGSVGElement) =>
-    Array.from(svg.querySelectorAll('style'), (style) => style.textContent ?? '').join('\n');
-  const flowchartFill = (svg: SVGSVGElement) => {
-    const fill = /\.node rect[^{}]*\{[^{}]*\bfill:([^;]+);/.exec(styleText(svg))?.[1];
-    assert.ok(fill, 'real Mermaid flowchart theme styles should render');
-    return fill;
-  };
-  const assertUniqueIds = (first: SVGSVGElement, second: SVGSVGElement) => {
-    const firstIds = new Set(Array.from(first.querySelectorAll('[id]'), (node) => node.id));
-    assert.equal(
-      Array.from(second.querySelectorAll('[id]')).some((node) => firstIds.has(node.id)),
-      false,
-      'repeated diagrams should not share DOM ids',
-    );
-  };
-  let root = createRoot(dom.document.querySelector('#root')!);
-
   try {
     await act(async () => root.render(view()));
     await settleEffects();
-    const lightSvgs = renderedSvgs();
-    assert.equal(lightSvgs.length, 4);
-    assert.equal(renderCalls, 2, 'identical mounts should coalesce real Mermaid renders');
-    assertUniqueIds(lightSvgs[0]!, lightSvgs[1]!);
-    assertUniqueIds(lightSvgs[2]!, lightSvgs[3]!);
-    const lightFill = flowchartFill(lightSvgs[0]!);
-
-    await act(async () => root.unmount());
-    const remount = dom.document.createElement('div');
-    dom.document.body.appendChild(remount);
-    root = createRoot(remount);
-    const committedStates: string[][] = [];
-    await act(async () => root.render(
-      <Profiler id="cached-diagrams" onRender={() => {
-        committedStates.push(Array.from(
-          remount.querySelectorAll('[data-maka-mermaid-state]'),
-          (node) => node.getAttribute('data-maka-mermaid-state')!,
-        ));
-      }}>
-        {view()}
-      </Profiler>,
-    ));
-    await settleEffects();
-    assert.ok(committedStates.length > 0);
-    for (const states of committedStates) {
-      assert.deepEqual(states, ['rendered', 'rendered', 'rendered', 'rendered'],
-        'every cached-remount commit must contain complete diagrams');
+    const first = svgs();
+    assert.equal(first.length, 4);
+    assert.ok(first.every(svg => svg.classList.contains('pele')), 'Mermaid fences must use Pele');
+    assert.equal(new Set(ids()).size, ids().length, 'repeated diagrams must not share ids');
+    assert.ok(ids().length > 0, 'sankey paint servers must have isolated ids');
+    for (const svg of first.slice(0, 2)) {
+      assert.match(svg.textContent!, /开始/);
+      assert.match(svg.textContent!, /第二行/);
+      assert.match(svg.textContent!, /服务/);
     }
-    assert.equal(renderCalls, 2, 'a real Mermaid remount should use both cached templates');
-
-    dom.document.documentElement.classList.add('dark');
-    await settleEffects();
-    const darkSvgs = renderedSvgs();
-    assert.equal(darkSvgs.length, 4);
-    assert.equal(renderCalls, 4, 'dark mode should render one new template per diagram type');
-    assert.notEqual(flowchartFill(darkSvgs[0]!), lightFill, 'dark should use Mermaid dark styles');
-    assertUniqueIds(darkSvgs[0]!, darkSvgs[1]!);
-    assertUniqueIds(darkSvgs[2]!, darkSvgs[3]!);
-  } finally {
-    await act(async () => root.unmount());
-    mermaid.render = originalRender;
-    dom.document.documentElement.classList.remove('dark');
-    dom.restore();
-  }
-});
-
-test('reuses a rendered Mermaid result across remounts and isolates themes', async () => {
-  const dom = installDom();
-  const mermaid = (await import('mermaid')).default;
-  const originalInitialize = mermaid.initialize;
-  const originalRender = mermaid.render;
-  let renderCalls = 0;
-  const themes: string[] = [];
-  mermaid.initialize = (config) => {
-    themes.push(String(config.theme));
-  };
-  mermaid.render = async (id, code) => {
-    renderCalls += 1;
-    return {
-      diagramType: 'flowchart-v2',
-      svg: `<svg id="${id}" data-theme="${themes.at(-1)}" viewBox="0 0 100 50"><text>${code}</text></svg>`,
-    };
-  };
-
-  const code = 'flowchart LR\ncache_a --> cache_b';
-  const cachedThemeCommits: boolean[] = [];
-  let trackCachedTheme = false;
-  const view = () => (
-    <Profiler id="cached-theme" onRender={() => {
-      if (trackCachedTheme) {
-        cachedThemeCommits.push(Boolean(dom.document.querySelector('.maka-mermaid-svg > svg')));
+    for (const svg of first.slice(2)) {
+      const ids = new Set(Array.from(svg.querySelectorAll('[id]'), node => node.id));
+      for (const node of svg.querySelectorAll('[fill]')) {
+        const id = /url\(#([^)]+)\)/.exec(node.getAttribute('fill')!)?.[1];
+        if (id) assert.ok(ids.has(id), 'paint servers must refer to this SVG instance');
       }
-    }}>
-      {diagram(code)}
-    </Profiler>
-  );
-  let root = createRoot(dom.document.querySelector('#root')!);
-
-  try {
-    await act(async () => root.render(view()));
-    await settleEffects();
-    assert.equal(renderCalls, 1);
-
-    await act(async () => root.unmount());
-    const remount = dom.document.createElement('div');
-    dom.document.body.appendChild(remount);
-    root = createRoot(remount);
-    await act(async () => root.render(view()));
-    await settleEffects();
-    assert.equal(renderCalls, 1, 'same source and theme should hit the render cache');
-
+    }
     dom.document.documentElement.classList.add('dark');
     await settleEffects();
-    assert.equal(renderCalls, 2, 'dark theme must use a distinct render result');
-    assert.equal(
-      dom.document.querySelector('.maka-mermaid-svg > svg')?.getAttribute('data-theme'),
-      'dark',
-      'the dark render should be mounted',
-    );
-
-    trackCachedTheme = true;
-    dom.document.documentElement.classList.remove('dark');
+    assert.deepEqual(svgs(), first, 'theme switches must preserve the mounted SVGs');
+    const oldIds = new Set(ids());
+    await act(async () => root.unmount());
+    const container = dom.document.createElement('div');
+    dom.document.body.append(container);
+    root = createRoot(container);
+    const commits: string[][] = [];
+    await act(async () => root.render(<Profiler id="cache" onRender={() => {
+      commits.push(Array.from(container.querySelectorAll('[data-maka-mermaid-state]'), node => node.getAttribute('data-maka-mermaid-state')!));
+    }}>{view()}</Profiler>));
     await settleEffects();
-    assert.equal(renderCalls, 2, 'switching back should reuse the cached default-theme result');
-    assert.ok(cachedThemeCommits.length > 0, 'the cached theme switch should commit');
-    assert.ok(cachedThemeCommits.every(Boolean), 'a cached theme switch must never commit loading');
-    assert.equal(
-      dom.document.querySelector('.maka-mermaid-svg > svg')?.getAttribute('data-theme'),
-      'default',
-      'a cached theme switch should restore the default-theme SVG',
-    );
-    assert.deepEqual(themes, ['default', 'dark']);
+    assert.ok(commits.length > 0);
+    assert.ok(commits.every(states => states.every(state => state === 'rendered')), 'cached remounts must not flash source/loading');
+    assert.ok(ids().every(id => !oldIds.has(id)), 'cached instances must receive fresh ids');
   } finally {
     await act(async () => root.unmount());
-    mermaid.initialize = originalInitialize;
-    mermaid.render = originalRender;
     dom.restore();
   }
 });
 
-test('coalesces concurrent Mermaid renders and gives cached instances unique SVG ids', async () => {
+test('keeps navigation, scripts, HTML, and images out of diagrams and rejects oversized graphs', async () => {
   const dom = installDom();
-  const mermaid = (await import('mermaid')).default;
-  const originalInitialize = mermaid.initialize;
-  const originalRender = mermaid.render;
-  let renderCalls = 0;
-  let releaseRender: (() => void) | undefined;
-  mermaid.initialize = () => {};
-  mermaid.render = (id) => {
-    renderCalls += 1;
-    return new Promise((resolve) => {
-      releaseRender = () => resolve({
-        diagramType: 'flowchart-v2',
-        svg: [
-          `<svg id="${id}" viewBox="0 0 100 50" aria-labelledby="actor1">`,
-          `<style>#${id}-node{fill:red}#root-1{filter:url(#drop-shadow)}</style>`,
-          '<title id="actor1">Title</title>',
-          `<defs><marker id="${id}-arrow"><path /></marker><filter id="drop-shadow" /></defs>`,
-          `<g id="root-1" filter="url(#drop-shadow)"><path id="${id}-node" marker-end="url(#${id}-arrow)" /></g>`,
-          '</svg>',
-        ].join(''),
-      });
-    });
-  };
-
-  const code = 'flowchart LR\nconcurrent_a --> concurrent_b';
   const root = createRoot(dom.document.querySelector('#root')!);
-
+  const edges = 'flowchart LR\n' + Array.from({ length: 501 }, (_, index) => `a --> n${index}`).join('\n');
   try {
-    await act(async () => root.render(
-      <LocaleProvider locale="en">
-        <MermaidDiagram code={code} density="default" />
-        <MermaidDiagram code={code} density="compact" />
-      </LocaleProvider>,
-    ));
+    await act(async () => root.render(<LocaleProvider locale="en">
+      <MermaidDiagram code={'flowchart LR\nA["<script>alert(1)</script>"] --> B[完成]\nclick A "https://example.com/navigation"'} density="default" />
+      <MermaidDiagram code={edges} density="default" />
+    </LocaleProvider>));
     await settleEffects();
-    assert.equal(renderCalls, 1, 'same-key mounts should share the in-flight render');
+    const svg = dom.document.querySelector('.maka-mermaid-svg > svg');
+    assert.ok(svg, 'the untrusted diagram must still render');
+    assert.equal(svg.querySelectorAll('a, script, foreignObject, image').length, 0);
+    assert.equal(dom.document.querySelectorAll('[data-maka-mermaid-state="error"]').length, 1, 'edge limit must reject the graph');
+  } finally {
+    await act(async () => root.unmount());
+    dom.restore();
+  }
+});
 
-    await act(async () => releaseRender?.());
+test('evicts old templates while retaining recently viewed diagrams', async () => {
+  const dom = installDom();
+  const root = createRoot(dom.document.querySelector('#root')!);
+  const commits: string[] = [];
+  const prefix = `lru${Date.now()}`;
+  let mount = 0;
+  const show = async (index: number) => {
+    commits.length = 0;
+    await act(async () => root.render(<Profiler id="lru" onRender={() => {
+      commits.push(dom.document.querySelector('[data-maka-mermaid-state]')!.getAttribute('data-maka-mermaid-state')!);
+    }}><LocaleProvider locale="en"><MermaidDiagram key={++mount} code={`flowchart LR\n${prefix}${index} --> done`} density="default" /></LocaleProvider></Profiler>));
     await settleEffects();
-    const diagrams = Array.from(dom.document.querySelectorAll('.maka-mermaid-svg > svg'));
-    assert.equal(diagrams.length, 2);
-    const firstIds = new Set(Array.from(diagrams[0]!.querySelectorAll('[id]'), (node) => node.id));
-    const secondIds = new Set(Array.from(diagrams[1]!.querySelectorAll('[id]'), (node) => node.id));
-    assert.equal([...firstIds].some((id) => secondIds.has(id)), false, 'instances must not share DOM ids');
-    for (const svg of diagrams) {
-      const marker = svg.querySelector('marker')!;
-      const filter = svg.querySelector('filter')!;
-      const group = svg.querySelector('g')!;
-      const path = svg.querySelector('path[id]')!;
-      const title = svg.querySelector('title')!;
-      assert.equal(path.getAttribute('marker-end'), `url(#${marker.id})`);
-      assert.equal(group.getAttribute('filter'), `url(#${filter.id})`);
-      assert.equal(svg.getAttribute('aria-labelledby'), title.id);
-      const style = svg.querySelector('style')!.textContent ?? '';
-      assert.match(style, new RegExp(`#${path.id}`));
-      assert.match(style, new RegExp(`#${group.id}`));
-      assert.match(style, new RegExp(`url\\(#${filter.id}\\)`));
+  };
+  try {
+    for (let index = 0; index < MERMAID_RENDER_CACHE_LIMIT; index++) await show(index);
+    await show(0);
+    assert.equal(commits[0], 'rendered', 'a cached mount must retain its diagram');
+    await show(MERMAID_RENDER_CACHE_LIMIT);
+    await show(0);
+    assert.equal(commits[0], 'rendered', 'viewing a cached diagram must refresh its recency');
+    await show(1);
+    assert.equal(commits[0], 'loading', 'the least recently viewed template must be evicted');
+    assert.equal(commits.at(-1), 'rendered');
+  } finally {
+    await act(async () => root.unmount());
+    dom.restore();
+  }
+});
+
+test('re-rendering one diagram at many widths keeps other cached diagrams', async () => {
+  const dom = installDom();
+  let width = 700;
+  Object.defineProperty(HTMLElement.prototype, 'clientWidth', { configurable: true, get: () => width });
+  const root = createRoot(dom.document.querySelector('#root')!);
+  const commits: string[] = [];
+  const prefix = `resize${Date.now()}`;
+  let mount = 0;
+  const show = async (name: string) => {
+    commits.length = 0;
+    await act(async () => root.render(<Profiler id="resize" onRender={() => {
+      commits.push(dom.document.querySelector('[data-maka-mermaid-state]')!.getAttribute('data-maka-mermaid-state')!);
+    }}><LocaleProvider locale="en"><MermaidDiagram key={++mount} code={`flowchart LR\n${prefix}${name} --> done`} density="default" /></LocaleProvider></Profiler>));
+    await settleEffects();
+  };
+  try {
+    await show('a');
+    for (let step = 0; step <= MERMAID_RENDER_CACHE_LIMIT; step++) {
+      width = 400 + step;
+      await show('b');
+      assert.equal(commits.at(-1), 'rendered');
     }
+    await show('a');
+    assert.equal(commits[0], 'rendered', 'layout widths of one diagram must not evict other diagrams');
   } finally {
     await act(async () => root.unmount());
-    mermaid.initialize = originalInitialize;
-    mermaid.render = originalRender;
-    dom.restore();
-  }
-});
-
-test('does not cancel a shared Mermaid render while another consumer remains mounted', async () => {
-  const dom = installDom();
-  const mermaid = (await import('mermaid')).default;
-  const originalInitialize = mermaid.initialize;
-  const originalRender = mermaid.render;
-  let renderCalls = 0;
-  let releaseRender: (() => void) | undefined;
-  mermaid.initialize = () => {};
-  mermaid.render = (id, code) => {
-    renderCalls += 1;
-    return new Promise((resolve) => {
-      releaseRender = () => resolve({
-        diagramType: 'flowchart-v2',
-        svg: `<svg id="${id}" viewBox="0 0 100 50"><text>${code}</text></svg>`,
-      });
-    });
-  };
-
-  const code = 'flowchart LR\nremaining_a --> remaining_b';
-  const root = createRoot(dom.document.querySelector('#root')!);
-  const view = (showFirst: boolean) => (
-    <LocaleProvider locale="en">
-      {showFirst ? <MermaidDiagram key="first" code={code} density="default" /> : null}
-      <MermaidDiagram key="second" code={code} density="compact" />
-    </LocaleProvider>
-  );
-
-  try {
-    await act(async () => root.render(view(true)));
-    await settleEffects();
-    assert.equal(renderCalls, 1);
-
-    await act(async () => root.render(view(false)));
-    await act(async () => releaseRender?.());
-    await settleEffects();
-    assert.equal(
-      dom.document.querySelectorAll('[data-maka-mermaid-state="rendered"]').length,
-      1,
-    );
-  } finally {
-    await act(async () => root.unmount());
-    mermaid.initialize = originalInitialize;
-    mermaid.render = originalRender;
-    dom.restore();
-  }
-});
-
-test('bounds the Mermaid cache and evicts its least recently used result', async () => {
-  const dom = installDom();
-  const mermaid = (await import('mermaid')).default;
-  const originalInitialize = mermaid.initialize;
-  const originalRender = mermaid.render;
-  let renderCalls = 0;
-  mermaid.initialize = () => {};
-  mermaid.render = async (id, code) => {
-    renderCalls += 1;
-    return {
-      diagramType: 'flowchart-v2',
-      svg: `<svg id="${id}" viewBox="0 0 100 50"><text>${code}</text></svg>`,
-    };
-  };
-
-  const root = createRoot(dom.document.querySelector('#root')!);
-  const prefix = `lru-${Date.now()}-`;
-  const renderCode = async (code: string) => {
-    await act(async () => root.render(diagram(code)));
-    await settleEffects();
-  };
-
-  try {
-    for (let index = 0; index < MERMAID_RENDER_CACHE_LIMIT; index += 1) {
-      await renderCode(`${prefix}${index}`);
-    }
-    assert.equal(renderCalls, MERMAID_RENDER_CACHE_LIMIT);
-
-    await renderCode(`${prefix}0`);
-    assert.equal(renderCalls, MERMAID_RENDER_CACHE_LIMIT, 'a cache hit should refresh recency');
-
-    await renderCode(`${prefix}${MERMAID_RENDER_CACHE_LIMIT}`);
-    assert.equal(renderCalls, MERMAID_RENDER_CACHE_LIMIT + 1);
-
-    await renderCode(`${prefix}0`);
-    assert.equal(renderCalls, MERMAID_RENDER_CACHE_LIMIT + 1, 'the refreshed entry should survive');
-
-    await renderCode(`${prefix}1`);
-    assert.equal(
-      renderCalls,
-      MERMAID_RENDER_CACHE_LIMIT + 2,
-      'the oldest entry should be rendered again after LRU eviction',
-    );
-  } finally {
-    await act(async () => root.unmount());
-    mermaid.initialize = originalInitialize;
-    mermaid.render = originalRender;
     dom.restore();
   }
 });

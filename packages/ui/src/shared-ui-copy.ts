@@ -60,7 +60,6 @@ export interface SharedUiCopy {
     mermaidResetView: string;
     mermaidExpandView: string;
     mermaidCollapseView: string;
-    mermaidZoomLevel: (percent: number) => string;
     mermaidCopyImage: string;
     mermaidCopyImageFailed: string;
   };
@@ -172,7 +171,6 @@ const sharedUiCopyZhCn: SharedUiCopy = {
       mermaidResetView: '适应视窗',
       mermaidExpandView: '全屏查看图表',
       mermaidCollapseView: '退出全屏图表',
-      mermaidZoomLevel: (percent) => `缩放比例 ${percent}%`,
       mermaidCopyImage: '复制图表',
       mermaidCopyImageFailed: '复制图表失败',
     },
@@ -271,7 +269,6 @@ const sharedUiCopyZhTw: SharedUiCopy = {
       mermaidResetView: '適應視窗',
       mermaidExpandView: '全屏檢視圖表',
       mermaidCollapseView: '退出全屏圖表',
-      mermaidZoomLevel: (percent) => `縮放比例 ${percent}%`,
       mermaidCopyImage: '複製圖表',
       mermaidCopyImageFailed: '複製圖表失敗',
     },
@@ -370,7 +367,6 @@ const sharedUiCopyEn: SharedUiCopy = {
       mermaidResetView: 'Fit diagram to viewport',
       mermaidExpandView: 'View diagram fullscreen',
       mermaidCollapseView: 'Exit diagram fullscreen',
-      mermaidZoomLevel: (percent) => `Zoom level ${percent}%`,
       mermaidCopyImage: 'Copy diagram',
       mermaidCopyImageFailed: 'Copy diagram failed',
     },

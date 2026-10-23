@@ -698,6 +698,26 @@
 [role="document"] > .maka-markdown-code:first-child { margin-block-start: 0; }
 [role="document"] > .maka-markdown-code:last-child { margin-block-end: 0; }
 .maka-mermaid-diagram {
+  --pele-bg: var(--background);
+  --pele-fg: var(--foreground);
+  --pele-muted: var(--muted-foreground);
+  --pele-line: var(--foreground);
+  --pele-surface: var(--foreground-3);
+  --pele-surface-alt: var(--foreground-5);
+  --pele-border: var(--border-strong);
+  --pele-accent: var(--accent);
+  --pele-critical: var(--color-error);
+  --pele-error: var(--color-error);
+  --pele-font: var(--font-family-body);
+  --pele-font-mono: var(--font-family-code);
+  --pele-series-1: var(--color-text-blue);
+  --pele-series-2: var(--color-text-orange);
+  --pele-series-3: var(--color-text-green);
+  --pele-series-4: var(--color-text-red);
+  --pele-series-5: var(--color-text-cyan);
+  --pele-series-6: var(--color-text-yellow);
+  --pele-series-7: var(--color-text-purple);
+  --pele-series-8: var(--color-text-pink);
   display: flex;
   max-width: 100%;
   min-height: 0;
@@ -716,57 +736,33 @@
 }
 .maka-mermaid-title { font: var(--maka-text-supporting); color: var(--muted-foreground); }
 .maka-mermaid-actions { display: flex; align-items: center; gap: 2px; }
-.maka-mermaid-zoom-actions { display: flex; align-items: center; gap: 2px; }
-.maka-mermaid-zoom-level {
-  font: var(--maka-text-code);
-  min-width: 4.5ch;
-  color: var(--muted-foreground);
-  text-align: center;
-  font-variant-numeric: tabular-nums;
-}
 .maka-mermaid-viewport {
   --maka-mermaid-fit-width: min(
     var(--maka-mermaid-natural-width),
-    max(1px, calc(100cqi - 2 * var(--space-3))),
+    max(1px, calc(100cqi - 2 * var(--space-3) - 40px)),
     calc((max(112px, min(480px, 55vh)) - 2 * var(--space-3)) * var(--maka-mermaid-ratio))
   );
   height: max(112px, calc(var(--maka-mermaid-fit-width) / var(--maka-mermaid-ratio) + 2 * var(--space-3)));
   position: relative;
-  display: grid;
+  display: flex;
   min-width: 0;
   align-items: center;
-  overflow: auto;
+  justify-content: center;
+  overflow: hidden;
   padding: var(--space-3);
+  padding-inline-end: calc(var(--space-3) + 40px);
   cursor: default;
   outline: none;
   overscroll-behavior: auto;
   touch-action: pan-y;
 }
-.maka-mermaid-viewport:focus-visible { box-shadow: inset 0 0 0 2px var(--focus-ring); }
-.maka-mermaid-viewport[data-maka-mermaid-pannable="horizontal"] { cursor: grab; overscroll-behavior-x: contain; }
-.maka-mermaid-viewport[data-maka-mermaid-pannable="vertical"],
-.maka-mermaid-viewport[data-maka-mermaid-pannable="both"] {
-  cursor: grab;
-  overscroll-behavior: contain;
-  touch-action: none;
-}
-.maka-mermaid-viewport[data-maka-mermaid-panning="true"] { cursor: grabbing; user-select: none; }
-.maka-mermaid-canvas {
-  min-width: 0;
-  margin-inline: auto;
-  width: calc(var(--maka-mermaid-fit-width) * var(--maka-mermaid-zoom));
-}
-.maka-mermaid-svg { display: flex; width: 100%; height: 100%; min-width: 0; justify-content: center; }
 .maka-mermaid-svg > svg {
   display: block;
-  width: 100%;
-  max-width: none !important;
-  height: 100%;
+  flex: 0 0 auto;
+  width: var(--maka-mermaid-fit-width);
+  height: auto;
   overflow: visible;
 }
-/* Legal square (DESIGN.md §6): the expanded diagram fills its viewport with
-   margin 0 on every side, so it is full-bleed rather than a card that lost its
-   corners. The collapsed state above keeps its radius. */
 .maka-mermaid-diagram-expanded {
   width: 100%;
   height: 100%;
@@ -786,8 +782,11 @@
   flex: 1 1 auto;
   container-type: size;
 }
-.maka-mermaid-diagram-expanded .maka-mermaid-canvas {
-  --maka-mermaid-fit-width: min(100cqw, calc(100cqh * var(--maka-mermaid-ratio)));
+.maka-mermaid-diagram-expanded .maka-mermaid-svg > svg {
+  --maka-mermaid-fit-width: min(
+    calc(100cqw - 2 * var(--space-3) - 40px),
+    calc((100cqh - 2 * var(--space-3)) * var(--maka-mermaid-ratio))
+  );
 }
 .maka-mermaid-dialog { -webkit-app-region: no-drag; }
 .maka-mermaid-source {
@@ -811,10 +810,6 @@
 
 @container (max-width: 520px) {
   .maka-mermaid-title { display: none; }
-}
-
-@container (max-width: 360px) {
-  .maka-mermaid-diagram:not(.maka-mermaid-diagram-expanded) .maka-mermaid-zoom-actions { display: none; }
 }
 
 .maka-tool-output-panel { display: grid; gap: 8px; margin-top: 4px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-surface); background: var(--foreground-3); }
