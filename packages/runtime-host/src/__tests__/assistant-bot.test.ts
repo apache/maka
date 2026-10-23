@@ -1410,6 +1410,8 @@ test('only explicitly linked replies to delivered discoveries reach the notebook
             assert.match(notebook, /我不喝茶了/);
             assert.match(notebook, /主题：tea/);
             feedbackId = /｜(feedback:[^｜\n]+)｜待理解/.exec(notebook)![1];
+            // Leave the second discovery in flight so the wait cannot rely on round alone.
+            await new Promise((resolve) => setTimeout(resolve, 50));
           }
         } else if (round === 1) {
           draft = {
@@ -1480,8 +1482,8 @@ test('only explicitly linked replies to delivered discoveries reach the notebook
   await f.service.call('assistant.control', { action: 'check' });
   await until(async () => {
     const status: any = await f.service.call('assistant.status', {});
-    if (status.lastError) throw Error(status.lastError);
-    return round === 2 && !status.active;
+    if (status.state.lastError) throw Error(status.state.lastError);
+    return round === 2 && !status.state.active;
   });
   const book = new DatabaseSync(join(f.directory, 'native', 'index-initiative', 'notebook.sqlite'));
   t.after(() => book.close());
