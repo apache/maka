@@ -23,6 +23,9 @@ guide is [Terminal](../../website/docs/tui.md), with a matching
   screen/modal state, animation bindings and decoded image references.
   It applies batches in order. Native state decisions happen before JS
   receives events, as on the other platforms.
+  Inline-link locators index the resident Text snapshots directly; text
+  replacement and physical node removal maintain the index, while parked
+  list cells retain their text and locators together.
 - `text.rs`: engine-thread text layout records terminal graphemes and
   positions in the type-erased `TextLayout`; the renderer uses those runs
   directly. Terminal widths come from `unicode-width`, graphemes from

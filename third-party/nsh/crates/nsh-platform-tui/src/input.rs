@@ -126,13 +126,10 @@ impl Surface {
         if self.node(id).is_some() {
             return None;
         }
-        self.nodes.iter().enumerate().find_map(|(owner, node)| {
-            let (text, ..) = node.as_ref()?.text.as_ref()?;
-            text.links
-                .iter()
-                .find(|link| link.node == id)
-                .map(|link| (owner as NodeId, link))
-        })
+        let &(owner, index) = self.text_links.get(&id)?;
+        let (text, ..) = self.node(owner)?.text.as_ref()?;
+        let link = text.links.get(index)?;
+        (link.node == id).then_some((owner, link))
     }
 
     pub(crate) fn focus_owner(&self, id: NodeId) -> Option<NodeId> {
@@ -7226,6 +7223,232 @@ mod tests {
         surface.handle_event(mouse(MouseEventKind::Up(MouseButton::Left), 2, 3));
         key(&mut surface, KeyCode::Enter, KeyModifiers::NONE);
         assert!(presses(&surface).is_empty());
+    }
+
+    #[test]
+    fn inline_link_owners_follow_text_replacement_and_native_lifetimes() {
+        use nsh_core::{
+            AccessibilityRole, AttributedText, Command, LayoutAnimation, LayoutCurve,
+            LayoutProperty, LayoutTransition, MountBatch, MountItem, ResolvedTextStyle, TextEngine,
+            TextLink, ViewProps,
+        };
+        use std::sync::Arc;
+
+        let mut surface = Surface::new(40, 12, crate::CellMetrics::default());
+        let engine = crate::TerminalTextEngine::default();
+        let content = Bounds::new(Point::default(), Size::new(px(160.0), px(32.0)));
+        let link = |id, start, end, disabled| {
+            let mut props = ViewProps::default();
+            props.accessibility.state.disabled = disabled;
+            TextLink {
+                start,
+                end,
+                node: id,
+                events: mask(&[EventKind::Press]),
+                props: Arc::new(props),
+            }
+        };
+        let text = |id, links| {
+            let mut text = AttributedText::default();
+            text.push("first second", ResolvedTextStyle::default());
+            text.links = links;
+            MountItem::Text {
+                id,
+                layout: engine.layout(&engine.prepare(&text), content.size),
+                text: Arc::new(text),
+                content,
+            }
+        };
+        let focus = |surface: &mut Surface, id| {
+            surface.apply(MountBatch {
+                items: vec![MountItem::Command {
+                    id,
+                    command: Command::Focus,
+                }],
+            });
+        };
+        let activate = |surface: &mut Surface, id, owner| {
+            surface.set_focus(Some(2));
+            focus(surface, id);
+            assert_eq!(surface.focused(), Some(id));
+            assert_eq!(surface.focus_path(), vec![id, owner, 2, ROOT_ID]);
+            assert!(surface.accessibility_snapshot().iter().any(|node| {
+                node.id == id && node.role == AccessibilityRole::Link && node.focused
+            }));
+            surface.events.clear();
+            key(surface, KeyCode::Enter, KeyModifiers::NONE);
+            let presses = surface
+                .events
+                .iter()
+                .filter_map(|event| match event {
+                    SurfaceEvent::Event(id, EventKind::Press, _) => Some(*id),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(presses, [id]);
+        };
+        let inactive = |surface: &mut Surface, id| {
+            surface.set_focus(Some(2));
+            surface.events.clear();
+            focus(surface, id);
+            assert_ne!(surface.focused(), Some(id));
+            key(surface, KeyCode::Enter, KeyModifiers::NONE);
+            assert!(!surface.events.iter().any(|event| {
+                matches!(event, SurfaceEvent::Event(target, EventKind::Press, _) if *target == id)
+            }));
+            assert!(
+                !surface
+                    .accessibility_snapshot()
+                    .iter()
+                    .any(|node| node.id == id)
+            );
+        };
+        let mut items = create(2, ViewKind::Scroll, ROOT_ID, 0.0);
+        items.extend(create(4, ViewKind::Text, 2, 0.0));
+        items.push(text(4, vec![link(10, 0, 5, true), link(12, 6, 12, false)]));
+        surface.apply(MountBatch { items });
+        assert!(surface.accessibility_snapshot().iter().any(|node| {
+            node.id == 10 && node.role == AccessibilityRole::Link && node.state.disabled
+        }));
+        // Delete only the first span: the remaining link moves in the Text's
+        // link array, with no replacement Text to repair a stale locator.
+        surface.apply(MountBatch {
+            items: vec![MountItem::Delete { id: 10 }],
+        });
+        inactive(&mut surface, 10);
+        activate(&mut surface, 12, 4);
+
+        // A new snapshot terminates the old link; no per-span Delete is needed.
+        surface.apply(MountBatch {
+            items: vec![text(4, vec![link(14, 0, 5, false)])],
+        });
+        inactive(&mut surface, 12);
+        activate(&mut surface, 14, 4);
+        surface.set_focus(Some(2));
+        surface.apply(MountBatch {
+            items: vec![MountItem::RetireListCell {
+                id: 4,
+                request: 1,
+                roots: vec![4],
+            }],
+        });
+        assert!(
+            surface
+                .events
+                .iter()
+                .any(|event| { matches!(event, SurfaceEvent::ListCellRetired(4, 1, true)) })
+        );
+        assert!(
+            !surface
+                .accessibility_snapshot()
+                .iter()
+                .any(|node| node.id == 14)
+        );
+        // Parked content is still resident: restoration need not resend Text.
+        surface.apply(MountBatch {
+            items: vec![MountItem::ProjectRoot {
+                parent: 2,
+                id: 4,
+                following: vec![],
+            }],
+        });
+        activate(&mut surface, 14, 4);
+
+        for (old, next, boundary) in [(14, 16, 0), (16, 18, 1), (18, 20, 2)] {
+            surface.set_focus(Some(2));
+            match boundary {
+                0 => surface.apply(MountBatch {
+                    items: vec![MountItem::Delete { id: 4 }],
+                }),
+                1 => {
+                    surface.apply(MountBatch {
+                        items: vec![
+                            MountItem::LayoutAnimation(LayoutAnimation {
+                                delete: Some(LayoutTransition {
+                                    curve: LayoutCurve::Linear,
+                                    property: LayoutProperty::Opacity,
+                                    duration_ms: 1000.0,
+                                    delay_ms: 0.0,
+                                }),
+                                ..LayoutAnimation::default()
+                            }),
+                            MountItem::Delete { id: 4 },
+                        ],
+                    });
+                    surface.tick(surface.now + 1.1);
+                }
+                // Remove retains its Node; the subsequent Create overwrites it.
+                _ => surface.apply(MountBatch {
+                    items: vec![MountItem::Remove { id: 4 }],
+                }),
+            }
+            let mut items = create(4, ViewKind::Text, 2, 0.0);
+            items.push(text(4, vec![link(next, 0, 5, false)]));
+            surface.apply(MountBatch { items });
+            inactive(&mut surface, old);
+            activate(&mut surface, next, 4);
+        }
+        // A moved span can be published at its new Text before the previous
+        // owner's other span or the owner itself is deleted. Deleting that
+        // sibling must not reclaim the moved span while compacting the array.
+        let mut items = vec![text(4, vec![link(20, 0, 5, false), link(22, 6, 12, false)])];
+        items.extend(create(6, ViewKind::Text, 2, 0.0));
+        items.push(text(6, vec![link(20, 0, 5, false)]));
+        items.push(MountItem::Delete { id: 22 });
+        items.push(MountItem::Delete { id: 4 });
+        surface.apply(MountBatch { items });
+        activate(&mut surface, 20, 6);
+
+        // Separately, a stale old-owner Text update must not retire a link
+        // already published by the new owner, even while it keeps focus.
+        let mut items = create(4, ViewKind::Text, 2, 0.0);
+        items.push(text(4, vec![link(20, 0, 5, false), link(22, 6, 12, false)]));
+        items.push(text(6, vec![link(20, 0, 5, false)]));
+        surface.apply(MountBatch { items });
+        focus(&mut surface, 20);
+        assert_eq!(surface.focus_path(), vec![20, 6, 2, ROOT_ID]);
+        surface.events.clear();
+        surface.apply(MountBatch {
+            items: vec![text(4, vec![link(22, 6, 12, false)])],
+        });
+        assert_eq!(surface.focused(), Some(20));
+        assert_eq!(surface.focus_path(), vec![20, 6, 2, ROOT_ID]);
+        key(&mut surface, KeyCode::Enter, KeyModifiers::NONE);
+        let presses = surface
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                SurfaceEvent::Event(id, EventKind::Press, _) => Some(*id),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(presses, [20]);
+
+        // A real view takes precedence over a virtual span with that ID.
+        let mut items = create(20, ViewKind::View, 2, 0.0);
+        items.push(MountItem::Events {
+            id: 20,
+            events: mask(&[EventKind::Press]),
+        });
+        surface.apply(MountBatch { items });
+        focus(&mut surface, 20);
+        assert_eq!(surface.focus_path(), vec![20, 2, ROOT_ID]);
+        surface.events.clear();
+        surface.apply(MountBatch {
+            items: vec![text(6, vec![])],
+        });
+        assert_eq!(surface.focused(), Some(20));
+        assert_eq!(surface.focus_path(), vec![20, 2, ROOT_ID]);
+        key(&mut surface, KeyCode::Enter, KeyModifiers::NONE);
+        let presses = surface
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                SurfaceEvent::Event(id, EventKind::Press, _) => Some(*id),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(presses, [20]);
     }
 
     #[test]

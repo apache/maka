@@ -185,6 +185,8 @@ impl Node {
 /// the engine. [`crate::AppView`] combines these steps with an engine.
 pub struct Surface {
     pub(crate) nodes: Vec<Option<Node>>,
+    /// Locators into the resident Text snapshots, which remain the link authority.
+    pub(crate) text_links: HashMap<NodeId, (NodeId, usize)>,
     pub(crate) metrics: CellMetrics,
     pub(crate) columns: u16,
     pub(crate) rows: u16,
@@ -248,6 +250,7 @@ impl Surface {
         let fonts = crate::fonts::FontCatalog::default();
         let mut surface = Self {
             nodes: vec![None, Some(Node::new(ViewKind::View))],
+            text_links: HashMap::new(),
             metrics,
             columns,
             rows,
@@ -646,6 +649,40 @@ impl Surface {
         }
     }
 
+    fn forget_text_links(&mut self, owner: NodeId) {
+        let Some((text, ..)) = self
+            .nodes
+            .get(owner as usize)
+            .and_then(Option::as_ref)
+            .and_then(|node| node.text.as_ref())
+        else {
+            return;
+        };
+        for link in &text.links {
+            if self
+                .text_links
+                .get(&link.node)
+                .is_some_and(|(current, _)| *current == owner)
+            {
+                self.text_links.remove(&link.node);
+            }
+        }
+    }
+
+    fn index_text_links(&mut self, owner: NodeId) {
+        let Some((text, ..)) = self
+            .nodes
+            .get(owner as usize)
+            .and_then(Option::as_ref)
+            .and_then(|node| node.text.as_ref())
+        else {
+            return;
+        };
+        for (index, link) in text.links.iter().enumerate() {
+            self.text_links.insert(link.node, (owner, index));
+        }
+    }
+
     /// Applies one core commit in order, then reconciles native interaction.
     pub fn apply(&mut self, batch: MountBatch) {
         let mut focus_return = self.prepare_focus_return(&batch);
@@ -660,6 +697,7 @@ impl Surface {
             match item {
                 MountItem::LayoutAnimation(animation) => layout = Some(animation),
                 MountItem::Create { id, kind } => {
+                    self.forget_text_links(id);
                     self.composites.borrow_mut().invalidate(id);
                     self.canvas_pending.retain(|pending| *pending != id);
                     self.canvas_dirty.retain(|dirty| *dirty != id);
@@ -756,10 +794,23 @@ impl Surface {
                         }
                         removed_focus |= self.retire_recycled_focus(id);
                         self.retire_input_within(id, focus_return.as_mut());
-                        if let Some((text, ..)) =
-                            self.node_mut(owner).and_then(|node| node.text.as_mut())
+                        self.text_links.remove(&id);
+                        if let Some((text, ..)) = self
+                            .nodes
+                            .get_mut(owner as usize)
+                            .and_then(Option::as_mut)
+                            .and_then(|node| node.text.as_mut())
                         {
-                            Arc::make_mut(text).links.retain(|link| link.node != id);
+                            let text = Arc::make_mut(text);
+                            text.links.retain(|link| link.node != id);
+                            for (index, link) in text.links.iter().enumerate() {
+                                if let Some((current, position)) =
+                                    self.text_links.get_mut(&link.node)
+                                    && *current == owner
+                                {
+                                    *position = index;
+                                }
+                            }
                         }
                         continue;
                     }
@@ -799,6 +850,7 @@ impl Surface {
                     self.detach(id);
                     self.composites.borrow_mut().invalidate(id);
                     self.canvas_pending.retain(|pending| *pending != id);
+                    self.forget_text_links(id);
                     if let Some(node) = self.nodes.get_mut(id as usize) {
                         *node = None;
                     }
@@ -902,6 +954,10 @@ impl Surface {
                             old.links
                                 .iter()
                                 .filter(|link| {
+                                    self.text_link(link.node)
+                                        .is_some_and(|(owner, _)| owner == id)
+                                })
+                                .filter(|link| {
                                     !text
                                         .links
                                         .iter()
@@ -915,10 +971,12 @@ impl Surface {
                         self.retire_input_within(link, None);
                         removed_focus |= self.retire_recycled_focus(link);
                     }
+                    self.forget_text_links(id);
                     if let Some(node) = self.node_mut(id) {
                         node.editor.label_text(&text.text);
                         node.text = Some((text, layout, content));
                     }
+                    self.index_text_links(id);
                 }
                 MountItem::Input { id, config } => {
                     if let Some(node) = self.node_mut(id) {
@@ -1362,6 +1420,7 @@ impl Surface {
         }
         for id in descendants.into_iter().rev() {
             if self.node(id).is_some_and(|node| node.delete_pending) {
+                self.forget_text_links(id);
                 self.nodes[id as usize] = None;
                 self.composites.borrow_mut().invalidate(id);
                 self.canvas_pending.retain(|pending| *pending != id);
