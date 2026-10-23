@@ -19,46 +19,197 @@
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
-//! The Maka desktop: the gpui-shell command, built inside this workspace
-//! against the vendored gpui-base and gpui-fast, that runs the scripts in
-//! `app/` (`maka-desktop-shell run --dir app`). It adds a `maka-host` module
-//! that reaches the Host named by `MAKA_HOST_ENDPOINT` and `MAKA_HOST_EPOCH`,
-//! a `maka-files` module for the file or folder the user picks, a
-//! `maka-locale` module with the language the system asks for, the
-//! Workbar's terminal (`maka-desktop`'s `Terminal`), and the window Maka
-//! opens in (`window`).
+//! The Maka desktop: runs the workbench (`maka-workbench`) in a window of
+//! its own through NSH's GPUI backend. `maka desktop` starts it for the Host
+//! it admitted, named by `MAKA_HOST_ROOT`, `MAKA_HOST_ENDPOINT` and
+//! `MAKA_HOST_EPOCH`. Closing the window detaches this client; the Host keeps
+//! the work it accepted. If that Host stops while the window is open, the
+//! window connects to the Root's next Host, which the launcher named by
+//! `MAKA_LAUNCHER` starts, and loads the workbench again.
 
-mod files;
-mod locale;
-mod maka_host;
-mod terminal;
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+mod host;
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+mod placement;
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod window;
 
-fn main() {
-    // Imports are linked against the registry, so register before any load.
-    let registered = maka_host::module()
-        .and_then(|module| gpui_shell::export_module(module).map_err(|error| error.to_string()));
-    if let Err(error) = registered {
-        eprintln!("{}: {error}", maka_host::NAME);
-        std::process::exit(1);
+use std::{path::PathBuf, process::ExitCode};
+
+const ROOT: &str = "MAKA_HOST_ROOT";
+const ENDPOINT: &str = "MAKA_HOST_ENDPOINT";
+const EPOCH: &str = "MAKA_HOST_EPOCH";
+const LAUNCHER: &str = "MAKA_LAUNCHER";
+
+/// The Host `maka desktop` admitted: its Root, its endpoint and the epoch the
+/// connection must find there, and the launcher that starts the Root's Host.
+#[derive(Debug, PartialEq)]
+struct Target {
+    root: PathBuf,
+    endpoint: PathBuf,
+    epoch: uuid::Uuid,
+    launcher: PathBuf,
+}
+
+impl Target {
+    fn from(var: impl Fn(&str) -> Option<std::ffi::OsString>) -> Result<Self, String> {
+        let read = |name: &str| {
+            var(name)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| format!("{name} is not set; start the desktop with `maka desktop`"))
+        };
+        let absolute = |name: &str| {
+            let path = PathBuf::from(read(name)?);
+            if path.is_absolute() {
+                Ok(path)
+            } else {
+                Err(format!("{name} is not an absolute path"))
+            }
+        };
+        let root = absolute(ROOT)?;
+        let endpoint = PathBuf::from(read(ENDPOINT)?);
+        let epoch = read(EPOCH)?;
+        let epoch = epoch
+            .to_str()
+            .and_then(|epoch| epoch.parse().ok())
+            .ok_or_else(|| format!("{EPOCH} is not a UUID: {}", epoch.to_string_lossy()))?;
+        Ok(Self {
+            root,
+            endpoint,
+            epoch,
+            launcher: absolute(LAUNCHER)?,
+        })
     }
-    if let Err(error) = gpui_shell::export_module(files::module()) {
-        eprintln!("{}: {error}", files::NAME);
-        std::process::exit(1);
+}
+
+/// What `--help` or `--version` prints, answered before anything can fail;
+/// `None` starts the desktop.
+fn answer(arguments: impl IntoIterator<Item = std::ffi::OsString>) -> Option<String> {
+    let version = format!("maka-desktop-shell {}", env!("CARGO_PKG_VERSION"));
+    let mut answer = None;
+    for argument in arguments {
+        if argument == "--help" || argument == "-h" {
+            return Some(format!(
+                "{version}\n\nStarted by `maka desktop --root PATH`, which names the Host in \
+                 {ROOT}, {ENDPOINT} and {EPOCH}, and itself in {LAUNCHER}."
+            ));
+        }
+        if argument == "--version" || argument == "-V" {
+            answer = Some(version.clone());
+        }
     }
-    if let Err(error) = gpui_shell::export_module(locale::module()) {
-        eprintln!("{}: {error}", locale::NAME);
-        std::process::exit(1);
+    answer
+}
+
+fn main() -> ExitCode {
+    if let Some(text) = answer(std::env::args_os().skip(1)) {
+        println!("{text}");
+        return ExitCode::SUCCESS;
     }
-    let components = match window::components() {
-        Ok(components) => components,
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("maka-desktop-shell: {error}");
-            std::process::exit(1);
+            ExitCode::FAILURE
         }
-    };
-    gpui_shell::host::main_with_brand_and_components(
-        gpui_shell::host::HostBrand::new("maka-desktop-shell", env!("CARGO_PKG_VERSION")),
-        components,
-    );
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+fn run() -> Result<(), String> {
+    use maka_host_runtime::application::host::Client as HostClient;
+
+    let target = Target::from(|name| std::env::var_os(name))?;
+    let root = host::Root::find(target.root, target.launcher)?;
+    let runtime = tokio::runtime::Runtime::new().map_err(|error| error.to_string())?;
+    let first = runtime.block_on(async {
+        let host = HostClient::connect(&target.endpoint, Some(target.epoch)).await?;
+        let handle = tokio::runtime::Handle::current();
+        host::Connection::admit(host, target.endpoint, root.path(), handle).await
+    })?;
+    window::run(first, root, runtime)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+fn run() -> Result<(), String> {
+    Err("the desktop runs on macOS, Windows and Linux".into())
+}
+
+// Unix paths: on Windows an absolute Root also names a drive.
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::{collections::HashMap, ffi::OsString};
+
+    #[test]
+    fn help_and_version_answer_without_a_host() {
+        let answer = |arguments: &[&str]| answer(arguments.iter().map(OsString::from));
+        let version = format!("maka-desktop-shell {}", env!("CARGO_PKG_VERSION"));
+        assert_eq!(answer(&["--version"]), Some(version.clone()));
+        assert_eq!(answer(&["-V"]), Some(version.clone()));
+        let help = answer(&["--version", "-h"]).unwrap();
+        assert!(help.starts_with(&format!("{version}\n\n")), "{help}");
+        assert!(help.contains("maka desktop --root PATH"), "{help}");
+        assert_eq!(answer(&[]), None);
+    }
+
+    fn target(vars: &[(&str, &str)]) -> Result<Target, String> {
+        let vars: HashMap<_, _> = vars
+            .iter()
+            .map(|(name, value)| (name.to_string(), OsString::from(value)))
+            .collect();
+        Target::from(|name| vars.get(name).cloned())
+    }
+
+    #[test]
+    fn the_target_is_the_root_endpoint_and_epoch_the_launcher_names() {
+        let epoch = "8f1d3c0e-2a4b-4c6d-8e0f-1a2b3c4d5e6f";
+        let complete = [
+            (ROOT, "/hosts/main"),
+            (ENDPOINT, "/run/maka/host.sock"),
+            (EPOCH, epoch),
+            (LAUNCHER, "/opt/maka/maka"),
+        ];
+        assert_eq!(
+            target(&complete),
+            Ok(Target {
+                root: "/hosts/main".into(),
+                endpoint: "/run/maka/host.sock".into(),
+                epoch: epoch.parse().unwrap(),
+                launcher: "/opt/maka/maka".into(),
+            })
+        );
+        for missing in [ROOT, ENDPOINT, EPOCH, LAUNCHER] {
+            let vars: Vec<_> = complete
+                .iter()
+                .copied()
+                .filter(|(name, _)| *name != missing)
+                .collect();
+            let error = target(&vars).unwrap_err();
+            assert!(
+                error.starts_with(&format!("{missing} is not set")),
+                "{error}"
+            );
+        }
+        for relative in [ROOT, LAUNCHER] {
+            let vars: Vec<_> = complete
+                .iter()
+                .map(|&(name, value)| (name, if name == relative { "maka" } else { value }))
+                .collect();
+            assert_eq!(
+                target(&vars),
+                Err(format!("{relative} is not an absolute path"))
+            );
+        }
+        let latest = [
+            (ROOT, "/hosts/main"),
+            (ENDPOINT, "/sock"),
+            (EPOCH, "latest"),
+            (LAUNCHER, "/opt/maka/maka"),
+        ];
+        assert_eq!(
+            target(&latest),
+            Err(format!("{EPOCH} is not a UUID: latest"))
+        );
+    }
 }

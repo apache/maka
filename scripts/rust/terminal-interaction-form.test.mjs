@@ -23,7 +23,7 @@ import {
   formSubmission,
   initialForm,
   utf8Bytes,
-} from '../../products/maka/terminal-shell/app/interaction-form.ts';
+} from '../../products/maka/workbench/app/interaction-form.ts';
 
 const string = (name, extra = {}) => ({
   kind: 'string',

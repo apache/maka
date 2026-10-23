@@ -26,7 +26,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs, promisify } from 'node:util';
 import { npmSpawnOptions } from '../npm-spawn.mjs';
-import { stageDesktopApp, stageDesktopBundle } from './build-cli.mjs';
+import { stageDesktopBundle } from './build-cli.mjs';
 
 const run = promisify(execFile);
 const root = fileURLToPath(new URL('../../', import.meta.url));
@@ -85,7 +85,6 @@ export async function packNativeCli({
         512 * 1024 * 1024,
       );
       await chmod(join(directory, 'bin', desktop), 0o755);
-      await stageDesktopApp(repositoryRoot, join(directory, 'bin', 'app'));
     }
     if (platform.os === 'win32') {
       await copyRegular(

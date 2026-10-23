@@ -19,16 +19,14 @@
 
 //! Runs the NSH application against one launcher-selected public Host.
 
-use crate::{APPLICATION, bindings::Bindings, terminal};
-use maka_app_client::{Client, Journal};
-use maka_event_log::root;
+use crate::terminal;
 use maka_host_runtime::application::host::startup;
-use maka_plugin_core::operation::receipt_reader_contract;
+use maka_workbench::bindings::Bindings;
 use nsh_core::{
     Points, Size,
     platform::{Environment, Idiom, Renderer},
 };
-use nsh_engine::{Bundle, EngineConfig, Limits, Policy};
+use nsh_engine::EngineConfig;
 use std::{
     io::{self, IsTerminal},
     path::PathBuf,
@@ -61,7 +59,8 @@ impl Args {
             .map(PathBuf::from)
             .ok_or("home directory unavailable; select --root")?;
         #[cfg(windows)]
-        let home = root::windows::account_home().map_err(|error| error.to_string())?;
+        let home =
+            maka_event_log::root::windows::account_home().map_err(|error| error.to_string())?;
         Ok(home.join(".maka/application/host"))
     }
 
@@ -86,30 +85,8 @@ impl Args {
         if stop.load(Ordering::Acquire) {
             return native.close().await;
         }
-        let prepare = async {
-            let location = root::resolve(&path).map_err(|error| error.to_string())?;
-            if native.source().state_domain != location.root_id() {
-                return Err("application Host changed during terminal startup admission".to_owned());
-            }
-            if native.catalogue().describe("receipts")?.contract != receipt_reader_contract() {
-                return Err("Host receipts endpoint has a different contract".into());
-            }
-            let directory = location.canonical_path().join("clients");
-            root::private_directory(&directory).map_err(|error| error.to_string())?;
-            let journal = Journal::open(&directory.join("terminal.sqlite")).await?;
-            Ok((journal, directory))
-        }
-        .await;
-        let (journal, client_directory) = match prepare {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                return match native.close().await {
-                    Ok(()) => Err(error),
-                    Err(cleanup) => Err(format!("{error}; terminal Host cleanup: {cleanup}")),
-                };
-            }
-        };
-        let client = Client::new(native, journal, "receipts".into())?;
+        let (client, client_directory) =
+            maka_workbench::host::admit(native, &path, "terminal").await?;
         let runtime = tokio::runtime::Handle::current();
         let bindings = Bindings::new(client, runtime.clone());
         let mut config = configuration(bindings.registry(self.session), runtime);
@@ -173,27 +150,11 @@ impl Args {
     }
 }
 
-/// The production bundle and its declared permissions, shared with native UI tests.
-pub fn application_bundle() -> Bundle {
-    let capabilities = nsh_core::access::Capabilities::from_json(&serde_json::json!({
-        "clipboard": true,
-        "network": {"http": [{"host":"*","methods":["GET"],"schemes":["http","https"]}]}
-    }))
-    .expect("static terminal application capabilities");
-    Bundle::source(APPLICATION.into())
-        .with_app_id(Some("org.apache.maka.terminal"))
-        .with_policy(Policy {
-            declared: Some(capabilities),
-            ..Default::default()
-        })
-}
-
 fn configuration(
     registry: nsh_core::ui::Registry,
     runtime: tokio::runtime::Handle,
 ) -> EngineConfig {
     let viewport = Size::new(Points(960.0), Points(640.0));
-    let app = application_bundle();
     EngineConfig {
         viewport,
         environment: Environment {
@@ -202,13 +163,7 @@ fn configuration(
             window: viewport,
             ..Default::default()
         },
-        header_heights: nsh_core::NO_NATIVE_HEADER,
-        // APPLICATION is compiled into this trusted executable; only the
-        // interpreter stack is bounded, as for other standalone NSH apps.
-        limits: Limits::standalone(),
-        ui_sets: vec![nsh_base::registry(), registry, crate::markdown::registry()],
-        runtime: Some(runtime),
-        ..EngineConfig::new(app)
+        ..maka_workbench::configuration(registry, runtime)
     }
 }
 
@@ -246,24 +201,6 @@ mod tests {
     struct Command {
         #[command(flatten)]
         args: Args,
-    }
-
-    #[test]
-    fn application_bundle_grants_image_gets_without_other_http_methods_or_sockets() {
-        let access = application_bundle().policy.access();
-        for url in [
-            "http://127.0.0.1:1234/image.png",
-            "https://images.example.test/a.png",
-        ] {
-            assert!(access.allows_media(url));
-            assert!(access.allows_http("GET", url));
-            assert!(!access.allows_http("POST", url));
-            assert!(!access.allows_http("DELETE", url));
-        }
-        assert!(!access.allows_media("ftp://images.example.test/a.png"));
-        assert!(!access.allows_http("GET", "wss://images.example.test/a.png"));
-        assert!(!access.allows_socket("127.0.0.1", 1234));
-        assert!(access.declared.clipboard);
     }
 
     #[test]

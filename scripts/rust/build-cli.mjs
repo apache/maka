@@ -28,7 +28,6 @@ import {
   lstat,
   mkdir,
   mkdtemp,
-  readdir,
   readFile,
   rename,
   rm,
@@ -103,10 +102,6 @@ export async function buildCli({
       join(directory, 'maka-desktop-shell'),
       join(directory, 'Maka.app'),
     );
-    // The app now lives only in the bundle; drop an earlier build's sidecar.
-    await rm(join(directory, 'app'), { recursive: true, force: true });
-  } else {
-    await stageDesktopApp(repositoryRoot, join(directory, 'app'));
   }
   return binary;
 }
@@ -121,19 +116,23 @@ export function desktopShell(platform) {
   return platform === 'win32' ? 'maka-desktop-shell.exe' : 'maka-desktop-shell';
 }
 
+/** The desktop's identity; the shell gives its window the same application id. */
+const desktopApp = { id: 'org.apache.maka.desktop', name: 'Maka' };
+
+/** `[workspace.package] version`, which every Maka crate takes. */
+export function workspaceVersion(manifest) {
+  const section = /^\[workspace\.package\]$([^]*?)(?=^\[|(?![^]))/mu.exec(manifest)?.[1];
+  const version = section && /^version\s*=\s*"([^"]+)"\s*$/mu.exec(section)?.[1];
+  if (!version) throw new Error('Cargo.toml has no [workspace.package] version');
+  return version;
+}
+
 /**
- * Stage `Maka.app`: the shell, the authored app in `Contents/Resources/app`
- * where the shell looks for it, and the Info.plist and icon macOS reads.
+ * Stage `Maka.app`: the shell, which carries the workbench, and the
+ * Info.plist and icon macOS reads.
  */
 export async function stageDesktopBundle(repositoryRoot, shell, destination) {
-  const manifest = JSON.parse(
-    await readFile(join(repositoryRoot, 'products/maka/desktop-shell/app/gpui-shell.json'), 'utf8'),
-  );
-  for (const key of ['id', 'name', 'version']) {
-    if (typeof manifest[key] !== 'string' || !manifest[key]) {
-      throw new Error(`Desktop app manifest has no ${key}`);
-    }
-  }
+  const version = workspaceVersion(await readFile(join(repositoryRoot, 'Cargo.toml'), 'utf8'));
   const icon = icns(await readFile(join(repositoryRoot, 'assets/logo.png')));
   const metadata = await lstat(shell);
   if (!metadata.isFile() || metadata.size === 0) {
@@ -143,9 +142,9 @@ export async function stageDesktopBundle(repositoryRoot, shell, destination) {
   const stage = await mkdtemp(join(dirname(destination), '.Maka.app-'));
   try {
     const contents = join(stage, 'Contents');
-    await stageDesktopApp(repositoryRoot, join(contents, 'Resources', 'app'));
+    await mkdir(join(contents, 'Resources'), { recursive: true });
     await writeFile(join(contents, 'Resources', 'Maka.icns'), icon);
-    await writeFile(join(contents, 'Info.plist'), infoPlist(manifest));
+    await writeFile(join(contents, 'Info.plist'), infoPlist({ ...desktopApp, version }));
     await mkdir(join(contents, 'MacOS'));
     const executable = join(contents, 'MacOS', 'maka-desktop-shell');
     await copyFile(shell, executable, constants.COPYFILE_FICLONE);
@@ -160,8 +159,8 @@ export async function stageDesktopBundle(repositoryRoot, shell, destination) {
 }
 
 function infoPlist({ id, name, version }) {
-  // As gpui-shell's own bundles: `CFBundleVersion` takes up to three integers,
-  // so a pre-release or build suffix stays in the short version only.
+  // `CFBundleVersion` takes up to three integers, so a pre-release or build
+  // suffix stays in the short version only.
   const build = /^[0-9]+\.[0-9]+\.[0-9]+/u.exec(version)?.[0] ?? version;
   const escape = (value) =>
     value
@@ -212,36 +211,6 @@ function icns(png) {
   header.write('ic10', 8, 'latin1');
   header.writeUInt32BE(8 + png.length, 12);
   return Buffer.concat([header, png]);
-}
-
-/** Stage only regular authored app files; executable lookup is independent of cwd. */
-export async function stageDesktopApp(repositoryRoot, destination) {
-  const source = join(repositoryRoot, 'products/maka/desktop-shell/app');
-  // Validate before replacing a previous successful development sidecar.
-  const files = [];
-  async function collect(directory, relative = '') {
-    const metadata = await lstat(directory);
-    if (!metadata.isDirectory())
-      throw new Error('Desktop app directory must not be a symlink or special file');
-    for (const name of await readdir(directory)) {
-      const file = join(directory, name);
-      const path = join(relative, name);
-      const metadata = await lstat(file);
-      if (metadata.isDirectory()) await collect(file, path);
-      else if (metadata.isFile()) files.push(path);
-      else throw new Error('Desktop app contains a non-regular file');
-    }
-  }
-  await collect(source);
-  if (!files.includes('gpui-shell.json') || !files.includes('main.js')) {
-    throw new Error('Desktop app manifest and main.js are required');
-  }
-  await rm(destination, { recursive: true, force: true });
-  await mkdir(destination, { recursive: true });
-  for (const file of files) {
-    await mkdir(dirname(join(destination, file)), { recursive: true });
-    await copyFile(join(source, file), join(destination, file));
-  }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

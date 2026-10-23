@@ -36,7 +36,7 @@ A plugin is declared by a leaf `package.ts`. It lists executable entries, config
 
 For an existing plugin, start with its declaration and follow its selected implementation. Native entries select an implementation supplied by the executable; JavaScript entries name their bundled local module. Neither a family directory nor a linked crate activates a plugin.
 
-The product selects business Host services. The [terminal shell](../products/maka/terminal-shell/README.md) and [desktop shell](../products/maka/desktop-shell/README.md) author their interfaces separately and connect to those same public Host capabilities. General SDK scene contracts remain available for independently authored runtimes; the default bundle has no scene presenter packages.
+The product selects business Host services. The [terminal shell](../products/maka/terminal-shell/README.md) and [desktop shell](../products/maka/desktop-shell/README.md) run the same [workbench](../products/maka/workbench/README.md), which connects to those public Host capabilities. General SDK scene contracts remain available for independently authored runtimes; the default bundle has no scene presenter packages.
 
 Build a single package from the repository root:
 

@@ -97,6 +97,7 @@ maka-app-client.workspace = true
 maka-files-native.workspace = true
 maka-providers.workspace = true
 maka-settings-native.workspace = true
+maka-workbench.workspace = true
 nsh-base.workspace = true
 nsh-bundler.workspace = true
 nsh-core.workspace = true

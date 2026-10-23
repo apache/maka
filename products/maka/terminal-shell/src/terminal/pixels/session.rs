@@ -204,7 +204,7 @@ fn run(
         .map_err(|error| error.to_string())?;
     config
         .assets
-        .get_or_insert_with(|| Arc::new(crate::ApplicationAssets));
+        .get_or_insert_with(|| Arc::new(maka_workbench::ApplicationAssets));
     let error = presentation.clone();
     let window = Rc::new(RefCell::new(None));
     let created = window.clone();

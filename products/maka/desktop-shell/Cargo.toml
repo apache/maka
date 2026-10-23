@@ -23,20 +23,16 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-alacritty_terminal = { version = "0.26.0", default-features = false }
-async-channel = "2.5.0"
-base64 = "0.22.1"
-futures-lite = "2.6.1"
-gpui-shell.workspace = true
-hex.workspace = true
-maka-capabilities.workspace = true
-maka-agent-facts.workspace = true
-maka-process.workspace = true
+maka-event-log.workspace = true
 maka-host-runtime.workspace = true
-maka-plugin-core.workspace = true
-maka-ui-runtime.workspace = true
+maka-workbench.workspace = true
+nsh-engine.workspace = true
+serde.workspace = true
 serde_json.workspace = true
-sha2.workspace = true
 tokio.workspace = true
-tokio-util.workspace = true
 uuid.workspace = true
+
+[target.'cfg(any(target_os = "linux", target_os = "macos", windows))'.dependencies]
+# Shaders compile at run time, so building needs no Metal Toolchain (macOS).
+nsh-platform-gpui = { workspace = true, features = ["runtime-shaders"] }
+gpui_platform = { package = "gpui-fast-platform", version = "0.1.10", default-features = false, features = ["font-kit", "wayland", "x11"] }

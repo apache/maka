@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { createAttachmentDraft } from '../../app/attachmentDraft';
+import { createAttachmentDraft } from '../../../workbench/app/attachmentDraft';
 import { mount, signal, Text, View } from 'nsh';
 import { Button } from 'nsh/base';
 import { host } from 'maka/host';

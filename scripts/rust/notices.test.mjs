@@ -41,21 +41,12 @@ test('release notices reject changed dependency inputs and edited texts', async 
       await copyFile(new URL(name, repository), join(root, name));
     }
     await verifyNotices(root);
-    for (const name of ['gpui-kit.d.ts', 'dev.js']) {
-      const file = join(root, 'products/maka/desktop-shell/app', name);
-      await writeFile(file, 'local development helper\n');
-      await verifyNotices(root);
-      await rm(file);
-      await verifyNotices(root);
-    }
     for (const name of [
       'Cargo.lock',
       'scripts/rust/notices-sources.json',
       'third-party/gpui-kit/upstream.json',
       'products/maka/cli/Cargo.toml',
       'products/maka/desktop-shell/Cargo.toml',
-      'products/maka/desktop-shell/app/main.js',
-      'products/maka/desktop-shell/app/.gitignore',
       'patches/zod+4.6.5.patch',
       'products/maka/bundle/scripts/build.mjs',
       'plugins/settings/settings/package.ts',

@@ -33,6 +33,6 @@ The platform loads packages, checks compositions, owns execution resources and p
 | I/O and isolation | [network](network/README.md), [process](process/README.md), [sandbox](sandbox/README.md), [computer-use](computer-use/README.md) |
 | Connections and health | [transport](transport/README.md), [background-health](background-health/README.md) |
 
-Host and UI share the plugin lifecycle kernel. Optional execution adapters run JavaScript plugins. The [terminal workbench](../products/maka/terminal-shell/README.md) uses NSH for native terminal rendering and connects through public Host services. The desktop application lives in [desktop-shell](../products/maka/desktop-shell/README.md) and connects through public Host services.
+Host and UI share the plugin lifecycle kernel. Optional execution adapters run JavaScript plugins. The [workbench](../products/maka/workbench/README.md) is an NSH application that connects through public Host services; the [terminal shell](../products/maka/terminal-shell/README.md) renders it in a terminal and the [desktop shell](../products/maka/desktop-shell/README.md) in a window.
 
 The dependency boundary is deliberate: Host and UI lifecycle crates can compile without V8 or the Agent engine. Some platform code still depends on shared Agent facts for storage and presentation. Those data dependencies are visible in the Cargo manifests.

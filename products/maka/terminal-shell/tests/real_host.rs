@@ -3064,7 +3064,7 @@ async fn immutable_tool_images_render_and_preview_without_stopping_the_running_t
         let other_id = other["session"]["id"].as_str().unwrap();
         let fence = client.query("agent", "observe", json!({"sessionId":other_id})).await.unwrap();
         let uri = format!("asset:/tool-image/{}", URL_SAFE_NO_PAD.encode(serde_json::to_vec(&json!({"sessionId":other_id,"through":fence["through"],"position":result,"offset":0})).unwrap()));
-        let bindings = maka_terminal_shell::bindings::Bindings::new(client, tokio::runtime::Handle::current());
+        let bindings = maka_workbench::bindings::Bindings::new(client, tokio::runtime::Handle::current());
         let assets = bindings.assets();
         assert!(tokio::task::spawn_blocking(move || assets.read(&uri)).await.unwrap().is_err());
         bindings.close().await.unwrap();

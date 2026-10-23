@@ -19,7 +19,7 @@
 
 # Standalone SDK scene components
 
-These components target the SDK scene runtime. Maka's terminal and desktop shells author their own interfaces and do not mount these scenes.
+These components target the SDK scene runtime. Maka's terminal and desktop shells run their own workbench and do not mount these scenes.
 
 An entry exports `activate(configuration)` with a Component descriptor:
 `{ Counter: { contract, kind: "component", component: ["counter"] } }`.
@@ -29,8 +29,8 @@ optional `capture` callbacks. Each callback returns actions/events and a frame w
 
 Use the SDK's `Component<State, Props, TerminalNode>` and `ui.terminal`
 constructors. Declare `{ name: "maka.tui.scene", version: 1 }` for the TUI entry.
-The desktop-shell application uses its separate gpui-shell script API, not this
-plugin component scene language.
+The workbench is an NSH application, not written in this plugin component scene
+language.
 
 Native controls own editing, IME, selection, pointer capture, layout and scroll
 measurement. Compose them through declared Component imports and stable child keys.

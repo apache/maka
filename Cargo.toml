@@ -46,6 +46,7 @@ members = [
     "products/maka/desktop-shell",
     "products/maka/client",
     "products/maka/terminal-shell",
+    "products/maka/workbench",
     "platform/computer-use",
     "platform/event-log",
     "plugins/agent/acp-executor/engine",
@@ -184,6 +185,7 @@ maka-terminal-shell = { path = "products/maka/terminal-shell" }
 maka-ui-runtime = { path = "platform/ui-runtime" }
 maka-ui-js = { path = "platform/ui-js" }
 maka-web = { path = "plugins/workspace/workspace-web/native" }
+maka-workbench = { path = "products/maka/workbench" }
 maka-workhub = { path = "plugins/workhub/core" }
 pulldown-cmark = { version = "0.13.4", default-features = false }
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
