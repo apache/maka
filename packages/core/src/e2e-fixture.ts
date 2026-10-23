@@ -38,7 +38,8 @@ export type E2eFixtureScenario =
   | 'module-mcp'
   | 'module-daily-review'
   | 'scheduled-tasks'
-  | 'sidebar-search-modal-open';
+  | 'sidebar-search-modal-open'
+  | 'checkin';
 
 export interface E2eFixtureState {
   enabled: true;
