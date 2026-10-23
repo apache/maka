@@ -22,6 +22,8 @@ use crate::{
     Viewability, geometry::Points,
 };
 
+crate::static_reactive!(ListContentStyle: ListContentStyle);
+
 /// How a list lays out its rows: [`super::ListElement`] (the app's rows)
 /// and [`VirtualList`] (the component's).
 pub trait ListLayout: Sized {
@@ -95,6 +97,11 @@ pub trait ListLayout: Sized {
     /// Whether the scroll indicator shows (default yes).
     fn scrollbar(self, shows: impl IntoReactive<bool>) -> Self {
         self.layout(shows, |c, shows| c.scrollbar_visible = Some(shows))
+    }
+
+    /// Padding and gaps of the rows, as one resolved content layout.
+    fn content_style(self, style: impl IntoReactive<ListContentStyle>) -> Self {
+        self.layout(style, |c, style| c.content = Some(style))
     }
 
     /// Padding around the rows.

@@ -32,10 +32,14 @@ colored with the theme's tokens; the app restyles each part over it.
   renderer payloads contain their displayed content. HTML text with decoding or whitespace collapse is an explicit
   replacement of its originating Markdown HTML node; its processed offsets never stand in for original addresses.
   Selection continues to use the real selectable texts.
-- **Blocks are rows of an `Each`, keyed by position and kind** (`(index, block.kind())`). A streamed reply grows at its
-  end: the blocks before it parse to equal values and keep their nodes, the block being written keeps its row (same
-  position, same kind) and only that row is made again. A block that changes kind mid-stream (a paragraph becoming a
-  table once its delimiter row arrives) gets a new row. Footnotes follow the blocks in one region of their own.
+- **Root blocks use a native parent-viewport list.** The scroll view around the document remains its reader;
+  only blocks near that viewport are mounted. A recycled cell has a single keyed logical owner for its block's
+  position and kind. Compatible appends retain that owner; a paragraph becoming a table replaces it, so callbacks
+  and link focus capabilities never follow the cell into another block. Footnotes form the final row. Containers
+  still use the same recursive renderer within their root block. `contentStyle: ListContentStyle` lays out these
+  rows with point-valued padding and gaps (default `rowGap: 11.25`). A supplied value replaces the complete content
+  layout, so `{}` and `{ rowGap: 0 }` both select zero gap. Root `classes` / `styles` own outer geometry and text
+  appearance; document content spacing belongs to `contentStyle`.
 - **Built on `Text`** (`text.md`): every paragraph, heading, table cell and code block is one native text
   block, so wrapping, font scale, selection, span backgrounds (inline code), pressable
   spans (links) and inline attachments (images, inline custom nodes, the caret) are the text element's, with nothing of
@@ -44,8 +48,8 @@ colored with the theme's tokens; the app restyles each part over it.
   (`Inline` → nested texts, inline images, slots), lists are rows of a marker text and a column, code blocks a column
   with floating actions and a horizontal `scroll`, tables one grid in a horizontal `scroll` (below), disclosures a
   pressable summary and an `If`. With `selectable`, every text carries `selectable` and the root is a selection area
-  (`Element::selection_area`), so one selection runs across the blocks, and inside a `SelectionArea` on into the
-  texts around the view ("Selection areas" in `text.md`).
+  (`Element::selection_area`), so one selection runs across the mounted blocks, and inside a `SelectionArea` on into the
+  mounted texts around the view ("Selection areas" in `text.md`).
 - **Tables** (`Cx::table`) lay out as gpui-kit's: columns fit their content when there is room, shrink (their cells
   wrapping) down to a floor per column when the view is narrower, and below the floors the table scrolls horizontally
   (`tableScroll`; `tableScrollbar` hides its indicator, as `codeBlockScrollbar` a code block's). The cells are one CSS grid, so columns line up across rows: each column is a `minmax(<floor>,
@@ -81,6 +85,9 @@ colored with the theme's tokens; the app restyles each part over it.
 - **Code controls retain their owners.** Native `codeBlockActions` supports `copy` and `wrap`. Adding `wrap`
   initially wraps the code; its selected state and native control survive further stream appends, including code
   inside containers. `renderCodeBlockAction` supplies app content and `labels` supplies table names/copy feedback.
+  User Wrap and disclosure choices also survive root-cell recycling. The source lifecycle owns only those values;
+  every mounted control creates its own signal. Replacing source identity, input, parser configuration or a
+  non-prefix source clears the choices; changing a block or ancestor's logical kind clears that subtree's choices.
   Code and table scroll intent is reported as `onScrollIntent`.
 - **Image rendering context.** `renderImage` receives `TextViewImageContext` (`image`, `linked`, `flow`,
   `lineHeight`). The app owns standalone image activation and loading; linked inline images use their enclosing
@@ -109,7 +116,8 @@ take GitHub's alert colors (note blue, tip green, important violet, warning ambe
 theme's `destructive`. Everything is the
 app's to override: `classes` (Tailwind, applied after the part's own styles, so they win) and `styles` (inline, over
 the classes), by part, and `class` / `style` on the root, whose text styles every part inherits (the root's defaults
-are the text's size, line height and color). The root is also the part `root` (its `styles.root` is typed
+are the text's size, line height and color). Content padding and spacing between root blocks use `contentStyle`,
+the native list's typed content layout; nested containers retain their part styles. The root is also the part `root` (its `styles.root` is typed
 `StyleProp<TextStyle>`, which the component's own `style`, a `ViewStyle`, is not). Line heights are points, not
 multiples (typed styles have no multiple yet): an app that changes a part's size sets its line height too, as
 Tailwind's `text-*` classes do. A node with several parts (`heading` then `heading2`; `blockquote`, `alert`, `alertNote`; `listMarker`,
@@ -232,8 +240,11 @@ role `checkbox` with their checked state, a disclosure's summary role `button` w
 - The worker parses the whole newest source, including late reference definitions; pending changes coalesce while
   one parse runs. There is no incremental AST or content cap. Matched workload measurements belong in
   `performance.md` once measured.
-- Rows are made again only when their value changes (`Each` with the position and kind as the key, the block as the
-  value), and render functions only when their value changes.
+- Root rows are mounted near the surrounding viewport; each cell reads only its current block. Their keyed logical
+  owners update only when that block's value changes. The complete parsed document remains available for static
+  whole-document text, and the app's canonical raw-source copy remains independent of mounted rows.
+- Selection joins the actual mounted texts. A single large root block (a long paragraph, code block, table or
+  container), including the full literal shown before parsing, remains one row.
 - A disclosure makes its content only while open.
 - Images default to their natural size (one `image_size` read each), at most the width of the text.
 

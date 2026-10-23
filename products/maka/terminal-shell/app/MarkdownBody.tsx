@@ -54,6 +54,7 @@ export function MarkdownBody(props: {
           markdown={props.row().text}
           sourceId={props.sourceId}
           selectable
+          contentStyle={{ rowGap: props.compact ? 6 : 16 }}
           options={{ streaming: true, preserveLineBreaks: true }}
           labels={{ table: tr('Markdown table'), copied: tr('Copied') }}
           onScrollIntent={props.userScroll}
@@ -98,7 +99,7 @@ export function MarkdownBody(props: {
             { id: 'copy', label: tr('Copy code block') },
           ]}
           styles={{
-            root: { ...readingStyle, color, gap: props.compact ? 6 : 16 },
+            root: { ...readingStyle, color },
             paragraph: readingStyle,
             heading: {
               ...readingStyle,

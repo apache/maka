@@ -12,6 +12,8 @@ demo: text-view
 links, lists and task lists, quotes and GitHub's alerts, code, tables, images, formulas, footnotes and disclosures. It
 is made for the replies of AI models in a chat: the reply streams in as Markdown, and each chunk shows the text with its
 formatting in place. Parsing happens in Rust, and the document is drawn with [`Text`](./text.md) elements and views.
+Root blocks are mounted near the surrounding scroll viewport. `contentStyle` sets their padding and spacing in
+points; its default is `{ rowGap: 11.25 }`. Root classes and styles control outer geometry and text appearance.
 
 It owns behavior and comes with a reading typography of its own: 15pt text in generous 25.5pt lines, semibold
 headings with room above them, links underlined in the theme's `primary` color, code in the theme's `font-mono` in a bordered, rounded box, tables ruled on every side with a tinted header row, quotes with a line at their side and
@@ -99,10 +101,11 @@ are its [spans](./text.md#spans); inline code is a span with a [span background]
 [inline attachments](./text.md#inline-views-and-images). Text styles on the root pass to every part, as
 [text styles](./text.md#text-styles) pass from a `Text` to its spans.
 
-With `selectable`, the whole document selects as one, as a web page does: a drag (or, on touch screens, a long press
-and the handles) runs from one paragraph, list item, cell or code block to the next, and Copy takes the text of them
-all. A `selectable` `TextView` is a [`SelectionArea`](./selection-area.md) of its own; inside a
-`SelectionArea`, its selection also runs on into the texts and other `TextView`s around it.
+With `selectable`, mounted texts share one selection: a drag (or, on touch screens, a long press and the handles)
+runs from one mounted paragraph, list item, cell or code block to the next, and Copy takes the selected text.
+A `selectable` `TextView` is a [`SelectionArea`](./selection-area.md) of its own; inside a `SelectionArea`, its
+selection also runs into the mounted texts and other `TextView`s around it. Whole-document copy uses the complete
+source or `TextView.plainText(document)` ([The document model](#the-document-model)).
 
 What `TextView` adds is the rest: reading Markdown, HTML or a document into blocks, the views around the texts (lists,
 quotes, tables, code blocks, disclosures, footnotes), streaming, styles by part, render functions and extensions.
@@ -151,8 +154,8 @@ documents.
 
 ## Styling the parts
 
-`class` and `style` style the root, a column of the blocks; text styles set there (color, size, font) pass to every
-part. The root is also the part `root`: `styles.root` takes text styles with their types (`style` is typed as a
+`class` and `style` set the native document viewport's outer geometry and text appearance; text styles set there
+(color, size, font) pass to every part. `contentStyle` sets row padding and spacing with point values. The root is also the part `root`: `styles.root` takes text styles with their types (`style` is typed as a
 view's), and `classes.root` classes. `classes` takes Tailwind classes by part and `styles` inline styles by part. A part's classes come after its own
 default styles, so they win; its `styles` win over its classes. In Rust, the parts take typed styles: `TextViewParts`
 gives each `TextViewPart` a function refining its style, for every `TextView` below the view that provides it
@@ -184,7 +187,10 @@ fn reply(markdown: Signal<SharedString>) -> impl IntoElement {
     );
     text_view()
         .markdown(move || markdown.get())
-        .gap_3()
+        .content_style(nsh_core::ListContentStyle {
+            row_gap: px(12.0),
+            ..nsh_core::ListContentStyle::default()
+        })
         .text_size(px(15.0))
         .line_height(px(24.0))
         .text_color(rgb(0x262626))
@@ -195,7 +201,8 @@ fn reply(markdown: Signal<SharedString>) -> impl IntoElement {
 ```tsx tabs
 <TextView
   markdown={reply()}
-  class="gap-3 text-[15px] leading-6 text-neutral-800"
+  contentStyle={{ rowGap: 12 }}
+  class="text-[15px] leading-6 text-neutral-800"
   classes={{
     heading: "text-neutral-950",
     heading2: "text-xl mt-2",
@@ -219,7 +226,7 @@ Some nodes are several parts, which apply in order: a level 2 heading is `headin
 
 | Part | Rust | What it is |
 |---|---|---|
-| `root` | `Root` | The text view itself, a column of its blocks; text styles here pass to every part. |
+| `root` | `Root` | The native document viewport: outer geometry and inherited text appearance. Row padding and spacing use `contentStyle`. |
 | `paragraph` | `Paragraph` | Every paragraph. |
 | `heading` | `Heading` | Every heading, before its level's part. |
 | `heading1` … `heading6` | `Heading1` … `Heading6` | Headings of that level (27, 20, 17, then 15pt, semibold). |
@@ -787,7 +794,8 @@ markdown-rs's syntax, and `ParseContext` reads a node's children as the parser d
 | `extensions` | `.extensions(..)` | `MarkdownExtension[]` | `[]` | The app's syntax, as custom nodes ([Markdown extensions](#markdown-extensions)). |
 | `classes` | `.classes(..)` | `TextViewClasses` | `{}` | Tailwind classes by part. |
 | `styles` | `.styles(..)` | `TextViewStyles` | `{}` | Inline styles by part (each a `StyleProp<TextStyle>`), over the classes. |
-| `selectable` | `.selectable(..)` | `boolean` | `false` | The document is selectable as one: a selection runs across its paragraphs, headings, cells and code blocks ([SelectionArea](./selection-area.md)). |
+| `contentStyle` | `.content_style(..)` | `ListContentStyle` | `{ rowGap: 11.25 }` | Padding and gaps of the native document rows, in points; a supplied value replaces the whole content layout. |
+| `selectable` | `.selectable(..)` | `boolean` | `false` | Mounted document texts select together across paragraphs, headings, cells and code blocks ([SelectionArea](./selection-area.md)). |
 | `links` | `.links(..)` | `"report" \| "open"` | `"report"` | What a press on a link does: reports it (`onLinkPress`), and with `"open"` also opens a link to another site or app outside the app ([Links](#links)). |
 | `codeBlockScrollbar` | `.code_block_scrollbar(..)` | `boolean` | `true` | Code blocks show their horizontal scroll indicator. |
 | `tableScrollbar` | `.table_scrollbar(..)` | `boolean` | `true` | Tables show their horizontal scroll indicator. |
@@ -799,7 +807,7 @@ markdown-rs's syntax, and `ParseContext` reads a node's children as the parser d
 | `renderTableActions` | `.render_table_actions(\|table\| ..)` | `(table: TextViewTable) => JSX.Element` | | Content above each table. |
 | `renderMath` | `.render_math(\|math\| ..)` | `(math: TextViewMath) => JSX.Element` | | Shows formulas. |
 | `renderImage` | `.render_image(\|image\| ..)` | `(image: TextViewImage) => JSX.Element` | | Shows images. |
-| `class`, `style` | style methods | `string`, `StyleProp<ViewStyle>` | | The root, a column of the blocks; its text styles pass to every part (typed text styles: `styles.root`). |
+| `class`, `style` | style methods | `string`, `StyleProp<ViewStyle>` | | The native document viewport: outer geometry and text appearance (`styles.root` for typed text styles). Row padding and spacing use `contentStyle`. |
 
 In Rust the classes and styles by part are `TextViewClasses` and `TextViewStyles`; a Rust view usually styles the
 parts with [`TextViewParts`](#typed-part-styles).

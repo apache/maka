@@ -1,9 +1,13 @@
 //! The `TextView` component: a [`Document`] shown with the primitives.
 
-use std::rc::{Rc, Weak};
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    rc::{Rc, Weak},
+};
 
 use nsh_core::{
-    ResizeMode,
+    ListContentStyle, ListViewport, ResizeMode,
     color::Hsla,
     geometry::{DefiniteLength, Length},
     ui::{
@@ -53,8 +57,12 @@ pub struct TextViewProps {
     /// Inline styles by part, over their classes.
     #[prop(default)]
     pub styles: Prop<TextViewStyles>,
-    /// Its texts can be selected and copied (a long press, or a drag with
-    /// a pointer), each block on its own.
+    /// Padding and spacing of the native document rows, in points.
+    /// Supplying a value replaces the complete content layout.
+    #[prop(default = default_content_style())]
+    pub content_style: Prop<ListContentStyle>,
+    /// Its mounted texts share one selection for copying (a long press,
+    /// or a drag with a pointer), joined by a surrounding SelectionArea.
     #[prop(default)]
     pub selectable: Prop<bool>,
     /// What a press on a link does: `"report"` (the default) reports it
@@ -340,93 +348,218 @@ pub fn TextView(props: TextViewProps, cx: Scope<TextViewEvent>) -> impl IntoElem
     let plugins = use_context::<MarkdownPlugins>().unwrap_or_default();
     let parsed = super::parse::document(props, plugins.clone(), cx);
     let document = parsed.document;
-    let blocks = computed(move || {
-        document.with(|d| d.blocks.iter().cloned().enumerate().collect::<Vec<_>>())
-    });
-    let count = computed(move || blocks.with(Vec::len));
-    let footnotes = computed(move || document.with(|d| d.footnotes.clone()));
-    let has_footnotes = computed(move || !footnotes.with(Vec::is_empty));
+    let count =
+        computed(move || document.with(|d| d.blocks.len() + usize::from(!d.footnotes.is_empty())));
     let plugins = Rc::new(plugins);
-    let row_plugins = plugins.clone();
     dynamic(move || {
         parsed.track_source();
-        let row_plugins = row_plugins.clone();
-        let plugins = plugins.clone();
-        view()
-            .flex_col()
-            .gap(px(BLOCK_GAP))
-            .text_size(px(BODY_SIZE))
-            .line_height(px(BODY_SIZE * BODY_LINE))
-            .text_color(move || theme().foreground)
-            // Selectable: its texts share one selection, block to block (inside
-            // a `SelectionArea`, the outer area's).
-            .selection_area(props.selectable)
-            .app_class(move || props.classes.with(|c| c.root.clone()))
-            .inline_style(move || {
-                props
-                    .styles
-                    .with(|s| s.root.as_ref().map(|s| s.0.clone()).unwrap_or_default())
+        // User choices belong to the source, not to a recycled list cell.
+        // Signals and event owners are still made under each logical row.
+        let choices = BlockChoices::new(document);
+        let prune = choices.clone();
+        effect(move || document.with(|document| prune.retain(document)));
+        let row_plugins = plugins.clone();
+        virtual_list(count, move |at| {
+            let rows = computed(move || {
+                let index = at.index();
+                document.with(|d| {
+                    d.blocks
+                        .get(index)
+                        .cloned()
+                        .map(|block| DocumentRow::Block(index, block))
+                        .or_else(|| {
+                            (index == d.blocks.len() && !d.footnotes.is_empty())
+                                .then_some(DocumentRow::Footnotes)
+                        })
+                        .into_iter()
+                        .collect::<Vec<_>>()
+                })
+            });
+            let plugins = row_plugins.clone();
+            let choices = choices.clone();
+            each(rows, DocumentRow::key, move |item, _| {
+                let cx = Cx::read(&props, cx, plugins.clone(), parsed, choices.clone());
+                // A cell follows Position. This owner instead follows the
+                // logical block, so its old callbacks cannot address a row
+                // that the cell starts showing later.
+                let content = match item.get_untracked() {
+                    DocumentRow::Block(index, _) => {
+                        let last = computed(move || document.with(|d| index + 1 == d.blocks.len()));
+                        let before = computed(move || {
+                            document.with(|d| {
+                                Before::of(index.checked_sub(1).and_then(|i| d.blocks.get(i)))
+                            })
+                        });
+                        let block = computed(move || match item.get() {
+                            DocumentRow::Block(_, block) => block,
+                            DocumentRow::Footnotes => unreachable!(),
+                        });
+                        cx.block(block, index.to_string(), last, before)
+                    }
+                    DocumentRow::Footnotes => {
+                        cx.footnotes(computed(move || document.with(|d| d.footnotes.clone())))
+                    }
+                };
+                view().child(content)
             })
-            .child(each(
-                blocks,
-                // By position and kind: the block a stream is writing keeps its
-                // row, and its row alone is made again.
-                |(index, block): &(usize, Block)| (*index, row_kind(block)),
-                move |item, index| {
-                    let plugins = row_plugins.clone();
-                    // A memo: a block added after this one runs it again only
-                    // when this one stops being the last.
-                    let last = computed(move || index.get() + 1 == count.get());
-                    // A memo as well: what comes before decides a heading's
-                    // room above it.
-                    let before = computed(move || match index.get() {
-                        0 => Before::Nothing,
-                        i => blocks.with(|b| Before::of(b.get(i - 1).map(|(_, b)| b))),
-                    });
-                    // A node as the row's root: an `Each` keeps rows by their
-                    // root's key, which a region has none of.
-                    let cx = Cx::read(&props, cx, plugins.clone(), parsed);
-                    let block = computed(move || item.get().1);
-                    let key = item.get_untracked().0.to_string();
-                    view().child(cx.block(block, key, last, before))
-                },
-            ))
-            .child(dynamic(move || {
-                if !has_footnotes.get() {
-                    return None;
-                }
-                let cx = untracked(|| Cx::read(&props, cx, plugins.clone(), parsed));
-                let footnote_cx = cx.clone();
-                let column = view()
-                    .flex_col()
-                    .gap(px(4.0))
-                    .text_size(px(SMALL_SIZE))
-                    .line_height(px(SMALL_SIZE * 1.6))
-                    .text_color(move || theme().muted_foreground);
-                Some(cx.part(column, Part::Footnotes).child(each(
-                    footnotes,
-                    |note: &super::Footnote| note.label.clone(),
-                    move |note, _| {
-                        let children = computed(move || note.get().children);
-                        let cx = footnote_cx.clone();
-                        let key = format!("f{}", note.get_untracked().index);
-                        cx.part(view().flex_row().gap(px(6.0)), Part::Footnote)
-                            .child(cx.part(
-                                text(move || format!("{}.", note.get().index)).selectable(false),
-                                Part::FootnoteLabel,
-                            ))
-                            .child(cx.with_line(SMALL_SIZE * 1.6, || {
-                                cx.blocks(
-                                    view().flex_col().flex_1().gap(px(4.0)),
-                                    children,
-                                    key,
-                                    computed(|| false),
-                                )
-                            }))
-                    },
-                )))
-            }))
+        })
+        .viewport(ListViewport::Parent)
+        .content_style(props.content_style)
+        .flex_col()
+        .keys(move || {
+            document.with(|d| {
+                d.blocks
+                    .iter()
+                    .enumerate()
+                    .map(|(index, block)| DocumentRowKey::Block(index, row_kind(block)))
+                    .chain((!d.footnotes.is_empty()).then_some(DocumentRowKey::Footnotes))
+                    .collect::<Vec<_>>()
+            })
+        })
+        .text_size(px(BODY_SIZE))
+        .line_height(px(BODY_SIZE * BODY_LINE))
+        .text_color(move || theme().foreground)
+        // Parent mode contributes these mounted texts to the surrounding
+        // reader and selection area; it owns no independent scroll offset.
+        .selection_area(props.selectable)
+        .app_class(move || props.classes.with(|c| c.root.clone()))
+        .inline_style(move || {
+            props
+                .styles
+                .with(|s| s.root.as_ref().map(|s| s.0.clone()).unwrap_or_default())
+        })
     })
+}
+
+fn default_content_style() -> ListContentStyle {
+    ListContentStyle {
+        row_gap: px(BLOCK_GAP),
+        ..ListContentStyle::default()
+    }
+}
+
+#[derive(Clone, PartialEq)]
+enum DocumentRow {
+    Block(usize, Block),
+    Footnotes,
+}
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum DocumentRowKey {
+    Block(usize, String),
+    Footnotes,
+}
+impl DocumentRow {
+    fn key(&self) -> DocumentRowKey {
+        match self {
+            Self::Block(index, block) => DocumentRowKey::Block(*index, row_kind(block)),
+            Self::Footnotes => DocumentRowKey::Footnotes,
+        }
+    }
+}
+
+/// Only user decisions outlive cells. Each mounted logical row creates its
+/// own signal; the source keeps values, never handles owned by retired cells.
+#[derive(Clone)]
+struct BlockChoices {
+    document: Signal<Document>,
+    values: Rc<RefCell<HashMap<ChoiceAddress, (Vec<String>, bool)>>>,
+    footnote: Option<String>,
+}
+impl BlockChoices {
+    fn new(document: Signal<Document>) -> Self {
+        Self {
+            document,
+            values: Rc::default(),
+            footnote: None,
+        }
+    }
+
+    fn for_footnote(&self, label: String) -> Self {
+        Self {
+            footnote: Some(label),
+            ..self.clone()
+        }
+    }
+
+    fn address(&self, path: &str) -> ChoiceAddress {
+        ChoiceAddress {
+            footnote: self.footnote.clone(),
+            // The renderer's footnote key contains a display number; its
+            // logical owner, and hence its choices, belong to the label.
+            path: if self.footnote.is_some() {
+                path.split_once('.').map_or("", |(_, path)| path).to_owned()
+            } else {
+                path.to_owned()
+            },
+        }
+    }
+
+    fn signal(&self, path: &str, initial: bool) -> Signal<bool> {
+        let address = self.address(path);
+        let owners = self.document.with_untracked(|d| choice_owners(d, &address));
+        let initial = self
+            .values
+            .borrow()
+            .get(&address)
+            .filter(|(old, _)| Some(old) == owners.as_ref())
+            .map_or(initial, |(_, value)| *value);
+        signal(initial)
+    }
+
+    fn set(&self, path: &str, value: bool) {
+        let address = self.address(path);
+        if let Some(owners) = self.document.with_untracked(|d| choice_owners(d, &address)) {
+            self.values.borrow_mut().insert(address, (owners, value));
+        }
+    }
+
+    fn retain(&self, document: &Document) {
+        self.values
+            .borrow_mut()
+            .retain(|path, (owners, _)| choice_owners(document, path).as_ref() == Some(&*owners));
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct ChoiceAddress {
+    footnote: Option<String>,
+    path: String,
+}
+
+/// Kind changes at any ancestor replace its logical owner and choices.
+/// Footnotes are addressed by label, independently of their display number.
+fn choice_owners(document: &Document, address: &ChoiceAddress) -> Option<Vec<String>> {
+    let mut indices = address.path.split('.');
+    let root = indices.next()?.parse::<usize>().ok()?;
+    let mut owners = Vec::new();
+    let mut block = if let Some(label) = &address.footnote {
+        let note = document
+            .footnotes
+            .iter()
+            .find(|note| &note.label == label)?;
+        owners.push(format!("footnote:{}", note.label));
+        note.children.get(root)?
+    } else {
+        document.blocks.get(root)?
+    };
+    owners.push(row_kind(block));
+    while let Some(index) = indices.next() {
+        let index = index.parse::<usize>().ok()?;
+        block = match block {
+            Block::Blockquote { children, .. } | Block::Details { children, .. } => {
+                children.get(index)?
+            }
+            Block::Custom(node) => node.children.get(index)?,
+            Block::List { items, .. } => {
+                let item = items.get(index)?;
+                owners.push(format!("item:{}", item.checked.is_some()));
+                item.children.get(indices.next()?.parse::<usize>().ok()?)?
+            }
+            _ => return None,
+        };
+        owners.push(row_kind(block));
+    }
+    Some(owners)
 }
 
 /// Syntax highlighting of code blocks, for Rust views: given to the text
@@ -495,6 +628,7 @@ struct Cx {
     selectable: bool,
     props: TextViewProps,
     source: DocumentState,
+    choices: BlockChoices,
     code_scroll_indicator: bool,
     table_scrollbar: bool,
     caret: Option<Slot>,
@@ -527,11 +661,13 @@ impl Cx {
         scope: Scope<TextViewEvent>,
         plugins: Rc<MarkdownPlugins>,
         source: DocumentState,
+        choices: BlockChoices,
     ) -> Self {
         Self {
             selectable: props.selectable.get(),
             props: *props,
             source,
+            choices,
             code_scroll_indicator: props.code_block_scrollbar.get(),
             table_scrollbar: props.table_scrollbar.get(),
             caret: props.streaming_caret.get(),
@@ -655,7 +791,9 @@ impl Cx {
             }
             Block::List { .. } => return self.list(block, key, tail),
             Block::Details { open, .. } => {
-                let shown = signal(open);
+                let shown = self.choices.signal(&key, open);
+                let choices = self.choices.clone();
+                let choice_key = key.clone();
                 let children = computed(move || match block.get() {
                     Block::Details { children, .. } => children,
                     _ => unreachable!(),
@@ -675,7 +813,11 @@ impl Cx {
                                     expanded: Some(shown.get()),
                                     ..AccessibilityState::default()
                                 })
-                                .on_press(move || shown.set(!shown.get_untracked())),
+                                .on_press(move || {
+                                    let value = !shown.get_untracked();
+                                    shown.set(value);
+                                    choices.set(&choice_key, value);
+                                }),
                             Part::Summary,
                         )
                         .child(
@@ -716,7 +858,13 @@ impl Cx {
         }
         let cx = self.clone();
         dynamic(move || {
-            let mut current = Cx::read(&cx.props, cx.scope, cx.plugins.clone(), cx.source);
+            let mut current = Cx::read(
+                &cx.props,
+                cx.scope,
+                cx.plugins.clone(),
+                cx.source,
+                cx.choices.clone(),
+            );
             current.list_depth = std::cell::Cell::new(cx.list_depth.get());
             current.line = std::cell::Cell::new(cx.line.get());
             let el = current.leaf(&block.get(), &key, tail.get(), before.get());
@@ -824,6 +972,43 @@ impl Cx {
                 kind: nsh_core::TextSourceKind::Replacement,
             }],
         )
+        .into_element()
+    }
+
+    fn footnotes(&self, footnotes: Memo<Vec<super::Footnote>>) -> AnyElement {
+        let cx = self.clone();
+        self.part(
+            view()
+                .flex_col()
+                .gap(px(4.0))
+                .text_size(px(SMALL_SIZE))
+                .line_height(px(SMALL_SIZE * 1.6))
+                .text_color(move || theme().muted_foreground),
+            Part::Footnotes,
+        )
+        .child(each(
+            footnotes,
+            |note: &super::Footnote| note.label.clone(),
+            move |note, _| {
+                let children = computed(move || note.get().children);
+                let key = format!("f{}", note.get_untracked().index);
+                let mut cx = cx.clone();
+                cx.choices = cx.choices.for_footnote(note.get_untracked().label);
+                cx.part(view().flex_row().gap(px(6.0)), Part::Footnote)
+                    .child(cx.part(
+                        text(move || format!("{}.", note.get().index)).selectable(false),
+                        Part::FootnoteLabel,
+                    ))
+                    .child(cx.with_line(SMALL_SIZE * 1.6, || {
+                        cx.blocks(
+                            view().flex_col().flex_1().gap(px(4.0)),
+                            children,
+                            key,
+                            computed(|| false),
+                        )
+                    }))
+            },
+        ))
         .into_element()
     }
 
@@ -1202,7 +1387,8 @@ impl Cx {
     /// The row owns controls and Wrap state. Only the code body changes as
     /// the source grows, so keyboard focus and the user's wrap choice survive.
     fn code_block(&self, code: Memo<CodeBlock>, key: &str, tail: Memo<bool>) -> AnyElement {
-        let wrapped = signal(
+        let wrapped = self.choices.signal(
+            key,
             self.code_block_actions
                 .iter()
                 .any(|a| a.id.as_ref() == "wrap"),
@@ -1222,7 +1408,7 @@ impl Cx {
                 move |action, _| {
                     let action = computed(move || action.get());
                     let key = format!("{action_key}.{}", action.get_untracked().id);
-                    action_cx.code_action_live(action, code, wrapped, &key)
+                    action_cx.code_action_live(action, code, wrapped, &key, &action_key)
                 },
             ));
         let cx = self.clone();
@@ -1239,7 +1425,13 @@ impl Cx {
         )
         .child(header)
         .child(dynamic(move || {
-            let cx = Cx::read(&cx.props, cx.scope, cx.plugins.clone(), cx.source);
+            let cx = Cx::read(
+                &cx.props,
+                cx.scope,
+                cx.plugins.clone(),
+                cx.source,
+                cx.choices.clone(),
+            );
             let code = code.get();
             let body = match &cx.highlighter {
                 Some(h) => text("").children(h.spans(&code)),
@@ -1296,9 +1488,12 @@ impl Cx {
         code: Memo<CodeBlock>,
         wrapped: Signal<bool>,
         key: &str,
+        choice_key: &str,
     ) -> AnyElement {
         let scope = self.scope;
         let owner = Owner::current();
+        let choices = self.choices.clone();
+        let choice_key = choice_key.to_owned();
         let id = action.get_untracked().id;
         let copy = id.as_ref() == "copy";
         let wrap = id.as_ref() == "wrap";
@@ -1348,7 +1543,9 @@ impl Cx {
                 }
                 let code = code.get_untracked();
                 if wrap {
-                    wrapped.set(!wrapped.get_untracked());
+                    let value = !wrapped.get_untracked();
+                    wrapped.set(value);
+                    choices.set(&choice_key, value);
                 }
                 if copy {
                     set_clipboard(code.code.clone());
@@ -2341,6 +2538,9 @@ mod tests {
                     .h(px(30.0))
                     .on_press(move || source.set("[same][ref]\n\n[ref]: file.txt".into())),
             )
+            .child(view().test_id("kind").h(px(30.0)).on_press(move || {
+                source.set(format!("{}\n---", source.get_untracked()).into());
+            }))
             .child(view().test_id("old").h(px(30.0)).on_press(move || {
                 status.set(format!(
                     "old {}",
@@ -2356,9 +2556,7 @@ mod tests {
                     .markdown(move || Some(source.get()))
                     .on_link_press(move |event: &TextViewLinkPressEvent| {
                         let target = event.target.clone().expect("original Link capability");
-                        if first.get_untracked().is_none() {
-                            first.set(Some(target.clone()));
-                        }
+                        first.set(Some(target.clone()));
                         presses.update(|n| *n += 1);
                         status.set(format!(
                             "press {} focus {}",
@@ -2381,12 +2579,19 @@ mod tests {
         app.wait_for("text:same").unwrap();
         app.press("text:same").unwrap();
         app.wait_for("press 1 focus true").unwrap();
+        // Prefix append keeps the source but changes this row's kind.
+        app.press("id:kind").unwrap();
+        app.wait_for("role:header").unwrap();
+        app.press("id:old").unwrap();
+        app.wait_for("old false").unwrap();
+        app.press("text:same").unwrap();
+        app.wait_for("press 2 focus true").unwrap();
         app.press("id:replace").unwrap();
         app.wait_for("text:same").unwrap();
         app.press("id:old").unwrap();
         app.wait_for("old false").unwrap();
         app.press("text:same").unwrap();
-        app.wait_for("press 2 focus true").unwrap();
+        app.wait_for("press 3 focus true").unwrap();
         let node = app.screen().press_target("text:same").unwrap().unwrap();
         assert!(
             app.screen()
@@ -2394,5 +2599,98 @@ mod tests {
                 .iter()
                 .any(|(id, command)| *id == node && matches!(command, nsh_core::Command::Focus))
         );
+    }
+
+    #[component]
+    fn DocumentViewportChoices() -> impl IntoElement {
+        let page = element_ref();
+        let source_id = signal(SharedString::from("first"));
+        let target = signal(None::<TextViewLinkTarget>);
+        let status = signal(String::from("ready"));
+        let presses = signal(0);
+        let source = format!(
+            "```text\ncode kept across recycling\n```\n\n<details><summary>Disclosure</summary>\n\ndisclosed child\n\n</details>\n\n[saved link](file.txt)\n\n{}\n\nviewport tail",
+            (0..80)
+                .map(|i| format!("filler {i}\n\n"))
+                .collect::<String>(),
+        );
+        view()
+            .flex_col()
+            .flex_1()
+            .child(
+                view()
+                    .test_id("bottom")
+                    .h(px(25.0))
+                    .on_press(move || page.scroll_to_end(false)),
+            )
+            .child(view().test_id("top").h(px(25.0)).on_press(move || {
+                page.scroll_to(point(px(0.0), px(0.0)), false);
+            }))
+            .child(view().test_id("old-link").h(px(25.0)).on_press(move || {
+                status.set(format!(
+                    "link live {}",
+                    target
+                        .get_untracked()
+                        .is_some_and(|target| target.is_live())
+                ));
+            }))
+            .child(
+                view()
+                    .test_id("reset")
+                    .h(px(25.0))
+                    .on_press(move || source_id.set("second".into())),
+            )
+            .child(text(move || status.get()))
+            .child(
+                scroll().flex_1().element_ref(&page).child(
+                    text_view()
+                        .markdown(source)
+                        .source_id(move || Some(source_id.get()))
+                        .code_block_actions(vec![TextViewCodeAction {
+                            id: "wrap".into(),
+                            label: Some("Wrap code".into()),
+                        }])
+                        .on_link_press(move |event: &TextViewLinkPressEvent| {
+                            target.set(event.target.clone());
+                            presses.update(|value| *value += 1);
+                            status.set(format!("link pressed {}", presses.get_untracked()));
+                        }),
+                ),
+            )
+    }
+
+    #[test]
+    fn document_viewport_recycles_link_owners_and_retains_source_choices() {
+        use nsh_core::{Size, ui::Root};
+        use nsh_testing::Headless;
+        let mut app = Headless::start(nsh_engine::EngineConfig {
+            viewport: Size::new(px(500.0), px(500.0)),
+            ..nsh_engine::EngineConfig::new(Root::of::<DocumentViewportChoices>())
+        })
+        .unwrap();
+        app.wait_for("label:Wrap code").unwrap();
+        assert!(app.screen().selected("label:Wrap code").unwrap());
+        app.press("label:Wrap code").unwrap();
+        assert!(!app.screen().selected("label:Wrap code").unwrap());
+        app.press("text:Disclosure").unwrap();
+        app.wait_for("disclosed child").unwrap();
+        app.press("text:saved link").unwrap();
+        app.wait_for("link pressed 1").unwrap();
+        app.press("id:bottom").unwrap();
+        app.wait_for("viewport tail").unwrap();
+        app.press("id:old-link").unwrap();
+        app.wait_for("link live false").unwrap();
+        app.press("id:top").unwrap();
+        app.wait_for("label:Wrap code").unwrap();
+        assert!(!app.screen().selected("label:Wrap code").unwrap());
+        app.wait_for("disclosed child").unwrap();
+        app.press("text:saved link").unwrap();
+        app.wait_for("link pressed 2").unwrap();
+        app.press("id:old-link").unwrap();
+        app.wait_for("link live true").unwrap();
+        app.press("id:reset").unwrap();
+        app.wait_for("label:Wrap code").unwrap();
+        assert!(app.screen().selected("label:Wrap code").unwrap());
+        assert!(!app.screen().shows("disclosed child"));
     }
 }

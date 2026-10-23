@@ -14,7 +14,7 @@ use crate::{
     ops::OverlayProp,
     overlay::{OverlayAnchor, TooltipContent},
     props::{AccessibilityActionDef, AccessibilityValue, Checked, PanActivation, Ripple},
-    ui::TsTypes,
+    ui::{JsHost, JsIn, JsKind, JsOwned, JsValue, PropError, TsTypes},
 };
 
 fn number<I: HostInput>(input: &I, key: &str) -> Option<f32> {
@@ -78,21 +78,7 @@ impl HostValue for ImageSource {
 /// `gap` / `rowGap` / `columnGap`.
 impl HostValue for ListContentStyle {
     fn decode<I: HostInput>(input: &I, _: &mut HostCx) -> Option<Self> {
-        let n = |key| points(input, key);
-        let all = n("padding").unwrap_or_default();
-        let horizontal = n("paddingHorizontal").unwrap_or(all);
-        let vertical = n("paddingVertical").unwrap_or(all);
-        let gap = n("gap").unwrap_or_default();
-        Some(ListContentStyle {
-            padding: EdgeInsets {
-                top: n("paddingTop").unwrap_or(vertical),
-                right: n("paddingRight").unwrap_or(horizontal),
-                bottom: n("paddingBottom").unwrap_or(vertical),
-                left: n("paddingLeft").unwrap_or(horizontal),
-            },
-            row_gap: n("rowGap").unwrap_or(gap),
-            column_gap: n("columnGap").unwrap_or(gap),
-        })
+        list_content(|key| Ok::<_, std::convert::Infallible>(points(input, key))).ok()
     }
 
     fn ts_type(types: &mut TsTypes) -> String {
@@ -104,6 +90,57 @@ impl HostValue for ListContentStyle {
              columnGap?: number;\n}"
                 .into()
         })
+    }
+}
+
+/// Resolve the list's existing shorthand/axis/side precedence at either
+/// native JS boundary. Both decoders use this one content layout shape.
+fn list_content<E>(n: impl Fn(&str) -> Result<Option<Points>, E>) -> Result<ListContentStyle, E> {
+    let all = n("padding")?.unwrap_or_default();
+    let horizontal = n("paddingHorizontal")?.unwrap_or(all);
+    let vertical = n("paddingVertical")?.unwrap_or(all);
+    let gap = n("gap")?.unwrap_or_default();
+    Ok(ListContentStyle {
+        padding: EdgeInsets {
+            top: n("paddingTop")?.unwrap_or(vertical),
+            right: n("paddingRight")?.unwrap_or(horizontal),
+            bottom: n("paddingBottom")?.unwrap_or(vertical),
+            left: n("paddingLeft")?.unwrap_or(horizontal),
+        },
+        row_gap: n("rowGap")?.unwrap_or(gap),
+        column_gap: n("columnGap")?.unwrap_or(gap),
+    })
+}
+
+impl JsValue for ListContentStyle {
+    fn ts_type(types: &mut TsTypes) -> String {
+        <Self as HostValue>::ts_type(types)
+    }
+
+    fn from_js(value: JsIn<'_>) -> Result<Self, PropError> {
+        if value.kind() != JsKind::Object {
+            return Err(value.expected("a ListContentStyle object"));
+        }
+        list_content(|key| {
+            let field = value.field(key)?;
+            Option::<Points>::from_js(field.get())
+                .map_err(|error| PropError(format!("`{key}`: {error}")))
+        })
+    }
+
+    fn to_js<'a>(&self, host: &'a dyn JsHost) -> Result<JsOwned<'a>, PropError> {
+        let object = JsOwned::new(host, host.new_object()?);
+        for (key, value) in [
+            ("paddingTop", self.padding.top),
+            ("paddingRight", self.padding.right),
+            ("paddingBottom", self.padding.bottom),
+            ("paddingLeft", self.padding.left),
+            ("rowGap", self.row_gap),
+            ("columnGap", self.column_gap),
+        ] {
+            host.set_field(object.get().raw(), key, value.to_js(host)?.into_raw())?;
+        }
+        Ok(object)
     }
 }
 
@@ -649,4 +686,41 @@ pub(crate) fn orientations<I: HostInput>(input: &I, _: &mut HostCx) -> Option<Mo
         };
     }
     Some(ModalProp::Orientations(bits))
+}
+
+#[cfg(test)]
+mod content_style_tests {
+    use super::*;
+    use crate::ui::json_host::JsonHost;
+    use serde_json::json;
+
+    #[test]
+    fn component_content_style_uses_list_shorthands_and_rejects_non_numeric_lengths() {
+        let host = JsonHost::default();
+        let input = host.value(json!({
+            "padding": 4, "paddingHorizontal": 6, "paddingTop": 9,
+            "gap": 12, "rowGap": 16,
+        }));
+        let content = ListContentStyle::from_js(JsIn::new(&host, input)).unwrap();
+        assert_eq!(
+            host.read(content.to_js(&host).unwrap()),
+            Some(json!({
+                "paddingTop": 9.0, "paddingRight": 6.0,
+                "paddingBottom": 4.0, "paddingLeft": 6.0,
+                "rowGap": 16.0, "columnGap": 12.0,
+            }))
+        );
+        let invalid = host.value(json!({ "rowGap": "10%" }));
+        assert!(
+            ListContentStyle::from_js(JsIn::new(&host, invalid))
+                .unwrap_err()
+                .to_string()
+                .contains("rowGap")
+        );
+        let empty = host.value(json!({}));
+        assert_eq!(
+            ListContentStyle::from_js(JsIn::new(&host, empty)).unwrap(),
+            ListContentStyle::default()
+        );
+    }
 }
