@@ -33,9 +33,11 @@ import type { HistoryCompactSummaryInput } from '../ai-sdk-compaction-contract.j
 import {
   buildHistoryCompactCheckpoint,
   renderHistoryCompactCheckpoint,
+  isProviderHistoryCompactCheckpoint,
 } from '../history-compact-checkpoint.js';
 import { planHistoryCompaction } from '../history-compaction.js';
 import { buildLlmHistorySummarizer } from '../history-compact-summarizer.js';
+import { testInvocationRecord } from './invocation-fixture.js';
 import { sectionedSummary } from './history-compact-test-fixtures.js';
 
 describe('OpenAI Codex compaction fallback', () => {
@@ -68,7 +70,7 @@ describe('OpenAI Codex compaction fallback', () => {
     assert.equal(fallbackCalls, 1);
   });
 
-  test('falls back when native state is unusable or its projection cannot fit', () => {
+  test('falls back on unusable native state but leaves capacity errors to the planner', () => {
     assert.equal(
       shouldFallbackFromOpenAiCodexHistoryCompaction(
         new HistoryCompactSummarizerError('invalid_provider_state'),
@@ -79,9 +81,102 @@ describe('OpenAI Codex compaction fallback', () => {
       shouldFallbackFromOpenAiCodexHistoryCompaction(
         new HistoryCompactSummarizerError('input_too_large'),
       ),
-      true,
+      false,
     );
   });
+
+  for (const alwaysOverflow of [false, true]) {
+    test(`native capacity ${alwaysOverflow ? 'failure terminates' : 'retry preserves the uncovered tail'} without text fallback`, async () => {
+      const events = [
+        runtimeEvent({
+          id: 'old-user',
+          role: 'user',
+          author: 'user',
+          content: { kind: 'text', text: 'OLD_USER '.repeat(100) },
+        }),
+        assistantTextEvent('old-model', 'old-step', 'OLD_MODEL '.repeat(100)),
+        runtimeEvent({
+          id: 'recent-user',
+          role: 'user',
+          author: 'user',
+          content: { kind: 'text', text: 'RECENT_USER' },
+        }),
+        assistantTextEvent('recent-model', 'recent-step', 'UNCOVERED_RECENT_REPLY'),
+      ];
+      let calls = 0;
+      let fallbackCalls = 0;
+      const model = new MockLanguageModelV4({
+        doStream: async (options) => {
+          if (++calls === 1 || alwaysOverflow)
+            throw Object.assign(new Error('prompt is too long: context length exceeded'), {
+              name: 'AI_APICallError',
+              statusCode: 400,
+            });
+          return await compactionModel().doStream(options);
+        },
+      });
+      const summarize = withOpenAiCodexHistoryCompactionFallback(
+        buildOpenAiCodexHistoryCompactor({
+          resolveModel: () => model,
+          connectionId: 'codex-subscription',
+          modelId: 'gpt-5.3-codex',
+        }),
+        async () => {
+          fallbackCalls += 1;
+          return sectionedSummary('TEXT_FALLBACK');
+        },
+      );
+      const invocation = testInvocationRecord({
+        sessionId: 'session-1',
+        runId: 'run-1',
+        turnId: 'turn-previous',
+        outcome: 'completed',
+        opening: {
+          route: {
+            provenance: 'runtime',
+            backendKind: 'ai-sdk',
+            llmConnectionId: 'codex-subscription',
+            llmConnectionSlug: 'codex-subscription',
+            modelId: 'gpt-5.3-codex',
+          },
+        },
+      });
+      const plan = await planHistoryCompaction({
+        sessionId: 'session-1',
+        phase: 'standalone',
+        orderedEvents: events,
+        invocations: [invocation],
+        acceptedRoute: { connectionId: 'codex-subscription', modelId: 'gpt-5.3-codex' },
+        summarize: ({ coveredRuntimeEvents }) =>
+          summarize({
+            sessionId: 'session-1',
+            turnId: 'turn-compact',
+            source: { foldedRuntimeEvents: [...coveredRuntimeEvents], invocations: [invocation] },
+          }),
+      });
+      assert.equal(model.doStreamCalls.length, 2);
+      assert.equal(fallbackCalls, 0);
+      assert.match(JSON.stringify(model.doStreamCalls[0]?.prompt), /UNCOVERED_RECENT_REPLY/);
+      assert.doesNotMatch(JSON.stringify(model.doStreamCalls[1]?.prompt), /UNCOVERED_RECENT_REPLY/);
+      if (alwaysOverflow) {
+        assert.deepEqual(plan, {
+          decision: 'fail_open',
+          reason: 'summarizer_failed',
+          diagnosticReason: 'input_too_large',
+        });
+      } else {
+        assert.equal(plan.decision, 'compacted');
+        if (plan.decision !== 'compacted') assert.fail('expected native checkpoint');
+        assert.equal(isProviderHistoryCompactCheckpoint(plan.checkpoint), true);
+        assert.deepEqual(
+          plan.tailRuntimeEvents.map((event) => event.id),
+          ['recent-model'],
+        );
+        assert.match(JSON.stringify(plan.replacementEvents), /UNCOVERED_RECENT_REPLY/);
+        assert.doesNotMatch(JSON.stringify(plan.checkpoint), /TEXT_FALLBACK/);
+      }
+    });
+  }
 
   test('does not fall back on cancellation, rate limits, or provider availability', () => {
     const rateLimit = new HistoryCompactSummarizerError('provider_error', {
@@ -142,7 +237,7 @@ describe('OpenAI Codex compaction output', () => {
 });
 
 describe('OpenAI Codex compaction input', () => {
-  test('preserves the verbatim head anchor of a text mid-turn checkpoint (#6154)', async () => {
+  test('preserves a historical text checkpoint head anchor after reasoning admission shifts its index (#6154)', async () => {
     const anchor = runtimeEvent({
       id: 'anchor',
       role: 'user',
@@ -166,14 +261,37 @@ describe('OpenAI Codex compaction input', () => {
     })({
       sessionId: 'session-1',
       turnId: 'turn-current',
-      source: { foldedRuntimeEvents: [anchor, old, tail] },
+      source: {
+        foldedRuntimeEvents: [
+          ...Array.from({ length: 3 }, (_, index) =>
+            runtimeEvent({
+              id: `old-reasoning-${index}`,
+              role: 'model',
+              author: 'agent',
+              content: {
+                kind: 'thinking',
+                text: '',
+                providerOptions: {
+                  openai: {
+                    itemId: `rs-${index}`,
+                    reasoningEncryptedContent: 'OLD_ENCRYPTED_REASONING',
+                  },
+                },
+              },
+            }),
+          ),
+          anchor,
+          old,
+          tail,
+        ],
+      },
       previousCheckpoint: previous,
       newlyFoldedRuntimeEvents: [tail],
     });
 
     const prompt = JSON.stringify(model.doStreamCalls[0]?.prompt);
     assert.match(prompt, /PORTABLE_SUMMARY.*EXACT_USER_DIRECTIVE.*NEW_TAIL/);
-    assert.doesNotMatch(prompt, /ALREADY_FOLDED/);
+    assert.doesNotMatch(prompt, /ALREADY_FOLDED|OLD_ENCRYPTED_REASONING/);
   });
 
   for (const nativeState of [true, false]) {

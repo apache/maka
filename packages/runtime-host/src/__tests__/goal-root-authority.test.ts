@@ -44,7 +44,7 @@ import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
-import { mkdir, mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile, readFile, rename } from 'node:fs/promises';
 import { backup, DatabaseSync } from 'node:sqlite';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -3298,7 +3298,7 @@ test('ShellRun crash fixture', { skip: !process.env.MAKA_SHELL_WAIT_CRASH_ROOT }
     );
   }
   await writeFile(
-    join(base, 'ready.json'),
+    join(base, 'ready.json.tmp'),
     JSON.stringify({
       sessionId: f.sessionId,
       waitId: wait.waitId,
@@ -3306,6 +3306,8 @@ test('ShellRun crash fixture', { skip: !process.env.MAKA_SHELL_WAIT_CRASH_ROOT }
       taskId: task.shellRunId,
     }),
   );
+  // Publish only the complete marker: the parent may read it as soon as it exists.
+  await rename(join(base, 'ready.json.tmp'), join(base, 'ready.json'));
   const keepAlive = setInterval(() => {}, 1000);
   try {
     await new Promise<void>(() => {});

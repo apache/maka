@@ -25,6 +25,7 @@ import { Composer, type ComposerHandle } from '../composer.js';
 import { ComposerModelPicker } from '../composer-model-picker.js';
 import { highestExecutorModelVariant } from '../executor-model-presentation.js';
 import { LocaleProvider } from '../locale-context.js';
+import { ToastProvider } from '../toast.js';
 import { installTranscriptDom } from './transcript-test-dom.js';
 import { deriveComposerModelSwitchAvailability } from '../composer-helpers.js';
 import { actions, catalog, choices, session } from './composer-model-picker-fixture.js';
@@ -45,7 +46,7 @@ test('new tasks can recover another Agent without changing their selection', asy
         /></LocaleProvider>);
         const { click, trigger } = actions(dom);
         await click([...dom.document.querySelectorAll('button')].find(el => el.textContent === (readiness === 'unavailable' ? 'Retry' : 'Go to sign in')));
-        assert.equal(trigger()?.textContent, selected ? 'Ready Agent · Family' : 'Native');
+        assert.equal(trigger()?.textContent, selected ? 'Family' : 'Native');
       }
     }
     assert.deepEqual(setup, ['agent', 'agent']);
@@ -144,7 +145,7 @@ test('external model families preserve opaque IDs, reset model-bound modes and r
     assert.equal(pending.at(-1), true);
     await act(async () => { finish(); });
     assert.equal(pending.at(-1), false);
-    assert.equal(trigger()?.textContent, 'Agent · Family');
+    assert.equal(trigger()?.textContent, 'Family');
     await click(trigger());
     await click(option('Other'));
     assert.deepEqual(writes.at(-1), { executorId: 'agent', configuration: { model: 'other' } });
@@ -226,4 +227,83 @@ test('model switching availability retains its priority and opaque family levels
   assert.deepEqual(deriveComposerModelSwitchAvailability({ sessionStatus: 'waiting_for_user' }), { available: false, pending: false, reason: 'permission' });
   assert.equal(deriveComposerModelSwitchAvailability({}).available, true);
   assert.equal(highestExecutorModelVariant(catalog[0]!.modelGroups![0]!), 'opaque-high');
+});
+
+test('agent loading stays in its section and failed refresh keeps the selected agent refresh button', async () => {
+  const dom = installTranscriptDom();
+  const retried: Array<string | undefined> = [];
+  try {
+    for (const selection of [undefined, { executorId: 'ready', configuration: { model: 'opaque-high' } }]) {
+      await dom.render(<LocaleProvider locale="en"><ToastProvider><ComposerModelPicker label="Native" choices={choices}
+        executor={{ catalog: [{ ...catalog[0]!, readiness: 'unavailable', models: [] }, { ...catalog[0]!, id: 'ready', displayName: 'Ready Agent', refreshFailed: true }],
+          selection, loading: true, loadingIds: ['agent'],
+          onSelect() {}, onSetup() {}, onRetry: id => { retried.push(id); }, onNewTask() {} }}
+      /></ToastProvider></LocaleProvider>);
+      const { click, trigger } = actions(dom);
+      assert.notEqual(trigger()?.getAttribute('aria-busy'), 'true', 'another agent never makes the current model busy');
+      assert.equal(dom.document.querySelector('.maka-executor-notice'), null);
+      assert.equal([...dom.document.querySelectorAll('button')].some(el => el.textContent === 'Retry'), false);
+      const refresh = dom.document.querySelector<HTMLButtonElement>('button[aria-label="Ready Agent: Refresh models"]');
+      if (selection) { assert.ok(refresh); await click(refresh); }
+      else assert.equal(refresh, null);
+      await click(trigger());
+      const pending = dom.document.querySelector('[role="group"][aria-label="Agent"]');
+      assert.match(pending?.textContent ?? '', /Loading models/);
+      const ready = dom.document.querySelector('[role="group"][aria-label="Ready Agent"]');
+      assert.match(ready?.textContent ?? '', /Family/);
+      await click(trigger());
+    }
+    assert.deepEqual(retried, ['ready']);
+  } finally { await dom.cleanup(); }
+});
+
+test('draft refresh appears only for the selected external agent and preserves its selection', async () => {
+  const dom = installTranscriptDom();
+  const retried: Array<string | undefined> = [];
+  let selectionWrites = 0;
+  try {
+    for (const executorId of [undefined, 'agent', 'other', undefined]) {
+      const selection = executorId ? { executorId, configuration: { model: 'opaque-high' } } : undefined;
+      const render = (loadingIds: string[] = []) => dom.render(<LocaleProvider locale="en"><ComposerModelPicker label="Native" choices={choices}
+        executor={{ catalog: [catalog[0]!, { ...catalog[0]!, id: 'other', displayName: 'Other Agent' }],
+          selection, loadingIds,
+          onSelect() { selectionWrites++; }, onSetup() {}, onRetry: id => { retried.push(id); }, onNewTask() {} }}
+      /></LocaleProvider>);
+      await render();
+      const { click, trigger } = actions(dom);
+      const refresh = (name: string) => dom.document.querySelector<HTMLButtonElement>(`button[aria-label="${name}: Refresh models"]`);
+      if (!executorId) {
+        assert.equal(refresh('Agent'), null);
+        assert.equal(refresh('Other Agent'), null);
+        continue;
+      }
+      const name = executorId === 'agent' ? 'Agent' : 'Other Agent';
+      const otherName = executorId === 'agent' ? 'Other Agent' : 'Agent';
+      assert.ok(refresh(name));
+      assert.equal(refresh(otherName), null);
+      await click(refresh(name));
+      assert.equal(trigger()?.textContent, 'Family');
+      await render([executorId === 'agent' ? 'other' : 'agent']);
+      assert.notEqual(refresh(name)?.getAttribute('aria-disabled'), 'true');
+      await render([executorId]);
+      assert.equal(refresh(name)?.getAttribute('aria-disabled'), 'true');
+      await click(refresh(name));
+    }
+    assert.deepEqual(retried, ['agent', 'other']);
+    assert.equal(selectionWrites, 0);
+  } finally { await dom.cleanup(); }
+});
+
+test('inventory errors retry the roster even with a valid external selection', async () => {
+  const dom = installTranscriptDom();
+  const retried: Array<string | undefined> = [];
+  try {
+    await dom.render(<LocaleProvider locale="en"><ComposerModelPicker label="Native" choices={choices}
+      executor={{ catalog, selection: { executorId: 'agent', configuration: { model: 'opaque-high' } },
+        error: 'Inventory unavailable',
+        onSelect() {}, onSetup() {}, onRetry: id => { retried.push(id); }, onNewTask() {} }}
+    /></LocaleProvider>);
+    await actions(dom).click([...dom.document.querySelectorAll('button')].find(el => el.textContent === 'Retry'));
+    assert.deepEqual(retried, [undefined], 'a successful single-agent read cannot repair the inventory');
+  } finally { await dom.cleanup(); }
 });

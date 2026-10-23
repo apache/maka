@@ -24,6 +24,7 @@ import { InitiativeStore } from './store.js';
 import { InitiativeController } from './controller.js';
 import { initializeBot } from '../bot/host.js';
 import { registerAssistant } from './assistant.js';
+import { DISCOVERY_EXCLUDED_TOOLS } from './discovery-capabilities.js';
 export async function initializeInitiative(
   ctx: AssistantModuleServices,
   directory: string,
@@ -46,6 +47,14 @@ export async function initializeInitiative(
   registerAssistant(ctx, store, controller);
   ctx.backgroundSessions.register(() =>
     store.get()?.discoverySession ? [store.get().discoverySession] : [],
+  );
+  // Discovery investigates and reports; it must not hold conversation-mutating tools.
+  if (!ctx.tools.filter)
+    throw Error('Assistant tool filtering is required to bound discovery Sessions');
+  ctx.tools.filter((sessionId, tools) =>
+    store.get()?.discoverySession === sessionId
+      ? tools.filter((tool) => !DISCOVERY_EXCLUDED_TOOLS.has(tool.name))
+      : tools,
   );
   ctx.tools.register({
     name: 'DiscoveryReport',

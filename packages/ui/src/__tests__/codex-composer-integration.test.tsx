@@ -93,7 +93,7 @@ test('the real Codex contribution shares one Composer picker with native and ACP
     assert.deepEqual(writes.at(-1), { executorId: 'codex.app-server', model: 'codex-model', thinkingLevel: 'high' });
     assert.equal(dom.document.querySelector('button[aria-label="Send"]')?.getAttribute('aria-disabled'), 'true');
     await act(async () => { finish(); });
-    assert.match(trigger()?.textContent ?? '', /Codex.*Codex model/);
+    assert.equal(trigger()?.textContent, 'Codex model');
     await click(trigger('.maka-thinking-level-selector'));
     await click(option('Low'));
     assert.deepEqual(writes.at(-1), { executorId: 'codex.app-server', model: 'codex-model', thinkingLevel: 'low' });
@@ -101,7 +101,7 @@ test('the real Codex contribution shares one Composer picker with native and ACP
     await click(trigger());
     await click(option('Other'));
     assert.deepEqual(writes.at(-1), { executorId: 'agent', configuration: { model: 'other' } });
-    assert.equal(trigger()?.textContent, 'Agent · Other');
+    assert.equal(trigger()?.textContent, 'Other');
     await click(trigger());
     await click(dom.document.querySelector('[role="group"][aria-label="second"] [role="option"]'));
     assert.deepEqual(writes.at(-1), { llmConnectionId: 'second', llmConnectionSlug: 'second', model: 'gpt-6.1-sol' });
