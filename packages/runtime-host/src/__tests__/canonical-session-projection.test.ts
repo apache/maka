@@ -181,7 +181,8 @@ test('projects pending Interactions and preflights their combined snapshot capac
       rootAdmissions: new RootAdmissionOwner(stores.agentRunStore),
       messages,
     });
-    for (let index = 0; index < 5; index += 1) {
+    // Reserve space for the bounded wait summary as well as the Goal.
+    for (let index = 0; index < 4; index += 1) {
       const established = await stores.interactionStore.establishRequest(
         largePendingInteraction(session.id, index),
       );
@@ -190,10 +191,10 @@ test('projects pending Interactions and preflights their combined snapshot capac
 
     const canonical = await reader.read(session.id);
     assert.ok(canonical);
-    assert.equal(canonical.interactions.pending.length, 5);
+    assert.equal(canonical.interactions.pending.length, 4);
     assert.deepEqual(
       canonical.interactions.pending.map((interaction) => interaction.interactionId),
-      Array.from({ length: 5 }, (_, index) => `interaction-${index}`),
+      Array.from({ length: 4 }, (_, index) => `interaction-${index}`),
     );
 
     const emptyQueue = messages.projection(session.id);
@@ -237,7 +238,8 @@ test('projects pending Interactions and preflights their combined snapshot capac
 test('preflights queued steering at the exact in-flight snapshot boundary', async () => {
   await withStores(async (root, stores) => {
     const session = await stores.sessionStore.create(sessionInput(root));
-    for (let index = 0; index < 5; index += 1) {
+    // Reserve space for the bounded wait summary as well as the Goal.
+    for (let index = 0; index < 4; index += 1) {
       const established = await stores.interactionStore.establishRequest(
         largePendingInteraction(session.id, index),
       );
@@ -807,7 +809,9 @@ function largestFittingFollowupQueue(
       {
         entryId: 'large-entry',
         messageId: 'large-message',
-        content: { text: 'q'.repeat(TURN_MESSAGE_TEXT_MAX_BYTES) },
+        // A full maximum-size message plus the reserved Goal/wait no longer
+        // fits the shared frame; fill the remaining space with the searched tail.
+        content: { text: 'q'.repeat(TURN_MESSAGE_TEXT_MAX_BYTES / 2) },
         placement: 'next_turn',
         state: 'queued',
       },

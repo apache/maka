@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { PersonalAssistantEnableSwitch } from '../features/personal-assistant/index.js';
 import { JevSettingsSection } from '../features/jev-settings';
 import { useEffect, useMemo, useState } from "react";
 import { PersonalizationSettingsSection } from "./personalization-settings-section";
@@ -290,6 +291,22 @@ export function GeneralSettingsPage(props: {
               }}
             />
           }
+        />
+        <SettingsRow
+          label={copy.personalAssistant}
+          description={copy.personalAssistantHelp}
+          end={host && runtimeHostTargetVerified ? (
+            <RuntimeHostSettingsGenerationBoundary>
+              <PersonalAssistantEnableSwitch
+                host={host}
+                label={copy.personalAssistant}
+                isLabelHidden
+                isDisabled={!runtimeHostSettingsInteractive}
+              />
+            </RuntimeHostSettingsGenerationBoundary>
+          ) : (
+            <Switch label={copy.personalAssistant} isLabelHidden value={false} isDisabled />
+          )}
         />
       </SettingsSection>
       {showRuntimeHostDefaults ? (

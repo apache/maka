@@ -47,10 +47,13 @@ export type {
 import type { ToolResultPrunePolicy } from './tool-result-archive.js';
 import {
   applyRuntimeEventHistoryCompact as applyRuntimeEventHistoryCompactNarrow,
-  isHistoryCompactContentEvent,
   type HistoryCompactionPolicy,
   type HistoryCompactionReplayResult,
 } from './history-compaction.js';
+import {
+  isHistoryCompactContentEvent,
+  type HistoryCompactCheckpoint,
+} from './history-compact-checkpoint.js';
 
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type {
@@ -58,7 +61,6 @@ import type {
   ContextBudgetDiagnostic,
 } from '@maka/core/usage-stats/types';
 import { compactionDecisionDiagnosticPatch } from './compaction-boundary.js';
-import type { HistoryCompactCheckpoint } from './history-compact-checkpoint.js';
 
 export interface ContextBudgetPolicy {
   name?: string;

@@ -867,6 +867,10 @@ export class DesktopRuntimeHostClient {
     return result.project;
   }
 
+  resolveImageDelivery(sessionId: string, request: import('@maka/core/image-delivery').ImageDeliveryRequest): Promise<import('@maka/core/image-delivery').ImageDeliveryResult> {
+    return this.request('artifact.image.resolve', { ...request, sessionId });
+  }
+
   async listArtifacts(sessionId: string): Promise<ArtifactProjection[]> {
     for (let attempt = 0; attempt < MAX_OPTIMISTIC_ATTEMPTS; attempt += 1) {
       const first = await this.request("artifact.query", {
@@ -1483,6 +1487,10 @@ export class DesktopRuntimeHostClient {
     input: OperationInput<"usage.query">,
   ): Promise<OperationOutput<"usage.query">> {
     return this.request("usage.query", input);
+  }
+
+  cancelGoalEventWait(input: OperationInput<"goal.event-wait.cancel">): Promise<OperationOutput<"goal.event-wait.cancel">> {
+    return this.request("goal.event-wait.cancel", input);
   }
 
   queryGoal(sessionId: string): Promise<OperationOutput<"goal.query">> {

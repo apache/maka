@@ -41,6 +41,12 @@ export type ComposerSlashCommand =
   | { kind: 'graph'; command: ParsedGraphCommand }
   | { kind: 'swarm'; command: ParsedSwarmCommand };
 
+/** Whether a submit starts a turn, which the Host runs under the Session's settings. */
+function startsTurn(command: ComposerSlashCommand | null): boolean {
+  if (!command) return true;
+  return (command.kind === 'swarm' || command.kind === 'graph') && command.command.kind === 'run_once';
+}
+
 export interface RevisionDraftIdentity {
   sourceSessionId: string;
   draftSessionId: string;
@@ -79,6 +85,18 @@ export interface RevisionSendShellCopy {
  * tests must call it rather than re-implementing its ordering.
  */
 export interface RevisionSendPorts<TDraft extends RevisionDraftIdentity> {
+  /**
+   * #4695: the Session's setting writes observed since the user's submit.
+   * Settled before a revision copies the Session or the send starts.
+   */
+  sendSettlement?: { settled(): Promise<boolean> };
+  /**
+   * Captures the surface and selection this submit came from; the returned
+   * check says whether the user is still on it. Navigation keeps the Session
+   * id, so the id alone cannot answer that (#1433). Required so the
+   * production wiring cannot be dropped silently.
+   */
+  captureSubmitSurface: () => () => boolean;
   shellCopy: RevisionSendShellCopy;
   toastApi: {
     info(title: string, description?: string): void;
@@ -172,14 +190,23 @@ export function createStagedFollowUp(ports: {
  */
 export function createRevisionAwareOnSend<TDraft extends RevisionDraftIdentity>(
   ports: RevisionAwareOnSendPorts<TDraft>,
-): (text: string, metadata?: ComposerSendMetadata, captured?: ComposerStagingSubmission) => Promise<boolean | void> {
-  return (text, metadata, captured) => {
+): (
+  text: string,
+  metadata?: ComposerSendMetadata,
+  captured?: ComposerStagingSubmission,
+  settlement?: { settled(): Promise<boolean> },
+) => Promise<boolean | void> {
+  return (text, metadata, captured, settlement) => {
     const staging = captured ?? ports.captureStaging();
     return composerSend({
       pending: staging.submittableAttachments,
       retainAttachments: staging.retainAttachments,
       setPending: ports.setNewTaskSendPending,
-      send: (value, context) => revisionAwareSend({ ...ports, captureStaging: () => staging }, value, context),
+      send: (value, context) => revisionAwareSend({
+        ...ports,
+        captureStaging: () => staging,
+        ...(settlement ? { sendSettlement: settlement } : {}),
+      }, value, context),
     })(text, metadata);
   };
 }
@@ -220,6 +247,20 @@ export async function revisionAwareSend<TDraft extends RevisionDraftIdentity>(
     if (queued) delete ports.retractedWorkspaceReferencesRef.current[sessionId];
     return queued;
   }
+  // #4695: settle before a revision copies the source Session's settings and
+  // before the send reads them; a failed write keeps the draft. Only a submit
+  // that starts a turn runs under those settings, so local commands skip it.
+  const settlement = startsTurn(slashCommand) ? ports.sendSettlement : undefined;
+  if (settlement) {
+    const surfaceIsCurrent = ports.captureSubmitSurface();
+    if (
+      !(await settlement.settled()) ||
+      ports.activeIdRef.current !== sessionId ||
+      !surfaceIsCurrent()
+    ) {
+      return false;
+    }
+  }
   if (revisionSend && revision) {
     const actionCopy = ports.revisionUnavailableCopy;
     if (slashCommand) {
@@ -229,6 +270,9 @@ export async function revisionAwareSend<TDraft extends RevisionDraftIdentity>(
     // The attachments / mixed-context refusals live inside the revision
     // lifecycle (prepareRevisionSend), which toasts and stops the send.
     if (!(await ports.prepareRevisionSend(text))) return false;
+    // A source write can still fail while the copy is prepared. The child
+    // stays prepared, so an explicit retry sends into it like any refusal.
+    if (settlement && !(await settlement.settled())) return false;
   }
   if (slashCommand?.kind === 'compact') {
     const compactSessionId = ports.activeIdRef.current;

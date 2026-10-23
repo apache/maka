@@ -56,7 +56,9 @@ export interface BotIncomingMainService {
 
 interface BotIncomingMainServiceDeps {
   sessions: BotSessionAdapter;
+  readMode?(platform: BotIncomingMessage['platform']): Promise<'assistant' | 'task' | 'workhub'>;
   workHub?: WorkHubRemoteBridge;
+  assistants?: Partial<Record<BotIncomingMessage['platform'], { handle(message: BotIncomingMessage): Promise<void>; close(): Promise<void> }>>;
   botRegistry: BotRegistry;
 }
 
@@ -86,6 +88,23 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
   }
 
   async function handleAcceptedBotIncomingMessage(message: BotIncomingMessage): Promise<void> {
+    if (await deps.readMode?.(message.platform) === 'assistant') {
+      const bridge = deps.assistants?.[message.platform];
+      const label = message.platform;
+      // Assistant mode uses durable source deduplication in submitMessage.
+      try {
+        if (!bridge) throw Error(`${label}个人助手暂不可用，请检查个人助手设置。`);
+        if (!message.text.trim()) {
+          await deps.botRegistry.sendMessage(message.platform, message.chatId, nonTextMessageAck(message.attachmentKind ?? 'unknown'));
+          return;
+        }
+        await bridge.handle(message);
+      } catch (error) {
+        await deps.botRegistry.sendMessage(message.platform, message.chatId,
+          generalizedErrorMessageForLocale(error, `${label}个人助手暂不可用，请在桌面端检查设置`, 'zh-CN')).catch(() => null);
+      }
+      return;
+    }
     if (rememberBotSourceEvent(message)) return;
     const text = message.text.trim();
     // PR-BOT-NON-TEXT-MESSAGE-ACK-0: previously a photo / voice / sticker
@@ -120,7 +139,7 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
   function close(): Promise<void> {
     if (closeTask) return closeTask;
     closed = true;
-    closeTask = Promise.allSettled([...activeTasks, deps.workHub?.close()]).then(() => {
+    closeTask = Promise.allSettled([...activeTasks, deps.workHub?.close(), ...Object.values(deps.assistants ?? {}).map((bridge) => bridge?.close())]).then(() => {
       botConversationSessions.clear();
       botConversationQueues.clear();
       botRecentSourceEventKeys.clear();
@@ -327,6 +346,12 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
         sessionId,
         turnId,
         text: formatBotMessageForSession({ ...message, text }),
+        origin: {
+          kind: 'external_connector',
+          connectorId: message.platform,
+          // BotMessageEvent calls the connector sender identity userId.
+          ...(message.userId ? { senderId: message.userId } : {}),
+        },
         onReplySnapshot: (snapshot) => replyStream?.update(snapshot),
       });
       // PR-BOT-TYPING-INDICATOR-0 (external bot research): keep "Maka 正在
@@ -362,6 +387,7 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
       } finally {
         typingAbort.abort();
         await typingLoop.catch(() => {});
+        await deps.botRegistry.cancelTypingIndicator?.(message.platform, message.chatId).catch(() => false);
       }
       if (closed) {
         await replyStream?.abort();

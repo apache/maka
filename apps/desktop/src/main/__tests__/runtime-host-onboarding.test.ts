@@ -34,6 +34,51 @@ const OPERATOR = {
   modulePath: '/home/operator/.local/share/maka/operator.mjs',
 };
 
+test('checks SSH project directories against the probed Host platform before setup', async () => {
+  const roots = [{ label: 'Work', path: 'C:\\projects' }];
+  for (const platform of ['win32', 'linux'] as const) {
+    let setupCalls = 0;
+    const harness = createHarness({
+      resolveSshNodeIdentity: async () => ({ platform, architecture: 'x64' }),
+      profiles: { addAndEnableVerified: async (input) => ({ profileId: input.profile.id }) },
+      runSetup: async (input) => {
+        setupCalls++;
+        assert.equal(input.remotePlatform, 'win32');
+        assert.deepEqual(input.projectDirectoryRoots, roots);
+        return {
+          serviceId: 'b'.repeat(64), deploymentId: '00000000-0000-4000-8000-000000000001',
+          rootPath: 'C:\\Maka', rootId: 'a'.repeat(64),
+          operator: { kind: 'node', platform: 'win32', nodePath: 'C:\\node.exe', modulePath: 'C:\\Maka\\operator.mjs' },
+          endpoint: 'ws://127.0.0.1:7443/runtime-host', credential: 'secret-access-token',
+        };
+      },
+    });
+    try {
+      const result = await harness.invoke('runtime-host-onboarding:start', {
+        kind: 'ssh', name: 'Lab', destination: 'operator@example.com', projectDirectoryRoots: roots,
+      });
+      assert.equal((result as { kind: string }).kind, platform === 'win32' ? 'complete' : 'failed');
+      assert.equal(setupCalls, platform === 'win32' ? 1 : 0);
+      if (platform === 'linux') assert.match(JSON.stringify(result), /Project directory is invalid/u);
+    } finally {
+      await harness.onboarding.close();
+    }
+  }
+});
+
+test('rejects Windows directories for WSL before starting setup', async () => {
+  const harness = createHarness();
+  try {
+    const result = await harness.invoke('runtime-host-onboarding:start', {
+      kind: 'wsl', distribution: 'Ubuntu', projectDirectoryRoots: [{ label: 'Work', path: 'C:\\work' }],
+    });
+    assert.equal((result as { kind: string }).kind, 'failed');
+    assert.match(JSON.stringify(result), /Project directory is invalid/u);
+  } finally {
+    await harness.onboarding.close();
+  }
+});
+
 test('persists a verified on-demand SSH profile without endpoint or credential projection', async () => {
   let setupInput: unknown;
   let saved:

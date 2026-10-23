@@ -141,6 +141,10 @@ export function createDesktopRuntimeHostOnboarding(input: {
         return await runWsl(request, setupPackage, signal);
       }
       const nodeIdentity = await resolveSshNodeIdentity(request, signal);
+      const remotePlatform = nodeIdentity.platform === 'win32' ? 'win32' : 'posix';
+      const projectDirectoryRoots = request.projectDirectoryRoots === undefined
+        ? undefined
+        : requireProjectDirectoryRoots(request.projectDirectoryRoots, remotePlatform);
       const peerTarget = input.setupPackageMode === 'development'
         ? runtimeHostPeerTargetFromNode(nodeIdentity.platform, nodeIdentity.architecture)
         : 'none';
@@ -166,11 +170,11 @@ export function createDesktopRuntimeHostOnboarding(input: {
           destination: request.destination,
           ...(request.sshPort === undefined ? {} : { sshPort: request.sshPort }),
           setupPackage,
-          remotePlatform: nodeIdentity.platform === 'win32' ? 'win32' : 'posix',
+          remotePlatform,
           lifecycle,
           principalId: `desktop:${input.clientInstanceId}`,
-          ...(request.projectDirectoryRoots
-            ? { projectDirectoryRoots: request.projectDirectoryRoots }
+          ...(projectDirectoryRoots
+            ? { projectDirectoryRoots }
             : {}),
           signal,
         },
@@ -348,7 +352,7 @@ function requireOnboardingInput(value: unknown): DesktopRuntimeHostOnboardingInp
   }
   const roots = input.projectDirectoryRoots === undefined
     ? undefined
-    : requireProjectDirectoryRoots(input.projectDirectoryRoots);
+    : requireProjectDirectoryRoots(input.projectDirectoryRoots, input.kind === 'wsl' ? 'posix' : undefined);
   if (input.kind === 'wsl') {
     if (
       typeof input.distribution !== 'string' ||

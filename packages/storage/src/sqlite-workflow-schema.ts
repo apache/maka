@@ -19,7 +19,8 @@
 
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_WORKFLOW_SCHEMA_VERSION = 13;
+// v15 excludes acknowledged deliveries from active wait ownership and delivery scans.
+export const SQLITE_WORKFLOW_SCHEMA_VERSION = 15;
 
 const RELEASED_WORKFLOW_PROJECTION_TABLES = [
   {
@@ -41,6 +42,9 @@ const RELEASED_WORKFLOW_PROJECTION_TABLES = [
 
 export function migrateSqliteWorkflowDatabase(db: DatabaseSync): void {
   retireReleasedWorkflowProjections(db);
+  db.exec(
+    'DROP INDEX IF EXISTS workflow_event_waits_one_active_session; DROP INDEX IF EXISTS workflow_event_waits_pending',
+  );
   db.exec(`
     DROP INDEX IF EXISTS workflow_plan_reminders_order;
     DROP TABLE IF EXISTS workflow_plan_reminders;
@@ -158,10 +162,26 @@ export function migrateSqliteWorkflowDatabase(db: DatabaseSync): void {
     );
     CREATE INDEX IF NOT EXISTS workflow_event_waits_by_session
       ON workflow_event_waits(session_id, wait_id);
+    CREATE INDEX IF NOT EXISTS workflow_event_waits_by_status
+      ON workflow_event_waits(status, wait_id);
+    CREATE INDEX IF NOT EXISTS workflow_event_waits_observation_order
+      ON workflow_event_waits(COALESCE(json_extract(record_json, '$.observation.lastAttemptAt'), 0), wait_id)
+      WHERE status = 'waiting';
     CREATE INDEX IF NOT EXISTS workflow_event_waits_pending
-      ON workflow_event_waits(wait_id) WHERE status IN ('waiting', 'resolved');
+      ON workflow_event_waits(wait_id) WHERE status IN ('waiting', 'resolved') AND json_extract(record_json, '$.delivery') IS NULL;
     CREATE UNIQUE INDEX IF NOT EXISTS workflow_event_waits_one_active_session
-      ON workflow_event_waits(session_id) WHERE status IN ('waiting', 'resolved');
+      ON workflow_event_waits(session_id) WHERE status IN ('waiting', 'resolved') AND json_extract(record_json, '$.delivery') IS NULL;
+
+    CREATE INDEX IF NOT EXISTS workflow_event_waits_delivery ON workflow_event_waits(status, wait_id) WHERE status IN ('resolved', 'expired') AND json_extract(record_json, '$.delivery') IS NULL;
+
+    CREATE TABLE IF NOT EXISTS workflow_event_wait_source_cooldowns (
+      source_key TEXT PRIMARY KEY,
+      until_ms INTEGER NOT NULL CHECK (until_ms >= 0),
+      dispatch_token TEXT,
+      dispatch_until_ms INTEGER NOT NULL DEFAULT 0 CHECK (dispatch_until_ms >= 0)
+    );
+    CREATE INDEX IF NOT EXISTS workflow_event_wait_source_cooldowns_expiry
+      ON workflow_event_wait_source_cooldowns(MAX(until_ms, dispatch_until_ms), source_key);
 
     CREATE TABLE IF NOT EXISTS workflow_goal_authority (
       session_id TEXT PRIMARY KEY,

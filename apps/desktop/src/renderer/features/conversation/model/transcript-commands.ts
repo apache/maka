@@ -44,7 +44,9 @@ export function createTranscriptCommands(workspace: ConversationWorkspace, feedb
         const snapshot = controller.store.snapshot();
         if (snapshot.sessionId !== sessionId) return false;
         ui.clearMessageLoadError(sessionId);
-        return required === undefined || snapshot.messages.some((message) => message.id === required && workspace.isMessagePublished(message));
+        // A parked window has no live bubble; durable proof can settle it
+        // without publishing or acknowledging the unseen tail.
+        return required === undefined || snapshot.hasNewer === true || snapshot.messages.some((message) => message.id === required && workspace.isMessagePublished(message));
       } catch (error) {
         if (isCurrent()) reportError(sessionId, error);
         return false;

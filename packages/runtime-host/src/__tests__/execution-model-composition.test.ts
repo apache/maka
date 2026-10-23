@@ -51,13 +51,17 @@ import {
   type ExecutionBoundary,
 } from '@maka/core/sandbox-boundary';
 import { PROVIDER_REGISTRY } from '@maka/core/llm-connections';
+import { installRefreshedModelMetadata } from '@maka/core/model-metadata';
 import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 import {
   decodeRequestCompositionSnapshot,
   decodeRunCompositionSnapshot,
 } from '@maka/core/run-composition';
 import { readInvocation, testInvocationRecord } from '@maka/runtime/test-only/invocation-fixture';
-import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
+import {
+  ASSISTANT_BACKGROUND_SESSION_LABEL,
+  WORKHUB_COORDINATION_SESSION_ID,
+} from '@maka/core/session';
 import { messageContentDigest } from '@maka/core/events';
 import { runtimeInvocationOutcome } from '@maka/core/runtime-invocation';
 import { agentRunCompositionFromEvents } from '@maka/core/agent-run';
@@ -168,7 +172,7 @@ const MAX_IMPLEMENTATION_CHILD_REQUESTS =
 const HEADLESS_CODING_V1_PROMPT_HASH =
   'sha256:e490f6055478bf8cdcef1aa85217de623f0954120a692358dbba2065ba6710fc';
 const HEADLESS_CODING_V1_TOOLS_HASH =
-  'sha256:b4fd61c4eeec3ed41f22d36b61c800331e6c18a9704f5b7806acafea919945b0';
+  'sha256:1c225493cbb6c72bb34e2e7a669cec45aa27bfef73dab2f2df05dfb6bb7c1dae';
 const execFileAsync = promisify(execFile);
 test('backend creation resolves a bound Session by immutable Connection identity', async () => {
   let observedRef: unknown;
@@ -1016,7 +1020,7 @@ test('Host reopens one projected image from its ArtifactStore authority', async 
             name: 'ProjectedImage',
             description: 'Return one inline image.',
             parameters: z.object({}),
-            recoveryMode: 'replay_safe',
+            recoveryMode: 'never_auto_retry',
             impl: async () => ({ private: 'raw execution fact' }),
             toModelOutput: () => ({
               type: 'content',
@@ -1372,6 +1376,144 @@ test('provider dispatch fails closed when the Request Composition epoch commit f
   } finally {
     await backend?.dispose();
     await provider.close();
+  }
+});
+
+test('persistent assistant Bot compacts on wake by default without changing ordinary sessions or user thresholds', async () => {
+  for (const scenario of [
+    'bot',
+    'ordinary',
+    'discovery',
+    'explicit',
+    'below',
+    'unknown',
+  ] as const) {
+    const provider = await startProvider();
+    let checkpoints = 0;
+    const anchor = compactRuntimeTextEvent(
+      'wake',
+      'wake-turn',
+      'user',
+      'user',
+      'Inbox has new mail',
+    );
+    const prior = [
+      compactRuntimeTextEvent(
+        'old-user',
+        'old-turn',
+        'user',
+        'user',
+        'OLD_BOT_HISTORY '.repeat(100),
+      ),
+      compactRuntimeTextEvent(
+        'old-assistant',
+        'old-turn',
+        'model',
+        'agent',
+        'Previously handled messages.',
+      ),
+      {
+        ...compactRuntimeTextEvent('prior-usage', 'old-turn', 'model', 'agent', ''),
+        role: 'system' as const,
+        author: 'system' as const,
+        content: undefined,
+        actions: {
+          tokenUsage: {
+            input: 7_000,
+            output: 10,
+            lastRequestAnchor: {
+              inputTokens: scenario === 'below' ? 1_000 : 7_000,
+              outputTokens: 10,
+            },
+          },
+        },
+      },
+    ];
+    const fixture = backendCreationFixture({
+      abortSignal: new AbortController().signal,
+      resolveExecutionConnection: async () => {
+        const ready = readyExecutionConnection(provider.baseUrl);
+        return {
+          ...ready,
+          connection: {
+            ...ready.connection,
+            ...(scenario === 'unknown' ? { models: [{ id: MODEL_ID }] } : {}),
+            ...(scenario === 'explicit'
+              ? {
+                  modelOverrides: {
+                    [MODEL_ID]: { compactionThreshold: 20_000 },
+                  },
+                }
+              : {}),
+          },
+        };
+      },
+      readPricing: async () => ({ revision: 0, overrides: [] }),
+      loadTurnRuntimeEvents: async () => [anchor],
+      recordHistoryCompactCheckpoint: async () => {
+        checkpoints += 1;
+      },
+    });
+    fixture.context.header.labels =
+      scenario === 'ordinary'
+        ? []
+        : [
+            ASSISTANT_BACKGROUND_SESSION_LABEL,
+            scenario === 'discovery' ? 'initiative:owner' : 'assistant-bot:owner',
+          ];
+    fixture.context.allowMidTurnHistoryCompaction = true;
+    const backend = await createHostAiSdkBackend(fixture);
+    try {
+      const events = [];
+      for await (const event of backend.send({
+        runId: 'wake-run',
+        turnId: 'wake-turn',
+        text: 'Inbox has new mail',
+        context: [],
+        headAnchorRuntimeEvent: anchor,
+        runtimeContext: prior,
+        runtimeContextInvocations: [
+          testInvocationRecord({
+            sessionId: 'backend-creation-session',
+            runId: 'compact-source-run',
+            turnId: 'old-turn',
+            openedAt: 1,
+            closedAt: 2,
+            outcome: 'completed',
+            opening: {
+              route: {
+                provenance: 'runtime',
+                backendKind: 'ai-sdk',
+                llmConnectionId: '11111111-1111-4111-8111-111111111111',
+                llmConnectionSlug: 'backend-creation-connection',
+                modelId: MODEL_ID,
+              },
+              configuration: { cwd: '/workspace' },
+            },
+          }),
+        ],
+      }))
+        events.push(event);
+      assert.equal(
+        events.some((event) => event.type === 'error'),
+        false,
+        JSON.stringify(events),
+      );
+      assert.equal(checkpoints, scenario === 'bot' ? 1 : 0, scenario);
+      const main = provider.requests.filter((request) => request.body.stream === true);
+      assert.equal(main.length, 1, scenario);
+      assert.equal(
+        JSON.stringify(main[0]?.body).includes('OLD_BOT_HISTORY'),
+        scenario !== 'bot',
+        scenario,
+      );
+      assert.ok(JSON.stringify(main[0]?.body).includes('Inbox has new mail'), scenario);
+      if (scenario === 'bot')
+        assert.match(JSON.stringify(main[0]?.body), /maka_history_compact_checkpoint/);
+    } finally {
+      await backend.dispose();
+      await provider.close();
+    }
   }
 });
 
@@ -2631,6 +2773,8 @@ test('hosted execution freezes the headless coding provider wire contract', asyn
     assert.match(instructions ?? '', /^Active model: deepseek-v4-flash$/mu);
     assert.ok(Array.isArray(tools));
     assert.equal(stableHash(instructions), HEADLESS_CODING_V1_PROMPT_HASH);
+    // Preserve optional tool arguments on the provider wire as well as the dispatch schema.
+    assert.ok(tools.every((tool: { strict?: boolean }) => tool.strict === false));
     assert.equal(stableHash(tools), HEADLESS_CODING_V1_TOOLS_HASH);
     assert.deepEqual(responsesToolNames(request?.body), [
       'Bash',
@@ -2844,6 +2988,13 @@ test('production Host executes a canonical ai-sdk Session against a real provide
       { skillHomeDirectory: home },
     );
     await composition.recover();
+    // This test freezes the ordinary-session wire contract, independently of
+    // the assistant's default enablement and additional tools.
+    const assistantDisabled = await composition.handlers['personal-assistant.call'](
+      { method: 'assistant.set-enabled', input: { enabled: false } },
+      connectionContext,
+    );
+    assert.equal(assistantDisabled.ok, true, JSON.stringify(assistantDisabled));
     const memoryState = await composition.handlers['memory.query'](
       { kind: 'state' },
       connectionContext,
@@ -2948,6 +3099,7 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     // must never see WebSearch in the effective root tool surface. Non-direct
     // bound tools stay deferred behind tool_search until activated, except
     // request_sandbox_boundary which stays visible in sandboxed Sessions.
+    // The personal assistant is default-off, so its tools must stay absent.
     assert.deepEqual(toolNames(request?.body), [
       'AskUserQuestion',
       'Bash',
@@ -6100,9 +6252,49 @@ function runtimeEnvironment(body: Record<string, unknown>): {
     .flatMap(({ content }) =>
       typeof content === 'string' ? [content] : (content ?? []).map(({ text }) => text ?? ''),
     )
-    .filter((text) => text.startsWith('Runtime Host environment for this turn'));
-  assert.equal(contexts.length, 1, JSON.stringify(body));
-  return JSON.parse(contexts[0]!.slice(contexts[0]!.indexOf('\n') + 1));
+    .filter((text) => text.startsWith('Runtime context (runtime.environment;'))
+    .map((text) => text.slice(text.indexOf('\n') + 1));
+  assert.ok(contexts.length > 0, JSON.stringify(body));
+  const current = contexts.at(-1)!;
+  assert.ok(current.startsWith('Runtime Host environment for this turn'));
+  return JSON.parse(current.slice(current.indexOf('\n') + 1));
+}
+
+// The provider fixture must reason about the current user turn: historical
+// context and successful association calls now remain in the request prefix.
+function workHubAssociationPending(body: Record<string, unknown>): boolean {
+  const input = Array.isArray(body.input) ? body.input : [];
+  const textOf = (item: any): string =>
+    typeof item.content === 'string'
+      ? item.content
+      : (item.content ?? []).map((part: any) => part.text ?? '').join('');
+  const currentUser = input.reduce(
+    (latest: number, item: any, index: number) =>
+      item.role === 'user' && !textOf(item).startsWith('Runtime context (') ? index : latest,
+    -1,
+  );
+  const hasInstruction = input.some(
+    (item: any) =>
+      item.role === 'user' &&
+      textOf(item).includes('Before answering or performing other work, record this turn'),
+  );
+  const current = input.slice(currentUser + 1);
+  const associations = new Set(
+    current
+      .filter(
+        (item: any) =>
+          item.type === 'function_call' &&
+          (item.name === 'exec' || item.name === 'mcp__desktop_workhub__tasks') &&
+          String(item.arguments).includes('associate'),
+      )
+      .map((item: any) => item.call_id),
+  );
+  return (
+    hasInstruction &&
+    !current.some(
+      (item: any) => item.type === 'function_call_output' && associations.has(item.call_id),
+    )
+  );
 }
 
 function responsesDeveloperPrompt(body: Record<string, unknown> | undefined): string | undefined {
@@ -6355,12 +6547,7 @@ async function handleProviderRequest(
   });
   if (request.url === '/v1/responses') {
     const serialized = JSON.stringify(body);
-    if (
-      workHubAssociation &&
-      JSON.stringify(body.input).includes(
-        'Before answering or performing other work, record this turn',
-      )
-    ) {
+    if (workHubAssociation && workHubAssociationPending(body)) {
       respondProviderResponsesAssociation(
         response,
         requests.length,
@@ -7064,101 +7251,123 @@ test('prompt suggestions use the least reasoning each model accepts, reject trun
   }
 });
 
-test('prompt suggestions ask Kimi K3 for its lowest effort instead of its default thinking', async () => {
-  const MODEL_ID = 'k3';
-  const base = await mkdtemp(join(tmpdir(), 'maka-host-kimi-suggestion-'));
-  const capability = await resolveStorageRoot({
-    path: join(base, 'interactive'),
-    kind: 'interactive',
+for (const scenario of [
+  {
+    name: 'prompt suggestions disable Kimi K3 thinking when refreshed metadata declares none',
+    efforts: ['none', 'low', 'high', 'max'],
+    thinking: { type: 'disabled' },
+    effort: undefined,
+    maxTokens: 128,
+  },
+  {
+    name: 'prompt suggestions ask Kimi K3 for low effort when refreshed metadata has no none',
+    efforts: ['low', 'high', 'max'],
+    thinking: { type: 'adaptive' },
+    effort: 'low',
+    maxTokens: 1_024,
+  },
+]) {
+  test(scenario.name, async (t) => {
+    const MODEL_ID = 'k3';
+    // Host tests refresh process-wide models.dev data. Pin each catalog shape
+    // so both the `none` and lowest-effort request paths stay covered.
+    installRefreshedModelMetadata({
+      'kimi-coding-plan': {
+        [MODEL_ID]: { thinkingOptions: { efforts: scenario.efforts } },
+      },
+    });
+    t.after(() => installRefreshedModelMetadata(undefined));
+    const base = await mkdtemp(join(tmpdir(), 'maka-host-kimi-suggestion-'));
+    const capability = await resolveStorageRoot({
+      path: join(base, 'interactive'),
+      kind: 'interactive',
+    });
+    const owner = await tryAcquireInteractiveRootOwner(capability);
+    assert.ok(owner);
+    if (!owner) return;
+
+    const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+    const usage = await openInteractiveUsageStoresForWrite(owner.lease);
+    const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
+    try {
+      const created = await policy.connectionCatalog.create({
+        expectedCatalogRevision: 0,
+        connection: {
+          slug: 'kimi-coding-plan',
+          name: 'Kimi Coding Plan',
+          providerType: 'kimi-coding-plan',
+          enabled: true,
+          enabledModelIds: [MODEL_ID],
+        },
+      });
+      assert.equal(created.kind, 'committed');
+      if (created.kind !== 'committed') return;
+      const connection = created.snapshot.connections[0];
+      assert.ok(connection);
+      if (!connection) return;
+      const credential = await policy.credentialVault.set({
+        locator: { scope: 'connection', connectionId: connection.connectionId, kind: 'api_key' },
+        expected: null,
+        secret: API_KEY,
+      });
+      assert.equal(credential.kind, 'committed');
+      await publishConnectionModel(policy, connection.connectionId, MODEL_ID);
+      const session = await execution.sessionStore.create({
+        cwd: capability.canonicalPath,
+        llmConnectionId: connection.connectionId,
+        llmConnectionSlug: 'kimi-coding-plan',
+        model: MODEL_ID,
+        permissionMode: 'ask',
+      });
+
+      let requestBody: Record<string, unknown> = {};
+      const suggest = createHostPromptSuggestionModel({
+        runtimePolicy: policy,
+        oauthCredentials: new HostOAuthExecutionAuthority(policy),
+        usage,
+        requestDrain: () => assert.fail('prompt suggestion telemetry must not drain the Host'),
+        newId: () => 'kimi-suggestion',
+        createFetchTransport: () => ({
+          close: async () => {},
+          fetch: (async (_url, init) => {
+            requestBody = JSON.parse(String(init?.body));
+            return Response.json({
+              id: 'msg-1',
+              type: 'message',
+              role: 'assistant',
+              model: MODEL_ID,
+              content: [{ type: 'text', text: 'Yes, add the tests next.' }],
+              stop_reason: 'end_turn',
+              stop_sequence: null,
+              usage: { input_tokens: 7, output_tokens: 6 },
+            });
+          }) as typeof fetch,
+        }),
+      });
+
+      const text = await suggest(
+        {
+          sessionId: session.id,
+          turnId: 'turn',
+          terminalEventId: 'terminal',
+          header: session,
+          messages: [],
+        },
+        new AbortController().signal,
+      );
+
+      assert.equal(text, 'Yes, add the tests next.');
+      assert.deepEqual(requestBody.thinking, scenario.thinking);
+      const serializedRequestBody = JSON.stringify(requestBody);
+      if (scenario.effort === undefined) {
+        assert.doesNotMatch(serializedRequestBody, /"effort"/);
+      } else {
+        assert.match(serializedRequestBody, /"effort":"low"/);
+      }
+      assert.equal(requestBody.max_tokens, scenario.maxTokens);
+    } finally {
+      await owner.close();
+      await rm(base, { recursive: true, force: true });
+    }
   });
-  const owner = await tryAcquireInteractiveRootOwner(capability);
-  assert.ok(owner);
-  if (!owner) return;
-
-  const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
-  const usage = await openInteractiveUsageStoresForWrite(owner.lease);
-  const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
-  try {
-    const created = await policy.connectionCatalog.create({
-      expectedCatalogRevision: 0,
-      connection: {
-        slug: 'kimi-coding-plan',
-        name: 'Kimi Coding Plan',
-        providerType: 'kimi-coding-plan',
-        enabled: true,
-        enabledModelIds: [MODEL_ID],
-      },
-    });
-    assert.equal(created.kind, 'committed');
-    if (created.kind !== 'committed') return;
-    const connection = created.snapshot.connections[0];
-    assert.ok(connection);
-    if (!connection) return;
-    const credential = await policy.credentialVault.set({
-      locator: { scope: 'connection', connectionId: connection.connectionId, kind: 'api_key' },
-      expected: null,
-      secret: API_KEY,
-    });
-    assert.equal(credential.kind, 'committed');
-    await publishConnectionModel(policy, connection.connectionId, MODEL_ID);
-    const session = await execution.sessionStore.create({
-      cwd: capability.canonicalPath,
-      llmConnectionId: connection.connectionId,
-      llmConnectionSlug: 'kimi-coding-plan',
-      model: MODEL_ID,
-      permissionMode: 'ask',
-    });
-
-    let requestBody: Record<string, unknown> = {};
-    const suggest = createHostPromptSuggestionModel({
-      runtimePolicy: policy,
-      oauthCredentials: new HostOAuthExecutionAuthority(policy),
-      usage,
-      requestDrain: () => assert.fail('prompt suggestion telemetry must not drain the Host'),
-      newId: () => 'kimi-suggestion',
-      createFetchTransport: () => ({
-        close: async () => {},
-        fetch: (async (_url, init) => {
-          requestBody = JSON.parse(String(init?.body));
-          return Response.json({
-            id: 'msg-1',
-            type: 'message',
-            role: 'assistant',
-            model: MODEL_ID,
-            content: [{ type: 'text', text: 'Yes, add the tests next.' }],
-            stop_reason: 'end_turn',
-            stop_sequence: null,
-            usage: { input_tokens: 7, output_tokens: 6 },
-          });
-        }) as typeof fetch,
-      }),
-    });
-
-    const text = await suggest(
-      {
-        sessionId: session.id,
-        turnId: 'turn',
-        terminalEventId: 'terminal',
-        header: session,
-        messages: [],
-      },
-      new AbortController().signal,
-    );
-
-    assert.equal(text, 'Yes, add the tests next.');
-    assert.deepEqual(
-      requestBody.thinking,
-      { type: 'adaptive' },
-      'K3 must be sent an explicit thinking mode, not left on its default',
-    );
-    assert.match(
-      JSON.stringify(requestBody),
-      /"effort":"low"/,
-      'K3 must be asked for its lowest effort, not its default maximum',
-    );
-    assert.equal(requestBody.max_tokens, 1_024);
-  } finally {
-    await owner.close();
-    await rm(base, { recursive: true, force: true });
-  }
-});
+}

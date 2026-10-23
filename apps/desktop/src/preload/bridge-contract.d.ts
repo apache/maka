@@ -116,6 +116,7 @@ import type {
   DesktopTranscriptBatch,
   DesktopTranscriptHandle,
   DesktopTranscriptOpenMode,
+  DesktopTranscriptPosition,
 } from './transcript-contract.js';
 import type { PetPackManifestV1 } from '@maka/core/pet';
 import type {
@@ -910,6 +911,7 @@ export interface MakaBridge {
     command<K extends RendererRuntimeHostCommandOperation>(
       operation: K,
       input: OperationInput<K>,
+      host?: DesktopRuntimeHostRef,
     ): Promise<OperationOutput<K>>;
   };
 
@@ -1029,7 +1031,8 @@ export interface MakaBridge {
   };
 
   newTasks: {
-    getExecutors(target: DesktopNewTaskTarget, cwd: string, refresh?: boolean): Promise<readonly import('@maka/core/executor-catalog').ExecutorCatalogEntry[]>;
+    getExecutors(target: DesktopNewTaskTarget, cwd: string, refresh?: boolean, executorId?: string): Promise<readonly import('@maka/core/executor-catalog').ExecutorCatalogEntry[]>;
+    listExecutors(target: DesktopNewTaskTarget, cwd: string): Promise<readonly import('@maka/core/executor-catalog').ExecutorCatalogEntry[]>;
     getCatalog(): Promise<DesktopNewTaskCatalog>;
     subscribeChanges(handler: () => void): () => void;
     addProject(host: DesktopNewTaskHostRef, name?: string): Promise<
@@ -1280,7 +1283,7 @@ export interface MakaBridge {
     ): Promise<
       | {
           ok: true;
-          disposition: 'turn_started' | 'steering' | 'followup' | 'locally_saved';
+          disposition: 'turn_started' | 'steering' | 'followup' | 'locally_saved' | 'inbox';
           turnId?: string;
           attachments: import('@maka/core/events').AttachmentRef[];
           inlineReferences: import('@maka/core/events').InlineReference[];
@@ -1475,6 +1478,7 @@ export interface MakaBridge {
       mode?: DesktopTranscriptOpenMode,
       /** The oldest sequence the reader already holds; the first answer reads back down to it. */
       resumeFrom?: number,
+      position?: DesktopTranscriptPosition,
     ): Promise<DesktopTranscriptHandle>;
   };
   externalSessions: {
@@ -1584,7 +1588,8 @@ export interface MakaBridge {
   };
   goal: {
     /** The session's current goal (null when none is set). */
-    get(sessionId: string): Promise<import('@maka/runtime/goal-state').GoalState | null>;
+    get(sessionId: string): Promise<import('../shared/goal-arm').DesktopGoal | null>;
+    cancelEventWait(input: import('@maka/runtime-host/protocol').GoalEventWaitCancelInput): Promise<import('@maka/runtime-host/protocol').GoalEventWaitCancelResult>;
     /**
      * Arm a goal for this session. It drives the session from the next turn
      * on; arming alone starts nothing. Rejects when the session already has an
@@ -1745,6 +1750,7 @@ export interface MakaBridge {
       | { ok: true; base64: string; mimeType: string }
       | { ok: false; reason: string }
     >;
+    resolveImageDelivery: import('@maka/core/image-delivery').ResolveImageDelivery;
     readBytes(sessionId: string, artifactId: string): Promise<ArtifactBinaryReadResult>;
   };
   search: {

@@ -18,9 +18,13 @@
  */
 
 import assert from 'node:assert/strict';
+import { BotStore } from '../assistant/bot/store.js';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
+import net from 'node:net';
+import dns from 'node:dns/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
 import {
   TOOL_BOUNDARY_PROTOCOL_V1,
@@ -41,6 +45,7 @@ import { runtimeHandoffPause } from '@maka/core/runtime-handoff';
 import { deferred } from '@maka/core/test-only/async-primitives';
 import { runtimeInvocationFailureClass } from '@maka/runtime/runtime-event-read-model';
 import { parseNoRealConnectionError } from '@maka/core/connection-error-copy';
+import { PluginAgentService, type PluginAgentRuntime } from '@maka/runtime/plugin-agent-service';
 import { createRequire } from 'node:module';
 import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -71,7 +76,7 @@ import { fingerprintAgentGraphRunnableIntent } from '@maka/runtime/stream-graph-
 import type { AgentGraphRunnableIntent } from '@maka/runtime/stream-graph-readiness';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
-import { createSqliteRuntimeStore } from '@maka/storage/sqlite-runtime-store';
+import { SqliteRuntimeStore, createSqliteRuntimeStore } from '@maka/storage/sqlite-runtime-store';
 import { createSessionStore } from '@maka/storage/session-store';
 import {
   LONG_TERM_MEMORY_DATABASE_NAME,
@@ -106,6 +111,7 @@ import {
   RUNTIME_HOST_PROTOCOL_VERSION,
   type ClientCapabilityHostFrame,
 } from '../protocol/index.js';
+import { PersonalAssistantService } from '../assistant/service.js';
 import { RootTurnCoordinator } from '../server/root-turn-coordinator.js';
 import { HostWorkHubResultCoordinator } from '../server/workhub-result-coordinator.js';
 import { readLedgerMessages } from './fixtures/ledger-transcript.js';
@@ -125,6 +131,652 @@ const HANDOFF_TEST_COMPOSITION = createRunCompositionSnapshot({
   baseProviderOptionsHash: `sha256:${'0'.repeat(64)}`,
   toolNames: [],
   contextWindow: null,
+});
+
+test('Plugin Agent background messages cannot race Root Turn startup recovery', async (t) => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    let runtime!: PluginAgentRuntime;
+    let earlyAttempt!: Promise<void>;
+    const bind = PluginAgentService.prototype.bindRuntime;
+    const initiator = {
+      sessionId: randomUUID(),
+      turnId: randomUUID(),
+      cwd: root,
+      abortSignal: new AbortController().signal,
+    };
+    t.mock.method(
+      PluginAgentService.prototype,
+      'bindRuntime',
+      function (this: PluginAgentService, bound: PluginAgentRuntime) {
+        runtime = bound;
+        // Activation callbacks run while the persisted admission tip is not yet loaded.
+        earlyAttempt = assert.rejects(
+          bound.followup(initiator.sessionId, 'continue unfinished index', initiator),
+          /not ready for Plugin Agent messages/,
+        );
+        return bind.call(this, bound);
+      },
+    );
+    const { composition } = await createCapturedExecutionComposition(owner);
+    try {
+      await earlyAttempt;
+      // After recovery, normal ownership validation is reachable again.
+      await assert.rejects(
+        runtime.followup(initiator.sessionId, 'continue unfinished index', initiator),
+        /outside the current ownership tree/,
+      );
+      composition.beginDrain();
+      await assert.rejects(
+        runtime.followup(initiator.sessionId, 'continue unfinished index', initiator),
+        /not ready for Plugin Agent messages/,
+      );
+    } finally {
+      await composition.close();
+    }
+  });
+});
+
+test('assistant messages enter a durable Inbox through real Host admission without running the visible chat', {
+  timeout: 20000,
+}, async (t) => {
+  let assistant!: PersonalAssistantService;
+  let mailbox!: BotStore;
+  const delivered = BotStore.prototype.delivered;
+  t.mock.method(BotStore.prototype, 'delivered', function (this: BotStore, id: string) {
+    mailbox = this;
+    return delivered.call(this, id);
+  });
+  const recover = PersonalAssistantService.prototype.recover;
+  t.mock.method(
+    PersonalAssistantService.prototype,
+    'recover',
+    function (this: PersonalAssistantService, ...args: Parameters<typeof recover>) {
+      assistant = this;
+      return recover.apply(this, args);
+    },
+  );
+  await withCompositionRoot(async ({ root, owner }) => {
+    const executed = new Set<string>();
+    const { composition, manager } = await createCapturedExecutionComposition(owner, {
+      primaryBackendFactory: (context) =>
+        new (class extends FakeBackend {
+          override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+            executed.add(context.sessionId);
+            yield* super.send({ ...input, text: FAKE_HOLD_OPEN_PROMPT });
+          }
+        })(context),
+    });
+    const residencies = new HostResidencyRegistry();
+    const caller: ConnectionContext = {
+      hostEpoch: 'execution-composition-test',
+      connectionId: 'client',
+      principal: 'local_owner',
+      principalKind: 'local_owner',
+      acquireResidency: () => residencies.acquire('assistant-test'),
+    };
+    try {
+      const enabled = await composition.handlers['personal-assistant.call'](
+        { method: 'assistant.set-enabled', input: { enabled: true } },
+        caller,
+      );
+      assert.equal(enabled.ok, true);
+      const chat = await manager.createSession({
+        cwd: root,
+        llmConnectionId: FAKE_CONNECTION_ID,
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'ask',
+        labels: ['personal-assistant'],
+      });
+      const bound = await composition.handlers['personal-assistant.call'](
+        { method: 'assistant.bind', input: { sessionId: chat.id } },
+        caller,
+      );
+      assert.equal(bound.ok, true, JSON.stringify(bound));
+      const frames: any[] = [];
+      composition.continuity!.attachConnection('client', {
+        send: async (frame) => {
+          frames.push(frame);
+        },
+      });
+      const opened = await composition.handlers['subscription.open'](
+        { sessionId: chat.id, transcript: { kind: 'tail', maxBytes: 64000 } },
+        caller,
+      );
+      assert.ok(opened.ok, JSON.stringify(opened));
+      if (!opened.ok) return;
+      await composition.handlers['subscription.ready'](
+        { subscriptionId: opened.result.subscriptionId },
+        caller,
+      );
+      const messageId = randomUUID();
+      const submit = () =>
+        composition.handlers['turn.message.submit'](
+          {
+            originHostEpoch: 'execution-composition-test',
+            sessionId: chat.id,
+            messageId,
+            content: { text: '帮我安排一下，先别直接执行。', inlineReferences: [] },
+            placement: 'current_turn',
+          },
+          caller,
+        );
+      const first = await submit();
+      assert.equal(first.ok, true, JSON.stringify(first));
+      if (first.ok) assert.equal(first.result.disposition, 'inbox');
+      assert.deepEqual(await submit(), first);
+      // Canonical legacy conversation storage remains usable without a model Turn.
+      const sessionStore = createSessionStore(root);
+      const messages = await sessionStore.readMessages(chat.id);
+      assert.equal(messages.filter((row) => row.id === messageId).length, 1);
+      // Crash window: canonical history committed, outbox acknowledgement did not.
+      mailbox.db.prepare('UPDATE outbox SET delivered=0 WHERE id=?').run(messageId);
+      await assistant.receiveUser(chat.id, messageId, {
+        text: '帮我安排一下，先别直接执行。',
+        inlineReferences: [],
+      });
+      assert.equal(mailbox.pendingVisible().length, 0);
+      assert.equal(
+        (await sessionStore.readMessages(chat.id)).filter((row) => row.id === messageId).length,
+        1,
+      );
+      // Semantic changes must still be rejected rather than silently treated as replay.
+      const row = mailbox.db.prepare('SELECT payload FROM outbox WHERE id=?').get(messageId)!;
+      const altered = { ...JSON.parse(String(row.payload)), text: 'different content' };
+      mailbox.db
+        .prepare('UPDATE outbox SET payload=?, delivered=0 WHERE id=?')
+        .run(JSON.stringify(altered), messageId);
+      await assert.rejects(
+        assistant.receiveUser(chat.id, messageId, {
+          text: '帮我安排一下，先别直接执行。',
+          inlineReferences: [],
+        }),
+        /Assistant message identity conflict/,
+      );
+      mailbox.db
+        .prepare('UPDATE outbox SET payload=?, delivered=0 WHERE id=?')
+        .run(String(row.payload), messageId);
+      await assistant.receiveUser(chat.id, messageId, {
+        text: '帮我安排一下，先别直接执行。',
+        inlineReferences: [],
+      });
+      const proof = await composition.handlers['turn.message.execution.query'](
+        { sessionId: chat.id, messageIds: [messageId] },
+        caller,
+      );
+      assert.deepEqual(proof, {
+        ok: true,
+        result: { resolutions: [{ messageId, state: 'inbox' }] },
+      });
+      let worker: string | undefined;
+      await pollFor(async () => {
+        worker = ((await assistant.call('assistant.status', { includeMemory: false })) as any).bot
+          ?.sessionId;
+        return !!worker && executed.has(worker);
+      });
+      const send = assistant.tools.find((tool) => tool.name === 'SendUser')!;
+      const call = {
+        sessionId: worker!,
+        turnId: randomUUID(),
+        toolCallId: randomUUID(),
+        cwd: root,
+        abortSignal: new AbortController().signal,
+        emitOutput() {},
+      };
+      await send.impl(
+        { messageId: 'host-reply', messages: [{ summary: '已接手', text: '好的，我来安排。' }] },
+        call,
+      );
+      await send.impl(
+        { messageId: 'host-reply', messages: [{ summary: '已接手', text: '好的，我来安排。' }] },
+        call,
+      );
+      const replies = (await sessionStore.readMessages(chat.id)).filter(
+        (row) => row.type === 'assistant',
+      );
+      assert.equal(replies.length, 1);
+      assert.equal(replies[0].text, '好的，我来安排。');
+      assert.equal(replies[0].summary, '已接手');
+      // Both visible directions are published in the canonical continuity snapshot.
+      await pollFor(() =>
+        frames.some((frame) => frame.kind === 'subscription.transcript_advanced'),
+      );
+      const continuity = await composition.handlers['subscription.open'](
+        { sessionId: chat.id, transcript: { kind: 'tail', maxBytes: 64000 } },
+        caller,
+      );
+      assert.equal(continuity.ok, true, JSON.stringify(continuity));
+      if (continuity.ok) {
+        const parts = continuity.result.transcript!.durable.fragments;
+        assert.match(
+          parts.map((part) => Buffer.from(part.data, 'base64').toString('utf8')).join(''),
+          /好的，我来安排/,
+        );
+        assert.match(
+          parts.map((part) => Buffer.from(part.data, 'base64').toString('utf8')).join(''),
+          /已接手/,
+        );
+      }
+      assert.equal(executed.has(chat.id), false);
+      const direct = await composition.handlers['turn.start'](
+        { sessionId: chat.id, turnId: randomUUID(), content: { text: 'bypass inbox' } },
+        caller,
+      );
+      assert.equal(direct.ok, false);
+      assert.match(JSON.stringify(direct), /Inbox/);
+    } finally {
+      await composition.close();
+    }
+  });
+});
+
+test('assistant Bot synchronizes fresh wakes through recovery and restart and reports provider failures', {
+  timeout: 30000,
+}, async (t) => {
+  let assistant!: PersonalAssistantService;
+  const recover = PersonalAssistantService.prototype.recover;
+  t.mock.method(
+    PersonalAssistantService.prototype,
+    'recover',
+    function (this: PersonalAssistantService, ...args: Parameters<typeof recover>) {
+      assistant = this;
+      return recover.apply(this, args);
+    },
+  );
+  const oldStarted = deferred();
+  const loseAdmissionResponse = deferred();
+  const failOldExecution = deferred();
+  let oldWakeId: string | undefined;
+  let recoveredRunningWake = false;
+  const bind = PluginAgentService.prototype.bindRuntime;
+  t.mock.method(
+    PluginAgentService.prototype,
+    'bindRuntime',
+    function (this: PluginAgentService, bound: PluginAgentRuntime) {
+      return bind.call(this, {
+        ...bound,
+        async followup(id, message, initiator, options) {
+          const result = await bound.followup(id, message, initiator, options);
+          if (!oldWakeId) {
+            oldWakeId = options!.messageId;
+            await loseAdmissionResponse.promise;
+            // Admission committed, but the controller must recover its durable wake.
+            throw Error('Bot wake admission response lost');
+          }
+          return result;
+        },
+        async messageExecution(id, messageId, initiator) {
+          const result = await bound.messageExecution!(id, messageId, initiator);
+          if (
+            messageId === oldWakeId &&
+            (result as any).state === 'owned' &&
+            !recoveredRunningWake
+          ) {
+            assert.equal(((await bound.snapshot(id, initiator)) as any).agent.status, 'running');
+            recoveredRunningWake = true;
+            // The recovered run saw a busy worker. Finish it before the controller
+            // inspects its status and creates a new wake in this same run.
+            failOldExecution.resolve();
+            await pollFor(
+              async () => ((await bound.snapshot(id, initiator)) as any).agent.status !== 'running',
+              { timeoutMs: 7000, pollMs: 5 },
+            );
+          }
+          return result;
+        },
+      });
+    },
+  );
+  await withCompositionRoot(async ({ root, owner }) => {
+    const originalConnectionId = await configureFakeDefaultTarget(owner);
+    const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+    const catalog = await policy.connectionCatalog.getSnapshot();
+    const created = await policy.connectionCatalog.create({
+      expectedCatalogRevision: catalog.revision,
+      connection: {
+        slug: 'replacement',
+        name: 'Replacement',
+        providerType: 'ollama',
+        enabled: true,
+        enabledModelIds: ['replacement-model'],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') throw Error('Replacement connection was not committed');
+    const replacement = created.snapshot.connections.find((entry) => entry.slug === 'replacement')!;
+    const executions: { sessionId: string; connectionId?: string; model: string }[] = [];
+    let failWake = false;
+    const primaryBackendFactory: BackendFactory = (context) =>
+      new (class extends FakeBackend {
+        override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+          executions.push({
+            sessionId: context.sessionId,
+            connectionId: context.header.llmConnectionId,
+            model: context.header.model,
+          });
+          if (context.header.model === 'fake-model') {
+            oldStarted.resolve();
+            await failOldExecution.promise;
+          }
+          if (context.header.model === 'fake-model' || failWake) {
+            yield* super.send({
+              ...input,
+              text:
+                context.header.model === 'fake-model'
+                  ? '__e2e_error__:auth'
+                  : '__e2e_error__:network',
+            });
+            return;
+          }
+          const invoke = (name: string, raw: unknown = {}) => {
+            const tool = assistant.tools.find((entry) => entry.name === name)!;
+            return tool.impl(raw, {
+              sessionId: context.sessionId,
+              turnId: input.turnId,
+              cwd: root,
+              toolCallId: randomUUID(),
+              abortSignal: new AbortController().signal,
+              emitOutput() {},
+            });
+          };
+          await invoke('InboxCheck');
+          await invoke('SendUser', {
+            messageId: `reply-${input.turnId}`,
+            messages: [{ text: '已用新模型处理原消息' }],
+          });
+          await invoke('Sleep');
+          assert.deepEqual(
+            await assistant.beforeFinish({
+              sessionId: context.sessionId,
+              turnId: input.turnId,
+              signal: new AbortController().signal,
+            }),
+            { allow: true },
+          );
+          yield* super.send({ ...input, text: 'done' });
+        }
+      })(context);
+    let { composition, manager } = await createCapturedExecutionComposition(owner, {
+      primaryBackendFactory,
+    });
+    const caller: ConnectionContext = {
+      hostEpoch: 'execution-composition-test',
+      connectionId: 'assistant-wake-recovery-test',
+      principal: 'local_os_user',
+      acquireResidency: () => ({ release() {} }),
+    };
+    try {
+      const chat = await manager.createSession({
+        cwd: root,
+        llmConnectionId: originalConnectionId,
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'ask',
+        labels: ['personal-assistant'],
+      });
+      const bound = await composition.handlers['personal-assistant.call'](
+        { method: 'assistant.bind', input: { sessionId: chat.id } },
+        caller,
+      );
+      assert.equal(bound.ok, true, JSON.stringify(bound));
+      const submitted = await composition.handlers['turn.message.submit'](
+        {
+          originHostEpoch: caller.hostEpoch,
+          sessionId: chat.id,
+          messageId: 'recover-original-inbox-message',
+          content: { text: '请用选中的模型处理这条消息' },
+          placement: 'current_turn',
+        },
+        caller,
+      );
+      assert.equal(submitted.ok, true, JSON.stringify(submitted));
+      await oldStarted.promise;
+      let stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      const workerId = executions[0].sessionId;
+      const before = await stores.sessionStore.readHeaderSnapshot(workerId);
+      const selectedRoute = {
+        sessionId: workerId,
+        connectionId: replacement.connectionId,
+        model: 'replacement-model',
+      };
+      const current = await stores.sessionStore.readHeaderRecordSnapshot(chat.id);
+      const selected = await composition.handlers['session.configuration.update'](
+        {
+          sessionId: chat.id,
+          expectedRevision: current.revision,
+          patch: {
+            modelTarget: {
+              kind: 'explicit',
+              connectionId: replacement.connectionId,
+              connectionSlug: 'replacement',
+              model: 'replacement-model',
+            },
+          },
+        },
+        caller,
+      );
+      assert.equal(selected.ok, true, JSON.stringify(selected));
+      if (selected.ok) assert.equal(selected.result.kind, 'committed');
+      loseAdmissionResponse.resolve();
+      await pollFor(() => executions.length === 2, { timeoutMs: 7000, pollMs: 5 });
+      assert.equal(recoveredRunningWake, true);
+      assert.deepEqual(executions[1], selectedRoute);
+      await pollFor(
+        async () =>
+          ((await assistant.call('assistant.status', { includeMemory: false })) as any).bot
+            .sleeping,
+        { timeoutMs: 7000, pollMs: 5 },
+      );
+      await composition.close();
+      failWake = true;
+      ({ composition, manager } = await createCapturedExecutionComposition(owner, {
+        primaryBackendFactory,
+      }));
+      stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      await assistant.receiveUser(chat.id, 'after-restart', { text: '继续' });
+      await pollFor(
+        async () =>
+          (await readLedgerMessages(stores.runtimeEventStore, chat.id)).some(
+            (message) =>
+              message.type === 'assistant' &&
+              message.text ===
+                '助手消息处理暂时停止。消息已保留；请检查当前模型和连接，发送新消息可重试。',
+          ),
+        { timeoutMs: 7000, pollMs: 5 },
+      );
+      const status: any = await assistant.call('assistant.status', { includeMemory: false });
+      assert.match(status.bot.error, /Deterministic network failure/);
+      const after = await stores.sessionStore.readHeaderSnapshot(workerId);
+      assert.deepEqual(after.labels, before.labels);
+      assert.equal(after.permissionMode, before.permissionMode);
+      assert.equal(after.parentSessionId, chat.id);
+      assert.equal(
+        (await readLedgerMessages(stores.runtimeEventStore, workerId)).filter(
+          (message) => message.type === 'user',
+        ).length,
+        3,
+      );
+      assert.deepEqual(executions.slice(2), [selectedRoute]);
+      const visible = await readLedgerMessages(stores.runtimeEventStore, chat.id);
+      const replies = visible.filter((row) => row.type === 'assistant');
+      assert.equal(replies.length, 2);
+      assert.equal(replies[0].text, '已用新模型处理原消息');
+    } finally {
+      loseAdmissionResponse.resolve();
+      failOldExecution.resolve();
+      await composition.close();
+    }
+  });
+});
+
+test('assistant master switch gates real Host execution and stops only assistant sessions', {
+  timeout: 20000,
+}, async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const sent = new Set<string>();
+    const { composition, manager } = await createCapturedExecutionComposition(owner, {
+      primaryBackendFactory: (context) =>
+        new (class extends FakeBackend {
+          override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+            sent.add(context.sessionId);
+            yield* super.send({ ...input, text: FAKE_HOLD_OPEN_PROMPT });
+          }
+        })(context),
+    });
+    const residencies = new HostResidencyRegistry();
+    const caller: ConnectionContext = {
+      hostEpoch: 'execution-composition-test',
+      connectionId: 'client',
+      principal: 'local_os_user',
+      acquireResidency: () => residencies.acquire('assistant-test'),
+    };
+    const call = async (
+      method: 'assistant.enablement' | 'assistant.set-enabled',
+      input: unknown = {},
+    ) => {
+      const result = await composition.handlers['personal-assistant.call'](
+        { method, input },
+        caller,
+      );
+      assert.equal(result.ok, true, JSON.stringify(result));
+      return result.ok ? result.result.value : undefined;
+    };
+    try {
+      assert.deepEqual(await call('assistant.enablement'), { enabled: true });
+      await call('assistant.set-enabled', { enabled: false });
+      assert.deepEqual(await call('assistant.enablement'), { enabled: false });
+      const create = (labels: string[]) =>
+        manager.createSession({
+          cwd: root,
+          llmConnectionId: FAKE_CONNECTION_ID,
+          llmConnectionSlug: 'fake',
+          model: 'fake-model',
+          permissionMode: 'ask',
+          labels,
+        });
+      const ordinary = await create([]);
+      const assistant = await create(['personal-assistant']);
+      const worker = await create(['personal-assistant-background']);
+      const start = (sessionId: string) =>
+        composition.handlers['turn.start'](
+          {
+            sessionId,
+            turnId: randomUUID(),
+            content: { text: 'keep working' },
+          },
+          caller,
+        );
+      for (const sessionId of [assistant.id, worker.id]) {
+        const result = await start(sessionId);
+        assert.equal(result.ok, false, JSON.stringify(result));
+        assert.match(JSON.stringify(result), /disabled/);
+      }
+      assert.equal(sent.size, 0, 'disabled sessions never reach the backend');
+      await start(ordinary.id);
+      await pollFor(() => sent.has(ordinary.id));
+      await call('assistant.set-enabled', { enabled: true });
+      await start(assistant.id);
+      await start(worker.id);
+      await pollFor(() => sent.has(assistant.id) && sent.has(worker.id));
+      await call('assistant.set-enabled', { enabled: false });
+      const sessions = await manager.listSessions();
+      assert.ok(!sessions.find((s) => s.id === assistant.id)?.runningTurnIds?.length);
+      assert.ok(!sessions.find((s) => s.id === worker.id)?.runningTurnIds?.length);
+      assert.ok(
+        sessions.find((s) => s.id === ordinary.id)?.runningTurnIds?.length,
+        'ordinary chat is not stopped',
+      );
+      const before = sent.size;
+      const disabledStart = await start(assistant.id).catch((error) => ({ error: String(error) }));
+      assert.ok('error' in disabledStart || !disabledStart.ok, JSON.stringify(disabledStart));
+      assert.equal(sent.size, before);
+      assert.deepEqual(await call('assistant.enablement'), { enabled: false });
+    } finally {
+      await composition.close();
+    }
+  });
+});
+
+test('Plugin Agent snapshot exposes pending interaction without losing ownership or inherited model settings', async (t) => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    let runtime!: PluginAgentRuntime;
+    const bind = PluginAgentService.prototype.bindRuntime;
+    t.mock.method(
+      PluginAgentService.prototype,
+      'bindRuntime',
+      function (this: PluginAgentService, bound: PluginAgentRuntime) {
+        runtime = bound;
+        return bind.call(this, bound);
+      },
+    );
+    const { composition, manager } = await createCapturedExecutionComposition(owner);
+    try {
+      const parent = await manager.createSession({
+        cwd: root,
+        llmConnectionId: FAKE_CONNECTION_ID,
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'ask',
+        thinkingLevel: 'medium',
+      });
+      const invocation = {
+        sessionId: parent.id,
+        turnId: randomUUID(),
+        cwd: root,
+        abortSignal: new AbortController().signal,
+      };
+      const child = await runtime.create(
+        { background: true, name: 'Awaiting input', labels: ['plugin-recovery:example'] },
+        invocation,
+      );
+      const sessions = await manager.listSessions();
+      const header = sessions.find((s) => s.id === child.sessionId)!;
+      assert.deepEqual(header.labels, ['plugin-recovery:example']);
+      assert.equal(header.name, 'Awaiting input');
+      assert.equal(header.model, parent.model);
+      assert.equal(header.permissionMode, parent.permissionMode);
+      assert.equal(header.thinkingLevel, parent.thinkingLevel);
+      const wakeId = randomUUID();
+      assert.deepEqual(await runtime.messageExecution!(child.sessionId, wakeId, invocation), {
+        messageId: wakeId,
+        state: 'not_admitted',
+      });
+      await runtime.followup(child.sessionId, FAKE_ASK_USER_QUESTION_PROMPT, invocation, {
+        messageId: wakeId,
+      });
+      assert.equal(
+        ((await runtime.messageExecution!(child.sessionId, wakeId, invocation)) as any).state,
+        'owned',
+      );
+      await assert.rejects(
+        runtime.messageExecution!(child.sessionId, wakeId, {
+          ...invocation,
+          sessionId: randomUUID(),
+        }),
+        /ownership tree/,
+      );
+      await waitFor(
+        async () =>
+          ((await runtime.snapshot(child.sessionId, invocation)) as any).agent.status ===
+          'waiting_for_user',
+        5000,
+      );
+      const snapshot = (await runtime.snapshot(child.sessionId, invocation)) as any;
+      assert.ok(snapshot.pendingInteractions > 0);
+      await assert.rejects(
+        runtime.snapshot(child.sessionId, { ...invocation, sessionId: randomUUID() }),
+        /not found/,
+      );
+      await runtime.cancel(child.sessionId, invocation);
+      await waitFor(
+        async () =>
+          ((await runtime.snapshot(child.sessionId, invocation)) as any).pendingInteractions === 0,
+        5000,
+      );
+    } finally {
+      await composition.close();
+    }
+  });
 });
 
 test('production Host recovery starts with a dispatched tool whose outcome is unknown', async () => {
@@ -4339,6 +4991,7 @@ async function createCapturedExecutionComposition(
       RuntimeHostCompositionContext,
       'retainUntilProcessExit' | 'requestDrain'
     >;
+    readonly assistantHomeDirectory?: string;
     readonly safeBoundaryResume?: boolean;
     readonly onWorkHubResult?: (input: BackendSendInput) => void;
     readonly primaryBackendFactory?: BackendFactory;
@@ -4378,7 +5031,11 @@ async function createCapturedExecutionComposition(
           : {}),
         ...options.context,
       },
-      {},
+      {
+        ...(options.assistantHomeDirectory
+          ? { assistantHomeDirectory: options.assistantHomeDirectory }
+          : {}),
+      },
       {
         generateSessionTitle: options.generateSessionTitle,
         primaryBackendFactory: (context) =>
@@ -4629,3 +5286,472 @@ async function actWorkHub(
     await desktop.close();
   }
 }
+
+test('production Host automatically archives assistant Markdown images and serves them after source deletion', async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const source = join(root, 'delivery.png');
+    const png = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==',
+      'base64',
+    );
+    await writeFile(source, png);
+    const captured = await createCapturedExecutionComposition(owner, {
+      primaryBackendFactory: (context) =>
+        new (class extends FakeBackend {
+          override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+            yield {
+              type: 'text_complete',
+              id: 'delivery-text-event',
+              turnId: input.turnId,
+              ts: Date.now(),
+              messageId: 'delivered-message',
+              text: `![Screenshot](<${source}>)`,
+            };
+            yield {
+              type: 'complete',
+              id: 'delivery-complete-event',
+              turnId: input.turnId,
+              ts: Date.now(),
+              stopReason: 'end_turn',
+            };
+          }
+        })(context),
+      context: {
+        retainUntilProcessExit: () => undefined,
+        requestDrain: () => assert.fail('image delivery must not drain Host'),
+      },
+    });
+    try {
+      const session = await captured.manager.createSession({
+        cwd: root,
+        llmConnectionId: FAKE_CONNECTION_ID,
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'bypass',
+      });
+      const context = {
+        hostEpoch: 'execution-composition-test',
+        connectionId: 'image-client',
+        principal: 'local_os_user',
+        acquireResidency: () => ({ release() {} }),
+      };
+      const started = await captured.composition.handlers['turn.start'](
+        {
+          sessionId: session.id,
+          turnId: 'image-delivery-turn',
+          content: { text: 'deliver screenshot' },
+        },
+        context,
+      );
+      assert.equal(started.ok, true, JSON.stringify(started));
+      const request = {
+        sessionId: session.id,
+        turnId: 'image-delivery-turn',
+        messageId: 'delivered-message',
+        source,
+      };
+      let artifactId: string | undefined;
+      await waitFor(async () => {
+        const result = await captured.composition.handlers['artifact.image.resolve'](
+          request,
+          context,
+        );
+        assert.equal(result.ok, true, JSON.stringify(result));
+        if (result.ok && result.result.status === 'ready') artifactId = result.result.artifactId;
+        return !!artifactId;
+      }, 5000);
+      await rm(source);
+      const replay = await captured.composition.handlers['artifact.image.resolve'](
+        request,
+        context,
+      );
+      assert.deepEqual(replay, { ok: true, result: { status: 'ready', artifactId } });
+      const binary = await captured.composition.handlers['artifact.query'](
+        { sessionId: session.id, kind: 'read_binary', artifactId: artifactId! },
+        context,
+      );
+      assert.equal(binary.ok, true, JSON.stringify(binary));
+      if (binary.ok && binary.result.kind === 'binary' && binary.result.preview.ok)
+        assert.equal(binary.result.preview.base64, png.toString('base64'));
+      const forged = await captured.composition.handlers['artifact.image.resolve'](
+        { ...request, source: '/tmp/private.png' },
+        context,
+      );
+      assert.deepEqual(forged, { ok: true, result: { status: 'unavailable' } });
+    } finally {
+      captured.composition.beginDrain();
+      await captured.composition.close();
+    }
+  });
+});
+
+test('production Host rejects loopback image destinations even when a restricted-session client permits media loading', async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    let requests = 0;
+    const server = createServer((_request, response) => {
+      requests++;
+      response.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const source = `http://127.0.0.1:${(server.address() as import('node:net').AddressInfo).port}/secret.png`;
+    const captured = await createCapturedExecutionComposition(owner, {
+      primaryBackendFactory: (context) =>
+        new (class extends FakeBackend {
+          override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+            yield {
+              type: 'text_complete',
+              id: `text-${input.turnId}`,
+              turnId: input.turnId,
+              ts: Date.now(),
+              messageId: `message-${input.turnId}`,
+              text: `![](${source})`,
+            };
+            yield {
+              type: 'complete',
+              id: `complete-${input.turnId}`,
+              turnId: input.turnId,
+              ts: Date.now(),
+              stopReason: 'end_turn',
+            };
+          }
+        })(context),
+      context: {
+        retainUntilProcessExit: () => undefined,
+        requestDrain: () => assert.fail('remote images must not drain Host'),
+      },
+    });
+    try {
+      for (const permissionMode of ['explore', 'ask'] as const) {
+        const session = await captured.manager.createSession({
+          cwd: root,
+          llmConnectionId: FAKE_CONNECTION_ID,
+          llmConnectionSlug: 'fake',
+          model: 'fake-model',
+          permissionMode,
+        });
+        const context = {
+          hostEpoch: 'execution-composition-test',
+          connectionId: 'image-client',
+          principal: 'local_os_user',
+          acquireResidency: () => ({ release() {} }),
+        };
+        const turnId = `remote-${permissionMode}`;
+        assert.equal(
+          (
+            await captured.composition.handlers['turn.start'](
+              { sessionId: session.id, turnId, content: { text: 'deliver image' } },
+              context,
+            )
+          ).ok,
+          true,
+        );
+        const request = {
+          sessionId: session.id,
+          turnId,
+          messageId: `message-${turnId}`,
+          source,
+          loadRemote: true,
+        };
+        await waitFor(async () => {
+          const result = await captured.composition.handlers['artifact.image.resolve'](
+            request,
+            context,
+          );
+          return (
+            result.ok && result.result.status === 'failed' && result.result.reason === 'not_allowed'
+          );
+        }, 5000);
+        assert.deepEqual(
+          await captured.composition.handlers['artifact.image.resolve'](
+            { ...request, loadRemote: true },
+            context,
+          ),
+          { ok: true, result: { status: 'failed', reason: 'not_allowed' } },
+        );
+      }
+      assert.equal(requests, 0);
+    } finally {
+      captured.composition.beginDrain();
+      await captured.composition.close();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+});
+
+test('production Host loads visible remote media independently of agent sandbox networking and respects app privacy', async (t) => {
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==',
+    'base64',
+  );
+  let requests = 0;
+  const server = createServer((_request, response) => {
+    requests++;
+    response.end(png);
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const origin = `http://127.0.0.1:${(server.address() as import('node:net').AddressInfo).port}`;
+  const realConnect = net.connect;
+  t.mock.method(dns, 'lookup', async (host: string) => {
+    assert.equal(host, 'image.example');
+    return [{ address: '93.184.216.34', family: 4 }];
+  });
+  t.mock.method(net, 'connect', (options: net.TcpNetConnectOpts) => {
+    assert.equal(options.host, 'image.example');
+    assert.ok(options.lookup);
+    options.lookup(options.host, { all: true }, (error, addresses) => {
+      assert.equal(error, null);
+      assert.deepEqual(addresses, [{ address: '93.184.216.34', family: 4 }]);
+    });
+    return realConnect({ host: '127.0.0.1', port: Number(new URL(origin).port) });
+  });
+  syncBuiltinESMExports();
+  try {
+    await withCompositionRoot(async ({ root, owner }) => {
+      const captured = await createCapturedExecutionComposition(owner, {
+        primaryBackendFactory: (context) =>
+          new (class extends FakeBackend {
+            override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+              yield {
+                type: 'text_complete',
+                id: `text-${input.turnId}`,
+                turnId: input.turnId,
+                ts: Date.now(),
+                messageId: `message-${input.turnId}`,
+                text: `![](http://image.example/${input.turnId}.png)`,
+              };
+              yield {
+                type: 'complete',
+                id: `complete-${input.turnId}`,
+                turnId: input.turnId,
+                ts: Date.now(),
+                stopReason: 'end_turn',
+              };
+            }
+          })(context),
+      });
+      const context = {
+        hostEpoch: 'execution-composition-test',
+        connectionId: 'image-client',
+        principal: 'local_os_user',
+        acquireResidency: () => ({ release() {} }),
+      };
+      try {
+        for (const [permissionMode, privacy] of [
+          ['explore', false],
+          ['ask', false],
+          ['bypass', true],
+        ] as const) {
+          const policy = await captured.composition.handlers['runtime.policy.query']({}, context);
+          assert.ok(policy.ok);
+          const changed = await captured.composition.handlers['runtime.policy.mutate'](
+            {
+              expectedRevision: policy.result.revision,
+              operation: { kind: 'set_privacy', value: { incognitoActive: privacy } },
+            },
+            context,
+          );
+          assert.ok(changed.ok);
+          const session = await captured.manager.createSession({
+            cwd: root,
+            llmConnectionId: FAKE_CONNECTION_ID,
+            llmConnectionSlug: 'fake',
+            model: 'fake-model',
+            permissionMode,
+          });
+          const turnId = `media-${permissionMode}`;
+          const started = await captured.composition.handlers['turn.start'](
+            { sessionId: session.id, turnId, content: { text: 'display image' } },
+            context,
+          );
+          assert.ok(started.ok, JSON.stringify(started));
+          const request = {
+            sessionId: session.id,
+            turnId,
+            messageId: `message-${turnId}`,
+            source: `http://image.example/${turnId}.png`,
+            loadRemote: true,
+          };
+          await waitFor(async () => {
+            const result = await captured.composition.handlers['artifact.image.resolve'](
+              request,
+              context,
+            );
+            assert.ok(result.ok);
+            return privacy
+              ? result.result.status === 'failed' && result.result.reason === 'not_allowed'
+              : result.result.status === 'ready';
+          }, 5000);
+        }
+        assert.equal(requests, 2, 'privacy mode must not issue a third media request');
+      } finally {
+        captured.composition.beginDrain();
+        await captured.composition.close();
+      }
+    });
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test('disabling during Bot publication fences the uncommitted message and permits later replay', {
+  timeout: 20000,
+}, async (t) => {
+  const entered = deferred<void>();
+  const release = deferred<void>();
+  let target = '';
+  let paused = false;
+  const read = SqliteRuntimeStore.prototype.readRuntimeEvents;
+  t.mock.method(
+    SqliteRuntimeStore.prototype,
+    'readRuntimeEvents',
+    async function (this: SqliteRuntimeStore, sessionId: string, runId: string) {
+      const result = await read.call(this, sessionId, runId);
+      if (sessionId === target && runId.startsWith('assistant-message-') && !paused) {
+        paused = true;
+        entered.resolve();
+        await release.promise;
+      }
+      return result;
+    },
+  );
+  await withCompositionRoot(async ({ root, owner }) => {
+    const { composition, manager } = await createCapturedExecutionComposition(owner, {
+      primaryBackendFactory: (context) => new FakeBackend(context),
+    });
+    const caller: ConnectionContext = {
+      hostEpoch: 'execution-composition-test',
+      connectionId: 'client',
+      principal: 'local_owner',
+      principalKind: 'local_owner',
+      acquireResidency: () => new HostResidencyRegistry().acquire('disable-race'),
+    };
+    const call = (method: any, input: any = {}) =>
+      composition.handlers['personal-assistant.call']({ method, input }, caller);
+    try {
+      assert.equal((await call('assistant.set-enabled', { enabled: true })).ok, true);
+      const chat = await manager.createSession({
+        cwd: root,
+        llmConnectionId: FAKE_CONNECTION_ID,
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'ask',
+        labels: ['personal-assistant'],
+      });
+      assert.equal((await call('assistant.bind', { sessionId: chat.id })).ok, true);
+      target = chat.id;
+      const messageId = randomUUID();
+      const submit = () =>
+        composition.handlers['turn.message.submit'](
+          {
+            originHostEpoch: 'execution-composition-test',
+            sessionId: chat.id,
+            messageId,
+            content: { text: 'Keep this accepted request for later.' },
+            placement: 'current_turn',
+          },
+          caller,
+        );
+      const pending = submit();
+      await entered.promise;
+      let stopped = false;
+      const disable = call('assistant.set-enabled', { enabled: false }).then((result) => {
+        stopped = true;
+        return result;
+      });
+      await pollFor(async () =>
+        JSON.stringify(await call('assistant.enablement')).includes('"enabled":false'),
+      );
+      assert.equal(stopped, false, 'disable drains in-flight publication before returning');
+      release.resolve();
+      await pending;
+      assert.equal((await disable).ok, true);
+      const sessionStore = createSessionStore(root);
+      assert.equal(
+        (await sessionStore.readMessages(chat.id)).filter((row) => row.id === messageId).length,
+        0,
+      );
+      assert.equal((await submit()).ok, false, 'disabled assistant rejects new admission');
+      assert.equal((await call('assistant.set-enabled', { enabled: true })).ok, true);
+      await submit();
+      await pollFor(async () =>
+        (await sessionStore.readMessages(chat.id)).some((row) => row.id === messageId),
+      );
+      assert.equal(
+        (await sessionStore.readMessages(chat.id)).filter((row) => row.id === messageId).length,
+        1,
+      );
+    } finally {
+      release.resolve();
+      await composition.close();
+    }
+  });
+});
+
+test('assistant Host fallback registers a task workspace usable by ordinary Session creation and binding', {
+  timeout: 30000,
+}, async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const home = join(root, 'isolated-home');
+    await mkdir(home);
+    const caller: ConnectionContext = {
+      hostEpoch: 'assistant-workspace-test',
+      connectionId: 'desktop',
+      principal: 'local_owner',
+      principalKind: 'local_owner',
+      acquireResidency: () => ({ release() {} }),
+    };
+    let captured = await createCapturedExecutionComposition(owner, {
+      assistantHomeDirectory: home,
+    });
+    const call = (method: any, input: any = {}) =>
+      captured.composition.handlers['personal-assistant.call']({ method, input }, caller);
+    try {
+      const missingModel = await call('assistant.allocate-workspace');
+      assert.equal(missingModel.ok, false);
+      if (!missingModel.ok) assert.match(missingModel.error.message, /No default Session model/);
+      assert.equal((await captured.manager.listSessions()).length, 0);
+      await assert.rejects(stat(join(home, 'Maka')));
+      await configureFakeDefaultTarget(owner);
+      const allocated = await call('assistant.allocate-workspace');
+      assert.equal(allocated.ok, true, JSON.stringify(allocated));
+      if (!allocated.ok) return;
+      const { projectId } = allocated.result.value as { projectId: string };
+      const created = await captured.composition.handlers['session.create'](
+        {
+          sessionId: 'assistant-fallback-chat',
+          workspace: { kind: 'project', projectId },
+          name: '个人助手',
+          modelTarget: { kind: 'default' },
+          labels: ['personal-assistant'],
+        },
+        caller,
+      );
+      assert.equal(created.ok, true, JSON.stringify(created));
+      assert.equal(
+        (await call('assistant.bind', { sessionId: 'assistant-fallback-chat' })).ok,
+        true,
+      );
+      const binding = await call('assistant.binding');
+      assert.equal(binding.ok, true);
+      const sessions = await captured.manager.listSessions();
+      assert.equal(sessions.length, 1);
+      const chat = sessions[0]!;
+      assert.equal(chat.id, 'assistant-fallback-chat');
+      assert.match(chat.cwd!, /[/\\]Maka[/\\]tasks[/\\]task-[^/\\]+$/);
+      assert.ok(chat.cwd!.startsWith(home));
+      assert.deepEqual(chat.labels, ['personal-assistant']);
+      await captured.composition.close();
+      captured = await createCapturedExecutionComposition(owner, { assistantHomeDirectory: home });
+      const restored = await call('assistant.binding');
+      assert.equal(restored.ok, true);
+      if (binding.ok && restored.ok) {
+        assert.deepEqual((restored.result.value as any).state, (binding.result.value as any).state);
+      }
+      assert.equal((await captured.manager.listSessions()).length, 1);
+    } finally {
+      await captured.composition.close();
+    }
+  });
+});

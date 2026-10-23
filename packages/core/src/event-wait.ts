@@ -33,8 +33,31 @@ export const EVENT_WAIT_LIMITS = Object.freeze({
   evidenceRefs: 8,
   evidenceRefBytes: 1024,
   reasonBytes: 1024,
-  recordBytes: 32768,
+  cursorBytes: 2048,
+  observationAttempts: 1_000_000,
+  // Every combination of bounded fields, including observation and a cancelled
+  // priorResolution, fits below 42 KiB even with JSON escaping. Leave room for
+  // the full lifecycle so an accepted result can always retain its facts on cancel.
+  recordBytes: 48 * 1024,
 });
+
+/** Checkpoint only, never a second execution or delivery authority. */
+export interface EventWaitObservation {
+  readonly schemaVersion: 1;
+  readonly attempts: number;
+  readonly lastAttemptAt: number;
+  readonly lastObservedAt: number | null;
+  /** Earliest read, including notification-triggered reads. */
+  readonly nextObserveAt: number;
+  /** Reconciliation fallback even when no notification arrives. */
+  readonly nextPollAt: number;
+  readonly consecutiveErrors: number;
+  readonly outcome: 'checking' | 'pending' | 'unknown' | EventWaitResolution['outcome'];
+  readonly cursor: string | null;
+  readonly eventKey: string | null;
+  /** Bounded diagnostic code, not raw exceptions, logs, or credentials. */
+  readonly reason: string | null;
+}
 
 export type EventWaitJsonValue =
   | null
@@ -43,6 +66,16 @@ export type EventWaitJsonValue =
   | string
   | readonly EventWaitJsonValue[]
   | { readonly [key: string]: EventWaitJsonValue };
+
+export type EventWaitDelivery =
+  | {
+      readonly kind: 'admitted';
+      readonly turnId: string;
+      readonly runId: string;
+      readonly userMessageId: string;
+      readonly at: number;
+    }
+  | { readonly kind: 'suppressed'; readonly at: number; readonly reason: string };
 
 export interface EventWaitBase {
   readonly schemaVersion: 1;
@@ -66,6 +99,8 @@ export interface EventWaitBase {
   readonly createdAt: number;
   readonly updatedAt: number;
   readonly deadlineAt: number;
+  readonly observation?: EventWaitObservation;
+  readonly delivery?: EventWaitDelivery;
 }
 
 export interface EventWaitResolution {
@@ -94,6 +129,8 @@ export type EventWaitLifecycle =
   | { readonly status: 'expired'; readonly expiredAt: number };
 
 export type EventWaitRecord = EventWaitBase & EventWaitLifecycle;
+/** Source observation has no dependency on the task owner's lifecycle. */
+export type ObservedEventWaitRecord = Omit<EventWaitBase, 'goalControlLease'> & EventWaitLifecycle;
 export type EventWaitStatus = EventWaitRecord['status'];
 
 const encoder = new TextEncoder();
@@ -250,6 +287,15 @@ export function eventWaitDeliveryKey(waitId: string): string {
 
 /** Correlation only: decoding does not authenticate Goal ownership or external truth. */
 export function decodeEventWaitRecord(value: unknown): EventWaitRecord {
+  return decodeWaitRecord(value, true) as EventWaitRecord;
+}
+
+/** Owner-free observation record. Ownership is checked by the supplied store and authorizer. */
+export function decodeObservedEventWaitRecord(value: unknown): ObservedEventWaitRecord {
+  return decodeWaitRecord(value, false);
+}
+
+function decodeWaitRecord(value: unknown, goal: boolean): ObservedEventWaitRecord {
   const root = object(json(value, EVENT_WAIT_LIMITS.recordBytes, 16, 2048), 'record');
   const lifecycleKeys =
     root.status === 'waiting'
@@ -267,7 +313,7 @@ export function decodeEventWaitRecord(value: unknown): EventWaitRecord {
       'schemaVersion',
       'waitId',
       'sessionId',
-      'goalControlLease',
+      ...(goal ? ['goalControlLease'] : []),
       'sourceTurnId',
       'sourceToolCallId',
       'resource',
@@ -279,10 +325,12 @@ export function decodeEventWaitRecord(value: unknown): EventWaitRecord {
       'status',
       ...lifecycleKeys,
     ],
-    root.status === 'cancelled' ? ['priorResolution'] : [],
+    root.status === 'cancelled'
+      ? ['priorResolution', 'observation', 'delivery']
+      : ['observation', 'delivery'],
   );
   if (r.schemaVersion !== EVENT_WAIT_SCHEMA_VERSION) invalid('schemaVersion');
-  const lease = shape(r.goalControlLease, ['goalId', 'generation']);
+  const lease = goal ? shape(r.goalControlLease, ['goalId', 'generation']) : undefined;
   const resource = shape(r.resource, ['providerId', 'connectionId', 'resourceType', 'resourceId']);
   const condition = shape(r.condition, ['typeId', 'version', 'parameters']);
   const parameters = object(
@@ -294,14 +342,18 @@ export function decodeEventWaitRecord(value: unknown): EventWaitRecord {
     ),
     'parameters',
   ) as Record<string, EventWaitJsonValue>;
-  const base: EventWaitBase = {
+  const base = {
     schemaVersion: EVENT_WAIT_SCHEMA_VERSION,
     waitId: id(r.waitId, 'waitId'),
     sessionId: id(r.sessionId, 'sessionId'),
-    goalControlLease: {
-      goalId: id(lease.goalId, 'goalId'),
-      generation: integer(lease.generation, 'generation'),
-    },
+    ...(lease
+      ? {
+          goalControlLease: {
+            goalId: id(lease.goalId, 'goalId'),
+            generation: integer(lease.generation, 'generation'),
+          },
+        }
+      : {}),
     sourceTurnId: id(r.sourceTurnId, 'sourceTurnId'),
     sourceToolCallId: text(
       r.sourceToolCallId,
@@ -324,7 +376,7 @@ export function decodeEventWaitRecord(value: unknown): EventWaitRecord {
     createdAt: integer(r.createdAt, 'createdAt'),
     updatedAt: integer(r.updatedAt, 'updatedAt'),
     deadlineAt: integer(r.deadlineAt, 'deadlineAt'),
-  };
+  } satisfies Omit<EventWaitBase, 'goalControlLease'> & { goalControlLease?: GoalControlLease };
   if (
     r.deliveryKey !== base.deliveryKey ||
     base.updatedAt < base.createdAt ||
@@ -336,6 +388,96 @@ export function decodeEventWaitRecord(value: unknown): EventWaitRecord {
     if (result < base.createdAt || result > upper) invalid('lifecycle time');
     return result;
   };
+  if (r.delivery !== undefined) {
+    const d = object(r.delivery, 'delivery');
+    if (r.status === 'waiting') invalid('delivery before resolution');
+    const terminalAt =
+      r.status === 'resolved' ? r.resolvedAt : r.status === 'expired' ? r.expiredAt : r.cancelledAt;
+    if (time(d.at) < time(terminalAt)) invalid('delivery before terminal fact');
+    if (d.kind === 'admitted') {
+      shape(d, ['kind', 'turnId', 'runId', 'userMessageId', 'at']);
+      if (r.status !== 'resolved' && r.status !== 'expired') invalid('admission without result');
+      Object.assign(base, {
+        delivery: {
+          kind: 'admitted',
+          turnId: id(d.turnId, 'delivery turn'),
+          runId: id(d.runId, 'delivery run'),
+          userMessageId: id(d.userMessageId, 'delivery message'),
+          at: time(d.at),
+        },
+      });
+    } else {
+      shape(d, ['kind', 'at', 'reason']);
+      if (d.kind !== 'suppressed') invalid('delivery kind');
+      Object.assign(base, {
+        delivery: {
+          kind: 'suppressed',
+          at: time(d.at),
+          reason: text(d.reason, 'delivery reason', EVENT_WAIT_LIMITS.reasonBytes),
+        },
+      });
+    }
+  }
+  if (Object.hasOwn(r, 'observation')) {
+    const x = shape(r.observation, [
+      'schemaVersion',
+      'attempts',
+      'lastAttemptAt',
+      'lastObservedAt',
+      'nextObserveAt',
+      'nextPollAt',
+      'consecutiveErrors',
+      'outcome',
+      'cursor',
+      'eventKey',
+      'reason',
+    ]);
+    const attempts = integer(x.attempts, 'observation attempts', 1);
+    const consecutiveErrors = integer(x.consecutiveErrors, 'consecutive errors');
+    const lastAttemptAt = time(x.lastAttemptAt);
+    const nextObserveAt = integer(x.nextObserveAt, 'next observation');
+    const nextPollAt = integer(x.nextPollAt, 'next poll');
+    const lastObservedAt = x.lastObservedAt === null ? null : time(x.lastObservedAt);
+    if (
+      x.schemaVersion !== 1 ||
+      attempts > EVENT_WAIT_LIMITS.observationAttempts ||
+      consecutiveErrors > attempts ||
+      nextObserveAt < lastAttemptAt ||
+      nextPollAt < nextObserveAt ||
+      (x.outcome !== 'checking' && (lastObservedAt === null || lastObservedAt < lastAttemptAt)) ||
+      typeof x.outcome !== 'string' ||
+      ![
+        'checking',
+        'pending',
+        'unknown',
+        'satisfied',
+        'invalidated',
+        'source_unavailable',
+      ].includes(x.outcome)
+    )
+      invalid('observation');
+    Object.assign(base, {
+      observation: {
+        schemaVersion: 1,
+        attempts,
+        lastAttemptAt,
+        lastObservedAt,
+        nextObserveAt,
+        nextPollAt,
+        consecutiveErrors,
+        outcome: x.outcome,
+        cursor: x.cursor === null ? null : text(x.cursor, 'cursor', EVENT_WAIT_LIMITS.cursorBytes),
+        eventKey:
+          x.eventKey === null
+            ? null
+            : text(x.eventKey, 'event key', EVENT_WAIT_LIMITS.receiptKeyBytes),
+        reason:
+          x.reason === null
+            ? null
+            : text(x.reason, 'observation reason', EVENT_WAIT_LIMITS.reasonBytes),
+      },
+    });
+  }
   const resolution = (v: unknown, resolvedAt: number): EventWaitResolution => {
     const x = shape(v, ['outcome', 'receiptKey', 'observedAt', 'evidenceRefs']);
     if (
@@ -393,15 +535,36 @@ export function decodeEventWaitRecord(value: unknown): EventWaitRecord {
 }
 
 export function assertEventWaitTransition(previous: EventWaitRecord, next: EventWaitRecord): void {
-  const a = decodeEventWaitRecord(previous);
-  const b = decodeEventWaitRecord(next);
+  const a = decodeEventWaitRecord(previous),
+    b = decodeEventWaitRecord(next);
+  if (JSON.stringify(a.goalControlLease) !== JSON.stringify(b.goalControlLease))
+    invalid('immutable goalControlLease');
+  const { goalControlLease: _a, ...before } = a;
+  const { goalControlLease: _b, ...after } = b;
+  assertObservedEventWaitTransition(before, after);
+}
+
+export function assertObservedEventWaitTransition(
+  previous: ObservedEventWaitRecord,
+  next: ObservedEventWaitRecord,
+): void {
+  const a = decodeObservedEventWaitRecord(previous);
+  const b = decodeObservedEventWaitRecord(next);
   const same = (x: unknown, y: unknown) => JSON.stringify(x) === JSON.stringify(y);
   if (same(a, b)) return;
+  if (a.delivery) invalid('immutable delivery');
+  if (b.delivery) {
+    const { delivery: _delivery, updatedAt: _updatedAt, ...rest } = b;
+    const { updatedAt: _previousTime, ...prior } = a;
+    if (same(rest, prior) && b.updatedAt >= a.updatedAt) return;
+    const { delivery: _acknowledgement, ...observation } = b;
+    assertObservedEventWaitTransition(a, observation);
+    return;
+  }
   for (const field of [
     'schemaVersion',
     'waitId',
     'sessionId',
-    'goalControlLease',
     'sourceTurnId',
     'sourceToolCallId',
     'resource',
@@ -413,7 +576,49 @@ export function assertEventWaitTransition(previous: EventWaitRecord, next: Event
     if (!same(a[field], b[field])) invalid(`immutable ${field}`);
   }
   if (b.updatedAt < a.updatedAt) invalid('time regression');
+  if (a.observation) {
+    if (
+      !b.observation ||
+      b.observation.attempts < a.observation.attempts ||
+      b.observation.attempts > a.observation.attempts + 1 ||
+      b.observation.lastAttemptAt < a.observation.lastAttemptAt ||
+      (a.observation.lastObservedAt !== null &&
+        (b.observation.lastObservedAt === null ||
+          b.observation.lastObservedAt < a.observation.lastObservedAt))
+    )
+      invalid('observation regression');
+    if (
+      b.observation.attempts === a.observation.attempts &&
+      b.observation.lastAttemptAt !== a.observation.lastAttemptAt
+    )
+      invalid('attempt time without reservation');
+    if (
+      b.observation.attempts > a.observation.attempts &&
+      (b.status !== 'waiting' ||
+        b.observation.outcome !== 'checking' ||
+        b.observation.lastObservedAt !== a.observation.lastObservedAt ||
+        b.observation.cursor !== a.observation.cursor ||
+        b.observation.eventKey !== a.observation.eventKey ||
+        b.observation.consecutiveErrors !== a.observation.consecutiveErrors)
+    )
+      invalid('attempt reservation');
+  } else if (b.observation && b.observation.attempts !== 1) invalid('initial observation budget');
   if (a.status === 'waiting') {
+    if (b.status === 'waiting' && b.observation && !same(a.observation, b.observation)) {
+      if (
+        b.observation.attempts > (a.observation?.attempts ?? 0) &&
+        b.observation.outcome === 'checking'
+      )
+        return;
+      if (
+        a.observation?.outcome === 'checking' &&
+        (b.observation.outcome === 'pending' || b.observation.outcome === 'unknown')
+      )
+        return;
+      invalid('observation update without reservation');
+    }
+    if (b.status === 'resolved' && b.resolvedAt >= b.deadlineAt)
+      invalid('resolution after deadline');
     if (
       b.status === 'resolved' ||
       b.status === 'expired' ||
@@ -423,6 +628,7 @@ export function assertEventWaitTransition(previous: EventWaitRecord, next: Event
   } else if (
     a.status === 'resolved' &&
     b.status === 'cancelled' &&
+    same(a.observation, b.observation) &&
     same(b.priorResolution, { resolvedAt: a.resolvedAt, resolution: a.resolution })
   )
     return;

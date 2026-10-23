@@ -174,6 +174,7 @@ const SETTINGS_SUBAGENTS_COPY_BY_LOCALE = resolveUiMessageCatalog(defineShippedU
     },
     thinking: {
       off: '关闭',
+      on: '开启',
       minimal: '最少',
       low: '低',
       medium: '中',
@@ -256,6 +257,7 @@ const SETTINGS_SUBAGENTS_COPY_BY_LOCALE = resolveUiMessageCatalog(defineShippedU
     },
     thinking: {
       off: '關閉',
+      on: '開啟',
       minimal: '最少',
       low: '低',
       medium: '中',
@@ -338,6 +340,7 @@ const SETTINGS_SUBAGENTS_COPY_BY_LOCALE = resolveUiMessageCatalog(defineShippedU
     },
     thinking: {
       off: 'Off',
+      on: 'On',
       minimal: 'Minimal',
       low: 'Low',
       medium: 'Medium',

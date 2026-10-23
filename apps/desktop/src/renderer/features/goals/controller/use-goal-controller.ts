@@ -69,6 +69,7 @@ export function useGoalController(
   const { goal: service } = useGoalServices();
   const [activeGoal, setActiveGoal] = useState<LiveGoalState | null>(null);
   const [dialogSessionId, setDialogSessionId] = useState<string>();
+  const refreshRef = useRef<{ sessionId: string; refresh(): void } | undefined>(undefined);
   const pendingControlSessionIdsRef = useRef(new Set<string>());
 
   useEffect(() => {
@@ -94,12 +95,15 @@ export function useGoalController(
         });
     };
 
+    const handle = { sessionId, refresh };
+    refreshRef.current = handle;
     refresh();
     const unsubscribe = service.subscribeChanges((changedSessionId) => {
       if (!changedSessionId || changedSessionId === sessionId) refresh();
     });
     return () => {
       disposed = true;
+      if (refreshRef.current === handle) refreshRef.current = undefined;
       refreshSequence += 1;
       unsubscribe();
     };
@@ -141,6 +145,33 @@ export function useGoalController(
     if (!activeGoal) return undefined;
     const common = {
       condition: activeGoal.condition,
+      ...(activeGoal.status === 'paused' && activeGoal.lastReason ? { pauseReason: activeGoal.lastReason } : {}),
+      ...(activeGoal.eventWait ? { eventWait: {
+        label: activeGoal.eventWait.phase === 'awaiting_admission'
+          ? copy.goalEventWaitReady
+          : activeGoal.eventWait.observation?.state === 'unknown'
+            ? copy.goalEventWaitUnknown
+            : copy.goalEventWaitPending,
+        detail: [
+          activeGoal.eventWait.reason,
+          activeGoal.eventWait.resource.resourceId,
+          ...(activeGoal.eventWait.observation?.state === 'unknown' && activeGoal.eventWait.observation.reasonCode
+            ? [activeGoal.eventWait.observation.reasonCode] : []),
+          new Date(activeGoal.eventWait.deadlineAt).toLocaleString(locale),
+        ].join(' · '),
+        cancelLabel: copy.goalEventWaitCancel,
+        cancelDescription: copy.goalEventWaitCancelDescription,
+        onCancel: () => {
+          const wait = activeGoal.eventWait!;
+          runExclusiveControl(activeGoal.sessionId, async () => {
+            const result = await service.cancelEventWait({ sessionId: activeGoal.sessionId, goalId: activeGoal.id,
+              controlGeneration: wait.controlGeneration, waitId: wait.waitId, expectedGoalRevision: activeGoal.revision });
+            if (refreshRef.current?.sessionId === activeGoal.sessionId) refreshRef.current.refresh();
+            if (result.outcome === 'conflict' || result.outcome === 'already_admitted')
+              throw new Error(copy.goalEventWaitConflict);
+          }, (error) => reportControlFailure(activeGoal.sessionId, error, copy.goalPauseFailedTitle, copy.goalPauseFailedFallback));
+        },
+      } } : {}),
       iterations: activeGoal.iterations,
       maxIterations: activeGoal.maxIterations,
       setAt: activeGoal.setAt,
@@ -202,12 +233,8 @@ export function useGoalController(
     };
   }, [
     activeGoal,
-    copy.goalClearFailedFallback,
-    copy.goalClearFailedTitle,
-    copy.goalPauseFailedFallback,
-    copy.goalPauseFailedTitle,
-    copy.goalResumeFailedFallback,
-    copy.goalResumeFailedTitle,
+    locale,
+    copy,
     reportControlFailure,
     runExclusiveControl,
     service,

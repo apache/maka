@@ -82,7 +82,7 @@ function harness(
       effects.push(patch);
       await applyEffect?.(settings, patch);
     },
-    adapters: { dingtalk: adapter },
+    adapters: { dingtalk: adapter, wechat: adapter, feishu: adapter },
     now: () => now,
     createId: () => `session-${++sequence}`,
     openExternal: async () => undefined,
@@ -775,4 +775,45 @@ describe('BotOnboardingService', () => {
     assert.equal(wecomTerminalPollStatus('scanned'), undefined);
     assert.equal(wecomTerminalPollStatus(undefined), undefined);
   });
+});
+
+
+it('WeChat onboarding binds only the scanning user and rollback survives cloned allowlists', async () => {
+  const adapter: BotOnboardingProviderAdapter = {
+    async start() { return startResult(); },
+    async poll() { return { status: 'confirmed', credential: {
+      provider: 'wechat', botToken: 'private-token', baseUrl: 'https://ilinkai.weixin.qq.com', botId: 'bot', userId: 'owner',
+    } }; },
+  };
+  const h = harness(adapter);
+  try {
+    const started = await h.service.start({ provider: 'wechat' });
+    h.advance(6000); await h.service.poll(started.sessionId);
+    assert.deepEqual(h.getSettings().botChat.channels.wechat.allowedUserIds, ['owner']);
+  } finally { h.service.dispose(); }
+  let sessionId = '';
+  const rollback = harness(adapter, async () => {
+    // A status write reconstructs arrays without changing their values.
+    await rollback.settingsStore.update({ botChat: { channels: { wechat: { readiness: 'operational' } } } });
+    rollback.service.cancel(sessionId);
+  });
+  try {
+    const started = await rollback.service.start({ provider: 'wechat' }); sessionId = started.sessionId;
+    rollback.advance(6000); await rollback.service.poll(started.sessionId);
+    assert.equal(rollback.getSettings().botChat.channels.wechat.token, '');
+    assert.equal(rollback.getSettings().botChat.channels.wechat.allowedUserIds, undefined);
+  } finally { rollback.service.dispose(); }
+});
+
+it('Feishu onboarding binds the confirmed open_id and clears stale owner when identity is unavailable', async () => {
+  for (const userId of ['ou_owner', undefined]) {
+    const flow = harness({ async start() { return startResult(); }, async poll() {
+      return { status: 'confirmed', credential: { provider: 'feishu', appId: 'app', appSecret: 'secret', brand: 'feishu', userId } };
+    } });
+    await flow.settingsStore.update({ botChat: { channels: { feishu: { allowedUserIds: ['ou_old'] } } } });
+    const started = await flow.service.start({ provider: 'feishu' });
+    flow.advance(5000);
+    await flow.service.poll(started.sessionId);
+    assert.deepEqual(flow.getSettings().botChat.channels.feishu.allowedUserIds ?? [], userId ? [userId] : []);
+  }
 });

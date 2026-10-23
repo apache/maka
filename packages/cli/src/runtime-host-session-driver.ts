@@ -329,12 +329,15 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     if (input.llmConnectionId) this.#llmConnectionId = input.llmConnectionId;
     this.#llmConnectionSlug = input.llmConnectionSlug;
     this.#model = input.model;
-    this.#thinkingLevel = input.thinkingLevel;
+    this.#thinkingLevel = input.thinkingLevel ?? undefined;
     // An omitted mode stays omitted: the Host applies its configured default.
     // Substituting a literal `ask` here would make the CLI a second authority
     // over the starting boundary and silently override that default.
     this.#permissionMode = input.permissionMode;
-    const session = await this.#createSession(input.name ?? DEFAULT_SESSION_NAME);
+    const session = await this.#createSession(
+      input.name ?? DEFAULT_SESSION_NAME,
+      input.thinkingLevel,
+    );
     return projectSessionCatalogSummary(session);
   }
 
@@ -1294,6 +1297,13 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     return () => this.#todoChangeListeners.delete(listener);
   }
 
+  async cancelGoalEventWait(
+    input: import('@maka/runtime-host/protocol').GoalEventWaitCancelInput,
+  ): Promise<import('@maka/runtime-host/protocol').GoalEventWaitCancelResult> {
+    if (input.sessionId !== this.#sessionId) throw new Error('Wait belongs to another Session');
+    return this.#request('goal.event-wait.cancel', input);
+  }
+
   async controlGoal(action: GoalControlAction): Promise<GoalProjection | null> {
     const sessionId = this.#sessionId;
     if (!sessionId) return null;
@@ -1439,7 +1449,10 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     }
   }
 
-  async #createSession(name: string): Promise<SessionCatalogProjection> {
+  async #createSession(
+    name: string,
+    thinkingLevel: CreateSessionRequest['thinkingLevel'] = this.#thinkingLevel,
+  ): Promise<SessionCatalogProjection> {
     const workspace = this.#workspace.target;
     if (!workspace) {
       throw new Error('A remote Runtime Host Session requires an explicit Project');
@@ -1464,7 +1477,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
         ...(this.#orchestrationMode === 'default'
           ? {}
           : { orchestrationMode: this.#orchestrationMode }),
-        ...(this.#thinkingLevel === undefined ? {} : { thinkingLevel: this.#thinkingLevel }),
+        ...(thinkingLevel === undefined ? {} : { thinkingLevel }),
       }),
     );
     this.#sessionGeneration += 1;

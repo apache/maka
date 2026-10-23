@@ -36,15 +36,7 @@ import type {
 } from './workspace-version-authority.js';
 import { WORKSPACE_VERSION_AUTHORITY_CAPABILITY_V1 } from './workspace-version-authority.js';
 
-export const TOOL_RECOVERY_BUNDLE_CAPABILITY_V1 = 'tool_recovery_bundle_v1' as const;
 export const RUNTIME_CONTINUATION_AUTHORITY_V1 = 'runtime_continuation_authority_v1' as const;
-
-export interface RuntimeRecoveryBundleCommit {
-  operationId: string;
-  reconcileRuntimeEvent: RuntimeEvent;
-  outcomeRuntimeEvent?: RuntimeEvent;
-  decisionRuntimeEvent: RuntimeEvent;
-}
 
 export interface RuntimeInvocationRecoveryInventoryEntry {
   readonly sessionId: string;
@@ -275,11 +267,6 @@ export async function readRunInvocation(
   return (await store.listSessionInvocations(sessionId)).find(
     (invocation) => invocation.runId === runId,
   );
-}
-
-export interface RuntimeRecoveryBundleStore extends RuntimeEventStore {
-  readonly recoveryBundleCapability: typeof TOOL_RECOVERY_BUNDLE_CAPABILITY_V1;
-  commitToolRecoveryBundle(input: RuntimeRecoveryBundleCommit): Promise<void>;
 }
 
 export type ContinuationClaimResult =

@@ -17,7 +17,17 @@
  * under the License.
  */
 
-import { decodeEventWaitRecord, type EventWaitRecord } from '@maka/core/event-wait';
+import type {
+  RegisterGoalWaitInput,
+  SettleGoalWaitInput,
+  QueueGoalWaitInput,
+  GoalWaitSnapshot,
+} from './event-wait-bridge.js';
+import {
+  decodeEventWaitRecord,
+  type EventWaitRecord,
+  type EventWaitStatus,
+} from '@maka/core/event-wait';
 import {
   assertStorageRootLease,
   runWithStorageRootLease,
@@ -27,6 +37,7 @@ import {
 import { assertSafeStorageId } from './storage-id.js';
 
 export const EVENT_WAIT_PAGE_LIMIT = 200;
+export const EVENT_WAIT_OBSERVATION_HINT_LIMIT = 10_000;
 export interface EventWaitSnapshot {
   readonly authorityRevision: number;
   readonly record: EventWaitRecord;
@@ -53,17 +64,59 @@ export interface ListPendingEventWaitsInput {
 export interface ListSessionEventWaitsInput extends ListPendingEventWaitsInput {
   readonly sessionId: string;
 }
+/** A fact query, not an acknowledgement or a delivery queue. */
+export interface ListEventWaitsByStatusInput extends ListPendingEventWaitsInput {
+  readonly status: EventWaitStatus;
+  readonly deliveryOutstanding?: true;
+}
 export interface EventWaitPage {
   readonly items: readonly EventWaitSnapshot[];
   readonly nextCursor: string | null;
 }
+export interface EventWaitSource {
+  readonly providerId: string;
+  readonly connectionId: string | null;
+}
+/** Ready waits; oldest attempted first by default. Scheduling hints are never authority. */
+export interface ListEventWaitsForObservationInput {
+  readonly limit: number;
+  readonly now: number;
+  /** Recovery traversal by immutable ID; eligibility filters remain unchanged. */
+  readonly scan?: { readonly afterWaitId?: string };
+  readonly dirtyWaitIds?: readonly string[];
+  readonly excludedWaitIds?: readonly string[];
+  readonly excludedSources?: readonly EventWaitSource[];
+}
+/** Source throttling outlives any individual wait or Session. */
+export interface ExtendEventWaitSourceCooldownInput extends EventWaitSource {
+  readonly observedAt: number;
+  readonly until: number;
+}
+/** A crash-safe dispatch reservation, separate from source-reported cooldown facts. */
+export interface ReserveEventWaitSourceDispatchInput extends ExtendEventWaitSourceCooldownInput {
+  readonly token: string;
+}
+export type CompleteEventWaitSourceDispatchInput = ReserveEventWaitSourceDispatchInput;
 type MaybePromise<T> = T | Promise<T>;
 /** Internal backend port. Root leases authorize storage, not future observation or admission. */
 export interface EventWaitAuthorityRepository {
   read(input: ReadEventWaitInput): MaybePromise<EventWaitSnapshot | null>;
   listSession(input: ListSessionEventWaitsInput): MaybePromise<EventWaitPage>;
   listPending(input: ListPendingEventWaitsInput): MaybePromise<EventWaitPage>;
+  listByStatus(input: ListEventWaitsByStatusInput): MaybePromise<EventWaitPage>;
+  listForObservation(
+    input: ListEventWaitsForObservationInput,
+  ): MaybePromise<readonly EventWaitSnapshot[]>;
+  /** Effective limit, including an unfinished dispatch reservation. */
+  readSourceCooldown(input: EventWaitSource): MaybePromise<number | null>;
+  /** Returns only the real source cooldown; a dispatch reservation is independent. */
+  extendSourceCooldown(input: ExtendEventWaitSourceCooldownInput): MaybePromise<number>;
+  reserveSourceDispatch(input: ReserveEventWaitSourceDispatchInput): MaybePromise<boolean>;
+  completeSourceDispatch(input: CompleteEventWaitSourceDispatchInput): MaybePromise<number>;
   commit(input: CommitEventWaitInput): MaybePromise<CommitEventWaitResult>;
+  registerGoalWait(input: RegisterGoalWaitInput): MaybePromise<GoalWaitSnapshot>;
+  settleGoalWait(input: SettleGoalWaitInput): MaybePromise<GoalWaitSnapshot>;
+  queueGoalWait(input: QueueGoalWaitInput): MaybePromise<GoalWaitSnapshot>;
   close(): MaybePromise<void>;
 }
 const writerBrand: unique symbol = Symbol('InteractiveEventWaitAuthorityWriter');
@@ -75,7 +128,20 @@ export interface InteractiveEventWaitAuthorityWriter {
   read(input: ReadEventWaitInput): Promise<EventWaitSnapshot | null>;
   listSession(input: ListSessionEventWaitsInput): Promise<EventWaitPage>;
   listPending(input: ListPendingEventWaitsInput): Promise<EventWaitPage>;
+  listByStatus(input: ListEventWaitsByStatusInput): Promise<EventWaitPage>;
+  listForObservation(
+    input: ListEventWaitsForObservationInput,
+  ): Promise<readonly EventWaitSnapshot[]>;
+  /** Effective limit, including an unfinished dispatch reservation. */
+  readSourceCooldown(input: EventWaitSource): Promise<number | null>;
+  /** Returns only the real source cooldown; a dispatch reservation is independent. */
+  extendSourceCooldown(input: ExtendEventWaitSourceCooldownInput): Promise<number>;
+  reserveSourceDispatch(input: ReserveEventWaitSourceDispatchInput): Promise<boolean>;
+  completeSourceDispatch(input: CompleteEventWaitSourceDispatchInput): Promise<number>;
   commit(input: CommitEventWaitInput): Promise<CommitEventWaitResult>;
+  registerGoalWait(input: RegisterGoalWaitInput): Promise<GoalWaitSnapshot>;
+  settleGoalWait(input: SettleGoalWaitInput): Promise<GoalWaitSnapshot>;
+  queueGoalWait(input: QueueGoalWaitInput): Promise<GoalWaitSnapshot>;
   close(): Promise<void>;
 }
 export function authenticateInteractiveEventWaitAuthorityWriter(
@@ -93,9 +159,22 @@ export async function openInteractiveEventWaitAuthorityForWrite(
   await assertStorageRootLease(lease, 'interactive', 'write');
   if (
     !repository ||
-    ['read', 'listSession', 'listPending', 'commit', 'close'].some(
-      (k) => typeof Reflect.get(repository, k) !== 'function',
-    )
+    [
+      'read',
+      'listSession',
+      'listPending',
+      'listByStatus',
+      'listForObservation',
+      'readSourceCooldown',
+      'extendSourceCooldown',
+      'reserveSourceDispatch',
+      'completeSourceDispatch',
+      'commit',
+      'registerGoalWait',
+      'settleGoalWait',
+      'queueGoalWait',
+      'close',
+    ].some((k) => typeof Reflect.get(repository, k) !== 'function')
   ) {
     throw new TypeError('Execution persistence requires an eventWaitStore');
   }
@@ -135,10 +214,61 @@ export async function openInteractiveEventWaitAuthorityForWrite(
       const captured = { ...input };
       return run(() => repository.listPending(captured));
     },
+    listByStatus: async (input: ListEventWaitsByStatusInput) => {
+      validateEventWaitStatusPage(input);
+      const captured = { ...input };
+      return run(() => repository.listByStatus(captured));
+    },
+    listForObservation: async (input: ListEventWaitsForObservationInput) => {
+      validateEventWaitObservationList(input);
+      const captured = {
+        limit: input.limit,
+        now: input.now,
+        ...(input.scan ? { scan: { ...input.scan } } : {}),
+        ...(input.dirtyWaitIds ? { dirtyWaitIds: [...input.dirtyWaitIds] } : {}),
+        ...(input.excludedWaitIds ? { excludedWaitIds: [...input.excludedWaitIds] } : {}),
+        ...(input.excludedSources
+          ? { excludedSources: input.excludedSources.map((source) => ({ ...source })) }
+          : {}),
+      };
+      return run(() => repository.listForObservation(captured));
+    },
+    readSourceCooldown: async (input: EventWaitSource) => {
+      validateEventWaitSource(input);
+      const captured = { ...input };
+      return run(() => repository.readSourceCooldown(captured));
+    },
+    extendSourceCooldown: async (input: ExtendEventWaitSourceCooldownInput) => {
+      validateEventWaitSourceCooldown(input);
+      const captured = { ...input };
+      return run(() => repository.extendSourceCooldown(captured));
+    },
+    reserveSourceDispatch: async (input: ReserveEventWaitSourceDispatchInput) => {
+      validateEventWaitSourceDispatch(input);
+      const captured = { ...input };
+      return run(() => repository.reserveSourceDispatch(captured));
+    },
+    completeSourceDispatch: async (input: CompleteEventWaitSourceDispatchInput) => {
+      validateEventWaitSourceDispatch(input, true);
+      const captured = { ...input };
+      return run(() => repository.completeSourceDispatch(captured));
+    },
     commit: async (input: CommitEventWaitInput) => {
       // Capture before the async lease check, so caller mutation cannot change a queued write.
       const normalized = normalizeEventWaitCommit(input);
       return run(() => repository.commit(normalized));
+    },
+    registerGoalWait: (input: RegisterGoalWaitInput) => {
+      const captured = structuredClone(input);
+      return run(() => repository.registerGoalWait(captured));
+    },
+    settleGoalWait: (input: SettleGoalWaitInput) => {
+      const captured = structuredClone(input);
+      return run(() => repository.settleGoalWait(captured));
+    },
+    queueGoalWait: (input: QueueGoalWaitInput) => {
+      const captured = structuredClone(input);
+      return run(() => repository.queueGoalWait(captured));
     },
     close: () =>
       (closeTask ??= (async () => {
@@ -191,6 +321,38 @@ export function validateEventWaitPage(input: ListPendingEventWaitsInput, session
   if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > EVENT_WAIT_PAGE_LIMIT)
     throw new TypeError('Invalid event wait page limit');
 }
+export function validateEventWaitObservationList(input: ListEventWaitsForObservationInput): void {
+  exactInput(
+    input,
+    ['limit', 'now'],
+    ['scan', 'dirtyWaitIds', 'excludedWaitIds', 'excludedSources'],
+  );
+  validateEventWaitPage({ limit: input.limit });
+  if (!Number.isSafeInteger(input.now) || input.now < 0)
+    throw new TypeError('Invalid event wait observation time');
+  if (Object.hasOwn(input, 'scan')) {
+    exactInput(input.scan, [], ['afterWaitId']);
+    if (Object.hasOwn(input.scan!, 'afterWaitId'))
+      assertEventWaitStorageId(input.scan!.afterWaitId);
+  }
+  for (const key of ['dirtyWaitIds', 'excludedWaitIds', 'excludedSources'] as const) {
+    if (!Object.hasOwn(input, key)) continue;
+    const values = input[key];
+    if (
+      !Array.isArray(values) ||
+      values.length > EVENT_WAIT_OBSERVATION_HINT_LIMIT ||
+      Reflect.ownKeys(values).length !== values.length + 1
+    )
+      throw new TypeError('Invalid event wait observation hints');
+    for (let i = 0; i < values.length; i++) {
+      const descriptor = Object.getOwnPropertyDescriptor(values, i);
+      if (!descriptor?.enumerable || !('value' in descriptor))
+        throw new TypeError('Invalid event wait observation hint');
+      if (key === 'excludedSources') validateEventWaitSource(descriptor.value);
+      else assertEventWaitStorageId(descriptor.value);
+    }
+  }
+}
 export function normalizeEventWaitCommit(input: CommitEventWaitInput): CommitEventWaitInput {
   exactInput(input, ['sessionId', 'waitId', 'expectedAuthorityRevision', 'record']);
   assertEventWaitStorageId(input.sessionId);
@@ -210,9 +372,69 @@ export function normalizeEventWaitCommit(input: CommitEventWaitInput): CommitEve
     record,
   };
 }
+export function validateEventWaitStatusPage(input: ListEventWaitsByStatusInput): void {
+  exactInput(input, ['status', 'limit'], ['afterWaitId', 'deliveryOutstanding']);
+  if (input.deliveryOutstanding !== undefined && input.deliveryOutstanding !== true)
+    throw new TypeError('Invalid delivery filter');
+  if (!['waiting', 'resolved', 'expired', 'cancelled'].includes(input.status))
+    throw new TypeError('Invalid event wait status');
+  validateEventWaitPage({
+    limit: input.limit,
+    ...(Object.hasOwn(input, 'afterWaitId') ? { afterWaitId: input.afterWaitId } : {}),
+  });
+}
 export function eventWaitPage(items: readonly EventWaitSnapshot[], limit: number): EventWaitPage {
   return {
     items: items.slice(0, limit),
     nextCursor: items.length > limit ? items[limit - 1]!.record.waitId : null,
   };
+}
+
+export function validateEventWaitSource(input: EventWaitSource): void {
+  exactInput(input, ['providerId', 'connectionId']);
+  if (
+    typeof input.providerId !== 'string' ||
+    input.providerId.length < 1 ||
+    input.providerId.length > 128 ||
+    /[^A-Za-z0-9_.-]/.test(input.providerId)
+  )
+    throw new TypeError('Invalid event wait provider');
+  if (input.connectionId !== null) {
+    assertEventWaitStorageId(input.connectionId);
+    if (input.connectionId.length > 128) throw new TypeError('Invalid event wait connection');
+  }
+}
+export function validateEventWaitSourceCooldown(input: ExtendEventWaitSourceCooldownInput): void {
+  exactInput(input, ['providerId', 'connectionId', 'observedAt', 'until']);
+  validateEventWaitSource({ providerId: input.providerId, connectionId: input.connectionId });
+  if (
+    !Number.isSafeInteger(input.observedAt) ||
+    input.observedAt < 0 ||
+    !Number.isSafeInteger(input.until) ||
+    input.until <= input.observedAt
+  )
+    throw new TypeError('Invalid event wait source cooldown');
+}
+export function eventWaitSourceKey(input: EventWaitSource): string {
+  return JSON.stringify([input.providerId, input.connectionId]);
+}
+
+export function validateEventWaitSourceDispatch(
+  input: ReserveEventWaitSourceDispatchInput,
+  completion = false,
+): void {
+  exactInput(input, ['providerId', 'connectionId', 'token', 'observedAt', 'until']);
+  validateEventWaitSource({
+    providerId: input.providerId,
+    connectionId: input.connectionId,
+  });
+  if (
+    !Number.isSafeInteger(input.observedAt) ||
+    input.observedAt < 0 ||
+    !Number.isSafeInteger(input.until) ||
+    (completion ? input.until < input.observedAt : input.until <= input.observedAt)
+  )
+    throw new TypeError('Invalid event wait dispatch time');
+  assertEventWaitStorageId(input.token);
+  if (input.token.length > 128) throw new TypeError('Invalid event wait dispatch token');
 }

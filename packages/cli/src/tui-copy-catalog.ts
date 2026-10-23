@@ -226,6 +226,7 @@ const TUI_COPY_RESOURCES_PICKERS_EN = {
   addAccount: 'add account',
   thinkingLevels: {
     off: 'Off',
+    on: 'On',
     minimal: 'Minimal',
     low: 'Low',
     medium: 'Medium',
@@ -562,7 +563,35 @@ const TUI_COPY_RESOURCES_TODO_EN = {
   hint: '↑↓/PgUp/PgDn scroll · Home/End · Esc close',
 };
 
+const TUI_COPY_RESOURCES_GOAL_EN = {
+  cancelWaitBusy: 'Wait for the current action to finish, then cancel the wait.',
+  noCancellableWait: 'No cancellable event wait.',
+  waitCancelled: 'Wait cancelled. Goal paused; the background task keeps running.',
+  waitChanged:
+    'The wait changed or its continuation was admitted. Use /goal to inspect the current state.',
+  usage: 'Usage: /goal [pause|resume|clear|cancel-wait]',
+};
+
 export const TUI_COPY_RESOURCES = {
+  goal: resolveUiMessageCatalog(
+    defineShippedUiMessageCatalog<UiMessageShape<typeof TUI_COPY_RESOURCES_GOAL_EN>>()({
+      en: TUI_COPY_RESOURCES_GOAL_EN,
+      'zh-CN': {
+        cancelWaitBusy: '请等待当前操作完成，再取消等待。',
+        noCancellableWait: '没有可取消的事件等待。',
+        waitCancelled: '等待已取消，目标已暂停；后台任务继续运行。',
+        waitChanged: '等待状态已变化，或后续执行已获准启动。请使用 /goal 查看当前状态。',
+        usage: '用法：/goal [pause|resume|clear|cancel-wait]',
+      },
+      'zh-TW': {
+        cancelWaitBusy: '請等待目前操作完成，再取消等待。',
+        noCancellableWait: '沒有可取消的事件等待。',
+        waitCancelled: '等待已取消，目標已暫停；背景任務繼續執行。',
+        waitChanged: '等待狀態已變更，或後續執行已獲准啟動。請使用 /goal 檢視目前狀態。',
+        usage: '用法：/goal [pause|resume|clear|cancel-wait]',
+      },
+    }),
+  ),
   todo: resolveUiMessageCatalog(
     defineShippedUiMessageCatalog<UiMessageShape<typeof TUI_COPY_RESOURCES_TODO_EN>>()({
       en: TUI_COPY_RESOURCES_TODO_EN,
@@ -1036,6 +1065,7 @@ export const TUI_COPY_RESOURCES = {
         addAccount: '添加账号',
         thinkingLevels: {
           off: '关',
+          on: '开',
           minimal: '最小',
           low: '低',
           medium: '中',
@@ -1162,6 +1192,7 @@ export const TUI_COPY_RESOURCES = {
         addAccount: '新增帳號',
         thinkingLevels: {
           off: '關',
+          on: '開',
           minimal: '最小',
           low: '低',
           medium: '中',

@@ -109,6 +109,7 @@ interface RegionProps {
 }
 
 interface TranscriptProps {
+  hasLaterHistory?: boolean;
   deriveTurnPresentation(turns: readonly TurnViewModel[]): TurnPresentation;
   safeResumeAction?: { pending: boolean; detail: string | undefined; onResume(): void };
   activeTurn: { turnId: string; awaitingInput: boolean; compacting: boolean } | undefined;
@@ -149,6 +150,8 @@ function harness(options: {
   sharedSessionActive?: boolean;
   ownerSessionId?: string;
   listMessages?: ReturnType<typeof stubConversationServices>['listMessages'];
+  hasNewer?: boolean;
+  showLatest?: (sessionId: string) => Promise<void>;
   resume?: ReturnType<typeof stubConversationServices>['resume'];
   cancelMessage?: ReturnType<typeof stubConversationServices>['cancelMessage'];
   releaseRecoveryAttachments?: ReturnType<typeof stubConversationServices>['releaseRecoveryAttachments'];
@@ -174,20 +177,28 @@ function harness(options: {
   conversationServices.observation.openTranscript = (sessionId) => {
     let messages: StoredMessage[] = [];
     let ready = false;
+    let hasNewer = options.hasNewer ?? false;
     const listeners = new Set<() => void>();
     published.push((next) => { messages = next; ready = true; for (const listener of listeners) listener(); });
     return {
       store: {
-        range: () => ({ sessionId, hasOlder: false, ready, generation: 'range' }),
+        range: () => ({ sessionId, hasOlder: false, hasNewer, ready, generation: 'range' }),
         snapshot: () => {
           if (!ready) throw new Error('Desktop transcript range is not initialized');
-          return { sessionId, messages, ready };
+          return { sessionId, messages, hasNewer, ready };
         },
         subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
         hasDurableMessage: (id) => messages.some((message) => message.id === id),
       },
       ready: async () => {}, waitForDurableMessage: async () => true,
       reload: async () => {}, holdsCachedTranscript: () => false, loadEarlier: async () => {}, observationChanged: () => {},
+      loadNewer: async () => {}, seek: async () => {},
+      showLatest: async () => {
+        await options.showLatest?.(sessionId);
+        hasNewer = false;
+        for (const listener of listeners) listener();
+      },
+      readComplete: async () => messages,
       close: async () => {},
     };
   };
@@ -596,6 +607,34 @@ describe('ComposerSubmissionProvider', () => {
     await act(async () => started.resolve({ disposition: 'started', runId: 'run-1', turnId: 'turn-2' }));
     assert.equal(h.region.resumeAction, undefined, 'a started resume retracts the offer');
     assert.equal(h.transcript.safeResumeAction?.pending, false);
+  });
+
+  test('Composer Resume follows the latest window before admission without waiting for its read', async () => {
+    const calls: unknown[] = [];
+    const latest = deferred<void>();
+    const h = harness({
+      ownerSessionId: 'A',
+      hasNewer: true,
+      showLatest: (sessionId) => { calls.push(['latest', sessionId]); return latest.promise; },
+      resume: {
+        queryPlan: async () => ({ disposition: 'ready' }) as Awaited<ReturnType<ReturnType<typeof stubConversationServices>['resume']['queryPlan']>>,
+        start: async (sessionId) => {
+          calls.push(['start', sessionId]);
+          return { disposition: 'started', runId: 'run-1', turnId: 'turn-2' };
+        },
+        subscribeChanges: () => () => undefined,
+      },
+    });
+    await act(async () => h.target.setActiveId('A'));
+    await act(async () => h.published[0]!([userTurn('turn-1', 'older window')]));
+    assert.equal(h.transcript.hasLaterHistory, true);
+
+    await act(async () => h.region.resumeAction!.onResume());
+    assert.deepEqual(calls, [['latest', 'A'], ['start', 'A']]);
+    assert.equal(h.transcript.hasLaterHistory, true, 'resume admission does not wait for history navigation');
+
+    await act(async () => latest.resolve());
+    assert.equal(h.transcript.hasLaterHistory, false, 'the resumed Turn is visible at the session tail');
   });
 
   test('runs local delivery recovery for the published Session below the owner', async () => {

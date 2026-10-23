@@ -22,7 +22,37 @@ import { EventEmitter } from 'node:events';
 import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 import type { PluginClientQueryInput, PluginClientQueryResult } from '@maka/runtime-host/protocol';
-import { ClientPluginTransport, type ClientPluginQueryClient, type ClientPluginRemoteClient } from '../client-plugin-transport.js';
+import {
+  ClientPluginTransport,
+  MAKA_CLIENT_PLUGIN_SCHEME_PRIVILEGES,
+  registerClientPluginProtocol,
+  type ClientPluginQueryClient,
+  type ClientPluginRemoteClient,
+} from '../client-plugin-transport.js';
+
+test('Client Plugin scheme supports credentialless executable bundle loading', () => {
+  assert.deepEqual(MAKA_CLIENT_PLUGIN_SCHEME_PRIVILEGES, {
+    standard: true,
+    secure: true,
+    supportFetchAPI: true,
+    corsEnabled: true,
+  });
+});
+
+test('Client Plugin protocol registration binds the transport to the app session', async () => {
+  let registeredScheme = '';
+  let registeredHandler: ((request: { readonly url: string }) => Response | Promise<Response>) | undefined;
+  await registerClientPluginProtocol({
+    async handle(scheme, handler) {
+      registeredScheme = scheme;
+      registeredHandler = handler;
+    },
+  });
+  assert.equal(registeredScheme, 'maka-client-plugin');
+  assert.equal(typeof registeredHandler, 'function');
+  const response = await registeredHandler!({ url: 'maka-client-plugin://bundle/unknown/sha256-deadbeef.js' });
+  assert.equal(response.status, 404);
+});
 
 test('Client Plugin transport serves only the exact Host-projected bundle generation', async () => {
   const content = Buffer.from('window.__MakaModuleLoader__.load({id:"fixture",factory:()=>({apply(){}})})');

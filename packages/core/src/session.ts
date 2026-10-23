@@ -881,6 +881,8 @@ export function isConversationTextMessage(message: StoredMessage): boolean {
 }
 
 export interface AssistantMessage {
+  /** Model-authored preview; text remains the complete message. */
+  summary?: string;
   type: 'assistant';
   interrupted?: true;
   id: string;
@@ -1377,7 +1379,7 @@ const USER_MESSAGE_SHAPE = defineObjectShape<UserMessage>()(
 );
 const ASSISTANT_MESSAGE_SHAPE = defineObjectShape<AssistantMessage>()(
   ['type', 'id', 'turnId', 'ts', 'text', 'modelId'],
-  ['thinking', 'contentOrder', 'providerOptions', 'interrupted'],
+  ['thinking', 'contentOrder', 'providerOptions', 'interrupted', 'summary'],
 );
 const TOOL_CALL_MESSAGE_SHAPE = defineObjectShape<ToolCallMessage>()(
   ['type', 'id', 'turnId', 'ts', 'toolName', 'args'],
@@ -1668,6 +1670,7 @@ function decodeMessage(
         hasMessageEnvelope(message, true) &&
         typeof message.text === 'string' &&
         typeof message.modelId === 'string' &&
+        (message.summary === undefined || typeof message.summary === 'string') &&
         (message.interrupted === undefined || message.interrupted === true) &&
         (message.providerOptions === undefined || isRecord(message.providerOptions)) &&
         (message.thinking === undefined || isAssistantThinking(message.thinking)) &&
@@ -2084,3 +2087,6 @@ function inferLegacyTurnStatus(messages: readonly StoredMessage[]): TurnStatus {
     return 'failed';
   return 'completed';
 }
+
+/** Durable provenance for assistant-created workers; visibility is a client preference. */
+export const ASSISTANT_BACKGROUND_SESSION_LABEL = 'personal-assistant-background';

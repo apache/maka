@@ -49,10 +49,10 @@ submission owner reads them from the controller. Its
 published Session reference is a frozen getter, and consuming contracts declare
 it readonly. It has no map setters, range
 controller, publication callback, writable refs, or whole-state getter.
-Copy and Save call `renderPublishedConversation(sessionName, locale)`, which
-renders the **published range** as Markdown at invocation; the shell gets the
-export, not the messages, and it is not a full-history promise. Revision commands
-read the same range from the controller inside the Composer submission owner.
+Copy and Save call `renderCompleteConversation(sessionId, sessionName, locale)`,
+which reads complete history without changing the displayed window and returns
+Markdown. The shell receives the export, not the messages. Revision commands
+read the published range from the controller inside the Composer submission owner.
 
 The Desktop adapter supplies `ConversationObservationServices`. The feature
 never imports the Desktop range implementation or accesses `window.maka`.

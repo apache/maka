@@ -52,11 +52,11 @@ import {
   type ContextBudgetPolicy,
   type ToolResultPruneStats,
 } from './context-budget.js';
-import { isHistoryCompactContentEvent } from './history-compaction.js';
 import {
   canContinueHistoryCompactCheckpointForModel,
   canReplayHistoryCompactCheckpointForModel,
-  historyCompactSourceDigest,
+  checkHistoryCompactCheckpointCurrency,
+  isHistoryCompactContentEvent,
   matchHistoryCompactCheckpointPrefix,
   projectHistoryCompactCheckpointReplay,
   type HistoryCompactCheckpoint,
@@ -325,6 +325,9 @@ export class AiSdkCompaction {
       }
 
       if (previousCheckpoint) {
+        // Load the transition view only when the raw prefix can replay at all:
+        // a checkpoint that cannot match never reaches for the ledger, the
+        // same as before (#5930 keeps the load point, not the check).
         const match = matchHistoryCompactCheckpointPrefix(previousCheckpoint, runtimeContext);
         if (!match.reason && match.successorRuntimeEvents.length === 0) {
           // Raw identity is not enough: a projection transition committed
@@ -333,11 +336,15 @@ export class AiSdkCompaction {
           // digest to still match — the same gate the pre-send path applies
           // (#5929). On drift, fall through to the planner, whose roll-forward
           // currency check discards the stale checkpoint and re-summarizes.
-          const effectiveCovered = await this.foldEffectiveModelHistory(match.coveredRuntimeEvents);
-          if (this.checkpointEffectiveCoverageMatches(previousCheckpoint, effectiveCovered)) {
+          const currency = checkHistoryCompactCheckpointCurrency(
+            previousCheckpoint,
+            runtimeContext,
+            await this.loadModelProjectionTransitions(),
+          );
+          if (currency.status === 'current') {
             const projectedEvents = projectHistoryCompactCheckpointReplay(
               previousCheckpoint,
-              match.coveredRuntimeEvents,
+              currency.match.coveredRuntimeEvents,
               [],
             );
             return {
@@ -391,11 +398,11 @@ export class AiSdkCompaction {
           : {}),
         ...(automaticMemoryBoundary ? { memoryExtractionBoundary: automaticMemoryBoundary } : {}),
         ...(previousCheckpoint ? { previousCheckpoint } : {}),
-        // The planner projects the covered span to its effective view before
+        // The planner folds the covered span through this snapshot before
         // summarizing and pins its digest as coverage.effectiveSourceDigest:
         // the summary can never quote a body a durable transition removed, and
         // a later transition invalidates the checkpoint at replay (#4845).
-        projectEffectiveCoverage: (covered) => this.foldEffectiveModelHistory(covered),
+        loadProjectionSnapshot: () => this.loadModelProjectionTransitions(),
         summarize: async ({
           coveredRuntimeEvents,
           newlyFoldedRuntimeEvents,
@@ -577,28 +584,6 @@ export class AiSdkCompaction {
   }
 
   /**
-   * Whether the checkpoint's pinned effective view still is the covered
-   * prefix's effective view. The raw identity match happens later in the
-   * replay authority; this gate is about content currency: a projection
-   * transition committed after the fold changes what the model may see of the
-   * covered span without touching the raw ledger, and the checkpoint's summary
-   * or provider state must not survive that drift (#4845 review).
-   */
-  private checkpointEffectiveCoverageMatches(
-    checkpoint: HistoryCompactCheckpoint,
-    effectiveEvents: readonly RuntimeEvent[],
-  ): boolean {
-    const pinned = checkpoint.coverage.effectiveSourceDigest;
-    if (pinned === undefined) return false;
-    const covered = effectiveEvents
-      .filter(isHistoryCompactContentEvent)
-      .slice(0, checkpoint.coverage.eventCount);
-    if (covered.length !== checkpoint.coverage.eventCount) return false;
-    if (covered.at(-1)?.id !== checkpoint.coverage.through.runtimeEventId) return false;
-    return historyCompactSourceDigest(covered) === pinned;
-  }
-
-  /**
    * Apply the same bounded-result rule to current and prior events.
    *
    * This is the one seam where raw RuntimeEvents become effective model
@@ -727,16 +712,12 @@ export class AiSdkCompaction {
       // This gate is only for the case where the raw identity matches but a
       // projection transition committed after the fold changed the effective
       // view the summary (or provider state) was built from (#4845 review).
-      const rawIdentityMatch = matchHistoryCompactCheckpointPrefix(
+      const currency = checkHistoryCompactCheckpointCurrency(
         loadedCheckpoint,
         runtimeContext.filter(isHistoryCompactContentEvent),
+        prepared.projectionSnapshot,
       );
-      if (rawIdentityMatch.reason) {
-        nextPolicy = {
-          ...nextPolicy,
-          historyCompact: { ...nextPolicy.historyCompact!, checkpoint: loadedCheckpoint },
-        };
-      } else if (this.checkpointEffectiveCoverageMatches(loadedCheckpoint, effective.events)) {
+      if (currency.status !== 'effective_history_changed') {
         nextPolicy = {
           ...nextPolicy,
           historyCompact: { ...nextPolicy.historyCompact!, checkpoint: loadedCheckpoint },
@@ -815,7 +796,8 @@ export class AiSdkCompaction {
       headAnchor,
       priorContentEvents,
       input.runtimeContextInvocations ?? [],
-      resolveDeclaredContextWindow(this.input.connection, this.input.modelId),
+      resolveDeclaredContextWindow(this.input.connection, this.input.modelId) ??
+        policy.historyCompact.midTurn.fallbackThresholdTokens,
     );
     // Seed the turn's FIRST request with the last request the provider
     // actually counted, so step 0 is judged by the same real number as every
@@ -838,12 +820,12 @@ export class AiSdkCompaction {
   /**
    * Request-projection stage for proactive compaction: before each request of
    * one turn, compare the baseline — the last provider-accepted request's real
-   * input plus real output tokens — against the context window the user
-   * declared, and over it fold a safe completed prefix into a durable
-   * checkpoint, continuing the turn on `[compact block, verbatim head anchor]`.
+   * input plus real output tokens — against the user's compaction target or
+   * explicit Host fallback. Crossing it folds a safe completed prefix into a
+   * durable checkpoint, continuing on `[compact block, verbatim head anchor]`.
    *
    * Nothing here estimates whether a request fits: the baseline is the
-   * provider's own count, the window is the user's own number, and the part of
+   * provider's own count, the target is a policy choice, and the part of
    * the next request neither describes (tool results, user text, images
    * appended since) is judged by the provider when the request goes out. This
    * hook never terminates the turn: every failure fails open with a diagnostic
@@ -919,7 +901,7 @@ export class AiSdkCompaction {
         return keepProjection();
       };
       // One trigger, one real signal: the baseline plus the room the next reply
-      // needs crossed the window the user declared. A cut reply is deliberately
+      // needs crossed the user target or Host fallback. A cut reply is deliberately
       // not a trigger — see the note on `finishReason: length` in the backend.
       // The next request is at least the baseline, and its reply needs room on
       // top of it. The room is measured from the last reply the model actually
@@ -1114,7 +1096,7 @@ export class AiSdkCompaction {
             },
           }
         : {}),
-      projectEffectiveCoverage: (covered) => this.foldEffectiveModelHistory(covered),
+      loadProjectionSnapshot: () => this.loadModelProjectionTransitions(),
       summarize: async ({ coveredRuntimeEvents, newlyFoldedRuntimeEvents, previousCheckpoint }) => {
         // Same contract as the standalone path: the planner hands the
         // effective (transition-folded) view to the summarizer and pins its
@@ -1234,10 +1216,10 @@ export class AiSdkCompaction {
   /**
    * Reactive overflow recovery (issue #882 PR 2): the second line of defense.
    * When a provider rejects a request with a context-length error, fold the
-   * durable turn ledger and resend — once per step: a step that a fold or an
-   * image omission has already reshaped gets no second recovery, so the
-   * resend's own rejection is terminal, while a step the provider has since
-   * accepted earns a fresh attempt. Returns the compacted messages to resend,
+   * durable turn ledger and resend. Each step may omit historical images once,
+   * then fold once; a rejection after the fold is terminal. A step the
+   * provider has since accepted earns a fresh recovery sequence. Returns the
+   * compacted messages to resend,
    * or undefined when recovery is impossible or already spent, in which case
    * the caller surfaces the real provider error rather than a fabricated
    * success or a locally synthesized verdict (the provider — not the runtime —
@@ -1261,13 +1243,15 @@ export class AiSdkCompaction {
     abortSignal?: AbortSignal;
   }): Promise<{ messages: ModelMessage[] } | undefined> {
     const state = input.midTurnState;
-    if (!state || state.stepShaping.has('fold') || state.stepShaping.has('omit_images')) {
+    if (!state || state.stepShaping.has('fold')) {
       return undefined;
     }
 
     const eligibleImages = collectHistoricalImageToolResults(state.priorContentEvents);
-    const imageOmission = omitHistoricalImageToolResults(input.currentMessages, eligibleImages);
-    if (imageOmission.omittedParts > 0) {
+    const imageOmission = state.stepShaping.has('omit_images')
+      ? undefined
+      : omitHistoricalImageToolResults(input.currentMessages, eligibleImages);
+    if (imageOmission && imageOmission.omittedParts > 0) {
       state.stepShaping.add('omit_images');
       for (const toolCallId of imageOmission.omittedToolCallIds) {
         const image = eligibleImages.get(toolCallId);
@@ -1276,6 +1260,17 @@ export class AiSdkCompaction {
         // back into the very history the provider just rejected.
         if (image) state.omittedImageToolResults.set(toolCallId, image);
       }
+      input.onDiagnosticPatch(
+        compactionDecisionDiagnosticPatch({
+          stage: 'activeStep',
+          sourceKind: 'providerMessages',
+          decision: 'replaced',
+          phase: state.compactionPhase(input.stepNumber),
+          boundaryKind: 'imageOmission',
+          coverage: { toolCallIds: [...imageOmission.omittedToolCallIds] },
+          reason: 'overflow',
+        }),
+      );
       state.baselineTokens = undefined;
       return { messages: imageOmission.messages };
     }
@@ -1329,7 +1324,13 @@ export class AiSdkCompaction {
     // The fold replaced the request; the baseline described the rejected one.
     state.stepShaping.add('fold');
     state.baselineTokens = undefined;
-    return { messages: outcome.replacementMessages };
+    return {
+      messages:
+        projectHistoricalImageOmissions(
+          outcome.replacementMessages,
+          state.omittedImageToolResults,
+        ) ?? outcome.replacementMessages,
+    };
   }
 }
 
@@ -1423,7 +1424,7 @@ export class MidTurnCapacityCompactState {
   /**
    * What has reshaped the request since the last one a provider accepted. The
    * turn clears it at that acceptance; overflow recovery reads it so a request
-   * that was already folded or stripped of images is not reshaped again.
+   * is folded at most once, after an optional image omission.
    */
   readonly stepShaping = new Set<'fold' | 'omit_images'>();
   /**

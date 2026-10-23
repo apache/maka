@@ -105,6 +105,7 @@ import {
   type DesktopTranscriptBatch,
   type DesktopTranscriptHandle,
   type DesktopTranscriptOpenMode,
+  type DesktopTranscriptPosition,
   type DesktopTranscriptOpenResult,
 } from './transcript-contract.js';
 import {
@@ -1251,8 +1252,8 @@ const runtimeHost: MakaBridge['runtimeHost'] = {
       OperationOutput<typeof operation>
     >;
   },
-  command(operation, input) {
-    return invokeActiveRuntimeHost('runtime-host:command', operation, input) as Promise<
+  command(operation, input, host) {
+    return (host ? invokeSelectedRuntimeHost(host, 'runtime-host:command', operation, input) : invokeActiveRuntimeHost('runtime-host:command', operation, input)) as Promise<
       OperationOutput<typeof operation>
     >;
   },
@@ -1964,8 +1965,11 @@ const makaBridge = {
     },
   },
   newTasks: {
-    async getExecutors(target, cwd, refresh) {
-      return ipcRenderer.invoke('sessions:executorCatalog', await runtimeHostScope(target), cwd, refresh);
+    async getExecutors(target, cwd, refresh, executorId) {
+      return ipcRenderer.invoke('sessions:executorCatalog', await runtimeHostScope(target), cwd, refresh, executorId);
+    },
+    async listExecutors(target, cwd) {
+      return ipcRenderer.invoke('sessions:executorCatalog', await runtimeHostScope(target), cwd, false, undefined, true);
     },
     getCatalog(): Promise<DesktopNewTaskCatalog> {
       return loadNewTaskCatalog();
@@ -2803,6 +2807,7 @@ const makaBridge = {
       registerCancellation?: (cancel: () => void) => void,
       mode: DesktopTranscriptOpenMode = 'history',
       resumeFrom?: number,
+      position?: DesktopTranscriptPosition,
     ): Promise<DesktopTranscriptHandle> {
       const consumerId = crypto.randomUUID();
       const channel = `sessions:transcript:${consumerId}`;
@@ -2864,6 +2869,7 @@ const makaBridge = {
             consumerId,
             mode,
             resumeFrom ?? null,
+            position ?? null,
           ) as Promise<RuntimeHostObservationIpcResult<DesktopTranscriptOpenResult>>,
         };
       });
@@ -2902,6 +2908,7 @@ const makaBridge = {
               ...cachedIdentity, sessionId, readThroughMessageId: null,
               acknowledgeTail: unavailable,
               loadEarlier: unavailable,
+              loadNewer: unavailable,
               close: async () => {},
             };
           }
@@ -2938,6 +2945,9 @@ const makaBridge = {
             consumerId,
             throughSequence ?? null,
           ) as Promise<void>,
+        loadNewer: () => invokeWhenReady(
+          'sessions:transcript:load-newer', consumerScope, consumerId,
+        ) as Promise<void>,
         async close() {
           if (closed) return;
           requestClose();
@@ -3203,11 +3213,22 @@ const makaBridge = {
     },
   },
   goal: {
-    get(sessionId: string): Promise<GoalState | null> {
+    get(sessionId: string): Promise<import('../shared/goal-arm.js').DesktopGoal | null> {
       return invokeProjectedSessionRuntimeHost('goal:get', sessionId);
     },
     arm(sessionId: string, goal: GoalArmRequest): Promise<GoalArmOutcome> {
       return invokeProjectedSessionRuntimeHost('goal:arm', sessionId, goal);
+    },
+    async cancelEventWait(input: import('@maka/runtime-host/protocol').GoalEventWaitCancelInput): Promise<import('@maka/runtime-host/protocol').GoalEventWaitCancelResult> {
+      const target = { ...input };
+      const session = await runtimeHostSessionRef(target.sessionId);
+      const result = await invokeWhenReady(
+        'goal:cancel-event-wait',
+        session.scope,
+        session.sessionId,
+        { ...target, sessionId: session.sessionId },
+      ) as import('@maka/runtime-host/protocol').GoalEventWaitCancelResult;
+      return projectProtocolSessionIds(session.scope.hostId, result);
     },
     clear(sessionId: string): Promise<void> {
       return invokeSessionRuntimeHost('goal:clear', sessionId);
@@ -3422,6 +3443,7 @@ const makaBridge = {
     },
   },
   attachments: {
+    resolveImageDelivery: (sessionId, request) => invokeSessionRuntimeHost('attachments:resolveImage', sessionId, request),
     pickDirectory: () => invokeWhenReady('directories:pick'),
     // The renderer hands over the dropped or pasted File objects, never paths:
     // only a File backed by something the user dropped or pasted has a path,

@@ -256,6 +256,7 @@ describe('Maka Pi TUI transcript', () => {
       lastReason: null,
       achievedAt: null,
       pausedAt: null,
+      eventWait: null,
     } as const;
     const active = stripAnsi(
       renderMakaPiStatusLine({ ...meta(), goal: { ...base, status: 'active' as const } }, 120),
@@ -473,6 +474,7 @@ describe('Maka Pi TUI transcript', () => {
             lastReason: null,
             achievedAt: null,
             pausedAt: null,
+            eventWait: null,
             status: 'active' as const,
           },
         },
@@ -513,6 +515,7 @@ describe('Maka Pi TUI transcript', () => {
         lastReason: null,
         achievedAt: null,
         pausedAt: null,
+        eventWait: null,
         status: 'active' as const,
       },
     };

@@ -28,6 +28,7 @@ import type {
 } from "./runtime-host-session-observer.js";
 import type {
   DesktopTranscriptOpenMode,
+  DesktopTranscriptPosition,
   DesktopTranscriptOpenResult,
   DesktopTranscriptTailAcknowledgement,
 } from '../preload/transcript-contract.js';
@@ -40,6 +41,7 @@ type SessionObservationSource = Pick<RuntimeHostSessionObserver, 'observe' | 'un
       | 'acknowledgeTranscriptTail'
       | 'closeTranscript'
       | 'loadEarlierTranscript'
+      | 'loadNewerTranscript'
       | 'openTranscript'
       | 'readTranscriptTurn'
     >
@@ -124,6 +126,7 @@ interface TranscriptRegistration {
    * than onto a fresh budget.
    */
   deliveredFrom: number | null;
+  position?: DesktopTranscriptPosition;
 }
 
 interface TranscriptReadiness {
@@ -410,6 +413,11 @@ export class RuntimeHostSessionObservationRegistry {
             registration.deliveredFrom = sequence;
           }
         }
+        if (payload.ready) {
+          registration.position = payload.hasNewer && registration.deliveredFrom !== null && payload.durableThrough !== null
+            ? { sequence: registration.deliveredFrom, throughSequence: payload.durableThrough, hasOlder: payload.hasOlder }
+            : undefined;
+        }
         target.send(channel, payload);
       },
       once: (event, listener) => target.once(event, listener),
@@ -423,6 +431,7 @@ export class RuntimeHostSessionObservationRegistry {
     target: RuntimeHostTranscriptTarget,
     mode: DesktopTranscriptOpenMode = 'tail',
     resumeFrom?: number,
+    position?: DesktopTranscriptPosition,
   ): Promise<DesktopTranscriptOpenResult> {
     this.#assertOpen();
     if (this.#transcripts.has(consumerId)) {
@@ -443,6 +452,7 @@ export class RuntimeHostSessionObservationRegistry {
       restoreOpened: false,
       lifecycle: 'pending',
       deliveredFrom: resumeFrom ?? null,
+      position,
     };
     this.#transcripts.set(consumerId, registration);
     target.once('destroyed', destroyedListener);
@@ -456,6 +466,7 @@ export class RuntimeHostSessionObservationRegistry {
         this.#trackDelivered(registration, this.#bindTarget(target)),
         mode,
         resumeFrom,
+        position,
       );
       if (this.#source === source && this.#transcripts.get(consumerId) === registration) {
         registration.lifecycle = 'active';
@@ -486,6 +497,13 @@ export class RuntimeHostSessionObservationRegistry {
   readTranscriptTurn(sessionId: string, turnId: string): Promise<StoredMessage[]> {
     this.#assertOpen();
     return requireTranscriptSource(this.#source).readTranscriptTurn(sessionId, turnId);
+  }
+
+  async loadNewerTranscript(consumerId: string, targetId?: number): Promise<void> {
+    await this.#runTranscriptOperation({ consumerId }, (source) => {
+      if (!source.loadNewerTranscript) throw new Error('Runtime Host forward history is unavailable');
+      return source.loadNewerTranscript(consumerId, targetId);
+    });
   }
 
   async acknowledgeTranscriptTail(
@@ -644,6 +662,7 @@ export class RuntimeHostSessionObservationRegistry {
         this.#trackDelivered(registration, this.#bindTarget(registration.target)),
         registration.mode,
         registration.deliveredFrom ?? undefined,
+        registration.position,
       );
       if (
         this.#source === source &&

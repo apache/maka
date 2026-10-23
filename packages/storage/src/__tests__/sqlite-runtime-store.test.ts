@@ -64,6 +64,27 @@ const PREFIX_PROOF_TEST_BUDGET = {
 };
 
 describe('SqliteRuntimeStore', () => {
+  it('history revision tracks durable append identity without using event time', async () => {
+    await withStore(async (store) => {
+      const first = functionCallEvent({
+        id: 'history-one',
+        content: { kind: 'text', text: 'first' },
+        ts: 100,
+      });
+      assert.equal(await store.readSessionHistoryRevision(first.sessionId), 'empty');
+      await store.appendRuntimeEvent(first.sessionId, first.runId, first);
+      const revision = await store.readSessionHistoryRevision(first.sessionId);
+      await store.appendRuntimeEvent(first.sessionId, first.runId, first);
+      assert.equal(await store.readSessionHistoryRevision(first.sessionId), revision);
+      await store.appendRuntimeEvent(first.sessionId, first.runId, {
+        ...first,
+        id: 'history-late',
+        ts: 1,
+      });
+      assert.notEqual(await store.readSessionHistoryRevision(first.sessionId), revision);
+    });
+  });
+
   it('leaves an existing NONE auto-vacuum database unchanged', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-sqlite-runtime-existing-none-'));
     const dbPath = join(root, 'runtime.sqlite');
@@ -104,6 +125,35 @@ describe('SqliteRuntimeStore', () => {
         inspected.close();
       }
     });
+  });
+
+  it('configures incremental auto-vacuum when another opener created the empty file', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-sqlite-runtime-empty-open-'));
+    const dbPath = join(root, 'runtime.sqlite');
+    const first = new DatabaseSync(dbPath);
+    try {
+      const store = createSqliteRuntimeStore(dbPath);
+      store.close();
+      assert.equal(first.prepare('PRAGMA auto_vacuum').get()?.auto_vacuum, 2);
+    } finally {
+      first.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves an initialized NONE database even when it has no tables', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-sqlite-runtime-empty-none-'));
+    const dbPath = join(root, 'runtime.sqlite');
+    const first = new DatabaseSync(dbPath);
+    try {
+      first.exec('BEGIN IMMEDIATE; COMMIT');
+      const store = createSqliteRuntimeStore(dbPath);
+      store.close();
+      assert.equal(first.prepare('PRAGMA auto_vacuum').get()?.auto_vacuum, 0);
+    } finally {
+      first.close();
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('reads a complete Session from one snapshot while another connection commits its terminal', async (t) => {

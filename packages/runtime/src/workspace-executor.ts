@@ -44,7 +44,7 @@ import { runProcessWithBoundedTail, runShellWithBoundedTail } from './shell-exec
 import type { ChildFdInput } from './child-fd-input.js';
 import type { ShellPlan } from './shell-detect.js';
 import { isSupportedImagePath, readWorkspaceFile } from './image-file.js';
-import type { ImageMimeType } from './image-file.js';
+import type { ImageMimeType, WorkspaceFileReadOptions } from './image-file.js';
 import { readTextLineWindow } from './text-line-window.js';
 import { searchFiles, type GrepResult } from './grep-search.js';
 import { defaultRipgrepCandidates, resolveRipgrepExecutable } from './ripgrep-executable.js';
@@ -85,7 +85,7 @@ export interface WorkspaceExecResult {
   aborted: boolean;
 }
 
-export interface WorkspaceReadFileInput {
+export interface WorkspaceReadFileInput extends WorkspaceFileReadOptions {
   cwd: string;
   path: string;
   offset?: number;
@@ -337,7 +337,7 @@ export class LocalWorkspaceExecutor implements WorkspaceExecutor {
   }
 
   async readFile(input: WorkspaceReadFileInput): Promise<WorkspaceReadFileResult> {
-    const file = await readWorkspaceFile(input.path);
+    const file = await readWorkspaceFile(input.path, input);
     if ('bytes' in file) return file;
     return { content: readTextLineWindow(file.content, input.offset, input.limit) };
   }
@@ -561,9 +561,12 @@ function assertInsideCwd(
   label: string,
 ): string {
   if (!isPathInside(root, candidate)) {
-    throw new Error(
-      `${label} path must stay inside session cwd ${JSON.stringify(root)}; ` +
-        `received ${JSON.stringify(inputPath)}, which resolves to ${JSON.stringify(candidate)}.`,
+    throw Object.assign(
+      new Error(
+        `${label} path must stay inside session cwd ${JSON.stringify(root)}; ` +
+          `received ${JSON.stringify(inputPath)}, which resolves to ${JSON.stringify(candidate)}.`,
+      ),
+      { code: 'EACCES' },
     );
   }
   return candidate;

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { decodeEventWaitProvenance, type EventWaitProvenance } from './event-wait-delivery.js';
 import { defineObjectShape, hasExactShape, isRecord } from './record-schema.js';
 
 export const GOAL_STATUSES = [
@@ -119,12 +120,28 @@ export interface GoalCurrentExecution {
   readonly controlLease: GoalControlLease;
 }
 
+export interface GoalActiveEventWait {
+  readonly waitId: string;
+  /** Physical Run that invoked the wait; currentExecution retains the logical Root. */
+  readonly sourceExecution: GoalExecutionRef;
+  readonly controlLease: GoalControlLease;
+  readonly reason: string;
+  /** Written with source Turn accounting; registration alone is not settlement. */
+  readonly settled: boolean;
+}
+export interface GoalEventWaitContinuation {
+  readonly execution: GoalExecutionRef;
+  readonly userMessageId: string;
+  readonly provenance: EventWaitProvenance;
+}
+
 /** Durable continuation outbox entry for the next Goal-owned Turn. */
 export interface GoalPendingContinuation {
   readonly checkpoint: GoalCheckpoint;
   readonly controlLease: GoalControlLease;
   readonly prompt: string;
   readonly triggeringTurnId?: string;
+  readonly eventWait?: GoalEventWaitContinuation;
 }
 
 export interface GoalAuthorityRecord {
@@ -133,6 +150,7 @@ export interface GoalAuthorityRecord {
   readonly controlLease: GoalControlLease;
   readonly currentExecution: GoalCurrentExecution | null;
   readonly pendingContinuation: GoalPendingContinuation | null;
+  readonly activeEventWait?: GoalActiveEventWait;
 }
 
 const GOAL_STATE_SHAPE = defineObjectShape<GoalState>()(
@@ -168,14 +186,14 @@ const GOAL_CURRENT_EXECUTION_SHAPE = defineObjectShape<GoalCurrentExecution>()(
 );
 const GOAL_PENDING_CONTINUATION_SHAPE = defineObjectShape<GoalPendingContinuation>()(
   ['checkpoint', 'controlLease', 'prompt'],
-  ['triggeringTurnId'],
+  ['triggeringTurnId', 'eventWait'],
 );
 const GOAL_AUTHORITY_RECORD_SHAPE = defineObjectShape<GoalAuthorityRecord>()(
   ['schemaVersion', 'goal', 'controlLease', 'currentExecution', 'pendingContinuation'],
-  [],
+  ['activeEventWait'],
 );
 const GOAL_AUTHORITY_RECORD_V1_SHAPE = defineObjectShape<
-  Omit<GoalAuthorityRecord, 'pendingContinuation'>
+  Omit<GoalAuthorityRecord, 'pendingContinuation' | 'activeEventWait'>
 >()(['schemaVersion', 'goal', 'controlLease', 'currentExecution'], []);
 const GOAL_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 
@@ -204,12 +222,30 @@ export function decodeGoalAuthorityRecord(value: unknown): GoalAuthorityRecord {
   if (controlLease.goalId !== goal.id) {
     throw new TypeError('Goal control lease does not match Goal identity');
   }
+  const activeEventWait =
+    value.activeEventWait === undefined
+      ? undefined
+      : decodeActiveEventWait(value.activeEventWait, goal, controlLease);
+  if (activeEventWait && !['active', 'waiting'].includes(goal.status))
+    throw new TypeError('Terminal Goal cannot retain an event wait gate');
+  if (
+    pendingContinuation?.eventWait &&
+    (!activeEventWait?.settled ||
+      activeEventWait.waitId !== pendingContinuation.eventWait.provenance.waitId ||
+      activeEventWait.sourceExecution.turnId !==
+        pendingContinuation.eventWait.provenance.sourceTurnId ||
+      pendingContinuation.triggeringTurnId !== activeEventWait.sourceExecution.turnId)
+  )
+    throw new TypeError('Event continuation does not match its settled wait gate');
+  if (activeEventWait && pendingContinuation && !pendingContinuation.eventWait)
+    throw new TypeError('Explicit wait excludes ordinary continuation');
   return Object.freeze({
     schemaVersion: 1,
     goal,
     controlLease,
     currentExecution,
     pendingContinuation,
+    ...(activeEventWait ? { activeEventWait } : {}),
   });
 }
 
@@ -239,8 +275,57 @@ function decodeGoalPendingContinuation(
     checkpoint,
     controlLease,
     prompt: value.prompt,
+    ...(value.eventWait === undefined
+      ? {}
+      : { eventWait: decodeEventContinuation(value.eventWait, goal, controlLease) }),
     ...(value.triggeringTurnId !== undefined ? { triggeringTurnId: value.triggeringTurnId } : {}),
   });
+}
+
+function decodeActiveEventWait(
+  value: unknown,
+  goal: GoalState,
+  lease: GoalControlLease,
+): GoalActiveEventWait {
+  if (
+    !isRecord(value) ||
+    Object.keys(value).sort().join() !== 'controlLease,reason,settled,sourceExecution,waitId' ||
+    !isGoalId(value.waitId) ||
+    typeof value.reason !== 'string' ||
+    !value.reason.trim() ||
+    !isGoalTextWithinLimit(value.reason, GOAL_REASON_TEXT_LIMIT) ||
+    typeof value.settled !== 'boolean'
+  ) {
+    throw new TypeError('Invalid active event wait');
+  }
+  const sourceExecution = decodeGoalExecutionRef(value.sourceExecution);
+  const controlLease = decodeGoalControlLease(value.controlLease);
+  if (sourceExecution.sessionId !== goal.sessionId || !sameGoalControlLease(controlLease, lease))
+    throw new TypeError('Event wait does not own the Goal');
+  return Object.freeze({
+    waitId: value.waitId,
+    sourceExecution,
+    controlLease,
+    reason: value.reason,
+    settled: value.settled,
+  });
+}
+function decodeEventContinuation(
+  value: unknown,
+  goal: GoalState,
+  lease: GoalControlLease,
+): GoalEventWaitContinuation {
+  if (
+    !isRecord(value) ||
+    Object.keys(value).sort().join() !== 'execution,provenance,userMessageId' ||
+    !isGoalId(value.userMessageId)
+  )
+    throw new TypeError('Invalid event continuation');
+  const execution = decodeGoalExecutionRef(value.execution);
+  const provenance = decodeEventWaitProvenance(value.provenance);
+  if (execution.sessionId !== goal.sessionId || provenance.generation !== lease.generation)
+    throw new TypeError('Event continuation does not own the Goal');
+  return Object.freeze({ execution, userMessageId: value.userMessageId, provenance });
 }
 
 function decodeGoalState(value: unknown): GoalState {

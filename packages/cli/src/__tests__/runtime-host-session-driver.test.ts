@@ -3435,6 +3435,13 @@ class FakeConnection {
         sessionId: (input as OperationInput<'session.remove'>).sessionId,
       } as OperationOutput<K>;
     }
+    if (operation === 'goal.event-wait.cancel') {
+      return {
+        sessionId: (input as OperationInput<'goal.event-wait.cancel'>).sessionId,
+        outcome: 'already_admitted',
+        goal: null,
+      } as OperationOutput<K>;
+    }
     if (operation === 'goal.control') {
       const outcome = this.goalControlOutcomes.shift();
       if (outcome === undefined) throw new Error('Unexpected goal.control request');
@@ -3767,6 +3774,7 @@ function goalProjection(overrides: Partial<GoalProjection> = {}): GoalProjection
     lastReason: null,
     achievedAt: null,
     pausedAt: null,
+    eventWait: null,
     ...overrides,
   };
 }
@@ -4716,3 +4724,82 @@ function toolResultFrame(sequence: number, subscriptionId = 'subscription-1'): S
     },
   };
 }
+
+test('CLI receives wait-only changes and sends cancellation to the original target once', async () => {
+  const wait = {
+    waitId: 'wait',
+    controlGeneration: 1,
+    waitRevision: 1,
+    resource: {
+      providerId: 'shell_run',
+      resourceType: 'background_task',
+      resourceId: 'maka://runtime/background-tasks/task',
+    },
+    reason: 'Inspect tests',
+    deadlineAt: 100,
+    phase: 'observing' as const,
+    observation: { state: 'pending' as const, lastObservedAt: 10, reasonCode: null },
+    outcome: null,
+  };
+  const goal = goalProjection({ eventWait: wait });
+  const subscription = new FakeSubscription(continuitySnapshot({ goal }), Promise.resolve([]));
+  const connection = new FakeConnection([subscription]);
+  const driver = createRuntimeHostMakaSessionDriver({
+    connection: connection.value,
+    cwd: '/repo',
+    llmConnectionId: 'connection-1',
+    llmConnectionSlug: 'openai-main',
+    model: 'gpt-5',
+    newId: () => 'session-id',
+  });
+  const changes: Array<string | undefined> = [];
+  const unsubscribe = driver.subscribeGoalChanges!((g) => changes.push(g?.eventWait?.phase));
+  try {
+    await driver.createSession({
+      cwd: '/repo',
+      llmConnectionId: 'connection-1',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      permissionMode: 'ask',
+    });
+    const target = {
+      sessionId: driver.getSessionId()!,
+      goalId: goal.goalId,
+      controlGeneration: 1,
+      waitId: 'wait',
+      expectedGoalRevision: goal.revision,
+    };
+    subscription.push({
+      kind: 'subscription.session_projection',
+      hostEpoch: 'host-1',
+      subscriptionId: 'subscription-1',
+      sequence: 1,
+      snapshot: continuitySnapshot({
+        goal: {
+          ...goal,
+          eventWait: {
+            ...wait,
+            waitRevision: 2,
+            phase: 'awaiting_admission',
+            observation: null,
+            outcome: 'satisfied',
+          },
+        },
+        projectionRevision: 2,
+      }),
+    });
+    await waitFor(() => changes.includes('awaiting_admission'));
+    const result = await driver.cancelGoalEventWait!(target);
+    assert.equal(result.outcome, 'already_admitted');
+    assert.deepEqual(
+      connection.requests
+        .filter((r) => r.operation === 'goal.event-wait.cancel')
+        .map((r) => r.input),
+      [target],
+    );
+    assert.deepEqual(changes, ['observing', 'awaiting_admission']);
+  } finally {
+    unsubscribe();
+    await driver.startNewSession();
+  }
+});

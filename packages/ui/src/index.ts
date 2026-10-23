@@ -63,7 +63,6 @@ export * from './live-turn-buffer.js';
 export * from './transcript-projection.js';
 export * from './use-transcript-projection.js';
 export * from './model-picker.js';
-export * from './model-wheel-picker.js';
 export * from './new-project-dialog.js';
 export * from './interaction-queue.js';
 export * from './user-question-prompt.js';

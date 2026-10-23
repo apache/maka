@@ -27,6 +27,7 @@ import {
   useUiLocale,
   type LiveTurnProjection,
 } from '@maka/ui';
+import { PersonalAssistantChatPresentation } from './features/personal-assistant/index.js';
 import { OnboardingHero } from './onboarding-hero';
 import type { SessionHealthNoticeView, SessionUiReads } from './features/conversation/index.js';
 import type { WorkspaceReadinessRecovery } from './workspace-readiness-recovery';
@@ -58,6 +59,7 @@ interface ChatMessageSurfaceProps extends Omit<
   | 'pendingQuotes'
   | 'onQuoteAnnotationSubmit'
   | 'onReadAttachmentBytes'
+  | 'onResolveImageDelivery'
 > {
   /**
    * #1985: the live projection and the shell-run records are the only session
@@ -201,8 +203,12 @@ export function ChatMessageSurface({
     <>
       <ChatViewGoalProjectionConsumer>
         {(goalProjection) => (
-          <StagedQuoteChatView
+          <PersonalAssistantChatPresentation session={chatViewRest.activeSession} visible={visible}
+            messages={chatViewRest.messages} hasLaterHistory={chatViewRest.hasLaterHistory}
+            pendingSend={chatViewRest.transientMessages?.some((message) => message.transientPlacement === 'transcript')}>
+            {(presentation) => <StagedQuoteChatView
             {...chatViewRest}
+            {...presentation}
             liveTurns={seededLiveTurns}
               // Every branch above reseeds `sessionId` to `activeSessionId`, and a
             // render-phase setState re-runs this body before anything commits, so
@@ -211,7 +217,8 @@ export function ChatMessageSurface({
             shellRunUpdates={shellRunUpdates}
             emptyOverride={emptyOverride}
             goalIndicator={goalProjection.goalIndicator}
-          />
+          />}
+          </PersonalAssistantChatPresentation>
         )}
       </ChatViewGoalProjectionConsumer>
       <TaskReadinessNoticeConsumer surface={ChatRecoveryNotice} />

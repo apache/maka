@@ -47,7 +47,7 @@
     },
     "session-workbar.spec.ts": {
       "tests": 5,
-      "electron": "Git changes re-read on native window focus; native PTY ownership survives Session navigation and renderer replacement, while Stop/exit cross preload/main into the terminal view; Side Chat owns a Host fork lifecycle; first send reaches the Host; the composer usage entry opens a workbar whose per-Session visibility survives renderer reload."
+      "electron": "Git changes re-read on native window focus; native PTY ownership survives Session navigation and renderer replacement, while Stop/exit cross preload/main into the terminal view; Side Chat owns a Host fork lifecycle; first send reaches the Host; the Trace launcher opens a workbar whose per-Session visibility survives renderer reload."
     },
     "settings.spec.ts": {
       "tests": 2,
@@ -71,7 +71,7 @@
     },
     "workhub-layout.spec.ts": {
       "tests": 3,
-      "electron": "WorkHub model configuration and attachment sending cross the Host boundary; the Project New task action must dismiss the native dock owned by a separate WebContentsView; the default titlebar toggle controls the sibling WorkHub WebContentsView through Main IPC, and switching to edge mode restores the native-renderer toggle; the native Workbar menu must coexist with the live sibling WebContentsView without hiding its compositor; a delayed sidebar-preview capture keeps the sibling view live until its decoded backdrop can take over; the compact native window grows only with the inline composer wheel and keeps its bottom anchor; opening context details routes to Main’s Workbar without resizing or docking the floating conversation, while the thinking sheet stays within the compact bounds, and pointer dragging scrolls the no-drag wheel instead of moving the frameless window; native floating preserves macOS Dock visibility; a held-open Host Turn verifies immediate prompt visibility, durable transcript handoff and persistence after renderer reload"
+      "electron": "WorkHub model configuration and attachment sending cross the Host boundary; the Project New task action must dismiss the native dock owned by a separate WebContentsView; the default titlebar toggle controls the sibling WorkHub WebContentsView through Main IPC, and switching to edge mode restores the native-renderer toggle; the native Workbar menu must coexist with the live sibling WebContentsView without hiding its compositor; a delayed sidebar-preview capture keeps the sibling view live until its decoded backdrop can take over; model selection in the compact sheet must reach the Host without changing the native floating window bounds or bottom anchor; opening context details routes to Main’s Workbar without resizing or docking the floating conversation, while the thinking sheet stays within the compact bounds; native floating preserves macOS Dock visibility; a held-open Host Turn verifies immediate prompt visibility, durable transcript handoff and persistence after renderer reload"
     },
     "workhub-reconstruction.spec.ts": {
       "tests": 1,

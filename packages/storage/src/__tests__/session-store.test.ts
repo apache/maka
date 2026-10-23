@@ -599,17 +599,70 @@ describe('SQLite SessionStore', () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-session-import-commit-boundary-'));
     const store = createSessionStore(root);
     let commitStarted = false;
+    let preparedId: string | undefined;
+    let discardedId: string | undefined;
     try {
       await assert.rejects(
         store.createImportedSession(
           makeInput(),
           [{ type: 'user' } as unknown as StoredMessage],
           { adapterId: 'fake', sourceSessionId: 'source-1' },
-          { onCommitStarted: () => (commitStarted = true) },
+          {
+            onCommitStarted: () => (commitStarted = true),
+            prepareMessages: async (sessionId, messages) => {
+              preparedId = sessionId;
+              return messages;
+            },
+            discardPreparedMessages: async (sessionId) => {
+              discardedId = sessionId;
+            },
+          },
         ),
         /Invalid stored message schema/,
       );
       assert.equal(commitStarted, false);
+      assert.ok(preparedId);
+      assert.equal(discardedId, preparedId);
+      assert.deepEqual(await store.listHeaders(), []);
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('preserves the original import failure when prepared message cleanup fails', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-import-cleanup-failure-'));
+    const store = createSessionStore(root);
+    const preparationError = new Error('message preparation failed');
+    const commitError = new Error('import commit callback failed');
+    let cleanupAttempts = 0;
+    try {
+      for (const stage of ['prepare', 'decode', 'commit'] as const) {
+        await assert.rejects(
+          store.createImportedSession(
+            makeInput(),
+            stage === 'decode' ? [{ type: 'user' } as unknown as StoredMessage] : [],
+            { adapterId: 'fake', sourceSessionId: `source-${stage}` },
+            {
+              prepareMessages: async (_sessionId, messages) => {
+                if (stage === 'prepare') throw preparationError;
+                return messages;
+              },
+              onCommitStarted: () => {
+                if (stage === 'commit') throw commitError;
+              },
+              discardPreparedMessages: async () => {
+                cleanupAttempts++;
+                throw new Error('artifact cleanup failed');
+              },
+            },
+          ),
+          stage === 'decode'
+            ? /Invalid stored message schema/
+            : (error) => error === (stage === 'prepare' ? preparationError : commitError),
+        );
+      }
+      assert.equal(cleanupAttempts, 3);
       assert.deepEqual(await store.listHeaders(), []);
     } finally {
       await store.close?.();

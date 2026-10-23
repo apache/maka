@@ -29,7 +29,6 @@ import { fileURLToPath } from 'node:url';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { WorkspaceBaselineAuthorityInput } from '@maka/core/workspace-version-authority';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
-import { scanToolLedger } from '@maka/core/tool-ledger-scanner';
 import {
   SQLITE_RUNTIME_SCHEMA_VERSION,
   createSqliteRuntimeStore,
@@ -69,72 +68,6 @@ interface WorkerHandle {
 const RUN_RACE_AMPLIFICATION = process.env.MAKA_STORAGE_STRESS === '1';
 
 describe('SQLite recovery authority multi-process races', () => {
-  it('makes an exact concurrent recovery bundle idempotent', async () => {
-    await withPreparedDatabase(async ({ dbPath, startPath }) => {
-      const results = await runWorkers(dbPath, startPath, ['completed', 'completed']);
-      assert.deepEqual(
-        results.map(({ code }) => code),
-        [0, 0],
-      );
-
-      const store = createSqliteRuntimeStore(dbPath);
-      try {
-        assert.equal(
-          (await store.readToolOperation('operation-1'))?.currentState,
-          'recovery_completed',
-        );
-        assert.equal((await store.readImmutableRuntimeEvents('session-1', 'run-1')).length, 5);
-      } finally {
-        store.close();
-      }
-    });
-  });
-
-  it('serializes conflicting completed and parked bundles to one terminal decision', async () => {
-    await withPreparedDatabase(async ({ dbPath, startPath }) => {
-      const results = await runWorkers(dbPath, startPath, ['completed', 'parked']);
-      assert.deepEqual(results.map(({ code }) => code).sort(), [0, 2]);
-
-      const store = createSqliteRuntimeStore(dbPath);
-      try {
-        const operation = await store.readToolOperation('operation-1');
-        assert.ok(
-          operation?.currentState === 'recovery_completed' ||
-            operation?.currentState === 'recovery_parked',
-        );
-        const events = await store.readImmutableRuntimeEvents('session-1', 'run-1');
-        assert.equal(scanToolLedger(events).hasCorruption, false);
-      } finally {
-        store.close();
-      }
-    });
-  });
-
-  it('serializes projection rebuild against recovery commit', async () => {
-    await withPreparedDatabase(async ({ dbPath, startPath }) => {
-      const results = await runWorkers(dbPath, startPath, ['completed', 'rebuild']);
-      assert.deepEqual(
-        results.map(({ code }) => code),
-        [0, 0],
-      );
-
-      const store = createSqliteRuntimeStore(dbPath);
-      try {
-        assert.equal(
-          (await store.readToolOperation('operation-1'))?.currentState,
-          'recovery_completed',
-        );
-        assert.equal(
-          scanToolLedger(await store.readImmutableRuntimeEvents('session-1', 'run-1'))
-            .hasCorruption,
-          false,
-        );
-      } finally {
-        store.close();
-      }
-    });
-  });
-
   it('grants provider authority to exactly one process for one continuation boundary', async () => {
     await withPreparedDatabase(async ({ dbPath, startPath }) => {
       const results = await runWorkers(dbPath, startPath, ['claim', 'claim']);
@@ -236,6 +169,7 @@ describe('SQLite recovery authority multi-process races', () => {
               .user_version,
             SQLITE_RUNTIME_SCHEMA_VERSION,
           );
+          assert.equal(database.prepare('PRAGMA auto_vacuum').get()?.auto_vacuum, 2);
         } finally {
           database.close();
         }

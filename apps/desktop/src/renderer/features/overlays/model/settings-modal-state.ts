@@ -23,6 +23,7 @@ import type { SettingsSection } from '@maka/core/settings';
 export interface SettingsNavigationRequest {
   readonly section?: SettingsSection;
   readonly profileId?: string;
+  readonly externalAgentId?: string;
 }
 
 /** What the Settings modal is asked to show, and whether it is showing. */
@@ -41,6 +42,7 @@ export type SettingsModalIntent =
   | { readonly kind: 'project'; readonly profileId: string }
   | { readonly kind: 'provider-catalog' }
   | { readonly kind: 'connection-detail'; readonly slug: string }
+  | { readonly kind: 'external-agent'; readonly executorId: string }
   | { readonly kind: 'provider-create'; readonly providerType: ProviderType };
 
 export const CLOSED_SETTINGS_MODAL: SettingsModalState = {
@@ -58,6 +60,8 @@ export function settingsIntentSection(intent: SettingsModalIntent): SettingsSect
       return intent.section;
     case 'project':
       return 'projects';
+    case 'external-agent':
+      return 'external-agents';
     case 'provider-catalog':
     case 'connection-detail':
     case 'provider-create':
@@ -68,7 +72,7 @@ export function settingsIntentSection(intent: SettingsModalIntent): SettingsSect
 }
 
 /**
- * Opens Settings on an intent. Every opener resets the three sub-surfaces and
+ * Opens Settings on an intent. Every opener resets the sub-surfaces and
  * then raises its own; a project intent replaces the whole request so a stale
  * profile from an earlier open cannot leak into the Projects page.
  */
@@ -77,12 +81,15 @@ export function openSettingsModal(
   intent: SettingsModalIntent,
 ): SettingsModalState {
   const section = settingsIntentSection(intent);
+  const { externalAgentId: _externalAgentId, ...rememberedRequest } = current.request;
   const request: SettingsNavigationRequest =
     intent.kind === 'project'
       ? { section: 'projects', profileId: intent.profileId }
       : section
-        ? { ...current.request, section }
-        : current.request;
+        ? { ...rememberedRequest, section,
+            ...(intent.kind === 'external-agent' ? { externalAgentId: intent.executorId } : {}),
+          }
+        : rememberedRequest;
   return {
     open: true,
     request,

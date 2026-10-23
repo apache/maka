@@ -74,7 +74,7 @@ function makeServices(failFirst: boolean, withHistory: boolean | 'usage', colore
   let questionPending = question;
   let pendingForm: import('@maka/core/events').FormRequestEvent | undefined;
   const publishExecution = () => updateExecution?.({ type: 'host_execution', available: true, rootTurn: pendingForm ? { sessionId, turnId: pendingForm.turnId, runId: 'selection-run', status: 'waiting_for_user' } : questionPending ? { sessionId, turnId: 'question-turn', runId: 'question-run', status: 'waiting_for_user' } : null });
-  const publish = () => { publishExecution(); updateTranscript?.({ messages, hasOlder: false, ready: true }); };
+  const publish = () => { publishExecution(); updateTranscript?.({ messages, hasOlder: false, historyComplete: true, ready: true }); };
   return {
     inspector: {
       context: async () => ({ ok: true, data: { status: 'available', completedAt: 1, modelId: session.model, providerId: 'openai', inputTokens: 1000, contextWindow: 100_000 } }),
@@ -230,7 +230,7 @@ export const StandardComposer: Story = {
     await waitFor(() => expect(canvas.getByRole('button', { name: /切换当前任务模型/ })).toBeEnabled());
     await waitFor(() => expect(canvas.getByRole('button', { name: '打开用量追踪' }).textContent).toContain('1%'));
     await userEvent.click(canvas.getByRole('button', { name: /切换当前任务模型/ }));
-    await userEvent.click(page.getByRole('option', { name: /model-b/ }));
+    await userEvent.click(await page.findByRole('option', { name: /model-b/ }));
     await waitFor(() => expect(writes.model).toHaveBeenCalledWith(sessionId, {
       expectedRevision: 1, modelTarget: { kind: 'explicit', connectionId: 'connection-test', connectionSlug: 'test', model: 'model-b' }, thinkingLevel: null,
     }));
@@ -242,29 +242,33 @@ export const StandardComposer: Story = {
     await waitFor(() => expect(canvasElement.querySelectorAll('.maka-composer-attachment-token')).toHaveLength(0));
   },
 };
-// Real path: WorkHub composer → thinking level → choose an override or restore the default.
+// Real path: WorkHub composer → thinking selector → choose an override or restore the default.
 export const ThinkingLevelPicker: Story = {
   render: () => <Surface />,
   play: async ({ canvasElement }) => {
     Object.values(writes).forEach((spy) => spy.mockClear());
     const canvas = within(canvasElement); const page = within(canvasElement.ownerDocument.body);
-    await waitFor(() => expect(canvas.getByRole('combobox', { name: '思考级别: 默认' })).toBeEnabled());
+    const trigger = () => canvas.getByRole('combobox', { name: /思考级别/ });
+    const openEffort = async () => {
+      await userEvent.click(trigger());
+    };
+    await waitFor(() => expect(trigger()).toBeEnabled());
     const usage = canvas.getByRole('button', { name: '打开用量追踪' });
     await waitFor(() => expect(usage.textContent).toContain('1%'));
-    await userEvent.click(canvas.getByRole('combobox', { name: '思考级别: 默认' }));
-    await userEvent.click(page.getByRole('option', { name: /^高$/ }));
-    await waitFor(() => expect(canvas.getByRole('combobox', { name: '思考级别: 高' })).toBeEnabled());
+    await openEffort();
+    await userEvent.click(await page.findByRole('option', { name: /^高$/ }));
+    await waitFor(() => expect(trigger()).toHaveTextContent('高'));
     await expect(writes.model).toHaveBeenCalledWith(sessionId, {
       expectedRevision: 1, modelTarget: { kind: 'explicit', connectionId: 'connection-test', connectionSlug: 'test', model: 'model-a' }, thinkingLevel: 'high',
     });
-    await userEvent.click(canvas.getByRole('combobox', { name: '思考级别: 高' }));
-    await userEvent.click(page.getByRole('option', { name: /^默认$/ }));
-    await waitFor(() => expect(canvas.getByRole('combobox', { name: '思考级别: 默认' })).toBeEnabled());
+    await openEffort();
+    await userEvent.click(await page.findByRole('option', { name: /^默认$/ }));
+    await waitFor(() => expect(trigger()).toHaveTextContent('默认'));
     await expect(writes.model).toHaveBeenLastCalledWith(sessionId, {
       expectedRevision: 2, modelTarget: { kind: 'explicit', connectionId: 'connection-test', connectionSlug: 'test', model: 'model-a' }, thinkingLevel: null,
     });
-    await userEvent.click(canvas.getByRole('combobox', { name: '思考级别: 默认' }));
-    await expect(page.getByRole('option', { name: /^默认$/ })).toHaveAttribute('aria-selected', 'true');
+    await openEffort();
+    await expect(await page.findByRole('option', { name: /^默认$/ })).toHaveAttribute('aria-selected', 'true');
   },
 };
 // Real path: a floating WorkHub progress card → edit its composer → open the model picker.
@@ -298,23 +302,20 @@ export const ProgressModelPicker: Story = {
     await userEvent.type(editor, 'Keep this draft readable while choosing a model.');
     const trigger = await canvas.findByRole('button', { name: /切换当前任务模型/ });
     await userEvent.click(trigger);
-    const wheel = await canvas.findByRole('listbox');
-    await waitFor(() => expect(wheel).toHaveFocus());
-    const surface = wheel.closest('.maka-model-wheel-expanded')!;
-    const pixels = new OffscreenCanvas(1, 1).getContext('2d')!;
-    pixels.fillStyle = getComputedStyle(surface).backgroundColor;
-    pixels.fillRect(0, 0, 1, 1);
-    expect(pixels.getImageData(0, 0, 1, 1).data[3]).toBeGreaterThanOrEqual(230);
-    expect(pixels.getImageData(0, 0, 1, 1).data[3]).toBeLessThan(255);
+    const page = within(canvasElement.ownerDocument.body);
+    await page.findByRole('listbox');
+    const search = page.getByRole('combobox', { expanded: true });
+    await waitFor(() => expect(search).toHaveFocus());
     expect(editor).toHaveTextContent('Keep this draft readable while choosing a model.');
     await userEvent.keyboard('{Escape}');
+    await waitFor(() => expect(trigger).toHaveFocus());
     await userEvent.clear(editor);
     await waitFor(() => expect(editor.textContent).toBe(''));
     assertCompactLineBox();
-    // Restore this story's named final state: a draft with the model wheel open.
+    // Restore the draft with the same searchable model selector open.
     await userEvent.type(editor, 'Keep this draft readable while choosing a model.');
     await userEvent.click(trigger);
-    await waitFor(() => expect(canvas.getByRole('listbox')).toHaveFocus());
+    await waitFor(() => expect(page.getByRole('combobox', { expanded: true })).toHaveFocus());
   },
 };
 export const ComposerRetainsFailedAttachment: Story = {
@@ -576,13 +577,19 @@ function PagedWorkConversation() {
     </WorkHubHighlightContext.Provider>
   </ToastProvider></AstryxLocaleProvider></LocaleProvider>;
 }
+// Real path: filter a WorkHub conversation to one Work and scroll upward into its older Turns.
 export const FilterWorkHistoryPages: Story = {
   render: () => <PagedWorkConversation />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText('继续补充异常场景。')).toBeInTheDocument());
     expect(canvas.queryByText('请检查支付回调幂等性。')).toBeNull();
-    await userEvent.click(canvas.getByRole('button', { name: '载入更早的记录' }));
+    expect(canvas.getByRole('button', { name: '载入更早的记录' })).toBeInTheDocument();
+    const scroller = canvasElement.querySelector<HTMLElement>('[data-chat-scroll-container]');
+    expect(scroller).not.toBeNull();
+    scroller!.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: -120 }));
+    scroller!.scrollTop = 0;
+    scroller!.dispatchEvent(new Event('scroll'));
     await waitFor(() => expect(canvas.getByText('请检查支付回调幂等性。')).toBeInTheDocument());
     expect(canvas.queryByText('先讨论一下整体计划。')).toBeNull();
     expect(canvas.queryByRole('button', { name: '载入更早的记录' })).toBeNull();

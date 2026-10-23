@@ -683,6 +683,11 @@ export function createMemoryRuntimeStore(a: MemoryExecutionAuthority): Execution
       ),
     readImmutableRuntimeEvents: async (sessionId, runId) =>
       a.read((s) => immutable(s, sessionId, runId)),
+    readSessionHistoryRevision: async (sessionId) =>
+      a.read((s) => {
+        const last = ordinals(s).get(sessionId)?.at(-1);
+        return last ? `${last.ordinal}:${last.event.id}` : 'empty';
+      }),
     readRecoveryMessageEvents: async (input) =>
       a.read((s) => {
         check(input.sessionId, ...input.turnIds, ...input.eventIds);
@@ -799,6 +804,20 @@ export function createMemoryRuntimeStore(a: MemoryExecutionAuthority): Execution
             : null,
       };
     },
+    readToolProvenanceEvents: async (sessionId, runId, toolCallId, budget) =>
+      a.read((s) =>
+        bounded(
+          immutable(s, sessionId, runId).filter(
+            (event) =>
+              ((event.content?.kind === 'function_call' ||
+                event.content?.kind === 'function_response') &&
+                event.content.id === toolCallId) ||
+              event.refs?.toolCallId === toolCallId ||
+              event.actions?.toolDispatch?.providerToolCallId === toolCallId,
+          ),
+          budget,
+        ),
+      ),
     readRuntimeEventsBounded: async (sessionId, runId, budget) =>
       bounded(await store.readRuntimeEvents(sessionId, runId), budget),
     scanRuntimeEvents: async (sessionId, runId, budget, visit) => {

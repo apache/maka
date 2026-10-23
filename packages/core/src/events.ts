@@ -679,6 +679,7 @@ export type SessionEvent =
   | PlanSubmittedEvent
   | TokenUsageEvent
   | SteeringMessageEvent
+  | RuntimeContextEvent
   | MessageAdmissionEvent
   | QueueUpdateEvent
   | ProviderRetryEvent
@@ -1293,6 +1294,13 @@ export interface SteeringMessageEvent extends BaseEvent {
   submittedContentDigest?: `sha256:${string}`;
 }
 
+/** Internal model context, persisted in order but not rendered as a chat message. */
+export interface RuntimeContextEvent extends BaseEvent {
+  type: 'runtime_context';
+  name: string;
+  text: string;
+}
+
 /**
  * Transient Host projection fact: a submitted message now belongs to this
  * Turn. It is emitted by the session projector, not by a backend or durable
@@ -1397,6 +1405,7 @@ export interface CompleteEvent extends BaseEvent {
     | 'error'
     | 'plan_handoff'
     | 'graph_yield'
+    | 'event_wait'
     | 'permission_handoff'
     | 'step_limit'
     | 'max_tokens';

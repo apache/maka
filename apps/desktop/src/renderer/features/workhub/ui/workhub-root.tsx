@@ -274,7 +274,12 @@ export function WorkHubRoot() {
       focus();
     };
   }, [services]);
-  const links = useMemo(() => workHubLinkedWork(transcript.messages, controller.sessions, t.work, controller.sessionId), [transcript.messages, controller.sessions, t.work, controller.sessionId]);
+  const links = useMemo(
+    () => transcript.historyComplete
+      ? workHubLinkedWork(transcript.messages, controller.sessions, t.work, controller.sessionId)
+      : [],
+    [transcript.historyComplete, transcript.messages, controller.sessions, t.work, controller.sessionId],
+  );
   const delegatedSessionIds = links.map((link) => link.targetSessionId);
   const call = (task: Promise<unknown>) => {
     void task.catch(controller.report);
@@ -369,8 +374,7 @@ export function WorkHubRoot() {
               activeModelConnectionId={newWorkNativeModel?.llmConnectionId}
               activeModelConnectionSlug={newWorkNativeModel?.llmConnectionSlug}
               modelChoices={controller.choices}
-              pickerPresentation={showConversation ? 'popover' : 'wheel'}
-              modelSelectionPurpose="session"
+              pickerPresentation={showConversation ? 'popover' : 'bottom-sheet'}
               pickersReadOnly={Boolean(controller.activeQuestion || controller.activeForm || controller.configuringModel)}
               maxInputRows={progress && !editingProgress ? 1 : showConversation ? undefined : 6}
               onModelChange={controller.changeModel}
@@ -408,7 +412,7 @@ export function WorkHubRoot() {
         <div ref={history} className="workHubHistory" aria-hidden={!showConversation} inert={!showConversation}>
         <WorkHubConversation
           workLinks={links}
-          onReadAttachmentBytes={services.readAttachmentBytes}
+          onReadAttachmentBytes={services.readAttachmentBytes} onResolveImageDelivery={services.resolveImageDelivery}
           onOpenWork={(id) => call(services.presentation.openSession(id))}
           scrollBehavior="auto"
           onNew={() => composer.current?.focus()}

@@ -341,6 +341,7 @@ export type TurnTimelineItem =
     }
   | {
       kind: "text";
+      summary?: string;
       interrupted?: true;
       text: string;
       messageId: string;
@@ -759,7 +760,10 @@ export function materializeTurns(
     else messagesByTurn.set(turnId, [message]);
     if (message.type === "user") {
       const user = chatItemFromUserMessage(message);
-      if (!turn.user) {
+      // A resumed Turn starts without a new root prompt. Its first user row can
+      // therefore be a steering message, which belongs at its event position
+      // in the timeline instead of being promoted to the Turn's opening prompt.
+      if (!turn.user && message.steeringEventId === undefined) {
         turn.user = user;
       }
     } else if (message.type === "assistant") {
@@ -1021,16 +1025,17 @@ function buildTurnTimeline(
 ): TurnTimelineItem[] {
   const raw: TurnTimelineItem[] = [];
   let pending: ToolActivityItem[] = [];
-  let sawUser = false;
+  let sawRootUser = false;
   const flushTools = (items: ToolActivityItem[]): void => {
     if (items.length > 0) raw.push({ kind: "tools", items });
   };
   for (const message of turnMessages) {
     if (message.type === "user") {
-      if (!sawUser) {
-        sawUser = true;
+      if (message.steeringEventId === undefined && !sawRootUser) {
+        sawRootUser = true;
         continue;
       }
+      if (message.steeringEventId === undefined) sawRootUser = true;
       flushTools(pending);
       pending = [];
       raw.push({
@@ -1077,6 +1082,7 @@ function buildTurnTimeline(
             raw.push({
               kind: "text",
               text: message.text,
+              ...(message.summary !== undefined ? { summary: message.summary } : {}),
               ...(message.interrupted ? { interrupted: true } : {}),
               messageId: rowId,
               ts: message.ts,
@@ -1101,6 +1107,7 @@ function buildTurnTimeline(
           raw.push({
             kind: "text",
             text: message.text,
+              ...(message.summary !== undefined ? { summary: message.summary } : {}),
             ...(message.interrupted ? { interrupted: true } : {}),
             messageId: rowId,
             ts: message.ts,
@@ -1140,6 +1147,44 @@ function chatItemFromContent(
       ? { inlineReferences: content.inlineReferences }
       : {}),
     ...(hostOrigin ? { hostOrigin } : {}),
+    ...projectImportedCodexQuotes(content),
+  };
+}
+
+/** Display only: persisted quotes would duplicate the context already in model-facing text. */
+function projectImportedCodexQuotes(content: MessageContent): Pick<ChatItem, 'text' | 'quotes'> | undefined {
+  const display = content.displayText;
+  if (display === undefined || content.quotes !== undefined || content.inlineReferences !== undefined) return undefined;
+  const text = content.text.replace(/\r\n/g, '\n');
+  const reply = /^\n*<send_user_message_question_reply>\n([\s\S]*)\n<\/send_user_message_question_reply>\n*$/.exec(text);
+  const match = reply ?? /^\n*# Response annotations:\n[^\n]+\n<response-annotations>\n([\s\S]*?)\n<\/response-annotations>(?:\n|$)/.exec(text);
+  if (!match) return undefined;
+  let entries: unknown;
+  try {
+    entries = JSON.parse(match[1]!);
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(entries) || entries.length === 0) return undefined;
+  const quotes: QuoteRef[] = [];
+  for (const entry of entries) {
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return undefined;
+    const quote = reply ? entry.question : entry.text;
+    const comment = reply ? entry.answer : entry.annotation;
+    if (
+      typeof quote !== 'string' || quote.length === 0 ||
+      (reply ? typeof comment !== 'string' : comment !== undefined && typeof comment !== 'string')
+    ) return undefined;
+    // Codex message IDs are not Maka turn IDs; do not invent local provenance.
+    quotes.push({ text: quote, ...(comment !== undefined ? { comment } : {}) });
+  }
+  // Only replace the exact display prefix produced by the Codex importer, not quoted user prose.
+  const prefix = quotes.map(({ text, comment }) => `“${text}”${comment ? `\n${comment}` : ''}`).join('\n\n');
+  if (display !== prefix && (reply || !display.startsWith(`${prefix}\n\n`))) return undefined;
+  return {
+    quotes,
+    text: [...quotes.flatMap((quote) => quote.comment ? [quote.comment] : []), display.slice(prefix.length + 2)]
+      .filter(Boolean).join('\n\n'),
   };
 }
 

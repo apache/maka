@@ -21,14 +21,17 @@ import type { ComposerProps } from '@maka/ui';
 import type { useExecutorSelection } from '../controller/use-executor-selection.js';
 
 export function executorComposerProps(
-  executor: ReturnType<typeof useExecutorSelection>,
+  executor: Pick<ReturnType<typeof useExecutorSelection>,
+    'catalog' | 'selection' | 'entry' | 'changing' | 'loading' | 'error' | 'select' | 'restore' | 'refresh'> &
+    Partial<Pick<ReturnType<typeof useExecutorSelection>, 'loadingIds'>>,
   input: {
     activeId: string | undefined;
     turnActive: boolean;
     sendPending?: boolean;
     taskSubmissionHardBlocked: boolean;
     connectionCount: number;
-    onSetup(): void;
+    renderExecutorMark?: NonNullable<ComposerProps['executorPicker']>['renderExecutorMark'];
+    onSetup(executorId?: string): void;
     onNewTask(): void;
   },
 ): Pick<ComposerProps, 'executorPicker' | 'sendBlocked' | 'noModelConnection'> {
@@ -38,15 +41,17 @@ export function executorComposerProps(
       !fixed || executor.selection
         ? {
             catalog: executor.catalog,
+            renderExecutorMark: input.renderExecutorMark,
             selection: executor.selection,
             fixed,
             disabled: executor.changing || !!input.sendPending || (fixed && input.turnActive),
             loading: executor.loading,
+            loadingIds: executor.loadingIds,
             error: executor.error,
             onSelect: (selection) => executor.select(selection),
             onRestore: () => executor.restore(),
-            onRetry: () => {
-              void executor.refresh(true);
+            onRetry: (executorId) => {
+              void executor.refresh(true, executorId);
             },
             onSetup: input.onSetup,
             onNewTask: input.onNewTask,

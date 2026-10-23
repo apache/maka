@@ -49,7 +49,7 @@ export interface WorkHubRemoteBridge {
 interface Deps {
   client: Pick<DesktopRuntimeHostClient, 'openSession' | 'getSession' | 'resolveWorkHubCoordinationSession' | 'answerWorkHubCoordination' | 'answerInteraction' | 'queryInteraction' | 'queryTurn' | 'subscribeSessionCatalogChanges'>;
   botRegistry: Pick<BotRegistry, 'sendMessage'>;
-  readMode(): Promise<BotMessageHandling>;
+  readMode(platform?: BotIncomingMessage['platform']): Promise<BotMessageHandling | 'assistant'>;
   statePath: string;
   isActive?(): boolean;
   onError(error: unknown): void;
@@ -248,7 +248,7 @@ export function createWorkHubRemoteBridge(deps: Deps): WorkHubRemoteBridge {
     handle: (message, acceptMessage) => serial(async () => {
       if (closed || deps.isActive?.() === false) return true;
       await load();
-      const enabled = await deps.readMode() === 'workhub';
+      const enabled = await deps.readMode(message.platform) === 'workhub';
       if (!enabled && !session) return false;
       if (enabled) await deps.client.resolveWorkHubCoordinationSession();
       await connect();

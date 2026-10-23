@@ -30,7 +30,11 @@ import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { SessionSummary, StoredMessage } from '@maka/core/session';
 import type { SessionTodoItem } from '@maka/core/session-todo';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
-import type { CreateSessionInput, TurnOrchestration } from '@maka/core/runtime-inputs';
+import type {
+  CreateSessionInput,
+  CreateSessionRequestInput,
+  TurnOrchestration,
+} from '@maka/core/runtime-inputs';
 import type { TurnOrigin } from '@maka/core/turn-origin';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { InteractionFormResponse } from '@maka/core/interaction';
@@ -258,6 +262,10 @@ export interface MakaSessionDriver {
   subscribeGoalChanges?(listener: (goal: GoalProjection | null) => void): () => void;
   /** Fires when the attached Session's committed Todo projection is invalidated. */
   subscribeTodoChanges?(listener: (sessionId: string) => void): () => void;
+  /** Cancels the specified wait and pauses its Goal without stopping the background task. */
+  cancelGoalEventWait?(
+    input: import('@maka/runtime-host/protocol').GoalEventWaitCancelInput,
+  ): Promise<import('@maka/runtime-host/protocol').GoalEventWaitCancelResult>;
   /**
    * Applies a goal control action (pause/resume/clear) with optimistic
    * revision retry, mirroring the desktop client. Resolves with the resulting
@@ -305,9 +313,10 @@ export class MakaSessionCatalogIncompleteError extends Error {
  * choice", and it is the only way the configured default can apply — sending
  * a literal would silently override it.
  */
-export type CreateSessionRequest = Omit<CreateSessionInput, 'permissionMode'> & {
-  permissionMode?: PermissionMode;
-};
+export type CreateSessionRequest = Omit<CreateSessionInput, 'permissionMode' | 'thinkingLevel'> &
+  Pick<CreateSessionRequestInput, 'thinkingLevel'> & {
+    permissionMode?: PermissionMode;
+  };
 
 export type MakaTranscriptReplacementReason = 'reconcile' | 'reconnect';
 

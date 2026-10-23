@@ -313,6 +313,7 @@ function goal(overrides: Partial<GoalProjection> = {}): GoalProjection {
     lastReason: null,
     achievedAt: null,
     pausedAt: null,
+    eventWait: null,
     ...overrides,
   };
 }

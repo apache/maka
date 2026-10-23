@@ -394,40 +394,6 @@
   max-width: min(320px, 92vw);
 }
 
-/* Model chip (static fallback) still owns its own quiet geometry. */
-.maka-composer-model-chip {
-  font: var(--maka-text-label);
-  /* #1879: was a bare 26px. It is NOT an Astryx component — `ModelChipStatic`
-     puts this class only on its inert `<span>` branch; the `onOpenSettings`
-     branch renders a `Button size="sm"` that carries no class at all
-     (chat-model-switcher.tsx). So nothing sizes this box but this rule, and
-     unpinning it measured 22px (the label role's 20px line box plus two
-     hairlines) against the 28px Selector beside it. `--h-control-md` resolves
-     to `--size-element-sm`, which is the token that Selector's own `size="sm"`
-     reads — so the two agree by deriving from one token rather than by two
-     product rules agreeing on a literal. */
-  height: var(--h-control-md);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-1);
-  padding: 0 var(--space-2);
-  border: var(--border-width-hairline) solid transparent;
-  border-radius: var(--radius-pill);
-  background: transparent;
-  color: var(--muted-foreground);
-  white-space: nowrap;
-  max-width: min(180px, 28vw);
-  transition:
-    background-color var(--duration-base) var(--ease-out-strong),
-    color var(--duration-base) var(--ease-out-strong);
-}
-.maka-composer-model-chip:hover {
-  background: var(--state-hover-bg);
-  color: var(--foreground);
-  border-color: transparent;
-}
-
 /* Mode ON marks sit at the tail of the footer's left controls (#1897) —
    session state, not context staged for the next send, so they no longer live
    in the drawer.
@@ -514,21 +480,6 @@
   max-width: 100%;
   flex: 0 1 auto;
 }
-.maka-composer-model-chip-text {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.maka-composer-model-status {
-  width: 6px;
-  height: 6px;
-  border-radius: var(--radius-pill);
-  background: var(--destructive);
-  flex: 0 0 auto;
-}
-
 /* The active transcript and docked card meet at one boundary. Keeping the
    outer composer's default top padding here exposes an extra strip of panel
    background after the transcript viewport has already ended. */

@@ -23,6 +23,7 @@ import {
   Fragment,
   type ReactNode,
   useContext,
+  useMemo,
   useSyncExternalStore,
 } from 'react';
 import {
@@ -65,9 +66,7 @@ import {
   Tooltip,
   VStack,
 } from '@astryxdesign/core';
-import type { ChatModelChoice } from '@maka/core/chat-model-choice';
-import type { ProviderType } from '@maka/core/llm-connections';
-import { ModelWheelPicker } from './model-wheel-picker.js';
+import type { ComposerModelContribution } from './composer-model-picker.js';
 
 /** Stable owner props for a frame-wide overlay contribution. */
 export interface MakaClientShellOverlayProps {}
@@ -75,6 +74,15 @@ export interface MakaClientShellOverlayProps {}
 /** Stable owner props for an additive sidebar footer contribution. */
 export interface MakaClientSidebarFooterProps {
   readonly collapsed: boolean;
+}
+
+/** Stable owner props for an additive primary-navigation contribution. */
+export interface MakaClientSidebarNavigationProps {
+  readonly collapsed: boolean;
+  /** Active native conversation, including Sessions owned by plugin entries. */
+  readonly activeSessionId?: string;
+  /** Open a desktop Session in the native conversation, preserving Host identity. */
+  readonly openSession?: (sessionId: string) => void;
 }
 
 /** Stable owner props for one plugin-owned Settings navigation control. */
@@ -111,39 +119,12 @@ export interface MakaClientComposerToolbarProps {
   readonly onExecutorTargetChange?: (target: MakaClientExecutorTarget) => void | Promise<void>;
 }
 
-/** Stable owner props for replacing the Composer's complete model-selection pair. */
+/** Supplies model data to the Composer-owned picker. */
 export interface MakaClientComposerModelSelectionProps {
-  readonly disabled: boolean;
-  readonly streaming: boolean;
-  readonly hasSession: boolean;
-  readonly presentation?: 'popover' | 'bottom-sheet' | 'wheel';
-  readonly isReadOnly?: boolean;
-  readonly purpose?: 'session' | 'new-work-default';
-  readonly modelChoices: readonly ChatModelChoice[];
-  readonly activeModel?: string;
-  readonly activeModelLabel?: string;
-  readonly activeModelConnectionId?: string;
-  readonly activeModelConnectionSlug?: string;
-  readonly activeProviderType?: ProviderType;
-  readonly renderProviderMark?: (type: ProviderType) => ReactNode;
-  readonly newChatModel?: {
-    readonly llmConnectionId: string;
-    readonly llmConnectionSlug: string;
-    readonly model: string;
-  };
+  readonly hasModels: boolean;
+  readonly fixedExecutorId?: string;
   readonly executorTarget?: MakaClientExecutorTarget;
-  readonly onNativeModelChange?: (target: {
-    readonly llmConnectionId: string;
-    readonly llmConnectionSlug: string;
-    readonly model: string;
-  }) => void | Promise<void>;
-  /**
-   * Renders the Maka-owned thinking control for the selected native model.
-   * A contribution replacing the complete model-selection pair must use this
-   * instead of copying native model capability and mutation semantics.
-   */
-  readonly renderNativeThinkingControl: () => ReactNode;
-  readonly onExecutorTargetChange?: (target: MakaClientExecutorTarget) => void | Promise<void>;
+  readonly renderPicker?: (contribution?: ComposerModelContribution) => ReactNode;
 }
 
 export interface MakaClientExecutorTarget {
@@ -176,6 +157,11 @@ export interface MakaClientSlotMap {
     kind: 'list';
     scope: 'root';
     owner: MakaClientSidebarFooterProps;
+  };
+  'sidebar.navigation': {
+    kind: 'list';
+    scope: 'root';
+    owner: MakaClientSidebarNavigationProps;
   };
   'settings.navigation': {
     kind: 'list';
@@ -367,7 +353,10 @@ export type MakaClientSlotRegistrationOptions<
   readonly name: Name;
   readonly children?: Children;
   readonly registrant?: string;
-} & MakaClientKindOptions<Name, EntryKey, Match>;
+} & (Name extends 'sidebar.navigation' ? {
+  /** Sessions with these labels belong to this entry instead of the ordinary rail/palette. */
+  readonly sessionLabels?: readonly string[];
+} : object) & MakaClientKindOptions<Name, EntryKey, Match>;
 
 export interface MakaClientSlotRegistrar {
   register<
@@ -389,6 +378,7 @@ export interface MakaClientSlotRegistrar {
 }
 
 interface ErasedRegistrationOptions {
+  readonly sessionLabels?: readonly string[];
   readonly name: string;
   readonly key?: string;
   readonly id?: string;
@@ -402,6 +392,7 @@ interface ErasedRegistrationOptions {
 export interface MakaClientStoredSlotEntry {
   readonly component: MakaClientSlotComponent<Record<string, unknown>>;
   readonly options: {
+    readonly sessionLabels?: readonly string[];
     readonly key?: string;
     readonly id?: string;
     readonly order?: number;
@@ -442,6 +433,7 @@ const EMPTY_ENTRIES: readonly MakaClientStoredSlotEntry[] = Object.freeze([]);
 export const MAKA_CLIENT_NATIVE_SLOT_SPECS = Object.freeze({
   'shell.overlay': { kind: 'list', scope: 'root' },
   'sidebar.footer': { kind: 'list', scope: 'root' },
+  'sidebar.navigation': { kind: 'list', scope: 'root' },
   'settings.navigation': { kind: 'list', scope: 'root' },
   'settings.page': { kind: 'keyed', scope: 'root' },
   'conversation.header.actions': { kind: 'list', scope: 'session' },
@@ -549,6 +541,8 @@ export class MakaClientSlotCore implements MakaClientSlotRegistrar {
     const entry: MakaClientStoredSlotEntry = Object.freeze({
       component: component as MakaClientSlotComponent<Record<string, unknown>>,
       options: Object.freeze({
+        ...(options.name === 'sidebar.navigation' && options.sessionLabels
+          ? { sessionLabels: Object.freeze([...options.sessionLabels]) } : {}),
         ...(options.key === undefined ? {} : { key: options.key }),
         ...(options.id === undefined ? {} : { id: options.id }),
         ...(options.order === undefined ? {} : { order: options.order }),
@@ -754,6 +748,18 @@ interface SlotHostValue {
 
 const MakaClientSlotHostContext = createContext<SlotHostValue | null>(null);
 
+/**
+ * Whether a Slot's contributions would render for this host: the spec must be
+ * declared, and session-scoped Slots need a sessionId. Mirrors the outlet's
+ * gate so occupancy hooks cannot report content the outlet would hide.
+ */
+function slotEntriesRenderForHost(
+  spec: MakaClientSlotSpec | undefined,
+  sessionId: string | undefined,
+): spec is MakaClientSlotSpec {
+  return spec !== undefined && !(spec.scope === 'session' && sessionId === undefined);
+}
+
 /** Whether a Slot currently has at least one live contribution. */
 export function useMakaClientSlotOccupied(
   name: keyof MakaClientSlotMap & string,
@@ -766,6 +772,37 @@ export function useMakaClientSlotOccupied(
     () => core?.getVersion(name) ?? 0,
   );
   return (core?.activeEntries(name).length ?? 0) > 0;
+}
+
+/** Plugin navigation owns labelled Sessions without removing them from the catalog or Recall. */
+export function useMakaClientNavigationSessionLabels(): ReadonlySet<string> {
+  const core = useContext(MakaClientSlotHostContext)?.core;
+  const version = useSyncExternalStore(
+    listener => core?.subscribe('sidebar.navigation', listener) ?? (() => {}),
+    () => core?.getVersion('sidebar.navigation') ?? 0,
+    () => core?.getVersion('sidebar.navigation') ?? 0,
+  );
+  return useMemo(() => new Set(core?.activeEntries('sidebar.navigation')
+    .flatMap(entry => entry.options.sessionLabels ?? []) ?? []), [core, version]);
+}
+
+/** Subscribe once to a keyed Slot, then query contributions for each row. */
+export function useMakaClientSlotOccupiedKeys(
+  name: {
+    [Name in keyof MakaClientSlotMap]: MakaClientSlotMap[Name]['kind'] extends 'keyed' ? Name : never;
+  }[keyof MakaClientSlotMap] & string,
+): ReadonlySet<string> {
+  const host = useContext(MakaClientSlotHostContext);
+  const core = host?.core;
+  useSyncExternalStore(
+    (listener) => core?.subscribe(name, listener) ?? (() => {}),
+    () => core?.getVersion(name) ?? 0,
+    () => core?.getVersion(name) ?? 0,
+  );
+  if (!core || !slotEntriesRenderForHost(core.spec(name), host?.sessionId)) return new Set();
+  return new Set(core.activeEntries(name).flatMap((entry) =>
+    entry.options.key === undefined ? [] : [entry.options.key],
+  ));
 }
 
 export function MakaClientSlotProvider(props: {
@@ -888,7 +925,7 @@ function DynamicMakaClientSlotOutlet(props: {
   if (!host || !core) return props.options?.fallback ?? null;
 
   const spec = core.specDynamic(props.name);
-  if (!spec || (spec.scope === 'session' && host.sessionId === undefined)) {
+  if (!slotEntriesRenderForHost(spec, host.sessionId)) {
     return props.options?.fallback ?? null;
   }
   const active = core.activeEntries(props.name);
@@ -1007,7 +1044,6 @@ export {
   LayoutFooter,
   LayoutHeader,
   LayoutPanel,
-  ModelWheelPicker,
   NumberInput,
   RadioList,
   RadioListItem,
@@ -1054,7 +1090,6 @@ export const MakaClientPluginSdkModule = Object.freeze({
   LayoutFooter,
   LayoutHeader,
   LayoutPanel,
-  ModelWheelPicker,
   MakaClientSlotFragment: Fragment,
   MakaClientSlotOutlet,
   NumberInput,

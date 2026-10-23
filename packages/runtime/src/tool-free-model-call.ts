@@ -32,8 +32,10 @@ export type ToolFreeModelCallInput = ToolFreeModelCallContent & {
   readonly system?: string;
   readonly providerOptions?: unknown;
   readonly abortSignal?: AbortSignal;
-  readonly maxOutputTokens: number;
+  readonly maxOutputTokens?: number;
   readonly maxRetries?: number;
+  /** Some transports (including Codex OAuth) accept streaming requests only. */
+  readonly stream?: boolean;
 };
 
 export interface ToolFreeModelCallResult {
@@ -115,21 +117,42 @@ export async function generateToolFreeModelCall(
   input: ToolFreeModelCallInput,
 ): Promise<ToolFreeModelCallResult> {
   const ai = (await import('ai')) as unknown as {
+    streamText(options: Record<string, unknown>): {
+      fullStream: AsyncIterable<{ type: string; error?: unknown }>;
+      text: PromiseLike<string>;
+      usage: PromiseLike<AiSdkUsageLike>;
+      finishReason: PromiseLike<unknown>;
+    };
     generateText(options: Record<string, unknown>): Promise<{
       text: string;
       usage?: AiSdkUsageLike;
       finishReason?: unknown;
     }>;
   };
-  const result = await ai.generateText({
+  const options = {
     model: input.model,
     ...(input.system === undefined ? {} : { system: input.system }),
     ...(input.prompt === undefined ? { messages: input.messages } : { prompt: input.prompt }),
     ...(input.abortSignal === undefined ? {} : { abortSignal: input.abortSignal }),
     ...(input.providerOptions === undefined ? {} : { providerOptions: input.providerOptions }),
-    maxOutputTokens: input.maxOutputTokens,
+    ...(input.maxOutputTokens === undefined ? {} : { maxOutputTokens: input.maxOutputTokens }),
     ...(input.maxRetries === undefined ? {} : { maxRetries: input.maxRetries }),
-  });
+  };
+  let result;
+  if (input.stream) {
+    const streamed = ai.streamText(options);
+    for await (const part of streamed.fullStream) {
+      if (part.type === 'error') throw part.error;
+      if (part.type === 'abort') throw input.abortSignal?.reason ?? new Error('Model call aborted');
+    }
+    result = {
+      text: await streamed.text,
+      usage: await streamed.usage,
+      finishReason: await streamed.finishReason,
+    };
+  } else {
+    result = await ai.generateText(options);
+  }
   const usage = normalizeAiSdkUsage(result.usage, { rawFinishReason: result.finishReason });
   const finishReason = rawFinishReasonString(result.finishReason);
   return {

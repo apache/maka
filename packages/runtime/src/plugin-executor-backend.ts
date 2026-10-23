@@ -19,6 +19,7 @@
 
 import type { ExecutorConfiguration } from '@maka/core/executor-catalog';
 import { randomUUID } from 'node:crypto';
+import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import type { SessionEvent } from '@maka/core/events';
 import { redactSecrets } from '@maka/core/redaction';
 import type {
@@ -31,6 +32,7 @@ import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import { AsyncEventQueue } from './async-queue.js';
+import { MAX_EXECUTOR_COMPLETION_TEXT_BYTES } from './plugin-executor-service.js';
 import type {
   PluginExecutorBinding,
   PluginExecutorOutputEvent,
@@ -42,7 +44,14 @@ import type {
 interface ActiveExecution {
   readonly abort: AbortController;
   readonly settled: Promise<void>;
+  readonly queue: AsyncEventQueue<SessionEvent>;
 }
+
+/**
+ * Whether the provider settled a terminal result, and whether it was published.
+ * Only a settled result may be acknowledged or abandoned.
+ */
+type ExecutionSettlement = 'published' | 'rejected' | 'unsettled';
 
 export interface PluginExecutorBackendInput {
   readonly sessionId: string;
@@ -91,7 +100,7 @@ export class PluginExecutorBackend implements AgentBackend {
     const producer = this.#produce(input, messageId, abort.signal, queue).finally(() =>
       queue.close(),
     );
-    const active: ActiveExecution = { abort, settled: producer.then(() => undefined) };
+    const active: ActiveExecution = { abort, settled: producer.then(() => undefined), queue };
     this.#active.add(active);
     let acknowledged = false;
     try {
@@ -99,8 +108,8 @@ export class PluginExecutorBackend implements AgentBackend {
         yield event;
         queue.ackConsumed();
       }
-      const returnedResult = await producer;
-      if (returnedResult) {
+      const settlement = await producer;
+      if (settlement === 'published') {
         // The Runtime Kernel requests the next item only after onSessionEvent
         // resolves. Reaching this point means its terminal event was accepted.
         // The Plugin decides whether its external execution actually settled;
@@ -116,9 +125,12 @@ export class PluginExecutorBackend implements AgentBackend {
     } finally {
       queue.noteConsumerDetached();
       abort.abort(new Error('Plugin executor event consumer detached'));
-      const returnedResult = await producer.catch(() => false);
+      // A settled result that was not acknowledged is abandoned, including one
+      // the Runtime rejected before publishing it. A provider failure before
+      // settlement is neither acknowledged nor abandoned.
+      const settlement = await producer.catch((): ExecutionSettlement => 'unsettled');
       if (
-        returnedResult &&
+        settlement !== 'unsettled' &&
         this.#binding.acknowledgeExecution &&
         !acknowledged &&
         this.#binding.abandonExecution
@@ -128,10 +140,23 @@ export class PluginExecutorBackend implements AgentBackend {
     }
   }
 
+  /**
+   * Cancel execution and wait for its queued events to be consumed or the consumer
+   * to detach. Keep consuming send() while stopping: awaiting stop() inside that
+   * consumer loop prevents progress. Start it without awaiting in the loop, then
+   * await it after the loop exits.
+   */
   async stop(reason: 'user_stop' | 'redirect'): Promise<void> {
     const active = [...this.#active];
     for (const execution of active) execution.abort.abort(new Error(reason));
-    await Promise.allSettled(active.map((execution) => execution.settled));
+    await Promise.allSettled(
+      active.map(async (execution) => {
+        await execution.settled;
+        // Runtime may seal the ledger when stop returns. Provider settlement
+        // alone does not mean its queued final updates have been persisted.
+        await execution.queue.waitUntilConsumedThroughCurrent();
+      }),
+    );
   }
 
   async respondToSandboxBoundary(_response: SandboxBoundaryResponse): Promise<void> {
@@ -153,14 +178,18 @@ export class PluginExecutorBackend implements AgentBackend {
     messageId: string,
     signal: AbortSignal,
     queue: AsyncEventQueue<SessionEvent>,
-  ): Promise<boolean> {
+  ): Promise<ExecutionSettlement> {
     const turnId = input.turnId;
     let thinkingText = '';
+    let outputText = '';
+    let outputBytes = 0;
+    let outputTruncated = false;
     const toolUseIds = new Map<string, string>();
     const toolOutputSequences = new Map<string, number>();
     let result: PluginExecutorResult | undefined;
     let failure: unknown;
     let failed = false;
+    let settled = false;
     try {
       result = await this.#binding.execute(
         {
@@ -180,8 +209,30 @@ export class PluginExecutorBackend implements AgentBackend {
         },
         {
           signal,
+          onSettled: () => {
+            settled = true;
+          },
           onEvent: (event) => {
             if (event.type === 'thinking_delta') thinkingText += event.text;
+            if (event.type === 'output_delta' && !outputTruncated) {
+              // Bound even a single oversized delta before retaining it. Live
+              // delivery and the provider's final result remain authoritative.
+              const chunk = event.text.slice(0, MAX_EXECUTOR_COMPLETION_TEXT_BYTES + 1);
+              outputText += chunk;
+              outputBytes += Buffer.byteLength(chunk, 'utf8');
+              if (outputBytes > MAX_EXECUTOR_COMPLETION_TEXT_BYTES) {
+                // A surrogate pair split across deltas uses fewer bytes joined.
+                outputBytes = Buffer.byteLength(outputText, 'utf8');
+                if (outputBytes > MAX_EXECUTOR_COMPLETION_TEXT_BYTES) {
+                  outputText = truncateUtf8(
+                    outputText,
+                    MAX_EXECUTOR_COMPLETION_TEXT_BYTES,
+                    '\n[Response truncated]',
+                  );
+                  outputTruncated = true;
+                }
+              }
+            }
             this.#publishOutputEvent(
               turnId,
               messageId,
@@ -201,6 +252,22 @@ export class PluginExecutorBackend implements AgentBackend {
     }
 
     this.#closeOptionalOutput(turnId, messageId, thinkingText, toolUseIds, queue);
+    // Deltas are only live presentation. Close the interrupted text before the
+    // terminal event seals the ledger, including updates drained during cancel.
+    // Successful results keep their provider-authoritative completion text.
+    // Like successful completions, history stores one text block after tool
+    // results; it does not preserve the live text/tool interleaving.
+    if (outputText && (failed || result?.status !== 'completed')) {
+      queue.push({
+        type: 'text_complete',
+        id: this.#newId(),
+        turnId,
+        ts: this.#now(),
+        messageId,
+        text: outputText,
+        interrupted: true,
+      });
+    }
     if (failed) {
       if (signal.aborted)
         this.#publishCancellation(turnId, { status: 'cancelled', source: 'caller' }, queue);
@@ -212,7 +279,7 @@ export class PluginExecutorBackend implements AgentBackend {
           false,
           queue,
         );
-      return false;
+      return settled ? 'rejected' : 'unsettled';
     }
     if (result === undefined) {
       this.#publishFailure(
@@ -222,10 +289,10 @@ export class PluginExecutorBackend implements AgentBackend {
         false,
         queue,
       );
-      return false;
+      return settled ? 'rejected' : 'unsettled';
     }
     this.#publishResult(turnId, messageId, result, queue);
-    return true;
+    return 'published';
   }
 
   async #requestPermission(

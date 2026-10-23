@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { decodeEventWaitProvenance, type EventWaitProvenance } from './event-wait-delivery.js';
 import { defineObjectShape, hasExactShape, isRecord } from './record-schema.js';
 
 /** Non-user trigger source for a turn. */
@@ -35,11 +36,13 @@ export interface CloudActivationOrigin {
 }
 
 export type TurnOrigin =
+  // External text stays non-owner input even when its transport has no sender identity.
+  | { kind: 'external_connector'; connectorId: string; senderId?: string }
   | WorkHubResultOrigin
   | CloudActivationOrigin
   | { kind: 'scheduled_task'; scheduledTaskId: string }
   | { kind: 'legacy_automation'; automationId: string }
-  | { kind: 'goal'; goalId: string }
+  | { kind: 'goal'; goalId: string; eventWait?: EventWaitProvenance }
   | {
       kind: 'agent_graph';
       graphId: string;
@@ -48,6 +51,10 @@ export type TurnOrigin =
       /** Durable identity of one delivery attempt for the wake. */
       attemptId: string;
     };
+
+const EXTERNAL_CONNECTOR_ORIGIN_SHAPE = defineObjectShape<
+  Extract<TurnOrigin, { kind: 'external_connector' }>
+>()(['kind', 'connectorId'], ['senderId']);
 
 type ScheduledTaskOrigin = Extract<TurnOrigin, { kind: 'scheduled_task' }>;
 type CloudActivationOriginType = Extract<TurnOrigin, { kind: 'cloud_activation' }>;
@@ -67,7 +74,7 @@ const LEGACY_AUTOMATION_ORIGIN_SHAPE = defineObjectShape<LegacyAutomationOrigin>
   ['kind', 'automationId'],
   [],
 );
-const GOAL_ORIGIN_SHAPE = defineObjectShape<GoalOrigin>()(['kind', 'goalId'], []);
+const GOAL_ORIGIN_SHAPE = defineObjectShape<GoalOrigin>()(['kind', 'goalId'], ['eventWait']);
 const AGENT_GRAPH_ORIGIN_SHAPE = defineObjectShape<AgentGraphOrigin>()(
   ['kind', 'graphId', 'wakeId', 'attemptId'],
   [],
@@ -76,6 +83,21 @@ const AGENT_GRAPH_ORIGIN_SHAPE = defineObjectShape<AgentGraphOrigin>()(
 /** Decode a persisted or runtime turn origin, normalizing released Automation rows. */
 export function decodeTurnOrigin(value: unknown): TurnOrigin | undefined {
   if (!isRecord(value)) return undefined;
+  if (value.kind === 'external_connector') {
+    if (
+      !hasExactShape(value, EXTERNAL_CONNECTOR_ORIGIN_SHAPE) ||
+      typeof value.connectorId !== 'string' ||
+      !value.connectorId.length ||
+      (value.senderId !== undefined &&
+        (typeof value.senderId !== 'string' || !value.senderId.length))
+    )
+      return undefined;
+    return {
+      kind: 'external_connector',
+      connectorId: value.connectorId,
+      ...(value.senderId !== undefined ? { senderId: value.senderId as string } : {}),
+    };
+  }
   if (value.kind === 'workhub_result') {
     const keys = ['kind', 'eventId', 'actionId', 'delegationId', 'targetSessionId', 'targetTurnId'];
     if (
@@ -121,7 +143,17 @@ export function decodeTurnOrigin(value: unknown): TurnOrigin | undefined {
     value.kind === 'goal' &&
     typeof value.goalId === 'string'
   ) {
-    return { kind: 'goal', goalId: value.goalId };
+    try {
+      return {
+        kind: 'goal',
+        goalId: value.goalId,
+        ...(value.eventWait === undefined
+          ? {}
+          : { eventWait: decodeEventWaitProvenance(value.eventWait) }),
+      };
+    } catch {
+      return undefined;
+    }
   }
   if (
     hasExactShape(value, AGENT_GRAPH_ORIGIN_SHAPE) &&

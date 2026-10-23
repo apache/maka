@@ -26,6 +26,10 @@ import { createSqliteEventWaitAuthority } from './sqlite-event-wait-authority.js
 import { createSqliteGoalAuthority } from './goal-authority.js';
 import { createSqliteInteractionStore } from './interaction-store.js';
 import type { ExecutionPersistenceProvider } from './execution-persistence-provider.js';
+import { exportSessionBundleState } from './session-bundle-policy.js';
+import { createSessionSnapshotStateIdentity } from './production-session-snapshot.js';
+import { runWithStorageRootLease, type StorageRootLease } from './root-authority.js';
+import type { SessionSnapshotStatePreparer } from './quiescent-session-snapshot.js';
 
 export const localExecutionPersistenceProvider: ExecutionPersistenceProvider = Object.freeze({
   async open({ canonicalPath }: { canonicalPath: string }) {
@@ -55,7 +59,10 @@ export const localExecutionPersistenceProvider: ExecutionPersistenceProvider = O
       closes.push(() => operational.close());
       const graphControlStore = createAgentGraphControlStore(canonicalPath);
       closes.push(() => graphControlStore.close());
-      const eventWaitStore = createSqliteEventWaitAuthority(canonicalPath);
+      const eventWaitStore = createSqliteEventWaitAuthority(
+        canonicalPath,
+        runtime.runtimeEventStore,
+      );
       closes.push(() => eventWaitStore.close());
       const goalStore = createSqliteGoalAuthority(canonicalPath);
       closes.push(() => goalStore.close());
@@ -63,6 +70,33 @@ export const localExecutionPersistenceProvider: ExecutionPersistenceProvider = O
       closes.push(() => interactionStore.close());
       await Promise.all([sessionStore.ready(), agentRunStore.ready?.(), interactionStore.ready()]);
       return {
+        createSnapshotStatePreparer(
+          lease: StorageRootLease<'interactive', 'write'>,
+        ): SessionSnapshotStatePreparer {
+          if (lease.canonicalPath !== canonicalPath)
+            throw new Error('Snapshot lease belongs to another backend');
+          return {
+            async prepareState(input) {
+              input.cancellation.signal.throwIfAborted();
+              // Lock order: execution fence -> Artifact writer -> context values.
+              // The exporter holds the Artifact lock until both databases and
+              // their payloads are private. GC/publication uses these same locks.
+              await runWithStorageRootLease(lease, 'interactive', 'write', () =>
+                exportSessionBundleState({
+                  stateRoot: canonicalPath,
+                  configRoot: canonicalPath,
+                  allowShared: true,
+                  destinationRoot: input.destinationRoot,
+                  sessionId: input.makaSessionId,
+                  requireQuiescent: true,
+                  lease,
+                }),
+              );
+              input.cancellation.signal.throwIfAborted();
+              return createSessionSnapshotStateIdentity(input.makaSessionId);
+            },
+          };
+        },
         sessionStore,
         agentRunStore,
         runtimeEventStore: runtime.runtimeEventStore,

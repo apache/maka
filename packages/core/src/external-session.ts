@@ -231,6 +231,8 @@ export interface ExternalMakaSession {
     cwd: string;
   };
   messages: readonly StoredMessage[];
+  /** Explicit source image parts, consumed host-side before publishing an import. */
+  sourceImages?: readonly { readonly messageId: string; readonly path: string }[];
 }
 
 export const EXTERNAL_SESSION_LIMIT_KINDS = [

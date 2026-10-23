@@ -24,6 +24,7 @@
     "./tool-result-preview": "./dist/tool-result-preview.js",
     "./workspace-version-authority": "./dist/workspace-version-authority.js",
     "./runtime-policy": "./dist/runtime-policy.js",
+    "./event-wait-delivery": "./dist/event-wait-delivery.js",
     "./event-wait": "./dist/event-wait.js",
     "./goal": "./dist/goal.js",
     "./execution-log-coverage": "./dist/execution-log-coverage.js",
@@ -64,6 +65,8 @@
     "./context-offload": "./dist/context-offload.js",
     "./tool-result-archive-evidence": "./dist/tool-result-archive-evidence.js",
     "./attachments": "./dist/attachments.js",
+    "./image-delivery": "./dist/image-delivery.js",
+    "./image-markdown": "./dist/image-markdown.js",
     "./artifacts": "./dist/artifacts.js",
     "./pet": "./dist/pet.js",
     "./skill-invocation": "./dist/skill-invocation.js",
@@ -146,6 +149,7 @@
     "./project": "./dist/project.js",
     "./pty-output-view": "./dist/pty-output-view.js",
     "./relative-time": "./dist/relative-time.js",
+    "./assistant-turn-ids": "./dist/assistant-turn-ids.js",
     "./archive-retention": "./dist/archive-retention.js",
     "./run-composition": "./dist/run-composition.js",
     "./runtime-event-store": "./dist/runtime-event-store.js",
@@ -179,6 +183,7 @@
     "test:dist": "node --test \"dist/**/*.test.js\""
   },
   "dependencies": {
-    "intl-messageformat": "11.2.15"
+    "intl-messageformat": "11.2.15",
+    "marked": "18.0.11"
   }
 }

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { IMAGE_DELIVERY_OPERATION_SPECS } from './image-delivery.js';
 import {
   ARTIFACT_KINDS,
   ARTIFACT_SOURCES,
@@ -184,6 +185,7 @@ export type ArtifactIngestResult =
   | { readonly kind: 'upload_aborted'; readonly uploadId: string };
 
 export const ARTIFACT_OPERATION_SPECS = {
+  ...IMAGE_DELIVERY_OPERATION_SPECS,
   'artifact.ingest': defineOperation<
     ArtifactIngestInput,
     ArtifactIngestResult,

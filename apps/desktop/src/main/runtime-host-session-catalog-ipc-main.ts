@@ -81,7 +81,10 @@ export interface RuntimeHostSessionCatalogIpcDeps {
   runningTurnIds: (sessionId: string) => readonly string[];
   resolveCreateProject: (
     input: Pick<CreateSessionRequestInput, 'cwd' | 'projectId'>,
+    allocateHostProject?: () => Promise<WorkspaceTarget>,
   ) => Promise<WorkspaceTarget>;
+  /** Present only for a Host that owns its workspace filesystem. */
+  allocateAssistantWorkspace?: () => Promise<WorkspaceTarget>;
   /**
    * Dedicated task-directory authority for the explicit relocation
    * correction. Absent on Hosts that cannot provision Client directories —
@@ -124,10 +127,14 @@ export function registerRuntimeHostSessionCatalogIpc(
   const actionIds = (sessionId: string, options: unknown) =>
     resolveSessionActionIds(() => listSessions(), sessionId, options);
 
-  handleReconnectableRead(ipcMain, 'sessions:executorCatalog', async (_event, cwd: string, refresh?: boolean) => {
+  handleReconnectableRead(ipcMain, 'sessions:executorCatalog', async (_event, cwd: string, refresh?: boolean, executorId?: string, listOnly?: boolean) => {
     if (typeof cwd !== 'string' || !cwd) throw new Error('Executor discovery requires a workspace');
     if (refresh !== undefined && typeof refresh !== 'boolean') throw new Error('Invalid executor refresh flag');
-    return (await deps.queryExecutors?.({ kind: 'catalog', cwd, ...(refresh ? { refresh: true } : {}) }))?.items ?? [];
+    if (executorId !== undefined && (typeof executorId !== 'string' || !executorId || executorId.length > 256))
+      throw new Error('Invalid executor ID');
+    if (listOnly !== undefined && typeof listOnly !== 'boolean') throw new Error('Invalid executor inventory flag');
+    return (await deps.queryExecutors?.({ kind: 'catalog', cwd, ...(refresh ? { refresh: true } : {}),
+      ...(executorId ? { executorId } : {}), ...(listOnly ? { listOnly: true } : {}) }))?.items ?? [];
   });
   handleReconnectableRead(ipcMain, 'sessions:executorState', async (_event, sessionId: string) =>
     (await deps.queryExecutors?.({ kind: 'conversation', sessionId }))?.items ?? [],
@@ -155,10 +162,13 @@ export function registerRuntimeHostSessionCatalogIpc(
     pendingCleanup.add(sessionId);
   });
   ipcMain.handle('sessions:create', async (_event, input?: CreateSessionRequestInput) => {
-    const workspace = await deps.resolveCreateProject({
-      ...(input?.cwd === undefined ? {} : { cwd: input.cwd }),
-      ...(input?.projectId === undefined ? {} : { projectId: input.projectId }),
-    });
+    const workspace = await deps.resolveCreateProject(
+      {
+        ...(input?.cwd === undefined ? {} : { cwd: input.cwd }),
+        ...(input?.projectId === undefined ? {} : { projectId: input.projectId }),
+      },
+      input?.labels?.includes('personal-assistant') ? deps.allocateAssistantWorkspace : undefined,
+    );
     const session = await deps.client.createSession(resolveDesktopSessionCreateInput(input, newId(), workspace));
     deps.emitSessionsChanged('created', session.id);
     return toDesktopHostSessionSummary(session);

@@ -55,8 +55,8 @@ import {
   type AdmittedProposalFields,
   type MemoryProposalItem,
 } from './memory-extraction-proposal.js';
-import { isHistoryCompactContentEvent } from './history-compaction.js';
 import {
+  isHistoryCompactContentEvent,
   isTextHistoryCompactCheckpoint,
   matchHistoryCompactCheckpointPrefix,
   renderHistoryCompactCheckpoint,
@@ -304,7 +304,6 @@ export function buildMemoryExtractionTriggerTools(input: {
         'Use only when the user explicitly asks you to remember long-term information. It stores the requested memory and returns exactly what was saved.',
       parameters: noArguments,
       executionSemantics: 'exclusive_step',
-      recoveryMode: 'idempotent',
       impl: async (_args: Record<string, never>, context: MakaToolContext) => {
         const gate = await input.capabilities.gate();
         if (!gate.allowed) return { status: 'unavailable', requestedItems: [] };
@@ -325,7 +324,6 @@ export function buildMemoryExtractionTriggerTools(input: {
       description:
         'Use when the conversation contains durable long-term information worth preserving and the user did not explicitly ask to remember it. The extraction runs after this turn.',
       parameters: noArguments,
-      recoveryMode: 'idempotent',
       impl: async (_args: Record<string, never>, context: MakaToolContext) => {
         const gate = await input.capabilities.gate();
         if (!gate.allowed) return { status: 'unavailable' };

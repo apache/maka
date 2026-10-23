@@ -16,10 +16,10 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 | Classification | Count |
 |---|---:|
 | windows-backend-gap | 27 |
-| portable-candidate | 57 |
-| platform-contract | 48 |
+| portable-candidate | 60 |
+| platform-contract | 49 |
 
-Total Windows-excluded declarations: **132**
+Total Windows-excluded declarations: **136**
 
 ## Inventory
 
@@ -37,6 +37,7 @@ Total Windows-excluded declarations: **132**
 | platform-contract | `apps/desktop/src/main/__tests__/project-context-root.test.ts` rejects a session cwd without read and traversal access | `process.platform === 'win32' ? 'POSIX permissions are required to make the session cwd inaccessible' : process.getuid?.() === 0` |
 | platform-contract | `apps/desktop/src/main/__tests__/runtime-host-local-remote-access.test.ts` adopts a released handoff through its existing legacy operator | `process.platform === 'win32' && 'Legacy POSIX handoff requires POSIX deployment paths'` |
 | platform-contract | `apps/desktop/src/main/__tests__/runtime-host-skills-ipc-main.test.ts` reports create_failed without opening when a Skill directory parent is not writable | `process.platform === 'win32' ? 'POSIX permissions are required to make the Skill directory parent read-only' : process.getuid?.() === 0` |
+| portable-candidate | `apps/desktop/src/main/__tests__/runtime-host-wsl-controller.test.ts` WSL Node recovery retains deployment bindings, updates aliases and cannot revive deleted profiles | `process.platform === 'win32'` |
 | portable-candidate | `apps/desktop/src/main/__tests__/settings-recovery-startup.test.ts` early-window presents recovery guidance despite ${nativeFailure} | `nativeFailure === 'commit-unknown' && process.platform === 'win32'` |
 | portable-candidate | `apps/desktop/src/main/__tests__/settings-recovery.test.ts` published reset failure is independently reported and consumers reread without replaying a mutation | `process.platform === 'win32'` |
 | platform-contract | `apps/desktop/src/main/__tests__/shell-env.test.ts` imports the login PATH without importing application control variables | `process.platform === 'win32'` |
@@ -44,12 +45,14 @@ Total Windows-excluded declarations: **132**
 | platform-contract | `apps/desktop/src/main/__tests__/shell-env.test.ts` kills login-shell descendants when capture times out | `process.platform === 'win32'` |
 | platform-contract | `apps/desktop/src/main/__tests__/shell-env.test.ts` bounds shell output instead of buffering until the global timeout | `process.platform === 'win32'` |
 | platform-contract | `apps/desktop/src/main/__tests__/skill-locations.test.ts` reports an unreadable Skill directory instead of an available empty location | `process.platform === 'win32' ? 'POSIX permissions are required to make the Skill directory unreadable' : process.getuid?.() === 0` |
+| portable-candidate | `packages/acp-executor-plugin/src/__tests__/acp-process.test.ts` real catalog ${retry} retries cleanup and terminates the retained process and helper | `process.platform === 'win32'` |
 | portable-candidate | `packages/acp-executor-plugin/src/__tests__/acp-process.test.ts` disposing a real retained process also terminates its helper | `process.platform === 'win32'` |
 | portable-candidate | `packages/acp-executor-plugin/src/__tests__/acp-process.test.ts` retiring one conversation cleans its helper after the parent has crashed | `process.platform === 'win32'` |
 | platform-contract | `packages/cli/src/__tests__/acp-prompt-content.test.ts` rejects a FIFO without blocking the process | `process.platform === 'win32'` |
 | portable-candidate | `packages/cli/src/__tests__/pi-transcript.test.ts` shortens POSIX paths under the home directory | `process.platform === 'win32'` |
 | portable-candidate | `packages/cli/src/__tests__/pi-transcript.test.ts` keeps POSIX paths outside the home directory absolute | `process.platform === 'win32'` |
 | portable-candidate | `packages/cli/src/__tests__/runtime-host-local-managed-activation.test.ts` local CLI cold-starts through the installed ${legacy ? 'legacy' : 'Node'} operator | `process.platform === 'win32'` |
+| portable-candidate | `packages/cli/src/__tests__/runtime-host-setup.test.ts` missing WSL Node repair preserves authority and retries interrupted transactions | `process.platform === 'win32'` |
 | portable-candidate | `packages/cli/src/__tests__/runtime-host-setup.test.ts` managed operator binds its Client Data Root and routes deployment cleanup | `process.platform === 'win32'` |
 | portable-candidate | `packages/cli/src/__tests__/tui-mcp-control.test.ts` TUI MCP reconciles an already-published write through execute: ${scenario} | `process.platform === 'win32'` |
 | portable-candidate | `packages/eval/src/__tests__/install-preflight.test.ts` rejects an unusable trials root before invoking external prerequisites | `process.platform === 'win32' \|\| process.geteuid?.() === 0` |
@@ -87,6 +90,7 @@ Total Windows-excluded declarations: **132**
 | platform-contract | `packages/runtime/src/__tests__/filesystem-worker-process-runner.test.ts` filesystem worker rejects boundedly when a detached descendant retains stdout | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |
 | platform-contract | `packages/runtime/src/__tests__/filesystem-worker-smoke.test.ts` macOS filesystem worker smoke | `process.platform !== 'darwin'` |
 | platform-contract | `packages/runtime/src/__tests__/glob-search.test.ts` both Glob paths report permission failures and recover after permissions are restored | `process.platform === 'win32' \|\| process.getuid?.() === 0` |
+| platform-contract | `packages/runtime/src/__tests__/image-file.test.ts` chat reads reject FIFOs without waiting for a writer | `process.platform === 'win32'` |
 | portable-candidate | `packages/runtime/src/__tests__/node-pty-write-lifecycle.test.ts` does not carry queued Unix PTY writes past native exit | `process.platform === 'win32' ? 'Unix PTY file-descriptor lifecycle only' : false` |
 | platform-contract | `packages/runtime/src/__tests__/owned-child-process.test.ts` POSIX cancellation delivers SIGTERM exactly once to the owned command | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |
 | platform-contract | `packages/runtime/src/__tests__/owned-child-process.test.ts` supervisor mirrors a command that dies from ${signal} | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |

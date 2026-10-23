@@ -33,6 +33,7 @@
  * projection, or ledger logic lives here. Those arrive in later nodes.
  */
 
+import { decodeEventWaitProvenance, type EventWaitProvenance } from './event-wait-delivery.js';
 import { isWorkHubActionReceipt, type WorkHubActionReceipt } from './workhub-action-result.js';
 import { isToolCallOutcome } from './tool-result-status.js';
 import { isModelRetryDecision, type ModelRetryDecision } from './model-failure.js';
@@ -179,6 +180,8 @@ export function isTerminalRuntimeEventStatus(value: unknown): boolean {
 // ============================================================================
 
 export interface RuntimeEventTextContent extends MessageContent {
+  /** Model-authored collapsed preview, independent of the full text. */
+  summary?: string;
   kind: 'text';
   /** Failed response fragment retained for display, never for model replay. */
   interrupted?: true;
@@ -194,6 +197,8 @@ export interface RuntimeEventTextContent extends MessageContent {
    * current prompt or any historical user message verbatim).
    */
   steering?: true;
+  /** Host metadata replayed in place, never a user message or instruction. */
+  runtimeContextName?: string;
 }
 
 export interface RuntimeEventThinkingContent {
@@ -311,7 +316,7 @@ export type RuntimeInvocationRootAuthority =
   | { kind: 'user' }
   | { kind: 'context_compact' }
   | { kind: 'scheduled_task'; scheduledTaskId: string }
-  | { kind: 'goal'; goalId: string }
+  | { kind: 'goal'; goalId: string; eventWait?: EventWaitProvenance }
   | { kind: 'agent_graph_supervisor_wake'; wakeId: string; attemptId: string }
   | { kind: 'legacy_automation'; legacyAutomationId: string };
 
@@ -633,7 +638,10 @@ export interface RuntimeEventRefs {
   sourceRuntimeEventHighWater?: number;
 }
 
-/** Tool-owned contract for deciding what a later recovery phase may do. */
+/** Current tools only choose how to report an unknown result; neither mode retries an effect. */
+export type ToolOutcomeRecoveryMode = 'never_auto_retry' | 'outcome_unknown';
+
+/** Persisted dispatch metadata, including legacy modes; never authorizes recovery by itself. */
 export type ToolRecoveryMode =
   | 'replay_safe'
   | 'idempotent'
@@ -733,6 +741,7 @@ const RUNTIME_EVENT_SHAPE = defineObjectShape<RuntimeEvent>()(
 const TEXT_CONTENT_SHAPE = defineObjectShape<RuntimeEventTextContent>()(
   ['kind', 'text'],
   [
+    'summary',
     'displayText',
     'interrupted',
     'origin',
@@ -741,6 +750,7 @@ const TEXT_CONTENT_SHAPE = defineObjectShape<RuntimeEventTextContent>()(
     'quotes',
     'inlineReferences',
     'steering',
+    'runtimeContextName',
     'providerOptions',
   ],
 );
@@ -853,7 +863,7 @@ const INVOCATION_ROOT_SHAPES = {
   >()(['kind', 'scheduledTaskId'], []),
   goal: defineObjectShape<Extract<RuntimeInvocationRootAuthority, { kind: 'goal' }>>()(
     ['kind', 'goalId'],
-    [],
+    ['eventWait'],
   ),
   agent_graph_supervisor_wake: defineObjectShape<
     Extract<RuntimeInvocationRootAuthority, { kind: 'agent_graph_supervisor_wake' }>
@@ -1038,10 +1048,15 @@ export function decodeRuntimeEvent(value: unknown): RuntimeEvent {
       content: {
         kind: 'text',
         ...normalizeMessageContent(value.content as unknown as MessageContent),
+        ...(value.content.interrupted === true ? { interrupted: true as const } : {}),
+        ...(value.content.summary !== undefined ? { summary: value.content.summary } : {}),
         ...(value.content.origin !== undefined
           ? { origin: decodeTurnOrigin(value.content.origin) }
           : {}),
         ...(value.content.steering === true ? { steering: true as const } : {}),
+        ...(value.content.runtimeContextName !== undefined
+          ? { runtimeContextName: value.content.runtimeContextName }
+          : {}),
       },
     } as unknown as RuntimeEvent;
   }
@@ -1068,8 +1083,12 @@ function isRuntimeEventContent(value: unknown): value is RuntimeEventContent {
     case 'text':
       if (
         !hasExactShape(value, TEXT_CONTENT_SHAPE) ||
+        (value.summary !== undefined && typeof value.summary !== 'string') ||
         (value.origin !== undefined && !isTurnOrigin(value.origin)) ||
         (value.steering !== undefined && value.steering !== true) ||
+        (value.runtimeContextName !== undefined &&
+          (typeof value.runtimeContextName !== 'string' ||
+            value.runtimeContextName.length === 0)) ||
         (value.interrupted !== undefined && value.interrupted !== true) ||
         (value.providerOptions !== undefined && !isRecord(value.providerOptions))
       ) {
@@ -1230,7 +1249,11 @@ function isRuntimeInvocationRootAuthority(value: unknown): value is RuntimeInvoc
         isNonEmptyString(value.scheduledTaskId)
       );
     case 'goal':
-      return hasExactShape(value, INVOCATION_ROOT_SHAPES.goal) && isNonEmptyString(value.goalId);
+      return (
+        hasExactShape(value, INVOCATION_ROOT_SHAPES.goal) &&
+        isNonEmptyString(value.goalId) &&
+        isEventWaitProvenance(value.eventWait)
+      );
     case 'agent_graph_supervisor_wake':
       return (
         hasExactShape(value, INVOCATION_ROOT_SHAPES.agent_graph_supervisor_wake) &&
@@ -1634,4 +1657,14 @@ let __runtimeEventSeq = 0;
 export function createRuntimeEventId(prefix = 'rt-event'): string {
   __runtimeEventSeq += 1;
   return `${prefix}_${Date.now().toString(36)}_${__runtimeEventSeq.toString(36)}`;
+}
+
+function isEventWaitProvenance(value: unknown): boolean {
+  if (value === undefined) return true;
+  try {
+    decodeEventWaitProvenance(value);
+    return true;
+  } catch {
+    return false;
+  }
 }

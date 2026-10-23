@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { createAssistantWebBackend } from './assistant-web-backend.js';
+import { startAssistantWebServer } from './assistant-web-server.js';
 import { resolveDesktopWslHostHandoff } from './runtime-host-wsl-handoff.js';
 import {
   app,
@@ -29,7 +31,6 @@ import {
   nativeTheme,
   powerMonitor,
   powerSaveBlocker,
-  protocol,
   shell,
   Tray,
 } from "electron";
@@ -222,6 +223,8 @@ import {
   createDesktopRuntimeHostSshTerminal,
 } from "./runtime-host-ssh-terminal.js";
 import {
+  createDesktopRuntimeHostWslOperatorResolver,
+  type DesktopRuntimeHostWslManagementInput,
   runDesktopRuntimeHostWslManagement,
   runDesktopRuntimeHostWslSetup,
 } from './runtime-host-wsl-controller.js';
@@ -246,8 +249,7 @@ import { RuntimeHostOAuthPresentation } from "./runtime-host-oauth-presentation.
 import { registerRuntimeHostPermissionsIpc } from "./runtime-host-permissions-ipc-main.js";
 import { registerRuntimeHostRendererIpc } from "./runtime-host-renderer-ipc-main.js";
 import {
-  ClientPluginTransport,
-  MAKA_CLIENT_PLUGIN_SCHEME,
+  clientPluginTransport,
   registerClientPluginIpc,
 } from './client-plugin-transport.js';
 import { registerRuntimeHostRecallIpc } from "./runtime-host-recall-ipc-main.js";
@@ -284,8 +286,6 @@ bootContext.prepareToQuit = prepareRuntimeHostDesktopQuit;
 bootContext.cleanup = closeRuntimeHostDesktop;
 bootContext.activeRuntimeHostRef = activeRuntimeHostRef;
 bootContext.resolveRuntimeHostDiagnostics = resolveRuntimeHostDiagnostics;
-const clientPluginTransport = new ClientPluginTransport();
-protocol.handle(MAKA_CLIENT_PLUGIN_SCHEME, (request) => clientPluginTransport.serve(request.url));
 const runtimeHostPeerConfiguration = await configureDesktopRuntimeHostPeerClient({
   isPackaged: app.isPackaged,
   enableDevelopmentPeer: process.argv.includes('--runtime-host-peer'),
@@ -400,6 +400,15 @@ const runtimeHostSetupPackage = createRuntimeHostSetupPackageResolver({
   appPath: app.getAppPath(),
   environment: process.env,
 });
+const resolveWslOperator = createDesktopRuntimeHostWslOperatorResolver({
+  catalog: runtimeHostProfileCatalog,
+  principalId: runtimeHostClientInstanceId,
+  resolvePackage: (signal) => runtimeHostSetupPackage.resolve('none', signal),
+});
+const runWslManagement = async (input: DesktopRuntimeHostWslManagementInput) =>
+  runDesktopRuntimeHostWslManagement({ ...input,
+    operator: await resolveWslOperator({ ...input, rootId: input.expectedTarget.rootId }),
+  });
 const localRuntimeHostOperator = createDesktopRuntimeHostLocalOperator();
 const localRuntimeHostRemoteAccess = createDesktopLocalRuntimeHostRemoteAccess({
   ipcMain,
@@ -642,7 +651,7 @@ const runtimeHostManagement = createDesktopRuntimeHostManagement({
   ipcMain,
   profiles: runtimeHostProfileService,
   runServiceManagement: runtimeHostSshTerminal.runServiceManagement,
-  runWslManagement: runDesktopRuntimeHostWslManagement,
+  runWslManagement,
   runPeerManagement: runtimeHostSshTerminal.runPeerManagement,
   directPeerClientAvailable: runtimeHostDirectPeerAvailable,
   runUpdate: runtimeHostSshTerminal.runUpdate,
@@ -853,6 +862,7 @@ const mcpCapabilityPublisher = createCapabilityRevisionPublisher(() =>
 );
 let settingsBotsIpc: SettingsBotsIpcHandle | undefined;
 const botRegistry = new BotRegistry({
+  wechatContextDirectory: join(userDataDir, 'wechat-reply-context'),
   onIncomingMessage: (message: BotIncomingMessage) => {
     void runtimeHostManager
       ?.handleBotIncomingMessage(message)
@@ -1052,6 +1062,7 @@ const createLocalRuntimeHostManager = () => createRuntimeHostDesktopManager(
     ipcMain,
     workspaceRoot,
     attachmentApprovals,
+    resolveWslOperator,
     stat: (path) => import("node:fs/promises").then(({ stat }) => stat(path)),
     resizeImage: resizeImageForAttachment,
     mainWindowController,
@@ -1167,12 +1178,14 @@ const createLocalRuntimeHostManager = () => createRuntimeHostDesktopManager(
       releaseDesktopInteractionSession,
     },
     botRegistry,
+    readBotChatSettings: async () => (await settingsStore.get()).botChat,
+    botAssistantStateDirectory: join(userDataDir, 'assistant-wechat'),
     readBotMessageHandling: async () => (await settingsStore.get()).botChat.messageHandling ?? 'task',
     botWorkHubStateDirectory: join(userDataDir, 'workhub-remote'),
     resolveBotCreateTarget: async (target) => ({
       workspace: await currentDesktopWorkspaceTarget(target),
     }),
-    resolveSessionCreateProject: async (input, target) => {
+    resolveSessionCreateProject: async (input, target, allocateHostProject) => {
       const currentTarget = requireRuntimePolicyTarget(target);
       return resolveDesktopSessionWorkspace(
         input,
@@ -1189,6 +1202,7 @@ const createLocalRuntimeHostManager = () => createRuntimeHostDesktopManager(
         {
           allowHostPath: !runtimeHostProfileUsesHostWorkspace(target.kind),
           allocateDedicatedDirectory: () => managedTaskDirectories.allocate(),
+          ...(allocateHostProject ? { allocateHostProject } : {}),
         },
       );
     },
@@ -1198,7 +1212,10 @@ const createLocalRuntimeHostManager = () => createRuntimeHostDesktopManager(
     emitSessionsChanged,
     cacheTranscript: (scope, snapshot) => sessionLocal.cacheTranscript(scope, snapshot),
     ...(e2eFixture?.scenario === "chat-partial-history"
-      ? { transcriptHistoryBytes: PARTIAL_HISTORY_TRANSCRIPT_BYTES }
+      ? {
+          transcriptHistoryBytes: PARTIAL_HISTORY_TRANSCRIPT_BYTES,
+          transcriptInitialHistoryBytes: PARTIAL_HISTORY_TRANSCRIPT_BYTES,
+        }
       : {}),
     retireCancelledMessages: (scope, sessionId, messageIds) =>
       sessionLocal.retireCancelledMessages(scope, sessionId, messageIds),
@@ -1310,6 +1327,7 @@ const createLocalRuntimeHostManager = () => createRuntimeHostDesktopManager(
     recoverLocalHost: (signal) => localRuntimeHostRemoteAccess.recoverBeforeLocalHostStart(signal),
     resolveStartupRepair: (error, signal) => localRuntimeHostRemoteAccess.resolveStartupRepair(error, signal),
     resolveWslHostHandoff: async (profile, error, signal) => resolveDesktopWslHostHandoff(profile, error, signal, {
+      status: runWslManagement,
       locale: await desktopLocale.resolve(),
       resolveBinding: (profileId) => runtimeHostProfileService.resolveManagedService(profileId),
       resolvePackage: (packageSignal) => runtimeHostSetupPackage.resolve('none', packageSignal),
@@ -1446,6 +1464,27 @@ export const runtimeHostBootReady = (async () => {
     throw new Error('Work Board IPC registration failed');
   }
 })();
+
+let assistantWebServer: Awaited<ReturnType<typeof startAssistantWebServer>> | undefined;
+const assistantWebStart = (async () => {
+  const configuredPort = process.env.MAKA_ASSISTANT_WEB_PORT;
+  if (!configuredPort) return;
+  const port = Number(configuredPort);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    console.error('[assistant-web] MAKA_ASSISTANT_WEB_PORT must be between 1 and 65535');
+    return;
+  }
+  await runtimeHostBootReady;
+  assistantWebServer = await startAssistantWebServer({
+    port,
+    host: process.env.MAKA_ASSISTANT_WEB_HOST ?? '127.0.0.1',
+    publicOrigin: process.env.MAKA_ASSISTANT_WEB_ORIGIN,
+    assets: join(import.meta.dirname, '../../dist-assistant-web'),
+    backend: createAssistantWebBackend(() => runtimeHostManager?.current()?.candidate?.client),
+    onError: (error) => console.error('[assistant-web]', error),
+  });
+  console.info(`[assistant-web] http://${process.env.MAKA_ASSISTANT_WEB_HOST ?? '127.0.0.1'}:${port}`);
+})().catch((error: unknown) => console.error('[assistant-web] startup failed:', error));
 
 void runtimeHostBootReady.then(async () => {
   await runtimeHostStart.catch((error: unknown) => {
@@ -2109,7 +2148,7 @@ function emitSessionsChanged(
 ): void {
   sessionLocal.changed(scope);
   if (reason === 'deleted' && sessionId) {
-    try { sessionLocalStore.removeSession(sessionLocal.target(scope).partition, sessionId); } catch { /* A retired target cannot repopulate its cache. */ }
+    try { sessionLocal.removeSession(sessionLocal.target(scope), sessionId); } catch { /* A retired target cannot repopulate its cache. */ }
   }
   const event: SessionChangedEvent = {
     reason,
@@ -2173,6 +2212,8 @@ function closeRuntimeHostDesktop(): Promise<void> {
 }
 
 async function disposeRuntimeHostDesktop(): Promise<void> {
+  await assistantWebStart;
+  await assistantWebServer?.close().catch((error: unknown) => console.error('[assistant-web] shutdown failed:', error));
   sessionLocal.close();
   powerMonitor.off("resume", wakePeerRecoveryAfterResume);
   clientSettingsWatcher.stop();
