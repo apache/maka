@@ -462,8 +462,13 @@ impl DocumentRow {
 #[derive(Clone)]
 struct BlockChoices {
     document: Signal<Document>,
-    values: Rc<RefCell<HashMap<ChoiceAddress, (Vec<String>, bool)>>>,
+    values: Rc<RefCell<HashMap<ChoiceAddress, SavedChoice>>>,
     footnote: Option<String>,
+}
+
+struct SavedChoice {
+    owners: Vec<String>,
+    value: bool,
 }
 impl BlockChoices {
     fn new(document: Signal<Document>) -> Self {
@@ -501,22 +506,24 @@ impl BlockChoices {
             .values
             .borrow()
             .get(&address)
-            .filter(|(old, _)| Some(old) == owners.as_ref())
-            .map_or(initial, |(_, value)| *value);
+            .filter(|choice| Some(&choice.owners) == owners.as_ref())
+            .map_or(initial, |choice| choice.value);
         signal(initial)
     }
 
     fn set(&self, path: &str, value: bool) {
         let address = self.address(path);
         if let Some(owners) = self.document.with_untracked(|d| choice_owners(d, &address)) {
-            self.values.borrow_mut().insert(address, (owners, value));
+            self.values
+                .borrow_mut()
+                .insert(address, SavedChoice { owners, value });
         }
     }
 
     fn retain(&self, document: &Document) {
         self.values
             .borrow_mut()
-            .retain(|path, (owners, _)| choice_owners(document, path).as_ref() == Some(&*owners));
+            .retain(|path, choice| choice_owners(document, path).as_ref() == Some(&choice.owners));
     }
 }
 
