@@ -1113,7 +1113,7 @@ fn source_leaves(document: &Document) -> Vec<SourceLeaf> {
 #[test]
 fn native_source_leaves_keep_utf8_entities_escapes_and_code_atoms() {
     use nsh_core::TextSourceKind::{Literal as L, Replacement as R};
-    let document = Parser::new().markdown_source("A &amp; \\* &#x1F642; ` a🙂 `");
+    let document = Parser::new().markdown_projection("A &amp; \\* &#x1F642; ` a🙂 `");
     assert_eq!(
         source_leaves(&document),
         vec![
@@ -1132,7 +1132,7 @@ fn native_source_leaves_keep_utf8_entities_escapes_and_code_atoms() {
             ("a🙂".into(), vec![(0, 3, 23, 28, L)]),
         ]
     );
-    let unicode = Parser::new().markdown_source("你好 **粗体** 👩🏽‍💻 e\u{301}");
+    let unicode = Parser::new().markdown_projection("你好 **粗体** 👩🏽‍💻 e\u{301}");
     assert_eq!(
         source_leaves(&unicode),
         vec![
@@ -1144,7 +1144,7 @@ fn native_source_leaves_keep_utf8_entities_escapes_and_code_atoms() {
     for original in ["&#00000038;", "&#x0000026;", "&#999999999999999999999999;"] {
         assert_eq!(
             Parser::new()
-                .markdown_source(&format!("&amp; {original}"))
+                .markdown_projection(&format!("&amp; {original}"))
                 .plain_text(),
             format!("& {original}")
         );
@@ -1159,18 +1159,18 @@ fn native_sources_compose_crlf_streaming_deletions_and_tex_rewrites() {
         ..options()
     });
     assert_eq!(
-        source_leaves(&parser.markdown_source("a\r\nb")),
+        source_leaves(&parser.markdown_projection("a\r\nb")),
         vec![(
             "a b".into(),
             vec![(0, 1, 0, 1, L), (1, 2, 1, 3, R), (2, 3, 3, 4, L)]
         )]
     );
     assert_eq!(
-        source_leaves(&parser.markdown_source("dup [dup](http")),
+        source_leaves(&parser.markdown_projection("dup [dup](http")),
         vec![("dup dup".into(), vec![(0, 4, 0, 4, L), (4, 7, 5, 8, L)])]
     );
     assert_eq!(
-        source_leaves(&parser.markdown_source("同🙂\r\n\r\n[同🙂](x)\r\n\r\n**同🙂")),
+        source_leaves(&parser.markdown_projection("同🙂\r\n\r\n[同🙂](x)\r\n\r\n**同🙂")),
         vec![
             ("同🙂".into(), vec![(0, 3, 0, 7, L)]),
             ("同🙂".into(), vec![(0, 3, 12, 19, L)]),
@@ -1178,7 +1178,7 @@ fn native_sources_compose_crlf_streaming_deletions_and_tex_rewrites() {
         ]
     );
     assert_eq!(
-        source_leaves(&parser.markdown_source("A \\(x\\) B")),
+        source_leaves(&parser.markdown_projection("A \\(x\\) B")),
         vec![
             ("A ".into(), vec![(0, 2, 0, 2, L)]),
             ("x".into(), vec![(0, 1, 2, 7, R)]),
@@ -1192,7 +1192,7 @@ fn native_source_positions_survive_alert_container_and_definition_reading() {
     use nsh_core::TextSourceKind::{Literal as L, Replacement as R};
     let parser = Parser::new().extension(MarkdownExtension::container("note", "note"));
     assert_eq!(
-        source_leaves(&parser.markdown_source("> [!NOTE]\n> Useful **info**.")),
+        source_leaves(&parser.markdown_projection("> [!NOTE]\n> Useful **info**.")),
         vec![
             ("Useful ".into(), vec![(0, 7, 12, 19, L)]),
             ("info".into(), vec![(0, 4, 21, 25, L)]),
@@ -1200,7 +1200,7 @@ fn native_source_positions_survive_alert_container_and_definition_reading() {
         ]
     );
     let source = "before [x][id]\n\n:::note\ninside **x**\n:::\n\n[id]: target\n";
-    let document = parser.markdown_source(source);
+    let document = parser.markdown_projection(source);
     assert_eq!(
         source_leaves(&document),
         vec![
@@ -1210,12 +1210,12 @@ fn native_source_positions_survive_alert_container_and_definition_reading() {
             ("x".into(), vec![(0, 1, 33, 34, L)]),
         ]
     );
-    let footnote = Parser::new().markdown_source("word[^n]\n\n[^n]: note &amp;\n");
+    let footnote = Parser::new().markdown_projection("word[^n]\n\n[^n]: note &amp;\n");
     assert_eq!(
         source_leaves(&footnote).last().unwrap(),
         &("note &".into(), vec![(0, 5, 16, 21, L), (5, 6, 21, 26, R)])
     );
-    let formula = Parser::new().markdown_source("$$\na\nb\n$$");
+    let formula = Parser::new().markdown_projection("$$\na\nb\n$$");
     let Block::Math {
         tex,
         source: mappings,
@@ -1232,7 +1232,7 @@ fn native_source_positions_survive_alert_container_and_definition_reading() {
         vec![(0, 3, 3, 6, L)]
     );
     assert_eq!(
-        source_leaves(&Parser::new().markdown_source("<div>A &amp; B</div>")),
+        source_leaves(&Parser::new().markdown_projection("<div>A &amp; B</div>")),
         vec![("A & B".into(), vec![(0, 5, 0, 20, R)])]
     );
     assert_eq!(
@@ -1242,13 +1242,13 @@ fn native_source_positions_survive_alert_container_and_definition_reading() {
                     html: false,
                     ..options()
                 })
-                .markdown_source("<div>A &amp; B</div>")
+                .markdown_projection("<div>A &amp; B</div>")
         ),
         vec![("<div>A &amp; B</div>".into(), vec![(0, 20, 0, 20, L)])]
     );
     // JS custom renderers receive content, never native provenance wrappers.
     assert_eq!(
-        serde_json::to_value(document).unwrap(),
+        serde_json::to_value(document.document).unwrap(),
         serde_json::to_value(parser.markdown(source)).unwrap()
     );
 }
@@ -1257,8 +1257,9 @@ fn native_source_positions_survive_alert_container_and_definition_reading() {
 fn native_code_source_preserves_tabs_blank_lines_and_indentation() {
     use nsh_core::TextSourceKind::Literal as L;
     let parser = Parser::new();
-    let document = parser
-        .markdown_source("```rust\n  let 你好 = \"👩🏽‍💻 e\u{301}\";  \n\tprintln!(\"完成\");\n\n```");
+    let document = parser.markdown_projection(
+        "```rust\n  let 你好 = \"👩🏽‍💻 e\u{301}\";  \n\tprintln!(\"完成\");\n\n```",
+    );
     let Block::CodeBlock(code) = &document.blocks[0] else {
         panic!("native code block")
     };
@@ -1266,7 +1267,7 @@ fn native_code_source_preserves_tabs_blank_lines_and_indentation() {
         code.code,
         "  let 你好 = \"👩🏽‍💻 e\u{301}\";  \n\tprintln!(\"完成\");\n"
     );
-    let indented = parser.markdown_source("    ```\n    x\n    ```");
+    let indented = parser.markdown_projection("    ```\n    x\n    ```");
     let Block::CodeBlock(code) = &indented.blocks[0] else {
         panic!("indented code block")
     };
@@ -1284,7 +1285,7 @@ fn native_code_source_preserves_tabs_blank_lines_and_indentation() {
 fn native_images_tables_and_references_retain_their_own_source_atoms() {
     use nsh_core::TextSourceKind::{Literal as L, Replacement as R};
     let parser = Parser::new();
-    let document = parser.markdown_source(
+    let document = parser.markdown_projection(
         "中🙂 ![图](a.png) [![图](b.png)](file.txt)\n\n| x | y |\n|---|---|\n| x | `y` |",
     );
     assert_eq!(
@@ -1302,12 +1303,93 @@ fn native_images_tables_and_references_retain_their_own_source_atoms() {
     );
     let unresolved = "same [late][r]";
     assert_eq!(
-        parser.markdown_source(unresolved).plain_text(),
+        parser.markdown_projection(unresolved).plain_text(),
         "same [late][r]"
     );
-    let resolved = parser.markdown_source("same [late][r]\n\n[r]: file.txt");
+    let resolved = parser.markdown_projection("same [late][r]\n\n[r]: file.txt");
     let Block::Paragraph { content } = &resolved.blocks[0] else {
         panic!("paragraph")
     };
     assert!(matches!(&content[1],Inline::Link {url,..} if url=="file.txt"));
+}
+
+#[test]
+fn native_root_rows_use_original_utf8_ranges_after_lexical_rewrites() {
+    let projection = Parser::new().markdown_projection("中🙂\r\n\r\n**后**\r\n\r\n\\(x\\)");
+    assert_eq!(projection.raw_len, 27);
+    assert_eq!(projection.plain_text(), "中🙂\n\n后\n\nx");
+    assert_eq!(
+        projection.rows.to_vec(),
+        vec![vec![0..7], vec![11..18], vec![22..27]]
+    );
+
+    let streaming = Parser::new().options(MarkdownOptions {
+        streaming: true,
+        ..options()
+    });
+    let projection = streaming.markdown_projection("**尾");
+    assert_eq!(projection.plain_text(), "尾");
+    assert_eq!(projection.raw_len, 5);
+    assert_eq!(projection.rows.to_vec(), vec![vec![0..5]]);
+}
+
+#[test]
+fn native_root_rows_keep_containers_and_skip_copied_definitions() {
+    let source =
+        "before [x][id]\n\n:::note\ninside **x**\n:::\n\n[id]: target\n\nword[^n]\n\n[^n]: note\n";
+    let parser = Parser::new().extension(MarkdownExtension::container("note", "note"));
+    let projection = parser.markdown_projection(source);
+    assert_eq!(projection.raw_len, 77);
+    assert_eq!(projection.blocks.len(), 3);
+    assert_eq!(projection.footnotes.len(), 1);
+    assert_eq!(
+        projection.rows.to_vec(),
+        vec![vec![0..14], vec![16..41], vec![56..64], vec![66..76]]
+    );
+    assert_eq!(
+        serde_json::to_value(&projection.document).unwrap()["blocks"][0]["content"][1]["url"],
+        "target"
+    );
+
+    let empty_container = parser.markdown_projection(":::note\n:::\n");
+    assert!(matches!(&empty_container.blocks[0], Block::Custom(node) if node.children.is_empty()));
+    assert_eq!(empty_container.rows.to_vec(), vec![vec![0..12]]);
+    let empty = parser.markdown_projection("");
+    assert!(empty.blocks.is_empty());
+    assert_eq!(empty.raw_len, 0);
+    assert!(empty.rows.is_empty());
+}
+
+#[test]
+fn native_root_rows_group_only_referenced_footnotes_and_keep_custom_origins() {
+    let projection = Parser::new()
+        .markdown_projection("ref[^b] [^a]\n\n[^a]: alpha\n\n[id]: skip\n\n[^b]: beta\n");
+    assert_eq!(
+        projection
+            .footnotes
+            .iter()
+            .map(|note| note.label.as_str())
+            .collect::<Vec<_>>(),
+        vec!["b", "a"]
+    );
+    // The first definition's AST range includes its closing LF before the blank line.
+    assert_eq!(
+        projection.rows.to_vec(),
+        vec![vec![0..12], vec![14..26, 39..49]]
+    );
+
+    let custom = Parser::new()
+        .plugin(Formulas)
+        .markdown_projection("> custom\n\nend");
+    assert!(matches!(&custom.blocks[0], Block::Custom(node) if node.name == "aside"));
+    assert_eq!(custom.rows.to_vec(), vec![vec![0..8], vec![10..13]]);
+
+    let fragment = Parser::new()
+        .options(MarkdownOptions {
+            mdx: true,
+            ..options()
+        })
+        .markdown_projection("<>\nfirst\n\nsecond\n</>");
+    assert_eq!(fragment.plain_text(), "first\n\nsecond");
+    assert_eq!(fragment.rows.to_vec(), vec![vec![3..8], vec![10..16]]);
 }

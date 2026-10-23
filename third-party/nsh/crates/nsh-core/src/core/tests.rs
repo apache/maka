@@ -1742,6 +1742,527 @@ fn source_reading_survives_delayed_cell_acknowledgment() {
     source_reading_survives_prepend_and_rich_replacement(true);
 }
 
+#[test]
+fn source_reading_waits_for_its_virtualized_row_without_capturing_another_document() {
+    for finish in [
+        "ready",
+        "isolated",
+        "following",
+        "closed",
+        "deleted",
+        "wheel",
+        "removed",
+    ] {
+        let mut c = core();
+        let put_text = |c: &mut Core<FakeEngine>, id, parent, source: &str, offset, chars| {
+            add(c, id, Tag::Text, parent, &[]);
+            apply(
+                c,
+                vec![
+                    Op::SetProp {
+                        id,
+                        prop: Prop::TextSource(Some(Arc::new(crate::TextSource::Literal {
+                            id: source.into(),
+                            offset,
+                        }))),
+                    },
+                    Op::CreateText {
+                        id: id + 1,
+                        text: "R".repeat(chars),
+                    },
+                    Op::Insert {
+                        parent: id,
+                        child: id + 1,
+                        before: None,
+                    },
+                ],
+            );
+        };
+        let source_point = crate::text_source::SourcePoint {
+            id: "session/message/body".into(),
+            byte: 3360,
+        };
+        add(
+            &mut c,
+            2,
+            Tag::List,
+            ROOT_ID,
+            &[("height", StyleValue::Number(416.0))],
+        );
+        c.apply(Op::SetProp {
+            id: 2,
+            prop: Prop::Count(1),
+        })
+        .unwrap();
+        c.commit();
+        add(&mut c, 100, Tag::Cell, 2, &[]);
+        c.apply(Op::SetProp {
+            id: 100,
+            prop: Prop::Slot(CellSlot::Item(0)),
+        })
+        .unwrap();
+        put_text(
+            &mut c,
+            10,
+            100,
+            "session/message/body",
+            3320,
+            if finish == "following" { 1160 } else { 2000 },
+        );
+        c.apply(Op::SetProp {
+            id: 100,
+            prop: Prop::CellIndex(0),
+        })
+        .unwrap();
+        c.commit();
+        // Forty bytes per shaped line: this user step puts byte 3360 at
+        // the viewport top before the raw history fragment becomes rich.
+        c.set_scroll_offset(2, point(px(0.0), px(16.0)), u32::MAX);
+        c.commit();
+        let owner = c.key(2).unwrap();
+        assert_eq!(
+            c.nodes[owner as usize]
+                .list
+                .as_ref()
+                .unwrap()
+                .reading_point(),
+            Some(&source_point)
+        );
+        if finish == "following" {
+            // Twenty-nine raw lines leave this established source reading
+            // exactly 32pt from the end. Enabling append-follow must not
+            // replace that intent, including before the rich tree exists.
+            c.apply(Op::SetProp {
+                id: 2,
+                prop: Prop::FollowEnd(Some(px(32.0))),
+            })
+            .unwrap();
+            c.commit();
+            assert_eq!(
+                c.nodes[owner as usize]
+                    .list
+                    .as_ref()
+                    .unwrap()
+                    .reading_point(),
+                Some(&source_point)
+            );
+        }
+
+        apply(
+            &mut c,
+            vec![
+                Op::Remove {
+                    parent: 100,
+                    child: 10,
+                },
+                Op::Release { id: 11 },
+                Op::Release { id: 10 },
+            ],
+        );
+        // Another document has a visible line while the old document's
+        // target row does not exist. It must not acquire the old reading pin.
+        put_text(&mut c, 20, 100, "another/document", 0, 80);
+        if finish == "isolated" {
+            // An overlay is a separate native root, outside this cell's
+            // layout. Its same-id provider stays behind the current source;
+            // it must not mask the provider in the actual reading subtree.
+            add(
+                &mut c,
+                30,
+                Tag::Overlay,
+                100,
+                &[
+                    ("width", StyleValue::Number(320.0)),
+                    ("height", StyleValue::Number(416.0)),
+                ],
+            );
+            add(&mut c, 34, Tag::List, 30, &[]);
+            apply(
+                &mut c,
+                vec![
+                    Op::SetProp {
+                        id: 34,
+                        prop: Prop::ListViewport(crate::ListViewport::Parent),
+                    },
+                    Op::SetProp {
+                        id: 34,
+                        prop: Prop::Count(20),
+                    },
+                    Op::SetProp {
+                        id: 34,
+                        prop: Prop::EstimatedItemSize(px(50.0)),
+                    },
+                    Op::SetProp {
+                        id: 34,
+                        prop: Prop::ListSourceRows(Some(Arc::new(crate::ListSourceRows {
+                            id: "session/message/body".into(),
+                            source_len: 16000,
+                            projection_len: 3200,
+                            rows: (0..20)
+                                .map(|row| vec![row * 160..(row + 1) * 160])
+                                .collect::<Vec<_>>()
+                                .into(),
+                            ..Default::default()
+                        }))),
+                    },
+                ],
+            );
+        }
+        add(&mut c, 4, Tag::List, 100, &[]);
+        apply(
+            &mut c,
+            vec![
+                Op::SetProp {
+                    id: 4,
+                    prop: Prop::ListViewport(crate::ListViewport::Parent),
+                },
+                Op::SetProp {
+                    id: 4,
+                    prop: Prop::Count(20),
+                },
+                Op::SetProp {
+                    id: 4,
+                    prop: Prop::EstimatedItemSize(px(50.0)),
+                },
+                Op::SetProp {
+                    id: 4,
+                    prop: Prop::ListSourceRows(Some(Arc::new(crate::ListSourceRows {
+                        id: "session/message/body".into(),
+                        source_len: 16000,
+                        projection_len: 3200,
+                        rows: (0..20)
+                            .map(|row| vec![row * 160..(row + 1) * 160])
+                            .collect::<Vec<_>>()
+                            .into(),
+                        ..Default::default()
+                    }))),
+                },
+            ],
+        );
+        // Keep a viewport of source-free content after the provider. When
+        // that provider leaves, the user's 16pt offset is still legal, so a
+        // native content clamp cannot masquerade as source compensation.
+        add(
+            &mut c,
+            40,
+            Tag::View,
+            100,
+            &[("height", StyleValue::Number(416.0))],
+        );
+        c.commit();
+        // The newest source is complete, but this native projection only
+        // covers its first 3200 bytes. Byte 3360 is pending, not the EOF of
+        // the short projection, and no row for it exists yet.
+        let reader = c.nodes[owner as usize].list.as_ref().unwrap();
+        assert_eq!(
+            reader.reading_point(),
+            Some(&source_point),
+            "{finish}: a short projection closed the pending source point"
+        );
+        if finish != "following" {
+            assert_eq!(reader.offset, 16.0);
+        }
+        assert_eq!(
+            reader
+                .source_geometry
+                .first_visible(reader.offset, reader.offset + 416.0)
+                .unwrap()
+                .0
+                .id
+                .as_ref(),
+            "another/document"
+        );
+        let replacement = c.nodes[c.key(4).unwrap() as usize].list.as_ref().unwrap();
+        assert_eq!(
+            replacement
+                .slots
+                .iter()
+                .filter_map(|slot| slot.ready())
+                .collect::<Vec<_>>(),
+            Vec::<u32>::new()
+        );
+        // Only the ordinary viewport is wanted: neither an absent target
+        // row 21 nor the prefix's last row 19 substitutes for this point.
+        assert_eq!(bound_items(&c, 4), (0..=16).collect::<Vec<_>>());
+        let mut prefix_binds = Vec::new();
+        c.take_list_binds(&mut prefix_binds);
+        c.take_paced_list_binds(usize::MAX, &mut prefix_binds);
+        assert!(
+            prefix_binds
+                .iter()
+                .any(|bind| bind.list == 4 && bind.binds.iter().any(|&(_, index)| index == 0))
+        );
+        assert!(
+            !prefix_binds
+                .iter()
+                .any(|bind| bind.list == 4 && bind.binds.iter().any(|&(_, index)| index == 21))
+        );
+
+        // The same provider publishes the full projection. Its actual row
+        // 21 must now be materialized through the ordinary binding path.
+        apply(
+            &mut c,
+            vec![
+                Op::SetProp {
+                    id: 4,
+                    prop: Prop::Count(100),
+                },
+                Op::SetProp {
+                    id: 4,
+                    prop: Prop::ListSourceRows(Some(Arc::new(crate::ListSourceRows {
+                        id: "session/message/body".into(),
+                        source_len: 16000,
+                        projection_len: 16000,
+                        rows: (0..100)
+                            .map(|row| vec![row * 160..(row + 1) * 160])
+                            .collect::<Vec<_>>()
+                            .into(),
+                        ..Default::default()
+                    }))),
+                },
+            ],
+        );
+        c.commit();
+        let reader = c.nodes[owner as usize].list.as_ref().unwrap();
+        assert_eq!(
+            reader.reading_point(),
+            Some(&source_point),
+            "{finish}: an empty replacement recaptured another document"
+        );
+        if finish != "following" {
+            assert_eq!(reader.offset, 16.0);
+        }
+        let replacement = c.nodes[c.key(4).unwrap() as usize].list.as_ref().unwrap();
+        assert_eq!(
+            replacement
+                .slots
+                .iter()
+                .filter_map(|slot| slot.ready())
+                .collect::<Vec<_>>(),
+            Vec::<u32>::new()
+        );
+        let put_row = |c: &mut Core<FakeEngine>, index, source: bool, queued_slot: Option<u32>| {
+            // The cell answers an actual binding; the fixture does not
+            // manufacture a source-to-slot assignment of its own.
+            let slot = queued_slot.unwrap_or_else(|| bound_slot(c, 4, index));
+            if queued_slot.is_none() {
+                assert!(c.current_list_bind(4, slot, index));
+            }
+            let cell = 200 + slot * 4;
+            add(
+                c,
+                cell,
+                Tag::Cell,
+                4,
+                &[("height", StyleValue::Number(50.0))],
+            );
+            c.apply(Op::SetProp {
+                id: cell,
+                prop: Prop::Slot(CellSlot::Item(slot)),
+            })
+            .unwrap();
+            if source {
+                put_text(
+                    c,
+                    cell + 1,
+                    cell,
+                    "session/message/body",
+                    u64::from(index) * 160,
+                    40,
+                );
+            }
+            c.apply(Op::SetProp {
+                id: cell,
+                prop: Prop::CellIndex(index),
+            })
+            .unwrap();
+            cell
+        };
+        let mut binds = Vec::new();
+        c.take_list_binds(&mut binds);
+        c.take_paced_list_binds(usize::MAX, &mut binds);
+        assert!(
+            binds
+                .iter()
+                .any(|bind| bind.list == 4 && bind.binds.iter().any(|&(_, index)| index == 21))
+        );
+        assert!(
+            !bound_items(&c, 4).contains(&99),
+            "source materialization must not mount the full document"
+        );
+
+        // Phase one: just row 0 is ready, alongside the unrelated document.
+        put_row(&mut c, 0, true, None);
+        c.commit();
+        let reader = c.nodes[owner as usize].list.as_ref().unwrap();
+        assert_eq!(
+            reader.reading_point(),
+            Some(&source_point),
+            "{finish}: first ready row replaced the source pin"
+        );
+        if finish != "following" {
+            assert_eq!(reader.offset, 16.0);
+        }
+        assert!(
+            reader
+                .source_geometry
+                .position(&crate::text_source::SourcePoint {
+                    id: "another/document".into(),
+                    byte: 40,
+                })
+                .is_some()
+        );
+
+        // Phase two: the ordinary viewport and overscan are ready. The
+        // target row must remain wanted even though it lies beyond them.
+        for index in 1..=16 {
+            put_row(&mut c, index, false, None);
+        }
+        c.commit();
+        let list = c.nodes[c.key(4).unwrap() as usize].list.as_ref().unwrap();
+        let mut ready: Vec<_> = list.slots.iter().filter_map(|slot| slot.ready()).collect();
+        ready.sort_unstable();
+        assert_eq!(ready, (0..=16).collect::<Vec<_>>());
+        assert!(c.current_list_bind(4, bound_slot(&c, 4, 21), 21));
+        let reader = c.nodes[owner as usize].list.as_ref().unwrap();
+        assert_eq!(
+            reader.reading_point(),
+            Some(&source_point),
+            "{finish}: overscan completion closed a pending target"
+        );
+        if finish != "following" {
+            assert_eq!(reader.offset, 16.0);
+        }
+
+        let target_slot = bound_slot(&c, 4, 21);
+        if finish == "deleted" {
+            // Logical rows and their canonical source disappear together,
+            // while the same provider node remains in the reader's tree.
+            apply(
+                &mut c,
+                vec![
+                    Op::SetProp {
+                        id: 4,
+                        prop: Prop::Splice(0, 100, 0),
+                    },
+                    Op::SetProp {
+                        id: 4,
+                        prop: Prop::ListSourceRows(Some(Arc::new(crate::ListSourceRows {
+                            id: "session/message/body".into(),
+                            rows: Vec::new().into(),
+                            ..Default::default()
+                        }))),
+                    },
+                ],
+            );
+            c.commit();
+            assert_ne!(
+                c.nodes[owner as usize]
+                    .list
+                    .as_ref()
+                    .unwrap()
+                    .reading_point(),
+                Some(&source_point)
+            );
+        } else if finish == "wheel" {
+            c.set_scroll_offset(2, point(px(0.0), px(32.0)), u32::MAX);
+            c.commit();
+            assert_ne!(
+                c.nodes[owner as usize]
+                    .list
+                    .as_ref()
+                    .unwrap()
+                    .reading_point(),
+                Some(&source_point)
+            );
+        } else if finish == "removed" {
+            c.apply(Op::Remove {
+                parent: 100,
+                child: 4,
+            })
+            .unwrap();
+            c.commit();
+            assert_ne!(
+                c.nodes[owner as usize]
+                    .list
+                    .as_ref()
+                    .unwrap()
+                    .reading_point(),
+                Some(&source_point)
+            );
+        }
+
+        // Phase three: only now does the target settle. Its actual shaped
+        // source line restores the reader; a row with no glyph closes the
+        // intent. A late ACK cannot undo removal or a wheel step.
+        put_row(&mut c, 21, finish != "closed", Some(target_slot));
+        let batch = c.commit();
+        let reader = c.nodes[owner as usize].list.as_ref().unwrap();
+        if finish == "ready" || finish == "isolated" || finish == "following" {
+            assert_eq!(reader.reading_point(), Some(&source_point));
+            assert_eq!(
+                reader.source_geometry.position(&source_point).unwrap() - reader.offset,
+                0.0
+            );
+            assert_eq!(reader.offset, 1082.0);
+            if finish == "ready" || finish == "isolated" {
+                assert_eq!(page_scrolls(batch.as_ref().unwrap()), [(false, 1066.0)]);
+            }
+            assert!(
+                !batch.as_ref().unwrap().items.iter().any(|item| matches!(
+                    item,
+                    MountItem::Command {
+                        id: 4,
+                        command: Command::ScrollTo { .. }
+                    } | MountItem::ScrollBy { id: 4, .. }
+                )),
+                "the parent list must not become another scroll owner"
+            );
+            assert!(
+                c.commit()
+                    .is_none_or(|batch| page_scrolls(&batch).is_empty()),
+                "settling the same source line must not compensate twice"
+            );
+            let reader = c.nodes[owner as usize].list.as_ref().unwrap();
+            assert_eq!(reader.reading_point(), Some(&source_point));
+            assert_eq!(
+                reader.source_geometry.position(&source_point).unwrap() - reader.offset,
+                0.0
+            );
+        } else {
+            assert_ne!(reader.reading_point(), Some(&source_point));
+            assert!(
+                batch
+                    .as_ref()
+                    .is_none_or(|batch| page_scrolls(batch).is_empty()),
+                "{finish}: {:?}",
+                batch.as_ref().map(page_scrolls).unwrap_or_default()
+            );
+            if finish == "wheel" {
+                assert_eq!(reader.offset, 32.0);
+            } else if finish == "removed" {
+                // The same detached provider can return with its late cell;
+                // an absent source lifetime must not revive the old intent.
+                c.apply(Op::Insert {
+                    parent: 100,
+                    child: 4,
+                    before: None,
+                })
+                .unwrap();
+                c.commit();
+                assert_ne!(
+                    c.nodes[owner as usize]
+                        .list
+                        .as_ref()
+                        .unwrap()
+                        .reading_point(),
+                    Some(&source_point)
+                );
+            }
+        }
+    }
+}
+
 fn source_reading_survives_prepend_and_rich_replacement(delayed_ready: bool) {
     let mut c = core();
     let source = |offset| {
@@ -17922,6 +18443,19 @@ fn a_page_list_in_a_cell_of_a_list_follows_that_list() {
             Op::SetProp {
                 id: 4,
                 prop: Prop::Count(100),
+            },
+            Op::SetProp {
+                id: 4,
+                prop: Prop::ListSourceRows(Some(Arc::new(crate::ListSourceRows {
+                    id: "page/item-40".into(),
+                    source_len: 80,
+                    projection_len: 80,
+                    rows: (0..100)
+                        .map(|index| if index == 40 { vec![0..80] } else { Vec::new() })
+                        .collect::<Vec<_>>()
+                        .into(),
+                    ..Default::default()
+                }))),
             },
             Op::Insert {
                 parent: 50,

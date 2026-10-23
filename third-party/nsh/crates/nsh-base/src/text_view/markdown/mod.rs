@@ -19,7 +19,10 @@ mod streaming;
 mod tests;
 
 use self::mapped::Source;
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    ops::{Deref, Range},
+};
 
 use markdown::{
     ParseOptions,
@@ -41,8 +44,27 @@ use super::{
 /// How deep blocks and inline content are read: deeper content is text.
 const MAX_DEPTH: usize = 32;
 
+/// One native publication: the document and the ranges of its actual root rows.
+/// This is not part of the app-authored document or the JS document format.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(super) struct Projection {
+    pub(super) document: Document,
+    /// Original UTF-8 bytes captured by this parse, before lexical repair.
+    pub(super) raw_len: u64,
+    /// One interval set per block, then one for the combined footnotes row.
+    pub(super) rows: std::sync::Arc<[Vec<Range<u64>>]>,
+}
+impl Deref for Projection {
+    type Target = Document;
+
+    fn deref(&self) -> &Document {
+        &self.document
+    }
+}
+
 /// Markdown `source` read with `parser`'s options, extensions and plugins.
-pub(crate) fn parse(parser: &Parser, source: &str, mapped: bool) -> Document {
+pub(super) fn parse(parser: &Parser, source: &str, mapped: bool) -> Projection {
+    let raw_len = source.len() as u64;
     let mut source = Source::original(source).normalize();
     if parser.options.streaming {
         source = streaming::repair_mapped(source);
@@ -81,12 +103,26 @@ pub(crate) fn parse(parser: &Parser, source: &str, mapped: bool) -> Document {
     if trees.is_empty() {
         trees.push(tree(parser, Source::default(), true));
     }
-    let mut converter = Converter::new(parser, &trees, mapped);
+    let mut converter = Converter::new(parser, &source, &trees, mapped);
     let mut blocks = Vec::new();
+    let mut rows = Vec::new();
     let mut next = 0;
-    converter.segments(&segments, &trees, &mut next, &mut blocks);
-    let footnotes = converter.footnotes();
-    Document { blocks, footnotes }
+    converter.segments(
+        &segments,
+        &trees,
+        &mut next,
+        &mut blocks,
+        mapped.then_some(&mut rows),
+    );
+    let (footnotes, footnote_ranges) = converter.footnotes();
+    if mapped && !footnotes.is_empty() {
+        rows.push(footnote_ranges);
+    }
+    Projection {
+        document: Document { blocks, footnotes },
+        raw_len,
+        rows: rows.into(),
+    }
 }
 
 /// A Markdown part of the source and its syntax tree.
@@ -262,6 +298,8 @@ struct Converter<'a> {
     parser: &'a Parser,
     /// The source of the tree being read.
     source: &'a Source,
+    /// The complete rewritten source, before container slices and appended definitions.
+    document_source: &'a Source,
     mapped: bool,
     quote: u32,
     /// Link and image definitions by identifier.
@@ -278,10 +316,16 @@ struct Converter<'a> {
 }
 
 impl<'a> Converter<'a> {
-    fn new(parser: &'a Parser, trees: &'a [Tree], mapped: bool) -> Self {
+    fn new(
+        parser: &'a Parser,
+        document_source: &'a Source,
+        trees: &'a [Tree],
+        mapped: bool,
+    ) -> Self {
         let mut converter = Self {
             parser,
             source: &trees[0].source,
+            document_source,
             mapped,
             quote: 0,
             definitions: HashMap::new(),
@@ -337,6 +381,7 @@ impl<'a> Converter<'a> {
         trees: &'a [Tree],
         next: &mut usize,
         out: &mut Vec<Block>,
+        mut rows: Option<&mut Vec<Vec<Range<u64>>>>,
     ) {
         for segment in segments {
             match segment {
@@ -345,12 +390,15 @@ impl<'a> Converter<'a> {
                     *next += 1;
                     self.source = &tree.source;
                     if let Some(children) = tree.root.children() {
-                        self.blocks_into(children, out);
+                        self.blocks_with_rows(children, out, rows.as_deref_mut());
                     }
                 }
                 Segment::Container(container) => {
                     let mut children = Vec::new();
-                    self.segments(&container.children, trees, next, &mut children);
+                    self.segments(&container.children, trees, next, &mut children, None);
+                    if let Some(rows) = rows.as_deref_mut() {
+                        rows.push(self.document_source.ranges(container.range.clone()));
+                    }
                     out.push(Block::Custom(CustomNode {
                         name: container.name.clone(),
                         attributes: container.attributes.clone(),
@@ -364,8 +412,9 @@ impl<'a> Converter<'a> {
 
     /// The footnotes referred to, numbered; those their own text refers to
     /// come after.
-    fn footnotes(&mut self) -> Vec<Footnote> {
+    fn footnotes(&mut self) -> (Vec<Footnote>, Vec<Range<u64>>) {
         let mut footnotes = Vec::new();
+        let mut ranges = Vec::new();
         let mut i = 0;
         while let Some(&id) = self.footnote_order.get(i) {
             i += 1;
@@ -373,6 +422,11 @@ impl<'a> Converter<'a> {
                 continue;
             };
             self.source = source;
+            if self.mapped {
+                if let Some(position) = &def.position {
+                    ranges.extend(source.ranges(position.start.offset..position.end.offset));
+                }
+            }
             let mut children = Vec::new();
             self.blocks_into(&def.children, &mut children);
             footnotes.push(Footnote {
@@ -381,7 +435,8 @@ impl<'a> Converter<'a> {
                 children,
             });
         }
-        footnotes
+        mapped::merge_ranges(&mut ranges);
+        (footnotes, ranges)
     }
 
     /// A context for plugins reading with this converter.
@@ -418,6 +473,15 @@ impl<'a> Converter<'a> {
     // --- Blocks -------------------------------------------------------------
 
     fn blocks_into(&mut self, nodes: &[Node], out: &mut Vec<Block>) {
+        self.blocks_with_rows(nodes, out, None);
+    }
+
+    fn blocks_with_rows(
+        &mut self,
+        nodes: &[Node],
+        out: &mut Vec<Block>,
+        rows: Option<&mut Vec<Vec<Range<u64>>>>,
+    ) {
         // The tree is read recursively, as it is shown: deeper content is
         // its text, so no input runs the stack out.
         if self.depth >= MAX_DEPTH {
@@ -426,23 +490,61 @@ impl<'a> Converter<'a> {
                 out.push(Block::Paragraph {
                     content: vec![Inline::Text { text }],
                 });
+                if let Some(rows) = rows {
+                    let mut ranges = nodes
+                        .iter()
+                        .flat_map(|node| self.source.ranges(node_range(node)))
+                        .collect();
+                    mapped::merge_ranges(&mut ranges);
+                    rows.push(ranges);
+                }
             }
             return;
         }
         self.depth += 1;
-        self.read_blocks(nodes, out);
+        self.read_blocks(nodes, out, rows);
         self.depth -= 1;
     }
 
-    fn read_blocks(&mut self, nodes: &[Node], out: &mut Vec<Block>) {
+    fn read_blocks(
+        &mut self,
+        nodes: &[Node],
+        out: &mut Vec<Block>,
+        mut rows: Option<&mut Vec<Vec<Range<u64>>>>,
+    ) {
         let mut i = 0;
         while i < nodes.len() {
+            let first = i;
+            let before = out.len();
             if let Some(block) = self.offer_block(&nodes[i]) {
                 out.push(block);
             } else if let Some(close) = self.html_element(nodes, i, out) {
                 i = close;
+            } else if rows.is_some()
+                && matches!(
+                    &nodes[i],
+                    Node::Root(_)
+                        | Node::MdxJsxFlowElement(mdast::MdxJsxFlowElement { name: None, .. })
+                )
+            {
+                // Fragments expose their children as separate root rows.
+                self.blocks_with_rows(
+                    nodes[i].children().map_or(&[][..], Vec::as_slice),
+                    out,
+                    rows.as_deref_mut(),
+                );
+                i += 1;
+                continue;
             } else {
                 self.convert_block(&nodes[i], out);
+            }
+            if let Some(rows) = rows.as_deref_mut() {
+                let mut ranges = Vec::new();
+                for node in &nodes[first..=i] {
+                    ranges.extend(self.source.ranges(node_range(node)));
+                }
+                mapped::merge_ranges(&mut ranges);
+                rows.extend((before..out.len()).map(|_| ranges.clone()));
             }
             i += 1;
         }

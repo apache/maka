@@ -4,10 +4,11 @@ use std::{
     cell::RefCell,
     collections::HashMap,
     rc::{Rc, Weak},
+    sync::Arc,
 };
 
 use nsh_core::{
-    ListContentStyle, ListViewport, ResizeMode,
+    ListContentStyle, ListSourceRows, ListViewport, ResizeMode,
     color::Hsla,
     geometry::{DefiniteLength, Length},
     ui::{
@@ -16,6 +17,7 @@ use nsh_core::{
     },
 };
 
+use super::markdown::Projection;
 use super::parse::{DocumentState, SourceOrigin};
 use super::{
     Alert, Block, CodeBlock, ColumnAlign, CustomNode, Document, Image, ImageLength, Inline,
@@ -404,6 +406,21 @@ pub fn TextView(props: TextViewProps, cx: Scope<TextViewEvent>) -> impl IntoElem
             })
         })
         .viewport(ListViewport::Parent)
+        .source_rows(move || {
+            // The live domain may be longer than this worker publication.
+            // Neither the repaired parser input nor an admitted old prefix
+            // may claim the current source's complete byte coverage.
+            let source = props.markdown.get()?;
+            let id = props.source_id.get()?;
+            document.with(|projection| {
+                let mut rows = ListSourceRows::default();
+                rows.id = Arc::from(id.as_str());
+                rows.source_len = source.len() as u64;
+                rows.projection_len = projection.raw_len;
+                rows.rows = projection.rows.clone();
+                Some(Arc::new(rows))
+            })
+        })
         .content_style(props.content_style)
         .flex_col()
         .keys(move || {
@@ -461,7 +478,7 @@ impl DocumentRow {
 /// own signal; the source keeps values, never handles owned by retired cells.
 #[derive(Clone)]
 struct BlockChoices {
-    document: Signal<Document>,
+    document: Signal<Projection>,
     values: Rc<RefCell<HashMap<ChoiceAddress, SavedChoice>>>,
     footnote: Option<String>,
 }
@@ -471,7 +488,7 @@ struct SavedChoice {
     value: bool,
 }
 impl BlockChoices {
-    fn new(document: Signal<Document>) -> Self {
+    fn new(document: Signal<Projection>) -> Self {
         Self {
             document,
             values: Rc::default(),

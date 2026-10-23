@@ -68,7 +68,7 @@ use rustc_hash::FxHashMap;
 use crate::{
     fenwick::Fenwick,
     ops::{CellSlot, ListContentStyle, Viewability},
-    text_source::{SourceGeometry, SourcePoint},
+    text_source::{SourceGeometry, SourcePoint, SourcePosition},
 };
 
 /// How far beyond the viewport cells are kept rendered, in viewports.
@@ -388,6 +388,8 @@ pub(super) struct ListState {
     pin: Option<Pin>,
     /// Derived only when rendered source geometry or cell placement changes.
     pub(super) source_geometry: SourceGeometry,
+    /// Source addressing of the current native projection, including unbound rows.
+    pub(super) source_rows: Option<std::sync::Arc<crate::ListSourceRows>>,
     pub(super) source_dirty: bool,
     /// Native interaction tracking stays enabled after an automatic request.
     pub(super) automatic: bool,
@@ -460,6 +462,7 @@ impl ListState {
             splice_anchor: 0.0,
             pin: None,
             source_geometry: SourceGeometry::default(),
+            source_rows: None,
             source_dirty: false,
             automatic: false,
             interaction: None,
@@ -762,7 +765,7 @@ impl ListState {
             // Capture from the geometry the user actually scrolled through,
             // before a source reply in this same turn can replace it. This
             // also begins reading when the user leaves end/target following.
-            self.anchor_source(false, 0.0);
+            self.anchor_source(false, 0.0, None);
         }
     }
 
@@ -919,20 +922,53 @@ impl ListState {
         self.pin.is_some()
     }
 
+    pub(super) fn source_row_matches_layout(&self, index: u32, size: f32) -> bool {
+        let index = index as usize;
+        // An exact estimate already places the clean cell at its actual extent.
+        index < self.sizes.len() && self.effective(index) == size
+    }
+
+    pub(super) fn reading_point(&self) -> Option<&SourcePoint> {
+        match &self.pin {
+            Some(Pin::Reading { point, .. }) => Some(point),
+            _ => None,
+        }
+    }
+
     /// Keep the source glyph the reader saw at the same viewport position.
-    /// Explicit navigation and end-follow retain their existing priority.
-    pub(super) fn anchor_source(&mut self, explicit: bool, anchored: f32) -> f32 {
+    /// Explicit navigation wins; end-follow prevents starting a new reading pin.
+    pub(super) fn anchor_source(
+        &mut self,
+        explicit: bool,
+        anchored: f32,
+        position: Option<SourcePosition>,
+    ) -> f32 {
         let near_end = self
             .follow_end
             .is_some_and(|threshold| self.content_len() - self.viewport - self.offset <= threshold);
-        if explicit || self.parent || self.horizontal || self.inverted || near_end {
+        if explicit || self.parent || self.horizontal || self.inverted {
             if matches!(self.pin, Some(Pin::Reading { .. })) {
                 self.pin = None;
             }
             return 0.0;
         }
         if let Some(Pin::Reading { point, line, at }) = self.pin.clone() {
-            if let Some(y) = self.source_geometry.position(&point) {
+            let position = position.unwrap_or_else(|| {
+                self.source_geometry
+                    .position(&point)
+                    .map_or(SourcePosition::Closed, SourcePosition::Ready)
+            });
+            if position == SourcePosition::Pending {
+                // Item/splice compensation already moved the speculative offset.
+                // Keep the one source intent while its logical row is binding.
+                self.pin = Some(Pin::Reading {
+                    point,
+                    line,
+                    at: self.offset,
+                });
+                return 0.0;
+            }
+            if let SourcePosition::Ready(y) = position {
                 let offset = self.clamped(y - line);
                 // `at` includes earlier issued corrections, but not this
                 // turn's item/splice anchoring. A native report may have
@@ -949,7 +985,8 @@ impl ListState {
             }
             self.pin = None;
         }
-        if self.pin.is_none()
+        if !near_end
+            && self.pin.is_none()
             && self
                 .pending
                 .iter()
@@ -1420,6 +1457,11 @@ impl ListState {
         }
         let end = (self.content_len() - self.viewport).max(0.0);
         if !self.inverted {
+            if matches!(self.pin, Some(Pin::Reading { .. })) {
+                // A temporary projection shrink is not an end-follow intent.
+                self.anchored_end = end;
+                return 0.0;
+            }
             let Some(threshold) = self.follow_end else {
                 return 0.0;
             };
@@ -1748,7 +1790,11 @@ impl ListState {
     /// pushed to `binds`: cells whose item moved, and new ones in the
     /// viewport or just ahead of it (all of them unless `paced`). Returns
     /// the load-more events to raise.
-    pub(super) fn update_window(&mut self, binds: &mut Vec<(u32, u32)>) -> Edges {
+    pub(super) fn update_window(
+        &mut self,
+        binds: &mut Vec<(u32, u32)>,
+        source_row: Option<u32>,
+    ) -> Edges {
         self.dirty = false;
         // Several splices can share one published source. Intermediate
         // indices no longer describe that source or the slot's current item.
@@ -1783,6 +1829,7 @@ impl ListState {
                 || sticky == Some(i)
                 || before == Some(i)
                 || focused == Some(i)
+                || source_row == Some(i)
         };
 
         for slot in 0..self.slots.len() as u32 {
@@ -1823,7 +1870,7 @@ impl ListState {
                 bind(self, i);
             }
         }
-        for s in [before, sticky, focused].into_iter().flatten() {
+        for s in [before, sticky, focused, source_row].into_iter().flatten() {
             bind(self, s);
         }
         let (start, end) = self.urgent_span(at);
@@ -1841,6 +1888,7 @@ impl ListState {
                 || sticky == Some(i)
                 || before == Some(i)
                 || focused == Some(i)
+                || source_row == Some(i)
                 || self.item_overlaps(i, start, end)
             {
                 self.slots[slot].requested = Some(i);
@@ -2045,7 +2093,7 @@ mod tests {
     fn window_covers_viewport_plus_overscan() {
         let mut l = list(1000, 50.0, 400.0);
         let mut binds = Vec::new();
-        l.update_window(&mut binds);
+        l.update_window(&mut binds, None);
         // [0, 800] at 50 per item -> items 0..=16.
         assert_eq!(binds.len(), 17);
         assert_eq!(binds[0], (0, 0));
@@ -2053,7 +2101,7 @@ mod tests {
         // Scroll down a screen: items scrolled far above are recycled.
         l.offset = 2000.0;
         binds.clear();
-        l.update_window(&mut binds);
+        l.update_window(&mut binds, None);
         let indices: Vec<u32> = binds.iter().map(|b| b.1).collect();
         assert_eq!(indices.first(), Some(&32));
         assert_eq!(indices.last(), Some(&56));
@@ -2065,13 +2113,13 @@ mod tests {
     fn native_owner_retires_only_after_confirmation_and_focus_cancels_the_request() {
         let mut l = list(1000, 50.0, 100.0);
         let mut binds = Vec::new();
-        l.update_window(&mut binds);
+        l.update_window(&mut binds, None);
         l.add_slot_cell(CellSlot::Item(0), 42);
         l.rendered(42, 0);
         l.projected(42);
         l.offset = 5000.0;
         binds.clear();
-        l.update_window(&mut binds);
+        l.update_window(&mut binds, None);
         let first = match l.native_ops[0] {
             NativeCellOp::Retire { cell: 42, request } => request,
             other => panic!("expected native retirement, got {other:?}"),
@@ -2086,7 +2134,7 @@ mod tests {
         // retirement. It is one sparse retained row, not the intervening span.
         l.focus_cell(Some(42));
         assert!(!l.retire_cell(42, first, true));
-        l.update_window(&mut Vec::new());
+        l.update_window(&mut Vec::new(), None);
         assert_eq!(l.slots[0].ready(), Some(0));
         let mut retained: Vec<_> = l.slots.iter().filter_map(|slot| slot.index).collect();
         retained.sort_unstable();
@@ -2094,14 +2142,14 @@ mod tests {
 
         l.viewport = 0.0;
         l.native_ops.clear();
-        l.update_window(&mut Vec::new());
+        l.update_window(&mut Vec::new(), None);
         assert_eq!(l.slots[0].ready(), Some(0));
         assert!(l.native_ops.is_empty());
         l.viewport = 100.0;
 
         l.focus_cell(None);
         l.native_ops.clear();
-        l.update_window(&mut Vec::new());
+        l.update_window(&mut Vec::new(), None);
         let second = match l.native_ops[0] {
             NativeCellOp::Retire { cell: 42, request } => request,
             other => panic!("expected another retirement, got {other:?}"),
@@ -2114,7 +2162,7 @@ mod tests {
         l.projected(42);
         assert!(!l.retire_cell(42, second, true));
         l.native_ops.clear();
-        l.update_window(&mut Vec::new());
+        l.update_window(&mut Vec::new(), None);
         let third = match l.native_ops[0] {
             NativeCellOp::Retire { cell: 42, request } => request,
             other => panic!("expected retirement after reordering, got {other:?}"),
@@ -2127,12 +2175,12 @@ mod tests {
     #[test]
     fn source_splices_move_retained_focus_but_revoke_deleted_owners_and_old_replies() {
         let mut l = list(1000, 50.0, 100.0);
-        l.update_window(&mut Vec::new());
+        l.update_window(&mut Vec::new(), None);
         l.add_slot_cell(CellSlot::Item(0), 42);
         l.rendered(42, 0);
         l.projected(42);
         l.offset = 5000.0;
-        l.update_window(&mut Vec::new());
+        l.update_window(&mut Vec::new(), None);
         let request = match l.native_ops[0] {
             NativeCellOp::Retire { cell: 42, request } => request,
             other => panic!("expected native retirement, got {other:?}"),
@@ -2140,7 +2188,7 @@ mod tests {
         l.splice(0, 0, 1);
         assert!(!l.retire_cell(42, request, true));
         let mut moved = Vec::new();
-        l.update_window(&mut moved);
+        l.update_window(&mut moved, None);
         assert!(moved.contains(&(0, 1)));
         assert!(matches!(l.slots[0].native, NativeCell::Retiring(_)));
         let moved_request = l.retirement_request(42).unwrap();
@@ -2158,7 +2206,7 @@ mod tests {
         assert!(!l.retire_cell(42, request, true));
         assert!(!l.retire_cell(42, moved_request, true));
         l.offset = 0.0;
-        l.update_window(&mut Vec::new());
+        l.update_window(&mut Vec::new(), None);
         assert_eq!(l.focused, None);
         assert!(!l.retire_cell(42, request, true));
         assert_eq!(l.slots[0].native, NativeCell::Retiring(source_request));
@@ -2189,13 +2237,13 @@ mod tests {
         let mut l = list(10, 50.0, 400.0);
         let mut binds = Vec::new();
         assert!(
-            l.update_window(&mut binds).end,
+            l.update_window(&mut binds, None).end,
             "500 px of content in a 400 px viewport"
         );
-        assert!(!l.update_window(&mut binds).end);
+        assert!(!l.update_window(&mut binds, None).end);
         l.set_count(20);
         l.offset = 600.0;
-        assert!(l.update_window(&mut binds).end);
+        assert!(l.update_window(&mut binds, None).end);
     }
 
     #[test]
@@ -2203,33 +2251,33 @@ mod tests {
         let mut l = list(100, 50.0, 400.0);
         let mut binds = Vec::new();
         // Where the list opens is not an approach.
-        assert!(!l.update_window(&mut binds).start);
+        assert!(!l.update_window(&mut binds, None).start);
         // The user scrolls away, then back within a viewport of the start.
         l.reported(2000.0, 0);
-        assert!(!l.update_window(&mut binds).start);
+        assert!(!l.update_window(&mut binds, None).start);
         l.reported(300.0, 0);
-        assert!(l.update_window(&mut binds).start);
+        assert!(l.update_window(&mut binds, None).start);
         // Once: scrolling on near the start fires nothing more.
         l.reported(100.0, 0);
-        assert!(!l.update_window(&mut binds).start);
+        assert!(!l.update_window(&mut binds, None).start);
         // A page arrives at the start: the visible rows keep their place,
         // still within the threshold, so the list asks again.
         l.splice(0, 0, 2);
         assert_eq!(l.offset, 200.0);
-        assert!(l.update_window(&mut binds).start);
-        assert!(!l.update_window(&mut binds).start);
+        assert!(l.update_window(&mut binds, None).start);
+        assert!(!l.update_window(&mut binds, None).start);
         // Out and back in: a new approach.
         l.reported(1500.0, 0);
-        assert!(!l.update_window(&mut binds).start);
+        assert!(!l.update_window(&mut binds, None).start);
         l.reported(0.0, 0);
-        assert!(l.update_window(&mut binds).start);
+        assert!(l.update_window(&mut binds, None).start);
         // The threshold, in viewports.
         let mut t = list(100, 50.0, 400.0);
         t.start_threshold = 0.25;
         t.reported(150.0, 0);
-        assert!(!t.update_window(&mut binds).start);
+        assert!(!t.update_window(&mut binds, None).start);
         t.reported(100.0, 0);
-        assert!(t.update_window(&mut binds).start);
+        assert!(t.update_window(&mut binds, None).start);
     }
 
     #[test]
@@ -2245,7 +2293,7 @@ mod tests {
         l.pin(Some(target), offset, false, false);
         l.jump(offset);
         let mut binds = Vec::new();
-        assert!(l.update_window(&mut binds).start);
+        assert!(l.update_window(&mut binds, None).start);
     }
 
     #[test]
@@ -2256,12 +2304,12 @@ mod tests {
         l.anchor_end();
         let mut binds = Vec::new();
         // Opens at its start (item 0 at the bottom): no event.
-        assert!(!l.update_window(&mut binds).start);
+        assert!(!l.update_window(&mut binds, None).start);
         // Scrolled up, then back down to 200 px from the start.
         l.reported(5000.0 - 400.0 - 1000.0, 0);
-        assert!(!l.update_window(&mut binds).start);
+        assert!(!l.update_window(&mut binds, None).start);
         l.reported(5000.0 - 400.0 - 200.0, 0);
-        assert!(l.update_window(&mut binds).start);
+        assert!(l.update_window(&mut binds, None).start);
         // Newer items arrive before item 0: the rows on screen stay.
         let on_screen = |l: &ListState, i: u32| l.to_content(l.item_at(i), 50.0) - l.offset;
         let before = on_screen(&l, 4);
@@ -2309,10 +2357,10 @@ mod tests {
     fn shrinking_count_unbinds() {
         let mut l = list(100, 50.0, 400.0);
         let mut binds = Vec::new();
-        l.update_window(&mut binds);
+        l.update_window(&mut binds, None);
         l.set_count(3);
         binds.clear();
-        l.update_window(&mut binds);
+        l.update_window(&mut binds, None);
         assert_eq!(l.slots.iter().filter(|s| s.index.is_some()).count(), 3);
     }
 
@@ -2329,7 +2377,7 @@ mod tests {
         assert_eq!(l.item_at(6), 130.0);
         assert_eq!(l.column(320.0, 2), (320.0 * 2.0 / 3.0, 320.0 / 3.0));
         let mut binds = Vec::new();
-        l.update_window(&mut binds);
+        l.update_window(&mut binds, None);
         assert_eq!(binds.len(), 10);
     }
 
@@ -2419,7 +2467,7 @@ mod tests {
         assert_eq!(l.anchor_end(), 5000.0 - 400.0);
         assert_eq!(l.to_content(l.item_at(0), 50.0), 4950.0);
         let mut binds = Vec::new();
-        l.update_window(&mut binds);
+        l.update_window(&mut binds, None);
         assert_eq!(binds.first().map(|b| b.1), Some(0));
         assert!(binds.iter().all(|b| b.1 <= 16));
         // Older items load (appended): the visible content stays put.
@@ -2474,7 +2522,7 @@ mod tests {
         l.offset = 1000.0;
         assert_eq!(l.active_sticky(), Some(0));
         let mut binds = Vec::new();
-        l.update_window(&mut binds);
+        l.update_window(&mut binds, None);
         assert!(binds.iter().any(|b| b.1 == 0), "{binds:?}");
         assert_eq!(
             l.sticky_range(0, 1, 50.0),
@@ -2498,14 +2546,14 @@ mod tests {
         l.offset = 3200.0;
         assert_eq!(l.active_sticky(), Some(60));
         let mut binds = Vec::new();
-        l.update_window(&mut binds);
+        l.update_window(&mut binds, None);
         let bound = |l: &ListState, i: u32| l.slots.iter().any(|s| s.index == Some(i));
         assert!(bound(&l, 60) && bound(&l, 30), "{binds:?}");
         assert!(!bound(&l, 0));
         // Scrolled back into 30's rows: 30 is pinned and 0 waits above it.
         l.offset = 2000.0;
         binds.clear();
-        l.update_window(&mut binds);
+        l.update_window(&mut binds, None);
         assert!(bound(&l, 30) && bound(&l, 0), "{binds:?}");
         assert!(!bound(&l, 60));
     }
@@ -2559,7 +2607,7 @@ mod tests {
         let mut l = list(100, 50.0, 400.0);
         let mut binds = Vec::new();
         l.offset = 1000.0;
-        l.update_window(&mut binds);
+        l.update_window(&mut binds, None);
         for (slot, index) in binds.drain(..) {
             l.add_slot_cell(CellSlot::Item(slot), 100 + slot);
             l.rendered(100 + slot, index);
@@ -2575,7 +2623,7 @@ mod tests {
         // Item 25's measurement moved with it.
         assert_eq!(l.row_extent(28), 80.0);
         // Cells follow their items, and the runtime is told.
-        l.update_window(&mut binds);
+        l.update_window(&mut binds, None);
         assert!(binds.iter().any(|&(_, i)| i == 28));
         assert!(l.slots.iter().any(|s| s.ready() == Some(28)));
         // A change below the viewport moves nothing.
@@ -2589,14 +2637,14 @@ mod tests {
     fn batched_splices_bind_only_the_final_source_indices() {
         let mut l = list(2, 50.0, 400.0);
         let mut binds = Vec::new();
-        l.update_window(&mut binds);
+        l.update_window(&mut binds, None);
         assert_eq!(binds, [(0, 0), (1, 1)]);
         binds.clear();
         // Both mutations are published together: the runtime sees only
         // the final one-row snapshot, never the intermediate three rows.
         l.splice(0, 0, 1);
         l.splice(0, 3, 1);
-        l.update_window(&mut binds);
+        l.update_window(&mut binds, None);
         assert_eq!(binds, [(1, 0)]);
 
         // A surviving moved cell still needs its final index, not each
@@ -2604,7 +2652,7 @@ mod tests {
         binds.clear();
         l.splice(0, 0, 1);
         l.splice(0, 0, 1);
-        l.update_window(&mut binds);
+        l.update_window(&mut binds, None);
         assert_eq!(
             binds
                 .iter()
@@ -2625,7 +2673,7 @@ mod tests {
         let mut l = list(100, 50.0, 400.0);
         l.paced = true;
         let mut binds = Vec::new();
-        l.update_window(&mut binds);
+        l.update_window(&mut binds, None);
         assert_eq!(binds.len(), 8);
         assert!(l.has_paced());
         binds.clear();
@@ -2634,7 +2682,7 @@ mod tests {
         // overscan cells still waiting must read only the final snapshot.
         l.splice(0, 0, 1);
         l.splice(0, 101, 2);
-        l.update_window(&mut binds);
+        l.update_window(&mut binds, None);
         // The prepend moved the viewport to 50: final row 1 is visible,
         // while row 0 is overscan above it and must wait for paced work.
         assert_eq!(binds.iter().map(|b| b.1).collect::<Vec<_>>(), [1]);
@@ -2651,7 +2699,7 @@ mod tests {
         // An empty final source must not receive even a moved-cell bind.
         l.splice(0, 0, 2);
         l.splice(0, 4, 0);
-        l.update_window(&mut binds);
+        l.update_window(&mut binds, None);
         l.take_paced(100, &mut binds);
         assert!(binds.is_empty());
         assert!(!l.has_paced());
@@ -2662,7 +2710,7 @@ mod tests {
         let mut l = list(1000, 50.0, 400.0);
         l.paced = true;
         let mut binds = Vec::new();
-        l.update_window(&mut binds);
+        l.update_window(&mut binds, None);
         let now: Vec<u32> = binds.iter().map(|b| b.1).collect();
         assert_eq!(now, (0..8).collect::<Vec<_>>(), "the viewport");
         assert!(l.has_paced());
@@ -2676,23 +2724,23 @@ mod tests {
         // viewport and two steps above it bind now; the rest above comes
         // before what is below.
         l.reported(2000.0, 0);
-        l.update_window(&mut binds);
+        l.update_window(&mut binds, None);
         while l.take_paced(100, &mut binds) > 0 {}
         l.reported(1900.0, 0);
         binds.clear();
-        l.update_window(&mut binds);
+        l.update_window(&mut binds, None);
         // 1700..2300 was bound already; 1500..1600 is new and waits.
         assert_eq!(binds, []);
         // A jump binds its viewport only.
         l.reported(5000.0, 0);
-        l.update_window(&mut binds);
+        l.update_window(&mut binds, None);
         let now: Vec<u32> = binds.iter().map(|b| b.1).collect();
         assert_eq!(now, (100..108).collect::<Vec<_>>());
         // A step up before the overscan bound: the viewport (4900..5300)
         // and two steps ahead (4700..4900) bind now ...
         l.reported(4900.0, 0);
         binds.clear();
-        l.update_window(&mut binds);
+        l.update_window(&mut binds, None);
         let now: Vec<u32> = binds.iter().map(|b| b.1).collect();
         assert_eq!(now, (94..100).collect::<Vec<_>>());
         // ... the rest above before what is below.
@@ -2706,7 +2754,7 @@ mod tests {
         let mut l = list(100, 50.0, 400.0);
         l.paced = true;
         let mut binds = Vec::new();
-        l.update_window(&mut binds);
+        l.update_window(&mut binds, None);
         for &(slot, index) in &binds {
             l.add_slot_cell(CellSlot::Item(slot), 100 + slot);
             l.rendered(100 + slot, index);
@@ -2714,7 +2762,7 @@ mod tests {
         // Overscan cells wait; one row arrives at the top.
         l.splice(0, 0, 1);
         binds.clear();
-        l.update_window(&mut binds);
+        l.update_window(&mut binds, None);
         // Every bound cell learns its new index, at once (the anchoring
         // scroll keeps them in place). The anchoring scroll is the core's,
         // not a step of the user's: the cells waiting below it, and the new
@@ -2726,7 +2774,7 @@ mod tests {
         // for an item that is gone.
         l.splice(3, 98, 0);
         binds.clear();
-        l.update_window(&mut binds);
+        l.update_window(&mut binds, None);
         while l.take_paced(100, &mut binds) > 0 {}
         assert!(binds.iter().all(|&(_, i)| i < 3), "{binds:?}");
     }
@@ -2800,15 +2848,15 @@ mod tests {
         let mut l = in_page(100.0, 0.0, 4700.0);
         assert_eq!(l.offset, -100.0);
         let mut binds = Vec::new();
-        l.update_window(&mut binds);
+        l.update_window(&mut binds, None);
         assert_eq!(bound(&l), (0..=14).collect::<Vec<_>>());
         // Entirely below the viewport and its overscan: nothing.
         let mut l = in_page(1000.0, 0.0, 4700.0);
-        l.update_window(&mut binds);
+        l.update_window(&mut binds, None);
         assert!(bound(&l).is_empty());
         // Scrolled past: nothing either.
         let mut l = in_page(0.0, 5500.0, 6000.0);
-        l.update_window(&mut binds);
+        l.update_window(&mut binds, None);
         assert!(bound(&l).is_empty());
     }
 
@@ -2820,7 +2868,7 @@ mod tests {
         let mut binds = Vec::new();
         for (offset, fires) in [(0.0, false), (1100.0, false), (1300.0, true)] {
             l.set_outer(1000.0, offset, 400.0, 1600.0, true);
-            assert_eq!(l.update_window(&mut binds).end, fires, "at {offset}");
+            assert_eq!(l.update_window(&mut binds, None).end, fires, "at {offset}");
         }
     }
 

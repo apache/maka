@@ -108,6 +108,6 @@ pub use crate::{
         FontExtent, LinePiece, ResolvedTextStyle, TextAttachment, TextBackground, TextEngine,
         TextLayout, TextLine, TextLink, TextSpan,
     },
-    text_source::{TextSource, TextSourceKind, TextSourceSegment},
+    text_source::{ListSourceRows, TextSource, TextSourceKind, TextSourceSegment},
     transform::{Decomposed, MAX_TRANSFORMS, Matrix, Transform, TransformKind, TransformOp},
 };

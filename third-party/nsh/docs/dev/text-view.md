@@ -40,6 +40,11 @@ colored with the theme's tokens; the app restyles each part over it.
   rows with point-valued padding and gaps (default `rowGap: 11.25`). A supplied value replaces the complete content
   layout, so `{}` and `{ rowGap: 0 }` both select zero gap. Root `classes` / `styles` own outer geometry and text
   appearance; document content spacing belongs to `contentStyle`.
+  The native Markdown publication also carries its captured source length and each root row's canonical ranges,
+  collected by the same converter. `VirtualList::source_rows` publishes this immutable index as `ListSourceRows`;
+  the current input supplies the complete source length. The surrounding reader keeps its one source pin while
+  a required prefix or row is pending, binds that row and its ancestor cells through the normal list window,
+  then resolves its actual text geometry. Other mounted rows do not stand in for a missing source position.
 - **Built on `Text`** (`text.md`): every paragraph, heading, table cell and code block is one native text
   block, so wrapping, font scale, selection, span backgrounds (inline code), pressable
   spans (links) and inline attachments (images, inline custom nodes, the caret) are the text element's, with nothing of

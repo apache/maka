@@ -233,6 +233,17 @@ impl VirtualList {
         }
     }
 
+    /// Addresses a native parent-viewport list's rows by canonical source position.
+    /// The projection and its captured source length are published together;
+    /// the complete source may already contain a newer streaming prefix.
+    pub fn source_rows(
+        mut self,
+        source: impl IntoReactive<Option<std::sync::Arc<crate::ListSourceRows>>>,
+    ) -> Self {
+        super::host::bind_prop(&mut self.0, source, Prop::ListSourceRows);
+        self
+    }
+
     /// One of the list's own cells (header, footer, empty), outside the
     /// recycling: made with the view, kept while the view has it.
     fn extra(mut self, slot: CellSlot, key: &'static str, content: AnyElement) -> Self {

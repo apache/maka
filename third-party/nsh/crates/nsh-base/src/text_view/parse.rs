@@ -19,6 +19,7 @@
 
 //! One component-owned parser worker. Source effects replace the latest work;
 //! an already-started blocking parse is allowed to finish before the next starts.
+use super::markdown::Projection;
 use super::view::{TextViewEvent, TextViewProps};
 use super::{Block, Document, Inline, MarkdownExtension, MarkdownOptions, MarkdownPlugins, Parser};
 use nsh_core::ui::{Owner, Stored, prelude::*, stored};
@@ -50,7 +51,7 @@ impl Request {
                 _ => self.input == parsed.input,
             }
     }
-    fn parse(&self) -> Document {
+    fn parse(&self) -> Projection {
         // Configure plugins (which may create non-Send ParseOptions callbacks)
         // entirely on the CPU worker; only owned source/configuration crosses.
         let parser = Parser::new()
@@ -58,20 +59,39 @@ impl Request {
             .extensions(self.extensions.clone())
             .plugins(&self.plugins);
         match &self.input {
-            Input::Markdown(source) => parser.markdown_source(source),
-            Input::Html(source) => parser.html(source),
-            Input::Document(document) => document.clone(),
+            Input::Markdown(source) => parser.markdown_projection(source),
+            Input::Html(source) => Projection {
+                document: parser.html(source),
+                ..Projection::default()
+            },
+            Input::Document(document) => Projection {
+                document: document.clone(),
+                ..Projection::default()
+            },
         }
     }
-    fn literal(&self) -> Document {
+    fn literal(&self) -> Projection {
         match &self.input {
             Input::Markdown(source) | Input::Html(source) => {
-                Document::new(vec![Block::paragraph(vec![Inline::Source {
-                    content: vec![Inline::text(source.to_string())],
-                    segments: super::markdown::source::literal(0, source),
-                }])])
+                let raw_len = source.len() as u64;
+                Projection {
+                    document: Document::new(vec![Block::paragraph(vec![Inline::Source {
+                        content: vec![Inline::text(source.to_string())],
+                        segments: super::markdown::source::literal(0, source),
+                    }])]),
+                    raw_len,
+                    rows: vec![if raw_len == 0 {
+                        Vec::new()
+                    } else {
+                        vec![0..raw_len]
+                    }]
+                    .into(),
+                }
             }
-            Input::Document(document) => document.clone(),
+            Input::Document(document) => Projection {
+                document: document.clone(),
+                ..Projection::default()
+            },
         }
     }
 }
@@ -84,7 +104,7 @@ struct Work {
 
 #[derive(Clone, Copy)]
 pub(super) struct DocumentState {
-    pub document: Signal<Document>,
+    pub document: Signal<Projection>,
     source: Signal<Option<Request>>,
 }
 impl DocumentState {
@@ -120,7 +140,7 @@ pub(super) fn document(
     scope: Scope<TextViewEvent>,
 ) -> DocumentState {
     let owner = Owner::current();
-    let document = signal(Document::default());
+    let document = signal(Projection::default());
     let source = signal(None::<Request>);
     let failure = signal(None::<SharedString>);
     effect(move || scope.emit(TextViewEvent::ParseError(failure.get())));
@@ -177,7 +197,7 @@ async fn worker(
     owner: Owner,
     work: Stored<Work>,
     shown: Stored<Option<Request>>,
-    document: Signal<Document>,
+    document: Signal<Projection>,
     failure: Signal<Option<SharedString>>,
 ) {
     loop {

@@ -3054,6 +3054,14 @@ impl<M: TextEngine> Core<M> {
                     list.set_sticky_node(node_id);
                 }
             }
+            Prop::ListSourceRows(source) => {
+                if let Some(list) = node.list.as_mut() {
+                    list.source_rows = source;
+                    list.source_dirty = true;
+                    list.dirty = true;
+                    self.reading_dirty = true;
+                }
+            }
             Prop::ListContent(content) => {
                 if let Some(list) = node.list.as_mut() {
                     list.set_content(content);
@@ -5949,6 +5957,11 @@ impl<M: TextEngine> Core<M> {
     /// Measures rendered cells, keeps the visible content anchored, picks
     /// the items to render and positions the cells of every list.
     fn update_lists(&mut self, relayout: bool) {
+        // Source providers must already have their logical reader while its
+        // own window is updated, even before a new parent list is measured.
+        if self.outer_moved {
+            self.resolve_outer();
+        }
         for i in 0..self.lists.len() {
             let key = self.lists[i];
             let id = self.nodes[key as usize].id;
@@ -5995,9 +6008,6 @@ impl<M: TextEngine> Core<M> {
             self.update_list(key, relayout, None);
         }
         if !self.parent_lists.is_empty() {
-            if self.outer_moved {
-                self.resolve_outer();
-            }
             for i in 0..self.parent_lists.len() {
                 let key = self.parent_lists[i];
                 if !self.nodes[key as usize].created {
@@ -6137,8 +6147,13 @@ impl<M: TextEngine> Core<M> {
                             | Command::ScrollToEnd { .. }
                     )
             });
+        let source_position = self.nodes[key as usize]
+            .list
+            .as_ref()
+            .and_then(|list| list.reading_point().cloned())
+            .map(|point| self.reading_position(key, &point));
         let list = self.nodes[key as usize].list.as_mut().expect("list");
-        anchor += list.anchor_source(explicit, anchor);
+        anchor += list.anchor_source(explicit, anchor, source_position);
         // The last scroll command's target moves as its cells are
         // measured: the list follows it.
         let mut retarget = None;
@@ -6249,10 +6264,11 @@ impl<M: TextEngine> Core<M> {
         // The components' own lists bind in the core, at once; the
         // runtime's pace their overscan.
         let paced = !self.components.is_virtual_list(id);
+        let source_row = self.reading_row(key);
         let list = self.nodes[key as usize].list.as_mut().expect("list");
         list.paced = paced;
         let mut binds = Vec::new();
-        let edges = list.update_window(&mut binds);
+        let edges = list.update_window(&mut binds, source_row);
         if edges.end {
             self.events.push(crate::ui::JsEvent::Event(
                 id,

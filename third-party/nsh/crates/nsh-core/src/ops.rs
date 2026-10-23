@@ -1922,6 +1922,8 @@ pub enum Prop {
     /// list is made.
     #[prop(js = "viewport", on = LIST)]
     ListViewport(ListViewport),
+    /// Canonical row coverage of a native virtual list's source projection.
+    ListSourceRows(Option<Arc<crate::ListSourceRows>>),
     /// `contentStyle`: padding and gaps of the content.
     #[prop(js = "contentStyle", on = LIST)]
     ListContent(ListContentStyle),

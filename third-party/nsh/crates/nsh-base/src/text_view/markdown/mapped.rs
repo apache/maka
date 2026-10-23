@@ -111,6 +111,32 @@ impl Source {
         out.copy(&self[at..]);
         out.finish()
     }
+    /// Canonical byte intervals of an input range, without assigning glyphs.
+    /// Synthetic repair syntax has no source interval.
+    pub(super) fn ranges(&self, range: Range<usize>) -> Vec<Range<u64>> {
+        let first = self
+            .pieces
+            .partition_point(|piece| piece.rendered.end <= range.start);
+        let mut ranges = self.pieces[first..]
+            .iter()
+            .take_while(|piece| piece.rendered.start < range.end)
+            .filter_map(|piece| {
+                let start = piece.rendered.start.max(range.start);
+                let end = piece.rendered.end.min(range.end);
+                (start < end).then(|| {
+                    if piece.literal {
+                        (piece.original.start + start - piece.rendered.start) as u64
+                            ..(piece.original.start + end - piece.rendered.start) as u64
+                    } else {
+                        piece.original.start as u64..piece.original.end as u64
+                    }
+                })
+            })
+            .collect();
+        merge_ranges(&mut ranges);
+        ranges
+    }
+
     /// Compose the parser's lexical UTF-16 mapping with rewrite provenance.
     pub(super) fn project(
         &self,
@@ -183,6 +209,22 @@ impl Source {
         out
     }
 }
+/// Root rows can include several disjoint original pieces (notably footnotes).
+pub(super) fn merge_ranges(ranges: &mut Vec<Range<u64>>) {
+    ranges.retain(|range| range.start < range.end);
+    ranges.sort_unstable_by_key(|range| (range.start, range.end));
+    let mut kept = 0;
+    for index in 0..ranges.len() {
+        if kept > 0 && ranges[index].start <= ranges[kept - 1].end {
+            ranges[kept - 1].end = ranges[kept - 1].end.max(ranges[index].end);
+        } else {
+            ranges.swap(kept, index);
+            kept += 1;
+        }
+    }
+    ranges.truncate(kept);
+}
+
 pub(super) struct Writer<'a> {
     input: &'a Source,
     out: Source,
