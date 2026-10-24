@@ -450,24 +450,36 @@ export class MemoryController {
       input.from,
       input.to,
       visible,
-      { ...input, excludeExternal: true, offset: 0, limit: Number.MAX_SAFE_INTEGER },
+      {
+        ...input,
+        excludeExternal: true,
+        offset: 0,
+        limit: Number.MAX_SAFE_INTEGER,
+      },
       select,
     );
-    const items: any[] = [...local.items];
     const offset = input.offset ?? 0,
       limit = input.limit ?? 30;
-    let more = false;
+    const items: any[] = local.items.slice(offset, offset + limit);
+    let matched = local.items.length;
+    let more = local.items.length > offset + limit;
     for (const record of remote) {
       for (const ref of input.from ? record.delta : record.documents) {
-        if (items.length >= offset + limit) {
-          more = true;
-          break;
-        }
         const metadata = this.store.reference(ref).object;
         if (input.types && !input.types.includes(metadata.kind)) continue;
         if (input.messageId && input.messageId !== metadata.id) continue;
         if (input.since !== undefined && !(metadata.updatedAt >= input.since)) continue;
         if (input.until !== undefined && !(metadata.updatedAt <= input.until)) continue;
+        if (items.length >= limit) {
+          more = true;
+          break;
+        }
+        // Without a body predicate, select the page before reading originals.
+        // A keyword query still needs earlier bodies to establish matching offsets.
+        if (!input.query && input.view !== 'conversation' && matched < offset) {
+          matched++;
+          continue;
+        }
         const original = await this.readReference(ref, false, false, visible);
         if (original.status !== 'ok' && original.status !== 'deleted')
           throw Error(
@@ -483,6 +495,7 @@ export class MemoryController {
             : { content: original.content }),
         };
         if (!select([message], { ...input, after: undefined, limit: 1 }).items.length) continue;
+        if (matched++ < offset) continue;
         items.push({
           source: record.source,
           recordId: record.id,
@@ -496,14 +509,14 @@ export class MemoryController {
     return {
       from: input.from,
       to: input.to,
-      items: items.slice(offset, offset + limit),
-      total: more ? null : items.length,
-      nextOffset: more || items.length > offset + limit ? offset + limit : null,
+      items,
+      total: more ? null : matched,
+      nextOffset: more ? offset + limit : null,
       notice:
         'Remote content is read on demand. total=null means more candidates remain; no completeness claim. Types are native source kinds.',
     };
   }
-  private sourceScope(source: string) {
+  sourceScope(source: string) {
     const descriptor = this.ctx.sources.list().find((s: any) => s.id === source);
     if (!descriptor) throw Error('Source is no longer available');
     const canonical = (value: any): any =>

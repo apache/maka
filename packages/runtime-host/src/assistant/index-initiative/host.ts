@@ -22,6 +22,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { InitiativeStore } from './store.js';
 import { InitiativeController } from './controller.js';
+import { initializeQuickDiscovery } from './quick.js';
 import { initializeBot } from '../bot/host.js';
 import { registerAssistant } from './assistant.js';
 export async function initializeInitiative(
@@ -48,6 +49,7 @@ export async function initializeInitiative(
   ctx.onStart(activate);
   initializeBot(ctx, directory, store);
   registerAssistant(ctx, store, controller);
+  const quick = initializeQuickDiscovery(ctx, controller, directory, limits.tickMs);
   ctx.backgroundSessions.register(() =>
     [store.get()?.discoverySession, store.get()?.judgementSession].filter(Boolean),
   );
@@ -63,7 +65,12 @@ export async function initializeInitiative(
     executionSemantics: 'parallel',
     impl: async (input: any, call: any) => {
       const state = store.get();
-      if (!state || ![state.discoverySession, state.judgementSession].includes(call.sessionId))
+      if (
+        !state ||
+        ![state.discoverySession, state.judgementSession, quick.state()?.workerSession].includes(
+          call.sessionId,
+        )
+      )
         throw Error('Not the exploration worker');
       return controller.asOwner(state, async () => {
         const snapshot: any = await ctx.sessionQuery.read(state.sessionId);

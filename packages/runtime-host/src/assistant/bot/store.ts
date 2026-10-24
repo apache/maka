@@ -58,6 +58,9 @@ export class BotStore {
         type TEXT NOT NULL, source TEXT NOT NULL, at INTEGER NOT NULL, task TEXT,
         content TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS notification_decisions(call_id TEXT NOT NULL, inbox_id TEXT NOT NULL,
+        at INTEGER NOT NULL, reason TEXT NOT NULL, PRIMARY KEY(call_id,inbox_id));
+      CREATE INDEX IF NOT EXISTS notification_decisions_inbox ON notification_decisions(inbox_id,at);
       CREATE TABLE IF NOT EXISTS discovery_messages(message_id TEXT PRIMARY KEY, discovery_ids TEXT NOT NULL, delivered_at INTEGER);
       CREATE TABLE IF NOT EXISTS discovery_feedback(user_id TEXT NOT NULL, message_id TEXT NOT NULL,
         PRIMARY KEY(user_id,message_id));
@@ -154,7 +157,33 @@ export class BotStore {
       content: body.slice(offset, end),
       nextOffset: end < body.length ? end : null,
       totalCharacters: body.length,
+      notNotified: this.db
+        .prepare('SELECT at,reason FROM notification_decisions WHERE inbox_id=? ORDER BY at,rowid')
+        .all(id),
     };
+  }
+  /** Append a decision at this moment; never mark mail processed or prevent later delivery. */
+  recordNotNotified(callId: string, decisions: { inboxId: string; reason: string }[]) {
+    if (!decisions.length) return;
+    if (!callId) throw Error('Notification decision requires a tool call identity');
+    this.transaction(() => {
+      const at = Date.now();
+      for (const { inboxId, reason } of decisions) {
+        if (!this.db.prepare('SELECT 1 FROM inbox WHERE id=?').get(inboxId))
+          throw Error('Unknown inbox message');
+        const existing = this.db
+          .prepare('SELECT reason FROM notification_decisions WHERE call_id=? AND inbox_id=?')
+          .get(callId, inboxId);
+        if (existing) {
+          if (existing.reason !== reason)
+            throw Error('Notification decision retry has different reason');
+          continue;
+        }
+        this.db
+          .prepare('INSERT INTO notification_decisions(call_id,inbox_id,at,reason) VALUES(?,?,?,?)')
+          .run(callId, inboxId, at, reason);
+      }
+    });
   }
   /** Bounded delivery, returning bodies directly rather than requiring List + Read. */
   batch(after: number, limit = 50, maxCharacters = 24000) {

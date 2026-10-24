@@ -58,6 +58,9 @@ export interface PluginSourceAdapter {
   /** Describes provider-supported query fields and the configured enumeration scope. */
   readonly queryHelp: string;
   readonly scope: Readonly<Record<string, unknown>>;
+  /** Cheap scoped change token. Must check permission; must not enumerate bodies or run a model.
+   * Null means no complete observation yet. Unsupported adapters use periodic discovery. */
+  activityToken?(caller: PluginSessionQueryCaller): Promise<string | null>;
   /** Enumerates metadata only. Pagination is not an index coverage declaration. */
   enumerate(cursor: string | undefined, caller: PluginSessionQueryCaller): Promise<SourcePage>;
   query(
@@ -117,6 +120,11 @@ export class PluginSourceService extends Service {
         scope,
         storage: 'on-demand' as const,
       }));
+  }
+  async activityToken(id: string): Promise<string | null> {
+    const caller = this.caller();
+    const adapter = this.adapter(id);
+    return adapter.activityToken ? adapter.activityToken(caller) : null;
   }
   async enumerate(id: string, cursor?: string) {
     const caller = this.caller();
