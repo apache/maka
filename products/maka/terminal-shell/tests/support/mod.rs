@@ -357,11 +357,7 @@ impl Fixture {
         let permissions = if file_tool.is_some() {
             // File-tool workflows use the product's real fresh-installation
             // policy, so an allowed write exercises its default authority.
-            let bundle = std::env::var_os("MAKA_PRODUCT_BUNDLE")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| {
-                    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../bundle/dist")
-                });
+            let bundle = PathBuf::from(env!("OUT_DIR")).join("product");
             let source = std::fs::read_to_string(bundle.join("authoring/composition.mjs")).unwrap();
             let vm = maka_js_runtime::plugin::Vm::pure(Default::default()).unwrap();
             let module = vm.load("real-host-installation".into(), source).unwrap();

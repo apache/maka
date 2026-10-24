@@ -66,27 +66,19 @@ fn generated_product_version_matches_canonical_unicode_and_binary_vectors() {
 }
 
 #[test]
-fn generated_version_reads_no_packages_and_rejects_invalid_metadata() {
-    let directory = tempfile::tempdir().unwrap();
-    assert!(super::read_bundle_fingerprint(directory.path()).is_err());
+fn generated_version_rejects_invalid_metadata() {
     let version = super::fingerprint("author", []);
-    // There is deliberately no authoring or packages directory to scan.
-    std::fs::write(
-        directory.path().join("product-version.txt"),
-        format!("{version}\n"),
-    )
-    .unwrap();
     assert_eq!(
-        super::read_bundle_fingerprint(directory.path()).unwrap(),
+        super::parse_bundle_fingerprint(&format!("{version}\n")).unwrap(),
         version
     );
     for invalid in [
+        String::new(),
         "sha256-wrong".to_owned(),
         version.to_uppercase(),
         format!("{version}\nextra"),
     ] {
-        std::fs::write(directory.path().join("product-version.txt"), invalid).unwrap();
-        assert!(super::read_bundle_fingerprint(directory.path()).is_err());
+        assert!(super::parse_bundle_fingerprint(&invalid).is_err());
     }
 }
 

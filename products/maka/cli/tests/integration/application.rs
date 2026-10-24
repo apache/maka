@@ -275,9 +275,7 @@ fn standalone_host_package_update_preserves_saved_configuration_and_data() {
     let deployment = uuid::Uuid::new_v4();
     let files_key = uuid::Uuid::new_v4();
     let consumer_key = uuid::Uuid::new_v4();
-    let bundle = std::env::var_os("MAKA_PRODUCT_BUNDLE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../bundle/dist"));
+    let bundle = PathBuf::from(env!("OUT_DIR")).join("product");
     let current = Package::read_from(&bundle.join("packages/workspace-files")).unwrap();
     // A same-ID fork is explicit configuration, not evidence of an old default.
     // The update policy replaces this declared bundled ID without guessing origin.
@@ -425,8 +423,7 @@ fn standalone_host_package_update_preserves_saved_configuration_and_data() {
         let mut process = Command::new(env!("CARGO_BIN_EXE_maka"));
         process
             .args(["application", "update-defaults", "--root"])
-            .arg(&root)
-            .env("MAKA_PRODUCT_BUNDLE", &bundle);
+            .arg(&root);
         if apply {
             process.arg("--apply");
         }
@@ -547,7 +544,6 @@ fn standalone_host_package_update_preserves_saved_configuration_and_data() {
         Command::new(env!("CARGO_BIN_EXE_maka"))
             .args(["host", "serve", "--root"])
             .arg(&root)
-            .env("MAKA_PRODUCT_BUNDLE", &bundle)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::inherit())

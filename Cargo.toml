@@ -239,6 +239,16 @@ opt-level = 1
 [profile.dev.package.gpui-fast-wgpu]
 opt-level = 1
 
+# Keep Sixel colour quantization and its concrete generic writer optimized.
+[profile.dev.package.quantette]
+opt-level = 3
+
+[profile.dev.package.icy_sixel]
+opt-level = 3
+
+[profile.dev.package.nsh-gpui-terminal]
+opt-level = 3
+
 [patch.crates-io]
 gix-index = { path = "third-party/gix-index" }
 image-webp = { path = "third-party/image-webp" }
