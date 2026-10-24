@@ -604,6 +604,26 @@ async function verifyConcurrentRevisionAuthority(
     if (retriedStaged?.ref.kind !== 'session_file')
       assert.fail('Retried staged ref must stay session-backed');
     assert.equal(retriedStaged.ref.sessionId, 'staged-upload-revision-target');
+    // A staged attachment deleted from the target after the commit stays
+    // deleted: the replay is read-only and must not republish it (#6246
+    // review).
+    await desktop.request('artifact.delete', {
+      sessionId: 'staged-upload-revision-target',
+      artifactId: retriedStaged.ref.relativePath,
+    });
+    const afterDelete = await desktop.request('session.revision.create', {
+      sourceSessionId,
+      targetSessionId: 'staged-upload-revision-target',
+      sourceTurnId: 'turn-1',
+      expectedSourceRevision: sourceAfterRevision.revision,
+    });
+    assert.equal(afterDelete.kind, 'committed');
+    if (afterDelete.kind !== 'committed') assert.fail('Replay must stay committed');
+    assert.equal(
+      afterDelete.stagedAttachments,
+      undefined,
+      'a deleted staged attachment drops off the replay instead of being republished',
+    );
     assert.deepEqual(
       await desktop.request('session.revision.abandon', {
         targetSessionId: 'staged-upload-revision-target',
