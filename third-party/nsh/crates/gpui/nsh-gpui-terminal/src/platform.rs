@@ -285,6 +285,14 @@ impl TerminalPlatform {
         WindowState::input_caret_bounds(&self.window().ok()?)
     }
 
+    /// The native IME candidate rectangle in logical window pixels: the marked
+    /// range's start on the caret's visual line, or the active selection endpoint.
+    /// Preserve all four edges when converting units. Native height and any
+    /// zero-width insertion rectangle are returned unchanged.
+    pub fn input_candidate_bounds(&self) -> Option<gpui::Bounds<gpui::Pixels>> {
+        WindowState::input_candidate_bounds(&self.window().ok()?)
+    }
+
     /// Records a receipt from the host's trusted sole writer. This confirms
     /// transport completion for output diagnostics, without authorizing input.
     pub fn mark_presented(&self, token: FrameToken) -> Result<()> {

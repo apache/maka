@@ -2410,11 +2410,18 @@ impl PlatformInputHandler {
     }
 
     pub fn ime_candidate_bounds(&mut self) -> Option<Bounds<Pixels>> {
-        let marked_range = self.marked_text_range();
-        let selection = self.selected_text_range(true)?;
-        Self::compute_ime_candidate_bounds(marked_range, &selection, |range| {
-            self.bounds_for_range(range)
-        })
+        self.cx
+            .clone()
+            .update(|window, cx| {
+                if !window.input_handler_is_admitted(self.focus, &self.origin)
+                    || !self.handler.accepts_text_input(window, cx)
+                {
+                    return None;
+                }
+                self.selected_bounds(window, cx)
+            })
+            .ok()
+            .flatten()
     }
 
     #[allow(unused)]

@@ -314,11 +314,12 @@ pub(super) fn run(
                     }
                 };
                 let cursor = inbox.cursor;
+                let nonce = inbox.text_input.ready_nonce();
                 drop(state);
-                let parts = cursor.frame_parts(bytes);
+                let parts = cursor.frame_parts(bytes, nonce);
                 let wire_bytes = parts.iter().map(Vec::len).sum();
                 output.submit(parts)?;
-                submitted_cursor = Some(cursor);
+                submitted_cursor = Some((cursor, nonce));
                 phase = Phase::Publish { offer, image };
                 if let Some((offer, at)) = sample {
                     let mut state = presentation.state.lock().unwrap();
@@ -334,14 +335,15 @@ pub(super) fn run(
                         sample.image = image;
                     }
                 }
-            } else if submitted_cursor != Some(inbox.cursor)
+            } else if submitted_cursor != Some((inbox.cursor, inbox.text_input.ready_nonce()))
                 && inbox.last_fully_written_geometry == Some(inbox.geometry)
                 && inbox.resize.is_none()
             {
                 let cursor = inbox.cursor;
+                let nonce = inbox.text_input.ready_nonce();
                 drop(state);
-                output.submit([cursor.bytes()])?;
-                submitted_cursor = Some(cursor);
+                output.submit([cursor.bytes(nonce)])?;
+                submitted_cursor = Some((cursor, nonce));
                 phase = Phase::Effect;
             }
         }

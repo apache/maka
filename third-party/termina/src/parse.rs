@@ -571,6 +571,13 @@ fn parse_nsh_text_input(payload: &str) -> Result<osc::NshTextInput> {
             .ok_or(MalformedSequenceError)?;
         String::from_utf8(bytes).map_err(|_| MalformedSequenceError)
     }
+    fn coordinate(field: &str) -> Result<f64> {
+        // C++ from_chars does not accept a leading plus.
+        if field.starts_with('+') {
+            bail!();
+        }
+        field.parse().map_err(|_| MalformedSequenceError)
+    }
 
     let mut fields = payload.split(';');
     let input = match fields.next() {
@@ -581,6 +588,23 @@ fn parse_nsh_text_input(payload: &str) -> Result<osc::NshTextInput> {
         Some("cancel") => osc::NshTextInput::Cancel(unsigned(fields.next())?),
         Some("disable") => osc::NshTextInput::Disable(unsigned(fields.next())?),
         Some("disabled") => osc::NshTextInput::Disabled(unsigned(fields.next())?),
+        Some("caret") => {
+            let nonce = unsigned(fields.next())?;
+            let bounds = if let Some(left) = fields.next() {
+                Some(
+                    osc::NshTextInputCaretRect::new(
+                        coordinate(left)?,
+                        coordinate(fields.next().ok_or(MalformedSequenceError)?)?,
+                        coordinate(fields.next().ok_or(MalformedSequenceError)?)?,
+                        coordinate(fields.next().ok_or(MalformedSequenceError)?)?,
+                    )
+                    .ok_or(MalformedSequenceError)?,
+                )
+            } else {
+                None
+            };
+            osc::NshTextInput::Caret { nonce, bounds }
+        }
         Some("update") => {
             let composition = unsigned(fields.next())?;
             let active = match fields.next() {
@@ -2060,7 +2084,7 @@ mod test {
 
     #[test]
     fn nsh_text_input_packets_keep_composition_and_following_keys_separate() {
-        use osc::NshTextInput;
+        use osc::{NshTextInput, NshTextInputCaretRect};
         use std::num::NonZeroU64;
         let nonce = NonZeroU64::new(7).unwrap();
         let composition = NonZeroU64::new(11).unwrap();
@@ -2095,6 +2119,19 @@ mod test {
             })))
         );
         assert_eq!(parser.pop(), Some(Event::Key(KeyCode::Char('z').into())));
+        parser
+            .parse(b"\x1b]777;nsh-text-input;caret;7;1.25;2.5;1.25;", true)
+            .unwrap();
+        assert_eq!(parser.pop(), None);
+        parser.parse(b"4.75\x1b\\c", false).unwrap();
+        assert_eq!(
+            parser.pop(),
+            Some(Event::Osc(osc::Osc::NshTextInput(NshTextInput::Caret {
+                nonce,
+                bounds: Some(NshTextInputCaretRect::new(1.25, 2.5, 1.25, 4.75).unwrap()),
+            })))
+        );
+        assert_eq!(parser.pop(), Some(Event::Key(KeyCode::Char('c').into())));
         for (valid, expected) in [
             ("query", NshTextInput::Query),
             ("supported", NshTextInput::Supported),
@@ -2103,6 +2140,20 @@ mod test {
             ("cancel;11", NshTextInput::Cancel(composition)),
             ("disable;7", NshTextInput::Disable(nonce)),
             ("disabled;7", NshTextInput::Disabled(nonce)),
+            (
+                "caret;7",
+                NshTextInput::Caret {
+                    nonce,
+                    bounds: None,
+                },
+            ),
+            (
+                "caret;7;0;0;1.25;2.5",
+                NshTextInput::Caret {
+                    nonce,
+                    bounds: Some(NshTextInputCaretRect::new(0.0, 0.0, 1.25, 2.5).unwrap()),
+                },
+            ),
             (
                 "ready;18446744073709551615",
                 NshTextInput::Ready(NonZeroU64::new(u64::MAX).unwrap()),
@@ -2136,6 +2187,21 @@ mod test {
             );
             assert_eq!(osc::Osc::NshTextInput(expected).to_string(), wire);
         }
+        parser
+            .parse(
+                b"\x1b]777;nsh-text-input;caret;7;1e0;2.50;3E0;4.0\x07",
+                false,
+            )
+            .unwrap();
+        let canonical = osc::Osc::NshTextInput(NshTextInput::Caret {
+            nonce,
+            bounds: Some(NshTextInputCaretRect::new(1.0, 2.5, 3.0, 4.0).unwrap()),
+        });
+        assert_eq!(parser.pop(), Some(Event::Osc(canonical.clone())));
+        assert_eq!(
+            canonical.to_string(),
+            "\x1b]777;nsh-text-input;caret;7;1;2.5;3;4\x1b\\"
+        );
         for invalid in [
             "update;11;1;2;3;;5L2g8J+YgDs=", // surrogate interior
             "update;11;1;3;1;;5L2g8J+YgDs=", // reversed range
@@ -2152,6 +2218,20 @@ mod test {
             "cancel;0",
             "disable;0",
             "disabled;0",
+            "caret;0",
+            "caret;7;",
+            "caret;7;0;0;1",
+            "caret;7;0;0;1;2;3",
+            "caret;7;NaN;0;1;2",
+            "caret;7;0;0;inf;2",
+            "caret;7;0;0;1;1e309",
+            "caret;7;-1;0;1;2",
+            "caret;7;2;0;1;2",
+            "caret;7;0;2;1;2",
+            "caret;7;0;3;1;2",
+            "caret;7;+0;0;1;2",
+            "caret;7; 0;0;1;2",
+            "caret;7;0,5;0;1;2",
             "enable;18446744073709551616", // u64 overflow
             "enable;+7",                   // not unsigned decimal wire text
             "enable",

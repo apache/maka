@@ -16,9 +16,11 @@ framing, including BEL termination. No terminal-name detection enables it.
 | Application → terminal | `cancel;C` |
 | Application → terminal | `disable;E` |
 | Terminal → application | `disabled;E` |
+| Application → terminal | `caret;E;L;T;R;B` |
+| Application → terminal | `caret;E` (clear exact bounds) |
 
 `E` and `C` are positive unsigned decimal u64 values (`NonZeroU64`). `E` is a
-random application nonce used only to admit or revoke one subscription. A
+random application nonce identifying one subscription and its caret geometry. A
 `supported` reply alone cannot enable delivery. The terminal drains and revokes
 old native delivery before `ready;E`, then sends all new snapshots after that
 reply. Repeated `enable;E` is idempotent and does not reset a composition.
@@ -32,6 +34,25 @@ disable, and control detach/reattach. `cancel;C` affects only that still-current
 native lifetime, so a late cancellation cannot damage a newer composition.
 Termina parses these values; subscription and lifetime admission remain with the
 native input owners. There is no per-update subscription or sequence field.
+
+`L`, `T`, `R`, and `B` are finite, nonnegative f64 edges in fractional terminal
+cells. `R >= L` and `B > T`; zero-width insertion carets are valid. Parsing and
+formatting are locale-independent: decimal and exponent notation are accepted,
+leading `+` and whitespace are rejected, and formatting uses ordinary shortest
+decimal display. `NshTextInputCaretRect::new` validates the four private edges;
+`edges()` returns them in left, top, right, bottom order. The finite-only type
+preserves the existing event equality contract.
+
+The terminal applies caret geometry only to the currently admitted matching
+`E`. The short form clears its override; disable, revocation, reset, and close
+clear it too. Geometry is a layout update, not ordinary input, and does not drain
+or rotate a composition. Maka sends the complete candidate bounds through its
+existing output path, after the CUP fallback and before synchronized-output end.
+The terminal maps fractional edges through its actual text-area origin and font
+cell size, rounding left/top down and right/bottom up, and notifies its current
+native candidate context of layout changes. It clips or rejects geometry outside
+the current visible grid before integer conversion. The protocol adds no viewport
+dimensions, composition ID, or frame sequence to these packets.
 
 `COMMIT` and `PREEDIT` are canonical padded standard Base64 of UTF-8; empty fields
 are valid. Controls and semicolons are data inside the decoded strings. `ACTIVE`

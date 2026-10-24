@@ -526,11 +526,13 @@ fn run(
             worked |= platform.pump_with_draw(allow_draw);
             text_input.sync(&platform, presentation)?;
             let caret = platform.input_caret_bounds();
+            let candidate = platform.input_candidate_bounds();
             {
                 let mut state = presentation.state.lock().unwrap();
                 let inbox = state.pixels.as_mut().unwrap();
                 if geometry.get() == inbox.geometry && inbox.resize.is_none() {
-                    let cursor = super::cursor::Cursor::from_native(caret, inbox.capabilities);
+                    let cursor =
+                        super::cursor::Cursor::from_native(caret, candidate, inbox.capabilities);
                     if inbox.cursor != cursor {
                         inbox.cursor = cursor;
                         presentation.wake_driver();

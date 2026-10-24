@@ -88,7 +88,7 @@ pub enum Osc<'a> {
     /// xterm defines reset commands by adding 100 to the dynamic color number.
     ResetDynamicColor(DynamicColorNumber),
 
-    /// Private OSC 777 `nsh-text-input` negotiation or composition snapshot.
+    /// Private OSC 777 `nsh-text-input` negotiation, composition, or caret geometry.
     NshTextInput(NshTextInput),
     // TODO: I didn't copy many available commands yet...
 }
@@ -114,6 +114,11 @@ pub enum NshTextInput {
     Disable(NonZeroU64),
     /// Acknowledge revocation after draining native delivery.
     Disabled(NonZeroU64),
+    /// Set or clear candidate-window bounds for the named subscription.
+    Caret {
+        nonce: NonZeroU64,
+        bounds: Option<NshTextInputCaretRect>,
+    },
     /// One atomic committed prefix and remaining composition snapshot.
     ///
     /// An inactive snapshot has empty preedit and selection `0..0`. Active
@@ -127,6 +132,32 @@ pub enum NshTextInput {
         preedit: String,
     },
 }
+
+/// Exact candidate-window bounds in fractional terminal-cell coordinates.
+///
+/// All edges are finite and nonnegative. Zero-width insertion carets are valid;
+/// the bottom edge must be strictly below the top edge.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NshTextInputCaretRect {
+    edges: [f64; 4],
+}
+
+impl NshTextInputCaretRect {
+    /// Validate left, top, right, and bottom edges.
+    pub fn new(left: f64, top: f64, right: f64, bottom: f64) -> Option<Self> {
+        let edges = [left, top, right, bottom];
+        (edges.iter().all(|edge| edge.is_finite() && *edge >= 0.0) && right >= left && bottom > top)
+            .then_some(Self { edges })
+    }
+
+    /// Return left, top, right, and bottom edges, in that order.
+    pub fn edges(&self) -> [f64; 4] {
+        self.edges
+    }
+}
+
+// Construction excludes NaN, so equality is reflexive.
+impl Eq for NshTextInputCaretRect {}
 
 pub(crate) fn valid_text_input_update(
     active: bool,
@@ -194,6 +225,13 @@ impl Display for Osc<'_> {
                     NshTextInput::Cancel(composition) => write!(f, "cancel;{composition}")?,
                     NshTextInput::Disable(nonce) => write!(f, "disable;{nonce}")?,
                     NshTextInput::Disabled(nonce) => write!(f, "disabled;{nonce}")?,
+                    NshTextInput::Caret { nonce, bounds } => {
+                        write!(f, "caret;{nonce}")?;
+                        if let Some(bounds) = bounds {
+                            let [left, top, right, bottom] = bounds.edges();
+                            write!(f, ";{left};{top};{right};{bottom}")?;
+                        }
+                    }
                     NshTextInput::Update {
                         composition,
                         active,

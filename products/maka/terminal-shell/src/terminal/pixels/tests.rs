@@ -153,6 +153,7 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
         assert!(Instant::now() < deadline, "real Input did not load");
     }
     assert!(platform.input_caret_bounds().is_none());
+    assert!(platform.input_candidate_bounds().is_none());
     let initial_count = Cell::new(count.get());
     let click_at = |x, y| {
         let position = point(px(x), px(y));
@@ -249,6 +250,7 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
     let start = platform.input_caret_bounds().unwrap();
     assert_eq!(start.origin.x, px(16.0));
     assert!(start.origin.y >= px(16.0) && start.bottom() <= px(64.0));
+    assert_eq!(platform.input_candidate_bounds(), Some(start));
     stroke("end", None, false);
     let end = platform.input_caret_bounds().unwrap();
     assert!(end.origin.x > start.origin.x);
@@ -269,6 +271,7 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
     // native press target stops paste without a paint to unregister it.
     click(96.0);
     assert!(platform.input_caret_bounds().is_none());
+    assert!(platform.input_candidate_bounds().is_none());
     platform.paste("must not enter the old editor").unwrap();
     click(32.0);
     assert_eq!(copied(), "a你好😀");
@@ -278,6 +281,7 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
     platform.set_active(false).unwrap();
     platform.pump_with_draw(false);
     assert!(platform.input_caret_bounds().is_none());
+    assert!(platform.input_candidate_bounds().is_none());
     platform.paste("must not enter an inactive editor").unwrap();
     platform.set_active(true).unwrap();
     platform.pump_with_draw(false);
@@ -361,6 +365,19 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
             .unwrap()
     );
     assert!(has_preedit_glyphs(&painted()));
+    let marked_start = platform.input_caret_bounds().unwrap();
+    assert!(
+        platform
+            .apply_composition(&target, "", "ni😀", Some(4..4), true)
+            .unwrap()
+    );
+    let candidate = platform.input_candidate_bounds().unwrap();
+    let composing_caret = platform.input_caret_bounds().unwrap();
+    assert_eq!(candidate, marked_start);
+    assert!(composing_caret.origin.x > candidate.origin.x);
+    assert_eq!(candidate.origin.y, composing_caret.origin.y);
+    assert_eq!(candidate.size.height, composing_caret.size.height);
+    assert!(candidate.size.height > px(0.0));
     stroke("j", None, true);
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
@@ -380,6 +397,10 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
             .unwrap()
     );
     assert!(!has_preedit_glyphs(&painted()));
+    assert_eq!(
+        platform.input_candidate_bounds(),
+        platform.input_caret_bounds()
+    );
     assert_eq!(copied(), "BASE");
     stroke("end", None, false);
     assert!(

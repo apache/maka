@@ -74,6 +74,10 @@ impl Wire {
         matches!(self.phase, Phase::Ready)
     }
 
+    pub(super) fn ready_nonce(&self) -> Option<NonZeroU64> {
+        self.ready().then_some(self.nonce)
+    }
+
     fn cancel(&mut self, composition: NonZeroU64) {
         if self.ready() {
             self.controls.push_back(NshTextInput::Cancel(composition));

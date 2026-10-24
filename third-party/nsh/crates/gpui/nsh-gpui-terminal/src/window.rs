@@ -395,6 +395,19 @@ impl WindowState {
         bounds
     }
 
+    pub(crate) fn input_candidate_bounds(state: &Rc<RefCell<Self>>) -> Option<Bounds<Pixels>> {
+        {
+            let state = state.borrow();
+            if state.closed || !state.active || !state.visible.is_visible() {
+                return None;
+            }
+        }
+        let mut handler = state.borrow_mut().input_handler.take()?;
+        let bounds = handler.ime_candidate_bounds();
+        state.borrow_mut().input_handler.get_or_insert(handler);
+        bounds
+    }
+
     pub(crate) fn request_close(state: &Rc<RefCell<Self>>) {
         if state.borrow().closed {
             return;

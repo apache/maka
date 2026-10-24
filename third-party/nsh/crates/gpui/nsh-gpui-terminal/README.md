@@ -39,6 +39,11 @@ the same field also invalidates it. The host binds each source composition
 lifetime to one such target and negotiates application admission separately;
 field changes do not require a transport round trip.
 
+`input_candidate_bounds()` returns the native IME anchor on the current visual
+line, with its full height, in logical window pixels. Convert all four edges
+to terminal units and retain any zero-width rectangle. `input_caret_bounds()`
+continues to report the actual caret independently.
+
 Each successful GPU submission produces a `SubmittedFrame` containing an
 issuer-bound `FrameToken`, viewport generation and its owned readback ticket.
 Complete the ticket on a background executor
