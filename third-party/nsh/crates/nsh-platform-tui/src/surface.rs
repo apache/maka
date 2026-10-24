@@ -979,13 +979,20 @@ impl Surface {
                     self.index_text_links(id);
                 }
                 MountItem::Input { id, config } => {
-                    if let Some(node) = self.node_mut(id) {
+                    let selection_changed = if let Some(node) = self.node_mut(id) {
                         if node.input.multiline != config.multiline
                             || node.input.secure != config.secure
                         {
                             node.request_input_reveal();
                         }
+                        let changed = node.editor.set_tokens(&config.tokens);
                         node.input = *config;
+                        changed
+                    } else {
+                        false
+                    };
+                    if selection_changed {
+                        self.report_selection(id);
                     }
                 }
                 MountItem::InputValue { id, text, count } => self.input_value(id, text, count),

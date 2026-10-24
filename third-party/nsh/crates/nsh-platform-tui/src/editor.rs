@@ -4,21 +4,20 @@
 
 use std::ops::Range;
 
+use nsh_core::input_tokens::{InputTokenRule, InputTokenSpan, InputTokens, TokenEdit};
 use nsh_core::{AutoCapitalize, InputConfig, KeyboardType};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
-
-const HISTORY_LIMIT: usize = 64;
-const HISTORY_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Clone, Debug)]
 struct Snapshot {
     text: String,
     anchor: usize,
     cursor: usize,
+    pending: Option<Range<usize>>,
 }
 
-/// One input's retained text, selection and bounded undo history.
+/// One input's retained text, selection and undo history.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Editor {
     text: String,
@@ -28,6 +27,7 @@ pub(crate) struct Editor {
     undo: Vec<Snapshot>,
     redo: Vec<Snapshot>,
     goal_column: Option<usize>,
+    tokens: InputTokens,
 }
 
 impl Editor {
@@ -37,6 +37,24 @@ impl Editor {
 
     pub(crate) fn count(&self) -> u32 {
         self.count
+    }
+
+    pub(crate) fn set_tokens(&mut self, rules: &[InputTokenRule]) -> bool {
+        if !self.tokens.set_rules(rules, &self.text) {
+            return false;
+        }
+        let before = (self.anchor, self.cursor);
+        (self.anchor, self.cursor) = self.tokens.select(self.anchor, self.cursor);
+        if before != (self.anchor, self.cursor) {
+            self.goal_column = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(crate) fn token_spans(&self) -> &[InputTokenSpan] {
+        self.tokens.spans()
     }
 
     pub(crate) fn selected_range(&self) -> Range<usize> {
@@ -83,7 +101,8 @@ impl Editor {
         } else {
             byte_at_utf16(&self.text, old_cursor)
         };
-        self.anchor = self.cursor;
+        self.tokens.reset(&self.text);
+        (self.anchor, self.cursor) = self.tokens.select(self.cursor, self.cursor);
         self.goal_column = None;
         self.undo.clear();
         self.redo.clear();
@@ -113,6 +132,7 @@ impl Editor {
     }
 
     fn select_bytes(&mut self, anchor: usize, cursor: usize) -> bool {
+        let (anchor, cursor) = self.tokens.select(anchor, cursor);
         let changed = (self.anchor, self.cursor) != (anchor, cursor);
         self.anchor = anchor;
         self.cursor = cursor;
@@ -138,6 +158,7 @@ impl Editor {
         } else {
             self.boundary(self.cursor, forward)
         };
+        let offset = self.tokens.step(offset, forward);
         self.select_bytes(if extend { self.anchor } else { offset }, offset)
     }
 
@@ -153,6 +174,7 @@ impl Editor {
                 .rfind(['\r', '\n'])
                 .map_or(0, |i| i + 1)
         };
+        let offset = self.tokens.step(offset, end);
         self.select_bytes(if extend { self.anchor } else { offset }, offset)
     }
 
@@ -173,7 +195,15 @@ impl Editor {
         } else {
             row.saturating_sub(1)
         };
-        let offset = self.offset_at(row, goal.saturating_sub(alignments.1), columns, secure);
+        let offset = self.offset_at_inner(
+            row,
+            goal.saturating_sub(alignments.1),
+            columns,
+            secure,
+            false,
+        );
+        let offset = self.tokens.step(byte_at_utf16(&self.text, offset), down);
+        let offset = utf16_len(&self.text[..offset]);
         let changed = self.move_to(offset, extend);
         self.goal_column = Some(goal);
         changed
@@ -227,7 +257,7 @@ impl Editor {
             || config.keyboard != KeyboardType::Default
             || config.auto_capitalize == AutoCapitalize::None
         {
-            return self.replace(&text, config);
+            return self.type_literal(&text, config);
         }
         let prefix = &self.text[..self.selected_range().start];
         let text = match config.auto_capitalize {
@@ -236,11 +266,17 @@ impl Editor {
             AutoCapitalize::Sentences => capitalize_sentences(prefix, &text),
             AutoCapitalize::None => text,
         };
-        self.replace(&text, config)
+        self.type_literal(&text, config)
+    }
+
+    pub(crate) fn type_literal(&mut self, incoming: &str, config: &InputConfig) -> bool {
+        self.replace_inner(incoming, config, TokenEdit::Typing)
+            .unwrap_or(false)
     }
 
     pub(crate) fn replace(&mut self, incoming: &str, config: &InputConfig) -> bool {
-        self.replace_inner(incoming, config).unwrap_or(false)
+        self.replace_inner(incoming, config, TokenEdit::Commit)
+            .unwrap_or(false)
     }
 
     pub(crate) fn replace_range(
@@ -250,26 +286,54 @@ impl Editor {
         incoming: &str,
         config: &InputConfig,
     ) -> bool {
-        let previous = (self.anchor, self.cursor, self.goal_column);
-        self.set_selection(start, end);
-        match self.replace_inner(incoming, config) {
+        self.replace_at(
+            byte_at_utf16(&self.text, start)..byte_at_utf16(&self.text, end),
+            incoming,
+            config,
+            TokenEdit::Commit,
+        )
+    }
+
+    fn replace_at(
+        &mut self,
+        range: Range<usize>,
+        incoming: &str,
+        config: &InputConfig,
+        kind: TokenEdit,
+    ) -> bool {
+        let previous = (
+            self.anchor,
+            self.cursor,
+            self.goal_column,
+            self.tokens.pending(),
+        );
+        self.anchor = range.start;
+        self.cursor = range.end;
+        match self.replace_inner(incoming, config, kind) {
             Some(changed) => {
                 // The replacement range is not the selection the user had
                 // before accepting a completion. Undo restores that selection.
                 if changed && let Some(snapshot) = self.undo.last_mut() {
                     snapshot.anchor = previous.0;
                     snapshot.cursor = previous.1;
+                    snapshot.pending = previous.3;
                 }
                 changed
             }
             None => {
-                (self.anchor, self.cursor, self.goal_column) = previous;
+                (self.anchor, self.cursor, self.goal_column) = (previous.0, previous.1, previous.2);
+                self.tokens.restore(&self.text, previous.3);
                 false
             }
         }
     }
 
-    fn replace_inner(&mut self, incoming: &str, config: &InputConfig) -> Option<bool> {
+    fn replace_inner(
+        &mut self,
+        incoming: &str,
+        config: &InputConfig,
+        kind: TokenEdit,
+    ) -> Option<bool> {
         if !config.editable {
             return None;
         }
@@ -287,7 +351,7 @@ impl Editor {
         if !incoming.is_empty() && text.is_empty() {
             return None;
         }
-        let range = self.selected_range();
+        let range = self.tokens.expand(self.selected_range());
         let retained = utf16_len(&self.text) - utf16_len(&self.text[range.clone()]);
         let limit = config.max_length.map(|max| max.saturating_sub(retained));
         let mut units = 0u32;
@@ -302,15 +366,17 @@ impl Editor {
             return None;
         }
         if self.text[range.clone()] == fit {
+            self.tokens.edited(&self.text, &range, fit.len(), kind);
             self.select_bytes(range.start + fit.len(), range.start + fit.len());
             return Some(false);
         }
         self.record();
         self.text.replace_range(range.clone(), &fit);
+        self.tokens.edited(&self.text, &range, fit.len(), kind);
         let cursor = range.start + fit.len();
         // Combining text inserted beside a cluster may merge with it.
         self.cursor = ceil_grapheme(&self.text, cursor);
-        self.anchor = self.cursor;
+        (self.anchor, self.cursor) = self.tokens.select(self.cursor, self.cursor);
         self.goal_column = None;
         self.count = self.count.saturating_add(1);
         Some(true)
@@ -320,7 +386,7 @@ impl Editor {
         if !config.editable {
             return false;
         }
-        if self.selected_range().is_empty() {
+        let range = if self.selected_range().is_empty() {
             let offset = if word {
                 self.word_boundary(self.cursor, !backward)
             } else {
@@ -329,9 +395,11 @@ impl Editor {
             if offset == self.cursor {
                 return false;
             }
-            self.anchor = offset;
-        }
-        self.replace("", config)
+            offset.min(self.cursor)..offset.max(self.cursor)
+        } else {
+            self.selected_range()
+        };
+        self.replace_at(range, "", config, TokenEdit::Delete)
     }
 
     fn snapshot(&self) -> Snapshot {
@@ -339,19 +407,20 @@ impl Editor {
             text: self.text.clone(),
             anchor: self.anchor,
             cursor: self.cursor,
+            pending: self.tokens.pending(),
         }
     }
 
     fn record(&mut self) {
         let snapshot = self.snapshot();
-        bounded_push(&mut self.undo, snapshot);
+        self.undo.push(snapshot);
         self.redo.clear();
     }
 
     fn restore(&mut self, snapshot: Snapshot) {
         self.text = snapshot.text;
-        self.anchor = snapshot.anchor;
-        self.cursor = snapshot.cursor;
+        self.tokens.restore(&self.text, snapshot.pending);
+        (self.anchor, self.cursor) = self.tokens.select(snapshot.anchor, snapshot.cursor);
         self.goal_column = None;
         self.count = self.count.saturating_add(1);
     }
@@ -364,7 +433,7 @@ impl Editor {
             return false;
         };
         let current = self.snapshot();
-        bounded_push(&mut self.redo, current);
+        self.redo.push(current);
         self.restore(snapshot);
         true
     }
@@ -377,7 +446,7 @@ impl Editor {
             return false;
         };
         let current = self.snapshot();
-        bounded_push(&mut self.undo, current);
+        self.undo.push(current);
         self.restore(snapshot);
         true
     }
@@ -421,8 +490,22 @@ impl Editor {
     /// Finds the nearest caret boundary on a visual line, including tabs,
     /// wide glyphs, masked passwords and wrapped continuation lines.
     pub(crate) fn offset_at(&self, row: usize, column: usize, columns: usize, secure: bool) -> u32 {
+        self.offset_at_inner(row, column, columns, secure, true)
+    }
+
+    fn offset_at_inner(
+        &self,
+        row: usize,
+        column: usize,
+        columns: usize,
+        secure: bool,
+        atoms: bool,
+    ) -> u32 {
         let mut closest = (usize::MAX, usize::MAX, 0);
         self.walk_cells(columns, secure, |offset, r, c| {
+            if atoms && !self.tokens.is_caret(offset) {
+                return;
+            }
             let distance = (r.abs_diff(row), c.abs_diff(column), offset);
             if (distance.0, distance.1) < (closest.0, closest.1) {
                 closest = distance;
@@ -527,18 +610,6 @@ fn capitalize_sentences(prefix: &str, incoming: &str) -> String {
     result
 }
 
-fn bounded_push(history: &mut Vec<Snapshot>, snapshot: Snapshot) {
-    if snapshot.text.len() > HISTORY_BYTES {
-        history.clear();
-        return;
-    }
-    history.push(snapshot);
-    let mut bytes = history.iter().map(|s| s.text.len()).sum::<usize>();
-    while history.len() > HISTORY_LIMIT || bytes > HISTORY_BYTES {
-        bytes -= history.remove(0).text.len();
-    }
-}
-
 fn utf16_len(text: &str) -> u32 {
     text.encode_utf16().count().min(u32::MAX as usize) as u32
 }
@@ -595,6 +666,56 @@ mod tests {
         assert_eq!(editor.text(), "a中");
         editor.set_selection(1, 2);
         assert_eq!(editor.selected(), "中");
+
+        let rule = InputTokenRule::new(
+            r"(?:^|\s)(?P<token>/skill:[a-z]+)",
+            Default::default(),
+            true,
+        )
+        .unwrap();
+        let mut editor = Editor::default();
+        editor.set_tokens(&[rule]);
+        editor.replace("/skill:one tail", &config);
+        editor.set_selection(0, 0);
+        assert!(editor.horizontal(true, false, false));
+        assert_eq!(editor.selection(), (10, 10));
+        assert!(editor.horizontal(false, false, false));
+        assert_eq!(editor.selection(), (0, 0));
+        assert_eq!(editor.offset_at(0, 8, 80, false), 10);
+        assert!(editor.vertical(true, false, 4, false, (0, 0)));
+        assert_eq!(editor.selection(), (10, 10));
+        assert!(editor.vertical(false, false, 4, false, (0, 0)));
+        assert_eq!(editor.selection(), (0, 0));
+        editor.set_selection(2, 4);
+        assert_eq!(editor.selected(), "/skill:one");
+        assert!(editor.delete(true, false, &config));
+        assert_eq!(editor.text(), " tail");
+        assert!(editor.undo(&config));
+        assert_eq!(editor.text(), "/skill:one tail");
+        assert_eq!(editor.selected(), "/skill:one");
+        assert!(editor.redo(&config));
+        assert_eq!(editor.text(), " tail");
+
+        editor.controlled(String::new(), editor.count());
+        for character in "/skill:one".chars() {
+            assert!(editor.type_literal(&character.to_string(), &config));
+        }
+        assert_eq!(editor.tokens.pending(), Some(0..10));
+        assert!(!editor.controlled("/skill:one".into(), editor.count()));
+        assert_eq!(editor.tokens.pending(), Some(0..10));
+        assert!(editor.delete(true, false, &config));
+        assert_eq!(editor.text(), "/skill:on");
+        assert_eq!(editor.tokens.pending(), Some(0..9));
+        assert!(editor.undo(&config));
+        assert_eq!(editor.tokens.pending(), Some(0..10));
+        assert!(editor.replace_range(0, 10, "/skill:two", &config));
+        assert_eq!(editor.tokens.pending(), None);
+        assert!(editor.undo(&config));
+        assert_eq!(editor.text(), "/skill:one");
+        assert_eq!(editor.tokens.pending(), Some(0..10));
+        editor.set_selection(0, 0);
+        assert!(editor.delete(false, false, &config));
+        assert_eq!(editor.text(), "skill:one");
     }
 
     #[test]
@@ -665,13 +786,9 @@ mod tests {
     }
 
     #[test]
-    fn history_is_bounded_and_combining_insert_stays_on_boundary() {
+    fn combining_insert_stays_on_boundary() {
         let mut editor = Editor::default();
         let config = InputConfig::default();
-        for _ in 0..100 {
-            editor.replace("x", &config);
-        }
-        assert_eq!(editor.undo.len(), HISTORY_LIMIT);
         editor.controlled("e".into(), editor.count());
         editor.replace("\u{301}", &config);
         assert_eq!(editor.selection(), (2, 2));

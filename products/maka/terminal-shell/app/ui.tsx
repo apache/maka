@@ -68,7 +68,6 @@ export type BrowserHeader = {
   expanded: boolean;
   hidden: boolean;
   toggle(): void;
-  search(): void;
 };
 export function Header(props: {
   title: string;
@@ -132,16 +131,6 @@ export function Header(props: {
             />
           </View>
         </View>
-      </Button>
-      <Button
-        onPress={props.browser.search}
-        accessibilityLabel={tr('Search sessions')}
-        tooltip={tr('Search sessions · Ctrl+O')}
-        style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
-        hoverStyle={{ backgroundColor: C.surface }}
-        focusStyle={{ backgroundColor: C.raised }}
-      >
-        <Icon name="search" color={C.secondary} />
       </Button>
       <Button
         onPress={props.commands}

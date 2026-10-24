@@ -84,6 +84,11 @@ import type {
   AgentHistoryAttachment,
   AgentHistoryChunk,
   AgentHistoryLandmark,
+  AgentHistoryPage,
+  AgentMarkReadResult,
+  AgentSession,
+  HistoryPosition,
+  OperationReply,
   AgentPendingInteractions,
   AgentQueue,
 } from '../../../../packages/plugin-sdk/src/index.js';
@@ -93,7 +98,12 @@ import {
   type DraftAttachment,
 } from './attachmentDraft';
 
-type HistoryNavigation = { kind: 'start' } | { kind: 'turn'; item: TurnNavigationItem };
+export type ConversationAnchor = { messageId: string; position: Position };
+type HistoryNavigation =
+  | { kind: 'start' | 'tail' }
+  | { kind: 'turn'; item: TurnNavigationItem }
+  | { kind: 'message'; anchor: ConversationAnchor };
+type HistoryWindow = Pick<AgentHistoryPage, 'through' | 'before' | 'after'> & { identity: object };
 
 export type Control = (method: string, input: any) => Promise<any>;
 export type ConversationHandle = ComposerSession & {
@@ -106,6 +116,7 @@ export type ConversationHandle = ComposerSession & {
   /** A null target follows the current live turn. */
   jumpLatest(turnId: string | null): void;
   refresh(): Promise<any>;
+  reveal(anchor: ConversationAnchor, current: () => boolean): Promise<void>;
   focusHistory(): void;
   focusActivity(turnId: string | null): void;
 };
@@ -114,6 +125,8 @@ type ConversationProps = {
   control: Control;
   fork(action: Extract<SessionAction, { kind: 'fork' }>): Promise<void>;
   commands(): void;
+  visible(): boolean;
+  foreground(): boolean;
   browser(): BrowserHeader;
   files(): void;
   filesOpener(node: YNode): void;
@@ -190,7 +203,20 @@ export function Conversation(props: ConversationProps) {
   const error = createText();
   const ready = signal(false);
   const transcriptStatus = signal<'loading' | 'live' | 'closing' | 'failed'>('loading');
-  const before = signal<any>(null);
+  const historyWindow = signal<HistoryWindow | null>(null);
+  const atHistoryTail = () => historyWindow()?.after === null;
+  const visibleRows = signal<ReadonlySet<string>>(new Set());
+  const readState = signal<{
+    revision: number;
+    through: number;
+    hasUnread: boolean;
+    tailMessageId: string | null;
+  }>({ revision: -1, through: 0, hasUnread: false, tailMessageId: null });
+  const readExposure = signal<object>({});
+  const changedReadExposure = () => {
+    if (readState().hasUnread) readExposure.set({});
+  };
+  const acknowledging = signal(false);
   const landmarks = signal<{ through: number; items: AgentHistoryLandmark[] }>({
     through: 0,
     items: [],
@@ -241,6 +267,8 @@ export function Conversation(props: ConversationProps) {
         offset: new AnimatedValue(0),
         measured: new Map(),
         lease: 0,
+        visibleRows: signal<ReadonlySet<string>>(new Set()),
+        rowNodes: new Map<string, YNode>(),
       };
       groupStates.set(key, state);
     }
@@ -260,10 +288,15 @@ export function Conversation(props: ConversationProps) {
     canonicalRows().byId.get(id) ??
     liveRows().byId.get(id) ??
     pendingMessages().find((row) => stableRowId(row) === id);
-  const processLive = computed<readonly ProcessRow[]>(() => live(), { equals: sameProcessRows });
-  const processActivity = computed<readonly ProcessActivity[]>(() => toolActivity(), {
-    equals: sameProcessActivity,
+  const processLive = computed<readonly ProcessRow[]>(() => (atHistoryTail() ? live() : []), {
+    equals: sameProcessRows,
   });
+  const processActivity = computed<readonly ProcessActivity[]>(
+    () => (atHistoryTail() ? toolActivity() : []),
+    {
+      equals: sameProcessActivity,
+    },
+  );
   const activity = computed<LiveActivity>(
     () => {
       if (run() === 'waiting_for_user') return { kind: 'waiting', detail: '' };
@@ -302,7 +335,7 @@ export function Conversation(props: ConversationProps) {
       );
     });
     const next = projectProcessGroups({
-      rows: [...ordered, ...pendingMessages()],
+      rows: [...ordered, ...(atHistoryTail() ? pendingMessages() : [])],
       toolActivity: processActivity(),
       activeTurnId: invocation() === null ? null : runTurn(),
       previous: previousGroups,
@@ -427,7 +460,16 @@ export function Conversation(props: ConversationProps) {
   let runThrough = 0;
   let followTask: Promise<void> | null = null;
   let followAgain = false;
+  let historyIdentity: object = {};
+  let windowTask: Promise<boolean> | null = null;
+  let historyDestination: { position: HistoryPosition; explicit: boolean; failed: boolean } = {
+    position: { kind: 'tail' },
+    explicit: false,
+    failed: false,
+  };
   let olderTask: Promise<boolean> | null = null;
+  let newerTask: Promise<boolean> | null = null;
+  let attemptedRead: { revision: number; messageId: string; exposure: object } | null = null;
   let landmarksReadingThrough = -1;
   let draftRevision = 0;
   let editEpoch = 0;
@@ -479,7 +521,7 @@ export function Conversation(props: ConversationProps) {
       attachmentMetadataFailed.set(false);
     hydrateAttachmentMetadata();
   };
-  const history = async (through: number, position: any) => {
+  const history = async (through: number, position: HistoryPosition) => {
     const page = await host.query('agent', 'history', {
       sessionId,
       through,
@@ -489,6 +531,82 @@ export function Conversation(props: ConversationProps) {
     });
     if (page.through !== through) throw new UiError('History changed its requested fence.');
     return page;
+  };
+  const ownsWindow = (identity: object) => alive && historyIdentity === identity;
+  // Tail, recall, Home and turn navigation open the same bidirectional window.
+  // Superseded reads can finish, but never publish into its replacement.
+  const resetHistory = (
+    position: HistoryPosition,
+    through: number,
+    verify?: (page: AgentHistoryPage) => void,
+    current: () => boolean = () => true,
+  ): Promise<boolean> => {
+    if (!current()) return Promise.resolve(false);
+    const identity = {};
+    const destination = historyDestination;
+    const canPublish = () => {
+      if (!ownsWindow(identity)) return false;
+      if (historyDestination === destination && current()) return true;
+      const previous = historyWindow();
+      if (previous) historyWindow.set({ ...previous, identity });
+      return false;
+    };
+    historyIdentity = identity;
+    for (const state of groupStates.values()) {
+      if (state.revealRow !== undefined) {
+        state.revealRow = undefined;
+        state.requestFocus = false;
+      }
+    }
+    olderTask = null;
+    newerTask = null;
+    followTask = null;
+    followAgain = false;
+    refreshFrom = null;
+    const task = (async () => {
+      let location = position;
+      let page: AgentHistoryPage;
+      for (;;) {
+        page = await history(through, location);
+        if (!canPublish()) return false;
+        verify?.(page);
+        if (page.chunks.length) break;
+        const reverse = location.kind === 'tail' || location.kind === 'before';
+        const cursor = reverse ? page.before : page.after;
+        if (!cursor) break;
+        location = reverse ? { kind: 'before', cursor } : { kind: 'after', cursor };
+      }
+      if (!canPublish()) return false;
+      batch(() => {
+        rows.set(mergeChunks([], page.chunks, false, page.through));
+        historyWindow.set({
+          identity,
+          through: page.through,
+          before: page.before,
+          after: page.after,
+        });
+        ready.set(true);
+        awayFromLatest.set(position.kind !== 'tail');
+        innerReader.set(null);
+      });
+      hydrateAttachmentMetadata();
+      if (page.after === null && latestKnown > through) void follow().catch(report);
+      return true;
+    })()
+      .catch((reason) => {
+        if (!canPublish()) return false;
+        if (historyDestination === destination) destination.failed = true;
+        // Keep the existing viewport usable after a failed exact lookup.
+        // Its old in-flight requests stay revoked.
+        const previous = historyWindow();
+        if (previous) historyWindow.set({ ...previous, identity });
+        throw reason;
+      })
+      .finally(() => {
+        if (windowTask === task) windowTask = null;
+      });
+    windowTask = task;
+    return task;
   };
   const hydrateAttachmentMetadata = () => {
     for (const row of rows()) {
@@ -571,10 +689,21 @@ export function Conversation(props: ConversationProps) {
         report(reason);
       });
   };
+  const acceptReadState = (session: AgentSession, through = readState().through) => {
+    if (session.id !== sessionId) throw new UiError('The Host observed a different conversation.');
+    if (session.revision >= readState().revision)
+      readState.set({
+        revision: session.revision,
+        through,
+        hasUnread: session.hasUnread,
+        tailMessageId: session.tailMessageId,
+      });
+  };
   const observe = async () => {
     const observed = await host.query('agent', 'observe', { sessionId });
     if (!alive) return observed;
     if (observed.session.id !== sessionId) throw new UiError('Host observed a different session.');
+    acceptReadState(observed.session, observed.through);
     latestKnown = Math.max(latestKnown, observed.through);
     readLandmarks(observed.through);
     title.set(observed.session.title);
@@ -593,38 +722,42 @@ export function Conversation(props: ConversationProps) {
     return observed;
   };
 
-  // Facts may request another pass while the single canonical-history reader
-  // is awaiting a page. The newest boundary fragment is re-read and replaced.
+  // Only a window already at its fence's tail follows newly appended text.
+  // A recall window retains its native forward cursor instead of reading the gap.
   const follow = (): Promise<void> => {
     followAgain = true;
     if (followTask) return followTask;
+    const owner = historyWindow();
+    if (!owner || !ownsWindow(owner.identity)) return Promise.resolve();
     const stream = subscription;
-    followTask = (async () => {
+    const task = (async () => {
       do {
         followAgain = false;
         const fence = latestKnown;
-        const last = rows().at(-1);
-        let position: any = last
-          ? {
-              kind: 'after',
-              cursor: {
-                position: last.position,
-                field: last.field,
-                offset: last.fragments!.at(-1)!.offset,
-              },
-            }
-          : { kind: 'start' };
-        const chunks: AgentHistoryChunk[] = [];
-        for (;;) {
-          const page = await history(fence, position);
-          if (!alive) return;
-          chunks.push(...page.chunks);
-          if (page.after === null) break;
-          position = { kind: 'after', cursor: page.after };
+        if (historyWindow()?.after === null) {
+          const last = rows().at(-1);
+          let position: HistoryPosition = last
+            ? {
+                kind: 'after',
+                cursor: {
+                  position: last.position!,
+                  field: last.field as 'body' | 'thinking',
+                  offset: last.fragments!.at(-1)!.offset,
+                },
+              }
+            : { kind: 'start' };
+          const chunks: AgentHistoryChunk[] = [];
+          for (;;) {
+            const page = await history(fence, position);
+            if (!ownsWindow(owner.identity)) return;
+            chunks.push(...page.chunks);
+            if (page.after === null) break;
+            position = { kind: 'after', cursor: page.after };
+          }
+          publishHistory(chunks, fence);
+          const current = historyWindow()!;
+          historyWindow.set({ ...current, through: fence, after: null });
         }
-        // A completed message replaces its live text as one canonical read,
-        // rather than shrinking it to the first transport page on the way.
-        publishHistory(chunks, fence);
         const currentLive = live();
         const nextLive = currentLive.filter(
           (row) => row.closedAt === null || row.closedAt! > fence,
@@ -632,21 +765,31 @@ export function Conversation(props: ConversationProps) {
         if (nextLive.length !== currentLive.length) live.set(nextLive);
         const refresh = refreshFrom;
         refreshFrom = null;
-        if (refresh !== null) {
-          const metadataFence = latestKnown;
-          // Completion changes metadata on earlier multipart output as well.
-          // Never merge these newly budgeted fragments into already loaded text.
-          let cursor: any = {
+        const last = rows().at(-1);
+        if (refresh !== null && last?.position) {
+          let cursor: HistoryPosition = {
             kind: 'row',
             position: refresh.position,
-            field: refresh.field,
+            field: refresh.field as 'body' | 'thinking',
           };
           try {
             for (;;) {
-              const page = await history(metadataFence, cursor);
-              if (!alive) return;
+              const page = await history(fence, cursor);
+              if (!ownsWindow(owner.identity)) return;
               publishMetadata(page.chunks, page.through);
-              if (page.after === null) break;
+              // Metadata beyond the loaded viewport grants no reason to fetch
+              // the rest of an anchored history window.
+              if (
+                page.after === null ||
+                page.chunks.some((chunk) => {
+                  const order = comparePosition(chunk.position, last.position!);
+                  return (
+                    order > 0 ||
+                    (order === 0 && (chunk.field === 'body' || last.field === 'thinking'))
+                  );
+                })
+              )
+                break;
               cursor = { kind: 'after', cursor: page.after };
             }
           } catch (reason) {
@@ -654,11 +797,12 @@ export function Conversation(props: ConversationProps) {
             throw reason;
           }
         }
-      } while (alive && followAgain);
+      } while (ownsWindow(owner.identity) && followAgain);
     })()
       .catch((reason) => {
+        if (!ownsWindow(owner.identity)) return;
         followAgain = false;
-        if (alive && stream !== null && subscription === stream) {
+        if (stream !== null && subscription === stream) {
           readFailure = { stream, reason };
           transcriptStatus.set('closing');
           void stream.close().catch(report);
@@ -666,10 +810,12 @@ export function Conversation(props: ConversationProps) {
         throw reason;
       })
       .finally(() => {
+        if (followTask !== task) return;
         followTask = null;
         if (alive && followAgain) void follow().catch(report);
       });
-    return followTask;
+    followTask = task;
+    return task;
   };
 
   const openParts = (started: LivePart[]) => {
@@ -847,29 +993,18 @@ export function Conversation(props: ConversationProps) {
     watchLast = after;
     let failure: { reason: unknown } | null = null;
     try {
-      if (ready()) {
-        // Fill the gap from the existing canonical tail, retaining loaded
-        // history and the native reader anchor instead of jumping to the end.
-        await follow();
-      } else {
-        let position: any = { kind: 'tail' };
-        for (;;) {
-          const page = await history(observed.through, position);
-          if (!alive) return;
-          if (page.chunks.length === 0 && page.before !== null) {
-            position = { kind: 'before', cursor: page.before };
-            continue;
-          }
-          before.set(page.before);
-          publishHistory(page.chunks, page.through);
-          ready.set(true);
-          list?.scrollToEnd({ animated: false });
-          break;
-        }
-      }
+      // Recall may have opened its exact window before initial history arrived.
+      while (windowTask !== null) await windowTask;
+      if (!alive) return;
+      if (ready()) await follow();
+      else if (
+        !historyDestination.explicit &&
+        (await resetHistory(historyDestination.position, observed.through))
+      )
+        list?.scrollToEnd({ animated: false });
       if (!alive) return;
       transcriptStatus.set('live');
-      error.set('');
+      if (!historyDestination.failed) error.set('');
       // Subscribe before reading history so facts cannot fall between fences.
       // The snapshot is sufficient for readiness; no new event is required.
       for (;;) {
@@ -950,139 +1085,205 @@ export function Conversation(props: ConversationProps) {
     else if (transcriptTask === null) startTranscript();
   };
 
-  // Automatic paging, Home and Turn jumps await the same native-history read.
-  const loadOlder = (): Promise<boolean> => {
-    if (olderTask) return olderTask;
-    if (!alive || !ready() || before() === null) return Promise.resolve(false);
-    const fence = latestKnown;
-    olderTask = (async () => {
-      let position: any = { kind: 'before', cursor: before() };
+  const extendHistory = (direction: 'before' | 'after'): Promise<boolean> => {
+    const pending = direction === 'before' ? olderTask : newerTask;
+    if (pending) return pending;
+    const owner = historyWindow();
+    const edge = owner?.[direction];
+    if (!owner || !edge || !ownsWindow(owner.identity)) return Promise.resolve(false);
+    const task = (async () => {
+      let position: HistoryPosition = { kind: direction, cursor: edge };
       for (;;) {
-        const page = await history(fence, position);
-        if (!alive) return false;
-        before.set(page.before);
-        if (page.chunks.length || page.before === null) {
-          publishHistory(page.chunks, page.through, true);
-          if (page.through < latestKnown) {
-            requestMetadata(page.chunks[0]);
+        const page = await history(owner.through, position);
+        if (!ownsWindow(owner.identity)) return false;
+        const current = historyWindow()!;
+        historyWindow.set({ ...current, [direction]: page[direction] });
+        if (page.chunks.length || page[direction] === null) {
+          publishHistory(page.chunks, page.through, direction === 'before');
+          if (historyWindow()?.after === null && latestKnown > page.through)
             void follow().catch(report);
-          }
           return true;
         }
-        position = { kind: 'before', cursor: page.before };
+        position = { kind: direction, cursor: page[direction]! };
       }
     })()
       .catch((reason) => {
-        report(reason);
+        if (ownsWindow(owner.identity)) report(reason);
         return false;
       })
       .finally(() => {
-        olderTask = null;
+        if (direction === 'before' && olderTask === task) olderTask = null;
+        if (direction === 'after' && newerTask === task) newerTask = null;
       });
-    return olderTask;
+    if (direction === 'before') olderTask = task;
+    else newerTask = task;
+    return task;
   };
+  const loadOlder = () => extendHistory('before');
+  const loadNewer = () => extendHistory('after');
   const cancelNavigation = (turnId = navigatingTurn()) => {
     if (!alive || turnId !== navigatingTurn()) return;
     navigation.set(null);
+    if (windowTask !== null) {
+      // A user scroll/focus change also revokes a pending replacement page.
+      // Preserve the displayed window, never revive its earlier requests.
+      historyIdentity = {};
+      const current = historyWindow();
+      if (current) historyWindow.set({ ...current, identity: historyIdentity });
+      windowTask = null;
+      olderTask = null;
+      newerTask = null;
+      followTask = null;
+      followAgain = false;
+    }
   };
   const navigateStart = async () => {
-    if (!alive || !ready()) return;
+    if (!alive) return;
     const target: HistoryNavigation = { kind: 'start' };
+    historyDestination = { position: { kind: 'start' }, explicit: true, failed: false };
     navigation.set(target);
-    innerReader.set(null);
-    awayFromLatest.set(true);
     try {
-      while (alive && navigation() === target && before() !== null) {
-        const previous = before();
-        if (!(await loadOlder())) return;
-        if (!alive || navigation() !== target) return;
-        if (
-          before() !== null &&
-          comparePosition(before().position, previous.position) === 0 &&
-          before().field === previous.field &&
-          before().offset === previous.offset
-        ) {
-          notice.set(
-            uiMessage('Older history did not advance. The beginning could not be reached.'),
-          );
-          return;
-        }
-      }
+      const observed = await observe();
       if (!alive || navigation() !== target) return;
-      const first = displayKeys()[0];
-      if (first !== undefined)
-        list?.scrollToIndex({
-          index: displayKeys().indexOf(first),
+      if (
+        !(await resetHistory(
+          { kind: 'start' },
+          observed.through,
+          undefined,
+          () => navigation() === target,
+        ))
+      )
+        return;
+      if (navigation() === target)
+        list?.scrollToIndex({ index: 0, viewPosition: 0, animated: false });
+    } finally {
+      if (navigation() === target) navigation.set(null);
+    }
+  };
+  const revealRow = (row: Row) => {
+    reading.set('chat');
+    if (row.turnId) {
+      const turn = projection().turns.get(row.turnId);
+      if (turn) turnState(turn.turnId).expanded.set({ open: true, answerKey: turn.answerKey });
+    }
+    const id = stableRowId(row);
+    const entry = display().find((item) =>
+      item.kind === 'row'
+        ? item.rowId === id
+        : item.kind === 'process' && item.group.rowIds.includes(id),
+    );
+    if (!entry) throw new UiError('The original message is not available in this conversation.');
+    if (entry.kind === 'process') {
+      const state = groupState(entry.key);
+      state.following.set(false);
+      state.opening = undefined;
+      state.revealRow = id;
+      state.open.set(true);
+      state.requestFocus = true;
+      innerReader.set(entry.key);
+      if (state.list) {
+        state.list.scrollToIndex({
+          index: entry.group.rowIds.indexOf(id),
           viewPosition: 0,
           animated: false,
         });
+        state.list.focus();
+        state.revealRow = undefined;
+        state.requestFocus = false;
+      }
+    } else {
+      innerReader.set(null);
+      list?.focus();
+    }
+    awayFromLatest.set(true);
+    list?.scrollToIndex({
+      index: displayKeys().indexOf(entry.key),
+      viewPosition: 0,
+      animated: false,
+    });
+  };
+  const reveal = async (anchor: ConversationAnchor, current: () => boolean) => {
+    if (!alive) throw new UiError('This conversation is closed.');
+    if (!current()) throw new UiError('History navigation was cancelled.');
+    const target: HistoryNavigation = { kind: 'message', anchor };
+    const destination = {
+      position: { kind: 'row' as const, position: anchor.position, field: 'body' as const },
+      explicit: true,
+      failed: false,
+    };
+    historyDestination = destination;
+    navigation.set(target);
+    try {
+      const observed = await observe();
+      if (!alive || navigation() !== target || !current())
+        throw new UiError('History navigation was cancelled.');
+      const opened = await resetHistory(
+        { kind: 'row', position: anchor.position, field: 'body' },
+        observed.through,
+        (page) => {
+          if (
+            !page.chunks.some(
+              (chunk) =>
+                chunk.messageId === anchor.messageId &&
+                chunk.field === 'body' &&
+                chunk.offset === 0 &&
+                comparePosition(chunk.position, anchor.position) === 0,
+            )
+          )
+            throw new UiError('The original message could not be verified.');
+        },
+        () => navigation() === target && current(),
+      );
+      if (!opened || !alive || navigation() !== target || !current())
+        throw new UiError('History navigation was cancelled.');
+      const row = rows().find(
+        (candidate) =>
+          candidate.messageId === anchor.messageId &&
+          candidate.field === 'body' &&
+          candidate.position &&
+          comparePosition(candidate.position, anchor.position) === 0,
+      );
+      if (!row) throw new UiError('The original message is no longer available.');
+      if (!current()) throw new UiError('History navigation was cancelled.');
+      revealRow(row);
+    } catch (reason) {
+      if (historyDestination === destination) destination.failed = true;
+      if (alive && current() && navigation() === target) report(reason);
+      throw reason;
     } finally {
       if (navigation() === target) navigation.set(null);
     }
   };
   const navigateTurn = async (item: TurnNavigationItem) => {
-    if (!alive || !ready()) return;
+    if (!alive) return;
     const target: HistoryNavigation = { kind: 'turn', item };
+    historyDestination = {
+      position: { kind: 'event', sequence: item.anchor.position.sourceSequence },
+      explicit: true,
+      failed: false,
+    };
     navigation.set(target);
-    innerReader.set(null);
     try {
-      if (item.anchor.kind === 'landmark') {
-        const landmark = item.anchor;
-        // The raw Turn opening may itself be omitted from conversation history.
-        // Load past that boundary, then choose a real display seat in its bounds.
-        while (
-          alive &&
-          navigation() === target &&
-          before() !== null &&
-          (comparePosition(before().position, landmark.position) > 0 ||
-            (comparePosition(before().position, landmark.position) === 0 && before().offset > 0))
-        ) {
-          const previous = before();
-          if (!(await loadOlder())) return;
-          if (
-            before() !== null &&
-            comparePosition(before().position, previous.position) === 0 &&
-            before().field === previous.field &&
-            before().offset === previous.offset
-          ) {
-            notice.set(uiMessage('Older history did not advance. This turn could not be reached.'));
-            return;
-          }
-        }
-      }
+      const observed = await observe();
       if (!alive || navigation() !== target) return;
-      const targetRows = new Set(
-        rows()
-          .filter(
-            (row) =>
-              row.turnId === item.turnId &&
-              (item.anchor.kind === 'loaded' ||
-                (row.position &&
-                  comparePosition(row.position, item.anchor.position) >= 0 &&
-                  comparePosition(row.position, item.anchor.lastPosition) <= 0)),
-          )
-          .map(stableRowId),
-      );
-      const index =
-        targetRows.size === 0
-          ? -1
-          : display().findIndex((entry) =>
-              entry.kind === 'summary'
-                ? entry.turnId === item.turnId
-                : entry.kind === 'row'
-                  ? targetRows.has(entry.rowId)
-                  : entry.group.turnId === item.turnId &&
-                    entry.group.rowIds.some((id) => targetRows.has(id)),
-            );
-      if (index < 0) {
-        notice.set(uiMessage('This turn has no visible messages in the current reading mode.'));
+      if (
+        !(await resetHistory(
+          { kind: 'event', sequence: item.anchor.position.sourceSequence },
+          observed.through,
+          (page) => {
+            if (!page.chunks.some((chunk) => chunk.turnId === item.turnId))
+              throw new UiError('This turn is no longer available.');
+          },
+          () => navigation() === target,
+        ))
+      )
         return;
-      }
-      awayFromLatest.set(true);
-      list?.scrollToIndex({ index, viewPosition: 0 });
-      list?.focus();
+      if (navigation() !== target) return;
+      const row = rows().find((candidate) => candidate.turnId === item.turnId);
+      if (!row) throw new UiError('This turn is no longer available.');
+      revealRow(row);
     } finally {
-      if (navigation() === target) cancelNavigation();
+      if (navigation() === target) navigation.set(null);
     }
   };
 
@@ -1548,6 +1749,7 @@ export function Conversation(props: ConversationProps) {
       cancelNavigation();
       props.focusComposer();
     },
+    reveal,
     focusHistory() {
       cancelNavigation();
       list?.focus();
@@ -1591,21 +1793,40 @@ export function Conversation(props: ConversationProps) {
     },
     jumpLatest(turnId) {
       if (!alive) return;
-      cancelNavigation();
-      awayFromLatest.set(false);
-      const targetTurn = turnId ?? runTurn();
-      const group = projection().entries.findLast(
-        (entry) => entry.kind === 'process' && entry.turnId === targetTurn,
-      );
-      if (group?.kind === 'process') {
-        const state = groupState(group.key);
-        state.following.set(true);
-        if (state.list) state.list.scrollToEnd({ animated: false });
-        else state.opening = 'bottom';
-      }
-      innerReader.set(null);
-      list?.scrollToEnd({ animated: false });
-      props.focusComposer();
+      const target: HistoryNavigation = { kind: 'tail' };
+      historyDestination = { position: { kind: 'tail' }, explicit: true, failed: false };
+      navigation.set(target);
+      void (async () => {
+        try {
+          const observed = await observe();
+          if (!alive || navigation() !== target) return;
+          if (
+            !(await resetHistory(
+              { kind: 'tail' },
+              observed.through,
+              undefined,
+              () => navigation() === target,
+            )) ||
+            navigation() !== target
+          )
+            return;
+          awayFromLatest.set(false);
+          innerReader.set(null);
+          const group = projection().entries.findLast(
+            (entry) => entry.kind === 'process' && entry.turnId === (turnId ?? runTurn()),
+          );
+          if (group?.kind === 'process') {
+            const state = groupState(group.key);
+            state.following.set(true);
+            if (state.list) state.list.scrollToEnd({ animated: false });
+            else state.opening = 'bottom';
+          }
+          list?.scrollToEnd({ animated: false });
+          props.focusComposer();
+        } finally {
+          if (navigation() === target) navigation.set(null);
+        }
+      })().catch(report);
     },
     stop,
     async compact(prompt) {
@@ -1630,10 +1851,136 @@ export function Conversation(props: ConversationProps) {
     },
     refresh: observe,
   };
+  const readTarget = () => {
+    const observed = readState();
+    const exposure = readExposure();
+    if (
+      !alive ||
+      !props.visible() ||
+      !props.foreground() ||
+      !observed.hasUnread ||
+      !ready() ||
+      !atHistoryTail() ||
+      awayFromLatest() ||
+      navigation() !== null ||
+      invocation() !== null ||
+      observed.through < runThrough ||
+      (historyWindow()?.through ?? -1) < observed.through ||
+      observed.tailMessageId === null
+    )
+      return null;
+    const tail = rows().findLast((row) => row.messageId === observed.tailMessageId);
+    if (!tail?.position) return null;
+    const id = stableRowId(tail);
+    const entry = display().find((item) =>
+      item.kind === 'row'
+        ? item.rowId === id
+        : item.kind === 'process' && item.group.rowIds.includes(id),
+    );
+    if (!entry || !visibleRows().has(entry.key)) return null;
+    if (entry.kind === 'process') {
+      const state = groupState(entry.key);
+      if (
+        !state.open() ||
+        !state.visibleRows().has(id) ||
+        (innerReader() !== null && innerReader() !== entry.key) ||
+        !state.list ||
+        !state.rowNodes.get(id) ||
+        !list
+      )
+        return null;
+      return {
+        kind: 'process' as const,
+        observed,
+        exposure,
+        tail,
+        state,
+        row: state.rowNodes.get(id)!,
+        reader: state.list,
+        viewport: list,
+        lease: state.lease,
+        identity: historyIdentity,
+      };
+    }
+    if (innerReader() !== null) return null;
+    return { kind: 'row' as const, observed, exposure, tail, identity: historyIdentity };
+  };
+  effect(() => {
+    if (!props.visible() || !props.foreground()) {
+      attemptedRead = null;
+      return;
+    }
+    if (acknowledging()) return;
+    const target = readTarget();
+    if (!target) return;
+    if (
+      attemptedRead?.revision === target.observed.revision &&
+      attemptedRead.messageId === target.tail.messageId &&
+      attemptedRead.exposure === target.exposure
+    )
+      return;
+    attemptedRead = {
+      revision: target.observed.revision,
+      messageId: target.tail.messageId,
+      exposure: target.exposure,
+    };
+    acknowledging.set(true);
+    void (async () => {
+      if (target.kind === 'process') {
+        // Nested List viewability is local. Intersect the real row with both
+        // scroll viewports so a group header alone cannot acknowledge its tail.
+        const measured = await Promise.all([
+          target.row.measure(),
+          target.reader.measure(),
+          target.viewport.measure(),
+        ]);
+        if (measured.some((bounds) => bounds === null)) return;
+        const left = Math.max(...measured.map((bounds) => bounds!.pagePosition.x));
+        const top = Math.max(...measured.map((bounds) => bounds!.pagePosition.y));
+        const right = Math.min(
+          ...measured.map((bounds) => bounds!.pagePosition.x + bounds!.bounds.size.width),
+        );
+        const bottom = Math.min(
+          ...measured.map((bounds) => bounds!.pagePosition.y + bounds!.bounds.size.height),
+        );
+        if (left >= right || top >= bottom) return;
+      }
+      const current = readTarget();
+      if (
+        !current ||
+        current.identity !== target.identity ||
+        current.exposure !== target.exposure ||
+        current.observed.revision !== target.observed.revision ||
+        current.tail.messageId !== target.tail.messageId ||
+        (target.kind === 'process' &&
+          (current.kind !== 'process' ||
+            current.state !== target.state ||
+            current.lease !== target.lease))
+      )
+        return;
+      const attempt = await host.control('markRead', {
+        sessionId,
+        messageId: target.tail.messageId,
+      });
+      const reply = attempt.reply as OperationReply;
+      if (reply.receipt.kind !== 'recorded' || reply.receipt.outcome.kind !== 'returned')
+        throw new UiError('The read confirmation is still unknown.');
+      const result = reply.receipt.outcome.value as AgentMarkReadResult;
+      if (!alive) return;
+      if (result.kind === 'rejected')
+        throw new UiError('Read confirmation rejected: {reason}', { reason: result.reason });
+      acceptReadState(result.session);
+    })()
+      .catch(report)
+      .finally(() => {
+        if (alive) acknowledging.set(false);
+      });
+  });
   props.attach(ownHandle);
 
   cleanup(() => {
     alive = false;
+    historyIdentity = {};
     navigation.set(null);
     wakeReconnect?.();
     modelGeneration += 1;
@@ -1792,25 +2139,37 @@ export function Conversation(props: ConversationProps) {
         <View style={{ flex: 1, minHeight: 0, flexDirection: 'row' }}>
           <List
             ref={list}
-            onLayout={(frame) => readingSize.set(frame.size)}
+            onLayout={(frame) => {
+              readingSize.set(frame.size);
+              changedReadExposure();
+            }}
             each={displayKeys()}
             onScrollIntent={(event) => {
               if (event.intent === 'start') void navigateStart().catch(report);
               else cancelNavigation();
             }}
             onBlur={() => cancelNavigation()}
-            onViewableItemsChange={(event) =>
-              visibleTurn.set(entryTurn(event.viewableItems[0]?.item ?? ''))
-            }
+            onViewableItemsChange={(event) => {
+              visibleTurn.set(entryTurn(event.viewableItems[0]?.item ?? ''));
+              visibleRows.set(new Set(event.viewableItems.map((item) => item.item)));
+              changedReadExposure();
+            }}
             estimatedItemSize={96}
             maintainVisibleContentPosition={
-              innerReader() === null ? { autoscrollToBottomThreshold: 32 } : {}
+              atHistoryTail() &&
+              !awayFromLatest() &&
+              innerReader() === null &&
+              navigation() === null
+                ? { autoscrollToBottomThreshold: 32 }
+                : {}
             }
             contentStyle={{ paddingRight: 8 }}
             style={{ flex: 1, minHeight: 0 }}
             onScroll={(event) => {
+              changedReadExposure();
               awayFromLatest.set(
-                event.offset.y < Math.max(0, event.contentSize.height - event.size.height) - 32,
+                !atHistoryTail() ||
+                  event.offset.y < Math.max(0, event.contentSize.height - event.size.height) - 32,
               );
               const reader = innerReader();
               const row = reader === null ? undefined : projection().rowsById.get(reader);
@@ -1827,6 +2186,8 @@ export function Conversation(props: ConversationProps) {
               )
                 innerReader.set(null);
               if (event.offset.y <= 32) void loadOlder();
+              if (event.offset.y >= Math.max(0, event.contentSize.height - event.size.height) - 32)
+                void loadNewer();
             }}
             empty={
               <Text style={{ color: C.muted, paddingVertical: 32 }}>
@@ -1896,6 +2257,7 @@ export function Conversation(props: ConversationProps) {
                         activity={activity}
                         viewport={readingSize}
                         reading={(away) => {
+                          changedReadExposure();
                           if (away) innerReader.set(initial.group.key);
                           else if (innerReader() === initial.group.key) innerReader.set(null);
                         }}

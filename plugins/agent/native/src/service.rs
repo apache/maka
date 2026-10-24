@@ -1035,6 +1035,7 @@ pub(crate) fn summary_for(
         updated_at: session.updated_at,
         archived: session.archived,
         has_unread: session.read_state.has_unread,
+        tail_message_id: session.last_message.map(|message| message.tail_message_id),
     }
 }
 fn delivery(event: StoreStreamEvent) -> Delivery {

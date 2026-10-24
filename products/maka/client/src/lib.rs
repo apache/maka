@@ -47,11 +47,12 @@ use uuid::Uuid;
 
 pub type Result<T> = std::result::Result<T, String>;
 
-const CONTROL_METHODS: [&str; 10] = [
+const CONTROL_METHODS: [&str; 11] = [
     "create",
     "trustProjectMcp",
     "selectBackend",
     "compact",
+    "markRead",
     "stop",
     "respond",
     "editQueue",

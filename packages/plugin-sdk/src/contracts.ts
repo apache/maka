@@ -7591,6 +7591,11 @@ export const contracts = {
                   hasUnread: {
                     type: 'boolean',
                   },
+                  tailMessageId: {
+                    description:
+                      'Exact durable visible tail accepted by markRead; independent of preview clocks.',
+                    type: ['string', 'null'],
+                  },
                   activity: {
                     $ref: '#/$defs/AgentSessionActivity',
                   },
@@ -7609,6 +7614,7 @@ export const contracts = {
                   'updatedAt',
                   'archived',
                   'hasUnread',
+                  'tailMessageId',
                   'activity',
                 ],
               },
@@ -8652,6 +8658,11 @@ export const contracts = {
                   hasUnread: {
                     type: 'boolean',
                   },
+                  tailMessageId: {
+                    description:
+                      'Exact durable visible tail accepted by markRead; independent of preview clocks.',
+                    type: ['string', 'null'],
+                  },
                   activity: {
                     $ref: '#/$defs/AgentSessionActivity',
                   },
@@ -8670,6 +8681,7 @@ export const contracts = {
                   'updatedAt',
                   'archived',
                   'hasUnread',
+                  'tailMessageId',
                   'activity',
                 ],
               },
@@ -9675,6 +9687,11 @@ export const contracts = {
                   hasUnread: {
                     type: 'boolean',
                   },
+                  tailMessageId: {
+                    description:
+                      'Exact durable visible tail accepted by markRead; independent of preview clocks.',
+                    type: ['string', 'null'],
+                  },
                   activity: {
                     $ref: '#/$defs/AgentSessionActivity',
                   },
@@ -9693,6 +9710,7 @@ export const contracts = {
                   'updatedAt',
                   'archived',
                   'hasUnread',
+                  'tailMessageId',
                   'activity',
                 ],
               },
@@ -11515,6 +11533,11 @@ export const contracts = {
                   hasUnread: {
                     type: 'boolean',
                   },
+                  tailMessageId: {
+                    description:
+                      'Exact durable visible tail accepted by markRead; independent of preview clocks.',
+                    type: ['string', 'null'],
+                  },
                   activity: {
                     $ref: '#/$defs/AgentSessionActivity',
                   },
@@ -11533,6 +11556,7 @@ export const contracts = {
                   'updatedAt',
                   'archived',
                   'hasUnread',
+                  'tailMessageId',
                   'activity',
                 ],
               },
@@ -11998,6 +12022,11 @@ export const contracts = {
                   hasUnread: {
                     type: 'boolean',
                   },
+                  tailMessageId: {
+                    description:
+                      'Exact durable visible tail accepted by markRead; independent of preview clocks.',
+                    type: ['string', 'null'],
+                  },
                   activity: {
                     $ref: '#/$defs/AgentSessionActivity',
                   },
@@ -12016,6 +12045,7 @@ export const contracts = {
                   'updatedAt',
                   'archived',
                   'hasUnread',
+                  'tailMessageId',
                   'activity',
                 ],
               },
@@ -14305,6 +14335,11 @@ export const contracts = {
                   hasUnread: {
                     type: 'boolean',
                   },
+                  tailMessageId: {
+                    description:
+                      'Exact durable visible tail accepted by markRead; independent of preview clocks.',
+                    type: ['string', 'null'],
+                  },
                   activity: {
                     $ref: '#/$defs/AgentSessionActivity',
                   },
@@ -14323,6 +14358,7 @@ export const contracts = {
                   'updatedAt',
                   'archived',
                   'hasUnread',
+                  'tailMessageId',
                   'activity',
                 ],
               },
@@ -15284,6 +15320,11 @@ export const contracts = {
                   hasUnread: {
                     type: 'boolean',
                   },
+                  tailMessageId: {
+                    description:
+                      'Exact durable visible tail accepted by markRead; independent of preview clocks.',
+                    type: ['string', 'null'],
+                  },
                   activity: {
                     $ref: '#/$defs/AgentSessionActivity',
                   },
@@ -15302,6 +15343,7 @@ export const contracts = {
                   'updatedAt',
                   'archived',
                   'hasUnread',
+                  'tailMessageId',
                   'activity',
                 ],
               },
@@ -16663,6 +16705,11 @@ export const contracts = {
                   hasUnread: {
                     type: 'boolean',
                   },
+                  tailMessageId: {
+                    description:
+                      'Exact durable visible tail accepted by markRead; independent of preview clocks.',
+                    type: ['string', 'null'],
+                  },
                   activity: {
                     $ref: '#/$defs/AgentSessionActivity',
                   },
@@ -16681,6 +16728,7 @@ export const contracts = {
                   'updatedAt',
                   'archived',
                   'hasUnread',
+                  'tailMessageId',
                   'activity',
                 ],
               },
@@ -17177,6 +17225,11 @@ export const contracts = {
                   hasUnread: {
                     type: 'boolean',
                   },
+                  tailMessageId: {
+                    description:
+                      'Exact durable visible tail accepted by markRead; independent of preview clocks.',
+                    type: ['string', 'null'],
+                  },
                   activity: {
                     $ref: '#/$defs/AgentSessionActivity',
                   },
@@ -17195,6 +17248,7 @@ export const contracts = {
                   'updatedAt',
                   'archived',
                   'hasUnread',
+                  'tailMessageId',
                   'activity',
                 ],
               },
@@ -17670,6 +17724,11 @@ export const contracts = {
                   hasUnread: {
                     type: 'boolean',
                   },
+                  tailMessageId: {
+                    description:
+                      'Exact durable visible tail accepted by markRead; independent of preview clocks.',
+                    type: ['string', 'null'],
+                  },
                   activity: {
                     $ref: '#/$defs/AgentSessionActivity',
                   },
@@ -17688,6 +17747,7 @@ export const contracts = {
                   'updatedAt',
                   'archived',
                   'hasUnread',
+                  'tailMessageId',
                   'activity',
                 ],
               },
@@ -18093,6 +18153,11 @@ export const contracts = {
                   hasUnread: {
                     type: 'boolean',
                   },
+                  tailMessageId: {
+                    description:
+                      'Exact durable visible tail accepted by markRead; independent of preview clocks.',
+                    type: ['string', 'null'],
+                  },
                   activity: {
                     $ref: '#/$defs/AgentSessionActivity',
                   },
@@ -18111,6 +18176,7 @@ export const contracts = {
                   'updatedAt',
                   'archived',
                   'hasUnread',
+                  'tailMessageId',
                   'activity',
                 ],
               },
@@ -20448,6 +20514,8 @@ export const contracts = {
                 minLength: 1,
               },
               limit: {
+                description:
+                  'An explicit caller-selected result budget; omission retains all matching results.',
                 type: ['integer', 'null'],
                 format: 'uint',
                 minimum: 1,
@@ -20575,6 +20643,11 @@ export const contracts = {
                   hasUnread: {
                     type: 'boolean',
                   },
+                  tailMessageId: {
+                    description:
+                      'Exact durable visible tail accepted by markRead; independent of preview clocks.',
+                    type: ['string', 'null'],
+                  },
                   activity: {
                     $ref: '#/$defs/AgentSessionActivity',
                   },
@@ -20593,6 +20666,7 @@ export const contracts = {
                   'updatedAt',
                   'archived',
                   'hasUnread',
+                  'tailMessageId',
                   'activity',
                 ],
               },
@@ -20839,6 +20913,8 @@ export const contracts = {
                     $ref: '#/$defs/HistoryRowPosition',
                   },
                   excerpt: {
+                    description:
+                      'Complete text of the original anchor message; rendering may choose a preview.',
                     type: 'string',
                   },
                   matchedTerms: {
@@ -24245,6 +24321,11 @@ export const contracts = {
                   hasUnread: {
                     type: 'boolean',
                   },
+                  tailMessageId: {
+                    description:
+                      'Exact durable visible tail accepted by markRead; independent of preview clocks.',
+                    type: ['string', 'null'],
+                  },
                   activity: {
                     $ref: '#/$defs/AgentSessionActivity',
                   },
@@ -24263,6 +24344,7 @@ export const contracts = {
                   'updatedAt',
                   'archived',
                   'hasUnread',
+                  'tailMessageId',
                   'activity',
                 ],
               },
@@ -29455,6 +29537,11 @@ export const contracts = {
                   hasUnread: {
                     type: 'boolean',
                   },
+                  tailMessageId: {
+                    type: ['string', 'null'],
+                    description:
+                      'Exact durable visible tail accepted by markRead; independent of preview clocks.',
+                  },
                   activity: {
                     $ref: '#/$defs/AgentSessionActivity',
                   },
@@ -29472,6 +29559,7 @@ export const contracts = {
                   'updatedAt',
                   'archived',
                   'hasUnread',
+                  'tailMessageId',
                   'activity',
                 ],
               },
@@ -30900,6 +30988,11 @@ export const contracts = {
                   hasUnread: {
                     type: 'boolean',
                   },
+                  tailMessageId: {
+                    type: ['string', 'null'],
+                    description:
+                      'Exact durable visible tail accepted by markRead; independent of preview clocks.',
+                  },
                   activity: {
                     $ref: '#/$defs/AgentSessionActivity',
                   },
@@ -30917,6 +31010,7 @@ export const contracts = {
                   'updatedAt',
                   'archived',
                   'hasUnread',
+                  'tailMessageId',
                   'activity',
                 ],
               },

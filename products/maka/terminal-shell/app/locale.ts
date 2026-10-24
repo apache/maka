@@ -26,6 +26,7 @@ import { commonMessages } from './locale-common';
 import { conversationMessages } from './locale-conversation';
 import { settingsMessages } from './locale-settings';
 import { workspaceMessages } from './locale-workspace';
+import { recallMessages } from './locale-recall';
 
 const nativeLocale = nativeHost.systemLocale;
 const currentLocale = signal(resolveLocale('auto', nativeLocale));
@@ -36,6 +37,7 @@ const copy = createCopy({
   ...composerMessages,
   ...settingsMessages,
   ...workspaceMessages,
+  ...recallMessages,
 });
 export type MessageKey = keyof ReturnType<typeof copy>;
 

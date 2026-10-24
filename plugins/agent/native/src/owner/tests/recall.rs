@@ -27,7 +27,7 @@ use maka_capabilities::storage::Namespace;
 use maka_event_log::sessions::PluginSession;
 use maka_plugin_core::scope::Scope as StorageScope;
 
-async fn imported(f: &Fixture, title: &str, prefix: &str) -> String {
+async fn imported(f: &Fixture, title: &str, prefix: &str, answer: &str) -> String {
     let seed = f.create(title).await;
     let configuration = f.owner.session(&seed).await.unwrap().configuration;
     let session = format!("{prefix}{}", Uuid::new_v4().simple());
@@ -61,7 +61,7 @@ async fn imported(f: &Fixture, title: &str, prefix: &str) -> String {
                     source_turn_id: "one".into(),
                     timestamp: Some(2000),
                     content: Content::Assistant {
-                        text: "The original café answer".into(),
+                        text: answer.into(),
                         thinking: None,
                         model: None,
                     },
@@ -86,8 +86,8 @@ async fn imported(f: &Fixture, title: &str, prefix: &str) -> String {
 async fn recall_native_queries_keep_unicode_dates_titles_namespace_and_exact_history_anchor() {
     tokio::time::timeout(Duration::from_secs(45), async {
         let f = Fixture::new("http://127.0.0.1:1/v1", None).await;
-        let session = imported(&f, "A café conversation", &f.owner.prefix).await;
-        let foreign = imported(&f, "Foreign conversation", "other_").await;
+        let session = imported(&f, "A café conversation", &f.owner.prefix, "The original café answer").await;
+        let foreign = imported(&f, "Foreign conversation", "other_", "The original café answer").await;
         let found = f.query("recall", json!({"terms":["CAFÉ"],"since":1000,"until":2000})).await.unwrap();
         assert_eq!(found["complete"], true, "{found}");
         assert_eq!(found["titles"], json!([]));
@@ -105,6 +105,27 @@ async fn recall_native_queries_keep_unicode_dates_titles_namespace_and_exact_his
         assert!(f.query("recall", json!({"terms":["café"],"session_id":foreign})).await.is_err());
         assert!(f.app.client().start(f.binding(2).await, "recall".into(), json!({"terms":["café"]}), scope(&f.issuer,false), Attachments::new().into()).await.is_err());
         assert!(f.query("recall", json!({"terms":[],"since":2000,"until":1000})).await.is_err());
+        let long = format!("needle cafe\u{301} {}\n终点", "字".repeat(6000));
+        let mut long_session = String::new();
+        for index in 0..12 {
+            let answer = if index == 11 { long.as_str() } else { "needle short answer" };
+            let id = imported(&f, &format!("needle title {index}"), &f.owner.prefix, answer).await;
+            if index == 11 { long_session = id; }
+        }
+        let found = f.query("recall", json!({"terms":["needle"]})).await.unwrap();
+        assert_eq!(found["complete"], true, "{found}");
+        assert_eq!(found["titles"].as_array().unwrap().len(), 24, "both seed and imported titles remain searchable");
+        let passages = found["passages"].as_array().unwrap();
+        assert_eq!(passages.len(), 12, "title matches must not consume an implicit passage budget");
+        let hit = passages.iter().find(|hit| hit["session"]["id"] == long_session).unwrap();
+        assert_eq!(hit["excerpt"], long, "the full source anchor preserves Unicode and its tail");
+        let through = f.query("observe", json!({"sessionId":long_session})).await.unwrap()["through"].clone();
+        let page = f.query("history", json!({"sessionId":long_session,"through":through,"position":{"kind":"row","position":hit["anchorPosition"],"field":"body"}})).await.unwrap();
+        assert_eq!(page["chunks"][0]["messageId"], hit["anchorMessageId"]);
+        assert_eq!(page["chunks"][0]["totalBytes"], long.len());
+        let limited = f.query("recall", json!({"terms":["needle"],"since":0,"limit":3})).await.unwrap();
+        assert_eq!(limited["titles"], json!([]));
+        assert_eq!(limited["passages"].as_array().unwrap().len(), 3);
         f.app.shutdown().await.unwrap();
     }).await.unwrap();
 }
@@ -120,7 +141,7 @@ async fn recall_native_model_tools_expand_exclude_active_turn_and_retain_materia
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let f = Fixture::configured(&format!("http://{}/v1",listener.local_addr().unwrap()),None,None,None,|settings| settings.recall=true).await;
         images::enable_vision(&f).await;
-        let source = imported(&f, "Earlier conversation", &f.owner.prefix).await;
+        let source = imported(&f, "Earlier conversation", &f.owner.prefix, "The original café answer").await;
         let found = f.query("recall",json!({"terms":["café"],"session_id":source})).await.unwrap();
         let anchor = found["passages"][0]["anchorMessageId"].clone();
         let bytes = b"historical attachment contents\nsecond line";
@@ -199,7 +220,7 @@ async fn recall_native_privacy_revokes_offered_tools_and_pending_queries() {
             |settings| settings.recall = true,
         )
         .await;
-        let source = imported(&f, "Private source", &f.owner.prefix).await;
+        let source = imported(&f, "Private source", &f.owner.prefix, "The original café answer").await;
         let target = f.create("Privacy transition").await;
         let query = json!({"terms":["café"],"session_id":source});
         assert_eq!(

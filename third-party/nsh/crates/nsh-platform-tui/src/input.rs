@@ -1126,7 +1126,7 @@ impl Surface {
         }
     }
 
-    fn report_selection(&mut self, id: NodeId) {
+    pub(crate) fn report_selection(&mut self, id: NodeId) {
         let Some(node) = self.node(id) else { return };
         let (start, end) = node.editor.selection();
         self.emit_if(
@@ -1600,7 +1600,7 @@ impl Surface {
             KeyCode::Char(c) if !alt && !c.is_control() => {
                 let text = c.to_string();
                 self.key_press(id, text.clone());
-                self.edit_input(id, |editor, config| editor.replace(&text, config));
+                self.edit_input(id, |editor, config| editor.type_literal(&text, config));
                 true
             }
             KeyCode::Insert if shift => {

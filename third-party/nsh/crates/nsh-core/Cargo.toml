@@ -13,6 +13,8 @@ workspace = true
 
 [dependencies]
 unicode-linebreak.workspace = true
+unicode-segmentation.workspace = true
+regex.workspace = true
 rustc-hash.workspace = true
 slab.workspace = true
 taffy.workspace = true

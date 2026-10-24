@@ -68,6 +68,7 @@ crate::static_reactive!(ResizeMode: ResizeMode);
 crate::static_reactive!(ReturnKeyType: ReturnKeyType);
 crate::static_reactive!(SubmitBehavior: SubmitBehavior);
 crate::static_reactive!(PasteBehavior: PasteBehavior);
+crate::static_reactive!(Vec<crate::input_tokens::InputTokenRule>: Vec<crate::input_tokens::InputTokenRule>);
 crate::static_reactive!(crate::EllipsizeMode: crate::EllipsizeMode);
 crate::static_reactive!(JsonValue: JsonValue);
 crate::static_reactive!(StatusBarSetting: StatusBarSetting, crate::StatusBarStyle);
@@ -438,6 +439,14 @@ impl Input {
     /// Several lines, growing with the text (return adds a line).
     pub fn multiline(self, multiline: impl IntoReactive<bool>) -> Self {
         self.bind_prop(multiline, |multiline: bool| Prop::Multiline(multiline))
+    }
+
+    /// Styles and atomically edits token captures in the native text input.
+    pub fn tokens(
+        self,
+        tokens: impl IntoReactive<Vec<crate::input_tokens::InputTokenRule>>,
+    ) -> Self {
+        self.bind_prop(tokens, Prop::InputTokens)
     }
 
     /// At most `length` characters.

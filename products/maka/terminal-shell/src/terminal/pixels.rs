@@ -124,7 +124,7 @@ pub(super) fn run(
     caps: Capabilities,
     worker: &mut Option<super::GpuWorker>,
 ) -> Result<(), String> {
-    let mut setup = b"\x1b[?1003h\x1b[?1004h".to_vec();
+    let mut setup = b"\x1b[?1003h".to_vec();
     if matches!(caps.mouse, MouseCoordinates::Pixels(_)) {
         setup.extend_from_slice(b"\x1b[?1016h");
     }
@@ -397,7 +397,7 @@ pub(super) fn cleanup(presentation: &Presentation, failed: bool) -> Vec<u8> {
     }
     let inbox = state.pixels.as_ref().unwrap();
     let mut bytes = inbox.text_input.pending_release().unwrap_or_default();
-    bytes.extend_from_slice(b"\x1b[?1016l\x1b[?1004l\x1b[?1003l");
+    bytes.extend_from_slice(b"\x1b[?1016l\x1b[?1003l");
     match inbox.capabilities.protocol {
         Some(probe::Protocol::Kitty) => {
             let slots = state.pixel_probe.slots;

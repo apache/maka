@@ -1999,9 +1999,21 @@ fn paint_input(
     };
     let modifiers = text_modifiers(node.input.style);
     let selected_color = node.input.selection_color.unwrap_or(Color(0x388b_fdcc));
+    let mut tokens = node.editor.token_spans().iter().peekable();
     let (mut row, mut column) = (0usize, 0usize);
     let alignments = input_line_offsets(node, focused, actual_columns);
     for (offset, grapheme) in text.grapheme_indices(true) {
+        while tokens.peek().is_some_and(|span| span.range.end <= offset) {
+            tokens.next();
+        }
+        let token_style = if !placeholder && !node.input.secure {
+            tokens
+                .peek()
+                .filter(|span| span.range.contains(&offset))
+                .map(|span| span.style)
+        } else {
+            None
+        };
         if matches!(grapheme, "\n" | "\r" | "\r\n") {
             row += 1;
             column = 0;
@@ -2041,8 +2053,10 @@ fn paint_input(
                     width,
                     symbol,
                     clip,
-                    color,
-                    selected.then_some(selected_color),
+                    token_style.and_then(|style| style.color).unwrap_or(color),
+                    selected
+                        .then_some(selected_color)
+                        .or(token_style.and_then(|style| style.background_color)),
                     opacity,
                     modifiers,
                 );

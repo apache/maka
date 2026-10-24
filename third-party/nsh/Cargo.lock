@@ -3226,6 +3226,7 @@ dependencies = [
  "libc",
  "log",
  "nsh-macros",
+ "regex",
  "resvg",
  "rustc-hash",
  "serde",
@@ -3237,6 +3238,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.28.0",
  "unicode-linebreak",
+ "unicode-segmentation",
  "url",
  "windows-sys 0.61.2",
 ]

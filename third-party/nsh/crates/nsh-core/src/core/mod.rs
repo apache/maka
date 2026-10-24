@@ -3686,6 +3686,10 @@ impl<M: TextEngine> Core<M> {
                         c.multiline = multiline;
                         true
                     }
+                    Prop::InputTokens(tokens) => {
+                        c.tokens = tokens;
+                        false
+                    }
                     Prop::PlaceholderColor(color) => {
                         c.placeholder_color = color;
                         false

@@ -67,6 +67,7 @@ use gpui::{Font, FontFeatures, FontStyle, FontWeight, SharedString, TextSystem, 
 use nsh_core::{
     AutoCapitalize, Color, EventKind, EventPayload, InputConfig, NodeId, PayloadValue, Points,
     ReturnKeyType, SubmitBehavior, TextAlign,
+    input_tokens::InputTokenStyle,
     tailwind::state,
     text_edit::{self as model, Composition, Model, Unit, key_of, pasted, utf16_to_byte},
 };
@@ -345,13 +346,17 @@ impl InputState {
     }
 
     /// The text offset at editor point `(x, y)`.
-    fn hit(&self, x: f32, y: f32) -> usize {
+    fn hit(&self, x: f32, y: f32, caret: bool) -> usize {
         let Some(layout) = self.layout() else {
             return 0;
         };
         let (ox, oy) = self.origin(&layout);
-        let pos = layout.hit(x - ox, y - oy);
-        self.model.borrow().text_at(pos, self.secure())
+        let model = self.model.borrow();
+        let secure = self.secure();
+        let pos = layout.hit(x - ox, y - oy, |at| {
+            !caret || model.tokens().is_caret(model.text_at(at, secure))
+        });
+        model.text_at(pos, secure)
     }
 
     /// Scrolls so that the caret shows.
@@ -414,6 +419,24 @@ impl Hosted for InputState {
         let secure = config.secure;
         let color = self.text_color();
         let focused = self.focused.get();
+        let tokens = if secure {
+            Vec::new()
+        } else {
+            display_tokens(&model)
+        };
+
+        for (range, style) in &tokens {
+            let Some(tint) = style.background_color else {
+                continue;
+            };
+            for (x, y, rw, rh) in layout.rects(range.start, range.end) {
+                cx.fill_rect(
+                    crate::geom::rect(ox + x, oy + y, rw, rh),
+                    [style.border_radius.0; 4],
+                    tint,
+                );
+            }
+        }
 
         if focused && model.has_selection() {
             let (s, e) = model.selection();
@@ -448,10 +471,10 @@ impl Hosted for InputState {
                 } else {
                     (h - placeholder.height) / 2.0
                 };
-                paint_glyphs(cx, &placeholder, 0.0, y, tint);
+                paint_glyphs(cx, &placeholder, 0.0, y, tint, &[]);
             }
         } else {
-            paint_glyphs(cx, &layout, ox, oy, color);
+            paint_glyphs(cx, &layout, ox, oy, color, &tokens);
         }
 
         if let Some(c) = model.composition.as_ref().filter(|c| !c.text.is_empty()) {
@@ -518,21 +541,37 @@ impl Hosted for InputState {
 
 /// Paints `layout`'s glyphs with its origin at `(ox, oy)` (current
 /// coordinates).
-fn paint_glyphs(cx: &mut DrawCx<'_>, layout: &Layout, ox: f32, oy: f32, color: Color) {
+fn paint_glyphs(
+    cx: &mut DrawCx<'_>,
+    layout: &Layout,
+    ox: f32,
+    oy: f32,
+    color: Color,
+    tokens: &[(Range<u32>, InputTokenStyle)],
+) {
     if cx.culled() || layout.glyphs.is_empty() {
         return;
     }
     let size = px(layout.size * cx.transform_scale());
+    let tint = cx.color(color);
+    let colors: Vec<_> = tokens
+        .iter()
+        .filter_map(|(range, style)| style.color.map(|color| (range, cx.color(color))))
+        .collect();
     let mut glyphs = Vec::with_capacity(layout.glyphs.len());
     for line in &layout.lines {
         let y = oy + line.y + line.baseline;
         for g in &layout.glyphs[line.glyphs.clone()] {
-            glyphs.push((cx.map(ox + line.x + g.x, y), *g));
+            let index = colors.partition_point(|(range, _)| range.end <= g.offset);
+            let tint = colors
+                .get(index)
+                .filter(|(range, _)| range.contains(&g.offset))
+                .map_or(tint, |(_, color)| *color);
+            glyphs.push((cx.map(ox + line.x + g.x, y), *g, tint));
         }
     }
-    let tint = cx.color(color);
     cx.paint(|window, _| {
-        for (p, g) in glyphs {
+        for (p, g, tint) in glyphs {
             let result = if g.emoji {
                 window.paint_emoji(p, g.font, g.id, size)
             } else {
@@ -543,6 +582,32 @@ fn paint_glyphs(cx: &mut DrawCx<'_>, layout: &Layout, ox: f32, oy: f32, color: C
             }
         }
     });
+}
+
+/// Project committed source ranges into the shown text, leaving the IME's
+/// preedit unstyled even when it sits inside the token being typed.
+fn display_tokens(model: &Model) -> Vec<(Range<u32>, InputTokenStyle)> {
+    let mut shown = Vec::new();
+    let caret = model.caret();
+    let composition = model
+        .composition
+        .as_ref()
+        .filter(|c| !c.text.is_empty())
+        .map_or(0, |c| model::utf16_len(&c.text) as u32);
+    for span in model.tokens().spans() {
+        let start = model.to_display(span.range.start, false);
+        let end = model.to_display(span.range.end, false);
+        if composition > 0 && span.range.start <= caret && caret < span.range.end {
+            let at = model.to_display(caret, false);
+            if start < at {
+                shown.push((start..at, span.style));
+            }
+            shown.push((at + composition..end, span.style));
+        } else {
+            shown.push((start..end, span.style));
+        }
+    }
+    shown
 }
 
 /// The font of a text style, resolved as the engine's text resolves it
@@ -1202,7 +1267,7 @@ pub(crate) mod ime {
         let m = view.to_root()?;
         let (x, y) = m.unproject(f32::from(point.x) - ox, f32::from(point.y) - oy)?;
         let content = content_rect(&view, &input);
-        let at = input.hit(x - content.origin.x.0, y - content.origin.y.0);
+        let at = input.hit(x - content.origin.x.0, y - content.origin.y.0, true);
         let model = input.model.borrow();
         Some(model::byte_to_utf16(model.text(), at) as usize)
     }
@@ -1422,7 +1487,7 @@ fn insert(surface: &Surface, view: &NshView, input: &InputState, text: &str, typ
         return;
     }
     let max = input.config.borrow().max_length;
-    let inserted = input.model.borrow_mut().insert(text, max);
+    let inserted = input.model.borrow_mut().insert_input(text, max, typed);
     input.goal_x.set(None);
     if let Some(fit) = &inserted
         && !fit.is_empty()
@@ -1494,7 +1559,15 @@ pub(crate) fn config(surface: &Rc<Surface>, view: &NshView, config: &InputConfig
         }
     }
     let editable_changed = input.config.borrow().editable != config.editable;
+    let tokens_changed = input.model.borrow_mut().set_tokens(&config.tokens);
     *input.config.borrow_mut() = config.clone();
+    if tokens_changed {
+        // Token styles leave shaping and line metrics intact. The model
+        // may move a selection off a newly atomic range.
+        input.reveal();
+        report_selection(surface, view, &input);
+        view.changed();
+    }
     if editable_changed && input.focused.get() {
         // The input handler comes or goes with the next frame.
         surface.invalidate();
@@ -1779,8 +1852,11 @@ pub(crate) fn pointer(surface: &Rc<Surface>, view: &NshView, event: &ItemPointer
                 ime::unmark_text(surface);
             }
             set_focus(surface, Some(view));
-            let at = input.hit(x, y);
             let secure = input.secure();
+            // Word/line selection needs the point inside the token; its
+            // resulting range is made whole by the model. A single caret
+            // instead targets only legal atomic boundaries.
+            let at = input.hit(x, y, event.clicks <= 1 || secure);
             let drag = {
                 let mut model = input.model.borrow_mut();
                 match event.clicks {
@@ -1815,7 +1891,7 @@ pub(crate) fn pointer(surface: &Rc<Surface>, view: &NshView, event: &ItemPointer
             let Some(drag) = input.drag.get() else {
                 return false;
             };
-            let at = input.hit(x, y);
+            let at = input.hit(x, y, matches!(drag, Drag::Char));
             {
                 let mut model = input.model.borrow_mut();
                 match drag {
@@ -2247,10 +2323,9 @@ fn line_edge(input: &InputState, end: bool) -> usize {
     let secure = input.secure();
     let pos = input.model.borrow().display_caret(secure);
     let (start, stop) = layout.line_edges(pos);
-    input
-        .model
-        .borrow()
-        .text_at(if end { stop } else { start }, secure)
+    let model = input.model.borrow();
+    let at = model.text_at(if end { stop } else { start }, secure);
+    model.tokens().step(at, end)
 }
 
 /// Where Up / Down (a line) or Page Up / Down (a box) takes the caret,
@@ -2277,8 +2352,10 @@ fn vertical(input: &InputState, down: bool, page: bool) -> usize {
     if target > layout.height {
         return model.text().len();
     }
-    let at = layout.hit(goal, target);
-    model.text_at(at, secure)
+    let at = layout.hit(goal, target, |_| true);
+    // A directional key entering a wrapped atom must cross it, rather
+    // than snap back to the endpoint the caret just left.
+    model.tokens().step(model.text_at(at, secure), down)
 }
 
 // --- The caret's blinking ----------------------------------------------------
@@ -2471,5 +2548,31 @@ mod tests {
         // the text.
         assert_eq!(m.text_at(2, false), 1);
         assert_eq!(m.text_at(4, false), 2);
+
+        m.composition = None;
+        m.set_tokens(&[nsh_core::input_tokens::InputTokenRule::new(
+            "(?P<token>ab)",
+            InputTokenStyle::default(),
+            false,
+        )
+        .unwrap()]);
+        m.composition = composition("中", None);
+        assert_eq!(
+            display_tokens(&m)
+                .into_iter()
+                .map(|(r, _)| r)
+                .collect::<Vec<_>>(),
+            vec![0..1, 2..3]
+        );
+        m.composition = None;
+        m.select(0, 0);
+        m.composition = composition("中", None);
+        assert_eq!(
+            display_tokens(&m)
+                .into_iter()
+                .map(|(r, _)| r)
+                .collect::<Vec<_>>(),
+            vec![1..3]
+        );
     }
 }

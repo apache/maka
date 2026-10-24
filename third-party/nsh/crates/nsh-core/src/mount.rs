@@ -504,6 +504,8 @@ pub struct InputConfig {
     pub auto_correct: bool,
     /// Several lines (return inserts a line break).
     pub multiline: bool,
+    /// Styled and optionally atomic source ranges, matched natively.
+    pub tokens: Vec<crate::input_tokens::InputTokenRule>,
     /// Maximum length in UTF-16 units.
     pub max_length: Option<u32>,
     /// The user can edit the text.
@@ -561,6 +563,7 @@ impl Default for InputConfig {
             auto_capitalize: AutoCapitalize::Sentences,
             auto_correct: true,
             multiline: false,
+            tokens: Vec::new(),
             max_length: None,
             editable: true,
             blur_on_submit: true,

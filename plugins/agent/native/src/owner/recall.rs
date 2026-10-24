@@ -113,27 +113,35 @@ impl Recall {
             .await
             .map_err(|e| e.to_string())?;
         let mut title_matches = Vec::new();
-        for title in titles.into_iter().take(query.limit.unwrap_or(8)) {
+        for title in titles {
+            if query
+                .limit
+                .is_some_and(|limit| title_matches.len() == limit)
+            {
+                break;
+            }
             title_matches.push(crate::service::summary_for(
                 &self.data_source,
                 self.session(&title.id).await?,
             ));
         }
-        let found = search::search(self.clone(), call, &query)
+        let found = search::search(self.clone(), call, &query, search::Content::Anchor)
             .await
             .map_err(|e| e.to_string())?;
         let mut passages = Vec::new();
-        for passage in found
-            .passages
-            .into_iter()
-            .take(query.limit.unwrap_or(8).saturating_sub(title_matches.len()))
-        {
+        for passage in found.passages {
+            if query
+                .limit
+                .is_some_and(|limit| title_matches.len() + passages.len() == limit)
+            {
+                break;
+            }
             let session = self.session(&passage.session_id).await?;
             let excerpt = passage
                 .messages
                 .iter()
                 .find(|message| message.is_anchor)
-                .map(|message| message.text.chars().take(1024).collect())
+                .map(|message| message.text.clone())
                 .unwrap_or_default();
             passages.push(RecallPassage {
                 session: crate::service::summary_for(&self.data_source, session),
@@ -337,7 +345,16 @@ impl ToolPreparer for Recall {
                         }
                         let found = match input {
                             Input::Search(query) => {
-                                search::search(recall.clone(), call, &query).await?
+                                search::search(
+                                    recall.clone(),
+                                    call,
+                                    &query,
+                                    search::Content::Context {
+                                        before: 4,
+                                        after: 4,
+                                    },
+                                )
+                                .await?
                             }
                             Input::More(more) => search::more(recall.clone(), call, &more).await?,
                             Input::Material(_) => unreachable!(),

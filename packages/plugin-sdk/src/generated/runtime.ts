@@ -7200,6 +7200,10 @@ export interface AgentSession {
   updatedAt: number;
   archived: boolean;
   hasUnread: boolean;
+  /**
+   * Exact durable visible tail accepted by markRead; independent of preview clocks.
+   */
+  tailMessageId: string | null;
   activity: AgentSessionActivity;
 }
 /**
@@ -8845,6 +8849,9 @@ export interface RecallQuery {
    */
   terms: [string, ...string[]];
   question?: string | null;
+  /**
+   * An explicit caller-selected result budget; omission retains all matching results.
+   */
   limit?: number | null;
   session_id?: string | null;
   since?: number | null;
@@ -8860,6 +8867,9 @@ export interface AgentRecallPassage {
   session: AgentSession;
   anchorMessageId: string;
   anchorPosition: HistoryRowPosition;
+  /**
+   * Complete text of the original anchor message; rendering may choose a preview.
+   */
   excerpt: string;
   matchedTerms: string[];
 }

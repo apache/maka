@@ -21,6 +21,7 @@
 //! and recovery stay outside this shell; blocked stdout never stalls native
 //! event dispatch or the input owner’s independent cancellation path.
 
+pub(crate) mod activation;
 mod adapter;
 mod frame_trace;
 mod graphics;
@@ -45,9 +46,9 @@ use std::{
 };
 use termina::{EventReader, PlatformTerminal, Terminal as _};
 
-const SETUP: &[u8] = b"\x1b[?1049h\x1b[?25l\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?2004h";
+const SETUP: &[u8] = b"\x1b[?1049h\x1b[?25l\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?1004h\x1b[?2004h";
 const CLEANUP: &[u8] =
-    b"\x1b[?2026l\x1b[?2004l\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?25h\x1b[?1049l";
+    b"\x1b[?2026l\x1b[?2004l\x1b[?1004l\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?25h\x1b[?1049l";
 const TICK: Duration = Duration::from_millis(16);
 // One existing best-effort restoration window, shared by IME release and IO.
 const RESTORATION_WAIT: Duration = Duration::from_millis(100);
@@ -57,6 +58,7 @@ pub(crate) type GpuWorker = thread::JoinHandle<Result<(), String>>;
 #[derive(Clone, Default)]
 struct Presentation {
     state: Arc<Mutex<Inbox>>,
+    activation: activation::Activation,
     stop: Arc<AtomicBool>,
     driver: Option<thread::Thread>,
 }
@@ -70,6 +72,7 @@ impl Presentation {
 
     fn shutdown(&self) {
         self.stop.store(true, Ordering::Release);
+        self.activation.clear();
     }
 }
 
@@ -126,6 +129,7 @@ pub(crate) fn run(
         driver: Some(thread::current()),
         ..Default::default()
     };
+    config.context = config.context.with(presentation.activation.clone());
     let setup = [SETUP, graphics::QUERY].concat();
     let setup = {
         let mut setup = setup;
@@ -429,10 +433,12 @@ fn start_reader(presentation: Presentation, reader: EventReader) -> Result<Reade
                             Err(error) => {
                                 inbox.error = Some(error.to_string());
                                 reading.store(true, Ordering::Release);
+                                presentation.activation.clear();
                                 presentation.wake_driver();
                                 return;
                             }
                         };
+                        presentation.activation.observe(&event);
                         presentation.wake_driver();
                         inbox.graphics.observe(&event);
                         {
@@ -489,12 +495,14 @@ fn start_reader(presentation: Presentation, reader: EventReader) -> Result<Reade
                         Err(error) => {
                             state.lock().unwrap().error = Some(error.to_string());
                             reading.store(true, Ordering::Release);
+                            presentation.activation.clear();
                             presentation.wake_driver();
                             return;
                         }
                     }
                 }
             }
+            presentation.activation.clear();
             presentation.wake_driver();
         })
         .map_err(|error| error.to_string())?;

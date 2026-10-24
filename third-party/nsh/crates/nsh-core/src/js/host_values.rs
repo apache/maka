@@ -93,6 +93,44 @@ impl HostValue for ListContentStyle {
     }
 }
 
+impl HostValue for crate::input_tokens::InputTokenRule {
+    fn decode<I: HostInput>(input: &I, cx: &mut HostCx) -> Option<Self> {
+        let pattern = input.field("pattern")?.as_string()?;
+        let style = input.field("style");
+        let color = |name| style.as_ref().and_then(|s| s.field(name));
+        let radius = style
+            .as_ref()
+            .and_then(|s| number(s, "borderRadius"))
+            .unwrap_or(0.0);
+        if !radius.is_finite() || radius < 0.0 {
+            return None;
+        }
+        Self::new(
+            &pattern,
+            crate::input_tokens::InputTokenStyle {
+                color: color("color").and_then(|v| crate::Color::decode(&v, cx)),
+                background_color: color("backgroundColor")
+                    .and_then(|v| crate::Color::decode(&v, cx)),
+                border_radius: Points(radius),
+            },
+            input
+                .field("atomic")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+        )
+        .map_err(|error| log::warn!(target: "js", "input tokens: {error}"))
+        .ok()
+    }
+
+    fn ts_type(types: &mut TsTypes) -> String {
+        types.declare("InputTokenRule", |_| {
+            "/** Native input token rule. Rust regex syntax; a named `token` capture is required. */\n\
+             export interface InputTokenRule {\n  pattern: string;\n  atomic?: boolean;\n  style?: { color?: ColorValue; backgroundColor?: ColorValue; borderRadius?: number };\n}"
+                .into()
+        })
+    }
+}
+
 /// Resolve the list's existing shorthand/axis/side precedence at either
 /// native JS boundary. Both decoders use this one content layout shape.
 fn list_content<E>(n: impl Fn(&str) -> Result<Option<Points>, E>) -> Result<ListContentStyle, E> {

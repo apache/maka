@@ -63,6 +63,8 @@ pub(crate) struct Style {
 /// One glyph to paint.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Glyph {
+    /// The cluster's offset in the shown text (UTF-16).
+    pub(crate) offset: u32,
     /// Left edge from its line's.
     pub(crate) x: f32,
     pub(crate) font: FontId,
@@ -132,24 +134,42 @@ impl Layout {
     }
 
     /// The offset nearest to `(x, y)`.
-    pub(crate) fn hit(&self, x: f32, y: f32) -> u32 {
+    pub(crate) fn hit(&self, x: f32, y: f32, allowed: impl Fn(u32) -> bool) -> u32 {
         let i = self
             .lines
             .iter()
             .position(|l| y < l.y + l.height)
             .unwrap_or(self.lines.len() - 1);
-        let l = &self.lines[i];
-        // A wrapped line's end is the next line's start: shown there.
-        let stops = if self.soft(i) && l.stops.len() > 1 {
-            &l.stops[..l.stops.len() - 1]
-        } else {
-            &l.stops[..]
+        let nearest = |i: usize| {
+            let l = &self.lines[i];
+            // A wrapped line's end is the next line's start: shown there.
+            let stops = if self.soft(i) && l.stops.len() > 1 {
+                &l.stops[..l.stops.len() - 1]
+            } else {
+                &l.stops[..]
+            };
+            stops
+                .iter()
+                .filter(|s| allowed(s.0))
+                .min_by(|a, b| (l.x + a.1 - x).abs().total_cmp(&(l.x + b.1 - x).abs()))
+                .copied()
         };
-        let x = x - l.x;
-        stops
+        if let Some(stop) = nearest(i) {
+            return stop.0;
+        }
+        // An atom can cover an entire wrapped line. Its caret must land
+        // at an actual endpoint on another line, never inside the atom.
+        self.lines
             .iter()
-            .min_by(|a, b| (a.1 - x).abs().total_cmp(&(b.1 - x).abs()))
-            .map_or(l.start, |s| s.0)
+            .enumerate()
+            .filter_map(|(i, l)| {
+                let (offset, sx) = nearest(i)?;
+                let dy = (l.y - y).max(y - l.y - l.height).max(0.0);
+                let dx = l.x + sx - x;
+                Some((offset, dy * dy + dx * dx))
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map_or(0, |s| s.0)
     }
 
     /// The start and end of the line showing `pos` (the end of a wrapped
@@ -368,6 +388,7 @@ pub(crate) fn layout(
                 for &(u, x, font, id, emoji) in &p.glyphs {
                     if u >= u0 && (u < u1 || (c1 == p.chars.len() && u >= u1)) {
                         glyphs.push(Glyph {
+                            offset: offset + u,
                             x: x - x0,
                             font,
                             id,
@@ -510,12 +531,18 @@ mod tests {
         // The end of the paragraph, before the line break.
         assert_eq!(l.caret(11), (50.0, 20.0, 20.0));
         assert_eq!(l.caret(12), (0.0, 40.0, 20.0));
-        assert_eq!(l.hit(24.0, 5.0), 2);
-        assert_eq!(l.hit(26.0, 5.0), 3);
+        assert_eq!(l.hit(24.0, 5.0, |_| true), 2);
+        assert_eq!(l.hit(26.0, 5.0, |_| true), 3);
         // Past a wrapped line's end: before its trailing space's end.
-        assert_eq!(l.hit(500.0, 5.0), 5);
-        assert_eq!(l.hit(500.0, 25.0), 11);
-        assert_eq!(l.hit(-5.0, 500.0), 12);
+        assert_eq!(l.hit(500.0, 5.0, |_| true), 5);
+        assert_eq!(l.hit(500.0, 25.0, |_| true), 11);
+        assert_eq!(l.hit(-5.0, 500.0, |_| true), 12);
+        // Caret stops inside an atom are not mouse targets. A token may
+        // cover the entire middle line of a wrapped paragraph.
+        assert_eq!(l.hit(24.0, 5.0, |at| !(1..5).contains(&at)), 0);
+        assert_eq!(l.hit(26.0, 5.0, |at| !(1..5).contains(&at)), 5);
+        assert_eq!(l.hit(0.0, 25.0, |at| !(1..11).contains(&at)), 0);
+        assert_eq!(l.hit(50.0, 25.0, |at| !(1..11).contains(&at)), 11);
         assert_eq!(l.line_edges(2), (0, 5));
         assert_eq!(l.line_edges(8), (6, 11));
     }

@@ -141,6 +141,7 @@ mod tests {
             ),
             ("InputHostProps", "  masked?: boolean;"),
             ("InputHostProps", "  readonly?: boolean;"),
+            ("InputHostProps", "  tokens?: InputTokenRule[];"),
             ("IOSInputHostProps", "  inputAccessoryViewID?: string;"),
             (
                 "IOSInputHostProps",

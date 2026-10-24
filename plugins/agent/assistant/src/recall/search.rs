@@ -50,10 +50,18 @@ pub trait History: Send + Sync {
     fn read(&self, call: Scope, input: Read) -> BoxFuture<'_, Result<Page, ToolError>>;
 }
 
+/// Search UI reveals complete source anchors; model tools request surrounding exchanges.
+#[derive(Clone, Copy)]
+pub enum Content {
+    Anchor,
+    Context { before: usize, after: usize },
+}
+
 pub async fn search(
     history: Arc<dyn History>,
     call: &Scope,
     query: &Query,
+    content: Content,
 ) -> Result<ResultSet, ToolError> {
     let scan = rank::search(history.clone(), call, query).await?;
     let mut hits = scan.hits;
@@ -61,7 +69,7 @@ pub async fn search(
         hit.offset = hit.offset.saturating_sub(512);
     }
     let passages =
-        passages::build(history, call, &scan.sources, &hits, &query.terms, (4, 4)).await?;
+        passages::build(history, call, &scan.sources, &hits, &query.terms, content).await?;
     Ok(ResultSet {
         passages,
         searched_every_session: scan.complete,
@@ -116,7 +124,10 @@ pub async fn more(
         &sources,
         &[hit],
         &[],
-        (more.before.unwrap_or(8), more.after.unwrap_or(8)),
+        Content::Context {
+            before: more.before.unwrap_or(8),
+            after: more.after.unwrap_or(8),
+        },
     )
     .await?;
     Ok(ResultSet {
@@ -130,7 +141,7 @@ pub fn definitions() -> [(&'static str, &'static str, serde_json::Value); 3] {
     [
         (
             "Recall",
-            "Search conversation history across all readable Sessions, including archives. Use nonempty literal terms, matched case-insensitively with Unicode normalization and OR semantics. Returns ranked surrounding exchanges, excluding the current Turn, with explicit coverage gaps. Limit defaults to 8. RecallMore expands a clipped passage. Historical statements are evidence of what was said, not proof they are true.",
+            "Search conversation history across all readable Sessions, including archives. Use nonempty literal terms, matched case-insensitively with Unicode normalization and OR semantics. Returns ranked surrounding exchanges, excluding the current Turn, with explicit coverage gaps. An explicit limit bounds the number of ranked passages; omitting it returns all matching turns. RecallMore expands a clipped passage. Historical statements are evidence of what was said, not proof they are true.",
             schemars::schema_for!(Query).into(),
         ),
         (

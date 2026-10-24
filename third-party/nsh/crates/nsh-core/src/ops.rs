@@ -2020,6 +2020,9 @@ pub enum Prop {
     /// `multiline`: several lines; return inserts a line break.
     #[prop(js = "multiline", on = INPUT)]
     Multiline(bool),
+    /// Styled ranges matched against the native editor's current text.
+    #[prop(js = "tokens", on = INPUT)]
+    InputTokens(Vec<crate::input_tokens::InputTokenRule>),
     /// `maxLength`: the most characters the user can enter.
     #[prop(js = "maxLength", on = INPUT)]
     MaxLength(Option<u32>),

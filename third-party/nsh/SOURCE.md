@@ -68,6 +68,14 @@ edit; it does not simulate IME or clipboard input. Other backends retain their
 existing unsupported-command behavior. These changes are local adaptations,
 not changes to the recorded upstream import baseline.
 
+The GPUI and terminal input editors also accept generic `tokens` rules. Native
+Rust-regex captures derive styled ranges from the current committed source;
+atomic ranges share caret, selection, replacement and deletion boundaries. The
+native editor retains only the currently unfinished token beside its existing
+text/selection undo snapshots. Plain text remains authoritative, and IME
+preedit retains its existing separate display mapping. This is a local input
+capability, not a Maka-specific parser or a hidden rich-text document format.
+
 Maka's workspace uses these local crates, including NSH's offscreen renderer and
 image codec; changing them here changes the code built and tested with Maka.
 

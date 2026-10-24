@@ -5,6 +5,8 @@
 //! always on character boundaries; JS sees UTF-16 units (converted by the
 //! helpers at the end).
 
+use crate::input_tokens::{InputTokenRule, InputTokens, TokenEdit};
+
 /// How far a caret movement or a deletion goes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Unit {
@@ -29,6 +31,7 @@ struct Snapshot {
     text: String,
     anchor: usize,
     caret: usize,
+    pending: Option<std::ops::Range<usize>>,
 }
 
 /// Text an input method is composing, shown at the caret until it is
@@ -57,9 +60,6 @@ impl Composition {
     }
 }
 
-/// The most undo steps kept.
-const MAX_UNDO: usize = 200;
-
 /// A text input's text, selection and history.
 #[derive(Debug, Default)]
 #[non_exhaustive]
@@ -75,9 +75,23 @@ pub struct Model {
     last: Option<EditKind>,
     /// The IME's text, if it composes.
     pub composition: Option<Composition>,
+    tokens: InputTokens,
 }
 
 impl Model {
+    /// Current styled source ranges and native atomic caret boundaries.
+    pub fn tokens(&self) -> &InputTokens {
+        &self.tokens
+    }
+
+    /// Configures native token rules without replacing the source/history.
+    pub fn set_tokens(&mut self, rules: &[InputTokenRule]) -> bool {
+        let changed = self.tokens.set_rules(rules, &self.text);
+        if changed && self.composition.is_none() {
+            (self.anchor, self.caret) = self.tokens.select(self.anchor, self.caret);
+        }
+        changed
+    }
     /// The text.
     pub fn text(&self) -> &str {
         &self.text
@@ -113,6 +127,9 @@ impl Model {
     /// Replaces the text without history (a value from JS), keeping the
     /// caret where it was, or at the end if it was there.
     pub fn set_text(&mut self, text: &str) {
+        if self.text == text {
+            return;
+        }
         let at_end = self.caret >= self.text.len();
         let caret = if at_end {
             text.len()
@@ -128,6 +145,8 @@ impl Model {
         self.redo.clear();
         self.last = None;
         self.composition = None;
+        self.tokens.reset(&self.text);
+        (self.anchor, self.caret) = self.tokens.select(self.anchor, self.caret);
     }
 
     /// Selects from `anchor` to `caret` (clamped to the text, moved onto
@@ -135,6 +154,7 @@ impl Model {
     pub fn select(&mut self, anchor: usize, caret: usize) {
         let anchor = caret_boundary(&self.text, anchor.min(self.text.len()));
         let caret = caret_boundary(&self.text, caret.min(self.text.len()));
+        let (anchor, caret) = self.tokens.select(anchor, caret);
         if (anchor, caret) != (self.anchor, self.caret) {
             self.last = None;
         }
@@ -162,12 +182,13 @@ impl Model {
 
     /// The position `unit` away from `at`.
     pub fn boundary(&self, at: usize, unit: Unit, forward: bool) -> usize {
-        match (unit, forward) {
+        let boundary = match (unit, forward) {
             (Unit::Char, true) => next_cluster(&self.text, at),
             (Unit::Char, false) => prev_cluster(&self.text, at),
             (Unit::Word, true) => word_right(&self.text, at),
             (Unit::Word, false) => word_left(&self.text, at),
-        }
+        };
+        self.tokens.step(boundary, forward)
     }
 
     /// Selects everything.
@@ -180,6 +201,7 @@ impl Model {
             text: self.text.clone(),
             anchor: self.anchor,
             caret: self.caret,
+            pending: self.tokens.pending(),
         }
     }
 
@@ -188,9 +210,6 @@ impl Model {
     fn record(&mut self, kind: EditKind) {
         if kind == EditKind::Other || self.last != Some(kind) {
             self.undo.push(self.snapshot());
-            if self.undo.len() > MAX_UNDO {
-                self.undo.remove(0);
-            }
         }
         self.redo.clear();
         self.last = Some(kind);
@@ -200,7 +219,20 @@ impl Model {
     /// (UTF-16 units of the whole text) leaves room for. Returns what was
     /// inserted; `None` when nothing changed.
     pub fn insert(&mut self, text: &str, max_len: Option<u32>) -> Option<String> {
+        self.insert_input(text, max_len, true)
+    }
+
+    /// Inserts typed/composed (`typed`) or pasted text. Pasted tokens are
+    /// confirmed immediately; typing keeps the current query editable.
+    pub fn insert_input(
+        &mut self,
+        text: &str,
+        max_len: Option<u32>,
+        typed: bool,
+    ) -> Option<String> {
         let (s, e) = self.selection();
+        let range = self.tokens.expand(s..e);
+        let (s, e) = (range.start, range.end);
         let fit = match max_len {
             Some(max) => {
                 let kept = utf16_len(&self.text[..s]) + utf16_len(&self.text[e..]);
@@ -213,13 +245,23 @@ impl Model {
             return None;
         }
         // A run of typing merges; a paste or a replaced selection does not.
-        let typing = s == e && fit.chars().count() == 1 && !matches!(fit, "\n" | "\r");
+        let typing = typed && s == e && fit.chars().count() == 1 && !matches!(fit, "\n" | "\r");
         self.record(if typing {
             EditKind::Typing
         } else {
             EditKind::Other
         });
         self.text.replace_range(s..e, fit);
+        self.tokens.edited(
+            &self.text,
+            &range,
+            fit.len(),
+            if typed {
+                TokenEdit::Typing
+            } else {
+                TokenEdit::Commit
+            },
+        );
         let caret = after_caret_boundary(&self.text, s + fit.len());
         self.anchor = caret;
         self.caret = caret;
@@ -245,6 +287,7 @@ impl Model {
         {
             return false;
         }
+        let range = self.tokens.expand(range);
         let kept = utf16_len(&self.text[..range.start]) + utf16_len(&self.text[range.end..]);
         let fit = max_len.map_or(text, |max| {
             clip_utf16(text, (max as usize).saturating_sub(kept))
@@ -254,13 +297,17 @@ impl Model {
             return false;
         }
         if self.text[range.clone()] == *fit {
+            self.tokens
+                .edited(&self.text, &range, fit.len(), TokenEdit::Commit);
             let caret = after_caret_boundary(&self.text, range.start + fit.len());
             self.select(caret, caret);
             return false;
         }
         self.record(EditKind::Other);
         let caret = range.start + fit.len();
-        self.text.replace_range(range, fit);
+        self.text.replace_range(range.clone(), fit);
+        self.tokens
+            .edited(&self.text, &range, fit.len(), TokenEdit::Commit);
         self.caret = after_caret_boundary(&self.text, caret);
         self.anchor = self.caret;
         true
@@ -282,15 +329,23 @@ impl Model {
             };
             (start, self.caret)
         };
+        let range = self.tokens.expand(s..e);
+        let (s, e) = (range.start, range.end);
         if s == e {
             return false;
         }
-        self.record(if unit == Unit::Char && self.anchor == self.caret {
-            EditKind::Deleting
-        } else {
-            EditKind::Other
-        });
+        self.record(
+            if unit == Unit::Char
+                && self.anchor == self.caret
+                && !self.tokens.intersects_atom(&range)
+            {
+                EditKind::Deleting
+            } else {
+                EditKind::Other
+            },
+        );
         self.text.replace_range(s..e, "");
+        self.tokens.edited(&self.text, &range, 0, TokenEdit::Delete);
         let caret = after_caret_boundary(&self.text, s);
         self.anchor = caret;
         self.caret = caret;
@@ -326,6 +381,8 @@ impl Model {
         self.text = snap.text;
         self.anchor = snap.anchor;
         self.caret = snap.caret;
+        self.tokens.restore(&self.text, snap.pending);
+        (self.anchor, self.caret) = self.tokens.select(self.anchor, self.caret);
         self.last = None;
     }
 
@@ -839,6 +896,72 @@ mod tests {
         assert!(!m.replace_range(8..13, "must not cancel", None));
         assert_eq!(m.text(), "pre😀 skill\nname tail");
         assert_eq!(m.composition.as_ref().unwrap().text, "ni");
+
+        let rules = [InputTokenRule::new(
+            r"(?:^|\s)(?P<token>/skill:[A-Za-z0-9._-]+)",
+            Default::default(),
+            true,
+        )
+        .unwrap()];
+        let mut m = model("/skill:review ");
+        m.set_tokens(&rules);
+        assert!(m.delete(Unit::Char, false)); // separator
+        assert_eq!(m.text(), "/skill:review");
+        assert!(m.delete(Unit::Char, false)); // one whole atom
+        assert_eq!(m.text(), "");
+        assert!(m.undo());
+        assert_eq!(m.text(), "/skill:review");
+        assert_eq!(m.selection(), (13, 13));
+        m.move_to(0, false);
+        m.step(Unit::Char, true, false);
+        assert_eq!(m.caret(), 13);
+        m.step(Unit::Char, false, false);
+        assert_eq!(m.caret(), 0);
+        m.select(2, 4);
+        assert_eq!(m.selected(), "/skill:review");
+        m.insert("x", None);
+        assert_eq!(m.text(), "x");
+        assert!(m.undo());
+        assert_eq!(m.selected(), "/skill:review");
+
+        let mut m = model("");
+        m.set_tokens(&rules);
+        for ch in "/skill:rev".chars() {
+            m.insert(&ch.to_string(), None);
+        }
+        assert_eq!(m.tokens().pending(), Some(0..10));
+        m.set_text("/skill:rev"); // the same JS echo retains native state
+        assert!(m.delete(Unit::Char, false));
+        assert_eq!(m.text(), "/skill:re");
+        assert!(m.replace_range(0..9, "/skill:review ", None));
+        assert_eq!(m.tokens().pending(), None);
+        assert!(m.undo());
+        assert_eq!(m.text(), "/skill:re");
+        assert_eq!(m.tokens().pending(), Some(0..9));
+        assert_eq!(m.selection(), (9, 9));
+        assert!(m.delete(Unit::Char, false));
+        assert_eq!(m.text(), "/skill:r");
+
+        let mut m = model("");
+        m.set_tokens(&rules);
+        m.insert_input("中 /skill:review, /skill:fix", None, false);
+        assert_eq!(m.tokens().spans().len(), 2);
+        assert_eq!(m.tokens().pending(), None);
+        assert!(m.delete(Unit::Char, false));
+        assert_eq!(m.text(), "中 /skill:review, ");
+
+        let mut m = model("/skill:e\u{301}");
+        m.set_tokens(&rules);
+        assert!(m.tokens().spans().is_empty());
+        m.move_to(7, false);
+        m.step(Unit::Char, true, false);
+        assert_eq!(m.caret(), 10);
+        assert!(m.delete(Unit::Char, false));
+        assert_eq!(m.text(), "/skill:e");
+
+        let mut m = model("xy");
+        m.set_tokens(&[InputTokenRule::new(r"x|(?P<token>y)", Default::default(), true).unwrap()]);
+        assert_eq!(m.tokens().spans()[0].range, 1..2);
     }
 
     #[test]

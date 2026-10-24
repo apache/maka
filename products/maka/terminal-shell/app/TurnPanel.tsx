@@ -66,6 +66,9 @@ export type GroupViewState = {
   measured: Map<string, { width: number; height: number }>;
   lease: number;
   opening?: 'top' | 'bottom';
+  revealRow?: string;
+  visibleRows: ReturnType<typeof signal<ReadonlySet<string>>>;
+  rowNodes: Map<string, YNode>;
   list?: YNode;
   requestFocus?: boolean;
 };
@@ -202,7 +205,10 @@ function ActivityLog(props: {
   cleanup(() => {
     alive = false;
     pendingReveal.set(null);
-    if (state.list === ownList) state.list = undefined;
+    if (state.list === ownList) {
+      state.list = undefined;
+      state.visibleRows.set(new Set());
+    }
   });
   // Native cell measurements fit short groups. Unmeasured cells start at the
   // one-line row minimum; text length never acts as a layout authority.
@@ -254,6 +260,10 @@ function ActivityLog(props: {
         <List
           accessibilityLabel={tr('Turn activity')}
           each={props.group().rowIds}
+          onViewableItemsChange={(event) => {
+            if (alive && lease === state.lease)
+              state.visibleRows.set(new Set(event.viewableItems.map((item) => item.item)));
+          }}
           estimatedItemSize={controlStyle.minHeight + memberGap}
           scrollValue={state.offset}
           contentOffset={initial()!}
@@ -287,7 +297,11 @@ function ActivityLog(props: {
           ref={(node) => {
             ownList = node;
             state.list = node;
-            if (opening === 'bottom') node.scrollToEnd({ animated: false });
+            if (state.revealRow) {
+              const index = props.group().rowIds.indexOf(state.revealRow);
+              if (index >= 0) node.scrollToIndex({ index, viewPosition: 0, animated: false });
+              state.revealRow = undefined;
+            } else if (opening === 'bottom') node.scrollToEnd({ animated: false });
             else if (opening === 'top') node.scrollToOffset({ offset: 0, animated: false });
             if (state.requestFocus) {
               state.requestFocus = false;
@@ -301,8 +315,17 @@ function ActivityLog(props: {
               {(ownedId) => {
                 const first = props.row(ownedId());
                 if (!first) return <View />;
+                const rowId = ownedId();
+                let ownRow: YNode | undefined;
+                cleanup(() => {
+                  if (state.rowNodes.get(rowId) === ownRow) state.rowNodes.delete(rowId);
+                });
                 return (
                   <View
+                    ref={(node) => {
+                      ownRow = node;
+                      state.rowNodes.set(rowId, node);
+                    }}
                     style={{
                       paddingBottom: props.group().rowIds.at(-1) === ownedId() ? 0 : memberGap,
                     }}

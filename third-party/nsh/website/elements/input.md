@@ -74,11 +74,47 @@ view styles apply):
 | `defaultValue` | `.default_value(..)` | `string` | | The initial text. |
 | `placeholder` | `.placeholder(..)` | `string` | | Shown while the input is empty. |
 | `multiline` | `.multiline(..)` | `boolean` | `false` | Several lines; return inserts a line break unless `submitBehavior` says otherwise. |
+| `tokens` | `.tokens(..)` | `InputTokenRule[]` | `[]` | Native styled and optionally atomic source ranges (GPUI and terminal backends). |
 | `maxLength` | `.max_length(..)` | `number` | | The most characters the user can enter. |
 | `readonly` | `.readonly(..)` | `boolean` | `false` | The user can select and copy the text but not change it. |
 | `masked` | `.masked(..)` | `boolean` | `false` | The text is hidden (passwords). |
 | `allowFontScaling` | | `boolean` | `true` | Follow the system text size. |
 | `maxFontSizeMultiplier` | | `number` | `0` | The upper bound of the system scale (0 is none). |
+
+### Styled and atomic tokens
+
+The GPUI and terminal editors match `tokens` against their current committed
+plain text. A rule uses Rust regular-expression syntax and must have a named
+`token` capture; context outside that capture is neither styled nor selected
+with the token. The earliest source match wins when rules overlap; declaration
+order breaks ties. Empty captures and captures that split a grapheme are ignored.
+No replacement label or hidden
+text is introduced: copying, `value`, and `onChange` retain the original text.
+
+```tsx
+<Input
+  multiline
+  tokens={[{
+    pattern: String.raw`(?:^|\s)(?P<token>#[A-Za-z0-9_-]+)`,
+    atomic: true,
+    style: { color: "#8ab8f8", backgroundColor: "#8ab8f820", borderRadius: 4 },
+  }]}
+/>
+```
+
+`atomic` defaults to `false`. Confirmed atomic tokens have caret stops only at
+their edges; partial selections and replacements expand to the whole token.
+Backspace, Delete and Cut use the same native boundaries. A token currently
+being typed remains editable until a delimiter, an explicit replacement or
+paste, or moving the caret outside it confirms the token. Removing a trailing
+delimiter does not reopen a confirmed token. Undo restores text, selection and
+the unfinished token together; replaying the same controlled `value` preserves
+that native state.
+
+Token styles affect painting only. The Unicode renderer uses foreground and
+background colors; GPUI also draws the background radius. Masked inputs do not
+show token styles. IME preedit text remains the input method's editable text
+and is never matched or styled as a committed token.
 
 ### Keyboard
 
