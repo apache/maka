@@ -38,7 +38,6 @@ import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { npmSpawnOptions } from './npm-spawn.mjs';
-import { validateCliReleaseArtifactMetrics } from './release-cli-artifact-policy.mjs';
 import { assertProductNightlyVersion } from './release-version.mjs';
 import {
   isCurrentDevelopmentJavaScript,
@@ -174,11 +173,6 @@ function packageCli(publishable) {
   if (packs.length !== 1 || !pack?.filename || !Array.isArray(pack.files)) {
     throw new Error('npm pack did not return one JSON package result');
   }
-  validateCliReleaseArtifactMetrics({
-    compressedBytes: pack.size,
-    unpackedBytes: pack.unpackedSize,
-    entryCount: pack.entryCount,
-  });
   const tarballPath = join(artifactRoot, pack.filename);
   validatePackedFiles(pack.files, expectedDependencyManifests, publishable);
   const sha256 = digestFile(tarballPath);

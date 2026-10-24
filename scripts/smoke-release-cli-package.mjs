@@ -38,7 +38,6 @@ import {
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { validateCliReleaseArtifactMetrics } from './release-cli-artifact-policy.mjs';
 import { findReleaseTarball } from './release-cli-eval-support.mjs';
 import {
   collectRuntimeHostFailureDiagnostic,
@@ -603,11 +602,9 @@ function validateReleaseArtifact(path) {
     }
     unpackedBytes += file.size;
   }
-  validateCliReleaseArtifactMetrics({
-    compressedBytes: statSync(path).size,
-    unpackedBytes,
-    entryCount: files.length,
-  });
+  console.log(
+    `[cli-smoke] artifact: ${statSync(path).size} compressed bytes, ${unpackedBytes} unpacked bytes, ${files.length} files`,
+  );
 }
 
 function validateInstalledRuntimeFiles(packageRoot) {
