@@ -108,6 +108,7 @@ import {
 import { isDiscardableConversationCopy } from './session-conversation-copy.js';
 import {
   acquireOperationalStateDatabase,
+  type OperationalStateDatabaseOptions,
   OPERATIONAL_STATE_DATABASE_NAME,
 } from './operational-state-store.js';
 import { DEFAULT_SESSION_NAME, normalizeUserSessionName } from '@maka/core/session-name';
@@ -156,8 +157,11 @@ import type {
 import { projectSessionCatalogMessages } from './session-message-projection.js';
 export { projectSessionCatalogMessages };
 
-export function createSessionStore(workspaceRoot: string): SessionAuthorityStore {
-  return new SqliteSessionStore(workspaceRoot);
+export function createSessionStore(
+  workspaceRoot: string,
+  options?: OperationalStateDatabaseOptions,
+): SessionAuthorityStore {
+  return new SqliteSessionStore(workspaceRoot, options);
 }
 
 class SqliteSessionStore implements SessionAuthorityStore {
@@ -166,9 +170,9 @@ class SqliteSessionStore implements SessionAuthorityStore {
   private readonly transcriptChangeListeners = new Set<(sessionId: string) => void>();
   private closePromise: Promise<void> | null = null;
 
-  constructor(workspaceRoot: string) {
+  constructor(workspaceRoot: string, options: OperationalStateDatabaseOptions = {}) {
     this.workspaceRoot = workspaceRoot;
-    const databaseLease = acquireOperationalStateDatabase(workspaceRoot);
+    const databaseLease = acquireOperationalStateDatabase(workspaceRoot, options);
     this.metadata = createSqliteSessionMetadataStore(
       join(workspaceRoot, OPERATIONAL_STATE_DATABASE_NAME),
       { databaseLease },
