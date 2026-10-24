@@ -78,6 +78,8 @@ const SUBCOMMANDS = {
       `  ${cliCommand} runtime-host service install [options]`,
       `  ${cliCommand} runtime-host service configure (--project-root <label>=<path> ... | --no-project-roots) --expected-config-fingerprint <sha256:...> --expected-service-id <id> --expected-root-path <path> --expected-root-id <id> [--allow-interrupt-active-tasks]`,
       `  ${cliCommand} runtime-host service status|start|stop|restart|logs [--json]`,
+      `  ${cliCommand} runtime-host service repair-root [--root <path> | --managed-root-id <id>]`,
+      '  repair-root asks for one-time confirmation of the exact storage root; it never enables automatic repair.',
       `  ${cliCommand} runtime-host service uninstall --expected-service-id <id> --expected-root-path <path> --expected-root-id <id> [--allow-interrupt-active-tasks]`,
       `  ${cliCommand} runtime-host service peer enable|disable|status|rotate|descriptor [options]`,
       `  ${cliCommand} runtime-host service mesh status|create|invite|join|remove|leave|close|reconcile [options]`,
