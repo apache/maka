@@ -19,7 +19,7 @@
 
 export type Selection = { start: number; end: number };
 export type CompletionToken = {
-  kind: 'slash' | 'file';
+  kind: 'slash' | 'skill' | 'file';
   start: number;
   end: number;
   query: string;
@@ -99,7 +99,7 @@ function tokenAt(text: string, caret: number, start: number): CompletionToken | 
   }
   if (query === null) return null;
   return {
-    kind: marker === '/' ? 'slash' : 'file',
+    kind: marker === '@' ? 'file' : text.startsWith('/skill:', start) ? 'skill' : 'slash',
     start,
     end,
     query,

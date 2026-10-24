@@ -63,6 +63,34 @@ test('composer completion replaces the caret token while preserving Unicode pros
     query: 'mod',
     leading: true,
   });
+  assert.deepEqual(completionToken('/skill:', { start: 7, end: 7 }), {
+    kind: 'skill',
+    start: 0,
+    end: 7,
+    query: '',
+    leading: true,
+  });
+  assert.deepEqual(completionToken('/skill:new', { start: 10, end: 10 }), {
+    kind: 'skill',
+    start: 0,
+    end: 10,
+    query: 'new',
+    leading: true,
+  });
+  assert.deepEqual(completionToken('前 /skill:new 后', { start: 12, end: 12 }), {
+    kind: 'skill',
+    start: 2,
+    end: 12,
+    query: 'new',
+    leading: false,
+  });
+  assert.deepEqual(completionToken('/new', { start: 4, end: 4 }), {
+    kind: 'slash',
+    start: 0,
+    end: 4,
+    query: 'new',
+    leading: true,
+  });
   assert.equal(completionToken('https://host/src', { start: 16, end: 16 }), null);
   assert.equal(completionToken('/usr/bin', { start: 8, end: 8 }), null);
 });

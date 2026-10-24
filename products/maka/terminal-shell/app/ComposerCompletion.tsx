@@ -403,7 +403,15 @@ export function createComposerCompletion(options: Options) {
     }
     const token = completionToken(text, range);
     const requested = explicit();
-    const source = requested ?? (token?.kind === 'file' ? 'files' : token ? 'slash' : null);
+    const source =
+      requested ??
+      (token?.kind === 'file'
+        ? 'files'
+        : token?.kind === 'skill'
+          ? 'skills'
+          : token
+            ? 'slash'
+            : null);
     if (source === null) {
       hide();
       return;
@@ -446,7 +454,7 @@ export function createComposerCompletion(options: Options) {
   });
   const command = (text: string) => {
     const match = /^\s*\/([^\s]+)(?:\s+([\s\S]*))?$/u.exec(text);
-    if (!match) return null;
+    if (!match || match[1].startsWith('skill:')) return null;
     const found = options.commands().find((entry) => entry.trigger === match[1]);
     const argument = match[2]?.trim() ?? '';
     return found && (!argument || found.takesArgument) ? { found, argument } : null;
