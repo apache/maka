@@ -58,6 +58,15 @@ export function buildMatterTools(deps: MatterToolsDeps): MakaTool[] {
     kind: z.literal('at'),
     at: z.number().describe('Future absolute Unix milliseconds'),
   });
+  const progressSummary = z
+    .string()
+    .trim()
+    .min(1)
+    .refine(
+      (value) => Array.from(value).length <= 30,
+      'Progress summary must be at most 30 characters',
+    )
+    .describe('用不超过30字概括当前进展，供用户在任务列表查看。由你概括，不要截断正文。');
   return [
     {
       name: 'MatterConditionTest',
@@ -126,6 +135,7 @@ export function buildMatterTools(deps: MatterToolsDeps): MakaTool[] {
       description:
         'Save current working state after meaningful progress. Does not end this run or change the user objective.',
       parameters: z.object({
+        progressSummary,
         expectedRevision: z.number().int().positive(),
         stateFile: z
           .string()
@@ -135,7 +145,10 @@ export function buildMatterTools(deps: MatterToolsDeps): MakaTool[] {
       }),
       categoryHint: 'file_write',
       executionSemantics: 'exclusive_step',
-      impl: (input: { expectedRevision: number; stateFile: string }, ctx) => {
+      impl: (
+        input: { expectedRevision: number; stateFile: string; progressSummary: string },
+        ctx,
+      ) => {
         const o = own(ctx);
         const result = deps.store.checkpoint(
           o.id,
@@ -143,6 +156,7 @@ export function buildMatterTools(deps: MatterToolsDeps): MakaTool[] {
           input.expectedRevision,
           deps.store.readDraft(o.id, o.activationId, input.stateFile),
           operation(ctx),
+          input.progressSummary,
         );
         deps.changed();
         return deps.store.workspace(result.id, o.activationId);
@@ -161,6 +175,7 @@ export function buildMatterTools(deps: MatterToolsDeps): MakaTool[] {
           .describe(
             'Optional working note to retain for future activations. Omit to keep the previous note; no draft file is needed.',
           ),
+        progressSummary,
         disposition: z.enum(['continue', 'wait', 'complete']),
         wakes: z.array(wake).max(10).optional(),
         condition: z

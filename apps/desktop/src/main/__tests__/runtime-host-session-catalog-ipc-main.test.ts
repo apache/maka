@@ -113,6 +113,23 @@ test('only implicit assistant creation receives a Host fallback and keeps Projec
   assert.deepEqual(creates[1]!.labels, ['personal-assistant']);
 });
 
+test('executor IPC forwards inventory and agent-specific refresh without widening other inputs', async () => {
+  const queries: unknown[] = [];
+  const ipc = ipcHarness();
+  registerRuntimeHostSessionCatalogIpc({
+    ...createDeps([]),
+    queryExecutors: async input => { queries.push(input); return { items: [] }; },
+  }, ipc as unknown as IpcMain);
+  await ipc.invoke('sessions:executorCatalog', '/workspace', false, undefined, true);
+  await ipc.invoke('sessions:executorCatalog', '/workspace', true, 'antigravity-acp');
+  assert.deepEqual(queries, [
+    { kind: 'catalog', cwd: '/workspace', listOnly: true },
+    { kind: 'catalog', cwd: '/workspace', refresh: true, executorId: 'antigravity-acp' },
+  ]);
+  await assert.rejects(() => ipc.invoke('sessions:executorCatalog', '/workspace', false, 123), /Invalid executor ID/);
+  await assert.rejects(() => ipc.invoke('sessions:executorCatalog', '/workspace', false, undefined, 'yes'), /Invalid executor inventory flag/);
+});
+
 test('session creation forwards a plugin executor model without a native model target', async () => {
   const creates: SessionCreateInput[] = [];
   const ipc = ipcHarness();

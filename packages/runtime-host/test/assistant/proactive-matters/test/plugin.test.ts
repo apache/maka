@@ -412,3 +412,27 @@ test('native condition tools test real source, wait without a model, then resume
     'model called only for wait and complete review, not condition observations',
   );
 });
+
+test('checkpoint and settlement require an AI-authored preview of at most 30 characters', async (t) => {
+  const f = await fixture();
+  t.after(async () => {
+    await f.close();
+    await rm(f.root, { recursive: true, force: true });
+  });
+  for (const name of ['MatterSettle', 'MatterCheckpoint']) {
+    const tool = f.tools.resolve('session-1', []).tools.find((tool: any) => tool.name === name);
+    const input =
+      name === 'MatterSettle'
+        ? { disposition: 'complete', summary: 'full handoff' }
+        : { expectedRevision: 1, stateFile: '/draft.md' };
+    assert.equal(tool.parameters.safeParse(input).success, false);
+    assert.equal(
+      tool.parameters.safeParse({ ...input, progressSummary: '字'.repeat(31) }).success,
+      false,
+    );
+    assert.equal(
+      tool.parameters.safeParse({ ...input, progressSummary: '😀'.repeat(30) }).success,
+      true,
+    );
+  }
+});

@@ -356,6 +356,8 @@ export class PluginExecutorService extends Service {
       /** Discover within this Session's scope without inspecting a retained conversation. */
       discoverySessionId?: string;
       executorId?: string;
+      /** Registration inventory only; never starts provider discovery. */
+      listOnly?: boolean;
       configuration?: ExecutorConfiguration;
     },
     signal = AbortSignal.timeout(35_000),
@@ -367,6 +369,15 @@ export class PluginExecutorService extends Service {
     const selected = entries.filter(
       (entry) => !entry.retired && (!input.executorId || entry.provider.id === input.executorId),
     );
+    if (input.listOnly)
+      return selected.map(({ provider }) => ({
+        id: provider.id,
+        displayName: provider.displayName?.trim() || provider.id,
+        readiness: 'unavailable' as const,
+        models: [],
+        supportsAttachments: false,
+        supportsModelChange: false,
+      }));
     if (input.executorId && !selected.length)
       return [
         {
@@ -413,9 +424,10 @@ export class PluginExecutorService extends Service {
     );
   }
 
-  invalidateCatalog(): void {
+  invalidateCatalog(executorId?: string): void {
     for (const entry of this.registry.entries('profile')) {
-      if (!entry.retired) entry.provider.invalidateCatalog?.();
+      if (!entry.retired && (!executorId || entry.provider.id === executorId))
+        entry.provider.invalidateCatalog?.();
     }
   }
 

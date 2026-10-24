@@ -1965,8 +1965,11 @@ const makaBridge = {
     },
   },
   newTasks: {
-    async getExecutors(target, cwd, refresh) {
-      return ipcRenderer.invoke('sessions:executorCatalog', await runtimeHostScope(target), cwd, refresh);
+    async getExecutors(target, cwd, refresh, executorId) {
+      return ipcRenderer.invoke('sessions:executorCatalog', await runtimeHostScope(target), cwd, refresh, executorId);
+    },
+    async listExecutors(target, cwd) {
+      return ipcRenderer.invoke('sessions:executorCatalog', await runtimeHostScope(target), cwd, false, undefined, true);
     },
     getCatalog(): Promise<DesktopNewTaskCatalog> {
       return loadNewTaskCatalog();
@@ -2331,10 +2334,16 @@ const makaBridge = {
      * The single session-creation channel (#1433). `mode` names a
      * product intent — main derives the permission boundary, name and
      * labels it implies (`create-session-input.ts`); the renderer cannot
-     * reach a boundary like `explore` by asking for it directly.
+     * reach a boundary like `explore` by asking for it directly. A Session
+     * created beside another stays on that Session's Host, never the active one.
      */
-    async create(input?: CreateSessionRequestInput): Promise<DesktopSessionSummary> {
-      const scope = await activeRuntimeHostRef();
+    async create(
+      input?: CreateSessionRequestInput,
+      options?: { readonly besideSessionId?: string },
+    ): Promise<DesktopSessionSummary> {
+      const scope = options?.besideSessionId
+        ? (await runtimeHostSessionRef(options.besideSessionId)).scope
+        : await activeRuntimeHostRef();
       return createDesktopSessionOnScope(scope, input);
     },
     async send(sessionId, command) {
@@ -2484,6 +2493,25 @@ const makaBridge = {
     async generatePromptSuggestion(sessionId: string): Promise<import('@maka/runtime-host/protocol').PromptSuggestionResult> {
       const session = await runtimeHostSessionRef(sessionId);
       return invokeWhenReady('sessions:generatePromptSuggestion', session.scope, session.sessionId);
+    },
+    async generateCheckin(input: {
+      effectId: string;
+      since: number | null;
+    }): Promise<import('@maka/runtime-host/protocol').SessionCheckinGenerateResult> {
+      const scope = await activeRuntimeHostRef();
+      const result = (await invokeWhenReady(
+        'sessions:generateCheckin',
+        scope,
+        input,
+      )) as import('@maka/runtime-host/protocol').SessionCheckinGenerateResult;
+      if (result.kind !== 'generated') return result;
+      return {
+        ...result,
+        cards: result.cards.map((card) => ({
+          ...card,
+          sessionId: desktopSessionKey({ hostId: scope.hostId, sessionId: card.sessionId }),
+        })),
+      };
     },
     async readSnapshot(
       sessionId: string,

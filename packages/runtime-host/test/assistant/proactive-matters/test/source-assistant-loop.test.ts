@@ -19,6 +19,7 @@
 
 import { readFileSync } from 'node:fs';
 
+import { output, note } from '../../index-initiative/test/notebook-output.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
@@ -128,13 +129,21 @@ test('source sync → stale index → fresh original → discovery Inbox → Bot
     f.setRunner(async ({ id: sessionId, prompt, invoke }: any) => {
       try {
         if (prompt.startsWith('Runtime heartbeat')) {
+          if (prompt.includes('Phase: discovery')) {
+            await output(prompt, { notes: [note] });
+            return;
+          }
           assert.notEqual(sessionId, 'owner');
           const index = await invoke('MemoryIndexRead', { indexId: id });
           assert.equal(index.freshness.coveredCursor, boundary);
           const q = await invoke('MemorySourceQuery', { source, query: {} });
           const original = await invoke('MemoryOriginal', { ref: q.items[0].ref });
           assert.equal(original.content.body.content, body);
-          await invoke('DiscoveryReport', { text: '演示验收和离线材料都已确认，可以准备演示。' });
+          await output(prompt, {
+            messages: [
+              { text: '演示验收和离线材料都已确认，可以准备演示。', topicIds: [note.topicId] },
+            ],
+          });
           return;
         }
         if (prompt.startsWith('Inbox 有新消息')) {
@@ -169,6 +178,7 @@ test('source sync → stale index → fresh original → discovery Inbox → Bot
           note: readFileSync(v.files.draft, 'utf8'),
           disposition: 'complete',
           summary: '核对最新验收原文',
+          progressSummary: '核对最新验收原文',
           reason: '验收及材料均确认',
           update: '演示验收和材料核对完成。',
         });

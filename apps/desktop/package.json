@@ -102,7 +102,7 @@
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "simple-icons": "16.32.0",
-    "storybook": "^10.4.6",
+    "storybook": "^10.6.2",
     "vite": "^8.3.1"
   },
   "maka": {

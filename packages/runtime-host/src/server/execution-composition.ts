@@ -170,6 +170,11 @@ import { HostConnectionEffectCoordinator } from './connection-effect-coordinator
 import { HostChangeFeed } from './host-change-feed.js';
 import { HostConfigurationCoordinator } from './configuration-coordinator.js';
 import { HostPromptSuggestionCoordinator, supportsPromptSuggestion } from './prompt-suggestion.js';
+import {
+  checkinSessionState,
+  HostSessionCheckinCoordinator,
+  listCheckinCatalogSessions,
+} from './session-checkin.js';
 import { HostContextCoordinator } from './context-coordinator.js';
 import { HostClientCapabilityCoordinator } from './client-capability-coordinator.js';
 import { HostDailyReviewCoordinator } from './daily-review-coordinator.js';
@@ -188,6 +193,8 @@ import {
   createHostPluginModel,
   createHostSessionEffectModel,
   createHostPromptSuggestionModel,
+  createHostCheckinModel,
+  resolveDefaultModelHeader,
   type HostSessionEffectModel,
 } from './execution-model-authority.js';
 import { HostExecutionInspectCoordinator } from './execution-inspect-coordinator.js';
@@ -233,6 +240,7 @@ import { join } from 'node:path';
 import { toRuntimePolicyProxy } from './runtime-policy-proxy.js';
 import { AcpSetupError } from './acp/connection.js';
 import { installAntigravity } from './acp/antigravity-install.js';
+import { ANTIGRAVITY_ACP_EXECUTOR_ID } from '@maka/antigravity-acp-plugin';
 import { createProxiedFetchTransport } from '@maka/runtime/network/scoped-fetch-transport';
 import { HostExternalAgentSetupCoordinator } from './external-agent-setup-coordinator.js';
 import { HostOAuthCoordinator, type HostOAuthCoordinatorInput } from './oauth-coordinator.js';
@@ -392,6 +400,7 @@ export async function createExecutionRuntimeHostComposition(
   let graphClient: HostAgentGraphCoordinator | undefined;
   let sessionEffects: HostSessionEffectCoordinator | undefined;
   let promptSuggestions: HostPromptSuggestionCoordinator | undefined;
+  let checkins: HostSessionCheckinCoordinator | undefined;
   let memoryExtraction: HostMemoryExtractionCoordinator | undefined;
   let imageDelivery: ChatImageDeliveryService | undefined;
   let unsubscribeTranscriptChanges: (() => void) | undefined;
@@ -463,7 +472,12 @@ export async function createExecutionRuntimeHostComposition(
             ...(header.executorConfig ? { configuration: header.executorConfig } : {}),
           });
         }
-        return pluginExecutors.catalog({ cwd: input.cwd, refresh: input.refresh });
+        return pluginExecutors.catalog({
+          cwd: input.cwd,
+          refresh: input.refresh,
+          executorId: input.executorId,
+          listOnly: input.listOnly,
+        });
       },
     );
 
@@ -1959,7 +1973,7 @@ export async function createExecutionRuntimeHostComposition(
         context.requestDrain();
       },
       onSucceeded: () => {
-        pluginExecutors.invalidateCatalog();
+        pluginExecutors.invalidateCatalog(ANTIGRAVITY_ACP_EXECUTOR_ID);
         hostChanges.publishConfiguration();
       },
       capabilities: clientCapabilities,
@@ -2112,6 +2126,7 @@ export async function createExecutionRuntimeHostComposition(
     ) =>
       Object.freeze({
         id: session.id,
+        isArchived: session.isArchived,
         ...(session.name ? { title: session.name } : {}),
         ...(session.cwd ? { cwd: session.cwd } : {}),
         ...(session.labels?.length ? { labels: session.labels } : {}),
@@ -2589,7 +2604,8 @@ export async function createExecutionRuntimeHostComposition(
     });
     async function applyRuntimePolicyMutationEffects(): Promise<void> {
       try {
-        pluginExecutors.invalidateCatalog();
+        // Reconciliation replaces only changed agent configurations. Unrelated
+        // policy edits must not discard every provider's persistent catalog.
         await builtinExternalAgentPlugins.reconcile();
         await requireMemory(memory).refreshAfterPolicyMutation();
       } catch (error) {
@@ -2654,6 +2670,39 @@ export async function createExecutionRuntimeHostComposition(
         ? { sessionAccessAuthority: context.sessionAccessAuthority }
         : {}),
     });
+    const sessionCheckins = new HostSessionCheckinCoordinator({
+      allowed: async () =>
+        !(await runtimePolicyStores.runtimePolicy.getSnapshot()).policy.privacy.incognitoActive,
+      listSessions: (context) =>
+        listCheckinCatalogSessions((input) =>
+          sessionCatalog.handlers['session.catalog.query'](input, context),
+        ),
+      readSession: async (session) => {
+        // The Todo read takes the Session's admission itself, so it cannot run inside this one.
+        const todos = (await sessionTodo.read(session.id)).items;
+        return sessionAdmission.run(session.id, async () => {
+          const canonical = await canonicalProjectionReader.read(session.id);
+          if (!canonical || canonical.session.isArchived) return undefined;
+          await requireSessionManager(manager).ensureTranscriptLedgerForRead(session.id);
+          const view = await recapReadModel.getSessionView(session.id);
+          return checkinSessionState({
+            session,
+            canonical,
+            todos,
+            messages: view.messages,
+            turns: view.turns,
+          });
+        });
+      },
+      readModelTarget: () => resolveDefaultModelHeader(runtimePolicyStores),
+      generate: createHostCheckinModel({
+        runtimePolicy: runtimePolicyStores,
+        oauthCredentials,
+        usage: openedUsageStores,
+        requestDrain: context.requestDrain,
+      }),
+    });
+    checkins = sessionCheckins;
     const assistantWorkspace = new HostPersonalAssistantWorkspace({
       stateRoot: context.owner.capability.canonicalPath,
       ...(options.assistantHomeDirectory ? { homeDirectory: options.assistantHomeDirectory } : {}),
@@ -3630,6 +3679,7 @@ export async function createExecutionRuntimeHostComposition(
           interactions.handlers,
           sessionEffectCoordinator.handlers,
           promptSuggestionCoordinator.handlers,
+          sessionCheckins.handlers,
           continuityCoordinator.handlers,
           runtimeResources.handlers,
           contextOperations.handlers,
@@ -3666,6 +3716,7 @@ export async function createExecutionRuntimeHostComposition(
           () => interactions.beginDrain(),
           () => sessionEffects?.beginDrain(),
           () => promptSuggestions?.beginDrain(),
+          () => checkins?.beginDrain(),
         ],
         close: [
           async () => {
@@ -3680,6 +3731,7 @@ export async function createExecutionRuntimeHostComposition(
           () => workspaceExecution?.close(),
           () => sessionEffects?.close(),
           () => promptSuggestions?.close(),
+          () => checkins?.close(),
           () => messages.close(),
           () => interactions.close(),
           () => turnAccessRequests?.close(),
@@ -3878,6 +3930,7 @@ export async function createExecutionRuntimeHostComposition(
     try {
       await sessionEffects?.close();
       await promptSuggestions?.close();
+      await checkins?.close();
     } catch (closeError) {
       errors.push(closeError);
     }
