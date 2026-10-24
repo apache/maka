@@ -1023,7 +1023,6 @@ function App() {
                 >
                   <WorkspaceBrowser
                     {...browserProps}
-                    docked={false}
                     close={() => closeOverlay(current.instance)}
                   />
                 </View>

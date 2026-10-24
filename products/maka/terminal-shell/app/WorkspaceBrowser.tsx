@@ -68,8 +68,6 @@ export type WorkspaceBrowserProps = {
   settings(expectedSessionId: string | null): void;
   search(expectedSessionId: string | null): void;
   changeSession(action: SessionAction, expectedSessionId: string | null): Promise<void>;
-  docked?: boolean;
-  resize?(columns: number): void;
 };
 
 export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
@@ -578,38 +576,6 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
           <Icon name="settings" color={C.secondary} />
           <Text style={{ color: C.secondary }}>{tr('Settings')}</Text>
         </Button>
-        <If when={props.docked}>
-          <Button
-            onPress={props.resize ? inputAction(props.resize, -2) : undefined}
-            accessibilityLabel={tr('Narrower session browser')}
-            style={{
-              width: 24,
-              height: 32,
-              alignItems: 'center',
-              justifyContent: 'center',
-              borderRadius: 8,
-            }}
-            hoverStyle={controlHoverStyle}
-            focusStyle={controlFocusStyle}
-          >
-            <Icon name="back" color={C.muted} />
-          </Button>
-          <Button
-            onPress={props.resize ? inputAction(props.resize, 2) : undefined}
-            accessibilityLabel={tr('Wider session browser')}
-            style={{
-              width: 24,
-              height: 32,
-              alignItems: 'center',
-              justifyContent: 'center',
-              borderRadius: 8,
-            }}
-            hoverStyle={controlHoverStyle}
-            focusStyle={controlFocusStyle}
-          >
-            <Icon name="right" color={C.muted} />
-          </Button>
-        </If>
       </View>
       <Each of={actions() ? [actions()!] : []} key={(target) => target}>
         {(item) => {

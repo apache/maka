@@ -50,17 +50,6 @@ export function Workbench(props: {
   const preferredPreviewWidth = signal(48 * CELL);
   const preview = () => props.resources.shown() && canDockPreview();
   const browser = () => props.expanded() && canDockBrowser(props.resources.shown());
-  const width = () =>
-    Math.min(
-      preferredWidth(),
-      windowSize().width - CENTER_MIN - CELL - (preview() ? PREVIEW_MIN + CELL : 0),
-    );
-  const clamp = (value: number) =>
-    Math.max(
-      BROWSER_MIN,
-      Math.min(BROWSER_MAX, windowSize().width - CENTER_MIN - CELL, Math.round(value)),
-    );
-  const resize = (delta: number) => preferredWidth.set(clamp(width() + delta * CELL));
   const previewDialog = signal(false);
   let wasPreviewDocked = canDockPreview();
   effect(() => {
@@ -92,7 +81,7 @@ export function Workbench(props: {
           style={{ minHeight: 0, backgroundColor: C.surface }}
         >
           <If when={browser()}>
-            <WorkspaceBrowser {...props.browser} docked resize={resize} />
+            <WorkspaceBrowser {...props.browser} />
           </If>
         </ResizablePanel>
         <ResizablePanel
