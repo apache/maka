@@ -441,7 +441,9 @@ test's side prints them under the step `Remote` took last (named as `Headless` n
 ### On a real platform (`--target`)
 
 `nsh test --target <platform>` runs the apps tests open on the platform's development host (`macos`, `linux`,
-`windows`, `gpui`, `web`, `ios`, `android`). `App` drives either kind
+`windows`, `gpui`, `web`, `ios`, `android`); `--fps` (macOS, Linux, Windows and iOS) has the host log its performance
+monitor's readings once a second, shown with `-v` (`docs/dev/linux.md` "Performance", `docs/dev/windows.md`
+"Performance"). `App` drives either kind
 of app through one trait (`driver.rs` `Driver`): `Headless`, or `Remote`, which turns each step and query into a
 `nsh_dev::protocol::TestStep` for the host (`TestRun::host`, a `StartHost` the CLI makes: `nsh-cli/src/test_host.rs`).
 For each `open`, the CLI builds the entry, starts a dev server of its own in a test session

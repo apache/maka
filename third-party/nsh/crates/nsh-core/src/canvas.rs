@@ -11,7 +11,7 @@ mod hit;
 use std::sync::Arc;
 
 pub use self::{
-    damage::{Damage, DamageScan},
+    damage::{Damage, DamageScan, first_animated, prefix_path_needed},
     hit::{point_in_path, point_in_stroke},
 };
 use crate::{
@@ -730,6 +730,24 @@ pub enum CanvasOp {
         /// Where it goes.
         dest: [Num; 4],
     },
+}
+
+impl CanvasOp {
+    /// Whether it paints (rather than setting the state: transforms,
+    /// styles, paths, clips).
+    pub fn paints(&self) -> bool {
+        matches!(
+            self,
+            CanvasOp::Fill(..)
+                | CanvasOp::Stroke(_)
+                | CanvasOp::FillRect(_)
+                | CanvasOp::StrokeRect(_)
+                | CanvasOp::ClearRect(_)
+                | CanvasOp::FillText { .. }
+                | CanvasOp::StrokeText { .. }
+                | CanvasOp::DrawImage { .. }
+        )
+    }
 }
 
 /// One `draw` of a canvas.

@@ -27,6 +27,7 @@ mod decor;
 pub mod dev;
 #[cfg(feature = "embed")]
 pub mod embed;
+mod fps;
 mod image;
 mod input;
 mod interaction;

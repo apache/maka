@@ -365,8 +365,23 @@ define_class!(
             // What Core Animation redraws (all of it, or a canvas's part
             // that animated values changed), top down.
             let dirty = CGContext::clip_bounding_box(c);
-            crate::canvas::draw(cx, &state, dirty);
+            let (size, scale) = (layer.bounds().size, layer.contentsScale());
+            let asynchronous = layer.drawsAsynchronously();
+            if crate::fps::measuring() && state.canvas.is_some() {
+                let start = std::time::Instant::now();
+                crate::canvas::draw(cx, &state, dirty, size, scale, asynchronous);
+                crate::fps::drew_canvas(start.elapsed());
+            } else {
+                crate::canvas::draw(cx, &state, dirty, size, scale, asynchronous);
+            }
             CGContext::restore_g_state(c);
+            // A canvas that keeps its static part redraws little: drawn at
+            // once, without the drawing threads' cost per layer.
+            if let Some(canvas) = &state.canvas
+                && canvas.keeps_prefix() == asynchronous
+            {
+                layer.setDrawsAsynchronously(!asynchronous);
+            }
         }
 
         // Nothing nsh changes animates implicitly.

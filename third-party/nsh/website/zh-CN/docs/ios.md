@@ -116,6 +116,8 @@ cargo xtask ios-embed --dynamic
    **Frameworks, Libraries, and Embedded Content** 中。默认的静态 framework 选择 **Do Not Embed**；
    使用 `--dynamic` 构建的动态 framework 选择 **Embed & Sign**。
 2. 在 Swift 中 `import NativeShell`。
+3. 在应用的 `Info.plist` 中把 `CADisableMinimumFrameDurationOnPhone` 设为 `YES`：在 ProMotion iPhone 上，应用的动画
+   就会像滚动一样以 120 Hz 运行（`nsh package` 构建的应用已经设置）。
 
 > [!TIP]
 > 在 Debug 配置中链接 `NativeShellDev.xcframework`，在 Release 配置中链接 `NativeShell.xcframework`，这样只有开发构建能连接开发服务器。

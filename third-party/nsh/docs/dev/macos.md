@@ -59,7 +59,12 @@ server client, log forwarding, the error overlay: `dev.rs`). The runtime needs m
   its content changes and when its size does (`needsDisplayOnBoundsChange`), not when the view moves (transitions
   redrew every moving text on every frame before). Canvases draw asynchronously (`drawsAsynchronously`: Core
   Animation replays the drawing on its threads; Stocks idle, main-thread time per frame ~3.3 → ~1.8 ms, process CPU
-  ~60% → ~30%); text draws at once, which measured faster than asynchronously.
+  ~60% → ~30%); text draws at once, which measured faster than asynchronously. A canvas whose long static part is
+  kept as a `CGLayer` (`canvas.rs`: a drawing painted unchanged 30 times) draws at once instead: each frame draws the
+  layer and replays the animated rest, and Core Animation's drawing threads, their Metal work and their IOSurface
+  backing stores cost more than that (the gallery's Canvas page: CPU 7–10% → 4–6%, GPU 5–6% → 0%, ~210 → ~105 MB).
+  Contents stay in the screen's format: 8-bit contents (`kCAContentsFormatRGBA8Uint`) measured slower on the
+  ProMotion display, which converts them on every frame.
 - **No masks on what scrolls, where avoidable** (`visual.rs`): the window server pays for a mask on every frame its
   layer moves. Outer box shadows under an opaque background (a fill layer, or an opaque gradient, both above them)
   are plain `shadowPath` casters, masked only under translucent ones; inset shadows are clipped by their holder's

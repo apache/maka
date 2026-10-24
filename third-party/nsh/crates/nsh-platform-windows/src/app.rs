@@ -90,6 +90,9 @@ pub enum AppSource {
 pub struct AppOptions {
     /// Log per-commit timings.
     pub trace: bool,
+    /// Logs the performance monitor's readings once a second (target
+    /// `nsh::perf`): frame rate, frame phases, commits, CPU, memory.
+    pub fps: bool,
     /// Where bundled assets are (for [`AppSource::Bundle`]); dev servers
     /// serve them themselves.
     pub asset_base: Option<AssetBase>,
@@ -136,6 +139,7 @@ impl Default for AppOptions {
     fn default() -> Self {
         AppOptions {
             trace: false,
+            fps: false,
             asset_base: None,
             app_id: "com.longbridge.nsh.host".to_owned(),
             title: "nsh".to_owned(),
@@ -203,6 +207,9 @@ impl AppView {
             dev: RefCell::new(None),
         });
         crate::system::watch_environment(&view.surface);
+        if view.options.borrow().fps {
+            view.surface.enable_fps();
+        }
         Ok(view)
     }
 

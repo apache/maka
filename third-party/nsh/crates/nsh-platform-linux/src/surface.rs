@@ -138,6 +138,8 @@ pub(crate) struct Surface {
     /// Selections across the texts of selection areas
     /// ([`crate::selection_area`]).
     pub(crate) selection: crate::selection_area::State,
+    /// The performance monitor, while it measures ([`crate::fps`]).
+    fps: RefCell<Option<Rc<crate::fps::Fps>>>,
 }
 
 impl Surface {
@@ -176,6 +178,7 @@ impl Surface {
             keymap: Default::default(),
             chrome: Default::default(),
             selection: Default::default(),
+            fps: RefCell::new(None),
         });
         SURFACES.with(|s| s.borrow_mut().insert(key, Rc::downgrade(&surface)));
         let weak = Rc::downgrade(&surface);
@@ -184,9 +187,27 @@ impl Surface {
                 surface.resized(width, height);
             }
         });
+        // Canvases that came into sight are drawn in the frame that shows them.
+        root.connect_realize(|root| {
+            if let Some(clock) = root.frame_clock() {
+                clock.connect_layout(|_| crate::canvas::reveal());
+            }
+        });
         crate::input::install(&surface);
         crate::scroll::install_keyboard(&surface);
         surface
+    }
+
+    /// Measures the surface's frames and commits and logs them once a
+    /// second ([`crate::fps`]).
+    pub(crate) fn enable_fps(&self) {
+        if self.fps.borrow().is_some() {
+            return;
+        }
+        let fps = Rc::new(crate::fps::Fps::new());
+        crate::fps::install(self.root.upcast_ref(), &fps);
+        self.control(|c| c.set_perf_monitor(Some(fps.monitor.clone())));
+        *self.fps.borrow_mut() = Some(fps);
     }
 
     /// Its key ([`Surface::by_key`]).
@@ -260,6 +281,9 @@ impl Surface {
                 #[cfg(feature = "dev")]
                 if let Some(model) = &*self.test_model.borrow() {
                     model.engine_started(engine.control());
+                }
+                if let Some(fps) = &*self.fps.borrow() {
+                    engine.control().set_perf_monitor(Some(fps.monitor.clone()));
                 }
                 *self.control.borrow_mut() = Some(engine.control());
                 *self.engine.borrow_mut() = Some(engine);
@@ -341,6 +365,18 @@ impl Surface {
 
     /// Applies what the engine sent.
     fn drain(self: &Rc<Self>) {
+        let started = self
+            .fps
+            .borrow()
+            .is_some()
+            .then(nsh_core::time::Instant::now);
+        self.drain_messages();
+        if let (Some(started), Some(fps)) = (started, &*self.fps.borrow()) {
+            fps.drained(started.elapsed());
+        }
+    }
+
+    fn drain_messages(self: &Rc<Self>) {
         self.pending.borrow().store(false, Ordering::Release);
         let messages: Vec<Message> = match &*self.rx.borrow() {
             Some(rx) => rx.try_iter().collect(),

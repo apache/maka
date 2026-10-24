@@ -62,8 +62,8 @@ impl UiAnimation {
                 if moved.is_some() {
                     crate::text_input::animated(view);
                 }
-                for &(k, value) in canvas {
-                    crate::canvas::set_arg(view, k, value);
+                if !canvas.is_empty() {
+                    crate::canvas::set_args(view, canvas);
                 }
             },
         );

@@ -23,9 +23,26 @@
 //!
 //! The panel lets the mouse through. It measures nothing while hidden: the
 //! surface's monitor is removed with it.
+//!
+//! While it shows it also logs one `nsh::perf` line a second, in the shape
+//! of the Linux backend's (`examples/gallery/tools/perf.py` reads both):
+//!
+//! `fps 120/120 frame 1.21/1.10/2.40/3.90 gap 8.33/8.33/8.40/16.70 over 0%
+//! tick 0.40/… drain 0.30/… canvas 0.20/… commits 20 js 0.30/… core 0.50/…
+//! items 42 engine 3% cpu 24% gpu 9% mem 92.4 MB`: frames shown in the
+//! second over the display's rate, the main thread's time per shown frame,
+//! the gaps between shown frames (one refresh while something moves), the
+//! share of frames over one refresh; its phases: `tick` (the display link:
+//! animations, the batches that waited for the frame, frame callbacks),
+//! `drain` (batches applied as they arrived) and `canvas` (canvases'
+//! drawing on the main thread, per frame that drew any; Core Animation
+//! renders their commands on its own threads); the engine's commits with
+//! their JS and core time, mount items per commit, the engine thread's busy
+//! share, the process' CPU (percent of one core), GPU and physical footprint
+//! (milliseconds as mean/p50/p95/max).
 
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     rc::{Rc, Weak},
     sync::Arc,
     time::Duration,
@@ -56,6 +73,46 @@ thread_local! {
     /// The HUDs of this (main) thread by key: the timer finds its HUD by
     /// key, as dispatched closures must be `Send`.
     static HUDS: RefCell<FxHashMap<u64, Weak<Hud>>> = RefCell::default();
+}
+
+thread_local! {
+    /// How many HUDs measure on this (main) thread, the canvases' drawing
+    /// time of the frame being drawn, and the phases since the last line.
+    static MEASURING: Cell<u32> = const { Cell::new(0) };
+    static CANVAS: Cell<Duration> = const { Cell::new(Duration::ZERO) };
+    static PHASES: RefCell<Phases> = RefCell::default();
+}
+
+/// The phases' samples since the last line.
+#[derive(Default)]
+struct Phases {
+    tick: Vec<Duration>,
+    drain: Vec<Duration>,
+    canvas: Vec<Duration>,
+}
+
+/// Whether a HUD measures (the phases are timed).
+pub(crate) fn measuring() -> bool {
+    MEASURING.get() > 0
+}
+
+/// A display link frame's work took `cost`.
+pub(crate) fn ticked(cost: Duration) {
+    PHASES.with_borrow_mut(|p| p.tick.push(cost));
+    let canvas = CANVAS.take();
+    if !canvas.is_zero() {
+        PHASES.with_borrow_mut(|p| p.canvas.push(canvas));
+    }
+}
+
+/// Batches applied as they arrived took `cost`.
+pub(crate) fn drained(cost: Duration) {
+    PHASES.with_borrow_mut(|p| p.drain.push(cost));
+}
+
+/// A canvas drew in `cost` (closed into its frame at the next tick).
+pub(crate) fn drew_canvas(cost: Duration) {
+    CANVAS.set(CANVAS.get() + cost);
 }
 
 static NEXT_KEY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -166,15 +223,13 @@ pub(crate) struct Hud {
     trace: Retained<TraceView>,
     process: RefCell<ProcessSampler>,
     gpu: RefCell<Option<crate::gpu::GpuProbe>>,
-    /// Also log the readings once a second (`--fps --trace`), and how many
-    /// updates ran.
-    log: bool,
+    /// How many updates ran (every second one logs a line).
     updates: std::cell::Cell<u64>,
 }
 
 impl Hud {
     /// Shows a HUD over `view` and starts measuring its surface.
-    pub(crate) fn show(view: &AppView, log: bool) -> Rc<Hud> {
+    pub(crate) fn show(view: &AppView) -> Rc<Hud> {
         let mtm = MainThreadMarker::new().expect("main thread");
         let surface = view.surface();
         let monitor = Arc::new(PerfMonitor::new());
@@ -216,10 +271,10 @@ impl Hud {
             trace,
             process: RefCell::new(ProcessSampler::new()),
             gpu: RefCell::new(crate::gpu::GpuProbe::new()),
-            log,
             updates: std::cell::Cell::new(0),
         });
         HUDS.with(|h| h.borrow_mut().insert(hud.key, Rc::downgrade(&hud)));
+        MEASURING.set(MEASURING.get() + 1);
         surface.set_perf_monitor(Some(monitor));
         hud.update();
         schedule(hud.key);
@@ -239,8 +294,15 @@ impl Hud {
         let snapshot = self.monitor.snapshot();
         let n = self.updates.get() + 1;
         self.updates.set(n);
-        if self.log && n.is_multiple_of(2) {
-            log::info!(target: "nsh::perf", "{}", log_line(&snapshot));
+        if n.is_multiple_of(2) {
+            let phases = PHASES.with_borrow_mut(|p| {
+                [
+                    drain_stat(&mut p.tick),
+                    drain_stat(&mut p.drain),
+                    drain_stat(&mut p.canvas),
+                ]
+            });
+            log::info!(target: "nsh::perf", "{}", log_line(&snapshot, &phases));
         }
         self.label
             .setStringValue(&NSString::from_str(&readings(&snapshot)));
@@ -292,6 +354,7 @@ impl Drop for Hud {
         }
         let key = self.key;
         let _ = HUDS.try_with(|h| h.borrow_mut().remove(&key));
+        let _ = MEASURING.try_with(|m| m.set(m.get().saturating_sub(1)));
     }
 }
 
@@ -318,8 +381,24 @@ fn stat(s: &Stat) -> String {
     format!("{:6.2}  p95 {:6.2}", ms(s.mean), ms(s.p95))
 }
 
-/// One line of the readings, for logs: milliseconds as `mean/p50/p95/max`.
-fn log_line(s: &PerfSnapshot) -> String {
+/// The distribution of `samples`, which it empties.
+fn drain_stat(samples: &mut Vec<Duration>) -> Stat {
+    let mut stat = Stat::default();
+    if samples.is_empty() {
+        return stat;
+    }
+    samples.sort_unstable();
+    let n = samples.len();
+    stat.mean = samples.iter().sum::<Duration>() / n as u32;
+    stat.p50 = samples[n / 2];
+    stat.p95 = samples[(n * 95 / 100).min(n - 1)];
+    stat.max = samples[n - 1];
+    samples.clear();
+    stat
+}
+
+/// One second's line, for logs (see the module documentation).
+fn log_line(s: &PerfSnapshot, phases: &[Stat; 3]) -> String {
     let st = |s: &Stat| {
         format!(
             "{:.2}/{:.2}/{:.2}/{:.2}",
@@ -329,21 +408,28 @@ fn log_line(s: &PerfSnapshot) -> String {
             ms(s.max)
         )
     };
+    let percent = |v: Option<f32>| v.map_or_else(|| "-".to_owned(), |v| format!("{v:.0}%"));
     format!(
-        "fps {:.0} ({:.0} Hz) tick {} frame-gap {} main {} drop {:.0}% js {} core {} {:.0} commits/s {:.0} items hop {} cpu {:.0}% gpu {:.0}%",
+        "fps {:.0}/{:.0} frame {} gap {} over {:.0}% tick {} drain {} canvas {} commits {:.0} js {} core {} \
+         items {:.0} engine {:.0}% cpu {} gpu {} mem {}",
         s.fps,
         s.refresh_rate.unwrap_or(0.0),
-        st(&s.tick_interval),
-        st(&s.frame_interval),
         st(&s.frame),
+        st(&s.frame_interval),
         s.dropped * 100.0,
+        st(&phases[0]),
+        st(&phases[1]),
+        st(&phases[2]),
+        s.commits,
         st(&s.js),
         st(&s.layout),
-        s.commits,
         s.items,
-        st(&s.latency),
-        s.process.cpu.unwrap_or(0.0),
-        s.process.gpu.unwrap_or(0.0),
+        s.engine_busy,
+        percent(s.process.cpu),
+        percent(s.process.gpu),
+        s.process
+            .memory
+            .map_or_else(|| "-".to_owned(), |m| format!("{:.1} MB", m as f64 / 1e6)),
     )
 }
 

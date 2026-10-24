@@ -221,7 +221,8 @@ nsh run App.tsx --target android --trace --release
 nsh run App.tsx --target macos --fps --release
 ```
 
-（Rust 应用在 `run_app` 中用 `AppOptions { fps: true, .. }`）会在运行中的应用上方显示帧率、每帧和每次 commit 的开销，以及 CPU、GPU 和内存（[macOS：性能监视器](./macos.md#性能监视器)）。
+（Rust 应用在 `run_app` 中用 `AppOptions { fps: true, .. }`）会在运行中的应用上方显示帧率、每帧和每次 commit 的开销，以及 CPU、GPU 和内存（[macOS：性能监视器](./macos.md#性能监视器)）。在 Linux 和 Windows 上，`--target linux --fps` 和 `--target windows --fps` 每秒输出一行同样的读数，并给出一帧中每个阶段的耗时；
+`nsh test --target linux --fps -v`（或 `windows`）可以在测试驱动应用时采集这些读数。
 
 > [!TIP]
 > 单次测量主要受 CPU 时钟状态影响：刚刚休眠过的线程会在一段时间内运行得更慢。请在同一台机器上比较多次运行的最小值，
@@ -229,17 +230,7 @@ nsh run App.tsx --target macos --fps --release
 
 ## 参考数据
 
-来自 NSH 自己的基线（除特别注明外均为 Apple silicon）：
-
-| 场景 | 数据 |
-|---|---|
-| 计数器应用，无界面（debug） | 首帧 ~0.5–0.65 ms（58 ops / 49 mount items）；一次点击 ~0.15 ms |
-| 计数器应用，Mac Catalyst（release） | 首帧 ~1.05–1.15 ms（其中约 0.7 ms 用于首次用 CoreText 布局 10 段文本）；一次点击 ~0.12 ms |
-| Gallery 照片列表，无界面（debug） | 首帧 653 ops / 224 nodes，~2.7 ms |
-| 滚动照片列表，Catalyst（release） | 慢速滚动时重新绑定一行 ~0.4 ms；快速甩动时一整屏约 32 行 0.9–1.6 ms |
-| 滚动照片列表，Android 模拟器（arm64，release） | 重新绑定一行 ~0.3–0.4 ms（JS ~60 µs） |
-| 引擎启动（release） | ~75–155 µs；全局 API（`fetch`、`URL` 等）在首次使用前没有任何开销，首次使用后 ~90 µs |
-| 热重载 | 从保存文件到新版本运行 ~120 ms；应用更新 0.2–0.5 ms |
+实测数据（NSH 的基线和 gallery 在 Linux 上的逐页数据）见[性能报告](./performance-report.md)。
 
 ## 检查清单
 
@@ -252,6 +243,7 @@ nsh run App.tsx --target macos --fps --release
 
 ## 另请参阅
 
+- [性能报告](./performance-report.md)
 - [架构](./architecture.md)
 - [测试](./testing-and-trace.md)
 - [列表](./lists.md)、[动画](./animation.md)、[响应式](./reactivity.md)

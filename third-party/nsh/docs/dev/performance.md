@@ -294,6 +294,15 @@ draw a panel.
   p50 ~1.9 → ~1.7 ms, CPU ~38–40% both; a test canvas (524×340: a 400-point area and line, 400 bars, a pulsing ring,
   a moving square) presented 86–117 fps before and 92–119 after, `main` p50 ~1.2 → ~1.0 ms, CPU ~17% both.
 
+  Kept static parts (`canvas.rs` `Prefix`, `docs/dev/canvas.md`; `examples/gallery/tools/perf.py --only
+  Stocks,Canvas,Animations --seconds 6`, two runs each, the display kept awake): a long static part, painted unchanged
+  30 times, is kept as a `CGLayer` and its canvas drawn at once. Canvas demo idle: canvas phase 0.24–0.27 →
+  0.09–0.11 ms, CPU 7–10% → 4–6%, GPU 5–6% → 0%, ~200–220 → ~106 MB; Stocks and Animations unchanged (their
+  drawings are short or change every few frames, so none is kept). Tried and not kept: the layer for every drawing
+  (Stocks' frame p95 ~3.3 → ~4.2 ms: its sparklines change ~15 times a second and replay faster than a layer draws),
+  every canvas at once (Stocks p95 ~3.3 → ~7.5 ms, 2% of frames over a refresh: the main thread fills the screen's
+  RGBA16F backing stores), 8-bit contents (canvas phase ~0.45 → ~1.6 ms).
+
   List binds while scrolling (release host, 120 Hz MacBook Pro; the list scrolled by chained native
   `scrollToOffset({ animated: true })` every 300 ms, no input; each display link refresh logged with its link
   timestamp and main-thread time; three runs each, refreshes missed = link gaps of two periods or more). Before =
@@ -344,6 +353,54 @@ draw a panel.
   rasterized on two workers and only what animates in place (`canvas.rs`).
 
 The dev profile builds `quickjs-jit-sys` and `taffy` with `opt-level = 3`, so debug timings are meaningful too; release uses fat LTO.
+
+- Linux (GTK 4, release; a 1896×1030 window on a 120 Hz headless Hyprland output, NVIDIA; `--fps` readings and the
+  host's threads' CPU from `/proc`, 20 s runs). Before = main as of `8ff7b9f6` (GSK's Vulkan renderer, canvases
+  replayed into a Cairo recording surface on every change):
+
+  | Scenario | Before: fps, frame p95, CPU | After: fps, frame p95, CPU |
+  |---|---|---|
+  | Stocks (live prices, sparklines, chart, a tick every 50 ms) | 75–87, 17–21 ms, 82–85% | 117–120, 5–6 ms, 31–32% (29% at 1200×800) |
+  | Canvas demo | 118–120, 6–11 ms, 17–23% | 120, 2.6–4.4 ms, 5–10% |
+  | Animations demo | 66–85, 21–25 ms, 73% | 120, 2.0 ms, 12–13% |
+
+  Every page of the gallery draws its frames in under 8.3 ms at p95 (`examples/gallery/tools/perf.py`). On Stocks
+  the GL renderer alone gave 116 fps at 62%; the canvas rasters (tiles, partial redraws over the kept static part,
+  canvases out of sight waiting) took it to the rest. What is left is GSK's rendering (~12% of the main thread: GL
+  commands for the damaged areas), Cairo's rasterizing (~8%, strokes most of it: the chart's full redraw on every
+  tick costs ~1.7 ms, a sparkline's pulse ~21 µs) and the engine (~5%: the demo's market in JS, canvas recording,
+  layout). `fillRect` / `fillText` after a long path set it aside once instead of copying it out and back per
+  call: a 400-point line then 240 bars, 840×340, 1.68 → 0.63 ms (`cargo test --release -p nsh-platform-linux
+  bench_rects_after_a_path -- --ignored --nocapture`). Memory: visiting a demo again adds nothing; the first visits
+  grow by bounded caches (decoded images, up to 128 MB) and libraries loaded on first use (WebKitGTK).
+
+- Windows (Win32 / Direct2D, release; i7-13700KF, RTX 3060 Ti, a 1200 × 800 point window on a 4K 144 Hz display at
+  150%; `--fps` readings through `nsh test --target windows --fps`, 4 s per scenario). Before = this branch with
+  only the monitor added (every canvas whose animated value changed recorded again in full; every view pushed a
+  content clip; every child of a scroll view drawn):
+
+  | Scenario | Before: fps, frame p95, over one refresh, paint / canvas per frame, CPU | After |
+  |---|---|---|
+  | Stocks | 144, 8.2–8.8 ms, 11–28%, 4.4 / 1.8 ms, 87–98% | 144, 6.6–6.9 ms, 3–5%, 2.7 / 0.3 ms, 52–71% |
+  | Canvas demo | 144, 2.7–5.0 ms, 0–1%, 2.2–2.5 / 0.21 ms, 30–32% | 144, 2.6–2.7 ms, 0%, 2.0–2.4 / 0.08 ms, 28–50% |
+
+  Stocks re-recorded ~3100 canvases a second (its 22 sparklines and the chart, on every pulse), 280 ms of the main
+  thread; recording only what follows the first animated operation takes that to ~26 ms (the sparklines erase their
+  left edge with `destination-out`, inside the head). What is left is drawing the whole window on every refresh
+  (~690 views; text ~0.6 ms of it, `EndDraw` ~0.05 ms). CPU readings vary by ±10 points between runs on this machine.
+
+  Partial frames (`docs/dev/windows.md` "Partial frames": a frame draws the changed views' areas over the kept back
+  buffer of a `FLIP_SEQUENTIAL` swap chain, once, in a clip of up to 24 rectangles, and presents them with `Present1`),
+  same setup. Before = the whole window drawn on every frame:
+
+  | Scenario | Before: frame p95, over one refresh, paint per frame, CPU | After |
+  |---|---|---|
+  | Stocks (~34 changed views a frame) | 6.6–6.9 ms, 3–5%, 2.7 ms, 52–71% | 3.7–4.3 ms, 0–1%, 1.4 ms, 36–43% |
+  | Animations demo | 2.6 ms, 0%, 2.3 ms, 32–40% | 1.0 ms, 0%, 0.9 ms, 20–28% |
+  | Canvas demo | 2.6–2.7 ms, 0%, 2.0–2.4 ms, 28–50% | 0.95 ms, 0%, 0.8 ms, 21–26% |
+
+  Drawing each area in a pass of its own (up to 6) was tried first: Stocks' paint only went 2.7 → 2.2 ms, the
+  passes each walking the tree and the merged areas covering ~30% of the window.
 
 - Tailwind containing blocks, font-relative lengths and intrinsic text sizes (PR #323 follow-up, Linux,
   debug counter trace against `70254f80`): first commit 656 → 674µs, press commit 313 → 312µs;

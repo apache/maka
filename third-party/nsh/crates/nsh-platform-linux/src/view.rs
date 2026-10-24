@@ -360,6 +360,89 @@ mod imp {
         }
     }
 
+    impl NshView {
+        /// Draws the view and its children.
+        fn draw(&self, snapshot: &gtk::Snapshot) {
+            let obj = self.obj();
+            let state = self.state.borrow();
+            if state.style.hidden || crate::decor::backface_away(&state) {
+                return;
+            }
+            let opacity = state.opacity();
+            if opacity <= 0.0 {
+                return;
+            }
+            if opacity < 1.0 {
+                snapshot.push_opacity(opacity as f64);
+            }
+            let filters = crate::decor::push_filters(snapshot, &state);
+            let (phase, changed) = self.damage.get();
+            let phase = phase ^ changed;
+            self.damage.set((phase, false));
+            state.draw_overhang(snapshot, phase);
+            let soft = crate::decor::soft_shadows(obj.upcast_ref(), &state);
+            crate::decor::draw_background(snapshot, &state, soft);
+            let clip = state.clips();
+            if clip {
+                snapshot.push_rounded_clip(&state.rounded_bounds());
+            }
+            // The view's own content stays inside it, as a UIKit view's
+            // drawing stays in its backing store: a cell the core has not
+            // placed yet (no frame) draws nothing.
+            if !clip {
+                snapshot.push_clip(&graphene::Rect::new(
+                    0.0,
+                    0.0,
+                    state.frame.size.width.0,
+                    state.frame.size.height.0,
+                ));
+            }
+            crate::text::draw(snapshot, &state);
+            crate::image::draw(snapshot, &state);
+            if state.canvas.is_some() {
+                // The surface's own scale, fractional ones included.
+                let scale = obj
+                    .native()
+                    .and_then(|n| n.surface())
+                    .map_or(obj.scale_factor() as f64, |s| s.scale());
+                crate::canvas::draw(snapshot, &obj, &state, scale);
+            }
+            if !clip {
+                snapshot.pop();
+            }
+            drop(state);
+            let mut child = obj.first_child();
+            while let Some(widget) = child {
+                child = widget.next_sibling();
+                // A view inserted (or given a size) by a batch applied
+                // since the last layout has no allocation until the next
+                // frame's; snapshots taken in between (images of a screen
+                // the app removed) skip it, as GTK would after warning.
+                if let Some(view) = widget.downcast_ref::<super::NshView>()
+                    && widget.width() == 0
+                    && widget.height() == 0
+                    && view.state().frame.size.width.0 >= 1.0
+                    && view.state().frame.size.height.0 >= 1.0
+                {
+                    continue;
+                }
+                obj.snapshot_child(&widget, snapshot);
+            }
+            let state = self.state.borrow();
+            crate::scroll::draw_indicator(snapshot, &state);
+            if clip {
+                snapshot.pop();
+            }
+            crate::decor::draw_border(snapshot, &state);
+            for _ in 0..filters {
+                snapshot.pop();
+            }
+            if opacity < 1.0 {
+                snapshot.pop();
+            }
+        }
+    }
+
     impl ObjectImpl for NshView {
         fn dispose(&self) {
             while let Some(child) = self.obj().first_child() {
@@ -435,75 +518,13 @@ mod imp {
         }
 
         fn snapshot(&self, snapshot: &gtk::Snapshot) {
-            let obj = self.obj();
-            let state = self.state.borrow();
-            if state.style.hidden || crate::decor::backface_away(&state) {
-                return;
-            }
-            let opacity = state.opacity();
-            if opacity <= 0.0 {
-                return;
-            }
-            if opacity < 1.0 {
-                snapshot.push_opacity(opacity as f64);
-            }
-            let filters = crate::decor::push_filters(snapshot, &state);
-            let (phase, changed) = self.damage.get();
-            let phase = phase ^ changed;
-            self.damage.set((phase, false));
-            state.draw_overhang(snapshot, phase);
-            let soft = crate::decor::soft_shadows(obj.upcast_ref(), &state);
-            crate::decor::draw_background(snapshot, &state, soft);
-            let clip = state.clips();
-            if clip {
-                snapshot.push_rounded_clip(&state.rounded_bounds());
-            }
-            // The view's own content stays inside it, as a UIKit view's
-            // drawing stays in its backing store: a cell the core has not
-            // placed yet (no frame) draws nothing.
-            if !clip {
-                snapshot.push_clip(&graphene::Rect::new(
-                    0.0,
-                    0.0,
-                    state.frame.size.width.0,
-                    state.frame.size.height.0,
-                ));
-            }
-            crate::text::draw(snapshot, &state);
-            crate::image::draw(snapshot, &state);
-            crate::canvas::draw(snapshot, &state);
-            if !clip {
-                snapshot.pop();
-            }
-            drop(state);
-            let mut child = obj.first_child();
-            while let Some(widget) = child {
-                child = widget.next_sibling();
-                // A view inserted (or given a size) by a batch applied
-                // since the last layout has no allocation until the next
-                // frame's; snapshots taken in between (images of a screen
-                // the app removed) skip it, as GTK would after warning.
-                if let Some(view) = widget.downcast_ref::<super::NshView>()
-                    && widget.width() == 0
-                    && widget.height() == 0
-                    && view.state().frame.size.width.0 >= 1.0
-                    && view.state().frame.size.height.0 >= 1.0
-                {
-                    continue;
-                }
-                obj.snapshot_child(&widget, snapshot);
-            }
-            let state = self.state.borrow();
-            crate::scroll::draw_indicator(snapshot, &state);
-            if clip {
-                snapshot.pop();
-            }
-            crate::decor::draw_border(snapshot, &state);
-            for _ in 0..filters {
-                snapshot.pop();
-            }
-            if opacity < 1.0 {
-                snapshot.pop();
+            // The root's snapshot is the whole tree's that changed, which
+            // the performance monitor reports ([`crate::fps`]).
+            let started = (self.resized.borrow().is_some() && crate::fps::measuring())
+                .then(nsh_core::time::Instant::now);
+            self.draw(snapshot);
+            if let Some(started) = started {
+                crate::fps::snapshotted(started.elapsed());
             }
         }
 

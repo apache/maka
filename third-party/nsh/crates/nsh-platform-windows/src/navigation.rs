@@ -1524,7 +1524,7 @@ mod tests {
     /// A root that counts as attached to a surface, and views under it.
     fn root() -> NshView {
         let root = NshView::new(ROOT_ID, ViewKind::View);
-        root.set_invalidate(Rc::new(|| {}));
+        root.set_invalidate(Rc::new(|_| {}));
         root
     }
 

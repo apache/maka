@@ -53,6 +53,9 @@ pub struct AppOptions {
     /// Where the apps keep their caches (the images they downloaded) and
     /// how much each keeps ([`SurfaceOptions::cache`]).
     pub cache: nsh_engine::CacheOptions,
+    /// Logs the performance monitor's readings once a second
+    /// ([`SurfaceOptions::fps`]).
+    pub fps: bool,
 }
 
 /// Whether `path` is inside the app's own bundle (which the system verifies
@@ -191,6 +194,7 @@ fn connect(mtm: MainThreadMarker, scene: &UIWindowScene) {
         root.bounds(),
         SurfaceOptions {
             trace: options.trace,
+            fps: options.fps,
             asset_base: options.asset_base,
             data_dir: options
                 .data_dir

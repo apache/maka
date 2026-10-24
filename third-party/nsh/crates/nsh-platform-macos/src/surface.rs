@@ -547,7 +547,11 @@ impl Surface {
         });
         if let (Some(monitor), Some(start)) = (monitor, start) {
             // Core Animation's commit (drawing what changed) included.
-            monitor.record_work(start.elapsed(), applied);
+            let cost = start.elapsed();
+            monitor.record_work(cost, applied);
+            if applied {
+                crate::fps::drained(cost);
+            }
         }
         self.ensure_ticking();
     }
@@ -801,7 +805,9 @@ impl Surface {
         let start = Instant::now();
         let dirty = self.wants_frames();
         quiet(|| self.tick(now));
-        monitor.record_work(start.elapsed(), dirty);
+        let cost = start.elapsed();
+        monitor.record_work(cost, dirty);
+        crate::fps::ticked(cost);
         monitor.vsync(
             Instant::now(),
             std::time::Duration::from_secs_f64(period.max(0.0)),

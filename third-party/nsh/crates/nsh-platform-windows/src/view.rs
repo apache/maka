@@ -18,7 +18,7 @@
 //! drawn in one pass, so damage is the window.
 
 use std::{
-    cell::{Ref, RefCell, RefMut},
+    cell::{Cell, Ref, RefCell, RefMut},
     rc::{Rc, Weak},
 };
 
@@ -326,8 +326,12 @@ impl ViewState {
     }
 }
 
-/// Called when a view of the tree changed: the root's surface draws again.
-pub(crate) type Invalidate = Rc<dyn Fn()>;
+/// Called with the view of the tree that changed: the root's surface draws
+/// it again ([`crate::surface::Surface::invalidate_view`]).
+pub(crate) type Invalidate = Rc<dyn Fn(&NshView)>;
+
+/// A rectangle in the window's DIPs (points).
+pub(crate) type WindowRect = windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
 
 struct Node {
     state: RefCell<ViewState>,
@@ -335,6 +339,21 @@ struct Node {
     children: RefCell<Vec<NshView>>,
     /// Set on a surface's root only.
     invalidate: RefCell<Option<Invalidate>>,
+    /// It is on its surface's list of changed views.
+    queued: Cell<bool>,
+    /// Where the window's last frame painted it (not its children), clipped
+    /// to what was visible: the area to draw again when it changes.
+    painted: Cell<Option<WindowRect>>,
+}
+
+/// The smallest rectangle holding `a` and `b`.
+pub(crate) fn union(a: &WindowRect, b: &WindowRect) -> WindowRect {
+    WindowRect {
+        left: a.left.min(b.left),
+        top: a.top.min(b.top),
+        right: a.right.max(b.right),
+        bottom: a.bottom.max(b.bottom),
+    }
 }
 
 /// The view of one node (a cheap, reference-counted handle).
@@ -366,6 +385,8 @@ impl NshView {
             parent: RefCell::new(Weak::new()),
             children: RefCell::new(Vec::new()),
             invalidate: RefCell::new(None),
+            queued: Cell::new(false),
+            painted: Cell::new(None),
         }))
     }
 
@@ -401,9 +422,12 @@ impl NshView {
         *self.0.invalidate.borrow_mut() = Some(invalidate);
     }
 
-    /// Something it draws changed: its surface draws again (if it is in
-    /// one).
+    /// Something it or its subtree draws changed: its surface draws that
+    /// again (if it is in one).
     pub(crate) fn changed(&self) {
+        if self.0.queued.get() {
+            return;
+        }
         let mut node = self.0.clone();
         loop {
             let parent = node.parent.borrow().upgrade();
@@ -414,8 +438,34 @@ impl NshView {
         }
         let invalidate = node.invalidate.borrow().clone();
         if let Some(f) = invalidate {
-            f();
+            f(self);
         }
+    }
+
+    /// Whether it is on its surface's list of changed views; set by the
+    /// surface, which clears it when it draws.
+    pub(crate) fn set_queued(&self, queued: bool) {
+        self.0.queued.set(queued);
+    }
+
+    /// Records where the window's frame painted it.
+    pub(crate) fn set_painted(&self, rect: Option<WindowRect>) {
+        self.0.painted.set(rect);
+    }
+
+    /// Where the window's last frames painted it and its subtree, as one
+    /// rectangle (`None`: nowhere).
+    pub(crate) fn painted_subtree(&self) -> Option<WindowRect> {
+        let mut area = self.0.painted.get();
+        for child in self.0.children.borrow().iter() {
+            if let Some(b) = child.painted_subtree() {
+                area = Some(match area {
+                    Some(a) => union(&a, &b),
+                    None => b,
+                });
+            }
+        }
+        area
     }
 
     /// Its frame, transform or shift changed.
@@ -463,15 +513,20 @@ impl NshView {
             .unwrap_or(children.len());
         children.insert(at, self.clone());
         drop(children);
-        parent.changed();
+        // Where it draws now (its parent draws nothing new of its own).
+        self.changed();
     }
 
     /// Takes this view out of its parent.
     pub(crate) fn unparent(&self) {
+        // Where it was drawn is drawn again: queued while it can still
+        // reach its surface.
+        if self.parent_view().is_some() {
+            self.changed();
+        }
         let parent = self.0.parent.replace(Weak::new()).upgrade();
         if let Some(parent) = parent {
             parent.children.borrow_mut().retain(|c| c != self);
-            NshView(parent).changed();
         }
     }
 

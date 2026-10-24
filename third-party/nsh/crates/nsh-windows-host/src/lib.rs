@@ -5,6 +5,8 @@
 //! - `nsh-windows-host --bundle <path> [--trace]` runs a built bundle (`.nshc`
 //!   is QuickJS bytecode, anything else JS source).
 //!
+//! - `--fps` logs the performance monitor's readings once a second (frame
+//!   rate, frame phases, commits, CPU and memory; target `nsh::perf`).
 //! - `--window-size 390x844` sets the window size in points (default 1200x800,
 //!   wide enough for desktop layouts such as the gallery's sidebar).
 //! - `--data-dir <dir>` keeps the apps' data there instead of the system's
@@ -56,6 +58,7 @@ pub fn main() -> std::process::ExitCode {
                 source = Some(AppSource::Bundle(bundle));
             }
             "--trace" => options.trace = true,
+            "--fps" => options.fps = true,
             "--app-id" => {
                 if let Some(id) = args.next().filter(|id| !id.is_empty()) {
                     options.app_id = id;

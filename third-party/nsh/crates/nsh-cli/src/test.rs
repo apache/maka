@@ -60,6 +60,7 @@ pub(crate) fn test(
     entry: &Path,
     filter: Option<String>,
     trace: bool,
+    fps: bool,
     junit: Option<&Path>,
     target: Option<crate::run::Target>,
     browser: Option<&Path>,
@@ -141,7 +142,7 @@ pub(crate) fn test(
     }
     let host = target
         .filter(|_| !files.is_empty())
-        .map(|target| crate::test_host::starter(target, browser, &work_dir))
+        .map(|target| crate::test_host::starter(target, browser, &work_dir, fps))
         .transpose()?;
     // On a real platform the apps run in hosts built with the app's crates:
     // the test files run here, whatever the app is.

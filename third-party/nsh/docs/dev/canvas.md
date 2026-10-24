@@ -49,8 +49,18 @@ their blur past their offset, text by 1.5 em per character and 1.5 em above and 
 hand). The scan falls back to a full redraw (`Damage::All`) for a clip that reads a changed value, a painting
 operation that reads one under a composite operation other than `source-over` (`copy`, `source-in`, ... change pixels
 outside the shape), an image at its natural size and bounds that are not finite. A scan allocates nothing (its save
-stack is kept); two per changed frame cost microseconds next to the replay. Linux (GTK 4 redraws whole widgets:
-`queue_draw` takes no area), Android, the web runtime and the GPUI backend (which rasterizes the drawing, text outlines
+stack is kept); two per changed frame cost microseconds next to the replay. Linux rasterizes each canvas into an
+image surface at the surface's scale, shown as textures of 256 pixel tiles (`canvas.rs` `Raster`): an animation
+clears the damaged area and replays the drawing clipped to it, and only the tiles it touches become new textures
+(GSK keeps the others on the GPU). There, what the operations before the first one reading a slot painted
+(`canvas::first_animated`) is kept from the last full replay and copied back into the area, so only the painting from
+that operation on runs again (the operations before it still set the state; their path ops are skipped too when the
+animated part begins a path of its own). macOS keeps that part too, as a `CGLayer` (`canvas.rs` `Prefix`), when it
+is long (128 operations or more: drawing a layer costs about what replaying a sparkline does) and the drawing has been
+painted unchanged 30 times (a drawing that keeps changing would rasterize it on the main thread more often than it
+draws from it); such a canvas then draws at once instead of asynchronously, where its layer is made, and goes back to
+Core Animation's threads when its drawing changes. On Linux, a canvas out of sight (outside a clipping ancestor or the window) is not
+drawn until it comes into sight: its animations ask for no frames. Android, the web runtime and the GPUI backend (which rasterizes the drawing, text outlines
 included, with tiny-skia into a pixmap in device pixels: `nsh-platform-gpui` `canvas.rs`) still redraw the
 whole canvas. Numbers:
 `docs/dev/performance.md`.

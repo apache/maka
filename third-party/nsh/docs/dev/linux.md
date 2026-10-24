@@ -74,7 +74,7 @@ works and its runner only needs GTK.
 | Selection areas | `selection_area.rs` | One selection across the texts of a `selection_area` view's subtree (`nsh_core::selection`'s model; depth-first order, an area inside another is part of it), driven from `input.rs`'s pointer handlers, so simulated drags select too: a mouse press in an area presses the model (GTK's double-click time and distance count clicks, Shift+click extends), a drag past 3 pt (10 pt over a press target, which then does not fire) drags it, dragging past a scroll view's edge around the area scrolls it; texts draw their part with the `selectable` highlight and run no selection of their own; the area view takes the focus while it has a selection (Ctrl+A / Ctrl+C / Ctrl+Insert / Escape, the menu's Copy and Select All), any press elsewhere or losing the focus clears it (one selection per surface), a finished drag sets the primary selection |
 | Decoration | `decor.rs` | GSK nodes: shadows (React Native's take the box's shape with a fill, the content's without, as iOS), colors, gradients, inset shadows, borders (over the children, as UIKit), outlines, filters |
 | Images | `image.rs` | Loaded and decoded on worker threads (GDK's PNG / JPEG / TIFF loaders, the `image` crate for GIF and WebP), textures in an LRU cache per resolved location; animated GIF / WebP play on timers of their frame delays (paused while unmapped); blur and tint at draw time |
-| Canvas | `canvas.rs` | The recorded drawing replayed with Cairo into a recording surface (`Snapshot::append_cairo`), sharp at any scale; shadows blurred into a mask; conic gradients as mesh patterns |
+| Canvas | `canvas.rs` | The recorded drawing replayed with Cairo into an image surface at the surface's (fractional) scale, shown as 256 px texture tiles; animations redraw only their damage over the kept pixels of the drawing's static part, canvases out of sight wait (`docs/dev/canvas.md`); `fillRect` / `fillText` set the current path aside once (in device space) until an operation uses it; shadows blurred into a mask; conic gradients as mesh patterns |
 | Scroll views | `scroll.rs`, `nsh_core::scroll` | Offsets of their own (`ScrollState`, with the physics and gestures in `nsh_core::scroll`, shared with Windows and GPUI; `scroll.rs` draws the indicator and spinner and handles the window's keys), reported as UIKit's `contentOffset`; wheel / touchpad / touchscreen scrolling with UIKit-like deceleration, snapping, paging, sticky cells, rubber banding for touch drags (mouse drags never scroll: they are the app's, for pans, responders and text selection; pull to refresh needs a touchscreen); an indicator that fades (it shows while the mouse moves over the view, as overlay scroll bars do; horizontal views keep it with `scrollbar={false}`, their only scroll bar for a mouse without a horizontal wheel) and that the mouse drags as a scroll bar (a mouse press within 12 pt of the edge on the indicator, faded or not, drags it as a scroll bar's thumb: the content moves the other way, so the thumb follows the pointer); the keyboard (arrows by 40 pt, Page Up / Page Down and Space / Shift+Space by a page, Home / End) scrolls the view around the focused widget or under the pointer while no field has focus; a widget that gets the focus (Tab, a click, `focus()`) is scrolled into view, animated |
 | Input | `input.rs`, `nsh_core::input` | Its own hit testing over the views (GTK's `pick` ignores `overflow: hidden`, `hidden` and `box-only`; hosted widgets are picked inside with GTK's; outside a view's bounds only in its `Overflow` area); touches for the responder system, with `panActivation` gates (the scroll views around wait for the pan to fail; `TouchEvent::activated`); native presses, long presses, hover and pressed states, `onHoverIn` / `onHoverOut`; pan / pinch / rotate animated values (Ctrl + wheel pinches); wheel, touchpad and touch scrolling routed to scroll views (only touches drag them): wheels go to views along their axis, and a scroll stays on its view until it ends (touchpad gesture; wheel notches within 200 ms); the decisions over plain data (what a pointer may start, a press's events, hover changes, hit areas, pinches, wheel latching) are `nsh_core::input`'s, shared with the other desktop backends |
 | Text inputs | `text_input.rs` | `gtk::Text` / `gtk::TextView` in a `gtk::ScrolledWindow`, hosted at the content box; the view draws the decoration, a per-input style provider clears GTK's (an animated `color` goes to a second one-rule provider, so frames do not reload the sheet); edit counts drop stale JS values; a user edit reports `onChange` once the main loop is idle (or before a submit or blur), so a text view's paste over a selection, undo and redo (a deletion and an insertion) report their result once; offsets converted between UTF-16 and characters; return does what `submitBehavior` says (see "Keyboard") |
@@ -182,11 +182,28 @@ xdotool mousemove --window $W 100 30 click 1; xdotool type --window $W "hi"; xdo
 ```
 
 Without `--bundle` the host connects to the dev server on this machine (`--dev-server ws://…/ws` names another);
-`--trace` logs per-commit timings; `--data-dir <dir>` keeps the apps' data there (`nsh test` gives each app a fresh
+`--trace` logs per-commit timings; `--fps` logs the performance monitor's readings once a second (below); `--data-dir <dir>` keeps the apps' data there (`nsh test` gives each app a fresh
 one); `--app-id <id>` (which `nsh run` passes from `nsh.json`, as on the macOS,
 Windows and GPUI hosts) names the GTK application and the directory of its web view data (the app's storage follows the id
 the bundle carries). GTK Inspector (`GTK_DEBUG=interactive`) shows the widget tree, with each view's
 `testID` as its name.
+
+## Performance: `--fps`, the renderer
+
+`nsh-linux-host --fps` (`nsh run --target linux --fps`, `nsh test --target linux --fps`; `AppOptions::fps`) logs one
+`nsh::perf` line a second (`fps.rs`, on `nsh_engine::perf::PerfMonitor`): frames GTK drew over the display's rate,
+the main thread's time per drawn frame from the frame clock's `before-paint` to `after-paint` and its phases
+(`update`, `layout`, `paint`, and within `paint` NSH's `snapshot` and the canvases' rasterizing), batches applied per
+drain, the engine's commits (JS and core time, mount items), its busy share, and the process' CPU and resident memory.
+`examples/gallery/tools/perf.py` runs the gallery under it, idle and scrolling on every demo, and prints a table.
+
+GSK's Vulkan renderer (GTK's default since 4.16) costs the main thread several times what its GL renderer does under
+NVIDIA's driver (gallery Animations, 1896×1030 at 120 Hz: ~9.5 ms of `paint` per frame and 73% CPU at 75 fps, against
+~1 ms and 14% at 120 fps): `run_app` sets `GSK_RENDERER=ngl` there (`/proc/driver/nvidia/version` exists) unless the
+environment chooses one. Memory, release, at rest after 3 s: a GTK 4 window of one label takes ~130–160 MB resident
+on this desktop (GTK, Mesa / NVIDIA libraries shared with other processes), ~60 MB of it private under Vulkan or GL;
+NSH's Rust template app is ~49 MB private (USS), the TSX counter ~79 MB. `GSK_RENDERER=cairo` halves the private
+memory (~28 MB for the Rust app) at a much higher CPU cost for animated content.
 
 ## Not implemented, or different
 

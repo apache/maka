@@ -812,6 +812,9 @@ fn info_plist(
         Value::Dictionary(Default::default()),
     );
     d.insert("UIApplicationSupportsMultipleScenes".into(), false.into());
+    // ProMotion iPhones run display links above 60 Hz only with this:
+    // animations move at the rate scrolling does.
+    d.insert("CADisableMinimumFrameDurationOnPhone".into(), true.into());
     // The app's own appearance, from the launch screen on.
     match config.appearance.as_deref() {
         Some("light") => d.insert("UIUserInterfaceStyle".into(), s("Light")),

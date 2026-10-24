@@ -981,7 +981,7 @@ mod tests {
     ///   └ 22 text "Footer"
     fn tree() -> (NshView, Vec<NshView>) {
         let root = view(0, ViewKind::View, Accessibility::default());
-        root.set_invalidate(Rc::new(|| {}));
+        root.set_invalidate(Rc::new(|_| {}));
         let plain = view(2, ViewKind::View, Accessibility::default());
         let title = text(4, "Title");
         let button = pressable(6, Accessibility::default());

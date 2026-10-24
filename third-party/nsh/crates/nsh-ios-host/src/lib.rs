@@ -11,6 +11,8 @@
 //!
 //! - `--data-dir <dir>` keeps the apps' data there instead of the app's
 //!   data directory (`nsh test --target ios` gives each app a fresh one).
+//! - `--fps` logs the performance monitor's readings once a second
+//!   (`nsh run --fps`, `nsh test --fps`).
 //!
 //! Without arguments it connects to the dev server on this machine.
 //!
@@ -28,6 +30,7 @@ pub fn main() {
     dev::init_logging();
     let mut source = None;
     let mut trace = false;
+    let mut fps = false;
     let mut asset_base = None;
     let mut package = None;
     let mut roots = Vec::new();
@@ -56,6 +59,8 @@ pub fn main() {
             "--package" => package = args.next().map(PathBuf::from),
             "--root" => roots.extend(args.next().map(PathBuf::from)),
             "--trace" => trace = true,
+            // The performance monitor's readings, logged once a second.
+            "--fps" => fps = true,
             // Where apps keep their data (`nsh test --target ios` gives each
             // app a fresh one); the app's data directory otherwise.
             "--data-dir" => data_dir = args.next().map(PathBuf::from),
@@ -85,6 +90,7 @@ pub fn main() {
         source,
         AppOptions {
             trace,
+            fps,
             asset_base,
             // Its caches too (downloaded images): a test's app starts with none.
             cache: data_dir.as_ref().map_or_else(Default::default, |dir| {

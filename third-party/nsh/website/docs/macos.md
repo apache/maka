@@ -76,8 +76,10 @@ app that updates twice a second:
 | `CPU` / `GPU` / `MEM` | The process: CPU (100% is one core), its GPU share, its memory footprint (Activity Monitor's figure). |
 
 The bars below are the last 120 frames' main-thread time against one refresh (the line): green within half of it, amber
-within it, red over. With `--trace` too, the host also logs the readings once a second (milliseconds as
-mean/p50/p95/max). Measure release builds; the monitor costs nothing while it is off.
+within it, red over. While the panel shows, the readings are also logged once a second (target `nsh::perf`, in the
+Linux backend's shape with macOS's frame phases `tick`, `drain` and `canvas`; milliseconds as mean/p50/p95/max), which
+`nsh test --fps -v` shows and `examples/gallery/tools/perf.py` reads. Measure release builds; the monitor costs nothing
+while it is off.
 
 ## Packaging
 

@@ -125,6 +125,8 @@ compiler versions can import it, and the framework links everything it needs: yo
    **Frameworks, Libraries, and Embedded Content**. Choose **Do Not Embed** for the default static frameworks,
    or **Embed & Sign** for dynamic frameworks built with `--dynamic`.
 2. In Swift, `import NativeShell`.
+3. In the app's `Info.plist`, set `CADisableMinimumFrameDurationOnPhone` to `YES`: on ProMotion iPhones the app's
+   animations then move at 120 Hz, as scrolling does (apps built by `nsh package` have it).
 
 > [!TIP]
 > Link `NativeShellDev.xcframework` in the Debug configuration and `NativeShell.xcframework` in Release, so only

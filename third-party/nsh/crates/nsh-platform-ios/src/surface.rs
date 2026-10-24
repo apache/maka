@@ -628,6 +628,9 @@ impl RootView {
         );
         // The app's downloaded images go through its disk cache.
         installed.set_image_cache(engine.image_cache());
+        if self.ivars().options.fps {
+            installed.measure();
+        }
         *mounter.get(mtm).borrow_mut() = Some(installed);
         *self.ivars().running.borrow_mut() = Some(Running { engine, mounter });
         self.ivars().environment.set(Some(self.environment()));
@@ -689,6 +692,9 @@ pub struct SurfaceOptions {
     /// parameters, events and handlers of their calls and posts, one for
     /// every app the surface runs.
     pub host: nsh_engine::HostChannel,
+    /// Logs the performance monitor's readings once a second (target
+    /// `nsh::perf`): frame rate, frame and commit costs, CPU, memory.
+    pub fps: bool,
 }
 
 impl Default for SurfaceOptions {
@@ -703,6 +709,7 @@ impl Default for SurfaceOptions {
             cache: nsh_engine::CacheOptions::default(),
             components: crate::component::Components::default(),
             host: nsh_engine::HostChannel::default(),
+            fps: false,
         }
     }
 }

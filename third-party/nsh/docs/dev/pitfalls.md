@@ -212,6 +212,11 @@ Things that were found the hard way. Read the section of the area you change bef
   drawn one raises it while zoomed, so neither is the screen's scale. Images decoded at it came out at a third of their
   pixels and blurred; the scale is the trait collection's `displayScale` (`Mounter::display_scale`).
 
+- **iOS, ProMotion**: a `CADisplayLink` left at its default fires at 60 Hz on a 120 Hz iPhone, so native
+  animations, `scrollValue` bindings and JS frames moved at half the rate of the system's own scrolling. Both links ask
+  for the screen's `maximumFramesPerSecond` (`animation.rs` `full_rate`); an iPhone grants more than 60 Hz only to
+  apps whose `Info.plist` sets `CADisableMinimumFrameDurationOnPhone` (`nsh package`, the development host; embedding
+  apps set it themselves, `website/docs/ios.md`). iPads ignore the key.
 - **iOS, secondary clicks**: `buttonMaskRequired` only holds touches that have buttons. A finger has none, so a tap
   recognizer requiring the secondary button recognized every tap, and as a tap recognizer it cancelled the presses inside
   (a `ContextMenu`'s trigger opened its menu instead of pressing). The `onContextMenu` recognizer allows only

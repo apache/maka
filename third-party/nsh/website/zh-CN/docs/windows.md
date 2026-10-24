@@ -49,6 +49,14 @@ dist\nsh\runtime\windows\nsh-windows-host --bundle build\bundle.nshc --window-si
 
 `--window-size` 是窗口的尺寸，单位为点（`<宽>x<高>`；TSX 应用）。
 
+### 性能监视器
+
+`--fps`（`nsh run App.tsx --target windows --fps`、`nsh test --target windows --fps`、宿主的 `--fps`，或 Rust 应用在
+`run_app` 中用 `AppOptions { fps: true, .. }`）每秒输出一行性能监视器读数（target `nsh::perf`）：显示的帧数与显示器刷新率、
+主线程每帧的耗时及其各阶段（`tick`、`drain`、`paint`、`present`、`canvas`）、引擎的 commit、CPU 和内存，格式与其他桌面平台一致
+（毫秒，依次为 mean/p50/p95/max）。`nsh test --fps -v` 会显示这些读数，`examples/gallery/tools/perf.py` 会读取它们
+（[性能报告](./performance-report.md#windowswin32direct2d)）。请测量 release 构建；监视器关闭时没有任何开销。
+
 ## 打包
 
 ```sh

@@ -3,7 +3,14 @@
 //! The replay is recorded into an `ID2D1CommandList` when the drawing,
 //! one of its animated values or an image it draws changes (and when the
 //! device is replaced); [`draw`] only plays the list back with the view's
-//! transform. Command lists are vector: redrawing the window is cheap and
+//! transform. A drawing whose animated values are read late is recorded
+//! as two lists: the operations before the first one reading a slot
+//! ([`nsh_core::canvas::first_animated`]), recorded once, and the rest,
+//! recorded again when a slot changes; the tail replays the head's state
+//! (transforms, styles, the path, clips) without painting it. A tail that
+//! would combine with what the head drew (a composite operation other than
+//! `source-over` in effect or set in it, a `clearRect`) is recorded whole
+//! with its head. Command lists are vector: redrawing the window is cheap and
 //! stays sharp at any scale, and effects (shadows, composite operations)
 //! are rendered at the resolution they are played back at.
 //!
@@ -134,8 +141,15 @@ pub(crate) struct CanvasState {
 /// A canvas' recording and the device resources it draws with.
 #[derive(Default)]
 struct Cache {
-    /// The replay, once recorded (`None` inside when recording failed).
+    /// The replay, once recorded (`None` inside when recording failed):
+    /// the whole drawing, or the operations from `split` on.
     list: Option<Option<ID2D1CommandList>>,
+    /// The operations before `split`, recorded once per drawing (`None`
+    /// while the drawing is recorded whole).
+    head: Option<Option<ID2D1CommandList>>,
+    /// Where the drawing splits into the head and the animated tail
+    /// (`0`: recorded whole).
+    split: usize,
     /// The device generation `list` belongs to.
     generation: u64,
     /// DirectWrite layouts of `fillText` / `strokeText`.
@@ -145,8 +159,48 @@ struct Cache {
 impl CanvasState {
     /// Records again on the next draw.
     fn stale(&mut self) {
+        let cache = self.cache.get_mut();
+        cache.list = None;
+        cache.head = None;
+    }
+
+    /// An animated value changed: records the tail again on the next draw.
+    fn stale_tail(&mut self) {
         self.cache.get_mut().list = None;
     }
+}
+
+/// Where `drawing` splits into a head recorded once and a tail recorded
+/// when a slot changes (`0`: recorded whole).
+fn split(drawing: &Drawing) -> usize {
+    let ops = &drawing.ops;
+    let first = nsh_core::canvas::first_animated(ops);
+    // Nothing animated, or nothing before it to keep.
+    if first == 0 || first >= ops.len() {
+        return 0;
+    }
+    // The tail must not combine with what was drawn before it, which its
+    // list does not hold: no composite operation in effect where it starts
+    // or set in it, no `clearRect` in it. The head's own composite
+    // operations combine within its list.
+    let mut composite = Composite::SourceOver;
+    let mut saved = Vec::new();
+    for op in &ops[..first] {
+        match op {
+            CanvasOp::Save => saved.push(composite),
+            CanvasOp::Restore => composite = saved.pop().unwrap_or(composite),
+            CanvasOp::Composite(m) => composite = *m,
+            _ => {}
+        }
+    }
+    let combines = |op: &CanvasOp| {
+        matches!(op, CanvasOp::Composite(m) if *m != Composite::SourceOver)
+            || matches!(op, CanvasOp::ClearRect(_))
+    };
+    if composite != Composite::SourceOver || ops[first..].iter().any(combines) {
+        return 0;
+    }
+    first
 }
 
 /// Sets up a canvas view.
@@ -222,13 +276,21 @@ pub(crate) fn set_arg(view: &NshView, k: u16, value: AnimationValue) {
             return;
         }
         c.args[k] = Some(value);
-        c.stale();
+        c.stale_tail();
     }
     view.changed();
 }
 
 /// Draws a canvas: records it first if needed.
 pub(crate) fn draw(cx: &mut DrawCx<'_>, state: &ViewState) {
+    let started = crate::fps::measuring().then(std::time::Instant::now);
+    draw_canvas(cx, state);
+    if let Some(started) = started {
+        crate::fps::drew_canvas(started.elapsed());
+    }
+}
+
+fn draw_canvas(cx: &mut DrawCx<'_>, state: &ViewState) {
     let Some(canvas) = state.canvas.as_ref() else {
         return;
     };
@@ -244,11 +306,32 @@ pub(crate) fn draw(cx: &mut DrawCx<'_>, state: &ViewState) {
     if cache.generation != generation {
         cache.generation = generation;
         cache.list = None;
+        cache.head = None;
+    }
+    let cache = &mut *cache;
+    if cache.head.is_none() {
+        cache.split = split(drawing);
+        let head = (cache.split > 0).then(|| {
+            record(
+                cx.gfx,
+                &drawing.ops[..cache.split],
+                0,
+                &canvas.args,
+                &canvas.images,
+                &mut cache.text,
+            )
+            .map_err(|e| log::warn!("canvas: not recorded: {e}"))
+            .ok()
+        });
+        cache.head = Some(head.flatten());
+        // A new head goes with a new tail.
+        cache.list = None;
     }
     if cache.list.is_none() {
         let recorded = record(
             cx.gfx,
-            drawing,
+            &drawing.ops,
+            cache.split,
             &canvas.args,
             &canvas.images,
             &mut cache.text,
@@ -258,7 +341,7 @@ pub(crate) fn draw(cx: &mut DrawCx<'_>, state: &ViewState) {
             .ok();
         cache.list = Some(list);
     }
-    if let Some(Some(list)) = &cache.list {
+    for list in [&cache.head, &cache.list].into_iter().flatten().flatten() {
         // SAFETY: a COM call between BeginDraw and EndDraw; the list is
         // closed and made on this device.
         unsafe {
@@ -288,10 +371,12 @@ thread_local! {
     static POOL: RefCell<Pool> = RefCell::new(Pool::default());
 }
 
-/// Replays `drawing` into a new command list.
+/// Replays `ops` into a new command list; the ones before `from` only set
+/// the state (they are painted by another list).
 fn record(
     gfx: &Gfx,
-    drawing: &Drawing,
+    ops: &[CanvasOp],
+    from: usize,
     args: &[Option<AnimationValue>],
     images: &FxHashMap<Arc<str>, Option<Rc<Frame>>>,
     text: &mut TextCache,
@@ -321,7 +406,10 @@ fn record(
     };
     let mut result = replay.begin_main(None);
     if result.is_ok() {
-        for op in &drawing.ops {
+        for (i, op) in ops.iter().enumerate() {
+            if i < from && op.paints() {
+                continue;
+            }
             if let Err(e) = replay.op(op) {
                 result = Err(e);
                 break;
@@ -2397,6 +2485,201 @@ mod tests {
 
     fn close(a: Pt, b: Pt) -> bool {
         (a.0 - b.0).abs() < 1e-6 && (a.1 - b.1).abs() < 1e-6
+    }
+
+    /// What `lists` draw on a transparent 100 × 60 bitmap, as BGRA bytes.
+    fn pixels(gfx: &Gfx, lists: &[&ID2D1CommandList]) -> Vec<u8> {
+        use windows::Win32::Graphics::{
+            Direct2D::{
+                Common::{
+                    D2D_POINT_2U, D2D_RECT_U, D2D_SIZE_U, D2D1_ALPHA_MODE_PREMULTIPLIED,
+                    D2D1_PIXEL_FORMAT,
+                },
+                D2D1_BITMAP_OPTIONS, D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_CPU_READ,
+                D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1, D2D1_MAP_OPTIONS_READ,
+            },
+            Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
+        };
+        let (w, h) = (100, 60);
+        let props = |options: D2D1_BITMAP_OPTIONS| D2D1_BITMAP_PROPERTIES1 {
+            pixelFormat: D2D1_PIXEL_FORMAT {
+                format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+            },
+            dpiX: 96.0,
+            dpiY: 96.0,
+            bitmapOptions: options,
+            colorContext: std::mem::ManuallyDrop::new(None),
+        };
+        let size = D2D_SIZE_U {
+            width: w,
+            height: h,
+        };
+        // SAFETY: COM calls on live objects; the mapped memory is copied
+        // before `Unmap`.
+        unsafe {
+            let target = gfx
+                .dc
+                .CreateBitmap(size, None, 0, &props(D2D1_BITMAP_OPTIONS_TARGET))
+                .unwrap();
+            gfx.dc.SetTarget(&target);
+            gfx.dc.BeginDraw();
+            gfx.dc.Clear(None);
+            for list in lists {
+                gfx.dc.DrawImage(
+                    *list,
+                    None,
+                    None,
+                    D2D1_INTERPOLATION_MODE_LINEAR,
+                    D2D1_COMPOSITE_MODE_SOURCE_OVER,
+                );
+            }
+            gfx.dc.EndDraw(None, None).unwrap();
+            gfx.dc.SetTarget(None);
+            let read = gfx
+                .dc
+                .CreateBitmap(
+                    size,
+                    None,
+                    0,
+                    &props(D2D1_BITMAP_OPTIONS_CPU_READ | D2D1_BITMAP_OPTIONS_CANNOT_DRAW),
+                )
+                .unwrap();
+            read.CopyFromBitmap(
+                Some(&D2D_POINT_2U { x: 0, y: 0 }),
+                &target,
+                Some(&D2D_RECT_U {
+                    left: 0,
+                    top: 0,
+                    right: w,
+                    bottom: h,
+                }),
+            )
+            .unwrap();
+            let mapped = read.Map(D2D1_MAP_OPTIONS_READ).unwrap();
+            let mut data = Vec::new();
+            for row in 0..h {
+                let start = mapped.bits.add((row * mapped.pitch) as usize);
+                data.extend_from_slice(std::slice::from_raw_parts(start, (w * 4) as usize));
+            }
+            read.Unmap().unwrap();
+            data
+        }
+    }
+
+    #[test]
+    fn a_split_drawing_draws_what_the_whole_one_does() {
+        let c = Num::Const;
+        let ops = vec![
+            CanvasOp::Save,
+            CanvasOp::Translate(c(10.0), c(5.0)),
+            CanvasOp::Path(PathOp::Rect([c(0.0), c(0.0), c(60.0), c(40.0)])),
+            CanvasOp::Clip(None, FillRule::NonZero),
+            CanvasOp::BeginPath,
+            CanvasOp::FillStyle(Paint::Color(Color(0xff0000ff))),
+            CanvasOp::FillRect([c(0.0), c(0.0), c(100.0), c(100.0)]),
+            // Erased within the head, as the sparklines fade.
+            CanvasOp::Composite(Composite::DestinationOut),
+            CanvasOp::FillRect([c(0.0), c(0.0), c(15.0), c(40.0)]),
+            CanvasOp::Composite(Composite::SourceOver),
+            // The current path and the clip are the head's, painted by the
+            // tail.
+            CanvasOp::Path(PathOp::Arc {
+                x: c(30.0),
+                y: c(20.0),
+                radius: c(12.0),
+                start: c(0.0),
+                end: c(TAU as f32),
+                ccw: false,
+            }),
+            CanvasOp::GlobalAlpha(Num::Slot(0)),
+            CanvasOp::FillStyle(Paint::Color(Color(0x0000ffff))),
+            CanvasOp::Fill(None, FillRule::NonZero),
+            CanvasOp::Restore,
+            CanvasOp::FillRect([c(0.0), c(0.0), c(8.0), c(8.0)]),
+        ];
+        let drawing = Drawing {
+            ops: ops.clone(),
+            ..Drawing::default()
+        };
+        let at = split(&drawing);
+        assert_eq!(at, 11);
+        let Ok(gfx) = gfx::get() else {
+            // No Direct3D device, not even WARP.
+            return;
+        };
+        let images = FxHashMap::default();
+        let mut text = TextCache::default();
+        for alpha in [0.5, 1.0] {
+            let args = [Some(AnimationValue::Number(alpha))];
+            let whole = record(&gfx, &ops, 0, &args, &images, &mut text).unwrap();
+            let head = record(&gfx, &ops[..at], 0, &args, &images, &mut text).unwrap();
+            let tail = record(&gfx, &ops, at, &args, &images, &mut text).unwrap();
+            let expected = pixels(&gfx, &[&whole]);
+            assert_eq!(pixels(&gfx, &[&head, &tail]), expected);
+            // The tail alone paints only the circle and the corner.
+            let alone = pixels(&gfx, &[&tail]);
+            let px = |data: &[u8], x: usize, y: usize| data[(y * 100 + x) * 4..][..4].to_vec();
+            assert_eq!(px(&alone, 12, 7), [0, 0, 0, 0]);
+            // Erased by the head.
+            assert_eq!(px(&expected, 22, 40), [0, 0, 0, 0]);
+            assert_eq!(px(&expected, 60, 40), [0, 0, 255, 255]);
+            assert_eq!(px(&alone, 40, 25)[3], (alpha * 255.0) as u8);
+        }
+    }
+
+    #[test]
+    fn tails_that_combine_with_the_head_record_whole() {
+        let c = Num::Const;
+        let rect = |x| CanvasOp::FillRect([x, c(0.0), c(10.0), c(10.0)]);
+        let at = |ops: Vec<CanvasOp>| {
+            split(&Drawing {
+                ops,
+                ..Drawing::default()
+            })
+        };
+        let multiply = CanvasOp::Composite(Composite::Multiply);
+        let over = CanvasOp::Composite(Composite::SourceOver);
+        // In effect where the tail starts.
+        assert_eq!(
+            at(vec![rect(c(0.0)), multiply.clone(), rect(Num::Slot(0))]),
+            0
+        );
+        // Set in the tail.
+        assert_eq!(
+            at(vec![rect(c(0.0)), rect(Num::Slot(0)), multiply.clone()]),
+            0
+        );
+        assert_eq!(
+            at(vec![
+                rect(c(0.0)),
+                rect(Num::Slot(0)),
+                CanvasOp::ClearRect([c(0.0); 4])
+            ]),
+            0
+        );
+        // Combined within the head, then back to source-over: the
+        // sparklines' fade.
+        assert_eq!(
+            at(vec![
+                rect(c(0.0)),
+                multiply.clone(),
+                rect(c(0.0)),
+                over,
+                rect(Num::Slot(0))
+            ]),
+            4
+        );
+        assert_eq!(
+            at(vec![
+                CanvasOp::Save,
+                multiply,
+                rect(c(0.0)),
+                CanvasOp::Restore,
+                rect(Num::Slot(0))
+            ]),
+            4
+        );
     }
 
     #[test]

@@ -7,12 +7,26 @@
 //! path; it keeps only canvas' paint state (styles, alpha, shadow, font)
 //! itself. Fills, strokes and clips keep the path (`*_preserve`), as canvas
 //! does; operations that draw without it (`fillRect`, text, images) set
-//! the current path aside and put it back.
+//! the current path aside, and it is put back when an operation uses it.
 //!
-//! The view's node draws into a Cairo recording surface
-//! (`Snapshot::append_cairo`), replayed by GSK at the display's scale, so
-//! paths and text stay sharp. Composite operations combine within the
-//! canvas' own node, as on a canvas bitmap. Shadows are rendered into an
+//! The drawing is rasterized into an image surface at the display's scale,
+//! kept with its texture ([`Raster`]): a frame in which the canvas did not
+//! change appends the same texture, which GSK keeps on the GPU, and only a
+//! new drawing, size or scale replays it whole. An animation of its value
+//! slots redraws only what the operations reading the changed slots cover,
+//! where they were and where they are now ([`DamageScan`]): the area is
+//! cleared and the drawing replayed clipped to it. What comes before the
+//! first operation reading a slot paints the same every time
+//! ([`first_animated`]): its pixels are kept from the last full replay
+//! ([`Raster::prefix`]), copied back into the area, and only the operations
+//! from there on paint (the ones before it still set the state).
+//!
+//! A canvas out of sight (outside a clipping ancestor or the window) is not
+//! drawn: what changed waits, its animations stop asking for frames, and
+//! every frame after layout draws those that came into sight ([`reveal`]).
+//!
+//! Composite operations combine within the canvas' own bitmap. Shadows are
+//! rendered into an
 //! alpha mask at the display's scale, blurred with three box blurs (an
 //! approximation of the Gaussian canvas specifies) and painted through the
 //! shadow color. Conic gradients are mesh patterns of thin wedges.
@@ -23,16 +37,21 @@
 //! ([`CanvasState::args`]) are read while replaying: an animation only
 //! queues a redraw, without JS.
 
-use std::{cell::RefCell, f64::consts::TAU, rc::Rc, sync::Arc};
+use std::{
+    cell::{Cell, RefCell},
+    f64::consts::TAU,
+    rc::Rc,
+    sync::Arc,
+};
 
-use gtk4::{self as gtk, cairo, graphene, prelude::*};
+use gtk4::{self as gtk, cairo, gdk, glib, graphene, prelude::*};
 use nsh_core::{
     Color,
     animation::AnimationValue,
     canvas::{
         CanvasFont, CanvasGradient, CanvasOp, CanvasTextAlign, CanvasTextBaseline, Composite,
-        Drawing, FillRule, GradientShape, LineCap, LineJoin, Num, Paint, PathOp, arc_sweep,
-        fit_radii,
+        Damage, DamageScan, Drawing, FillRule, GradientShape, LineCap, LineJoin, Num, Paint,
+        PathOp, arc_sweep, first_animated, fit_radii, prefix_path_needed,
     },
     geometry::{Corners, Points, Radians, size},
 };
@@ -49,7 +68,6 @@ const MAX_LAYOUTS: usize = 256;
 const MAX_SHADOW_SIZE: f64 = 4096.0;
 
 /// What a canvas draws.
-#[derive(Default)]
 pub(crate) struct CanvasState {
     /// The drawing.
     pub(crate) drawing: Option<Arc<Drawing>>,
@@ -58,10 +76,122 @@ pub(crate) struct CanvasState {
     /// The images the drawing names, by URI: `None` while loading (or
     /// when they failed to load).
     images: FxHashMap<Arc<str>, Option<cairo::ImageSurface>>,
-    /// The display's scale when the drawing came (shadow masks).
-    scale: f64,
     /// Pango layouts of `fillText` / `strokeText`.
     text: RefCell<TextCache>,
+    /// The drawing rasterized, and what of it must be drawn again.
+    raster: RefCell<Option<Raster>>,
+    /// The first operation reading an animated slot ([`first_animated`]),
+    /// and whether the path the operations before it build is needed from
+    /// it on ([`prefix_path_needed`]).
+    split: usize,
+    split_path: bool,
+    dirty: Cell<Damage>,
+    /// Out of sight with something to draw ([`reveal`]).
+    hidden: Cell<bool>,
+    /// Finds what animated slots paint, and the slots that changed (reused).
+    scan: DamageScan,
+    changed: Vec<u16>,
+}
+
+impl Default for CanvasState {
+    fn default() -> Self {
+        CanvasState {
+            drawing: None,
+            args: Vec::new(),
+            images: FxHashMap::default(),
+            text: RefCell::default(),
+            raster: RefCell::new(None),
+            split: 0,
+            split_path: true,
+            dirty: Cell::new(Damage::All),
+            hidden: Cell::new(false),
+            scan: DamageScan::default(),
+            changed: Vec::new(),
+        }
+    }
+}
+
+/// A canvas' pixels: the surface it is drawn into, at the display's scale,
+/// and the texture it is shown with.
+struct Raster {
+    surface: cairo::ImageSurface,
+    scale: f64,
+    /// The surface's pixels in tiles of [`TILE`] pixels, row by row: a
+    /// partial redraw makes the textures of the tiles it touches again,
+    /// and GSK keeps the others on the GPU.
+    tiles: Vec<gdk::Texture>,
+    /// What the operations before the first one reading a slot painted,
+    /// when some do and some do not.
+    prefix: Option<cairo::ImageSurface>,
+}
+
+thread_local! {
+    /// Canvases out of sight with something to draw ([`reveal`]).
+    static HIDDEN: RefCell<Vec<glib::WeakRef<NshView>>> = RefCell::default();
+}
+
+/// Draws the canvases that came into sight (called every frame, after
+/// layout): those still out of sight wait.
+pub(crate) fn reveal() {
+    let shown: Vec<NshView> = HIDDEN.with(|h| {
+        let mut shown = Vec::new();
+        h.borrow_mut().retain(|weak| {
+            let Some(view) = weak.upgrade() else {
+                return false;
+            };
+            if !view.is_mapped() || !in_sight(&view) {
+                return true;
+            }
+            shown.push(view);
+            false
+        });
+        shown
+    });
+    for view in shown {
+        if let Some(c) = view.state().canvas.as_ref() {
+            c.hidden.set(false);
+        }
+        view.changed();
+    }
+}
+
+/// Whether some of `view` may show: false only when it lies wholly
+/// outside a clipping ancestor (a scroll view, `overflow: hidden`) or the
+/// window.
+fn in_sight(view: &NshView) -> bool {
+    let mut widget = view.parent();
+    while let Some(ancestor) = widget {
+        widget = ancestor.parent();
+        let Some(a) = ancestor.downcast_ref::<NshView>() else {
+            continue;
+        };
+        // The root's bounds are the window's.
+        let root = widget.as_ref().is_none_or(|p| !p.is::<NshView>());
+        if !(root || a.state().clips()) {
+            continue;
+        }
+        let Some(b) = view.compute_bounds(a) else {
+            return true;
+        };
+        let (w, h) = (a.width() as f32, a.height() as f32);
+        if b.x() >= w || b.y() >= h || b.x() + b.width() <= 0.0 || b.y() + b.height() <= 0.0 {
+            return false;
+        }
+    }
+    true
+}
+
+/// The side of a canvas' tiles, in pixels.
+const TILE: i32 = 256;
+
+/// The tiles of a surface `pw` × `ph` pixels: their areas (x, y, width,
+/// height), row by row.
+fn tiles((pw, ph): (i32, i32)) -> impl Iterator<Item = [i32; 4]> {
+    (0..ph).step_by(TILE as usize).flat_map(move |y| {
+        (0..pw)
+            .step_by(TILE as usize)
+            .map(move |x| [x, y, TILE.min(pw - x), TILE.min(ph - y)])
+    })
 }
 
 /// Sets up a canvas view.
@@ -71,7 +201,6 @@ pub(crate) fn create(view: &NshView) {
 
 /// A new drawing: loads the images it names that are new.
 pub(crate) fn set(surface: &Rc<Surface>, view: &NshView, drawing: Arc<Drawing>) {
-    let scale = view.scale_factor().max(1) as f64;
     let mut load = Vec::new();
     {
         let mut state = view.state_mut();
@@ -87,10 +216,13 @@ pub(crate) fn set(surface: &Rc<Surface>, view: &NshView, drawing: Arc<Drawing>) 
                 load.push(image.uri.clone());
             }
         }
-        c.scale = scale;
         c.text.borrow_mut().trim();
+        c.split = first_animated(&drawing.ops);
+        c.split_path = prefix_path_needed(&drawing.ops, c.split);
         c.drawing = Some(drawing);
+        c.dirty.set(Damage::All);
     }
+    let hidden = view.state().canvas.as_ref().is_some_and(|c| c.hidden.get());
     for uri in load {
         let weak = view.downgrade();
         let key = uri.clone();
@@ -108,34 +240,79 @@ pub(crate) fn set(surface: &Rc<Surface>, view: &NshView, drawing: Arc<Drawing>) 
                 return;
             };
             *slot = Some(image);
+            if let Some(c) = state.canvas.as_ref() {
+                c.dirty.set(Damage::All);
+            }
             drop(state);
             view.changed();
         });
     }
-    view.changed();
+    if !hidden {
+        view.changed();
+    }
 }
 
-/// Animated value slot `k` changed: draws again if the value did.
-pub(crate) fn set_arg(view: &NshView, k: u16, value: AnimationValue) {
-    {
+/// Animated value slots changed (`(slot, value)`, every bound slot on each
+/// frame): draws again where the operations reading the slots whose values
+/// changed paint, where they were and where they are now.
+pub(crate) fn set_args(view: &NshView, values: &[(u16, AnimationValue)]) {
+    let damage = {
         let mut state = view.state_mut();
-        let Some(c) = state.canvas.as_mut() else {
+        let Some(CanvasState {
+            drawing,
+            args,
+            scan,
+            changed,
+            dirty,
+            hidden,
+            ..
+        }) = state.canvas.as_mut()
+        else {
             return;
         };
-        let k = k as usize;
-        if c.args.len() <= k {
-            c.args.resize(k + 1, None);
+        changed.clear();
+        for &(k, value) in values {
+            if args.get(k as usize).copied().flatten() != Some(value) {
+                changed.push(k);
+            }
         }
-        if c.args[k] == Some(value) {
+        if changed.is_empty() {
             return;
         }
-        c.args[k] = Some(value);
+        let ops = drawing.as_ref().map_or(&[][..], |d| &d.ops[..]);
+        let is_changed = |s: u16| changed.contains(&s);
+        let before = scan.damage(ops, |s| slot_number(args, s), is_changed);
+        for &(k, value) in values {
+            let i = k as usize;
+            if args.len() <= i {
+                args.resize(i + 1, None);
+            }
+            args[i] = Some(value);
+        }
+        let damage = match before {
+            Damage::All => Damage::All,
+            _ => before.union(scan.damage(ops, |s| slot_number(args, s), is_changed)),
+        };
+        dirty.set(dirty.get().union(damage));
+        // Out of sight, it is drawn when it comes into sight.
+        damage != Damage::None && !hidden.get()
+    };
+    if damage {
+        view.changed();
     }
-    view.changed();
 }
 
-/// Draws a canvas.
-pub(crate) fn draw(snapshot: &gtk::Snapshot, state: &ViewState) {
+/// The number in slot `s` (0 while unset).
+fn slot_number(args: &[Option<AnimationValue>], s: u16) -> f32 {
+    args.get(s as usize)
+        .copied()
+        .flatten()
+        .map_or(0.0, AnimationValue::number)
+}
+
+/// Draws canvas `view` at the display's `scale`: its raster, drawn again
+/// where it changed, unless it is out of sight.
+pub(crate) fn draw(snapshot: &gtk::Snapshot, view: &NshView, state: &ViewState, scale: f64) {
     let Some(canvas) = state.canvas.as_ref() else {
         return;
     };
@@ -146,25 +323,232 @@ pub(crate) fn draw(snapshot: &gtk::Snapshot, state: &ViewState) {
     if drawing.ops.is_empty() || w <= 0.0 || h <= 0.0 {
         return;
     }
-    let cr = snapshot.append_cairo(&graphene::Rect::new(0.0, 0.0, w, h));
-    let mut text = canvas.text.borrow_mut();
-    let mut replay = Replay {
-        cr: &cr,
-        args: &canvas.args,
-        images: &canvas.images,
-        text: &mut text,
-        scale: canvas.scale.max(1.0),
-        base: cr.matrix(),
-        state: State::default(),
-        stack: Vec::new(),
-        has_path: false,
+    let scale = scale.max(1.0);
+    let (pw, ph) = (
+        (w as f64 * scale).ceil() as i32,
+        (h as f64 * scale).ceil() as i32,
+    );
+    let mut raster = canvas.raster.borrow_mut();
+    let fits = raster
+        .as_ref()
+        .is_some_and(|r| r.scale == scale && r.surface.width() == pw && r.surface.height() == ph);
+    if (!fits || canvas.dirty.get() != Damage::None) && !in_sight(view) {
+        if !canvas.hidden.replace(true) {
+            HIDDEN.with(|h| h.borrow_mut().push(view.downgrade()));
+        }
+        return;
+    }
+    let damage = match canvas.dirty.replace(Damage::None) {
+        _ if !fits => Damage::All,
+        damage => damage,
     };
-    for op in &drawing.ops {
-        replay.op(op);
+    if damage != Damage::None {
+        let started = crate::fps::measuring().then(nsh_core::time::Instant::now);
+        let rasterized = rasterize(canvas, drawing, raster.take(), damage, (pw, ph), scale);
+        if let Some(started) = started {
+            crate::fps::rasterized(started.elapsed());
+        }
+        match rasterized {
+            Ok(new) => *raster = Some(new),
+            Err(e) => {
+                log::warn!("canvas: {e}");
+                return;
+            }
+        }
     }
-    if let Err(e) = cr.status() {
-        log::warn!("canvas: cairo: {e}");
+    if let Some(raster) = &*raster {
+        let s = scale as f32;
+        for (texture, area) in raster.tiles.iter().zip(tiles((pw, ph))) {
+            let [x, y, w, h] = area.map(|v| v as f32 / s);
+            snapshot.append_texture(texture, &graphene::Rect::new(x, y, w, h));
+        }
     }
+}
+
+/// Replays `drawing` into `old`'s surface where `damage` says (a new
+/// surface for all of it, when the size or scale changed), and makes its
+/// texture.
+fn rasterize(
+    canvas: &CanvasState,
+    drawing: &Drawing,
+    old: Option<Raster>,
+    damage: Damage,
+    (pw, ph): (i32, i32),
+    scale: f64,
+) -> Result<Raster, String> {
+    // A full replay draws into the surfaces it had, cleared, when they
+    // fit: no new allocations (pages the kernel must map) per drawing.
+    let fits = old
+        .as_ref()
+        .is_some_and(|o| o.scale == scale && o.surface.width() == pw && o.surface.height() == ph);
+    let (surface, mut prefix, kept, spare) = match old {
+        Some(old) if damage != Damage::All => (old.surface, old.prefix, Some(old.tiles), None),
+        Some(old) if fits => {
+            let cr = cairo::Context::new(&old.surface).map_err(|e| e.to_string())?;
+            cr.set_operator(cairo::Operator::Clear);
+            cr.paint().map_err(|e| e.to_string())?;
+            (old.surface, None, None, old.prefix)
+        }
+        _ => {
+            let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, pw, ph)
+                .map_err(|e| format!("image surface {pw}x{ph}: {e}"))?;
+            surface.set_device_scale(scale, scale);
+            (surface, None, None, None)
+        }
+    };
+    let ops = &drawing.ops[..];
+    let split = canvas.split.min(ops.len());
+    {
+        let cr = cairo::Context::new(&surface).map_err(|e| e.to_string())?;
+        // Where only the operations from `split` on paint: the pixels of
+        // those before it, kept.
+        let mut kept = None;
+        let mut spare = spare;
+        if let Damage::Rect(area) = damage {
+            cr.rectangle(
+                area.origin.x.0 as f64,
+                area.origin.y.0 as f64,
+                area.size.width.0 as f64,
+                area.size.height.0 as f64,
+            );
+            cr.clip();
+            match &prefix {
+                Some(prefix) => {
+                    cr.set_source_surface(prefix, 0.0, 0.0)
+                        .map_err(|e| e.to_string())?;
+                    cr.set_operator(cairo::Operator::Source);
+                    kept = Some(split);
+                }
+                None => cr.set_operator(cairo::Operator::Clear),
+            }
+            let _ = cr.paint();
+            cr.set_operator(cairo::Operator::Over);
+            cr.set_source_rgba(0.0, 0.0, 0.0, 0.0);
+        }
+        let mut text = canvas.text.borrow_mut();
+        let mut replay = Replay {
+            cr: &cr,
+            args: &canvas.args,
+            images: &canvas.images,
+            text: &mut text,
+            scale,
+            base: cr.matrix(),
+            state: State::default(),
+            stack: Vec::new(),
+            has_path: false,
+            stash: None,
+        };
+        for (i, op) in ops.iter().enumerate() {
+            if kept.is_some_and(|k| i < k)
+                && (op.paints()
+                    || (!canvas.split_path
+                        && matches!(op, CanvasOp::BeginPath | CanvasOp::Path(_))))
+            {
+                continue;
+            }
+            // A full replay keeps what the static operations painted.
+            if kept.is_none()
+                && damage == Damage::All
+                && i == split
+                && 0 < split
+                && split < ops.len()
+            {
+                prefix = Some(copy(&surface, spare.take(), (pw, ph), scale)?);
+            }
+            replay.op(op);
+        }
+        if let Err(e) = cr.status() {
+            log::warn!("canvas: cairo: {e}");
+        }
+    }
+    let mut surface = surface;
+    surface.flush();
+    // The area redrawn, in whole pixels (all of it for a full replay).
+    let [x0, y0, x1, y1] = match damage {
+        Damage::Rect(area) => {
+            let px = |v: f32, round: fn(f64) -> f64, max: i32| {
+                (round(v as f64 * scale) as i32).clamp(0, max)
+            };
+            [
+                px(area.origin.x.0, f64::floor, pw),
+                px(area.origin.y.0, f64::floor, ph),
+                px(area.origin.x.0 + area.size.width.0, f64::ceil, pw),
+                px(area.origin.y.0 + area.size.height.0, f64::ceil, ph),
+            ]
+        }
+        _ => [0, 0, pw, ph],
+    };
+    let data = surface.data().map_err(|e| e.to_string())?;
+    let stride = data.len() / ph.max(1) as usize;
+    let mut old = kept.unwrap_or_default().into_iter();
+    let tiles = tiles((pw, ph))
+        .map(|[x, y, w, h]| {
+            let touched = x < x1 && x + w > x0 && y < y1 && y + h > y0;
+            match old.next() {
+                Some(texture) if !touched => texture,
+                _ => memory_texture(&data, stride, [x, y, w, h]),
+            }
+        })
+        .collect();
+    drop(data);
+    Ok(Raster {
+        surface,
+        scale,
+        tiles,
+        prefix,
+    })
+}
+
+/// A texture of the pixels of `area` (x, y, width, height) of an ARGB32
+/// surface's `data`.
+fn memory_texture(data: &[u8], stride: usize, [x, y, w, h]: [i32; 4]) -> gdk::Texture {
+    let (x, y, w, h) = (x as usize, y as usize, w as usize, h as usize);
+    let bytes = if x == 0 && w * 4 == stride {
+        glib::Bytes::from(&data[y * stride..(y + h) * stride])
+    } else {
+        let mut pixels = Vec::with_capacity(w * h * 4);
+        for row in y..y + h {
+            let start = row * stride + x * 4;
+            pixels.extend_from_slice(&data[start..start + w * 4]);
+        }
+        glib::Bytes::from_owned(pixels)
+    };
+    // Cairo's ARGB32 is premultiplied, native-endian: BGRA in memory on
+    // little-endian machines.
+    let format = if cfg!(target_endian = "little") {
+        gdk::MemoryFormat::B8g8r8a8Premultiplied
+    } else {
+        gdk::MemoryFormat::A8r8g8b8Premultiplied
+    };
+    gdk::MemoryTexture::new(w as i32, h as i32, format, &bytes, w * 4).upcast()
+}
+
+/// A copy of `surface`'s pixels, in `into` (a surface of the same size)
+/// when given.
+fn copy(
+    surface: &cairo::ImageSurface,
+    into: Option<cairo::ImageSurface>,
+    (pw, ph): (i32, i32),
+    scale: f64,
+) -> Result<cairo::ImageSurface, String> {
+    surface.flush();
+    let copy = match into {
+        Some(into) => into,
+        None => {
+            let copy = cairo::ImageSurface::create(cairo::Format::ARgb32, pw, ph)
+                .map_err(|e| format!("image surface {pw}x{ph}: {e}"))?;
+            copy.set_device_scale(scale, scale);
+            copy
+        }
+    };
+    let cr = cairo::Context::new(&copy).map_err(|e| e.to_string())?;
+    cr.set_source_surface(surface, 0.0, 0.0)
+        .map_err(|e| e.to_string())?;
+    cr.set_operator(cairo::Operator::Source);
+    cr.paint().map_err(|e| e.to_string())?;
+    drop(cr);
+    copy.flush();
+    Ok(copy)
 }
 
 /// A loaded texture as a Cairo surface (premultiplied ARGB32, which is
@@ -321,6 +705,11 @@ struct Replay<'a> {
     stack: Vec<State>,
     /// The current path may hold something (so it must be set aside).
     has_path: bool,
+    /// The current path while it is set aside (in device space, so later
+    /// transforms leave it where it was): put back only when an operation
+    /// uses it, so a run of `fillRect`s or `fillText`s after a long path
+    /// copies it once ([`Replay::aside`]).
+    stash: Option<cairo::Path>,
 }
 
 /// How a shape is painted.
@@ -374,6 +763,15 @@ impl Replay<'_> {
 
     fn op(&mut self, op: &CanvasOp) {
         let cr = self.cr;
+        if matches!(
+            op,
+            CanvasOp::Path(_)
+                | CanvasOp::Fill(None, _)
+                | CanvasOp::Stroke(None)
+                | CanvasOp::Clip(None, _)
+        ) {
+            self.unstash();
+        }
         match op {
             CanvasOp::Save => {
                 self.stack.push(self.state.clone());
@@ -413,6 +811,7 @@ impl Replay<'_> {
             CanvasOp::BeginPath => {
                 cr.new_path();
                 self.has_path = false;
+                self.stash = None;
             }
             CanvasOp::Path(p) => {
                 if !self.state.singular {
@@ -431,12 +830,11 @@ impl Replay<'_> {
                     None => cr.clip_preserve(),
                     // Not `aside`: the clip outlives this operation.
                     Some(ops) => {
-                        let saved = self.take_path();
+                        self.set_path_aside();
                         for op in ops.iter() {
                             self.path_op(op);
                         }
                         cr.clip();
-                        self.put_path(saved);
                     }
                 }
             }
@@ -523,33 +921,39 @@ impl Replay<'_> {
         }
     }
 
-    /// Takes the current path out of Cairo (`None` if it is empty).
-    fn take_path(&self) -> Option<cairo::Path> {
-        let saved = if self.has_path {
-            self.cr.copy_path().ok()
-        } else {
-            None
-        };
+    /// Sets the current path aside ([`Replay::stash`], unless it is
+    /// already) and empties Cairo's.
+    fn set_path_aside(&mut self) {
+        if self.has_path && self.stash.is_none() {
+            let cr = self.cr;
+            let user = cr.matrix();
+            cr.identity_matrix();
+            self.stash = cr.copy_path().ok();
+            cr.set_matrix(user);
+        }
         self.cr.new_path();
-        saved
     }
 
-    /// Puts a path taken with [`Self::take_path`] back.
-    fn put_path(&self, saved: Option<cairo::Path>) {
-        self.cr.new_path();
-        if let Some(path) = saved {
-            self.cr.append_path(&path);
+    /// Puts the current path set aside back into Cairo.
+    fn unstash(&mut self) {
+        if let Some(path) = self.stash.take() {
+            let cr = self.cr;
+            let user = cr.matrix();
+            cr.identity_matrix();
+            cr.new_path();
+            cr.append_path(&path);
+            cr.set_matrix(user);
         }
     }
 
-    /// Runs `f` on an empty path and in its own Cairo state, then puts the
-    /// current path back.
+    /// Runs `f` on an empty path and in its own Cairo state; the current
+    /// path stays aside until an operation uses it.
     fn aside(&mut self, f: impl FnOnce(&mut Self)) {
-        let saved = self.take_path();
+        self.set_path_aside();
         let _ = self.cr.save();
         f(self);
         let _ = self.cr.restore();
-        self.put_path(saved);
+        self.cr.new_path();
     }
 
     /// Adds `op` to Cairo's current path.
@@ -1310,6 +1714,156 @@ mod tests {
         let steps = conic_steps(&gradient(&[(0.0, 0), (0.3, 0), (1.0, 0)]));
         assert_eq!(steps.len(), CONIC_WEDGES + 2);
         assert!(steps.contains(&0.3));
+    }
+
+    /// A static line under a filled ring whose radius is slot 0 (its alpha
+    /// slot 1), rasterized at scale 2 as `damage` says over `old`.
+    fn ring(canvas: &mut CanvasState, radius: f32, old: Option<Raster>, damage: Damage) -> Raster {
+        use nsh_core::canvas::PathOp;
+        let c = Num::Const;
+        let drawing = canvas.drawing.get_or_insert_with(|| {
+            Arc::new(Drawing {
+                ops: vec![
+                    CanvasOp::BeginPath,
+                    CanvasOp::Path(PathOp::MoveTo(c(0.0), c(0.0))),
+                    CanvasOp::Path(PathOp::LineTo(c(60.0), c(40.0))),
+                    CanvasOp::LineWidth(c(3.0)),
+                    CanvasOp::Stroke(None),
+                    CanvasOp::FillStyle(Paint::Color(Color(0xff000080))),
+                    // As a pulse's halo: its alpha animated too, before
+                    // its path begins.
+                    CanvasOp::GlobalAlpha(Num::Slot(1)),
+                    CanvasOp::BeginPath,
+                    CanvasOp::Path(PathOp::Arc {
+                        x: c(30.0),
+                        y: c(20.0),
+                        radius: Num::Slot(0),
+                        start: c(0.0),
+                        end: c(TAU as f32),
+                        ccw: false,
+                    }),
+                    CanvasOp::Fill(None, FillRule::NonZero),
+                ],
+                ..Drawing::default()
+            })
+        });
+        canvas.split = first_animated(&drawing.ops);
+        canvas.split_path = prefix_path_needed(&drawing.ops, canvas.split);
+        canvas.args = vec![
+            Some(AnimationValue::Number(radius)),
+            Some(AnimationValue::Number(0.5)),
+        ];
+        let drawing = drawing.clone();
+        rasterize(canvas, &drawing, old, damage, (600, 80), 2.0).unwrap()
+    }
+
+    fn pixels(raster: &Raster) -> Vec<u8> {
+        let mut surface = copy(&raster.surface, None, (600, 80), 2.0).unwrap();
+        let data = surface.data().map(|d| d.to_vec());
+        data.unwrap()
+    }
+
+    #[test]
+    fn partial_redraws_match_full_ones() {
+        let mut canvas = CanvasState::default();
+        let first = ring(&mut canvas, 4.0, None, Damage::All);
+        // The ring grows: what the slot paints, before and after.
+        let mut scan = DamageScan::default();
+        let ops = canvas.drawing.as_ref().unwrap().ops.clone();
+        let damage = scan
+            .damage(&ops, |s| if s == 0 { 4.0 } else { 0.5 }, |s| s == 0)
+            .union(scan.damage(&ops, |s| if s == 0 { 9.0 } else { 0.5 }, |s| s == 0));
+        assert!(matches!(damage, Damage::Rect(_)));
+        assert!(!canvas.split_path, "the ring begins a path of its own");
+        let before = first.tiles.clone();
+        assert_eq!(before.len(), 3);
+        let partial = ring(&mut canvas, 9.0, Some(first), damage);
+        // Only the first tile has the ring: the others stay as they were.
+        assert_ne!(partial.tiles[0], before[0]);
+        assert_eq!(partial.tiles[1..], before[1..]);
+        let mut fresh = CanvasState::default();
+        let full = ring(&mut fresh, 9.0, None, Damage::All);
+        assert_eq!(pixels(&partial), pixels(&full));
+        // A full replay over the old surfaces leaves nothing of them.
+        let small = ring(&mut canvas, 2.0, Some(partial), Damage::All);
+        let fresh = ring(&mut CanvasState::default(), 2.0, None, Damage::All);
+        assert_eq!(pixels(&small), pixels(&fresh));
+    }
+
+    /// The pixels of `ops` drawn on a fresh `w` × `h` canvas at scale 1.
+    fn draw_ops(ops: Vec<CanvasOp>, (w, h): (i32, i32)) -> (Vec<u8>, usize) {
+        let drawing = Drawing {
+            ops,
+            ..Drawing::default()
+        };
+        let canvas = CanvasState::default();
+        let raster = rasterize(&canvas, &drawing, None, Damage::All, (w, h), 1.0).unwrap();
+        let mut surface = copy(&raster.surface, None, (w, h), 1.0).unwrap();
+        let stride = surface.stride() as usize;
+        let data = surface.data().map(|d| d.to_vec()).unwrap();
+        (data, stride)
+    }
+
+    #[test]
+    fn the_current_path_outlives_rects_and_transforms() {
+        use nsh_core::canvas::PathOp;
+        let c = Num::Const;
+        let (data, stride) = draw_ops(
+            vec![
+                CanvasOp::FillStyle(Paint::Color(Color(0x000000ff))),
+                CanvasOp::BeginPath,
+                CanvasOp::Path(PathOp::Rect([c(0.0), c(0.0), c(10.0), c(10.0)])),
+                // Drawn without touching the path; the transform after it
+                // moves what comes next, not the path built before.
+                CanvasOp::FillRect([c(40.0), c(0.0), c(10.0), c(10.0)]),
+                CanvasOp::Translate(c(20.0), c(0.0)),
+                CanvasOp::Fill(None, FillRule::NonZero),
+                CanvasOp::Path(PathOp::Rect([c(0.0), c(0.0), c(5.0), c(5.0)])),
+                CanvasOp::Fill(None, FillRule::NonZero),
+            ],
+            (60, 10),
+        );
+        let alpha = |x: usize, y: usize| data[y * stride + x * 4 + 3];
+        // The first path where it was built, the rect, the second path
+        // translated; nothing elsewhere.
+        assert_eq!((alpha(5, 5), alpha(45, 5), alpha(22, 2)), (255, 255, 255));
+        assert_eq!((alpha(15, 5), alpha(35, 5), alpha(27, 7)), (0, 0, 0));
+    }
+
+    /// A chart's pattern: a long line, then a run of bars drawn with
+    /// `fillRect` (`cargo test --release -p nsh-platform-linux
+    /// bench_rects_after_a_path -- --ignored --nocapture`).
+    #[test]
+    #[ignore]
+    fn bench_rects_after_a_path() {
+        use nsh_core::canvas::PathOp;
+        let c = Num::Const;
+        let mut ops = vec![
+            CanvasOp::BeginPath,
+            CanvasOp::Path(PathOp::MoveTo(c(0.0), c(100.0))),
+        ];
+        for i in 0..400 {
+            ops.push(CanvasOp::Path(PathOp::LineTo(
+                c(i as f32 * 2.0),
+                c(100.0 + 50.0 * (i as f32 * 0.1).sin()),
+            )));
+        }
+        ops.push(CanvasOp::StrokeStyle(Paint::Color(Color(0xff0000ff))));
+        ops.push(CanvasOp::Stroke(None));
+        for i in 0..240 {
+            ops.push(CanvasOp::FillStyle(Paint::Color(Color(0x00ff00ff))));
+            ops.push(CanvasOp::FillRect([
+                c(i as f32 * 3.4),
+                c(280.0),
+                c(2.0),
+                c(-(i % 30) as f32),
+            ]));
+        }
+        let t = std::time::Instant::now();
+        for _ in 0..50 {
+            draw_ops(ops.clone(), (840, 340));
+        }
+        eprintln!("a 400-point line, then 240 bars: {:?}", t.elapsed() / 50);
     }
 
     #[test]

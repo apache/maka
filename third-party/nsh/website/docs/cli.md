@@ -99,7 +99,7 @@ A Rust app (`nsh.json` `"root"`, [Building with Rust](./rust.md)) runs with no d
 | `--release` | | Minify and strip debug info. Release bundles have no hot module replacement: every save reloads the app. |
 | `--limits [<LIMITS>]` | | Runs the app as an app embedded in another one, within the limits its host app sets: `memory` and `stack` (in `KB`, `MB` or `GB`), `load` and `call` (in `ms` or `s`) and `nodes`, such as `--limits memory=128MB,call=500ms`. The ones left out keep the embedding defaults, which `--limits` alone runs with ([Sandbox and capabilities](./sandbox-and-capabilities.md#limits)). Without it the app runs on its own, as a packaged app does. TSX entries. |
 | `--trace` | | The host logs the timing of every commit (JS, layout, mount items) to the terminal. |
-| `--fps` | | Shows the performance monitor over the app: frame rate, what frames and commits cost, CPU, GPU and memory ([macOS](./macos.md#performance-monitor); `--target macos` only for now). |
+| `--fps` | | The performance monitor: frame rate, what frames and commits cost, CPU, GPU and memory, shown over the app on macOS ([macOS](./macos.md#performance-monitor)) and logged once a second on macOS, Linux, Windows and iOS. |
 | `--name <NAME>` | `nsh.json` name | Application display name in the menu bar and initial window title (`--target macos`, TSX entries). |
 | `--window-size <WIDTHxHEIGHT>` | Host default | Initial window size in points, such as `800x600` (`--target macos`, `linux`, `windows` and `gpui`, TSX entries). |
 
@@ -126,7 +126,7 @@ Use `nsh dev --server-only` with an app that embeds the development SDK (`Native
 ## nsh test
 
 ```sh
-nsh test [PATH] [--filter <NAME>] [--trace] [--junit <FILE>] [--target <TARGET>] [--browser <PATH>] [--web-host <JS>]
+nsh test [PATH] [--filter <NAME>] [--trace] [--fps] [--junit <FILE>] [--target <TARGET>] [--browser <PATH>] [--web-host <JS>]
 ```
 
 Runs the app's tests headless ([Testing](./testing-and-trace.md)): the test files (`*.test.tsx`, `*.test.ts`, importing `nsh/test`) in `PATH`, a directory (default: the current one; hidden directories, `node_modules` and `target` are skipped), or the test file `PATH`. Given a directory of an app with Rust crates of its own (`nsh.json` `"rust"`: a Rust app or a TSX app with a crate), it first runs `cargo test` for each crate in the directory, in the crate's own directory, and shows and counts each Rust test with the TypeScript tests, under the file of its test target (`src/lib.rs › tests::adds`); a Rust app with only Rust tests is tested this way too. Each test file runs on an engine of its own and each app its tests open on another, fresh one. It prints a line per test, and for a failure what was thrown, where in the test file and the texts on screen; any failure makes it exit with a non-zero code. Given the app's entry (`nsh test App.tsx`; a Rust app's: `nsh test nsh.json`), it opens the app on the network, lets it run for 1.2 s and takes the steps standard input gives (`await app.press("Add")`, with `app` the app). A TSX app runs in the CLI's own process; an app with Rust crates of its own runs in a headless runner built with them, which the CLI builds the entries for. Headless runs behave as iOS unless a test opens the app as Android (`open`'s `platform`): `platform.os` is `"ios"`, and `ios:` classes and `ios={{…}}` props apply.
@@ -140,6 +140,7 @@ Runs the app's tests headless ([Testing](./testing-and-trace.md)): the test file
 |---|---|
 | `--filter <NAME>` | Runs only the tests whose name (after the names of the `describe` blocks it is in) contains `NAME`; for the crates, `cargo test <NAME>`. |
 | `--trace` | Prints every mount batch of the apps the tests open, under the step it came in (`── press(Add): 7 items`), and the time of every commit: what the first frame, a step or a frame of scrolling costs. With `--target`, the host's batches and timings. |
+| `--fps` | With `--target linux`, `macos`, `windows` or `ios`: the host logs its performance monitor's readings once a second (frame rate, frame phases, commits, CPU, memory), shown with `-v`. |
 | `--junit <FILE>` | Also writes the results to `FILE` as a JUnit XML report, the format CI services show test results from: a `testsuite` per test file, a `testcase` per test. |
 | `--target <TARGET>` | Runs the apps the tests open on this platform's development host instead of headless (`macos`, `linux`, `windows`, `gpui`, `web`, `ios` and `android`; `web` runs them in a headless Chrome, Edge or Chromium): the steps act with the platform's own input ([Testing](./testing-and-trace.md#on-a-real-platform)). The crates' Rust tests run on this machine, in runs without `--target`. |
 | `--browser <PATH>` | The Chrome, Edge or Chromium executable `--target web` runs the apps in (default: the one installed on this machine). |

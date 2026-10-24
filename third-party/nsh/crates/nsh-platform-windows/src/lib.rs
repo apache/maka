@@ -34,6 +34,7 @@ mod decor;
 #[cfg(feature = "dev")]
 pub mod dev;
 mod file_drop;
+mod fps;
 mod geom;
 mod gfx;
 mod image;

@@ -15,6 +15,7 @@ use nsh_core::{
     ViewKind, ViewProps, ViewStyle,
     animation::{AnimationProp, AnimationValue},
     geometry::{DevicePixels, point, size},
+    time::Instant,
 };
 use nsh_engine::EngineControl;
 use objc2::{
@@ -531,6 +532,8 @@ pub(crate) struct Mounter {
     components: crate::component::Components,
     /// Selection areas (`ViewProps::selection_area`) and their selections.
     areas: Vec<(NodeId, Retained<crate::selection_area::AreaResponder>)>,
+    /// The performance monitor, while it measures ([`Mounter::measure`]).
+    fps: Option<std::rc::Rc<crate::fps::Fps>>,
     mtm: MainThreadMarker,
 }
 
@@ -599,11 +602,28 @@ impl Mounter {
             rtl: false,
             components,
             areas: Vec::new(),
+            fps: None,
             mtm,
         }
     }
 
+    /// Measures the surface's frames and commits with a performance
+    /// monitor ([`crate::fps`]) from now on.
+    pub(crate) fn measure(&mut self) {
+        let fps = crate::fps::Fps::start(self.mtm);
+        self.control.set_perf_monitor(Some(fps.monitor.clone()));
+        self.fps = Some(fps);
+    }
+
     pub(crate) fn apply(&mut self, batch: MountBatch) {
+        let start = self.fps.is_some().then(Instant::now);
+        self.apply_batch(batch);
+        if let (Some(fps), Some(start)) = (&self.fps, start) {
+            fps.drained(start.elapsed());
+        }
+    }
+
+    fn apply_batch(&mut self, batch: MountBatch) {
         let mut animation_changed = false;
         for item in batch.items {
             animation_changed |= self.apply_item(item);
@@ -3974,6 +3994,14 @@ impl Mounter {
     }
 
     pub(crate) fn scrolled(&mut self, id: NodeId, offset: CGPoint) {
+        let start = self.fps.is_some().then(Instant::now);
+        self.follow_scroll(id, offset);
+        if let (Some(fps), Some(start)) = (&self.fps, start) {
+            fps.scrolled(start.elapsed());
+        }
+    }
+
+    fn follow_scroll(&mut self, id: NodeId, offset: CGPoint) {
         self.pin_sticky(id);
         for (_, area) in &self.areas {
             area.scrolled();
@@ -3996,10 +4024,15 @@ impl Mounter {
 
     /// Display link frame.
     pub(crate) fn tick(&mut self) {
-        if self.animator.tick() {
+        let start = self.fps.is_some().then(Instant::now);
+        let changed = self.animator.tick();
+        if changed {
             self.apply_animations();
         }
         self.report_finished();
+        if let (Some(fps), Some(start)) = (&self.fps, start) {
+            fps.ticked(start.elapsed(), changed);
+        }
     }
 
     fn apply_animations(&mut self) {

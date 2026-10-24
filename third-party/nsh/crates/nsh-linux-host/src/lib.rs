@@ -6,6 +6,8 @@
 //!   is QuickJS bytecode, anything else JS source).
 //!
 //! - `--window-size 390x844` sets the window size.
+//! - `--fps` logs the performance monitor's readings once a second (frame
+//!   rate, frame and commit costs, CPU, memory).
 //! - `--data-dir <dir>` keeps the apps' data there instead of the system's
 //!   data directory (`nsh test --target` gives each app a fresh one).
 //! - `--app-id <id>` sets the application id (`com.example.app`); `nsh run`
@@ -55,6 +57,8 @@ pub fn main() -> std::process::ExitCode {
                 source = Some(AppSource::Bundle(bundle));
             }
             "--trace" => options.trace = true,
+            // The performance monitor's readings, once a second.
+            "--fps" => options.fps = true,
             "--app-id" => {
                 if let Some(id) = args.next().filter(|id| !id.is_empty()) {
                     options.app_id = id;
