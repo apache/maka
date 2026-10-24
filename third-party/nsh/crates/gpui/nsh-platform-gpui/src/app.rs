@@ -692,6 +692,14 @@ impl Focusable for AppView {
 /// The surface's window input handler resolves the current native field for
 /// every text operation, including focus changes between paints.
 impl gpui::EntityInputHandler for AppView {
+    fn text_input_target(
+        &self,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<gpui::TextInputTarget> {
+        crate::text_input::ime::target(&self.surface)
+    }
+
     fn accepts_text_input(&self, window: &mut Window, _cx: &mut Context<Self>) -> bool {
         window.is_window_active()
             && self.focus.is_focused(window)

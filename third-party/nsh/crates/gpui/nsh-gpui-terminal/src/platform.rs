@@ -1,6 +1,7 @@
 use std::{
     cell::{Cell, RefCell},
     ffi::OsString,
+    ops::Range,
     path::{Path, PathBuf},
     rc::Rc,
     sync::Arc,
@@ -245,6 +246,36 @@ impl TerminalPlatform {
     pub fn paste(&self, text: &str) -> Result<()> {
         WindowState::paste(&self.window()?, text);
         Ok(())
+    }
+
+    /// Identifies the live native editor, including fields inside one NSH surface.
+    /// Keep this token on the native owner thread and send transport session
+    /// generations separately.
+    pub fn text_input_target(&self) -> Option<gpui::TextInputTarget> {
+        WindowState::text_input_target(&self.window().ok()?)
+    }
+
+    /// Applies an ordered composition snapshot to its original native editor.
+    /// `selection_utf16` is relative to `preedit`, in UTF-16 code units.
+    /// An inactive snapshot cancels the temporary mark. A stale target returns
+    /// false; if committing the prefix changed focus, that prefix remains
+    /// committed and the rest of this snapshot is discarded.
+    pub fn apply_composition(
+        &self,
+        target: &gpui::TextInputTarget,
+        commit_prefix: &str,
+        preedit: &str,
+        selection_utf16: Option<Range<usize>>,
+        active: bool,
+    ) -> Result<bool> {
+        WindowState::apply_composition(
+            &self.window()?,
+            target,
+            commit_prefix,
+            preedit,
+            selection_utf16,
+            active,
+        )
     }
 
     /// The live focused editor's caret in logical window pixels. A terminal

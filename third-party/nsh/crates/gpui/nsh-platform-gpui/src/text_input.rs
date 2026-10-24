@@ -910,6 +910,12 @@ pub(crate) mod ime {
         Some((view, input))
     }
 
+    /// The live native field, independent of the surface's shared GPUI focus.
+    pub(crate) fn target(surface: &Surface) -> Option<gpui::TextInputTarget> {
+        let (_, input) = field(surface)?;
+        Some(gpui::TextInputTarget::from_field(&input))
+    }
+
     /// The UTF-16 range of the composition, if there is one.
     pub(super) fn marked(model: &Model) -> Option<Range<usize>> {
         let c = model.composition.as_ref().filter(|c| !c.text.is_empty())?;

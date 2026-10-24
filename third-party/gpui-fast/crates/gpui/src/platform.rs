@@ -2010,6 +2010,50 @@ impl From<TileId> for etagere::AllocId {
     }
 }
 
+/// The identity of the actual editor receiving platform text input.
+///
+/// Composite handlers use their existing field allocation, so repainting does
+/// not change the target and moving focus to another field does. This weak
+/// identity neither retains the field nor grants focus to it.
+#[derive(Clone)]
+pub struct TextInputTarget(TextInputTargetIdentity);
+
+#[derive(Clone)]
+enum TextInputTargetIdentity {
+    Focus(crate::FocusId),
+    Field(std::rc::Weak<dyn std::any::Any>),
+}
+
+impl TextInputTarget {
+    /// Identifies a field by the allocation its native editor already owns.
+    pub fn from_field<T: 'static>(field: &Rc<T>) -> Self {
+        let field: Rc<dyn std::any::Any> = field.clone();
+        Self(TextInputTargetIdentity::Field(Rc::downgrade(&field)))
+    }
+}
+
+impl PartialEq for TextInputTarget {
+    fn eq(&self, other: &Self) -> bool {
+        match (&self.0, &other.0) {
+            (TextInputTargetIdentity::Focus(left), TextInputTargetIdentity::Focus(right)) => {
+                left == right
+            }
+            (TextInputTargetIdentity::Field(left), TextInputTargetIdentity::Field(right)) => {
+                std::rc::Weak::ptr_eq(left, right)
+            }
+            _ => false,
+        }
+    }
+}
+
+impl Eq for TextInputTarget {}
+
+impl fmt::Debug for TextInputTarget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("TextInputTarget(..)")
+    }
+}
+
 #[expect(missing_docs)]
 pub struct PlatformInputHandler {
     cx: AsyncWindowContext,
@@ -2047,6 +2091,86 @@ impl PlatformInputHandler {
     /// use it to detect a field change without restarting the keyboard session.
     pub fn focus_id(&self) -> Option<crate::FocusId> {
         Some(self.focus)
+    }
+
+    /// Returns the live editor's identity, including a composite handler's field.
+    pub fn text_input_target(&mut self) -> Option<TextInputTarget> {
+        self.cx
+            .clone()
+            .update(|window, cx| self.current_text_input_target(window, cx))
+            .ok()
+            .flatten()
+    }
+
+    fn current_text_input_target(
+        &mut self,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<TextInputTarget> {
+        if !window.input_handler_is_admitted(self.focus, &self.origin)
+            || !self.handler.accepts_text_input(window, cx)
+        {
+            return None;
+        }
+        Some(
+            self.handler
+                .text_input_target(window, cx)
+                .unwrap_or(TextInputTarget(TextInputTargetIdentity::Focus(self.focus))),
+        )
+    }
+
+    /// Applies one platform composition snapshot to its original editor.
+    ///
+    /// `selection_utf16` is relative to `preedit`, in UTF-16 code units. An
+    /// inactive snapshot cancels the temporary mark without committing it.
+    /// A nonempty committed prefix is inserted before the new mark. If that
+    /// edit changes focus, the remaining mark is discarded and this returns
+    /// `false`; the committed prefix has already been applied and must not be
+    /// retried. Invalid selection ranges return an error.
+    pub fn apply_composition(
+        &mut self,
+        target: &TextInputTarget,
+        commit_prefix: &str,
+        preedit: &str,
+        selection_utf16: Option<Range<usize>>,
+        active: bool,
+    ) -> Result<bool> {
+        if let Some(selection) = &selection_utf16 {
+            anyhow::ensure!(
+                selection.start <= selection.end && selection.end <= preedit.encode_utf16().count(),
+                "composition selection is outside the preedit UTF-16 range"
+            );
+        }
+        Ok(self
+            .cx
+            .clone()
+            .update(|window, cx| {
+                if self.current_text_input_target(window, cx).as_ref() != Some(target) {
+                    return false;
+                }
+                if !commit_prefix.is_empty() {
+                    self.handler
+                        .replace_text_in_range(None, commit_prefix, window, cx);
+                    // A native change callback may have moved focus before the
+                    // same snapshot's next preedit is applied.
+                    if self.current_text_input_target(window, cx).as_ref() != Some(target) {
+                        return false;
+                    }
+                }
+                if (active && !preedit.is_empty())
+                    || self.handler.marked_text_range(window, cx).is_some()
+                {
+                    self.handler.replace_and_mark_text_in_range(
+                        None,
+                        if active { preedit } else { "" },
+                        if active { selection_utf16 } else { None },
+                        window,
+                        cx,
+                    );
+                }
+                true
+            })
+            .unwrap_or(false))
     }
 
     pub(crate) fn presentation_is_admitted(&self, window: &Window) -> bool {
@@ -2401,6 +2525,18 @@ pub struct UTF16Selection {
 ///
 /// Text offsets and ranges use UTF-16 code units unless stated otherwise.
 pub trait InputHandler: 'static {
+    /// Identifies the actual editor inside a composite input handler.
+    ///
+    /// Return the same field allocation across repaints. `None` uses the
+    /// handler's registered GPUI focus identity for a single editor.
+    fn text_input_target(
+        &mut self,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) -> Option<TextInputTarget> {
+        None
+    }
+
     /// Get the range of the user's currently selected text, if any
     /// Corresponds to [selectedRange()](https://developer.apple.com/documentation/appkit/nstextinputclient/1438242-selectedrange)
     ///

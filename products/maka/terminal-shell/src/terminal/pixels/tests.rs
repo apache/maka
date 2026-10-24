@@ -38,10 +38,13 @@ use std::{
 fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
     const APP: &str = r#"
         import { mount, signal } from 'nsh';
+        import { Clipboard } from 'nsh/clipboard';
         import { keymap } from 'nsh/keymap';
         import { element, prop, bindProp, append } from 'nsh:rt';
         const value = signal('');
+        const second = signal('B');
         keymap.bind('mod+k', () => value.set(keymap.label('mod+k')), { when: 'always' });
+        keymap.bind('mod+j', () => Clipboard.writeText(value()), { when: 'always' });
         mount(() => {
             const root = element('view');
             prop(root, 'style', {flex: 1, padding: 16, backgroundColor: '#111111'});
@@ -54,6 +57,12 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
             prop(body, 'onPress', () => {});
             prop(body, 'style', {width: 240, height: 64, backgroundColor: '#406020'});
             append(root, body);
+            const other = element('input');
+            prop(other, 'style', {position: 'absolute', left: 264, top: 16, width: 48, height: 48,
+                backgroundColor: '#302040', color: '#ffffff'});
+            bindProp(other, 'value', second);
+            prop(other, 'onChange', text => second.set(text));
+            append(root, other);
             return root;
         });
     "#;
@@ -138,8 +147,8 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
     }
     assert!(platform.input_caret_bounds().is_none());
     let initial_count = Cell::new(count.get());
-    let click = |y| {
-        let position = point(px(32.0), px(y));
+    let click_at = |x, y| {
+        let position = point(px(x), px(y));
         platform
             .dispatch_input(PlatformInput::MouseDown(gpui::MouseDownEvent {
                 position,
@@ -157,6 +166,7 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
             }))
             .unwrap();
     };
+    let click = |y| click_at(32.0, y);
     let stroke = |key: &str, text: Option<&str>, control| {
         let keystroke = gpui::Keystroke {
             key: key.into(),
@@ -297,6 +307,112 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
         );
     }
     assert_eq!(count.get(), initial_count.get());
+    // Composition enters the same native editor and WGPU painter. The app's
+    // committed value stays observable while the preedit has visible glyphs.
+    stroke("a", None, true);
+    platform.paste("BASE").unwrap();
+    assert_eq!(copied(), "BASE");
+    stroke("end", None, false);
+    let target = platform.text_input_target().unwrap();
+    assert!(
+        platform
+            .apply_composition(&target, "", "😀", Some(3..3), true)
+            .is_err(),
+        "one emoji occupies two UTF-16 units"
+    );
+    let caret = platform.input_caret_bounds().unwrap();
+    let painted = || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            platform.pump();
+            let pixels = frames
+                .borrow_mut()
+                .drain(..)
+                .map(|frame| frame.complete().unwrap().pixels().to_vec())
+                .last();
+            if let Some(pixels) = pixels {
+                initial_count.set(count.get());
+                return pixels;
+            }
+            assert!(Instant::now() < deadline, "composition did not paint");
+        }
+    };
+    // Exclude the unchanged caret column and the underline below the glyphs.
+    let has_preedit_glyphs = |pixels: &[u8]| {
+        (caret.origin.y.0.ceil() as usize..caret.bottom().0.floor() as usize - 2).any(|y| {
+            (caret.origin.x.0.ceil() as usize + 3..240).any(|x| {
+                let color = &pixels[(y * 320 + x) * 4..][..3];
+                color.iter().all(|channel| *channel > 200)
+            })
+        })
+    };
+    assert!(!has_preedit_glyphs(&painted()));
+    assert!(
+        platform
+            .apply_composition(&target, "", "ni😀", Some(0..0), true)
+            .unwrap()
+    );
+    assert!(has_preedit_glyphs(&painted()));
+    stroke("j", None, true);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        platform.pump_with_draw(false);
+        if let Some(text) = platform.take_clipboard_write().and_then(|item| item.text()) {
+            assert_eq!(text, "BASE", "preedit must not change the app's value");
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "committed value was not reported"
+        );
+    }
+    assert!(
+        platform
+            .apply_composition(&target, "", "", Some(0..0), false)
+            .unwrap()
+    );
+    assert!(!has_preedit_glyphs(&painted()));
+    assert_eq!(copied(), "BASE");
+    stroke("end", None, false);
+    assert!(
+        platform
+            .apply_composition(&target, "", "old", Some(0..0), true)
+            .unwrap()
+    );
+    assert!(
+        platform
+            .apply_composition(&target, "😀", "ni", Some(2..2), true)
+            .unwrap()
+    );
+    assert!(
+        platform
+            .apply_composition(&target, "你", "", None, false)
+            .unwrap()
+    );
+    assert_eq!(copied(), "BASE😀你");
+    stroke("end", None, false);
+    assert!(
+        platform
+            .apply_composition(&target, "", "cancel on blur", None, true)
+            .unwrap()
+    );
+    click_at(280.0, 32.0);
+    let other = platform.text_input_target().unwrap();
+    assert_ne!(other, target);
+    assert!(
+        !platform
+            .apply_composition(&target, "STALE", "wrong field", None, true)
+            .unwrap()
+    );
+    assert_eq!(copied(), "B");
+    assert!(
+        platform
+            .apply_composition(&other, "B2", "", None, false)
+            .unwrap()
+    );
+    assert_eq!(copied(), "B2");
+    click(32.0);
+    assert_eq!(copied(), "BASE😀你", "blur cancels the old preedit");
     // Change density within this same application, as moving the terminal to
     // another screen does. Preserve logical layout and rasterize at full size.
     platform

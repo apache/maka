@@ -1,5 +1,6 @@
 use std::{
     cell::RefCell,
+    ops::Range,
     rc::{Rc, Weak},
     sync::Arc,
 };
@@ -332,6 +333,42 @@ impl WindowState {
             }
             state.borrow_mut().input_handler.get_or_insert(handler);
         }
+    }
+
+    pub(crate) fn text_input_target(state: &Rc<RefCell<Self>>) -> Option<gpui::TextInputTarget> {
+        {
+            let state = state.borrow();
+            if state.closed || !state.active || !state.visible.is_visible() {
+                return None;
+            }
+        }
+        let mut handler = state.borrow_mut().input_handler.take()?;
+        let target = handler.text_input_target();
+        state.borrow_mut().input_handler.get_or_insert(handler);
+        target
+    }
+
+    pub(crate) fn apply_composition(
+        state: &Rc<RefCell<Self>>,
+        target: &gpui::TextInputTarget,
+        commit_prefix: &str,
+        preedit: &str,
+        selection_utf16: Option<Range<usize>>,
+        active: bool,
+    ) -> Result<bool> {
+        {
+            let state = state.borrow();
+            if state.closed || !state.active || !state.visible.is_visible() {
+                return Ok(false);
+            }
+        }
+        let Some(mut handler) = state.borrow_mut().input_handler.take() else {
+            return Ok(false);
+        };
+        let result =
+            handler.apply_composition(target, commit_prefix, preedit, selection_utf16, active);
+        state.borrow_mut().input_handler.get_or_insert(handler);
+        result
     }
 
     pub(crate) fn input_caret_bounds(state: &Rc<RefCell<Self>>) -> Option<Bounds<Pixels>> {
