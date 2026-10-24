@@ -79,10 +79,15 @@ export function runCommand(command, args, options = {}) {
         return;
       }
       reject(
-        new Error(
-          `${command} ${args.join(' ')} failed with ${
-            signal ? `signal ${signal}` : `exit code ${code}`
-          }\n${stderr.trim()}`,
+        Object.assign(
+          new Error(
+            `${command} ${args.join(' ')} failed with ${
+              signal ? `signal ${signal}` : `exit code ${code}`
+            }` +
+              `${stdout.trim() ? `\nstdout: ${stdout.trim()}` : ''}` +
+              `${stderr.trim() ? `\nstderr: ${stderr.trim()}` : ''}`,
+          ),
+          { code, signal, stdout, stderr },
         ),
       );
     });

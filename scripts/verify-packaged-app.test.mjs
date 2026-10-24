@@ -39,12 +39,30 @@ import {
   asarLookupPath,
   assertPackagedDependencyClosure,
   assertPackagedResources,
+  runCommand,
   stopChild,
 } from './verify-packaged-app.mjs';
 
 const { version: productVersion } = JSON.parse(
   await readFile(new URL('../package.json', import.meta.url), 'utf8'),
 );
+
+test('runCommand preserves the exit code and both output streams on failure', async () => {
+  await assert.rejects(
+    runCommand(process.execPath, [
+      '-e',
+      "require('node:fs').writeSync(1, 'CloudKit connection lost'); require('node:fs').writeSync(2, 'stderr detail'); process.exit(68)",
+    ]),
+    (error) => {
+      assert.equal(error.code, 68);
+      assert.equal(error.stdout, 'CloudKit connection lost');
+      assert.equal(error.stderr, 'stderr detail');
+      assert.match(error.message, /CloudKit connection lost/u);
+      assert.match(error.message, /stderr detail/u);
+      return true;
+    },
+  );
+});
 
 test('stopChild waits for a process that ignores SIGTERM to exit before returning', {
   skip: process.platform === 'win32',
