@@ -44,7 +44,7 @@
 - Preserve Windows browser launcher paths and SSH operator arguments, and validate project roots for the target platform (#6121, #6123, #6122).
 - Source patches no longer include the unchanged QuickJS WebAssembly binary; installation reuses it from the pinned npm dependency. Source verification also rejects Base64-encoded WASM.
 - Correct stale source-license component and dependency references, preserve the cursor files' upstream MIT scope, and identify the historical 0.2.0 RC1 in DISCLAIMER-WIP.
-- Update the standalone CLI's bundled Node runtime and MCP, follow-redirects and Hono dependencies for published security advisories (#6229).
+- Update the standalone CLI's bundled Node runtime and refresh shipped dependencies for published security advisories (#6229, #6236).
 
 ### Changed
 
