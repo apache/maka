@@ -2481,7 +2481,7 @@ impl Surface {
                 self.raw_touch(TouchPhase::End, x, y, None);
                 let pointer = self.pointer.take().unwrap();
                 if let Some(id) = pointer.pan {
-                    self.pan_event(id, EventKind::PanEnd, &pointer, x, y);
+                    self.pan_event(id, EventKind::PanEnd, &pointer, x, y, false);
                 }
                 if let Some(id) = pointer.pressable {
                     self.emit_if(id, EventKind::PressUp, EventPayload::None);
@@ -2912,7 +2912,7 @@ impl Surface {
                 Some(true) => {
                     pointer.pan = Some(id);
                     activated = Some(id);
-                    self.pan_event(id, EventKind::PanStart, &pointer, x, y);
+                    self.pan_event(id, EventKind::PanStart, &pointer, x, y, false);
                 }
                 Some(false) => pointer.pan_candidate = None,
                 None => {}
@@ -2943,19 +2943,37 @@ impl Surface {
         }
     }
 
-    fn pan_event(&mut self, id: NodeId, kind: EventKind, pointer: &Pointer, x: f32, y: f32) {
+    fn pan_event(
+        &mut self,
+        id: NodeId,
+        kind: EventKind,
+        pointer: &Pointer,
+        x: f32,
+        y: f32,
+        cancelled: bool,
+    ) {
         let elapsed = pointer.started.elapsed().as_secs_f32().max(0.001);
         let (dx, dy) = self.pan_delta(id, pointer, x, y);
         let gestures = self.node(id).map(|n| n.gestures).unwrap_or_default();
         self.emit_if(
             id,
             kind,
-            EventPayload::Pan {
-                translation: point(px(dx), px(dy)),
-                velocity_x: dx / elapsed,
-                velocity_y: dy / elapsed,
-                value_x: gestures.pan_x.map(|_| px(pointer.pan_base.0 + dx)),
-                value_y: gestures.pan_y.map(|_| px(pointer.pan_base.1 + dy)),
+            if cancelled {
+                EventPayload::PanCancelled {
+                    translation: point(px(dx), px(dy)),
+                    velocity_x: dx / elapsed,
+                    velocity_y: dy / elapsed,
+                    value_x: gestures.pan_x.map(|_| px(pointer.pan_base.0 + dx)),
+                    value_y: gestures.pan_y.map(|_| px(pointer.pan_base.1 + dy)),
+                }
+            } else {
+                EventPayload::Pan {
+                    translation: point(px(dx), px(dy)),
+                    velocity_x: dx / elapsed,
+                    velocity_y: dy / elapsed,
+                    value_x: gestures.pan_x.map(|_| px(pointer.pan_base.0 + dx)),
+                    value_y: gestures.pan_y.map(|_| px(pointer.pan_base.1 + dy)),
+                }
             },
         );
     }
@@ -3004,6 +3022,7 @@ impl Surface {
                     &pointer,
                     pointer.last.0,
                     pointer.last.1,
+                    true,
                 );
             }
         }
@@ -3136,6 +3155,81 @@ mod tests {
                 before: None,
             },
         ]
+    }
+
+    #[test]
+    fn cancelled_pan_is_not_a_released_drag() {
+        use nsh_core::{GestureValues, MountBatch, MountItem};
+
+        for cancelled in [false, true] {
+            let mut surface = Surface::new(40, 12, crate::CellMetrics::default());
+            let mut items = create(2, ViewKind::View, ROOT_ID, 0.0);
+            items.extend([
+                MountItem::Events {
+                    id: 2,
+                    events: mask(&[EventKind::PanStart, EventKind::PanEnd]),
+                },
+                MountItem::Animation(nsh_core::animation::AnimationOp::CreateValue {
+                    node: 17,
+                    value: 0.0,
+                }),
+                MountItem::Gestures {
+                    id: 2,
+                    values: GestureValues {
+                        pan_x: Some(17),
+                        ..Default::default()
+                    },
+                },
+            ]);
+            surface.apply(MountBatch { items });
+            let mouse = |kind, column| {
+                Event::Mouse(MouseEvent {
+                    kind,
+                    column,
+                    row: 0,
+                    modifiers: KeyModifiers::NONE,
+                })
+            };
+            surface.handle_event(mouse(MouseEventKind::Down(MouseButton::Left), 1));
+            surface.handle_event(mouse(MouseEventKind::Drag(MouseButton::Left), 5));
+            let value = surface.animation.value(17).unwrap();
+            assert!(value > 0.0);
+            surface.drain_events().for_each(drop);
+            if cancelled {
+                surface.cancel_pointer();
+            } else {
+                surface.handle_event(mouse(MouseEventKind::Up(MouseButton::Left), 5));
+            }
+            let events: Vec<_> = surface.drain_events().collect();
+            let ends: Vec<_> = events
+                .iter()
+                .filter_map(|event| match event {
+                    SurfaceEvent::Event(2, EventKind::PanEnd, payload) => Some(payload),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(ends.len(), 1);
+            assert_eq!(
+                matches!(ends[0], EventPayload::PanCancelled { .. }),
+                cancelled
+            );
+            let (translation, value_x) = match ends[0] {
+                EventPayload::Pan {
+                    translation,
+                    value_x,
+                    ..
+                }
+                | EventPayload::PanCancelled {
+                    translation,
+                    value_x,
+                    ..
+                } => (translation, value_x),
+                other => panic!("unexpected drag payload: {other:?}"),
+            };
+            assert_eq!(translation.x.0, value);
+            assert_eq!(value_x.unwrap().0, value);
+            assert!(surface.pointer.is_none());
+        }
     }
 
     #[test]
@@ -7227,12 +7321,13 @@ mod tests {
 
     #[test]
     fn inline_link_owners_follow_text_replacement_and_native_lifetimes() {
+        use std::sync::Arc;
+
         use nsh_core::{
             AccessibilityRole, AttributedText, Command, LayoutAnimation, LayoutCurve,
             LayoutProperty, LayoutTransition, MountBatch, MountItem, ResolvedTextStyle, TextEngine,
             TextLink, ViewProps,
         };
-        use std::sync::Arc;
 
         let mut surface = Surface::new(40, 12, crate::CellMetrics::default());
         let engine = crate::TerminalTextEngine::default();
