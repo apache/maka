@@ -114,7 +114,7 @@ fn fingerprint(source: &str, packages: impl IntoIterator<Item = (String, String)
 // This generated identifier is a no-op hint, never package execution admission.
 // Actual installation/update candidates must pass verified_fingerprint below.
 fn bundle_fingerprint() -> Result<String, HostError> {
-    Ok(PRODUCT_VERSION.into())
+    Ok(PRODUCT_VERSION.trim_end().into())
 }
 fn verified_fingerprint(
     source: &str,
