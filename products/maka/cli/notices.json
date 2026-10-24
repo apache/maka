@@ -1264,7 +1264,7 @@
     "third-party/nsh/crates/nsh-core/src/image/cache.rs": "7db3a77091226235917176cf6320784862b451cafb3d791ee2f19225537af59e",
     "third-party/nsh/crates/nsh-core/src/image/cache/tests.rs": "71d10a0bc2240f975e14cf1d2d2b2168a6cb3778622766cce14c8c38b60f4f8e",
     "third-party/nsh/crates/nsh-core/src/input.rs": "2f0e15100636f3edfd65d39bde42257fd1912e62a31c445bdf1263b17ca5dda0",
-    "third-party/nsh/crates/nsh-core/src/input_tokens.rs": "6c1ba8141dde39f34a623c8c908ee78b5ce05ccc455394fc807f15d9f12074c0",
+    "third-party/nsh/crates/nsh-core/src/input_tokens.rs": "a5d660bf493667c5f1b4d02ce428303c85280fc9d17f8f13bb2f3940bfa41986",
     "third-party/nsh/crates/nsh-core/src/js/animation.rs": "34d01d06befdd127a5c85480767723964ffe9dda41280b55b29788446368beb4",
     "third-party/nsh/crates/nsh-core/src/js/canvas.rs": "348900df6c3d12e2061e09d7d7c1d50fc409cb1f42fe4da2e1400e89fab93679",
     "third-party/nsh/crates/nsh-core/src/js/host.rs": "96ec2291291c6bb7f94ab89d53086e083954954a78f0fcfbd3e2dbc7579f690e",
