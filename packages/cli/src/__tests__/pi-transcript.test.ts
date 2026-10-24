@@ -552,6 +552,64 @@ describe('Maka Pi TUI transcript', () => {
     );
   });
 
+  test('a preserved entry after a thinking-carrying reply stays after the whole message', () => {
+    // Stored thinking resumes above the reply text under the SAME message id,
+    // so the durable projection holds two entries for one id. A preserved
+    // client-local entry follows the reply body — the LAST entry of that id —
+    // and must not land between the thinking and the body.
+    const durable = [
+      { type: 'user', id: 'u1', turnId: 'turn-1', ts: 1, text: 'go' },
+      {
+        type: 'assistant',
+        id: 'm1',
+        turnId: 'turn-1',
+        ts: 2,
+        text: 'done',
+        modelId: 'model-1',
+        thinking: { text: 'reasoning first' },
+      },
+    ] as const;
+    const state = createMakaPiTranscriptState();
+    replaceTranscriptWithStoredMessages(state, [...durable]);
+    state.entries.push({ kind: 'notice', level: 'info', text: 'CLIENT-NOTICE' });
+
+    replaceTranscriptWithStoredMessages(state, [...durable], {
+      preserveClientLocalEntries: true,
+    });
+
+    assert.deepEqual(
+      state.entries.map((entry) => entry.kind),
+      ['user', 'thinking', 'assistant', 'notice'],
+    );
+  });
+
+  test('a preserved transient steering row after a thinking reply stays after the body', () => {
+    const durable = [
+      { type: 'user', id: 'u1', turnId: 'turn-1', ts: 1, text: 'go' },
+      {
+        type: 'assistant',
+        id: 'm1',
+        turnId: 'turn-1',
+        ts: 2,
+        text: 'done',
+        modelId: 'model-1',
+        thinking: { text: 'reasoning first' },
+      },
+    ] as const;
+    const state = createMakaPiTranscriptState();
+    replaceTranscriptWithStoredMessages(state, [...durable]);
+    appendUserPrompt(state, 'steer mid-flight', 'in-flight-1', true);
+
+    replaceTranscriptWithStoredMessages(state, [...durable], {
+      preserveClientLocalEntries: true,
+    });
+
+    assert.deepEqual(
+      state.entries.map((entry) => entry.kind),
+      ['user', 'thinking', 'assistant', 'user'],
+    );
+  });
+
   test('preserves a transient user row across a sparse transcript replacement', () => {
     const state = createMakaPiTranscriptState();
     appendUserPrompt(state, 'send now', 'message-1', true);
