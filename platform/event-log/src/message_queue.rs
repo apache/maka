@@ -71,7 +71,7 @@ impl EventLog {
         crate::sessions::validate_id(session)?;
         let session = session.to_owned();
         self.connection
-            .run(move |connection| Box::pin(async move { revision(connection, &session).await }))
+            .read(move |connection| Box::pin(async move { revision(connection, &session).await }))
             .await
     }
     pub async fn message_queue(&self, session: &str) -> Result<MessageQueue, StoreError> {
@@ -105,7 +105,7 @@ impl EventLog {
             return Err(invalid("queue command kind does not match edit"));
         }
         let session = session.to_owned();
-        let commits = self.commits.clone();
+        let commits = self.commits.session(&session);
         self.connection
             .run(move |connection| {
                 Box::pin(async move {
@@ -151,7 +151,7 @@ impl EventLog {
                     if change.changed {
                         // A wakeup is not a new execution fact. The same high-water is
                         // enough to refresh a projection whose queue control changed.
-                        commits.send_modify(|_| {});
+                        commits.metadata();
                     }
                     Ok(receipt)
                 })

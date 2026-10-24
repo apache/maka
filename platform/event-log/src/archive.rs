@@ -25,7 +25,7 @@ pub(crate) use accepted::archived;
 
 pub(crate) use accepted::validate_append;
 pub(crate) use accepted::verify_replay;
-pub(crate) use effective::{digest_selected, validate_selected, validate_summary};
+pub(crate) use effective::{digest_selected, validate_summary};
 
 use maka_agent_facts::tool_output::DurableToolProjection;
 

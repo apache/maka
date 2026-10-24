@@ -52,7 +52,7 @@ async fn unrestricted_queue_regression(count: usize, large: bool) {
                 let read = fixture.query("queueMessage", json!({"sessionId":session,"messageId":id,"expectedRevision":queue["revision"]})).await?;
                 if read != json!({"kind":"ready","revision":queue["revision"],"message":message,"hasAttachments":false}) { return Err(format!("original body changed for {id}")); }
             }
-            let durable = fixture.store.message_queue(&session).await.map_err(|e| e.to_string())?;
+            let durable = fixture.session(&session).await.message_queue(&session).await.map_err(|e| e.to_string())?;
             if large && durable.entries.iter().map(|entry| serde_json::to_vec(entry).unwrap().len()).sum::<usize>() <= 8 * 1024 * 1024 { return Err("workload did not cross the former aggregate byte limit".into()); }
             for (entry, (id, message)) in durable.entries.iter().zip(&originals) {
                 if entry.source.message.message_id != *id || entry.source.unprepared_content.text != *message || entry.source.message.content.text != *message { return Err("durable original input changed".into()); }
@@ -92,7 +92,7 @@ async fn unrestricted_queue_regression(count: usize, large: bool) {
             }
             Ok(())
         }.await;
-        let before_stop_revision = fixture.store.message_queue(&session).await.unwrap().revision;
+        let before_stop_revision = fixture.session(&session).await.message_queue(&session).await.unwrap().revision;
         let stop_input = json!({"sessionId":session,"invocationId":started["invocationId"]});
         let operation = Uuid::new_v4();
         let stopped = fixture.mutation(2, "stop", stop_input.clone(), operation).await;
@@ -108,12 +108,12 @@ async fn unrestricted_queue_regression(count: usize, large: bool) {
             fixture.mutation(2, "stop", stop_input, Uuid::new_v4()).await.unwrap();
         }
         fixture.drained().await;
-        let remaining = fixture.store.message_queue(&session).await.unwrap();
+        let remaining = fixture.session(&session).await.message_queue(&session).await.unwrap();
         let mut cancelled = Vec::new();
         let mut canonical = Vec::new();
         for (id, _) in &originals {
-            cancelled.push(fixture.store.message_cancelled(&session, id).await.unwrap());
-            canonical.push(fixture.store.root_message(&session, id).await.unwrap().is_none());
+            cancelled.push(fixture.session(&session).await.message_cancelled(&session, id).await.unwrap());
+            canonical.push(fixture.session(&session).await.root_message(&session, id).await.unwrap().is_none());
         }
         fixture.app.shutdown().await.unwrap();
         fixture.config.shutdown().await.unwrap();
@@ -149,6 +149,19 @@ async fn queued_followup_uses_original_worker_and_a_new_invocation() {
         let session = fixture.create("Queued followup").await;
         let first = fixture.send(&session).await.unwrap();
         assert_eq!(first["kind"], "started");
+        let catalog = fixture.owner.mcp_projects.catalog(None).unwrap();
+        {
+            let runs = fixture.owner.runs.lock().await;
+            let basis = &runs.controls[&session].basis;
+            assert!(Arc::ptr_eq(&basis.internal_tools, &catalog.definitions));
+            assert!(Arc::ptr_eq(&basis.internal_bindings, &catalog.bindings));
+            assert!(Arc::ptr_eq(&basis.tools, &fixture.owner.tool_basis));
+            // Durable admission still uses the original array/object representation.
+            let wire = serde_json::to_value(basis).unwrap();
+            let restored: MessageBasis = serde_json::from_value(wire.clone()).unwrap();
+            assert_eq!(serde_json::to_value(restored).unwrap(), wire);
+            assert!(wire["tools"].is_array());
+        }
         let (mut first_socket, _) = listener.accept().await.unwrap();
         request(&mut first_socket).await;
         let next = fixture.mutation(2, "send", json!({"sessionId":session,"message":"original followup","model":fixture.selection().await}), Uuid::new_v4()).await.unwrap();
@@ -159,7 +172,7 @@ async fn queued_followup_uses_original_worker_and_a_new_invocation() {
         assert_eq!(fixture.query("work",json!({"sessionId":other,"target":{"kind":"message","messageId":next["messageId"]}})).await.unwrap(),json!({"kind":"missing"}));
         assert!(fixture.query("work",json!({"sessionId":"foreign_session","target":{"kind":"message","messageId":next["messageId"]}})).await.is_err());
         assert_eq!(fixture.owner.runs.lock().await.controls.len(), 1);
-        let pending = fixture.store.pending_messages(&session).await.unwrap();
+        let pending = fixture.session(&session).await.pending_messages(&session).await.unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].invocation.invocation_id, first["invocationId"]);
         response(&mut first_socket).await;
@@ -169,7 +182,16 @@ async fn queued_followup_uses_original_worker_and_a_new_invocation() {
         assert!(second["messages"].as_array().unwrap().iter().any(|message| message["content"] == "original followup"));
         let current = fixture.query("observe", json!({"sessionId":session})).await.unwrap();
         assert_ne!(current["run"]["invocationId"], first["invocationId"]);
-        assert!(fixture.store.pending_messages(&session).await.unwrap().is_empty());
+        assert!(fixture.session(&session).await.pending_messages(&session).await.unwrap().is_empty());
+        {
+            // A queued admission was decoded from durable JSON. Validation must
+            // reattach shared descriptors before the successor remains running.
+            let runs = fixture.owner.runs.lock().await;
+            let basis = &runs.controls[&session].basis;
+            assert!(Arc::ptr_eq(&basis.internal_tools, &catalog.definitions));
+            assert!(Arc::ptr_eq(&basis.internal_bindings, &catalog.bindings));
+            assert!(Arc::ptr_eq(&basis.tools, &fixture.owner.tool_basis));
+        }
         // Put a real send at the gate before the completed successor worker.
         // Its Running handle drops while we hold the gate, cancelling that
         // handle's token; this is not a user stop or a SQL interrupt fence.
@@ -273,17 +295,13 @@ async fn stopping_original_run_retracts_queue_and_fences_tail_admission() {
         assert_eq!(tail.await.err().unwrap(), "agent_admission_failed");
         fixture.drained().await;
         assert!(
-            fixture
-                .store
-                .pending_messages(&session)
+            fixture.session(&session).await.pending_messages(&session)
                 .await
                 .unwrap()
                 .is_empty()
         );
         assert!(
-            fixture
-                .store
-                .message_cancelled(&session, queued["messageId"].as_str().unwrap())
+            fixture.session(&session).await.message_cancelled(&session, queued["messageId"].as_str().unwrap())
                 .await
                 .unwrap()
         );
@@ -316,16 +334,18 @@ use maka_agent_facts::execution::ThinkingLevel::High;
         selection::thinking(&fixture, vec![Off, Low, High], High).await;
         let deployment = fixture.app.client().snapshot().effective.unwrap().deployment;
         let mut sessions = Vec::new();
-        let raw = rusqlite::Connection::open(fixture.root.join(maka_event_log::root::ROOT_DATABASE)).unwrap();
-        raw.execute_batch("CREATE TRIGGER hold_opening BEFORE INSERT ON event_log WHEN NEW.kind='invocation_opened' BEGIN SELECT RAISE(ABORT, 'fixture opening failure'); END;").unwrap();
+        let raw: Vec<_> = std::fs::read_dir(fixture.root.join("runtime-partitions")).unwrap()
+            .map(|entry| entry.unwrap().path()).filter(|path| path.extension().is_some_and(|extension| extension == "sqlite"))
+            .map(|path| rusqlite::Connection::open(path).unwrap()).collect();
+        for database in &raw { database.execute_batch("CREATE TRIGGER hold_opening BEFORE INSERT ON event_log WHEN NEW.kind='invocation_opened' BEGIN SELECT RAISE(ABORT, 'fixture opening failure'); END;").unwrap(); }
         for (index, level) in [Some(Off), Some(Low), None].into_iter().enumerate() {
             let session = fixture.create(&format!("Recovery {index}")).await;
             assert!(fixture.mutation(2, "send", json!({"sessionId":session,"message":"restored thinking","model":fixture.selection().await,"thinkingLevel":level}), Uuid::new_v4()).await.is_err());
-            assert_eq!(fixture.store.pending_messages(&session).await.unwrap().len(), 1);
+            assert_eq!(fixture.session(&session).await.pending_messages(&session).await.unwrap().len(), 1);
             sessions.push(session);
         }
         fixture.app.shutdown().await.unwrap();
-        raw.execute_batch("DROP TRIGGER hold_opening").unwrap();
+        for database in &raw { database.execute_batch("DROP TRIGGER hold_opening").unwrap(); }
         drop(raw);
         let mut native = NativeRegistry::default();
         crate::owner::tests::provide_all(&mut native).unwrap();
@@ -343,7 +363,7 @@ use maka_agent_facts::execution::ThinkingLevel::High;
         efforts.sort();
         assert_eq!(efforts, ["high", "low", "none"]);
         for session in sessions {
-            while !fixture.store.pending_messages(&session).await.unwrap().is_empty() { tokio::task::yield_now().await; }
+            while !fixture.session(&session).await.pending_messages(&session).await.unwrap().is_empty() { tokio::task::yield_now().await; }
         }
         app.shutdown().await.unwrap();
         fixture.config.shutdown().await.unwrap();
@@ -407,7 +427,7 @@ async fn queue_controls_are_revisioned_and_observed_without_transcript_progress(
         assert_eq!(fixture.query("queue", json!({"sessionId":session})).await.unwrap()["entries"][0]["messageId"], ids[0]);
         let retracted = fixture.mutation(2, "editQueue", json!({"sessionId":session,"expectedRevision":reordered["revision"],"edit":{"kind":"retract","messageId":ids[0]}}), Uuid::new_v4()).await.unwrap();
         assert_eq!(retracted["kind"], "committed");
-        assert!(fixture.store.message_cancelled(&session, &ids[0]).await.unwrap());
+        assert!(fixture.session(&session).await.message_cancelled(&session, &ids[0]).await.unwrap());
         assert_eq!(fixture.query("queueMessage", json!({"sessionId":session,"messageId":ids[0],"expectedRevision":retracted["revision"]})).await.unwrap()["kind"], "missing");
         assert!(fixture.query("queue", json!({"sessionId":"foreign_session"})).await.is_err());
         drop(watch);

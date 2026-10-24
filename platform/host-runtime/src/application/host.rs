@@ -37,7 +37,7 @@ use super::transport::{
 use super::{Application, NativeRegistry, Result};
 use crate::ipc::{LocalListener, LocalStream};
 use access::{Authority, Principal};
-use maka_event_log::EventLog;
+use maka_event_log::root_store::RootStore;
 use maka_plugin_core::deployment::DeploymentRef;
 use protocol::{Connected, Opening, Request, Response, SessionControl};
 use sha2::Digest;
@@ -72,7 +72,7 @@ pub struct Host {
     root: Arc<maka_event_log::root::RootOwner>,
     options: Options,
     application: Application,
-    store: Arc<EventLog>,
+    store: Arc<RootStore>,
     access: Arc<maka_config::ConfigurationStore>,
     access_grant: Mutex<String>,
     access_gate: tokio::sync::Mutex<()>,
@@ -99,7 +99,7 @@ enum SessionMode {
 }
 impl Host {
     pub async fn open(
-        store: Arc<EventLog>,
+        store: Arc<RootStore>,
         deployment: Uuid,
         native: NativeRegistry,
         scripts: Option<Arc<dyn super::backend::Factory>>,
@@ -118,7 +118,7 @@ impl Host {
         .await
     }
     pub async fn open_with_options(
-        store: Arc<EventLog>,
+        store: Arc<RootStore>,
         deployment: Uuid,
         native: NativeRegistry,
         scripts: Option<Arc<dyn super::backend::Factory>>,
@@ -137,7 +137,7 @@ impl Host {
 
     /// Open a checked committed source without rereading its immutable packages.
     pub async fn open_loaded_with_options(
-        store: Arc<EventLog>,
+        store: Arc<RootStore>,
         loaded: maka_event_log::applications::LoadedDeployment,
         native: NativeRegistry,
         scripts: Option<Arc<dyn super::backend::Factory>>,

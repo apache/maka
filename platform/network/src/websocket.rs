@@ -94,6 +94,8 @@ pub async fn connect_websocket(
         Role::Client,
         Some(
             WebSocketConfig::default()
+                .write_buffer_size(0)
+                .max_write_buffer_size(64 * 1024)
                 .max_message_size(Some(limit))
                 .max_frame_size(Some(limit)),
         ),

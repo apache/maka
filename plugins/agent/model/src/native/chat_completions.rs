@@ -22,10 +22,35 @@ use maka_agent_facts::language::Language;
 
 /// Chat has text-only tool messages. Keep the entire result group together and
 /// carry media in the following user message, never between parallel results.
+#[cfg(test)]
 pub(super) fn project(messages: Vec<Message>, language: Language) -> Vec<Message> {
-    let mut projected = Vec::with_capacity(messages.len());
-    let mut images = Vec::new();
-    for mut message in messages {
+    let mut projector = Projector::new(language);
+    let mut projected = Vec::new();
+    for message in messages {
+        projected.extend(projector.push(message));
+    }
+    projected.extend(projector.finish());
+    projected
+}
+
+/// Carries only the pending tool media across consecutive result messages.
+/// The request encoder drains each returned message before reading more history.
+pub(super) struct Projector {
+    language: Language,
+    images: Vec<ContentPart>,
+}
+
+impl Projector {
+    pub(super) fn new(language: Language) -> Self {
+        Self {
+            language,
+            images: Vec::new(),
+        }
+    }
+
+    pub(super) fn push(&mut self, mut message: Message) -> Vec<Message> {
+        let language = self.language;
+        let mut projected = Vec::new();
         if let Message::Tool { content, .. } = &mut message {
             for result in content {
                 let ToolOutput::Content(parts) = &mut result.output else {
@@ -47,14 +72,14 @@ pub(super) fn project(messages: Vec<Message>, language: Language) -> Vec<Message
                         if !labelled {
                             let name = &result.tool_name;
                             let id = &result.tool_call_id;
-                            images.push(ContentPart::text(match language {
+                            self.images.push(ContentPart::text(match language {
                                 Language::En => format!("{kind} from tool {name} ({id}):"),
                                 Language::ZhCn => format!("来自工具 {name}（{id}）的{kind}："),
                                 Language::ZhTw => format!("來自工具 {name}（{id}）的{kind}："),
                             }));
                             labelled = true;
                         }
-                        images.push(std::mem::replace(
+                        self.images.push(std::mem::replace(
                             part,
                             ContentPart::text(match language {
                                 Language::En => format!("{kind} supplied below."),
@@ -65,21 +90,23 @@ pub(super) fn project(messages: Vec<Message>, language: Language) -> Vec<Message
                     }
                 }
             }
-        } else if !images.is_empty() {
-            projected.push(Message::User {
-                content: std::mem::take(&mut images),
-                provider_options: None,
-            });
+        } else {
+            projected.extend(self.take_media());
         }
         projected.push(message);
+        projected
     }
-    if !images.is_empty() {
-        projected.push(Message::User {
-            content: images,
+
+    fn take_media(&mut self) -> Option<Message> {
+        (!self.images.is_empty()).then(|| Message::User {
+            content: std::mem::take(&mut self.images),
             provider_options: None,
-        });
+        })
     }
-    projected
+
+    pub(super) fn finish(mut self) -> Option<Message> {
+        self.take_media()
+    }
 }
 
 #[cfg(test)]

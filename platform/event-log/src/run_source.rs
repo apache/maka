@@ -18,14 +18,13 @@
  */
 
 use crate::{EventLog, StoreError, sequence_number};
-use futures_util::TryStreamExt;
 use maka_agent_facts::configuration::validation::MAX_SAFE_INTEGER;
 use maka_agent_facts::continuation::RunBoundary;
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::RuntimeEvent;
 use maka_agent_facts::event::StoredEvent;
 use sha2::{Digest, Sha256};
-use sqlx::{Connection, Row, SqliteConnection};
+use sqlx::{Connection, SqliteConnection};
 
 /// Canonical evidence for one physical Run cut, retaining only its endpoints.
 /// Boundary high-water counts Run-local events; endpoint sequences are root positions.
@@ -37,7 +36,7 @@ pub struct RunSource {
 }
 
 impl EventLog {
-    /// Authenticate identity, the exact Run-local cut and original bytes in one snapshot.
+    /// Read the admitted identity and exact Run-local cut in one snapshot.
     /// A requested cut must exist; it is never silently clamped to the latest event.
     /// An unsealed prefix is readable evidence, not proof that resuming it is safe.
     pub async fn run_source(
@@ -64,11 +63,10 @@ impl EventLog {
                     };
                     let through = if let Some(up_to) = up_to {
                         sqlx::query_scalar::<_, i64>(
-                            "SELECT sequence FROM runtime_events WHERE invocation_id = ?
-                     ORDER BY sequence LIMIT 1 OFFSET ?",
+                            "SELECT sequence FROM context_source_prefixes WHERE kind='invocation' AND owner=? AND ordinal=?",
                         )
                         .bind(&invocation)
-                        .bind((up_to - 1) as i64)
+                        .bind(up_to as i64)
                         .fetch_optional(&mut *tx)
                         .await?
                         .ok_or_else(|| invalid("requested Run prefix is unavailable"))?
@@ -96,80 +94,58 @@ pub(crate) async fn read(
     invocation_id: &str,
     through: i64,
 ) -> Result<RunSource, StoreError> {
-    let count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM runtime_events WHERE invocation_id = ? AND sequence <= ?",
+    let (sequence, count, root): (i64, i64, Vec<u8>) = sqlx::query_as(
+        "SELECT sequence,ordinal,hash FROM context_source_prefixes
+         WHERE kind='invocation' AND owner=? AND sequence<=? ORDER BY sequence DESC LIMIT 1",
     )
     .bind(invocation_id)
     .bind(through)
-    .fetch_one(&mut *connection)
-    .await?;
+    .fetch_optional(&mut *connection)
+    .await?
+    .ok_or_else(|| invalid("Run source is empty"))?;
+    if through != i64::MAX && sequence != through {
+        return Err(invalid("requested Run prefix is unavailable"));
+    }
+    let through = sequence;
     let high_water = sequence_number(count)?;
     if high_water == 0 || high_water > MAX_SAFE_INTEGER {
         return Err(invalid(
             "Run source high-water is not a positive safe integer",
         ));
     }
-    let mut opening: Option<StoredEvent> = None;
-    let mut last = None;
-    let mut observed = 0u64;
-    let mut digest = Sha256::new();
-    digest.update(b"maka.run-prefix.v1\0");
-    digest.update(high_water.to_be_bytes());
-    let mut rows = sqlx::query(
-        "SELECT sequence, event_json,
-         (SELECT length(payload) FROM tool_result_payloads WHERE event_id = runtime_events.event_id)
-         FROM runtime_events WHERE invocation_id = ? AND sequence <= ? ORDER BY sequence",
+    let (opened,json):(i64,String)=sqlx::query_as(
+        "SELECT sequence,event_json FROM runtime_events WHERE invocation_id=? ORDER BY sequence LIMIT 1")
+        .bind(invocation_id).fetch_one(&mut *connection).await?;
+    let opening = StoredEvent {
+        sequence: sequence_number(opened)?,
+        event: serde_json::from_str::<RuntimeEvent>(&json)?,
+    };
+    let json: String = sqlx::query_scalar(
+        "SELECT event_json FROM runtime_events WHERE invocation_id=? AND sequence=?",
     )
     .bind(invocation_id)
     .bind(through)
-    .fetch(&mut *connection);
-    while let Some(row) = rows.try_next().await? {
-        let sequence = sequence_number(row.try_get(0)?)?;
-        let json: &str = row.try_get(1)?;
-        let event: RuntimeEvent = serde_json::from_str(json)?;
-        crate::tool_payloads::verify_binding(&event, row.try_get(2)?)?;
-        match &opening {
-            None => {
-                if !matches!(event.fact, Fact::InvocationOpened { .. })
-                    || event.invocation.session_id != session
-                    || event.invocation.run_id != run
-                    || event.invocation.invocation_id != invocation_id
-                {
-                    return Err(invalid("Run prefix lacks its exact canonical opening"));
-                }
-                let identity = serde_json::to_vec(&event.invocation)?;
-                digest.update((identity.len() as u64).to_be_bytes());
-                digest.update(identity);
-            }
-            Some(opening)
-                if opening.event.invocation != event.invocation
-                    || matches!(event.fact, Fact::InvocationOpened { .. }) =>
-            {
-                return Err(invalid("Run prefix identity changed"));
-            }
-            Some(_) => {}
-        }
-        digest.update(sequence.to_be_bytes());
-        digest.update((json.len() as u64).to_be_bytes());
-        digest.update(json.as_bytes());
-        let stored = StoredEvent { sequence, event };
-        if opening.is_none() {
-            opening = Some(StoredEvent {
-                sequence,
-                event: stored.event.clone(),
-            });
-        }
-        last = Some(stored);
-        observed = observed
-            .checked_add(1)
-            .ok_or_else(|| invalid("Run source event count overflow"))?;
+    .fetch_one(connection)
+    .await?;
+    let last = StoredEvent {
+        sequence: sequence_number(through)?,
+        event: serde_json::from_str::<RuntimeEvent>(&json)?,
+    };
+    if !matches!(opening.event.fact, Fact::InvocationOpened { .. })
+        || opening.event.invocation.session_id != session
+        || opening.event.invocation.run_id != run
+        || opening.event.invocation.invocation_id != invocation_id
+        || last.event.invocation != opening.event.invocation
+    {
+        return Err(invalid("Run prefix lacks its exact canonical identity"));
     }
-    if observed != high_water {
-        return Err(invalid(
-            "Run source event count changed during authentication",
-        ));
-    }
-    let opening = opening.ok_or_else(|| invalid("Run source is empty"))?;
+    let identity = serde_json::to_vec(&opening.event.invocation)?;
+    let mut digest = Sha256::new();
+    digest.update(b"maka.run-prefix.v2\0");
+    digest.update(high_water.to_be_bytes());
+    digest.update((identity.len() as u64).to_be_bytes());
+    digest.update(identity);
+    digest.update(root);
     Ok(RunSource {
         boundary: RunBoundary {
             invocation: opening.event.invocation.clone(),
@@ -177,8 +153,43 @@ pub(crate) async fn read(
             digest: format!("sha256:{}", hex::encode(digest.finalize())),
         },
         opening,
-        last: last.ok_or_else(|| invalid("Run source is empty"))?,
+        last,
     })
+}
+
+/// Read only writer-admitted relationship metadata for ordinary lineage views.
+/// Explicit RunSource exports separately materialize their requested endpoints.
+pub(crate) async fn admitted_boundary(
+    connection: &mut SqliteConnection,
+    invocation: &str,
+    through: i64,
+) -> Result<(RunBoundary, u64), StoreError> {
+    let (sequence,count,root,identity):(i64,i64,Vec<u8>,String)=sqlx::query_as(
+        "SELECT p.sequence,p.ordinal,p.hash,l.identity_json FROM context_source_prefixes p
+         JOIN context_source_lineages l ON l.invocation_id=p.owner
+         WHERE p.kind='invocation' AND p.owner=? AND p.sequence<=? ORDER BY p.sequence DESC LIMIT 1")
+        .bind(invocation).bind(through).fetch_optional(connection).await?
+        .ok_or_else(||invalid("Run source is empty"))?;
+    if through != i64::MAX && through != sequence {
+        return Err(invalid("requested Run prefix is unavailable"));
+    }
+    let invocation: maka_agent_facts::event::Invocation = serde_json::from_str(&identity)?;
+    let bytes = serde_json::to_vec(&invocation)?;
+    let count = sequence_number(count)?;
+    let mut digest = Sha256::new();
+    digest.update(b"maka.run-prefix.v2\0");
+    digest.update(count.to_be_bytes());
+    digest.update((bytes.len() as u64).to_be_bytes());
+    digest.update(bytes);
+    digest.update(root);
+    Ok((
+        RunBoundary {
+            invocation,
+            high_water: count,
+            digest: format!("sha256:{}", hex::encode(digest.finalize())),
+        },
+        sequence_number(sequence)?,
+    ))
 }
 
 fn invalid(reason: &str) -> StoreError {

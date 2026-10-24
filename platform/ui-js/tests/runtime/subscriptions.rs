@@ -824,7 +824,7 @@ fn one_pending_feedback_does_not_double_charge_each_of_48_live_requests() {
 #[test]
 fn mutation_factory_panic_cancels_stream_waiting_ack_and_preserves_failed_preparation_fence() {
     use maka_event_log::{
-        EventLog,
+        RootStore,
         root::{RootNamespaces, RootOwner},
     };
     let timer = timer();
@@ -835,7 +835,7 @@ fn mutation_factory_panic_cancels_stream_waiting_ack_and_preserves_failed_prepar
     };
     let store = Arc::new(
         timer
-            .block_on(EventLog::for_root(Arc::new(
+            .block_on(RootStore::open(Arc::new(
                 RootOwner::create(&dir.path().join("root"), &ns).unwrap(),
             )))
             .unwrap(),

@@ -37,10 +37,11 @@ async fn approval(
     fixture: &Fixture,
     session: &str,
 ) -> maka_agent_facts::interaction::InteractionRecord {
-    let mut changes = fixture.store.subscribe_commits();
+    let mut changes = fixture.session(&session).await.subscribe_commits().unwrap();
     loop {
         if let Some(record) = fixture
-            .store
+            .session(session)
+            .await
             .pending_interactions(session)
             .await
             .unwrap()
@@ -99,8 +100,10 @@ async fn exercise_mcp_permissions() {
             files::change(&fixture, &session, "read_only", false, true).await;
         }
         fixture.send(&session).await.unwrap();
+
         let (mut first, _) = listener.accept().await.unwrap();
         let prompt = request(&mut first).await;
+
         if code {
             assert!(
                 prompt["tools"]
@@ -126,7 +129,9 @@ async fn exercise_mcp_permissions() {
             .await;
         }
         if !preapproved {
+
             let pending = approval(&fixture, &session).await;
+
             assert_eq!(calls(&record), 0, "confirmation must precede MCP effect");
             assert!(
                 matches!(pending.request,maka_agent_facts::interaction::InteractionRequest::ServiceApproval{ref tool_name,..} if tool_name=="mcp__fixture__echo")
@@ -153,6 +158,7 @@ async fn exercise_mcp_permissions() {
         }
         response(&mut next).await;
         fixture.drained().await;
+
         let facts = service_tools::facts(&fixture, &session).await;
         if should_call {
             assert!(facts.iter().any(|fact|matches!(fact,Fact::ToolDispatched{name,call,..} if name=="mcp__fixture__echo" && (!code || matches!(call.origin,maka_agent_facts::tool_call::ToolOrigin::CodeMode{..})))));

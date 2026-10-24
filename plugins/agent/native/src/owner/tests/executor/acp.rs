@@ -20,6 +20,8 @@
 use super::*;
 #[path = "acp/setup_tests.rs"]
 mod setup_tests;
+#[path = "acp/post_cleanup.rs"]
+mod post_cleanup;
 
 async fn setup(
     protocol: u8,
@@ -120,7 +122,7 @@ async fn native_acp_continues_after_only_its_caller_is_reactivated() {
         assert_ne!(client.activation(&id(1)).unwrap(), caller);
         assert_eq!(client.activation(&id(21)).unwrap(), backend);
         assert_eq!(client.activation(&id(22)).unwrap(), processes);
-        let mut changes = f.store.subscribe_commits();
+        let mut changes = f.session(&session).await.subscribe_commits().unwrap();
         let next = execute(&f, &session, "after replacement").await;
         loop {
             let observed = work(&f, &session, &next).await;
@@ -216,10 +218,11 @@ async fn execute(f: &Fixture, session: &str, text: &str) -> Value {
     result
 }
 async fn form(f: &Fixture, session: &str) -> maka_agent_facts::interaction::InteractionRecord {
-    let mut changes = f.store.subscribe_commits();
+    let mut changes = f.session(&session).await.subscribe_commits().unwrap();
     loop {
         if let Some(record) = f
-            .store
+            .session(session)
+            .await
             .pending_interactions(session)
             .await
             .unwrap()
@@ -267,13 +270,13 @@ async fn native_acp_callbacks_have_distinct_writes_and_cancel_the_original_form(
             let observed=work(&f,&session,&accepted).await;
             assert_eq!(observed["execution"]["state"],"completed","{observed}");
             assert_eq!(observed["answer"]["text"],if text=="peer-cancel" {"permission cancelled"}else{"callbacks complete"});
-            assert!(f.store.pending_interactions(&session).await.unwrap().is_empty());
+            assert!(f.session(&session).await.pending_interactions(&session).await.unwrap().is_empty());
         }
         assert_eq!(std::fs::read_to_string(f.workspace.join("written.txt")).unwrap(),"written through Host\n");
         let writes=f.store.application_intents(f.app.source().unwrap().deployment,id(21),0,128).await.unwrap();
         let writes=writes.iter().filter(|r|r.reference.namespace==id(23)&&r.reference.method=="write").collect::<Vec<_>>();
         assert_eq!(writes.len(),3,"identical callbacks remain distinct accepted writes");
-        for write in writes { assert!(matches!(f.store.operation_observation(&write.reference).await.unwrap().unwrap().outcome,OperationOutcome::Returned{..})); }
+        for write in writes { assert!(matches!(f.store.operation(&write.reference).unwrap().operation_observation().await.unwrap().unwrap().outcome,OperationOutcome::Returned{..})); }
         drop(probe);
         f.app.shutdown().await.unwrap();
         f.config.shutdown().await.unwrap();
@@ -340,7 +343,8 @@ async fn native_acp_file_callback_requires_its_own_write_grant() {
         assert_eq!(observed["execution"]["state"], "failed", "{observed}");
         assert!(!f.workspace.join("written.txt").exists());
         assert!(
-            f.store
+            f.session(&session)
+                .await
                 .pending_interactions(&session)
                 .await
                 .unwrap()
@@ -365,24 +369,30 @@ async fn native_acp_file_callback_requires_its_own_write_grant() {
 
 async fn reject_changed_authority(f: &Fixture, session: &str) {
     let invocation = f
-        .store
-        .session_projection::<SessionConfiguration>(session)
+        .session(session)
+        .await
+        .session_projection::<StoredSessionConfiguration>(session)
         .await
         .unwrap()
         .unwrap()
         .root_turn
         .unwrap()
         .invocation;
+    let execution_scope = f.session(session).await.execution_scope(Some(
+        f.owner.session(session).await.unwrap().configuration.permission_basis(),
+    )).await.unwrap();
+    let execution = execution_scope.store().execution_custody().unwrap();
     for field in ["invocation", "cwd"] {
         let scope = f
             .issuer
-            .issue_with(
+            .issue_with_execution(
                 Identity::Agent {
                     invocation: invocation.clone(),
                     operation_id: None,
                 },
                 true,
                 CancellationToken::new(),
+                execution.clone(),
             )
             .unwrap();
         let mut input = json!({"invocation":invocation,"conversationKey":"untrusted shared key","message":"must not run","cwd":f.workspace,"settings":{}});

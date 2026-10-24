@@ -17,23 +17,17 @@
  * under the License.
  */
 
-use super::{ModelContextSource, frozen, invalid, selection::Selection};
+use super::{ContextView, ModelContextSource, invalid, read, safety, selection::Selection};
 use crate::EventLog;
 use crate::StoreError;
 use maka_agent_facts::continuation::RunBoundary;
-use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::LogScope;
 use sqlx::Connection;
 
 impl EventLog {
     /// Reconstruct a sealed source's selected history, not the current whole Session.
     /// The raw boundary and each inherited edge are authenticated in the same SQL snapshot.
-    pub async fn read_lineage_context(
-        &self,
-        source: &RunBoundary,
-        max_events: usize,
-        max_bytes: usize,
-    ) -> Result<ModelContextSource, StoreError> {
+    pub async fn read_lineage_view(&self, source: &RunBoundary) -> Result<ContextView, StoreError> {
         self.validate_root()?;
         for id in [
             &source.invocation.session_id,
@@ -62,36 +56,30 @@ impl EventLog {
                     if id != invocation.invocation_id {
                         return Err(invalid("lineage source identity changed"));
                     }
-                    let through: i64 = sqlx::query_scalar(
-                        "SELECT MAX(sequence) FROM runtime_events WHERE invocation_id=?",
-                    )
-                    .bind(&id)
-                    .fetch_one(&mut *tx)
-                    .await?;
-                    let evidence = crate::run_source::read(
-                        &mut tx,
-                        &invocation.session_id,
-                        &invocation.run_id,
-                        &id,
-                        through,
-                    )
-                    .await?;
-                    if evidence.boundary != source
-                        || !matches!(evidence.last.event.fact, Fact::InvocationEnded { .. })
-                    {
-                        return Err(invalid("lineage source is not its exact sealed boundary"));
-                    }
+                    let (boundary,through)=crate::run_source::admitted_boundary(&mut tx,&id,i64::MAX).await?;
+                    let sealed:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM runtime_events WHERE sequence=? AND kind='invocation_ended' AND invocation_id=?)")
+                        .bind(through as i64).bind(&id).fetch_one(&mut *tx).await?;
+                    if boundary!=source || !sealed {return Err(invalid("lineage source is not its exact sealed boundary"));}
                     let scope = LogScope::Lineage {
                         session_id: invocation.session_id.clone(),
                         run_id: invocation.run_id.clone(),
                     };
                     let selection = Selection::resolve(&mut tx, &scope).await?;
-                    let context = frozen::closed_selected(
+                    safety::closed_boundary(&mut tx, &invocation.session_id, through)
+                        .await?;
+                    safety::require_safe_through(
+                        &mut tx,
+                        &invocation.session_id,
+                        None,
+                        through,
+                    )
+                    .await?;
+                    let context = read::selected_view(
                         &mut tx,
                         &selection,
-                        through as u64,
-                        max_events,
-                        max_bytes,
+                        through,
+                        through + 1,
+                        false,
                     )
                     .await?;
                     tx.commit().await?;
@@ -99,5 +87,14 @@ impl EventLog {
                 })
             })
             .await
+    }
+    pub async fn capture_lineage_context(
+        &self,
+        source: &RunBoundary,
+        max_events: usize,
+        max_bytes: usize,
+    ) -> Result<ModelContextSource, StoreError> {
+        let view = self.read_lineage_view(source).await?;
+        self.materialize_view(view, max_events, max_bytes).await
     }
 }

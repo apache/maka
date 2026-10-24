@@ -62,6 +62,7 @@ async fn external_output_is_durable_observation_not_native_dispatch_and_rebuilds
             approval_policy: maka_agent_facts::execution::ApprovalPolicy::OnRequest,
             boundary_revision: 0,
             cwd: temp.path().to_string_lossy().into_owned(),
+            workspace_binding: None,
             workspace_identity: None,
             model: None,
             editing_tools: None,

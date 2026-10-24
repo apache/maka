@@ -71,7 +71,7 @@ pub enum Updated {
 
 pub(crate) async fn read(
     store: &maka_config::ConfigurationStore,
-    log: &maka_event_log::EventLog,
+    log: &maka_event_log::RootStore,
     input: Value,
 ) -> Result<Value, String> {
     let _: Read = serde_json::from_value(input).map_err(|_| "settings_input_invalid")?;

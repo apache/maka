@@ -82,8 +82,9 @@ fn op_maka_store(
 #[serde]
 fn op_maka_load(state: &mut OpState, #[string] key: String) -> serde_json::Value {
     match state.borrow::<CellContext>().load(&key) {
-        Some(value) => serde_json::json!({"found":true,"value":value}),
-        None => serde_json::json!({"found":false}),
+        Ok(Some(value)) => serde_json::json!({"found":true,"value":value}),
+        Ok(None) => serde_json::json!({"found":false}),
+        Err(error) => serde_json::json!({"error":error}),
     }
 }
 

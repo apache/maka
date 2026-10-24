@@ -598,7 +598,7 @@ async fn executor_service_selects_the_exact_authorized_import_member() {
         f.app.adopt_committed(source).await.unwrap();
         f.app.ready().await.unwrap();
         let session = f.create("Selected member").await;
-        let mut changes = f.store.subscribe_commits();
+        let mut changes = f.session(&session).await.subscribe_commits().unwrap();
         let mut execution = input_for(&session, "second binding");
         execution["executor"]["executor"] = json!(executor_name);
         let accepted = f
@@ -686,9 +686,12 @@ async fn executor_service_javascript_uses_original_engine_and_read_only_restart(
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].reference.namespace, id(21));
         assert_eq!(records[0].reference.method, "execute");
-        let configuration = fixture
-            .store
-            .invocation_configuration(&Invocation {
+        let configuration = fixture.session(&(Invocation {
+                session_id: session.clone(),
+                turn_id: observed["execution"]["turnId"].as_str().unwrap().into(),
+                run_id: observed["execution"]["runId"].as_str().unwrap().into(),
+                invocation_id: accepted["invocationId"].as_str().unwrap().into(),
+            }).session_id).await.invocation_configuration(&Invocation {
                 session_id: session.clone(),
                 turn_id: observed["execution"]["turnId"].as_str().unwrap().into(),
                 run_id: observed["execution"]["runId"].as_str().unwrap().into(),
@@ -698,10 +701,10 @@ async fn executor_service_javascript_uses_original_engine_and_read_only_restart(
             .unwrap()
             .unwrap();
         assert!(configuration.model.is_none());
-        let source = fixture.store.run_source(
+        let source = fixture.session(&session).await.run_source(
             &session, observed["execution"]["runId"].as_str().unwrap(), None,
         ).await.unwrap().unwrap();
-        let mut prefix = fixture.store.session_events(
+        let mut prefix = fixture.session(&session).await.session_events(
             &session, 0, source.last.sequence, 512, 65536,
         ).await.unwrap();
         assert!(prefix.next_after.is_none());
@@ -807,7 +810,7 @@ async fn executor_service_unknown_is_not_resent_or_resumed_as_a_model() {
         assert_eq!(work(&fixture,&session,&accepted).await,observed);
         fixture.drained().await;assert_eq!(replacement.calls.load(Ordering::SeqCst),0);
         let originals=fixture.store.application_intents(fixture.app.source().unwrap().deployment,id(1),0,128).await.unwrap();assert_eq!(originals.len(),1);
-        let receipt=fixture.store.operation_observation(&originals[0].reference).await.unwrap().unwrap();assert!(matches!(receipt.outcome,OperationOutcome::Unknown{..}));
+        let receipt=fixture.store.operation(&originals[0].reference).unwrap().operation_observation().await.unwrap().unwrap();assert!(matches!(receipt.outcome,OperationOutcome::Unknown{..}));
         fixture.app.shutdown().await.unwrap();fixture.config.shutdown().await.unwrap();
     }).await.unwrap();
 }
@@ -893,7 +896,7 @@ async fn executor_service_progress_is_canonical_before_original_backend_finishes
         let probe = Probe::new(Behavior::Streaming);
         activate(&mut fixture, true, Some(probe.clone()), true).await;
         let session = fixture.create("Live output").await;
-        let mut commits = fixture.store.subscribe_commits();
+        let mut commits = fixture.session(&session).await.subscribe_commits().unwrap();
         let accepted = fixture
             .mutation(
                 2,
@@ -909,13 +912,15 @@ async fn executor_service_progress_is_canonical_before_original_backend_finishes
         loop {
             commits.borrow_and_update();
             let source = fixture
-                .store
+                .session(&session)
+                .await
                 .run_source(&session, run, None)
                 .await
                 .unwrap()
                 .unwrap();
             let mut prefix = fixture
-                .store
+                .session(&session)
+                .await
                 .session_events(&session, 0, source.last.sequence, 512, 65536)
                 .await
                 .unwrap();
@@ -1000,7 +1005,9 @@ async fn executor_service_progress_is_canonical_before_original_backend_finishes
         assert_eq!(
             fixture
                 .store
-                .operation_observation(&records[0].reference)
+                .operation(&records[0].reference)
+                .unwrap()
+                .operation_observation()
                 .await
                 .unwrap()
                 .unwrap()
@@ -1042,7 +1049,8 @@ async fn executor_service_invalid_progress_stops_original_request_without_false_
         let observed = work(&fixture, &session, &accepted).await;
         assert_eq!(observed["execution"]["state"], "failed");
         let source = fixture
-            .store
+            .session(&session)
+            .await
             .run_source(
                 &session,
                 observed["execution"]["runId"].as_str().unwrap(),
@@ -1052,7 +1060,8 @@ async fn executor_service_invalid_progress_stops_original_request_without_false_
             .unwrap()
             .unwrap();
         let mut prefix = fixture
-            .store
+            .session(&session)
+            .await
             .session_events(&session, 0, source.last.sequence, 512, 65536)
             .await
             .unwrap();
@@ -1168,17 +1177,21 @@ async fn executor_attachments_use_only_owned_immutable_uploads_and_original_rece
         let operation = Uuid::new_v4();
         let started = std::time::Instant::now();
         let (started_cpu, _) = usage();
+
         let accepted = f
             .mutation(2, "execute", input.clone(), operation)
             .await
             .unwrap();
         assert_eq!(accepted["kind"], "started");
+
         // Observing backend entry includes admission and the complete production
         // capture; it is not an exact isolated SQLite/encoding measurement.
         probe.entered.acquire().await.unwrap().forget();
+
         let entered_ms = started.elapsed().as_secs_f64() * 1000.0;
         let (entered_cpu, _) = usage();
         f.drained().await;
+
         let observed = work(&f, &session, &accepted).await;
         assert_eq!(observed["execution"]["state"], "completed", "{observed}");
         let completed_ms = started.elapsed().as_secs_f64() * 1000.0;

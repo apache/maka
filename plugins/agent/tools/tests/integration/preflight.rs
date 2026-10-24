@@ -185,7 +185,7 @@ async fn provider_preflight_rejects_before_t1_and_exclusivity_follows_call_order
             catalog(effect.clone()),
             mode,
             cells.clone(),
-            Default::default(),
+            maka_tools::availability::LoadedTools::temporary().unwrap(),
         );
         let request = run
             .capture(".", tokio_util::sync::CancellationToken::new())
@@ -312,7 +312,7 @@ async fn nested_preflight_is_effect_free_and_diagnostics_are_successful_parent_v
             catalog(effect.clone()),
             ToolMode::CodeMode,
             cells.clone(),
-            Default::default(),
+            maka_tools::availability::LoadedTools::temporary().unwrap(),
         );
         let value = run
             .capture(".", tokio_util::sync::CancellationToken::new())

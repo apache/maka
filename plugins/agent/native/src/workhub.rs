@@ -70,10 +70,32 @@ pub fn provide(
     registry: &mut NativeRegistry,
     catalog: Arc<maka_providers::catalog::Catalog>,
 ) -> Result<(), String> {
+    provide_inner(
+        registry,
+        catalog,
+        #[cfg(test)]
+        None,
+    )
+}
+#[cfg(test)]
+pub(crate) fn provide_captured(
+    registry: &mut NativeRegistry,
+    catalog: Arc<maka_providers::catalog::Catalog>,
+    capture: Arc<dyn Fn(Arc<Owner>) + Send + Sync>,
+) -> Result<(), String> {
+    provide_inner(registry, catalog, Some(capture))
+}
+fn provide_inner(
+    registry: &mut NativeRegistry,
+    catalog: Arc<maka_providers::catalog::Catalog>,
+    #[cfg(test)] capture: Option<Arc<dyn Fn(Arc<Owner>) + Send + Sync>>,
+) -> Result<(), String> {
     registry.insert(
         maka_agent_api::workhub::IMPLEMENTATION.into(),
         Arc::new(move |context, settings| {
             let catalog = catalog.clone();
+            #[cfg(test)]
+            let capture = capture.clone();
             Box::pin(async move {
                 let prepared = tasks::prepare(&context, settings);
                 let (settings, tasks, additional, link) = match prepared {
@@ -97,6 +119,10 @@ pub fn provide(
                 .await
                 {
                     Ok(agent) => {
+                        #[cfg(test)]
+                        if let Some(capture) = capture {
+                            capture(agent.clone());
+                        }
                         let owner = Arc::new(Hub {
                             key: format!("{}coordinator", agent.prefix),
                             agent: Agent(agent),
@@ -173,12 +199,17 @@ impl Hub {
         let owner = &self.agent.0;
         let session = owner
             .store
-            .get_session(&owner.operation_id(&intent.operation))
+            .get_session::<maka_agent_api::session::StoredSessionConfiguration>(
+                &owner.operation_id(&intent.operation),
+            )
             .await
             .map_err(|_| "workhub_store_unavailable")?;
         Ok(match session {
             Some(session) => Coordinator::Ready {
-                session: Box::new(crate::service::summary(owner, session)),
+                session: Box::new(crate::service::summary(
+                    owner,
+                    crate::owner::resolve_session(session)?,
+                )),
             },
             None => Coordinator::Pending {
                 workspace: intent.workspace.clone(),
@@ -333,7 +364,12 @@ impl Handler for Hub {
                         let input: contract::ControlRead =
                             serde_json::from_value(input).map_err(|_| "workhub_input_invalid")?;
                         return hub
-                            .control(&input.control_id, false, scope.cancellation.clone())
+                            .control(
+                                &input.control_id,
+                                false,
+                                scope.execution().cloned(),
+                                scope.cancellation.clone(),
+                            )
                             .await;
                     }
                     if method == "tasks" {

@@ -32,8 +32,8 @@ fn snapshot(db: &Connection) -> Vec<Vec<String>> {
         .collect::<Result<Vec<String>, _>>().unwrap()).collect()
 }
 
-fn indexes(db: &Connection) -> std::collections::BTreeSet<String> {
-    db.prepare("SELECT name FROM sqlite_schema WHERE type='index'")
+fn material_indexes(db: &Connection) -> std::collections::BTreeSet<String> {
+    db.prepare("SELECT name FROM sqlite_schema WHERE type='index' AND tbl_name IN ('event_log','session_history_members','session_revision_sources')")
         .unwrap()
         .query_map([], |row| row.get(0))
         .unwrap()
@@ -64,6 +64,45 @@ async fn collect(log: &EventLog) {
         }
     }
     panic!("material collection failed to converge");
+}
+
+/// Literal schema-38 fixture state. Current retirement/material APIs own newer
+/// derived tables and must only be exercised after the migration below.
+async fn seed_collected_v38(log: &EventLog) {
+    use sqlx::Connection as _;
+    log.connection
+        .run(|connection| Box::pin(async move {
+            let mut tx=connection.begin().await?;
+            let records:Vec<(String,String)>=sqlx::query_as("SELECT event_id,event_json FROM event_log WHERE json_extract(event_json,'$.invocation.session_id')='collected' ORDER BY sequence")
+                .fetch_all(&mut *tx).await?;
+            assert_eq!(records.len(),2);
+            for (id,body) in records {
+                let original:Value=serde_json::from_str(&body)?;
+                let fact=match original["fact"]["kind"].as_str().unwrap() {
+                    "invocation_opened"=>json!({"configuration":null}),
+                    "invocation_ended"=>json!({"outcome":{"kind":"completed"}}),
+                    other=>panic!("unexpected schema-38 collected fixture: {other}"),
+                };
+                let retained=json!({"id":original["id"],"invocation":original["invocation"],"recorded_at":original["recorded_at"],"fact":fact});
+                sqlx::query("UPDATE event_log SET retained_json=?,body_digest=?,event_json=NULL WHERE event_id=?")
+                    .bind(serde_json::to_string(&retained)?).bind(content_digest(body.as_bytes())).bind(id).execute(&mut *tx).await?;
+            }
+            for statement in [
+                "DELETE FROM transcript_cache.rows WHERE session_id='collected'",
+                "DELETE FROM transcript_cache.text WHERE session_id='collected'",
+                "DELETE FROM transcript_directory WHERE session_id='collected'",
+                "DELETE FROM transcript_failures WHERE session_id='collected'",
+                "DELETE FROM catalog_messages WHERE session_id='collected'",
+                "DELETE FROM session_read_state WHERE session_id='collected'",
+                "DELETE FROM message_queue_state WHERE session_id='collected'",
+                "DELETE FROM session_control WHERE id='collected'",
+            ] { sqlx::query(statement).execute(&mut *tx).await?; }
+            sqlx::query("INSERT INTO session_retirements(session_id,remove_session,completed) VALUES('collected',1,1)")
+                .execute(&mut *tx).await?;
+            tx.commit().await?;
+            Ok(())
+        }))
+        .await.unwrap();
 }
 
 #[tokio::test]
@@ -97,23 +136,19 @@ async fn migration_39_preserves_live_collected_and_copied_evidence_and_original_
             outcome: InvocationOutcome::Completed,
         },
     ] {
-        log.append(&EventWrite::plain(RuntimeEvent::new(original.clone(), fact)).unwrap())
-            .await
-            .unwrap();
+        append_historical(
+            &log,
+            &EventWrite::plain(RuntimeEvent::new(original.clone(), fact)).unwrap(),
+        )
+        .await;
     }
-    retire(&log, "collected").await;
-    collect(&log).await;
+    seed_collected_v38(&log).await;
     let scoped = |id: &str| LogScope::Session { id: id.into() };
-    let native = log
-        .scoped_prefix(scoped("original"), 64, 1_000_000)
-        .await
-        .unwrap()
-        .digest;
-    let inherited = log
-        .scoped_prefix(scoped("copied"), 64, 1_000_000)
-        .await
-        .unwrap()
-        .digest;
+    // Prefix digests use the new source representation after migration. Original
+    // rows and membership are compared byte-for-byte below; repeat opens must
+    // then preserve the new native and inherited source identities.
+    let mut native = None;
+    let mut inherited = None;
     assert_eq!(log.navigation_fence("original").await.unwrap(), Some(4));
     assert_eq!(log.navigation_fence("copied").await.unwrap(), Some(4));
     let versions = log
@@ -125,8 +160,10 @@ async fn migration_39_preserves_live_collected_and_copied_evidence_and_original_
     log.close().await.unwrap();
     let db = Connection::open(&path).unwrap();
     let before = snapshot(&db);
-    let mut expected_indexes = indexes(&db);
+    let mut expected_indexes = material_indexes(&db);
     assert!(expected_indexes.remove("session_event_sequence"));
+    expected_indexes.insert("context_run_opening".into());
+    expected_indexes.insert("auxiliary_usage_meter_observation".into());
     assert_eq!(
         db.query_row("SELECT max(version) FROM _sqlx_migrations", [], |r| r
             .get::<_, i64>(0))
@@ -145,19 +182,20 @@ async fn migration_39_preserves_live_collected_and_copied_evidence_and_original_
     drop(db);
     for _ in 0..2 {
         let log = EventLog::open(&path).await.unwrap();
+        let actual_native = log
+            .scoped_prefix(scoped("original"), 64, 1_000_000)
+            .await
+            .unwrap()
+            .digest;
+        let actual_inherited = log
+            .scoped_prefix(scoped("copied"), 64, 1_000_000)
+            .await
+            .unwrap()
+            .digest;
+        assert_eq!(&actual_native, native.get_or_insert(actual_native.clone()));
         assert_eq!(
-            log.scoped_prefix(scoped("original"), 64, 1_000_000)
-                .await
-                .unwrap()
-                .digest,
-            native
-        );
-        assert_eq!(
-            log.scoped_prefix(scoped("copied"), 64, 1_000_000)
-                .await
-                .unwrap()
-                .digest,
-            inherited
+            &actual_inherited,
+            inherited.get_or_insert(actual_inherited.clone())
         );
         let actual = log
             .observation_versions(&["original".into(), "copied".into(), "missing".into()])
@@ -188,12 +226,12 @@ async fn migration_39_preserves_live_collected_and_copied_evidence_and_original_
         );
         let db = Connection::open(&path).unwrap();
         assert_eq!(snapshot(&db), before);
-        assert_eq!(indexes(&db), expected_indexes);
+        assert_eq!(material_indexes(&db), expected_indexes);
         assert_eq!(
             db.query_row("SELECT max(version) FROM _sqlx_migrations", [], |r| r
                 .get::<_, i64>(0))
                 .unwrap(),
-            39
+            current_version()
         );
         drop(db);
         log.close().await.unwrap();
@@ -209,7 +247,7 @@ async fn migration_39_preserves_live_collected_and_copied_evidence_and_original_
             .await
             .unwrap()
             .digest,
-        inherited
+        inherited.unwrap()
     );
     retire(&log, "copied").await;
     collect(&log).await;

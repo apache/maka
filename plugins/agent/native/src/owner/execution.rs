@@ -66,6 +66,9 @@ impl Owner {
         };
         let observed = self
             .store
+            .session(&input.session_id)
+            .await
+            .map_err(|error| error.to_string())?
             .work_observation(
                 &input.session_id,
                 origin,
@@ -113,6 +116,9 @@ impl Owner {
         self.session(&input.session_id).await?;
         let boundary = self
             .store
+            .session(&input.session_id)
+            .await
+            .map_err(|error| error.to_string())?
             .invocation_boundary(&input.session_id, &input.invocation_id)
             .await
             .map_err(|_| "agent_execution_unavailable")?;
@@ -148,6 +154,9 @@ impl Owner {
         // state. The canonical opening is the receipt; there is no resume ledger.
         if let Some((accepted, source, recorded_fingerprint)) = self
             .store
+            .session(&invocation.session_id)
+            .await
+            .map_err(|error| error.to_string())?
             .continuation_receipt(&invocation.invocation_id)
             .await
             .map_err(|_| "agent_execution_unavailable")?
@@ -162,6 +171,9 @@ impl Owner {
             }
             let boundary = self
                 .store
+                .session(&input.session_id)
+                .await
+                .map_err(|error| error.to_string())?
                 .invocation_boundary(&input.session_id, &invocation.invocation_id)
                 .await
                 .map_err(|_| "agent_execution_unavailable")?
@@ -179,6 +191,9 @@ impl Owner {
         if runs.controls.contains_key(&input.session_id)
             || !self
                 .store
+                .session(&input.session_id)
+                .await
+                .map_err(|error| error.to_string())?
                 .message_queue(&input.session_id)
                 .await
                 .map_err(|_| "agent_queue_unavailable")?
@@ -189,6 +204,9 @@ impl Owner {
         }
         let Some((boundary, high_water)) = self
             .store
+            .session(&input.session_id)
+            .await
+            .map_err(|error| error.to_string())?
             .invocation_boundary(&input.session_id, &input.source_invocation_id)
             .await
             .map_err(|_| "agent_execution_unavailable")?
@@ -209,6 +227,9 @@ impl Owner {
         }
         let prefix = match self
             .store
+            .session(&input.session_id)
+            .await
+            .map_err(|error| error.to_string())?
             .run_source(&input.session_id, &boundary.invocation.run_id, None)
             .await
         {
@@ -225,6 +246,9 @@ impl Owner {
         let source_boundary = prefix.boundary;
         if self
             .store
+            .session(&source_boundary.invocation.session_id)
+            .await
+            .map_err(|error| error.to_string())?
             .continuation_for_source(&source_boundary)
             .await
             .map_err(|_| "agent_execution_unavailable")?
@@ -234,6 +258,9 @@ impl Owner {
         }
         let Some(mut configuration) = self
             .store
+            .session(&boundary.invocation.session_id)
+            .await
+            .map_err(|error| error.to_string())?
             .invocation_configuration(&boundary.invocation)
             .await
             .map_err(|_| "agent_execution_unavailable")?
@@ -248,6 +275,8 @@ impl Owner {
         let workspace = &session.configuration.workspace;
         if configuration.cwd != workspace.path
             || configuration.workspace_identity.as_ref() != Some(&workspace.identity)
+            || configuration.workspace_binding.map(|binding| binding.id)
+                != Some(session.configuration.binding.id)
             || workspace::validate(&self.workspace_roots, workspace, &self.managed_worktrees)
                 .await
                 .is_err()
@@ -292,6 +321,9 @@ impl Owner {
         }
         if self
             .store
+            .session(&source_boundary.invocation.session_id)
+            .await
+            .map_err(|error| error.to_string())?
             .continuation_for_source(&source_boundary)
             .await
             .map_err(|_| "agent_execution_unavailable")?
@@ -322,11 +354,26 @@ impl Owner {
             model: Some(source.accepted.clone()),
             executor: None,
             workspace: workspace.clone(),
+            binding: session.configuration.binding,
             fingerprint: fingerprint.clone(),
             tools: self.tool_basis.clone(),
         };
         configuration.model = Some(source.accepted.binding.clone());
         configuration.thinking_level = source.accepted.thinking_level;
+        // The historical prompt is replayed, but this continuation is a new
+        // admission under the current Session permission boundary.
+        configuration.boundary_revision = session.configuration.boundary_revision;
+        configuration.workspace_binding = Some(session.configuration.binding);
+        configuration.sandbox_mode = match session.configuration.permissions.access {
+            WorkspaceAccess::ReadOnly => SandboxMode::ReadOnly,
+            WorkspaceAccess::WorkspaceWrite => SandboxMode::WorkspaceWrite,
+            WorkspaceAccess::DangerFullAccess => SandboxMode::DangerFullAccess,
+        };
+        configuration.approval_policy = if session.configuration.permissions.request_permissions {
+            ApprovalPolicy::OnRequest
+        } else {
+            ApprovalPolicy::Never
+        };
         // Replay the original prepared prompt. Native service tools continue to
         // resolve the live Session permission boundary through their actual owner.
         let tools = self.selected_tools(
@@ -351,7 +398,18 @@ impl Owner {
                 tools,
             },
         };
-        let prepared = match self.engine.prepare_continuation(run, &self.stop).await {
+        let prepared = match self
+            .engine
+            .prepare_continuation(
+                self.store
+                    .session(&run.invocation.session_id)
+                    .await
+                    .map_err(|error| error.to_string())?,
+                run,
+                &self.stop,
+            )
+            .await
+        {
             Ok(prepared) => prepared,
             Err(
                 RunError::InvalidInput(_)
@@ -409,6 +467,9 @@ impl Owner {
         self.workers.spawn(self.clone().drive(running));
         let boundary = self
             .store
+            .session(&invocation.session_id)
+            .await
+            .map_err(|error| error.to_string())?
             .invocation_boundary(&invocation.session_id, &invocation.invocation_id)
             .await
             .map_err(|_| "agent_execution_unavailable")?

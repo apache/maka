@@ -23,14 +23,32 @@ use maka_agent_facts::tools::ToolError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::VecDeque,
     sync::{Arc, Mutex},
 };
 use tokio::sync::Notify;
 
-/// Only JSON crosses cell boundaries; neither interpreter values nor authority are stored.
-#[derive(Clone, Default)]
-pub struct CellStore(Arc<Mutex<BTreeMap<String, Value>>>);
+/// Only JSON crosses cell boundaries; idle values and pending writes live on disk.
+#[derive(Clone)]
+pub struct CellStore(maka_session_state::Session);
+
+impl CellStore {
+    pub fn new(session: maka_session_state::Session) -> Self {
+        Self(session)
+    }
+
+    pub fn temporary() -> Result<Self, CellDiagnostic> {
+        Ok(Self(
+            maka_session_state::Backend::temporary()
+                .map_err(state_error)?
+                .session("scratch"),
+        ))
+    }
+}
+
+fn state_error(error: maka_session_state::Error) -> CellDiagnostic {
+    CellDiagnostic::new(crate::CellDiagnosticKind::ExecutionError, error.to_string())
+}
 
 /// Synchronous notification admission shared by all cells of a Run. Closing
 /// and enqueueing use the same lock; publication remains the Host's job.
@@ -80,7 +98,7 @@ pub struct ToolMetadata {
 pub struct CellContext(Arc<Inner>);
 
 struct Inner {
-    store: CellStore,
+    snapshot: maka_session_state::Snapshot,
     state: Mutex<State>,
     changed: Notify,
     notification_ready: Notify,
@@ -89,8 +107,6 @@ struct Inner {
 }
 
 struct State {
-    values: BTreeMap<String, Value>,
-    writes: BTreeMap<String, Value>,
     output: Vec<CellOutput>,
     notifications: VecDeque<String>,
     deduplicate_images: bool,
@@ -99,7 +115,7 @@ struct State {
 }
 
 impl CellContext {
-    pub fn new(store: CellStore, metadata: Vec<ToolMetadata>) -> Self {
+    pub fn new(store: CellStore, metadata: Vec<ToolMetadata>) -> Result<Self, CellDiagnostic> {
         Self::with_notification_gate(store, metadata, NotificationGate::default())
     }
 
@@ -107,13 +123,11 @@ impl CellContext {
         store: CellStore,
         metadata: Vec<ToolMetadata>,
         notification_gate: NotificationGate,
-    ) -> Self {
-        let values = store.0.lock().unwrap().clone();
-        Self(Arc::new(Inner {
-            store,
+    ) -> Result<Self, CellDiagnostic> {
+        let snapshot = store.0.snapshot().map_err(state_error)?;
+        Ok(Self(Arc::new(Inner {
+            snapshot,
             state: Mutex::new(State {
-                values,
-                writes: BTreeMap::new(),
                 output: Vec::new(),
                 notifications: VecDeque::new(),
                 deduplicate_images: false,
@@ -124,7 +138,7 @@ impl CellContext {
             notification_ready: Notify::new(),
             metadata,
             notification_gate,
-        }))
+        })))
     }
 
     pub fn metadata(&self) -> &[ToolMetadata] {
@@ -149,25 +163,32 @@ impl CellContext {
         self.yield_output();
     }
 
-    pub fn load(&self, key: &str) -> Option<Value> {
-        self.0.state.lock().unwrap().values.get(key).cloned()
+    pub fn load(&self, key: &str) -> Result<Option<Value>, CellDiagnostic> {
+        self.0
+            .snapshot
+            .load(key)
+            .map_err(|error| self.state_failure(error))
     }
 
     pub fn store(&self, key: String, value: Value) -> Result<(), CellDiagnostic> {
-        let mut state = self.0.state.lock().unwrap();
-        state.values.insert(key.clone(), value.clone());
-        state.writes.insert(key, value);
-        Ok(())
+        self.0
+            .snapshot
+            .store(&key, &value)
+            .map_err(|error| self.state_failure(error))
+    }
+
+    fn state_failure(&self, error: maka_session_state::Error) -> CellDiagnostic {
+        // Storage failure remains fatal even if user code catches the helper error.
+        self.fail(ToolError::Persistence(error.to_string()));
+        state_error(error)
     }
 
     /// Called only after the cell's effects and canonical completion settle.
     pub fn commit(&self) -> Result<(), CellDiagnostic> {
-        let state = self.0.state.lock().unwrap();
-        let mut store = self.0.store.0.lock().unwrap();
-        let mut next = store.clone();
-        next.extend(state.writes.clone());
-        *store = next;
-        Ok(())
+        self.0
+            .snapshot
+            .commit()
+            .map_err(|error| self.state_failure(error))
     }
 
     pub fn emit(&self, output: CellOutput) -> Result<(), CellDiagnostic> {
@@ -263,6 +284,21 @@ impl CellContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retired_storage_is_a_sticky_host_failure_not_a_missing_value() {
+        let backend = maka_session_state::Backend::temporary().unwrap();
+        let session = backend.session("retired");
+        let context = CellContext::new(CellStore::new(session.clone()), vec![]).unwrap();
+        context
+            .store("answer".into(), serde_json::json!(42))
+            .unwrap();
+        session.retire().unwrap();
+        assert!(context.load("answer").is_err());
+        assert!(matches!(context.failure(), Some(ToolError::Persistence(_))));
+        assert!(context.commit().is_err());
+    }
+
     #[test]
     fn observation_image_deduplication_precedes_budget_and_does_not_cross_batches() {
         let image = CellOutput::Media {
@@ -272,17 +308,21 @@ mod tests {
             },
             detail: None,
         };
-        let context = CellContext::new(CellStore::default(), vec![]).with_image_deduplication();
+        let context = CellContext::new(CellStore::temporary().unwrap(), vec![])
+            .unwrap()
+            .with_image_deduplication();
         context.emit(image.clone()).unwrap();
         context.emit(image.clone()).unwrap();
         assert_eq!(context.take_output().len(), 1);
         // A drained batch does not suppress a new observation.
         context.emit(image.clone()).unwrap();
         assert_eq!(context.take_output().len(), 1);
-        let next = CellContext::new(CellStore::default(), vec![]).with_image_deduplication();
+        let next = CellContext::new(CellStore::temporary().unwrap(), vec![])
+            .unwrap()
+            .with_image_deduplication();
         next.emit(image.clone()).unwrap();
         assert_eq!(next.take_output().len(), 1);
-        let ordinary = CellContext::new(CellStore::default(), vec![]);
+        let ordinary = CellContext::new(CellStore::temporary().unwrap(), vec![]).unwrap();
         ordinary.emit(image.clone()).unwrap();
         ordinary.emit(image).unwrap();
         assert_eq!(ordinary.take_output().len(), 2);
@@ -291,8 +331,12 @@ mod tests {
     #[test]
     fn notification_acceptance_and_empty_queue_closure_are_atomic() {
         let gate = NotificationGate::default();
-        let context =
-            CellContext::with_notification_gate(CellStore::default(), vec![], gate.clone());
+        let context = CellContext::with_notification_gate(
+            CellStore::temporary().unwrap(),
+            vec![],
+            gate.clone(),
+        )
+        .unwrap();
         context.notify("accepted".into()).unwrap();
         assert!(!gate.close_if_empty(std::iter::once(&context)));
         assert_eq!(context.take_notifications(), ["accepted".to_string()]);

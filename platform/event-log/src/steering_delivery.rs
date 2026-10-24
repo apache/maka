@@ -45,7 +45,7 @@ impl EventLog {
     async fn commit_steering(&self, invocation: &Invocation) -> Result<usize, StoreError> {
         self.validate_root()?;
         let invocation = invocation.clone();
-        let commits = self.commits.clone();
+        let commits = self.commits.session(&invocation.session_id);
         self.connection
             .run(move |connection| {
                 Box::pin(async move {
@@ -74,7 +74,7 @@ impl EventLog {
                     }
                     if let Some(high) = high {
                         tx.commit().await.map_err(StoreError::CommitUnknown)?;
-                        commits.send_replace(high);
+                        commits.publish(high);
                     } else {
                         tx.rollback().await?;
                     }

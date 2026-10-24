@@ -272,10 +272,10 @@ async fn new_capture_in_existing_session_uses_shared_chinese_language() {
         let outgoing = request(&mut socket).await;
         response(&mut socket).await;
         fixture.drained().await;
-        let boundary = fixture.store.invocation_boundary(
+        let boundary = fixture.session(&session).await.invocation_boundary(
             &session, sent["invocationId"].as_str().unwrap(),
         ).await.unwrap().unwrap().0;
-        let configuration = serde_json::to_value(fixture.store.invocation_configuration(
+        let configuration = serde_json::to_value(fixture.session(&(boundary.invocation).session_id).await.invocation_configuration(
             &boundary.invocation,
         ).await.unwrap().unwrap()).unwrap();
         fixture.app.shutdown().await.unwrap();
@@ -325,7 +325,7 @@ pub(super) async fn select_language(fixture: &Fixture, preference: &str) -> Valu
 
 fn stored_configuration(fixture: &Fixture, invocation: &str) -> Value {
     let connection = rusqlite::Connection::open_with_flags(
-        fixture.root.join(maka_event_log::root::ROOT_DATABASE),
+        fixture.runtime_database_containing("SELECT COUNT(*) FROM runtime_events WHERE invocation_id=?1 AND kind='invocation_opened'", invocation),
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
     )
     .unwrap();
@@ -435,7 +435,7 @@ async fn accepted_queue_and_explicit_resume_keep_english_across_language_changes
         let queue_input = json!({"sessionId":first,"message":queued_text,"model":fixture.selection().await});
         let operation = Uuid::new_v4();
         let queued = fixture.mutation(2, "send", queue_input.clone(), operation).await.unwrap();
-        let queue = fixture.store.message_queue(&first).await.unwrap();
+        let queue = fixture.session(&first).await.message_queue(&first).await.unwrap();
         let queued_basis = queue.entries.iter().find(|entry| entry.source.message.message_id == queued["messageId"])
             .unwrap().execution.basis.clone();
         let chinese = select_language(&fixture, "zh-CN").await;
@@ -449,7 +449,7 @@ async fn accepted_queue_and_explicit_resume_keep_english_across_language_changes
         let queued_request = request(&mut socket).await;
         response(&mut socket).await;
         fixture.drained().await;
-        let promoted = fixture.store.latest_turn_boundary(&first).await.unwrap().unwrap().invocation;
+        let promoted = fixture.session(&first).await.latest_turn_boundary(&first).await.unwrap().unwrap().invocation;
         let queued_configuration = stored_configuration(&fixture, &promoted.invocation_id);
         let fresh_configuration = stored_configuration(&fixture, fresh["invocationId"].as_str().unwrap());
         let queued_composition = session_context::composition(&fixture, &first).await;

@@ -31,18 +31,22 @@ async fn complete_workspace_membership_and_session_configuration_survive_reopen(
         .to_string_lossy()
         .into_owned();
     let log = EventLog::open(&path).await.unwrap();
+    let binding = log
+        .attach_workspace("workspace-test", &json!({"path":cwd}))
+        .await
+        .unwrap();
     for index in 0..257 {
         log.create_session(
             &format!("session-{index:03}"),
             &format!("create-{index}"),
-            &json!({"workspace":{"path":cwd},"name":format!("Session {index}")}),
+            &json!({"workspace":binding,"boundary_revision":0,"name":format!("Session {index}")}),
             1,
         )
         .await
         .unwrap();
     }
     let fence = log.workspace_fence(&cwd).await;
-    let large = json!({"workspace":{"path":cwd},"original":"original-config-🦀".repeat(6000)});
+    let large = json!({"workspace":binding,"boundary_revision":0,"original":"original-config-🦀".repeat(6000)});
     let created = log
         .create_session("large-session", "large-original", &large, 2)
         .await;

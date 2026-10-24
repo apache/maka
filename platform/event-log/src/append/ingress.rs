@@ -1,0 +1,87 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+//! RuntimeEvent ingress and both derived projections share the caller's
+//! transaction. No effect receipt can escape before that transaction commits.
+use crate::{StoreError, sequence_number};
+use maka_agent_facts::event::RuntimeEvent;
+use sqlx::SqliteConnection;
+
+pub(crate) enum Position {
+    /// Native admission retains its visible-message namespace guard.
+    Admitted,
+    /// Import validation owns identity admission and may preserve a sequence.
+    Imported(Option<u64>),
+}
+
+pub(crate) async fn insert(
+    connection: &mut SqliteConnection,
+    event: &RuntimeEvent,
+    json: String,
+    position: Position,
+) -> Result<u64, StoreError> {
+    let id = event.id.clone();
+    let invocation = event.invocation.invocation_id.clone();
+    let session = event.invocation.session_id.clone();
+    let kind = event.fact.kind();
+    let operation = event.fact.operation_id().map(str::to_owned);
+    crate::connection::worker_query(connection, move |worker| Box::pin(async move {
+        // SAFETY: this callback exclusively borrows the original SQLite worker;
+        // inspect its actual state, including externally established transactions.
+        if unsafe { rusqlite::ffi::sqlite3_get_autocommit(worker.as_raw_handle().as_ptr()) } != 0 {
+            return Err(StoreError::InvalidTransition(
+                "canonical ingress requires an existing transaction".into(),
+            ));
+        }
+        // Reuse SQLx's persistent statement cache. In particular, do not prepare
+        // the canonical INSERT and remaining obligation trigger once per event.
+        let inserted = match position {
+            Position::Admitted => sqlx::query(
+                "INSERT INTO event_log (event_id, invocation_id, kind, operation_id, event_json)
+                 SELECT ?1, ?2, ?3, ?4, ?5 WHERE NOT EXISTS (
+                     SELECT 1 FROM session_message_sources WHERE owner_session_id = ?6 AND message_id = ?1
+                     UNION ALL SELECT 1 FROM message_admissions WHERE session_id = ?6 AND message_id = ?1)",
+            ).bind(&id).bind(&invocation).bind(kind).bind(&operation).bind(&json).bind(&session)
+                .execute(&mut *worker).await?,
+            Position::Imported(sequence) => sqlx::query(
+                "INSERT INTO event_log(sequence,event_id,invocation_id,kind,operation_id,event_json) VALUES(?,?,?,?,?,?)",
+            ).bind(sequence.map(i64::try_from).transpose().map_err(|_| StoreError::PrefixTooLarge)?)
+                .bind(&id).bind(&invocation).bind(kind).bind(&operation).bind(&json)
+                .execute(&mut *worker).await?,
+        };
+        if inserted.rows_affected() != 1 {
+            return Err(StoreError::EventConflict);
+        }
+        // Capture before either projection issues INSERTs on this same handle.
+        let sequence = sequence_number(inserted.last_insert_rowid())?;
+        // Each projector owns a separate SQLite statement, so its writes no
+        // longer enlarge the canonical INSERT's statement rollback journal.
+        // Keep the existing UDF/SQLx error path, including extended SQLite codes
+        // shared by coalesced receipts. All statements use this original worker.
+        sqlx::query("SELECT context_source_record(?,?,?,?,?)")
+            .bind(sequence as i64).bind(&session).bind(&invocation).bind(&json).bind(kind)
+            .execute(&mut *worker).await?;
+        sqlx::query("SELECT context_semantic_record(?,?)")
+            .bind(sequence as i64).bind(&json).execute(&mut *worker).await?;
+        Ok(sequence)
+    })).await
+}
+
+#[cfg(test)]
+mod tests;

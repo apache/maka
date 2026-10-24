@@ -55,13 +55,13 @@ impl EventLog {
         }
         let package = namespace.package().to_owned();
         let scope = String::from(namespace.scope().clone());
-        let commits = self.commits.clone();
+        let commits = self.commits.session(&request.invocation.session_id);
         self.connection
             .run(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
                     if let Some(receipt) =
-                        read(&mut tx, &package, &scope, &request.operation_id).await?
+                        read(&mut tx, &package, &scope, &request.invocation.session_id, &request.operation_id).await?
                     {
                         if receipt.request_digest != digest {
                             return Err(StoreError::EventConflict);
@@ -69,7 +69,7 @@ impl EventLog {
                         return Ok(receipt);
                     }
                     let receipt = MessageReceipt {
-                        invocation: request.invocation,
+                        invocation: request.invocation.clone(),
                         message_id: pending.source.message.message_id.clone(),
                         request_digest: digest,
                     };
@@ -79,15 +79,16 @@ impl EventLog {
                     {
                         return Err(StoreError::EventConflict);
                     }
-                    sqlx::query("INSERT INTO plugin_message_receipts VALUES (?, ?, ?, ?)")
+                    sqlx::query("INSERT INTO plugin_message_receipts (package_id, scope_id, target_session_id, operation_id, receipt_json) VALUES (?, ?, ?, ?, ?)")
                         .bind(package)
                         .bind(scope)
+                        .bind(&request.invocation.session_id)
                         .bind(request.operation_id)
                         .bind(serde_json::to_string(&receipt)?)
                         .execute(&mut *tx)
                         .await?;
                     tx.commit().await.map_err(StoreError::CommitUnknown)?;
-                    commits.send_modify(|_| {});
+                    commits.metadata();
                     Ok(receipt)
                 })
             })
@@ -102,7 +103,7 @@ impl EventLog {
         for id in [&session, &message] {
             crate::sessions::validate_id(id)?;
         }
-        let commits = self.commits.clone();
+        let commits = self.commits.session(&session);
         self.connection
             .run(move |connection| {
                 Box::pin(async move {
@@ -129,7 +130,7 @@ impl EventLog {
                         crate::message_queue::bump(&mut tx, &session).await?;
                     }
                     tx.commit().await.map_err(StoreError::CommitUnknown)?;
-                    commits.send_modify(|_| {});
+                    commits.metadata();
                     Ok(())
                 })
             })
@@ -139,23 +140,28 @@ impl EventLog {
     pub async fn plugin_message_receipt(
         &self,
         namespace: &Namespace,
-        operation: &str,
+        operation: &maka_agent_ports::execution::SessionOperation,
     ) -> Result<Option<MessageReceipt>, StoreError> {
         self.validate_root()?;
-        if operation.is_empty()
-            || operation.len() > 256
-            || operation
-                .chars()
-                .any(|c| c.is_control() || c.is_whitespace())
-        {
-            return Err(invalid("invalid operation identity"));
-        }
+        operation
+            .validate()
+            .map_err(|error| invalid(&error.to_string()))?;
+        crate::sessions::validate_id(&operation.session_id)?;
         let package = namespace.package().to_owned();
         let scope = String::from(namespace.scope().clone());
-        let operation = operation.to_owned();
+        let operation = operation.clone();
         self.connection
             .run(move |connection| {
-                Box::pin(async move { read(connection, &package, &scope, &operation).await })
+                Box::pin(async move {
+                    read(
+                        connection,
+                        &package,
+                        &scope,
+                        &operation.session_id,
+                        &operation.operation_id,
+                    )
+                    .await
+                })
             })
             .await
     }
@@ -164,14 +170,16 @@ async fn read(
     connection: &mut SqliteConnection,
     package: &str,
     scope: &str,
+    session: &str,
     operation: &str,
 ) -> Result<Option<MessageReceipt>, StoreError> {
     let encoded: Option<Option<String>> = sqlx::query_scalar(
         "SELECT CASE WHEN length(CAST(receipt_json AS BLOB)) <= 4096 THEN receipt_json END
-         FROM plugin_message_receipts WHERE package_id = ? AND scope_id = ? AND operation_id = ?",
+         FROM plugin_message_receipts WHERE package_id = ? AND scope_id = ? AND target_session_id = ? AND operation_id = ?",
     )
     .bind(package)
     .bind(scope)
+    .bind(session)
     .bind(operation)
     .fetch_optional(connection)
     .await?;
@@ -188,7 +196,9 @@ async fn read(
             ] {
                 crate::sessions::validate_id(id)?;
             }
-            if !maka_agent_facts::archive::valid_projection_digest(&receipt.request_digest) {
+            if receipt.invocation.session_id != session
+                || !maka_agent_facts::archive::valid_projection_digest(&receipt.request_digest)
+            {
                 return Err(invalid("invalid queued message receipt"));
             }
             Ok(receipt)

@@ -29,7 +29,14 @@ use maka_plugin_core::scope::Scope as StorageScope;
 
 async fn imported(f: &Fixture, title: &str, prefix: &str) -> String {
     let seed = f.create(title).await;
-    let configuration = f.owner.session(&seed).await.unwrap().configuration;
+    let configuration = f
+        .session(&seed)
+        .await
+        .get_session::<StoredSessionConfiguration>(&seed)
+        .await
+        .unwrap()
+        .unwrap()
+        .configuration;
     let session = format!("{prefix}{}", Uuid::new_v4().simple());
     let plugin = PluginSession {
         session_id: session.clone(),
@@ -178,11 +185,11 @@ async fn recall_native_model_tools_expand_exclude_active_turn_and_retain_materia
             history_input["position"] = json!({"kind":"after","cursor":page["after"]});
         }
         assert!(historical_tools.contains("historical attachment contents"),"{historical_tools}");
-        let copies = f.store.list_artifacts(&target,0,128).await.unwrap();
+        let copies = f.session(&target).await.list_artifacts(&target,0,128).await.unwrap();
         let copied = copies.records.iter().find(|record| record.name == "notes.txt").unwrap();
         assert_ne!(copied.id,artifact);
-        assert!(matches!(f.store.delete_user_artifact(&source,&artifact).await.unwrap(), maka_event_log::artifacts::ArtifactDeletion::Deleted));
-        assert_eq!(f.store.read_artifact_chunk(&target,&copied.id,0,1024).await.unwrap().unwrap().bytes,bytes);
+        assert!(matches!(f.session(&source).await.delete_user_artifact(&source,&artifact).await.unwrap(), maka_event_log::artifacts::ArtifactDeletion::Deleted));
+        assert_eq!(f.session(&target).await.read_artifact_chunk(&target,&copied.id,0,1024).await.unwrap().unwrap().bytes,bytes);
         f.app.shutdown().await.unwrap();
     }).await.unwrap();
 }

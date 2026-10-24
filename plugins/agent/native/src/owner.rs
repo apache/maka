@@ -65,7 +65,7 @@ use maka_agent_facts::input::MessageInput;
 use maka_agent_facts::language::{Language, LanguagePreference};
 use maka_agent_facts::message::*;
 use maka_config::ConfigurationStore;
-use maka_event_log::{EventLog, sessions::SessionRecord};
+use maka_event_log::{RootStore, sessions::SessionRecord};
 use maka_model::ModelExecutor;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -79,7 +79,15 @@ use tokio::sync::Mutex;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use uuid::Uuid;
 
-use maka_agent_api::session::SessionConfiguration;
+use maka_agent_api::session::{ResolvedConfiguration, StoredSessionConfiguration};
+
+pub(crate) fn resolve_session(
+    session: SessionRecord<StoredSessionConfiguration>,
+) -> Result<SessionRecord<ResolvedConfiguration>, String> {
+    maka_agent_authority::permissions::resolve_session(session)
+        .map_err(|_| "agent_workspace_binding_unavailable".into())
+}
+
 /// Frozen accepted message prerequisites, interpreted only by this Agent.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -101,9 +109,9 @@ struct MessageBasis {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     background: Option<ScheduledTarget>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    internal_tools: Vec<maka_agent_facts::tools::ToolDefinition>,
+    internal_tools: Arc<Vec<maka_agent_facts::tools::ToolDefinition>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    internal_bindings: BTreeMap<String, Option<String>>,
+    internal_bindings: Arc<BTreeMap<String, Option<String>>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     behavior: Option<SystemPrompt>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -111,8 +119,9 @@ struct MessageBasis {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     executor: Option<crate::executor::Accepted>,
     workspace: Workspace,
+    binding: maka_agent_facts::workspace::BindingStamp,
     fingerprint: String,
-    tools: Vec<crate::tools::SelectedTool>,
+    tools: Arc<Vec<crate::tools::SelectedTool>>,
     #[serde(default, skip_serializing_if = "Language::is_english")]
     language: Language,
 }
@@ -162,7 +171,7 @@ struct Runs {
 }
 pub(crate) struct Owner {
     graphs: Option<Arc<crate::workhub::tasks::graph::Graphs>>,
-    pub store: Arc<EventLog>,
+    pub store: Arc<RootStore>,
     pub recall: Arc<recall::Recall>,
     scheduler: Arc<scheduler::Scheduler>,
     todo: Arc<todo::Todo>,
@@ -170,6 +179,7 @@ pub(crate) struct Owner {
     plans: Arc<plan::Plans>,
     recap_storage: Arc<maka_host_runtime::storage::Storage>,
     auxiliary: auxiliary::Auxiliary,
+    titles: title::Registry,
     pub settings: Configuration,
     pub prefix: String,
     pub data_source: DataSource,
@@ -188,7 +198,7 @@ pub(crate) struct Owner {
     tools: maka_tools::ToolCatalog,
     mcp: crate::mcp::Servers,
     mcp_projects: Arc<crate::mcp::Projects>,
-    tool_basis: Vec<crate::tools::SelectedTool>,
+    tool_basis: Arc<Vec<crate::tools::SelectedTool>>,
     editing_tools: Vec<(String, maka_agent_facts::execution::EditingTools)>,
     skills: Option<skills::Library>,
     executors: crate::executor::Executors,
@@ -208,6 +218,18 @@ pub(crate) enum BuiltinBehavior {
 }
 
 impl Owner {
+    pub(crate) fn tool_store(
+        &self,
+        context: &maka_agent_facts::tools::ToolCallContext,
+    ) -> Result<maka_event_log::SessionStore, String> {
+        let custody = context
+            .execution
+            .as_deref()
+            .ok_or("agent_execution_custody_unavailable")?;
+        self.store
+            .session_for_execution(custody, &context.invocation)
+            .map_err(|error| error.to_string())
+    }
     pub(crate) fn resolve_language(&self, snapshot: &RuntimePolicySnapshot) -> Language {
         snapshot
             .policy
@@ -467,16 +489,16 @@ impl Owner {
             )),
         };
         let engine = Engine::with_pricing(
-            persistence.store().clone(),
             models,
             cells,
             Arc::new(crate::model::Prices(configuration.clone())),
-        );
+        )
+        .map_err(|error| error.to_string())?;
         let mcp_projects = Arc::new(crate::mcp::Projects::new(
             crate::mcp::Catalog {
                 tools: tools.clone(),
-                definitions: internal_tools.clone(),
-                bindings: internal_bindings.clone(),
+                definitions: Arc::new(internal_tools),
+                bindings: Arc::new(internal_bindings),
                 planning: planning_tools.clone(),
             },
             prefix.clone(),
@@ -515,11 +537,12 @@ impl Owner {
             tools,
             mcp,
             mcp_projects,
-            tool_basis,
+            tool_basis: Arc::new(tool_basis),
             editing_tools,
             skills,
             executors,
             runs: Arc::default(),
+            titles: title::Registry::default(),
             workers,
             producers: TaskTracker::new(),
             producer_gate: Arc::default(),
@@ -556,15 +579,66 @@ impl Owner {
             Err("agent_session_unavailable".into())
         }
     }
-    pub async fn session(&self, id: &str) -> Result<SessionRecord<SessionConfiguration>, String> {
+    pub(crate) async fn scoped_store(
+        &self,
+        scope: &maka_capabilities::call::Scope,
+        id: &str,
+    ) -> Result<maka_event_log::SessionStore, String> {
         if !self.owns(id) {
             return Err("agent_session_unavailable".into());
         }
-        self.store
-            .get_session(id)
+        if let (Some(invocation), Some(execution)) = (
+            scope
+                .identity
+                .agent()
+                .filter(|invocation| invocation.session_id == id),
+            scope.execution(),
+        ) {
+            self.store
+                .session_for_execution(execution.as_ref(), invocation)
+                .map_err(|error| match error {
+                    maka_event_log::StoreError::SessionNotFound => {
+                        "agent_session_unavailable".to_owned()
+                    }
+                    other => other.to_string(),
+                })
+        } else {
+            self.store.session(id).await.map_err(|error| match error {
+                maka_event_log::StoreError::SessionNotFound => {
+                    "agent_session_unavailable".to_owned()
+                }
+                other => other.to_string(),
+            })
+        }
+    }
+    pub(crate) async fn scoped_session(
+        &self,
+        scope: &maka_capabilities::call::Scope,
+        id: &str,
+    ) -> Result<SessionRecord<ResolvedConfiguration>, String> {
+        let session = self
+            .scoped_store(scope, id)
+            .await?
+            .get::<StoredSessionConfiguration>()
+            .await
+            .map_err(|error| match error {
+                maka_event_log::StoreError::Json(_) => "agent_store_unavailable".to_owned(),
+                other => other.to_string(),
+            })?
+            .ok_or("agent_session_unavailable")?;
+        resolve_session(session)
+    }
+    pub async fn session(&self, id: &str) -> Result<SessionRecord<ResolvedConfiguration>, String> {
+        if !self.owns(id) {
+            return Err("agent_session_unavailable".into());
+        }
+        let session = self
+            .store
+            .get_session::<StoredSessionConfiguration>(id)
             .await
             .map_err(|_| "agent_store_unavailable".to_owned())?
-            .ok_or("agent_session_unavailable".into())
+            .ok_or("agent_session_unavailable")?;
+        resolve_session(session)
     }
     pub async fn create(
         self: &Arc<Self>,
@@ -636,7 +710,7 @@ impl Owner {
                 }
                 let Some(session) = self
                     .store
-                    .get_session::<SessionConfiguration>(&session_id)
+                    .get_session::<StoredSessionConfiguration>(&session_id)
                     .await
                     .map_err(|_| "agent_store_unavailable")?
                 else {
@@ -644,6 +718,7 @@ impl Owner {
                         reason: Rejection::SessionUnavailable,
                     });
                 };
+                let session = resolve_session(session)?;
                 if session.archived
                     || !self
                         .project_accepts_session(&session.configuration.workspace)
@@ -692,20 +767,25 @@ impl Owner {
                 });
             }
         }
+        let binding = self
+            .store
+            .attach_workspace(&self.prefix, &selected)
+            .await
+            .map_err(|_| "agent_workspace_binding_unavailable")?;
         let id = self.operation_id(operation);
         let record = self
             .store
             .create_session(
                 &id,
                 &operation.fingerprint,
-                &SessionConfiguration {
+                &StoredSessionConfiguration {
                     backend: None,
                     collaboration_mode: CollaborationMode::Agent,
                     tools,
                     title: input.title,
                     title_is_manual: !input.automatic_title,
                     labels: input.labels,
-                    workspace: selected,
+                    workspace: binding,
                     permissions: self.settings.permissions.clone(),
                     boundary_revision: 0,
                 },
@@ -714,7 +794,16 @@ impl Owner {
             .await
             .map_err(|_| "agent_creation_failed")?;
         Ok(Created::Created {
-            session: Box::new(crate::service::summary(self, record)),
+            session: Box::new(crate::service::summary(
+                self,
+                resolve_session(
+                    record
+                        .get()
+                        .await
+                        .map_err(|_| "agent_creation_failed")?
+                        .ok_or("agent_creation_failed")?,
+                )?,
+            )),
         })
     }
     pub async fn mark_read(&self, input: MarkRead) -> Result<MarkReadResult, String> {
@@ -731,7 +820,7 @@ impl Owner {
         }
         let session = self
             .store
-            .get_session::<SessionConfiguration>(&input.session_id)
+            .get_session::<StoredSessionConfiguration>(&input.session_id)
             .await
             .map_err(|_| "agent_store_unavailable")?;
         if session.is_none_or(|session| session.archived) {
@@ -743,11 +832,14 @@ impl Owner {
         // inside its transaction. A stale reader cannot clear a newer message.
         let record = self
             .store
-            .set_session_read_marker::<SessionConfiguration>(&input.session_id, &input.message_id)
+            .set_session_read_marker::<StoredSessionConfiguration>(
+                &input.session_id,
+                &input.message_id,
+            )
             .await
             .map_err(|_| "agent_read_marker_failed")?;
         Ok(MarkReadResult::Observed {
-            session: Box::new(crate::service::summary(self, record)),
+            session: Box::new(crate::service::summary(self, resolve_session(record)?)),
         })
     }
     pub async fn metadata(&self, input: Metadata) -> Result<MetadataResult, String> {
@@ -767,7 +859,7 @@ impl Owner {
         }
         let Some(session) = self
             .store
-            .get_session::<SessionConfiguration>(&input.session_id)
+            .get_session::<StoredSessionConfiguration>(&input.session_id)
             .await
             .map_err(|_| "agent_store_unavailable")?
         else {
@@ -796,14 +888,14 @@ impl Owner {
                 });
             }
             if runs.controls.contains_key(&input.session_id)
-                || !self.store.message_queue(&input.session_id).await.map_err(|_| "agent_queue_unavailable")?.entries.is_empty()
-                || self.store.latest_turn_boundary(&input.session_id).await.map_err(|_| "agent_execution_unavailable")?
+                || !self.store.session(&input.session_id).await.map_err(|error| error.to_string())?.message_queue(&input.session_id).await.map_err(|_| "agent_queue_unavailable")?.entries.is_empty()
+                || self.store.session(&input.session_id).await.map_err(|error| error.to_string())?.latest_turn_boundary(&input.session_id).await.map_err(|_| "agent_execution_unavailable")?
                     .is_some_and(|boundary| matches!(boundary.state, maka_event_log::turns::InvocationState::Ended { outcome: maka_agent_facts::event::InvocationOutcome::HandoffPaused { .. }, .. })) {
                 return Ok(MetadataResult::Rejected { reason: Rejection::Busy });
             }
         }
         let permissions = input.permissions.is_some() || mode_changed;
-        let update = move |configuration: &mut SessionConfiguration| {
+        let update = move |configuration: &mut StoredSessionConfiguration| {
             // Policy changes do not turn an automatic title into a manual title.
             if (input.collaboration_mode.is_none() && input.permissions.is_none())
                 || configuration.title != input.title
@@ -852,7 +944,7 @@ impl Owner {
         .map_err(|_| "agent_metadata_failed")?;
         match changed {
             SessionMutation::Committed(record) => Ok(MetadataResult::Committed {
-                session: Box::new(crate::service::summary(self, record)),
+                session: Box::new(crate::service::summary(self, resolve_session(record)?)),
             }),
             SessionMutation::RevisionConflict { expected, actual } => {
                 Ok(MetadataResult::RevisionConflict { expected, actual })
@@ -1076,12 +1168,12 @@ impl Owner {
             allowed_tools: session.configuration.tools.clone(),
             background: None,
             internal_tools: if external {
-                vec![]
+                Arc::default()
             } else {
                 selected_catalog.definitions.clone()
             },
             internal_bindings: if external {
-                BTreeMap::new()
+                Arc::default()
             } else {
                 selected_catalog.bindings.clone()
             },
@@ -1091,9 +1183,10 @@ impl Owner {
             model,
             executor,
             workspace: session.configuration.workspace.clone(),
+            binding: session.configuration.binding,
             fingerprint: operation.fingerprint.clone(),
             tools: if external {
-                vec![]
+                Arc::default()
             } else {
                 self.tool_basis.clone()
             },
@@ -1179,11 +1272,17 @@ impl Owner {
             loop {
                 let revision = self
                     .store
+                    .session(&id)
+                    .await
+                    .map_err(|error| error.to_string())?
                     .message_queue_revision(&id)
                     .await
                     .map_err(|_| "agent_queue_unavailable")?;
                 match self
                     .store
+                    .session(&pending.invocation.session_id)
+                    .await
+                    .map_err(|error| error.to_string())?
                     .admit_queued_message(&self.revision.activation, revision, pending.clone())
                     .await
                 {
@@ -1203,6 +1302,9 @@ impl Owner {
             .input(invocation.clone(), backend, basis.clone(), delivered)
             .await?;
         self.store
+            .session(&pending.invocation.session_id)
+            .await
+            .map_err(|error| error.to_string())?
             .admit_message(pending)
             .await
             .map_err(|_| "agent_admission_failed")?;

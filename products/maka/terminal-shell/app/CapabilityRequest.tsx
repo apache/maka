@@ -28,9 +28,17 @@ type Request = Extract<InteractionRequest, { kind: 'client_capability' }>;
 // It never turns a generic capability request into a broad client grant.
 export function computerCapability(request: Request): boolean {
   const target = request.target;
+  const basis = request.basis;
+  const binding = basis?.binding;
+  if (!basis || !binding) return false;
   return (
-    Number.isSafeInteger(request.baseRevision) &&
-    request.baseRevision! >= 0 &&
+    Number.isSafeInteger(basis.boundaryRevision) &&
+    basis.boundaryRevision >= 0 &&
+    typeof binding.id === 'string' &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(binding.id) &&
+    binding.id !== '00000000-0000-0000-0000-000000000000' &&
+    Number.isSafeInteger(binding.permissionEpoch) &&
+    binding.permissionEpoch >= 0 &&
     target.providerId === 'maka_workspace_computer' &&
     target.contractId === 'maka_workspace_computer_v1' &&
     target.serverId === 'maka_workspace_computer' &&
@@ -62,7 +70,7 @@ export function CapabilityRequest(props: { request: Request; sessionId: string }
           <Text selectable style={{ ...codeTextStyle, color: C.secondary }}>
             {tr('{tool} · Permission boundary: {revision}', {
               tool: props.request.target.toolName,
-              revision: props.request.baseRevision ?? tr('unavailable'),
+              revision: props.request.basis?.boundaryRevision ?? tr('unavailable'),
             })}
           </Text>
           <If when={computerCapability(props.request)}>
@@ -105,7 +113,10 @@ export function CapabilityRequest(props: { request: Request; sessionId: string }
             [tr('Tool'), props.request.target.toolName],
             [tr('Capability'), props.request.target.capability],
             [tr('Scope'), JSON.stringify(props.request.target.scope)],
-            [tr('Permission boundary'), String(props.request.baseRevision ?? tr('unavailable'))],
+            [
+              tr('Permission boundary'),
+              String(props.request.basis?.boundaryRevision ?? tr('unavailable')),
+            ],
           ]}
         >
           {(detail) => (

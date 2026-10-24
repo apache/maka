@@ -50,51 +50,59 @@ pub async fn recover_invocations(log: &EventLog) -> Result<usize, RecoveryError>
         u64::try_from(now).map_err(|error| RecoveryError::Clock(error.to_string()))?,
     )
     .await?;
-    let openings = log.unfinished_invocations(10_000).await?;
-    for invocation in &openings {
-        let state = log
-            .invocation_recovery(invocation, 10_000, 8 * 1024 * 1024)
-            .await?;
-        let append = |fact| {
-            let event = RuntimeEvent::new(invocation.clone(), fact);
-            async move {
-                let write = maka_agent_facts::event::EventWrite::plain(event)?;
-                log.append(&write).await.map_err(RecoveryError::from)
-            }
-        };
-        for step_id in state.unfinished_model_steps {
-            append(Fact::ModelInterrupted {
-                model_failure: None,
-                step_id,
-                status: ModelInterruption::Failed,
-                diagnostic: Some("Host stopped before the model request settled.".into()),
-            })
-            .await?;
+    let mut after_sequence = 0;
+    let mut recovered = 0;
+    loop {
+        let page = log.unfinished_invocations(after_sequence, 256).await?;
+        if page.invocations.is_empty() {
+            return Ok(recovered);
         }
-        for call in state.undispatched_calls {
-            // A refusal closes the accepted call without claiming dispatch.
-            append(Fact::ToolRejected {
-                operation_id: call.operation_id,
-                call: call.identity,
-                name: call.name,
-                input: call.input,
-                reason: ToolRejection::Cancelled,
-            })
-            .await?;
-        }
-        append(Fact::InvocationEnded {
-            outcome: InvocationOutcome::Failed {
-                model_failure: None,
-                class: if state.uncertain_operations.is_empty() && !state.unfinished_executor {
-                    "host_interrupted"
-                } else {
-                    "outcome_unknown"
+        for invocation in &page.invocations {
+            let state = log
+                .invocation_recovery(invocation, 10_000, 8 * 1024 * 1024)
+                .await?;
+            let append = |fact| {
+                let event = RuntimeEvent::new(invocation.clone(), fact);
+                async move {
+                    let write = maka_agent_facts::event::EventWrite::plain(event)?;
+                    log.append(&write).await.map_err(RecoveryError::from)
                 }
-                .into(),
-                message: None,
-            },
-        })
-        .await?;
+            };
+            for step_id in state.unfinished_model_steps {
+                append(Fact::ModelInterrupted {
+                    model_failure: None,
+                    step_id,
+                    status: ModelInterruption::Failed,
+                    diagnostic: Some("Host stopped before the model request settled.".into()),
+                })
+                .await?;
+            }
+            for call in state.undispatched_calls {
+                // A refusal closes the accepted call without claiming dispatch.
+                append(Fact::ToolRejected {
+                    operation_id: call.operation_id,
+                    call: call.identity,
+                    name: call.name,
+                    input: call.input,
+                    reason: ToolRejection::Cancelled,
+                })
+                .await?;
+            }
+            append(Fact::InvocationEnded {
+                outcome: InvocationOutcome::Failed {
+                    model_failure: None,
+                    class: if state.uncertain_operations.is_empty() && !state.unfinished_executor {
+                        "host_interrupted"
+                    } else {
+                        "outcome_unknown"
+                    }
+                    .into(),
+                    message: None,
+                },
+            })
+            .await?;
+        }
+        recovered += page.invocations.len();
+        after_sequence = page.through_sequence;
     }
-    Ok(openings.len())
 }

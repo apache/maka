@@ -34,7 +34,7 @@ use tokio_util::sync::CancellationToken;
 #[derive(Default)]
 struct Transport {
     replies: Mutex<VecDeque<http::Response>>,
-    calls: Mutex<Vec<(call::Scope, http::Request)>>,
+    calls: Mutex<Vec<(call::Scope, http::BufferedRequest)>>,
     started: tokio::sync::Notify,
 }
 impl http::Client for Transport {
@@ -44,6 +44,23 @@ impl http::Client for Transport {
         request: http::Request,
     ) -> BoxFuture<'_, Result<http::Response, http::Error>> {
         Box::pin(async move {
+            let http::Request {
+                url,
+                method,
+                headers,
+                body,
+            } = request;
+            let mut upload = body.into_stream();
+            let mut body = Vec::new();
+            while let Some(chunk) = futures_util::StreamExt::next(&mut upload).await {
+                body.extend_from_slice(&chunk.unwrap());
+            }
+            let request = http::BufferedRequest {
+                url,
+                method,
+                headers,
+                body,
+            };
             self.calls.lock().unwrap().push((scope, request));
             self.started.notify_one();
             let reply = self.replies.lock().unwrap().pop_front();

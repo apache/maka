@@ -38,7 +38,9 @@ impl Recall {
             .ok_or_else(|| failed("RecallMaterial requires an Agent call"))?
             .session_id
             .clone();
-        self.session(&input.session_id).await.map_err(failed)?;
+        if !super::super::owns_session(&self.prefix, &input.session_id) {
+            return Err(failed("Recall Session unavailable"));
+        }
         let mut ticket = call.resources.reserve()?;
         ticket.start();
         let recall = self.clone();
@@ -47,9 +49,22 @@ impl Recall {
                 // The actual worker retains its call ticket until SQLite settles.
                 let result = async {
                     recall.check(&call).await?;
+                    let selected_target = recall
+                        .store
+                        .session_for_execution(
+                            call.execution()
+                                .ok_or_else(|| failed("Recall execution custody unavailable"))?
+                                .as_ref(),
+                            call.identity.agent().expect("validated Agent call"),
+                        )
+                        .map_err(failed)?;
                     let record = recall
                         .store
-                        .get_artifact(&input.session_id, &input.artifact_id)
+                        .execution_attachment(
+                            &selected_target,
+                            &input.session_id,
+                            &input.artifact_id,
+                        )
                         .await
                         .map_err(failed)?
                         .record
@@ -76,7 +91,8 @@ impl Recall {
                     .map_err(failed)?;
                     let copied = recall
                         .store
-                        .copy_plugin_attachment(
+                        .copy_plugin_attachment_to_execution(
+                            &selected_target,
                             &namespace,
                             maka_agent_ports::execution::CopyAttachment {
                                 attachment,
@@ -110,9 +126,9 @@ impl Recall {
                     .resolve()
                     .map_err(failed)?;
                     let output = maka_files_native::attachments::read(
-                        &recall.store,
+                        &recall.scoped_store(&call, &target).await?,
                         &target,
-                        id,
+                        &id,
                         &request,
                         record.kind == ArtifactKind::Image,
                         &call.cancellation,

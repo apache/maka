@@ -82,7 +82,7 @@ struct Owner {
     calls: Arc<calls::Calls>,
     processes: Arc<processes::Processes>,
     storage: Arc<storage::Storage>,
-    store: Arc<maka_event_log::EventLog>,
+    store: Arc<maka_event_log::RootStore>,
     namespace: String,
 }
 impl Owner {
@@ -180,7 +180,17 @@ impl Handler for Service {
                 .clone();
             let input: maka_agent_api::executor::Execute =
                 serde_json::from_value(input).map_err(|e| e.to_string())?;
-            let configuration = maka_agent_authority::permissions::live(&owner.store, &invocation)
+            let store = owner
+                .store
+                .session_for_execution(
+                    context
+                        .execution_custody()
+                        .ok_or("ACP requires execution custody")?
+                        .as_ref(),
+                    &invocation,
+                )
+                .map_err(|error| error.to_string())?;
+            let configuration = maka_agent_authority::permissions::live(&store, &invocation)
                 .await
                 .map_err(|e| e.to_string())?;
             if input.invocation != invocation || input.cwd != configuration.workspace.path {

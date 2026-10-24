@@ -190,16 +190,25 @@ fn invalid() -> StoreError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::EventLog;
     use serde_json::json;
+    use sqlx::Connection;
 
     #[tokio::test]
     async fn identity_queries_seek_scalar_candidates_instead_of_scanning_step_observations() {
-        let temp = tempfile::tempdir().unwrap();
-        let log = EventLog::open(&temp.path().join("model-identity.sqlite"))
-            .await
-            .unwrap();
-        log.connection.run(|db| Box::pin(async move {
+        // Isolate these SQL selection/plan fixtures from admitted-fact reducers:
+        // some rows intentionally omit fields or contain a numeric step ID.
+        // Use the production ledger DDL and lookup indexes without writer triggers.
+        let mut connection = SqliteConnection::connect("sqlite::memory:").await.unwrap();
+        sqlx::raw_sql(concat!(
+            include_str!("../../migrations/0001_runtime.sql"),
+            include_str!("../../migrations/0022_prune_lookup.sql"),
+            include_str!("../../migrations/0029_model_response_identity.sql"),
+        ))
+        .execute(&mut connection)
+        .await
+        .unwrap();
+        let result: Result<(), StoreError> = async {
+            let db = &mut connection;
             // This SQL-plan fixture deliberately writes only columns used by the
             // scalar queries; canonical admission behavior is covered by history.
             let mut sequence = 0i64;
@@ -239,7 +248,7 @@ mod tests {
             let absent: Option<(i64, String)> = sqlx::query_as(OBSERVED).bind("source").bind("invocation").bind("without-report").bind(sequence).fetch_optional(&mut *db).await?;
             assert_eq!(absent, None);
             Ok(())
-        })).await.unwrap();
-        log.close().await.unwrap();
+        }.await;
+        result.unwrap();
     }
 }

@@ -136,6 +136,12 @@ pub(super) fn model(stage: &'static str, error: &ModelError, connection_id: &str
         ModelError::Provider(error) => {
             tracing::warn!(stage, cause = "model_provider", connection_id, reason = ?error.reason(), "Model preparation failed")
         }
+        ModelError::CleanupUnconfirmed => tracing::warn!(
+            stage,
+            cause = "model_cleanup_unconfirmed",
+            connection_id,
+            "Model preparation failed"
+        ),
         ModelError::Adapter(_) => tracing::warn!(
             stage,
             cause = "model_adapter",
@@ -151,6 +157,7 @@ pub(super) fn network(stage: &'static str, error: &maka_network::Error, connecti
         maka_network::Error::MissingCredentials => "proxy_credentials_missing",
         maka_network::Error::InvalidUpgrade => "network_invalid_upgrade",
         maka_network::Error::InvalidHeaders => "network_invalid_headers",
+        maka_network::Error::RedirectLimit => "network_redirect_limit",
         maka_network::Error::Transport(_) => "network_transport",
     };
     tracing::warn!(stage, cause, connection_id, "Model preparation failed");

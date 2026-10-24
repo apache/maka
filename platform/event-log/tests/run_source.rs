@@ -210,28 +210,7 @@ async fn exact_run_cuts_bind_identity_and_bytes_without_admitting_unproven_repla
     );
     log.close().await.unwrap();
 
-    // Source authentication binds stored bytes, not reserialized semantic JSON.
-    {
-        let db = rusqlite::Connection::open(&path).unwrap();
-        db.execute(
-            "UPDATE event_log SET event_json = event_json || ' ' WHERE event_id = ?",
-            [&first.id],
-        )
-        .unwrap();
-    }
     let log = EventLog::open(&path).await.unwrap();
-    let changed = log
-        .run_source("session", "source", Some(1))
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(changed.opening.event, first);
-    assert_eq!(changed.boundary.high_water, before.boundary.high_water);
-    assert_ne!(changed.boundary.digest, before.boundary.digest);
-    assert_eq!(
-        changed.boundary.digest,
-        reference_digest(&first.invocation, &[(1, &format!("{first_json} "))])
-    );
 
     // Synthetic/legacy duplicate Run identities must be unreadable, not latest-wins.
     let successor = log
@@ -268,17 +247,28 @@ async fn exact_run_cuts_bind_identity_and_bytes_without_admitting_unproven_repla
 // Independent reference framing: source count is local; positions and JSON bytes are canonical.
 fn reference_digest(invocation: &Invocation, rows: &[(u64, &str)]) -> String {
     use sha2::{Digest, Sha256};
+    fn framed(domain: &[u8], parts: &[&[u8]]) -> Vec<u8> {
+        let mut hash = Sha256::new();
+        hash.update(domain);
+        for part in parts {
+            hash.update((part.len() as u64).to_be_bytes());
+            hash.update(part);
+        }
+        hash.finalize().to_vec()
+    }
+    let mut root = Sha256::digest(b"maka.source.empty.v2\0").to_vec();
+    for (sequence, json) in rows {
+        let sequence = sequence.to_be_bytes();
+        let leaf = framed(b"maka.source.leaf.v2\0", &[&sequence, json.as_bytes()]);
+        root = framed(b"maka.source.chain.v2\0", &[&root, &sequence, &leaf]);
+    }
     let mut digest = Sha256::new();
-    digest.update(b"maka.run-prefix.v1\0");
+    digest.update(b"maka.run-prefix.v2\0");
     digest.update((rows.len() as u64).to_be_bytes());
     let identity = serde_json::to_vec(invocation).unwrap();
     digest.update((identity.len() as u64).to_be_bytes());
     digest.update(identity);
-    for (sequence, json) in rows {
-        digest.update(sequence.to_be_bytes());
-        digest.update((json.len() as u64).to_be_bytes());
-        digest.update(json.as_bytes());
-    }
+    digest.update(root);
     format!("sha256:{}", hex::encode(digest.finalize()))
 }
 
@@ -371,7 +361,10 @@ async fn cumulative_raw_observation_bytes_do_not_limit_source_evidence() {
     assert_eq!((source.opening.sequence, source.last.sequence), (1, 14));
     assert_eq!(source.opening.event, first);
     assert_eq!(source.last.event, terminal);
-    let effective = log.read_model_context("session", None).await.unwrap();
+    let effective = log
+        .capture_model_context("session", None, 100_000, 64 * 1024 * 1024)
+        .await
+        .unwrap();
     let canonical: Vec<_> = effective
         .tail
         .iter()
@@ -398,77 +391,4 @@ async fn cumulative_raw_observation_bytes_do_not_limit_source_evidence() {
     assert_eq!(reopened.opening.event, first);
     assert_eq!(reopened.last.event, terminal);
     log.close().await.unwrap();
-}
-
-#[tokio::test]
-async fn source_validates_intermediate_identity_and_rejects_extraneous_material() {
-    for damage in ["identity", "extraneous material"] {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("damaged-source.sqlite");
-        let log = EventLog::open(&path).await.unwrap();
-        let first = opening("session", "source", "source-invocation", "original");
-        append(&log, first.clone()).await;
-        let dispatched = RuntimeEvent::new(
-            first.invocation.clone(),
-            Fact::ToolDispatched {
-                presentation: None,
-                title: None,
-                operation_id: "call".into(),
-                call: ToolCallIdentity::standalone("call-id".into()),
-                name: "Read".into(),
-                input: serde_json::json!({}),
-            },
-        );
-        append(&log, dispatched.clone()).await;
-        append(
-            &log,
-            RuntimeEvent::new(
-                first.invocation.clone(),
-                Fact::InvocationEnded {
-                    outcome: InvocationOutcome::Failed {
-                        class: "outcome_unknown".into(),
-                        message: None,
-                        model_failure: None,
-                    },
-                },
-            ),
-        )
-        .await;
-        let valid = log
-            .run_source("session", "source", None)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(valid.boundary.high_water, 3);
-        assert_eq!(valid.last.sequence, 3);
-        log.close().await.unwrap();
-        {
-            let db = rusqlite::Connection::open(&path).unwrap();
-            if damage == "identity" {
-                db.execute("UPDATE event_log SET event_json=json_set(event_json, '$.invocation.turn_id', 'wrong-turn') WHERE event_id=?", [&dispatched.id]).unwrap();
-            } else {
-                db.execute(
-                    "INSERT INTO tool_result_payloads(event_id,payload) VALUES(?,x'00')",
-                    [&dispatched.id],
-                )
-                .unwrap();
-            }
-        }
-        let log = EventLog::open(&path).await.unwrap();
-        assert!(
-            matches!(
-                log.run_source("session", "source", None).await,
-                Err(StoreError::InvalidTransition(_))
-            ),
-            "{damage}"
-        );
-        let before_damage = log
-            .run_source("session", "source", Some(1))
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(before_damage.boundary.high_water, 1);
-        assert_eq!(before_damage.last.event, first);
-        log.close().await.unwrap();
-    }
 }

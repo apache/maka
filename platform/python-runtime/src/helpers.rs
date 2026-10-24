@@ -61,7 +61,7 @@ pub(crate) fn invoke(
         })?,
         "notify" => context.notify(display(&args[0]))?,
         "store" => context.store(key(&args[0])?.into(), args[1].clone())?,
-        "load" => return Ok(context.load(key(&args[0])?).unwrap_or(Value::Null)),
+        "load" => return Ok(context.load(key(&args[0])?)?.unwrap_or(Value::Null)),
         "yield_control" => context.yield_output(),
         "exit" => {}
         "image" => {

@@ -17,7 +17,8 @@
  * under the License.
  */
 
-use super::SessionConfiguration;
+use super::auxiliary::persistence;
+use super::{ResolvedConfiguration, StoredSessionConfiguration, resolve_session};
 use crate::contract::{RecallPage, RecallPassage};
 use futures_util::future::BoxFuture;
 use maka_agent_facts::tool_call::ToolRejection;
@@ -36,7 +37,7 @@ use tokio_util::sync::CancellationToken;
 
 #[derive(Clone)]
 pub(crate) struct Recall {
-    pub(super) store: Arc<maka_event_log::EventLog>,
+    pub(super) store: Arc<maka_event_log::RootStore>,
     pub(super) configuration: Arc<maka_config::ConfigurationStore>,
     pub(super) prefix: String,
     pub(super) data_source: crate::contract::DataSource,
@@ -46,6 +47,29 @@ pub(crate) struct Recall {
     pub(super) workers: tokio_util::task::TaskTracker,
 }
 impl Recall {
+    async fn scoped_store(
+        &self,
+        call: &Scope,
+        id: &str,
+    ) -> Result<maka_event_log::SessionStore, ToolError> {
+        if !super::owns_session(&self.prefix, id) {
+            return Err(failed("Recall Session unavailable"));
+        }
+        if let Some(invocation) = call
+            .identity
+            .agent()
+            .filter(|invocation| invocation.session_id == id)
+        {
+            let custody = call
+                .execution()
+                .ok_or_else(|| failed("Recall execution custody unavailable"))?;
+            self.store
+                .session_for_execution(custody.as_ref(), invocation)
+                .map_err(persistence)
+        } else {
+            self.store.session(id).await.map_err(persistence)
+        }
+    }
     async fn private(&self) -> Result<bool, ToolError> {
         Ok(self
             .configuration
@@ -58,16 +82,18 @@ impl Recall {
     }
     async fn session(
         &self,
+        call: &Scope,
         id: &str,
-    ) -> Result<maka_event_log::sessions::SessionRecord<SessionConfiguration>, String> {
-        if !super::owns_session(&self.prefix, id) {
-            return Err("agent_session_unavailable".into());
-        }
-        self.store
-            .get_session(id)
+    ) -> Result<maka_event_log::sessions::SessionRecord<ResolvedConfiguration>, String> {
+        let session = self
+            .scoped_store(call, id)
             .await
-            .map_err(|_| "agent_store_unavailable".to_owned())?
-            .ok_or("agent_session_unavailable".into())
+            .map_err(|error| error.to_string())?
+            .get::<StoredSessionConfiguration>()
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or("agent_session_unavailable")?;
+        resolve_session(session)
     }
     async fn check(&self, call: &Scope) -> Result<(), ToolError> {
         if call.cancellation.is_cancelled() || self.stop.is_cancelled() {
@@ -80,9 +106,17 @@ impl Recall {
             if !self.enabled {
                 return Err(failed("Recall model access is disabled"));
             }
-            self.session(&invocation.session_id).await.map_err(failed)?;
-            let boundary = self
-                .store
+            if !super::owns_session(&self.prefix, &invocation.session_id) {
+                return Err(failed("Recall Session unavailable"));
+            }
+            let store = self.scoped_store(call, &invocation.session_id).await?;
+            let session = store
+                .get::<StoredSessionConfiguration>()
+                .await
+                .map_err(persistence)?
+                .ok_or_else(|| failed("Recall Session unavailable"))?;
+            resolve_session(session).map_err(failed)?;
+            let boundary = store
                 .invocation_boundary(&invocation.session_id, &invocation.invocation_id)
                 .await
                 .map_err(failed)?
@@ -107,7 +141,7 @@ impl Recall {
         query.validate()?;
         self.check(call).await.map_err(|e| e.to_string())?;
         if let Some(id) = &query.session_id {
-            self.session(id).await?;
+            self.session(call, id).await?;
         }
         let (titles, catalog_complete) = search::titles(self.as_ref(), call, &query)
             .await
@@ -116,7 +150,7 @@ impl Recall {
         for title in titles.into_iter().take(query.limit.unwrap_or(8)) {
             title_matches.push(crate::service::summary_for(
                 &self.data_source,
-                self.session(&title.id).await?,
+                self.session(call, &title.id).await?,
             ));
         }
         let found = search::search(self.clone(), call, &query)
@@ -128,7 +162,7 @@ impl Recall {
             .into_iter()
             .take(query.limit.unwrap_or(8).saturating_sub(title_matches.len()))
         {
-            let session = self.session(&passage.session_id).await?;
+            let session = self.session(call, &passage.session_id).await?;
             let excerpt = passage
                 .messages
                 .iter()
@@ -208,7 +242,7 @@ impl History for Recall {
             self.check(&call).await?;
             let page = self
                 .store
-                .scoped_sessions::<SessionConfiguration>(
+                .scoped_sessions::<StoredSessionConfiguration>(
                     CatalogScope::IdPrefix(self.prefix.clone()),
                     input.revision.as_deref(),
                     input
@@ -247,14 +281,25 @@ impl History for Recall {
         Box::pin(async move {
             input.validate().map_err(failed)?;
             self.check(&call).await?;
-            self.session(&input.session_id).await.map_err(failed)?;
-            let high_water = *self.store.subscribe_commits().borrow();
+            self.scoped_store(&call, &input.session_id)
+                .await?
+                .get::<StoredSessionConfiguration>()
+                .await
+                .map_err(persistence)?
+                .ok_or_else(|| failed("Recall Session unavailable"))?;
+            let high_water = *self
+                .scoped_store(&call, &input.session_id)
+                .await?
+                .subscribe_commits()
+                .map_err(persistence)?
+                .borrow();
             let through = input.through.unwrap_or(high_water);
             if through > high_water {
                 return Err(failed("Recall history fence invalid"));
             }
             let page = self
-                .store
+                .scoped_store(&call, &input.session_id)
+                .await?
                 .history_text(
                     &input.session_id,
                     through,
@@ -266,7 +311,12 @@ impl History for Recall {
                 )
                 .await
                 .map_err(failed)?;
-            self.session(&input.session_id).await.map_err(failed)?;
+            self.scoped_store(&call, &input.session_id)
+                .await?
+                .get::<StoredSessionConfiguration>()
+                .await
+                .map_err(persistence)?
+                .ok_or_else(|| failed("Recall Session unavailable"))?;
             self.check(&call).await?;
             Ok(page)
         })
@@ -321,12 +371,15 @@ impl ToolPreparer for Recall {
                     // original native activation owns the request and settlement.
                     let request = recall
                         .services
-                        .request(
+                        .request_with_execution(
                             maka_capabilities::call::Identity::Agent {
                                 invocation: context.invocation,
                                 operation_id: Some(context.operation_id),
                             },
                             cancellation,
+                            context
+                                .execution
+                                .ok_or_else(|| failed("Execution custody unavailable"))?,
                         )
                         .map_err(failed)?;
                     let call = request.scope();

@@ -163,7 +163,7 @@ async fn catalog_observes_metadata_pending_and_removal_at_its_original_location(
     assert_eq!(fixture.query("list", json!({"filter":"all","position":{"kind":"start"},"scope":owned_scope,"titleQuery":"updated"})).await.unwrap()["sessions"], json!([]), "title substring matching is case-sensitive");
     fixture
         .store
-        .set_session_archived::<SessionConfiguration>(&ids[1], true, 3)
+        .set_session_archived::<StoredSessionConfiguration>(&ids[1], true, 3)
         .await
         .unwrap();
     let archived = next(&mut stream).await;
@@ -180,7 +180,8 @@ async fn catalog_observes_metadata_pending_and_removal_at_its_original_location(
 
     // Background pending sessions outside this page contribute to the exact count.
     fixture
-        .store
+        .session(&(catalog_interaction(&ids[0], "background")).session_id)
+        .await
         .establish_interaction(&catalog_interaction(&ids[0], "background"))
         .await
         .unwrap();
@@ -188,7 +189,8 @@ async fn catalog_observes_metadata_pending_and_removal_at_its_original_location(
     assert_eq!(pending["needsYouCount"], 1);
     assert_eq!(pending["sessions"][0]["id"], ids[2]);
     fixture
-        .store
+        .session(&(catalog_interaction(&ids[0], "background-second")).session_id)
+        .await
         .establish_interaction(&catalog_interaction(&ids[0], "background-second"))
         .await
         .unwrap();
@@ -210,7 +212,8 @@ async fn catalog_observes_metadata_pending_and_removal_at_its_original_location(
         .unwrap();
     assert_eq!(next(&mut stream).await["sessions"], pending["sessions"]);
     fixture
-        .store
+        .session(&(catalog_interaction("foreign", "foreign-request")).session_id)
+        .await
         .establish_interaction(&catalog_interaction("foreign", "foreign-request"))
         .await
         .unwrap();
@@ -220,7 +223,8 @@ async fn catalog_observes_metadata_pending_and_removal_at_its_original_location(
 
     for request in ["background", "background-second"] {
         fixture
-            .store
+            .session(&ids[0])
+            .await
             .commit_interaction_outcome(
                 request,
                 InteractionOutcome::Closure {
@@ -238,8 +242,9 @@ async fn catalog_observes_metadata_pending_and_removal_at_its_original_location(
     }
     for id in &ids[1..] {
         let record = fixture
-            .store
-            .get_session::<SessionConfiguration>(id)
+            .session(id)
+            .await
+            .get_session::<StoredSessionConfiguration>(id)
             .await
             .unwrap()
             .unwrap();
@@ -398,8 +403,9 @@ async fn explicit_read_marker_keeps_original_tail_authority_and_receipt() {
             false
         );
         let stored = fixture
-            .store
-            .get_session::<SessionConfiguration>(&session)
+            .session(&session)
+            .await
+            .get_session::<StoredSessionConfiguration>(&session)
             .await
             .unwrap()
             .unwrap();
@@ -409,7 +415,7 @@ async fn explicit_read_marker_keeps_original_tail_authority_and_receipt() {
         );
         fixture
             .store
-            .set_session_archived::<SessionConfiguration>(&session, true, now())
+            .set_session_archived::<StoredSessionConfiguration>(&session, true, now())
             .await
             .unwrap();
         assert_eq!(
@@ -461,13 +467,15 @@ async fn session_lifecycle_is_revision_checked_reversible_and_scoped() {
             .await
             .unwrap();
         assert_eq!(stale["kind"], "revision_conflict");
-        f.store
+        f.session(&(catalog_interaction(&session, "pending-delete")).session_id)
+            .await
             .establish_interaction(&catalog_interaction(&session, "pending-delete"))
             .await
             .unwrap();
         revision = f
-            .store
-            .get_session::<SessionConfiguration>(&session)
+            .session(&session)
+            .await
+            .get_session::<StoredSessionConfiguration>(&session)
             .await
             .unwrap()
             .unwrap()
@@ -482,7 +490,8 @@ async fn session_lifecycle_is_revision_checked_reversible_and_scoped() {
             .await
             .unwrap();
         assert_eq!(busy["reason"], "busy");
-        f.store
+        f.session(&session)
+            .await
             .commit_interaction_outcome(
                 "pending-delete",
                 InteractionOutcome::Closure {
@@ -493,8 +502,9 @@ async fn session_lifecycle_is_revision_checked_reversible_and_scoped() {
             .await
             .unwrap();
         revision = f
-            .store
-            .get_session::<SessionConfiguration>(&session)
+            .session(&session)
+            .await
+            .get_session::<StoredSessionConfiguration>(&session)
             .await
             .unwrap()
             .unwrap()
@@ -511,15 +521,17 @@ async fn session_lifecycle_is_revision_checked_reversible_and_scoped() {
         assert_eq!(removed["kind"], "removed");
         f.drained().await;
         assert!(
-            f.store
-                .get_session::<SessionConfiguration>(&session)
+            f.session(&session)
+                .await
+                .get_session::<StoredSessionConfiguration>(&session)
                 .await
                 .unwrap()
                 .is_none()
         );
         assert!(
-            f.store
-                .get_session::<SessionConfiguration>(&other)
+            f.session(&other)
+                .await
+                .get_session::<StoredSessionConfiguration>(&other)
                 .await
                 .unwrap()
                 .is_some()

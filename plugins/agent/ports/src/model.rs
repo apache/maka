@@ -37,7 +37,14 @@ pub trait Transport: Send + Sync {
     /// Process-local routing identity, excluding the serialized credential.
     /// A changed routing policy must invalidate cached connections.
     fn identity(&self) -> u64;
-    fn request(&self, request: http::Request) -> BoxFuture<'_, Result<http::Response, Error>>;
+    /// Cancellation is acknowledged only after the upload source and its
+    /// transport-retained bytes drain. Callers cancel this token and await the
+    /// future; dropping a pending request cannot confirm resource settlement.
+    fn request(
+        &self,
+        request: http::Request,
+        cancellation: CancellationToken,
+    ) -> BoxFuture<'_, Result<http::Response, Error>>;
     fn connect(&self, request: Connect) -> BoxFuture<'_, Result<Arc<dyn Socket>, Error>>;
 }
 #[derive(Clone, Serialize, Deserialize)]
@@ -54,8 +61,16 @@ pub enum Frame {
 }
 /// One outstanding reader and writer. Cancelling a pending receive must not
 /// consume the next frame; dropping the last handle closes the connection.
+pub type TextStream = std::pin::Pin<
+    Box<dyn futures_util::Stream<Item = Result<http::Bytes, Error>> + Send + 'static>,
+>;
+
 pub trait Socket: Send + Sync {
     fn send(&self, frame: Frame) -> BoxFuture<'_, Result<(), Error>>;
+    /// One UTF-8 text message, produced under transport backpressure. Chunks
+    /// may split UTF-8 code points. Dropping an active send retires the socket:
+    /// a partial message must never be resumed or followed by another request.
+    fn send_text(&self, chunks: TextStream) -> BoxFuture<'_, Result<(), Error>>;
     fn receive(&self) -> BoxFuture<'_, Result<Option<Frame>, Error>>;
     fn close(&self) -> BoxFuture<'_, Result<(), Error>>;
 }
@@ -104,13 +119,13 @@ pub trait Session: Send + Sync {
     }
     /// Check committed history projected by Host after local tool settlement.
     /// This is not a plugin claim or permission to change canonical history.
-    fn confirm(
-        &self,
-        _prompt: &[Message],
-        _settled_tool_call_ids: &[&str],
-        _response_id: Option<&str>,
-    ) -> bool {
-        false
+    fn confirm<'a>(
+        &'a self,
+        _prompt: &'a maka_agent_facts::model::prompt_source::Prompt,
+        _settled_tool_call_ids: &'a [&'a str],
+        _response_id: Option<&'a str>,
+    ) -> BoxFuture<'a, bool> {
+        Box::pin(async { false })
     }
 }
 #[derive(Clone, Copy, Serialize, Deserialize)]

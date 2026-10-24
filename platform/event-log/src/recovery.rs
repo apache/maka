@@ -29,41 +29,38 @@ use crate::{EventLog, StoreError};
 
 macro_rules! unresolved {
     ($tail:literal) => { concat!(
-        "WITH ", crate::model_items::accepted_calls!(), ", unresolved(kind, id, name, input, call) AS (
-                    SELECT 0, request.operation_id, '', 'null', 'null'
-                    FROM runtime_events AS request
-                    WHERE request.invocation_id = ?1 AND request.kind = 'model_requested'
-                    AND NOT EXISTS(SELECT 1 FROM runtime_events AS result
-                        WHERE result.invocation_id = request.invocation_id
-                        AND result.operation_id = request.operation_id
-                        AND result.kind IN ('model_completed', 'model_interrupted'))
-                    UNION ALL
-                    SELECT 1, dispatch.operation_id, '', 'null', 'null'
-                    FROM runtime_events AS dispatch
-                    WHERE dispatch.invocation_id = ?1 AND dispatch.kind = 'tool_dispatched'
-                    AND NOT EXISTS(SELECT 1 FROM runtime_events AS result
-                        WHERE result.invocation_id = dispatch.invocation_id
-                        AND result.operation_id = dispatch.operation_id AND result.kind = 'tool_settled')
-                    UNION ALL
-                    SELECT 2, accepted.step_id || ':' || json_extract(accepted.call, '$.id'),
-                        json_extract(accepted.call, '$.name'), accepted.call -> '$.input',
-                        json_object('tool_call_id', json_extract(accepted.call, '$.id'),
-                            'origin', json_object('kind', 'provider', 'step_id', accepted.step_id))
-                    FROM accepted_calls accepted
-                    WHERE accepted.invocation_id = ?1 AND json_extract(accepted.call, '$.provider_executed') = 0
-                    AND NOT EXISTS(SELECT 1 FROM runtime_events dispatch
-                        WHERE dispatch.invocation_id = accepted.invocation_id AND dispatch.kind IN ('tool_dispatched', 'tool_rejected')
-                        AND dispatch.operation_id = accepted.step_id || ':' || json_extract(accepted.call, '$.id'))
-                    UNION ALL
-                    SELECT 3, started.event_id, '', 'null', 'null'
-                    FROM runtime_events started
-                    WHERE started.invocation_id = ?1 AND started.kind = 'executor_started'
-                    AND NOT EXISTS(SELECT 1 FROM runtime_events done
-                        WHERE done.invocation_id = started.invocation_id
-                        AND (done.kind = 'executor_completed' OR
-                            (done.kind = 'invocation_ended' AND
-                             COALESCE(json_extract(done.event_json, '$.fact.outcome.class'), '') != 'outcome_unknown')))
-                )",
+        "WITH pending AS MATERIALIZED (
+            SELECT kind, operation_id, opened_at FROM context_obligations
+            WHERE invocation_id=?1 AND kind IN ('model','tool','call')
+        ), pending_calls(step_id, call) AS (
+            SELECT e.operation_id, json_extract(part.value, '$.call')
+            FROM pending p CROSS JOIN runtime_events e CROSS JOIN json_each(e.event_json, '$.fact.output.parts') part
+            WHERE p.kind='call' AND e.sequence=p.opened_at AND e.kind='model_completed'
+              AND json_extract(part.value, '$.kind')='tool_call'
+              AND e.operation_id || ':' || json_extract(part.value, '$.call.id')=p.operation_id
+            UNION ALL
+            SELECT json_extract(e.event_json, '$.fact.step_id'), json_extract(e.event_json, '$.fact.event.data')
+            FROM pending p CROSS JOIN runtime_events e
+            WHERE p.kind='call' AND e.sequence=p.opened_at AND e.kind='model_observed'
+        ), unresolved(kind, id, name, input, call) AS (
+            SELECT CASE kind WHEN 'model' THEN 0 ELSE 1 END, operation_id, '', 'null', 'null'
+            FROM pending WHERE kind IN ('model','tool')
+            UNION ALL
+            SELECT 2, step_id || ':' || json_extract(call, '$.id'),
+                json_extract(call, '$.name'), call -> '$.input',
+                json_object('tool_call_id', json_extract(call, '$.id'),
+                    'origin', json_object('kind', 'provider', 'step_id', step_id))
+            FROM pending_calls
+            UNION ALL
+            SELECT 3, started.event_id, '', 'null', 'null'
+            FROM runtime_events started
+            WHERE started.invocation_id = ?1 AND started.kind = 'executor_started'
+              AND NOT EXISTS(SELECT 1 FROM runtime_events done
+                WHERE done.invocation_id = started.invocation_id
+                  AND (done.kind = 'executor_completed' OR
+                    (done.kind = 'invocation_ended' AND
+                     COALESCE(json_extract(done.event_json, '$.fact.outcome.class'), '') != 'outcome_unknown')))
+        )",
         $tail
     ) };
 }
@@ -99,6 +96,46 @@ pub struct UndispatchedCall {
     pub input: ToolInput,
 }
 
+/// One bounded discovery page. The cursor is an immutable opening sequence,
+/// so settling earlier pages cannot shift or skip later unfinished invocations.
+pub struct UnfinishedInvocations {
+    pub invocations: Vec<Invocation>,
+    pub through_sequence: u64,
+}
+
+// Limit the indexed frontier before reading opening JSON. Imported roots are
+// excluded before LIMIT so an imported-only page cannot hide later local work.
+const UNFINISHED_INVOCATIONS: &str = "WITH pending AS MATERIALIZED (
+                 SELECT invocation_id, opened_at FROM context_obligations
+                 WHERE kind='invocation' AND opened_at>?1
+                   AND NOT EXISTS(SELECT 1 FROM imported_invocations i
+                       WHERE i.invocation_id=context_obligations.invocation_id)
+                 ORDER BY opened_at LIMIT ?2
+             )
+             SELECT json_extract(opening.event_json, '$.invocation.session_id'),
+                    json_extract(opening.event_json, '$.invocation.turn_id'),
+                    json_extract(opening.event_json, '$.invocation.run_id'),
+                    opening.invocation_id, pending.opened_at
+             FROM pending CROSS JOIN runtime_events AS opening
+             WHERE opening.sequence = pending.opened_at
+             ORDER BY pending.opened_at";
+
+// Session filtering belongs to the indexed frontier, before pagination.
+const SESSION_UNFINISHED_INVOCATIONS: &str = "WITH pending AS MATERIALIZED (
+                 SELECT invocation_id, opened_at FROM context_obligations
+                 WHERE kind='invocation' AND session_id=?3 AND opened_at>?1
+                   AND NOT EXISTS(SELECT 1 FROM imported_invocations i
+                       WHERE i.invocation_id=context_obligations.invocation_id)
+                 ORDER BY opened_at LIMIT ?2
+             )
+             SELECT json_extract(opening.event_json, '$.invocation.session_id'),
+                    json_extract(opening.event_json, '$.invocation.turn_id'),
+                    json_extract(opening.event_json, '$.invocation.run_id'),
+                    opening.invocation_id, pending.opened_at
+             FROM pending CROSS JOIN runtime_events AS opening
+             WHERE opening.sequence = pending.opened_at
+             ORDER BY pending.opened_at";
+
 impl EventLog {
     /// Read only unresolved execution authority in one SQLite snapshot. Text,
     /// streamed observations, opening inputs and settled results are excluded.
@@ -115,7 +152,7 @@ impl EventLog {
             .and_then(|n| i64::try_from(n).ok())
             .ok_or(StoreError::PrefixTooLarge)?;
         let invocation = invocation.clone();
-        self.connection.run(move |connection| Box::pin(async move {
+        self.connection.read(move |connection| Box::pin(async move {
         let mut transaction = connection.begin().await?;
         require_local(&mut transaction, &invocation.invocation_id).await?;
         let identity: String = sqlx::query_scalar(
@@ -127,7 +164,6 @@ impl EventLog {
                 "stored invocation identity changed".into(),
             ));
         }
-        crate::tool_payloads::verify_invocation_bindings(&mut transaction, &invocation.invocation_id).await?;
         let mut evidence = InvocationRecovery {
             unfinished_executor: false,
             unfinished_model_steps: Vec::new(),
@@ -168,49 +204,55 @@ impl EventLog {
         })).await
     }
 
-    /// Enumerate canonical unsealed openings without loading root history or
-    /// opening input bodies. Exceeding the bound fails instead of truncating.
+    /// Read a page of current unsealed local obligations after an opening cursor.
+    /// A nonempty page advances `through_sequence`; an empty page completes the
+    /// scan. Requires a positive page limit. Settling a page does not affect the
+    /// cursor because event sequences are never reused.
     pub async fn unfinished_invocations(
         &self,
+        after_sequence: u64,
         limit: usize,
-    ) -> Result<Vec<Invocation>, StoreError> {
+    ) -> Result<UnfinishedInvocations, StoreError> {
         self.validate_root()?;
-        let sql_limit = limit
-            .checked_add(1)
-            .and_then(|n| i64::try_from(n).ok())
-            .ok_or(StoreError::PrefixTooLarge)?;
+        let expected_session = self.expected_session.clone();
+        if limit == 0 {
+            return Err(StoreError::PrefixTooLarge);
+        }
+        let sql_limit = i64::try_from(limit).map_err(|_| StoreError::PrefixTooLarge)?;
+        let cursor = i64::try_from(after_sequence).map_err(|_| StoreError::PrefixTooLarge)?;
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
-                    let mut rows = sqlx::query(
-                        "SELECT json_extract(opening.event_json, '$.invocation.session_id'),
-                    json_extract(opening.event_json, '$.invocation.turn_id'),
-                    json_extract(opening.event_json, '$.invocation.run_id'),
-                    opening.invocation_id
-             FROM local_runtime_events AS opening
-             WHERE opening.kind = 'invocation_opened'
-             AND NOT EXISTS(SELECT 1 FROM runtime_events AS terminal
-                 WHERE terminal.invocation_id = opening.invocation_id
-                 AND terminal.kind = 'invocation_ended')
-             ORDER BY opening.sequence LIMIT ?",
-                    )
-                    .bind(sql_limit)
-                    .fetch(connection);
-                    let mut openings = Vec::new();
+                    let statement = if expected_session.is_some() {
+                        SESSION_UNFINISHED_INVOCATIONS
+                    } else {
+                        UNFINISHED_INVOCATIONS
+                    };
+                    let mut query = sqlx::query(statement).bind(cursor).bind(sql_limit);
+                    if let Some(session) = expected_session.as_deref() {
+                        query = query.bind(session);
+                    }
+                    let mut rows = query.fetch(connection);
+                    let mut page = UnfinishedInvocations {
+                        invocations: Vec::new(),
+                        through_sequence: after_sequence,
+                    };
                     while let Some(row) = rows.try_next().await? {
-                        if openings.len() == limit {
-                            return Err(StoreError::PrefixTooLarge);
-                        }
-                        openings.push(Invocation {
+                        page.through_sequence = u64::try_from(row.try_get::<i64, _>(4)?)
+                            .map_err(|_| StoreError::PrefixTooLarge)?;
+                        page.invocations.push(Invocation {
                             session_id: row.try_get(0)?,
                             turn_id: row.try_get(1)?,
                             run_id: row.try_get(2)?,
                             invocation_id: row.try_get(3)?,
                         });
                     }
-                    Ok(openings)
+                    Ok(page)
                 })
             })
             .await
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -113,7 +113,7 @@ fn owned_startup_connects_concurrently_and_preserves_original_effect_and_last_cl
     let runtime = tokio::runtime::Runtime::new().unwrap();
     runtime.block_on(async {
         tokio::time::timeout(Duration::from_secs(60), async {
-            let store = maka_event_log::EventLog::for_root(Arc::new(
+            let store = maka_event_log::root_store::RootStore::open(Arc::new(
                 RootOwner::open(&fixture.root, &namespaces).unwrap(),
             ))
             .await

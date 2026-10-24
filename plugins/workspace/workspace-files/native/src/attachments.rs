@@ -23,7 +23,7 @@ use maka_agent_facts::artifact::ArtifactSource;
 use maka_agent_facts::read::ReadRequest;
 
 pub async fn read(
-    store: &EventLog,
+    store: &maka_event_log::SessionStore,
     session: &str,
     id: &str,
     request: &ReadRequest,

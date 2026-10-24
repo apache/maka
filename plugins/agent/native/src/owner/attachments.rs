@@ -105,6 +105,9 @@ impl Owner {
                 }
                 let record = owner
                     .store
+                    .session(&record.session_id)
+                    .await
+                    .map_err(|error| error.to_string())?
                     .commit_artifact(record, payload)
                     .await
                     .map_err(|_| "agent_attachment_commit_failed")?;
@@ -143,6 +146,9 @@ impl Owner {
             }
             let record = self
                 .store
+                .session(session)
+                .await
+                .map_err(|error| error.to_string())?
                 .get_artifact(session, &id)
                 .await
                 .map_err(|_| "agent_attachment_unavailable")?

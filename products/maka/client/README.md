@@ -39,7 +39,9 @@ The shell retains the client scope independently of JavaScript handles. Cancelle
 observers leave their original physical calls in that scope. Successful cleanup
 releases each request; disconnected requests remain until the original session
 acknowledges `close`. Recovering a business receipt alone does not settle a physical
-request. Admission is bounded to 128 unsettled requests.
+request. Retained subscriptions do not impose a request-count ceiling on new
+queries or controls. Each call retains its transport backpressure and cleanup
+ownership; closing the scope fences admission and drains all accepted calls.
 
 Drafts belong to the actual Host domain/deployment, captured provider/export,
 session and stable editor ID. Saves compare the previous edit revision. Sending

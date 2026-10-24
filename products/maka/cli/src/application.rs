@@ -235,7 +235,9 @@ fn read_json<T: serde::de::DeserializeOwned>(source: &Path) -> Result<T, HostErr
     ))?)
 }
 
-async fn open_store(root: PathBuf) -> Result<maka_event_log::EventLog, HostError> {
+pub(super) async fn open_store(
+    root: PathBuf,
+) -> Result<maka_event_log::root_store::RootStore, HostError> {
     let owner = tokio::task::spawn_blocking(move || {
         maka_event_log::root::RootOwner::open(
             &root,

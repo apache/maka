@@ -205,7 +205,7 @@ async fn readable_tool_cards_preserve_paged_originals_across_workspace_changes_a
         continuation.delta("TOOL_CARD_TURN_CONTINUES").await;
         continuation.finish().await;
         fixture.idle(&client, &fixture.session).await;
-        assert!(fixture.store.pending_interactions(&fixture.session).await.unwrap().is_empty());
+        assert!(fixture.store.session(&fixture.session).await.unwrap().pending_interactions(&fixture.session).await.unwrap().is_empty());
         drop(view);
         bindings.close().await.unwrap();
         client.close().await.unwrap();

@@ -28,7 +28,6 @@ use maka_agent_facts::{
 use maka_capabilities::call::Resources;
 use maka_event_log::usage::{AuxiliarySource, Outcome};
 use maka_model::{ModelRequest, ModelStream, StepBuilder};
-use tracing::Instrument;
 
 pub(super) enum Error {
     Model(ModelError),
@@ -53,6 +52,11 @@ pub(super) enum Admission {
     Source(AuxiliarySource),
     Operation {
         reference: Box<maka_plugin_core::operation::RecoveryRef>,
+        scope: maka_event_log::applications::operations::OperationDispatchScope,
+        execution: Option<(
+            Arc<dyn maka_agent_facts::tools::ExecutionCustody>,
+            Invocation,
+        )>,
         binding: ModelBinding,
         session_id: String,
     },
@@ -73,69 +77,79 @@ impl Auxiliary {
         &self,
         request: ModelRequest,
         cancellation: CancellationToken,
-        log: &EventLog,
+        log: &RootStore,
         admission: Admission,
         quote: maka_agent_facts::pricing::Quote,
     ) -> Result<ModelGeneration, Error> {
         if cancellation.is_cancelled() {
             return Err(Error::Model(ModelError::Cancelled));
         }
-        let id = match admission {
+        let journal = match admission {
             Admission::Operation {
                 reference,
+                scope,
+                execution,
                 binding,
                 session_id,
             } => {
-                let span = tracing::error_span!("agent_auxiliary_operation", session_id = %session_id, operation_id = %reference.operation);
-                async {
-                    log.begin_auxiliary_operation_model(
-                        *reference,
-                        binding,
-                        session_id,
-                        request.language,
-                        Some(quote),
-                    )
-                    .await
-                    .map_err(|error| match error {
-                        maka_event_log::StoreError::SessionNotFound
-                        | maka_event_log::StoreError::SessionRetired
-                        | maka_event_log::StoreError::SessionBusy => {
-                            Error::Admission(failed(error))
+                let operation = log.operation(&reference).map_err(admission_error)?;
+                let lease = match execution {
+                    Some((custody, invocation)) => {
+                        if invocation.session_id != session_id {
+                            return Err(failed("Auxiliary execution Session mismatch").into());
                         }
-                        other => {
-                            tracing::error!(
-                                stage = "auxiliary_model_admission_failed",
-                                cause = crate::diagnostics::store_cause(&other),
-                                sql_code = crate::diagnostics::store_sql_code(&other),
-                                "Auxiliary model admission failed"
-                            );
-                            Error::Tool(persistence(other))
-                        }
-                    })
-                }
-                .instrument(span)
-                .await?
-            }
-            Admission::Source(source) => log
-                .begin_auxiliary_model(source, request.language, Some(quote))
-                .await
-                .map_err(|error| match error {
-                    maka_event_log::StoreError::InvalidTransition(_)
-                    | maka_event_log::StoreError::SessionNotFound
-                    | maka_event_log::StoreError::SessionRetired
-                    | maka_event_log::StoreError::SessionBusy
-                    | maka_event_log::StoreError::PrefixTooLarge => Error::Admission(failed(error)),
-                    _ => {
-                        tracing::error!(
-                            stage = "auxiliary_model_admission_failed",
-                            cause = crate::diagnostics::store_cause(&error),
-                            sql_code = crate::diagnostics::store_sql_code(&error),
-                            "Auxiliary model admission failed"
-                        );
-                        Error::Tool(persistence(error))
+                        log.fork_execution(custody.as_ref(), &invocation)
+                            .map_err(admission_error)?
                     }
-                })?,
+                    None => session_lease(log, &session_id).await?,
+                };
+                Journal::Operation(
+                    operation
+                        .begin_auxiliary_operation_model(
+                            &scope,
+                            lease,
+                            binding,
+                            request.language,
+                            Some(quote),
+                        )
+                        .await
+                        .map_err(admission_error)?,
+                )
+            }
+            Admission::Source(source) => {
+                let session_id = match &source {
+                    AuxiliarySource::SessionTitle { invocation }
+                    | AuxiliarySource::Agent { invocation, .. } => &invocation.session_id,
+                    _ => {
+                        return Err(failed(
+                            "Auxiliary source requires an original Session or operation claim",
+                        )
+                        .into());
+                    }
+                };
+                let mut admission = IdleLease(Some(session_lease(log, session_id).await?));
+                let store = admission.0.as_ref().expect("admission lease").store();
+                let id = match store
+                    .begin_auxiliary_model(source, request.language, Some(quote))
+                    .await
+                {
+                    Ok(id) => id,
+                    Err(error) => {
+                        return Err(admission_error(error));
+                    }
+                };
+                Journal::Session {
+                    store,
+                    lease: admission.0.take().expect("admission lease"),
+                    id,
+                }
+            }
         };
+        let mut custody = JournalCustody {
+            journal: Some(journal),
+            phase: ProviderPhase::Unstarted,
+        };
+        let id = custody.journal().id();
         let model_id = request.provider.model.clone();
         let result = async {
             let stream = self
@@ -143,7 +157,8 @@ impl Auxiliary {
                 .stream(request, cancellation.clone())
                 .await
                 .map_err(Error::Model)?;
-            let step = receive(stream, log, id).await?;
+            custody.phase = ProviderPhase::Active;
+            let step = receive(stream, &mut custody).await?;
             if step.finish_reason == ModelFinishReason::ToolCalls {
                 return Err(failed("Auxiliary generation cannot finish with tool calls").into());
             }
@@ -166,7 +181,8 @@ impl Auxiliary {
             })
         }
         .await;
-        // Neither an uncertain commit nor lost physical custody permits a success/failure replacement.
+        // SQL uncertainty preserves the pending receipt. Physical custody is released
+        // only by the explicit unstarted/drained phase, independently of this error.
         if matches!(
             result,
             Err(Error::Tool(
@@ -180,7 +196,7 @@ impl Auxiliary {
             Err(_) if cancellation.is_cancelled() => Outcome::Aborted,
             Err(_) => Outcome::Error,
         };
-        log.settle_auxiliary_model(id, outcome)
+        custody.journal.take().expect("auxiliary journal").settle(outcome)
             .await
             .map_err(|error| {
                 tracing::error!(stage = "auxiliary_model_settlement_failed", cause = crate::diagnostics::store_cause(&error),
@@ -190,11 +206,122 @@ impl Auxiliary {
         result
     }
 }
+fn rejected_admission(error: &maka_event_log::StoreError) -> bool {
+    matches!(
+        error,
+        maka_event_log::StoreError::InvalidTransition(_)
+            | maka_event_log::StoreError::EventConflict
+            | maka_event_log::StoreError::SessionNotFound
+            | maka_event_log::StoreError::SessionRetired
+            | maka_event_log::StoreError::SessionBusy
+            | maka_event_log::StoreError::PermissionRevoked
+            | maka_event_log::StoreError::PrefixTooLarge
+    )
+}
+fn admission_error(error: maka_event_log::StoreError) -> Error {
+    if rejected_admission(&error) {
+        Error::Admission(failed(error))
+    } else {
+        Error::Tool(persistence(error))
+    }
+}
+async fn session_lease(
+    log: &RootStore,
+    id: &str,
+) -> Result<maka_event_log::root_store::SessionExecutionLease, Error> {
+    let store = log.session(id).await.map_err(admission_error)?;
+    let record = store
+        .get::<StoredSessionConfiguration>()
+        .await
+        .map_err(persistence)?
+        .ok_or_else(|| failed("Auxiliary Session unavailable"))?;
+    let session = resolve_session(record).map_err(failed)?;
+    Ok(store
+        .execution_scope(Some(session.configuration.permission_basis()))
+        .await
+        .map_err(admission_error)?
+        .accept())
+}
+// Only unstarted or confirmed-drained providers may use this release guard.
+// SQL actor work independently retains its own pins until completion.
+struct IdleLease(Option<maka_event_log::root_store::SessionExecutionLease>);
+impl Drop for IdleLease {
+    fn drop(&mut self) {
+        if let Some(lease) = self.0.take() {
+            lease.finish();
+        }
+    }
+}
+enum ProviderPhase {
+    Unstarted,
+    Active,
+    Drained,
+}
+struct JournalCustody {
+    journal: Option<Journal>,
+    phase: ProviderPhase,
+}
+impl JournalCustody {
+    fn journal(&self) -> &Journal {
+        self.journal.as_ref().expect("auxiliary journal")
+    }
+}
+impl Drop for JournalCustody {
+    fn drop(&mut self) {
+        if matches!(
+            self.phase,
+            ProviderPhase::Unstarted | ProviderPhase::Drained
+        ) && let Some(journal) = self.journal.take()
+        {
+            match journal {
+                Journal::Session { lease, .. } => lease.finish(),
+                Journal::Operation(journal) => journal.release_after_cleanup(),
+            }
+        }
+        // Active provider custody remains quarantined by the journal's Drop.
+    }
+}
+enum Journal {
+    Session {
+        store: maka_event_log::root_store::SessionStore,
+        lease: maka_event_log::root_store::SessionExecutionLease,
+        id: Uuid,
+    },
+    Operation(maka_event_log::root_store::OperationAuxiliary),
+}
+impl Journal {
+    fn id(&self) -> Uuid {
+        match self {
+            Self::Session { id, .. } => *id,
+            Self::Operation(journal) => journal.id(),
+        }
+    }
+    async fn observe(
+        &self,
+        usage: maka_agent_facts::model::ModelUsage,
+    ) -> Result<(), maka_event_log::StoreError> {
+        match self {
+            Self::Session { store, id, .. } => store.observe_auxiliary_model(*id, usage).await,
+            Self::Operation(journal) => journal.observe(usage).await,
+        }
+    }
+    async fn settle(self, outcome: Outcome) -> Result<(), maka_event_log::StoreError> {
+        match self {
+            Self::Session { store, lease, id } => {
+                let completion = IdleLease(Some(lease));
+                let result = store.settle_auxiliary_model(id, outcome).await;
+                drop(completion);
+                result
+            }
+            Self::Operation(journal) => journal.settle(outcome).await,
+        }
+    }
+}
 async fn receive(
     mut stream: ModelStream,
-    log: &EventLog,
-    id: Uuid,
+    custody: &mut JournalCustody,
 ) -> Result<maka_agent_facts::model::ModelStep, Error> {
+    let journal = custody.journal();
     let result = async {
         let mut builder = StepBuilder::default();
         let mut bytes = 0usize;
@@ -207,11 +334,11 @@ async fn receive(
             if let ModelEvent::Finished { usage, .. } = &event
                 && !observed_usage
             {
-                log.observe_auxiliary_model(id, usage.clone())
+                journal.observe(usage.clone())
                     .await
                     .map_err(|error| {
                         tracing::error!(stage = "auxiliary_model_observation_failed", cause = crate::diagnostics::store_cause(&error),
-                            sql_code = crate::diagnostics::store_sql_code(&error), request_id = %id, "Auxiliary model usage observation failed");
+                            sql_code = crate::diagnostics::store_sql_code(&error), request_id = %journal.id(), "Auxiliary model usage observation failed");
                         persistence(error)
                     })?;
                 observed_usage = true;
@@ -239,9 +366,10 @@ async fn receive(
         .await
         .map_err(|error| {
             tracing::error!(stage = "auxiliary_model_cleanup_unconfirmed", cause = "cleanup_unconfirmed",
-                request_id = %id, "Auxiliary model stream cleanup is unconfirmed");
+                request_id = %journal.id(), "Auxiliary model stream cleanup is unconfirmed");
             ToolError::CleanupUnconfirmed(error.to_string())
         })?;
+    custody.phase = ProviderPhase::Drained;
     result
 }
 pub(super) fn persistence(error: impl std::fmt::Display) -> ToolError {
@@ -250,3 +378,6 @@ pub(super) fn persistence(error: impl std::fmt::Display) -> ToolError {
 pub(super) fn failed(error: impl std::fmt::Display) -> ToolError {
     ToolError::Failed(error.to_string())
 }
+
+#[cfg(test)]
+mod tests;

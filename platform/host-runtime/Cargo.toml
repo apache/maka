@@ -36,7 +36,7 @@ maka-fs-tools.workspace = true
 maka-process.workspace = true
 maka-sandbox.workspace = true
 maka-network.workspace = true
-reqwest.workspace = true
+reqwest = { workspace = true, features = ["stream"] }
 maka-presentation.workspace = true
 serde_json.workspace = true
 serde.workspace = true

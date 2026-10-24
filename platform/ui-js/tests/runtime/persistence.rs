@@ -23,7 +23,7 @@ mod reconciliation;
 use super::Application;
 use super::{support, timer};
 use maka_event_log::{
-    EventLog,
+    RootStore,
     root::{RootNamespaces, RootOwner},
 };
 use maka_plugin_core::composition::PresentationTarget;
@@ -38,11 +38,11 @@ fn namespaces(dir: &std::path::Path) -> RootNamespaces {
         control: dir.join("control"),
     }
 }
-fn store(timer: &tokio::runtime::Runtime, dir: &std::path::Path) -> Arc<EventLog> {
+fn store(timer: &tokio::runtime::Runtime, dir: &std::path::Path) -> Arc<RootStore> {
     let owner = Arc::new(RootOwner::create(&dir.join("root"), &namespaces(dir)).unwrap());
-    Arc::new(timer.block_on(EventLog::for_root(owner)).unwrap())
+    Arc::new(timer.block_on(RootStore::open(owner)).unwrap())
 }
-fn start(timer: &tokio::runtime::Runtime, store: Arc<EventLog>, id: Uuid) -> Application {
+fn start(timer: &tokio::runtime::Runtime, store: Arc<RootStore>, id: Uuid) -> Application {
     let source = timer
         .block_on(store.load_application(id))
         .unwrap()
@@ -116,9 +116,7 @@ fn persisted_execution_keeps_original_bytes_source_and_root_until_mount_cleanup(
             .await
         })
         .unwrap();
-    let stored = timer
-        .block_on(EventLog::for_root(Arc::new(reopened)))
-        .unwrap();
+    let stored = timer.block_on(RootStore::open(Arc::new(reopened))).unwrap();
     assert_eq!(
         timer
             .block_on(stored.load_application(id))

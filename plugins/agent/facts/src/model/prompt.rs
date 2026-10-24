@@ -242,3 +242,8 @@ pub enum ToolOutput {
     ErrorJson(Value),
     Content(Vec<ContentPart>),
 }
+
+pub use super::prompt_source::{
+    PreparedWire, Prompt, PromptCursor, PromptSource, WireChunk, WireCursor, WireFormat, WireGroup,
+    WireMetadata, WireMetadataCursor, WirePosition, WireSource,
+};

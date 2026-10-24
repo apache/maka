@@ -22,7 +22,7 @@ mod controller;
 mod display;
 mod launch;
 mod output;
-use super::{Processes, SessionConfiguration, cancelled, failed, persistence, worker_error};
+use super::{Processes, ResolvedConfiguration, cancelled, failed, persistence, worker_error};
 pub(super) use controller::Lease;
 use futures_util::future::BoxFuture;
 use maka_agent_facts::shell_run::ShellObservation;
@@ -125,11 +125,35 @@ impl Processes {
             _ => Err(failed("Terminal method unavailable")),
         }
     }
+    async fn terminal_store(
+        &self,
+        id: &str,
+        context: &Context,
+    ) -> Result<maka_event_log::SessionStore, ToolError> {
+        if let Some(invocation) = context
+            .scope()
+            .identity
+            .agent()
+            .filter(|invocation| invocation.session_id == id)
+            && let Some(custody) = context.scope().execution()
+        {
+            return maka_agent_authority::permissions::execution(
+                &self.store,
+                invocation,
+                Some(custody.as_ref()),
+            );
+        }
+        self.store.session(id).await.map_err(|error| match error {
+            maka_event_log::StoreError::SessionNotFound => failed("Terminal Session not found"),
+            error => persistence(error),
+        })
+    }
     async fn terminal_session(
         &self,
         id: &str,
         active: bool,
-    ) -> Result<SessionRecord<SessionConfiguration>, ToolError> {
+        context: &Context,
+    ) -> Result<SessionRecord<ResolvedConfiguration>, ToolError> {
         let prefix = self
             .session_prefix
             .as_deref()
@@ -142,19 +166,27 @@ impl Processes {
         }) {
             return Err(failed("Terminal Session not found in configured owner"));
         }
-        let record: SessionRecord<SessionConfiguration> = self
-            .store
-            .get_session(id)
+        let record = self
+            .terminal_store(id, context)
+            .await?
+            .get_session::<maka_agent_api::session::StoredSessionConfiguration>(id)
             .await
             .map_err(persistence)?
             .ok_or_else(|| failed("Terminal Session not found"))?;
+        let record =
+            maka_agent_authority::permissions::resolve_session(record).map_err(persistence)?;
         if active && record.archived {
             return Err(failed("Session is archived"));
         }
         Ok(record)
     }
-    async fn terminal_record(&self, target: &Target) -> Result<ShellObservation, ToolError> {
-        self.terminal_session(&target.session_id, false).await?;
+    async fn terminal_record(
+        &self,
+        target: &Target,
+        context: &Context,
+    ) -> Result<ShellObservation, ToolError> {
+        self.terminal_session(&target.session_id, false, context)
+            .await?;
         let id = self.terminal_id(target)?;
         if let Some(Ok(live)) = self
             .resources
@@ -167,7 +199,8 @@ impl Processes {
             return Ok((*live).clone());
         }
         let record = self
-            .store
+            .terminal_store(&target.session_id, context)
+            .await?
             .read_shell_run(&target.session_id, id)
             .await
             .map_err(persistence)?
@@ -195,12 +228,13 @@ impl Processes {
         if input.offset > MAX_SEQUENCE {
             return Err(failed("Invalid terminal page offset"));
         }
-        let mut changes = self.store.subscribe_shell_changes();
+        let store = self.terminal_store(&input.session_id, context).await?;
+        let mut changes = store.subscribe_commits().map_err(persistence)?;
         let mut previous = None;
         loop {
-            self.terminal_session(&input.session_id, false).await?;
-            let page = self
-                .store
+            self.terminal_session(&input.session_id, false, context)
+                .await?;
+            let page = store
                 .query_shell_catalog(&input.session_id, &self.prefix, input.offset)
                 .await
                 .map_err(persistence)?;
@@ -222,11 +256,9 @@ impl Processes {
                 tokio::select! { biased;
                     _ = context.scope().cancellation.cancelled() => return Ok(value),
                     _ = self.drain.cancelled() => return Ok(value),
-                    change = changes.recv() => match change {
-                        Ok(change) if change.session_id == input.session_id && change.id.starts_with(&self.prefix) => break,
-                        Ok(_) => {},
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => break,
-                        Err(_) => return Err(failed("Terminal resource observation closed")),
+                    change = changes.changed() => {
+                        change.map_err(|_| failed("Terminal resource observation closed"))?;
+                        break;
                     }
                 }
             }
@@ -238,13 +270,14 @@ impl Processes {
         watch: bool,
         context: &Context,
     ) -> Result<Value, ToolError> {
-        let mut changes = self.store.subscribe_shell_changes();
+        let store = self.terminal_store(&target.session_id, context).await?;
+        let mut changes = store.subscribe_commits().map_err(persistence)?;
         let id = self.terminal_id(&target)?.to_owned();
         // Subscribe before reading either durable state or the original live cut.
         let mut handle = self.resources.get(&target.session_id, &id);
         let mut previous = None;
         loop {
-            let record = self.terminal_record(&target).await?;
+            let record = self.terminal_record(&target, context).await?;
             if watch && handle.is_none() && record.state.active() {
                 handle = self.resources.get(&target.session_id, &id);
                 if handle.is_some() {
@@ -274,18 +307,16 @@ impl Processes {
                         }
                         break;
                     }
-                    change = changes.recv() => match change {
-                        Ok(change) if change.session_id == target.session_id && change.id == id => break,
-                        Ok(_) => {},
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => break,
-                        Err(_) => return Err(failed("Terminal resource observation closed")),
+                    change = changes.changed() => {
+                        change.map_err(|_| failed("Terminal resource observation closed"))?;
+                        break;
                     }
                 }
             }
         }
     }
     async fn terminal_stop(&self, target: Target, context: &Context) -> Result<Stopped, ToolError> {
-        let mut record = self.terminal_record(&target).await?;
+        let mut record = self.terminal_record(&target, context).await?;
         cancelled(&context.scope().cancellation)?;
         let applied = if let Some(mut handle) = self.resources.get(&target.session_id, &record.id) {
             let receipt = handle.stop_and_wait().await.map_err(worker_error)?;
@@ -293,7 +324,7 @@ impl Processes {
             receipt.applied
         } else {
             if record.state.active() {
-                record = self.terminal_record(&target).await?;
+                record = self.terminal_record(&target, context).await?;
                 if record.state.active() {
                     return Err(ToolError::CleanupUnconfirmed(
                         "Active terminal has no native owner".into(),

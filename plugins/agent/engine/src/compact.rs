@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use crate::{Inner, RunContext, RunError, context_input, model_attempt};
+use crate::{RunContext, RunError, RunSettings, context_input, model_attempt};
 use maka_agent_facts::context::CheckpointMode;
 use maka_agent_facts::context::CompactOutcome;
 use maka_agent_facts::context::ContextCheckpoint;
@@ -31,17 +31,17 @@ use tokio_util::sync::CancellationToken;
 pub(super) type Candidate = (CompactOutcome, Option<RuntimeEvent>);
 
 pub(super) struct Job {
-    input: RunContext,
+    input: RunSettings,
     source: model_attempt::RequestSource,
     mode: CheckpointMode,
-    prompt: Vec<maka_model::prompt::Message>,
+    prompt: crate::prepared_prompt::PreparedPrompt,
     surface: Arc<crate::request_composition::Surface>,
     definitions: Vec<maka_model::ToolDefinition>,
 }
 
 pub(super) async fn run(
-    inner: &Arc<Inner>,
-    input: &mut RunContext,
+    inner: &Arc<RunContext>,
+    input: &mut RunSettings,
     mode: &CheckpointMode,
     cancellation: &CancellationToken,
     continuation_base: Option<u64>,
@@ -58,8 +58,8 @@ pub(super) async fn run(
 }
 
 pub(super) async fn capture(
-    inner: &Arc<Inner>,
-    input: &mut RunContext,
+    inner: &Arc<RunContext>,
+    input: &mut RunSettings,
     mode: &CheckpointMode,
     cancellation: &CancellationToken,
     continuation_base: Option<u64>,
@@ -68,27 +68,13 @@ pub(super) async fn capture(
     let source = tokio::select! {
         biased;
         _ = cancellation.cancelled() => return Err(RunError::Cancelled),
-        source = inner.log.prepare_context_compaction(
+        source = inner.log.prepare_compaction_view(
             &input.invocation.session_id,
             Some(&input.invocation.invocation_id),
             mode,
         ) => source?,
     };
-    let has_new_history = source
-        .tail
-        .iter()
-        .any(|event| match event {
-            maka_event_log::context::ContextEvent::ModelItems(step) => !step.items.is_empty(),
-            maka_event_log::context::ContextEvent::Canonical(stored) => matches!(
-                &stored.event.fact,
-                Fact::InvocationOpened {
-                    input: maka_agent_facts::input::InvocationInput::Message { .. },
-                    ..
-                } | Fact::MessageSteered { .. }
-                    | Fact::ModelCompleted { .. }
-            ) || matches!(&stored.event.fact, Fact::MessageImported { record, .. } if record.is_conversation()),
-            maka_event_log::context::ContextEvent::Archived(_) => false,
-        });
+    let has_new_history = source.has_new_history;
     let prompt = model_attempt::prompt(
         inner,
         input,
@@ -104,7 +90,7 @@ pub(super) async fn capture(
     {
         return Ok(None);
     }
-    let adapter = inner.model.binding(&input.provider)?;
+    let adapter = inner.shared.model.binding(&input.provider)?;
     let prior = match &source.latest_main {
         maka_event_log::context::LatestMainContext::Selected(latest)
             if latest.model_id == input.provider.model
@@ -182,7 +168,7 @@ pub(super) async fn capture(
 impl Job {
     pub async fn execute(
         self,
-        inner: &Arc<Inner>,
+        inner: &Arc<RunContext>,
         cancellation: &CancellationToken,
     ) -> Result<Candidate, RunError> {
         let Self {
@@ -206,7 +192,13 @@ impl Job {
         let mut overflowed = false;
         loop {
             let mut request = if overflowed {
-                context_input::fit_summary(&prompt, input_budget, input.configuration.language)
+                context_input::fit_prepared_summary(
+                    &prompt,
+                    input_budget,
+                    input.configuration.language,
+                    cancellation,
+                )
+                .await?
             } else {
                 prompt.clone()
             };
@@ -230,7 +222,10 @@ impl Job {
                 Err(RunError::Model(maka_model::ModelError::ContextOverflow {
                     observed_output: false,
                 })) if input_budget > 256 => {
-                    input_budget = input_budget.min(context_input::estimate(&prompt)).max(1) / 2;
+                    input_budget = input_budget
+                        .min(prompt.breakdown().estimated_tokens())
+                        .max(1)
+                        / 2;
                     overflowed = true;
                     continue;
                 }

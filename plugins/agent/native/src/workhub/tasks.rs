@@ -316,7 +316,7 @@ impl ToolPreparer for Tool {
                 })?
                 .request;
             // Actual ToolCallContext supplies the source, never model JSON.
-            hub.coordinator_source(&context.invocation)
+            hub.coordinator_source(&context)
                 .await
                 .map_err(|_| ToolRejection::Unavailable)?;
             // A graph supervisor cannot bypass its frozen scheduling authority
@@ -334,7 +334,8 @@ impl ToolPreparer for Tool {
                 let configuration = hub
                     .agent
                     .0
-                    .store
+                    .tool_store(&context)
+                    .map_err(|_| ToolRejection::Unavailable)?
                     .invocation_configuration(&context.invocation)
                     .await
                     .map_err(|_| ToolRejection::Unavailable)?
@@ -371,10 +372,27 @@ impl ToolPreparer for Tool {
     }
 }
 impl Hub {
-    async fn source_language(&self, invocation: &Invocation) -> Result<Language, String> {
-        self.agent
-            .0
-            .store
+    async fn source_language(
+        &self,
+        invocation: &Invocation,
+        execution: Option<&dyn maka_agent_facts::tools::ExecutionCustody>,
+    ) -> Result<Language, String> {
+        let store = match execution {
+            Some(execution) => self
+                .agent
+                .0
+                .store
+                .session_for_execution(execution, invocation)
+                .map_err(|error| error.to_string())?,
+            None => self
+                .agent
+                .0
+                .store
+                .session(&invocation.session_id)
+                .await
+                .map_err(|error| error.to_string())?,
+        };
+        store
             .invocation_configuration(invocation)
             .await
             .map_err(|_| "workhub_source_unavailable")?
@@ -383,13 +401,14 @@ impl Hub {
     }
     async fn coordinator_source(
         &self,
-        invocation: &Invocation,
+        context: &ToolCallContext,
     ) -> Result<maka_event_log::turns::TurnBoundary, String> {
-        self.agent.0.session(&invocation.session_id).await?;
-        let boundary = self
-            .agent
-            .0
-            .store
+        let invocation = &context.invocation;
+        if !self.agent.0.owns(&invocation.session_id) {
+            return Err("workhub_source_unavailable".into());
+        }
+        let store = self.agent.0.tool_store(context)?;
+        let boundary = store
             .invocation_boundary(&invocation.session_id, &invocation.invocation_id)
             .await
             .map_err(|_| "workhub_source_unavailable")?
@@ -501,7 +520,9 @@ impl Hub {
                 .map_err(|_| "workhub_store_unavailable")?
                 .is_some()
             {
-                return self.task(&id, true, None, cancellation).await;
+                return self
+                    .task_with_execution(&id, true, None, context.execution.clone(), cancellation)
+                    .await;
             }
             let (preset, model) = self.resolve_preset(&preset).await?;
             Input::Route(Route {
@@ -528,8 +549,13 @@ impl Hub {
         };
         match input {
             Input::ReadPatch { control_id, offset } => {
-                self.read_control_patch(&control_id, offset, cancellation)
-                    .await
+                self.read_control_patch(
+                    &control_id,
+                    offset,
+                    context.execution.clone(),
+                    cancellation,
+                )
+                .await
             }
             Input::RoutePreset { .. } => unreachable!("preset resolved above"),
             Input::CancelPending { task_id } => self.cancel_pending(&task_id, cancellation).await,
@@ -544,10 +570,12 @@ impl Hub {
                     .await
             }
             Input::InspectControl { control_id } => {
-                self.control(&control_id, false, cancellation).await
+                self.control(&control_id, false, context.execution.clone(), cancellation)
+                    .await
             }
             Input::AdvanceControl { control_id } => {
-                self.control(&control_id, true, cancellation).await
+                self.control(&control_id, true, context.execution.clone(), cancellation)
+                    .await
             }
             Input::Assignments { after } => {
                 self.task_list_scope(after, Some(&context.invocation.session_id))
@@ -562,12 +590,16 @@ impl Hub {
                     .get(&worker)
                     .and_then(Option::as_ref)
                     .ok_or("workhub_worker_unavailable")?;
-                let request = self.tasks.services.request(
+                let request = self.tasks.services.request_with_execution(
                     Identity::Agent {
                         invocation: context.invocation,
                         operation_id: Some(context.operation_id),
                     },
                     cancellation,
+                    context
+                        .execution
+                        .clone()
+                        .ok_or("workhub_execution_custody_unavailable")?,
                 )?;
                 self.observe_request(&request, async {
                     request
@@ -588,12 +620,16 @@ impl Hub {
                     .get(&worker)
                     .and_then(Option::as_ref)
                     .ok_or("workhub_worker_unavailable")?;
-                let request = self.tasks.services.request(
+                let request = self.tasks.services.request_with_execution(
                     Identity::Agent {
                         invocation: context.invocation,
                         operation_id: Some(context.operation_id),
                     },
                     cancellation,
+                    context
+                        .execution
+                        .clone()
+                        .ok_or("workhub_execution_custody_unavailable")?,
                 )?;
                 self.observe_request(&request, async {
                     let page = request
@@ -616,12 +652,16 @@ impl Hub {
                     .get(&worker)
                     .and_then(Option::as_ref)
                     .ok_or("workhub_worker_unavailable")?;
-                let request = self.tasks.services.request(
+                let request = self.tasks.services.request_with_execution(
                     Identity::Agent {
                         invocation: context.invocation,
                         operation_id: Some(context.operation_id),
                     },
                     cancellation,
+                    context
+                        .execution
+                        .clone()
+                        .ok_or("workhub_execution_custody_unavailable")?,
                 )?;
                 self.observe_request(&request, async {
                     // Each model turn changes the global catalog revision. Refresh at the
@@ -681,13 +721,30 @@ impl Hub {
                         Err(_) => return Err("workhub_route_commit_unknown".into()),
                     }
                 }
-                self.task(&id, true, None, cancellation).await
+                self.task_with_execution(&id, true, None, context.execution.clone(), cancellation)
+                    .await
             }
             Input::Wait { task_id } => self.wait_task(&task_id, context, cancellation).await,
             Input::Inspect { task_id, cursor } => {
-                self.task(&task_id, false, cursor, cancellation).await
+                self.task_with_execution(
+                    &task_id,
+                    false,
+                    cursor,
+                    context.execution.clone(),
+                    cancellation,
+                )
+                .await
             }
-            Input::Advance { task_id } => self.task(&task_id, true, None, cancellation).await,
+            Input::Advance { task_id } => {
+                self.task_with_execution(
+                    &task_id,
+                    true,
+                    None,
+                    context.execution.clone(),
+                    cancellation,
+                )
+                .await
+            }
         }
     }
     /// Freeze one original task without dispatching it. Graph decisions use
@@ -714,8 +771,16 @@ impl Hub {
             .get(&worker)
             .and_then(Option::as_ref)
             .ok_or("workhub_worker_unavailable")?;
-        let original = self.coordinator_source(&context.invocation).await?;
-        let language = self.source_language(&context.invocation).await?;
+        let original = self.coordinator_source(&context).await?;
+        let language = self
+            .agent
+            .0
+            .tool_store(&context)?
+            .invocation_configuration(&context.invocation)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or("workhub_source_unavailable")?
+            .language;
         let maka_agent_facts::input::InvocationInput::Message {
             content,
             source_messages,
@@ -747,10 +812,7 @@ impl Hub {
             _ => return Err("workhub_execution_selection_invalid".into()),
         };
         let attachments = self
-            .transfers(
-                &context.invocation,
-                content.attachments.as_deref().unwrap_or_default(),
-            )
+            .transfers(&context, content.attachments.as_deref().unwrap_or_default())
             .await?;
         let original = if source_messages.len() == 1 {
             &source_messages[0].unprepared_content.text
@@ -806,7 +868,15 @@ impl Hub {
         context: ToolCallContext,
         cancellation: CancellationToken,
     ) -> Result<Value, String> {
-        let current = self.task(id, false, None, cancellation.clone()).await?;
+        let current = self
+            .task_with_execution(
+                id,
+                false,
+                None,
+                context.execution.clone(),
+                cancellation.clone(),
+            )
+            .await?;
         if !waiting(&current) {
             return Ok(current);
         }
@@ -815,12 +885,16 @@ impl Hub {
             .delivery(id, &assignment)
             .await?
             .ok_or("workhub_delivery_missing")?;
-        let request = self.tasks.services.request(
+        let request = self.tasks.services.request_with_execution(
             Identity::Agent {
                 invocation: context.invocation,
                 operation_id: Some(context.operation_id),
             },
             cancellation.clone(),
+            context
+                .execution
+                .clone()
+                .ok_or("workhub_execution_custody_unavailable")?,
         )?;
         self.observe_request(&request, async {
             let original = self.agent.0.store.application_intent(
@@ -832,7 +906,7 @@ impl Hub {
             let mut subscription = request.subscribe(&assignment.worker, 0, "watch".into(), serde_json::json!({"sessionId":delivery.session_id,"after":through}), Attachments::default())?.await?;
             loop {
                 // Re-read after admission to cover completion between observe and watch.
-                let current = self.task(id, false, None, cancellation.clone()).await?;
+                let current = self.task_with_execution(id, false, None, context.execution.clone(), cancellation.clone()).await?;
                 if !waiting(&current) { return Ok(current); }
                 tokio::select! {
                     biased;
@@ -992,6 +1066,17 @@ impl Hub {
         cursor: Option<crate::contract::AnswerCursor>,
         cancellation: CancellationToken,
     ) -> Result<Value, String> {
+        self.task_with_execution(id, advance, cursor, None, cancellation)
+            .await
+    }
+    pub(super) async fn task_with_execution(
+        &self,
+        id: &str,
+        advance: bool,
+        cursor: Option<crate::contract::AnswerCursor>,
+        execution: Option<Arc<dyn maka_agent_facts::tools::ExecutionCustody>>,
+        cancellation: CancellationToken,
+    ) -> Result<Value, String> {
         if self.tasks.cleanup_failed() {
             return Err("workhub_closed".into());
         }
@@ -1026,16 +1111,36 @@ impl Hub {
             return encode_task(id, &assignment, &metadata, TaskStatus::Cancelled);
         }
         let dependency_input = match self
-            .dependency_input(id, &assignment, advance, cancellation.clone())
+            .dependency_input(
+                id,
+                &assignment,
+                advance,
+                execution.clone(),
+                cancellation.clone(),
+            )
             .await?
         {
             Ok(input) => input,
             Err(status) => return encode_task(id, &assignment, &metadata, status),
         };
         if advance && !assignment.dependencies.is_empty() {
-            let source = self.agent.0.session(&assignment.source.session_id).await?;
+            let source = match &execution {
+                Some(execution) => crate::owner::resolve_session(
+                    self.agent
+                        .0
+                        .store
+                        .session_for_execution(execution.as_ref(), &assignment.source)
+                        .map_err(|error| error.to_string())?
+                        .get::<maka_agent_api::session::StoredSessionConfiguration>()
+                        .await
+                        .map_err(|error| error.to_string())?
+                        .ok_or("workhub_source_unavailable")?,
+                )?,
+                None => self.agent.0.session(&assignment.source.session_id).await?,
+            };
             if source.archived
                 || source.configuration.workspace != assignment.return_route.workspace
+                || source.configuration.binding != assignment.return_route.binding
             {
                 return encode_task(id, &assignment, &metadata, TaskStatus::Unavailable);
             }
@@ -1046,13 +1151,18 @@ impl Hub {
             .get(&assignment.worker)
             .and_then(Option::as_ref)
             .is_some_and(|binding| binding.execution_basis() == assignment.binding);
-        let request = self.tasks.services.request(
-            Identity::Agent {
-                invocation: assignment.source.clone(),
-                operation_id: Some(assignment.tool_operation.clone()),
-            },
-            cancellation,
-        )?;
+        let identity = Identity::Agent {
+            invocation: assignment.source.clone(),
+            operation_id: Some(assignment.tool_operation.clone()),
+        };
+        let request = match execution {
+            Some(execution) => {
+                self.tasks
+                    .services
+                    .request_with_execution(identity, cancellation, execution)
+            }
+            None => self.tasks.services.request(identity, cancellation),
+        }?;
         self.observe_request(&request, async {
             let delivery = match self.prepare_delivery(id, &assignment, &request, advance).await? {
                 Ok(delivery) => delivery,

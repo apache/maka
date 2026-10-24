@@ -54,11 +54,16 @@ const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct SessionRecord<T> {
     pub id: String,
+    /// Effective metadata revision, including shared binding epoch changes.
     pub revision: u64,
     pub created_at: u64,
     pub updated_at: u64,
     pub archived: bool,
+    /// Exact stored configuration, with attachment baselines rather than resolved authority.
     pub configuration: T,
+    /// Current binding captured in the same SQL snapshot as the stored configuration.
+    #[serde(skip)]
+    pub workspace_binding: Option<crate::workspace_bindings::WorkspaceBinding>,
     /// Exact stored configuration basis, independent of execution-driven revision.
     #[serde(skip)]
     pub configuration_digest: String,
@@ -75,6 +80,27 @@ pub struct SessionRecord<T> {
     pub pending_interaction_since: Option<u64>,
     pub lineage: Option<Box<maka_agent_facts::session::Lineage>>,
     pub copy_state: Option<maka_agent_facts::session::CopyState>,
+}
+
+impl<T> SessionRecord<T> {
+    pub fn map_configuration<U>(self, map: impl FnOnce(T) -> U) -> SessionRecord<U> {
+        SessionRecord {
+            id: self.id,
+            revision: self.revision,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+            archived: self.archived,
+            configuration: map(self.configuration),
+            workspace_binding: self.workspace_binding,
+            configuration_digest: self.configuration_digest,
+            read_state: self.read_state,
+            execution: self.execution,
+            last_message: self.last_message,
+            pending_interaction_since: self.pending_interaction_since,
+            lineage: self.lineage,
+            copy_state: self.copy_state,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -310,6 +336,27 @@ pub(crate) async fn insert(
 ) -> Result<(), StoreError> {
     validate_id(id)?;
     validate_time(now)?;
+    // Creation admission must distinguish missing/stale authority from storage
+    // failures. Read the raw binding before resolving effective epochs: a future
+    // attachment epoch is stale, not an arithmetic error that poisons recovery.
+    let configuration_value: serde_json::Value = serde_json::from_str(configuration)?;
+    if let Some(reference) = crate::workspace_bindings::attached(&configuration_value)? {
+        let binding =
+            crate::workspace_bindings::read::<serde_json::Value>(tx, reference.id).await?;
+        let rejection = match binding {
+            None => Some(crate::root_store::CreationRejection::MissingWorkspaceBinding),
+            Some(binding) if binding.reference() != reference => {
+                Some(crate::root_store::CreationRejection::StaleWorkspaceBinding)
+            }
+            Some(binding) => {
+                crate::workspace_bindings::effective_boundary(&configuration_value, &binding)?;
+                None
+            }
+        };
+        if let Some(rejection) = rejection {
+            return Err(StoreError::SessionCreationRejected(rejection));
+        }
+    }
     let reserved: Option<String> =
         sqlx::query_scalar("SELECT fingerprint FROM plugin_sessions WHERE session_id = ?")
             .bind(id)
@@ -361,7 +408,15 @@ pub(crate) async fn read<T: DeserializeOwned>(
         let configuration: String = row.try_get(5)?;
         let configuration_digest =
             maka_agent_facts::artifact::content_digest(configuration.as_bytes());
-        let configuration = serde_json::from_str(&configuration)?;
+        let configuration_value: serde_json::Value = serde_json::from_str(&configuration)?;
+        let workspace_binding =
+            crate::workspace_bindings::resolve(connection, &configuration_value).await?;
+        let revision = crate::workspace_bindings::effective_revision(
+            number(&row, 1)?,
+            &configuration_value,
+            workspace_binding.as_ref(),
+        )?;
+        let configuration = serde_json::from_value(configuration_value)?;
         let lineage = row
             .try_get::<Option<String>, _>(6)?
             .map(|json| serde_json::from_str(&json))
@@ -374,10 +429,7 @@ pub(crate) async fn read<T: DeserializeOwned>(
         let last_message = execution::last_message(connection, id).await?;
         let read_state = read_state::read(connection, id).await?;
         let pending_since: Option<i64> = sqlx::query_scalar(
-            "SELECT MIN(created_at) FROM interaction_requests request
-             WHERE session_id = ? AND NOT EXISTS (
-                 SELECT 1 FROM interaction_outcomes outcome
-                 WHERE outcome.request_id = request.request_id)",
+            "SELECT MIN(created_at) FROM interaction_pending WHERE session_id = ?",
         )
         .bind(id)
         .fetch_one(&mut *connection)
@@ -387,11 +439,12 @@ pub(crate) async fn read<T: DeserializeOwned>(
             .transpose()?;
         Ok(Some(SessionRecord {
             id: row.try_get(0)?,
-            revision: number(&row, 1)?,
+            revision,
             created_at: number(&row, 2)?,
             updated_at: number(&row, 3)?,
             archived: row.try_get(4)?,
             configuration,
+            workspace_binding,
             configuration_digest,
             execution,
             last_message,

@@ -27,7 +27,7 @@ use crate::{
 use maka_agent_facts::{
     artifact::{Artifact, ArtifactKind, ArtifactSource, content_digest},
     event::{EventWrite, Fact, Invocation, InvocationInput, InvocationOutcome, RuntimeEvent},
-    session::CopyPurpose,
+    session::{BranchOrigin, CopyPurpose, Lineage},
     tool_call::ToolCallIdentity,
     tool_output::ToolSuccess,
 };
@@ -35,7 +35,8 @@ use rusqlite::Connection;
 use serde_json::{Value, json};
 use sqlx::sqlite::SqliteConnectOptions;
 
-// Run the real historical migrations, then use the real current writer APIs.
+// Run the real historical migrations. Seed only APIs whose storage contract
+// predates the migration under test; new derived-state readers need current schema.
 // No migration ledger entry or checksum is removed to manufacture an old schema.
 async fn open_at<const VERSION: i64>(path: &Path) -> EventLog {
     let mut lock_path = path.as_os_str().to_os_string();
@@ -49,7 +50,7 @@ async fn open_at<const VERSION: i64>(path: &Path) -> EventLog {
         move |connection| {
             Box::pin(async move {
                 sqlx::raw_sql(
-                    "PRAGMA auto_vacuum = INCREMENTAL; PRAGMA application_id = 1296124754;",
+                    "PRAGMA auto_vacuum = INCREMENTAL; PRAGMA application_id = 1296124754; PRAGMA temp_store = FILE;",
                 )
                 .execute(&mut *connection)
                 .await?;
@@ -64,23 +65,57 @@ async fn open_at<const VERSION: i64>(path: &Path) -> EventLog {
                     .await?;
                 crate::message_sources::initialize(connection).await?;
                 crate::sessions::initialize_execution(connection).await?;
-                crate::transcript::directory::initialize(connection).await
+                crate::transcript::directory::initialize(connection).await?;
+                // Current append maintains these derived counters. Keep them
+                // connection-local so the prior on-disk schema and migration
+                // ledger stay genuine; migration 49 must backfill real tables.
+                // temp_store is already FILE above, so later transcript-cache
+                // initialization cannot discard these temporary tables.
+                sqlx::raw_sql(
+                    "CREATE TEMP TABLE session_usage_totals (
+                        session_id TEXT PRIMARY KEY NOT NULL,
+                        input_known INTEGER NOT NULL, input_missing INTEGER NOT NULL,
+                        output_known INTEGER NOT NULL, output_missing INTEGER NOT NULL
+                     ) STRICT;
+                     CREATE TEMP TABLE session_usage_pending (
+                        request_id TEXT PRIMARY KEY NOT NULL,
+                        invocation_id TEXT NOT NULL, operation_id TEXT NOT NULL UNIQUE,
+                        session_id TEXT NOT NULL
+                     ) STRICT;",
+                )
+                .execute(&mut *connection)
+                .await?;
+                // Current Session projections read active interactions. This
+                // historical fixture keeps that view connection-local: the old
+                // canonical schema stays exact and migration 50 must create and
+                // backfill the real durable membership on the later open.
+                sqlx::raw_sql(
+                    "CREATE TEMP VIEW interaction_pending AS
+                     SELECT request_id, session_id, created_at FROM interaction_requests request
+                     WHERE NOT EXISTS (SELECT 1 FROM interaction_outcomes outcome
+                                       WHERE outcome.request_id=request.request_id);",
+                )
+                .execute(&mut *connection)
+                .await?;
+                let durable: i64 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM main.sqlite_schema
+                     WHERE name IN ('session_usage_totals','session_usage_pending','interaction_pending')",
+                )
+                .fetch_one(&mut *connection)
+                .await?;
+                assert_eq!(durable, 0, "historical fixture gained durable projections");
+                Ok(())
             })
         },
     )
     .await
     .unwrap();
-    let context_cache = Arc::new(crate::context::cache::Cache::default());
-    let install = context_cache.clone();
-    connection
-        .run(move |connection| Box::pin(async move { install.install(connection).await }))
-        .await
-        .unwrap();
     EventLog {
-        context_cache,
+        expected_session: None,
         connection,
         root_owner: None,
-        commits: tokio::sync::watch::channel(0).0,
+        commits: crate::commits::CommitHub::new(0),
+        prepared: crate::context::prepared::lifetime::PreparedRegistry::new(),
         shell_changes: tokio::sync::broadcast::channel(256).0,
     }
 }
@@ -97,30 +132,60 @@ fn event(fact: Fact) -> EventWrite {
     EventWrite::plain(RuntimeEvent::new(invocation(), fact)).unwrap()
 }
 
+// Historical schemas deliberately lack current ingress projections. Seed their
+// literal canonical facts and pre-existing artifact/catalog contracts without
+// routing through the current production ingress or fabricating new tables.
+async fn append_historical(log: &EventLog, write: &EventWrite) {
+    let write = write.clone();
+    log.connection.run(move |connection| Box::pin(async move {
+        use sqlx::Connection as _;
+        let mut tx = connection.begin().await?;
+        let event = write.event();
+        let result = sqlx::query("INSERT INTO event_log(event_id,invocation_id,kind,operation_id,event_json) VALUES(?,?,?,?,?)")
+            .bind(&event.id).bind(&event.invocation.invocation_id).bind(event.fact.kind())
+            .bind(event.fact.operation_id()).bind(serde_json::to_string(event)?)
+            .execute(&mut *tx).await?;
+        let sequence = result.last_insert_rowid() as u64;
+        crate::tool_payloads::insert(&mut tx, &write).await?;
+        crate::artifacts::freeze_tool_media(&mut tx, event, sequence).await?;
+        if matches!(event.fact, Fact::InvocationOpened { .. } | Fact::InvocationEnded { .. }) {
+            crate::sessions::project_execution(&mut tx, sequence).await?;
+            crate::sessions::advance_revision(&mut tx, &event.invocation.session_id).await?;
+        }
+        crate::transcript::directory::record_source(&mut tx, &event.invocation.session_id, sequence).await?;
+        tx.commit().await?;
+        Ok(())
+    })).await.unwrap();
+}
+
 async fn seed_canonical_image(log: &EventLog) -> Artifact {
     log.create_session("original", "create", &json!({"name": "kept"}), 10)
         .await
         .unwrap();
-    log.append(&event(Fact::InvocationOpened {
-        configuration: None,
-        input: InvocationInput::Message {
-            source_messages: Vec::new(),
-            content: "preserve image".into(),
-            request_fingerprint: None,
-        },
-    }))
-    .await
-    .unwrap();
-    log.append(&event(Fact::ToolDispatched {
-        presentation: None,
-        title: None,
-        operation_id: "image".into(),
-        call: ToolCallIdentity::standalone("image-call".into()),
-        name: "Read".into(),
-        input: json!({}),
-    }))
-    .await
-    .unwrap();
+    append_historical(
+        log,
+        &event(Fact::InvocationOpened {
+            configuration: None,
+            input: InvocationInput::Message {
+                source_messages: Vec::new(),
+                content: "preserve image".into(),
+                request_fingerprint: None,
+            },
+        }),
+    )
+    .await;
+    append_historical(
+        log,
+        &event(Fact::ToolDispatched {
+            presentation: None,
+            title: None,
+            operation_id: "image".into(),
+            call: ToolCallIdentity::standalone("image-call".into()),
+            name: "Read".into(),
+            input: json!({}),
+        }),
+    )
+    .await;
     let image = vec![
         71, 73, 70, 56, 57, 97, 1, 0, 1, 0, 128, 0, 0, 0, 0, 0, 255, 255, 255, 33, 249, 4, 1, 0, 0,
         0, 0, 44, 0, 0, 0, 0, 1, 0, 1, 0, 0, 2, 1, 68, 0, 59,
@@ -134,32 +199,75 @@ async fn seed_canonical_image(log: &EventLog) -> Artifact {
     )
     .unwrap();
     let artifact = result.projection_artifacts()[0].artifact().clone();
-    log.append(&result).await.unwrap();
-    log.append(&event(Fact::InvocationEnded {
-        outcome: InvocationOutcome::Completed,
-    }))
-    .await
-    .unwrap();
-    let source = log.get_session::<Value>("original").await.unwrap().unwrap();
-    assert!(matches!(
-        log.copy_session(
-            crate::sessions::SessionCopy {
-                source_session_id: "original".into(),
-                target_session_id: "copied".into(),
-                expected_source_revision: source.revision,
-                purpose: CopyPurpose::Branch {
-                    turn_id: None,
-                    side_conversation: false
-                },
-            },
-            &json!({"name": "copy"}),
-            20
-        )
-        .await
-        .unwrap(),
-        crate::sessions::SessionCopyResult::Committed(_)
-    ));
+    append_historical(log, &result).await;
+    append_historical(
+        log,
+        &event(Fact::InvocationEnded {
+            outcome: InvocationOutcome::Completed,
+        }),
+    )
+    .await;
+    seed_historical_copy(log).await;
     artifact
+}
+
+// This fixture must remain a real pre-40 database. The current copy entrypoint
+// reads durable source/safety state that did not exist then; create the old
+// branch records directly instead of adding fake new tables or migration rows.
+async fn seed_historical_copy(log: &EventLog) {
+    use sqlx::Connection as _;
+    // The current public reader uses a separate SQL owner. Historical seeding
+    // stays on the fixture connection, whose TEMP projections do not alter the
+    // old on-disk schema or leak into a current-schema read owner.
+    let source = log
+        .connection
+        .run(|connection| {
+            Box::pin(async move { crate::sessions::read::<Value>(connection, "original").await })
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    let request = crate::sessions::SessionCopy {
+        source_session_id: "original".into(),
+        target_session_id: "copied".into(),
+        expected_source_revision: source.revision,
+        purpose: CopyPurpose::Branch {
+            turn_id: None,
+            side_conversation: false,
+        },
+    };
+    let request = serde_json::to_string(&request).unwrap();
+    let fingerprint = content_digest(request.as_bytes());
+    let lineage = serde_json::to_string(&Lineage::Branch {
+        origin: BranchOrigin {
+            parent_session_id: "original".into(),
+            turn_id: None,
+        },
+    })
+    .unwrap();
+    log.connection.run(move |connection| Box::pin(async move {
+        let mut tx = connection.begin().await?;
+        crate::sessions::insert(&mut tx,"copied",&fingerprint,r#"{"name":"copy"}"#,20).await?;
+        let through: i64 = sqlx::query_scalar("SELECT MAX(sequence) FROM runtime_events")
+            .fetch_one(&mut *tx).await?;
+        sqlx::query("INSERT INTO session_history_copies(session_id,source_session_id,source_revision,through_sequence,observed_through,request_json,lineage_json,state) VALUES('copied','original',?,?,?,?,?,'committed')")
+            .bind(source.revision as i64).bind(through).bind(through).bind(request).bind(lineage)
+            .execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO session_history_members SELECT 'copied',sequence,NULL FROM runtime_events WHERE event_session='original' AND sequence<=?")
+            .bind(through).execute(&mut *tx).await?;
+        crate::artifacts::history::retain(&mut tx,"original","copied",20).await?;
+        crate::transcript::directory::copy(&mut tx,"original","copied",through as u64).await?;
+        tx.commit().await?;
+        Ok(())
+    })).await.unwrap();
+}
+
+fn current_version() -> i64 {
+    super::MIGRATIONS
+        .iter()
+        .map(|migration| migration.version)
+        .max()
+        .unwrap()
 }
 
 type StoredArtifact = (String, String, i64, String, String, Vec<u8>, Option<i64>);
@@ -206,7 +314,16 @@ async fn migration_36_preserves_canonical_images_and_copies_and_accepts_large_to
     )
     .await
     .unwrap();
-    let facts = serde_json::to_vec(&log.prefix(32, 64 * 1024).await.unwrap()).unwrap();
+    // Compare canonical events across migration, without invoking the new
+    // source-root reader against a deliberately historical schema.
+    let through = log.navigation_fence("original").await.unwrap().unwrap();
+    let facts = serde_json::to_vec(
+        &log.session_events("original", 0, through, 32, 64 * 1024)
+            .await
+            .unwrap()
+            .events,
+    )
+    .unwrap();
     let original = log.list_artifacts("original", 0, 128).await.unwrap();
     let copied = log.list_artifacts("copied", 0, 128).await.unwrap();
     log.close().await.unwrap();
@@ -241,7 +358,7 @@ async fn migration_36_preserves_canonical_images_and_copies_and_accepts_large_to
 
     let log = EventLog::open(&path).await.unwrap();
     assert_eq!(
-        serde_json::to_vec(&log.prefix(32, 64 * 1024).await.unwrap()).unwrap(),
+        serde_json::to_vec(&log.prefix(32, 64 * 1024).await.unwrap().events).unwrap(),
         facts
     );
     for (session, expected) in [("original", original), ("copied", copied)] {
@@ -325,7 +442,7 @@ async fn migration_37_preserves_interaction_receipts_and_relations_without_json_
         outcome: None,
         request: InteractionRequest::ClientCapability {
             tool_use_id: "tool".into(),
-            base_revision: Some(4),
+            basis: None,
             target: GrantTarget {
                 provider_id: "provider".into(),
                 contract_id: "contract".into(),
@@ -346,7 +463,13 @@ async fn migration_37_preserves_interaction_receipts_and_relations_without_json_
         request_id: "permissions".into(),
         request: InteractionRequest::Permissions {
             tool_use_id: Some("tool".into()),
-            base_revision: 4,
+            basis: maka_agent_facts::workspace::PermissionBasis {
+                boundary_revision: 4,
+                binding: maka_agent_facts::workspace::BindingStamp {
+                    id: uuid::Uuid::from_u128(1),
+                    permission_epoch: 0,
+                },
+            },
             request: PermissionRequest {
                 reason: "Original permission basis".into(),
                 command: None,
@@ -358,8 +481,23 @@ async fn migration_37_preserves_interaction_receipts_and_relations_without_json_
         },
         ..settled.clone()
     };
-    for record in [&settled, &pending, &permission] {
+    for record in [&settled, &pending] {
         assert!(log.establish_interaction(record).await.unwrap().matches);
+    }
+    // This pre-binding schema fixture retains original immutable permission
+    // evidence directly; it must not resolve that historical stamp as authority.
+    {
+        let db = Connection::open(&path).unwrap();
+        db.execute(
+            "INSERT INTO interaction_requests VALUES(?,?,?,?)",
+            rusqlite::params![
+                permission.request_id,
+                permission.session_id,
+                permission.created_at as i64,
+                serde_json::to_string(&permission).unwrap(),
+            ],
+        )
+        .unwrap();
     }
     log.commit_interaction_outcome(
         "settled",
@@ -480,7 +618,7 @@ async fn migration_37_preserves_interaction_receipts_and_relations_without_json_
             0
         ))
         .unwrap(),
-        39
+        current_version()
     );
     for ((table, columns), original) in tables.iter().zip(original) {
         assert_eq!(rows(&db, table, columns), original);
@@ -719,7 +857,7 @@ async fn migration_37_preserves_artifact_metadata_and_copied_image_provenance() 
             0
         ))
         .unwrap(),
-        39
+        current_version()
     );
     assert_eq!(artifacts(&db), prior);
     assert_eq!(mappings(&db), provenance);

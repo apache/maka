@@ -19,7 +19,7 @@
 
 use maka_agent_facts::language::Language;
 
-use crate::{RunContext, RunError, RunInput};
+use crate::{RunError, RunInput, RunSettings};
 use maka_agent_facts::composition::FrozenComposition;
 use maka_agent_facts::composition::RequestComposition;
 use maka_model::prompt::Message;
@@ -64,8 +64,8 @@ impl Surface {
     pub fn capture(
         tools: &RequestTools<'_>,
         models: &maka_model::ModelExecutor,
-        input: &RunContext,
-        source: &maka_event_log::context::ModelContextSource,
+        input: &RunSettings,
+        source: &maka_event_log::context::ContextView,
         prior_unknown_notice: Option<&str>,
     ) -> Result<Self, RunError> {
         let mut system = input
@@ -134,19 +134,14 @@ impl Surface {
         })
     }
 
-    pub fn apply(&self, mut history: Vec<Message>) -> Vec<Message> {
-        if matches!(history.first(), Some(Message::System { .. })) {
-            history.remove(0);
-        }
-        if let Some(system) = &self.system {
-            history.insert(
-                0,
-                Message::System {
-                    content: system.clone(),
-                    provider_options: None,
-                },
-            );
-        }
+    pub fn apply(
+        &self,
+        mut history: crate::prepared_prompt::PreparedPrompt,
+    ) -> crate::prepared_prompt::PreparedPrompt {
+        history.set_system(self.system.as_ref().map(|system| Message::System {
+            content: system.clone(),
+            provider_options: None,
+        }));
         history
     }
 }

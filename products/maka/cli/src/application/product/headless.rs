@@ -21,9 +21,9 @@ pub(super) mod update;
 use super::{HostError, Input, author, installation, launch, packages};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use maka_event_log::{
-    EventLog,
     applications::{LoadedDeployment, PreparedApplication, launch::Launch},
     root::RootOwner,
+    root_store::RootStore,
 };
 use maka_host_runtime::{
     DirectoryRootSpec,
@@ -61,7 +61,7 @@ struct Preparation {
 
 /// Bind an explicitly committed generic Host without reauthoring its source.
 pub(crate) async fn select_committed_host(
-    store: &EventLog,
+    store: &RootStore,
     request: &maka_host_runtime::application::host::startup::Request,
 ) -> Result<(), HostError> {
     if let Some(record) = store.application_launch().await? {
@@ -170,7 +170,7 @@ pub(crate) async fn open_host(
     }
 }
 async fn prepare(
-    store: &EventLog,
+    store: &RootStore,
     roots: Roots,
 ) -> Result<(LoadedDeployment, Selection), HostError> {
     // A fresh Host is already authored from the current bundle.
@@ -209,7 +209,7 @@ async fn prepare(
 // Explicit update recovery must finish only its frozen target, without starting
 // another update from a potentially newer bundle.
 async fn prepare_saved(
-    store: &EventLog,
+    store: &RootStore,
     roots: Roots,
 ) -> Result<(LoadedDeployment, Selection), HostError> {
     if store.application_launch().await?.is_none() {
@@ -256,7 +256,7 @@ async fn prepare_saved(
     Ok((loaded, selection))
 }
 async fn begin(
-    store: &EventLog,
+    store: &RootStore,
     roots: Option<Vec<DirectoryRootSpec>>,
 ) -> Result<(Uuid, Selection, PreparedApplication), HostError> {
     let home = crate::serve::home_directory()?;
@@ -309,7 +309,7 @@ async fn begin(
 }
 
 async fn apply_directories(
-    store: &EventLog,
+    store: &RootStore,
     deployment: Uuid,
     roots: Vec<DirectoryRootSpec>,
 ) -> Result<(), HostError> {
@@ -531,7 +531,7 @@ mod tests {
         let root = directory.path().join("root");
         let workspace = directory.path().join("workspace");
         std::fs::create_dir(&workspace).unwrap();
-        let store = EventLog::for_root(Arc::new(RootOwner::create(&root, &namespaces).unwrap()))
+        let store = RootStore::open(Arc::new(RootOwner::create(&root, &namespaces).unwrap()))
             .await
             .unwrap();
         let roots = vec![DirectoryRootSpec {

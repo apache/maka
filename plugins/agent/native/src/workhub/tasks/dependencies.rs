@@ -112,6 +112,7 @@ impl Hub {
         id: &str,
         assignment: &Assignment,
         advance: bool,
+        execution: Option<Arc<dyn maka_agent_facts::tools::ExecutionCustody>>,
         cancellation: CancellationToken,
     ) -> Result<Result<Option<String>, TaskStatus>, String> {
         if assignment.dependencies.is_empty() && assignment.graph.is_none() {
@@ -127,7 +128,10 @@ impl Hub {
                 }));
             }
             if assignment.graph.is_some() {
-                let capture = match self.graph_input(assignment, cancellation.clone()).await? {
+                let capture = match self
+                    .graph_input(assignment, execution.as_deref(), cancellation.clone())
+                    .await?
+                {
                     Ok(message) => Capture::Ready { message },
                     Err(TaskStatus::Rejected { reason }) => Capture::Rejected { reason },
                     Err(status) => return Ok(Err(status)),
@@ -138,7 +142,9 @@ impl Hub {
                     Capture::Rejected { reason } => Err(TaskStatus::Rejected { reason }),
                 });
             }
-            let language = self.source_language(&assignment.source).await?;
+            let language = self
+                .source_language(&assignment.source, execution.as_deref())
+                .await?;
             let mut message = assignment.input["message"]
                 .as_str()
                 .ok_or("workhub_input_invalid")?
@@ -157,10 +163,11 @@ impl Hub {
                         return Err("workhub_cancelled".into());
                     }
                     // A read never recursively advances another dependency.
-                    let value = Box::pin(self.task(
+                    let value = Box::pin(self.task_with_execution(
                         dependency,
                         false,
                         cursor.clone(),
+                        execution.clone(),
                         cancellation.clone(),
                     ))
                     .await?;

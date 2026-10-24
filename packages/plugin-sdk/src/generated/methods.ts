@@ -231,6 +231,10 @@ export type SettingsUsageOutput_RejectionKind =
   | 'exclusive_conflict'
   | 'cancelled';
 export type SettingsUsageOutput_UsageToolStatus = 'success' | 'error' | 'unknown';
+/**
+ * Breakdown selected for a bounded summary page.
+ */
+export type SettingsUsageSummaryOutput_UsageGroup = 'byProvider' | 'byModel' | 'byTool';
 export type TerminalControlInput_RawAction =
   | {
       text: string;
@@ -895,22 +899,22 @@ export interface ServiceMethods {
       mode: 'query';
       input: Runtime.SettingsUsageRead;
       output: {
-        through: number;
+        through: SettingsUsageOutput_UsageFence;
         /**
          * @maxItems 32
          */
         attempts: SettingsUsageOutput_UsageActivity[];
         total: number;
-        nextOffset: number | null;
+        nextCursor: SettingsUsageOutput_UsageActivityCursor | null;
       };
     };
     usageSummary: {
       mode: 'query';
       input: Runtime.SettingsUsageSummaryRead;
       output: {
-        through: number;
+        through: SettingsUsageSummaryOutput_UsageFence;
         summary: SettingsUsageSummaryOutput_SettingsUsageTotals;
-        nextOffset: number | null;
+        nextCursor: SettingsUsageSummaryOutput_UsageGroupCursor | null;
       };
     };
   };
@@ -1254,6 +1258,14 @@ export interface SettingsUpdateInput_ModelModalities {
   input: SettingsUpdateInput_ModelModality[];
   output: SettingsUpdateInput_ModelModality[];
 }
+export interface SettingsUsageOutput_UsageFence {
+  stateDomain: string;
+  /**
+   * @minItems 8
+   * @maxItems 8
+   */
+  partitions: [number, number, number, number, number, number, number, number];
+}
 export interface SettingsUsageOutput_UsageModelAttempt {
   requestId: string;
   origin: SettingsUsageOutput_UsageOrigin;
@@ -1325,6 +1337,19 @@ export interface SettingsUsageOutput_ToolCallIdentity {
   tool_call_id: string;
   origin: SettingsUsageOutput_ToolOrigin;
   [k: string]: unknown | undefined;
+}
+export interface SettingsUsageOutput_UsageActivityCursor {
+  completedAt: number;
+  partition: number;
+  requestId: string;
+}
+export interface SettingsUsageSummaryOutput_UsageFence {
+  stateDomain: string;
+  /**
+   * @minItems 8
+   * @maxItems 8
+   */
+  partitions: [number, number, number, number, number, number, number, number];
 }
 export interface SettingsUsageSummaryOutput_SettingsUsageTotals {
   models: SettingsUsageSummaryOutput_UsageModelTotals;
@@ -1411,6 +1436,13 @@ export interface SettingsUsageSummaryOutput_UsageModelSummary {
 export interface SettingsUsageSummaryOutput_UsageToolSummary {
   name: string;
   totals: SettingsUsageSummaryOutput_UsageToolTotals;
+}
+export interface SettingsUsageSummaryOutput_UsageGroupCursor {
+  group: SettingsUsageSummaryOutput_UsageGroup;
+  /**
+   * None is the unknown-provider group, not the beginning of pagination.
+   */
+  key: string | null;
 }
 /**
  * Durable recipient, not a registration lease. Re-loading the same package can

@@ -28,6 +28,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
+mod prepared;
+pub(super) use prepared::prepare_input;
+
 pub(super) fn request(kind: ProviderKind, base_url: String) -> ModelRequest {
     ModelRequest {
         language: maka_agent_facts::language::Language::En,
@@ -42,7 +45,7 @@ pub(super) fn request(kind: ProviderKind, base_url: String) -> ModelRequest {
             network: Default::default(),
             body_overlay: None,
         },
-        prompt: vec![maka_model::prompt::Message::user("hello")],
+        prompt: vec![maka_model::prompt::Message::user("hello")].into(),
         tools: vec![maka_model::ToolDefinition {
             freeform: None,
             output_schema: None,
@@ -57,35 +60,9 @@ pub(super) fn request(kind: ProviderKind, base_url: String) -> ModelRequest {
 }
 
 pub(super) async fn read_request(socket: &mut TcpStream) -> String {
-    let mut bytes = Vec::new();
-    let boundary = loop {
-        let mut chunk = [0; 4096];
-        let count = socket.read(&mut chunk).await.unwrap();
-        assert_ne!(count, 0);
-        bytes.extend_from_slice(&chunk[..count]);
-        assert!(bytes.len() < 64 * 1024);
-        if let Some(at) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
-            break at + 4;
-        }
-    };
-    let head = String::from_utf8_lossy(&bytes[..boundary]);
-    let length: usize = head
-        .lines()
-        .find_map(|line| {
-            let (key, value) = line.split_once(':')?;
-            key.eq_ignore_ascii_case("content-length")
-                .then(|| value.trim().parse().unwrap())
-        })
-        .unwrap();
-    while bytes.len() < boundary + length {
-        let mut chunk = [0; 4096];
-        let count = socket.read(&mut chunk).await.unwrap();
-        assert_ne!(count, 0);
-        bytes.extend_from_slice(&chunk[..count]);
-    }
-    let mut request: String = bytes[..boundary].iter().copied().map(char::from).collect();
-    request.push_str(std::str::from_utf8(&bytes[boundary..]).unwrap());
-    request
+    let (mut head, bytes) = crate::http_request(socket).await;
+    head.push_str(std::str::from_utf8(&bytes).unwrap());
+    head
 }
 
 fn sse(values: &[Value]) -> String {
@@ -128,7 +105,7 @@ fn fixtures(kind: ProviderKind, text: &str) -> (String, String) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn large_native_requests_reserve_the_queue_without_a_body_size_cap() {
+async fn large_native_requests_have_no_artificial_body_size_cap() {
     tokio::time::timeout(Duration::from_secs(60), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}/v1", listener.local_addr().unwrap());
@@ -148,7 +125,7 @@ async fn large_native_requests_reserve_the_queue_without_a_body_size_cap() {
         for large in [true, false] {
             let mut input = request(ProviderKind::OpenaiChatCompletions, base.clone());
             if large {
-                input.prompt = vec![maka_model::prompt::Message::user("x".repeat(33 * 1024 * 1024))];
+                input.prompt = vec![maka_model::prompt::Message::user("x".repeat(33 * 1024 * 1024))].into();
             }
             let mut stream = models.stream(input, CancellationToken::new()).await.unwrap();
             let mut output = StepBuilder::for_step("large-adapter-request").unwrap();
@@ -207,7 +184,7 @@ async fn native_text_and_tool_streams_cross_real_http_before_response_finishes()
             customized.provider.headers.insert("X-Latin-1".into(), "ÿ".into());
             if matches!(kind, ProviderKind::Anthropic) {
                 customized.provider.headers.insert("Anthropic-Version".into(), "2023-06-01".into());
-                customized.prompt.push(serde_json::from_value(json!({"role":"user","content":[{"type":"file","mediaType":"audio/wav","data":{"type":"data","data":"YXVkaW8="}}]})).unwrap());
+                crate::edit_prompt(&mut customized.prompt, |messages| messages.push(serde_json::from_value(json!({"role":"user","content":[{"type":"file","mediaType":"audio/wav","data":{"type":"data","data":"YXVkaW8="}}]})).unwrap()));
             }
             let mut stream = executor.stream(customized, CancellationToken::new()).await.unwrap();
             let mut events = Vec::new();
@@ -368,20 +345,20 @@ async fn chat_tool_media_follow_the_complete_parallel_result_group_on_the_wire()
             });
             let append_user = matches!(kind, ProviderKind::OpenaiChatCompletions);
             let mut input = request(kind, base);
-            input.prompt.push(Message::Assistant {
+            crate::edit_prompt(&mut input.prompt, |messages| messages.push(Message::Assistant {
                 content: ["first", "second"].into_iter().map(|id| AssistantPart::ToolCall {
                     tool_call_id: id.into(), tool_name: "echo".into(), input: maka_agent_facts::model::ToolInput::Json(json!({})),
                     provider_executed: None, provider_options: None,
                 }).collect(),
                 provider_options: None,
-            });
+            }));
             for id in ["first", "second"] {
-                input.prompt.push(Message::tool(id, "echo", ToolOutput::Content(vec![
+                crate::edit_prompt(&mut input.prompt, |messages| messages.push(Message::tool(id, "echo", ToolOutput::Content(vec![
                     ContentPart::text(format!("result-{id}")),
                     ContentPart::File { data: FileData::Data("aW1hZ2U=".into()), media_type: mime.into(), provider_options: None },
-                ])));
+                ]))));
             }
-            if append_user { input.prompt.push(Message::user("compare these images")); }
+            if append_user { crate::edit_prompt(&mut input.prompt, |messages| messages.push(Message::user("compare these images"))); }
             let mut stream = executor.stream(input, CancellationToken::new()).await.unwrap();
             while let Some(event) = stream.next().await { event.unwrap(); }
             let body = server.await.unwrap();
@@ -756,12 +733,12 @@ async fn native_tool_history_projects_invalid_json_and_unwraps_valid_arguments_o
             let raw = " {\"n\":\n";
             let diagnostic = format!("Invalid JSON tool arguments: EOF while parsing a value; original arguments: {}", json!(raw));
             let mut input = request(kind.clone(), base);
-            input.prompt.push(Message::Assistant { content: vec![
+            crate::edit_prompt(&mut input.prompt, |messages| messages.push(Message::Assistant { content: vec![
                 AssistantPart::ToolCall { tool_call_id:"broken".into(), tool_name:"echo".into(), input:ToolInput::InvalidJson {raw:raw.into()}, provider_executed:Some(false), provider_options:None },
                 AssistantPart::ToolCall { tool_call_id:"normal".into(), tool_name:"echo".into(), input:ToolInput::Json(json!({"text":"original","n":7})), provider_executed:None, provider_options:None },
-            ], provider_options:None });
-            input.prompt.push(Message::tool("broken", "echo", ToolOutput::ErrorText(diagnostic.clone())));
-            input.prompt.push(Message::tool("normal", "echo", ToolOutput::Json(json!({"text":"original","n":7}))));
+            ], provider_options:None }));
+            crate::edit_prompt(&mut input.prompt, |messages| messages.push(Message::tool("broken", "echo", ToolOutput::ErrorText(diagnostic.clone()))));
+            crate::edit_prompt(&mut input.prompt, |messages| messages.push(Message::tool("normal", "echo", ToolOutput::Json(json!({"text":"original","n":7})))));
             let mut stream = executor.stream(input, CancellationToken::new()).await.unwrap();
             let mut builder = StepBuilder::default();
             while let Some(event) = stream.next().await { builder.push(event.unwrap().event).unwrap(); }
@@ -840,4 +817,94 @@ async fn error_body_deadlines_and_network_loss_keep_distinct_causes() {
             }
         }
     }).await.expect("body errors preserve the actual failure cause");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_single_large_provider_delta_is_split_without_a_response_size_cap() {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let expected = "x".repeat(33 * 1024 * 1024) + "中文🙂";
+        let (first, last) = fixtures(ProviderKind::OpenaiChatCompletions, &expected);
+        let body = first + &last;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}/v1", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            read_request(&mut socket).await;
+            socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).as_bytes()).await.unwrap();
+            socket.write_all(body.as_bytes()).await.unwrap();
+        });
+        let models = ModelExecutor::new(Duration::from_secs(30)).unwrap();
+        let mut stream = models.stream(request(ProviderKind::OpenaiChatCompletions,base),CancellationToken::new()).await.unwrap();
+        let mut actual=String::new();
+        let mut step=StepBuilder::default();
+        while let Some(event)=stream.next().await {
+            let event=event.unwrap().event;
+            if let ModelEvent::PartDelta {text,..}=&event {
+                assert!(text.len()<=8*1024, "journal observations stay bounded");
+                actual.push_str(text);
+            }
+            step.push(event).unwrap();
+        }
+        assert_eq!(actual,expected);
+        step.finish().unwrap();
+        stream.cancel_and_wait().await.unwrap();
+        server.await.unwrap();
+    }).await.expect("one large atomic delta is consumed and cleaned up");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prepared_native_upload_never_opens_semantic_history() {
+    use maka_model::prompt::Message;
+
+    for kind in [ProviderKind::OpenaiChatCompletions, ProviderKind::Anthropic] {
+        tokio::time::timeout(Duration::from_secs(20), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}/v1", listener.local_addr().unwrap());
+        let response_kind = kind.clone();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let wire = read_request(&mut socket).await;
+            let first_body = wire.split_once("\r\n\r\n").unwrap().1.to_owned();
+            socket.write_all(b"HTTP/1.1 307 Temporary Redirect\r\nLocation: /v1/redirected\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
+            drop(socket);
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let replay = read_request(&mut socket).await;
+            assert_eq!(replay.split_once("\r\n\r\n").unwrap().1, first_body, "redirect must replay the identical captured wire view");
+            let body: Value = serde_json::from_str(&first_body).unwrap();
+            let (first, last) = fixtures(response_kind, "OK");
+            let response = first + &last;
+            socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",response.len()).as_bytes()).await.unwrap();
+            body
+        });
+        let mut input = request(kind.clone(), base);
+        input.provider_options = json!({"openai":{"temperature":0.25}});
+        input.provider.body_overlay = Some(serde_json::from_value(json!({"routing":"captured"})).unwrap());
+        let messages = vec![Message::System { content: "captured instructions".into(), provider_options: None }, Message::user("persisted 中文\n\"body\""), Message::user("complete suffix")];
+        input.prompt = messages.into();
+        let reads = prepare_input(&mut input);
+        let executor = ModelExecutor::new(Duration::from_secs(10)).unwrap();
+        let mut stream = executor.stream(input, CancellationToken::new()).await.unwrap();
+        while let Some(event) = stream.next().await { event.unwrap(); }
+        let body = server.await.unwrap();
+        reads.assert_wire_only();
+        if matches!(kind, ProviderKind::Anthropic) {
+            assert_eq!(body["system"], json!([{"type":"text","text":"captured instructions"}]));
+            assert_eq!(body["messages"], json!([{"role":"user","content":[
+                {"type":"text","text":"persisted 中文\n\"body\""},
+                {"type":"text","text":"complete suffix"}
+            ]}]));
+            assert_eq!(body["tools"][0]["name"], "echo");
+        } else {
+            assert_eq!(body["messages"], json!([
+                {"role":"system","content":"captured instructions"},
+                {"role":"user","content":"persisted 中文\n\"body\""},
+                {"role":"user","content":"complete suffix"}
+            ]));
+            assert_eq!(body["temperature"], 0.25);
+            assert_eq!(body["tools"][0]["function"]["name"], "echo");
+        }
+        assert_eq!(body["routing"], "captured");
+        assert_eq!(body["max_tokens"], 128);
+    }).await.unwrap();
+    }
 }

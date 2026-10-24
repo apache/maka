@@ -155,7 +155,9 @@ async fn settings_confirmed_validation_rejections_do_not_downgrade_sql_uncertain
         assert_eq!(result, json!({"kind":"rejected","reason":reason}));
         let observation = fixture
             .store
-            .operation_observation(&reference)
+            .operation(&reference)
+            .unwrap()
+            .operation_observation()
             .await
             .unwrap()
             .unwrap();
@@ -207,7 +209,9 @@ async fn settings_confirmed_validation_rejections_do_not_downgrade_sql_uncertain
     ));
     let observation = fixture
         .store
-        .operation_observation(&reply.reference)
+        .operation(&reply.reference)
+        .unwrap()
+        .operation_observation()
         .await
         .unwrap()
         .unwrap();
@@ -473,29 +477,36 @@ async fn root_settings_create_partial_edit_save_capture_and_stale_vault_basis_us
             "SELECT target || request_fingerprint || phase FROM oauth_login_receipts",
         ),
     ] {
-        let db = rusqlite::Connection::open_with_flags(
-            fixture.root.join(database),
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-        )
-        .unwrap();
-        let mut statement = db.prepare(sql).unwrap();
-        let rows = statement
-            .query_map([], |row| row.get::<_, String>(0))
-            .unwrap();
+        let paths = if database == "runtime-rust.sqlite" {
+            fixture.runtime_databases()
+        } else {
+            vec![fixture.root.join(database)]
+        };
         let mut count = 0;
-        for row in rows {
-            count += 1;
-            let row = row.unwrap();
-            for secret in [
-                KEY,
-                "old-stale-capture",
-                "stale-generation-key",
-                "private-resource-metadata-marker",
-            ] {
-                assert!(
-                    !row.contains(secret),
-                    "private payload entered persisted journal"
-                );
+        for path in paths {
+            let db = rusqlite::Connection::open_with_flags(
+                path,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+            .unwrap();
+            let mut statement = db.prepare(sql).unwrap();
+            let rows = statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .unwrap();
+            for row in rows {
+                count += 1;
+                let row = row.unwrap();
+                for secret in [
+                    KEY,
+                    "old-stale-capture",
+                    "stale-generation-key",
+                    "private-resource-metadata-marker",
+                ] {
+                    assert!(
+                        !row.contains(secret),
+                        "private payload entered persisted journal"
+                    );
+                }
             }
         }
         assert!(count > 0, "actual journal must contain persisted facts");
@@ -503,7 +514,9 @@ async fn root_settings_create_partial_edit_save_capture_and_stale_vault_basis_us
     assert!(
         fixture
             .store
-            .operation_observation(&reference)
+            .operation(&reference)
+            .unwrap()
+            .operation_observation()
             .await
             .unwrap()
             .is_some()
@@ -539,7 +552,7 @@ async fn assistant_preferences_and_capability_guidance_freeze_at_message_accepta
             "mutation":{"kind":"personalization","displayName":"M4n5ter"}
         }), None).await;
         assert_eq!(saved["kind"], "committed");
-        let observation = fixture.store.operation_observation(&reference).await.unwrap().unwrap();
+        let observation = fixture.store.operation(&reference).unwrap().operation_observation().await.unwrap().unwrap();
         assert_eq!(observation.outcome, OperationOutcome::Returned { value: saved.clone() });
         let (stale, _) = mutate(&fixture, "updateAssistantPreferences", json!({
             "expectedRevision":initial["revision"],
@@ -588,7 +601,7 @@ async fn assistant_preferences_and_capability_guidance_freeze_at_message_accepta
         assert_eq!(privacy["kind"], "committed");
         assert_eq!(query(&fixture, "assistantPreferences", json!({})).await["incognitoActive"], true);
         assert!(fixture.config.runtime_policy().await.unwrap().policy.privacy.incognito_active);
-        assert_eq!(fixture.store.operation_observation(&reference).await.unwrap().unwrap().outcome,
+        assert_eq!(fixture.store.operation(&reference).unwrap().operation_observation().await.unwrap().unwrap().outcome,
             OperationOutcome::Returned { value: privacy });
         let (stale, _) = mutate(&fixture, "updateAssistantPreferences", json!({
             "expectedRevision":current["revision"],
@@ -604,7 +617,7 @@ async fn assistant_preferences_and_capability_guidance_freeze_at_message_accepta
         assert_eq!(disabled["kind"], "committed");
         assert_eq!(query(&fixture, "assistantPreferences", json!({})).await["shellTitles"], false);
         assert!(!fixture.config.runtime_policy().await.unwrap().policy.shell.titles);
-        assert_eq!(fixture.store.operation_observation(&reference).await.unwrap().unwrap().outcome,
+        assert_eq!(fixture.store.operation(&reference).unwrap().operation_observation().await.unwrap().unwrap().outcome,
             OperationOutcome::Returned { value: disabled });
         let (stale, _) = mutate(&fixture, "updateAssistantPreferences", json!({
             "expectedRevision":current["revision"],
@@ -629,7 +642,7 @@ async fn native_usage_keeps_request_quotes_and_settlement_fences_across_price_ch
         });
         let (saved, reference) = mutate(&fixture, "updatePrice", price(page["revision"].clone(), 10.0), None).await;
         assert_eq!(saved["result"]["kind"], "committed");
-        assert_eq!(fixture.store.operation_observation(&reference).await.unwrap().unwrap().outcome,
+        assert_eq!(fixture.store.operation(&reference).unwrap().operation_observation().await.unwrap().unwrap().outcome,
             OperationOutcome::Returned { value: saved.clone() });
         let session = fixture.create("Physical usage").await;
         fixture.send(&session).await.unwrap();
@@ -643,7 +656,7 @@ async fn native_usage_keeps_request_quotes_and_settlement_fences_across_price_ch
         response(&mut first).await;
         fixture.drained().await;
         let range = json!({"from":0,"to":9_007_199_254_740_991u64,"sessionId":session,"through":null});
-        let original = query(&fixture, "usageSummary", json!({"range":range,"group":"byProvider","offset":0})).await;
+        let original = query(&fixture, "usageSummary", json!({"range":range,"group":"byProvider","cursor":null})).await;
         assert_eq!(original["summary"]["models"]["calls"], 1);
         let cost = original["summary"]["models"]["cost"]["knownUsd"].as_f64().unwrap();
         assert!((cost - 0.00005).abs() < 1e-12, "first request must retain original quote: {original}");
@@ -654,11 +667,11 @@ async fn native_usage_keeps_request_quotes_and_settlement_fences_across_price_ch
         request(&mut second).await;
         response(&mut second).await;
         fixture.drained().await;
-        assert_eq!(query(&fixture, "usageSummary", json!({"range":frozen,"group":"byProvider","offset":0})).await, original);
-        let activity = query(&fixture, "usage", json!({"range":frozen,"selection":{"kind":null,"status":null,"search":""},"offset":0})).await;
+        assert_eq!(query(&fixture, "usageSummary", json!({"range":frozen,"group":"byProvider","cursor":null})).await, original);
+        let activity = query(&fixture, "usage", json!({"range":frozen,"selection":{"kind":null,"status":null,"search":""},"cursor":null})).await;
         assert_eq!(activity["total"], 1);
         assert_eq!(activity["attempts"][0]["attempt"]["quote"]["pricing"]["inputUsdPer1M"], 10.0);
-        let latest = query(&fixture, "usageSummary", json!({"range":range,"group":"byProvider","offset":0})).await;
+        let latest = query(&fixture, "usageSummary", json!({"range":range,"group":"byProvider","cursor":null})).await;
         assert_eq!(latest["summary"]["models"]["calls"], 2);
         assert_eq!(latest["summary"]["models"]["input"]["known"], 2);
         assert_eq!(latest["summary"]["models"]["output"]["known"], 4);
@@ -694,7 +707,7 @@ async fn host_proxy_settings_route_model_requests_and_keep_atomic_credential_rec
         assert_eq!(current["credential"]["configured"], true);
         assert!(!current.to_string().contains("private-proxy-password"));
         assert_eq!(fixture.config.network_configuration().await.unwrap().password.as_deref(), Some("private-proxy-password"));
-        assert_eq!(fixture.store.operation_observation(&reference).await.unwrap().unwrap().outcome,
+        assert_eq!(fixture.store.operation(&reference).unwrap().operation_observation().await.unwrap().unwrap().outcome,
             OperationOutcome::Returned { value: saved.clone() });
         let (stale, _) = mutate(&fixture, "updateNetwork", update, Some("different-password")).await;
         assert_eq!(stale["result"]["kind"], "revision_conflict");
@@ -721,7 +734,7 @@ async fn host_proxy_settings_route_model_requests_and_keep_atomic_credential_rec
         stale_credential["expectedPolicyRevision"] = removed["result"]["revision"].clone();
         let (stale, _) = mutate(&fixture, "updateNetwork", stale_credential, None).await;
         assert_eq!(stale["result"]["kind"], "credential_stale");
-        let observation = fixture.store.operation_observation(&reference).await.unwrap().unwrap();
+        let observation = fixture.store.operation(&reference).unwrap().operation_observation().await.unwrap().unwrap();
         assert_eq!(observation.outcome, OperationOutcome::Returned { value: saved });
         fixture.app.shutdown().await.unwrap();
         fixture.config.shutdown().await.unwrap();

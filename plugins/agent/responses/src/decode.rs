@@ -474,11 +474,23 @@ impl Decoder {
         }
         Ok(())
     }
-    fn final_item(&mut self, item: Item, out: &mut Vec<ModelEvent>) -> Result<()> {
+    fn final_item(
+        &mut self,
+        item: Item,
+        replay: Option<Value>,
+        out: &mut Vec<ModelEvent>,
+    ) -> Result<()> {
         self.observe(&item, false, out)?;
         if self.done.contains(item.identity()?.0) {
             return Err(Self::invalid("duplicate Responses item finalization"));
         }
+        let options = |id: &str| {
+            let mut options = json!({"openai":{"itemId":id}});
+            if let Some(replay) = &replay {
+                options["openai"]["responsesReplay"] = replay.clone();
+            }
+            options
+        };
         match item {
             Item::Message { id, content } => {
                 let mut text = String::new();
@@ -494,13 +506,7 @@ impl Decoder {
                 if self.done.contains(&id) {
                     return Ok(());
                 }
-                self.finish_part(
-                    id.clone(),
-                    text,
-                    TextKind::Text,
-                    Some(json!({"openai":{"itemId":id}})),
-                    out,
-                )?;
+                self.finish_part(id.clone(), text, TextKind::Text, Some(options(&id)), out)?;
             }
             Item::Reasoning {
                 id,
@@ -532,7 +538,7 @@ impl Decoder {
                     }
                     Some(_) => None,
                     None => {
-                        let mut value = json!({"openai":{"itemId":id}});
+                        let mut value = options(&id);
                         if let Some(encrypted) = encrypted_content {
                             value["openai"]["reasoningEncryptedContent"] = json!(encrypted);
                         }
@@ -560,7 +566,7 @@ impl Decoder {
                     name: crate::request::local_name(&name).into(),
                     input,
                     provider_executed: false,
-                    provider_options: Some(json!({"openai":{"itemId":id}})),
+                    provider_options: Some(options(&id)),
                 }));
             }
             Item::Custom {
@@ -583,7 +589,11 @@ impl Decoder {
                     name: crate::request::local_name(&name).into(),
                     input: ToolInput::Json(json!(input)),
                     provider_executed: false,
-                    provider_options: Some(json!({"openai":{"itemId":id,"toolKind":"custom"}})),
+                    provider_options: Some({
+                        let mut options = options(&id);
+                        options["openai"]["toolKind"] = json!("custom");
+                        options
+                    }),
                 }));
             }
             Item::Search { id, action, status } => {
@@ -601,12 +611,13 @@ impl Decoder {
                 // step assembler then keeps the outcome unknown.
                 if matches!(status.as_str(), "completed" | "failed") {
                     self.pending_effects.remove(&id);
+                    let provider_options = Some(options(&id));
                     out.push(ModelEvent::ProviderToolResult {
                         id,
                         name,
                         output: json!({"action":action}),
                         is_error: status == "failed",
-                        provider_options: None,
+                        provider_options,
                     });
                 }
             }
@@ -640,6 +651,26 @@ impl Decoder {
                 ""
             }; // Unknown remote effects have no replayable completion contract.
             self.pending_effects.insert(id.into());
+        }
+        let mut replay = BTreeMap::new();
+        if self.plaintext.is_none() {
+            let finalized = value["type"] == "response.output_item.done";
+            let values: Vec<&Value> = if finalized {
+                vec![&value["item"]]
+            } else {
+                value["response"]["output"]
+                    .as_array()
+                    .map(|items| items.iter().collect())
+                    .unwrap_or_default()
+            };
+            for item in values {
+                if let Some(id) = item["id"].as_str()
+                    && !self.done.contains(id)
+                    && let Some(template) = crate::replay::capture(item)
+                {
+                    replay.insert(id.to_owned(), template);
+                }
+            }
         }
         let event: Event = serde_json::from_value(value)
             .map_err(|e| Error::Invalid(format!("invalid Responses event: {e}")))?;
@@ -677,7 +708,10 @@ impl Decoder {
                     Item::Other => return Err(Self::invalid("unsupported Responses output item")),
                 }
             }
-            Event::Done { item } => self.final_item(item, &mut out)?,
+            Event::Done { item } => {
+                let template = replay.remove(item.identity()?.0);
+                self.final_item(item, template, &mut out)?;
+            }
             Event::Text { item_id, delta } => {
                 self.delta(item_id, delta, TextKind::Text, &mut out)?
             }
@@ -746,7 +780,8 @@ impl Decoder {
                     if id.is_some_and(|id| self.done.contains(id)) {
                         continue;
                     }
-                    self.final_item(item, &mut out)?;
+                    let template = replay.remove(item.identity()?.0);
+                    self.final_item(item, template, &mut out)?;
                 }
                 if self.items.len() != self.done.len() || !self.open.is_empty() {
                     return Err(Self::invalid("Responses completed with unfinished output"));
@@ -866,7 +901,7 @@ mod tests {
         assert_eq!(
             replay["input"],
             json!([
-                {"type":"custom_tool_call","call_id":"call","name":"exec","input":source},
+                {"type":"custom_tool_call","id":"item","call_id":"call","name":"exec","input":source},
                 {"type":"custom_tool_call_output","call_id":"call","output":"done"}
             ])
         );
@@ -919,7 +954,9 @@ mod tests {
             assert_eq!(call.name, "echo");
             assert_eq!(
                 call.provider_options,
-                Some(json!({"openai":{"itemId":"item"}}))
+                Some(
+                    json!({"openai":{"itemId":"item","responsesReplay":{"version":1,"fields":{"type":"function_call","id":"item","call_id":"call","name":"echo"}}}})
+                )
             );
         }
         for arguments in [json!(null), json!(7), json!({}), json!([])] {
@@ -1013,13 +1050,13 @@ mod tests {
         assert_eq!(
             encoded["input"],
             json!([
-                {"type":"function_call","call_id":"function","name":"exec","arguments":json!(source).to_string()},
+                {"type":"function_call","id":"f","call_id":"function","name":"exec","arguments":json!(source).to_string()},
                 {"type":"function_call_output","call_id":"function","output":"refused"},
-                {"type":"custom_tool_call","call_id":"custom","name":"exec","input":source},
+                {"type":"custom_tool_call","id":"c","call_id":"custom","name":"exec","input":source},
                 {"type":"custom_tool_call_output","call_id":"custom","output":"refused"},
-                {"type":"function_call","call_id":"broken","name":"exec","arguments":raw},
+                {"type":"function_call","id":"b","call_id":"broken","name":"exec","arguments":raw},
                 {"type":"function_call_output","call_id":"broken","output":"refused"},
-                {"type":"function_call","call_id":"string","name":"echo","arguments":"\"abc\""},
+                {"type":"function_call","id":"s","call_id":"string","name":"echo","arguments":"\"abc\""},
                 {"type":"function_call_output","call_id":"string","output":"refused"}
             ])
         );
@@ -1081,10 +1118,10 @@ mod tests {
                 }
                 prompt.push(result);
                 expected.extend(if custom {
-                    vec![json!({"type":"custom_tool_call","call_id":"call","name":"exec","input":source}),
+                    vec![json!({"type":"custom_tool_call","id":"custom-item","call_id":"call","name":"exec","input":source}),
                         json!({"type":"custom_tool_call_output","call_id":"call","output":"refused"})]
                 } else {
-                    vec![json!({"type":"function_call","call_id":"call","name":"exec","arguments":raw}),
+                    vec![json!({"type":"function_call","id":"function-item","call_id":"call","name":"exec","arguments":raw}),
                         json!({"type":"function_call_output","call_id":"call","output":"refused"})]
                 });
             }
@@ -1129,7 +1166,7 @@ mod tests {
     }
     #[test]
     fn unassociated_input_previews_preserve_complete_calls_and_retry_safety() {
-        for (kind, item, input, options) in [
+        for (kind, item, input, mut options) in [
             (
                 "response.function_call_arguments.delta",
                 function("item", "call"),
@@ -1153,6 +1190,7 @@ mod tests {
             assert!(!decoder.observed_output);
             assert!(decoder.replay_safe);
             assert!(decoder.retained_output_safe());
+            options["openai"]["responsesReplay"] = crate::replay::capture(&item).unwrap();
             assert_eq!(
                 decoder
                     .push(json!({"type":"response.output_item.done","item":item}))

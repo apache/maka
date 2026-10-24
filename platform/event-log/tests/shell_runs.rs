@@ -27,7 +27,11 @@ use maka_event_log::{EventLog, StoreError};
 use serde_json::json;
 use sqlx::{Connection, SqliteConnection, sqlite::SqliteConnectOptions};
 
-fn starting(id: &str) -> ShellRun {
+use maka_agent_facts::workspace::PermissionBasis;
+#[path = "support/shell_binding.rs"]
+mod binding;
+
+fn starting(id: &str, basis: PermissionBasis) -> ShellRun {
     ShellRun {
         id: id.into(),
         session_id: "session".into(),
@@ -36,7 +40,7 @@ fn starting(id: &str) -> ShellRun {
         source_tool_call_id: "call".into(),
         visibility: ShellVisibility::Model,
         permissions: maka_agent_facts::shell_run::ShellPermissions {
-            boundary_revision: 0,
+            basis,
             sandbox: maka_agent_facts::shell_run::Sandbox::Disabled,
         },
         cwd: "/captured/workspace".into(),
@@ -80,17 +84,15 @@ async fn durable_lifecycle_keeps_terminal_output_mutable_and_never_reattaches_on
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("runtime.sqlite");
     let log = EventLog::open(&path).await.unwrap();
-    log.create_session(
-        "session",
-        "create",
-        &json!({"workspace":{"hostCwd":"/captured/workspace"}}),
-        1,
-    )
-    .await
-    .unwrap();
-    let record = starting("finished");
+    let basis = binding::create(&log, "session", "/captured/workspace").await;
+    let record = starting("finished", basis);
     let mut changes = log.subscribe_shell_changes();
+    let mut session_changes = log.subscribe_session_commits("session");
+    let foreign_changes = log.subscribe_session_commits("foreign");
     assert_eq!(log.create_shell_run(record.clone()).await.unwrap(), record);
+    assert!(session_changes.has_changed().unwrap());
+    session_changes.borrow_and_update();
+    assert!(!foreign_changes.has_changed().unwrap());
     let change = changes.try_recv().unwrap();
     assert_eq!((&*change.session_id, &*change.id), ("session", "finished"));
     assert_eq!(
@@ -119,11 +121,14 @@ async fn durable_lifecycle_keeps_terminal_output_mutable_and_never_reattaches_on
         .is_err(),
         "starting cannot claim a completed process"
     );
+    assert!(!session_changes.has_changed().unwrap());
     let running = log
         .patch_shell_run("session", "finished", state(ShellState::Running))
         .await
         .unwrap();
     assert_eq!(running.revision, 2);
+    assert!(session_changes.has_changed().unwrap());
+    assert!(!foreign_changes.has_changed().unwrap());
     assert_eq!(changes.try_recv().unwrap(), change);
     assert!(
         matches!(
@@ -221,7 +226,7 @@ async fn durable_lifecycle_keeps_terminal_output_mutable_and_never_reattaches_on
     );
 
     for id in ["unspawned", "lost"] {
-        log.create_shell_run(starting(id)).await.unwrap();
+        log.create_shell_run(starting(id, basis)).await.unwrap();
     }
     log.patch_shell_run("session", "lost", state(ShellState::Running))
         .await
@@ -276,11 +281,9 @@ async fn recovery_commit_is_atomic_under_real_sqlite_faults() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("runtime.sqlite");
     let log = EventLog::open(&path).await.unwrap();
-    log.create_session("session", "create", &json!({}), 1)
-        .await
-        .unwrap();
+    let basis = binding::create(&log, "session", "/captured/workspace").await;
     for id in ["a", "b"] {
-        log.create_shell_run(starting(id)).await.unwrap();
+        log.create_shell_run(starting(id, basis)).await.unwrap();
     }
     let mut observer = SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(&path))
         .await
@@ -297,7 +300,7 @@ async fn recovery_commit_is_atomic_under_real_sqlite_faults() {
     for id in ["a", "b"] {
         assert_eq!(
             log.read_shell_run("session", id).await.unwrap(),
-            Some(starting(id)),
+            Some(starting(id, basis)),
             "all recovery writes roll back together"
         );
     }
@@ -317,7 +320,7 @@ async fn recovery_commit_is_atomic_under_real_sqlite_faults() {
     );
     assert_eq!(
         log.read_shell_run("session", "a").await.unwrap(),
-        Some(starting("a"))
+        Some(starting("a", basis))
     );
     assert!(
         matches!(
@@ -372,18 +375,18 @@ async fn read_prefixes_exclude_user_only_and_foreign_tasks_and_prefer_exact_ids(
     let log = EventLog::open(&temp.path().join("prefix.sqlite"))
         .await
         .unwrap();
-    for session in ["session", "other"] {
-        log.create_session(session, session, &json!({}), 1)
-            .await
-            .unwrap();
-    }
+    let basis = binding::create(&log, "session", "/captured/workspace").await;
+    assert_eq!(
+        basis,
+        binding::create(&log, "other", "/captured/workspace").await
+    );
     for id in ["task_a", "task_ab"] {
-        log.create_shell_run(starting(id)).await.unwrap();
+        log.create_shell_run(starting(id, basis)).await.unwrap();
     }
-    let mut hidden = starting("task_hidden");
+    let mut hidden = starting("task_hidden", basis);
     hidden.visibility = ShellVisibility::User;
     log.create_shell_run(hidden).await.unwrap();
-    let mut foreign = starting("task_foreign");
+    let mut foreign = starting("task_foreign", basis);
     foreign.session_id = "other".into();
     log.create_shell_run(foreign).await.unwrap();
     assert_eq!(
@@ -420,13 +423,11 @@ async fn provider_catalog_filters_before_count_pagination_and_digest() {
     let log = EventLog::open(&dir.path().join("catalog.sqlite"))
         .await
         .unwrap();
-    log.create_session("session", "create", &json!({}), 1)
-        .await
-        .unwrap();
+    let basis = binding::create(&log, "session", "/captured/workspace").await;
     for prefix in ["a_other_", "z_owner_"] {
         for index in 0..70 {
             let id = format!("{prefix}{index:03}");
-            let record = starting(&id);
+            let record = starting(&id, basis);
             log.create_shell_run(record).await.unwrap();
             log.patch_shell_run(
                 "session",
@@ -439,7 +440,9 @@ async fn provider_catalog_filters_before_count_pagination_and_digest() {
             .unwrap();
         }
     }
-    log.create_shell_run(starting("zXownerX000")).await.unwrap();
+    log.create_shell_run(starting("zXownerX000", basis))
+        .await
+        .unwrap();
     let page = log
         .query_shell_catalog("session", "z_owner_", 0)
         .await
@@ -491,14 +494,14 @@ async fn soft_first_shell_resource_keeps_complete_identity_and_offset() {
     let log = EventLog::open(&temp.path().join("singleton.sqlite"))
         .await
         .unwrap();
-    log.create_session("session", "create", &json!({}), 1)
-        .await
-        .unwrap();
+    let basis = binding::create(&log, "session", "/captured/workspace").await;
     let identity = "original-turn-".repeat(6000);
-    let mut first = starting("a_first");
+    let mut first = starting("a_first", basis);
     first.source_turn_id = identity.clone();
     log.create_shell_run(first).await.unwrap();
-    log.create_shell_run(starting("b_second")).await.unwrap();
+    log.create_shell_run(starting("b_second", basis))
+        .await
+        .unwrap();
     let page = log.query_shell_catalog("session", "a_", 0).await;
     let all = log.query_shell_resources("session", None, 0).await;
     let tail = log.query_shell_resources("session", None, 1).await;
@@ -520,4 +523,132 @@ async fn soft_first_shell_resource_keeps_complete_identity_and_offset() {
     assert_eq!(tail.revision, all.revision);
     assert_eq!(tail.next_offset, None);
     assert!(matches!(foreign, Err(StoreError::SessionNotFound)));
+}
+
+#[tokio::test]
+async fn shell_and_protocol_admission_fence_the_complete_workspace_basis() {
+    use maka_agent_facts::event::{EventWrite, Fact, Invocation, InvocationInput, RuntimeEvent};
+    use maka_agent_facts::workspace::BindingStamp;
+    use maka_event_log::sessions::SessionMutation;
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("permission-basis.sqlite");
+    let log = EventLog::open(&path).await.unwrap();
+    let original = binding::create(&log, "session", "/original").await;
+    let invocation = Invocation {
+        session_id: "session".into(),
+        turn_id: "turn".into(),
+        run_id: "run".into(),
+        invocation_id: "invocation".into(),
+    };
+    log.append(
+        &EventWrite::plain(RuntimeEvent::new(
+            invocation.clone(),
+            Fact::InvocationOpened {
+                configuration: None,
+                input: InvocationInput::Message {
+                    content: "work".into(),
+                    request_fingerprint: None,
+                    source_messages: vec![],
+                },
+            },
+        ))
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    log.create_shell_run(starting("already-admitted", original))
+        .await
+        .unwrap();
+    let replacement = log
+        .attach_workspace("shell-fixture", &json!({"path":"/replacement"}))
+        .await
+        .unwrap();
+    let revision = log.get_session::<serde_json::Value>("session").await.unwrap().unwrap().revision;
+    assert!(matches!(
+        log.update_session_permissions::<serde_json::Value, _>(
+            "session",
+            revision,
+            2,
+            move |configuration| {
+                configuration["workspace"] = serde_json::to_value(replacement).unwrap();
+                Ok(())
+            }
+        )
+        .await
+        .unwrap(),
+        SessionMutation::Committed(_)
+    ));
+    let current = PermissionBasis {
+        boundary_revision: original.boundary_revision,
+        binding: BindingStamp {
+            id: replacement.id,
+            permission_epoch: replacement.permission_epoch_at_attach,
+        },
+    };
+    assert_ne!(current.binding.id, original.binding.id);
+    // Both revisions can be numerically identical after attaching another binding.
+    assert_eq!(current.boundary_revision, original.boundary_revision);
+    assert_eq!(
+        current.binding.permission_epoch,
+        original.binding.permission_epoch
+    );
+    for stale in [
+        original,
+        PermissionBasis {
+            binding: BindingStamp {
+                permission_epoch: 1,
+                ..current.binding
+            },
+            ..current
+        },
+    ] {
+        let id = uuid::Uuid::new_v4();
+        assert!(
+            log.create_shell_run(starting(&id.to_string(), stale))
+                .await
+                .is_err()
+        );
+        assert!(
+            log.admit_session_process_for(&invocation, id, &stale)
+                .await
+                .is_err()
+        );
+    }
+    let inspect = rusqlite::Connection::open(&path).unwrap();
+    assert_eq!(
+        inspect
+            .query_row("SELECT count(*) FROM session_processes", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        inspect
+            .query_row("SELECT count(*) FROM shell_runs", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    drop(inspect);
+    log.create_shell_run(starting("current", current))
+        .await
+        .unwrap();
+    let protocol = uuid::Uuid::new_v4();
+    log.admit_session_process_for(&invocation, protocol, &current)
+        .await
+        .unwrap();
+    log.clean_session_process(protocol).await.unwrap();
+    // Withdrawal of launch authority must not rewrite history or prevent cleanup.
+    let settled = log
+        .patch_shell_run(
+            "session",
+            "already-admitted",
+            state(terminal(ShellOutcome::Failed {
+                message: "settled".into(),
+            })),
+        )
+        .await
+        .unwrap();
+    assert_eq!(settled.permissions.basis, original);
+    log.close().await.unwrap();
 }

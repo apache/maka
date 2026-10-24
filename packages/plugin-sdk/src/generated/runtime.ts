@@ -4010,7 +4010,7 @@ export type InteractionRequest =
     }
   | {
       toolUseId: string | null;
-      baseRevision: number;
+      basis: PermissionBasis;
       request: PermissionRequest;
       kind: 'permissions';
     }
@@ -4031,9 +4031,9 @@ export type InteractionRequest =
       target: GrantTarget;
       /**
        * Agent-owned approvals expire with this original permission boundary.
-       * Older capability records without a boundary remain readable.
+       * Unbound capabilities are explicit; Agent-owned capabilities capture a full binding stamp.
        */
-      baseRevision?: number | null;
+      basis?: PermissionBasis | null;
       kind: 'client_capability';
     };
 export type FormField = {
@@ -7190,6 +7190,7 @@ export interface AgentSession {
   dataSource: AgentDataSource;
   permissions: AgentWorkspacePermissions;
   boundaryRevision: number;
+  binding: BindingStamp;
   id: string;
   title: string;
   labels: string[];
@@ -7214,6 +7215,10 @@ export interface AgentDataSource {
   stateDomain: string;
   deployment: string;
   namespace: InstanceId;
+}
+export interface BindingStamp {
+  id: string;
+  permissionEpoch: number;
 }
 export interface AgentWorkspace {
   /**
@@ -7654,13 +7659,21 @@ export interface SettingsModelCursor {
 export interface SettingsUsageRead {
   range: SettingsUsageRange;
   selection: UsageSelection;
-  offset: number;
+  cursor: UsageActivityCursor | null;
 }
 export interface SettingsUsageRange {
   from: number;
   to: number;
   sessionId: string | null;
-  through: number | null;
+  through: UsageFence | null;
+}
+export interface UsageFence {
+  stateDomain: string;
+  /**
+   * @minItems 8
+   * @maxItems 8
+   */
+  partitions: [number, number, number, number, number, number, number, number];
 }
 /**
  * Filters only the activity list, never headline accounting for the range.
@@ -7670,14 +7683,19 @@ export interface UsageSelection {
   status?: UsageActivityStatus | null;
   search?: string;
 }
+export interface UsageActivityCursor {
+  completedAt: number;
+  partition: number;
+  requestId: string;
+}
 export interface SettingsUsagePage {
-  through: number;
+  through: UsageFence;
   /**
    * @maxItems 32
    */
   attempts: UsageActivity[];
   total: number;
-  nextOffset?: number | null;
+  nextCursor?: UsageActivityCursor | null;
 }
 export interface UsageModelAttempt {
   requestId: string;
@@ -7740,9 +7758,9 @@ export interface ToolCallIdentity {
   [k: string]: unknown | undefined;
 }
 export interface SettingsUsageSummary {
-  through: number;
+  through: UsageFence;
   summary: SettingsUsageTotals;
-  nextOffset?: number | null;
+  nextCursor?: UsageGroupCursor | null;
 }
 export interface SettingsUsageTotals {
   models: UsageModelTotals;
@@ -7830,10 +7848,17 @@ export interface UsageToolSummary {
   name: string;
   totals: UsageToolTotals;
 }
+export interface UsageGroupCursor {
+  group: UsageGroup;
+  /**
+   * None is the unknown-provider group, not the beginning of pagination.
+   */
+  key?: string | null;
+}
 export interface SettingsUsageSummaryRead {
   range: SettingsUsageRange;
   group: UsageGroup;
-  offset: number;
+  cursor: UsageGroupCursor | null;
 }
 export interface PricingUpdate {
   expectedRevision: number;
@@ -8472,6 +8497,7 @@ export interface AgentScheduledTarget {
   workspace: AgentWorkspace;
   permissions: AgentWorkspacePermissions;
   boundaryRevision: number;
+  binding: BindingStamp;
 }
 export interface AgentPlanReceiptRead {
   reference: RecoveryRef;
@@ -9118,6 +9144,13 @@ export interface InteractionRecord {
   createdAt: number;
   request: InteractionRequest;
   outcome: InteractionOutcome | null;
+}
+/**
+ * Captured authority, never silently upgraded by resolving a current binding.
+ */
+export interface PermissionBasis {
+  boundaryRevision: number;
+  binding: BindingStamp;
 }
 /**
  * The Host supplies the real operation description; it is display information,

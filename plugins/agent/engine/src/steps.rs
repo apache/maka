@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use crate::{Inner, RunContext, RunError, auto_context, model_attempt, prune};
+use crate::{RunContext, RunError, RunSettings, auto_context, model_attempt, prune};
 use futures_util::FutureExt;
 use maka_tools::RunTools;
 use std::sync::Arc;
@@ -25,8 +25,8 @@ use tokio_util::sync::CancellationToken;
 
 #[allow(clippy::too_many_arguments)] // Admission policy must remain visible across the step loop.
 pub(super) async fn run(
-    inner: &Arc<Inner>,
-    input: &mut RunContext,
+    inner: &Arc<RunContext>,
+    input: &mut RunSettings,
     work: crate::runner::ModelWork,
     opening_id: &str,
     cancellation: &CancellationToken,
@@ -39,7 +39,6 @@ pub(super) async fn run(
         restored,
     } = work;
     let lane = maka_model::Conversation::default();
-    let session = inner.session_state(&input.invocation.session_id);
     let mut tools = RunTools::new(
         input.configuration.language,
         inner.log.clone(),
@@ -47,16 +46,14 @@ pub(super) async fn run(
         catalog,
         input.configuration.tool_mode,
         inner
+            .shared
             .cells
             .clone()
             .with_language(input.configuration.code_language),
-        session.loaded,
+        inner.shared.loaded(&input.invocation.session_id),
     )
     .with_model(input.provider.tool_context())
     .with_behavior(input.configuration.orchestration_mode.clone());
-    if input.configuration.tool_mode == maka_agent_facts::execution::ToolMode::CodeMode {
-        tools = tools.with_store(session.code_store);
-    }
     let mut pending: Option<auto_context::Pending> = None;
     let mut handoff_cleanup = None;
     let result = std::panic::AssertUnwindSafe(async {
@@ -100,12 +97,20 @@ pub(super) async fn run(
                     )
                     .await
                     .ok()?;
+                    let checkpoint = match tools.checkpoint() {
+                        Ok(checkpoint) => checkpoint,
+                        Err(error) => {
+                            handoff_cleanup = Some(error.into());
+                            return None;
+                        }
+                    };
                     let replay = crate::continuation::replay(
                         input,
                         prompt,
-                        tools.replay_definitions(),
+                        tools.replay_selected(&checkpoint.loaded),
                         cancellation,
                     )
+                    .await
                     .ok()?;
                     let pause = maka_agent_facts::handoff::HandoffPause {
                         intent,
@@ -115,7 +120,7 @@ pub(super) async fn run(
                             provider_options: input.provider_options.clone(),
                             main_output_limit: input.main_output_limit,
                             supports_vision: input.supports_vision,
-                            tools: tools.checkpoint(),
+                            tools: checkpoint,
                             compaction,
                             replay_base: continuation_base,
                         }),
@@ -218,7 +223,7 @@ pub(super) async fn run(
             }
             let surface = Arc::new(crate::request_composition::Surface::capture(
                 &request_tools,
-                &inner.model,
+                &inner.shared.model,
                 input,
                 &context,
                 unknown_notice.as_deref(),
@@ -229,7 +234,6 @@ pub(super) async fn run(
                 input,
                 context,
                 surface.apply(prompt),
-                request_tools.definitions(),
                 model_attempt::Main {
                     lane: lane.clone(),
                     continuation_base,
@@ -333,7 +337,18 @@ pub(super) async fn run(
                 )
                 .await?;
                 let ids: Vec<_> = local_calls.iter().map(|call| call.id.as_str()).collect();
-                lane.confirm(&surface.apply(replay), &ids, output.response_id.as_deref());
+                let mut replay = surface.apply(replay);
+                replay
+                    .compile_wire(
+                        input.configuration.language,
+                        &input.provider,
+                        &input.provider_options,
+                        &request_tools.definitions(),
+                        cancellation,
+                    )
+                    .await?;
+                lane.confirm(&replay.model(), &ids, output.response_id.as_deref())
+                    .await;
             }
             main_progress = true;
         }

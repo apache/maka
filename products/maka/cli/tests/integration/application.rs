@@ -146,7 +146,7 @@ fn url_install_commits_validated_bytes_without_changing_the_composition() {
         launch: None,
     };
     runtime.block_on(async {
-        let store = maka_event_log::EventLog::for_root(Arc::new(owner))
+        let store = maka_event_log::root_store::RootStore::open(Arc::new(owner))
             .await
             .unwrap();
         store
@@ -240,7 +240,7 @@ fn url_install_commits_validated_bytes_without_changing_the_composition() {
     runtime.block_on(async {
         let owner =
             RootOwner::open(&root, &RootNamespaces::for_current_account().unwrap()).unwrap();
-        let store = maka_event_log::EventLog::for_root(Arc::new(owner))
+        let store = maka_event_log::root_store::RootStore::open(Arc::new(owner))
             .await
             .unwrap();
         let loaded = store.load_application(deployment).await.unwrap().unwrap();
@@ -260,7 +260,7 @@ fn url_install_commits_validated_bytes_without_changing_the_composition() {
 #[test]
 #[ignore = "requires the built bundled product"]
 fn standalone_host_package_update_preserves_saved_configuration_and_data() {
-    use maka_event_log::EventLog;
+    use maka_event_log::root_store::RootStore;
     use maka_host_runtime::application::host::Configuration;
     use maka_packages::Package;
     use serde_json::json;
@@ -344,7 +344,7 @@ fn standalone_host_package_update_preserves_saved_configuration_and_data() {
         .unwrap();
     let runtime = tokio::runtime::Runtime::new().unwrap();
     runtime.block_on(async {
-        let store = EventLog::for_root(Arc::new(owner)).await.unwrap();
+        let store = RootStore::open(Arc::new(owner)).await.unwrap();
         let source = store
             .commit_application(
                 deployment,
@@ -390,6 +390,9 @@ fn standalone_host_package_update_preserves_saved_configuration_and_data() {
             },
         ] {
             store
+                .session("retained-session")
+                .await
+                .unwrap()
                 .append(
                     &maka_agent_facts::event::EventWrite::plain(
                         maka_agent_facts::event::RuntimeEvent::new(invocation.clone(), fact),
@@ -405,17 +408,17 @@ fn standalone_host_package_update_preserves_saved_configuration_and_data() {
         runtime.block_on(async {
         let owner = RootOwner::open(&root, &namespaces).unwrap();
         assert_eq!(owner.root_id(), root_id);
-        let store = EventLog::for_root(Arc::new(owner)).await.unwrap();
+        let store = RootStore::open(Arc::new(owner)).await.unwrap();
         let loaded = store.load_application(deployment).await.unwrap().unwrap();
         let launch = store.application_launch().await.unwrap().unwrap();
         let snapshot = json!({
-            "rootId":store.owned_root().unwrap().root_id(),
+            "rootId":root_id,
             "source":loaded.source(),
             "packages":loaded.packages().iter().map(Package::application_ref).collect::<Vec<_>>(),
             "selection":{"deployment":launch.deployment,"configuration":launch.configuration,
                 "pending":launch.pending},
             "session":store.get_session::<Value>("retained-session").await.unwrap().unwrap(),
-            "history":store.prefix(100, 128 * 1024).await.unwrap(),
+            "history":store.session("retained-session").await.unwrap().scoped_prefix(maka_agent_facts::event::LogScope::Session { id: "retained-session".into() }, 100, 128 * 1024).await.unwrap(),
         });
         store.shutdown().await.unwrap();
         snapshot

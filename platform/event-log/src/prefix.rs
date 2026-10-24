@@ -21,7 +21,6 @@ use futures_util::TryStreamExt;
 use maka_agent_facts::event::LogPrefix;
 use maka_agent_facts::event::LogScope;
 use maka_agent_facts::event::StoredEvent;
-use sha2::{Digest, Sha256};
 use sqlx::{Connection, Row};
 
 use crate::{EventLog, StoreError, context::selection::Selection, sequence_number};
@@ -71,38 +70,30 @@ impl EventLog {
         {
             return Err(StoreError::PrefixTooLarge);
         }
-        let mut digest = Sha256::new();
-        digest.update(b"maka.log-prefix.v1\0");
-        let scope_bytes = serde_json::to_vec(&scope)?;
-        digest.update((scope_bytes.len() as u64).to_be_bytes());
-        digest.update(scope_bytes);
         let mut events = Vec::new();
         {
             let statement = sqlx::query(sqlx::AssertSqlSafe(format!(
-                "SELECT sequence, event_json, (SELECT length(payload) FROM tool_result_payloads WHERE event_id = runtime_events.event_id) FROM {source} runtime_events WHERE {filter} ORDER BY sequence"
+                "SELECT sequence, event_json FROM {source} runtime_events WHERE {filter} ORDER BY sequence"
             ))).bind(&selection.session).bind(&selection.lineage);
             let mut rows = statement.fetch(&mut *transaction);
             while let Some(row) = rows.try_next().await? {
                 let sequence: i64 = row.try_get(0)?;
                 let json: &str = row.try_get(1)?;
                 let sequence = sequence_number(sequence)?;
-                digest.update(sequence.to_be_bytes());
-                digest.update((json.len() as u64).to_be_bytes());
-                digest.update(json.as_bytes());
                 let event = serde_json::from_str(json)?;
-                crate::tool_payloads::verify_binding(&event, row.try_get(2)?)?;
                 events.push(StoredEvent {
                     sequence,
                     event,
                 });
             }
         }
-        digest.update(sequence_number(high_water)?.to_be_bytes());
+        let digest = crate::context::evidence::selected(
+            &mut transaction, &selection, sequence_number(high_water)?).await?.digest;
         transaction.commit().await?;
         Ok(LogPrefix {
             scope,
             high_water: sequence_number(high_water)?,
-            digest: format!("sha256:{}", hex::encode(digest.finalize())),
+            digest,
             events,
         })
         })).await

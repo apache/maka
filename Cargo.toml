@@ -19,6 +19,7 @@
 exclude = ["third-party/nsh", "third-party/gpui-fast", "third-party/async-io", "third-party/gix-index", "third-party/sqlx-sqlite", "third-party/image-webp", "third-party/llrt-crypto", "third-party/termina"]
 default-members = ["products/maka/cli", "platform/python-runtime"]
 members = [
+    "platform/session-state",
     "plugins/agent/facts",
     "platform/packages",
     "plugins/agent/ports",
@@ -160,6 +161,7 @@ maka-graph = { path = "plugins/agent/graph" }
 maka-insights = { path = "plugins/agent/insights" }
 maka-jev = { path = "plugins/workspace/workspace-jev/engine" }
 maka-js-runtime = { path = "platform/js-runtime" }
+maka-session-state = { path = "platform/session-state" }
 maka-code-runtime = { path = "platform/code-runtime" }
 maka-model = { path = "plugins/agent/model" }
 maka-provider-protocol = { path = "plugins/agent/provider-protocol" }
@@ -203,7 +205,7 @@ unicode-segmentation = "1.13.3"
 unicode-width = "0.2.2"
 sys-locale = "0.3.2"
 termina = { path = "third-party/termina" }
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
 
 [profile.dev]
 # Keep useful backtraces without embedding hundreds of MiB of dependency types.
@@ -212,6 +214,7 @@ debug = "line-tables-only"
 opt-level = 0
 
 [patch.crates-io]
+reqwest = { path = "third-party/reqwest" }
 gix-index = { path = "third-party/gix-index" }
 image-webp = { path = "third-party/image-webp" }
 sqlx-sqlite = { path = "third-party/sqlx-sqlite" }

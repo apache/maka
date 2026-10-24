@@ -252,7 +252,7 @@ async fn raw_media_and_t2_rollback_together_then_replay_after_sealing() {
 }
 
 #[tokio::test]
-async fn session_binding_missing_payload_and_corrupt_raw_fail_closed() {
+async fn explicit_raw_reads_and_new_writes_reject_wrong_scope_missing_and_corrupt_payloads() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("events.sqlite");
     let log = open(&path).await;
@@ -283,18 +283,8 @@ async fn session_binding_missing_payload_and_corrupt_raw_fail_closed() {
             rusqlite::params![corrupt, outcome.event().id],
         )
         .unwrap();
-    // Prefix checks physical binding; selected hydration verifies content hashes.
-    assert!(log.prefix(10, 8192).await.is_ok());
-    // Source evidence also checks physical binding without hydrating raw payloads.
-    assert_eq!(
-        log.run_source("session", "run", None)
-            .await
-            .unwrap()
-            .unwrap()
-            .boundary,
-        source.boundary
-    );
-
+    // Explicit raw hydration verifies the stored bytes; a newly submitted
+    // write must also match its immutable event identity and payload.
     assert!(
         log.resolve_tool_result("session", &outcome.event().id)
             .await
@@ -307,8 +297,6 @@ async fn session_binding_missing_payload_and_corrupt_raw_fail_closed() {
             [&outcome.event().id],
         )
         .unwrap();
-    assert!(log.prefix(10, 8192).await.is_err());
-    assert!(log.run_source("session", "run", None).await.is_err());
     assert!(
         log.resolve_tool_result("session", &outcome.event().id)
             .await
@@ -320,13 +308,6 @@ async fn session_binding_missing_payload_and_corrupt_raw_fail_closed() {
             [&outcome.event().id],
         )
         .unwrap();
-    assert!(log.prefix(10, 8192).await.is_err());
-    assert!(log.run_source("session", "run", None).await.is_err());
-    assert!(
-        log.invocation_recovery(&invocation(), 10, 8192)
-            .await
-            .is_err()
-    );
     // Damaged payload authority stays local. Another Session can append and
     // inspect its own recovery scope without hydrating the broken history.
     let other = Invocation {

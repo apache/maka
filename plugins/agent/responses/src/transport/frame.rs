@@ -25,6 +25,7 @@ use maka_agent_ports::model::Socket;
 use serde_json::Value;
 
 pub(super) enum ReadError {
+    CleanupUnconfirmed,
     Cancelled,
     Interrupted(String),
     Invalid(String),
@@ -33,6 +34,7 @@ pub(super) enum ReadError {
 impl ReadError {
     pub fn into_error(self) -> crate::Error {
         match self {
+            Self::CleanupUnconfirmed => crate::Error::CleanupUnconfirmed,
             Self::Cancelled => error("Responses WebSocket cancelled"),
             Self::Interrupted(message) => crate::Error::Interrupted(message),
             Self::Invalid(message) => crate::Error::Invalid(message),
@@ -48,6 +50,7 @@ pub(super) async fn receive(
         .receive()
         .await
         .map_err(|cause| match cause {
+            ModelError::CleanupUnconfirmed => ReadError::CleanupUnconfirmed,
             ModelError::Cancelled => ReadError::Cancelled,
             ModelError::Provider(ref failure)
                 if matches!(

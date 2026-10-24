@@ -27,6 +27,7 @@ use maka_event_log::message_admissions::{PendingExecution, PendingMessageAdmissi
 pub(crate) struct ReturnRoute {
     model: crate::model::AcceptedModel,
     pub(crate) workspace: Workspace,
+    pub(crate) binding: maka_agent_facts::workspace::BindingStamp,
 }
 impl Owner {
     pub(crate) fn background<F, Fut>(&self, task: F)
@@ -58,6 +59,7 @@ impl Owner {
                 .clone()
                 .ok_or("workhub_model_unavailable")?,
             workspace: control.basis.workspace.clone(),
+            binding: control.basis.binding,
         })
     }
 
@@ -81,7 +83,10 @@ impl Owner {
             Err(error) if error == "agent_session_unavailable" => return Ok(None),
             Err(error) => return Err(error),
         };
-        if session.archived || session.configuration.workspace != route.workspace {
+        if session.archived
+            || session.configuration.workspace != route.workspace
+            || session.configuration.binding != route.binding
+        {
             return Ok(None);
         }
         if workspace::validate(
@@ -129,6 +134,7 @@ impl Owner {
             model: Some(route.model.clone()),
             executor: None,
             workspace: route.workspace.clone(),
+            binding: session.configuration.binding,
             fingerprint: hex::encode(Sha256::digest(text.as_bytes())),
             tools: self.tool_basis.clone(),
             internal_tools: selected_catalog.definitions.clone(),
@@ -188,12 +194,18 @@ impl Owner {
         }
         if self
             .store
+            .session(session)
+            .await
+            .map_err(|error| error.to_string())?
             .root_message(session, message)
             .await
             .map_err(|_| "agent_queue_unavailable")?
             .is_some()
             || self
                 .store
+                .session(session)
+                .await
+                .map_err(|error| error.to_string())?
                 .message_cancelled(session, message)
                 .await
                 .map_err(|_| "agent_queue_unavailable")?
@@ -202,6 +214,9 @@ impl Owner {
         }
         if let Some(original) = self
             .store
+            .session(session)
+            .await
+            .map_err(|error| error.to_string())?
             .message_admission(session, message)
             .await
             .map_err(|_| "agent_queue_unavailable")?
@@ -225,10 +240,16 @@ impl Owner {
                 .map_err(|_| "agent_message_basis_invalid")?;
             self.validate_background(&basis).await?;
             basis.validate_background_target(&current)?;
-            if current.archived || current.configuration.workspace != basis.workspace {
+            if current.archived
+                || current.configuration.workspace != basis.workspace
+                || current.configuration.binding != basis.binding
+            {
                 return Ok(false);
             }
             self.store
+                .session(&admission.invocation.session_id)
+                .await
+                .map_err(|error| error.to_string())?
                 .admit_message(admission.clone())
                 .await
                 .map_err(|_| "agent_admission_unknown")?;

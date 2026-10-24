@@ -56,13 +56,13 @@ impl NativeContext {
 /// Cloning the store retains its lease; it does not acknowledge native cleanup.
 pub struct NativePersistence {
     pub(super) source: DeploymentRef,
-    pub(super) store: Arc<maka_event_log::EventLog>,
+    pub(super) store: Arc<maka_event_log::root_store::RootStore>,
 }
 impl NativePersistence {
     pub fn source(&self) -> &DeploymentRef {
         &self.source
     }
-    pub fn store(&self) -> &Arc<maka_event_log::EventLog> {
+    pub fn store(&self) -> &Arc<maka_event_log::root_store::RootStore> {
         &self.store
     }
 }
@@ -93,14 +93,32 @@ impl NativeServices {
         identity: maka_capabilities::call::Identity,
         cancellation: CancellationToken,
     ) -> Result<NativeRequest> {
-        let scope = self
-            .issuer
-            .issue_with(
-                identity,
-                NativeOrigin(self.activation.clone()),
-                cancellation,
-            )
-            .map_err(|error| error.to_string())?;
+        self.request_inner(identity, cancellation, None)
+    }
+    /// Inherit the original Engine custody through actual Host child scopes.
+    pub fn request_with_execution(
+        &self,
+        identity: maka_capabilities::call::Identity,
+        cancellation: CancellationToken,
+        execution: Arc<dyn maka_agent_facts::tools::ExecutionCustody>,
+    ) -> Result<NativeRequest> {
+        self.request_inner(identity, cancellation, Some(execution))
+    }
+    fn request_inner(
+        &self,
+        identity: maka_capabilities::call::Identity,
+        cancellation: CancellationToken,
+        execution: Option<Arc<dyn maka_agent_facts::tools::ExecutionCustody>>,
+    ) -> Result<NativeRequest> {
+        let origin = NativeOrigin(self.activation.clone());
+        let scope = match execution {
+            Some(execution) => {
+                self.issuer
+                    .issue_with_execution(identity, origin, cancellation, execution)
+            }
+            None => self.issuer.issue_with(identity, origin, cancellation),
+        }
+        .map_err(|error| error.to_string())?;
         Ok(NativeRequest(Context {
             stream: None,
             caller: None,
@@ -108,6 +126,7 @@ impl NativeServices {
             consumer: self.activation.clone(),
             requester: self.activation.clone(),
             operation: None,
+            operation_scope: None,
             attachments: Attachments::default(),
             imports: self.imports.clone(),
             dispatch: self.dispatch.clone(),

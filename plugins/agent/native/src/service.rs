@@ -17,10 +17,11 @@
  * under the License.
  */
 
+use crate::owner::resolve_session;
 use crate::{contract::*, owner::Owner};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use futures_util::future::BoxFuture;
-use maka_agent_api::session::SessionConfiguration;
+use maka_agent_api::session::{ResolvedConfiguration, StoredSessionConfiguration};
 use maka_event_log::{
     observation::{StoreStreamEvent, StreamFact},
     sessions::{CatalogScope, CatalogSelection, SessionRecord},
@@ -188,7 +189,15 @@ impl Handler for Agent {
                     let operation = context.operation().ok_or("agent_mutation_required")?;
                     encode(
                         owner
-                            .generate_recap(decode(input)?, context.scope(), operation)
+                            .generate_recap(
+                                decode(input)?,
+                                context.scope(),
+                                operation,
+                                context
+                                    .operation_scope()
+                                    .ok_or("agent_mutation_required")?
+                                    .clone(),
+                            )
                             .await?,
                     )
                 }
@@ -323,8 +332,9 @@ impl Handler for Agent {
                     let input: SessionRead = decode(input)?;
                     owner.require_session(&input.session_id).await?;
                     let observed = owner
-                        .store
-                        .observe_session::<SessionConfiguration>(&input.session_id)
+                        .scoped_store(context.scope(), &input.session_id)
+                        .await?
+                        .observe_session::<StoredSessionConfiguration>(&input.session_id)
                         .await
                         .map_err(|_| "agent_observation_unavailable")?
                         .ok_or("agent_session_unavailable")?;
@@ -341,13 +351,18 @@ impl Handler for Agent {
                             state,
                         })
                     });
-                    let session = summary(&owner, observed.session);
+                    let session = summary(&owner, resolve_session(observed.session)?);
                     let remembered_backend = if session.backend.is_none() {
                         owner.remembered_backend(&input.session_id).await?
                     } else {
                         None
                     };
-                    let metrics = match owner.store.context_usage(&input.session_id).await {
+                    let metrics = match owner
+                        .scoped_store(context.scope(), &input.session_id)
+                        .await?
+                        .context_usage(&input.session_id)
+                        .await
+                    {
                         Ok((
                             maka_event_log::context::LatestMainContext::Selected(basis),
                             usage,
@@ -429,7 +444,12 @@ impl Handler for Agent {
                     use maka_agent_ports::session::history::Read;
                     let input: History = decode(input)?;
                     owner.require_session(&input.session_id).await?;
-                    let high_water = *owner.store.subscribe_commits().borrow();
+                    let high_water = *owner
+                        .scoped_store(context.scope(), &input.session_id)
+                        .await?
+                        .subscribe_commits()
+                        .map_err(|error| error.to_string())?
+                        .borrow();
                     let through = input.through.unwrap_or(high_water);
                     if through > high_water {
                         return Err("agent_cursor_invalid".into());
@@ -449,7 +469,8 @@ impl Handler for Agent {
                             before,
                             after,
                         } = owner
-                            .store
+                            .scoped_store(context.scope(), &input.session_id)
+                            .await?
                             .history_view(
                                 &input.session_id,
                                 through,
@@ -512,11 +533,19 @@ impl Handler for Agent {
                 "historyLandmarks" => {
                     let input: HistoryLandmarksRead = decode(input)?;
                     owner.require_session(&input.session_id).await?;
-                    if input.through > *owner.store.subscribe_commits().borrow() {
+                    if input.through
+                        > *owner
+                            .scoped_store(context.scope(), &input.session_id)
+                            .await?
+                            .subscribe_commits()
+                            .map_err(|error| error.to_string())?
+                            .borrow()
+                    {
                         return Err("agent_cursor_invalid".into());
                     }
                     let landmarks = owner
-                        .store
+                        .scoped_store(context.scope(), &input.session_id)
+                        .await?
                         .navigation_landmarks(&input.session_id, input.through, 64, None)
                         .await
                         .map_err(|_| "agent_history_unavailable")?;
@@ -544,11 +573,19 @@ impl Handler for Agent {
                 "historyPrompt" => {
                     let input: HistoryPromptRead = decode(input)?;
                     owner.require_session(&input.session_id).await?;
-                    if input.through > *owner.store.subscribe_commits().borrow() {
+                    if input.through
+                        > *owner
+                            .scoped_store(context.scope(), &input.session_id)
+                            .await?
+                            .subscribe_commits()
+                            .map_err(|error| error.to_string())?
+                            .borrow()
+                    {
                         return Err("agent_cursor_invalid".into());
                     }
                     let result = owner
-                        .store
+                        .scoped_store(context.scope(), &input.session_id)
+                        .await?
                         .history_prompt(&input.session_id, input.through, input.position)
                         .await
                         .map_err(|_| "agent_history_unavailable")?;
@@ -562,7 +599,13 @@ impl Handler for Agent {
                     let input: HistorySearch = decode(input)?;
                     owner.require_session(&input.session_id).await?;
 
-                    if input.through > *owner.store.subscribe_commits().borrow()
+                    if input.through
+                        > *owner
+                            .scoped_store(context.scope(), &input.session_id)
+                            .await?
+                            .subscribe_commits()
+                            .map_err(|error| error.to_string())?
+                            .borrow()
                         || input.after.is_some_and(|after| {
                             after.validate().is_err() || after.source_sequence > input.through
                         })
@@ -572,7 +615,8 @@ impl Handler for Agent {
                     }
                     let page = {
                         let batch = owner
-                            .store
+                            .scoped_store(context.scope(), &input.session_id)
+                            .await?
                             .search_transcript(
                                 &input.session_id,
                                 maka_event_log::transcript::search::TranscriptSearch {
@@ -612,15 +656,25 @@ impl Handler for Agent {
                 }
                 "source" => {
                     let input: HistorySourceRead = decode(input)?;
-                    let session = owner.session(&input.session_id).await?;
-                    if input.through > *owner.store.subscribe_commits().borrow() {
+                    let session = owner
+                        .scoped_session(context.scope(), &input.session_id)
+                        .await?;
+                    if input.through
+                        > *owner
+                            .scoped_store(context.scope(), &input.session_id)
+                            .await?
+                            .subscribe_commits()
+                            .map_err(|error| error.to_string())?
+                            .borrow()
+                    {
                         return Err("agent_cursor_invalid".into());
                     }
                     let page = {
                         let position = match input.source {
                             HistorySourceReference::Row { position } => position,
                             HistorySourceReference::ToolUse { tool_use_id } => owner
-                                .store
+                                .scoped_store(context.scope(), &input.session_id)
+                                .await?
                                 .tool_source_position(
                                     &input.session_id,
                                     input.through,
@@ -630,7 +684,8 @@ impl Handler for Agent {
                                 .map_err(|_| "agent_history_unavailable")?,
                         };
                         let source = owner
-                            .store
+                            .scoped_store(context.scope(), &input.session_id)
+                            .await?
                             .history_source(
                                 &input.session_id,
                                 input.through,
@@ -664,12 +719,20 @@ impl Handler for Agent {
                 "toolImage" => {
                     let input: ToolImageRead = decode(input)?;
                     owner.require_session(&input.session_id).await?;
-                    if input.through > *owner.store.subscribe_commits().borrow() {
+                    if input.through
+                        > *owner
+                            .scoped_store(context.scope(), &input.session_id)
+                            .await?
+                            .subscribe_commits()
+                            .map_err(|error| error.to_string())?
+                            .borrow()
+                    {
                         return Err("agent_cursor_invalid".into());
                     }
                     let page = {
                         let image = owner
-                            .store
+                            .scoped_store(context.scope(), &input.session_id)
+                            .await?
                             .tool_image(
                                 &input.session_id,
                                 input.through,
@@ -707,7 +770,8 @@ impl Handler for Agent {
                     let image = match &input.source {
                         AttachmentImageSource::Uploaded { id } => {
                             owner
-                                .store
+                                .scoped_store(context.scope(), &input.session_id)
+                                .await?
                                 .uploaded_image(&input.session_id, id, input.offset, 32 * 1024)
                                 .await
                         }
@@ -716,11 +780,19 @@ impl Handler for Agent {
                             position,
                             attachment_index,
                         } => {
-                            if *through > *owner.store.subscribe_commits().borrow() {
+                            if *through
+                                > *owner
+                                    .scoped_store(context.scope(), &input.session_id)
+                                    .await?
+                                    .subscribe_commits()
+                                    .map_err(|error| error.to_string())?
+                                    .borrow()
+                            {
                                 return Err("agent_cursor_invalid".into());
                             }
                             owner
-                                .store
+                                .scoped_store(context.scope(), &input.session_id)
+                                .await?
                                 .attachment_image(
                                     &input.session_id,
                                     *through,
@@ -832,7 +904,11 @@ impl Handler for Agent {
                 "watch" => {
                     let input: Watch = decode(input)?;
                     owner.require_session(&input.session_id).await?;
-                    let mut commits = owner.store.subscribe_commits();
+                    let mut commits = owner
+                        .scoped_store(context.scope(), &input.session_id)
+                        .await?
+                        .subscribe_commits()
+                        .map_err(|error| error.to_string())?;
                     let mut after = input.after;
                     let mut queue_revision = None;
                     let mut interactions_revision = None;
@@ -843,7 +919,8 @@ impl Handler for Agent {
                         // Queue edits need not advance the transcript cursor. Deliver
                         // them fairly even while catching up a growing transcript.
                         let revision = owner
-                            .store
+                            .scoped_store(context.scope(), &input.session_id)
+                            .await?
                             .message_queue_revision(&input.session_id)
                             .await
                             .map_err(|_| "agent_queue_unavailable")?;
@@ -868,7 +945,8 @@ impl Handler for Agent {
                             return Err("agent_cursor_invalid".into());
                         }
                         let page = owner
-                            .store
+                            .scoped_store(context.scope(), &input.session_id)
+                            .await?
                             .session_stream_events(&input.session_id, after, through, 32, 48 * 1024)
                             .await
                             .map_err(|_| "agent_observation_unavailable")?;
@@ -941,7 +1019,7 @@ async fn catalog_page(owner: &Owner, input: &List) -> Result<SessionPage, String
     }
     let page = owner
         .store
-        .scoped_sessions::<SessionConfiguration>(
+        .scoped_sessions::<StoredSessionConfiguration>(
             catalog_scope(owner, input).await?,
             revision,
             position,
@@ -958,8 +1036,8 @@ async fn catalog_page(owner: &Owner, input: &List) -> Result<SessionPage, String
         sessions: page
             .sessions
             .into_iter()
-            .map(|session| summary(owner, session))
-            .collect(),
+            .map(|session| resolve_session(session).map(|session| summary(owner, session)))
+            .collect::<Result<Vec<_>, _>>()?,
         needs_you_count: page.pending_session_count,
         before: page.previous_cursor,
         after: page.next_cursor,
@@ -984,12 +1062,12 @@ fn decode<T: DeserializeOwned>(input: Value) -> Result<T, String> {
 fn encode<T: Serialize>(value: T) -> Result<Value, String> {
     serde_json::to_value(value).map_err(|_| "agent_output_unavailable".into())
 }
-pub(crate) fn summary(owner: &Owner, session: SessionRecord<SessionConfiguration>) -> Session {
+pub(crate) fn summary(owner: &Owner, session: SessionRecord<ResolvedConfiguration>) -> Session {
     summary_for(&owner.data_source, session)
 }
 pub(crate) fn summary_for(
     data_source: &DataSource,
-    session: SessionRecord<SessionConfiguration>,
+    session: SessionRecord<ResolvedConfiguration>,
 ) -> Session {
     use maka_agent_facts::event::TerminalStatus;
     use maka_event_log::sessions::SessionExecutionState;
@@ -1025,6 +1103,7 @@ pub(crate) fn summary_for(
         data_source: Box::new(data_source.clone()),
         permissions: session.configuration.permissions,
         boundary_revision: session.configuration.boundary_revision,
+        binding: session.configuration.binding,
         activity,
         id: session.id,
         revision: session.revision,

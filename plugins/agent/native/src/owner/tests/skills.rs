@@ -128,7 +128,7 @@ async fn selected_skill_tools_use_actual_agent_context_and_original_grants_over_
             response(&mut socket).await;
             f.drained().await;
             if granted {
-                let prefix = f.store.prefix(1024, 4 * 1024 * 1024).await.unwrap();
+                let prefix = f.prefix(&session, 1024, 4 * 1024 * 1024).await;
                 let titles: Vec<_> = prefix.events.iter().filter_map(|row| match &row.event.fact {
                     maka_agent_facts::event::Fact::ToolDispatched { title, .. } => title.as_ref(),
                     _ => None,

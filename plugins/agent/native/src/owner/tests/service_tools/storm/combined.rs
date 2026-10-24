@@ -262,7 +262,7 @@ async fn local_owner(
 ) {
     assert!(current.is_none());
     // The original Application has already acknowledged shutdown. Reuse its held
-    // EventLog, never create a second active Application or a second writer.
+    // RootStore, never create a second active Application or a second writer.
     let capture = Arc::new(StdMutex::new(None));
     let selections = BTreeMap::from([
         (
@@ -386,8 +386,9 @@ async fn quiescent(owner: &Owner) {
     assert!(owner.runs.lock().await.controls.is_empty());
 }
 
-async fn events(store: &EventLog, session: &str, after: u64) -> Vec<StoredEvent> {
-    let through = *store.subscribe_commits().borrow();
+async fn events(root: &RootStore, session: &str, after: u64) -> Vec<StoredEvent> {
+    let store = root.session(session).await.unwrap();
+    let through = *store.subscribe_commits().unwrap().borrow();
     let mut cursor = after;
     let mut result = Vec::new();
     loop {
@@ -545,7 +546,7 @@ fn snapshot(f: &Fixture, session: &str) -> Snapshot {
     // These are quiescent read-only observations of actual stored columns/raw
     // JSON, independent of both the projector and its optional body cache.
     let db = rusqlite::Connection::open_with_flags(
-        f.root.join(maka_event_log::root::ROOT_DATABASE),
+        f.session_database(session),
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
     )
     .unwrap();
@@ -1074,7 +1075,7 @@ async fn exercise(
     receipts.push(created);
     let mut invocations = Vec::new();
     for index in 0..2 {
-        let before = *f.store.subscribe_commits().borrow();
+        let before = f.through(&session).await;
         let text = compaction::user_prompt(index, 2, 65_536);
         assert_eq!(text.len(), 65_536);
         let sent = caller
@@ -1134,11 +1135,11 @@ async fn exercise(
         receipts.push(upload(f, caller, &session, &mut picture).await);
         pictures.push(picture);
     }
-    let before = *f.store.subscribe_commits().borrow();
+    let before = f.through(&session).await;
     let message = large_message();
     assert_eq!(message.len(), 614_400);
     *server = Some(tokio::spawn({
-        let store = f.store.clone();
+        let store = f.session(&session).await;
         let session = session.clone();
         let pictures = pictures.clone();
         let message = message.clone();
@@ -1171,7 +1172,7 @@ async fn exercise(
     let work = verify_combined_facts(f, &session, &invocations[2], before, &served).await;
     let (tools, input_digests) =
         verify_all_facts(f, &session, &invocations, &message, &pictures).await;
-    let through = *f.store.subscribe_commits().borrow();
+    let through = f.through(&session).await;
     let stored = snapshot(f, &session);
     let public = public_history(
         caller,
@@ -1189,9 +1190,17 @@ async fn exercise(
     for receipt in &receipts {
         caller.recover(receipt).await;
     }
-    assert!(f.store.pending_messages(&session).await.unwrap().is_empty());
     assert!(
-        f.store
+        f.session(&session)
+            .await
+            .pending_messages(&session)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        f.session(&session)
+            .await
             .pending_interactions(&session)
             .await
             .unwrap()
@@ -1288,7 +1297,7 @@ async fn run(local: bool) {
         let root_owner = f.store.owned_root().unwrap();
         f.store.shutdown().await.unwrap();
         f.config.shutdown().await.unwrap();
-        f.store = Arc::new(EventLog::for_root(root_owner.clone()).await.unwrap());
+        f.store = Arc::new(RootStore::open(root_owner.clone()).await.unwrap());
         f.config = Arc::new(ConfigurationStore::for_root(root_owner).await.unwrap());
         if local { local_owner(&mut current, &f, &setup, deployment).await; }
         else { reopened_application(&mut f, &setup, deployment).await; }
@@ -1306,13 +1315,13 @@ async fn run(local: bool) {
             assert_eq!(tools, proof.tools);
             assert_eq!(inputs, proof.input_digests);
             quiescent(owner).await;
-            assert!(f.store.pending_messages(&proof.session).await.unwrap().is_empty());
-            assert!(f.store.pending_interactions(&proof.session).await.unwrap().is_empty());
+            assert!(f.session(&proof.session).await.pending_messages(&proof.session).await.unwrap().is_empty());
+            assert!(f.session(&proof.session).await.pending_interactions(&proof.session).await.unwrap().is_empty());
             // Read the ACTUAL current tail, not merely the saved fence. Normal
             // model attempts commit ModelRequested before opening provider HTTP.
-            // Root/application receipt facts outside this Session may advance.
-            let actual_global_fence = *f.store.subscribe_commits().borrow();
-            assert!(actual_global_fence >= proof.through);
+            // Root/application receipt facts have an independent control frontier.
+            let actual_session_fence = f.through(&proof.session).await;
+            assert!(actual_session_fence >= proof.through);
             assert_eq!(snapshot(&f, &proof.session), proof.stored, "reopen must preserve all current Session columns/raw bytes and tail");
             assert_eq!(counter.entered.available_permits(), CASE.calls);
             assert_eq!(counter.effects.load(Ordering::SeqCst), 0);
@@ -1323,7 +1332,7 @@ async fn run(local: bool) {
                 "images":proof.pictures.iter().map(|p|json!({"bytes":p.bytes,"digest":p.digest})).collect::<Vec<_>>(),
                 "http_requests":5,"main_requests":4,"summary_requests":1,"completed_invocations":3,
                 "input_digests":proof.input_digests,
-                "tool_work":proof.work,"saved_fence":proof.through,"actual_global_fence":actual_global_fence,
+                "tool_work":proof.work,"saved_fence":proof.through,"actual_session_fence":actual_session_fence,
                 "session_tail":proof.stored.tail,"public_rows":proof.public["rows"].as_array().unwrap().len(),
                 "reopened_current_session_equal":true,"errors":0})
         }
@@ -1410,7 +1419,7 @@ async fn original_payloads_survive_local_ipc_summary_and_reopen() {
 
 async fn serve_combined(
     listener: TcpListener,
-    store: Arc<maka_event_log::EventLog>,
+    store: maka_event_log::root_store::SessionStore,
     session: String,
     initial_after: u64,
     message: String,
@@ -1449,7 +1458,7 @@ async fn serve_combined(
             progress["http_requests"] = json!(progress["http_requests"].as_u64().unwrap() + 1);
             progress["normalized_request_json_bytes"] = json!(request_bytes);
         }
-        let through = *store.subscribe_commits().borrow();
+        let through = *store.subscribe_commits().unwrap().borrow();
         let mut requested = None;
         loop {
             let page = store
@@ -1752,7 +1761,7 @@ async fn verify_combined_facts(
     initial_after: u64,
     served: &Value,
 ) -> Value {
-    let through = *fixture.store.subscribe_commits().borrow();
+    let through = fixture.through(&session).await;
     let case = CASE;
     let mut after = initial_after;
     let mut dispatched = BTreeMap::new();
@@ -1768,7 +1777,8 @@ async fn verify_combined_facts(
     let mut checkpoints = 0;
     loop {
         let page = fixture
-            .store
+            .session(session)
+            .await
             .session_events(session, after, through, 512, usize::MAX)
             .await
             .unwrap();
@@ -1806,7 +1816,8 @@ async fn verify_combined_facts(
                     );
                     projected_bytes += serde_json::to_vec(&case.business(index)).unwrap().len();
                     let raw = fixture
-                        .store
+                        .session(session)
+                        .await
                         .resolve_tool_result(session, &stored.event.id)
                         .await
                         .unwrap();

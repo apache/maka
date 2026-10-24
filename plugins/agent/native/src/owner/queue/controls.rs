@@ -36,6 +36,7 @@ impl MessageBasis {
             && self.internal_bindings == other.internal_bindings
             && self.behavior == other.behavior
             && self.workspace == other.workspace
+            && self.binding == other.binding
             && self.tools == other.tools
     }
 }
@@ -44,6 +45,9 @@ impl Owner {
         self.session(session).await?;
         let queue = self
             .store
+            .session(session)
+            .await
+            .map_err(|error| error.to_string())?
             .message_queue(session)
             .await
             .map_err(|_| "agent_queue_unavailable")?;
@@ -259,6 +263,9 @@ impl Owner {
         };
         match self
             .store
+            .session(&input.session_id)
+            .await
+            .map_err(|error| error.to_string())?
             .edit_message_queue(&input.session_id, input.expected_revision, edit, command)
             .await
         {

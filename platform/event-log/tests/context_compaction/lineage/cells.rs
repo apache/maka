@@ -90,7 +90,7 @@ async fn lineage_model_cut_allows_only_independent_cell_progress_not_compaction_
     .await;
     settle(&log, "exec").await;
     let frozen = log
-        .read_model_context("session", Some("child"))
+        .capture_model_context("session", Some("child"), 100_000, 64 * 1024 * 1024)
         .await
         .unwrap();
     dispatch(
@@ -122,12 +122,14 @@ async fn lineage_model_cut_allows_only_independent_cell_progress_not_compaction_
     .unwrap();
     // No unfinished model request here: the independent effects alone block maintenance.
     assert!(
-        log.prepare_context_compaction(
+        log.capture_compaction_context(
             "session",
             Some("child"),
             &CheckpointMode::MidTurn {
                 anchor_event_id: child.id
-            }
+            },
+            100_000,
+            64 * 1024 * 1024
         )
         .await
         .is_err()
@@ -201,7 +203,7 @@ async fn lineage_model_cut_allows_only_independent_cell_progress_not_compaction_
         .await
         .unwrap();
     let pending = log
-        .read_model_context("session", Some("child"))
+        .capture_model_context("session", Some("child"), 100_000, 64 * 1024 * 1024)
         .await
         .unwrap();
     assert!(
@@ -213,7 +215,7 @@ async fn lineage_model_cut_allows_only_independent_cell_progress_not_compaction_
         .await
         .unwrap();
     let before_settlement = log
-        .read_model_context("session", Some("child"))
+        .capture_model_context("session", Some("child"), 100_000, 64 * 1024 * 1024)
         .await
         .unwrap();
     settle(&log, "nested").await;
@@ -234,7 +236,7 @@ async fn lineage_model_cut_allows_only_independent_cell_progress_not_compaction_
             .is_err()
     );
     let before_direct = log
-        .read_model_context("session", Some("child"))
+        .capture_model_context("session", Some("child"), 100_000, 64 * 1024 * 1024)
         .await
         .unwrap();
     dispatch(&log, "direct", ToolOrigin::Standalone).await;
@@ -246,7 +248,7 @@ async fn lineage_model_cut_allows_only_independent_cell_progress_not_compaction_
         "a settled direct result cannot be omitted either"
     );
     let fresh = log
-        .read_model_context("session", Some("child"))
+        .capture_model_context("session", Some("child"), 100_000, 64 * 1024 * 1024)
         .await
         .unwrap();
     log.append(&lineage_request("next", ModelPurpose::Main, &fresh))

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+use crate::support::store::SessionFixture;
 use crate::support::{code_mode, context as fixture, image_projection};
 use maka_agent_engine::RunWork;
 use maka_agent_facts::context::CheckpointMode;
@@ -24,7 +25,6 @@ use maka_agent_facts::context::ModelPurpose;
 use maka_agent_facts::context::ModelRequestContext;
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::InvocationOutcome;
-use maka_event_log::EventLog;
 use serde_json::json;
 use std::sync::{
     Arc,
@@ -54,7 +54,7 @@ async fn resolved_threshold_and_matching_latest_main_route_are_required_for_pret
     ] {
         let directory = tempfile::tempdir().unwrap();
         let log = Arc::new(
-            EventLog::open(&directory.path().join("events.sqlite"))
+            SessionFixture::open(&directory.path().join("events.sqlite"))
                 .await
                 .unwrap(),
         );
@@ -86,17 +86,23 @@ async fn resolved_threshold_and_matching_latest_main_route_are_required_for_pret
             fixture::respond(main.as_mut().unwrap(), "done", "stop").await;
             requests
         });
-        let worker = fixture::engine(log.clone());
+        let worker = fixture::engine();
         let mut old = fixture::input(&base, "old", false);
         old.context = context(None);
-        worker.run(old, CancellationToken::new()).await.unwrap();
+        worker
+            .run(log.store(), old, CancellationToken::new())
+            .await
+            .unwrap();
         let mut next = fixture::input(&base, "next", false);
         next.main_output_limit = Some(200_000);
         next.context = context(declared);
         if !matching {
             next.configuration.model.as_mut().unwrap().connection_id = "different".into();
         }
-        worker.run(next, CancellationToken::new()).await.unwrap();
+        worker
+            .run(log.store(), next, CancellationToken::new())
+            .await
+            .unwrap();
         worker.drain().await;
         let requests = server.await.unwrap();
         let (summaries, mains): (Vec<_>, Vec<_>) = requests.iter().partition(|request| {
@@ -151,10 +157,8 @@ async fn resolved_threshold_and_matching_latest_main_route_are_required_for_pret
 async fn midturn_waits_for_all_code_mode_results_and_replays_exact_image_anchor_after_reopen() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("events.sqlite");
-    let log = Arc::new(EventLog::open(&path).await.unwrap());
-    log.create_session("session", "create", &json!({}), 1)
-        .await
-        .unwrap();
+    let log = Arc::new(SessionFixture::open(&path).await.unwrap());
+
     image_projection::artifact(&log, "anchor-image", 8, true).await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}/v1", listener.local_addr().unwrap());
@@ -219,8 +223,11 @@ async fn midturn_waits_for_all_code_mode_results_and_replays_exact_image_anchor_
     if let RunWork::Message { message, .. } = &mut input.work {
         *message=serde_json::from_value(json!({"text":"question-first","attachments":[image_projection::attachment("anchor-image")]})).unwrap();
     }
-    let worker = fixture::engine(log.clone());
-    worker.run(input, CancellationToken::new()).await.unwrap();
+    let worker = fixture::engine();
+    worker
+        .run(log.store(), input, CancellationToken::new())
+        .await
+        .unwrap();
     worker.drain().await;
     let (summary_request, after) = server.await.unwrap();
     assert!(
@@ -230,7 +237,7 @@ async fn midturn_waits_for_all_code_mode_results_and_replays_exact_image_anchor_
     );
     assert!(after["messages"].to_string().contains("summary-marker"));
     assert!(after["messages"].to_string().contains("image_url"));
-    let source = log.read_model_context("session", None).await.unwrap();
+    let source = log.read_model_view("session", None).await.unwrap();
     let anchor = source.anchor.as_ref().unwrap().event.id.clone();
     assert!(
         matches!(&source.baseline.as_ref().unwrap().checkpoint.mode,CheckpointMode::MidTurn {anchor_event_id} if anchor_event_id==&anchor)
@@ -267,9 +274,9 @@ async fn midturn_waits_for_all_code_mode_results_and_replays_exact_image_anchor_
     drop(worker);
     drop(effects);
     Arc::try_unwrap(log).ok().unwrap().close().await.unwrap();
-    let log = Arc::new(EventLog::open(&path).await.unwrap());
+    let log = Arc::new(SessionFixture::open(&path).await.unwrap());
     assert_eq!(
-        log.read_model_context("session", None)
+        log.read_model_view("session", None)
             .await
             .unwrap()
             .anchor
@@ -286,10 +293,13 @@ async fn midturn_waits_for_all_code_mode_results_and_replays_exact_image_anchor_
         fixture::respond(&mut socket, "reopened", "stop").await;
         request
     });
-    let worker = fixture::engine(log);
+    let worker = fixture::engine();
     let mut next = fixture::input(&base, "reopen", false);
     next.supports_vision = true;
-    worker.run(next, CancellationToken::new()).await.unwrap();
+    worker
+        .run(log.store(), next, CancellationToken::new())
+        .await
+        .unwrap();
     worker.drain().await;
     let next = server.await.unwrap();
     assert!(next["messages"].to_string().contains("question-first"));

@@ -21,8 +21,8 @@ use super::*;
 use maka_agent_facts::configuration::policy::Personalization;
 use maka_config::ConfigurationStore;
 use maka_event_log::{
-    EventLog,
     root::{RootNamespaces, RootOwner},
+    root_store::RootStore,
 };
 use maka_plugin_core::deployment::DeploymentRef;
 use std::sync::Mutex;
@@ -156,7 +156,7 @@ async fn native_context_uses_actual_root_and_stable_instances_across_deployments
         for root_index in 0..2 {
             let root = dir.path().join(format!("root-{root_index}"));
             let owner = Arc::new(RootOwner::create(&root, &namespaces).unwrap());
-            let store = Arc::new(EventLog::for_root(owner).await.unwrap());
+            let store = Arc::new(RootStore::open(owner).await.unwrap());
             let marker = format!("Root {root_index}");
             store
                 .create_session("root-marker", "create-marker", &marker, 1)
@@ -304,15 +304,17 @@ async fn native_context_uses_actual_root_and_stable_instances_across_deployments
 
 #[tokio::test]
 async fn retired_native_initializer_keeps_original_store_until_actual_configuration_close() {
+    let dir = tempfile::tempdir().unwrap();
+    let namespaces = namespaces(&dir);
+    let root = dir.path().join("root");
+    let store = Arc::new(
+        setup(RootStore::open(Arc::new(
+            RootOwner::create(&root, &namespaces).unwrap(),
+        )))
+        .await
+        .unwrap(),
+    );
     tokio::time::timeout(Duration::from_secs(20), async {
-        let dir = tempfile::tempdir().unwrap();
-        let namespaces = namespaces(&dir);
-        let root = dir.path().join("root");
-        let store = Arc::new(
-            EventLog::for_root(Arc::new(RootOwner::create(&root, &namespaces).unwrap()))
-                .await
-                .unwrap(),
-        );
         let provider = native_package();
         let consumer = consumer();
         let deployment = Uuid::new_v4();
@@ -479,16 +481,18 @@ async fn retired_native_initializer_keeps_original_store_until_actual_configurat
 
 #[tokio::test]
 async fn context_store_stays_fenced_after_initializer_panic_or_failed_native_close() {
-    tokio::time::timeout(Duration::from_secs(20), async {
-        for panic in [true, false] {
-            let dir = tempfile::tempdir().unwrap();
-            let namespaces = namespaces(&dir);
-            let root = dir.path().join("root");
-            let store = Arc::new(
-                EventLog::for_root(Arc::new(RootOwner::create(&root, &namespaces).unwrap()))
-                    .await
-                    .unwrap(),
-            );
+    for panic in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let namespaces = namespaces(&dir);
+        let root = dir.path().join("root");
+        let store = Arc::new(
+            setup(RootStore::open(Arc::new(
+                RootOwner::create(&root, &namespaces).unwrap(),
+            )))
+            .await
+            .unwrap(),
+        );
+        tokio::time::timeout(Duration::from_secs(20), async {
             let provider = native_package();
             let consumer = consumer();
             let deployment = Uuid::new_v4();
@@ -582,16 +586,16 @@ async fn context_store_stays_fenced_after_initializer_panic_or_failed_native_clo
                 RootOwner::open(&root, &namespaces).err().unwrap().kind(),
                 std::io::ErrorKind::WouldBlock
             );
-        }
-    })
-    .await
-    .unwrap();
+        })
+        .await
+        .unwrap();
+    }
 }
 
 #[tokio::test]
 async fn unmanaged_event_log_cannot_supply_an_owned_native_root() {
     let dir = tempfile::tempdir().unwrap();
-    let store = EventLog::open(&dir.path().join("standalone.sqlite"))
+    let store = maka_event_log::EventLog::open(&dir.path().join("standalone.sqlite"))
         .await
         .unwrap();
     assert!(

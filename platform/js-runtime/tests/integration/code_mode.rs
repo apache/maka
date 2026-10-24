@@ -173,9 +173,10 @@ async fn javascript_failure_cancels_and_drains_dispatched_tools() {
         // otherwise cancellation may correctly prevent dispatch altogether.
         let mut task = tokio::spawn(async move {
             let context = maka_code_runtime::CellContext::new(
-                maka_code_runtime::CellStore::default(),
+                maka_code_runtime::CellStore::temporary().unwrap(),
                 vec![],
-            );
+            )
+            .unwrap();
             executor()
                 .execute_module(
                     format!(

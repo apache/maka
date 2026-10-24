@@ -26,45 +26,15 @@ use crate::RunError;
 mod chat;
 mod compatible;
 mod images;
-pub(super) use chat::project as project_chat;
-pub(super) use compatible::project as project_compatible;
 mod output;
-mod projection;
-mod replay;
-pub(super) use replay::Replay;
+mod prepared;
+pub(super) use prepared::{PreparedHistory, capture as prepare_view};
 mod user;
 
-#[derive(Clone, Copy)]
-pub(super) enum EventRef<'a> {
-    Canonical(&'a maka_agent_facts::event::StoredEvent),
-    Archived(&'a maka_event_log::context::ArchivedToolResult),
-    ModelItems(&'a maka_event_log::context::AcceptedModelStep),
-}
-impl<'a> EventRef<'a> {
-    fn canonical(self) -> Option<&'a maka_agent_facts::event::StoredEvent> {
-        match self {
-            Self::Canonical(event) => Some(event),
-            Self::Archived(_) | Self::ModelItems(_) => None,
-        }
-    }
-}
-impl<'a> From<&'a maka_event_log::context::ContextEvent> for EventRef<'a> {
-    fn from(event: &'a maka_event_log::context::ContextEvent) -> Self {
-        match event {
-            maka_event_log::context::ContextEvent::Canonical(event) => Self::Canonical(event),
-            maka_event_log::context::ContextEvent::Archived(event) => Self::Archived(event),
-            maka_event_log::context::ContextEvent::ModelItems(event) => Self::ModelItems(event),
-        }
-    }
-}
 mod references;
 mod resources;
-pub(super) use images::materialize_replay;
-use projection::build;
-
-pub fn operation_id(step_id: &str, call_id: &str) -> String {
-    format!("{step_id}:{call_id}")
-}
+mod semantic;
+pub(super) use semantic::render as render_semantic_group;
 
 /// Only committed semantic facts produce provider input. No UI transcript or
 /// previous isolate state is read, including after process restart.
@@ -93,19 +63,111 @@ pub fn project(
             "archived history requires a checked effective context source".into(),
         ));
     }
-    build(
-        prefix
-            .events
-            .iter()
-            .filter(|e| e.event.invocation.session_id == session)
-            .map(EventRef::Canonical),
-        &resources::Resources::native(session),
-        &mut Vec::new(),
-        false,
-        None,
-        false,
-        language,
-    )
+    use maka_agent_facts::history::semantic::{
+        Fragment, Frontier, PartPayload, Payload, ResolvedRow, SemanticKind, reduce,
+    };
+    use std::collections::{BTreeMap, HashMap};
+    let mut frontiers: HashMap<&str, Frontier> = HashMap::new();
+    let mut rows = BTreeMap::new();
+    let mut fragments = BTreeMap::new();
+    for stored in prefix
+        .events
+        .iter()
+        .filter(|event| event.event.invocation.session_id == session)
+    {
+        let frontier = frontiers
+            .entry(&stored.event.invocation.invocation_id)
+            .or_default();
+        let transition = reduce(frontier, stored)
+            .map_err(|error| RunError::ReconciliationRequired(error.into()))?;
+        for fragment in transition.fragments {
+            fragments.insert(fragment.key, fragment);
+        }
+        for row in transition.rows {
+            rows.insert(row.id, row);
+        }
+    }
+    if frontiers
+        .values()
+        .any(|frontier| !frontier.calls.is_empty())
+    {
+        return Err(RunError::ReconciliationRequired(
+            "model tool calls have no committed outcome".into(),
+        ));
+    }
+    let mut rows: Vec<_> = rows.into_values().collect();
+    rows.sort_by_key(|row| (row.order, row.id));
+    let mut has_user = false;
+    let mut resolved = Vec::new();
+    for row in rows {
+        let key = match &row.kind {
+            SemanticKind::User { payload, .. } | SemanticKind::ImportedUser { payload } => {
+                has_user = true;
+                Some(*payload)
+            }
+            SemanticKind::ImportedAssistant { .. } if !has_user => continue,
+            SemanticKind::ImportedAssistant { payload }
+            | SemanticKind::ExecutorText { payload }
+            | SemanticKind::ToolResult { payload, .. }
+            | SemanticKind::Notification { payload, .. } => Some(*payload),
+            SemanticKind::AssistantPart {
+                payload: PartPayload::Complete(key),
+                ..
+            } => Some(*key),
+            _ => None,
+        };
+        let payload = if let Some(key) = key {
+            Some(
+                fragments
+                    .get(&key)
+                    .ok_or_else(|| {
+                        RunError::ReconciliationRequired("semantic payload missing".into())
+                    })?
+                    .payload
+                    .clone(),
+            )
+        } else if let SemanticKind::AssistantPart {
+            payload:
+                PartPayload::Text {
+                    part,
+                    end,
+                    text_kind,
+                },
+            ..
+        } = &row.kind
+        {
+            let mut text = String::new();
+            let mut options = None;
+            for Fragment { payload, .. } in fragments
+                .values()
+                .filter(|fragment| fragment.part == *part && fragment.key.source_sequence <= *end)
+            {
+                let Payload::TextDelta {
+                    text: delta,
+                    provider_options,
+                } = payload
+                else {
+                    return Err(RunError::ReconciliationRequired(
+                        "invalid text fragment".into(),
+                    ));
+                };
+                text.push_str(delta);
+                maka_agent_facts::model::merge_provider_options(
+                    &mut options,
+                    provider_options.clone(),
+                );
+            }
+            Some(Payload::Part(maka_agent_facts::model::ModelPart::Text {
+                text_kind: *text_kind,
+                text,
+                provider_options: options,
+            }))
+        } else {
+            None
+        };
+        resolved.push(ResolvedRow { row, payload });
+    }
+    semantic::project(&resolved, session, language)
 }
 
 #[cfg(test)]

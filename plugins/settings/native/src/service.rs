@@ -26,7 +26,7 @@ use std::sync::Arc;
 pub(crate) struct Settings {
     pub catalog: Arc<maka_providers::catalog::Catalog>,
     pub configuration: Arc<maka_config::ConfigurationStore>,
-    pub log: Arc<maka_event_log::EventLog>,
+    pub log: Arc<maka_event_log::root_store::RootStore>,
     pub configured_locale: maka_agent_facts::language::LanguagePreference,
     pub native_language: maka_agent_facts::language::Language,
 }

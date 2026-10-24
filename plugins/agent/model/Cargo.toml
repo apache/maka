@@ -37,7 +37,7 @@ jiff.workspace = true
 base64 = "0.22.1"
 serde.workspace = true
 serde_json.workspace = true
-reqwest = { workspace = true, features = ["form"] }
+reqwest = { workspace = true, features = ["form", "stream"] }
 maka-network.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

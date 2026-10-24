@@ -100,7 +100,11 @@ impl Transport for Script {
     fn identity(&self) -> u64 {
         1
     }
-    fn request(&self, request: http::Request) -> BoxFuture<'_, Result<http::Response, ModelError>> {
+    fn request(
+        &self,
+        request: http::Request,
+        _cancellation: tokio_util::sync::CancellationToken,
+    ) -> BoxFuture<'_, Result<http::Response, ModelError>> {
         Box::pin(async move {
             let url = request.url.clone();
             self.requests.lock().unwrap().push(request);

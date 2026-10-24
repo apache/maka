@@ -660,21 +660,21 @@ async fn source_import_retains_its_worker_after_cancellation_and_observer_loss()
             self.0.1.notify_all();
         }
     }
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source");
+    std::fs::create_dir(&source).unwrap();
+    let root = Arc::new(
+        RootOwner::create(
+            &dir.path().join("host"),
+            &RootNamespaces {
+                ownership: dir.path().join("owners"),
+                control: dir.path().join("control"),
+            },
+        )
+        .unwrap(),
+    );
+    let library = library(root, &source, "held-import").await;
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        let dir = tempfile::tempdir().unwrap();
-        let source = dir.path().join("source");
-        std::fs::create_dir(&source).unwrap();
-        let root = Arc::new(
-            RootOwner::create(
-                &dir.path().join("host"),
-                &RootNamespaces {
-                    ownership: dir.path().join("owners"),
-                    control: dir.path().join("control"),
-                },
-            )
-            .unwrap(),
-        );
-        let library = library(root, &source, "held-import").await;
         let call = scope();
         let release = Release(Arc::new((
             std::sync::Mutex::new(false),

@@ -94,6 +94,9 @@ impl EventLog {
                 {
                     return Ok(record);
                 }
+                if record.revision >= MAX_SAFE_INTEGER {
+                    return Err(invalid("session revision exhausted"));
+                }
                 sqlx::query(
                     "INSERT INTO session_read_state (session_id, has_unread, last_read_message_id)
                      VALUES (?, 0, ?) ON CONFLICT(session_id) DO UPDATE

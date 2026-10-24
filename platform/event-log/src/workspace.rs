@@ -21,7 +21,7 @@ use crate::{EventLog, StoreError};
 use sqlx::{Connection, Row};
 
 /// Execution evidence for Sessions sharing an exact canonical working directory.
-/// No workspace registry: membership is projected from durable Session bindings.
+/// Membership follows the current shared binding, not historical inline paths.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkspaceFence(pub Vec<WorkspaceSession>);
 
@@ -48,8 +48,10 @@ impl EventLog {
             .run(move |connection| {
                 Box::pin(async move {
                     Ok(sqlx::query_scalar(
-                        "SELECT EXISTS(SELECT 1 FROM session_control
-                WHERE COALESCE(json_extract(configuration, '$.workspace.path'), json_extract(configuration, '$.workspace.hostCwd'))=? AND id<>?)",
+                        "SELECT EXISTS(SELECT 1 FROM workspace_bindings binding
+                         JOIN session_control session INDEXED BY session_workspace_binding
+                         ON json_extract(session.configuration,'$.workspace.id')=binding.id
+                         WHERE json_extract(binding.workspace_json,'$.path')=? AND session.id<>?)",
                     )
                     .bind(cwd)
                     .bind(session)
@@ -67,17 +69,28 @@ impl EventLog {
             let mut tx = connection.begin().await?;
             let rows = sqlx::query(
                 "SELECT s.id, s.revision,
+                 b.metadata_epoch,json_extract(s.configuration,'$.workspace.metadataEpochAtAttach') AS attached_epoch,
                  COALESCE((SELECT MAX(e.sequence) FROM runtime_events e WHERE
                     (e.event_json IS NOT NULL AND e.event_session=s.id)), 0) AS sequence,
                  EXISTS(SELECT 1 FROM shell_runs r WHERE r.session_id = s.id AND
                     json_extract(r.record_json, '$.state.outcome.kind') = 'orphaned') AS orphaned
-                 FROM session_control s WHERE COALESCE(json_extract(s.configuration, '$.workspace.path'), json_extract(s.configuration, '$.workspace.hostCwd')) = ?
+                 FROM workspace_bindings b
+                 JOIN session_control s INDEXED BY session_workspace_binding
+                 ON json_extract(s.configuration,'$.workspace.id')=b.id
+                 WHERE json_extract(b.workspace_json,'$.path') = ?
                  ORDER BY s.id"
             ).bind(cwd).fetch_all(&mut *tx).await?;
             let mut result = Vec::with_capacity(rows.len());
             for row in rows {
+                let local: i64 = row.try_get("revision")?;
+                let current: i64 = row.try_get("metadata_epoch")?;
+                let attached: i64 = row.try_get("attached_epoch")?;
+                let revision = current.checked_sub(attached).filter(|delta| *delta >= 0)
+                    .and_then(|delta| local.checked_add(delta))
+                    .filter(|revision| (0..=maka_agent_facts::interaction::MAX_SAFE_INTEGER as i64).contains(revision))
+                    .ok_or_else(|| StoreError::InvalidTransition("invalid effective workspace Session revision".into()))?;
                 result.push(WorkspaceSession {
-                    session_id: row.try_get("id")?, revision: row.try_get("revision")?,
+                    session_id: row.try_get("id")?, revision,
                     event_sequence: row.try_get("sequence")?, orphaned_shells: row.try_get("orphaned")?,
                 });
             }

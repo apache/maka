@@ -32,7 +32,7 @@ use maka_agent_facts::shell_run::ShellPatch;
 use maka_agent_facts::shell_run::ShellState;
 use maka_agent_facts::shell_run::{ShellObservation, ShellRun};
 use maka_agent_facts::terminal::TerminalSize;
-use maka_event_log::EventLog;
+use maka_event_log::root_store::SessionStore;
 use maka_process::pty::{self, PtyChild, PtyCommand, PtyIo};
 use std::{
     num::NonZeroI64,
@@ -44,7 +44,7 @@ use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
 pub(super) struct Worker {
-    pub log: Arc<EventLog>,
+    pub log: SessionStore,
     pub record: Arc<ShellRun>,
     pub commands: mpsc::Receiver<Control>,
     pub updates: watch::Sender<Update>,
@@ -346,12 +346,32 @@ mod tests {
     #[tokio::test]
     async fn native_cleanup_failure_preserves_unsettled_row_and_typed_worker_error() {
         let directory = tempfile::tempdir().unwrap();
-        let log = Arc::new(
-            EventLog::open(&directory.path().join("events.sqlite"))
-                .await
-                .unwrap(),
-        );
-        log.create_session("session", "create", &serde_json::json!({}), 1)
+        let root = maka_event_log::root_store::RootStore::open(Arc::new(
+            maka_event_log::root::RootOwner::create(
+                &directory.path().join("root"),
+                &maka_event_log::root::RootNamespaces {
+                    ownership: directory.path().join("owners"),
+                    control: directory.path().join("control"),
+                },
+            )
+            .unwrap(),
+        ))
+        .await
+        .unwrap();
+        let binding = root
+            .attach_workspace(
+                "shell-fixture",
+                &serde_json::json!({"path":directory.path()}),
+            )
+            .await
+            .unwrap();
+        let log = root
+            .create_session(
+                "session",
+                "create",
+                &serde_json::json!({"workspace":binding,"boundary_revision":0}),
+                1,
+            )
             .await
             .unwrap();
         let size = TerminalSize::new(80, 24).unwrap();
@@ -366,7 +386,13 @@ mod tests {
                 source_tool_call_id: "tool".into(),
                 visibility: ShellVisibility::Model,
                 permissions: ShellPermissions {
-                    boundary_revision: 0,
+                    basis: maka_agent_facts::workspace::PermissionBasis {
+                        boundary_revision: 0,
+                        binding: maka_agent_facts::workspace::BindingStamp {
+                            id: binding.id,
+                            permission_epoch: 0,
+                        },
+                    },
                     sandbox: maka_sandbox::Sandbox::Disabled,
                 },
                 cwd: directory.path().to_str().unwrap().into(),
@@ -442,7 +468,7 @@ mod tests {
                 .contains("live output before cleanup failure")
         );
         drop(worker);
-        assert_eq!(log.recover_shell_runs(50).await.unwrap(), 1);
+        assert_eq!(root.recover_shell_runs(50).await.unwrap(), 1);
         let recovered = log
             .read_shell_run("session", "cleanup-failure")
             .await
@@ -457,6 +483,6 @@ mod tests {
                 ..
             }
         ));
-        log.shutdown().await.unwrap();
+        root.shutdown().await.unwrap();
     }
 }

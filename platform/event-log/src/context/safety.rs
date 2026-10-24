@@ -51,7 +51,7 @@ pub(crate) async fn require_safe(
 }
 
 /// Historical observations cannot borrow a later settlement or inherit later work.
-/// NOT MATERIALIZED keeps the cut in the indexed queries rather than copying the ledger.
+/// Current cuts use durable obligations; older cuts derive only the requested state.
 pub(crate) async fn require_safe_through(
     connection: &mut SqliteConnection,
     session: &str,
@@ -70,13 +70,8 @@ pub(crate) async fn require_manual_message_safe(
 ) -> Result<bool, StoreError> {
     require_safe_through_policy(connection, session, current, i64::MAX as u64, true).await?;
     let pending: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM runtime_events d JOIN runtime_events end
-         ON end.invocation_id=d.invocation_id AND end.kind='invocation_ended'
-         WHERE d.kind='tool_dispatched'
-         AND json_extract(d.event_json, '$.invocation.session_id')=?
-         AND json_extract(end.event_json, '$.fact.outcome.class')='outcome_unknown'
-         AND NOT EXISTS(SELECT 1 FROM runtime_events t WHERE t.invocation_id=d.invocation_id
-           AND t.operation_id=d.operation_id AND t.kind='tool_settled'))",
+        "SELECT EXISTS(SELECT 1 FROM context_obligations
+         WHERE session_id=? AND kind='tool' AND sealed_unknown=1)",
     )
     .bind(session)
     .fetch_one(connection)
@@ -91,6 +86,45 @@ async fn require_safe_through_policy(
     through: u64,
     allow_sealed_unknown: bool,
 ) -> Result<(), StoreError> {
+    // Durable obligations survive reopen. Only a genuinely older requested cut
+    // needs historical derivation; ordinary current reads never rescan the ledger.
+    let indexed: bool = sqlx::query_scalar(
+        "SELECT NOT EXISTS(SELECT 1 FROM context_safety_heads
+         WHERE session_id=? AND through_sequence>?)",
+    )
+    .bind(session)
+    .bind(i64::try_from(through).map_err(|_| invalid("coverage overflow"))?)
+    .fetch_one(&mut *connection)
+    .await?;
+    if indexed {
+        let unsettled: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM context_obligations
+             WHERE session_id=?1 AND (?2 IS NULL OR invocation_id!=?2)
+               AND kind!='interrupted_provider'
+               AND NOT (?3 AND kind='tool' AND sealed_unknown=1))",
+        )
+        .bind(session)
+        .bind(current)
+        .bind(allow_sealed_unknown)
+        .fetch_one(&mut *connection)
+        .await?;
+        if unsettled {
+            return Err(StoreError::HistoryUnsettled);
+        }
+        let unknown_provider_effect: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM context_obligations
+             WHERE session_id=?1 AND kind='interrupted_provider'
+               AND (?2 IS NULL OR invocation_id!=?2))",
+        )
+        .bind(session)
+        .bind(current)
+        .fetch_one(connection)
+        .await?;
+        if unknown_provider_effect {
+            return Err(StoreError::HistoryProviderEffectUnresolved);
+        }
+        return Ok(());
+    }
     let unsafe_history: bool = sqlx::query_scalar(concat!(
         "WITH runtime_events AS NOT MATERIALIZED (SELECT * FROM main.runtime_events WHERE sequence <= ?3), ",
         crate::model_items::accepted_calls!(), "
@@ -145,16 +179,6 @@ async fn require_safe_through_policy(
     ).bind(session).bind(current).bind(through as i64).fetch_one(&mut *connection).await?;
     if unknown_provider_effect {
         return Err(StoreError::HistoryProviderEffectUnresolved);
-    }
-    let broken_payload: bool = sqlx::query_scalar(
-        "WITH runtime_events AS NOT MATERIALIZED (SELECT * FROM main.runtime_events WHERE sequence <= ?2)
-         SELECT EXISTS(SELECT 1 FROM runtime_events e LEFT JOIN tool_result_payloads p ON p.event_id = e.event_id
-         WHERE json_extract(e.event_json, '$.invocation.session_id') = ?1
-         AND e.kind = 'tool_settled' AND json_extract(e.event_json, '$.fact.outcome.kind') = 'succeeded'
-         AND (p.event_id IS NULL OR length(p.payload) != COALESCE(json_extract(e.event_json, '$.fact.outcome.raw.bytes'), 0)))",
-    ).bind(session).bind(through as i64).fetch_one(connection).await?;
-    if broken_payload {
-        return Err(invalid("source tool payload binding is broken"));
     }
     Ok(())
 }
@@ -365,3 +389,7 @@ async fn execution_boundary(
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "safety/tests.rs"]
+mod tests;

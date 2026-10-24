@@ -76,12 +76,10 @@ impl EventLog {
             .run(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin().await?;
-                    let revision: Option<i64> =
-                        sqlx::query_scalar("SELECT revision FROM session_control WHERE id = ?")
-                            .bind(&session)
-                            .fetch_optional(&mut *tx)
-                            .await?;
-                    let actual = sequence_number(revision.ok_or(StoreError::SessionNotFound)?)?;
+                    let actual =
+                        crate::workspace_bindings::current_session_revision(&mut tx, &session)
+                            .await?
+                            .ok_or(StoreError::SessionNotFound)?;
                     if actual != expected_revision {
                         return Ok(HistoryCapture::SourceRevisionConflict {
                             expected: expected_revision,

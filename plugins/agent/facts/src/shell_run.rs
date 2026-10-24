@@ -94,7 +94,7 @@ pub struct ShellRun {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ShellPermissions {
-    pub boundary_revision: u64,
+    pub basis: crate::workspace::PermissionBasis,
     pub sandbox: Sandbox,
 }
 
@@ -116,9 +116,7 @@ impl ShellRun {
     /// Metadata projections never scan the retained display. Full validation
     /// belongs at persistence/decoding boundaries.
     pub fn validate_metadata(&self) -> Result<(), &'static str> {
-        if self.permissions.boundary_revision > MAX_SAFE {
-            return Err("invalid shell permission revision");
-        }
+        self.permissions.basis.validate()?;
         if let maka_sandbox::Sandbox::Managed { filesystem, .. } = &self.permissions.sandbox {
             filesystem
                 .compile()

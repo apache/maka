@@ -100,7 +100,7 @@ impl Owner {
         .await?;
         let current = self.session(session_id).await?.configuration;
         if current.workspace != original.workspace
-            || current.boundary_revision != original.boundary_revision
+            || current.permission_basis() != original.permission_basis()
         {
             return Err("agent_git_changed".into());
         }
@@ -130,7 +130,7 @@ impl Owner {
         }
         let current = self.session(session_id).await?.configuration;
         if current.workspace != original.workspace
-            || current.boundary_revision != original.boundary_revision
+            || current.permission_basis() != original.permission_basis()
         {
             return Err("agent_git_changed".into());
         }

@@ -245,11 +245,19 @@ impl Owner {
         context: &ToolCallContext,
         planning: bool,
     ) -> Result<Snapshot<MessageBasis>, String> {
-        if !self.settings.plans || self.session(&context.invocation.session_id).await?.archived {
+        if !self.settings.plans
+            || self
+                .tool_store(&context)?
+                .get::<StoredSessionConfiguration>()
+                .await
+                .map_err(|error| error.to_string())?
+                .ok_or("agent_session_unavailable")?
+                .archived
+        {
             return Err("plan_unavailable".into());
         }
         let boundary = self
-            .store
+            .tool_store(&context)?
             .invocation_boundary(
                 &context.invocation.session_id,
                 &context.invocation.invocation_id,
@@ -267,7 +275,7 @@ impl Owner {
             return Err("plan_invocation_inactive".into());
         }
         let configuration = self
-            .store
+            .tool_store(&context)?
             .invocation_configuration(&context.invocation)
             .await
             .map_err(reason)?

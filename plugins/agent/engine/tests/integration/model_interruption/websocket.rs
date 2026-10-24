@@ -19,6 +19,7 @@
 
 //! Real WS reconnection through the Agent, after a committed local effect.
 use super::*;
+use crate::support::store::SessionFixture;
 use futures_util::{FutureExt, SinkExt, StreamExt};
 use serde_json::Value;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -83,7 +84,7 @@ async fn fallback_waits_for_retry_budget_and_gets_one_bounded_budget_of_its_own(
         for replay_safe in [true, false] {
             let directory = tempfile::tempdir().unwrap();
             let log = Arc::new(
-                EventLog::open(&directory.path().join("events.sqlite"))
+                SessionFixture::open(&directory.path().join("events.sqlite"))
                     .await
                     .unwrap(),
             );
@@ -103,7 +104,6 @@ async fn fallback_waits_for_retry_budget_and_gets_one_bounded_budget_of_its_own(
                 },
             );
             let worker = Engine::new(
-                log.clone(),
                 ModelExecutor::new(Duration::from_secs(5))
                     .unwrap()
                     .with_adapters(std::collections::BTreeMap::from([(
@@ -111,9 +111,11 @@ async fn fallback_waits_for_retry_budget_and_gets_one_bounded_budget_of_its_own(
                         binding,
                     )])),
                 CodeExecutor::new(CellLimits::default()).unwrap(),
-            );
+            )
+            .unwrap();
             let result = worker
                 .run(
+                    log.store(),
                     input("http://unused.invalid/v1", "budget"),
                     CancellationToken::new(),
                 )
@@ -189,9 +191,10 @@ async fn websocket_retry_uses_frozen_full_input_and_never_reexecutes_settled_too
                 let retry: Value = serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
                 assert!(retry.get("previous_response_id").is_none());
                 let mut expected = initial["input"].as_array().unwrap().clone();
-                let mut replayed_item = item;
-                replayed_item.as_object_mut().unwrap().remove("id"); // A fresh socket cannot reuse connection-local item IDs.
-                expected.push(replayed_item);
+                // Reconnect replays the complete accepted item, including its
+                // canonical provider identity. It does not send a connection-
+                // local item_reference or rely on previous_response_id.
+                expected.push(item);
                 expected.extend(delta["input"].as_array().unwrap().iter().cloned());
                 assert_eq!(retry["input"], json!(expected));
                 assert!(!retry.to_string().contains("unaccepted partial text"));
@@ -200,13 +203,13 @@ async fn websocket_retry_uses_frozen_full_input_and_never_reexecutes_settled_too
                 socket.send(Message::Text(complete.to_string().into())).await.unwrap();
             });
             let directory = tempfile::tempdir().unwrap();
-            let log = Arc::new(EventLog::open(&directory.path().join("events.sqlite")).await.unwrap());
+            let log = Arc::new(SessionFixture::open(&directory.path().join("events.sqlite")).await.unwrap());
             let count = Arc::new(AtomicUsize::new(0));
             let effect = Arc::new(Effect { log:log.clone(), count:count.clone() });
             let mut input = agent_loop::input(&base, "websocket", effect);
             input.provider.kind = ProviderKind::OpenaiResponses;
             input.provider_options = json!({"openai":{"store":false}});
-            let worker = engine(log.clone());
+            let worker = engine();
             let cancellation = CancellationToken::new();
             let mut commits = log.subscribe_commits();
             let stop = async {
@@ -219,7 +222,7 @@ async fn websocket_retry_uses_frozen_full_input_and_never_reexecutes_settled_too
                     cancellation.cancel();
                 }
             };
-            let (result, ()) = tokio::join!(worker.run(input, cancellation.clone()), stop);
+            let (result, ()) = tokio::join!(worker.run(log.store(), input, cancellation.clone()), stop);
             if cancel { assert!(matches!(result,Err(RunError::Cancelled))); } else {result.unwrap();}
             worker.drain().await;
             server.await.unwrap();
@@ -243,8 +246,8 @@ async fn interrupted_progress_renews_compaction_before_and_after_a_checkpoint() 
     use maka_agent_facts::context::CheckpointMode;
     tokio::time::timeout(Duration::from_secs(20), async {
         let directory = tempfile::tempdir().unwrap();
-        let log = Arc::new(EventLog::open(&directory.path().join("events.sqlite")).await.unwrap());
-        log.create_session("session", "streaming", &json!({}), 1).await.unwrap();
+        let log = Arc::new(SessionFixture::open(&directory.path().join("events.sqlite")).await.unwrap());
+
         let count = Arc::new(AtomicUsize::new(0));
         let effect = Arc::new(Effect { log: log.clone(), count: count.clone() });
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -305,8 +308,8 @@ async fn interrupted_progress_renews_compaction_before_and_after_a_checkpoint() 
         let mut input = agent_loop::input(&base, "stream-compaction", effect);
         input.provider.kind = ProviderKind::OpenaiResponses;
         input.provider_options = json!({"openai":{"store":false}});
-        let worker = engine(log.clone());
-        worker.run(input, CancellationToken::new()).await.unwrap();
+        let worker = engine();
+        worker.run(log.store(), input, CancellationToken::new()).await.unwrap();
         worker.drain().await;
         server.await.unwrap();
         assert_eq!(count.load(Ordering::SeqCst), 2, "each committed effect executes exactly once");
@@ -325,113 +328,226 @@ async fn interrupted_progress_renews_compaction_before_and_after_a_checkpoint() 
 async fn accepted_call_runs_before_stream_completion_and_survives_retry_in_direct_and_code_mode() {
     use crate::support::agent_loop::{self, Effect};
     use maka_agent_facts::tool_call::ToolOrigin;
-    tokio::time::timeout(Duration::from_secs(20), async {
-        for (mode, idle) in [(ToolMode::Direct, false), (ToolMode::CodeMode, false), (ToolMode::Direct, true), (ToolMode::CodeMode, true)] {
-            let directory = tempfile::tempdir().unwrap();
-            let log = Arc::new(EventLog::open(&directory.path().join("events.sqlite")).await.unwrap());
-            log.create_session("session","streaming",&json!({}),1).await.unwrap();
-            let count = Arc::new(AtomicUsize::new(0));
-            let effect = Arc::new(Effect { log: log.clone(), count: count.clone() });
-            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let base = format!("http://{}/v1", listener.local_addr().unwrap());
-            let server_log = log.clone();
-            let mut commits = log.subscribe_commits();
-            let server = tokio::spawn(async move {
-                let (socket, _) = listener.accept().await.unwrap();
-                let mut socket = accept_async(socket).await.unwrap();
-                let initial: Value = serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
-                let item = if mode == ToolMode::CodeMode {
-                    // A local custom-call input delta cannot be mistaken for a
-                    // provider-side effect that prevents retained-output retry.
-                    socket.send(Message::Text(json!({"type":"response.custom_tool_call_input.delta","item_id":"item-1","delta":"text("}).to_string().into())).await.unwrap();
-                    json!({"type":"custom_tool_call","id":"item-1","call_id":"call-1","name":"exec","input":"text(await tools.echo({value:42}));"})
-                } else {
-                    json!({"type":"function_call","id":"item-1","call_id":"call-1","name":"echo","arguments":"{\"value\":42}"})
-                };
-                socket.send(Message::Text(json!({"type":"response.output_item.done","output_index":0,"item":item}).to_string().into())).await.unwrap();
-                // The provider deliberately withholds response.completed until
-                // the tool result is durable. Waiting for whole-response
-                // completion would deadlock this supported streaming workflow.
-                loop {
-                    let prefix = server_log.prefix(100,128*1024).await.unwrap();
-                    if prefix.events.iter().any(|event| matches!(&event.event.fact,
-                        Fact::ToolSettled { operation_id, .. } if operation_id.ends_with(":call-1"))) {
-                        assert!(!prefix.events.iter().any(|event| matches!(event.event.fact, Fact::ModelCompleted { .. })));
-                        break;
-                    }
-                    commits.changed().await.unwrap();
+    for (mode, idle) in [
+        (ToolMode::Direct, false),
+        (ToolMode::CodeMode, false),
+        (ToolMode::Direct, true),
+        (ToolMode::CodeMode, true),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let log = Arc::new(
+            SessionFixture::open(&directory.path().join("events.sqlite"))
+                .await
+                .unwrap(),
+        );
+
+        let count = Arc::new(AtomicUsize::new(0));
+        let effect = Arc::new(Effect {
+            log: log.clone(),
+            count: count.clone(),
+        });
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}/v1", listener.local_addr().unwrap());
+        let server_log = log.clone();
+        let mut commits = log.subscribe_commits();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut socket = accept_async(socket).await.unwrap();
+            let initial: Value =
+                serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap())
+                    .unwrap();
+            let item = if mode == ToolMode::CodeMode {
+                // A local custom-call input delta cannot be mistaken for a
+                // provider-side effect that prevents retained-output retry.
+                socket.send(Message::Text(json!({"type":"response.custom_tool_call_input.delta","item_id":"item-1","delta":"text("}).to_string().into())).await.unwrap();
+                json!({"type":"custom_tool_call","id":"item-1","call_id":"call-1","name":"exec","input":"text(await tools.echo({value:42}));"})
+            } else {
+                json!({"type":"function_call","id":"item-1","call_id":"call-1","name":"echo","arguments":"{\"value\":42}"})
+            };
+            socket
+                .send(Message::Text(
+                    json!({"type":"response.output_item.done","output_index":0,"item":item})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .unwrap();
+            // The provider deliberately withholds response.completed until
+            // the tool result is durable. Waiting for whole-response
+            // completion would deadlock this supported streaming workflow.
+            loop {
+                let prefix = server_log.prefix(100, 128 * 1024).await.unwrap();
+                if prefix.events.iter().any(|event| {
+                    matches!(&event.event.fact,
+                        Fact::ToolSettled { operation_id, .. } if operation_id.ends_with(":call-1"))
+                }) {
+                    assert!(
+                        !prefix
+                            .events
+                            .iter()
+                            .any(|event| matches!(event.event.fact, Fact::ModelCompleted { .. }))
+                    );
+                    break;
                 }
-                if idle {
-                    assert!(socket.next().await.is_none_or(|frame| frame.is_err() || matches!(frame, Ok(Message::Close(_)))));
-                } else {
-                    socket.close(None).await.unwrap();
-                }
-                drop(socket);
-                let (mut retry_socket, _) = listener.accept().await.unwrap();
-                let mut websocket = None;
-                let mut http = None;
-                let retry: Value = if idle {
-                    let body = read_request(&mut retry_socket).await;
-                    http = Some(retry_socket);
-                    body
-                } else {
-                    let mut socket = accept_async(retry_socket).await.unwrap();
-                    let body = serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
-                    websocket = Some(socket);
-                    body
-                };
-                assert!(retry.get("previous_response_id").is_none());
-                let input = retry["input"].as_array().unwrap();
-                assert_eq!(input[0], initial["input"][0]);
-                let calls:Vec<_> = input.iter().filter(|item| item["call_id"] == "call-1").collect();
-                assert_eq!(calls.len(),2,"one accepted call and one settled result must survive reconnect");
-                assert_eq!(calls[0]["type"],item["type"]);
-                assert!(calls[1]["output"].to_string().contains("42"));
-                let completed = json!({"type":"response.completed","response":{"id":"final","output":[{"type":"message","id":"answer","content":[{"type":"output_text","text":"done"}]}]}});
-                if let Some(mut socket) = http {
-                    let body = format!("data: {completed}\n\n");
-                    socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
-                } else {
-                    websocket.unwrap().send(Message::Text(completed.to_string().into())).await.unwrap();
-                }
-            });
-            let mut input = agent_loop::input(&base,"early-effect",effect);
-            input.configuration.tool_mode = mode;
-            input.provider.kind = ProviderKind::OpenaiResponses;
-            input.provider_options = json!({"openai":{"store":false}});
-            let worker = Engine::new(log.clone(), ModelExecutor::new(if idle { Duration::from_secs(1) } else { Duration::from_secs(20) }).unwrap(), CodeExecutor::new(CellLimits::default()).unwrap());
-            worker.run(input,CancellationToken::new()).await.unwrap();
+                commits.changed().await.unwrap();
+            }
+            if idle {
+                assert!(
+                    socket.next().await.is_none_or(
+                        |frame| frame.is_err() || matches!(frame, Ok(Message::Close(_)))
+                    )
+                );
+            } else {
+                socket.close(None).await.unwrap();
+            }
+            drop(socket);
+            let (mut retry_socket, _) = listener.accept().await.unwrap();
+            let mut websocket = None;
+            let mut http = None;
+            let retry: Value = if idle {
+                let body = read_request(&mut retry_socket).await;
+                http = Some(retry_socket);
+                body
+            } else {
+                let mut socket = accept_async(retry_socket).await.unwrap();
+                let body =
+                    serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap())
+                        .unwrap();
+                websocket = Some(socket);
+                body
+            };
+            assert!(retry.get("previous_response_id").is_none());
+            let input = retry["input"].as_array().unwrap();
+            assert_eq!(input[0], initial["input"][0]);
+            let calls: Vec<_> = input
+                .iter()
+                .filter(|item| item["call_id"] == "call-1")
+                .collect();
+            assert_eq!(
+                calls.len(),
+                2,
+                "one accepted call and one settled result must survive reconnect"
+            );
+            assert_eq!(calls[0]["type"], item["type"]);
+            assert!(calls[1]["output"].to_string().contains("42"));
+            let completed = json!({"type":"response.completed","response":{"id":"final","output":[{"type":"message","id":"answer","content":[{"type":"output_text","text":"done"}]}]}});
+            if let Some(mut socket) = http {
+                let body = format!("data: {completed}\n\n");
+                socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+            } else {
+                websocket
+                    .unwrap()
+                    .send(Message::Text(completed.to_string().into()))
+                    .await
+                    .unwrap();
+            }
+        });
+        let mut input = agent_loop::input(&base, "early-effect", effect);
+        input.configuration.tool_mode = mode;
+        input.provider.kind = ProviderKind::OpenaiResponses;
+        input.provider_options = json!({"openai":{"store":false}});
+        let worker = Engine::new(
+            ModelExecutor::new(if idle {
+                Duration::from_secs(1)
+            } else {
+                Duration::from_secs(20)
+            })
+            .unwrap(),
+            CodeExecutor::new(CellLimits::default()).unwrap(),
+        )
+        .unwrap();
+        // Root construction and bundle import each open eight real journals.
+        // Bound the streaming protocol itself independently of fixture setup.
+        tokio::time::timeout(Duration::from_secs(20), async {
+            worker
+                .run(log.store(), input, CancellationToken::new())
+                .await
+                .unwrap();
             worker.drain().await;
             server.await.unwrap();
-            assert_eq!(count.load(Ordering::SeqCst),1,"recovery cannot repeat the committed effect");
-            let prefix = log.prefix(100,128*1024).await.unwrap();
-            let attempts: Vec<_> = prefix.events.iter().filter_map(|event| match &event.event.fact {
-                Fact::ModelRequested { source_high_water, input_digest, .. } => Some((*source_high_water,input_digest)), _=>None,
-            }).collect();
-            assert_eq!(attempts.len(),2);
-            assert!(matches!(&prefix.events.last().unwrap().event.fact, Fact::InvocationEnded { outcome: InvocationOutcome::Completed }));
-            if idle {
-                assert!(prefix.events.iter().any(|event| matches!(&event.event.fact,
-                    Fact::ModelInterrupted { status: ModelInterruption::RetryableFailure, diagnostic: Some(message), .. } if message.contains("idle timeout"))));
+        })
+        .await
+        .expect("streaming execution and progress retry must settle");
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            1,
+            "recovery cannot repeat the committed effect"
+        );
+        let prefix = log.prefix(100, 128 * 1024).await.unwrap();
+        let attempts: Vec<_> = prefix
+            .events
+            .iter()
+            .filter_map(|event| match &event.event.fact {
+                Fact::ModelRequested {
+                    source_high_water,
+                    input_digest,
+                    ..
+                } => Some((*source_high_water, input_digest)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(attempts.len(), 2);
+        assert!(matches!(
+            &prefix.events.last().unwrap().event.fact,
+            Fact::InvocationEnded {
+                outcome: InvocationOutcome::Completed
             }
-            assert!(attempts[1].0 > attempts[0].0);
-            assert_ne!(attempts[0].1,attempts[1].1,"retry must carry accepted progress");
-            assert_eq!(prefix.events.iter().filter(|event| matches!(&event.event.fact,
+        ));
+        if idle {
+            assert!(prefix.events.iter().any(|event| matches!(&event.event.fact,
+                    Fact::ModelInterrupted { status: ModelInterruption::RetryableFailure, diagnostic: Some(message), .. } if message.contains("idle timeout"))));
+        }
+        assert!(attempts[1].0 > attempts[0].0);
+        assert_ne!(
+            attempts[0].1, attempts[1].1,
+            "retry must carry accepted progress"
+        );
+        assert_eq!(prefix.events.iter().filter(|event| matches!(&event.event.fact,
                 Fact::ToolDispatched { call, .. } if matches!(call.origin, ToolOrigin::Provider { .. }))).count(),1);
 
-            let settled = prefix.events.iter().find(|event| matches!(&event.event.fact,
-                Fact::ToolSettled { operation_id, .. } if operation_id.ends_with(":call-1"))).unwrap();
-            assert!(log.read_tool_result("session",&settled.event.id).await.unwrap().is_some(),"archive lookup must use item acceptance before dispatch");
-            let inventory = log.preview_bundle("session").await.unwrap();
-            let (bytes,_) = log.export_bundle("session",&inventory.subtree_digest,Vec::new()).await.unwrap();
-            let staged = maka_event_log::bundle::StagedBundle::read(bytes.as_slice()).await.unwrap();
-            let destination = EventLog::open(&directory.path().join("imported.sqlite")).await.unwrap();
-            destination.import_bundle(staged,&maka_agent_facts::artifact::content_digest(b"fixture destination"),
-                BTreeMap::from([("session".into(),json!({}))])).await.unwrap();
-            let imported = destination.read_model_context("session", None).await.unwrap();
-            assert!(!imported.tail.is_empty());
-        }
-    }).await.expect("streaming execution, progress retry and transcript projection must settle");
+        let settled = prefix
+            .events
+            .iter()
+            .find(|event| {
+                matches!(&event.event.fact,
+                Fact::ToolSettled { operation_id, .. } if operation_id.ends_with(":call-1"))
+            })
+            .unwrap();
+        assert!(
+            log.read_tool_result("session", &settled.event.id)
+                .await
+                .unwrap()
+                .is_some(),
+            "archive lookup must use item acceptance before dispatch"
+        );
+        let inventory = log.root().preview_bundle("session").await.unwrap();
+        let (bytes, _) = log
+            .root()
+            .export_bundle("session", &inventory.subtree_digest, Vec::new())
+            .await
+            .unwrap();
+        let staged = maka_event_log::bundle::StagedBundle::read(bytes.as_slice())
+            .await
+            .unwrap();
+        let destination =
+            crate::support::store::RootFixture::open(&directory.path().join("imported.sqlite"))
+                .await
+                .unwrap();
+        destination
+            .import_bundle(
+                staged,
+                &maka_agent_facts::artifact::content_digest(b"fixture destination"),
+                BTreeMap::from([("session".into(), json!({}))]),
+            )
+            .await
+            .unwrap();
+        let destination = destination.select("session").await.unwrap();
+        let imported = destination
+            .capture_model_context("session", None, 10_000, 16 * 1024 * 1024)
+            .await
+            .unwrap();
+        assert!(!imported.tail.is_empty());
+    }
 }
 
 struct Overlap {
@@ -481,7 +597,7 @@ async fn parallel_calls_overlap_while_the_model_stream_is_still_open() {
             socket.send(Message::Text(json!({"type":"response.completed","response":{"id":"answer","output":[{"type":"message","id":"text","content":[{"type":"output_text","text":"done"}]}]}}).to_string().into())).await.unwrap();
         });
         let directory = tempfile::tempdir().unwrap();
-        let log = Arc::new(EventLog::open(&directory.path().join("events.sqlite")).await.unwrap());
+        let log = Arc::new(SessionFixture::open(&directory.path().join("events.sqlite")).await.unwrap());
         let mut input = input(&base,"parallel");
         input.provider.kind = ProviderKind::OpenaiResponses;
         input.provider_options = json!({"openai":{"store":false}});
@@ -492,8 +608,8 @@ async fn parallel_calls_overlap_while_the_model_stream_is_still_open() {
                 handler:ToolHandler::Immediate(Arc::new(Overlap {started,both:Arc::new(tokio::sync::Barrier::new(2))})),
             }]).unwrap();
         }
-        let worker = engine(log.clone());
-        worker.run(input,CancellationToken::new()).await.unwrap();
+        let worker = engine();
+        worker.run(log.store(), input,CancellationToken::new()).await.unwrap();
         worker.drain().await;
         server.await.unwrap();
     }).await.expect("parallel tools must not block each other's model-stream admission");
@@ -529,7 +645,7 @@ async fn successful_finish_turn_is_authoritative_after_stream_interruption() {
     tokio::time::timeout(Duration::from_secs(10),async {
         for success in [true,false] {
             let directory = tempfile::tempdir().unwrap();
-            let log = Arc::new(EventLog::open(&directory.path().join("events.sqlite")).await.unwrap());
+            let log = Arc::new(SessionFixture::open(&directory.path().join("events.sqlite")).await.unwrap());
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let base = format!("http://{}/v1",listener.local_addr().unwrap());
             let observed = log.clone();
@@ -563,8 +679,8 @@ async fn successful_finish_turn_is_authoritative_after_stream_interruption() {
                     handler:ToolHandler::Immediate(Arc::new(Finisher(success))),
                 }]).unwrap();
             }
-            let worker = engine(log.clone());
-            worker.run(input,CancellationToken::new()).await.unwrap();
+            let worker = engine();
+            worker.run(log.store(), input,CancellationToken::new()).await.unwrap();
             worker.drain().await;
             let listener = server.await.unwrap();
             assert!(listener.accept().now_or_never().is_none());

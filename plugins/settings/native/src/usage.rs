@@ -27,6 +27,7 @@ use maka_agent_facts::accounting::ProviderSummary;
 use maka_agent_facts::accounting::Selection;
 use maka_agent_facts::accounting::ToolSummary;
 use maka_agent_facts::accounting::ToolTotals;
+use maka_event_log::root_store::{RootStore, UsageActivityCursor, UsageFence, UsageGroupCursor};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -43,10 +44,10 @@ pub struct Range {
     #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<String>")]
     pub session_id: Option<String>,
     #[serde(deserialize_with = "Option::deserialize")]
-    #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<u64>")]
-    pub through: Option<u64>,
+    #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<UsageFence>")]
+    pub through: Option<UsageFence>,
 }
-impl From<Range> for maka_event_log::usage::Query {
+impl From<Range> for maka_event_log::root_store::UsageQuery {
     fn from(value: Range) -> Self {
         Self {
             from: value.from,
@@ -62,18 +63,19 @@ impl From<Range> for maka_event_log::usage::Query {
 pub struct Read {
     pub range: Range,
     pub selection: Selection,
-    #[schemars(range(max = 9_007_199_254_740_991u64))]
-    pub offset: u64,
+    #[serde(deserialize_with = "Option::deserialize")]
+    #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<UsageActivityCursor>")]
+    pub cursor: Option<UsageActivityCursor>,
 }
 #[derive(Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "SettingsUsagePage")]
 pub struct Page {
-    pub through: u64,
+    pub through: UsageFence,
     #[schemars(length(max = 32))]
     pub attempts: Vec<Activity>,
     pub total: u64,
-    pub next_offset: Option<u64>,
+    pub next_cursor: Option<UsageActivityCursor>,
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -81,8 +83,9 @@ pub struct Page {
 pub struct SummaryRead {
     pub range: Range,
     pub group: Group,
-    #[schemars(range(max = 9_007_199_254_740_991u64))]
-    pub offset: u64,
+    #[serde(deserialize_with = "Option::deserialize")]
+    #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<UsageGroupCursor>")]
+    pub cursor: Option<UsageGroupCursor>,
 }
 #[derive(Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -102,9 +105,9 @@ pub struct Totals {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "SettingsUsageSummary")]
 pub struct Report {
-    pub through: u64,
+    pub through: UsageFence,
     pub summary: Totals,
-    pub next_offset: Option<u64>,
+    pub next_cursor: Option<UsageGroupCursor>,
 }
 #[derive(Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -116,29 +119,29 @@ pub enum PricingResult {
     Rejected,
 }
 
-pub(crate) async fn page(log: &maka_event_log::EventLog, input: Value) -> Result<Value, String> {
+pub(crate) async fn page(log: &RootStore, input: Value) -> Result<Value, String> {
     let input: Read = serde_json::from_value(input).map_err(|_| "settings_input_invalid")?;
     let page = log
-        .usage_activity(input.range.into(), input.selection, input.offset, 32)
+        .usage_activity(input.range.into(), input.selection, input.cursor)
         .await
         .map_err(|_| "settings_usage_unavailable")?;
     super::connections::encode(Page {
         through: page.through,
         attempts: page.attempts,
         total: page.total,
-        next_offset: page.next_offset,
+        next_cursor: page.next_cursor,
     })
 }
-pub(crate) async fn summary(log: &maka_event_log::EventLog, input: Value) -> Result<Value, String> {
+pub(crate) async fn summary(log: &RootStore, input: Value) -> Result<Value, String> {
     let input: SummaryRead = serde_json::from_value(input).map_err(|_| "settings_input_invalid")?;
     let report = log
-        .usage_summary_page(input.range.into(), input.group, input.offset)
+        .usage_summary_page(input.range.into(), input.group, input.cursor)
         .await
         .map_err(|_| "settings_usage_unavailable")?;
     let summary = report.summary;
     super::connections::encode(Report {
         through: report.through,
-        next_offset: report.next_offset,
+        next_cursor: report.next_cursor,
         summary: Totals {
             models: summary.models,
             tools: summary.tools,

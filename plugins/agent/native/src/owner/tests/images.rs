@@ -46,7 +46,8 @@ async fn canonical_images_use_original_agent_grants_and_bounded_base64() {
     };
     let write = |fact| EventWrite::plain(RuntimeEvent::new(invocation.clone(), fact)).unwrap();
     fixture
-        .store
+        .session(&session)
+        .await
         .append(&write(Fact::InvocationOpened {
             configuration: None,
             input: InvocationInput::Message {
@@ -65,7 +66,8 @@ async fn canonical_images_use_original_agent_grants_and_bounded_base64() {
         provider_executed: false,
     };
     fixture
-        .store
+        .session(&session)
+        .await
         .append(&write(Fact::ModelRequested {
             context_breakdown: None,
             item_acceptance: false,
@@ -84,7 +86,8 @@ async fn canonical_images_use_original_agent_grants_and_bounded_base64() {
         .await
         .unwrap();
     fixture
-        .store
+        .session(&session)
+        .await
         .append(&write(Fact::ModelObserved {
             step_id: "image-step".into(),
             event: ModelEvent::ToolCall(call.clone()),
@@ -92,7 +95,8 @@ async fn canonical_images_use_original_agent_grants_and_bounded_base64() {
         .await
         .unwrap();
     fixture
-        .store
+        .session(&session)
+        .await
         .append(&write(Fact::ModelCompleted {
             step_id: "image-step".into(),
             output: ModelStep {
@@ -108,7 +112,8 @@ async fn canonical_images_use_original_agent_grants_and_bounded_base64() {
         .await
         .unwrap();
     let old = fixture
-        .store
+        .session(&session)
+        .await
         .append(&write(Fact::ToolDispatched {
             presentation: None,
             title: None,
@@ -137,15 +142,21 @@ async fn canonical_images_use_original_agent_grants_and_bounded_base64() {
         ToolSuccess::image(bytes.clone(), "image/gif".into()).unwrap(),
     )
     .unwrap();
-    fixture.store.append(&result).await.unwrap();
     fixture
-        .store
+        .session(&session)
+        .await
+        .append(&result)
+        .await
+        .unwrap();
+    fixture
+        .session(&session)
+        .await
         .append(&write(Fact::InvocationEnded {
             outcome: InvocationOutcome::Completed,
         }))
         .await
         .unwrap();
-    let fence = *fixture.store.subscribe_commits().borrow();
+    let fence = fixture.through(&session).await;
     let mut position = json!({"kind":"start"});
     let sequence = loop {
         let page = fixture
@@ -296,10 +307,10 @@ async fn user_attachment_images_use_uploaded_identity_and_canonical_user_rows() 
         }
         assert!(f.query("attachmentImage", json!({"sessionId":other,"source":uploaded,"offset":0}))
             .await.is_err());
-        let mut tool_only = f.store.get_artifact(&session, image_id).await.unwrap().record.unwrap();
+        let mut tool_only = f.session(&session).await.get_artifact(&session, image_id).await.unwrap().record.unwrap();
         tool_only.id = "tool-image-only".into();
         tool_only.source = maka_agent_facts::artifact::ArtifactSource::ToolResult;
-        f.store.commit_artifact(tool_only, bytes.clone()).await.unwrap();
+        f.session(&session).await.commit_artifact(tool_only, bytes.clone()).await.unwrap();
         assert!(f.query("attachmentImage", json!({"sessionId":session,"source":{"kind":"uploaded","id":"tool-image-only"},"offset":0}))
             .await.is_err());
 
@@ -310,7 +321,7 @@ async fn user_attachment_images_use_uploaded_identity_and_canonical_user_rows() 
         request(&mut socket).await;
         response_with_text(&mut socket, "Image received").await;
         f.drained().await;
-        let through = *f.store.subscribe_commits().borrow();
+        let through = f.through(&session).await;
         let history = f.query("history", json!({"sessionId":session,"through":through,"position":{"kind":"start"}}))
             .await.unwrap();
         let rows = history["chunks"].as_array().unwrap();
@@ -343,7 +354,7 @@ async fn user_attachment_images_use_uploaded_identity_and_canonical_user_rows() 
         empty["data"] = json!("");
         assert_eq!(f.query("attachmentImage", end).await.unwrap(), empty);
 
-        let turn = f.store.invocation_boundary(&session, sent["invocationId"].as_str().unwrap())
+        let turn = f.session(&session).await.invocation_boundary(&session, sent["invocationId"].as_str().unwrap())
             .await.unwrap().unwrap().0.invocation.turn_id;
         let revision = f.owner.session(&session).await.unwrap().revision;
         let fork = f.mutation(2, "fork", json!({"sessionId":session,"expectedRevision":revision,
@@ -366,11 +377,11 @@ async fn user_attachment_images_use_uploaded_identity_and_canonical_user_rows() 
         let invocation = Invocation { session_id: session.clone(), turn_id: "bad-image-turn".into(),
             run_id: "bad-image-run".into(), invocation_id: "bad-image-invocation".into() };
         let write = |fact| EventWrite::plain(RuntimeEvent::new(invocation.clone(), fact)).unwrap();
-        let bad = f.store.append(&write(Fact::InvocationOpened { configuration: None,
+        let bad = f.session(&session).await.append(&write(Fact::InvocationOpened { configuration: None,
             input: InvocationInput::Message { content, source_messages: Vec::new(), request_fingerprint: None } }))
             .await.unwrap();
-        f.store.append(&write(Fact::InvocationEnded { outcome: InvocationOutcome::Completed })).await.unwrap();
-        let bad_fence = *f.store.subscribe_commits().borrow();
+        f.session(&session).await.append(&write(Fact::InvocationEnded { outcome: InvocationOutcome::Completed })).await.unwrap();
+        let bad_fence = f.through(&session).await;
         let bad_history = f.query("history", json!({"sessionId":session,"through":bad_fence,"position":{"kind":"start"}}))
             .await.unwrap();
         let bad_row = bad_history["chunks"].as_array().unwrap().iter()
@@ -381,7 +392,7 @@ async fn user_attachment_images_use_uploaded_identity_and_canonical_user_rows() 
             .await.is_err());
 
         // Existing uploads may be deleted; a retained branch owns its own copy.
-        assert!(matches!(f.store.delete_user_artifact(&session, image_id).await.unwrap(),
+        assert!(matches!(f.session(&session).await.delete_user_artifact(&session, image_id).await.unwrap(),
             maka_event_log::artifacts::ArtifactDeletion::Deleted));
         assert!(f.query("attachmentImage", read).await.is_err());
         assert!(f.query("attachmentImage", json!({"sessionId":session,"source":uploaded,"offset":0}))
@@ -908,7 +919,7 @@ async fn complete_image_with_failed_cleanup_never_settles_or_releases_owner() {
         let session = f.create("Unconfirmed image cleanup").await;
         start_image(&listener, &f, &session, json!({})).await;
         f.drained().await;
-        let facts = service_tools::facts(&f, &session).await;
+        let facts = f.facts_after_failed_shutdown(&session).await;
         assert!(
             !facts
                 .iter()

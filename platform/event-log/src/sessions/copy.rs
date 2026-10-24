@@ -21,7 +21,6 @@ use super::SessionRecord;
 use crate::{
     EventLog, StoreError,
     context::{HistoryCut, history, safety},
-    sequence_number,
 };
 use maka_agent_facts::session::BranchOrigin;
 use maka_agent_facts::session::CopyPurpose;
@@ -157,10 +156,8 @@ impl EventLog {
                 "SELECT EXISTS(SELECT 1 FROM session_control WHERE id = ?)",
             ).bind(&request.target_session_id).fetch_one(&mut *tx).await?;
             if exists { return Err(StoreError::SessionConflict); }
-            let revision: Option<i64> = sqlx::query_scalar(
-                "SELECT revision FROM session_control WHERE id = ?",
-            ).bind(&request.source_session_id).fetch_optional(&mut *tx).await?;
-            let actual = sequence_number(revision.ok_or(StoreError::SessionNotFound)?)?;
+            let actual = crate::workspace_bindings::current_session_revision(&mut tx, &request.source_session_id)
+                .await?.ok_or(StoreError::SessionNotFound)?;
             if actual != request.expected_source_revision {
                 return Ok(SessionCopyResult::SourceRevisionConflict {
                     expected: request.expected_source_revision, actual,
@@ -204,6 +201,8 @@ impl EventLog {
                  FROM session_history_events e WHERE e.owner_session_id = ?3 AND e.sequence <= ?4",
             ).bind(&request.target_session_id).bind(observed.saturating_add(1))
                 .bind(&request.source_session_id).bind(through as i64).execute(&mut *tx).await?;
+            sqlx::query("SELECT context_source_pin_copy(?)")
+                .bind(&request.target_session_id).execute(&mut *tx).await?;
             crate::artifacts::history::retain(&mut tx, &request.source_session_id, &request.target_session_id, now).await?;
             crate::transcript::directory::copy(&mut tx, &request.source_session_id, &request.target_session_id, through).await?;
             if let CopyPurpose::Revision { turn_id } = &request.purpose {

@@ -76,7 +76,9 @@ impl EventLog {
         }
         // Never repair hashes of unvalidated source history.
         staged.validate_history().await?;
-        let commits = self.commits.clone();
+        let commits = self
+            .commits
+            .sessions(configurations.keys().map(String::as_str));
         self.connection
             .run(move |db| {
                 Box::pin(async move {
@@ -123,7 +125,7 @@ impl EventLog {
                         relocated.close().await?;
                         published?;
                         tx.commit().await.map_err(StoreError::CommitUnknown)?;
-                        commits.send_replace(positions.high_water());
+                        commits.publish(positions.high_water());
                         Ok(receipt)
                     }
                     .await;

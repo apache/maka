@@ -34,10 +34,11 @@ pub(super) async fn question_response(socket: &mut TcpStream) {
     socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
 }
 async fn pending(fixture: &Fixture, session: &str) -> InteractionRecord {
-    let mut commits = fixture.store.subscribe_commits();
+    let mut commits = fixture.session(&session).await.subscribe_commits().unwrap();
     loop {
         if let Some(record) = fixture
-            .store
+            .session(session)
+            .await
             .pending_interactions(session)
             .await
             .unwrap()
@@ -100,7 +101,7 @@ async fn native_question_roundtrip_is_bound_owned_and_first_wins() {
         assert!(!message.to_string().contains("journal_v1"));
         response(&mut next).await;
         fixture.drained().await;
-        assert!(matches!(fixture.store.interaction(&record.request_id).await.unwrap().unwrap().outcome, Some(InteractionOutcome::QuestionAnswer { .. })));
+        assert!(matches!(fixture.session(&record.session_id).await.interaction(&record.request_id).await.unwrap().unwrap().outcome, Some(InteractionOutcome::QuestionAnswer { .. })));
         fixture.app.shutdown().await.unwrap(); fixture.config.shutdown().await.unwrap();
     }).await.unwrap();
 }
@@ -133,7 +134,8 @@ async fn stopping_question_closes_original_request_and_releases_run_owner() {
         fixture.drained().await;
         assert!(matches!(
             fixture
-                .store
+                .session(&record.session_id)
+                .await
                 .interaction(&record.request_id)
                 .await
                 .unwrap()
@@ -184,7 +186,7 @@ async fn native_form_validates_original_fields_and_commits_before_resuming() {
         for values in [json!({}),json!({"note":"","count":2,"confirm":false,"format":"brief"}),json!({"note":"valid","count":1.5,"confirm":false,"format":"brief"}),json!({"note":"valid","count":2,"confirm":"false","format":"brief"}),json!({"note":"valid","count":2,"confirm":false,"format":"unknown"}),json!({"note":"valid","count":2,"confirm":false,"format":"brief","unknown":true})] {
             let rejected = fixture.mutation(2,"respond",json!({"sessionId":session,"requestId":record.request_id,"answer":{"kind":"form","action":"accept","values":values}}),Uuid::new_v4()).await.unwrap();
             assert_eq!(rejected["reason"],"invalid_answer");
-            assert!(fixture.store.interaction(&record.request_id).await.unwrap().unwrap().outcome.is_none());
+            assert!(fixture.session(&record.session_id).await.interaction(&record.request_id).await.unwrap().unwrap().outcome.is_none());
         }
         let duplicate = fixture.mutation(2,"respond",json!({"sessionId":session,"requestId":record.request_id,"answer":{"kind":"form","action":"accept","values":{"extras":["a","a"]}}}),Uuid::new_v4()).await;
         assert_eq!(duplicate.unwrap_err(), "agent_input_invalid");
@@ -227,9 +229,9 @@ async fn native_form_decline_cancel_and_stop_settle_original_wait() {
                 response(&mut next).await;
             }
             fixture.drained().await;
-            let stored = fixture.store.interaction(&record.request_id).await.unwrap().unwrap();
+            let stored = fixture.session(&record.session_id).await.interaction(&record.request_id).await.unwrap().unwrap();
             if action == "stop" { assert!(matches!(stored.outcome,Some(InteractionOutcome::Closure{..}))); }
-            assert!(fixture.store.pending_interactions(&session).await.unwrap().is_empty());
+            assert!(fixture.session(&session).await.pending_interactions(&session).await.unwrap().is_empty());
             fixture.app.shutdown().await.unwrap();fixture.config.shutdown().await.unwrap();
         }
     }).await.unwrap();

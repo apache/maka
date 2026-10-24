@@ -60,9 +60,9 @@ async fn observe_exposes_last_known_context_only_for_an_active_matching_backend(
         assert_eq!(active["metrics"]["contextTokens"], 3);
         assert_eq!(active["metrics"]["contextLastKnown"], true);
 
-        let record = fixture.store.get_session::<SessionConfiguration>(&session).await.unwrap().unwrap();
+        let record = fixture.session(&session).await.get_session::<StoredSessionConfiguration>(&session).await.unwrap().unwrap();
         let original_backend = record.configuration.backend.clone();
-        fixture.store.update_session_metadata::<SessionConfiguration, _>(&session, record.revision, |configuration| {
+        fixture.session(&session).await.update_session_metadata::<StoredSessionConfiguration, _>(&session, record.revision, |configuration| {
             configuration.backend = Some(contract::BackendPreference::Model {
                 connection_id: "different-connection".into(),
                 model_id: "different-model".into(),
@@ -74,14 +74,14 @@ async fn observe_exposes_last_known_context_only_for_an_active_matching_backend(
         assert!(mismatch["metrics"]["contextTokens"].is_null());
         assert_eq!(mismatch["metrics"]["contextLastKnown"], false);
 
-        let record = fixture.store.get_session::<SessionConfiguration>(&session).await.unwrap().unwrap();
-        fixture.store.update_session_metadata::<SessionConfiguration, _>(&session, record.revision, move |configuration| {
+        let record = fixture.session(&session).await.get_session::<StoredSessionConfiguration>(&session).await.unwrap().unwrap();
+        fixture.session(&session).await.update_session_metadata::<StoredSessionConfiguration, _>(&session, record.revision, move |configuration| {
             configuration.backend = original_backend;
             Ok(())
         }).await.unwrap();
         fixture.mutation(2, "stop", json!({"sessionId":session,"invocationId":sent["invocationId"]}), Uuid::new_v4()).await.unwrap();
         fixture.drained().await;
-        assert!(fixture.store.context_usage(&session).await.unwrap().1.unwrap().last_known);
+        assert!(fixture.session(&session).await.context_usage(&session).await.unwrap().1.unwrap().last_known);
         let idle = fixture.query("observe", json!({"sessionId":session})).await.unwrap();
         assert!(idle["run"].is_null());
         assert!(idle["metrics"]["contextTokens"].is_null());
@@ -136,8 +136,8 @@ async fn context_reports_original_prepared_request_across_completion_failure_fen
         assert_eq!(completed["request"]["breakdown"], original["breakdown"]);
         assert_eq!(f.query("context", json!({"sessionId":session,"through":pending["through"]})).await.unwrap(), pending);
 
-        let record = f.store.get_session::<SessionConfiguration>(&session).await.unwrap().unwrap();
-        f.store.update_session_metadata::<SessionConfiguration, _>(&session, record.revision, |configuration| {
+        let record = f.session(&session).await.get_session::<StoredSessionConfiguration>(&session).await.unwrap().unwrap();
+        f.session(&session).await.update_session_metadata::<StoredSessionConfiguration, _>(&session, record.revision, |configuration| {
             configuration.backend = Some(contract::BackendPreference::Model {
                 connection_id: "different-connection".into(), model_id: "different-model".into(), thinking_level: None,
             });

@@ -92,6 +92,7 @@ impl Copies {
         through: u64,
         positions: Option<&crate::bundle::relocation::Positions>,
     ) -> Result<(), StoreError> {
+        let mut installed = Vec::new();
         while self
             .0
             .front()
@@ -99,6 +100,11 @@ impl Copies {
         {
             let copy = self.0.pop_front().expect("eligible copy");
             let request = &copy.request;
+            installed.push((
+                request.target_session_id.clone(),
+                request.source_session_id.clone(),
+                copy.through,
+            ));
             sqlx::query("INSERT INTO session_history_copies(session_id,source_session_id,source_revision,through_sequence,observed_through,request_json,lineage_json,state) VALUES(?,?,?,?,?,?,?,?)")
                 .bind(&request.target_session_id)
                 .bind(&request.source_session_id)
@@ -172,6 +178,32 @@ impl Copies {
                 }
                 after = number;
             }
+        }
+        // Equal-fence copies need not be ordered by ancestry in a bundle.
+        // Validate the full incoming membership once, then pin shared roots.
+        for (target, source, through) in installed {
+            let differs: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT sequence FROM session_history_events
+                   WHERE owner_session_id=?1 AND sequence<=?2
+                   EXCEPT SELECT sequence FROM session_history_members WHERE session_id=?3)
+                 OR EXISTS(SELECT sequence FROM session_history_members WHERE session_id=?3
+                   EXCEPT SELECT sequence FROM session_history_events
+                   WHERE owner_session_id=?1 AND sequence<=?2)",
+            )
+            .bind(source)
+            .bind(through as i64)
+            .bind(&target)
+            .fetch_one(&mut *db)
+            .await?;
+            if differs {
+                return Err(invalid(
+                    "copy membership differs from its complete source prefix",
+                ));
+            }
+            sqlx::query("SELECT context_source_pin_copy(?)")
+                .bind(target)
+                .execute(&mut *db)
+                .await?;
         }
         Ok(())
     }

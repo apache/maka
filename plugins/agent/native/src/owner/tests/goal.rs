@@ -41,7 +41,7 @@ async fn wait_status(f: &Fixture, session: &str, status: &str) -> Value {
 }
 async fn approval(f: &Fixture, session: &str) -> Value {
     let config = f.owner.session(session).await.unwrap().configuration;
-    json!({"target":{"sessionId":session,"workspace":config.workspace,"permissions":config.permissions,"boundaryRevision":config.boundary_revision},"model":f.selection().await,"thinkingLevel":null})
+    json!({"target":{"sessionId":session,"workspace":config.workspace,"permissions":config.permissions,"boundaryRevision":config.boundary_revision,"binding":config.binding},"model":f.selection().await,"thinkingLevel":null})
 }
 async fn create(
     f: &Fixture,
@@ -271,7 +271,7 @@ async fn goal_original_business_receipt_and_reserved_iteration_survive_restart_w
         let mut saved = repo.read(&session).await.unwrap().unwrap();
         saved.goal = original;
         repo.save(saved).await.unwrap();
-        f.store.set_session_archived::<SessionConfiguration>(&session,true,now()).await.unwrap();
+        f.store.set_session_archived::<StoredSessionConfiguration>(&session,true,now()).await.unwrap();
         todo_tests::reopen(&mut f).await;
         assert_eq!(wait_status(&f,&session,"budget_limited").await["iterations"],1);
         assert_eq!(service_tools::facts(&f,&session).await.iter().filter(|fact| matches!(fact,Fact::InvocationOpened { .. })).count(),1);
@@ -295,6 +295,14 @@ async fn goal_rechecks_privacy_and_revoked_session_before_original_outbox_admiss
         let rejected = f.mutation(2,"changeGoal",json!({"kind":"create","sessionId":session,"objective":"Stale boundary","start":true,"maxIterations":2,"tokenBudget":null,"approval":stale}),Uuid::new_v4()).await.unwrap();
         assert_eq!(rejected["kind"],"rejected");
         assert!(current(&f,&session).await.is_null());
+        let mut foreign_binding = approval(&f, &session).await;
+        foreign_binding["target"]["binding"]["id"] = json!(Uuid::new_v4());
+        let rejected = f.mutation(2, "changeGoal", json!({
+            "kind":"create", "sessionId":session, "objective":"Same values, foreign binding",
+            "start":true, "maxIterations":2, "tokenBudget":null, "approval":foreign_binding
+        }), Uuid::new_v4()).await.unwrap();
+        assert_eq!(rejected["kind"], "rejected");
+        assert!(current(&f, &session).await.is_null());
         let policy = f.config.runtime_policy().await.unwrap();
         f.config.set_privacy(policy.revision,maka_agent_facts::configuration::policy::PrivacyPolicy{incognito_active:true}).await.unwrap();
         assert_eq!(create(&f,&session,true,2,None).await["reason"],"goal_incognito");
@@ -309,7 +317,7 @@ async fn goal_rechecks_privacy_and_revoked_session_before_original_outbox_admiss
         saved.goal.control(Control::Resume).unwrap();
         saved.goal.reserve().unwrap();
         repo.save(saved).await.unwrap();
-        f.store.set_session_archived::<SessionConfiguration>(&session,true,now()).await.unwrap();
+        f.store.set_session_archived::<StoredSessionConfiguration>(&session,true,now()).await.unwrap();
         todo_tests::reopen(&mut f).await;
         let blocked = wait_status(&f,&session,"blocked").await;
         assert_eq!(blocked["iterations"],1);
@@ -334,12 +342,15 @@ async fn goal_prepared_report_cannot_override_a_newer_user_pause() {
         let (mut socket,_) = listener.accept().await.unwrap();
         request(&mut socket).await;
         let invocation = f.owner.runs.lock().await.controls.get(&session).unwrap().invocation.clone();
+        let scope = f.session(&session).await.execution_scope(Some(f.owner.session(&session).await.unwrap().configuration.permission_basis())).await.unwrap();
+        let execution_store = Arc::new(scope.store());
         let input = json!({"status":"achieved","note":"A prepared report cannot overrule later user intent"});
-        let pending = f.owner.goals.prepare("GoalStatus".into(),input.clone(),ToolCallContext{invocation:invocation.clone(),operation_id:"late-report".into()},CancellationToken::new()).await.unwrap();
+        let pending = f.owner.goals.prepare("GoalStatus".into(),input.clone(),ToolCallContext{invocation:invocation.clone(),operation_id:"late-report".into(),execution:Some(execution_store.execution_custody().unwrap())},CancellationToken::new()).await.unwrap();
         assert_eq!(control(&f,&session,"pause").await["kind"],"committed");
-        assert!(ToolJournal::new(f.store.clone(),invocation).invoke_prepared_call("late-report".into(),ToolCallIdentity::standalone("late-report".into()),"GoalStatus".into(),input,CancellationToken::new(),pending).await.is_err());
+        assert!(ToolJournal::new(execution_store,invocation).invoke_prepared_call("late-report".into(),ToolCallIdentity::standalone("late-report".into()),"GoalStatus".into(),input,CancellationToken::new(),pending).await.is_err());
         response(&mut socket).await;
         let paused = wait_status(&f,&session,"paused").await;
+        drop(scope);
         assert!(paused["report"].is_null());
         assert_eq!(paused["iterations"],1);
         assert!(tokio::time::timeout(Duration::from_millis(100),listener.accept()).await.is_err());
@@ -362,7 +373,8 @@ async fn goal_cancelled_before_dispatch_never_calls_the_model() {
         drop(producer);
         wait_status(&f, &session, "cancelled").await;
         assert!(
-            f.store
+            f.session(&session)
+                .await
                 .message_queue(&session)
                 .await
                 .unwrap()
@@ -435,8 +447,8 @@ async fn goal_language_stays_approved_until_an_idle_resume_renews_both_captures(
             scope(&f.issuer, true), Attachments::new().into()).await.unwrap();
         let (mut socket, _) = listener.accept().await.unwrap();
         let first = request(&mut socket).await;
-        let first_invocation = f.store.latest_turn_boundary(&session).await.unwrap().unwrap().invocation;
-        let first_configuration = f.store.invocation_configuration(&first_invocation).await.unwrap().unwrap();
+        let first_invocation = f.session(&session).await.latest_turn_boundary(&session).await.unwrap().unwrap().invocation;
+        let first_configuration = f.session(&(first_invocation).session_id).await.invocation_configuration(&first_invocation).await.unwrap().unwrap();
         let accepted = session_context::composition(&f, &session).await;
         let chinese = prompt_language::select_language(&f, "zh-CN").await;
         let pending = current(&f, &session).await;
@@ -448,8 +460,8 @@ async fn goal_language_stays_approved_until_an_idle_resume_renews_both_captures(
         response(&mut socket).await;
         let (mut socket, _) = listener.accept().await.unwrap();
         let original_chain = request(&mut socket).await;
-        let chain_invocation = f.store.latest_turn_boundary(&session).await.unwrap().unwrap().invocation;
-        let chain_configuration = f.store.invocation_configuration(&chain_invocation).await.unwrap().unwrap();
+        let chain_invocation = f.session(&session).await.latest_turn_boundary(&session).await.unwrap().unwrap().invocation;
+        let chain_configuration = f.session(&(chain_invocation).session_id).await.invocation_configuration(&chain_invocation).await.unwrap().unwrap();
         let paused = control(&f, &session, "pause").await;
         response(&mut socket).await;
         let idle_english = loop {
@@ -461,8 +473,8 @@ async fn goal_language_stays_approved_until_an_idle_resume_renews_both_captures(
         let renewed_cn = f.mutation(2, "changeGoal", json!({"kind":"control","sessionId":session,"goalId":idle_english["id"],"revision":idle_english["revision"],"action":"resume","approval":approval(&f,&session).await}), Uuid::new_v4()).await.unwrap();
         let (mut socket, _) = listener.accept().await.unwrap();
         let cn_request = request(&mut socket).await;
-        let cn_invocation = f.store.latest_turn_boundary(&session).await.unwrap().unwrap().invocation;
-        let cn_configuration = f.store.invocation_configuration(&cn_invocation).await.unwrap().unwrap();
+        let cn_invocation = f.session(&session).await.latest_turn_boundary(&session).await.unwrap().unwrap().invocation;
+        let cn_configuration = f.session(&(cn_invocation).session_id).await.invocation_configuration(&cn_invocation).await.unwrap().unwrap();
         let paused_cn = control(&f, &session, "pause").await;
         response(&mut socket).await;
         let idle_cn = loop {
@@ -475,8 +487,8 @@ async fn goal_language_stays_approved_until_an_idle_resume_renews_both_captures(
         let renewed_tw = f.mutation(2, "changeGoal", json!({"kind":"control","sessionId":session,"goalId":idle_cn["id"],"revision":idle_cn["revision"],"action":"resume","approval":approval(&f,&session).await}), Uuid::new_v4()).await.unwrap();
         let (mut socket, _) = listener.accept().await.unwrap();
         let tw_request = request(&mut socket).await;
-        let tw_invocation = f.store.latest_turn_boundary(&session).await.unwrap().unwrap().invocation;
-        let tw_configuration = f.store.invocation_configuration(&tw_invocation).await.unwrap().unwrap();
+        let tw_invocation = f.session(&session).await.latest_turn_boundary(&session).await.unwrap().unwrap().invocation;
+        let tw_configuration = f.session(&(tw_invocation).session_id).await.invocation_configuration(&tw_invocation).await.unwrap().unwrap();
         let paused_tw = control(&f, &session, "pause").await;
         response(&mut socket).await;
         let idle_tw = loop {

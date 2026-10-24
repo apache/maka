@@ -20,8 +20,8 @@
 use maka_app_client::{Client, Journal};
 use maka_capabilities::call::Attachments;
 use maka_event_log::{
-    EventLog,
     root::{RootNamespaces, RootOwner, private_directory},
+    root_store::RootStore,
 };
 use maka_host_runtime::{
     application::{
@@ -82,7 +82,7 @@ pub mod pty;
 /// A real Agent, settings store and public Host gateway, without the old UI.
 pub struct Fixture {
     pub address: PathBuf,
-    pub store: Arc<EventLog>,
+    pub store: Arc<RootStore>,
     pub base_url: String,
     pub session: String,
     pub selection: Value,
@@ -222,7 +222,7 @@ impl Fixture {
             }
             InitialCatalog::Empty => Value::Null,
         };
-        let store = Arc::new(EventLog::for_root(owner).await.unwrap());
+        let store = Arc::new(RootStore::open(owner).await.unwrap());
         let package = |id: &str,
                        implementation: &str,
                        configuration: Value,

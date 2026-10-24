@@ -37,7 +37,7 @@ use std::{collections::BTreeMap, sync::Arc};
 use tokio_util::sync::CancellationToken;
 
 struct Web {
-    log: Arc<maka_event_log::EventLog>,
+    log: Arc<maka_event_log::RootStore>,
     configuration: Arc<ConfigurationStore>,
     repository: crate::settings::Repository,
     storage: Arc<maka_host_runtime::storage::Storage>,

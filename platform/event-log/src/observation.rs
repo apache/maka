@@ -128,6 +128,23 @@ impl EventLog {
         &self,
         session_id: &str,
     ) -> Result<Option<SessionProjection<T>>, StoreError> {
+        self.session_projection_filtered(session_id, None).await
+    }
+
+    pub(crate) async fn root_session_projection<T: DeserializeOwned + Send + 'static>(
+        &self,
+        session_id: &str,
+        partition: usize,
+    ) -> Result<Option<SessionProjection<T>>, StoreError> {
+        self.session_projection_filtered(session_id, Some(partition))
+            .await
+    }
+
+    async fn session_projection_filtered<T: DeserializeOwned + Send + 'static>(
+        &self,
+        session_id: &str,
+        partition: Option<usize>,
+    ) -> Result<Option<SessionProjection<T>>, StoreError> {
         self.validate_root()?;
         sessions::validate_id(session_id)?;
         let session_id = session_id.to_owned();
@@ -135,6 +152,16 @@ impl EventLog {
             .read(move |connection| {
                 Box::pin(async move {
                     let mut transaction = connection.begin().await?;
+                    if let Some(partition) = partition
+                        && !crate::root_store::catalog::session_visible(
+                            &mut transaction,
+                            partition,
+                            &session_id,
+                        )
+                        .await?
+                    {
+                        return Ok(None);
+                    }
                     let result = read_projection(&mut transaction, &session_id).await?;
                     transaction.commit().await?;
                     Ok(result)
@@ -147,6 +174,23 @@ impl EventLog {
         &self,
         session_id: &str,
     ) -> Result<Option<SessionObservation<T>>, StoreError> {
+        self.observe_session_filtered(session_id, None).await
+    }
+
+    pub(crate) async fn root_observe_session<T: DeserializeOwned + Send + 'static>(
+        &self,
+        session_id: &str,
+        partition: usize,
+    ) -> Result<Option<SessionObservation<T>>, StoreError> {
+        self.observe_session_filtered(session_id, Some(partition))
+            .await
+    }
+
+    async fn observe_session_filtered<T: DeserializeOwned + Send + 'static>(
+        &self,
+        session_id: &str,
+        partition: Option<usize>,
+    ) -> Result<Option<SessionObservation<T>>, StoreError> {
         self.validate_root()?;
         sessions::validate_id(session_id)?;
         let session_id = session_id.to_owned();
@@ -154,6 +198,16 @@ impl EventLog {
             .read(move |connection| {
                 Box::pin(async move {
                     let mut transaction = connection.begin().await?;
+                    if let Some(partition) = partition
+                        && !crate::root_store::catalog::session_visible(
+                            &mut transaction,
+                            partition,
+                            &session_id,
+                        )
+                        .await?
+                    {
+                        return Ok(None);
+                    }
                     let Some(SessionProjection {
                         session,
                         root_turn,

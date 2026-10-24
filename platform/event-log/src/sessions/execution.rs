@@ -160,6 +160,12 @@ pub(crate) async fn advance_revision(
     connection: &mut SqliteConnection,
     id: &str,
 ) -> Result<(), StoreError> {
+    if crate::workspace_bindings::current_session_revision(connection, id)
+        .await?
+        .is_some_and(|revision| revision >= MAX_SAFE_INTEGER)
+    {
+        return Err(invalid("session revision exhausted"));
+    }
     let changed = sqlx::query(
         "UPDATE session_control SET revision = revision + 1 WHERE id = ? AND revision < ?",
     )

@@ -23,6 +23,7 @@ use futures_util::FutureExt;
 use maka_agent_facts::{model::ModelGeneration, tools::ToolError};
 use maka_agent_ports::{llm, preferences, session::history};
 use maka_capabilities::call::Scope;
+use maka_event_log::applications::operations::OperationDispatchScope;
 use maka_model::{ModelRequest, prompt::Message};
 use maka_plugin_core::operation::RecoveryRef;
 use maka_session_recap::recap::{self, Recaps};
@@ -30,7 +31,7 @@ use maka_session_recap::recap::{self, Recaps};
 struct Backend {
     owner: Arc<Owner>,
     session: String,
-    generation: Option<(RecoveryRef, ModelSelection)>,
+    generation: Option<(RecoveryRef, OperationDispatchScope, ModelSelection)>,
     original_resources: Arc<maka_capabilities::call::Resources>,
 }
 impl Owner {
@@ -42,7 +43,7 @@ impl Owner {
         if !self.settings.recaps || self.stop.is_cancelled() || scope.cancellation.is_cancelled() {
             return Err(failed("Session recap unavailable"));
         }
-        self.session(session).await.map_err(failed)?;
+        self.scoped_session(scope, session).await.map_err(failed)?;
         let snapshot = self
             .configuration
             .runtime_policy()
@@ -57,7 +58,7 @@ impl Owner {
         self: &Arc<Self>,
         scope: &Scope,
         session: String,
-        generation: Option<(RecoveryRef, ModelSelection)>,
+        generation: Option<(RecoveryRef, OperationDispatchScope, ModelSelection)>,
     ) -> Recaps {
         let backend = Arc::new(Backend {
             owner: self.clone(),
@@ -92,10 +93,15 @@ impl Owner {
         input: RecapGenerate,
         scope: &Scope,
         operation: &RecoveryRef,
+        dispatch: OperationDispatchScope,
     ) -> Result<RecapReceipt, String> {
         let operation = operation.clone();
         self.resource_work(scope, move |owner, scope| {
-            Box::pin(async move { owner.generate_recap_inner(input, &scope, &operation).await })
+            Box::pin(async move {
+                owner
+                    .generate_recap_inner(input, &scope, &operation, dispatch)
+                    .await
+            })
         })
         .await
     }
@@ -104,6 +110,7 @@ impl Owner {
         input: RecapGenerate,
         scope: &Scope,
         operation: &RecoveryRef,
+        dispatch: OperationDispatchScope,
     ) -> Result<RecapReceipt, String> {
         let snapshot = self
             .check_recap(scope, &input.session_id)
@@ -116,7 +123,7 @@ impl Owner {
         let recaps = self.recaps(
             scope,
             input.session_id.clone(),
-            Some((operation.clone(), input.model)),
+            Some((operation.clone(), dispatch, input.model)),
         );
         recaps
             .generate(scope, &input.session_id, id, language)
@@ -136,14 +143,23 @@ impl recap::History for Backend {
                 return Err(failed("Recap session mismatch"));
             }
             self.owner.check_recap(&scope, &self.session).await?;
-            let high_water = *self.owner.store.subscribe_commits().borrow();
+            let high_water = *self
+                .owner
+                .scoped_store(&scope, &self.session)
+                .await
+                .map_err(failed)?
+                .subscribe_commits()
+                .map_err(persistence)?
+                .borrow();
             let through = input.through.unwrap_or(high_water);
             if through > high_water {
                 return Err(failed("Recap history fence invalid"));
             }
             let page = self
                 .owner
-                .store
+                .scoped_store(&scope, &self.session)
+                .await
+                .map_err(failed)?
                 .history_text(
                     &self.session,
                     through,
@@ -185,7 +201,7 @@ impl recap::Models for Backend {
         input: llm::Generate,
     ) -> BoxFuture<'_, Result<ModelGeneration, ToolError>> {
         Box::pin(async move {
-            let (reference, model) = self
+            let (reference, dispatch, model) = self
                 .generation
                 .clone()
                 .ok_or_else(|| failed("Recap generation not admitted"))?;
@@ -207,7 +223,7 @@ impl recap::Models for Backend {
                 original_ticket.start();
                 owner_ticket.start();
                 let result = std::panic::AssertUnwindSafe(
-                    captured.recap_model(scope, session, reference, model, input),
+                    captured.recap_model(scope, session, reference, dispatch, model, input),
                 )
                 .catch_unwind()
                 .await
@@ -246,6 +262,7 @@ impl Owner {
         scope: Scope,
         session: String,
         reference: RecoveryRef,
+        dispatch: OperationDispatchScope,
         model: ModelSelection,
         input: llm::Generate,
     ) -> Result<ModelGeneration, ToolError> {
@@ -285,7 +302,7 @@ impl Owner {
                     ModelRequest {
                         language: input.language,
                         provider: prepared.provider,
-                        prompt,
+                        prompt: prompt.into(),
                         tools: Vec::new(),
                         provider_options: prepared.options,
                         max_output_tokens: Some(
@@ -298,6 +315,16 @@ impl Owner {
                     &self.store,
                     auxiliary::Admission::Operation {
                         reference: Box::new(reference),
+                        scope: dispatch,
+                        execution: scope
+                            .identity
+                            .agent()
+                            .filter(|invocation| invocation.session_id == session)
+                            .and_then(|invocation| {
+                                scope
+                                    .execution()
+                                    .map(|execution| (execution.clone(), invocation.clone()))
+                            }),
                         binding: source.accepted.binding.clone(),
                         session_id: session,
                     },

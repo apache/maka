@@ -17,6 +17,7 @@
  * under the License.
  */
 
+mod upload;
 mod worker;
 use futures_util::future::BoxFuture;
 use maka_agent_facts::tools::ToolError;
@@ -62,13 +63,13 @@ pub type Worker =
 
 pub struct Http {
     authority: Arc<dyn Authority>,
-    client: tokio::sync::Mutex<Option<(maka_network::Policy, reqwest::Client)>>,
+    tls: std::sync::Mutex<Option<(maka_network::Policy, Arc<maka_network::TlsConfigCache>)>>,
 }
 impl Http {
     pub fn new(authority: Arc<dyn Authority>) -> Self {
         Self {
             authority,
-            client: Default::default(),
+            tls: Default::default(),
         }
     }
 }
@@ -118,24 +119,30 @@ impl Client for Http {
                 .policy(&call, &destination, url.origin().ascii_serialization())
                 .await?;
             policy
-                .check_request_headers(&url, &headers, !input.body.is_empty(), false)
+                .check_request_headers(&url, &headers, input.body.length() != Some(0), false)
                 .map_err(invalid)?;
-            let client = {
-                let mut cached = self.client.lock().await;
+            let tls = {
+                let mut cached = self.tls.lock().unwrap();
                 if cached
                     .as_ref()
                     .is_none_or(|(previous, _)| previous != &policy)
                 {
-                    let client = policy
-                        .client_builder()
-                        .read_timeout(Duration::from_secs(60))
-                        .redirect(reqwest::redirect::Policy::none())
-                        .build()
-                        .map_err(failed)?;
-                    *cached = Some((policy, client));
+                    *cached = Some((
+                        policy.clone(),
+                        Arc::new(maka_network::TlsConfigCache::default()),
+                    ));
                 }
                 cached.as_ref().unwrap().1.clone()
             };
+            let connections = maka_network::ConnectionTasks::default();
+            let client = tls
+                .build(
+                    connections
+                        .client_builder(policy.client_builder())
+                        .read_timeout(Duration::from_secs(60))
+                        .redirect(reqwest::redirect::Policy::none()),
+                )
+                .map_err(failed)?;
             let method = match input.method {
                 Method::Get => reqwest::Method::GET,
                 Method::Head => reqwest::Method::HEAD,
@@ -148,18 +155,20 @@ impl Client for Http {
             let operation = maka_event_log::effects::Operation::Http {
                 method: input.method,
                 url: url.to_string(),
-                body_digest: maka_agent_facts::artifact::content_digest(&input.body),
-                body_bytes: input.body.len(),
+                body_length: input.body.length(),
             };
-            let request = client
-                .request(method, url)
-                .headers(headers)
-                .body(input.body);
+            let stop = CancellationToken::new();
+            let length = input.body.length();
+            let upload_stop = CancellationToken::new();
+            let (upload, mut receipt) = upload::body(input.body, upload_stop.clone());
+            let mut request = client.request(method, url).headers(headers).body(upload);
+            if let Some(length) = length {
+                request = request.header(reqwest::header::CONTENT_LENGTH, length);
+            }
             let mut ticket = call.resources.reserve().map_err(failed)?;
             let (head, response) = oneshot::channel();
             let (send, output) = mpsc::channel(1);
             let (ended, finished) = watch::channel(None);
-            let stop = CancellationToken::new();
             let body = Arc::new(ResponseBody {
                 authority: self.authority.clone(),
                 call: call.clone(),
@@ -173,13 +182,24 @@ impl Client for Http {
                 ticket.start();
                 let cancellation = call.cancellation.clone();
                 let effect = Box::pin(async move {
-                    tokio::select! {
+                    let result = tokio::select! {
                         biased;
                         _ = stop.cancelled() => Err("HTTP response closed".into()),
                         _ = retiring.cancelled() => Err("plugin retired during HTTP response".into()),
                         _ = cancellation.cancelled() => Err("invocation closed".into()),
                         result = worker::run(request, head, send) => result,
-                    }.map_err(ToolError::OutcomeUnknown)
+                    };
+                    upload_stop.cancel();
+                    connections.close().await;
+                    let upload = receipt.finish().await.map_err(|error|
+                        ToolError::CleanupUnconfirmed(error.to_string()))?;
+                    match result {
+                        Ok(mut outcome) => {
+                            outcome["upload"] = upload;
+                            Ok(outcome)
+                        }
+                        Err(error) => Err(ToolError::OutcomeUnknown(format!("{error}; upload={upload}"))),
+                    }
                 });
                 let result = authority.record(call, operation, destination, effect).await;
                 // Cancelling local I/O cannot roll back remote side effects.
@@ -189,7 +209,7 @@ impl Client for Http {
                     _ => Ok(()),
                 };
                 ticket.complete(settled.clone());
-                ended.send_replace(Some(result.map(|_| ()).map_err(|error| error.to_string())));
+                ended.send_replace(Some(Completion { result: result.map(|_| ()).map_err(|error| error.to_string()), settled: settled.clone() }));
                 settled
             })))?;
             match response.await {
@@ -205,13 +225,18 @@ impl Client for Http {
         })
     }
 }
+#[derive(Clone)]
+struct Completion {
+    result: Result<(), String>,
+    settled: Result<(), String>,
+}
 struct ResponseBody {
     authority: Arc<dyn Authority>,
     call: Scope,
     destination: maka_sandbox::Destination,
     stop: CancellationToken,
     output: tokio::sync::Mutex<mpsc::Receiver<Vec<u8>>>,
-    ended: watch::Receiver<Option<Result<(), String>>>,
+    ended: watch::Receiver<Option<Completion>>,
 }
 impl Drop for ResponseBody {
     fn drop(&mut self) {
@@ -239,7 +264,7 @@ impl Body for ResponseBody {
                     None => {
                         let mut ended = self.ended.clone();
                         ended.wait_for(Option::is_some).await.map_err(failed)?;
-                        let result = ended.borrow().as_ref().unwrap().clone();
+                        let result = ended.borrow().as_ref().unwrap().result.clone();
                         result.map(|()| None).map_err(failed)
                     }
                 },
@@ -257,7 +282,8 @@ impl Body for ResponseBody {
                 .await
                 .map_err(|_| Error::CleanupUnconfirmed)?
                 .map_err(|_| Error::CleanupUnconfirmed)?;
-            Ok(())
+            let settled = ended.borrow().as_ref().unwrap().settled.clone();
+            settled.map_err(|_| Error::CleanupUnconfirmed)
         })
     }
 }
@@ -270,3 +296,6 @@ fn failed(error: impl ToString) -> Error {
 fn message(error: impl ToString) -> String {
     error.to_string()
 }
+
+#[cfg(test)]
+mod tests;

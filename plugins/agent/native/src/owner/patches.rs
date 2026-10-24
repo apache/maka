@@ -49,6 +49,9 @@ impl Owner {
         let id = workspace_patch_id(&execution.session_id, &execution.turn_id);
         let record = self
             .store
+            .session(&execution.session_id)
+            .await
+            .map_err(|error| error.to_string())?
             .get_artifact(&execution.session_id, &id)
             .await
             .map_err(|_| "agent_patch_unavailable")?
@@ -77,6 +80,9 @@ impl Owner {
         };
         let chunk = self
             .store
+            .session(&patch.session_id)
+            .await
+            .map_err(|error| error.to_string())?
             .read_artifact_chunk(&patch.session_id, &patch.artifact_id, input.offset, 8192)
             .await
             .map_err(|_| "agent_patch_unavailable")?
@@ -130,6 +136,9 @@ impl Owner {
         }
         if self
             .store
+            .session(&session.id)
+            .await
+            .map_err(|error| error.to_string())?
             .latest_turn_boundary(&session.id)
             .await
             .map_err(|_| "agent_patch_unavailable")?
@@ -174,6 +183,9 @@ impl Owner {
         };
         let record = self
             .store
+            .session(&record.session_id)
+            .await
+            .map_err(|error| error.to_string())?
             .commit_artifact(record, bytes)
             .await
             .map_err(|_| "agent_patch_commit_unknown")?;
@@ -200,6 +212,9 @@ impl Owner {
                 || runs.controls.contains_key(&member.session_id)
                 || self
                     .store
+                    .session(&member.session_id)
+                    .await
+                    .map_err(|error| error.to_string())?
                     .has_unsettled_shells(&member.session_id)
                     .await
                     .map_err(|_| "agent_patch_unavailable")?
@@ -208,6 +223,9 @@ impl Owner {
             }
             if let Some(latest) = self
                 .store
+                .session(&member.session_id)
+                .await
+                .map_err(|error| error.to_string())?
                 .latest_turn_boundary(&member.session_id)
                 .await
                 .map_err(|_| "agent_patch_unavailable")?

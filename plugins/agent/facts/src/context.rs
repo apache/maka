@@ -21,6 +21,7 @@ use crate::model::{ModelFinishReason, ModelPart, ModelStep, TextKind};
 use serde::{Deserialize, Serialize};
 
 mod breakdown;
+pub mod measure;
 pub use breakdown::{ContextBucket, ContextCounts, PreparedContextBreakdown};
 mod checkpoint_mode;
 mod summary;

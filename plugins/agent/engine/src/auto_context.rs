@@ -17,18 +17,18 @@
  * under the License.
  */
 
-use crate::{Inner, RunContext, RunError, compact};
+use crate::{RunContext, RunError, RunSettings, compact};
 use maka_agent_facts::context::CheckpointMode;
 use maka_agent_facts::context::ModelRequestContext;
 use maka_agent_facts::event::EventWrite;
-use maka_event_log::context::{LatestMainContext, ModelContextSource};
+use maka_event_log::context::{ContextView, LatestMainContext};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 /// A cap on this request, never a mutation of the configured model limit.
 pub(super) fn output_limit(
-    input: &RunContext,
-    source: &ModelContextSource,
+    input: &RunSettings,
+    source: &ContextView,
 ) -> Result<Option<u64>, RunError> {
     let limit = input.main_output_limit.unwrap_or(8000);
     let Some(window) = input
@@ -85,7 +85,7 @@ fn cap_output(limit: u64, window: u64, retained: u64, thinking: u64) -> u64 {
     available.min(limit).max(limit.min(8000))
 }
 
-pub(super) fn due(input: &RunContext, source: &ModelContextSource) -> bool {
+pub(super) fn due(input: &RunSettings, source: &ContextView) -> bool {
     let Some(ModelRequestContext {
         declared_window: Some(window),
         ..
@@ -131,8 +131,8 @@ fn threshold(input: Option<u64>, output: Option<u64>, window: u64) -> bool {
 }
 
 pub(super) async fn start(
-    inner: &Arc<Inner>,
-    input: &mut RunContext,
+    inner: &Arc<RunContext>,
+    input: &mut RunSettings,
     opening_id: &str,
     mid_turn: bool,
     cancellation: &CancellationToken,
@@ -192,7 +192,7 @@ impl Pending {
 
     pub async fn adopt(
         self,
-        inner: &Inner,
+        inner: &RunContext,
         cancellation: &CancellationToken,
     ) -> Result<bool, RunError> {
         let checkpoint = self.join().await?;
@@ -204,7 +204,7 @@ impl Pending {
         };
         let session = checkpoint.invocation.session_id.clone();
         inner.log.append(&EventWrite::plain(checkpoint)?).await?;
-        inner.clear_loaded(&session);
+        inner.shared.clear_loaded(&session)?;
         Ok(true)
     }
 }

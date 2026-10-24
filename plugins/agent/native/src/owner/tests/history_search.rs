@@ -30,7 +30,7 @@ async fn history_search_options_match_persisted_unicode_literals_and_original_pr
     tokio::time::timeout(Duration::from_secs(45), async {
         let fixture = Fixture::new("http://127.0.0.1:9/v1", None).await;
         let seed = fixture.create("Unicode search").await;
-        let configuration = fixture.owner.session(&seed).await.unwrap().configuration;
+        let configuration = fixture.session(&seed).await.get_session::<StoredSessionConfiguration>(&seed).await.unwrap().unwrap().configuration;
         let session = format!("{}{}", fixture.owner.prefix, Uuid::new_v4().simple());
         let owner = PluginSession {
             session_id: session.clone(),
@@ -60,7 +60,7 @@ async fn history_search_options_match_persisted_unicode_literals_and_original_pr
         fixture.store.import_session(&owner,
             &Source { adapter: "fixture".into(), session_id: "unicode-original".into() },
             &configuration, records, now()).await.unwrap();
-        let through = *fixture.store.subscribe_commits().borrow();
+        let through = fixture.through(&session).await;
         for (query, case_sensitive, whole_word, expected) in [
             ("NEEDLE", false, true, vec![format!("…{} NeEdLe valid", "界".repeat(21))]),
             ("NEEDLE", true, true, vec![]),
@@ -98,7 +98,7 @@ async fn history_search_preserves_empty_batches_and_exact_cursors_with_original_
     tokio::time::timeout(Duration::from_secs(45), async {
         let fixture = Fixture::new("http://127.0.0.1:9/v1", None).await;
         let seed = fixture.create("Search").await;
-        let configuration = fixture.owner.session(&seed).await.unwrap().configuration;
+        let configuration = fixture.session(&seed).await.get_session::<StoredSessionConfiguration>(&seed).await.unwrap().unwrap().configuration;
         let session = format!("{}{}", fixture.owner.prefix, Uuid::new_v4().simple());
         let plugin = PluginSession {
             session_id: session.clone(),
@@ -120,7 +120,7 @@ async fn history_search_preserves_empty_batches_and_exact_cursors_with_original_
             adapter: "fixture".into(), session_id: "source".into(),
         }, &configuration, records, 1).await.unwrap();
 
-        let through = *fixture.store.subscribe_commits().borrow();
+        let through = fixture.through(&session).await;
         let request = json!({"sessionId":session,"through":through,"after":null,"query":"中😀","caseSensitive":true,"wholeWord":false,"includeInternal":false});
         let mut input = request.clone();
         let mut matches = Vec::new();
@@ -200,7 +200,7 @@ async fn search_hits_read_the_exact_field_when_history_body_is_absent_or_differe
     tokio::time::timeout(Duration::from_secs(45), async {
         let fixture = Fixture::new("http://127.0.0.1:9/v1", None).await;
         let seed = fixture.create("Fields").await;
-        let configuration = fixture.owner.session(&seed).await.unwrap().configuration;
+        let configuration = fixture.session(&seed).await.get_session::<StoredSessionConfiguration>(&seed).await.unwrap().unwrap().configuration;
         let session = format!("{}{}", fixture.owner.prefix, Uuid::new_v4().simple());
         let owner = PluginSession {
             session_id: session.clone(),
@@ -225,7 +225,7 @@ async fn search_hits_read_the_exact_field_when_history_body_is_absent_or_differe
             adapter: "fixture".into(), session_id: "original".into(),
         }, &configuration, records, 1).await.unwrap();
 
-        let through = *fixture.store.subscribe_commits().borrow();
+        let through = fixture.through(&session).await;
         for include in [false, true] {
             let mut position = json!({"kind":"start"});
             let mut thinking = String::new();
@@ -390,7 +390,14 @@ async fn search_hits_read_the_exact_field_when_history_body_is_absent_or_differe
 async fn reading_prompt_is_indexed_fenced_and_keeps_original_session_authority() {
     let fixture = Fixture::new("http://127.0.0.1:9/v1", None).await;
     let seed = fixture.create("Reading context").await;
-    let configuration = fixture.owner.session(&seed).await.unwrap().configuration;
+    let configuration = fixture
+        .session(&seed)
+        .await
+        .get_session::<StoredSessionConfiguration>(&seed)
+        .await
+        .unwrap()
+        .unwrap()
+        .configuration;
     let session = format!("{}{}", fixture.owner.prefix, Uuid::new_v4().simple());
 
     fixture
@@ -439,7 +446,7 @@ async fn reading_prompt_is_indexed_fenced_and_keeps_original_session_authority()
         .await
         .unwrap();
 
-    let through = *fixture.store.subscribe_commits().borrow();
+    let through = fixture.through(&session).await;
     let read = json!({"sessionId":session,"through":through,"position":{"kind":"start"},"view":"conversation"});
     let first = loop {
         let page = fixture.query("history", read.clone()).await.unwrap();

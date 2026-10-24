@@ -54,7 +54,11 @@ async fn shared_native_requests_progress_through_backpressure_and_cancellation()
             let part = json!({"id":"slow","object":"chat.completion.chunk","created":1,"model":"test-model",
                 "choices":[{"index":0,"delta":{"content":"x".repeat(4096)},"finish_reason":null}]});
             let data = format!("data: {part}\n\n").repeat(256);
-            socket.write_all(format!("{:x}\r\n{data}\r\n", data.len()).as_bytes()).await.unwrap();
+            // The consumer may cancel while this undrained response is still
+            // being written; a closed peer is the expected cleanup outcome.
+            if let Err(error) = socket.write_all(format!("{:x}\r\n{data}\r\n", data.len()).as_bytes()).await {
+                assert!(matches!(error.kind(), std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted), "unexpected response write failure: {error}");
+            }
             assert_http_closed(&mut socket).await;
         });
         let mut slow = models.stream(request(ProviderKind::OpenaiChatCompletions, flooding_base), CancellationToken::new()).await.unwrap();
@@ -136,61 +140,50 @@ async fn assert_http_closed(socket: &mut TcpStream) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn native_input_budget_wait_is_not_provider_silence_and_remains_cancellable() {
+async fn a_large_open_stream_does_not_reserve_capacity_for_independent_requests() {
     tokio::time::timeout(Duration::from_secs(60), async {
-        let large_models = ModelExecutor::new(Duration::from_secs(30)).unwrap();
-        let binding = large_models.binding(&request(ProviderKind::OpenaiChatCompletions, "http://fixture.invalid".into()).provider).unwrap();
-        let queued_models = ModelExecutor::new(Duration::from_millis(250)).unwrap()
-            .with_adapters(std::collections::BTreeMap::from([("chat-completions".into(), binding)]));
+        let models = ModelExecutor::new(Duration::from_secs(30)).unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}/v1", listener.local_addr().unwrap());
         let (received, ready) = oneshot::channel();
         let http = tokio::spawn(async move {
             let (mut first, _) = listener.accept().await.unwrap();
             assert!(read_request(&mut first).await.len() > 32 * 1024 * 1024);
+            first.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n").await.unwrap();
             received.send(()).unwrap();
-            // The complete large request owns the input window until its
-            // physical transport has closed. Neither queued request may pass it.
-            tokio::select! {
-                _ = assert_http_closed(&mut first) => {},
-                unexpected = listener.accept() => panic!("input reservation released before cleanup: {unexpected:?}"),
-            }
+            // The first request is still physically open when the independent
+            // request arrives and completes. Request size is not a stream quota.
             let (mut second, _) = listener.accept().await.unwrap();
-            let wire = read_request(&mut second).await;
-            assert!(wire.contains("queued survivor"));
-            assert!(!wire.contains("cancelled before transport"));
-            let part = json!({"id":"queued","object":"chat.completion.chunk","created":1,"model":"test-model",
-                "choices":[{"index":0,"delta":{"content":"after capacity"},"finish_reason":"stop"}],
+            assert!(read_request(&mut second).await.contains("independent request"));
+            let part = json!({"id":"independent","object":"chat.completion.chunk","created":1,"model":"test-model",
+                "choices":[{"index":0,"delta":{"content":"while the large stream is open"},"finish_reason":"stop"}],
                 "usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}});
             let body = format!("data: {part}\n\ndata: [DONE]\n\n");
             second.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+            assert_http_closed(&mut first).await;
         });
         let mut large = request(ProviderKind::OpenaiChatCompletions, base.clone());
-        large.prompt = vec![maka_model::prompt::Message::user("x".repeat(33 * 1024 * 1024))];
-        let held = large_models.stream(large, CancellationToken::new()).await.unwrap();
+        large.prompt = vec![maka_model::prompt::Message::user("x".repeat(33 * 1024 * 1024))].into();
+        let held = models.stream(large, CancellationToken::new()).await.unwrap();
         ready.await.unwrap();
-        let mut survivor = request(ProviderKind::OpenaiChatCompletions, base.clone());
-        survivor.prompt = vec![maka_model::prompt::Message::user("queued survivor")];
-        let mut waiting = queued_models.stream(survivor, CancellationToken::new()).await.unwrap();
-        let mut cancelled = request(ProviderKind::OpenaiChatCompletions, base);
-        cancelled.prompt = vec![maka_model::prompt::Message::user("cancelled before transport")];
-        queued_models.stream(cancelled, CancellationToken::new()).await.unwrap()
-            .cancel_and_wait().await.expect("queued cancellation settles without transport");
-        assert!(tokio::time::timeout(Duration::from_millis(750), waiting.next()).await.is_err(),
-            "waiting for local capacity must outlive the provider idle budget without failing");
-        held.cancel_and_wait().await.expect("original HTTP custody closes before input capacity returns");
+        let mut independent = request(ProviderKind::OpenaiChatCompletions, base);
+        independent.prompt = vec![maka_model::prompt::Message::user("independent request")].into();
+        let mut stream = models.stream(independent, CancellationToken::new()).await.unwrap();
         let mut text = String::new();
         let mut step = StepBuilder::default();
-        while let Some(event) = waiting.next().await {
-            let event = event.unwrap().event;
-            if let ModelEvent::PartDelta { text: delta, .. } = &event { text.push_str(delta); }
-            step.push(event).unwrap();
-        }
-        assert_eq!(text, "after capacity");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(event) = stream.next().await {
+                let event = event.unwrap().event;
+                if let ModelEvent::PartDelta { text: delta, .. } = &event { text.push_str(delta); }
+                step.push(event).unwrap();
+            }
+        }).await.expect("an open large request must not block unrelated streams");
+        assert_eq!(text, "while the large stream is open");
         step.finish().unwrap();
-        waiting.cancel_and_wait().await.expect("surviving stream cleanup");
+        stream.cancel_and_wait().await.expect("independent stream cleanup");
+        held.cancel_and_wait().await.expect("large stream physical cancellation");
         http.await.unwrap();
-    }).await.expect("local input backpressure and cancellation settle");
+    }).await.expect("large and independent streams both settle");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -310,21 +303,15 @@ async fn shared_native_admits_more_than_128_independent_models_and_cleans_them_u
         let models = ModelExecutor::new(Duration::from_secs(25)).unwrap();
         let server = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}/v1", server.local_addr().unwrap());
-        let (received, ready) = oneshot::channel();
+        let (received, mut ready) = tokio::sync::mpsc::channel(1);
         let http = tokio::spawn(async move {
-            let mut connections = tokio::task::JoinSet::new();
+            let mut sockets = Vec::new();
             for _ in 0..CALLS {
                 let (mut socket, _) = server.accept().await.unwrap();
-                connections.spawn(async move {
-                    read_request(&mut socket).await;
-                    socket
-                });
+                read_request(&mut socket).await;
+                sockets.push(socket);
+                received.send(()).await.unwrap();
             }
-            let mut sockets = Vec::new();
-            while let Some(result) = connections.join_next().await {
-                sockets.push(result.unwrap());
-            }
-            received.send(()).unwrap();
             for mut socket in sockets {
                 assert_http_closed(&mut socket).await;
             }
@@ -340,8 +327,10 @@ async fn shared_native_admits_more_than_128_independent_models_and_cleans_them_u
                     .await
                     .unwrap(),
             );
+            // Hold every admitted transport open, without turning this lifetime
+            // test into a platform-dependent TCP listen-backlog burst test.
+            ready.recv().await.unwrap();
         }
-        ready.await.unwrap();
         let mut cleanup = tokio::task::JoinSet::new();
         for stream in streams {
             cleanup.spawn(async move {

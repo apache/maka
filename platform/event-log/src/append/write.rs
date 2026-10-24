@@ -98,12 +98,11 @@ async fn prepare_request(
     connection: &mut SqliteConnection,
     events: &[EventWrite],
 ) -> Result<(Vec<u64>, Option<u64>), StoreError> {
-    let mut verification = crate::context::cache::Verification::default();
     let mut sequences = Vec::with_capacity(events.len());
     let mut inserted = None;
     for event in events {
         sequences.push(
-            match EventLog::append_verified(connection, event, &mut verification).await? {
+            match EventLog::append_in_transaction(connection, event).await? {
                 AppendResult::Existing(sequence) => sequence,
                 AppendResult::Inserted(sequence) => {
                     inserted = Some(sequence);

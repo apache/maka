@@ -729,6 +729,7 @@ pub struct Session {
     pub data_source: Box<DataSource>,
     pub permissions: WorkspacePermissions,
     pub boundary_revision: u64,
+    pub binding: maka_agent_facts::workspace::BindingStamp,
     pub id: String,
     pub title: String,
     pub labels: Vec<String>,

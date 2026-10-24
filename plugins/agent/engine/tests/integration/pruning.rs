@@ -18,13 +18,13 @@
  */
 
 use crate::support::context as fixture;
+use crate::support::store::SessionFixture;
 use maka_agent_engine::RunWork;
 use maka_agent_facts::context::ModelRequestContext;
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::ToolOutcome;
 use maka_agent_facts::tools::ToolExecutor;
 use maka_agent_facts::tools::ToolFuture;
-use maka_event_log::EventLog;
 use maka_tools::{
     ToolCatalog, ToolDefinition, ToolHandler, ToolNesting, ToolRegistration, ToolSemantics,
 };
@@ -84,7 +84,7 @@ async fn settled_results_are_pruned_before_context_limits_and_survive_failed_sum
     ] {
         let directory = tempfile::tempdir().unwrap();
         let log = Arc::new(
-            EventLog::open(&directory.path().join("events.sqlite"))
+            SessionFixture::open(&directory.path().join("events.sqlite"))
                 .await
                 .unwrap(),
         );
@@ -231,10 +231,11 @@ async fn settled_results_are_pruned_before_context_limits_and_survive_failed_sum
             message: "read".into(),
             tools: catalog(count.clone(), repeats),
         };
-        let worker = fixture::engine(log.clone());
+        let worker = fixture::engine();
         if interrupted {
             worker
                 .run(
+                    log.store(),
                     fixture::input(&base, "old", false),
                     CancellationToken::new(),
                 )
@@ -242,6 +243,7 @@ async fn settled_results_are_pruned_before_context_limits_and_survive_failed_sum
                 .unwrap();
             worker
                 .run(
+                    log.store(),
                     fixture::input(&base, "baseline", true),
                     CancellationToken::new(),
                 )
@@ -249,12 +251,15 @@ async fn settled_results_are_pruned_before_context_limits_and_survive_failed_sum
                 .unwrap();
         }
         let previous = log
-            .read_model_context("session", None)
+            .read_model_view("session", None)
             .await
             .unwrap()
             .baseline
             .map(|baseline| baseline.event_id);
-        worker.run(input, CancellationToken::new()).await.unwrap();
+        worker
+            .run(log.store(), input, CancellationToken::new())
+            .await
+            .unwrap();
         worker.drain().await;
         server.await.unwrap();
         assert_eq!(count.load(Ordering::SeqCst), call_count);
@@ -271,7 +276,7 @@ async fn settled_results_are_pruned_before_context_limits_and_survive_failed_sum
             usize::from(interrupted)
         );
         let next = log
-            .read_model_context("session", None)
+            .read_model_view("session", None)
             .await
             .unwrap()
             .baseline

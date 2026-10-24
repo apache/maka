@@ -26,6 +26,7 @@ use maka_capabilities::http::Request;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::json;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio_util::sync::CancellationToken;
 
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
@@ -153,6 +154,7 @@ pub(super) async fn authenticate(
             &context,
             "https://auth.openai.com/api/accounts/deviceauth/usercode",
             json!({"client_id": CLIENT_ID}),
+            context.cancellation.clone(),
         ) => response.map_err(|error| match error {
             Error::OutcomeUnknown => Error::Transport("device authorization service unavailable".into()),
             other => other,
@@ -184,11 +186,14 @@ pub(super) async fn authenticate(
             .filter(|v| *v > 0)
             .ok_or(Error::AuthenticationRequired)?;
         // Once this request starts, cancellation cannot throw away a consumed
-        // grant. The embedding Host owns the callback until it settles.
+        // grant. The embedding Host owns the callback until it settles. This
+        // token belongs to that settlement, not the cancelled UI wait.
+        let grant_settlement = CancellationToken::new();
         let response = post_json(
             &context,
             "https://auth.openai.com/api/accounts/deviceauth/token",
             json!({"device_auth_id": device.device_auth_id, "user_code": device.user_code}),
+            grant_settlement.clone(),
         )
         .await?;
         if (200..300).contains(&response.status) {
@@ -208,6 +213,7 @@ pub(super) async fn authenticate(
                         "https://auth.openai.com/deviceauth/callback",
                     ),
                 ],
+                grant_settlement,
             )
             .await?
             .decode::<Grant>()?
@@ -228,6 +234,9 @@ pub(super) async fn refresh(credential: Credential, context: Context) -> Result<
     if context.cancellation.is_cancelled() {
         return Err(Error::Cancelled);
     }
+    // Refresh can consume the old grant. Its owned settlement must finish even
+    // when the caller stops waiting, just like the authorization-code exchange.
+    let grant_settlement = CancellationToken::new();
     post_form(
         &context,
         &[
@@ -235,6 +244,7 @@ pub(super) async fn refresh(credential: Credential, context: Context) -> Result<
             ("client_id", CLIENT_ID),
             ("refresh_token", &previous.refresh_token),
         ],
+        grant_settlement,
     )
     .await?
     .decode::<Grant>()?
@@ -283,6 +293,7 @@ async fn post_json(
     context: &Context,
     url: &str,
     value: serde_json::Value,
+    cancellation: CancellationToken,
 ) -> Result<Response, Error> {
     send(
         context,
@@ -290,12 +301,17 @@ async fn post_json(
             url: url.into(),
             method: Method::Post,
             headers: vec![("content-type".into(), "application/json".into())],
-            body: serde_json::to_vec(&value).map_err(|_| invalid())?,
+            body: serde_json::to_vec(&value).map_err(|_| invalid())?.into(),
         },
+        cancellation,
     )
     .await
 }
-async fn post_form(context: &Context, form: &[(&str, &str)]) -> Result<Response, Error> {
+async fn post_form(
+    context: &Context,
+    form: &[(&str, &str)],
+    cancellation: CancellationToken,
+) -> Result<Response, Error> {
     let body = url::form_urlencoded::Serializer::new(String::new())
         .extend_pairs(form.iter().copied())
         .finish();
@@ -315,15 +331,20 @@ async fn post_form(context: &Context, form: &[(&str, &str)]) -> Result<Response,
                     "maka-desktop/0.1.0 (oauth-subscription)".into(),
                 ),
             ],
-            body: body.into_bytes(),
+            body: body.into_bytes().into(),
         },
+        cancellation,
     )
     .await
 }
-async fn send(context: &Context, request: Request) -> Result<Response, Error> {
+async fn send(
+    context: &Context,
+    request: Request,
+    cancellation: CancellationToken,
+) -> Result<Response, Error> {
     let response = context
         .transport
-        .request(request)
+        .request(request, cancellation)
         .await
         .map_err(|_| Error::OutcomeUnknown)?;
     let result = async {

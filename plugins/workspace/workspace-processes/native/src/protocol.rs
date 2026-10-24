@@ -27,6 +27,8 @@ use std::sync::Mutex;
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
+#[cfg(test)]
+mod tests;
 mod worker;
 use maka_workspace_api::protocol::{
     CHUNK_BYTES, Completion, EXPORT, Input, Launch, Progress, Run, Stream, Written, contract,
@@ -68,7 +70,7 @@ struct Control {
 enum Boundary {
     Session {
         session: String,
-        configuration: Box<SessionConfiguration>,
+        configuration: Box<ResolvedConfiguration>,
         sandbox: Sandbox,
     },
     Application {
@@ -77,6 +79,35 @@ enum Boundary {
 }
 #[derive(Default)]
 pub(super) struct Controls(Mutex<BTreeMap<Uuid, Arc<Control>>>);
+struct ControlResidency<'a> {
+    controls: &'a Controls,
+    id: Uuid,
+}
+impl Drop for ControlResidency<'_> {
+    fn drop(&mut self) {
+        self.controls.0.lock().unwrap().remove(&self.id);
+    }
+}
+// A dropped active worker retains unknown physical custody. Before spawning or
+// after confirmed drain, cancellation of bookkeeping must release that custody.
+struct ProcessCustody {
+    lease: Option<maka_event_log::root_store::SessionExecutionLease>,
+    phase: ProcessPhase,
+}
+enum ProcessPhase {
+    Unstarted,
+    Active,
+    Drained,
+}
+impl Drop for ProcessCustody {
+    fn drop(&mut self) {
+        if !matches!(self.phase, ProcessPhase::Active)
+            && let Some(lease) = self.lease.take()
+        {
+            lease.finish();
+        }
+    }
+}
 pub(super) struct Service(pub(super) Arc<Processes>);
 impl Handler for Service {
     fn call(
@@ -97,7 +128,7 @@ impl Handler for Service {
             let result = match method.as_str() {
                 "run" => match (serde_json::from_value(value), tool(&context)) {
                     (Ok(input), Ok(tool)) => owner
-                        .run(input, &tool, &context)
+                        .run_owned(input, tool, &context)
                         .await
                         .and_then(|v| serde_json::to_value(v).map_err(failed)),
                     (Err(error), _) => Err(failed(error)),
@@ -133,6 +164,7 @@ impl Handler for Service {
 }
 fn tool(context: &Context) -> Result<ToolCallContext, ToolError> {
     Ok(ToolCallContext {
+        execution: context.scope().execution().cloned(),
         invocation: context
             .scope()
             .identity
@@ -148,11 +180,44 @@ fn tool(context: &Context) -> Result<ToolCallContext, ToolError> {
     })
 }
 impl Processes {
+    async fn run_owned(
+        &self,
+        input: Run,
+        mut tool: ToolCallContext,
+        context: &Context,
+    ) -> Result<Completion, ToolError> {
+        // A protocol process may outlive the prompt that launched it. Capture
+        // child custody before entering any asynchronous setup or dispatch;
+        // copying the parent's token would expire when that prompt finishes.
+        let lease = self
+            .store
+            .fork_execution(
+                tool.execution
+                    .as_deref()
+                    .ok_or_else(|| failed("protocol_requires_execution_custody"))?,
+                &tool.invocation,
+            )
+            .map_err(persistence)?;
+        tool.execution = Some(match lease.store().execution_custody() {
+            Ok(custody) => custody,
+            Err(error) => {
+                lease.finish();
+                return Err(persistence(error));
+            }
+        });
+        let mut custody = ProcessCustody {
+            lease: Some(lease),
+            phase: ProcessPhase::Unstarted,
+        };
+        self.run(input, &tool, context, &mut custody).await
+    }
+
     async fn run(
         &self,
         input: Run,
         tool: &ToolCallContext,
         context: &Context,
+        custody: &mut ProcessCustody,
     ) -> Result<Completion, ToolError> {
         cancelled(&context.scope().cancellation)?;
         if self.drain.is_cancelled() {
@@ -175,8 +240,15 @@ impl Processes {
                 "Protocol process permissions require a justification",
             ));
         }
-        let configuration =
-            maka_agent_authority::permissions::live(&self.store, &tool.invocation).await?;
+        let configuration = maka_agent_authority::permissions::live(
+            &maka_agent_authority::permissions::execution(
+                &self.store,
+                &tool.invocation,
+                tool.execution.as_deref(),
+            )?,
+            &tool.invocation,
+        )
+        .await?;
         let requested = input
             .additional_permissions
             .map(|permissions| PermissionRequest {
@@ -222,24 +294,41 @@ impl Processes {
             }
             controls.insert(id, control);
         }
+        let _residency = ControlResidency {
+            controls: &self.protocol,
+            id,
+        };
         let result = async {
             // The same SQL transaction checks the live invocation and captured
             // configuration, and retains Session removal until actual cleanup.
-            self.store
-                .admit_session_process_for(&tool.invocation, id, &configuration)
+            let store = maka_agent_authority::permissions::execution(
+                &self.store,
+                &tool.invocation,
+                tool.execution.as_deref(),
+            )?;
+            store
+                .admit_session_process_for(&tool.invocation, id, &configuration.permission_basis())
                 .await
                 .map_err(persistence)?;
-            let result = worker::run(self, context, id, plan, receive, Some(&configuration)).await;
-            if !matches!(&result, Err(ToolError::CleanupUnconfirmed(_))) {
-                self.store
-                    .clean_session_process(id)
-                    .await
-                    .map_err(|e| ToolError::CleanupUnconfirmed(e.to_string()))?;
+            custody.phase = ProcessPhase::Active;
+            let result = worker::run(
+                self,
+                context,
+                id,
+                plan,
+                receive,
+                Some((&store, &configuration)),
+            )
+            .await;
+            if result.is_ok() {
+                custody.phase = ProcessPhase::Drained;
+                // The worker has physically drained. A journal failure leaves
+                // recovery work, not an unknown live process; SQL owns its pins.
+                store.clean_session_process(id).await.map_err(persistence)?;
             }
             result
         }
         .await;
-        self.protocol.0.lock().unwrap().remove(&id);
         result
     }
     async fn launch(&self, input: Launch, context: &Context) -> Result<Completion, ToolError> {
@@ -292,10 +381,13 @@ impl Processes {
             }
             controls.insert(id, control);
         }
+        let _residency = ControlResidency {
+            controls: &self.protocol,
+            id,
+        };
         // The original mutation owns this application process through physical
         // exit. It is not an Agent invocation and creates no Session process row.
         let result = worker::run(self, context, id, plan, receive, None).await;
-        self.protocol.0.lock().unwrap().remove(&id);
         result
     }
     async fn protocol_input(&self, input: Input, context: &Context) -> Result<Written, ToolError> {
@@ -338,9 +430,16 @@ impl Processes {
                 if session != &tool.invocation.session_id {
                     return Err(failed("Protocol process belongs to another Session"));
                 }
-                let current =
-                    maka_agent_authority::permissions::live(&self.store, &tool.invocation).await?;
-                if current.boundary_revision != configuration.boundary_revision
+                let current = maka_agent_authority::permissions::live(
+                    &maka_agent_authority::permissions::execution(
+                        &self.store,
+                        &tool.invocation,
+                        tool.execution.as_deref(),
+                    )?,
+                    &tool.invocation,
+                )
+                .await?;
+                if current.permission_basis() != configuration.permission_basis()
                     || current.workspace != configuration.workspace
                 {
                     return Err(failed("Protocol process permissions changed"));
@@ -374,9 +473,16 @@ impl Processes {
                         "Protocol process launch permissions are no longer available",
                     ));
                 }
-                let latest =
-                    maka_agent_authority::permissions::live(&self.store, &tool.invocation).await?;
-                if latest.boundary_revision != current.boundary_revision
+                let latest = maka_agent_authority::permissions::live(
+                    &maka_agent_authority::permissions::execution(
+                        &self.store,
+                        &tool.invocation,
+                        tool.execution.as_deref(),
+                    )?,
+                    &tool.invocation,
+                )
+                .await?;
+                if latest.permission_basis() != current.permission_basis()
                     || latest.workspace != current.workspace
                 {
                     return Err(failed(

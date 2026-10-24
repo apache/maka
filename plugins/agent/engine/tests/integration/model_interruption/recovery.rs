@@ -19,6 +19,7 @@
 
 //! Faults occur at the actual provider socket boundary, before any model output.
 use super::*;
+use crate::support::store::SessionFixture;
 use futures_util::future::BoxFuture;
 use maka_agent_ports::model::{
     self, Binding, Context, Frame, Lifetime, ProviderAdapter, Request, Session, Socket, Transport,
@@ -101,13 +102,17 @@ impl Transport for InjectedNetwork {
     fn identity(&self) -> u64 {
         self.inner.identity()
     }
-    fn request(&self, request: http::Request) -> BoxFuture<'_, Result<http::Response, ModelError>> {
+    fn request(
+        &self,
+        request: http::Request,
+        cancellation: tokio_util::sync::CancellationToken,
+    ) -> BoxFuture<'_, Result<http::Response, ModelError>> {
         assert!(
             self.closed.load(Ordering::SeqCst),
             "the failed socket must close before recovery"
         );
         self.requests.fetch_add(1, Ordering::SeqCst);
-        self.inner.request(request)
+        self.inner.request(request, cancellation)
     }
     fn connect(&self, _: model::Connect) -> BoxFuture<'_, Result<Arc<dyn Socket>, ModelError>> {
         let socket = FaultSocket {
@@ -131,6 +136,18 @@ impl Drop for FaultSocket {
     }
 }
 impl Socket for FaultSocket {
+    fn send_text(&self, mut chunks: model::TextStream) -> BoxFuture<'_, Result<(), ModelError>> {
+        Box::pin(async move {
+            use futures_util::StreamExt;
+            let mut bytes = Vec::new();
+            while let Some(chunk) = chunks.next().await {
+                bytes.extend_from_slice(&chunk?);
+            }
+            self.send(Frame::Text(String::from_utf8(bytes).unwrap()))
+                .await
+        })
+    }
+
     fn send(&self, frame: Frame) -> BoxFuture<'_, Result<(), ModelError>> {
         let Frame::Text(text) = frame else {
             panic!("expected model request")
@@ -190,7 +207,7 @@ async fn send_and_idle_faults_recover_the_original_request_but_opaque_effects_an
                 socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
             });
             let directory = tempfile::tempdir().unwrap();
-            let log = Arc::new(EventLog::open(&directory.path().join("events.sqlite")).await.unwrap());
+            let log = Arc::new(SessionFixture::open(&directory.path().join("events.sqlite")).await.unwrap());
             let mut input = input(&base, "recovery");
             input.provider.kind = ProviderKind::OpenaiResponses;
             // Exercise the subscription adapter, including timeout ownership forwarding.
@@ -198,8 +215,8 @@ async fn send_and_idle_faults_recover_the_original_request_but_opaque_effects_an
             let executor = ModelExecutor::new(Duration::from_millis(150)).unwrap();
             let inner = executor.binding(&input.provider).unwrap();
             let binding = Binding::new(Arc::new(Injected { inner: inner.clone(), fault, sent: sent.clone(), closed: closed.clone(), requests: requests.clone() }), inner.source().clone());
-            let engine = Engine::new(log.clone(), executor.with_adapters(BTreeMap::from([("codex-responses".into(), binding)])), CodeExecutor::new(CellLimits::default()).unwrap());
-            let result = engine.run(input, CancellationToken::new()).await;
+            let engine = Engine::new(executor.with_adapters(BTreeMap::from([("codex-responses".into(), binding)])), CodeExecutor::new(CellLimits::default()).unwrap()).unwrap();
+            let result = engine.run(log.store(), input, CancellationToken::new()).await;
             engine.drain().await;
             server.await.unwrap();
             assert!(closed.load(Ordering::SeqCst));

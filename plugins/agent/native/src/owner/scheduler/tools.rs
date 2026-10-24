@@ -128,9 +128,13 @@ impl Owner {
         context: ToolCallContext,
     ) -> Result<Value, String> {
         let _gate = self.scheduler.gate.lock().await;
-        self.session(&context.invocation.session_id).await?;
+        self.tool_store(&context)?
+            .get::<StoredSessionConfiguration>()
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or("agent_session_unavailable")?;
         let boundary = self
-            .store
+            .tool_store(&context)?
             .invocation_boundary(
                 &context.invocation.session_id,
                 &context.invocation.invocation_id,
@@ -210,12 +214,19 @@ impl Owner {
                         revision: connection.revision,
                         model_id: accepted.binding.model.clone(),
                     };
-                    let session = self.session(&context.invocation.session_id).await?;
+                    let session = self
+                        .tool_store(&context)?
+                        .get::<StoredSessionConfiguration>()
+                        .await
+                        .map_err(|error| error.to_string())?
+                        .ok_or("agent_session_unavailable")?;
+                    let session = resolve_session(session)?;
                     let target = ScheduledTarget {
                         session_id: session.id,
                         workspace: session.configuration.workspace,
                         permissions: session.configuration.permissions,
                         boundary_revision: session.configuration.boundary_revision,
+                        binding: session.configuration.binding,
                     };
                     let thinking_level = accepted.thinking_level;
                     if matches!(effect, Target::Session) {

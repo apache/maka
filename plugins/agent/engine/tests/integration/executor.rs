@@ -18,6 +18,7 @@
  */
 
 use super::support::{context, invocation};
+use crate::support::store::SessionFixture;
 use futures_util::future::BoxFuture;
 use maka_agent_engine::{ExecutorInput, RunError};
 use maka_agent_facts::event::Fact;
@@ -35,7 +36,6 @@ use maka_agent_ports::executor::OutputSink;
 use maka_agent_ports::executor::Provider;
 use maka_agent_ports::executor::Request;
 use maka_agent_ports::executor::Settlement;
-use maka_event_log::EventLog;
 use std::{
     sync::{Arc, Mutex},
     time::Duration,
@@ -61,6 +61,7 @@ struct NativeExecution(Arc<dyn Provider>, Request);
 impl Execution for NativeExecution {
     fn execute(
         self: Box<Self>,
+        _execution: Arc<dyn maka_agent_facts::tools::ExecutionCustody>,
         output: Arc<dyn OutputSink>,
         cancellation: CancellationToken,
     ) -> BoxFuture<'static, Settlement> {
@@ -127,11 +128,11 @@ impl Provider for Adapter {
 async fn external_backend_uses_canonical_admission_settlement_and_never_enters_model_loop() {
     let temp = tempfile::tempdir().unwrap();
     let log = Arc::new(
-        EventLog::open(&temp.path().join("executor.sqlite"))
+        SessionFixture::open(&temp.path().join("executor.sqlite"))
             .await
             .unwrap(),
     );
-    let engine = context::engine(log.clone());
+    let engine = context::engine();
     let started = Arc::new(Semaphore::new(0));
     let retained = Arc::new(Mutex::new(None));
     let answer = format!(
@@ -171,7 +172,7 @@ async fn external_backend_uses_canonical_admission_settlement_and_never_enters_m
             source_messages: vec![],
         };
         let running = engine
-            .start_executor(input, CancellationToken::new())
+            .start_executor(log.store(), input, CancellationToken::new())
             .await
             .unwrap();
         assert!(running.handoff().is_none());
@@ -290,18 +291,8 @@ async fn external_backend_uses_canonical_admission_settlement_and_never_enters_m
             .unwrap()
             .unfinished_executor
     );
-    assert_eq!(
-        maka_event_log::recovery::recover_invocations(&log)
-            .await
-            .unwrap(),
-        1
-    );
-    assert_eq!(
-        maka_event_log::recovery::recover_invocations(&log)
-            .await
-            .unwrap(),
-        0
-    );
+    assert_eq!(log.root().recover_invocations().await.unwrap(), 1);
+    assert_eq!(log.root().recover_invocations().await.unwrap(), 0);
     let recovered = log.prefix(100, read_bytes).await.unwrap();
     assert!(recovered.project_invocation("crashed").unfinished_executor);
     assert!(recovered.events.iter().any(|row| row.event.invocation == crashed
@@ -314,38 +305,29 @@ async fn external_backend_uses_canonical_admission_settlement_and_never_enters_m
     log.shutdown().await.unwrap();
 }
 
-struct CleanupFault {
-    log: Arc<EventLog>,
-    sql_failure: bool,
-}
+struct CleanupFault;
 impl Provider for CleanupFault {
     fn execute(&self, _: Request, _: Context) -> BoxFuture<'static, Result<Outcome, Error>> {
-        let log = self.log.clone();
-        let sql_failure = self.sql_failure;
-        Box::pin(async move {
-            if sql_failure {
-                log.shutdown().await.unwrap();
-            }
-            Err(Error::CleanupUnconfirmed)
-        })
+        Box::pin(async { Err(Error::CleanupUnconfirmed) })
     }
 }
 async fn unconfirmed_executor(sql_failure: bool) {
     let temp = tempfile::tempdir().unwrap();
     let log = Arc::new(
-        EventLog::open(&temp.path().join("executor.sqlite"))
+        SessionFixture::open(&temp.path().join("executor.sqlite"))
             .await
             .unwrap(),
     );
-    let engine = context::engine(log.clone());
-    let adapter = Arc::new(CleanupFault {
-        log: log.clone(),
-        sql_failure,
-    });
+    let engine = context::engine();
+    if sql_failure {
+        log.reject_terminal_writes();
+    }
+    let adapter = Arc::new(CleanupFault);
     let mut configuration = invocation::configuration(ToolMode::Direct);
     configuration.model = None;
     let running = engine
         .start_executor(
+            log.store(),
             ExecutorInput {
                 request: Request {
                     language: configuration.language,
@@ -372,6 +354,13 @@ async fn unconfirmed_executor(sql_failure: bool) {
         .unwrap();
     let completion = running.completion().await;
     assert!(completion.result.is_err());
+    if sql_failure {
+        assert!(
+            matches!(completion.result, Err(RunError::Commit(_))),
+            "expected terminal commit failure, got {:?}",
+            completion.result
+        );
+    }
     assert!(
         completion.cleanup.is_err(),
         "terminal SQL failure cannot clear original executor cleanup failure"

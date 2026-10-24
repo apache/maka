@@ -32,7 +32,7 @@ impl Processes {
         if input.after > MAX_SEQUENCE {
             return Err(failed("Invalid terminal output cursor"));
         }
-        let record = self.terminal_record(&input.target).await?;
+        let record = self.terminal_record(&input.target, context).await?;
         if !record.output.is_pty() {
             return Err(failed("Only a PTY has raw terminal output"));
         }
@@ -65,7 +65,7 @@ impl Processes {
                 return Ok(value);
             }
             // The retained output Arc conveys no Session authority of its own.
-            self.terminal_session(&input.target.session_id, false)
+            self.terminal_session(&input.target.session_id, false, context)
                 .await?;
             tokio::select! { biased;
                 _ = context.scope().cancellation.cancelled() => return last.ok_or_else(|| failed("Process operation cancelled")),

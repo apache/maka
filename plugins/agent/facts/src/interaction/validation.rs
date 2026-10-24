@@ -91,11 +91,10 @@ impl InteractionRequest {
             }
             Self::Permissions {
                 tool_use_id,
-                base_revision,
+                basis,
                 request,
             } => {
-                if tool_use_id.as_ref().is_some_and(|id| id.is_empty())
-                    || *base_revision > MAX_SAFE_INTEGER
+                if tool_use_id.as_ref().is_some_and(|id| id.is_empty()) || basis.validate().is_err()
                 {
                     return Err("Invalid permission request identity or revision");
                 }
@@ -129,11 +128,9 @@ impl InteractionRequest {
             Self::ClientCapability {
                 tool_use_id,
                 target,
-                base_revision,
+                basis,
             } => {
-                if tool_use_id.is_empty()
-                    || base_revision.is_some_and(|revision| revision > MAX_SAFE_INTEGER)
-                {
+                if tool_use_id.is_empty() || basis.is_some_and(|basis| basis.validate().is_err()) {
                     return Err("Invalid interaction tool use identity");
                 }
                 target.validate()?;
@@ -298,9 +295,7 @@ impl SessionGrant {
         entity_id(&self.session_id)?;
         self.target.validate()?;
         if self.granted_at > MAX_SAFE_INTEGER
-            || self
-                .base_revision
-                .is_some_and(|revision| revision > MAX_SAFE_INTEGER)
+            || self.basis.is_some_and(|basis| basis.validate().is_err())
         {
             return Err("Invalid grant timestamp");
         }

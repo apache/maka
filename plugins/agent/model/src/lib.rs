@@ -68,16 +68,12 @@ pub struct ProviderConfig {
 }
 
 /// Provider input projected from canonical facts, never a history authority.
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ModelRequest {
     pub language: maka_agent_facts::language::Language,
     pub provider: ProviderConfig,
-    pub prompt: Vec<prompt::Message>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub prompt: prompt::Prompt,
     pub tools: Vec<ToolDefinition>,
     pub provider_options: Value,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<u64>,
 }
 
@@ -171,7 +167,7 @@ impl ModelStream {
                         self.cleanup = result.unwrap_or(Err(StreamCleanupError));
                         if self.cleanup.is_err() {
                             self.ended = true;
-                            return Some(Err(ModelError::Adapter("model adapter worker failed".into())));
+                            return Some(Err(ModelError::CleanupUnconfirmed));
                         }
                         continue;
                     }
@@ -399,7 +395,7 @@ impl ModelExecutor {
                 "maxOutputTokens must be a positive JavaScript safe integer".into(),
             ));
         }
-        request.prompt = reasoning::project(request.prompt, &request.provider.kind);
+        request.prompt = reasoning::normalize(request.prompt, &request.provider.kind)?;
         let cancellation = cancellation.child_token();
         tokio::select! {
             biased;
@@ -466,15 +462,19 @@ impl ModelExecutor {
                 adapter_cancel.cancel();
                 // Give the original adapter a bounded cleanup window. Expiry
                 // reports unknown physical cleanup; its owner must keep its fence.
-                if tokio::time::timeout(Duration::from_secs(6), &mut operation)
-                    .await
-                    .is_err()
-                {
-                    cleanup = Err(StreamCleanupError);
+                match tokio::time::timeout(Duration::from_secs(6), &mut operation).await {
+                    Err(_) => cleanup = Err(StreamCleanupError),
+                    Ok(Err(error)) if error.cleanup_unconfirmed() => {
+                        cleanup = Err(StreamCleanupError)
+                    }
+                    _ => {}
                 }
                 break Err(cause);
             };
             if let Err(error) = result {
+                if error.cleanup_unconfirmed() {
+                    cleanup = Err(StreamCleanupError);
+                }
                 let _ = failure_sender.send(Err(error)).await;
             }
             cleanup
@@ -512,3 +512,8 @@ impl maka_agent_ports::model::Events for ChannelEvents {
 
 #[cfg(test)]
 mod stream_tests;
+
+pub use native::wire::{
+    PreparationContext, WireEncoding, prepare_wire_group, prepare_wire_group_with_context,
+    wire_codec, wire_message_metadata, wire_preparation_dependencies,
+};

@@ -303,9 +303,16 @@ pub struct RuntimeEvent {
 }
 
 impl RuntimeEvent {
+    pub(crate) fn new_id() -> String {
+        // Keep newly generated identities local in durable event/message
+        // indexes. Replay preserves the supplied ID; sequence, not this
+        // timestamp-bearing identity, remains the event ordering authority.
+        Uuid::now_v7().to_string()
+    }
+
     pub fn new(invocation: Invocation, fact: Fact) -> Self {
         Self {
-            id: Uuid::new_v4().to_string(),
+            id: Self::new_id(),
             recorded_at: SystemTime::now(),
             invocation,
             fact,
@@ -424,6 +431,11 @@ pub enum CommitError {
 /// The store owns I/O scheduling. Once submitted, dropping the waiter is not
 /// proof of rollback; the store must retain its writer authority through drain.
 pub trait EventSink: Send + Sync + 'static {
+    fn execution_custody(
+        self: std::sync::Arc<Self>,
+    ) -> Option<std::sync::Arc<dyn crate::tools::ExecutionCustody>> {
+        None
+    }
     fn commit(self: std::sync::Arc<Self>, event: EventWrite) -> CommitFuture;
 }
 

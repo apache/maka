@@ -120,7 +120,7 @@ async fn queue_management_preserves_the_stream_draft_and_original_message_identi
         wait_view_state(&mut view, |view, screen| {
             !screen.contains("QUEUED_REMOVE") && view.accessibility_snapshot().iter().any(|node| node.label == "Steer queued message 1 now" && !node.state.disabled)
         }).await;
-        assert!(fixture.store.message_cancelled(&fixture.session, removed["messageId"].as_str().unwrap()).await.unwrap());
+        assert!(fixture.store.session(&fixture.session).await.unwrap().message_cancelled(&fixture.session, removed["messageId"].as_str().unwrap()).await.unwrap());
         assert_eq!(client.query("agent", "queue", json!({"sessionId":fixture.session})).await.unwrap()["entries"].as_array().unwrap().len(), 1);
 
         // Reopening the real view restores the Host queue without a send echo

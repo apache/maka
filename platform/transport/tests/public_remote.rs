@@ -22,8 +22,8 @@
 mod support;
 use futures_util::{SinkExt, StreamExt};
 use maka_event_log::{
-    EventLog,
     root::{RootNamespaces, RootOwner},
+    root_store::RootStore,
 };
 use maka_host_runtime::{
     application::{
@@ -166,7 +166,7 @@ async fn remote_pairing_binds_client_source_and_session_and_revokes_original_cha
         maka_event_log::root::private_directory(directory.path()).unwrap();
         let namespaces = RootNamespaces { ownership: directory.path().join("owners"), control: directory.path().join("control") };
         let root = directory.path().join("root");
-        let store = Arc::new(EventLog::for_root(Arc::new(RootOwner::create(&root, &namespaces).unwrap())).await.unwrap());
+        let store = Arc::new(support::setup(RootStore::open(Arc::new(RootOwner::create(&root, &namespaces).unwrap()))).await.unwrap());
         let deployment = Uuid::new_v4();
         let (input, packages) = support::host();
         store.commit_application(deployment, 0, input, vec![], packages).await.unwrap();
@@ -230,7 +230,7 @@ async fn remote_pairing_binds_client_source_and_session_and_revokes_original_cha
         serving.await.unwrap().unwrap();
         drop((host, store));
         // A changed published grant set never silently reinterprets an old credential.
-        let store = Arc::new(EventLog::for_root(Arc::new(RootOwner::open(&root, &namespaces).unwrap())).await.unwrap());
+        let store = Arc::new(support::setup(RootStore::open(Arc::new(RootOwner::open(&root, &namespaces).unwrap()))).await.unwrap());
         let mut selections = selections;
         selections.get_mut("business").unwrap().grant.methods.remove("write");
         let host = Host::open(store.clone(), deployment, NativeRegistry::default(), Some(maka_host_js::factory(Default::default())), selections, vec![]).await.unwrap();
@@ -285,7 +285,7 @@ async fn remote_pairing_preserves_large_original_query_and_cleanup() {
         maka_event_log::root::private_directory(directory.path()).unwrap();
         let namespaces=RootNamespaces { ownership:directory.path().join("owners"),control:directory.path().join("control") };
         let root=directory.path().join("root");
-        let store=Arc::new(EventLog::for_root(Arc::new(RootOwner::create(&root,&namespaces).unwrap())).await.unwrap());
+        let store=Arc::new(support::setup(RootStore::open(Arc::new(RootOwner::create(&root,&namespaces).unwrap()))).await.unwrap());
         let deployment=Uuid::new_v4();
         let (input,packages)=support::native_host("remote.echo");
         let provider=Arc::new(RemoteEcho::default());

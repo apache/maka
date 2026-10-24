@@ -43,7 +43,7 @@ use maka_agent_facts::tools::ToolRegistration;
 use maka_agent_facts::tools::ToolSemantics;
 use maka_capabilities::call::Attachments;
 use maka_capabilities::call::Identity;
-use maka_event_log::EventLog;
+use maka_event_log::{RootStore, SessionStore};
 use maka_host_runtime::application::NativeServices;
 use maka_plugin_core::{
     contract::{Interface, MethodMode},
@@ -82,7 +82,7 @@ pub(crate) struct Catalog {
 
 pub(crate) fn catalog(
     services: NativeServices,
-    store: Arc<EventLog>,
+    store: Arc<RootStore>,
     configuration: Arc<maka_config::ConfigurationStore>,
     selected: &[ServiceTool],
     additional: Vec<ToolRegistration>,
@@ -369,7 +369,7 @@ struct Service {
     web_basis: Option<maka_web_api::contract::Basis>,
     tool_names: Arc<Vec<(String, Option<EditingTools>)>>,
     services: NativeServices,
-    store: Arc<EventLog>,
+    store: Arc<RootStore>,
     binding: String,
     target: String,
     selection: ServiceTool,
@@ -397,6 +397,19 @@ impl ToolPreparer for Service {
         let default_title = self.title_kind;
         let mode = self.mode;
         Box::pin(async move {
+            let store = Arc::new(
+                store
+                    .session_for_execution(
+                        context
+                            .execution
+                            .as_deref()
+                            .ok_or(ToolRejection::Unavailable)?,
+                        &context.invocation,
+                    )
+                    .map_err(|error| ToolRejection::PreparationFailed {
+                        message: error.to_string(),
+                    })?,
+            );
             if name != selection.name {
                 return Err(ToolRejection::Unavailable);
             }
@@ -488,13 +501,17 @@ impl ToolPreparer for Service {
                     };
                     let invocation = context.invocation.clone();
                     let operation = operation_id(&context);
+                    let execution = context.execution.clone().ok_or_else(|| {
+                        ToolError::Persistence("Execution custody unavailable".into())
+                    })?;
                     let request = services
-                        .request(
+                        .request_with_execution(
                             Identity::Agent {
                                 invocation: context.invocation,
                                 operation_id: Some(context.operation_id),
                             },
                             cancellation.clone(),
+                            execution,
                         )
                         .map_err(ToolError::Failed)?;
                     // Keep original request custody even if a native descriptor panics.

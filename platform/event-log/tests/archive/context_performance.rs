@@ -22,7 +22,8 @@ use std::time::Instant;
 
 // Save release test executables at each revision, then alternate invocations of
 // this test with MAKA_CONTEXT_BENCH_REPETITIONS=1 for at least five A/B pairs.
-// Timings include only read_model_context, after one unmeasured warmup.
+// Timings include fixed model-view capture only, after one unmeasured warmup.
+// Bounded export assertions run outside the timed region.
 #[tokio::test]
 #[ignore = "release archive-heavy context performance regression harness"]
 #[allow(clippy::assertions_on_constants)] // Compile in debug; reject only execution.
@@ -54,10 +55,21 @@ async fn archive_heavy_context() {
         let mut samples = Vec::with_capacity(repetitions);
         for sample in 0..=repetitions {
             let start = Instant::now();
-            let context = log.read_model_context("session", Some("writer")).await;
+            let context = log.read_model_view("session", Some("writer")).await;
             let context_ms = start.elapsed().as_secs_f64() * 1000.0;
             let context = match context {
-                Ok(context) => context,
+                Ok(view) => {
+                    let context = log
+                        .capture_model_context("session", Some("writer"), 100_000, 64 * 1024 * 1024)
+                        .await
+                        .unwrap();
+                    assert_eq!(context.source_evidence.digest, view.source_evidence.digest);
+                    assert_eq!(
+                        context.effective_source_digest,
+                        view.effective_source_digest
+                    );
+                    context
+                }
                 Err(error) => {
                     eprintln!(
                         "{}",

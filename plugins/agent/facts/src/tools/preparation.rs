@@ -107,11 +107,18 @@ impl PreparedEffect {
 pub type PreparationFuture =
     Pin<Box<dyn Future<Output = Result<PreparedEffect, ToolRejection>> + Send>>;
 
+/// In-process custody supplied by the actual execution owner. Only that owner
+/// can recover its private concrete token; serialized identities cannot mint it.
+pub trait ExecutionCustody: std::any::Any + Send + Sync {
+    fn as_any(&self) -> &dyn std::any::Any;
+}
+
 /// Host-owned identity; neither model arguments nor Code Mode may choose it.
 #[derive(Clone)]
 pub struct ToolCallContext {
     pub invocation: Invocation,
     pub operation_id: String,
+    pub execution: Option<Arc<dyn ExecutionCustody>>,
 }
 
 impl ToolCallContext {

@@ -50,18 +50,18 @@ pub(super) struct Outcome {
 impl Update {
     pub(crate) async fn run(self) -> Result<(), HostError> {
         let root = super::root_path(self.root)?;
-        let store = if self.apply {
-            super::super::open_store(root).await?
+        let outcome = if self.apply {
+            let store = super::super::open_store(root).await?;
+            let result = super::headless::update::synchronize(&store, true).await;
+            store.drain().await;
+            result?
         } else {
-            super::super::open_application_inspection(root).await?
+            let store = super::super::open_application_inspection(root).await?;
+            let result = super::headless::update::preview(&store).await;
+            store.drain().await;
+            result?
         };
-        let result = async {
-            let outcome = super::headless::update::synchronize(&store, self.apply).await?;
-            println!("{}", serde_json::to_string(&outcome)?);
-            Ok(())
-        }
-        .await;
-        store.drain().await;
-        result
+        println!("{}", serde_json::to_string(&outcome)?);
+        Ok(())
     }
 }

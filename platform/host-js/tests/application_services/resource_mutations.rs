@@ -18,7 +18,6 @@
  */
 
 use super::*;
-use maka_event_log::root::ROOT_DATABASE;
 use maka_host_runtime::application::Client;
 use sqlx::{Connection, SqliteConnection, sqlite::SqliteConnectOptions};
 
@@ -31,14 +30,14 @@ fn resource_contract() -> Contract {
     value
 }
 async fn application(
-    store: Arc<EventLog>,
+    store: Arc<RootStore>,
     issuer: &Issuer,
     handler: Arc<dyn Handler>,
 ) -> Application {
     application_contract(store, issuer, handler, resource_contract()).await
 }
 async fn application_contract(
-    store: Arc<EventLog>,
+    store: Arc<RootStore>,
     issuer: &Issuer,
     handler: Arc<dyn Handler>,
     declared: Contract,
@@ -102,7 +101,7 @@ async fn binding(client: &Client) -> maka_host_runtime::application::Binding {
 }
 struct Effect {
     caller: InstanceId,
-    store: Arc<EventLog>,
+    store: Arc<RootStore>,
     calls: Arc<AtomicUsize>,
 }
 impl Handler for Effect {
@@ -114,7 +113,9 @@ impl Handler for Effect {
             let reference = context.operation().unwrap();
             assert_eq!(
                 store
-                    .operation_observation(reference)
+                    .operation(reference)
+                    .unwrap()
+                    .operation_observation()
                     .await
                     .unwrap()
                     .unwrap()
@@ -140,8 +141,8 @@ impl Handler for Effect {
 
 #[tokio::test]
 async fn original_bundle_survives_prepare_dispatch_and_new_capture_cannot_replay_it() {
+    let (dir, _, store) = store().await;
     tokio::time::timeout(Duration::from_secs(20), async {
-        let (dir, _, store) = store().await;
         let issuer = Issuer::default();
         let calls = Arc::new(AtomicUsize::new(0));
         let app = application(
@@ -172,7 +173,9 @@ async fn original_bundle_survives_prepare_dispatch_and_new_capture_cannot_replay
         let reference = prepared.reference().clone();
         assert!(
             store
-                .operation_observation(&reference)
+                .operation(&reference)
+                .unwrap()
+                .operation_observation()
                 .await
                 .unwrap()
                 .is_none()
@@ -260,7 +263,11 @@ async fn original_bundle_survives_prepare_dispatch_and_new_capture_cannot_replay
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         let mut sql = SqliteConnection::connect_with(
             &SqliteConnectOptions::new()
-                .filename(dir.path().join("root").join(ROOT_DATABASE))
+                .filename(journal_database(
+                    &dir.path().join("root"),
+                    "application_operations",
+                    reference.operation,
+                ))
                 .read_only(true),
         )
         .await
@@ -286,8 +293,8 @@ async fn original_bundle_survives_prepare_dispatch_and_new_capture_cannot_replay
 
 #[tokio::test]
 async fn queued_unreceived_and_ready_preparations_keep_scope_open_until_actual_bundle_drop() {
+    let (_dir, _namespaces, store) = store().await;
     tokio::time::timeout(Duration::from_secs(20), async {
-        let (_dir, _namespaces, store) = store().await;
         let issuer = Issuer::default();
         let calls = Arc::new(AtomicUsize::new(0));
         let app = application(
@@ -384,8 +391,9 @@ async fn queued_unreceived_and_ready_preparations_keep_scope_open_until_actual_b
 #[tokio::test]
 async fn javascript_delegated_mutation_forwards_actual_current_slots_and_never_rebuilds_original_bundle()
  {
+    let (_dir, _namespaces, store) = store().await;
     tokio::time::timeout(Duration::from_secs(20),async {
-        let (_dir,_namespaces,store)=store().await;let issuer=Issuer::default();let calls=Arc::new(AtomicUsize::new(0));let operation=Uuid::new_v4();
+        let issuer=Issuer::default();let calls=Arc::new(AtomicUsize::new(0));let operation=Uuid::new_v4();
         let mut sink_entry=entry(true,Implementation::Native {implementation:"native.echo".into()},MethodMode::Mutation);
         sink_entry.exports.get_mut("echo").unwrap().contract=resource_contract();let sink=package("sink",sink_entry,None);
         let mut forward=attached_entry(true,Implementation::JavaScript {module:"host.mjs".into(),realm:Realm::Shared});
@@ -419,13 +427,15 @@ async fn javascript_delegated_mutation_forwards_actual_current_slots_and_never_r
 
 #[tokio::test]
 async fn failed_resource_mutation_keeps_original_snapshot_and_capacity_after_business_return() {
+    let (_dir, _namespaces, store) = store().await;
     tokio::time::timeout(Duration::from_secs(20),async {
-        let (_dir,_namespaces,store)=store().await;let issuer=Issuer::default();let calls=Arc::new(AtomicUsize::new(0));
+        let issuer=Issuer::default();let calls=Arc::new(AtomicUsize::new(0));
         let app=application(store.clone(),&issuer,Arc::new(ReadAttachment {calls:calls.clone(),started:Arc::new(Semaphore::new(0)),release:Arc::new(Semaphore::new(0))})).await;
         let client=app.client();let binding=binding(&client).await;let original_scope=scope(&issuer,true);
         let (resources,weak)=bytes(64*1024*1024);
         let prepared=client.prepare_mutation(binding.clone(),"echo".into(),json!("fail-cleanup"),original_scope.clone(),Uuid::new_v4(),resources.into()).await.unwrap();
         let reference=prepared.reference().clone();
+        let journal=store.operation(&reference).unwrap();
         let recorded=store.record_application_intent(reference.source.clone(),id(2),reference.clone(), serde_json::Value::Null).await.unwrap();
         let completed=client.mutate(prepared,recorded).await.unwrap().completion().await;
         assert!(completed.cleanup.is_err());
@@ -435,7 +445,9 @@ async fn failed_resource_mutation_keeps_original_snapshot_and_capacity_after_bus
         let failure=client.prepare_mutation(binding,"echo".into(),json!("public"),scope(&issuer,true),Uuid::new_v4(),resources.into()).await.err().unwrap();
         assert!(failure.contains("budget"));assert!(rejected.upgrade().is_none());
         assert_eq!(calls.load(Ordering::SeqCst),1);
-        assert!(matches!(store.operation_observation(&reference).await.unwrap().unwrap().cleanup,OperationCleanup::Failed {..}));
+        assert!(store.shutdown().await.is_err());
+        assert!(journal.operation_observation().await.is_err());
+        assert!(matches!(persisted_operation(&_dir.path().join("root"), &reference).cleanup,OperationCleanup::Failed {..}));
         assert!(app.shutdown().await.is_err());assert!(weak.upgrade().is_some(),"unknown physical cleanup keeps actual owner custody");
         // This fixture deliberately leaves failed physical custody with its real
         // owner; dropping the caller/observers does not manufacture recovery.
@@ -444,10 +456,10 @@ async fn failed_resource_mutation_keeps_original_snapshot_and_capacity_after_bus
 
 #[tokio::test]
 async fn received_original_payload_reservation_survives_prepare_and_real_caller_commit() {
+    let (_dir, _, store) = store().await;
     tokio::time::timeout(Duration::from_secs(20), async {
         use maka_capabilities::call::ResourceEncoding;
         use maka_host_runtime::application::{RESOURCE_CHUNK_LIMIT, ResourceDescriptor};
-        let (_dir, _, store) = store().await;
         let issuer = Issuer::default();
         let calls = Arc::new(AtomicUsize::new(0));
         let app = application(
@@ -497,7 +509,9 @@ async fn received_original_payload_reservation_survives_prepare_and_real_caller_
             let reference = prepared.reference().clone();
             assert!(
                 store
-                    .operation_observation(&reference)
+                    .operation(&reference)
+                    .unwrap()
+                    .operation_observation()
                     .await
                     .unwrap()
                     .is_none()
@@ -581,8 +595,8 @@ async fn optional_slots_keep_original_resource_capture_and_recovery() {
             Box::pin(async move { Ok(json!(context.attachments().len().to_string())) })
         }
     }
+    let (_dir, _, store) = store().await;
     tokio::time::timeout(Duration::from_secs(20), async {
-        let (_dir, _, store) = store().await;
         let issuer = Issuer::default();
         let mut contract = resource_contract();
         let Interface::Service { methods } = &mut contract.interface else {

@@ -22,33 +22,40 @@ use maka_agent_facts::tool_call::ToolRejection;
 use maka_agent_facts::tools::ToolError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{
-    collections::BTreeSet,
-    sync::{Arc, Mutex},
-};
+use std::collections::BTreeSet;
 
 pub const SEARCH: &str = "tool_search";
 
 /// Session-owned discovery preferences, never executable capabilities. Runs
 /// borrow this one source; each request still captures the current catalog.
-#[derive(Clone, Default)]
-pub struct LoadedTools(Arc<Mutex<BTreeSet<String>>>);
+#[derive(Clone)]
+pub struct LoadedTools(maka_session_state::Session);
 
 impl LoadedTools {
-    pub fn clear(&self) {
-        self.0.lock().unwrap().clear();
+    pub fn new(session: maka_session_state::Session) -> Self {
+        Self(session)
     }
-
-    /// Immutable discovery evidence; inspection must not mutate the Session.
-    pub fn snapshot(&self) -> BTreeSet<String> {
-        self.0.lock().unwrap().clone()
+    pub fn session(&self) -> &maka_session_state::Session {
+        &self.0
+    }
+    pub fn temporary() -> Result<Self, ToolError> {
+        Ok(Self::new(
+            maka_session_state::Backend::temporary()
+                .map_err(state_error)?
+                .session("tools"),
+        ))
+    }
+    pub fn clear(&self) -> Result<(), ToolError> {
+        self.0.update_loaded(BTreeSet::clear).map_err(state_error)
+    }
+    pub fn snapshot(&self) -> Result<BTreeSet<String>, ToolError> {
+        self.0.loaded().map_err(state_error)
     }
 }
-
-impl From<BTreeSet<String>> for LoadedTools {
-    fn from(names: BTreeSet<String>) -> Self {
-        Self(Arc::new(Mutex::new(names)))
-    }
+fn state_error(error: maka_session_state::Error) -> ToolError {
+    // Storage failure is fatal even after a successful tool journal settlement.
+    // Ordinary Failed errors are model-visible tool outcomes and may continue.
+    ToolError::Persistence(error.to_string())
 }
 
 #[derive(Clone)]
@@ -82,6 +89,7 @@ impl Availability {
         &self,
         model: Option<maka_agent_facts::tools::ModelToolContext>,
         invocation: maka_agent_facts::event::Invocation,
+        execution: Option<std::sync::Arc<dyn maka_agent_facts::tools::ExecutionCustody>>,
         cwd: String,
         cancellation: tokio_util::sync::CancellationToken,
     ) -> Result<Self, ToolError> {
@@ -90,6 +98,7 @@ impl Availability {
             behavior: self.behavior.clone(),
             model,
             invocation,
+            execution,
             cwd,
             tools: catalog.names().into_iter().collect(),
             available_tools: catalog.names().into_iter().collect(),
@@ -100,9 +109,8 @@ impl Availability {
         // Base and nested-only views would erase live DirectOnly names.
         self.loaded
             .0
-            .lock()
-            .unwrap()
-            .retain(|name| catalog.contains(name));
+            .update_loaded(|names| names.retain(|name| catalog.contains(name)))
+            .map_err(state_error)?;
         Ok(Self {
             catalog,
             behavior: self.behavior.clone(),
@@ -141,11 +149,14 @@ impl Availability {
     pub fn digest(&self) -> String {
         self.catalog.digest()
     }
-    pub fn snapshot(&self) -> ToolCatalog {
+    pub fn snapshot(&self) -> Result<ToolCatalog, ToolError> {
+        let active = self.loaded.snapshot()?;
+        Ok(self.select(&active))
+    }
+    pub fn select(&self, active: &BTreeSet<String>) -> ToolCatalog {
         if !self.enabled() {
             return self.catalog.clone();
         }
-        let active = self.loaded.0.lock().unwrap();
         self.catalog
             .select(|name| self.direct(name) || active.contains(name))
     }
@@ -154,13 +165,13 @@ impl Availability {
     pub fn all(&self) -> ToolCatalog {
         self.catalog.clone()
     }
-    pub fn checkpoint(&self) -> maka_agent_facts::handoff::HandoffTools {
-        maka_agent_facts::handoff::HandoffTools {
+    pub fn checkpoint(&self) -> Result<maka_agent_facts::handoff::HandoffTools, ToolError> {
+        Ok(maka_agent_facts::handoff::HandoffTools {
             catalog_digest: self.catalog.digest(),
             // Names survive handoff; implementations and grants do not. The
             // successor intersects them with its freshly bound capabilities.
-            loaded: self.loaded.0.lock().unwrap().clone(),
-        }
+            loaded: self.loaded.snapshot()?,
+        })
     }
 
     pub fn restore(
@@ -175,7 +186,10 @@ impl Availability {
         {
             return Err(ToolError::Failed("handoff tool catalog changed".into()));
         }
-        *self.loaded.0.lock().unwrap() = checkpoint.loaded.clone();
+        self.loaded
+            .0
+            .update_loaded(|names| *names = checkpoint.loaded.clone())
+            .map_err(state_error)?;
         Ok(())
     }
     pub fn definition(&self) -> Option<ToolDefinition> {
@@ -211,7 +225,7 @@ impl Availability {
         let availability = self.clone();
         Ok(PreparedEffect::new(move |_| {
             Box::pin(async move {
-                serde_json::to_value(availability.search(&input))
+                serde_json::to_value(availability.search(&input)?)
                     .map(Into::into)
                     .map_err(|error| ToolError::Failed(error.to_string()))
             })
@@ -226,20 +240,23 @@ impl Availability {
         let result: SearchResult = serde_json::from_value(result.clone()).map_err(|error| {
             ToolError::OutcomeUnknown(format!("invalid committed search result: {error}"))
         })?;
-        self.loaded.0.lock().unwrap().extend(result.activated);
+        self.loaded
+            .0
+            .update_loaded(|names| names.extend(result.activated))
+            .map_err(state_error)?;
         Ok(())
     }
     fn direct(&self, name: &str) -> bool {
         self.catalog.always_visible(name) || direct(name)
     }
 
-    fn search(&self, input: &SearchInput) -> SearchResult {
+    fn search(&self, input: &SearchInput) -> Result<SearchResult, ToolError> {
+        let active = self.loaded.snapshot()?;
         let query = input.query.trim().to_lowercase();
         let terms: Vec<_> = query
             .split(|c: char| !c.is_alphanumeric())
             .filter(|s| !s.is_empty())
             .collect();
-        let active = self.loaded.0.lock().unwrap();
         // Scan the bound catalog metadata directly;
         // no search service or dependency graph is needed for this request view.
         let mut ranked: Vec<_> = self
@@ -266,13 +283,13 @@ impl Availability {
             })
             .collect();
         ranked.sort_by(|(left, a), (right, b)| right.cmp(left).then_with(|| a.name.cmp(&b.name)));
-        SearchResult {
+        Ok(SearchResult {
             activated: ranked
                 .into_iter()
                 .take(input.limit)
                 .map(|(_, definition)| definition.name.clone())
                 .collect(),
-        }
+        })
     }
 }
 fn invalid() -> ToolRejection {
@@ -294,4 +311,46 @@ fn direct(name: &str) -> bool {
             | "WriteStdin"
             | "apply_patch"
     )
+}
+
+#[cfg(test)]
+mod state_tests {
+    use super::*;
+
+    #[test]
+    fn discovery_handles_restore_clear_and_retire_together() {
+        let backend = maka_session_state::Backend::temporary().unwrap();
+        let session = backend.session("s");
+        let first = LoadedTools::new(session.clone());
+        let catalog = ToolCatalog::default();
+        let view = Availability::new(catalog.clone(), first.clone());
+        let checkpoint = maka_agent_facts::handoff::HandoffTools {
+            catalog_digest: catalog.digest(),
+            loaded: BTreeSet::from(["preference-without-authority".into()]),
+        };
+        view.restore(&checkpoint).unwrap();
+        drop(first);
+        let restored = LoadedTools::new(backend.session("s"));
+        assert_eq!(restored.snapshot().unwrap(), checkpoint.loaded);
+        assert!(
+            !view
+                .snapshot()
+                .unwrap()
+                .contains("preference-without-authority")
+        );
+        restored.clear().unwrap();
+        assert!(view.checkpoint().unwrap().loaded.is_empty());
+        session.retire().unwrap();
+        assert!(matches!(
+            restored.snapshot(),
+            Err(ToolError::Persistence(_))
+        ));
+        assert!(matches!(restored.clear(), Err(ToolError::Persistence(_))));
+        assert!(matches!(
+            view.restore(&checkpoint),
+            Err(ToolError::Persistence(_))
+        ));
+        assert!(matches!(view.snapshot(), Err(ToolError::Persistence(_))));
+        assert!(LoadedTools::new(backend.session("s")).snapshot().is_err());
+    }
 }

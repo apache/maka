@@ -95,7 +95,7 @@ fn diagnostic(error: impl std::fmt::Display) -> String {
     error.to_string().chars().take(1024).collect()
 }
 async fn run(
-    store: Arc<EventLog>,
+    store: Arc<RootStore>,
     scope: Scope,
     policy: EditorPersistence,
     budget: NativeBudget,

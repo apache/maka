@@ -63,7 +63,9 @@ impl ToolExecutor for Fixture {
 }
 
 async fn evaluate(repl: &Repl, code: &str) -> Vec<CellOutput> {
-    let context = CellContext::new(Default::default(), vec![]).with_image_deduplication();
+    let context = CellContext::new(maka_code_runtime::CellStore::temporary().unwrap(), vec![])
+        .unwrap()
+        .with_image_deduplication();
     let result = repl
         .evaluate(
             code.into(),
@@ -224,7 +226,8 @@ async fn persistent_repl_uses_each_evaluations_language_without_rewriting_user_o
         (Language::En, "target rebinding"),
         (Language::ZhCn, "重新绑定目标"),
     ] {
-        let context = CellContext::new(Default::default(), vec![]);
+        let context =
+            CellContext::new(maka_code_runtime::CellStore::temporary().unwrap(), vec![]).unwrap();
         let result = repl
             .evaluate(
                 "await cua.listBrowsers(); nodeRepl.write('原始 user_DATA: zh-TW / en');".into(),

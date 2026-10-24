@@ -147,10 +147,11 @@ async fn finish(listener: &TcpListener, f: &Fixture) -> Value {
     result
 }
 async fn pending(f: &Fixture, session: &str) -> InteractionRecord {
-    let mut commits = f.store.subscribe_commits();
+    let mut commits = f.session(&session).await.subscribe_commits().unwrap();
     loop {
         if let Some(record) = f
-            .store
+            .session(session)
+            .await
             .pending_interactions(session)
             .await
             .unwrap()
@@ -223,7 +224,7 @@ async fn native_web_redirects_require_each_destination_and_cancel_withdraws_pend
         let _ = pending(&f, &session).await;
         f.mutation(2, "stop", json!({"sessionId":session,"invocationId":started["invocationId"]}), Uuid::new_v4()).await.unwrap();
         f.drained().await;
-        assert!(f.store.pending_interactions(&session).await.unwrap().is_empty());
+        assert!(f.session(&session).await.pending_interactions(&session).await.unwrap().is_empty());
         assert!(tokio::time::timeout(Duration::from_millis(50), first.accept()).await.is_err());
         assert_eq!(snapshot(&f).await["settings"]["enabled"], true);
         f.app.shutdown().await.unwrap(); f.config.shutdown().await.unwrap();
@@ -236,17 +237,23 @@ async fn native_web_request_binding_tracks_settings_provider_capabilities_and_pr
     tokio::time::timeout(Duration::from_secs(30), async {
         let model = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let f = Fixture::with_services(&format!("http://{}/v1", model.local_addr().unwrap()), None, None, Some(service_tools::Setup::web())).await;
+
         let session = f.create("Web binding").await;
         f.send(&session).await.unwrap();
+
         let (mut socket, _) = model.accept().await.unwrap();
         let initial = request(&mut socket).await;
+
         assert!(!initial["tools"].to_string().contains("WebFetch"));
-        let invocation = f.store.session_projection::<SessionConfiguration>(&session).await.unwrap().unwrap().root_turn.unwrap().invocation;
-        let available = maka_tools::availability::Availability::new(f.owner.tools.clone(), Default::default());
+        let invocation = f.session(&session).await.session_projection::<StoredSessionConfiguration>(&session).await.unwrap().unwrap().root_turn.unwrap().invocation;
+        let available = maka_tools::availability::Availability::new(f.owner.tools.clone(), maka_tools::availability::LoadedTools::temporary().unwrap());
+        let execution_scope = f.session(&session).await.execution_scope(Some(f.owner.session(&session).await.unwrap().configuration.permission_basis())).await.unwrap();
+
+        let execution = execution_scope.store().execution_custody().unwrap();
         let capture = |protocol, capable| {
-            let available = &available; let invocation = invocation.clone(); let cwd = f.workspace.to_str().unwrap().to_owned();
+            let available = &available; let invocation = invocation.clone(); let execution = execution.clone(); let cwd = f.workspace.to_str().unwrap().to_owned();
             async move { available.capture(Some(maka_agent_facts::tools::ModelToolContext { model: "fixture-model".into(), provider_tools: protocol,
-                capabilities: maka_agent_facts::configuration::ModelCapabilities { web_search: Some(capable), ..Default::default() } }), invocation, cwd, CancellationToken::new()).await.unwrap().all() }
+                capabilities: maka_agent_facts::configuration::ModelCapabilities { web_search: Some(capable), ..Default::default() } }), invocation, Some(execution), cwd, CancellationToken::new()).await.unwrap().all() }
         };
         save(&f, Value::Null, true).await;
         for (protocol, expected) in [(maka_agent_facts::tools::ProviderToolProtocol::OpenaiResponses, "openai.web_search"), (maka_agent_facts::tools::ProviderToolProtocol::AnthropicMessages, "anthropic.web_search_20250305")] {
@@ -281,15 +288,21 @@ async fn native_web_request_binding_tracks_settings_provider_capabilities_and_pr
         let mut old_basis = result["basis"].clone(); old_basis["credentialRevision"] = saved["snapshot"]["credential"]["revision"].clone();
         let rejected = mutation(&f, "search", json!({"basis":old_basis,"input":{"query":"must not contact external service","limit":1}}), None).await;
         assert_eq!(rejected["kind"], "failed");
-        assert!(f.store.pending_interactions(&session).await.unwrap().is_empty());
+        assert!(f.session(&session).await.pending_interactions(&session).await.unwrap().is_empty());
         mutation(&f, "deleteKey", json!({"revision":refreshed["snapshot"]["credential"]["revision"]}), None).await;
         assert!(!capture(None, false).await.contains("WebSearch"));
+
         response(&mut socket).await; f.drained().await;
-        let database = rusqlite::Connection::open_with_flags(f.root.join("runtime-rust.sqlite"), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+
+        for path in f.runtime_databases() {
+        let database = rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
         let mut statement = database.prepare("SELECT request_json || outcome_json || cleanup_json FROM application_operations").unwrap();
         for row in statement.query_map([], |row| row.get::<_, String>(0)).unwrap() {
             let row = row.unwrap(); assert!(!row.contains("private-web-"), "credential leaked into operation history");
         }
+        }
+
+        drop(execution_scope);
         f.app.shutdown().await.unwrap(); f.config.shutdown().await.unwrap();
     }).await.unwrap();
 }
@@ -356,7 +369,7 @@ async fn native_web_selected_model_search_crosses_the_actual_responses_request()
         let page = f.query("history", json!({"sessionId":session,"position":{"kind":"tail"}})).await.unwrap();
         assert!(page.to_string().contains("Selected model search answer"), "{page}");
         assert!(!service_tools::facts(&f, &session).await.iter().any(|fact|matches!(fact, Fact::ToolDispatched { name, .. } if name == "Http" || name == "WebSearch")));
-        assert!(f.store.pending_interactions(&session).await.unwrap().is_empty());
+        assert!(f.session(&session).await.pending_interactions(&session).await.unwrap().is_empty());
         f.app.shutdown().await.unwrap(); f.config.shutdown().await.unwrap();
     }).await.unwrap();
 }

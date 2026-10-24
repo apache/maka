@@ -239,7 +239,7 @@ impl Owner {
             .as_ref()
             .ok_or_else(|| invalid("No Goal-owned execution"))?;
         let commands = self.executions.restore(saved.goal.arm.grant).await?;
-        let observation = commands.query(pending.request.operation_id.clone()).await?;
+        let observation = commands.query(pending.request.operation()).await?;
         if observation.receipt.invocation != *invocation {
             return Err(invalid("This execution does not belong to the Goal"));
         }
@@ -334,7 +334,7 @@ impl Owner {
         }
         let commands = self.executions.restore(goal.arm.grant).await?;
         if let Some(pending) = goal.pending.clone() {
-            let observation = match commands.query(pending.request.operation_id.clone()).await {
+            let observation = match commands.query(pending.request.operation()).await {
                 Ok(o) => o,
                 Err(CommandError::NotFound) if goal.status == Status::Active => {
                     if self.privacy().await.is_err() {
@@ -402,7 +402,7 @@ impl Owner {
                         )
                     {
                         commands
-                            .cancel(pending.request.operation_id.clone())
+                            .cancel(pending.request.operation())
                             .await?;
                     }
                     return Ok(());
@@ -433,7 +433,7 @@ impl Owner {
                     Progress::Ended { .. } | Progress::Paused
                 )
             {
-                commands.cancel(pending.request.operation_id).await?;
+                commands.cancel(pending.request.operation()).await?;
                 return Ok(());
             }
             match observation.progress {

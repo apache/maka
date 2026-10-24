@@ -438,7 +438,7 @@ async fn retained_old_head_after_new_explicit_adoption_does_not_poison_readiness
         control: dir.path().join("control"),
     };
     let store = Arc::new(
-        maka_event_log::EventLog::for_root(Arc::new(
+        maka_event_log::root_store::RootStore::open(Arc::new(
             RootOwner::create(&dir.path().join("root"), &ns).unwrap(),
         ))
         .await

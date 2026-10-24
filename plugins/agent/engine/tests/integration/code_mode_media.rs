@@ -18,6 +18,7 @@
  */
 
 use crate::support::code_mode as fixture;
+use crate::support::store::SessionFixture;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use maka_agent_engine::{Engine, RunWork};
 use maka_agent_facts::event::Fact;
@@ -25,7 +26,6 @@ use maka_agent_facts::tools::ToolError;
 use maka_agent_facts::tools::ToolExecutor;
 use maka_agent_facts::tools::ToolFuture;
 use maka_code_runtime::CellLimits;
-use maka_event_log::EventLog;
 use maka_model::{ModelExecutor, ProviderKind};
 use maka_tools::CodeExecutor;
 use maka_tools::{
@@ -64,7 +64,7 @@ impl ToolExecutor for GateHandler {
         })
     }
 }
-async fn notices(log: &EventLog) {
+async fn notices(log: &SessionFixture) {
     let mut commits = log.subscribe_commits();
     loop {
         commits.borrow_and_update();
@@ -84,7 +84,7 @@ async fn notices(log: &EventLog) {
     }
 }
 struct GatePricing {
-    log: Arc<EventLog>,
+    log: Arc<SessionFixture>,
     gates: Arc<Gates>,
     before_commit: bool,
     calls: std::sync::atomic::AtomicUsize,
@@ -183,8 +183,8 @@ async fn notifications_trigger_followup_without_wait_and_audio_survives_copy_and
       for before_commit in [false, true] {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("events.sqlite");
-        let log = Arc::new(EventLog::open(&path).await.unwrap());
-        log.create_session("session", "create", &json!({}), 1).await.unwrap();
+        let log = Arc::new(SessionFixture::open(&path).await.unwrap());
+
         let gates = Arc::new(Gates::default());
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}/v1", listener.local_addr().unwrap());
@@ -231,14 +231,14 @@ async fn notifications_trigger_followup_without_wait_and_audio_survives_copy_and
                 handler:ToolHandler::Immediate(handler.clone()), nesting:ToolNesting::Nestable, semantics:ToolSemantics::Parallel,
             })).unwrap();
         }
-        let engine = Engine::with_pricing(log.clone(), ModelExecutor::new(Duration::from_secs(5)).unwrap(), CodeExecutor::new(CellLimits::default()).unwrap(), Arc::new(GatePricing { log:log.clone(), gates, before_commit, calls:std::sync::atomic::AtomicUsize::new(0) }));
-        engine.run(input.clone(), CancellationToken::new()).await.unwrap();
+        let engine = Engine::with_pricing(ModelExecutor::new(Duration::from_secs(5)).unwrap(), CodeExecutor::new(CellLimits::default()).unwrap(), Arc::new(GatePricing { log:log.clone(), gates, before_commit, calls:std::sync::atomic::AtomicUsize::new(0) })).unwrap();
+        engine.run(log.store(), input.clone(), CancellationToken::new()).await.unwrap();
         server.await.unwrap(); engine.drain().await; drop(engine);
         let revision = log.get_session::<Value>("session").await.unwrap().unwrap().revision;
-        log.copy_session(maka_event_log::sessions::SessionCopy { source_session_id:"session".into(), target_session_id:"copy".into(), expected_source_revision:revision,
+        log.root().copy_session(maka_event_log::sessions::SessionCopy { source_session_id:"session".into(), target_session_id:"copy".into(), expected_source_revision:revision,
             purpose:maka_agent_facts::session::CopyPurpose::Branch { turn_id:None, side_conversation:false } }, &json!({}), 2).await.unwrap();
         Arc::try_unwrap(log).ok().unwrap().close().await.unwrap();
-        let log = Arc::new(EventLog::open(&path).await.unwrap());
+        let log = Arc::new(SessionFixture::open(&path).await.unwrap());
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         input.provider.base_url = format!("http://{}/v1", listener.local_addr().unwrap());
         input.invocation.session_id = "copy".into(); input.invocation.turn_id="next-turn".into(); input.invocation.run_id="next-run".into(); input.invocation.invocation_id="next-invocation".into();
@@ -248,8 +248,8 @@ async fn notifications_trigger_followup_without_wait_and_audio_survives_copy_and
             assert!(request["input"].as_array().unwrap().iter().any(|item| item["output"].as_array().is_some_and(|parts| parts.iter().any(|part| part["type"] == "input_audio" && part["audio_url"] == audio_url))));
             reply(&mut socket, text("replayed", 4), 4).await;
         });
-        let engine = Engine::new(log.clone(), ModelExecutor::new(Duration::from_secs(5)).unwrap(), CodeExecutor::new(CellLimits::default()).unwrap());
-        engine.run(input, CancellationToken::new()).await.unwrap(); replay.await.unwrap(); engine.drain().await; drop(engine);
+        let engine = Engine::new(ModelExecutor::new(Duration::from_secs(5)).unwrap(), CodeExecutor::new(CellLimits::default()).unwrap()).unwrap();
+        engine.run(log.select("copy").await.unwrap().store(), input, CancellationToken::new()).await.unwrap(); replay.await.unwrap(); engine.drain().await; drop(engine);
         Arc::try_unwrap(log).ok().unwrap().close().await.unwrap();
       }
     }).await.expect("notification and audio lifecycle must make bounded progress");

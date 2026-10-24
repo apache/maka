@@ -252,7 +252,26 @@ fn nonempty<T>(value: Option<Vec<T>>) -> Option<Vec<T>> {
     value.filter(|v| !v.is_empty())
 }
 
-pub fn prepare(mut request: Request<'_>, config: &Config) -> Result<Prepared> {
+pub fn prepare(request: Request<'_>, config: &Config) -> Result<Prepared> {
+    prepare_inner(request, config, None)
+}
+
+/// Native streaming path: the prepass contains metadata/cache decisions only.
+/// `body.prompt` is an empty framing placeholder; the caller streams its system
+/// and message arrays with `prompt::streaming::Encoder` and the captured context.
+pub fn prepare_streaming(
+    request: Request<'_>,
+    config: &Config,
+    metadata: super::prompt::streaming::Metadata,
+) -> Result<Prepared> {
+    prepare_inner(request, config, Some(metadata))
+}
+
+fn prepare_inner(
+    mut request: Request<'_>,
+    config: &Config,
+    metadata: Option<super::prompt::streaming::Metadata>,
+) -> Result<Prepared> {
     let mut diagnostics = Vec::new();
     let model = &request.model;
     let profile = Profile::for_model(model);
@@ -367,17 +386,31 @@ pub fn prepare(mut request: Request<'_>, config: &Config) -> Result<Prepared> {
             );
         }
     }
-    let mut cache = CacheBudget::default();
-    let mut prompt = PreparedPrompt::encode(
-        request.messages,
-        PromptOptions {
-            send_reasoning: options.send_reasoning.unwrap_or(true),
-            cache_namespace: &config.cache_namespace,
-            tool_names: &names,
-            toolsets: &toolsets,
-        },
-        &mut cache,
-    )?;
+    let (mut cache, mut prompt, documents) = if let Some(metadata) = metadata {
+        (
+            metadata.cache,
+            PreparedPrompt {
+                system: None,
+                messages: Vec::new(),
+                features: metadata.features,
+                warnings: metadata.warnings,
+            },
+            metadata.documents,
+        )
+    } else {
+        let mut cache = CacheBudget::default();
+        let prompt = PreparedPrompt::encode(
+            request.messages,
+            PromptOptions {
+                send_reasoning: options.send_reasoning.unwrap_or(true),
+                cache_namespace: &config.cache_namespace,
+                tool_names: &names,
+                toolsets: &toolsets,
+            },
+            &mut cache,
+        )?;
+        (cache, prompt, documents(request.messages))
+    };
     diagnostics.extend(prompt.warnings.drain(..).map(Diagnostic::Message));
     let mut betas = prompt
         .features
@@ -579,7 +612,7 @@ pub fn prepare(mut request: Request<'_>, config: &Config) -> Result<Prepared> {
         };
     let response = response::Options {
         tool_names: response_names,
-        documents: documents(request.messages),
+        documents,
         json_tool,
         implicit_code_execution: dynamic_web && !explicit_code,
         metadata_namespace: request

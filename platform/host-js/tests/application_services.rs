@@ -38,6 +38,20 @@ mod retirement;
 #[path = "application_services/subscriptions.rs"]
 mod subscriptions;
 
+// Opening a real Root initializes its control database and eight execution partitions.
+// Keep that bounded setup cost separate from each scenario's behavior deadline.
+async fn setup<T>(future: impl std::future::Future<Output = T>) -> T {
+    let started = std::time::Instant::now();
+    tokio::time::timeout(std::time::Duration::from_secs(60), future)
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "fixture initialization timed out after {:?}",
+                started.elapsed()
+            )
+        })
+}
+
 use futures_util::{FutureExt, future::BoxFuture};
 use maka_capabilities::call::Attachments;
 use maka_capabilities::call::Identity;

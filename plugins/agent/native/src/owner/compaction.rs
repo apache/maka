@@ -70,6 +70,9 @@ impl Owner {
         // The canonical opening is the receipt, including after restart.
         if let Some(boundary) = self
             .store
+            .session(&input.session_id)
+            .await
+            .map_err(|error| error.to_string())?
             .invocation_boundary(&input.session_id, &invocation.invocation_id)
             .await
             .map_err(|_| "agent_execution_unavailable")?
@@ -95,6 +98,9 @@ impl Owner {
         if runs.controls.contains_key(&input.session_id)
             || !self
                 .store
+                .session(&input.session_id)
+                .await
+                .map_err(|error| error.to_string())?
                 .message_queue(&input.session_id)
                 .await
                 .map_err(|_| "agent_queue_unavailable")?
@@ -157,6 +163,7 @@ impl Owner {
                 ApprovalPolicy::Never
             },
             boundary_revision: session.configuration.boundary_revision,
+            workspace_binding: Some(session.configuration.binding),
             collaboration_mode: session.configuration.collaboration_mode,
             orchestration_mode: BehaviorId::default(),
             tool_mode: source.accepted.tool_mode,
@@ -176,14 +183,15 @@ impl Owner {
             tool_discovery: false,
             allowed_tools: session.configuration.tools.clone(),
             background: None,
-            internal_tools: vec![],
-            internal_bindings: BTreeMap::new(),
+            internal_tools: Arc::default(),
+            internal_bindings: Arc::default(),
             behavior: None,
             model: Some(source.accepted.clone()),
             executor: None,
             workspace: workspace.clone(),
+            binding: session.configuration.binding,
             fingerprint: operation.fingerprint.clone(),
-            tools: vec![],
+            tools: Arc::default(),
         };
         let run = RunInput {
             invocation: invocation.clone(),
@@ -199,7 +207,18 @@ impl Owner {
             configuration,
             work: RunWork::ContextCompact,
         };
-        let running = match self.engine.start(run, self.stop.child_token()).await {
+        let running = match self
+            .engine
+            .start(
+                self.store
+                    .session(&run.invocation.session_id)
+                    .await
+                    .map_err(|error| error.to_string())?,
+                run,
+                self.stop.child_token(),
+            )
+            .await
+        {
             Ok(running) => running,
             Err(RunError::Busy) => return rejected(CompactRejection::Busy),
             Err(error) => {
@@ -224,6 +243,9 @@ impl Owner {
         self.workers.spawn(self.clone().drive(running));
         let boundary = self
             .store
+            .session(&input.session_id)
+            .await
+            .map_err(|error| error.to_string())?
             .invocation_boundary(&input.session_id, &invocation.invocation_id)
             .await
             .map_err(|_| "agent_execution_unavailable")?

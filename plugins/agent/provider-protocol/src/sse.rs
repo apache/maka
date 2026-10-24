@@ -20,7 +20,11 @@
 use crate::{Error, Result};
 use serde_json::Value;
 
-pub const MAX_RECORD_BYTES: usize = 8 * 1024 * 1024;
+// Only one unfinished JSON/SSE record is buffered. Keep a generous bound for
+// atomic tool/media/text records (including the >32 MiB regression fixture),
+// while an unterminated provider record cannot grow without limit. Completed
+// records release their backing storage; total response size is unrestricted.
+pub const MAX_RECORD_BYTES: usize = 64 * 1024 * 1024;
 
 /// Raw byte accounting includes comments, field names and separators. Memory
 /// belongs to one incomplete record, not to the complete response stream.
@@ -68,7 +72,7 @@ impl Decoder {
     fn check_size(bytes: usize) -> Result<()> {
         if bytes > MAX_RECORD_BYTES {
             Err(Error::invalid(
-                "Provider SSE record exceeds 8 MiB.",
+                "Provider SSE record exceeds 64 MiB.",
                 Value::Null,
             ))
         } else {
@@ -89,7 +93,10 @@ impl Decoder {
                 if self.data.last() == Some(&b'\n') {
                     self.data.pop();
                 }
-                result.push(String::from_utf8_lossy(&self.data).into_owned());
+                let data = std::mem::take(&mut self.data);
+                result.push(String::from_utf8(data).unwrap_or_else(|error| {
+                    String::from_utf8_lossy(error.as_bytes()).into_owned()
+                }));
             }
             self.data.clear();
             self.has_data = false;

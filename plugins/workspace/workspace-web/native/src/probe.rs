@@ -89,7 +89,7 @@ async fn request(
                 url: target.into(),
                 method,
                 headers: vec![],
-                body: vec![],
+                body: Default::default(),
             },
         )
         .await?;

@@ -104,7 +104,8 @@ pub(super) async fn verify_nested_copy(log: &EventLog) {
     assert!(
         matches!(error, Err(BundleError::Store(StoreError::InvalidTransition(ref message)))
         if message == "bundle member is outside its declared source history"
-            || message == "copy archive pin differs from its source projection"),
+            || message == "copy archive pin differs from its source projection"
+            || message == "copy membership differs from its complete source prefix"),
         "{error:?}"
     );
     staged.close().await.unwrap();

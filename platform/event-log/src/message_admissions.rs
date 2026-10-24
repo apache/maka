@@ -142,8 +142,9 @@ impl EventLog {
         admission: PendingMessageAdmission,
     ) -> Result<PendingMessageAdmission, StoreError> {
         self.validate_root()?;
+        let commits = self.commits.session(&admission.invocation.session_id);
         self.connection
-            .write(WriteAdmission(admission), self.commits.clone())
+            .write(WriteAdmission(admission), commits)
             .await
     }
 

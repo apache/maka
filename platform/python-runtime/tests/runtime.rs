@@ -56,12 +56,13 @@ fn executor(limits: CellLimits) -> CodeExecutor {
 }
 fn context() -> CellContext {
     CellContext::new(
-        CellStore::default(),
+        CellStore::temporary().unwrap(),
         vec![ToolMetadata {
             name: "echo".into(),
             description: "echo JSON".into(),
         }],
     )
+    .unwrap()
 }
 fn success(result: CellResult) -> usize {
     match result {
@@ -127,14 +128,15 @@ text(await asyncio.gather(settled(1), settled(2)))
 
 #[tokio::test]
 async fn output_store_metadata_and_fresh_globals_obey_cell_contract() {
-    let store = CellStore::default();
+    let store = CellStore::temporary().unwrap();
     let first = CellContext::new(
         store.clone(),
         vec![ToolMetadata {
             name: "echo".into(),
             description: "echo JSON".into(),
         }],
-    );
+    )
+    .unwrap();
     success(run(r#"
 secret = "private"
 print(secret)
@@ -160,7 +162,7 @@ secret
         ["ready"]
     );
     first.commit().unwrap();
-    let second = CellContext::new(store, vec![]);
+    let second = CellContext::new(store, vec![]).unwrap();
     success(
         run(
             "text(load('receipt'))\ntry:\n    text(secret)\nexcept NameError:\n    text('fresh')",

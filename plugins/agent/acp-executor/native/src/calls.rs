@@ -77,7 +77,13 @@ impl Calls {
             },
             _ => return Err("ACP requires an admitted execution or setup request".into()),
         };
-        self.services.request(identity, cancellation)
+        match origin.execution_custody() {
+            Some(execution) => {
+                self.services
+                    .request_with_execution(identity, cancellation, execution.clone())
+            }
+            None => self.services.request(identity, cancellation),
+        }
     }
     pub async fn invoke(
         &self,

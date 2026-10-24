@@ -17,14 +17,9 @@
  * under the License.
  */
 
-use super::EventRef;
 use crate::RunError;
 use maka_agent_facts::attachment::StorageRef;
-use maka_agent_facts::event::Fact;
-use maka_agent_facts::event::InvocationInput;
-use maka_agent_facts::event::ToolOutcome;
-use maka_agent_facts::tool_output::DurableToolProjection;
-use maka_event_log::EventLog;
+use maka_event_log::root_store::SessionStore;
 use std::collections::HashMap;
 use tokio_util::sync::CancellationToken;
 
@@ -42,75 +37,88 @@ impl<'a> Resources<'a> {
         }
     }
 
-    pub async fn load(
-        log: &EventLog,
+    pub async fn load_references(
+        log: &SessionStore,
         session: &'a str,
-        events: impl Iterator<Item = EventRef<'a>>,
+        references: impl IntoIterator<Item = &'a StorageRef>,
         cancellation: &CancellationToken,
     ) -> Result<Self, RunError> {
         let mut resources = Self::native(session);
-        for event in events.filter_map(EventRef::canonical) {
-            let mut references = Vec::new();
-            match &event.event.fact {
-                Fact::InvocationOpened {
-                    input: InvocationInput::Message { content, .. },
-                    ..
-                } => {
-                    references.extend(content.attachments.iter().flatten().map(|a| &a.storage_ref));
-                }
-                Fact::MessageSteered { message, .. } => {
-                    references.extend(
-                        message
-                            .content
-                            .attachments
-                            .iter()
-                            .flatten()
-                            .map(|a| &a.storage_ref),
-                    );
-                }
-                Fact::ToolSettled {
-                    outcome:
-                        ToolOutcome::Succeeded {
-                            model_projection: DurableToolProjection::Content { parts },
-                            ..
-                        },
-                    ..
-                } => {
-                    references.extend(
-                        parts
-                            .iter()
-                            .filter_map(|part| part.media().map(|(reference, _)| reference)),
-                    );
-                }
-                _ => {}
-            }
-            for reference in references {
-                let StorageRef::SessionFile {
-                    session_id,
-                    relative_path,
-                } = reference
-                else {
-                    continue;
-                };
-                if session_id == session
-                    || resources
-                        .inherited
-                        .contains_key(&(session_id.as_str(), relative_path.as_str()))
-                {
-                    continue;
-                }
-                if cancellation.is_cancelled() {
-                    return Err(RunError::Cancelled);
-                }
-                let resolved = log
-                    .resolve_history_artifact(session, session_id, relative_path)
-                    .await?;
-                resources
+        for reference in references {
+            let StorageRef::SessionFile {
+                session_id,
+                relative_path,
+            } = reference
+            else {
+                continue;
+            };
+            if session_id == session
+                || resources
                     .inherited
-                    .insert((session_id, relative_path), resolved);
+                    .contains_key(&(session_id.as_str(), relative_path.as_str()))
+            {
+                continue;
             }
+            if cancellation.is_cancelled() {
+                return Err(RunError::Cancelled);
+            }
+            let resolved = log
+                .resolve_history_artifact(session, session_id, relative_path)
+                .await?;
+            resources
+                .inherited
+                .insert((session_id, relative_path), resolved);
         }
         Ok(resources)
+    }
+
+    pub fn from_manifest(
+        session: &'a str,
+        aliases: &'a [maka_agent_facts::history::media::ResourceAlias],
+    ) -> Self {
+        let mut resources = Self::native(session);
+        for alias in aliases {
+            if let StorageRef::SessionFile {
+                session_id,
+                relative_path,
+            } = &alias.source
+            {
+                resources
+                    .inherited
+                    .insert((session_id, relative_path), alias.resolved.clone());
+            }
+        }
+        resources
+    }
+
+    pub fn aliases(&self) -> Vec<maka_agent_facts::history::media::ResourceAlias> {
+        let mut aliases: Vec<_> = self
+            .inherited
+            .iter()
+            .map(|((session, artifact), resolved)| {
+                maka_agent_facts::history::media::ResourceAlias {
+                    source: StorageRef::SessionFile {
+                        session_id: (*session).to_owned(),
+                        relative_path: (*artifact).to_owned(),
+                    },
+                    resolved: resolved.clone(),
+                }
+            })
+            .collect();
+        aliases.sort_by(|left, right| match (&left.source, &right.source) {
+            (
+                StorageRef::SessionFile {
+                    session_id: a,
+                    relative_path: x,
+                },
+                StorageRef::SessionFile {
+                    session_id: b,
+                    relative_path: y,
+                },
+            ) => (a, x).cmp(&(b, y)),
+            _ => std::cmp::Ordering::Equal,
+        });
+        aliases
     }
 
     pub fn resolve<'b>(&'b self, reference: &'b StorageRef) -> Option<&'b StorageRef> {

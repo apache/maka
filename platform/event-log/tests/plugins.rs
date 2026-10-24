@@ -58,7 +58,7 @@ async fn execution_receipts_commit_with_work_and_survive_delivery_restarts_and_l
     );
     assert!(log.pending_messages("session").await.unwrap().is_empty());
     assert!(
-        log.plugin_execution_receipt(&namespace, &request.operation_id)
+        log.plugin_execution_receipt(&namespace, &request.operation())
             .await
             .unwrap()
             .is_none()
@@ -126,8 +126,9 @@ async fn execution_receipts_commit_with_work_and_survive_delivery_restarts_and_l
     };
     log.establish_interaction(&question).await.unwrap();
     let first = log
-        .plugin_execution_progress(receipt.clone())
+        .plugin_execution_progress(&namespace, &request.operation())
         .await
+        .unwrap()
         .unwrap();
     assert!(first.attention_id.is_some());
     log.create_session("unrelated", "create-unrelated", &json!({}), 2)
@@ -135,8 +136,9 @@ async fn execution_receipts_commit_with_work_and_survive_delivery_restarts_and_l
         .unwrap();
     assert_eq!(
         first.attention_id,
-        log.plugin_execution_progress(receipt.clone())
+        log.plugin_execution_progress(&namespace, &request.operation())
             .await
+            .unwrap()
             .unwrap()
             .attention_id
     );
@@ -150,8 +152,9 @@ async fn execution_receipts_commit_with_work_and_survive_delivery_restarts_and_l
     .await
     .unwrap();
     assert!(
-        log.plugin_execution_progress(receipt.clone())
+        log.plugin_execution_progress(&namespace, &request.operation())
             .await
+            .unwrap()
             .unwrap()
             .attention_id
             .is_none()
@@ -160,8 +163,9 @@ async fn execution_receipts_commit_with_work_and_survive_delivery_restarts_and_l
     question.created_at = 4;
     log.establish_interaction(&question).await.unwrap();
     let second = log
-        .plugin_execution_progress(receipt.clone())
+        .plugin_execution_progress(&namespace, &request.operation())
         .await
+        .unwrap()
         .unwrap();
     assert!(second.attention_id.is_some());
     assert_ne!(first.attention_id, second.attention_id);
@@ -541,3 +545,6 @@ async fn atomic_large_value_and_many_mutations_survive_scan_and_reopen() {
         assert_eq!(entry.record.data, Data::Present(json!({"index":index})));
     }
 }
+
+#[path = "plugins/session_receipts.rs"]
+mod session_receipts;

@@ -20677,7 +20677,7 @@ gpui-pre-reqwest@0.12.15 (MIT OR Apache-2.0); authors declared by package: Sean 
 reqwest@0.13.5 (MIT OR Apache-2.0); authors declared by package: Sean McArthur <sean@seanmonstar.com>
 
 https://crates.io/api/v1/crates/gpui-pre-reqwest/0.12.15/download :: LICENSE-APACHE
-https://crates.io/api/v1/crates/reqwest/0.13.5/download :: LICENSE-APACHE
+https://github.com/seanmonstar/reqwest#de55373434f07f42926599dbb5a88550d8e55112 (adapted; third-party/reqwest) :: LICENSE-APACHE
 
 Apache License
                         Version 2.0, January 2004
@@ -34539,7 +34539,7 @@ DEALINGS IN THE SOFTWARE.
 
 reqwest@0.13.5 (MIT OR Apache-2.0); authors declared by package: Sean McArthur <sean@seanmonstar.com>
 
-https://crates.io/api/v1/crates/reqwest/0.13.5/download :: LICENSE-MIT
+https://github.com/seanmonstar/reqwest#de55373434f07f42926599dbb5a88550d8e55112 (adapted; third-party/reqwest) :: LICENSE-MIT
 
 Copyright (c) 2016-2026 Sean McArthur
 

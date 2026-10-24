@@ -20,15 +20,15 @@
 //! Reconcile abandoned execution facts before any Root workers or activations.
 
 use crate::HostError;
-use maka_event_log::EventLog;
+use maka_event_log::root_store::RootStore;
 
 /// Requires the original exclusive Root owner and no live execution workers.
 /// This settles abandoned facts without replaying model, tool or shell effects.
 /// Call once at Root startup, never from a plugin activation or live repair.
 /// On failure, wait for the original SQL owner to close before returning Err.
-pub async fn recover(log: &EventLog) -> Result<(), HostError> {
+pub async fn recover(log: &RootStore) -> Result<(), HostError> {
     let result = async {
-        maka_event_log::recovery::recover_invocations(log).await?;
+        log.recover_invocations().await?;
         let recovered_at = u64::try_from(
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)?

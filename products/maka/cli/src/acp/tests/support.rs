@@ -37,6 +37,7 @@ pub fn catalog_transport() -> std::sync::Arc<dyn maka_agent_ports::model::Transp
         fn request(
             &self,
             _: maka_capabilities::http::Request,
+            _: tokio_util::sync::CancellationToken,
         ) -> futures_util::future::BoxFuture<
             '_,
             Result<maka_capabilities::http::Response, maka_agent_ports::model::Error>,

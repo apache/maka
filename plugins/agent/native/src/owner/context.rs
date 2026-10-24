@@ -36,7 +36,7 @@ impl Owner {
         self.resource_work(scope, move |owner, scope| {
             Box::pin(async move {
                 owner.session(&input.session_id).await?;
-                let report = owner.store.context_report(&input.session_id, input.through).await
+                let report = owner.store.session(&input.session_id).await.map_err(|error| error.to_string())?.context_report(&input.session_id, input.through).await
                     .map_err(|error| {
                         tracing::warn!(stage = "context_read", cause = crate::diagnostics::store_cause(&error),
                             sql_code = crate::diagnostics::store_sql_code(&error), session_id = %input.session_id,

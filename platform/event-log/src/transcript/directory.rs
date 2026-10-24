@@ -536,7 +536,16 @@ mod tests {
                     }),
                 },
             );
-            sqlx::query("INSERT INTO event_log(event_id,invocation_id,kind,event_json) VALUES(?,?,'message_imported',?)").bind(&event.id).bind(&event.invocation.invocation_id).bind(serde_json::to_string(&event).unwrap()).execute(&mut db).await.unwrap();
+            let mut tx = db.begin().await.unwrap();
+            crate::append::ingress::insert(
+                &mut tx,
+                &event,
+                serde_json::to_string(&event).unwrap(),
+                crate::append::ingress::Position::Imported(None),
+            )
+            .await
+            .unwrap();
+            tx.commit().await.unwrap();
         }
         let removed = event(
             "removed",
@@ -554,7 +563,16 @@ mod tests {
                 }),
             },
         );
-        sqlx::query("INSERT INTO event_log(event_id,invocation_id,kind,event_json) VALUES(?,?,'message_imported',?)").bind(&removed.id).bind(&removed.invocation.invocation_id).bind(serde_json::to_string(&removed).unwrap()).execute(&mut db).await.unwrap();
+        let mut tx = db.begin().await.unwrap();
+        crate::append::ingress::insert(
+            &mut tx,
+            &removed,
+            serde_json::to_string(&removed).unwrap(),
+            crate::append::ingress::Position::Imported(None),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
         sqlx::query("INSERT INTO session_retirements VALUES('removed',1,1)")
             .execute(&mut db)
             .await

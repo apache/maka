@@ -312,14 +312,23 @@ mod tests {
             context: Context,
         ) -> BoxFuture<'_, Result<Envelope, Error>> {
             Box::pin(async move {
+                if context.cancellation.is_cancelled() {
+                    return Err(Error::Cancelled);
+                }
+                // This fixture models a consumed refresh grant: once sent, the
+                // Host-owned settlement survives waiter cancellation and drain.
+                let grant_settlement = CancellationToken::new();
                 let response = context
                     .transport
-                    .request(http::Request {
-                        url: "https://provider.invalid/refresh".into(),
-                        method: http::Method::Post,
-                        headers: vec![],
-                        body: credential.secret.into_bytes(),
-                    })
+                    .request(
+                        http::Request {
+                            url: "https://provider.invalid/refresh".into(),
+                            method: http::Method::Post,
+                            headers: vec![],
+                            body: credential.secret.into_bytes().into(),
+                        },
+                        grant_settlement,
+                    )
                     .await
                     .map_err(|_| Error::OutcomeUnknown)?;
                 let bytes = response.body.next().await.unwrap().unwrap();
@@ -354,6 +363,7 @@ mod tests {
         fn request(
             &self,
             request: http::Request,
+            cancellation: tokio_util::sync::CancellationToken,
         ) -> BoxFuture<'_, Result<http::Response, maka_agent_ports::model::Error>> {
             Box::pin(async move {
                 let exchange = self
@@ -362,8 +372,17 @@ mod tests {
                     .unwrap()
                     .take()
                     .expect("grant exchanged twice");
-                exchange.request.send(request.body).unwrap();
-                let replacement = exchange.reply.await.unwrap();
+                let mut upload = request.body.into_stream();
+                let mut body = Vec::new();
+                while let Some(chunk) = futures_util::StreamExt::next(&mut upload).await {
+                    body.extend_from_slice(&chunk.unwrap());
+                }
+                exchange.request.send(body).unwrap();
+                let replacement = tokio::select! {
+                    biased;
+                    _ = cancellation.cancelled() => return Err(maka_agent_ports::model::Error::Cancelled),
+                    replacement = exchange.reply => replacement.unwrap(),
+                };
                 Ok(http::Response {
                     head: http::Head {
                         status: self.1,

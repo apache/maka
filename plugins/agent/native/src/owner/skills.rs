@@ -108,7 +108,7 @@ impl Owner {
         input: SkillCandidatesRead,
         parent: &Scope,
     ) -> Result<SkillCandidates, String> {
-        let session = self.session(&input.session_id).await?;
+        let session = self.scoped_session(parent, &input.session_id).await?;
         let Some(library) = &self.skills else {
             return Ok(SkillCandidates::default());
         };
@@ -159,14 +159,15 @@ impl Owner {
             tool_discovery: false,
             allowed_tools: session.configuration.tools.clone(),
             background: None,
-            internal_tools: vec![],
-            internal_bindings: BTreeMap::new(),
+            internal_tools: Arc::default(),
+            internal_bindings: Arc::default(),
             behavior: None,
             model: None,
             executor: None,
             workspace: session.configuration.workspace.clone(),
+            binding: session.configuration.binding,
             fingerprint: String::new(),
-            tools: vec![],
+            tools: Arc::default(),
         };
         let input = serde_json::to_value(SkillToolRequest {
             workspace: Some(session.configuration.workspace),
@@ -182,9 +183,16 @@ impl Owner {
             .resources
             .reserve()
             .map_err(|_| "agent_skill_call_closed")?;
-        let request = library
-            .services
-            .request(parent.identity.clone(), parent.cancellation.child_token())?;
+        let request = match parent.execution() {
+            Some(execution) => library.services.request_with_execution(
+                parent.identity.clone(),
+                parent.cancellation.child_token(),
+                execution.clone(),
+            ),
+            None => library
+                .services
+                .request(parent.identity.clone(), parent.cancellation.child_token()),
+        }?;
         let result = self
             .workers
             .spawn(async move {
@@ -267,9 +275,16 @@ impl Owner {
             .resources
             .reserve()
             .map_err(|_| "agent_skill_call_closed")?;
-        let request = library
-            .services
-            .request(parent.identity.clone(), parent.cancellation.child_token())?;
+        let request = match parent.execution() {
+            Some(execution) => library.services.request_with_execution(
+                parent.identity.clone(),
+                parent.cancellation.child_token(),
+                execution.clone(),
+            ),
+            None => library
+                .services
+                .request(parent.identity.clone(), parent.cancellation.child_token()),
+        }?;
         let result = self
             .workers
             .spawn(async move {

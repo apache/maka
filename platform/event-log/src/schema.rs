@@ -28,6 +28,13 @@ static MIGRATIONS: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 pub(crate) async fn initialize_connection(
     connection: &mut SqliteConnection,
 ) -> Result<(), StoreError> {
+    initialize_connection_with_control(connection, None).await
+}
+
+pub(crate) async fn initialize_connection_with_control(
+    connection: &mut SqliteConnection,
+    control: Option<&crate::connection::control::ReadOnlyControl>,
+) -> Result<(), StoreError> {
     let application_id: i64 = sqlx::query_scalar("PRAGMA application_id")
         .fetch_one(&mut *connection)
         .await?;
@@ -85,9 +92,16 @@ pub(crate) async fn initialize_connection(
     sqlx::raw_sql("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;")
         .execute(&mut *connection)
         .await?;
+    // Cache initialization sets temp_store, which clears the TEMP schema.
+    // Finish that configuration before installing the binding view.
+    crate::transcript::initialize_cache(connection).await?;
+    // Migrations create the standalone main table; derived Session reads must
+    // resolve the root's live bindings before rebuilding any execution state.
+    if let Some(control) = control {
+        control.attach(connection).await?;
+    }
     crate::message_sources::initialize(connection).await?;
     crate::sessions::initialize_execution(connection).await?;
-    crate::transcript::initialize_cache(connection).await?;
     Ok(())
 }
 

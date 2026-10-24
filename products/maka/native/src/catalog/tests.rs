@@ -32,7 +32,7 @@ struct Reply {
 }
 struct Script {
     replies: Mutex<BTreeMap<String, VecDeque<Reply>>>,
-    requests: Mutex<Vec<http::Request>>,
+    requests: Mutex<Vec<http::BufferedRequest>>,
     entered: Arc<Semaphore>,
     release: Arc<Semaphore>,
 }
@@ -40,8 +40,29 @@ impl Transport for Script {
     fn identity(&self) -> u64 {
         1
     }
-    fn request(&self, request: http::Request) -> BoxFuture<'_, Result<http::Response, Error>> {
+    fn request(
+        &self,
+        request: http::Request,
+        _cancellation: tokio_util::sync::CancellationToken,
+    ) -> BoxFuture<'_, Result<http::Response, Error>> {
         Box::pin(async move {
+            let http::Request {
+                url,
+                method,
+                headers,
+                body,
+            } = request;
+            let mut upload = body.into_stream();
+            let mut body = Vec::new();
+            while let Some(chunk) = futures_util::StreamExt::next(&mut upload).await {
+                body.extend_from_slice(&chunk.unwrap());
+            }
+            let request = http::BufferedRequest {
+                url,
+                method,
+                headers,
+                body,
+            };
             let reply = self
                 .replies
                 .lock()
@@ -472,8 +493,16 @@ impl Transport for Closing {
     fn identity(&self) -> u64 {
         2
     }
-    fn request(&self, _: http::Request) -> BoxFuture<'_, Result<http::Response, Error>> {
-        Box::pin(async {
+    fn request(
+        &self,
+        request: http::Request,
+        _cancellation: tokio_util::sync::CancellationToken,
+    ) -> BoxFuture<'_, Result<http::Response, Error>> {
+        Box::pin(async move {
+            let mut upload = request.body.into_stream();
+            while let Some(chunk) = futures_util::StreamExt::next(&mut upload).await {
+                assert!(chunk.unwrap().is_empty());
+            }
             Ok(http::Response {
                 head: http::Head {
                     status: 200,
@@ -570,8 +599,16 @@ impl Transport for RawResponse {
     fn identity(&self) -> u64 {
         3
     }
-    fn request(&self, _: http::Request) -> BoxFuture<'_, Result<http::Response, Error>> {
-        Box::pin(async {
+    fn request(
+        &self,
+        request: http::Request,
+        _cancellation: tokio_util::sync::CancellationToken,
+    ) -> BoxFuture<'_, Result<http::Response, Error>> {
+        Box::pin(async move {
+            let mut upload = request.body.into_stream();
+            while let Some(chunk) = futures_util::StreamExt::next(&mut upload).await {
+                assert!(chunk.unwrap().is_empty());
+            }
             Ok(http::Response {
                 head: http::Head {
                     status: 200,

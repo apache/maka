@@ -53,7 +53,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &root,
         &maka_event_log::root::RootNamespaces::for_current_account()?,
     )?);
-    let store = runtime.block_on(maka_event_log::EventLog::for_root(owner))?;
+    let store = runtime.block_on(maka_event_log::RootStore::open(owner))?;
     runtime.block_on(store.commit_application(
         uuid::Uuid::from_u128(1),
         0,

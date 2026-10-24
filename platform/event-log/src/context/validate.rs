@@ -30,9 +30,8 @@ use sqlx::SqliteConnection;
 pub(crate) async fn validate_append(
     connection: &mut SqliteConnection,
     event: &RuntimeEvent,
-    verification: &mut super::cache::Verification,
 ) -> Result<(), StoreError> {
-    super::request::validate(connection, event, verification).await?;
+    super::request::validate(connection, event).await?;
     match &event.fact {
         Fact::ContextCheckpointRecorded { checkpoint } => {
             safety::current_opening(
@@ -63,16 +62,7 @@ pub(crate) async fn validate_append(
             if current != checkpoint.previous_checkpoint_id {
                 return Err(invalid("checkpoint predecessor changed before adoption"));
             }
-            verification.select(&selection);
-            chain_cached(
-                connection,
-                event,
-                i64::MAX as u64,
-                false,
-                None,
-                verification,
-            )
-            .await?;
+            validate_checkpoint(connection, event).await?;
         }
         Fact::InvocationEnded { outcome } => {
             let compact: bool = sqlx::query_scalar(
@@ -115,114 +105,33 @@ pub(crate) async fn validate_append(
     Ok(())
 }
 
-/// Strictly decreasing coverage and record sequence make cycles impossible.
-/// An optional current source cut must be at or after the first record.
-pub(super) async fn chain_cached(
+/// Validate only the newly admitted checkpoint edge. Its predecessor was
+/// already admitted by this same writer (or the import boundary).
+async fn validate_checkpoint(
     connection: &mut SqliteConnection,
-    first: &RuntimeEvent,
-    first_sequence: u64,
-    committed: bool,
-    source: Option<(&Selection, u64)>,
-    verification: &mut super::cache::Verification,
-) -> Result<Option<String>, StoreError> {
-    let mut event = first.clone();
-    let mut sequence = first_sequence;
-    let mut needs_terminal = committed;
-    let mut sources: Vec<(Selection, Vec<(u64, String)>)> = Vec::new();
-    loop {
-        let Fact::ContextCheckpointRecorded { checkpoint } = &event.fact else {
-            return Err(invalid("predecessor is not a checkpoint"));
-        };
-        if verification.anchor(&event.id, sequence, checkpoint.covered_through) {
-            break;
-        }
-        #[cfg(test)]
-        verification.validated_link();
-        let selection = proof::validate(connection, &event, sequence, checkpoint).await?;
-        if needs_terminal && matches!(checkpoint.mode, CheckpointMode::Standalone) {
-            require_terminal(connection, &event).await?;
-        }
-        // A missing predecessor cannot silently discard the already adopted baseline.
-        let latest = read::latest_record(connection, &selection, checkpoint.covered_through)
-            .await?
-            .map(|r| r.event.id);
-        if latest != checkpoint.previous_checkpoint_id {
-            return Err(invalid("predecessor is not the selected source baseline"));
-        }
-        // Coverage decreases along the chain. Only identical selections share
-        // a scan; lineage predicates and copied-history ownership stay intact.
-        let expected = (checkpoint.covered_through, checkpoint.source_digest.clone());
-        if let Some((prior, prefixes)) = sources.last_mut()
-            && *prior == selection
-        {
-            prefixes.push(expected);
-        } else {
-            sources.push((selection, vec![expected]));
-        }
-        let Some(id) = &checkpoint.previous_checkpoint_id else {
-            break;
-        };
-        let (previous_sequence, previous) = proof::by_id(connection, id).await?;
-        let Fact::ContextCheckpointRecorded {
-            checkpoint: predecessor,
-        } = &previous.fact
-        else {
-            return Err(invalid("predecessor has wrong kind"));
-        };
-        if previous.invocation.session_id != event.invocation.session_id
-            || previous_sequence >= sequence
-            || previous_sequence > checkpoint.covered_through
-            || predecessor.covered_through >= checkpoint.covered_through
-        {
-            return Err(invalid(
-                "checkpoint coverage must advance in the same Session",
-            ));
-        }
-        event = previous;
-        sequence = previous_sequence;
-        needs_terminal = true;
-    }
-    let mut source_digest = None;
-    for (selection, prefixes) in sources {
-        let mut throughs: Vec<_> = prefixes.iter().rev().map(|(through, _)| *through).collect();
-        // The current source and checkpoint prefixes share raw-byte hashing
-        // only when their full selection (including lineage) is identical.
-        let current =
-            source.filter(|(selected, _)| **selected == selection && source_digest.is_none());
-        if let Some((_, through)) = current {
-            throughs.push(through);
-        }
-        let mut actual = verification
-            .digests(connection, &selection, &throughs)
-            .await?;
-        if current.is_some() {
-            // Current coverage follows the first checkpoint record, so its
-            // digest is after every checkpoint source boundary in the stream.
-            source_digest = actual.pop();
-        }
-        if actual
-            .iter()
-            .zip(prefixes.iter().rev())
-            .any(|(actual, (_, expected))| actual != expected)
-        {
-            return Err(invalid("source digest changed"));
-        }
-    }
-    if let Some((selection, through)) = source
-        && source_digest.is_none()
+    event: &RuntimeEvent,
+) -> Result<(), StoreError> {
+    let Fact::ContextCheckpointRecorded { checkpoint } = &event.fact else {
+        return Err(invalid("expected checkpoint"));
+    };
+    let selection = proof::validate(connection, event, i64::MAX as u64, checkpoint).await?;
+    let latest = read::latest_selected(connection, &selection, checkpoint.covered_through).await?;
+    if latest.as_ref().map(|baseline| &baseline.event_id)
+        != checkpoint.previous_checkpoint_id.as_ref()
     {
-        source_digest = Some(
-            verification
-                .digests(connection, selection, &[through])
-                .await?
-                .pop()
-                .expect("one requested prefix"),
-        );
+        return Err(invalid("predecessor is not the selected source baseline"));
     }
-    if committed {
-        verification.adopt(first, first_sequence);
+    if let Some(previous) = latest
+        && previous.checkpoint.covered_through >= checkpoint.covered_through
+    {
+        return Err(invalid("checkpoint coverage must advance"));
     }
-    Ok(source_digest)
+    let source =
+        super::evidence::selected(connection, &selection, checkpoint.covered_through).await?;
+    if source.digest != checkpoint.source_digest {
+        return Err(invalid("source digest changed"));
+    }
+    Ok(())
 }
 
 pub(crate) async fn require_terminal(

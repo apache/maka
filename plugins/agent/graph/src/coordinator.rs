@@ -196,7 +196,7 @@ impl Coordinator {
         };
         let observation = match self
             .commands
-            .query(intent.request.operation_id.clone())
+            .query(intent.request.operation())
             .await
         {
             Ok(observation) => observation,
@@ -227,7 +227,7 @@ impl Coordinator {
             let page = self
                 .commands
                 .events(
-                    intent.request.operation_id.clone(),
+                    intent.request.operation(),
                     execution.after,
                     through,
                 )
@@ -243,7 +243,7 @@ impl Coordinator {
         {
             match self
                 .commands
-                .workspace_patch(intent.request.operation_id.clone())
+                .workspace_patch(intent.request.operation())
                 .await
             {
                 Ok(patch) => {
@@ -305,7 +305,7 @@ impl Coordinator {
             {
                 let intent = &self.intents[work];
                 self.commands
-                    .cancel(intent.request.operation_id.clone())
+                    .cancel(intent.request.operation())
                     .await?;
             }
             return Ok(());
@@ -414,7 +414,7 @@ impl Coordinator {
             if let Some(event) = self
                 .commands
                 .event(
-                    intent.request.operation_id.clone(),
+                    intent.request.operation(),
                     id.into(),
                     execution.observation.through_sequence,
                 )

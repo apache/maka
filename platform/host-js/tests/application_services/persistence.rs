@@ -19,8 +19,8 @@
 
 use super::*;
 use maka_event_log::{
-    EventLog,
     root::{RootNamespaces, RootOwner},
+    root_store::RootStore,
 };
 
 #[tokio::test]
@@ -33,7 +33,7 @@ async fn stored_source_and_lease_survive_abandoned_query_resources_and_native_cl
         };
         let root = dir.path().join("root");
         let owner = Arc::new(RootOwner::create(&root, &namespaces).unwrap());
-        let store = Arc::new(EventLog::for_root(owner.clone()).await.unwrap());
+        let store = Arc::new(RootStore::open(owner.clone()).await.unwrap());
         drop(owner);
         let provider = native_package();
         let consumer = consumer();
@@ -168,7 +168,7 @@ async fn stored_source_and_lease_survive_abandoned_query_resources_and_native_cl
                 Err(error) => panic!("{error}"),
             }
         };
-        let store = EventLog::for_root(Arc::new(reopened)).await.unwrap();
+        let store = RootStore::open(Arc::new(reopened)).await.unwrap();
         let loaded = store.load_application(deployment).await.unwrap().unwrap();
         let (loaded_source, _, _, _) = loaded.into_parts();
         assert_eq!(loaded_source.reference.state_domain, source.state_domain);
@@ -188,7 +188,7 @@ async fn persisted_preflight_error_runs_no_native_effect_and_releases_storage() 
     };
     let root = dir.path().join("root");
     let owner = Arc::new(RootOwner::create(&root, &namespaces).unwrap());
-    let store = Arc::new(EventLog::for_root(owner).await.unwrap());
+    let store = Arc::new(RootStore::open(owner).await.unwrap());
     let provider = native_package();
     let consumer = consumer();
     let deployment = Uuid::new_v4();
@@ -231,7 +231,7 @@ async fn stored_failed_native_cleanup_keeps_the_actual_state_root_lease() {
     };
     let root = dir.path().join("root");
     let owner = Arc::new(RootOwner::create(&root, &namespaces).unwrap());
-    let store = Arc::new(EventLog::for_root(owner).await.unwrap());
+    let store = Arc::new(RootStore::open(owner).await.unwrap());
     let provider = native_package();
     let consumer = consumer();
     let deployment = Uuid::new_v4();

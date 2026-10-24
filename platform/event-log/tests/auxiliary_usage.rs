@@ -230,6 +230,7 @@ async fn title_accounting_uses_first_opening_after_stop_and_never_replays_after_
         approval_policy: ApprovalPolicy::OnRequest,
         boundary_revision: 0,
         cwd: directory.path().to_string_lossy().into_owned(),
+        workspace_binding: None,
         workspace_identity: None,
         model: Some(ModelBinding {
             connection_id: "connection".into(),

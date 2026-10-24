@@ -7560,6 +7560,9 @@ export const contracts = {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  binding: {
+                    $ref: '#/$defs/BindingStamp',
+                  },
                   id: {
                     type: 'string',
                   },
@@ -7601,6 +7604,7 @@ export const contracts = {
                   'dataSource',
                   'permissions',
                   'boundaryRevision',
+                  'binding',
                   'id',
                   'title',
                   'labels',
@@ -7767,6 +7771,22 @@ export const contracts = {
                   'Session sandbox policy. Full access explicitly disables filesystem and process isolation.',
                 type: 'string',
                 enum: ['read_only', 'workspace_write', 'danger_full_access'],
+              },
+              BindingStamp: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  permissionEpoch: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'permissionEpoch'],
               },
               AgentWorkspace: {
                 type: 'object',
@@ -7968,9 +7988,12 @@ export const contracts = {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  binding: {
+                    $ref: '#/$defs/BindingStamp',
+                  },
                 },
                 additionalProperties: false,
-                required: ['sessionId', 'workspace', 'permissions', 'boundaryRevision'],
+                required: ['sessionId', 'workspace', 'permissions', 'boundaryRevision', 'binding'],
               },
               AgentWorkspace: {
                 type: 'object',
@@ -8060,6 +8083,22 @@ export const contracts = {
                   'Session sandbox policy. Full access explicitly disables filesystem and process isolation.',
                 type: 'string',
                 enum: ['read_only', 'workspace_write', 'danger_full_access'],
+              },
+              BindingStamp: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  permissionEpoch: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'permissionEpoch'],
               },
               ModelSelection: {
                 description:
@@ -8304,9 +8343,12 @@ export const contracts = {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  binding: {
+                    $ref: '#/$defs/BindingStamp',
+                  },
                 },
                 additionalProperties: false,
-                required: ['sessionId', 'workspace', 'permissions', 'boundaryRevision'],
+                required: ['sessionId', 'workspace', 'permissions', 'boundaryRevision', 'binding'],
               },
               AgentWorkspace: {
                 type: 'object',
@@ -8396,6 +8438,22 @@ export const contracts = {
                   'Session sandbox policy. Full access explicitly disables filesystem and process isolation.',
                 type: 'string',
                 enum: ['read_only', 'workspace_write', 'danger_full_access'],
+              },
+              BindingStamp: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  permissionEpoch: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'permissionEpoch'],
               },
               ModelSelection: {
                 description:
@@ -8621,6 +8679,9 @@ export const contracts = {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  binding: {
+                    $ref: '#/$defs/BindingStamp',
+                  },
                   id: {
                     type: 'string',
                   },
@@ -8662,6 +8723,7 @@ export const contracts = {
                   'dataSource',
                   'permissions',
                   'boundaryRevision',
+                  'binding',
                   'id',
                   'title',
                   'labels',
@@ -8828,6 +8890,22 @@ export const contracts = {
                   'Session sandbox policy. Full access explicitly disables filesystem and process isolation.',
                 type: 'string',
                 enum: ['read_only', 'workspace_write', 'danger_full_access'],
+              },
+              BindingStamp: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  permissionEpoch: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'permissionEpoch'],
               },
               AgentWorkspace: {
                 type: 'object',
@@ -9644,6 +9722,9 @@ export const contracts = {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  binding: {
+                    $ref: '#/$defs/BindingStamp',
+                  },
                   id: {
                     type: 'string',
                   },
@@ -9685,6 +9766,7 @@ export const contracts = {
                   'dataSource',
                   'permissions',
                   'boundaryRevision',
+                  'binding',
                   'id',
                   'title',
                   'labels',
@@ -9851,6 +9933,22 @@ export const contracts = {
                   'Session sandbox policy. Full access explicitly disables filesystem and process isolation.',
                 type: 'string',
                 enum: ['read_only', 'workspace_write', 'danger_full_access'],
+              },
+              BindingStamp: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  permissionEpoch: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'permissionEpoch'],
               },
               AgentWorkspace: {
                 type: 'object',
@@ -11382,6 +11480,9 @@ export const contracts = {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  binding: {
+                    $ref: '#/$defs/BindingStamp',
+                  },
                   id: {
                     type: 'string',
                   },
@@ -11423,6 +11524,7 @@ export const contracts = {
                   'dataSource',
                   'permissions',
                   'boundaryRevision',
+                  'binding',
                   'id',
                   'title',
                   'labels',
@@ -11589,6 +11691,22 @@ export const contracts = {
                   'Session sandbox policy. Full access explicitly disables filesystem and process isolation.',
                 type: 'string',
                 enum: ['read_only', 'workspace_write', 'danger_full_access'],
+              },
+              BindingStamp: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  permissionEpoch: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'permissionEpoch'],
               },
               AgentWorkspace: {
                 type: 'object',
@@ -11865,6 +11983,9 @@ export const contracts = {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  binding: {
+                    $ref: '#/$defs/BindingStamp',
+                  },
                   id: {
                     type: 'string',
                   },
@@ -11906,6 +12027,7 @@ export const contracts = {
                   'dataSource',
                   'permissions',
                   'boundaryRevision',
+                  'binding',
                   'id',
                   'title',
                   'labels',
@@ -12072,6 +12194,22 @@ export const contracts = {
                   'Session sandbox policy. Full access explicitly disables filesystem and process isolation.',
                 type: 'string',
                 enum: ['read_only', 'workspace_write', 'danger_full_access'],
+              },
+              BindingStamp: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  permissionEpoch: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'permissionEpoch'],
               },
               AgentWorkspace: {
                 type: 'object',
@@ -14172,6 +14310,9 @@ export const contracts = {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  binding: {
+                    $ref: '#/$defs/BindingStamp',
+                  },
                   id: {
                     type: 'string',
                   },
@@ -14213,6 +14354,7 @@ export const contracts = {
                   'dataSource',
                   'permissions',
                   'boundaryRevision',
+                  'binding',
                   'id',
                   'title',
                   'labels',
@@ -14379,6 +14521,22 @@ export const contracts = {
                   'Session sandbox policy. Full access explicitly disables filesystem and process isolation.',
                 type: 'string',
                 enum: ['read_only', 'workspace_write', 'danger_full_access'],
+              },
+              BindingStamp: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  permissionEpoch: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'permissionEpoch'],
               },
               AgentWorkspace: {
                 type: 'object',
@@ -15151,6 +15309,9 @@ export const contracts = {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  binding: {
+                    $ref: '#/$defs/BindingStamp',
+                  },
                   id: {
                     type: 'string',
                   },
@@ -15192,6 +15353,7 @@ export const contracts = {
                   'dataSource',
                   'permissions',
                   'boundaryRevision',
+                  'binding',
                   'id',
                   'title',
                   'labels',
@@ -15358,6 +15520,22 @@ export const contracts = {
                   'Session sandbox policy. Full access explicitly disables filesystem and process isolation.',
                 type: 'string',
                 enum: ['read_only', 'workspace_write', 'danger_full_access'],
+              },
+              BindingStamp: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  permissionEpoch: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'permissionEpoch'],
               },
               AgentWorkspace: {
                 type: 'object',
@@ -15552,10 +15730,8 @@ export const contracts = {
                       toolUseId: {
                         type: ['string', 'null'],
                       },
-                      baseRevision: {
-                        type: 'integer',
-                        format: 'uint64',
-                        minimum: 0,
+                      basis: {
+                        $ref: '#/$defs/PermissionBasis',
                       },
                       request: {
                         $ref: '#/$defs/PermissionRequest',
@@ -15566,7 +15742,7 @@ export const contracts = {
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'toolUseId', 'baseRevision', 'request'],
+                    required: ['kind', 'toolUseId', 'basis', 'request'],
                   },
                   {
                     type: 'object',
@@ -15623,12 +15799,17 @@ export const contracts = {
                       target: {
                         $ref: '#/$defs/GrantTarget',
                       },
-                      baseRevision: {
+                      basis: {
                         description:
-                          'Agent-owned approvals expire with this original permission boundary.\nOlder capability records without a boundary remain readable.',
-                        type: ['integer', 'null'],
-                        format: 'uint64',
-                        minimum: 0,
+                          'Agent-owned approvals expire with this original permission boundary.\nUnbound capabilities are explicit; Agent-owned capabilities capture a full binding stamp.',
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/PermissionBasis',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
                       },
                       kind: {
                         type: 'string',
@@ -15639,6 +15820,39 @@ export const contracts = {
                     required: ['kind', 'toolUseId', 'target'],
                   },
                 ],
+              },
+              PermissionBasis: {
+                description:
+                  'Captured authority, never silently upgraded by resolving a current binding.',
+                type: 'object',
+                properties: {
+                  boundaryRevision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  binding: {
+                    $ref: '#/$defs/BindingStamp',
+                  },
+                },
+                additionalProperties: false,
+                required: ['boundaryRevision', 'binding'],
+              },
+              BindingStamp: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  permissionEpoch: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'permissionEpoch'],
               },
               PermissionRequest: {
                 description:
@@ -16530,6 +16744,9 @@ export const contracts = {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  binding: {
+                    $ref: '#/$defs/BindingStamp',
+                  },
                   id: {
                     type: 'string',
                   },
@@ -16571,6 +16788,7 @@ export const contracts = {
                   'dataSource',
                   'permissions',
                   'boundaryRevision',
+                  'binding',
                   'id',
                   'title',
                   'labels',
@@ -16737,6 +16955,22 @@ export const contracts = {
                   'Session sandbox policy. Full access explicitly disables filesystem and process isolation.',
                 type: 'string',
                 enum: ['read_only', 'workspace_write', 'danger_full_access'],
+              },
+              BindingStamp: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  permissionEpoch: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'permissionEpoch'],
               },
               AgentWorkspace: {
                 type: 'object',
@@ -17044,6 +17278,9 @@ export const contracts = {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  binding: {
+                    $ref: '#/$defs/BindingStamp',
+                  },
                   id: {
                     type: 'string',
                   },
@@ -17085,6 +17322,7 @@ export const contracts = {
                   'dataSource',
                   'permissions',
                   'boundaryRevision',
+                  'binding',
                   'id',
                   'title',
                   'labels',
@@ -17251,6 +17489,22 @@ export const contracts = {
                   'Session sandbox policy. Full access explicitly disables filesystem and process isolation.',
                 type: 'string',
                 enum: ['read_only', 'workspace_write', 'danger_full_access'],
+              },
+              BindingStamp: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  permissionEpoch: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'permissionEpoch'],
               },
               AgentWorkspace: {
                 type: 'object',
@@ -17537,6 +17791,9 @@ export const contracts = {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  binding: {
+                    $ref: '#/$defs/BindingStamp',
+                  },
                   id: {
                     type: 'string',
                   },
@@ -17578,6 +17835,7 @@ export const contracts = {
                   'dataSource',
                   'permissions',
                   'boundaryRevision',
+                  'binding',
                   'id',
                   'title',
                   'labels',
@@ -17744,6 +18002,22 @@ export const contracts = {
                   'Session sandbox policy. Full access explicitly disables filesystem and process isolation.',
                 type: 'string',
                 enum: ['read_only', 'workspace_write', 'danger_full_access'],
+              },
+              BindingStamp: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  permissionEpoch: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'permissionEpoch'],
               },
               AgentWorkspace: {
                 type: 'object',
@@ -17960,6 +18234,9 @@ export const contracts = {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  binding: {
+                    $ref: '#/$defs/BindingStamp',
+                  },
                   id: {
                     type: 'string',
                   },
@@ -18001,6 +18278,7 @@ export const contracts = {
                   'dataSource',
                   'permissions',
                   'boundaryRevision',
+                  'binding',
                   'id',
                   'title',
                   'labels',
@@ -18167,6 +18445,22 @@ export const contracts = {
                   'Session sandbox policy. Full access explicitly disables filesystem and process isolation.',
                 type: 'string',
                 enum: ['read_only', 'workspace_write', 'danger_full_access'],
+              },
+              BindingStamp: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  permissionEpoch: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'permissionEpoch'],
               },
               AgentWorkspace: {
                 type: 'object',
@@ -20442,6 +20736,9 @@ export const contracts = {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  binding: {
+                    $ref: '#/$defs/BindingStamp',
+                  },
                   id: {
                     type: 'string',
                   },
@@ -20483,6 +20780,7 @@ export const contracts = {
                   'dataSource',
                   'permissions',
                   'boundaryRevision',
+                  'binding',
                   'id',
                   'title',
                   'labels',
@@ -20649,6 +20947,22 @@ export const contracts = {
                   'Session sandbox policy. Full access explicitly disables filesystem and process isolation.',
                 type: 'string',
                 enum: ['read_only', 'workspace_write', 'danger_full_access'],
+              },
+              BindingStamp: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  permissionEpoch: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'permissionEpoch'],
               },
               AgentWorkspace: {
                 type: 'object',
@@ -21311,10 +21625,8 @@ export const contracts = {
                       toolUseId: {
                         type: ['string', 'null'],
                       },
-                      baseRevision: {
-                        type: 'integer',
-                        format: 'uint64',
-                        minimum: 0,
+                      basis: {
+                        $ref: '#/$defs/PermissionBasis',
                       },
                       request: {
                         $ref: '#/$defs/PermissionRequest',
@@ -21325,7 +21637,7 @@ export const contracts = {
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'toolUseId', 'baseRevision', 'request'],
+                    required: ['kind', 'toolUseId', 'basis', 'request'],
                   },
                   {
                     type: 'object',
@@ -21382,12 +21694,17 @@ export const contracts = {
                       target: {
                         $ref: '#/$defs/GrantTarget',
                       },
-                      baseRevision: {
+                      basis: {
                         description:
-                          'Agent-owned approvals expire with this original permission boundary.\nOlder capability records without a boundary remain readable.',
-                        type: ['integer', 'null'],
-                        format: 'uint64',
-                        minimum: 0,
+                          'Agent-owned approvals expire with this original permission boundary.\nUnbound capabilities are explicit; Agent-owned capabilities capture a full binding stamp.',
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/PermissionBasis',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
                       },
                       kind: {
                         type: 'string',
@@ -21398,6 +21715,39 @@ export const contracts = {
                     required: ['kind', 'toolUseId', 'target'],
                   },
                 ],
+              },
+              PermissionBasis: {
+                description:
+                  'Captured authority, never silently upgraded by resolving a current binding.',
+                type: 'object',
+                properties: {
+                  boundaryRevision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  binding: {
+                    $ref: '#/$defs/BindingStamp',
+                  },
+                },
+                additionalProperties: false,
+                required: ['boundaryRevision', 'binding'],
+              },
+              BindingStamp: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  permissionEpoch: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'permissionEpoch'],
               },
               PermissionRequest: {
                 description:
@@ -22651,9 +23001,12 @@ export const contracts = {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  binding: {
+                    $ref: '#/$defs/BindingStamp',
+                  },
                 },
                 additionalProperties: false,
-                required: ['sessionId', 'workspace', 'permissions', 'boundaryRevision'],
+                required: ['sessionId', 'workspace', 'permissions', 'boundaryRevision', 'binding'],
               },
               AgentWorkspace: {
                 type: 'object',
@@ -22743,6 +23096,22 @@ export const contracts = {
                   'Session sandbox policy. Full access explicitly disables filesystem and process isolation.',
                 type: 'string',
                 enum: ['read_only', 'workspace_write', 'danger_full_access'],
+              },
+              BindingStamp: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  permissionEpoch: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'permissionEpoch'],
               },
               ModelSelection: {
                 description:
@@ -23463,9 +23832,12 @@ export const contracts = {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  binding: {
+                    $ref: '#/$defs/BindingStamp',
+                  },
                 },
                 additionalProperties: false,
-                required: ['sessionId', 'workspace', 'permissions', 'boundaryRevision'],
+                required: ['sessionId', 'workspace', 'permissions', 'boundaryRevision', 'binding'],
               },
               AgentWorkspace: {
                 type: 'object',
@@ -23555,6 +23927,22 @@ export const contracts = {
                   'Session sandbox policy. Full access explicitly disables filesystem and process isolation.',
                 type: 'string',
                 enum: ['read_only', 'workspace_write', 'danger_full_access'],
+              },
+              BindingStamp: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  permissionEpoch: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'permissionEpoch'],
               },
               ModelSelection: {
                 description:
@@ -24112,6 +24500,9 @@ export const contracts = {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  binding: {
+                    $ref: '#/$defs/BindingStamp',
+                  },
                   id: {
                     type: 'string',
                   },
@@ -24153,6 +24544,7 @@ export const contracts = {
                   'dataSource',
                   'permissions',
                   'boundaryRevision',
+                  'binding',
                   'id',
                   'title',
                   'labels',
@@ -24319,6 +24711,22 @@ export const contracts = {
                   'Session sandbox policy. Full access explicitly disables filesystem and process isolation.',
                 type: 'string',
                 enum: ['read_only', 'workspace_write', 'danger_full_access'],
+              },
+              BindingStamp: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  permissionEpoch: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'permissionEpoch'],
               },
               AgentWorkspace: {
                 type: 'object',
@@ -27818,9 +28226,12 @@ export const contracts = {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  binding: {
+                    $ref: '#/$defs/BindingStamp',
+                  },
                 },
                 additionalProperties: false,
-                required: ['sessionId', 'workspace', 'permissions', 'boundaryRevision'],
+                required: ['sessionId', 'workspace', 'permissions', 'boundaryRevision', 'binding'],
               },
               AgentWorkspace: {
                 type: 'object',
@@ -27910,6 +28321,22 @@ export const contracts = {
                   'Session sandbox policy. Full access explicitly disables filesystem and process isolation.',
                 type: 'string',
                 enum: ['read_only', 'workspace_write', 'danger_full_access'],
+              },
+              BindingStamp: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  permissionEpoch: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'permissionEpoch'],
               },
               ModelSelection: {
                 description:
@@ -29322,6 +29749,9 @@ export const contracts = {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  binding: {
+                    $ref: '#/$defs/BindingStamp',
+                  },
                   id: {
                     type: 'string',
                   },
@@ -29362,6 +29792,7 @@ export const contracts = {
                   'dataSource',
                   'permissions',
                   'boundaryRevision',
+                  'binding',
                   'id',
                   'title',
                   'labels',
@@ -29528,6 +29959,22 @@ export const contracts = {
                 enum: ['read_only', 'workspace_write', 'danger_full_access'],
                 description:
                   'Session sandbox policy. Full access explicitly disables filesystem and process isolation.',
+              },
+              BindingStamp: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  permissionEpoch: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                required: ['id', 'permissionEpoch'],
               },
               AgentWorkspace: {
                 type: 'object',
@@ -30767,6 +31214,9 @@ export const contracts = {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  binding: {
+                    $ref: '#/$defs/BindingStamp',
+                  },
                   id: {
                     type: 'string',
                   },
@@ -30807,6 +31257,7 @@ export const contracts = {
                   'dataSource',
                   'permissions',
                   'boundaryRevision',
+                  'binding',
                   'id',
                   'title',
                   'labels',
@@ -30973,6 +31424,22 @@ export const contracts = {
                 enum: ['read_only', 'workspace_write', 'danger_full_access'],
                 description:
                   'Session sandbox policy. Full access explicitly disables filesystem and process isolation.',
+              },
+              BindingStamp: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  permissionEpoch: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                required: ['id', 'permissionEpoch'],
               },
               AgentWorkspace: {
                 type: 'object',
@@ -45981,15 +46448,19 @@ export const contracts = {
               selection: {
                 $ref: '#/$defs/UsageSelection',
               },
-              offset: {
-                type: 'integer',
-                format: 'uint64',
-                minimum: 0,
-                maximum: 9007199254740991,
+              cursor: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/UsageActivityCursor',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
               },
             },
             additionalProperties: false,
-            required: ['range', 'selection', 'offset'],
+            required: ['range', 'selection', 'cursor'],
             $defs: {
               SettingsUsageRange: {
                 type: 'object',
@@ -46010,13 +46481,38 @@ export const contracts = {
                     type: ['string', 'null'],
                   },
                   through: {
-                    type: ['integer', 'null'],
-                    format: 'uint64',
-                    minimum: 0,
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/UsageFence',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
                   },
                 },
                 additionalProperties: false,
                 required: ['from', 'to', 'sessionId', 'through'],
+              },
+              UsageFence: {
+                type: 'object',
+                properties: {
+                  stateDomain: {
+                    type: 'string',
+                  },
+                  partitions: {
+                    type: 'array',
+                    items: {
+                      type: 'integer',
+                      format: 'uint64',
+                      minimum: 0,
+                    },
+                    minItems: 8,
+                    maxItems: 8,
+                  },
+                },
+                additionalProperties: false,
+                required: ['stateDomain', 'partitions'],
               },
               UsageSelection: {
                 description:
@@ -46058,6 +46554,25 @@ export const contracts = {
                 type: 'string',
                 enum: ['success', 'error', 'aborted', 'unknown', 'rejected'],
               },
+              UsageActivityCursor: {
+                type: 'object',
+                properties: {
+                  completedAt: {
+                    type: 'number',
+                    format: 'double',
+                  },
+                  partition: {
+                    type: 'integer',
+                    format: 'uint',
+                    minimum: 0,
+                  },
+                  requestId: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['completedAt', 'partition', 'requestId'],
+              },
             },
           },
           output: {
@@ -46066,9 +46581,7 @@ export const contracts = {
             type: 'object',
             properties: {
               through: {
-                type: 'integer',
-                format: 'uint64',
-                minimum: 0,
+                $ref: '#/$defs/UsageFence',
               },
               attempts: {
                 type: 'array',
@@ -46082,15 +46595,40 @@ export const contracts = {
                 format: 'uint64',
                 minimum: 0,
               },
-              nextOffset: {
-                type: ['integer', 'null'],
-                format: 'uint64',
-                minimum: 0,
+              nextCursor: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/UsageActivityCursor',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
               },
             },
             additionalProperties: false,
-            required: ['through', 'attempts', 'total', 'nextOffset'],
+            required: ['through', 'attempts', 'total', 'nextCursor'],
             $defs: {
+              UsageFence: {
+                type: 'object',
+                properties: {
+                  stateDomain: {
+                    type: 'string',
+                  },
+                  partitions: {
+                    type: 'array',
+                    items: {
+                      type: 'integer',
+                      format: 'uint64',
+                      minimum: 0,
+                    },
+                    minItems: 8,
+                    maxItems: 8,
+                  },
+                },
+                additionalProperties: false,
+                required: ['stateDomain', 'partitions'],
+              },
               UsageActivity: {
                 description:
                   'A physical model call or tool attempt, never copied conversation membership.',
@@ -46667,6 +47205,25 @@ export const contracts = {
                 type: 'string',
                 enum: ['success', 'error', 'unknown'],
               },
+              UsageActivityCursor: {
+                type: 'object',
+                properties: {
+                  completedAt: {
+                    type: 'number',
+                    format: 'double',
+                  },
+                  partition: {
+                    type: 'integer',
+                    format: 'uint',
+                    minimum: 0,
+                  },
+                  requestId: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['completedAt', 'partition', 'requestId'],
+              },
             },
           },
           resources: {},
@@ -46684,15 +47241,19 @@ export const contracts = {
               group: {
                 $ref: '#/$defs/UsageGroup',
               },
-              offset: {
-                type: 'integer',
-                format: 'uint64',
-                minimum: 0,
-                maximum: 9007199254740991,
+              cursor: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/UsageGroupCursor',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
               },
             },
             additionalProperties: false,
-            required: ['range', 'group', 'offset'],
+            required: ['range', 'group', 'cursor'],
             $defs: {
               SettingsUsageRange: {
                 type: 'object',
@@ -46713,18 +47274,58 @@ export const contracts = {
                     type: ['string', 'null'],
                   },
                   through: {
-                    type: ['integer', 'null'],
-                    format: 'uint64',
-                    minimum: 0,
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/UsageFence',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
                   },
                 },
                 additionalProperties: false,
                 required: ['from', 'to', 'sessionId', 'through'],
               },
+              UsageFence: {
+                type: 'object',
+                properties: {
+                  stateDomain: {
+                    type: 'string',
+                  },
+                  partitions: {
+                    type: 'array',
+                    items: {
+                      type: 'integer',
+                      format: 'uint64',
+                      minimum: 0,
+                    },
+                    minItems: 8,
+                    maxItems: 8,
+                  },
+                },
+                additionalProperties: false,
+                required: ['stateDomain', 'partitions'],
+              },
               UsageGroup: {
                 description: 'Breakdown selected for a bounded summary page.',
                 type: 'string',
                 enum: ['byProvider', 'byModel', 'byTool'],
+              },
+              UsageGroupCursor: {
+                type: 'object',
+                properties: {
+                  group: {
+                    $ref: '#/$defs/UsageGroup',
+                  },
+                  key: {
+                    description:
+                      'None is the unknown-provider group, not the beginning of pagination.',
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+                required: ['group'],
               },
             },
           },
@@ -46734,22 +47335,45 @@ export const contracts = {
             type: 'object',
             properties: {
               through: {
-                type: 'integer',
-                format: 'uint64',
-                minimum: 0,
+                $ref: '#/$defs/UsageFence',
               },
               summary: {
                 $ref: '#/$defs/SettingsUsageTotals',
               },
-              nextOffset: {
-                type: ['integer', 'null'],
-                format: 'uint64',
-                minimum: 0,
+              nextCursor: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/UsageGroupCursor',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
               },
             },
             additionalProperties: false,
-            required: ['through', 'summary', 'nextOffset'],
+            required: ['through', 'summary', 'nextCursor'],
             $defs: {
+              UsageFence: {
+                type: 'object',
+                properties: {
+                  stateDomain: {
+                    type: 'string',
+                  },
+                  partitions: {
+                    type: 'array',
+                    items: {
+                      type: 'integer',
+                      format: 'uint64',
+                      minimum: 0,
+                    },
+                    minItems: 8,
+                    maxItems: 8,
+                  },
+                },
+                additionalProperties: false,
+                required: ['stateDomain', 'partitions'],
+              },
               SettingsUsageTotals: {
                 type: 'object',
                 properties: {
@@ -47008,6 +47632,26 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: ['name', 'totals'],
+              },
+              UsageGroupCursor: {
+                type: 'object',
+                properties: {
+                  group: {
+                    $ref: '#/$defs/UsageGroup',
+                  },
+                  key: {
+                    description:
+                      'None is the unknown-provider group, not the beginning of pagination.',
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+                required: ['group', 'key'],
+              },
+              UsageGroup: {
+                description: 'Breakdown selected for a bounded summary page.',
+                type: 'string',
+                enum: ['byProvider', 'byModel', 'byTool'],
               },
             },
           },

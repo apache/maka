@@ -65,19 +65,19 @@ async fn custom_result_and_notifications_all_survive_confirmed_websocket_delta()
         let step = generate_step(&executor, &lane, input).await;
         let mut input = next;
         let call = step.tool_calls().next().unwrap();
-        input.prompt.push(serde_json::from_value(json!({"role":"assistant","content":[{"type":"tool-call","toolCallId":call.id,"toolName":call.name,"input":call.input,"providerOptions":call.provider_options}]})).unwrap());
+        crate::edit_prompt(&mut input.prompt, |messages| messages.push(serde_json::from_value(json!({"role":"assistant","content":[{"type":"tool-call","toolCallId":call.id,"toolName":call.name,"input":call.input,"providerOptions":call.provider_options}]})).unwrap()));
         for (value, notification) in [("running",false),("notice one",true),("notice two",true)] {
-            input.prompt.push(serde_json::from_value(json!({"role":"tool","content":[{"type":"tool-result","toolCallId":"call_1","toolName":"exec",
-                "output":{"type":"text","value":value}, "providerOptions":{"openai":{"toolKind":"custom"},"maka":{"notification":notification}}}]})).unwrap());
+            crate::edit_prompt(&mut input.prompt, |messages| messages.push(serde_json::from_value(json!({"role":"tool","content":[{"type":"tool-result","toolCallId":"call_1","toolName":"exec",
+                "output":{"type":"text","value":value}, "providerOptions":{"openai":{"toolKind":"custom"},"maka":{"notification":notification}}}]})).unwrap()));
         }
-        assert!(lane.confirm(&input.prompt, &["call_1"], step.response_id.as_deref()));
+        assert!(lane.confirm(&input.prompt, &["call_1"], step.response_id.as_deref()).await);
         generate(&executor, &lane, input).await;
         server.await.unwrap();
     }).await.expect("custom outputs must not disappear from WS continuation");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn idle_close_reconnect_and_upgrade_fallback_restore_the_raw_baseline() {
+async fn idle_close_reconnect_and_upgrade_fallback_preserve_accepted_metadata() {
     tokio::time::timeout(Duration::from_secs(25), async {
         let executor = ModelExecutor::new(Duration::from_secs(10)).unwrap();
         for fallback in [false, true] {
@@ -97,19 +97,8 @@ async fn idle_close_reconnect_and_upgrade_fallback_restore_the_raw_baseline() {
                 let next = if fallback {
                     for _ in 0..6 { reject_upgrade(&listener).await; }
                     let (mut socket, _) = listener.accept().await.unwrap();
-                    let mut head = Vec::new();
-                    loop {
-                        head.push(socket.read_u8().await.unwrap());
-                        if head.ends_with(b"\r\n\r\n") { break; }
-                    }
-                    let head = String::from_utf8(head).unwrap();
+                    let (head, bytes) = crate::http_request(&mut socket).await;
                     assert!(head.starts_with("POST "));
-                    let length: usize = head.lines().find_map(|line| {
-                        let (key, value) = line.split_once(':')?;
-                        key.eq_ignore_ascii_case("content-length").then(|| value.trim().parse().unwrap())
-                    }).unwrap();
-                    let mut bytes = vec![0; length];
-                    socket.read_exact(&mut bytes).await.unwrap();
                     let next: Value = serde_json::from_slice(&bytes).unwrap();
                     assert_eq!(next["stream"], true);
                     assert!(next.get("type").is_none());
@@ -145,8 +134,8 @@ async fn idle_close_reconnect_and_upgrade_fallback_restore_the_raw_baseline() {
                 _ => unreachable!(),
             }).collect();
             let mut next = replay(&base);
-            next.prompt[1] = serde_json::from_value(json!({"role":"assistant","content":content})).unwrap();
-            assert!(lane.confirm(&next.prompt, &["call_1"], step.response_id.as_deref()));
+            crate::edit_prompt(&mut next.prompt, |messages| messages[1] = serde_json::from_value(json!({"role":"assistant","content":content})).unwrap());
+            assert!(lane.confirm(&next.prompt, &["call_1"], step.response_id.as_deref()).await);
             generate(&executor, &lane, next).await;
             drop(lane);
             server.await.unwrap();
@@ -194,11 +183,13 @@ fn call_events() -> Vec<Value> {
 
 fn replay(base: &str) -> ModelRequest {
     let mut request = request(base, "first");
-    request.prompt.extend(serde_json::from_value::<Vec<maka_model::prompt::Message>>(json!([
+    crate::edit_prompt(&mut request.prompt, |messages| {
+        messages.extend(serde_json::from_value::<Vec<maka_model::prompt::Message>>(json!([
         {"role":"assistant","content":[{"type":"tool-call","toolCallId":"call_1","toolName":"read","input":{"kind":"invalid_json","data":{"raw":MALFORMED_ARGUMENTS}},
             "providerOptions":{"openai":{"itemId":"fc_1"}}}]},
         {"role":"tool","content":[{"type":"tool-result","toolCallId":"call_1","toolName":"read","output":{"type":"error-text","value":REJECTION}}]},
-    ])).unwrap());
+    ])).unwrap())
+    });
     request
 }
 
@@ -243,9 +234,10 @@ async fn canonical_tool_confirmation_and_changed_properties_restore_full_input()
                 } else {
                     assert!(next.get("previous_response_id").is_none(), "{mode}");
                     assert_eq!(next["input"].as_array().unwrap().len(), 3, "{mode}");
-                    assert!(
-                        next["input"][1].get("id").is_none(),
-                        "full adapter projection, not raw cache"
+                    assert_eq!(
+                        next["input"][1],
+                        call_events().last().unwrap()["response"]["output"][0],
+                        "canonical accepted metadata survives every full replay"
                     );
                     assert_eq!(next["input"][1]["arguments"], MALFORMED_ARGUMENTS);
                     assert_eq!(next["input"][2], result);
@@ -266,24 +258,49 @@ async fn canonical_tool_confirmation_and_changed_properties_restore_full_input()
                 }
             );
             let mut next = replay(&base);
+            let accepted_options = step.tool_calls().next().unwrap().provider_options.clone();
+            crate::edit_prompt(&mut next.prompt, |messages| {
+                if let maka_model::prompt::Message::Assistant { content, .. } = &mut messages[1]
+                    && let maka_model::prompt::AssistantPart::ToolCall {
+                        provider_options, ..
+                    } = &mut content[0]
+                {
+                    *provider_options = accepted_options;
+                }
+            });
             match mode {
                 "unconfirmed" => {}
-                "wrong-tool" => assert!(!lane.confirm(
-                    &next.prompt,
-                    &["another-call"],
-                    step.response_id.as_deref()
-                )),
+                "wrong-tool" => assert!(
+                    !lane
+                        .confirm(&next.prompt, &["another-call"], step.response_id.as_deref())
+                        .await
+                ),
                 "wrong-response" => {
-                    assert!(!lane.confirm(&next.prompt, &["call_1"], Some("other-response")))
+                    assert!(
+                        !lane
+                            .confirm(&next.prompt, &["call_1"], Some("other-response"))
+                            .await
+                    )
                 }
                 "changed-before" => {
-                    next.prompt[0] = maka_model::prompt::Message::user("compacted");
-                    assert!(!lane.confirm(&next.prompt, &["call_1"], step.response_id.as_deref()));
+                    crate::edit_prompt(&mut next.prompt, |messages| {
+                        messages[0] = maka_model::prompt::Message::user("compacted")
+                    });
+                    assert!(
+                        !lane
+                            .confirm(&next.prompt, &["call_1"], step.response_id.as_deref())
+                            .await
+                    );
                 }
-                _ => assert!(lane.confirm(&next.prompt, &["call_1"], step.response_id.as_deref())),
+                _ => assert!(
+                    lane.confirm(&next.prompt, &["call_1"], step.response_id.as_deref())
+                        .await
+                ),
             }
             if mode == "changed-after" {
-                next.prompt[0] = maka_model::prompt::Message::user("compacted");
+                crate::edit_prompt(&mut next.prompt, |messages| {
+                    messages[0] = maka_model::prompt::Message::user("compacted")
+                });
             }
             if mode == "properties" {
                 next.max_output_tokens = Some(64);

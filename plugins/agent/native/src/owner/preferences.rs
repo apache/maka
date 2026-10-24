@@ -86,7 +86,7 @@ impl Owner {
             .update_session_metadata(
                 &input.session_id,
                 session.revision,
-                move |configuration: &mut SessionConfiguration| {
+                move |configuration: &mut StoredSessionConfiguration| {
                     configuration.backend = Some(input.backend);
                     Ok(())
                 },
@@ -95,7 +95,7 @@ impl Owner {
             .map_err(|_| "agent_preference_commit_unknown")?
         {
             SessionMutation::Committed(session) => Ok(MetadataResult::Committed {
-                session: Box::new(crate::service::summary(self, session)),
+                session: Box::new(crate::service::summary(self, resolve_session(session)?)),
             }),
             SessionMutation::RevisionConflict { expected, actual } => {
                 Ok(MetadataResult::RevisionConflict { expected, actual })
@@ -111,6 +111,9 @@ impl Owner {
         // model is an exact identity to resolve, never a new global default.
         let opening = self
             .store
+            .session(session)
+            .await
+            .map_err(|error| error.to_string())?
             .latest_message_opening(session)
             .await
             .map_err(|_| "agent_history_unavailable")?;

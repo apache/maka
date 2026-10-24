@@ -31,37 +31,41 @@ pub(crate) fn project(mut messages: Vec<Message>, provider: &ProviderKind) -> Ve
         return messages;
     }
     for message in &mut messages {
-        let Message::Assistant {
-            content,
-            provider_options,
-        } = message
-        else {
-            continue;
-        };
-        let mut reasoning = None;
-        content.retain(|part| {
-            let AssistantPart::Reasoning {
-                text,
-                provider_options,
-            } = part
-            else {
-                return true;
-            };
-            let Some(field) = reasoning_field(provider_options.as_ref()) else {
-                return true;
-            };
-            // The first tagged block owns message metadata, including empty text.
-            if reasoning.is_none() {
-                reasoning = Some((field, text.clone()));
-            }
-            false
-        });
-        if let Some((field, text)) = reasoning {
-            let options = provider_options.get_or_insert_with(|| serde_json::json!({}));
-            options["openaiCompatible"][field] = Value::String(text);
-        }
+        project_message(message);
     }
     messages
+}
+
+pub(super) fn project_message(message: &mut Message) {
+    let Message::Assistant {
+        content,
+        provider_options,
+    } = message
+    else {
+        return;
+    };
+    let mut reasoning = None;
+    content.retain(|part| {
+        let AssistantPart::Reasoning {
+            text,
+            provider_options,
+        } = part
+        else {
+            return true;
+        };
+        let Some(field) = reasoning_field(provider_options.as_ref()) else {
+            return true;
+        };
+        // The first tagged block owns message metadata, including empty text.
+        if reasoning.is_none() {
+            reasoning = Some((field, text.clone()));
+        }
+        false
+    });
+    if let Some((field, text)) = reasoning {
+        let options = provider_options.get_or_insert_with(|| serde_json::json!({}));
+        options["openaiCompatible"][field] = Value::String(text);
+    }
 }
 
 fn reasoning_field(options: Option<&Value>) -> Option<&'static str> {

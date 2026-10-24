@@ -31,18 +31,46 @@ pub(super) struct Prepared {
     pub decoder: Decoder,
     pub compatible: bool,
     pub anthropic: bool,
+    pub anthropic_source: Option<(
+        crate::prompt::PreparedWire,
+        std::sync::Arc<anthropic::prompt::streaming::Context>,
+    )>,
+    pub chat: Option<(
+        crate::prompt::Prompt,
+        chat_completions::request::PromptOptions,
+        maka_agent_facts::language::Language,
+    )>,
 }
-pub(super) fn prepare(mut request: Request) -> Result<Prepared, ModelError> {
+pub(super) async fn prepare(request: Request) -> Result<Prepared, ModelError> {
     let is_anthropic = matches!(request.provider.kind, ProviderKind::Anthropic);
     let compatible = matches!(request.provider.kind, ProviderKind::OpenaiCompatible { .. });
-    request.prompt = crate::prompt::notification_fallback(request.prompt, request.language);
-    super::media::audio_fallback(&mut request.prompt, request.language, is_anthropic);
-    if !is_anthropic {
-        request.prompt = super::chat_completions::project(request.prompt, request.language);
-    }
-    let messages = prompt::messages(request.prompt)?;
+    let mut chat = None;
+    let mut anthropic_source = None;
     let mut headers = BTreeMap::from([("content-type".to_owned(), "application/json".to_owned())]);
     let (mut body, decoder, suffix) = if is_anthropic {
+        let stream_options =
+            super::wire::anthropic_options(&request.provider_options, &request.tools)?;
+        let codec = super::wire::anthropic_codec(request.language, &stream_options);
+        let wire = if let Some(wire) = request.prompt.wire(crate::prompt::WireFormat::Anthropic) {
+            if wire.codec.as_ref() != codec {
+                return Err(ModelError::Adapter(
+                    "prepared Anthropic codec does not match captured request".into(),
+                ));
+            }
+            wire.clone()
+        } else if request.prompt.memory_messages().is_some() {
+            super::anthropic_body::direct_wire(
+                request.prompt.clone(),
+                request.language,
+                stream_options.clone(),
+            )
+        } else {
+            return Err(ModelError::Adapter(
+                "captured prompt is missing its prepared Anthropic wire projection".into(),
+            ));
+        };
+        let metadata = super::anthropic_body::metadata(&wire, stream_options).await?;
+        let context = metadata.context.clone();
         let tools = request
             .tools
             .into_iter()
@@ -91,10 +119,10 @@ pub(super) fn prepare(mut request: Request) -> Result<Prepared, ModelError> {
             None,
         )
         .map_err(failure)?;
-        let prepared = anthropic::request::prepare(
+        let prepared = anthropic::request::prepare_streaming(
             anthropic::request::Request {
                 model: request.provider.model,
-                messages: &messages,
+                messages: &[],
                 tools,
                 choice,
                 sampling: anthropic::request::Sampling {
@@ -112,14 +140,22 @@ pub(super) fn prepare(mut request: Request) -> Result<Prepared, ModelError> {
                 ],
             },
             &Default::default(),
+            metadata,
         )
         .map_err(failure)?;
+        anthropic_source = Some((wire, context));
         headers.insert("anthropic-version".into(), "2023-06-01".into());
         if !prepared.betas.is_empty() {
             headers.insert("anthropic-beta".into(), prepared.betas.join(","));
         }
+        let mut fields =
+            serde_json::to_value(prepared.body).map_err(|e| ModelError::Adapter(e.to_string()))?;
+        fields
+            .as_object_mut()
+            .expect("Anthropic fields")
+            .remove("messages");
         (
-            serde_json::to_value(prepared.body).map_err(|e| ModelError::Adapter(e.to_string()))?,
+            fields,
             Decoder::Anthropic(Box::new(anthropic::stream::Stream::new(prepared.response))),
             "messages",
         )
@@ -148,10 +184,10 @@ pub(super) fn prepare(mut request: Request) -> Result<Prepared, ModelError> {
             .collect::<Result<Vec<_>, ModelError>>()?;
         let tool_choice =
             (!tools.is_empty()).then_some(chat_completions::request::ToolChoice::Auto);
-        let prepared = chat_completions::request::prepare(
+        let prepared = chat_completions::request::prepare_fields(
             chat_completions::request::Request {
                 model: request.provider.model,
-                messages: &messages,
+                messages: &[],
                 tools,
                 tool_choice,
                 sampling: chat_completions::request::Sampling {
@@ -164,12 +200,36 @@ pub(super) fn prepare(mut request: Request) -> Result<Prepared, ModelError> {
                 streaming: true,
             },
             &chat_completions::request::Config {
-                provider_namespace: namespace,
+                provider_namespace: namespace.clone(),
                 include_usage: true,
                 ..Default::default()
             },
         )
         .map_err(failure)?;
+        let options = chat_completions::request::PromptOptions {
+            provider_namespace: namespace.clone(),
+            metadata_namespace: prepared.metadata_namespace.clone(),
+            multipart_tool_content: false,
+        };
+        if let Some(wire) = request
+            .prompt
+            .wire(crate::prompt::WireFormat::ChatCompletions)
+        {
+            if wire.codec.as_ref() != super::wire::chat_codec(request.language, &options) {
+                return Err(ModelError::Adapter(
+                    "prepared Chat Completions codec does not match captured request".into(),
+                ));
+            }
+        } else {
+            if request.prompt.memory_messages().is_none() {
+                return Err(ModelError::Adapter(
+                    "captured prompt is missing its prepared Chat Completions wire projection"
+                        .into(),
+                ));
+            }
+            super::body::validate(&request.prompt, &options, request.language).await?;
+        }
+        chat = Some((request.prompt, options, request.language));
         (
             prepared.body,
             Decoder::Chat(Box::new(
@@ -181,7 +241,13 @@ pub(super) fn prepare(mut request: Request) -> Result<Prepared, ModelError> {
     };
     if let Some(overlay) = request.provider.body_overlay {
         for (key, value) in overlay {
-            if body.get(&key).is_some() {
+            if body.get(&key).is_some()
+                || key == "messages"
+                || (key == "system"
+                    && anthropic_source
+                        .as_ref()
+                        .is_some_and(|(_, context)| context.has_system()))
+            {
                 return Err(ModelError::Adapter(format!(
                     "Extra request body conflicts with a generated field: {key}"
                 )));
@@ -226,6 +292,8 @@ pub(super) fn prepare(mut request: Request) -> Result<Prepared, ModelError> {
         decoder,
         compatible,
         anthropic: is_anthropic,
+        chat,
+        anthropic_source,
     })
 }
 fn merge_headers(

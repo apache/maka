@@ -194,7 +194,7 @@ impl Owner {
         session: &str,
         path: Option<WorkspacePath>,
         scope: &Scope,
-    ) -> Result<(SessionConfiguration, Arc<Directory>), String> {
+    ) -> Result<(ResolvedConfiguration, Arc<Directory>), String> {
         if let Some(path) = &path {
             path.validate().map_err(|_| "agent_files_invalid_path")?;
         }
@@ -228,7 +228,7 @@ impl Owner {
     async fn check_file_session(
         &self,
         session: &str,
-        original: &SessionConfiguration,
+        original: &ResolvedConfiguration,
         scope: &Scope,
     ) -> Result<(), String> {
         if scope.cancellation.is_cancelled() || self.stop.is_cancelled() {
@@ -242,7 +242,7 @@ impl Owner {
         .await?;
         let current = self.session(session).await?.configuration;
         if current.workspace != original.workspace
-            || current.boundary_revision != original.boundary_revision
+            || current.permission_basis() != original.permission_basis()
         {
             return Err("agent_files_changed".into());
         }
@@ -255,7 +255,7 @@ impl Owner {
     async fn observe_files(
         &self,
         session: &str,
-        original: &SessionConfiguration,
+        original: &ResolvedConfiguration,
         directory: &Arc<Directory>,
         watch: &mut Watch,
         context: &Context,
@@ -265,7 +265,7 @@ impl Owner {
         let result = async {
             // Subscribe before revalidating the captured Session. Earlier changes
             // are caught by the read; later changes remain pending on this receiver.
-            let mut commits = self.store.subscribe_commits();
+            let mut commits = self.store.session(session).await.map_err(|error| error.to_string())?.subscribe_commits().map_err(|error| error.to_string())?;
             commits.borrow_and_update();
             #[cfg(not(all(test, target_os = "macos")))]
             let native_hints = true;

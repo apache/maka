@@ -129,33 +129,9 @@ async fn credential(f: &Fixture, url: &str, target: Value, secret: Option<&str>)
     mutation(f, "credential", json!({"url":url,"revision":current["credentialRevision"],"target":target,"change":if secret.is_some() {"replace"} else {"remove"}}), secret).await
 }
 async fn incoming(socket: &mut TcpStream) -> (String, Value) {
-    let mut bytes = Vec::new();
-    loop {
-        let mut buffer = [0; 4096];
-        let count = socket.read(&mut buffer).await.unwrap();
-        assert!(count > 0);
-        bytes.extend_from_slice(&buffer[..count]);
-        if let Some(end) = bytes.windows(4).position(|v| v == b"\r\n\r\n") {
-            let headers = String::from_utf8(bytes[..end].to_vec()).unwrap();
-            let length: usize = headers
-                .lines()
-                .find_map(|line| {
-                    line.to_ascii_lowercase()
-                        .strip_prefix("content-length: ")
-                        .map(str::to_owned)
-                })
-                .unwrap()
-                .parse()
-                .unwrap();
-            if bytes.len() >= end + 4 + length {
-                return (
-                    headers,
-                    serde_json::from_slice(&bytes[end + 4..end + 4 + length]).unwrap(),
-                );
-            }
-        }
-    }
+    http_fixture::read_request(socket).await
 }
+
 #[tokio::test]
 async fn native_jev_evaluates_with_endpoint_credentials_and_revokes_inflight_access() {
     tokio::time::timeout(Duration::from_secs(30), async {

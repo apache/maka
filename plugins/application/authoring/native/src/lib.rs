@@ -25,7 +25,7 @@ use maka_capabilities::{
     call::Scope,
     storage::{Data, Mutation, Namespace},
 };
-use maka_event_log::EventLog;
+use maka_event_log::RootStore;
 use maka_host_runtime::application::{
     Context, Handler, NativeActivation, NativeContext, NativeOwner, NativeRegistry,
 };
@@ -37,7 +37,7 @@ use tokio::sync::{Mutex, Notify};
 
 #[derive(Clone)]
 struct Requests {
-    store: Arc<EventLog>,
+    store: Arc<RootStore>,
     prefix: String,
     writes: Arc<Mutex<()>>,
     changed: Arc<Notify>,
@@ -375,7 +375,7 @@ mod tests {
         assert!(serde_json::from_value::<Command>(json!({"method":"instances"})).is_err());
         assert!(serde_json::from_value::<Command>(json!({"method":"unknown","input":{}})).is_err());
     }
-    fn requests(store: Arc<EventLog>) -> Requests {
+    fn requests(store: Arc<RootStore>) -> Requests {
         Requests {
             store,
             prefix: "ui-test/".into(),
@@ -396,7 +396,7 @@ mod tests {
             )
             .unwrap(),
         );
-        let store = Arc::new(EventLog::for_root(owner).await.unwrap());
+        let store = Arc::new(RootStore::open(owner).await.unwrap());
         let first = requests(store.clone());
         let basis = first.execution_basis().unwrap();
         let mut other = requests(store.clone());

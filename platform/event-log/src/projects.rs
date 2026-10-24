@@ -24,7 +24,7 @@ mod mutation;
 mod relink;
 
 use crate::{EventLog, StoreError};
-pub use relink::{ProjectRelink, ProjectRelinkContext, ProjectRelinkGuard};
+pub use relink::{ProjectRelink, ProjectRelinkGuard};
 use sqlx::{Connection, Row, SqliteConnection};
 use std::collections::BTreeMap;
 

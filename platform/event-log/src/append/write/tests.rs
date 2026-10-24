@@ -200,6 +200,7 @@ async fn neighbors_share_commit_and_isolate_bad_batch_and_conflicting_replay() {
     assert_eq!(count.load(Ordering::SeqCst), 1);
     assert_eq!(log.connection.writer().failures() - before_failures, 2);
     assert_eq!(ids(&path), ["opened", "requested", "part", "first", "last"]);
+    assert_projection_positions(&path);
     let mut commits = log.subscribe_commits();
     commits.borrow_and_update();
     assert_eq!(log.append_batch(&first).await.unwrap(), [4]);
@@ -483,4 +484,190 @@ async fn authority_lost_during_last_request_rolls_back_before_commit() {
     assert!(matches!(b.await, Err(CommitError::Rejected(_))));
     log.connection.shutdown().await.unwrap();
     assert_eq!(ids(&path), ["opened", "requested", "part"]);
+}
+
+#[tokio::test]
+async fn session_observers_follow_confirmed_fast_and_checked_commits_only() {
+    let directory = tempfile::tempdir().unwrap();
+    let log = open(&directory.path().join("events.sqlite")).await;
+    let mut own = log.subscribe_session_commits("session");
+    let other = log.subscribe_session_commits("other");
+    let write = delta("observed", "one");
+    let sequence = log.append(&write).await.unwrap();
+    assert_eq!(*own.borrow_and_update(), sequence);
+    assert!(!other.has_changed().unwrap());
+    assert_eq!(log.append(&write).await.unwrap(), sequence);
+    assert!(
+        !own.has_changed().unwrap(),
+        "exact replay does not invalidate state"
+    );
+    assert!(log.append(&delta("observed", "conflict")).await.is_err());
+    assert!(
+        !own.has_changed().unwrap(),
+        "rejected input is not a change"
+    );
+    let terminal = event(
+        "interrupt",
+        Fact::ModelInterrupted {
+            model_failure: None,
+            step_id: "step".into(),
+            status: maka_agent_facts::event::ModelInterruption::Failed,
+            diagnostic: None,
+        },
+    );
+    let sequence = log.append(&terminal).await.unwrap();
+    assert!(own.has_changed().unwrap());
+    assert_eq!(*own.borrow_and_update(), sequence);
+    assert!(!other.has_changed().unwrap());
+    log.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn projection_sql_fault_preserves_database_codes_and_rolls_back_all_neighbors() {
+    for trigger in [
+        "CREATE TEMP TRIGGER projection_fault BEFORE INSERT ON context_source_prefixes
+         WHEN NEW.sequence=5 AND NEW.kind='session'
+         BEGIN SELECT RAISE(ABORT,'projection storage fault'); END;",
+        "CREATE TEMP TRIGGER projection_fault BEFORE UPDATE ON context_semantic_frontiers
+         WHEN NEW.through_sequence=5
+         BEGIN SELECT RAISE(ABORT,'projection storage fault'); END;",
+    ] {
+        let (legacy_code, legacy_message) = legacy_projection_failure(trigger).await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.sqlite");
+        let log = open(&path).await;
+        log.connection
+            .run(move |db| {
+                Box::pin(async move {
+                    sqlx::raw_sql(trigger).execute(db).await?;
+                    Ok(())
+                })
+            })
+            .await
+            .unwrap();
+        let (release, blocked) = gate(&log).await;
+        // Inspect the same typed receipts before EventSink intentionally maps
+        // storage errors into its string-bearing CommitError API.
+        let mut first = Box::pin(log.connection.write(
+            WriteAppend::from_events(&[delta("first", "one")]).unwrap(),
+            log.commits.session("session"),
+        ));
+        let mut poison = Box::pin(log.connection.write(
+            WriteAppend::from_events(&[delta("poison", "two")]).unwrap(),
+            log.commits.session("session"),
+        ));
+        let mut last = Box::pin(log.connection.write(
+            WriteAppend::from_events(&[delta("last", "three")]).unwrap(),
+            log.commits.session("session"),
+        ));
+        assert!(futures_util::poll!(&mut first).is_pending());
+        assert!(futures_util::poll!(&mut poison).is_pending());
+        assert!(futures_util::poll!(&mut last).is_pending());
+        let mut commits = log.subscribe_commits();
+        commits.borrow_and_update();
+        release.send(()).unwrap();
+        blocked.await.unwrap();
+        for result in [first.await, poison.await, last.await] {
+            let StoreError::Sqlx(error) = result.unwrap_err() else {
+                panic!("projection must retain SQLx database family")
+            };
+            let database = error
+                .as_database_error()
+                .expect("database error survived shared receipt");
+            assert_eq!(database.code().unwrap(), legacy_code);
+            assert_eq!(database.message(), legacy_message);
+            assert!(database.message().contains("projection storage fault"));
+            assert!(database.as_error().source().is_some());
+        }
+        assert!(!commits.has_changed().unwrap());
+        log.connection.shutdown().await.unwrap();
+        assert_eq!(ids(&path), ["opened", "requested", "part"]);
+        assert_projection_positions(&path);
+        let reopened = EventLog::open(&path).await.unwrap();
+        assert_eq!(
+            reopened
+                .append_batch(&[delta("first", "one")])
+                .await
+                .unwrap(),
+            [4]
+        );
+        reopened.close().await.unwrap();
+        assert_projection_positions(&path);
+    }
+}
+
+fn assert_projection_positions(path: &std::path::Path) {
+    let db = rusqlite::Connection::open(path).unwrap();
+    let canonical: Vec<i64> = db
+        .prepare("SELECT sequence FROM runtime_events ORDER BY sequence")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    for kind in ["root", "session", "invocation"] {
+        let projected: Vec<i64> = db
+            .prepare("SELECT sequence FROM context_source_prefixes WHERE kind=? ORDER BY sequence")
+            .unwrap()
+            .query_map([kind], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            projected, canonical,
+            "{kind} projection retained rolled-back event"
+        );
+    }
+    let semantic: i64 = db
+        .query_row(
+            "SELECT through_sequence FROM context_semantic_heads WHERE session_id='session'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(Some(&semantic), canonical.last());
+}
+
+// Measure the old INSERT-trigger/UDF error contract using the same real
+// projector and injected fault. rusqlite's callback reporting can translate a
+// nested SQLite code; comparing its actual SQLx result avoids inventing codes.
+async fn legacy_projection_failure(trigger: &'static str) -> (String, String) {
+    use sqlx::Connection as _;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("legacy.sqlite");
+    let log = open(&path).await;
+    let failure = log.connection.run(move |db| Box::pin(async move {
+        sqlx::raw_sql("CREATE TRIGGER context_source_append AFTER INSERT ON event_log
+            WHEN NEW.invocation_id IS NOT NULL AND NEW.event_json IS NOT NULL BEGIN
+              SELECT context_source_record(NEW.sequence,NEW.event_session,NEW.invocation_id,NEW.event_json,NEW.kind);
+            END;
+            CREATE TRIGGER context_semantic_append AFTER INSERT ON event_log
+            WHEN NEW.invocation_id IS NOT NULL AND NEW.event_json IS NOT NULL BEGIN
+              SELECT context_semantic_record(NEW.sequence,NEW.event_json);
+            END;").execute(&mut *db).await?;
+        sqlx::raw_sql(trigger).execute(&mut *db).await?;
+        let mut tx = db.begin().await?;
+        let mut error = None;
+        for write in [delta("legacy-first", "one"), delta("legacy-poison", "two")] {
+            let event = write.event();
+            let result = sqlx::query("INSERT INTO event_log(event_id,invocation_id,kind,operation_id,event_json) VALUES(?,?,?,?,?)")
+                .bind(&event.id).bind(&event.invocation.invocation_id).bind(event.fact.kind())
+                .bind(event.fact.operation_id()).bind(serde_json::to_string(event)?)
+                .execute(&mut *tx).await;
+            if let Err(cause) = result { error = Some(cause); break; }
+        }
+        let error = error.expect("legacy projection fault must fire");
+        let database = error.as_database_error().expect("legacy SQLx database error");
+        assert!(database.message().contains("projection storage fault"));
+        let failure = (database.code().unwrap().into_owned(), database.message().to_owned());
+        tx.rollback().await?;
+        Ok(failure)
+    })).await.unwrap();
+    log.connection.shutdown().await.unwrap();
+    assert_projection_positions(&path);
+    eprintln!(
+        "legacy projection failure: code={} message={}",
+        failure.0, failure.1
+    );
+    failure
 }

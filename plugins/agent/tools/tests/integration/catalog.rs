@@ -65,6 +65,7 @@ fn context() -> ToolCallContext {
             invocation_id: "invocation".into(),
         },
         operation_id: "step:call".into(),
+        execution: None,
     }
 }
 
@@ -213,7 +214,7 @@ async fn discovery_loads_complete_schemas_without_running_effects() {
         let search = preflight::call("search", "tool_search", json!({"query":"fixture"}));
         let invocation = preflight::invocation("discovery-budget");
         preflight::accepted(&log, &invocation, &[invalid.clone(), search.clone()]).await;
-        let loaded = maka_tools::availability::LoadedTools::default();
+        let loaded = maka_tools::availability::LoadedTools::temporary().unwrap();
         let run = RunTools::new(
             maka_agent_facts::language::Language::En,
             log.clone(),
@@ -250,8 +251,8 @@ async fn discovery_loads_complete_schemas_without_running_effects() {
             .capture(".", tokio_util::sync::CancellationToken::new())
             .await
             .unwrap();
-        let checkpoint = run.checkpoint();
-        let restored_loaded = maka_tools::availability::LoadedTools::default();
+        let checkpoint = run.checkpoint().unwrap();
+        let restored_loaded = maka_tools::availability::LoadedTools::temporary().unwrap();
         let restored = RunTools::new(
             maka_agent_facts::language::Language::En,
             log.clone(),
@@ -286,7 +287,7 @@ async fn discovery_loads_complete_schemas_without_running_effects() {
         invalid.loaded.insert(String::new());
         assert!(restored.restore(&invalid).is_err());
         assert_eq!(
-            restored.checkpoint(),
+            restored.checkpoint().unwrap(),
             checkpoint,
             "failed restore preserves the admitted view"
         );
@@ -297,7 +298,7 @@ async fn discovery_loads_complete_schemas_without_running_effects() {
             ToolCatalog::default(),
             ToolMode::Direct,
             CodeExecutor::new(CellLimits::default()).unwrap(),
-            Default::default(),
+            maka_tools::availability::LoadedTools::temporary().unwrap(),
         );
         assert!(changed.restore(&checkpoint).is_err());
         drop(changed);
@@ -312,15 +313,15 @@ async fn discovery_loads_complete_schemas_without_running_effects() {
         );
         let captured_code = coded.capture(".", CancellationToken::new()).await.unwrap();
         let declarations = captured_code.definitions();
-        restored_loaded.clear();
-        assert!(restored.checkpoint().loaded.is_empty());
+        restored_loaded.clear().unwrap();
+        assert!(restored.checkpoint().unwrap().loaded.is_empty());
         assert_eq!(
-            run.checkpoint(),
+            run.checkpoint().unwrap(),
             checkpoint,
             "a detached successor cannot change the prior Session preferences"
         );
         drop(restored);
-        loaded.clear();
+        loaded.clear().unwrap();
         assert_eq!(
             captured_code.definitions(),
             declarations,
@@ -354,4 +355,97 @@ async fn discovery_loads_complete_schemas_without_running_effects() {
         drop(run);
         Arc::try_unwrap(log).ok().unwrap().close().await.unwrap();
     }
+}
+
+#[tokio::test]
+async fn discovery_state_failure_after_successful_t2_is_fatal() {
+    use crate::support::preflight;
+    use maka_agent_facts::event::{CommitFuture, EventSink, EventWrite, Fact};
+    use maka_agent_facts::tools::ToolError;
+    use maka_code_runtime::CellLimits;
+    use maka_event_log::EventLog;
+    use maka_tools::availability::LoadedTools;
+
+    struct RetireAfterSettlement {
+        log: Arc<EventLog>,
+        loaded: LoadedTools,
+        settlements: AtomicUsize,
+    }
+    impl EventSink for RetireAfterSettlement {
+        fn commit(self: Arc<Self>, write: EventWrite) -> CommitFuture {
+            Box::pin(async move {
+                let settled = matches!(write.event().fact, Fact::ToolSettled { .. });
+                let committed = self.log.clone().commit(write).await?;
+                if settled {
+                    self.settlements.fetch_add(1, Ordering::SeqCst);
+                    // Fail the subsequent preference write only after T2 is durable.
+                    self.loaded.session().retire().unwrap();
+                }
+                Ok(committed)
+            })
+        }
+    }
+
+    let directory = tempfile::tempdir().unwrap();
+    let log = Arc::new(
+        EventLog::open(&directory.path().join("events.sqlite"))
+            .await
+            .unwrap(),
+    );
+    let loaded = LoadedTools::temporary().unwrap();
+    let sink = Arc::new(RetireAfterSettlement {
+        log: log.clone(),
+        loaded: loaded.clone(),
+        settlements: AtomicUsize::new(0),
+    });
+    let search = preflight::call("search", "tool_search", json!({"query":"echo"}));
+    let invocation = preflight::invocation("discovery-state-failure");
+    preflight::accepted(&log, &invocation, &[search.clone()]).await;
+    let catalog = ToolCatalog::new([registration(
+        "echo",
+        json!({"type":"object"}),
+        Arc::new(Fixture::default()),
+    )])
+    .unwrap()
+    .with_discovery();
+    let run = RunTools::new(
+        maka_agent_facts::language::Language::En,
+        sink.clone(),
+        invocation.clone(),
+        catalog,
+        ToolMode::Direct,
+        CodeExecutor::new(CellLimits::default()).unwrap(),
+        loaded,
+    );
+    let checkpoint = run.checkpoint().unwrap();
+    let mut step = run
+        .capture(".", CancellationToken::new())
+        .await
+        .unwrap()
+        .into_step(&invocation.invocation_id);
+    assert!(matches!(
+        step.invoke(&search, CancellationToken::new()).await,
+        Err(ToolError::Persistence(_))
+    ));
+    assert_eq!(sink.settlements.load(Ordering::SeqCst), 1);
+    let prefix = log.prefix(32, 64 * 1024).await.unwrap();
+    assert!(prefix.events.iter().any(|stored| matches!(
+        &stored.event.fact,
+        Fact::ToolSettled { outcome: maka_agent_facts::event::ToolOutcome::Succeeded {
+            model_projection: maka_agent_facts::tool_output::DurableToolProjection::Json { value }, ..
+        }, .. } if *value == json!({"activated":["echo"]})
+    )));
+    assert!(matches!(
+        run.capture(".", CancellationToken::new()).await,
+        Err(ToolError::Persistence(_))
+    ));
+    assert!(matches!(run.checkpoint(), Err(ToolError::Persistence(_))));
+    assert!(matches!(
+        run.restore(&checkpoint),
+        Err(ToolError::Persistence(_))
+    ));
+    drop(step);
+    drop(run);
+    drop(sink);
+    preflight::close(log).await;
 }

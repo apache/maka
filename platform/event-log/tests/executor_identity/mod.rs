@@ -69,6 +69,7 @@ fn opening(cwd: &std::path::Path, external: bool) -> Fact {
                 approval_policy: maka_agent_facts::execution::ApprovalPolicy::OnRequest,
                 boundary_revision: 0,
                 cwd: cwd.to_string_lossy().into_owned(),
+                workspace_binding: None,
                 workspace_identity: None,
                 model: None,
                 editing_tools: None,

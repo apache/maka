@@ -31,7 +31,7 @@ pub use maka_agent_facts::accounting::ToolAttempt;
 use sqlx::{Row, sqlite::SqliteRow};
 
 mod auxiliary;
-mod reads;
+pub(crate) mod reads;
 mod summary;
 pub use summary::Report;
 pub(crate) mod valuation;
@@ -73,7 +73,7 @@ impl Query {
         }
     }
 
-    fn validate(&self) -> Result<(), StoreError> {
+    pub(crate) fn validate(&self) -> Result<(), StoreError> {
         if !self.from.is_finite() || !self.to.is_finite() || self.from < 0.0 || self.to < self.from
         {
             return Err(invalid("invalid Usage time range"));

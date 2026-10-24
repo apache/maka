@@ -216,9 +216,6 @@ impl Client {
         if self.0.closing.load(Ordering::Acquire) {
             return Err("client scope is closing".into());
         }
-        if self.0.requests.lock().await.len() >= 128 {
-            return Err("client request capacity exhausted; settle earlier requests".into());
-        }
         let description = host.catalogue().describe(endpoint)?.clone();
         let call = host.call(endpoint, method.into(), input, resources).await?;
         let request = Arc::new(Request {

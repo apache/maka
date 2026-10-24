@@ -47,18 +47,7 @@ fn frames(events: &[Value]) -> String {
 }
 
 async fn read_request(socket: &mut TcpStream) -> Value {
-    let mut bytes = Vec::new();
-    let boundary = loop {
-        let mut chunk = [0; 4096];
-        let count = socket.read(&mut chunk).await.unwrap();
-        assert_ne!(count, 0);
-        bytes.extend_from_slice(&chunk[..count]);
-        assert!(bytes.len() < 64 * 1024);
-        if let Some(at) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
-            break at + 4;
-        }
-    };
-    let head = String::from_utf8_lossy(&bytes[..boundary]);
+    let (head, bytes) = crate::http_request(socket).await;
     assert!(head.starts_with("POST /v1/responses HTTP/1.1\r\n"));
     assert!(
         head.lines()
@@ -68,22 +57,7 @@ async fn read_request(socket: &mut TcpStream) -> Value {
         head.lines()
             .any(|line| line.eq_ignore_ascii_case("x-test-provider: responses"))
     );
-    let length: usize = head
-        .lines()
-        .find_map(|line| {
-            let (key, value) = line.split_once(':')?;
-            key.eq_ignore_ascii_case("content-length")
-                .then(|| value.trim().parse().unwrap())
-        })
-        .unwrap();
-    assert!(boundary + length < 64 * 1024);
-    while bytes.len() < boundary + length {
-        let mut chunk = [0; 4096];
-        let count = socket.read(&mut chunk).await.unwrap();
-        assert_ne!(count, 0);
-        bytes.extend_from_slice(&chunk[..count]);
-    }
-    serde_json::from_slice(&bytes[boundary..boundary + length]).unwrap()
+    serde_json::from_slice(&bytes).unwrap()
 }
 
 fn completed() -> Value {
@@ -232,7 +206,7 @@ async fn responses_http_preserves_reasoning_and_raw_tool_identity_across_steps()
             let request = ModelRequest {
                 language: maka_agent_facts::language::Language::En,
                 provider: ProviderConfig { adapter: None, capabilities: Default::default(), network: Default::default(), kind: ProviderKind::OpenaiResponses, model: "gpt-5".into(), base_url: base_url.clone(), auth: maka_model::ProviderAuth::ApiKey("local-test-key".into()), headers: BTreeMap::from([("x-test-provider".into(), "responses".into())]), body_overlay: Some(serde_json::Map::from_iter([("fixture_context".into(), json!({"route":"responses"}))])) },
-                prompt: serde_json::from_value(json!(prompt)).unwrap(),
+                prompt: serde_json::from_value::<Vec<maka_model::prompt::Message>>(json!(prompt)).unwrap().into(),
                 tools: vec![maka_model::ToolDefinition { freeform: None, output_schema: None, provider: None, name: "tool_search".into(), description: "Echo text".into(), input_schema: schema.clone() }],
                 provider_options: json!({"openai":{"store":false,"reasoningEffort":"low","reasoningSummary":"auto"}}),
                 max_output_tokens: Some(128),
@@ -286,7 +260,11 @@ async fn responses_http_preserves_reasoning_and_raw_tool_identity_across_steps()
             let ModelPart::Text { text_kind, text, provider_options } = &step.parts[0] else { panic!("reasoning missing") };
             assert_eq!(*text_kind, TextKind::Thinking);
             assert_eq!(text, "Check the echo tool.");
-            assert_eq!(provider_options.as_ref().unwrap()["openai"], json!({"itemId":"rs_1","reasoningEncryptedContent":"opaque-reasoning"}));
+            let metadata = &provider_options.as_ref().unwrap()["openai"];
+            assert_eq!(metadata["itemId"], "rs_1");
+            assert_eq!(metadata["reasoningEncryptedContent"], "opaque-reasoning");
+            assert_eq!(metadata["responsesReplay"]["fields"]["type"], "reasoning");
+            assert!(!metadata["responsesReplay"].to_string().contains("Check the echo tool."));
             let call = step.tool_calls().next().unwrap();
             assert_eq!(call.id, "call_raw_1");
             assert_eq!(call.name, "tool_search");
@@ -325,9 +303,9 @@ async fn responses_http_preserves_reasoning_and_raw_tool_identity_across_steps()
         assert_eq!(history[1]["encrypted_content"], "opaque-reasoning");
         assert_eq!(history[2]["content"][0]["text"], "Checking 😀");
         assert_eq!(history[3]["type"], "function_call");
-        // adapter deliberately omits the item ID on replayed client function calls;
-        // call_id pairs the call with its output, while Rust retains item metadata.
-        assert!(history[3].get("id").is_none());
+        // The canonical accepted item retains its provider identity even after
+        // the disposable connection/cache is gone.
+        assert_eq!(history[3]["id"], "fc_item_1");
         assert_eq!(history[3]["call_id"], "call_raw_1");
         assert_eq!(history[3]["name"], "maka_tool_search");
         assert_eq!(serde_json::from_str::<Value>(history[3]["arguments"].as_str().unwrap()).unwrap(), json!({"text":"你好😀"}));
@@ -409,7 +387,11 @@ async fn responses_http_streams_custom_input_before_its_complete_freeform_call()
         assert_eq!(call.name, "exec");
         assert_eq!(call.input, ToolInput::Json(json!(source)));
         assert!(!call.provider_executed);
-        assert_eq!(call.provider_options, Some(json!({"openai":{"itemId":"custom_item","toolKind":"custom"}})));
+        let metadata = &call.provider_options.as_ref().unwrap()["openai"];
+        assert_eq!(metadata["itemId"], "custom_item");
+        assert_eq!(metadata["toolKind"], "custom");
+        assert_eq!(metadata["responsesReplay"]["fields"]["type"], "custom_tool_call");
+        assert!(metadata["responsesReplay"]["fields"].get("input").is_none());
         let request = server.await.unwrap();
         assert_eq!(request["tools"][0]["type"], "custom");
         assert_eq!(request["tools"][0]["name"], "exec");
@@ -480,7 +462,7 @@ async fn plaintext_responses_replays_only_its_declared_carrier_after_a_tool_step
                     provider: ProviderConfig { adapter: None, capabilities: Default::default(), network: Default::default(), kind: ProviderKind::OpenResponses(contract),
                         model: "plain".into(), base_url: base_url.clone(), auth: maka_model::ProviderAuth::ApiKey("local-test-key".into()),
                         headers: BTreeMap::from([("x-test-provider".into(),"responses".into())]), body_overlay: None },
-                    prompt: prompt.clone(), tools: vec![maka_model::ToolDefinition { freeform: None, output_schema: None, provider: None, name: "tool_search".into(), description: "Search tools".into(), input_schema: json!({"type":"object"}) }],
+                    prompt: prompt.clone().into(), tools: vec![maka_model::ToolDefinition { freeform: None, output_schema: None, provider: None, name: "tool_search".into(), description: "Search tools".into(), input_schema: json!({"type":"object"}) }],
                     provider_options: json!({"openResponses":{"reasoningEffort":"high","reasoningSummary":"auto"}}),
                     max_output_tokens: Some(256),
                 };
@@ -546,7 +528,7 @@ async fn plaintext_responses_does_not_turn_transport_eof_into_success() {
                 kind: ProviderKind::OpenResponses(PlaintextResponses { reasoning_replay: PlaintextReasoningReplay::PlaintextSummary, compatibility: None }),
                 model: "plain".into(), base_url, auth: maka_model::ProviderAuth::ApiKey("local-test-key".into()),
                 headers: BTreeMap::from([("x-test-provider".into(), "responses".into())]), body_overlay: None },
-            prompt: vec![maka_model::prompt::Message::user("hello")],
+            prompt: vec![maka_model::prompt::Message::user("hello")].into(),
             tools: vec![], provider_options: json!({}), max_output_tokens: None,
         }, CancellationToken::new()).await.unwrap();
         let mut failure = None;

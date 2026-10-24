@@ -18,10 +18,14 @@
  */
 
 //! Immutable outbound routing shared by provider HTTP and WebSocket transport.
+mod connection_tasks;
+pub use connection_tasks::ConnectionTasks;
 mod policy;
 mod probe;
 pub use probe::probe;
 pub mod proxy;
+mod tls_config;
+pub use tls_config::TlsConfigCache;
 mod tunnel;
 mod websocket;
 pub use policy::Policy;
@@ -37,6 +41,8 @@ pub enum Error {
     InvalidHeaders,
     #[error("invalid WebSocket upgrade response")]
     InvalidUpgrade,
+    #[error("outbound redirect limit")]
+    RedirectLimit,
     #[error("outbound network request failed")]
     Transport(#[source] reqwest::Error),
 }

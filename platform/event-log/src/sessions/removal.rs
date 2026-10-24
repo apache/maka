@@ -146,7 +146,7 @@ impl EventLog {
             return Err(invalid("invalid expected Session revision"));
         }
         let session = session.to_owned();
-        let commits = self.commits.clone();
+        let commits = self.commits.session(&session);
         self.connection
             .run(move |connection| {
                 Box::pin(async move {
@@ -160,21 +160,16 @@ impl EventLog {
                             SessionRetirement::Archived => {}
                         }
                     }
-                    let actual: i64 =
-                        sqlx::query_scalar("SELECT revision FROM session_control WHERE id=?")
-                            .bind(&session)
-                            .fetch_optional(&mut *tx)
+                    let actual =
+                        crate::workspace_bindings::current_session_revision(&mut tx, &session)
                             .await?
                             .ok_or(StoreError::SessionNotFound)?;
-                    if actual as u64 != expected {
-                        return Ok(SessionRemovalResult::RevisionConflict {
-                            expected,
-                            actual: actual as u64,
-                        });
+                    if actual != expected {
+                        return Ok(SessionRemovalResult::RevisionConflict { expected, actual });
                     }
                     plan::fence(&mut tx, &session, plan::Action::Remove).await?;
                     tx.commit().await.map_err(StoreError::CommitUnknown)?;
-                    commits.send_modify(|_| {});
+                    commits.metadata();
                     Ok(SessionRemovalResult::Accepted(SessionRetirement::Removing))
                 })
             })
@@ -228,6 +223,8 @@ impl EventLog {
         self.validate_root()?;
         validate_id(session)?;
         let session = session.to_owned();
+        let commits = self.commits.session(&session);
+        let prepared = self.prepared.clone();
         self.connection
             .run(move |connection| {
                 Box::pin(async move {
@@ -250,11 +247,17 @@ impl EventLog {
                         .await?;
                         advance_catalog(&mut tx).await?;
                         tx.commit().await.map_err(StoreError::CommitUnknown)?;
+                        commits.metadata();
                         return Ok(SessionRetirement::Archived);
                     }
                     // Membership is retained proof, not a disposable UI projection:
                     // descendants may pin an archive whose writer inherited its target.
                     // Verifying that archive/checkpoint still needs the writer's cut.
+                    // The caller's physical-drain contract above releases this
+                    // owner's lazy prepared views. Other owners' copied metadata
+                    // and immutable shared payloads remain independently pinned.
+                    crate::context::prepared::gc::retire_owner(&mut tx, &session).await?;
+                    crate::context::semantic::gc::retire_owner(&mut tx, &session).await?;
                     for statement in [
                         "DELETE FROM session_history_artifacts WHERE session_id=?",
                         "DELETE FROM session_revision_sources WHERE session_id=?",
@@ -282,6 +285,8 @@ impl EventLog {
                         .await?;
                     advance_catalog(&mut tx).await?;
                     tx.commit().await.map_err(StoreError::CommitUnknown)?;
+                    prepared.wake();
+                    commits.metadata();
                     Ok(SessionRetirement::Removed)
                 })
             })
@@ -299,8 +304,7 @@ async fn settled(connection: &mut SqliteConnection, session: &str) -> Result<boo
          OR EXISTS(SELECT 1 FROM session_processes WHERE session_id=?1 AND cleaned=0)
          OR EXISTS(SELECT 1 FROM host_effects WHERE outcome IS NULL
             AND json_extract(request, '$.boundary.boundary.sessionId')=?1)
-         OR EXISTS(SELECT 1 FROM interaction_requests r WHERE session_id=?1
-            AND NOT EXISTS(SELECT 1 FROM interaction_outcomes o WHERE o.request_id=r.request_id))
+         OR EXISTS(SELECT 1 FROM interaction_pending WHERE session_id=?1)
          OR EXISTS(SELECT 1 FROM message_admissions WHERE session_id=?1)
          OR EXISTS(SELECT 1 FROM event_log a WHERE a.kind='auxiliary_model_started'
             AND json_extract(a.event_json,'$.source.kind')='session_title'

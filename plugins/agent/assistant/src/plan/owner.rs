@@ -153,7 +153,7 @@ impl Owner {
             return Err(Error::Conflict);
         }
         let observation = commands
-            .query(execution.request.operation_id.clone())
+            .query(execution.request.operation())
             .await?;
         let activity = commands.activity(session.clone()).await?;
         if observation.receipt.invocation.turn_id != invocation.turn_id
@@ -248,7 +248,7 @@ impl Owner {
             return Ok(false);
         }
         let commands = self.executions.restore(execution.grant).await?;
-        match commands.query(execution.request.operation_id.clone()).await {
+        match commands.query(execution.request.operation()).await {
             Ok(observation) => self.observe(session, commands.as_ref(), observation).await,
             Err(CommandError::NotFound) if matches!(execution.phase, Phase::AwaitingAdmission) => {
                 if execution.cancellation.is_some() {
@@ -270,7 +270,7 @@ impl Owner {
                 match commands.submit(execution.request.clone()).await {
                     Ok(_) => {
                         let observation = commands
-                            .query(execution.request.operation_id.clone())
+                            .query(execution.request.operation())
                             .await?;
                         self.observe(session, commands.as_ref(), observation).await
                     }
@@ -347,7 +347,7 @@ impl Owner {
             && !matches!(observation.progress, Progress::Ended { .. })
         {
             observation = commands
-                .cancel(execution.request.operation_id.clone())
+                .cancel(execution.request.operation())
                 .await?;
         }
         let Progress::Ended { outcome } = observation.progress else {

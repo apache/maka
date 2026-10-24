@@ -17,7 +17,7 @@
  * under the License.
  */
 
-//! Live shell ownership. Durable records remain in the existing EventLog.
+//! Live shell ownership. Durable records remain in the existing RootStore.
 mod control;
 mod handle;
 mod output;
@@ -33,7 +33,8 @@ pub use output::{PtyStream, PtyStreamEvent};
 
 use maka_agent_facts::shell_run::{ShellObservation, ShellRun};
 use maka_agent_facts::terminal::TerminalSize;
-use maka_event_log::{EventLog, StoreError};
+use maka_event_log::StoreError;
+use maka_event_log::root_store::RootStore;
 use maka_process::pty::PtyCommand;
 use std::{
     collections::HashMap,
@@ -68,7 +69,7 @@ pub(super) type Update = Option<std::result::Result<Arc<ShellObservation>, Arc<S
 /// At most eight native PTYs; each worker owns its Rust terminal parser.
 /// This is an internal execution API, not a client authorization boundary.
 pub struct ShellResources {
-    log: Arc<EventLog>,
+    log: Arc<RootStore>,
     active: Active,
     output_changes: watch::Sender<()>,
     workers: TaskTracker,
@@ -77,7 +78,7 @@ pub struct ShellResources {
 }
 
 impl ShellResources {
-    pub fn new(log: Arc<EventLog>, host_drain: CancellationToken) -> Self {
+    pub fn new(log: Arc<RootStore>, host_drain: CancellationToken) -> Self {
         Self {
             log,
             active: Arc::default(),
@@ -95,8 +96,13 @@ impl ShellResources {
         record: ShellRun,
         command: PtyCommand,
         size: TerminalSize,
+        execution: Option<(
+            maka_agent_facts::event::Invocation,
+            Arc<dyn maka_agent_facts::tools::ExecutionCustody>,
+        )>,
     ) -> Result<ShellHandle> {
         record.validate().map_err(ShellError::Rejected)?;
+        let execution = prepare_execution(&self.log, &record, execution)?;
         if !record.output.is_pty()
             || record
                 .timeout_ms
@@ -153,9 +159,10 @@ impl ShellResources {
                     let runtime = tokio::runtime::Builder::new_current_thread()
                         .enable_all()
                         .build()?;
-                    runtime.block_on(
-                        worker::Worker {
-                            log: log.clone(),
+                    runtime.block_on(async {
+                        let lease = execution_lease(&log, &record, execution).await?;
+                        let result = worker::Worker {
+                            log: lease.store(),
                             record: Arc::new(record),
                             commands: receiver,
                             updates: updates.clone(),
@@ -165,8 +172,11 @@ impl ShellResources {
                             persistence_failed: false,
                             output: output.clone(),
                         }
-                        .run(command, size),
-                    )
+                        .run(command, size)
+                        .await;
+                        finish_execution(lease, &result);
+                        result
+                    })
                 }));
                 match result {
                     Ok(Ok(())) => {}
@@ -205,9 +215,14 @@ impl ShellResources {
         &self,
         record: ShellRun,
         command: maka_process::Command,
+        execution: Option<(
+            maka_agent_facts::event::Invocation,
+            Arc<dyn maka_agent_facts::tools::ExecutionCustody>,
+        )>,
     ) -> Result<ShellHandle> {
         use futures_util::FutureExt;
         record.validate().map_err(ShellError::Rejected)?;
+        let execution = prepare_execution(&self.log, &record, execution)?;
         if record.output.is_pty() {
             return Err(ShellError::Rejected("invalid pipe launch"));
         }
@@ -251,15 +266,21 @@ impl ShellResources {
         drop(active);
         scheduler.spawn(async move {
             let _owner = owner;
-            let result = std::panic::AssertUnwindSafe(pipes::run(
-                log,
-                record,
-                process,
-                &updates,
-                &cancellation,
-                &drain,
-                &stop,
-            ))
+            let result = std::panic::AssertUnwindSafe(async {
+                let lease = execution_lease(&log, &record, execution).await?;
+                let result = pipes::run(
+                    lease.store(),
+                    record,
+                    process,
+                    &updates,
+                    &cancellation,
+                    &drain,
+                    &stop,
+                )
+                .await;
+                finish_execution(lease, &result);
+                result
+            })
             .catch_unwind()
             .await;
             let error = match result {
@@ -304,4 +325,63 @@ impl Drop for Residency {
     fn drop(&mut self) {
         self.active.lock().unwrap().remove(&self.key);
     }
+}
+
+fn finish_execution(lease: maka_event_log::root_store::SessionExecutionLease, result: &Result<()>) {
+    if matches!(
+        result,
+        Err(ShellError::Process(
+            maka_agent_facts::tools::ToolError::CleanupUnconfirmed(_)
+        ))
+    ) {
+        lease.retain_unconfirmed();
+    } else {
+        lease.finish();
+    }
+}
+
+// Before a worker starts, admission failures and failed spawning own no physical
+// effect. Once taken, the worker's lease retains uncertainty on an unchecked Drop.
+struct PreparedExecution(Option<maka_event_log::root_store::SessionExecutionLease>);
+impl Drop for PreparedExecution {
+    fn drop(&mut self) {
+        if let Some(lease) = self.0.take() {
+            lease.finish();
+        }
+    }
+}
+fn prepare_execution(
+    root: &RootStore,
+    record: &ShellRun,
+    execution: Option<(
+        maka_agent_facts::event::Invocation,
+        Arc<dyn maka_agent_facts::tools::ExecutionCustody>,
+    )>,
+) -> Result<PreparedExecution> {
+    let lease = if let Some((invocation, custody)) = execution {
+        if invocation.session_id != record.session_id {
+            return Err(ShellError::Rejected("foreign shell execution custody"));
+        }
+        // Capture the child before returning admission; the parent may finish
+        // before the spawned background worker gets its first poll.
+        Some(root.fork_execution(custody.as_ref(), &invocation)?)
+    } else {
+        None
+    };
+    Ok(PreparedExecution(lease))
+}
+async fn execution_lease(
+    root: &RootStore,
+    record: &ShellRun,
+    mut execution: PreparedExecution,
+) -> Result<maka_event_log::root_store::SessionExecutionLease> {
+    if let Some(lease) = execution.0.take() {
+        return Ok(lease);
+    }
+    Ok(root
+        .session(&record.session_id)
+        .await?
+        .execution_scope(Some(record.permissions.basis))
+        .await?
+        .accept())
 }

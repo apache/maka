@@ -26,6 +26,8 @@ pub mod archive;
 pub mod artifacts;
 pub mod bundle;
 mod catalog_changes;
+mod commits;
+pub use commits::SessionSubscription;
 pub mod connection;
 pub mod context;
 mod continuation;
@@ -50,6 +52,8 @@ pub mod projects;
 mod read_resources;
 pub mod recovery;
 pub mod root;
+pub mod root_store;
+pub use root_store::{RootStore, SessionStore};
 pub mod run_source;
 mod schema;
 pub mod sessions;
@@ -64,6 +68,7 @@ pub mod transcript;
 pub mod turns;
 pub mod usage;
 pub mod workspace;
+pub mod workspace_bindings;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -95,6 +100,8 @@ pub enum StoreError {
     EventConflict,
     #[error("session create request conflicts with committed configuration")]
     SessionConflict,
+    #[error("Session creation was rejected: {0}")]
+    SessionCreationRejected(root_store::CreationRejection),
     #[error("artifact identity conflicts with committed metadata or payload")]
     ArtifactConflict,
     #[error("artifact chunk offset is out of range")]
@@ -163,22 +170,57 @@ pub enum StoreError {
 }
 
 pub struct EventLog {
-    context_cache: Arc<context::cache::Cache>,
+    expected_session: Option<Arc<str>>,
     // The independent owner drains SQLx and closes it before releasing its lease.
     connection: OwnedConnection,
     root_owner: Option<Arc<root::RootOwner>>,
-    commits: tokio::sync::watch::Sender<u64>,
+    commits: commits::CommitHub,
+    prepared: context::prepared::lifetime::PreparedRegistry,
     shell_changes: tokio::sync::broadcast::Sender<shell_runs::ShellChange>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum OpenPurpose {
     Execution,
+    RootControl,
     ApplicationInspection,
 }
 
 impl EventLog {
-    pub async fn for_root(owner: Arc<root::RootOwner>) -> Result<Self, StoreError> {
+    /// Root/SessionStore-only ingress carrying an already acquired SQL pin.
+    /// All journals, notices and actual workers remain the original owner's.
+    fn scoped(&self, custody: connection::custody::Custody) -> Self {
+        Self {
+            connection: self.connection.scoped(custody),
+            expected_session: self.expected_session.clone(),
+            root_owner: self.root_owner.clone(),
+            commits: self.commits.clone(),
+            prepared: self.prepared.clone(),
+            shell_changes: self.shell_changes.clone(),
+        }
+    }
+
+    /// Only SessionStore binds this private clone; no public raw log escapes.
+    fn bind_session(mut self, session: Arc<str>) -> Self {
+        self.expected_session = Some(session);
+        self
+    }
+
+    fn check_bound_session(&self, session: &str) -> Result<(), StoreError> {
+        Self::require_session_scope(self.expected_session.as_deref(), session)
+    }
+
+    fn require_session_scope(expected: Option<&str>, actual: &str) -> Result<(), StoreError> {
+        if expected.is_some_and(|expected| expected != actual) {
+            return Err(StoreError::InvalidTransition("foreign Session resource".into()));
+        }
+        Ok(())
+    }
+
+    // Primitive storage tests can own a single database. Production Roots must
+    // use RootStore so every Session and operation follows its durable route.
+    #[cfg(test)]
+    pub(crate) async fn for_root(owner: Arc<root::RootOwner>) -> Result<Self, StoreError> {
         owner.validate_current()?;
         let path = owner.canonical_path().join(root::ROOT_DATABASE);
         Self::open_owned(&path, Some(owner), OpenPurpose::Execution).await
@@ -221,6 +263,15 @@ impl EventLog {
         root_owner: Option<Arc<root::RootOwner>>,
         purpose: OpenPurpose,
     ) -> Result<Self, StoreError> {
+        Self::open_owned_with_control(path, root_owner, purpose, None).await
+    }
+
+    async fn open_owned_with_control(
+        path: &Path,
+        root_owner: Option<Arc<root::RootOwner>>,
+        purpose: OpenPurpose,
+        control: Option<connection::control::ReadOnlyControl>,
+    ) -> Result<Self, StoreError> {
         // A symlink alias must share the same lease and SQLite sidecars.
         let path = match path.canonicalize() {
             Ok(path) => path,
@@ -262,7 +313,9 @@ impl EventLog {
         let mut lock_path = path.as_os_str().to_os_string();
         lock_path.push(".writer.lock");
         let acquired = match purpose {
-            OpenPurpose::Execution => root::FileLease::acquire(Path::new(&lock_path)),
+            OpenPurpose::Execution | OpenPurpose::RootControl => {
+                root::FileLease::acquire(Path::new(&lock_path))
+            }
             OpenPurpose::ApplicationInspection => {
                 root::FileLease::acquire_existing(Path::new(&lock_path))
             }
@@ -275,36 +328,58 @@ impl EventLog {
             Err(error) => return Err(StoreError::Io(error)),
         };
         let options = match purpose {
-            OpenPurpose::Execution => SqliteConnectOptions::new()
+            OpenPurpose::Execution | OpenPurpose::RootControl => SqliteConnectOptions::new()
                 .filename(&path)
                 .create_if_missing(true),
             OpenPurpose::ApplicationInspection => application_inspection::options(&path)?,
         };
-        let connection = OwnedConnection::open(
+        let cache = if purpose == OpenPurpose::Execution {
+            Some(context::prepared::lifetime::PreparedCache::new(&path)?)
+        } else {
+            None
+        };
+        let prepared = cache
+            .as_ref()
+            .map(|cache| cache.registry())
+            .unwrap_or_else(|| {
+                let registry = context::prepared::lifetime::PreparedRegistry::new();
+                registry.close();
+                registry
+            });
+        let initialize_control = control.clone();
+        let connection = OwnedConnection::open_with_cache(
             options,
             ConnectionAuthority::Writer {
                 lease,
                 root: root_owner.clone(),
             },
-            match purpose {
-                OpenPurpose::Execution => |connection| {
-                    Box::pin(async move {
-                        schema::initialize_connection(connection).await?;
-                        transcript::directory::initialize(connection).await
-                    })
-                },
-                OpenPurpose::ApplicationInspection => application_inspection::initialize,
+            move |connection| {
+                Box::pin(async move {
+                    match purpose {
+                        OpenPurpose::Execution => {
+                            schema::initialize_connection_with_control(
+                                connection,
+                                initialize_control.as_ref(),
+                            )
+                            .await?;
+                            transcript::directory::initialize(connection).await
+                        }
+                        OpenPurpose::RootControl => {
+                            root_store::initialize_control(connection).await
+                        }
+                        OpenPurpose::ApplicationInspection => {
+                            application_inspection::initialize(connection).await
+                        }
+                    }
+                })
             },
+            cache,
+            control,
         )
         .await?;
-        let context_cache = Arc::new(context::cache::Cache::default());
-        let install = context_cache.clone();
         let high_water = connection
             .run(move |connection| {
                 Box::pin(async move {
-                    if purpose == OpenPurpose::Execution {
-                        install.install(connection).await?;
-                    }
                     sequence_number(
                         sqlx::query_scalar::<_, i64>(
                             "SELECT COALESCE(MAX(sequence), 0) FROM event_log",
@@ -329,10 +404,11 @@ impl EventLog {
             }
         };
         Ok(Self {
-            context_cache,
+            expected_session: None,
             connection,
             root_owner,
-            commits: tokio::sync::watch::channel(high_water).0,
+            commits: commits::CommitHub::new(high_water),
+            prepared,
             shell_changes: tokio::sync::broadcast::channel(256).0,
         })
     }
@@ -369,6 +445,12 @@ impl EventLog {
     /// before reading a bootstrap snapshot, then catch up from its SQL cursor.
     pub fn subscribe_commits(&self) -> tokio::sync::watch::Receiver<u64> {
         self.commits.subscribe()
+    }
+
+    /// Coalescible hints for this Session only. Subscribe before reading its
+    /// bootstrap snapshot; catch up from the committed SQL cursor after waking.
+    pub fn subscribe_session_commits(&self, session: &str) -> SessionSubscription {
+        self.commits.subscribe_session(session)
     }
 
     /// Register before reading catalog state. Hints include metadata writes;

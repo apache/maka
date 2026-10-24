@@ -35,7 +35,7 @@ pub(crate) fn global(
     Ok(files::merge(configurations, &[&files::global(home)?]))
 }
 
-use maka_agent_api::{contract::WorkspaceAccess, session::SessionConfiguration};
+use maka_agent_api::{contract::WorkspaceAccess, session::ResolvedConfiguration};
 use maka_agent_facts::{
     configuration::mcp::ServerConfiguration,
     tool_call::ToolRejection,
@@ -44,7 +44,7 @@ use maka_agent_facts::{
         ToolPreparer, ToolRegistration, ToolSemantics,
     },
 };
-use maka_event_log::EventLog;
+use maka_event_log::RootStore;
 use maka_mcp::Connection;
 use serde_json::Value;
 use std::{
@@ -64,7 +64,7 @@ pub(crate) struct Servers {
 impl Servers {
     pub async fn open(
         configurations: &[ServerConfiguration],
-        store: Arc<EventLog>,
+        store: Arc<RootStore>,
         configuration: &maka_config::ConfigurationStore,
     ) -> Result<Self, String> {
         Self::open_cancellable(
@@ -78,7 +78,7 @@ impl Servers {
     }
     pub async fn open_cancellable(
         configurations: &[ServerConfiguration],
-        store: Arc<EventLog>,
+        store: Arc<RootStore>,
         configuration: &maka_config::ConfigurationStore,
         cancellation: CancellationToken,
     ) -> Result<Self, maka_mcp::StartupError> {
@@ -176,7 +176,7 @@ impl Servers {
 }
 struct Binding {
     connection: Connection,
-    store: Arc<EventLog>,
+    store: Arc<RootStore>,
     name: String,
     remote_name: String,
     server: String,
@@ -184,7 +184,7 @@ struct Binding {
     preapproved: bool,
     read_only: bool,
 }
-fn permitted(configuration: &SessionConfiguration, name: &str, read_only: bool) -> bool {
+fn permitted(configuration: &ResolvedConfiguration, name: &str, read_only: bool) -> bool {
     configuration
         .tools
         .as_ref()
@@ -211,6 +211,19 @@ impl ToolPreparer for Binding {
         let read_only = self.read_only;
         let preapproved = self.preapproved;
         Box::pin(async move {
+            let store = Arc::new(
+                store
+                    .session_for_execution(
+                        context
+                            .execution
+                            .as_deref()
+                            .ok_or(ToolRejection::Unavailable)?,
+                        &context.invocation,
+                    )
+                    .map_err(|error| ToolRejection::PreparationFailed {
+                        message: error.to_string(),
+                    })?,
+            );
             if name != expected || !connection.available() {
                 return Err(ToolRejection::Unavailable);
             }

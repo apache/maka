@@ -20,7 +20,7 @@
 //! One trusted launcher pipeline; foreground preflight precedes connection approval.
 use crate::{Connections, Result};
 use futures_util::{FutureExt, future::BoxFuture};
-use maka_event_log::{EventLog, applications::DeploymentChanges};
+use maka_event_log::{applications::DeploymentChanges, root_store::RootStore};
 use maka_plugin_core::deployment::DeploymentRef;
 use maka_ui_runtime::{Application, CommittedUpdate, PreparedUpdate, actions::RemoteService};
 use std::{
@@ -63,7 +63,7 @@ pub struct ApprovedUpdate {
 }
 impl Updates {
     pub fn new(
-        store: Arc<EventLog>,
+        store: Arc<RootStore>,
         source: DeploymentRef,
         connections: Arc<Mutex<Connections>>,
         scheduler: Handle,

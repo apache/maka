@@ -97,6 +97,7 @@ impl EventLog {
         self.validate_root()?;
         sessions::validate_id(invocation_id)?;
         let invocation_id = invocation_id.to_owned();
+        let expected_session = self.expected_session.clone();
         self.connection
             .run(move |connection| {
                 Box::pin(async move {
@@ -104,9 +105,12 @@ impl EventLog {
                         "SELECT json_extract(event_json, '$.invocation'),
                     json_extract(event_json, '$.fact.input.claim.source'),
                     json_extract(event_json, '$.fact.input.request_fingerprint')
-                 FROM runtime_events WHERE invocation_id = ? AND kind = 'invocation_opened'",
+                 FROM runtime_events WHERE invocation_id = ? AND kind = 'invocation_opened'
+                   AND (? IS NULL OR event_session = ?)",
                     )
                     .bind(invocation_id)
+                    .bind(expected_session.as_deref())
+                    .bind(expected_session.as_deref())
                     .fetch_optional(connection)
                     .await?;
                     row.map(|(invocation, source, fingerprint)| {

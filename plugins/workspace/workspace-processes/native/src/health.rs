@@ -54,10 +54,18 @@ impl Processes {
             .transpose()
             .map_err(failed)?;
         cancelled(&context.scope().cancellation)?;
-        maka_agent_authority::permissions::live(&self.store, &tool.invocation).await?;
+        maka_agent_authority::permissions::live(
+            &maka_agent_authority::permissions::execution(
+                &self.store,
+                &tool.invocation,
+                tool.execution.as_deref(),
+            )?,
+            &tool.invocation,
+        )
+        .await?;
         let id = maka_host_runtime::shell::request::parse_ref(&input.reference)
             .ok_or_else(|| failed("Invalid process resource ref"))?;
-        let record = self.read_model(&tool.invocation.session_id, id).await?;
+        let record = self.read_model(tool, id).await?;
         let snapshot = if input.include_logs {
             maka_presentation::shell::local_observation(record).map(|update| update.result)
         } else {

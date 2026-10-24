@@ -138,7 +138,7 @@ pub enum CacheDirective {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 pub enum CacheSite {
     System,
     Text,

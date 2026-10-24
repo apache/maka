@@ -39,7 +39,8 @@ pub struct Report {
 
 impl EventLog {
     pub async fn usage_summary(&self, query: Query) -> Result<Report, StoreError> {
-        self.read_usage_summary(query, None).await
+        self.read_usage_summary(query, None, None, false, false)
+            .await
     }
     /// Full totals and one bounded breakdown at the same settlement fence.
     pub async fn usage_summary_page(
@@ -51,17 +52,34 @@ impl EventLog {
         if offset > i64::MAX as u64 {
             return Err(invalid("invalid Usage group offset"));
         }
-        self.read_usage_summary(query, Some((group, offset))).await
+        self.read_usage_summary(query, Some((group, offset)), None, false, false)
+            .await
+    }
+    pub(crate) async fn usage_totals(&self, query: Query) -> Result<Report, StoreError> {
+        self.read_usage_summary(query, None, None, false, true)
+            .await
+    }
+    pub(crate) async fn usage_summary_after(
+        &self,
+        query: Query,
+        group: Group,
+        after: Option<Option<String>>,
+    ) -> Result<Report, StoreError> {
+        self.read_usage_summary(query, Some((group, 0)), after, true, false)
+            .await
     }
     async fn read_usage_summary(
         &self,
         query: Query,
         page: Option<(Group, u64)>,
+        after: Option<Option<String>>,
+        key_order: bool,
+        totals_only: bool,
     ) -> Result<Report, StoreError> {
         self.validate_root()?;
         query.validate()?;
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin().await?;
                     let through = query.fence(&mut tx).await?;
@@ -96,6 +114,9 @@ impl EventLog {
                             "json_extract(quote_json, '$.providerId')",
                             page,
                             Group::ByProvider,
+                            after.as_ref(),
+                            key_order,
+                            totals_only,
                         )
                         .await?
                         .iter()
@@ -114,6 +135,9 @@ impl EventLog {
                             "model_id",
                             page,
                             Group::ByModel,
+                            after.as_ref(),
+                            key_order,
+                            totals_only,
                         )
                         .await?
                         .iter()
@@ -132,6 +156,9 @@ impl EventLog {
                             "name",
                             page,
                             Group::ByTool,
+                            after.as_ref(),
+                            key_order,
+                            totals_only,
                         )
                         .await?
                         .iter()
@@ -144,7 +171,9 @@ impl EventLog {
                         .collect::<Result<_, StoreError>>()?,
                     };
                     let mut next_offset = None;
-                    if let Some((group, offset)) = page {
+                    if let Some((group, offset)) = page
+                        && !key_order
+                    {
                         // The query includes one lookahead row. Account for bytes as well
                         // as rows, without truncating an identity or silently dropping it.
                         loop {
@@ -192,14 +221,38 @@ async fn groups(
     key: &'static str,
     page: Option<(Group, u64)>,
     group: Group,
+    after: Option<&Option<String>>,
+    key_order: bool,
+    totals_only: bool,
 ) -> Result<Vec<SqliteRow>, StoreError> {
-    if page.is_some_and(|(selected, _)| selected != group) {
+    if totals_only || page.is_some_and(|(selected, _)| selected != group) {
         return Ok(vec![]);
     }
     let mut sql = QueryBuilder::<Sqlite>::new("SELECT ");
-    sql.push(key).push(" AS key, ").push(columns);
+    // Bound the transferred identity before SQLite materializes the result row.
+    // An oversized group is rejected below; it is never silently coalesced.
+    sql.push("CASE WHEN length(CAST(")
+        .push(key)
+        .push(" AS BLOB)) <= 49152 THEN ")
+        .push(key)
+        .push(" END AS key, MAX(length(CAST(")
+        .push(key)
+        .push(" AS BLOB))) AS key_bytes, ")
+        .push(columns);
     query.restrict(&mut sql, through);
-    sql.push(" GROUP BY key ORDER BY calls DESC, key");
+    if let Some(after) = after {
+        sql.push(" AND ").push(key);
+        if let Some(after) = after {
+            sql.push(" > ").push_bind(after.clone());
+        } else {
+            sql.push(" IS NOT NULL");
+        }
+    }
+    sql.push(if key_order {
+        " GROUP BY key ORDER BY key"
+    } else {
+        " GROUP BY key ORDER BY calls DESC, key"
+    });
     if page.is_some() {
         sql.push(" LIMIT ").push_bind(33);
     }
@@ -207,6 +260,14 @@ async fn groups(
         sql.push(" OFFSET ").push_bind(offset as i64);
     }
     let rows = sql.build().fetch_all(connection).await?;
+    for row in &rows {
+        if row
+            .try_get::<Option<i64>, _>("key_bytes")?
+            .is_some_and(|bytes| bytes > 48 * 1024)
+        {
+            return Err(invalid("one Usage group exceeds page capacity"));
+        }
+    }
     Ok(rows)
 }
 

@@ -51,7 +51,7 @@ impl ToolExecutor for Fixture {
     }
 }
 fn context() -> CellContext {
-    CellContext::new(CellStore::default(), vec![])
+    CellContext::new(CellStore::temporary().unwrap(), vec![]).unwrap()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

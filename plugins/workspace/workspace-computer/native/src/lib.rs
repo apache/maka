@@ -34,7 +34,7 @@ use std::{collections::BTreeMap, panic::AssertUnwindSafe, sync::Arc};
 use tokio_util::sync::CancellationToken;
 
 struct Computer {
-    store: Arc<maka_event_log::EventLog>,
+    store: Arc<maka_event_log::RootStore>,
     configuration: Configuration,
     sessions: sessions::Sessions,
     resources: Arc<Resources>,
@@ -115,7 +115,15 @@ impl Computer {
             .ok_or_else(|| failed("Computer Use requires an Agent invocation"))?
             .clone();
         if name == "state" {
-            maka_agent_authority::permissions::live(&self.store, &invocation).await?;
+            maka_agent_authority::permissions::live(
+                &maka_agent_authority::permissions::execution(
+                    &self.store,
+                    &invocation,
+                    context.scope().execution().map(|token| token.as_ref()),
+                )?,
+                &invocation,
+            )
+            .await?;
             return serde_json::to_value(self.sessions.state(&invocation.session_id).await)
                 .map_err(failed);
         }
@@ -139,7 +147,7 @@ impl Computer {
                 name,
                 input,
                 context.scope().clone(),
-                configuration.boundary_revision,
+                configuration.permission_basis(),
                 interaction.clone(),
                 cancellation.clone(),
             );

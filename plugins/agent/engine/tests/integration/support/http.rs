@@ -22,6 +22,10 @@ use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
 
 pub async fn read_request(socket: &mut TcpStream) -> Value {
+    read_request_bounded(socket, 16 * 1024 * 1024).await
+}
+
+pub async fn read_request_bounded(socket: &mut TcpStream, max_body_bytes: usize) -> Value {
     let mut bytes = Vec::new();
     let boundary = loop {
         let mut chunk = [0; 4096];
@@ -33,7 +37,47 @@ pub async fn read_request(socket: &mut TcpStream) -> Value {
             break at + 4;
         }
     };
-    let length: usize = String::from_utf8_lossy(&bytes[..boundary])
+    let headers = String::from_utf8_lossy(&bytes[..boundary]);
+    let chunked = headers.lines().any(|line| {
+        line.split_once(':').is_some_and(|(name, value)| {
+            name.eq_ignore_ascii_case("transfer-encoding")
+                && value.trim().eq_ignore_ascii_case("chunked")
+        })
+    });
+    if chunked {
+        let mut offset = boundary;
+        let mut body = Vec::new();
+        loop {
+            let line_end = loop {
+                if let Some(end) = bytes[offset..].windows(2).position(|pair| pair == b"\r\n") {
+                    break offset + end;
+                }
+                read_more(socket, &mut bytes).await;
+            };
+            let size = usize::from_str_radix(
+                std::str::from_utf8(&bytes[offset..line_end])
+                    .unwrap()
+                    .split(';')
+                    .next()
+                    .unwrap(),
+                16,
+            )
+            .unwrap();
+            offset = line_end + 2;
+            if size == 0 {
+                break;
+            }
+            while bytes.len() < offset + size + 2 {
+                read_more(socket, &mut bytes).await;
+            }
+            body.extend_from_slice(&bytes[offset..offset + size]);
+            assert!(body.len() <= max_body_bytes);
+            assert_eq!(&bytes[offset + size..offset + size + 2], b"\r\n");
+            offset += size + 2;
+        }
+        return serde_json::from_slice(&body).unwrap();
+    }
+    let length: usize = headers
         .lines()
         .find_map(|line| {
             let (name, value) = line.split_once(':')?;
@@ -41,12 +85,16 @@ pub async fn read_request(socket: &mut TcpStream) -> Value {
                 .then(|| value.trim().parse().unwrap())
         })
         .unwrap();
-    assert!(length < 16 * 1024 * 1024);
+    assert!(length <= max_body_bytes);
     while bytes.len() < boundary + length {
-        let mut chunk = [0; 4096];
-        let count = socket.read(&mut chunk).await.unwrap();
-        assert_ne!(count, 0);
-        bytes.extend_from_slice(&chunk[..count]);
+        read_more(socket, &mut bytes).await;
     }
     serde_json::from_slice(&bytes[boundary..boundary + length]).unwrap()
+}
+
+async fn read_more(socket: &mut TcpStream, bytes: &mut Vec<u8>) {
+    let mut chunk = [0; 4096];
+    let count = socket.read(&mut chunk).await.unwrap();
+    assert_ne!(count, 0);
+    bytes.extend_from_slice(&chunk[..count]);
 }

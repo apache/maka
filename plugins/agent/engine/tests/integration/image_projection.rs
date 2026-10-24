@@ -19,6 +19,7 @@
 
 use crate::support::image_projection as support;
 
+use crate::support::store::SessionFixture;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use maka_agent_engine::RunError;
 use maka_agent_facts::event::EventWrite;
@@ -30,7 +31,6 @@ use maka_agent_facts::tool_call::ToolCallIdentity;
 use maka_agent_facts::tool_output::ImageOutput;
 use maka_agent_facts::tool_output::ToolOutput;
 use maka_agent_facts::tool_output::ToolSuccess;
-use maka_event_log::EventLog;
 use serde_json::{Value, json};
 use std::{sync::Arc, time::Duration};
 use support::*;
@@ -45,8 +45,8 @@ async fn reopened_images_preserve_complete_accepted_artifacts_and_copied_authori
     tokio::time::timeout(Duration::from_secs(60), async {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("events.sqlite");
-        let log = EventLog::open(&path).await.unwrap();
-        log.create_session("session", "create", &json!({}), 1).await.unwrap();
+        let log = SessionFixture::open(&path).await.unwrap();
+
         for id in ["historical", "tool", "fits"] { artifact(&log, id, FOUR_MIB, true).await; }
         artifact(&log, "invalid", FOUR_MIB + 1, false).await;
         artifact(&log, "overflow", 8, true).await;
@@ -84,13 +84,13 @@ async fn reopened_images_preserve_complete_accepted_artifacts_and_copied_authori
         drop(large_result);
         log.append(&EventWrite::plain(RuntimeEvent::new(prior, Fact::InvocationEnded { outcome: InvocationOutcome::Completed })).unwrap()).await.unwrap();
         let revision = log.get_session::<Value>("session").await.unwrap().unwrap().revision;
-        assert!(matches!(log.copy_session(maka_event_log::sessions::SessionCopy {
+        assert!(matches!(log.root().copy_session(maka_event_log::sessions::SessionCopy {
             source_session_id: "session".into(), target_session_id: "branch".into(),
             expected_source_revision: revision, purpose: maka_agent_facts::session::CopyPurpose::Branch { turn_id: None, side_conversation: false },
         }, &json!({}), 2).await.unwrap(), maka_event_log::sessions::SessionCopyResult::Committed(_)));
         log.close().await.unwrap();
 
-        let log = Arc::new(EventLog::open(&path).await.unwrap());
+        let log = Arc::new(SessionFixture::open(&path).await.unwrap());
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}/v1", listener.local_addr().unwrap());
         let observed_log = log.clone();
@@ -107,8 +107,8 @@ async fn reopened_images_preserve_complete_accepted_artifacts_and_copied_authori
         foreign["ref"]["sessionId"] = json!("other");
         let mut workspace = attachment("workspace");
         workspace["ref"] = json!({"kind":"workspace_file", "relativePath":"historical"});
-        let engine = engine(log.clone());
-        engine.run(input(&base, json!([attachment("invalid"), attachment("missing"), foreign, workspace,
+        let engine = engine();
+        engine.run(log.store(), input(&base, json!([attachment("invalid"), attachment("missing"), foreign, workspace,
             attachment("fits"), attachment("overflow"), attachment("accepted-50-mib")])), CancellationToken::new()).await.unwrap();
         let body = server.await.unwrap();
         let mut urls = Vec::new();
@@ -145,7 +145,8 @@ async fn reopened_images_preserve_complete_accepted_artifacts_and_copied_authori
         let mut copied = input(&base, json!([]));
         copied.invocation = identity("branch-current");
         copied.invocation.session_id = "branch".into();
-        engine.run(copied, CancellationToken::new()).await.unwrap();
+        let branch = log.select("branch").await.unwrap();
+        engine.run(branch.store(), copied, CancellationToken::new()).await.unwrap();
         let copied_request = copied_request.await.unwrap();
         let mut inherited_images = Vec::new();
         collect_images(&copied_request["messages"], &mut inherited_images);
@@ -153,17 +154,17 @@ async fn reopened_images_preserve_complete_accepted_artifacts_and_copied_authori
         for (url, size) in inherited_images.into_iter().zip([FOUR_MIB, FOUR_MIB, LARGE_TOOL_IMAGE_BYTES]) {
             assert_fixture_image(url, size);
         }
-        let reference = log.resolve_history_artifact("branch", "session", "historical").await.unwrap().unwrap();
+        let reference = branch.resolve_history_artifact("branch", "session", "historical").await.unwrap().unwrap();
         assert!(copied_request["messages"].to_string().contains(&reference.resource_ref().unwrap()),
             "Read must receive the destination-owned resource URI");
-        let tool_reference = log.resolve_history_artifact("branch", "session", "tool").await.unwrap().unwrap();
+        let tool_reference = branch.resolve_history_artifact("branch", "session", "tool").await.unwrap().unwrap();
         let maka_agent_facts::attachment::StorageRef::SessionFile { relative_path, .. } = tool_reference else { panic!("owned tool image") };
-        assert!(log.read_tool_result("branch", "prior-result").await.unwrap().unwrap().serialized_result.contains(&relative_path),
+        assert!(branch.read_tool_result("branch", "prior-result").await.unwrap().unwrap().serialized_result.contains(&relative_path),
             "tool-result Read renders the copied image's locator, not the source artifact ID");
-        let generated_reference = log.resolve_history_artifact("branch", "session", &generated_id).await.unwrap().unwrap();
+        let generated_reference = branch.resolve_history_artifact("branch", "session", &generated_id).await.unwrap().unwrap();
         let maka_agent_facts::attachment::StorageRef::SessionFile { session_id, relative_path } = generated_reference else { panic!("owned generated image") };
         assert_eq!(session_id, "branch");
-        assert!(log.read_tool_result("branch", "prior-large-result").await.unwrap().unwrap().serialized_result.contains(&relative_path),
+        assert!(branch.read_tool_result("branch", "prior-large-result").await.unwrap().unwrap().serialized_result.contains(&relative_path),
             "generated tool evidence keeps destination-owned authority after copying");
         let original = log.prefix(100, 128 * 1024).await.unwrap();
         let source_opening = original.events.iter().find(|e| e.event.invocation.invocation_id == "invocation-historical"
@@ -215,7 +216,7 @@ fn collect_images<'a>(value: &'a Value, urls: &mut Vec<&'a str>) {
 async fn cancelled_image_turn_does_not_commit_or_send_a_model_request() {
     let directory = tempfile::tempdir().unwrap();
     let log = Arc::new(
-        EventLog::open(&directory.path().join("events.sqlite"))
+        SessionFixture::open(&directory.path().join("events.sqlite"))
             .await
             .unwrap(),
     );
@@ -223,10 +224,14 @@ async fn cancelled_image_turn_does_not_commit_or_send_a_model_request() {
     let base = format!("http://{}/v1", listener.local_addr().unwrap());
     let cancellation = CancellationToken::new();
     cancellation.cancel();
-    let engine = engine(log.clone());
+    let engine = engine();
     assert!(matches!(
         engine
-            .run(input(&base, json!([attachment("missing")])), cancellation)
+            .run(
+                log.store(),
+                input(&base, json!([attachment("missing")])),
+                cancellation
+            )
             .await,
         Err(RunError::Cancelled)
     ));
@@ -251,8 +256,8 @@ async fn prepared_context_breakdown_measures_projected_roles_and_freezes_literal
     tokio::time::timeout(Duration::from_secs(30), async {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("events.sqlite");
-        let log = Arc::new(EventLog::open(&path).await.unwrap());
-        log.create_session("session", "create", &json!({}), 1).await.unwrap();
+        let log = Arc::new(SessionFixture::open(&path).await.unwrap());
+
         artifact(&log, "tool", 8, true).await;
         let prior = identity("historical");
         for fact in [
@@ -304,8 +309,8 @@ async fn prepared_context_breakdown_measures_projected_roles_and_freezes_literal
         });
         let maka_agent_engine::RunWork::Message { message, .. } = &mut input.work else { unreachable!() };
         *message = "😀".into();
-        let engine = engine(log.clone());
-        engine.run(input, CancellationToken::new()).await.unwrap();
+        let engine = engine();
+        engine.run(log.store(), input, CancellationToken::new()).await.unwrap();
         engine.drain().await;
         let body = server.await.unwrap();
         let prefix = log.prefix(100, 128 * 1024).await.unwrap();
@@ -315,7 +320,7 @@ async fn prepared_context_breakdown_measures_projected_roles_and_freezes_literal
         }).unwrap();
         drop(engine);
         Arc::try_unwrap(log).ok().unwrap().close().await.unwrap();
-        let reopened = EventLog::open(&path).await.unwrap();
+        let reopened = SessionFixture::open(&path).await.unwrap();
         let persisted = reopened.prefix(100, 128 * 1024).await.unwrap();
         reopened.close().await.unwrap();
 
@@ -362,13 +367,11 @@ async fn missing_image_guidance_uses_the_admitted_language_and_preserves_attachm
     ] {
         let directory = tempfile::tempdir().unwrap();
         let log = Arc::new(
-            EventLog::open(&directory.path().join("events.sqlite"))
+            SessionFixture::open(&directory.path().join("events.sqlite"))
                 .await
                 .unwrap(),
         );
-        log.create_session("session", "create", &json!({}), 1)
-            .await
-            .unwrap();
+
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}/v1", listener.local_addr().unwrap());
         let server = tokio::spawn(async move {
@@ -381,8 +384,11 @@ async fn missing_image_guidance_uses_the_admitted_language_and_preserves_attachm
         image["name"] = "missing-原图.png".into();
         let mut run = input(&base, json!([image]));
         run.configuration.language = language;
-        let worker = engine(log.clone());
-        worker.run(run, CancellationToken::new()).await.unwrap();
+        let worker = engine();
+        worker
+            .run(log.store(), run, CancellationToken::new())
+            .await
+            .unwrap();
         worker.drain().await;
         let request = server.await.unwrap();
         let user = request["messages"]
@@ -413,13 +419,11 @@ async fn summary_overflow_keeps_media_multipart_and_checkpoint_corrections_as_ev
     const CORRECTION: &str = "User correction: stage only; retain the rollback checklist. Screenshot evidence is attached.";
     let directory = tempfile::tempdir().unwrap();
     let log = Arc::new(
-        EventLog::open(&directory.path().join("events.sqlite"))
+        SessionFixture::open(&directory.path().join("events.sqlite"))
             .await
             .unwrap(),
     );
-    log.create_session("session", "create", &json!({}), 1)
-        .await
-        .unwrap();
+
     artifact(&log, "summary-evidence", 128, true).await;
     artifact(&log, "summary-tool-evidence", 256, true).await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -445,14 +449,18 @@ async fn summary_overflow_keeps_media_multipart_and_checkpoint_corrections_as_ev
         context::respond(&mut socket, "continued checkpoint", "stop").await;
         (recent, full, fitted)
     });
-    let worker = context::engine(log.clone());
+    let worker = context::engine();
     let mut first = context::input(&base, "first", false);
     if let maka_agent_engine::RunWork::Message { message, .. } = &mut first.work {
         *message = CHECKPOINT.into();
     }
-    worker.run(first, CancellationToken::new()).await.unwrap();
+    worker
+        .run(log.store(), first, CancellationToken::new())
+        .await
+        .unwrap();
     worker
         .run(
+            log.store(),
             context::input(&base, "baseline", true),
             CancellationToken::new(),
         )
@@ -463,7 +471,10 @@ async fn summary_overflow_keeps_media_multipart_and_checkpoint_corrections_as_ev
     if let maka_agent_engine::RunWork::Message { message, .. } = &mut recent.work {
         *message = CORRECTION.into();
     }
-    worker.run(recent, CancellationToken::new()).await.unwrap();
+    worker
+        .run(log.store(), recent, CancellationToken::new())
+        .await
+        .unwrap();
     let historical = identity("summary-media");
     let message = serde_json::from_value(
         json!({"text":CORRECTION,"attachments":[attachment("summary-evidence")]}),
@@ -531,7 +542,10 @@ async fn summary_overflow_keeps_media_multipart_and_checkpoint_corrections_as_ev
         model_context_window: Some(10_000),
         declared_window: None,
     });
-    worker.run(compact, CancellationToken::new()).await.unwrap();
+    worker
+        .run(log.store(), compact, CancellationToken::new())
+        .await
+        .unwrap();
     worker.drain().await;
     let (recent, full, fitted) = server.await.unwrap();
     let original_prefix = recent["messages"].as_array().unwrap();
@@ -617,7 +631,7 @@ async fn summary_overflow_keeps_media_multipart_and_checkpoint_corrections_as_ev
         "summary fitting leaves canonical media evidence untouched"
     );
     assert_eq!(
-        log.read_model_context("session", None)
+        log.read_model_view("session", None)
             .await
             .unwrap()
             .baseline

@@ -18,8 +18,8 @@
  */
 
 use maka_agent_facts::model::prompt::Message;
-use maka_agent_facts::model::request::ProviderKind;
-use maka_agent_facts::model::request::Request as ModelRequest;
+use maka_agent_facts::model::prompt_source::{Prompt, WireFormat};
+use maka_agent_facts::model::request::{ProviderKind, Request as ModelRequest};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
@@ -27,116 +27,180 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-/// The transport is only a cache. Confirmation must come from the canonical
-/// projection after all local tool outcomes have committed.
 #[derive(Clone, Default)]
 pub struct Lane {
     pub(crate) transport: crate::transport::ResponsesLane,
     semantic: Arc<Mutex<Semantic>>,
 }
-
 #[derive(Default)]
 struct Semantic {
     pending: Option<Prefix>,
     confirmed: Option<(Prefix, String)>,
 }
-
 struct Prefix {
     length: usize,
-    digest: [u8; 32],
+    identity: Identity,
 }
-
+#[derive(PartialEq, Eq)]
+enum Identity {
+    Prepared { codec: Arc<str>, root: String },
+    Memory([u8; 32]),
+}
+struct Writer(Sha256);
+impl io::Write for Writer {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0.update(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
 impl Prefix {
-    fn new(messages: &[Message]) -> Self {
-        struct Writer(Sha256);
-        impl io::Write for Writer {
-            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-                self.0.update(bytes);
-                Ok(bytes.len())
-            }
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
+    async fn new(prompt: &Prompt, length: usize) -> Option<Self> {
+        if length > prompt.len() {
+            return None;
         }
-        let mut writer = Writer(Sha256::new());
-        // Message serialization cannot fail with this infallible writer.
-        serde_json::to_writer(&mut writer, messages).expect("JSON value serialization");
-        Self {
-            length: messages.len(),
-            digest: writer.0.finalize().into(),
-        }
+        let identity = if let Some(wire) = prompt.wire(WireFormat::Responses) {
+            Identity::Prepared {
+                codec: wire.codec.clone(),
+                root: wire.source.prefix_identity(length).await.ok()??,
+            }
+        } else {
+            // Only explicitly small generated/test input has an in-memory path.
+            // Missing persisted metadata disables reuse instead of hashing P.
+            let messages = prompt.memory_messages()?.get(..length)?;
+            let mut writer = Writer(Sha256::new());
+            serde_json::to_writer(&mut writer, messages).ok()?;
+            Identity::Memory(writer.0.finalize().into())
+        };
+        Some(Self { length, identity })
     }
-
-    fn matches(&self, messages: &[Message]) -> bool {
-        messages
-            .get(..self.length)
-            .is_some_and(|prefix| Self::new(prefix).digest == self.digest)
+    async fn matches(&self, prompt: &Prompt) -> bool {
+        Self::new(prompt, self.length)
+            .await
+            .is_some_and(|prefix| prefix.identity == self.identity)
     }
 }
-
 impl Lane {
-    /// No readback is needed when there is no completed, cached WS response.
     pub fn needs_confirmation(&self) -> bool {
         self.transport.response_id().is_some()
     }
 
-    /// Call once with the post-settlement model view. A changed prefix or
-    /// missing outcome disables reuse; later view changes are checked again.
-    pub fn confirm(
+    pub async fn confirm(
         &self,
-        replay: &[Message],
+        replay: &Prompt,
         settled_tool_call_ids: &[&str],
         response_id: Option<&str>,
     ) -> bool {
-        let mut state = self.semantic.lock().unwrap();
-        state.confirmed = None;
-        let Some(pending) = state.pending.take() else {
+        let pending = {
+            let mut state = self.semantic.lock().unwrap();
+            state.confirmed = None;
+            state.pending.take()
+        };
+        let Some(pending) = pending else {
             return false;
         };
         let Some(id) = self.transport.response_id() else {
             return false;
         };
-        if response_id != Some(id.as_str()) {
+        if response_id != Some(id.as_str()) || !pending.matches(replay).await {
             return false;
         }
-        if !pending.matches(replay) {
-            return false;
-        }
-        let response_end = match replay[pending.length..]
-            .iter()
-            .position(|message| matches!(message, Message::Tool { .. }))
-        {
-            Some(offset) => pending.length + offset,
-            None if settled_tool_call_ids.is_empty() => replay.len(),
-            None => return false,
-        };
-        if response_end <= pending.length {
-            return false;
-        }
+        let mut next = pending.length;
+        let mut response_end = None;
         let mut settled = settled_tool_call_ids.iter();
-        for message in &replay[response_end..] {
-            let Message::Tool { content, .. } = message else {
+        // A local closure consumes only current-message identifiers; none are
+        // retained after their indexed metadata row is released.
+        let mut check = |index: usize, role: &str, ids: &[String]| {
+            if index != next {
+                return false;
+            }
+            next += 1;
+            if role == "tool" {
+                response_end.get_or_insert(index);
+                for tool_id in ids {
+                    if settled.next().copied() != Some(tool_id.as_str()) {
+                        return false;
+                    }
+                }
+            } else if role != "assistant" || response_end.is_some() {
+                return false;
+            }
+            true
+        };
+        if let Some(wire) = replay.wire(WireFormat::Responses) {
+            let Some(mut cursor) = wire.source.open_metadata(pending.length) else {
                 return false;
             };
-            for part in content {
-                if !part.is_notification()
-                    && settled.next().copied() != Some(part.tool_call_id.as_str())
-                {
+            loop {
+                let row = match cursor.next().await {
+                    Ok(Some(row)) => row,
+                    Ok(None) => break,
+                    Err(_) => return false,
+                };
+                let Some(role) = row.metadata["role"].as_str() else {
+                    return false;
+                };
+                let Some(ids) = row.metadata["settledToolCallIds"].as_array() else {
+                    return false;
+                };
+                let Some(ids) = ids
+                    .iter()
+                    .map(|id| id.as_str().map(str::to_owned))
+                    .collect::<Option<Vec<_>>>()
+                else {
+                    return false;
+                };
+                if !check(row.message_index, role, &ids) {
+                    return false;
+                }
+            }
+        } else {
+            let Some(messages) = replay.memory_messages() else {
+                return false;
+            };
+            for (index, message) in messages.iter().enumerate().skip(pending.length) {
+                let (role, ids) = match message {
+                    Message::Assistant { .. } => ("assistant", Vec::new()),
+                    Message::Tool { content, .. } => (
+                        "tool",
+                        content
+                            .iter()
+                            .filter(|part| !part.is_notification())
+                            .map(|part| part.tool_call_id.clone())
+                            .collect(),
+                    ),
+                    Message::System { .. } => ("system", Vec::new()),
+                    Message::User { .. } => ("user", Vec::new()),
+                };
+                if !check(index, role, &ids) {
                     return false;
                 }
             }
         }
-        if settled.next().is_some() {
+        let length = response_end.unwrap_or(next);
+        if next != replay.len() || length <= pending.length || settled.next().is_some() {
             return false;
         }
-        state.confirmed = Some((Prefix::new(&replay[..response_end]), id));
+        let Some(prefix) = Prefix::new(replay, length).await else {
+            return false;
+        };
+        if self.transport.response_id().as_ref() != Some(&id) {
+            return false;
+        }
+        self.semantic.lock().unwrap().confirmed = Some((prefix, id));
         true
     }
 
-    pub(crate) fn prepare(&self, request: &mut ModelRequest) {
-        let mut state = self.semantic.lock().unwrap();
-        let confirmed = state.confirmed.take();
-        state.pending = None;
+    /// The original prompt remains intact. Only a live confirmed connection may
+    /// omit a prefix, and that comparison uses structural prefix metadata.
+    pub(crate) async fn prepare(&self, request: &mut ModelRequest) -> usize {
+        let confirmed = {
+            let mut state = self.semantic.lock().unwrap();
+            state.pending = None;
+            state.confirmed.take()
+        };
         if !matches!(
             request.provider.kind,
             ProviderKind::OpenaiResponses | ProviderKind::OpenResponses(_)
@@ -147,32 +211,37 @@ impl Lane {
                 .as_ref()
                 .is_some_and(|body| !body.is_empty())
         {
-            return;
+            return 0;
         }
-        state.pending = Some(Prefix::new(&request.prompt));
+        let pending = Prefix::new(&request.prompt, request.prompt.len()).await;
+        self.semantic.lock().unwrap().pending = pending;
         let Some((prefix, id)) = confirmed else {
-            return;
+            return 0;
         };
         if self.transport.response_id().as_ref() != Some(&id)
             || request.prompt.len() <= prefix.length
-            || !prefix.matches(&request.prompt)
+            || !prefix.matches(&request.prompt).await
         {
-            return;
+            return 0;
         }
-        // Never replace caller-specified options with an optimization.
+        let namespace = if matches!(request.provider.kind, ProviderKind::OpenResponses(_)) {
+            "openResponses"
+        } else {
+            "openai"
+        };
         let Some(options) = request.provider_options.as_object_mut() else {
-            return;
+            return 0;
         };
-        let openai = options
-            .entry("openai")
+        let options = options
+            .entry(namespace)
             .or_insert_with(|| serde_json::json!({}));
-        let Some(openai) = openai.as_object_mut() else {
-            return;
+        let Some(options) = options.as_object_mut() else {
+            return 0;
         };
-        if openai.contains_key("previousResponseId") {
-            return;
+        if options.contains_key("previousResponseId") {
+            return 0;
         }
-        openai.insert("previousResponseId".into(), Value::String(id));
-        request.prompt.drain(..prefix.length);
+        options.insert("previousResponseId".into(), Value::String(id));
+        prefix.length
     }
 }

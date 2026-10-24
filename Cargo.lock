@@ -8399,7 +8399,9 @@ dependencies = [
  "maka-model",
  "maka-plugin-core",
  "maka-presentation",
+ "maka-session-state",
  "maka-tools",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2 0.11.1",
@@ -8589,6 +8591,7 @@ name = "maka-capabilities"
 version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
+ "bytes",
  "cap-fs-ext",
  "cap-std",
  "dunce",
@@ -8688,6 +8691,7 @@ version = "0.2.0"
 dependencies = [
  "futures-util",
  "maka-agent-facts",
+ "maka-session-state",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
@@ -9283,6 +9287,7 @@ dependencies = [
  "maka-workspace-support",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tokio-util",
  "uuid",
@@ -9356,6 +9361,7 @@ dependencies = [
  "maka-agent-facts",
  "maka-code-runtime",
  "maka-event-log",
+ "maka-session-state",
  "maka-tools",
  "monty",
  "monty-alloc",
@@ -9377,6 +9383,7 @@ dependencies = [
  "maka-agent-facts",
  "maka-agent-ports",
  "maka-capabilities",
+ "maka-provider-protocol",
  "reqwest",
  "serde",
  "serde_json",
@@ -9492,6 +9499,17 @@ dependencies = [
  "tokio",
  "tokio-util",
  "uuid",
+]
+
+[[package]]
+name = "maka-session-state"
+version = "0.2.0"
+dependencies = [
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -9639,6 +9657,7 @@ version = "0.2.0"
 dependencies = [
  "jsonschema 0.56.0",
  "maka-agent-facts",
+ "maka-session-state",
  "schemars 1.2.2",
  "serde",
  "serde_json",
@@ -13754,8 +13773,6 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 [[package]]
 name = "reqwest"
 version = "0.13.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "16a1cfa75cc186dd73d5818e510e042e40927bccc9c236b061cea97e1eb08029"
 dependencies = [
  "base64 0.23.1",
  "bytes",

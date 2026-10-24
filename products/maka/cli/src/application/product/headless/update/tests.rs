@@ -41,7 +41,7 @@ fn leaf(marker: &str, label_type: &str) -> Package {
     .unwrap()
 }
 struct Fixture {
-    store: EventLog,
+    store: RootStore,
     deployment: Uuid,
     input: Input,
     previous: Package,

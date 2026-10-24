@@ -28,7 +28,12 @@ pub(super) async fn step(
     text: &str,
 ) -> (u64, String) {
     let source = log
-        .read_model_context("session", Some(&inv.invocation_id))
+        .capture_model_context(
+            "session",
+            Some(&inv.invocation_id),
+            100_000,
+            64 * 1024 * 1024,
+        )
         .await
         .unwrap();
     let request = append(

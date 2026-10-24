@@ -28,9 +28,10 @@ use serde_json::json;
 impl Processes {
     pub(super) async fn read_model(
         &self,
-        session: &str,
+        tool: &ToolCallContext,
         id: &str,
     ) -> Result<ShellObservation, ToolError> {
+        let session = &tool.invocation.session_id;
         if let Some(Ok(live)) = self
             .resources
             .get(session, id)
@@ -41,15 +42,18 @@ impl Processes {
         {
             return Ok((*live).clone());
         }
-        let record = self
-            .store
-            .read_shell_run(session, id)
-            .await
-            .map_err(persistence)?
-            .filter(|record| {
-                record.visibility == ShellVisibility::Model && record.id.starts_with(&self.prefix)
-            })
-            .ok_or_else(|| failed("Process resource not found in this Session and provider"))?;
+        let record = maka_agent_authority::permissions::execution(
+            &self.store,
+            &tool.invocation,
+            tool.execution.as_deref(),
+        )?
+        .read_shell_run(session, id)
+        .await
+        .map_err(persistence)?
+        .filter(|record| {
+            record.visibility == ShellVisibility::Model && record.id.starts_with(&self.prefix)
+        })
+        .ok_or_else(|| failed("Process resource not found in this Session and provider"))?;
         if let Some(update) = self
             .resources
             .get(session, id)
@@ -61,6 +65,7 @@ impl Processes {
     }
     pub(super) async fn project(
         &self,
+        tool: &ToolCallContext,
         mut record: ShellObservation,
         compact: bool,
     ) -> Result<Value, ToolError> {
@@ -72,17 +77,21 @@ impl Processes {
             }
         ) {
             record.record = Arc::new(
-                self.store
-                    .patch_shell_run(
-                        &record.session_id,
-                        &record.id,
-                        ShellPatch {
-                            observed_at: Some(maka_agent_authority::now()),
-                            ..Default::default()
-                        },
-                    )
-                    .await
-                    .map_err(persistence)?,
+                maka_agent_authority::permissions::execution(
+                    &self.store,
+                    &tool.invocation,
+                    tool.execution.as_deref(),
+                )?
+                .patch_shell_run(
+                    &record.session_id,
+                    &record.id,
+                    ShellPatch {
+                        observed_at: Some(maka_agent_authority::now()),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .map_err(persistence)?,
             );
             record.preview = None;
         }
@@ -110,10 +119,10 @@ impl Processes {
         let input: Reference = serde_json::from_value(value).map_err(failed)?;
         let id =
             parse_ref(&input.reference).ok_or_else(|| failed("Invalid process resource ref"))?;
-        let mut record = self.read_model(session, id).await?;
+        let mut record = self.read_model(tool, id).await?;
         cancelled(cancellation)?;
         if name == "read" {
-            return self.project(record, false).await;
+            return self.project(tool, record, false).await;
         }
         let applied = if let Some(mut handle) = self.resources.get(session, id) {
             // Stop bypasses input backpressure and remains available after revocation.
@@ -122,7 +131,7 @@ impl Processes {
             receipt.applied
         } else {
             if record.state.active() {
-                record = self.read_model(session, id).await?;
+                record = self.read_model(tool, id).await?;
                 if record.state.active() {
                     return Err(ToolError::CleanupUnconfirmed(
                         "Active process has no native owner".into(),
@@ -131,7 +140,7 @@ impl Processes {
             }
             false
         };
-        let mut value = self.project(record, false).await?;
+        let mut value = self.project(tool, record, false).await?;
         value["operation"] = json!({"kind":"stop","applied":applied});
         Ok(value)
     }
@@ -143,7 +152,7 @@ impl Processes {
     ) -> Result<Value, ToolError> {
         let session = &tool.invocation.session_id;
         let id = parse_ref(&input.reference).expect("validated ref");
-        let mut record = self.read_model(session, id).await?;
+        let mut record = self.read_model(tool, id).await?;
         if !record.output.is_pty() {
             return Err(failed("writeStdin requires a PTY process ref"));
         }
@@ -167,9 +176,16 @@ impl Processes {
                 }) {
                     return Err(failed("PTY is controlled by a connected user"));
                 }
-                let current =
-                    maka_agent_authority::permissions::live(&self.store, &tool.invocation).await?;
-                if current.boundary_revision != record.permissions.boundary_revision {
+                let current = maka_agent_authority::permissions::live(
+                    &maka_agent_authority::permissions::execution(
+                        &self.store,
+                        &tool.invocation,
+                        tool.execution.as_deref(),
+                    )?,
+                    &tool.invocation,
+                )
+                .await?;
+                if current.permission_basis() != record.permissions.basis {
                     return Err(failed(
                         "PTY launch permissions no longer match this Session; start a new terminal",
                     ));
@@ -204,14 +220,14 @@ impl Processes {
                 }
             }
         } else if record.state.active() {
-            record = self.read_model(session, id).await?;
+            record = self.read_model(tool, id).await?;
             if record.state.active() {
                 return Err(ToolError::CleanupUnconfirmed(
                     "Active PTY has no native owner".into(),
                 ));
             }
         }
-        let mut value = self.project(record, false).await?;
+        let mut value = self.project(tool, record, false).await?;
         value["operation"] = json!({"kind":"pty_control", "acceptedBytes":accepted_bytes,
             "requestedBytes":input.bytes,"resized":resized,"resizeChanged":resize_changed,"failure":failure});
         Ok(value)
@@ -245,7 +261,13 @@ mod tests {
             source_tool_call_id: "tool".into(),
             visibility: ShellVisibility::Model,
             permissions: ShellPermissions {
-                boundary_revision: 0,
+                basis: maka_agent_facts::workspace::PermissionBasis {
+                    boundary_revision: 0,
+                    binding: maka_agent_facts::workspace::BindingStamp {
+                        id: uuid::Uuid::from_u128(1),
+                        permission_epoch: 0,
+                    },
+                },
                 sandbox: Sandbox::Disabled,
             },
             cwd: "/".into(),

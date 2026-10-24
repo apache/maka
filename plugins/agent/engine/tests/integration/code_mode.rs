@@ -24,13 +24,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+use crate::support::store::SessionFixture;
 use maka_agent_engine::Engine;
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::TerminalStatus;
 use maka_agent_facts::event::ToolOutcome;
 use maka_agent_facts::tool_call::ToolOrigin;
 use maka_code_runtime::CellLimits;
-use maka_event_log::EventLog;
 use maka_model::ModelExecutor;
 use maka_tools::CodeExecutor;
 use serde_json::{Value, json};
@@ -39,7 +39,7 @@ use tokio::sync::Barrier;
 use tokio_util::sync::CancellationToken;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn scratch_store_survives_turns_and_is_released_with_the_session() {
+async fn scratch_store_survives_turns_and_is_cleared_on_engine_restart() {
     tokio::time::timeout(Duration::from_secs(15), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}/v1", listener.local_addr().unwrap());
@@ -80,21 +80,27 @@ async fn scratch_store_survives_turns_and_is_released_with_the_session() {
         });
         let directory = tempfile::tempdir().unwrap();
         let log = Arc::new(
-            EventLog::open(&directory.path().join("events.sqlite"))
+            SessionFixture::open(&directory.path().join("events.sqlite"))
                 .await
                 .unwrap(),
         );
-        let engine = Engine::new(
-            log.clone(),
+        let mut engine = Engine::new(
             ModelExecutor::new(Duration::from_secs(5)).unwrap(),
             CodeExecutor::new(CellLimits::default()).unwrap(),
-        );
+        )
+        .unwrap();
         for index in 0..3 {
             if index == 2 {
-                engine.release_session_state("session");
+                engine.drain().await;
+                engine = Engine::new(
+                    ModelExecutor::new(Duration::from_secs(5)).unwrap(),
+                    CodeExecutor::new(CellLimits::default()).unwrap(),
+                )
+                .unwrap();
             }
             engine
                 .run(
+                    log.store(),
                     fixture::input(
                         &base,
                         &format!("store-{index}"),
@@ -141,12 +147,12 @@ async fn streamed_exec_journals_parallel_children_and_reopens_without_reexecutio
         });
         let before_reopen;
         {
-            let log = Arc::new(EventLog::open(&path).await.unwrap());
+            let log = Arc::new(SessionFixture::open(&path).await.unwrap());
             let engine = Engine::new(
-                log.clone(),
                 ModelExecutor::new(Duration::from_secs(10)).unwrap(),
                 CodeExecutor::new(CellLimits::default()).unwrap(),
-            );
+            )
+            .unwrap();
             let input = fixture::input(
                 &base,
                 "first",
@@ -158,7 +164,10 @@ async fn streamed_exec_journals_parallel_children_and_reopens_without_reexecutio
             );
             let invocation = input.invocation.clone();
             assert_eq!(
-                engine.run(input, CancellationToken::new()).await.unwrap(),
+                engine
+                    .run(log.store(), input, CancellationToken::new())
+                    .await
+                    .unwrap(),
                 invocation
             );
             engine.drain().await;
@@ -310,18 +319,19 @@ async fn streamed_exec_journals_parallel_children_and_reopens_without_reexecutio
             Arc::try_unwrap(log).ok().unwrap().close().await.unwrap();
         }
         {
-            let log = Arc::new(EventLog::open(&path).await.unwrap());
+            let log = Arc::new(SessionFixture::open(&path).await.unwrap());
             assert_eq!(
                 serde_json::to_value(log.prefix(100, 128 * 1024).await.unwrap().events).unwrap(),
                 serde_json::to_value(&before_reopen).unwrap()
             );
             let engine = Engine::new(
-                log.clone(),
                 ModelExecutor::new(Duration::from_secs(10)).unwrap(),
                 CodeExecutor::new(CellLimits::default()).unwrap(),
-            );
+            )
+            .unwrap();
             engine
                 .run(
+                    log.store(),
                     fixture::input(
                         &base,
                         "next",

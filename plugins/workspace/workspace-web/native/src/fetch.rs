@@ -90,7 +90,7 @@ impl Fetcher {
                     ("Accept".into(), "text/markdown, text/plain;q=0.9, text/html;q=0.8, application/xhtml+xml;q=0.8".into()),
                     ("User-Agent".into(), concat!("Maka/", env!("CARGO_PKG_VERSION"), " WebFetch").into()),
                 ],
-                body: Vec::new(),
+                body: Default::default(),
             }).await?;
             // A Host transport must not follow redirects on the plugin's behalf.
             // Resolve links against this validated response URL.

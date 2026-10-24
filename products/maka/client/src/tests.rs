@@ -20,8 +20,8 @@
 use super::*;
 use futures_util::future::BoxFuture;
 use maka_event_log::{
-    EventLog,
     root::{RootNamespaces, RootOwner, private_directory},
+    root_store::RootStore,
 };
 use maka_host_runtime::{
     application::{
@@ -49,6 +49,7 @@ use tokio::sync::Notify;
 
 mod drafts;
 mod progress;
+mod request_custody;
 mod settings;
 
 #[derive(Default)]
@@ -175,7 +176,7 @@ impl Fixture {
             )
             .unwrap(),
         );
-        let store = Arc::new(EventLog::for_root(root).await.unwrap());
+        let store = Arc::new(RootStore::open(root).await.unwrap());
         let mut contract: Contract = serde_json::from_value(json!({
             "name":"test.Counter","version":1,"transport":"remote","interface":{"kind":"service","methods":{
                 "read":{"mode":"query","input":{},"output":{},"resources":{}},

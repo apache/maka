@@ -146,10 +146,13 @@ async fn replay(
             &event.id,
         )
         .await?;
-        sqlx::query("INSERT INTO event_log(sequence,event_id,invocation_id,kind,operation_id,event_json) VALUES(?,?,?,?,?,?)")
-            .bind(sequence as i64).bind(&event.id).bind(&event.invocation.invocation_id)
-            .bind(event.fact.kind()).bind(event.fact.operation_id()).bind(json)
-            .execute(&mut *original).await?;
+        crate::append::ingress::insert(
+            original,
+            &event,
+            json,
+            crate::append::ingress::Position::Imported(Some(sequence)),
+        )
+        .await?;
         crate::message_sources::insert(original, &event).await?;
         if let Some(payload) = payload {
             sqlx::query("INSERT INTO tool_result_payloads(event_id,payload) VALUES(?,?)")
@@ -226,13 +229,7 @@ async fn request(
     if source.digest != *source_digest {
         return Err(invalid("request original source digest mismatch"));
     }
-    let baseline = context::read::latest_selected(
-        db,
-        &selection,
-        *source_high_water,
-        &mut context::cache::Verification::default(),
-    )
-    .await?;
+    let baseline = context::read::latest_selected(db, &selection, *source_high_water).await?;
     if baseline.as_ref().map(|b| &b.event_id) != checkpoint_event_id.as_ref() {
         return Err(invalid("request original baseline mismatch"));
     }

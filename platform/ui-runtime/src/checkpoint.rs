@@ -27,7 +27,7 @@ use crate::{
     editor::EditorSnapshot,
 };
 use maka_capabilities::call::Resources;
-use maka_event_log::{EventLog, applications::checkpoints::Checkpoints};
+use maka_event_log::{RootStore, applications::checkpoints::Checkpoints};
 use maka_plugin_core::{composition::InstanceId, runtime::Mount};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -37,7 +37,7 @@ use std::sync::{Arc, Weak};
 /// A presenter obtains this weak capability for the actual mounted provider.
 #[derive(Clone)]
 pub struct Scope {
-    store: Weak<EventLog>,
+    store: Weak<RootStore>,
     source: maka_event_log::applications::SourceSnapshot,
     instance: InstanceId,
     scheduler: tokio::runtime::Handle,
@@ -58,7 +58,7 @@ impl<V: ?Sized + 'static> crate::Application<V> {
     }
 }
 impl Scope {
-    fn open(&self, store: &Arc<EventLog>) -> Result<Arc<Checkpoints>, String> {
+    fn open(&self, store: &Arc<RootStore>) -> Result<Arc<Checkpoints>, String> {
         store
             .ui_checkpoints_from(&self.source, &self.instance)
             .map(Arc::new)

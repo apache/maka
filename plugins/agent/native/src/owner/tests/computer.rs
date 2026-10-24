@@ -29,12 +29,13 @@ async fn pending(
     session: &str,
     step: &std::cell::Cell<&'static str>,
 ) -> InteractionRecord {
-    let mut commits = fixture.store.subscribe_commits();
+    let mut commits = fixture.session(&session).await.subscribe_commits().unwrap();
     loop {
         commits.borrow_and_update();
         step.set("pending.query");
         if let Some(record) = fixture
-            .store
+            .session(session)
+            .await
             .pending_interactions(session)
             .await
             .unwrap()
@@ -151,7 +152,7 @@ async fn computer_product_tools_preserve_approval_repl_media_and_revocation() {
         let denied = pending(&f, &session, &step).await;
         scenario.set("denied.pending.returned");
         step.set("returned_or_assertions");
-        assert!(matches!(&denied.request, InteractionRequest::ClientCapability { target, base_revision: Some(0), .. } if target == &maka_workspace_api::computer::target()));
+        assert!(matches!(&denied.request, InteractionRequest::ClientCapability { target, basis: Some(basis), .. } if target == &maka_workspace_api::computer::target() && basis.boundary_revision == 0));
         scenario.set("denied.answer");
         step.set("direct.await");
         answer(&f, &denied, false, &step).await;
@@ -160,7 +161,7 @@ async fn computer_product_tools_preserve_approval_repl_media_and_revocation() {
         assert!(tool_text(&finish(&listener, &f, &step).await).contains("not granted"));
         scenario.set("denied.grant_assertion");
         step.set("direct.await");
-        assert!(f.store.client_capability_grant(&session, &maka_workspace_api::computer::target()).await.unwrap().is_none());
+        assert!(f.session(&session).await.client_capability_grant(&session, &maka_workspace_api::computer::target()).await.unwrap().is_none());
         scenario.set("denied.grant_assertion.returned");
         step.set("returned_or_assertions");
         // Real native facade operations stay journaled under the original parent;
@@ -212,7 +213,7 @@ async fn computer_product_tools_preserve_approval_repl_media_and_revocation() {
         assert!(tool_text(&finish(&listener, &f, &step).await).contains("42"));
         scenario.set("counter.pending_assertion");
         step.set("direct.await");
-        assert!(f.store.pending_interactions(&session).await.unwrap().is_empty());
+        assert!(f.session(&session).await.pending_interactions(&session).await.unwrap().is_empty());
         scenario.set("counter.pending_assertion.returned");
         step.set("returned_or_assertions");
         // Grants and VM globals never leak into another Session.
@@ -233,7 +234,7 @@ async fn computer_product_tools_preserve_approval_repl_media_and_revocation() {
         let revocation_invocation = start(&listener, &f, &session, "cua_repl", json!({"code":"await cua.listBrowsers(); nodeRepl.write('waiting'); await new Promise(() => {});","timeout_ms":120000}), "ready", &step).await;
         scenario.set("revocation.start.returned");
         step.set("returned_or_assertions");
-        let mut commits = f.store.subscribe_commits();
+        let mut commits = f.session(&session).await.subscribe_commits().unwrap();
         loop {
             let observed_commit = *commits.borrow_and_update();
             scenario.set("revocation.dispatch_facts");
@@ -331,7 +332,7 @@ async fn computer_product_tools_preserve_approval_repl_media_and_revocation() {
         let renewal = pending(&f, &session, &step).await;
         scenario.set("renewal.pending.returned");
         step.set("returned_or_assertions");
-        assert!(matches!(renewal.request, InteractionRequest::ClientCapability { base_revision: Some(1), .. }));
+        assert!(matches!(renewal.request, InteractionRequest::ClientCapability { basis: Some(basis), .. } if basis.boundary_revision == 1));
         scenario.set("renewal.answer");
         step.set("direct.await");
         answer(&f, &renewal, true, &step).await;

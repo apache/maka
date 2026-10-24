@@ -40,7 +40,7 @@ use serde_json::Value;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
-use crate::{ToolCallContext, ToolCatalog, ToolDefinition};
+use crate::{ToolCatalog, ToolDefinition};
 use uuid::Uuid;
 
 const EXEC_GRAMMAR: &str = r#"start: pragma_source | plain_source
@@ -259,10 +259,7 @@ impl ToolExecutor for NestedTools {
             } else {
                 futures_util::future::Either::Right(execution.write_owned().await)
             };
-            let context = ToolCallContext {
-                invocation: journal.invocation().clone(),
-                operation_id: operation_id.clone(),
-            };
+            let context = journal.context(operation_id.clone());
             let prepared = catalog
                 .prepare(name.clone(), input.clone(), context, cancellation.clone())
                 .await;

@@ -19,82 +19,73 @@
 
 use super::*;
 use crate::sessions::advance_catalog;
-use serde::{Serialize, de::DeserializeOwned};
-
-#[derive(Debug)]
-pub struct ProjectRelinkContext {
-    pub project_id: String,
-    pub previous_ids: Vec<String>,
-    pub absorbed_ids: Vec<String>,
-    pub destination_path: String,
-}
+use serde_json::Value;
 
 #[derive(Debug)]
 pub struct ProjectRelink {
     pub project: ProjectRecord,
-    pub updated_session_ids: Vec<String>,
+    pub updated_bindings: usize,
 }
 
 /// Exact source and destination observations plus the only Session namespace
-/// whose typed metadata this owner is permitted to rewrite.
+/// whose shared workspace selections this owner may relocate.
 #[derive(Clone, Debug)]
 pub struct ProjectRelinkGuard {
     pub source: ProjectRecord,
     pub destination: Option<ProjectRecord>,
-    pub session_prefix: String,
+    pub owner_scope: String,
 }
 
 impl EventLog {
-    /// Project aliases, locations and Session membership commit together.
-    /// The domain closure updates validated, typed Session control metadata;
-    /// runtime facts, creation fingerprints and activity timestamps never move.
-    pub async fn relink_project<T, F>(
+    /// Project aliases, locations and shared workspace bindings commit together.
+    /// Session rows and immutable execution facts are never rewritten.
+    pub async fn relink_project(
         &self,
         id: &str,
+        owner_scope: &str,
         registration: ProjectRegistration,
         now: u64,
-        reassign: F,
-    ) -> Result<ProjectRelink>
-    where
-        T: Serialize + DeserializeOwned + Send + 'static,
-        F: FnMut(&mut T, &ProjectRelinkContext) -> Result<()> + Send + 'static,
-    {
-        self.relink_project_guarded(id, registration, now, reassign, None)
+        selected_workspace: Value,
+    ) -> Result<ProjectRelink> {
+        self.relink_project_guarded(id, owner_scope, registration, now, selected_workspace, None)
             .await
     }
 
-    pub async fn relink_project_if<T, F>(
+    pub async fn relink_project_if(
         &self,
         guard: ProjectRelinkGuard,
         registration: ProjectRegistration,
         now: u64,
-        reassign: F,
-    ) -> Result<ProjectRelink>
-    where
-        T: Serialize + DeserializeOwned + Send + 'static,
-        F: FnMut(&mut T, &ProjectRelinkContext) -> Result<()> + Send + 'static,
-    {
-        if guard.session_prefix.is_empty() {
-            return Err(invalid("invalid project Session namespace"));
-        }
+        selected_workspace: Value,
+    ) -> Result<ProjectRelink> {
         let id = guard.source.id.clone();
-        self.relink_project_guarded(&id, registration, now, reassign, Some(guard))
-            .await
+        let owner_scope = guard.owner_scope.clone();
+        self.relink_project_guarded(
+            &id,
+            &owner_scope,
+            registration,
+            now,
+            selected_workspace,
+            Some(guard),
+        )
+        .await
     }
 
-    async fn relink_project_guarded<T, F>(
+    async fn relink_project_guarded(
         &self,
         id: &str,
+        owner_scope: &str,
         registration: ProjectRegistration,
         now: u64,
-        mut reassign: F,
+        selected_workspace: Value,
         guard: Option<ProjectRelinkGuard>,
-    ) -> Result<ProjectRelink>
-    where
-        T: Serialize + DeserializeOwned + Send + 'static,
-        F: FnMut(&mut T, &ProjectRelinkContext) -> Result<()> + Send + 'static,
-    {
+    ) -> Result<ProjectRelink> {
         self.validate_root()?;
+        if owner_scope.is_empty() {
+            return Err(invalid("invalid project owner scope"));
+        }
+        let owner_scope = owner_scope.to_owned();
+        let commits = self.commits.notice();
         validate_id(id)?;
         validate_registration(&registration)?;
         let now = timestamp(now)?;
@@ -125,25 +116,12 @@ impl EventLog {
                             return Err(ProjectError::Changed.into());
                         }
                     }
-                    let context = ProjectRelinkContext {
-                        project_id: project.id.clone(),
-                        previous_ids: std::iter::once(project.id.clone())
-                            .chain(project.aliases.iter().cloned())
-                            .collect(),
-                        absorbed_ids: conflict
-                            .iter()
-                            .flat_map(|record| {
-                                std::iter::once(record.id.clone())
-                                    .chain(record.aliases.iter().cloned())
-                            })
-                            .collect(),
-                        destination_path: registration.path.clone(),
-                    };
-                    let updated_session_ids = reassign_sessions(
+                    let updated_bindings = reassign_bindings(
                         &mut tx,
-                        &context,
-                        &mut reassign,
-                        guard.as_ref().map(|guard| guard.session_prefix.as_str()),
+                        &project,
+                        conflict.as_ref(),
+                        &owner_scope,
+                        selected_workspace,
                     )
                     .await?;
                     sqlx::query("DELETE FROM project_locations WHERE project_id = ?")
@@ -197,9 +175,12 @@ impl EventLog {
                         .await?
                         .ok_or(ProjectError::NotFound)?;
                     tx.commit().await.map_err(StoreError::CommitUnknown)?;
+                    if updated_bindings != 0 {
+                        commits.metadata_scope(&owner_scope);
+                    }
                     Ok(ProjectRelink {
                         project,
-                        updated_session_ids,
+                        updated_bindings,
                     })
                 })
             })
@@ -207,60 +188,57 @@ impl EventLog {
     }
 }
 
-async fn reassign_sessions<T, F>(
+async fn reassign_bindings(
     connection: &mut SqliteConnection,
-    context: &ProjectRelinkContext,
-    reassign: &mut F,
-    prefix: Option<&str>,
-) -> Result<Vec<String>>
-where
-    T: Serialize + DeserializeOwned,
-    F: FnMut(&mut T, &ProjectRelinkContext) -> Result<()>,
-{
-    let mut updated = Vec::new();
-    // Bounded row batches avoid loading all Session configurations at once.
-    let mut cursor = String::new();
-    loop {
-        let rows: Vec<(String, String)> = sqlx::query_as(
-            "SELECT id, configuration FROM session_control WHERE id > ? ORDER BY id LIMIT 32",
-        )
-        .bind(&cursor)
-        .fetch_all(&mut *connection)
-        .await?;
-        if rows.is_empty() {
-            break;
-        }
-        for (id, original) in rows {
-            cursor = id.clone();
-            if prefix.is_some_and(|prefix| !id.starts_with(prefix)) {
-                continue;
-            }
-            let mut configuration: T = serde_json::from_str(&original)?;
-            // Compare normalized encodings, not the input's incidental key order.
-            let before = serde_json::to_string(&configuration)?;
-            reassign(&mut configuration, context)?;
-            let after = serde_json::to_string(&configuration)?;
-            if after != before {
-                if sqlx::query(
-                    "UPDATE session_control SET configuration = ?, revision = revision + 1
-                    WHERE id = ? AND revision < ?",
-                )
-                .bind(after)
-                .bind(&id)
-                .bind(MAX_SAFE_INTEGER as i64)
-                .execute(&mut *connection)
-                .await?
-                .rows_affected()
-                    != 1
-                {
-                    return Err(invalid("relinked Session revision exhausted"));
+    source: &ProjectRecord,
+    absorbed: Option<&ProjectRecord>,
+    owner_scope: &str,
+    mut selected_workspace: Value,
+) -> Result<usize> {
+    if !selected_workspace.is_object() {
+        return Err(invalid("invalid relocated workspace"));
+    }
+    selected_workspace["projectId"] = Value::String(source.id.clone());
+    let mut updated = 0usize;
+    for (project, relocation) in
+        std::iter::once((source, true)).chain(absorbed.map(|project| (project, false)))
+    {
+        for project_id in std::iter::once(&project.id).chain(&project.aliases) {
+            let mut cursor = String::new();
+            loop {
+                let rows: Vec<(String, String)> = sqlx::query_as(
+                    "SELECT id,workspace_json FROM workspace_bindings
+                     WHERE owner_scope=? AND json_extract(workspace_json,'$.projectId')=? AND id>?
+                     ORDER BY id LIMIT 32",
+                ).bind(owner_scope).bind(project_id).bind(&cursor).fetch_all(&mut *connection).await?;
+                if rows.is_empty() {
+                    break;
                 }
-                updated.push(id.clone());
+                for (id, encoded) in rows {
+                    cursor.clone_from(&id);
+                    let workspace = if relocation {
+                        selected_workspace.clone()
+                    } else {
+                        let mut workspace: Value = serde_json::from_str(&encoded)?;
+                        workspace["projectId"] = Value::String(source.id.clone());
+                        workspace
+                    };
+                    crate::workspace_bindings::replace(
+                        connection,
+                        uuid::Uuid::parse_str(&id)
+                            .map_err(|_| invalid("invalid workspace binding ID"))?,
+                        workspace,
+                        relocation,
+                    )
+                    .await?;
+                    updated = updated
+                        .checked_add(1)
+                        .ok_or_else(|| invalid("workspace binding count exhausted"))?;
+                }
             }
-            cursor = id;
         }
     }
-    if !updated.is_empty() {
+    if updated != 0 {
         advance_catalog(connection).await?;
     }
     Ok(updated)

@@ -41,8 +41,8 @@ pub enum ExitMode {
 /// owner's close. That original worker retains the Root and writer authority.
 pub async fn open_store(
     owner: std::sync::Arc<maka_event_log::root::RootOwner>,
-) -> std::result::Result<maka_event_log::EventLog, maka_event_log::StoreError> {
-    confirmed_store(maka_event_log::EventLog::for_root(owner).await).await
+) -> std::result::Result<maka_event_log::root_store::RootStore, maka_event_log::StoreError> {
+    confirmed_store(maka_event_log::root_store::RootStore::open(owner).await).await
 }
 
 /// Inspect an existing Root's saved application without initializing storage.
@@ -53,9 +53,9 @@ pub async fn open_application_inspection(
     confirmed_store(maka_event_log::EventLog::for_application_inspection(owner).await).await
 }
 
-async fn confirmed_store(
-    result: std::result::Result<maka_event_log::EventLog, maka_event_log::StoreError>,
-) -> std::result::Result<maka_event_log::EventLog, maka_event_log::StoreError> {
+async fn confirmed_store<T>(
+    result: std::result::Result<T, maka_event_log::StoreError>,
+) -> std::result::Result<T, maka_event_log::StoreError> {
     match result {
         Err(error @ maka_event_log::StoreError::StartupCleanupFailed { .. }) => {
             eprintln!("SQL startup cleanup unconfirmed: {error}");

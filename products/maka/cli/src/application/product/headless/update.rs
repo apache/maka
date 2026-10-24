@@ -24,7 +24,8 @@ use super::super::{
 };
 use super::{HostError, Input, Preparation, Roots, Selection, launch};
 use base64::{Engine, engine::general_purpose::STANDARD};
-use maka_event_log::{EventLog, applications::launch::Launch};
+use maka_event_log::applications::launch::Launch;
+use maka_event_log::root_store::RootStore;
 use maka_plugin_core::{
     composition::ExecutionLocation,
     package::{PackageRef, PackageSelection},
@@ -32,20 +33,58 @@ use maka_plugin_core::{
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(in super::super) async fn synchronize(
-    store: &EventLog,
+    store: &RootStore,
     apply: bool,
 ) -> Result<Outcome, HostError> {
     let record = store
         .application_launch()
         .await?
         .ok_or("public Host selection missing")?;
+    let current = store.load_application(record.deployment).await?;
+    let base = if let (Some(pending), Some(current)) = (&record.pending, &current) {
+        let preparation: Preparation = serde_json::from_slice(pending)?;
+        let mut reference = current.source().reference.clone();
+        reference.revision = preparation.expected_revision.max(1);
+        store.load_application_at(&reference).await?
+    } else {
+        None
+    };
+    synchronize_loaded(apply.then_some(store), record, current, base).await
+}
+
+/// Offline preview reads only the existing control database; no runtime partition opens.
+pub(in super::super) async fn preview(
+    store: &maka_event_log::EventLog,
+) -> Result<Outcome, HostError> {
+    let record = store
+        .application_launch()
+        .await?
+        .ok_or("public Host selection missing")?;
+    let current = store.load_application(record.deployment).await?;
+    let base = if let (Some(pending), Some(current)) = (&record.pending, &current) {
+        let preparation: Preparation = serde_json::from_slice(pending)?;
+        let mut reference = current.source().reference.clone();
+        reference.revision = preparation.expected_revision.max(1);
+        store.load_application_at(&reference).await?
+    } else {
+        None
+    };
+    synchronize_loaded(None, record, current, base).await
+}
+
+async fn synchronize_loaded(
+    apply: Option<&RootStore>,
+    record: Launch,
+    current: Option<maka_event_log::applications::LoadedDeployment>,
+    base: Option<maka_event_log::applications::LoadedDeployment>,
+) -> Result<Outcome, HostError> {
     let selection: Selection = serde_json::from_value(record.configuration.clone())?;
     selection.validate()?;
     if let Some(pending) = &record.pending {
         let preparation: Preparation = serde_json::from_slice(pending)?;
         let packages = launch::decode_packages(preparation.packages.clone())?;
         validate_target(&preparation.input, &packages)?;
-        let previous = check_pending(store, &record, &preparation, &packages).await?;
+        let previous = check_pending(current.as_ref(), base.as_ref(), &preparation, &packages)?;
         let initializing = preparation.expected_revision == 0;
         let mut outcome = Outcome {
             scope: if initializing {
@@ -61,7 +100,7 @@ pub(in super::super) async fn synchronize(
                 changes(previous.as_ref(), &preparation.input)
             },
         };
-        if apply {
+        if let Some(store) = apply {
             // Recover only this frozen operation, even under a newer executable.
             super::prepare_saved(store, Roots::Saved).await?;
             outcome.applied = true;
@@ -72,7 +111,13 @@ pub(in super::super) async fn synchronize(
     let packages = tokio::task::spawn_blocking(super::super::packages).await??;
     let authoring = super::super::authoring()?;
     super::super::verified_fingerprint(&authoring, &packages, &version)?;
-    synchronize_packages(store, record, apply, packages).await
+    synchronize_loaded_packages(
+        apply,
+        record,
+        current.ok_or("public Host source missing")?,
+        packages,
+    )
+    .await
 }
 
 /// Read the ordinary management query through the live Host, never its database.
@@ -193,8 +238,9 @@ async fn read_initial_document(
     Ok(serde_json::from_str(&text)?)
 }
 
+#[cfg(test)]
 async fn synchronize_packages(
-    store: &EventLog,
+    store: &RootStore,
     record: Launch,
     apply: bool,
     bundled: BTreeMap<String, Package>,
@@ -203,6 +249,15 @@ async fn synchronize_packages(
         .load_application(record.deployment)
         .await?
         .ok_or("public Host source missing")?;
+    synchronize_loaded_packages(apply.then_some(store), record, loaded, bundled).await
+}
+
+async fn synchronize_loaded_packages(
+    apply: Option<&RootStore>,
+    record: Launch,
+    loaded: maka_event_log::applications::LoadedDeployment,
+    bundled: BTreeMap<String, Package>,
+) -> Result<Outcome, HostError> {
     if !loaded.source().remote_exports.is_empty() {
         return Err("public Host source cannot use remote observations".into());
     }
@@ -250,7 +305,7 @@ async fn synchronize_packages(
     }
     let packages: Vec<_> = inventory.into_values().collect();
     validate_target(&next, &packages)?;
-    if apply {
+    if let Some(store) = apply {
         let preparation = Preparation {
             expected_revision: loaded.source().reference.revision,
             input: next,
@@ -338,22 +393,16 @@ fn changes(previous: Option<&Input>, next: &Input) -> Vec<String> {
         .collect()
 }
 
-async fn check_pending(
-    store: &EventLog,
-    record: &Launch,
+fn check_pending(
+    current: Option<&maka_event_log::applications::LoadedDeployment>,
+    base: Option<&maka_event_log::applications::LoadedDeployment>,
     preparation: &Preparation,
     packages: &[Package],
 ) -> Result<Option<Input>, HostError> {
-    let current = store.load_application(record.deployment).await?;
     if preparation.expected_revision == 0 {
-        if let Some(current) = current {
-            let mut reference = current.source().reference.clone();
-            reference.revision = 1;
-            let original = store
-                .load_application_at(&reference)
-                .await?
-                .ok_or("original public Host source missing")?;
-            if !matches_target(&original, &preparation.input, packages) {
+        if current.is_some() {
+            let original = base.ok_or("original public Host source missing")?;
+            if !matches_target(original, &preparation.input, packages) {
                 return Err(
                     "original product initialization source conflicts with stored revision 1"
                         .into(),
@@ -370,16 +419,11 @@ async fn check_pending(
                 .expected_revision
                 .checked_add(1)
                 .ok_or("public Host revision exhausted")?
-            && matches_target(&current, &preparation.input, packages))
+            && matches_target(current, &preparation.input, packages))
     {
         return Err("prepared Host update conflicts with a later source revision".into());
     }
-    let mut reference = current.source().reference.clone();
-    reference.revision = preparation.expected_revision;
-    let previous = store
-        .load_application_at(&reference)
-        .await?
-        .ok_or("prepared Host update source missing")?;
+    let previous = base.ok_or("prepared Host update source missing")?;
     Ok(Some(previous.source().input.clone()))
 }
 fn matches_target(

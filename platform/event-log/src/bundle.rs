@@ -156,15 +156,15 @@ async fn inventory(
     rows.sort_unstable_by(|left, right| left.0.cmp(&right.0));
     let mut digest = Sha256::new();
     let mut sessions = Vec::with_capacity(rows.len());
-    for (id, revision) in rows {
+    for (id, _) in rows {
         if !sessions.is_empty() {
             digest.update(b"\n");
         }
         digest.update(id.as_bytes());
-        sessions.push(Session {
-            id,
-            revision: crate::sequence_number(revision)?,
-        });
+        let revision = crate::workspace_bindings::current_session_revision(connection, &id)
+            .await?
+            .ok_or(StoreError::SessionNotFound)?;
+        sessions.push(Session { id, revision });
     }
     Ok(Inventory {
         root_session_id: root.into(),

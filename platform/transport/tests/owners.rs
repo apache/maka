@@ -21,8 +21,8 @@
 mod support;
 use futures_util::future::BoxFuture;
 use maka_event_log::{
-    EventLog,
     root::{RootNamespaces, RootOwner},
+    root_store::RootStore,
 };
 use maka_host_runtime::application::{
     Application, Context, Handler, Invocation, NativeActivation, NativeOwner, NativeRegistry,
@@ -74,7 +74,7 @@ async fn compiled_native_file_and_root_wait_for_the_original_application_and_sql
         control: directory.path().join("control"),
     };
     let original = Arc::new(RootOwner::create(&root, &namespaces).unwrap());
-    let store = Arc::new(EventLog::for_root(original).await.unwrap());
+    let store = Arc::new(support::setup(RootStore::open(original)).await.unwrap());
     let deployment = uuid::Uuid::new_v4();
     let (input, packages) = support::native_host("native.File");
     store
@@ -199,9 +199,11 @@ async fn cancelled_cohost_start_keeps_original_initializer_native_file_and_sql_u
         control: directory.path().join("control"),
     };
     let store = Arc::new(
-        EventLog::for_root(Arc::new(RootOwner::create(&root, &namespaces).unwrap()))
-            .await
-            .unwrap(),
+        support::setup(RootStore::open(Arc::new(
+            RootOwner::create(&root, &namespaces).unwrap(),
+        )))
+        .await
+        .unwrap(),
     );
     let (mut input, originals) = support::host();
     let mut packages = Vec::new();
@@ -365,7 +367,7 @@ async fn cohost_retains_independent_receipts_when_selected_business_cannot_start
             ownership: directory.path().join("owners"),
             control: directory.path().join("control"),
         };
-        let store = Arc::new(EventLog::for_root(Arc::new(RootOwner::create(&root, &namespaces).unwrap())).await.unwrap());
+        let store = Arc::new(support::setup(RootStore::open(Arc::new(RootOwner::create(&root, &namespaces).unwrap()))).await.unwrap());
         let (input, packages) = support::host_with_unavailable_business();
         let host = uuid::Uuid::new_v4();
         store.commit_application(host, 0, input, vec![], packages).await.unwrap();
@@ -402,14 +404,16 @@ async fn loaded_ui_requires_its_live_original_root_owner() {
     };
     let path = directory.path().join("ui");
     let original = Arc::new(
-        EventLog::for_root(Arc::new(RootOwner::create(&path, &namespaces).unwrap()))
-            .await
-            .unwrap(),
+        support::setup(RootStore::open(Arc::new(
+            RootOwner::create(&path, &namespaces).unwrap(),
+        )))
+        .await
+        .unwrap(),
     );
     let other = Arc::new(
-        EventLog::for_root(Arc::new(
+        support::setup(RootStore::open(Arc::new(
             RootOwner::create(&directory.path().join("other"), &namespaces).unwrap(),
-        ))
+        )))
         .await
         .unwrap(),
     );
@@ -441,9 +445,11 @@ async fn loaded_ui_requires_its_live_original_root_owner() {
     original.drain().await;
     drop(original);
     let reopened = Arc::new(
-        EventLog::for_root(Arc::new(RootOwner::open(&path, &namespaces).unwrap()))
-            .await
-            .unwrap(),
+        support::setup(RootStore::open(Arc::new(
+            RootOwner::open(&path, &namespaces).unwrap(),
+        )))
+        .await
+        .unwrap(),
     );
     assert_eq!(
         reopened.owned_root().unwrap().root_id(),

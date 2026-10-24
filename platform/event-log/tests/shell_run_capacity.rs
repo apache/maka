@@ -31,7 +31,11 @@ use maka_event_log::EventLog;
 use serde_json::json;
 use std::sync::Arc;
 
-fn record(output: ShellOutput) -> ShellRun {
+use maka_agent_facts::workspace::PermissionBasis;
+#[path = "support/shell_binding.rs"]
+mod binding;
+
+fn record(basis: PermissionBasis, output: ShellOutput) -> ShellRun {
     ShellRun {
         id: "large".into(),
         session_id: "session".into(),
@@ -40,7 +44,7 @@ fn record(output: ShellOutput) -> ShellRun {
         source_tool_call_id: "call".into(),
         visibility: ShellVisibility::User,
         permissions: ShellPermissions {
-            boundary_revision: 0,
+            basis,
             sandbox: Sandbox::Disabled,
         },
         cwd: "/workspace".into(),
@@ -59,9 +63,7 @@ async fn styled_display_above_old_record_limit_survives_recovery_observation_and
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("runtime.sqlite");
     let log = EventLog::open(&path).await.unwrap();
-    log.create_session("session", "create", &json!({}), 1)
-        .await
-        .unwrap();
+    let basis = binding::create(&log, "session", "/workspace").await;
     let mut display = Display::new(TerminalSize::new(80, 24).unwrap());
     let row = (0..80)
         .map(|n| Run {
@@ -76,9 +78,12 @@ async fn styled_display_above_old_record_limit_survives_recovery_observation_and
         })
         .collect::<Vec<_>>();
     display.scrollback = vec![row; 600];
-    let record = record(ShellOutput::Pty {
-        screen: Arc::new(display),
-    });
+    let record = record(
+        basis,
+        ShellOutput::Pty {
+            screen: Arc::new(display),
+        },
+    );
     assert!(serde_json::to_vec(&record).unwrap().len() > 4 * 1024 * 1024);
     log.create_shell_run(record.clone()).await.unwrap();
     log.close().await.unwrap();
@@ -127,16 +132,17 @@ async fn old_terminal_text_migrates_once_preserving_identity_pipes_unicode_and_r
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("runtime.sqlite");
     let log = EventLog::open(&path).await.unwrap();
-    log.create_session("session", "create", &json!({}), 1)
-        .await
-        .unwrap();
-    let pipe = record(ShellOutput::Pipes {
-        stdout: "untouched\u{1b}[31m".into(),
-        stderr: String::new(),
-        latest_stream: None,
-        stdout_truncated: false,
-        stderr_truncated: false,
-    });
+    let basis = binding::create(&log, "session", "/workspace").await;
+    let pipe = record(
+        basis,
+        ShellOutput::Pipes {
+            stdout: "untouched\u{1b}[31m".into(),
+            stderr: String::new(),
+            latest_stream: None,
+            stdout_truncated: false,
+            stderr_truncated: false,
+        },
+    );
     log.create_shell_run(pipe.clone()).await.unwrap();
     log.close().await.unwrap();
     let connection = rusqlite::Connection::open(&path).unwrap();

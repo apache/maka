@@ -108,7 +108,8 @@ impl Search {
                         max_results: input.limit,
                         search_depth: "basic",
                     })
-                    .map_err(|_| Error::Input)?,
+                    .map_err(|_| Error::Input)?
+                    .into(),
                 },
             )
             .await

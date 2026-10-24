@@ -101,7 +101,7 @@ impl EventLog {
         let configuration = serde_json::to_string(configuration)?;
         let source = serde_json::to_string(source)?;
         let owner = owner.clone();
-        let commits = self.commits.clone();
+        let commits = self.commits.session(&owner.session_id);
         self.connection.run(move |connection| Box::pin(async move {
             let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
             let previous: Option<(String, String, String, i64)> = sqlx::query_as(
@@ -148,7 +148,7 @@ impl EventLog {
             super::insert(&mut tx, &owner.session_id, &owner.fingerprint, &configuration, now).await?;
             let record = super::read(&mut tx, &owner.session_id).await?.ok_or(StoreError::SessionNotFound)?;
             tx.commit().await.map_err(StoreError::CommitUnknown)?;
-            if let Some(sequence) = through { commits.send_replace(sequence); }
+            if let Some(sequence) = through { commits.publish(sequence); }
             Ok(record)
         })).await
     }
@@ -202,16 +202,16 @@ async fn append(
             continue;
         }
         bytes += json.len() as u64;
-        let inserted = sqlx::query("INSERT INTO event_log(event_id,invocation_id,kind,event_json) VALUES(?,?,'message_imported',?)")
-                    .bind(&event.id).bind(&event.invocation.invocation_id).bind(json).execute(&mut *connection).await?;
-        last = Some(inserted.last_insert_rowid() as u64);
-        super::project_execution(&mut *connection, inserted.last_insert_rowid() as u64).await?;
-        crate::transcript::directory::record_source(
+        let sequence = crate::append::ingress::insert(
             connection,
-            session,
-            inserted.last_insert_rowid() as u64,
+            &event,
+            json,
+            crate::append::ingress::Position::Imported(None),
         )
         .await?;
+        last = Some(sequence);
+        super::project_execution(connection, sequence).await?;
+        crate::transcript::directory::record_source(connection, session, sequence).await?;
         sqlx::query("UPDATE session_imports SET records=records+1,bytes=?,conversation=conversation+? WHERE session_id=?")
                     .bind(bytes as i64).bind(i64::from(conversation)).bind(session).execute(&mut *connection).await?;
     }

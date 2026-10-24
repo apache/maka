@@ -230,7 +230,7 @@ impl Health {
                     url: url.into(),
                     method,
                     headers: vec![],
-                    body: vec![],
+                    body: Default::default(),
                 },
             )
             .await?;
@@ -306,7 +306,7 @@ mod tests {
     #[derive(Default)]
     struct Transport {
         replies: Mutex<VecDeque<http::Response>>,
-        calls: Mutex<Vec<http::Request>>,
+        calls: Mutex<Vec<http::BufferedRequest>>,
         started: tokio::sync::Notify,
     }
     impl http::Client for Transport {
@@ -316,6 +316,23 @@ mod tests {
             request: http::Request,
         ) -> BoxFuture<'_, Result<http::Response, http::Error>> {
             Box::pin(async move {
+                let http::Request {
+                    url,
+                    method,
+                    headers,
+                    body,
+                } = request;
+                let mut upload = body.into_stream();
+                let mut body = Vec::new();
+                while let Some(chunk) = futures_util::StreamExt::next(&mut upload).await {
+                    body.extend_from_slice(&chunk.unwrap());
+                }
+                let request = http::BufferedRequest {
+                    url,
+                    method,
+                    headers,
+                    body,
+                };
                 self.calls.lock().unwrap().push(request);
                 self.started.notify_one();
                 let result = self.replies.lock().unwrap().pop_front();
@@ -426,6 +443,7 @@ mod tests {
             assert_eq!(calls.len(), 2);
             assert!(matches!(calls[0].method, http::Method::Head));
             assert!(matches!(calls[1].method, http::Method::Get));
+            assert!(calls.iter().all(|request| request.body.is_empty()));
         }
         assert_eq!(head.closed.load(Ordering::SeqCst), 1);
         assert_eq!(get.closed.load(Ordering::SeqCst), 1);

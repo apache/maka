@@ -25,11 +25,11 @@ async fn session_read_guards_reject_foreign_missing_and_logically_removed_sessio
         let fixture = Fixture::new("http://127.0.0.1:9/v1", None).await;
         let session = fixture.create("Availability").await;
         fixture.owner.require_session(&session).await.unwrap();
-        let record = fixture.owner.session(&session).await.unwrap();
+        let record = fixture.session(&session).await.get::<StoredSessionConfiguration>().await.unwrap().unwrap();
         fixture.store.create_session("foreign_session", "foreign", &record.configuration, now()).await.unwrap();
         let missing = format!("{}{}", fixture.owner.prefix, Uuid::new_v4().simple());
         fixture.store.begin_session_removal(&session, record.revision).await.unwrap();
-        assert!(fixture.store.retiring_session::<SessionConfiguration>(&session).await.unwrap().is_some());
+        assert!(fixture.store.retiring_session::<StoredSessionConfiguration>(&session).await.unwrap().is_some());
         let row = json!({"sourceSequence":1,"itemIndex":0});
         let requests = [
             ("observe", json!({})),
@@ -73,12 +73,12 @@ async fn history_visibility_does_not_decode_configuration_but_source_still_requi
             .unwrap();
         assert_eq!(expected["kind"], "ready");
         assert_eq!(expected["chunks"], json!([]));
-        let connection =
-            rusqlite::Connection::open(fixture.root.join(maka_event_log::root::ROOT_DATABASE))
-                .unwrap();
+        let connection = rusqlite::Connection::open(fixture.session_database(&session)).unwrap();
+        // Preserve valid JSON and the binding reference while making the domain
+        // configuration undecodable; history only requires Session visibility.
         connection
             .execute(
-                "UPDATE session_control SET configuration='invalid json' WHERE id=?",
+                "UPDATE session_control SET configuration=json_set(configuration,'$.title',42) WHERE id=?",
                 [&session],
             )
             .unwrap();

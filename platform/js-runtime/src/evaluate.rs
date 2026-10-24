@@ -111,6 +111,7 @@ pub(crate) async fn evaluate(
             load: (key) => {{
                 if (typeof key !== "string") throw new ErrorClass("load key must be a string");
                 const result = read(key);
+                check(result.error);
                 return result.found ? result.value : undefined;
             }},
             setTimeout: (callback, millis = 0) => {{

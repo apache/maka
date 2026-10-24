@@ -926,7 +926,8 @@ pub(super) async fn stored_facts(
     session: &str,
 ) -> Vec<maka_agent_facts::event::StoredEvent> {
     fixture
-        .store
+        .session(&(session))
+        .await
         .scoped_prefix(
             maka_agent_facts::event::LogScope::Session { id: session.into() },
             256,
@@ -941,10 +942,11 @@ async fn pending_approval(
     fixture: &Fixture,
     session: &str,
 ) -> maka_agent_facts::interaction::InteractionRecord {
-    let mut commits = fixture.store.subscribe_commits();
+    let mut commits = fixture.session(&session).await.subscribe_commits().unwrap();
     loop {
         if let Some(record) = fixture
-            .store
+            .session(session)
+            .await
             .pending_interactions(session)
             .await
             .unwrap()
@@ -1248,7 +1250,8 @@ async fn stop_closes_original_service_confirmation_without_an_effect_or_replay()
         assert_eq!(counter.entered.available_permits(), 0);
         assert!(
             fixture
-                .store
+                .session(&session)
+                .await
                 .pending_interactions(&session)
                 .await
                 .unwrap()
@@ -1329,7 +1332,8 @@ async fn installed_javascript_service_is_a_real_model_tool_with_business_project
             }
         );
         let prefix = fixture
-            .store
+            .session(&(session))
+            .await
             .scoped_prefix(
                 maka_agent_facts::event::LogScope::Session {
                     id: session.clone(),
@@ -1345,7 +1349,8 @@ async fn installed_javascript_service_is_a_real_model_tool_with_business_project
             .find(|event| matches!(event.event.fact, Fact::ToolSettled { .. }))
             .unwrap();
         let raw = fixture
-            .store
+            .session(&session)
+            .await
             .resolve_tool_result(&session, &event.event.id)
             .await
             .unwrap();
@@ -1356,7 +1361,7 @@ async fn installed_javascript_service_is_a_real_model_tool_with_business_project
             raw,
             maka_agent_facts::tool_output::ToolOutput::Operation(_)
         ));
-        let through = *fixture.store.subscribe_commits().borrow();
+        let through = fixture.through(&session).await;
 
         use maka_agent_ports::session::history::Page;
         use maka_agent_ports::session::history::Position;
@@ -1364,7 +1369,8 @@ async fn installed_javascript_service_is_a_real_model_tool_with_business_project
         use maka_agent_ports::session::history::SourceFormat;
         use maka_agent_ports::session::history::SourcePosition;
         let Page::Ready { chunks, .. } = fixture
-            .store
+            .session(&session)
+            .await
             .history_text(
                 &session,
                 through,
@@ -1403,7 +1409,8 @@ async fn installed_javascript_service_is_a_real_model_tool_with_business_project
                 let mut actual = String::new();
                 loop {
                     let source = fixture
-                        .store
+                        .session(&session)
+                        .await
                         .history_source(
                             &session,
                             through,
@@ -1442,7 +1449,8 @@ async fn installed_javascript_service_is_a_real_model_tool_with_business_project
             }
         }
         let matches = fixture
-            .store
+            .session(&session)
+            .await
             .search_transcript(
                 &session,
                 maka_event_log::transcript::search::TranscriptSearch {
@@ -1534,7 +1542,9 @@ async fn unknown_service_outcome_has_typed_original_evidence_and_never_enters_mo
         );
         let recovered = fixture
             .store
-            .operation_observation(&operation.reference)
+            .operation(&operation.reference)
+            .unwrap()
+            .operation_observation()
             .await
             .unwrap()
             .unwrap();
@@ -1741,7 +1751,7 @@ async fn returned_effect_with_failed_cleanup_preserves_receipt_without_settling_
             let session = fixture.create("Failed original cleanup").await;
             fixture.send(&session).await.unwrap();
             fixture.drained().await;
-            let observed = facts(&fixture, &session).await;
+            let observed = fixture.facts_after_failed_shutdown(&session).await;
             server.await.unwrap();
             let facts = observed;
             assert!(
@@ -1817,7 +1827,8 @@ async fn query_tool_uses_original_query_gate_and_projects_plain_business_json() 
         fixture.drained().await;
         server.await.unwrap();
         let prefix = fixture
-            .store
+            .session(&(session))
+            .await
             .scoped_prefix(
                 maka_agent_facts::event::LogScope::Session {
                     id: session.clone(),
@@ -1842,7 +1853,8 @@ async fn query_tool_uses_original_query_gate_and_projects_plain_business_json() 
             .unwrap();
         assert_eq!(
             fixture
-                .store
+                .session(&session)
+                .await
                 .resolve_tool_result(&session, &event.event.id)
                 .await
                 .unwrap(),
@@ -1901,7 +1913,7 @@ async fn unresponsive_native_tool_reaches_original_cleanup_budget_and_keeps_host
                 .any(|status| status.activation.instance() == &id(21) && status.calls > 0)
         );
         assert!(
-            !facts(&fixture, &session)
+            !fixture.facts_after_failed_shutdown(&session)
                 .await
                 .iter()
                 .any(|fact| matches!(fact, Fact::ToolSettled { .. }))
@@ -1931,15 +1943,19 @@ async fn admitted_message_keeps_original_model_workspace_and_dispatcher_when_ope
     )
     .await;
     let session = fixture.create("Pending original basis").await;
-    let raw =
-        rusqlite::Connection::open(fixture.root.join(maka_event_log::root::ROOT_DATABASE)).unwrap();
+    let raw = rusqlite::Connection::open(fixture.session_database(&session)).unwrap();
     raw.execute_batch("CREATE TRIGGER hold_opening BEFORE INSERT ON event_log WHEN NEW.kind='invocation_opened' BEGIN SELECT RAISE(ABORT, 'fixture opening failure'); END;").unwrap();
     let operation = Uuid::new_v4();
     assert!(fixture.mutation(2, "send", json!({
         "sessionId":session,"message":"durable original", "model":fixture.selection().await
     }), operation).await.is_err());
     fixture.drained().await;
-    let queued = fixture.store.pending_messages(&session).await.unwrap();
+    let queued = fixture
+        .session(&session)
+        .await
+        .pending_messages(&session)
+        .await
+        .unwrap();
     assert_eq!(queued.len(), 1);
     assert_eq!(queued[0].execution.owner, fixture.owner.prefix);
     let encoded = serde_json::to_string(&queued[0].execution.basis).unwrap();
@@ -2002,7 +2018,7 @@ async fn queue_promotion_steers_original_run_at_the_next_step_without_a_successo
         assert_eq!(fixture.query("observe", json!({"sessionId":session})).await.unwrap()["run"]["invocationId"], started["invocationId"]);
         response(&mut second).await;
         fixture.drained().await;
-        assert!(fixture.store.pending_messages(&session).await.unwrap().is_empty());
+        assert!(fixture.session(&session).await.pending_messages(&session).await.unwrap().is_empty());
         let work=fixture.query("work",json!({"sessionId":session,"target":{"kind":"message","messageId":queued["messageId"]}})).await.unwrap();
         assert_eq!(work["kind"],"delivered");assert_eq!(work["shared"],true);
         assert_eq!(work["execution"]["invocationId"],started["invocationId"]);
@@ -2157,7 +2173,7 @@ async fn resume_replays_original_settlements_without_redispatching_effects() {
                     Fact::ToolSettled { outcome: ToolOutcome::Unknown { operation: Some(operation), .. }, .. } => Some(&operation.reference),
                     _ => None,
                 }).unwrap();
-                let receipt = fixture.store.operation_observation(reference).await.unwrap().unwrap();
+                let receipt = fixture.store.operation(reference).unwrap().operation_observation().await.unwrap().unwrap();
                 assert!(matches!(receipt.outcome, OperationOutcome::Unknown { .. }));
             }
             assert_eq!(counter.effects.load(Ordering::SeqCst), 1, "replay never redispatches original service mutation");
@@ -2252,14 +2268,14 @@ async fn code_mode_calls_selected_native_services_with_original_grants_and_recei
                         Fact::ToolSettled { operation_id, outcome: ToolOutcome::Succeeded { .. } }
                         if operation_id == expected
                     )).count(), 1, "each nested service has its own successful durable settlement");
-                    let prefix = fixture.store.scoped_prefix(
+                    let prefix = fixture.session(&(session)).await.scoped_prefix(
                         maka_agent_facts::event::LogScope::Session { id: session.clone() },
                         256, 4 * 1024 * 1024,
                     ).await.unwrap();
                     let event = prefix.events.iter().find(|event| matches!(&event.event.fact,
                         Fact::ToolSettled { operation_id, .. } if operation_id == expected
                     )).unwrap();
-                    assert!(matches!(fixture.store.resolve_tool_result(&session, &event.event.id).await.unwrap(),
+                    assert!(matches!(fixture.session(&session).await.resolve_tool_result(&session, &event.event.id).await.unwrap(),
                         maka_agent_facts::tool_output::ToolOutput::Operation(_)
                     ), "Code Mode business projection must retain the original native receipt");
                 }
@@ -2297,10 +2313,13 @@ async fn code_mode_native_file_writes_obey_the_live_session_permission_boundary(
                 files::change(&fixture, &session, "read_only", false, true).await;
             }
             fixture.send(&session).await.unwrap();
+
             let (mut first, _) = listener.accept().await.unwrap();
             let prompt = request(&mut first).await;
+
             assert!(prompt["tools"].as_array().unwrap().iter().any(|tool| tool["function"]["name"] == "exec"));
             code_response(&mut first, "text(await tools.WorkspaceFile({path:'code-mode.txt',content:'native Code Mode write'}));").await;
+
             let (mut next, _) = listener.accept().await.unwrap();
             let observed = request(&mut next).await;
             let tool = observed["messages"].as_array().unwrap().iter().find(|message| message["role"] == "tool").unwrap();
@@ -2310,9 +2329,11 @@ async fn code_mode_native_file_writes_obey_the_live_session_permission_boundary(
             if writable {
                 assert_eq!(std::fs::read_to_string(target).unwrap(), "native Code Mode write");
             }
-            assert!(fixture.store.pending_interactions(&session).await.unwrap().is_empty());
+            assert!(fixture.session(&session).await.pending_interactions(&session).await.unwrap().is_empty());
             response(&mut next).await;
+
             fixture.drained().await;
+
             fixture.app.shutdown().await.unwrap();
             fixture.config.shutdown().await.unwrap();
         }
@@ -2685,10 +2706,10 @@ async fn editing_policy_and_code_mode_survive_actual_host_restart_with_original_
         }).await;
         let session = fixture.create("Restore admitted tool policies").await;
         let deployment = fixture.app.client().snapshot().effective.unwrap().deployment;
-        let raw = rusqlite::Connection::open(fixture.root.join(maka_event_log::root::ROOT_DATABASE)).unwrap();
+        let raw = rusqlite::Connection::open(fixture.session_database(&session)).unwrap();
         raw.execute_batch("CREATE TRIGGER hold_opening BEFORE INSERT ON event_log WHEN NEW.kind='invocation_opened' BEGIN SELECT RAISE(ABORT, 'fixture opening failure'); END;").unwrap();
         assert!(fixture.send(&session).await.is_err());
-        assert_eq!(fixture.store.pending_messages(&session).await.unwrap().len(), 1);
+        assert_eq!(fixture.session(&session).await.pending_messages(&session).await.unwrap().len(), 1);
         selection::edit(&fixture, |changes| {
             changes.model_overrides = Patch::Set(BTreeMap::from([("fixture-model".into(), ModelOverride {
                 code_mode: Some(false), apply_patch: Some(true), ..Default::default()
@@ -2715,7 +2736,7 @@ async fn editing_policy_and_code_mode_survive_actual_host_restart_with_original_
         let (mut socket, _) = listener.accept().await.unwrap();
         request(&mut socket).await;
         assert_eq!(std::fs::read_to_string(fixture.workspace.join("restored-policy.txt")).unwrap(), "editing policy");
-        let mut commits = fixture.store.subscribe_commits();
+        let mut commits = fixture.session(&session).await.subscribe_commits().unwrap();
         response(&mut socket).await;
         loop {
             let recorded = facts(&fixture, &session).await;
@@ -2748,10 +2769,10 @@ async fn queued_messages_resume_with_equivalent_native_service_targets_after_res
             ).await;
             let session = fixture.create(&format!("Restore {name}")).await;
             let deployment = fixture.app.client().snapshot().effective.unwrap().deployment;
-            let raw = rusqlite::Connection::open(fixture.root.join(maka_event_log::root::ROOT_DATABASE)).unwrap();
+            let raw = rusqlite::Connection::open(fixture.session_database(&session)).unwrap();
             raw.execute_batch("CREATE TRIGGER hold_opening BEFORE INSERT ON event_log WHEN NEW.kind='invocation_opened' BEGIN SELECT RAISE(ABORT, 'fixture opening failure'); END;").unwrap();
             assert!(fixture.send(&session).await.is_err());
-            assert_eq!(fixture.store.pending_messages(&session).await.unwrap().len(), 1);
+            assert_eq!(fixture.session(&session).await.pending_messages(&session).await.unwrap().len(), 1);
             fixture.app.shutdown().await.unwrap();
             raw.execute_batch("DROP TRIGGER hold_opening").unwrap();
             drop(raw);
@@ -2767,7 +2788,7 @@ async fn queued_messages_resume_with_equivalent_native_service_targets_after_res
             assert!(next.is_ok(), "{name} refused equivalent targets: {:?}", facts(&fixture, &session).await);
             let (mut socket, _) = next.unwrap().unwrap();
             request(&mut socket).await;
-            let mut commits = fixture.store.subscribe_commits();
+            let mut commits = fixture.session(&session).await.subscribe_commits().unwrap();
             response(&mut socket).await;
             loop {
                 let recorded = facts(&fixture, &session).await;
@@ -2923,8 +2944,22 @@ async fn independent_session_admits_while_preparation_is_blocked_and_same_sessio
             last_inputs,
             ["first blocked", "independent started", "same queued"]
         );
-        assert!(f.store.pending_messages(&a).await.unwrap().is_empty());
-        assert!(f.store.pending_messages(&b).await.unwrap().is_empty());
+        assert!(
+            f.session(&a)
+                .await
+                .pending_messages(&a)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            f.session(&b)
+                .await
+                .pending_messages(&b)
+                .await
+                .unwrap()
+                .is_empty()
+        );
         f.app.shutdown().await.unwrap();
         f.config.shutdown().await.unwrap();
     })

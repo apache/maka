@@ -1360,7 +1360,7 @@ impl NativeService for RecordingSource {
 #[test]
 fn live_remote_epoch_update_preserves_original_query_source_and_waits_for_accepted_work() {
     use maka_event_log::{
-        EventLog,
+        RootStore,
         root::{RootNamespaces, RootOwner},
     };
     use maka_plugin_core::{
@@ -1375,7 +1375,7 @@ fn live_remote_epoch_update_preserves_original_query_source_and_waits_for_accept
     };
     let store = Arc::new(
         timer
-            .block_on(EventLog::for_root(Arc::new(
+            .block_on(RootStore::open(Arc::new(
                 RootOwner::create(&dir.path().join("root"), &ns).unwrap(),
             )))
             .unwrap(),

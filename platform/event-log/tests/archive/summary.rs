@@ -18,7 +18,6 @@
  */
 
 use super::*;
-use maka_agent_facts::archive::projection_digest;
 use sha2::{Digest, Sha256};
 
 #[tokio::test]
@@ -33,18 +32,30 @@ async fn stale_after_opening_binds_summary_and_late_prune_rolls_back_checkpoint(
         end(&log, "old").await;
         open(&log, "compact", true).await;
         let stale = log
-            .prepare_context_compaction("session", Some("compact"), &CheckpointMode::Standalone)
+            .capture_compaction_context(
+                "session",
+                Some("compact"),
+                &CheckpointMode::Standalone,
+                100_000,
+                64 * 1024 * 1024,
+            )
             .await
             .unwrap();
         let archived = archive("compact", &first);
-        log.append(&archived).await.unwrap();
+        let archive_sequence = log.append(&archived).await.unwrap();
         assert!(
             log.append(&request("compact", "stale-summary", Some(&stale)))
                 .await
                 .is_err()
         );
         let fresh = log
-            .prepare_context_compaction("session", Some("compact"), &CheckpointMode::Standalone)
+            .capture_compaction_context(
+                "session",
+                Some("compact"),
+                &CheckpointMode::Standalone,
+                100_000,
+                64 * 1024 * 1024,
+            )
             .await
             .unwrap();
         assert_eq!(fresh.source_evidence.digest, stale.source_evidence.digest);
@@ -62,30 +73,34 @@ async fn stale_after_opening_binds_summary_and_late_prune_rolls_back_checkpoint(
                 _ => None,
             })
             .unwrap();
-        let replacement_digest = projection_digest(&projected.replacement).unwrap();
-        let evidence = serde_json::to_vec(&(
-            projected.sequence,
-            &projected.event_id,
-            placeholder,
-            replacement_digest,
-        ))
-        .unwrap();
+        assert_eq!(
+            projected.replacement,
+            placeholder.to_canonical_projection().unwrap()
+        );
+        let sequence = archive_sequence.to_be_bytes();
+        let bytes = serde_json::to_vec(archived.event()).unwrap();
+        let mut leaf = Sha256::new();
+        leaf.update(b"maka.source.leaf.v2\0");
+        leaf.update(8_u64.to_be_bytes());
+        leaf.update(sequence);
+        leaf.update((bytes.len() as u64).to_be_bytes());
+        leaf.update(bytes);
         let mut hash = Sha256::new();
-        hash.update(b"maka.effective-context.v1\0");
+        hash.update(b"maka.effective-context.v2\0");
         hash.update(fresh.source_evidence.digest.as_bytes());
-        hash.update((evidence.len() as u64).to_le_bytes());
-        hash.update(evidence);
+        hash.update(Sha256::digest(b"maka.archive.copy.v2\0"));
+        hash.update(sequence);
+        hash.update(leaf.finalize());
         assert_eq!(
             fresh.effective_source_digest,
-            format!("sha256:{}", hex::encode(hash.finalize())),
-            "summary proof must bind the actual model replacement plus full archive evidence"
+            format!("sha256:{}", hex::encode(hash.finalize()))
         );
         let pair = summary_pair(&log, "compact", &fresh).await;
         if late {
             log.append(&archive("compact", &second)).await.unwrap();
             assert!(log.append_batch(&pair).await.is_err());
             assert!(
-                log.read_model_context("session", Some("compact"))
+                log.capture_model_context("session", Some("compact"), 100_000, 64 * 1024 * 1024)
                     .await
                     .unwrap()
                     .baseline
@@ -109,10 +124,12 @@ async fn stale_after_opening_binds_summary_and_late_prune_rolls_back_checkpoint(
             open(&log, "next-compact", true).await;
             assert!(log.append(&archive("next-compact", &second)).await.is_err());
             let source = log
-                .prepare_context_compaction(
+                .capture_compaction_context(
                     "session",
                     Some("next-compact"),
                     &CheckpointMode::Standalone,
+                    100_000,
+                    64 * 1024 * 1024,
                 )
                 .await
                 .unwrap();
@@ -128,15 +145,11 @@ async fn stale_after_opening_binds_summary_and_late_prune_rolls_back_checkpoint(
                     .unwrap(),
                 expected
             );
-            log.read_model_context("session", None).await.unwrap();
-            let imported = archive("next-compact", &second);
-            let inspect = rusqlite::Connection::open(&path).unwrap();
-            inspect.execute("INSERT INTO event_log(event_id,invocation_id,kind,operation_id,event_json) VALUES (?,'next-compact','tool_result_archived',NULL,?)",
-                rusqlite::params![imported.event().id,serde_json::to_string(imported.event()).unwrap()]).unwrap();
-            assert!(
-                log.read_model_context("session", None).await.is_err(),
-                "read must reject imported post-summary prune, not reinterpret the old summary"
-            );
+            log.capture_model_context("session", None, 100_000, 64 * 1024 * 1024)
+                .await
+                .unwrap();
+            // A new post-summary archive is still rejected at admission.
+            assert!(log.append(&archive("next-compact", &second)).await.is_err());
             log.close().await.unwrap();
             continue;
         }

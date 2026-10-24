@@ -18,7 +18,7 @@
  */
 
 use super::*;
-use maka_event_log::usage::{AuxiliarySource, Origin, Outcome, Query};
+use maka_event_log::usage::{AuxiliarySource, Origin, Outcome};
 
 async fn fixture(base: &str) -> Fixture {
     Fixture::configured(base, None, None, None, |settings| settings.recaps = true).await
@@ -39,19 +39,28 @@ async fn read(f: &Fixture, session: &str) -> Value {
 }
 async fn attempts(f: &Fixture, session: &str) -> Vec<maka_agent_facts::accounting::ModelAttempt> {
     f.store
-        .model_attempts(
-            Query {
+        .usage_activity(
+            maka_event_log::root_store::UsageQuery {
                 from: 0.0,
                 to: 253402300799999.0,
                 session_id: Some(session.into()),
                 through: None,
             },
-            0,
-            100,
+            maka_agent_facts::accounting::Selection {
+                kind: Some(maka_agent_facts::accounting::ActivityKind::Model),
+                ..Default::default()
+            },
+            None,
         )
         .await
         .unwrap()
         .attempts
+        .into_iter()
+        .map(|activity| match activity {
+            maka_agent_facts::accounting::Activity::Model(attempt) => attempt,
+            _ => panic!("model activity selection returned tool"),
+        })
+        .collect()
 }
 
 #[tokio::test]
@@ -116,9 +125,7 @@ async fn kimi_recap_uses_low_and_retains_original_session_operation() {
         Err(_) => None,
     };
     let physical = attempts(&f, &session).await;
-    let boundary = f
-        .store
-        .invocation_boundary(&session, sent["invocationId"].as_str().unwrap())
+    let boundary = f.session(&session).await.invocation_boundary(&session, sent["invocationId"].as_str().unwrap())
         .await
         .unwrap()
         .unwrap()
@@ -287,8 +294,8 @@ async fn native_recap_captures_current_language_and_replays_original_receipt_aft
         let mut f = fixture(&format!("http://{}/v1", listener.local_addr().unwrap())).await;
         let english = prompt_language::select_language(&f, "en").await;
         let session = opening(&f, &listener).await;
-        let main = f.store.latest_turn_boundary(&session).await.unwrap().unwrap().invocation;
-        let main_configuration = f.store.invocation_configuration(&main).await.unwrap().unwrap();
+        let main = f.session(&session).await.latest_turn_boundary(&session).await.unwrap().unwrap().invocation;
+        let main_configuration = f.session(&(main).session_id).await.invocation_configuration(&main).await.unwrap().unwrap();
         let chinese = prompt_language::select_language(&f, "zh-CN").await;
         let operation = Uuid::new_v4();
         let input = json!({"sessionId":session,"model":f.selection().await});
@@ -309,7 +316,7 @@ async fn native_recap_captures_current_language_and_replays_original_receipt_aft
         let original_attempts = attempts(&f, &session).await;
         let repeated = f.mutation(2, "generateRecap", input.clone(), operation).await.unwrap();
         let raw = rusqlite::Connection::open_with_flags(
-            f.root.join(maka_event_log::root::ROOT_DATABASE),
+            f.runtime_database_containing("SELECT COUNT(*) FROM event_log WHERE kind='auxiliary_model_started' AND json_extract(event_json, '$.source.operation')=?1", &operation.to_string()),
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         ).unwrap();
         let original_admission: String = raw.query_row(

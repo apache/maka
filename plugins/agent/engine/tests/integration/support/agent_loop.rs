@@ -18,12 +18,12 @@
  */
 
 use crate::support::invocation;
+use crate::support::store::SessionFixture;
 use maka_agent_engine::RunInput;
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::Invocation;
 use maka_agent_facts::tools::ToolExecutor;
 use maka_agent_facts::tools::ToolFuture;
-use maka_event_log::EventLog;
 use maka_model::{ProviderConfig, ProviderKind};
 use maka_tools::{
     ToolCatalog, ToolDefinition, ToolHandler, ToolMode, ToolNesting, ToolRegistration,
@@ -40,7 +40,7 @@ use std::{
 use tokio_util::sync::CancellationToken;
 
 pub(crate) struct Effect {
-    pub log: Arc<EventLog>,
+    pub log: Arc<SessionFixture>,
     pub count: Arc<AtomicUsize>,
 }
 impl ToolExecutor for Effect {
@@ -152,10 +152,7 @@ fn source(
         submitted_intent: None,
     }
 }
-pub(crate) async fn admit_root(log: &EventLog, input: &mut RunInput) {
-    log.create_session("session", "create", &json!({}), 1)
-        .await
-        .unwrap();
+pub(crate) async fn admit_root(log: &SessionFixture, input: &mut RunInput) {
     let maka_agent_engine::RunWork::Message {
         message,
         source_messages,
@@ -186,7 +183,7 @@ pub(crate) async fn admit_root(log: &EventLog, input: &mut RunInput) {
     .await
     .unwrap();
 }
-pub(crate) async fn enqueue(log: &EventLog, invocation: Invocation) {
+pub(crate) async fn enqueue(log: &SessionFixture, invocation: Invocation) {
     log.admit_message(
         maka_event_log::message_admissions::PendingMessageAdmission {
             execution: maka_event_log::message_admissions::PendingExecution {

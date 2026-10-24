@@ -21,7 +21,7 @@ use super::super::*;
 use maka_capabilities::call::Attachments;
 use maka_capabilities::call::Identity;
 use maka_capabilities::call::Issuer;
-use maka_event_log::{EventLog, root::RootNamespaces};
+use maka_event_log::{RootStore, root::RootNamespaces};
 use maka_host_runtime::application::{
     Application, Binding, Invocation, Policy, RecoveryInvocation,
 };
@@ -231,7 +231,7 @@ impl Handler for Pause {
     }
 }
 struct Fixture {
-    store: Arc<EventLog>,
+    store: Arc<RootStore>,
     app: Application,
     issuer: Issuer,
 }
@@ -252,7 +252,7 @@ impl Fixture {
             )
             .unwrap(),
         );
-        let store = Arc::new(EventLog::for_root(root).await.unwrap());
+        let store = Arc::new(RootStore::open(root).await.unwrap());
         if store.load_application(DEPLOYMENT).await.unwrap().is_none() {
             let (input, packages) = packages(&dir.join("source"));
             store
@@ -465,7 +465,9 @@ async fn publication_results_survive_host_process_loss_without_replaying_or_weak
         let fixture = Fixture::open(dir, None).await;
         let observation = fixture
             .store
-            .operation_observation(&reference)
+            .operation(&reference)
+            .unwrap()
+            .operation_observation()
             .await
             .unwrap()
             .unwrap();
@@ -584,7 +586,9 @@ async fn publication_results_survive_host_process_loss_without_replaying_or_weak
         }
         let after = fixture
             .store
-            .operation_observation(&reference)
+            .operation(&reference)
+            .unwrap()
+            .operation_observation()
             .await
             .unwrap()
             .unwrap();

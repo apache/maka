@@ -183,7 +183,7 @@ impl Builder<'_> {
             }
         }))
     }
-    fn unsupported_output(&mut self, result: &ToolResult) {
+    pub(super) fn unsupported_output(&mut self, result: &ToolResult) {
         self.warn(format!(
             "provider executed tool result output type {} for tool {} is not supported",
             kind(&result.output.value),
