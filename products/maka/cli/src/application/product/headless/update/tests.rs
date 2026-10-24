@@ -154,6 +154,50 @@ impl Fixture {
 }
 
 #[tokio::test]
+async fn startup_preserves_unrelated_components_with_product_process_names() {
+    let directory = tempfile::tempdir().unwrap();
+    let f = Fixture::new(directory.path()).await;
+    let mut input = f.input.clone();
+    for (previous, renamed) in [
+        ("direct", "workspace-processes"),
+        ("group", "coordinator-workspace-processes"),
+    ] {
+        let node = input.instances.remove(previous).unwrap();
+        input.instances.insert(renamed.into(), node);
+    }
+    let committed = f
+        .store
+        .commit_application(
+            f.deployment,
+            1,
+            input.clone(),
+            vec![],
+            vec![f.previous.clone(), f.template.clone()],
+        )
+        .await
+        .unwrap();
+
+    let (loaded, selection) = super::super::prepare(&f.store, Roots::Saved).await.unwrap();
+    assert_eq!(loaded.source().input, input);
+    assert_eq!(loaded.source().reference, committed);
+    let stored = f
+        .store
+        .read_application_metadata(f.deployment)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(stored.source).unwrap(),
+        serde_json::to_value(loaded.source()).unwrap()
+    );
+    assert_eq!(serde_json::to_value(selection).unwrap(), f.selection);
+    let record = f.store.application_launch().await.unwrap().unwrap();
+    assert_eq!(record.configuration, f.selection);
+    assert!(record.pending.is_none());
+    f.store.drain().await;
+}
+
+#[tokio::test]
 async fn selected_and_override_pins_upgrade_without_reauthoring_custom_composition() {
     let directory = tempfile::tempdir().unwrap();
     let f = Fixture::new(directory.path()).await;

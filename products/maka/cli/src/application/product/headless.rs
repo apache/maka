@@ -187,15 +187,12 @@ async fn prepare(
             root.display()
         ))
     })?;
-    let configured = matches!(roots, Roots::Configured(_));
-    if let Roots::Configured(roots) = roots {
-        apply_directories(
-            store,
-            loaded.source().reference.deployment,
-            directories(roots)?,
-        )
-        .await?;
-    }
+    let roots = match roots {
+        Roots::Saved => None,
+        Roots::Configured(roots) => Some(directories(roots)?),
+    };
+    let configured =
+        apply_launch_configuration(store, loaded.source().reference.deployment, roots).await?;
     if outcome.applied || configured {
         let loaded = store
             .load_application(loaded.source().reference.deployment)
@@ -308,65 +305,104 @@ async fn begin(
     Ok((deployment, selection, prepared))
 }
 
-async fn apply_directories(
+async fn apply_launch_configuration(
     store: &RootStore,
     deployment: Uuid,
-    roots: Vec<DirectoryRootSpec>,
-) -> Result<(), HostError> {
+    roots: Option<Vec<DirectoryRootSpec>>,
+) -> Result<bool, HostError> {
     let metadata = store
         .read_application_metadata(deployment)
         .await?
         .ok_or("public Host source missing")?;
-    let roots = serde_json::to_value(roots)?;
+    // The bootstrap helper implements this executable's internal protocol. Its
+    // installation path is launcher-owned, even when the bundle is unchanged.
+    let helper = serde_json::to_value(std::env::current_exe()?)?;
+    let processes: Vec<_> = ["workspace-processes", "coordinator-workspace-processes"]
+        .into_iter()
+        .filter(|name| {
+            metadata
+                .source
+                .input
+                .instances
+                .get(*name)
+                .is_some_and(|node| node.configuration.values.get("helper") != Some(&helper))
+        })
+        .collect();
     let current = metadata
         .source
         .input
         .instances
         .get("agent")
         .and_then(|node| node.configuration.values.get("workspaceRoots"));
-    if current == Some(&roots) {
-        return Ok(());
+    let roots = roots
+        .map(serde_json::to_value)
+        .transpose()?
+        .filter(|roots| current != Some(roots));
+    if roots.is_none() && processes.is_empty() {
+        return Ok(false);
     }
-    // Read payloads only for an actual configuration change, never on ordinary reopen.
+    // Read payloads only when a launcher-owned value might change.
     let loaded = store
         .load_application_at(&metadata.source.reference)
         .await?
         .ok_or("public Host source missing")?;
     let (mut source, packages, _, _) = loaded.into_parts();
     let input = &mut source.input;
-    configuration_values(input, &packages, "agent", maka_agent_api::IMPLEMENTATION)?
-        .insert("workspaceRoots".into(), roots.clone());
-    if input.instances.contains_key("skills") {
-        configuration_values(input, &packages, "skills", maka_skills_api::IMPLEMENTATION)?
-            .insert("projectRoots".into(), roots.clone());
-    }
-    if input.instances.contains_key("workspace-processes") {
-        let filesystem = configuration_values(
+    let mut helper_changed = false;
+    for name in processes {
+        // Custom components and composition wrappers own their configuration.
+        if let Some(values) = configuration_values(
             input,
             &packages,
-            "workspace-processes",
+            name,
             maka_workspace_api::processes::IMPLEMENTATION,
-        )?
-        .get_mut("filesystem")
-        .and_then(Value::as_object_mut)
-        .ok_or("public Host filesystem ceiling missing")?;
-        let previous = current
-            .and_then(Value::as_array)
-            .ok_or("saved published directories missing")?;
-        let rules = filesystem
-            .get_mut("rules")
-            .and_then(Value::as_array_mut)
-            .ok_or("saved filesystem rules missing")?;
-        // Replace the published roots' write ceiling, preserving narrower
-        // user-authored read/deny rules and unrelated filesystem restrictions.
-        rules.retain(|rule| {
-            !(rule["scope"] == "subtree"
-                && rule["access"] == "write"
-                && previous.iter().any(|root| root["path"] == rule["path"]))
-        });
-        for root in roots.as_array().expect("directory list") {
-            if !rules.iter().any(|rule| rule["path"] == root["path"]) {
-                rules.push(json!({"path": root["path"], "scope": "subtree", "access": "write"}));
+        ) {
+            values.insert("helper".into(), helper.clone());
+            helper_changed = true;
+        }
+    }
+    if roots.is_none() && !helper_changed {
+        return Ok(false);
+    }
+    if let Some(roots) = roots {
+        configuration_values(input, &packages, "agent", maka_agent_api::IMPLEMENTATION)
+            .ok_or("managed Agent configuration no longer targets the saved native component")?
+            .insert("workspaceRoots".into(), roots.clone());
+        if input.instances.contains_key("skills") {
+            configuration_values(input, &packages, "skills", maka_skills_api::IMPLEMENTATION)
+                .ok_or("managed skills configuration no longer targets the saved native component")?
+                .insert("projectRoots".into(), roots.clone());
+        }
+        if input.instances.contains_key("workspace-processes") {
+            let filesystem = configuration_values(
+                input,
+                &packages,
+                "workspace-processes",
+                maka_workspace_api::processes::IMPLEMENTATION,
+            )
+            .ok_or("managed process configuration no longer targets the saved native component")?
+            .get_mut("filesystem")
+            .and_then(Value::as_object_mut)
+            .ok_or("public Host filesystem ceiling missing")?;
+            let previous = current
+                .and_then(Value::as_array)
+                .ok_or("saved published directories missing")?;
+            let rules = filesystem
+                .get_mut("rules")
+                .and_then(Value::as_array_mut)
+                .ok_or("saved filesystem rules missing")?;
+            // Replace the published roots' write ceiling, preserving narrower
+            // user-authored read/deny rules and unrelated filesystem restrictions.
+            rules.retain(|rule| {
+                !(rule["scope"] == "subtree"
+                    && rule["access"] == "write"
+                    && previous.iter().any(|root| root["path"] == rule["path"]))
+            });
+            for root in roots.as_array().expect("directory list") {
+                if !rules.iter().any(|rule| rule["path"] == root["path"]) {
+                    rules
+                        .push(json!({"path": root["path"], "scope": "subtree", "access": "write"}));
+                }
             }
         }
     }
@@ -379,24 +415,21 @@ async fn apply_directories(
             packages,
         )
         .await?;
-    Ok(())
+    Ok(true)
 }
 fn configuration_values<'a>(
     input: &'a mut Input,
     packages: &[super::Package],
     name: &str,
     expected: &str,
-) -> Result<&'a mut BTreeMap<String, Value>, HostError> {
+) -> Option<&'a mut BTreeMap<String, Value>> {
     use maka_plugin_core::{
         composition::PackageUse,
         package::{EntryTarget, Implementation, PackageSelection},
     };
-    let node = input
-        .instances
-        .get_mut(name)
-        .ok_or("managed public Host component was removed")?;
+    let node = input.instances.get_mut(name)?;
     let PackageSelection::Pinned { package } = &node.package else {
-        return Err("managed public Host component must be pinned".into());
+        return None;
     };
     let native = packages
         .iter()
@@ -407,9 +440,9 @@ fn configuration_values<'a>(
         || !node.configuration.parameters.is_empty()
         || !matches!(native, Some(entry) if matches!(&entry.implementation, Implementation::Native { implementation } if implementation == expected))
     {
-        return Err("managed directories no longer target the saved native Host components".into());
+        return None;
     }
-    Ok(&mut node.configuration.values)
+    Some(&mut node.configuration.values)
 }
 
 #[cfg(test)]
@@ -666,6 +699,44 @@ mod tests {
                 .reference,
             changed.source().reference
         );
+        // A moved/rebuilt CLI must replace even an existing older helper, with
+        // no package update and without changing the user's source or permissions.
+        let old_helper = directory.path().join("old-maka");
+        std::fs::write(&old_helper, b"old executable").unwrap();
+        let expected = changed.source().input.clone();
+        let mut revision = changed.source().reference.revision;
+        for exists in [true, false] {
+            if !exists {
+                std::fs::remove_file(&old_helper).unwrap();
+            }
+            let mut stale = expected.clone();
+            for name in ["workspace-processes", "coordinator-workspace-processes"] {
+                stale
+                    .instances
+                    .get_mut(name)
+                    .unwrap()
+                    .configuration
+                    .values
+                    .insert("helper".into(), json!(old_helper));
+            }
+            let stale = store
+                .commit_application(
+                    deployment,
+                    revision,
+                    stale,
+                    changed.source().remote_exports.clone(),
+                    changed.packages().to_vec(),
+                )
+                .await
+                .unwrap();
+            let (repaired, _) = prepare(&store, Roots::Saved).await.unwrap();
+            assert_eq!(repaired.source().input, expected);
+            assert_eq!(repaired.source().reference.deployment, deployment);
+            assert_eq!(repaired.source().reference.revision, stale.revision + 1);
+            let (again, _) = prepare(&store, Roots::Saved).await.unwrap();
+            assert_eq!(again.source().reference, repaired.source().reference);
+            revision = repaired.source().reference.revision;
+        }
         store.drain().await;
     }
 }
