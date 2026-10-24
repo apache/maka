@@ -208,8 +208,36 @@ uuid = { version = "1", features = ["v4", "serde"] }
 [profile.dev]
 # Keep useful backtraces without embedding hundreds of MiB of dependency types.
 debug = "line-tables-only"
-# Favor fast development builds; reserve optimization for release builds.
+# Keep application code quick to rebuild and straightforward to debug.
 opt-level = 0
+
+# Dependency workspaces' profiles are ignored here. Keep the VM and layout
+# engines optimized, as NSH does in its own development builds.
+[profile.dev.package.quickjs-jit-sys]
+opt-level = 3
+
+[profile.dev.package.taffy]
+opt-level = 3
+
+# Include the concrete UI callers that instantiate generic engine/layout code.
+# Level 1 keeps development builds lighter and allows shared monomorphizations.
+[profile.dev.package.nsh-core]
+opt-level = 1
+
+[profile.dev.package.nsh-js]
+opt-level = 1
+
+[profile.dev.package.nsh-platform-tui]
+opt-level = 1
+
+[profile.dev.package.nsh-platform-gpui]
+opt-level = 1
+
+[profile.dev.package.gpui-fast]
+opt-level = 1
+
+[profile.dev.package.gpui-fast-wgpu]
+opt-level = 1
 
 [patch.crates-io]
 gix-index = { path = "third-party/gix-index" }
