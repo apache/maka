@@ -71,10 +71,10 @@ export function useAssistantAvatar(enabled: boolean, sessionId?: string) {
   return enabled && state.scope === sessionId ? state.avatar : DEFAULT_ASSISTANT_AVATAR;
 }
 
-export function PersonalAssistantAvatar({ avatar }: { avatar: AvatarView }) {
+export function PersonalAssistantAvatar({ avatar, variant = 'chat' }: { avatar: AvatarView; variant?: 'chat' | 'navigation' }) {
   const copy = getPersonalAssistantChatCopy(useUiLocale());
-  return <span className="personal-assistant-avatar" role="img" aria-label={copy.avatarLabel}
-    style={{ backgroundColor: avatar.background }}>
+  return <span className="personal-assistant-avatar" data-variant={variant} role="img" aria-label={copy.avatarLabel}
+    style={variant === 'chat' ? { backgroundColor: avatar.background } : undefined}>
     {avatar.imageUrl ? <img src={avatar.imageUrl} alt="" draggable={false} /> : avatar.emoji}
   </span>;
 }

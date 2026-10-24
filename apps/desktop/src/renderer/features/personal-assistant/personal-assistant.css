@@ -115,6 +115,15 @@
   line-height: 1;
   user-select: none;
 }
+/* Match the SideNav icon slot; full avatar styling belongs to conversation. */
+.personal-assistant-avatar[data-variant="navigation"] {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  border-radius: 4px;
+  font-size: 16px;
+  background: transparent;
+}
 .personal-assistant-chat .maka-assistant-answer { align-items: flex-start; }
 .personal-assistant-chat .maka-assistant-answer .personal-assistant-avatar { margin-top: 3px; }
 
