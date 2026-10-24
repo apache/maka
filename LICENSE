@@ -355,7 +355,7 @@ Zod dependency patch
 
 Source: https://www.npmjs.com/package/zod/v/4.6.7
 Repository: https://github.com/colinhacks/zod
-Version: 4.6.5
+Version: 4.6.7
 Dependency patch: patches/zod+4.6.7.patch
 Copyright (c) 2025 Colin McDonnell
 License: MIT
