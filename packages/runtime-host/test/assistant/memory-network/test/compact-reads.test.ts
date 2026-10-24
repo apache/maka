@@ -21,6 +21,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fixture } from './host-fixture.js';
 import { READ_PAGE_MAX_BYTES } from '@maka/runtime/read-page';
+import { DatabaseSync } from 'node:sqlite';
+import { join } from 'node:path';
 
 async function setup(t: any) {
   const f = await fixture();
@@ -249,3 +251,82 @@ test('large requested character budgets still fit the runtime byte limit with Ch
   }
   assert.equal(refs.size, 40);
 });
+
+for (const tool of ['MemorySourceQuery', 'MemoryOriginal']) {
+  for (const maxChars of [1000, 24000]) {
+    test(`${tool} rechecks completed reads after another source waits (budget ${maxChars})`, {
+      timeout: 10000,
+    }, async (t) => {
+      const f = await fixture();
+      t.after(() => f.close());
+      let allowed = true,
+        readOne = false;
+      let release!: () => void, firstChecked!: () => void, secondStarted!: () => void;
+      const waiting = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const checked = new Promise<void>((resolve) => {
+        firstChecked = resolve;
+      });
+      const started = new Promise<void>((resolve) => {
+        secondStarted = resolve;
+      });
+      t.after(release);
+      for (const id of ['fast', 'slow']) {
+        const object = { id, revision: '1', kind: 'message', title: id, locator: { id } };
+        f.sources.register({
+          id,
+          description: id,
+          queryHelp: '{}',
+          scope: { room: id },
+          enumerate: async () => ({ items: [object] }),
+          query: async () => ({ items: [object] }),
+          authorize: async (objects: any[]) => {
+            const ids = id === 'fast' && !allowed ? [] : objects.map((o) => o.id);
+            // Signal after the first body's individual post-I/O check has completed.
+            if (id === 'fast' && readOne) setImmediate(firstChecked);
+            return ids;
+          },
+          read: async () => {
+            if (id === 'slow') {
+              secondStarted();
+              await waiting;
+            } else readOne = true;
+            return { status: 'ok', object, content: `${id}-private-body ` + 'x'.repeat(500) };
+          },
+        });
+      }
+      const refs: string[] = [];
+      for (const source of ['fast', 'slow']) {
+        const page = await f.invoke('MemorySourceQuery', { source });
+        refs.push(page.items[0].ref);
+      }
+      const input =
+        tool === 'MemorySourceQuery'
+          ? { queries: [{ source: 'fast' }, { source: 'slow' }], maxChars }
+          : { refs, maxChars };
+      const pending = f.invoke(tool, input);
+      try {
+        await Promise.all([checked, started]);
+        allowed = false;
+        assert.deepEqual((await f.invoke('MemorySourceQuery', { source: 'fast' })).items, []);
+        const rejected = assert.rejects(pending, /permission changed before batch return/);
+        release();
+        await rejected;
+        const db = new DatabaseSync(join(f.root, 'data/network.sqlite'), { readOnly: true });
+        try {
+          assert.equal(db.prepare('SELECT count(*) AS n FROM memory_read_pages').get()!.n, 0);
+        } finally {
+          db.close();
+        }
+        allowed = true;
+        const retry = await f.invoke(tool, input);
+        assert.match(retry.items[0].content, /fast-private-body/);
+        assert.equal(!!retry.nextPage, maxChars === 1000);
+      } finally {
+        release();
+        await pending.catch(() => {});
+      }
+    });
+  }
+}

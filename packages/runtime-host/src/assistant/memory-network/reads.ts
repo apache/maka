@@ -214,7 +214,21 @@ export class MemoryReads {
     }
     return this.finish(page, items, consumed);
   }
-  private finish(page: ReadPage, items: any[], consumed: number) {
+  private async finish(page: ReadPage, items: any[], consumed: number) {
+    // An individually authorized read may wait for other sources or later batches.
+    // Recheck the accumulated output before returning it or saving a continuation.
+    const visible = await this.controller.visible(
+      [...new Set(items.map((item) => item.source))],
+      true,
+    );
+    for (const item of items) {
+      if (item.status === 'error') continue;
+      try {
+        this.controller.store.fragment(item.ref, visible);
+      } catch {
+        throw Error('Source read permission changed before batch return');
+      }
+    }
     for (const [source, scope] of Object.entries(page.scopes)) {
       if (scope !== this.controller.sourceScope(source))
         throw Error('Source scope changed during read');
