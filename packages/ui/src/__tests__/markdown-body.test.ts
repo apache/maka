@@ -642,3 +642,18 @@ it('memory citations route internally and never navigate as external URLs', () =
   assert.equal((markup.match(/data-maka-uri-kind="memory-original"/g) ?? []).length, 2);
   assert.doesNotMatch(markup, /unsafe-scheme|href="memory-original/);
 });
+
+
+it('SVG auto-preview has a separate bounded budget without rewriting streaming source', () => {
+  const small = '```svg\n<svg/>\n```';
+  const budgeted = applyMermaidRenderBudget([small, small, small, small].join('\n\n'));
+  assert.equal((budgeted.match(/```svg\n/g) ?? []).length, 3);
+  assert.equal((budgeted.match(/```makasvgdeferred\n/g) ?? []).length, 1);
+  assert.match(applyMermaidRenderBudget('```svg\n<svg>' + ' '.repeat(65536) + '</svg>\n```'), /```makasvgdeferred/);
+});
+
+
+it('diagram budgets do not rewrite SVG examples nested in another code fence', () => {
+  const example = '````markdown\n' + '```svg\n<svg/>\n```\n'.repeat(5) + '````';
+  assert.equal(applyMermaidRenderBudget(example), example);
+});

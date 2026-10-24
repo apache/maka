@@ -179,7 +179,7 @@ export const FilesystemWorkerResultSchema = z.discriminatedUnion('kind', [
     .object({
       kind: z.literal('read_image'),
       base64: z.string(),
-      mimeType: z.enum(['image/png', 'image/jpeg', 'image/gif', 'image/webp']),
+      mimeType: z.enum(['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/svg+xml']),
     })
     .strict(),
   z

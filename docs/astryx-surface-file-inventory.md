@@ -6,7 +6,7 @@ Generated against `@astryxdesign/core@0.6.3` (195 component exports).
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 344 files — blocker 0, reimplementation 0, polish 5, aligned 339.
+**Totals:** 346 files — blocker 0, reimplementation 0, polish 5, aligned 341.
 
 ## Exclusions (explicit)
 
@@ -324,7 +324,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `packages/ui/src/locale-context.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/maka-wordmark.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/markdown-body.tsx` | ui-composition | CodeBlock, Link, Markdown | aligned — uses Astryx (CodeBlock, Link, Markdown) | aligned |
-| `packages/ui/src/markdown-image.tsx` | ui-composition | Button, IconButton, Link, Spinner, Tooltip | aligned — uses Astryx (Button, IconButton, Link, Spinner, Tooltip) | aligned |
+| `packages/ui/src/markdown-image.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/markdown-math.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/markdown.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/mermaid-diagram.tsx` | ui-composition | Button, CodeBlock, Collapsible, Dialog, IconButton, Toolbar | aligned — uses Astryx (Button, CodeBlock, Collapsible, Dialog, IconButton, Toolbar) | aligned |
@@ -355,6 +355,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `packages/ui/src/session-context-layer.tsx` | shell-chrome-or-panel | Button, ButtonGroup, Icon, IconButton, LayoutHeader, MoreMenu, OverflowList, StatusDot, Text, Token, Tooltip | aligned — uses Astryx (Button, ButtonGroup, Icon, IconButton, LayoutHeader, MoreMenu, OverflowList, StatusDot) | aligned |
 | `packages/ui/src/session-history-list.tsx` | shell-chrome-or-panel | Badge, Button, MoreMenu, SideNavItem, SideNavSection, StatusDot, VStack | aligned — uses Astryx (Badge, Button, MoreMenu, SideNavItem, SideNavSection, StatusDot, VStack) | aligned |
 | `packages/ui/src/session-list-panel.tsx` | shell-chrome-or-panel | SegmentedControl, SegmentedControlItem, SideNav, Text | aligned — uses Astryx (SegmentedControl, SegmentedControlItem, SideNav, Text) | aligned |
+| `packages/ui/src/session-media-image.tsx` | shell-chrome-or-panel | Button, IconButton, Link, Spinner, Tooltip | aligned — uses Astryx (Button, IconButton, Link, Spinner, Tooltip) | aligned |
 | `packages/ui/src/session-rail-context.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/session-rename-dialog.tsx` | dialog-overlay | Button, Dialog, DialogHeader, HStack, Layout, LayoutContent, LayoutFooter, TextInput | aligned — uses Astryx (Button, Dialog, DialogHeader, HStack, Layout, LayoutContent, LayoutFooter, TextInput) | aligned |
 | `packages/ui/src/session-sidebar-nav.tsx` | shell-chrome-or-panel | Icon, IconButton, SideNavItem, SideNavSection, Tooltip | aligned — uses Astryx (Icon, IconButton, SideNavItem, SideNavSection, Tooltip) | aligned |
@@ -362,6 +363,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `packages/ui/src/skills-panel.tsx` | module-hub | Button, DropdownMenu, DropdownMenuItem, DropdownMenuSubMenu, EmptyState, IconButton, List, Text, TextInput | aligned — uses Astryx (Button, DropdownMenu, DropdownMenuItem, DropdownMenuSubMenu, EmptyState, IconButton, List, Text) | aligned |
 | `packages/ui/src/status-label.tsx` | ui-composition | HStack, StatusDot, Text | aligned — uses Astryx (HStack, StatusDot, Text) | aligned |
 | `packages/ui/src/styles.css` | ui-composition | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
+| `packages/ui/src/svg-code-preview.tsx` | ui-composition | Button, CodeBlock | aligned — uses Astryx (Button, CodeBlock) | aligned |
 | `packages/ui/src/titlebar-session-identity.tsx` | shell-chrome-or-panel | Button, DropdownMenu, DropdownMenuItem, IconButton | aligned — uses Astryx (Button, DropdownMenu, DropdownMenuItem, IconButton) | aligned |
 | `packages/ui/src/toast.tsx` | ui-composition | AlertDialog, Button, HStack, LayerProvider, Text, VStack | aligned — uses Astryx (AlertDialog, Button, HStack, LayerProvider, Text, VStack) | aligned |
 | `packages/ui/src/tool-activity.tsx` | ui-composition | Banner, Button, ChatToolCalls, List, ListItem, StatusDot, Text, VisuallyHidden | aligned — uses Astryx (Banner, Button, ChatToolCalls, List, ListItem, StatusDot, Text, VisuallyHidden) | aligned |

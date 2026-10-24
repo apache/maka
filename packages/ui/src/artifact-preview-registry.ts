@@ -21,7 +21,7 @@
 
 import {
   ARTIFACT_IMAGE_PREVIEW_MAX_BYTES,
-  normalizeArtifactImagePreviewMime,
+  normalizeMediaPreviewMime,
   resolveArtifactImagePreview,
   type ArtifactBinaryReadResult,
   type ArtifactImagePreviewInput,
@@ -53,7 +53,7 @@ function decideImagePostLoad(input: {
   if (exceedsImagePayloadCap(input.base64)) {
     return { kind: 'unsupported', reason: 'oversize' };
   }
-  const safeMime = normalizeArtifactImagePreviewMime(input.mimeType);
+  const safeMime = normalizeMediaPreviewMime(input.mimeType);
   if (!safeMime) {
     return { kind: 'unsupported', reason: 'mime_disallowed' };
   }

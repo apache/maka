@@ -123,6 +123,7 @@ async function fixture(
         return authority.store.create(input);
       },
       findImageDelivery: authority.store.findImageDelivery,
+      getInSession: authority.store.getInSession,
       setImageDeliveryAttempt: authority.store.setImageDeliveryAttempt,
     },
     admission: new SessionAdmissionGate(),
@@ -614,7 +615,7 @@ test('copying a conversation carries delivery provenance and saved bytes; it doe
   }
 });
 test('source readers reject unsafe MIME and redirects to private networks', async (t) => {
-  assert.throws(() => checkedChatImage(Buffer.from('<svg/>')), /unsupported_mime/);
+  assert.throws(() => checkedChatImage(Buffer.from('<svg><broken')), /unsupported_mime/);
   const server = createServer((_req, res) => {
     res.writeHead(302, { location: 'http://169.254.169.254/latest/meta-data/' });
     res.end();
@@ -930,6 +931,80 @@ test('a queued retry reports pending instead of replaying the previous failure',
     assert.deepEqual(f.errors, []);
   } finally {
     release();
+    await f.close();
+  }
+});
+
+test('executor inline media and Markdown use the same archive, deduplicate and replay after source deletion', async () => {
+  let writes = 0;
+  const f = await fixture(undefined, undefined, () => {
+    writes++;
+  });
+  const owner = { sessionId: 'session-1', turnId: 'turn-1', messageId: 'message-1' };
+  try {
+    const input = {
+      kind: 'inline' as const,
+      mimeType: 'image/svg+xml',
+      base64: PNG.toString('base64'),
+    };
+    const [a, b] = await Promise.all([
+      f.service.publish(owner, input),
+      f.service.publish(owner, input),
+    ]);
+    assert.deepEqual(a, b);
+    assert.equal(a.kind, 'image');
+    assert.equal(writes, 1);
+    if (a.kind !== 'image') throw new Error('Image not published');
+    assert.equal(a.mimeType, 'image/png'); // Bytes, not the external MIME claim, are authoritative.
+    const read = await f.authority.store.readBinaryInSession(owner.sessionId, a.ref.relativePath);
+    assert.ok(read.ok);
+    if (read.ok) assert.equal(read.base64, PNG.toString('base64'));
+    const file = join(f.root, 'drawing.svg');
+    await writeFile(
+      file,
+      '<!-- generated SVG -->\n<svg xmlns="http://www.w3.org/2000/svg" width="80" height="40"><rect width="80" height="40" fill="red"/></svg>',
+    );
+    const svg = await f.service.publish(owner, { kind: 'source', source: file });
+    assert.equal(svg.kind, 'image');
+    if (svg.kind !== 'image') throw new Error('SVG not published');
+    const svgRead = await f.authority.store.readBinaryInSession(
+      owner.sessionId,
+      svg.ref.relativePath,
+    );
+    assert.ok(svgRead.ok);
+    if (svgRead.ok) assert.equal(svgRead.mimeType, 'image/svg+xml');
+    await rm(file);
+    assert.deepEqual(await f.service.publish(owner, { kind: 'source', source: file }), svg);
+    assert.equal(f.reads, 1);
+    assert.equal(f.leases, 0);
+  } finally {
+    await f.close();
+  }
+});
+
+test('executor publication keeps invalid bytes, quota and network failures out of image references', async () => {
+  const f = await fixture({ sessionBytes: 10, workspaceBytes: 10 });
+  const owner = { sessionId: 'session-1', turnId: 'turn-1', messageId: 'message-1' };
+  try {
+    const invalid = await f.service.publish(owner, {
+      kind: 'inline',
+      mimeType: 'image/png',
+      base64: Buffer.from('not an image').toString('base64'),
+    });
+    assert.equal(invalid.kind, 'text');
+    const quota = await f.service.publish(owner, {
+      kind: 'inline',
+      mimeType: 'image/png',
+      base64: PNG.toString('base64'),
+    });
+    assert.deepEqual(quota, { kind: 'text', text: '[Media unavailable: quota_exceeded]' });
+    f.allowRemote(false);
+    assert.deepEqual(
+      await f.service.publish(owner, { kind: 'source', source: 'https://example.com/image.svg' }),
+      { kind: 'text', text: '[Media unavailable: not_allowed]' },
+    );
+    assert.equal(f.leases, 0);
+  } finally {
     await f.close();
   }
 });

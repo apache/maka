@@ -17,6 +17,12 @@
  * under the License.
  */
 
+import {
+  isSessionMediaInput,
+  type SessionMediaInput,
+  type SessionContentPart,
+} from '@maka/core/session-media';
+import { checkedChatImage } from './chat-image-source.js';
 import { createHash } from 'node:crypto';
 import { ImageFileReadError } from '@maka/runtime/image-file-reader';
 import type { TextCompleteEvent } from '@maka/core/events';
@@ -54,7 +60,7 @@ interface DeliveryJob {
 export interface ChatImageDeliveryPorts {
   readonly artifacts: Pick<
     InteractiveArtifactStoreWriter,
-    'create' | 'findImageDelivery' | 'setImageDeliveryAttempt'
+    'create' | 'findImageDelivery' | 'setImageDeliveryAttempt' | 'getInSession'
   >;
   readonly admission: SessionAdmissionGate;
   isPresent(sessionId: string): Promise<boolean>;
@@ -75,8 +81,69 @@ export class ChatImageDeliveryService {
   readonly #queue: DeliveryJob[] = [];
   readonly #abort = new AbortController();
   #running = 0;
+  #inlineBytes = 0;
   #closed = false;
   constructor(private readonly ports: ChatImageDeliveryPorts) {}
+
+  /** Executor publication is Host-scoped; it never grants arbitrary client reads. */
+  async publish(
+    owner: { sessionId: string; turnId: string; messageId: string },
+    input: SessionMediaInput,
+  ): Promise<SessionContentPart> {
+    if (!isSessionMediaInput(input))
+      return { kind: 'text', text: '[Media unavailable: invalid input]' };
+    const source =
+      input.kind === 'source'
+        ? input.source
+        : `inline:base64-sha256:${createHash('sha256').update(input.base64, 'ascii').digest('hex')}`;
+    const identity = { ...owner, source, loadRemote: true };
+    const existing = await this.ports.artifacts.findImageDelivery(
+      owner.sessionId,
+      owner.turnId,
+      owner.messageId,
+      source,
+    );
+    if (existing?.status !== 'ready') {
+      // Reserve queue capacity before decoding, including concurrent publishers waiting on metadata.
+      if (
+        !this.#jobs.has(deliveryKey(identity)) &&
+        input.kind === 'inline' &&
+        this.#inlineBytes + (input.base64.length * 3) / 4 > 8 * 1024 * 1024
+      )
+        return { kind: 'text', text: '[Media unavailable: queue full]' };
+      const bytes =
+        !this.#jobs.has(deliveryKey(identity)) && input.kind === 'inline'
+          ? Buffer.from(input.base64, 'base64')
+          : undefined;
+      if (
+        bytes &&
+        bytes.toString('base64') !==
+          (input as Extract<SessionMediaInput, { kind: 'inline' }>).base64
+      )
+        return { kind: 'text', text: '[Media unavailable: invalid encoding]' };
+      if (!this.#enqueue(identity, bytes))
+        return { kind: 'text', text: '[Media unavailable: queue full]' };
+      await this.#jobs.get(deliveryKey(identity))?.done;
+    }
+    const saved = await this.ports.artifacts.findImageDelivery(
+      owner.sessionId,
+      owner.turnId,
+      owner.messageId,
+      source,
+    );
+    if (saved?.status !== 'ready')
+      return {
+        kind: 'text',
+        text: `[Media unavailable: ${saved?.status === 'failed' ? saved.reason : 'not saved'}]`,
+      };
+    const { record } = await this.ports.artifacts.getInSession(owner.sessionId, saved.artifactId);
+    if (!record?.mimeType) return { kind: 'text', text: '[Media unavailable: missing artifact]' };
+    return {
+      kind: 'image',
+      mimeType: record.mimeType,
+      ref: { kind: 'session_file', sessionId: owner.sessionId, relativePath: saved.artifactId },
+    };
+  }
 
   observe(sessionId: string, event: TextCompleteEvent): void {
     if (this.#closed || event.text.length > IMAGE_MARKDOWN_MAX_LENGTH) return;
@@ -121,10 +188,16 @@ export class ChatImageDeliveryService {
       : { status: 'failed', reason: 'queue_full' };
   }
 
-  #enqueue(identity: DeliveryIdentity): boolean {
+  #enqueue(identity: DeliveryIdentity, inline?: Uint8Array): boolean {
     const key = deliveryKey(identity);
     if (this.#jobs.has(key)) return true;
-    if (this.#closed || this.#jobs.size >= 128) return false;
+    if (
+      this.#closed ||
+      this.#jobs.size >= 128 ||
+      this.#inlineBytes + (inline?.byteLength ?? 0) > 8 * 1024 * 1024
+    )
+      return false;
+    this.#inlineBytes += inline?.byteLength ?? 0;
     let settle!: () => void;
     const done = new Promise<void>((resolve) => {
       settle = resolve;
@@ -132,6 +205,7 @@ export class ChatImageDeliveryService {
     const residency = this.ports.acquireResidency();
     const finish = () => {
       this.#jobs.delete(key);
+      this.#inlineBytes -= inline?.byteLength ?? 0;
       residency.release();
       settle();
     };
@@ -140,7 +214,7 @@ export class ChatImageDeliveryService {
       cancel: finish,
       run: async () => {
         try {
-          await this.#capture(identity);
+          await this.#capture(identity, inline);
         } catch (error) {
           if (!this.#abort.signal.aborted) {
             if (error instanceof ImagePersistenceError) this.ports.persistenceFailed(error.cause);
@@ -166,7 +240,7 @@ export class ChatImageDeliveryService {
       });
     }
   }
-  async #capture(identity: DeliveryIdentity): Promise<void> {
+  async #capture(identity: DeliveryIdentity, inline?: Uint8Array): Promise<void> {
     const { sessionId, turnId, messageId, source } = identity;
     const existing = await this.ports.artifacts.findImageDelivery(
       sessionId,
@@ -199,8 +273,10 @@ export class ChatImageDeliveryService {
     const signal = AbortSignal.any([this.#abort.signal, readAbort.signal]);
     let image: ChatImageBytes;
     try {
-      const path = localImagePath(source);
-      if (path !== undefined) {
+      const path = inline ? undefined : localImagePath(source);
+      if (inline) {
+        image = checkedChatImage(inline);
+      } else if (path !== undefined) {
         image = await abortable(() => this.ports.readLocalImage(sessionId, path, signal), signal);
       } else {
         if (!identity.loadRemote || !(await this.ports.canLoadRemote(sessionId)))

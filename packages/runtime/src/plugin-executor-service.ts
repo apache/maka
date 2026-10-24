@@ -18,6 +18,13 @@
  */
 
 import {
+  isSessionMediaInput,
+  isSessionContentPart,
+  SESSION_CONTENT_MAX_PARTS,
+  type SessionMediaInput,
+  type SessionContentPart,
+} from '@maka/core/session-media';
+import {
   isExecutorConfiguration,
   normalizeCatalogEntry,
   type ExecutorConfiguration,
@@ -105,6 +112,7 @@ export type PluginExecutorOutputEvent =
 
 /** Durable tool-result shapes that an external executor may publish directly. */
 export type PluginExecutorToolResultContent =
+  | { readonly kind: 'content'; readonly parts: readonly SessionContentPart[] }
   | { readonly kind: 'text'; readonly text: string }
   | { readonly kind: 'file_diff'; readonly paths: readonly string[]; readonly diff: string };
 
@@ -147,6 +155,7 @@ export type PluginExecutorResult =
 export interface PluginExecutorContext {
   readonly signal: AbortSignal;
   emit(event: PluginExecutorOutputEvent): void;
+  publishMedia?(input: SessionMediaInput): Promise<SessionContentPart>;
   /** Request one provider-defined permission choice through Maka's hosted form authority. */
   requestPermission(
     request: PluginExecutorPermissionRequest,
@@ -190,6 +199,7 @@ export interface PluginExecutorProvider {
 }
 
 export interface PluginExecutorExecutionOptions {
+  readonly onPublishMedia?: (input: SessionMediaInput) => Promise<SessionContentPart>;
   readonly signal?: AbortSignal;
   /** Called when the provider returns a terminal result, before the Runtime validates it. */
   readonly onSettled?: () => void;
@@ -549,11 +559,32 @@ export class PluginExecutorService extends Service {
             emit: (event) => {
               if (entry.retired) return;
               const normalized = normalizeOutputEvent(event, entry.provider.capabilities);
+              if (
+                normalized.type === 'tool_result' &&
+                normalized.content.kind === 'content' &&
+                normalized.content.parts.some(
+                  (part) =>
+                    part.kind === 'image' && part.ref.sessionId !== normalizedRequest.sessionId,
+                )
+              )
+                throw new TypeError('Executor media is outside the current Session');
               try {
                 options.onEvent?.(normalized);
               } catch {
                 // A presentation observer must not change external execution.
               }
+            },
+            publishMedia: async (input) => {
+              if (signal.aborted || entry.retired)
+                return { kind: 'text', text: '[Media unavailable: execution ended]' };
+              if (!isSessionMediaInput(input))
+                return { kind: 'text', text: '[Media unavailable: invalid input]' };
+              const part = (await options.onPublishMedia?.(Object.freeze({ ...input }))) ?? {
+                kind: 'text' as const,
+                text: '[Media preview unavailable]',
+              };
+              if (!isSessionContentPart(part)) throw new TypeError('Invalid published media');
+              return part;
             },
             requestPermission: async (request) => {
               if (signal.aborted || entry.retired) return Object.freeze({ outcome: 'cancelled' });
@@ -778,13 +809,20 @@ function normalizeOutputEvent(
       type: event.type,
       toolCallId: event.toolCallId,
       content:
-        event.content.kind === 'text'
-          ? Object.freeze({ kind: 'text' as const, text: event.content.text })
-          : Object.freeze({
-              kind: 'file_diff' as const,
-              paths: Object.freeze([...event.content.paths]),
-              diff: event.content.diff,
-            }),
+        event.content.kind === 'content'
+          ? Object.freeze({
+              kind: 'content' as const,
+              parts: Object.freeze(
+                event.content.parts.map((part) => Object.freeze(structuredClone(part))),
+              ),
+            })
+          : event.content.kind === 'text'
+            ? Object.freeze({ kind: 'text' as const, text: event.content.text })
+            : Object.freeze({
+                kind: 'file_diff' as const,
+                paths: Object.freeze([...event.content.paths]),
+                diff: event.content.diff,
+              }),
       ...(event.isError === undefined ? {} : { isError: event.isError }),
     });
   }
@@ -793,6 +831,14 @@ function normalizeOutputEvent(
 
 function isPluginToolResultContent(value: PluginExecutorToolResultContent): boolean {
   if (!value || typeof value !== 'object') return false;
+  if (value.kind === 'content')
+    return (
+      Array.isArray(value.parts) &&
+      value.parts.length > 0 &&
+      value.parts.length <= SESSION_CONTENT_MAX_PARTS &&
+      value.parts.every(isSessionContentPart) &&
+      Buffer.byteLength(JSON.stringify(value.parts), 'utf8') <= 1024 * 1024
+    );
   if (value.kind === 'text') return isSafeEventText(value.text);
   return (
     value.kind === 'file_diff' &&

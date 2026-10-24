@@ -17,11 +17,11 @@
  * under the License.
  */
 
-/** Renderer shell for capped raster previews and typed unsupported outcomes. */
+/** Renderer shell for bounded image previews and typed unsupported outcomes. */
 
 import { useEffect, useState } from 'react';
 import type { ArtifactDescriptor } from '@maka/core/artifacts';
-import { Button, useUiLocale } from '@maka/ui';
+import { Button, useUiLocale, mediaImageSource, MediaImageDisplay } from '@maka/ui';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Spinner } from '@astryxdesign/core/Spinner';
 import {
@@ -152,7 +152,7 @@ export function UnsupportedArtifactPreview(props: {
  *   - The post-load L2 decision (`decideImageReadOutcome`) runs
  *     INSIDE the async, BEFORE `setState`. The hook's state union
  *     therefore holds either a `loading` placeholder, an `image`
- *     branch carrying the verified base64, OR an `unsupported`
+ *     branch carrying the verified image source, OR an `unsupported`
  *     branch that carries NO base64. A 10MB oversize payload never
  *     enters React state / DevTools snapshot.
  *   - The component below is intentionally a thin switch over the
@@ -190,10 +190,7 @@ function ImageArtifactPreview(props: {
   // result.state === 'image' — exhaustiveness check below.
   return (
     <div className="maka-artifact-preview-image">
-      <img
-        alt={props.record.name}
-        src={`data:${result.safeMime};base64,${result.base64}`}
-      />
+      <MediaImageDisplay alt={props.record.name} src={result.src} onError={result.onError} />
     </div>
   );
 }
@@ -216,9 +213,8 @@ function toPreviewInput(record: ArtifactDescriptor): ArtifactPreviewInput {
  * branch). That meant a 10MB oversize payload could land in React
  * state / DevTools before the L2 cap rejected it for rendering. The
  * fix replaces the broad union with this closed three-way one and
- * runs the L2 decision INSIDE the async, so the only `base64` that
- * ever reaches `setState` is one that has already passed
- * `decideImageReadOutcome` (cap + MIME re-validation).
+ * runs the L2 decision INSIDE the async. The source passed to state
+ * has passed MIME/size validation and, for SVG, static preview conversion.
  *
  * Source/test gate (locked by `artifact-preview-registry.test.ts`):
  * the `unsupported` branch type signature MUST NOT include `base64`.
@@ -228,7 +224,7 @@ function toPreviewInput(record: ArtifactDescriptor): ArtifactPreviewInput {
  */
 type ImagePreviewLoadState =
   | { state: 'loading' }
-  | { state: 'image'; safeMime: string; base64: string }
+  | { state: 'image'; src: string; onError(): void }
   | {
       state: 'unsupported';
       reason: Extract<PreviewResolution, { kind: 'unsupported' }>['reason'];
@@ -254,7 +250,10 @@ function useImagePreviewLoad(
         // receives the post-decision shape.
         const outcome = decideImageReadOutcome(raw);
         if (outcome.kind === 'image') {
-          setState({ state: 'image', safeMime: outcome.safeMime, base64: outcome.base64 });
+          const src = await mediaImageSource(raw);
+          if (cancelled) return;
+          if (!src) { setState({ state: 'unsupported', reason: 'read_failed' }); return; }
+          setState({ state: 'image', src, onError: () => setState({ state: 'unsupported', reason: 'read_failed' }) });
         } else {
           setState({ state: 'unsupported', reason: outcome.reason });
         }

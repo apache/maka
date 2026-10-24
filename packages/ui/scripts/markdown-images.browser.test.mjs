@@ -46,6 +46,11 @@ before(async () => {
   await new Promise(resolve => imageServer.listen(0, '127.0.0.1', resolve));
   imageUrl = `http://127.0.0.1:${imageServer.address().port}`;
   const destinations = {
+    'svg-saved': '![SVG](maka://runtime/attachments/svg-image)',
+    "svg-fence": "```svg\n<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"240\" height=\"120\" viewBox=\"0 0 240 120\" onload=\"window.svgExecuted=true\"><script>window.svgExecuted=true</script><rect width=\"240\" height=\"120\" rx=\"12\" fill=\"#4355d9\"/><text x=\"20\" y=\"70\" fill=\"white\" font-size=\"28\">Maka SVG</text></svg>\n```",
+    "svg-fence-offscreen": "```svg\n<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"240\" height=\"120\" viewBox=\"0 0 240 120\" onload=\"window.svgExecuted=true\"><script>window.svgExecuted=true</script><rect width=\"240\" height=\"120\" rx=\"12\" fill=\"#4355d9\"/><text x=\"20\" y=\"70\" fill=\"white\" font-size=\"28\">Maka SVG</text></svg>\n```",
+    "svg-fence-streaming": "```svg\n<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"240\" height=\"120\" viewBox=\"0 0 240 120\" onload=\"window.svgExecuted=true\"><script>window.svgExecuted=true</script><rect width=\"240\" height=\"120\" rx=\"12\" fill=\"#4355d9\"/><text x=\"20\" y=\"70\" fill=\"white\" font-size=\"28\">Maka SVG</text></svg>\n```",
+
     'links-formats': [
       `![Screenshot](${imageUrl}/image.png)`,
       `![Title](${imageUrl}/title.png "Screenshot title")`,
@@ -100,6 +105,7 @@ before(async () => {
         '![Screenshot](${imageUrl}/'+(mode==='retry' ? 'retry.png' : 'image.png')+')');
       const root=createRoot(document.getElementById('root'));
       const readBytes=async(_session,artifactId)=>{
+        if(mode==='svg-saved') { window.imageReads++; return {ok:true,mimeType:'image/svg+xml',base64:'PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNDAiIGhlaWdodD0iMTIwIiB2aWV3Qm94PSIwIDAgMjQwIDEyMCIgb25sb2FkPSJ3aW5kb3cuc3ZnRXhlY3V0ZWQ9dHJ1ZSI+PHNjcmlwdD53aW5kb3cuc3ZnRXhlY3V0ZWQ9dHJ1ZTwvc2NyaXB0PjxyZWN0IHdpZHRoPSIyNDAiIGhlaWdodD0iMTIwIiByeD0iMTIiIGZpbGw9IiM0MzU1ZDkiLz48dGV4dCB4PSIyMCIgeT0iNzAiIGZpbGw9IndoaXRlIiBmb250LXNpemU9IjI4Ij5NYWthIFNWRzwvdGV4dD48L3N2Zz4='}; }
         if(captured.has(artifactId)) return captured.get(artifactId);
         reads++; window.imageReads=reads; return (mode==='attachment' || mode==='read-retry-saved') && reads===1 ? {ok:false,reason:'read_failed'} :
           {ok:true,base64:mode.endsWith('corrupt-saved') && reads===1 ? 'iVBORw0KGgo=' : '${png.toString('base64')}',mimeType:'image/png'};
@@ -128,12 +134,12 @@ before(async () => {
       };
       const markdown=(streaming)=>React.createElement(ImageMessageProvider,{identity:{turnId:'turn',messageId},streaming},
         React.createElement(Markdown,{text,streaming,settledText:race ? text : undefined,density:'compact',imageDisplay:mode.startsWith('links-') ? 'link' : undefined}));
-      const render=(streaming=race || mode==='links-streaming')=>root.render(
+      const render=(streaming=race || mode==='links-streaming' || mode==='svg-fence-streaming')=>root.render(
         React.createElement(Theme,{theme:makaTheme,mode:'light'},
           React.createElement(LocaleProvider,{locale:'en'},
             React.createElement(SessionAttachmentProvider,{sessionId:'session',readBytes},
               React.createElement(ImageDeliveryProvider,{sessionId:'session',resolve:resolveDelivery},
-              React.createElement('div',{style:mode==='offscreen' ? {paddingTop:'2500px'} : {}},
+              React.createElement('div',{style:(mode==='offscreen' || mode==='svg-fence-offscreen') ? {paddingTop:'2500px'} : {}},
                 markdown(streaming)))))));
       window.nextMessage=()=>{messageId='next-message'; render(false);};
       window.finishStream=()=>render(false);
@@ -165,7 +171,7 @@ before(async () => {
   });
   await new Promise(resolve => appServer.listen(0, '127.0.0.1', resolve));
   appUrl = `http://127.0.0.1:${appServer.address().port}`;
-  browser = await chromium.launch({ headless: true });
+  browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}) });
 });
 
 after(async () => {
@@ -423,3 +429,39 @@ for (const scenario of ['angle-saved', 'title-saved', 'escaped-saved', 'referenc
     } finally { await page.close(); }
   });
 }
+
+
+for (const mode of ['svg-saved', 'svg-fence']) {
+  test(`SVG ${mode} displays through static image context and strips executable content`, async () => {
+    const page = await pageFor(mode);
+    try {
+      await page.waitForFunction(() => { const img = document.querySelector('#root img'); return img?.complete && img.naturalWidth === 240; });
+      assert.equal(await page.evaluate(() => window.svgExecuted), undefined);
+      const source = await page.locator('#root img').getAttribute('src');
+      assert.doesNotMatch(decodeURIComponent(source), /<script|onload/);
+      assert.equal(await page.locator('#root svg script').count(), 0);
+      if (mode === 'svg-fence') {
+        await page.getByRole('button', { name: 'View source', exact: true }).click();
+        assert.equal(await page.locator('#root img').count(), 0);
+        await page.getByRole('button', { name: 'Preview SVG', exact: true }).click();
+        await page.locator('#root img').waitFor();
+        assert.equal(await page.getByRole('link', { name: 'Download SVG' }).getAttribute('download'), 'image.svg');
+      }
+    } finally { await page.close(); }
+  });
+}
+
+test('SVG code preview waits for settlement and viewport visibility', async () => {
+  const streaming = await pageFor('svg-fence-streaming');
+  const offscreen = await pageFor('svg-fence-offscreen');
+  try {
+    await streaming.locator('[data-maka-contract="markdown"]').waitFor();
+    assert.equal(await streaming.locator('[data-kind="svg-preview"]').count(), 0);
+    await streaming.evaluate(() => window.finishStream());
+    await streaming.locator('[data-kind="svg-preview"] img').waitFor();
+    await offscreen.locator('[data-kind="svg-preview"]').waitFor({state:'attached'});
+    assert.equal(await offscreen.locator('#root img').count(), 0);
+    await offscreen.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    await offscreen.locator('#root img').waitFor();
+  } finally { await streaming.close(); await offscreen.close(); }
+});

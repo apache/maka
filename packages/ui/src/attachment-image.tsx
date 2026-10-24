@@ -27,7 +27,7 @@ import {
   type ReactNode,
 } from 'react';
 import type { ArtifactBinaryReadResult } from '@maka/core/artifacts';
-import { decideImageReadOutcome } from './artifact-preview-registry.js';
+import { mediaImageSource } from './media-image-source.js';
 
 /** Host capability for reading bytes from the Runtime Host attachment authority. */
 export type ReadAttachmentBytes = (
@@ -37,7 +37,7 @@ export type ReadAttachmentBytes = (
 
 type SessionAttachmentContextValue = {
   sessionId: string;
-  loadImage: (sessionId: string, artifactId: string) => Promise<string | undefined>;
+  loadImage: (sessionId: string, artifactId: string, retry?: boolean) => Promise<string | undefined>;
 };
 
 const SessionAttachmentContext = createContext<SessionAttachmentContextValue | undefined>(undefined);
@@ -53,18 +53,28 @@ export function SessionAttachmentProvider(props: {
       const readBytes = props.readBytes;
       if (!readBytes) return undefined;
       const pending = new Map<string, Promise<string | undefined>>();
+      const ready = new Map<string, string>();
+      let readyChars = 0;
       return {
         sessionId: props.sessionId,
-        loadImage(sessionId: string, artifactId: string) {
+        loadImage(sessionId: string, artifactId: string, retry = false) {
           const key = `${sessionId}\0${artifactId}`;
+          if (retry) { const previous = ready.get(key); if (previous) readyChars -= previous.length; ready.delete(key); }
+          const cached = ready.get(key);
+          if (cached) { ready.delete(key); ready.set(key, cached); return Promise.resolve(cached); }
           const existing = pending.get(key);
           if (existing) return existing;
           const loaded = readBytes(sessionId, artifactId)
-            .then((result) => {
-              const outcome = decideImageReadOutcome(result);
-              return outcome.kind === 'image'
-                ? `data:${outcome.safeMime};base64,${outcome.base64}`
-                : undefined;
+            .then(mediaImageSource)
+            .then(source => {
+              if (source) {
+                ready.set(key, source); readyChars += source.length;
+                while (ready.size > 32 || readyChars > 8 * 1024 * 1024) {
+                  const oldest = ready.keys().next().value!;
+                  readyChars -= ready.get(oldest)!.length; ready.delete(oldest);
+                }
+              }
+              return source;
             })
             .catch(() => undefined);
           pending.set(key, loaded);
@@ -120,7 +130,7 @@ export function useAttachmentImage(ref: {
     if (!request) return;
     setResult({ request, status: 'loading' });
     let cancelled = false;
-    request.loadImage(request.sessionId, request.artifactId)
+    request.loadImage(request.sessionId, request.artifactId, request.attempt > 0)
       .then((loaded) => {
         if (!cancelled) setResult({ request, status: loaded ? 'ready' : 'failed', src: loaded });
       });

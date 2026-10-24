@@ -206,3 +206,7 @@ export { formatCompactTokenCount } from './compact-token-count.js';
 export * from './revision-staged-context.js';
 
 export { TranscriptDisclosure } from './transcript-disclosure.js';
+
+export { SessionMediaImage } from './session-media-image.js';
+export { mediaImageSource } from './media-image-source.js';
+export { MediaImageDisplay } from './session-media-image.js';

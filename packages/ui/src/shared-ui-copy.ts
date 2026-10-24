@@ -37,6 +37,9 @@ export interface SharedUiCopy {
     imageUnavailable: string;
     imageLoadFailed: string;
     imageUnsupported: string;
+    svgPreview: string;
+    svgSource: string;
+    svgDownload: string;
     imageRetry: string;
     imageOpen: string;
     taskList: string;
@@ -149,6 +152,9 @@ const sharedUiCopyZhCn: SharedUiCopy = {
       imageUnavailable: '当前无法读取图片附件。',
       imageLoadFailed: '图片加载失败，请重试。',
       imageUnsupported: '此图片地址无法在这里显示。',
+      svgPreview: '预览 SVG',
+      svgSource: '查看源码',
+      svgDownload: '下载 SVG',
       imageRetry: '重试',
       imageOpen: '在浏览器中打开',
       taskList: '任务列表',
@@ -248,6 +254,9 @@ const sharedUiCopyZhTw: SharedUiCopy = {
       imageUnavailable: '目前無法讀取圖片附件。',
       imageLoadFailed: '圖片載入失敗，請重試。',
       imageUnsupported: '此圖片位址無法在這裡顯示。',
+      svgPreview: '預覽 SVG',
+      svgSource: '查看原始碼',
+      svgDownload: '下載 SVG',
       imageRetry: '重試',
       imageOpen: '在瀏覽器中開啟',
       taskList: '任務列表',
@@ -347,6 +356,9 @@ const sharedUiCopyEn: SharedUiCopy = {
       imageUnavailable: 'This image attachment is unavailable here.',
       imageLoadFailed: 'Could not load the image. Try again.',
       imageUnsupported: 'This image address cannot be displayed here.',
+      svgPreview: 'Preview SVG',
+      svgSource: 'View source',
+      svgDownload: 'Download SVG',
       imageRetry: 'Retry',
       imageOpen: 'Open in browser',
       taskList: 'Task list',

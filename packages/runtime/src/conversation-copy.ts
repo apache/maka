@@ -191,6 +191,7 @@ function collectConversationCopyStorageRefs(
   const refs: StorageRef[] = [];
   const addContent = (content: ToolResultContent): void => {
     if (content.kind === 'image') refs.push(content.ref);
+    if (content.kind === 'content') for (const part of content.parts) addContent(part);
   };
   const addSerialized = (value: unknown): void => {
     if (isArchivedToolResultPlaceholder(value)) return;
@@ -1891,6 +1892,23 @@ function rewriteToolResultContent(
       rewriteLinkedArtifactIds(output.reference.artifactIds, shared, references);
       return content;
     }
+  }
+  if (content.kind === 'content') {
+    return {
+      ...content,
+      parts: content.parts.map((part) => {
+        if (part.kind === 'text')
+          return {
+            ...part,
+            text: rewriteAttachmentResourceRefs(part.text, references.artifactIds),
+          };
+        if (part.kind !== 'image') return part;
+        const ref = rewriteStorageRef(part.ref, references);
+        if (ref.kind !== 'session_file')
+          throw new Error('Copied media must retain a Session artifact reference');
+        return { ...part, ref };
+      }),
+    };
   }
   if (content.kind === 'image') {
     return { ...content, ref: rewriteStorageRef(content.ref, references) };

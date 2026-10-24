@@ -649,3 +649,55 @@ async function collect(events: AsyncIterable<SessionEvent>): Promise<SessionEven
   for await (const event of events) result.push(event);
   return result;
 }
+
+test('external media is Host-published before a reference-only tool result enters the event stream', async () => {
+  const root = new Context();
+  const service = new PluginExecutorService(root);
+  const publications: unknown[] = [];
+  root
+    .extend({
+      maka: { rootId: 'profile', packageId: 'fixture', entryId: 'provider', generation: 1 },
+    })
+    .executors.register({
+      id: 'media',
+      capabilities: { toolActivity: true },
+      execute: async (_request, context) => {
+        context.emit({ type: 'tool_start', toolCallId: 'draw', name: 'draw' });
+        const image = await context.publishMedia!({
+          kind: 'inline',
+          mimeType: 'image/svg+xml',
+          base64: 'PHN2Zy8+',
+        });
+        context.emit({
+          type: 'tool_result',
+          toolCallId: 'draw',
+          content: { kind: 'content', parts: [{ kind: 'text', text: 'drawing' }, image] },
+        });
+        return { status: 'completed', text: 'done' };
+      },
+    });
+  const backend = new PluginExecutorBackend({
+    sessionId: 'session-a',
+    cwd: '/workspace',
+    binding: service.bind('session-a', 'media'),
+    publishMedia: async (owner, input) => {
+      publications.push({ owner, input });
+      return {
+        kind: 'image',
+        mimeType: 'image/svg+xml',
+        ref: { kind: 'session_file', sessionId: owner.sessionId, relativePath: 'saved-svg' },
+      };
+    },
+  });
+  try {
+    const events = await collect(backend.send({ turnId: 'turn-a', text: 'draw' }));
+    assert.equal(publications.length, 1);
+    const result = events.find((event) => event.type === 'tool_result');
+    assert.equal(result?.content.kind, 'content');
+    assert.doesNotMatch(JSON.stringify(events), /PHN2Zy8\+/);
+    assert.match(JSON.stringify(events), /saved-svg/);
+  } finally {
+    await backend.dispose();
+    await root.fiber.dispose();
+  }
+});

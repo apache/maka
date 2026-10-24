@@ -30,7 +30,7 @@
  */
 
 import { MarkdownImage, createMarkdownImagePlugins } from './markdown-image.js';
-import { useCallback, useContext, useMemo, useRef, type ReactNode } from 'react';
+import { lazy, Suspense, useCallback, useContext, useMemo, useRef, type ReactNode } from 'react';
 import {
   Markdown as AstryxMarkdown,
   type MarkdownComponents,
@@ -54,6 +54,8 @@ import {
   prepareMarkdownMath,
 } from './markdown-math.js';
 
+const SvgCodePreview = lazy(() => import('./svg-code-preview.js'));
+
 const BASE_MARKDOWN_COMPONENTS = {
   link: MarkdownLink,
   image: MarkdownImage,
@@ -65,15 +67,22 @@ export const MAX_AUTOMATIC_MERMAID_SOURCE_LENGTH = 4_000;
 export const MAX_AUTOMATIC_MERMAID_TOTAL_SOURCE_LENGTH = 8_000;
 const CODE_BLOCK_COLLAPSIBLE_THRESHOLD = 10;
 const DEFERRED_MERMAID_LANGUAGE = 'makamermaiddeferred';
+const DEFERRED_SVG_LANGUAGE = 'makasvgdeferred';
+export const MAX_AUTOMATIC_SVG_DIAGRAMS = 3;
+export const MAX_AUTOMATIC_SVG_SOURCE_LENGTH = 64 * 1024;
 
 /**
- * Mark settled Mermaid fences that exceed the per-document automatic-render
+ * Mark settled diagram fences that exceed the per-document automatic-render
  * budget. The private language marker survives Astryx parsing without changing
  * the source shown to the user; the code renderer turns it into an explicit
  * source + Render action instead of scheduling more main-thread layout work.
  */
 export function applyMermaidRenderBudget(source: string): string {
+  // Most messages contain no diagrams: avoid allocating a line array on the hot path.
+  if (!/mermaid|svg/i.test(source)) return source;
   const lines = source.split('\n');
+  let svgCount = 0;
+  let svgLength = 0;
   let automaticCount = 0;
   let automaticSourceLength = 0;
 
@@ -81,8 +90,7 @@ export function applyMermaidRenderBudget(source: string): string {
     const opening = /^( {0,3})(`{3,}|~{3,})([^\n]*)$/.exec(lines[index] ?? '');
     if (!opening) continue;
     const [, indent = '', fence = '', info = ''] = opening;
-    const language = /^([ \t]*)mermaid(?=[ \t]|$)/i.exec(info);
-    if (!language) continue;
+    const language = /^([ \t]*)(mermaid|svg)(?=[ \t]|$)/i.exec(info);
 
     const fenceCharacter = fence[0];
     if (!fenceCharacter) continue;
@@ -91,20 +99,23 @@ export function applyMermaidRenderBudget(source: string): string {
     while (closingIndex < lines.length && !closing.test(lines[closingIndex] ?? '')) {
       closingIndex += 1;
     }
-    if (closingIndex >= lines.length) continue;
+    if (closingIndex >= lines.length) break;
+    if (!language) { index = closingIndex; continue; }
 
     const codeLength = lines.slice(index + 1, closingIndex).join('\n').length;
-    const withinBudget =
+    const svg = language[2]?.toLowerCase() === 'svg';
+    const withinBudget = svg ? codeLength <= MAX_AUTOMATIC_SVG_SOURCE_LENGTH && svgCount < MAX_AUTOMATIC_SVG_DIAGRAMS
+      && svgLength + codeLength <= 2 * MAX_AUTOMATIC_SVG_SOURCE_LENGTH :
       codeLength <= MAX_AUTOMATIC_MERMAID_SOURCE_LENGTH
       && automaticCount < MAX_AUTOMATIC_MERMAID_DIAGRAMS
       && automaticSourceLength + codeLength <= MAX_AUTOMATIC_MERMAID_TOTAL_SOURCE_LENGTH;
 
     if (withinBudget) {
-      automaticCount += 1;
-      automaticSourceLength += codeLength;
+      if (svg) { svgCount++; svgLength += codeLength; }
+      else { automaticCount += 1; automaticSourceLength += codeLength; }
     } else {
       const leadingWhitespace = language[1] ?? '';
-      lines[index] = `${indent}${fence}${leadingWhitespace}${DEFERRED_MERMAID_LANGUAGE}${info.slice(language[0].length)}`;
+      lines[index] = `${indent}${fence}${leadingWhitespace}${svg ? DEFERRED_SVG_LANGUAGE : DEFERRED_MERMAID_LANGUAGE}${info.slice(language[0].length)}`;
     }
     index = closingIndex;
   }
@@ -212,32 +223,32 @@ export function MarkdownBody(props: {
 }
 
 function MarkdownCodeDefault(props: { code: string; language?: string }) {
-  return <MarkdownCode {...props} density="default" renderMermaid />;
+  return <MarkdownCode {...props} density="default" renderDiagrams />;
 }
 
 function MarkdownCodeCompact(props: { code: string; language?: string }) {
-  return <MarkdownCode {...props} density="compact" renderMermaid />;
+  return <MarkdownCode {...props} density="compact" renderDiagrams />;
 }
 
 function MarkdownCodeStreamingDefault(props: { code: string; language?: string }) {
-  return <MarkdownCode {...props} density="default" renderMermaid={false} streaming />;
+  return <MarkdownCode {...props} density="default" renderDiagrams={false} streaming />;
 }
 
 function MarkdownCodeStreamingCompact(props: { code: string; language?: string }) {
-  return <MarkdownCode {...props} density="compact" renderMermaid={false} streaming />;
+  return <MarkdownCode {...props} density="compact" renderDiagrams={false} streaming />;
 }
 
 function MarkdownCode(props: {
   code: string;
   language?: string;
   density: 'default' | 'compact';
-  renderMermaid: boolean;
+  renderDiagrams: boolean;
   streaming?: boolean;
 }) {
   const t = useTranslator();
   const tokenizer = useMarkdownCodeTokenizer(props.code, props.language, props.streaming === true);
   const language = props.language?.trim().toLowerCase();
-  if (props.renderMermaid && (language === 'mermaid' || language === DEFERRED_MERMAID_LANGUAGE)) {
+  if (props.renderDiagrams && (language === 'mermaid' || language === DEFERRED_MERMAID_LANGUAGE)) {
     return (
       <MermaidDiagram
         code={props.code}
@@ -245,6 +256,10 @@ function MarkdownCode(props: {
         autoRender={language === 'mermaid'}
       />
     );
+  }
+
+  if (props.renderDiagrams && (language === 'svg' || language === DEFERRED_SVG_LANGUAGE)) {
+    return <Suspense fallback={<CodeBlock code={props.code} language="svg" width="100%" />}><SvgCodePreview code={props.code} autoRender={language === 'svg'} /></Suspense>;
   }
 
   const codeLines = props.code.split('\n');

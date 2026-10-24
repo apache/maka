@@ -64,6 +64,7 @@
     "node_modules/@vercel/oidc@3.2.0",
     "node_modules/@wecom/aibot-node-sdk@1.0.7",
     "node_modules/@workflow/serde@4.1.0",
+    "node_modules/@xmldom/xmldom@0.8.15",
     "node_modules/@xterm/addon-unicode11@0.9.0",
     "node_modules/@xterm/headless@6.0.0",
     "node_modules/agent-base@6.0.2",

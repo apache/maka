@@ -271,3 +271,37 @@ test('renders an attachment when a streaming Markdown image becomes complete', a
   assert.ok(image);
   assert.equal(image.getAttribute('src'), 'data:image/png;base64,c3RyZWFt');
 });
+
+
+test('text, tool media and virtualized remounts share a bounded saved-image cache', async () => {
+  const { SessionMediaImage } = await import('../session-media-image.js');
+  const { ToolResultPreview } = await import('../tool-activity/tool-result-preview.js');
+  const { container, root } = domRoot();
+  let reads = 0;
+  const readBytes: ReadAttachmentBytes = async () => {
+    reads++;
+    return { ok: true, base64: 'AAAA', mimeType: 'image/png' };
+  };
+  const part = { kind: 'image' as const, mimeType: 'image/png', ref: { kind: 'session_file' as const, sessionId: 'session-1', relativePath: 'image-1' } };
+  const render = (visible: boolean) => root.render(<LocaleProvider locale="en"><SessionAttachmentProvider sessionId="session-1" readBytes={readBytes}>
+    {visible && <><SessionMediaImage src="maka://runtime/attachments/image-1" alt="shared" /><ToolResultPreview content={{ kind: 'content', parts: [part] }} /></>}
+  </SessionAttachmentProvider></LocaleProvider>);
+  await act(async () => render(true));
+  assert.equal(container.querySelectorAll('img').length, 2);
+  assert.equal(reads, 1);
+  await act(async () => render(false));
+  await act(async () => render(true));
+  assert.equal(reads, 1, 'remount must not reread or re-encode saved bytes');
+});
+
+test('saved SVG previews sanitize content before image state and cache identical conversions', async () => {
+  const { mediaImageSource } = await import('../media-image-source.js');
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="60" onload="alert(1)"><script>alert(1)</script><rect width="120" height="60" fill="red"/></svg>';
+  const result = { ok: true as const, mimeType: 'image/svg+xml', base64: Buffer.from(svg).toString('base64') };
+  const [first, second] = await Promise.all([mediaImageSource(result), mediaImageSource(result)]);
+  assert.equal(first, second);
+  assert.ok(first);
+  assert.doesNotMatch(decodeURIComponent(first), /script|onload/);
+  assert.match(decodeURIComponent(first), /rect/);
+  await assert.rejects(mediaImageSource({ ...result, base64: Buffer.from('not SVG').toString('base64') }));
+});

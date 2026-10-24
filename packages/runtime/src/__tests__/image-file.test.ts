@@ -55,6 +55,26 @@ test('chat images cap both edge length and total decoded pixels', () => {
   assert.equal(validateImageBytes(WIDE_PNG, 'chat').mimeType, 'image/png');
 });
 
+test('avatars retain raster-only admission and preview limits independently of chat SVG support', () => {
+  const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>');
+  assert.equal(validateImageBytes(svg, 'chat').mimeType, 'image/svg+xml');
+  assert.throws(() => validateImageBytes(svg, 'avatar'), /not a supported/);
+  assert.equal(validateImageBytes(WIDE_PNG, 'avatar').mimeType, 'image/png');
+  assert.throws(
+    () => validateImageBytes(Buffer.alloc(ARTIFACT_IMAGE_PREVIEW_MAX_BYTES + 1), 'avatar'),
+    /Image exceeds/,
+  );
+  for (const [width, height] of [
+    [16_385, 1],
+    [8192, 8192],
+  ]) {
+    const bytes = Buffer.from(ONE_PIXEL_PNG);
+    bytes.writeUInt32BE(width!, 16);
+    bytes.writeUInt32BE(height!, 20);
+    assert.throws(() => validateImageBytes(bytes, 'avatar'), /Image exceeds/);
+  }
+});
+
 test('chat reader preserves structured Worker failures independently of message wording', async () => {
   for (const [reason, expected] of [
     ['not_found', 'not_found'],
