@@ -28,11 +28,10 @@ pub use access::Pairing;
 pub mod protocol;
 pub use client::{CallChannelOpener, Client, LocalCall};
 pub use discovery::Registration;
-pub use protocol::{Configuration, LifecycleMode, Status, VERSION};
+pub use protocol::{Configuration, LifecycleMode, Publication, Status, VERSION};
 
 use super::transport::{
-    Catalogue, Endpoints, HostEndpoint, NativeGrant, Peer, PeerPolicy, Peers, Server, wire,
-    with_gateway,
+    Catalogue, Endpoints, HostEndpoint, Peer, PeerPolicy, Peers, Server, wire, with_gateway,
 };
 use super::{Application, NativeRegistry, Result};
 use crate::ipc::{LocalListener, LocalStream};
@@ -79,7 +78,7 @@ pub struct Host {
     epoch: Uuid,
     source: DeploymentRef,
     policy: Arc<PeerPolicy>,
-    selections: Mutex<BTreeMap<String, HostEndpoint>>,
+    configuration: Mutex<Configuration>,
     sessions: Mutex<BTreeMap<Uuid, Arc<Session>>>,
     stop: CancellationToken,
     residency: Mutex<lifecycle::Residency>,
@@ -103,16 +102,14 @@ impl Host {
         deployment: Uuid,
         native: NativeRegistry,
         scripts: Option<Arc<dyn super::backend::Factory>>,
-        selections: BTreeMap<String, HostEndpoint>,
-        grants: Vec<NativeGrant>,
+        configuration: Configuration,
     ) -> Result<Arc<Self>> {
         Self::open_with_options(
             store,
             deployment,
             native,
             scripts,
-            selections,
-            grants,
+            configuration,
             Options::default(),
         )
         .await
@@ -122,8 +119,7 @@ impl Host {
         deployment: Uuid,
         native: NativeRegistry,
         scripts: Option<Arc<dyn super::backend::Factory>>,
-        selections: BTreeMap<String, HostEndpoint>,
-        grants: Vec<NativeGrant>,
+        configuration: Configuration,
         options: Options,
     ) -> Result<Arc<Self>> {
         let loaded = store
@@ -131,8 +127,7 @@ impl Host {
             .await
             .map_err(|error| error.to_string())?
             .ok_or("deployment not found")?;
-        Self::open_loaded_with_options(store, loaded, native, scripts, selections, grants, options)
-            .await
+        Self::open_loaded_with_options(store, loaded, native, scripts, configuration, options).await
     }
 
     /// Open a checked committed source without rereading its immutable packages.
@@ -141,8 +136,7 @@ impl Host {
         loaded: maka_event_log::applications::LoadedDeployment,
         native: NativeRegistry,
         scripts: Option<Arc<dyn super::backend::Factory>>,
-        selections: BTreeMap<String, HostEndpoint>,
-        grants: Vec<NativeGrant>,
+        configuration: Configuration,
         options: Options,
     ) -> Result<Arc<Self>> {
         if options.handshake_timeout.is_zero()
@@ -153,8 +147,14 @@ impl Host {
         {
             return Err("invalid Host options".into());
         }
+        configuration.validate()?;
+        let Configuration::PublicHost {
+            endpoints,
+            native: grants,
+            ..
+        } = &configuration;
         let root = store.owned_root().map_err(|error| error.to_string())?;
-        let policy = Arc::new(PeerPolicy::with_native_grants(grants)?);
+        let policy = Arc::new(PeerPolicy::with_native_grants(grants.clone())?);
         let application = Application::start_loaded(
             store.clone(),
             loaded,
@@ -163,7 +163,7 @@ impl Host {
             policy.clone(),
             scripts,
         )?;
-        if let Err(error) = Endpoints::start(&application.client(), &selections).await {
+        if let Err(error) = Endpoints::start(&application.client(), endpoints).await {
             application.shutdown().await?;
             return Err(error);
         }
@@ -177,14 +177,8 @@ impl Host {
         let access_grant = format!(
             "application.owner:{}",
             hex::encode(sha2::Sha256::digest(
-                serde_json::to_vec(&(
-                    application.source(),
-                    Configuration::PublicHost {
-                        endpoints: selections.clone(),
-                        native: policy.native_grants(),
-                    }
-                ))
-                .map_err(|error| error.to_string())?
+                serde_json::to_vec(&(application.source(), &configuration))
+                    .map_err(|error| error.to_string())?
             ))
         );
         Ok(Arc::new(Self {
@@ -198,12 +192,30 @@ impl Host {
             access_gate: tokio::sync::Mutex::new(()),
             policy,
             epoch: Uuid::new_v4(),
-            selections: Mutex::new(selections),
+            configuration: Mutex::new(configuration),
             sessions: Mutex::default(),
             stop: CancellationToken::new(),
             residency: Mutex::new(lifecycle::Residency::default()),
         }))
     }
+
+    async fn publication(&self) -> Result<Publication> {
+        let _gate = self.access_gate.lock().await;
+        if self.stop.is_cancelled() {
+            return Err("Host is closing".into());
+        }
+        let source = self
+            .store
+            .application_head(self.source.deployment)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or("Host deployment source missing")?;
+        Ok(Publication {
+            source,
+            configuration: self.configuration.lock().unwrap().clone(),
+        })
+    }
+
     /// This configuration step is durable independently of source replacement.
     /// The launcher's original pending operation coordinates their retries.
     async fn configure(
@@ -221,15 +233,33 @@ impl Host {
         if self.stop.is_cancelled() {
             return Err("Host is closing".into());
         }
-        let current = Configuration::PublicHost {
-            endpoints: self.selections.lock().unwrap().clone(),
-            native: self.policy.native_grants(),
-        };
+        let Configuration::PublicHost { endpoints, .. } = &configuration;
+        let resolved = Endpoints::capture(&self.application.client(), endpoints).await?;
+        configuration.validate_product_methods(&previous, &Catalogue::captured(&resolved))?;
+        let current = self.configuration.lock().unwrap().clone();
         let current = serde_json::to_value(current).map_err(|error| error.to_string())?;
         let previous = serde_json::to_value(previous).map_err(|error| error.to_string())?;
         let desired = serde_json::to_value(&configuration).map_err(|error| error.to_string())?;
         if current != previous && current != desired {
             return Err("Host configuration conflicts with current authority".into());
+        }
+        let record = self
+            .store
+            .application_launch()
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or("public Host selection missing")?;
+        if record.deployment != self.source.deployment {
+            return Err("Host configuration selects another deployment".into());
+        }
+        // Optional domain fields may be omitted or explicitly empty. Compare
+        // their typed meaning, but keep the exact stored JSON as the CAS witness.
+        let persisted: Configuration = serde_json::from_value(record.configuration.clone())
+            .map_err(|error| error.to_string())?;
+        persisted.validate()?;
+        let persisted = serde_json::to_value(persisted).map_err(|error| error.to_string())?;
+        if persisted != previous && persisted != desired {
+            return Err("Host configuration conflicts with persisted authority".into());
         }
         let access_grant = format!(
             "application.owner:{}",
@@ -240,7 +270,7 @@ impl Host {
         );
         if !self
             .store
-            .compare_and_set_application_launch_configuration(source, previous, desired)
+            .compare_and_set_application_launch_configuration(source, record.configuration, desired)
             .await
             .map_err(|error| error.to_string())?
         {
@@ -248,9 +278,9 @@ impl Host {
         }
         // No await between durable confirmation and publication of live authority.
         // Existing sessions retain their captured bindings and accepted jobs.
-        let Configuration::PublicHost { endpoints, native } = configuration;
-        *self.selections.lock().unwrap() = endpoints;
-        self.policy.replace_native_grants(native);
+        let Configuration::PublicHost { native, .. } = &configuration;
+        self.policy.replace_native_grants(native.clone());
+        *self.configuration.lock().unwrap() = configuration;
         *self.access_grant.lock().unwrap() = access_grant;
         Ok(())
     }
@@ -406,6 +436,14 @@ impl Host {
                 drop(gate);
                 wire::write(&mut output, &Response::Status(self.status())).await
             }
+            Request::Publication => {
+                authority.local()?;
+                wire::write(
+                    &mut output,
+                    &Response::Publication(self.publication().await),
+                )
+                .await
+            }
             Request::Configure {
                 source,
                 previous,
@@ -480,7 +518,11 @@ impl Host {
                     .await?;
                 let (mode, peer, endpoints, selections) = match request {
                     Request::Connect => {
-                        let selections = self.selections.lock().unwrap().clone();
+                        let selections = {
+                            let configuration = self.configuration.lock().unwrap();
+                            let Configuration::PublicHost { endpoints, .. } = &*configuration;
+                            endpoints.clone()
+                        };
                         (
                             SessionMode::Owned,
                             Peer::new(
@@ -703,7 +745,11 @@ impl Host {
         if selections.is_empty() {
             return Err("invalid peer endpoint selections".into());
         }
-        let published = self.selections.lock().unwrap();
+        let configuration = self.configuration.lock().unwrap();
+        let Configuration::PublicHost {
+            endpoints: published,
+            ..
+        } = &*configuration;
         for (name, selection) in selections {
             selection.validate()?;
             let published = published

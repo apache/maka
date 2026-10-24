@@ -19,7 +19,7 @@
 
 //! Public application caller: an anchored authenticated session, no legacy operations.
 use super::{
-    Configuration, Status, VERSION,
+    Configuration, Publication, Status, VERSION,
     protocol::{Connected, Opening, Request, Response, SessionControl},
 };
 use crate::{
@@ -369,8 +369,26 @@ impl Client {
             _ => Err("Host quit cleanup remains unconfirmed".into()),
         }
     }
+    /// Read this incarnation's live publication and its current source CAS witness.
+    pub async fn publication(&self) -> Result<Publication> {
+        if self.phase != Phase::Ready || self.peer.is_some() {
+            return Err("Host publication requires a ready local owner session".into());
+        }
+        match control(
+            &self.address,
+            Some(self.connected.epoch),
+            Request::Publication,
+        )
+        .await?
+        {
+            Response::Publication(result) => result,
+            _ => Err("Host publication response mismatch".into()),
+        }
+    }
+
     /// Persist trusted configuration and apply it to this same Host incarnation.
     /// A lost response must be retried with the same source and desired value.
+    /// Explicitly narrowed or rebound endpoints must clear their product method ownership.
     pub async fn configure(
         &self,
         source: DeploymentRef,

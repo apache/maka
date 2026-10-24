@@ -29,7 +29,7 @@ use maka_agent_facts::{
 };
 use maka_host_runtime::{
     application::{
-        host::{Client as HostClient, Host},
+        host::{Client as HostClient, Configuration, Host},
         transport::{Grant as EndpointGrant, HostEndpoint, Reply},
     },
     ipc::LocalListener,
@@ -306,8 +306,11 @@ async fn local_owner(
         deployment,
         providers(setup, capture.clone()),
         Some(maka_host_js::factory(Default::default())),
-        selections,
-        setup.native_grants(),
+        Configuration::PublicHost {
+            endpoints: selections,
+            native: setup.native_grants(),
+            product_methods: Default::default(),
+        },
     )
     .await
     .unwrap();

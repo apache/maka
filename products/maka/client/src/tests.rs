@@ -26,7 +26,7 @@ use maka_event_log::{
 use maka_host_runtime::{
     application::{
         Context, Handler, NativeActivation, NativeRegistry,
-        host::Host,
+        host::{Configuration, Host},
         transport::{Grant, HostEndpoint},
     },
     ipc::LocalListener,
@@ -311,92 +311,95 @@ impl Fixture {
             deployment,
             native,
             None,
-            BTreeMap::from([
-                (
-                    "agent".into(),
-                    HostEndpoint {
-                        consumer: InstanceId(vec![Uuid::from_u128(3)]),
-                        import: "agent".into(),
-                        grant: Grant {
-                            methods: [
-                                "read".into(),
-                                "send".into(),
-                                "uploadAttachment".into(),
-                                "selectBackend".into(),
-                                "updateGlobalInstructions".into(),
-                                "stop".into(),
-                                "respond".into(),
-                                "editQueue".into(),
-                                "watch".into(),
-                            ]
-                            .into(),
-                            recovery: false,
+            Configuration::PublicHost {
+                endpoints: BTreeMap::from([
+                    (
+                        "agent".into(),
+                        HostEndpoint {
+                            consumer: InstanceId(vec![Uuid::from_u128(3)]),
+                            import: "agent".into(),
+                            grant: Grant {
+                                methods: [
+                                    "read".into(),
+                                    "send".into(),
+                                    "uploadAttachment".into(),
+                                    "selectBackend".into(),
+                                    "updateGlobalInstructions".into(),
+                                    "stop".into(),
+                                    "respond".into(),
+                                    "editQueue".into(),
+                                    "watch".into(),
+                                ]
+                                .into(),
+                                recovery: false,
+                            },
                         },
-                    },
-                ),
-                (
-                    "settings".into(),
-                    HostEndpoint {
-                        consumer: InstanceId(vec![Uuid::from_u128(3)]),
-                        import: "settings".into(),
-                        grant: Grant {
-                            methods: [
-                                "create".into(),
-                                "saveCredential".into(),
-                                "updateAssistantPreferences".into(),
-                                "updateNetwork".into(),
-                            ]
-                            .into(),
-                            recovery: false,
+                    ),
+                    (
+                        "settings".into(),
+                        HostEndpoint {
+                            consumer: InstanceId(vec![Uuid::from_u128(3)]),
+                            import: "settings".into(),
+                            grant: Grant {
+                                methods: [
+                                    "create".into(),
+                                    "saveCredential".into(),
+                                    "updateAssistantPreferences".into(),
+                                    "updateNetwork".into(),
+                                ]
+                                .into(),
+                                recovery: false,
+                            },
                         },
-                    },
-                ),
-                (
-                    "setup".into(),
-                    HostEndpoint {
-                        consumer: InstanceId(vec![Uuid::from_u128(3)]),
-                        import: "setup".into(),
-                        grant: Grant {
-                            methods: ["discoverModels".into()].into(),
-                            recovery: false,
+                    ),
+                    (
+                        "setup".into(),
+                        HostEndpoint {
+                            consumer: InstanceId(vec![Uuid::from_u128(3)]),
+                            import: "setup".into(),
+                            grant: Grant {
+                                methods: ["discoverModels".into()].into(),
+                                recovery: false,
+                            },
                         },
-                    },
-                ),
-                (
-                    "management".into(),
-                    HostEndpoint {
-                        consumer: InstanceId(vec![Uuid::from_u128(3)]),
-                        import: "management".into(),
-                        grant: Grant {
-                            methods: ["setEnabled".into(), "configure".into()].into(),
-                            recovery: false,
+                    ),
+                    (
+                        "management".into(),
+                        HostEndpoint {
+                            consumer: InstanceId(vec![Uuid::from_u128(3)]),
+                            import: "management".into(),
+                            grant: Grant {
+                                methods: ["setEnabled".into(), "configure".into()].into(),
+                                recovery: false,
+                            },
                         },
-                    },
-                ),
-                (
-                    "authentication".into(),
-                    HostEndpoint {
-                        consumer: InstanceId(vec![Uuid::from_u128(3)]),
-                        import: "authentication".into(),
-                        grant: Grant {
-                            methods: ["loginCredential".into()].into(),
-                            recovery: false,
+                    ),
+                    (
+                        "authentication".into(),
+                        HostEndpoint {
+                            consumer: InstanceId(vec![Uuid::from_u128(3)]),
+                            import: "authentication".into(),
+                            grant: Grant {
+                                methods: ["loginCredential".into()].into(),
+                                recovery: false,
+                            },
                         },
-                    },
-                ),
-                (
-                    "receipts".into(),
-                    HostEndpoint {
-                        consumer: InstanceId(vec![Uuid::from_u128(3)]),
-                        import: "receipts".into(),
-                        grant: Grant {
-                            methods: ["read".into()].into(),
-                            recovery: true,
+                    ),
+                    (
+                        "receipts".into(),
+                        HostEndpoint {
+                            consumer: InstanceId(vec![Uuid::from_u128(3)]),
+                            import: "receipts".into(),
+                            grant: Grant {
+                                methods: ["read".into()].into(),
+                                recovery: true,
+                            },
                         },
-                    },
-                ),
-            ]),
-            vec![],
+                    ),
+                ]),
+                native: vec![],
+                product_methods: Default::default(),
+            },
         )
         .await
         .unwrap();

@@ -461,16 +461,39 @@ impl Owner {
                     .is_ok_and(|status| status.calls == 0)
             })
         {
+            let reason = if self.starting || self.loading_adoption.is_some() {
+                "startup"
+            } else if !self.jobs.is_empty() {
+                "jobs"
+            } else if !self.failed.is_empty() || self.cleanup_error.is_some() {
+                "cleanup"
+            } else {
+                "activation"
+            };
+            tracing::debug!(target: "maka_host_runtime::application", stage = "idle_retirement", reason,
+                jobs = self.jobs.len(), failed_cleanup = self.failed.len(),
+                "Host idle retirement deferred");
             return Ok(false);
         }
         // No await: invocation admission and source adoption remain serialized
         // with this decision. Each native guard fences its independent producers.
         let mut guards = Vec::new();
-        for owned in self.owned.values() {
+        for (id, owned) in &self.owned {
             if let Some(native) = &owned.native_owner {
                 match std::panic::catch_unwind(AssertUnwindSafe(|| native.prepare_retirement())) {
                     Ok(Some(guard)) => guards.push(guard),
-                    Ok(None) => return Ok(false),
+                    Ok(None) => {
+                        let path = self
+                            .runtime
+                            .desired()
+                            .instances()
+                            .get(id)
+                            .map(|instance| instance.path.join("/"));
+                        tracing::debug!(target: "maka_host_runtime::application", stage = "idle_retirement",
+                            reason = "native", instance_path = ?path,
+                            "Host idle retirement deferred");
+                        return Ok(false);
+                    }
                     Err(_) => return Err("native idle retirement preparation panicked".into()),
                 }
             }

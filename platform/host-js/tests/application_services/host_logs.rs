@@ -24,7 +24,7 @@ use maka_event_log::{
 };
 use maka_host_runtime::{
     application::{
-        host::{Client, Host},
+        host::{Client, Configuration, Host},
         transport::{Grant as EndpointGrant, HostEndpoint, wire::Reply},
     },
     ipc::LocalListener,
@@ -142,23 +142,26 @@ async fn fixed_root_logs_public_endpoint_survives_unrelated_initialization_failu
             source.deployment,
             NativeRegistry::default(),
             Some(maka_host_js::factory(Limits::default())),
-            [("logs", vec!["read", "watch"]), ("readOnly", vec!["read"])]
-                .into_iter()
-                .map(|(name, methods)| {
-                    (
-                        name.into(),
-                        HostEndpoint {
-                            consumer: id(2),
-                            import: "logs".into(),
-                            grant: EndpointGrant {
-                                methods: methods.into_iter().map(str::to_owned).collect(),
-                                recovery: false,
+            Configuration::PublicHost {
+                endpoints: [("logs", vec!["read", "watch"]), ("readOnly", vec!["read"])]
+                    .into_iter()
+                    .map(|(name, methods)| {
+                        (
+                            name.into(),
+                            HostEndpoint {
+                                consumer: id(2),
+                                import: "logs".into(),
+                                grant: EndpointGrant {
+                                    methods: methods.into_iter().map(str::to_owned).collect(),
+                                    recovery: false,
+                                },
                             },
-                        },
-                    )
-                })
-                .collect(),
-            vec![],
+                        )
+                    })
+                    .collect(),
+                native: vec![],
+                product_methods: Default::default(),
+            },
         )
         .await
         .unwrap();
@@ -352,18 +355,21 @@ async fn failed_startup_retirement_waits_for_cleanup_without_blocking_session_ad
             source.deployment,
             native,
             Some(maka_host_js::factory(Limits::default())),
-            BTreeMap::from([(
-                "echo".into(),
-                HostEndpoint {
-                    consumer: id(2),
-                    import: "echo".into(),
-                    grant: EndpointGrant {
-                        methods: ["echo".to_owned()].into_iter().collect(),
-                        recovery: false,
+            Configuration::PublicHost {
+                endpoints: BTreeMap::from([(
+                    "echo".into(),
+                    HostEndpoint {
+                        consumer: id(2),
+                        import: "echo".into(),
+                        grant: EndpointGrant {
+                            methods: ["echo".to_owned()].into_iter().collect(),
+                            recovery: false,
+                        },
                     },
-                },
-            )]),
-            vec![],
+                )]),
+                native: vec![],
+                product_methods: Default::default(),
+            },
         )
         .await
         .unwrap();

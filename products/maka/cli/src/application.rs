@@ -22,7 +22,8 @@ mod product;
 mod serve;
 
 pub(crate) use product::{
-    ProductHost, Roots, live_update_available, open_host, select_committed_host,
+    LivePublication, ProductHost, Roots, live_update_available, open_host,
+    prepare_live_publication, select_committed_host,
 };
 
 use std::path::{Path, PathBuf};

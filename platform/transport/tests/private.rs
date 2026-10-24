@@ -750,7 +750,7 @@ async fn stop_ui(mut ui: maka_ui_runtime::Application, root: &maka_plugin_core::
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn native_adapter_runs_checked_ui_actions_actual_caller_sql_and_original_recovery() {
     use maka_host_runtime::application::{
-        host::{Client, Host},
+        host::{Client, Configuration as HostConfiguration, Host},
         transport::HostEndpoint,
     };
     let f = Fixture::new().await;
@@ -786,8 +786,11 @@ async fn native_adapter_runs_checked_ui_actions_actual_caller_sql_and_original_r
         deployment,
         NativeRegistry::default(),
         Some(maka_host_js::factory(Default::default())),
-        selections.clone(),
-        vec![],
+        HostConfiguration::PublicHost {
+            endpoints: selections.clone(),
+            native: vec![],
+            product_methods: Default::default(),
+        },
     )
     .await
     .unwrap();

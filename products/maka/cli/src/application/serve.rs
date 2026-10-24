@@ -23,7 +23,7 @@ use maka_host_runtime::{
     HostError,
     application::{
         NativeRegistry,
-        host::{Host, LifecycleMode, Options},
+        host::{Configuration, Host, LifecycleMode, Options},
         transport::{HostEndpoint, NativeGrant},
     },
 };
@@ -90,8 +90,11 @@ pub(super) async fn run(args: Serve) -> Result<(), HostError> {
                 args.deployment,
                 native(catalog.catalog())?,
                 Some(maka_host_js::factory(Default::default())),
-                endpoints,
-                grants,
+                Configuration::PublicHost {
+                    endpoints,
+                    native: grants,
+                    product_methods: Default::default(),
+                },
                 Options {
                     lifecycle_mode: LifecycleMode::Service,
                     ..Default::default()

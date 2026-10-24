@@ -22,6 +22,12 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 fn leaf(marker: &str, label_type: &str) -> Package {
+    let service = json!({
+        "name":"example.Service","version":1,"transport":"remote",
+        "interface":{"kind":"service","methods":{"read":{
+            "mode":"query","input":{"type":"object"},"output":{"type":"object"},"resources":{}
+        }}}
+    });
     Package::new(BTreeMap::from([
         (
             "maka.extension.json".into(),
@@ -31,7 +37,8 @@ fn leaf(marker: &str, label_type: &str) -> Package {
                     "implementation":{"kind":"native","implementation":"example.Component"},
                     "configuration":{"type":"object","properties":{"label":{"type":label_type}},
                         "required":["label"],"additionalProperties":false},
-                    "imports":{},"exports":{}
+                    "imports":{"service":{"contract":service,"cardinality":{"kind":"optional"}}},
+                    "exports":{"service":{"contract":service,"availability":"required"}}
                 }}}
             }))
             .unwrap(),
@@ -68,7 +75,8 @@ impl Fixture {
         let input: Input = serde_json::from_value(json!({
             "environment":{"location":"host"},"instances":{
                 "direct":{"key":key,"package":{"source":"pinned","package":previous.application_ref()},
-                    "usePackage":"entry","configuration":{"values":{"label":"Keep this value"}}},
+                    "usePackage":"entry","configuration":{"values":{"label":"Keep this value"}},
+                    "bindings":{"service":[{"kind":"instance","path":["group","child"],"export":"service"}]}},
                 "group":{"key":Uuid::new_v4(),"package":{"source":"pinned","package":template.application_ref()},
                     "usePackage":"composition","overrides":[{"path":["child"],"package":previous.application_ref(),
                         "configuration":{"label":"Keep overridden configuration"}}]}
@@ -165,6 +173,16 @@ async fn startup_preserves_unrelated_components_with_product_process_names() {
         let node = input.instances.remove(previous).unwrap();
         input.instances.insert(renamed.into(), node);
     }
+    input
+        .instances
+        .get_mut("workspace-processes")
+        .unwrap()
+        .bindings
+        .get_mut("service")
+        .unwrap()[0] = maka_plugin_core::composition::Target::Instance {
+        path: vec!["coordinator-workspace-processes".into(), "child".into()],
+        export: "service".into(),
+    };
     let committed = f
         .store
         .commit_application(
@@ -294,6 +312,161 @@ async fn selected_and_override_pins_upgrade_without_reauthoring_custom_compositi
         3
     );
     f.store.drain().await;
+}
+
+#[tokio::test]
+async fn nested_bundled_defaults_upgrade_without_rewriting_custom_templates() {
+    let directory = tempfile::tempdir().unwrap();
+    let f = Fixture::new(directory.path()).await;
+    let mut input = f.input.clone();
+    input.instances.get_mut("direct").unwrap().package = f.current.application_ref().into();
+    // The old package is now selected only by the immutable custom template;
+    // keep the independent user override without an explicit package pin.
+    input.instances.get_mut("group").unwrap().overrides[0].package = None;
+    let source = f
+        .store
+        .commit_application(
+            f.deployment,
+            1,
+            input.clone(),
+            vec![],
+            vec![f.previous.clone(), f.current.clone(), f.template.clone()],
+        )
+        .await
+        .unwrap();
+    let record = f.store.application_launch().await.unwrap().unwrap();
+    let preview = synchronize_packages(&f.store, record, false, f.bundled())
+        .await
+        .unwrap();
+    assert!(preview.changed && !preview.applied);
+    assert_eq!(
+        f.store
+            .read_application_metadata(f.deployment)
+            .await
+            .unwrap()
+            .unwrap()
+            .source
+            .reference,
+        source
+    );
+
+    let record = f.store.application_launch().await.unwrap().unwrap();
+    let applied = synchronize_packages(&f.store, record, true, f.bundled())
+        .await
+        .unwrap();
+    assert!(applied.changed && applied.applied);
+    input.instances.get_mut("group").unwrap().overrides[0].package =
+        Some(f.current.application_ref());
+    let upgraded = f
+        .store
+        .load_application(f.deployment)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(upgraded.source().input, input);
+    assert!(
+        upgraded
+            .plan()
+            .instances()
+            .values()
+            .all(|instance| instance.package != f.previous.application_ref())
+    );
+    assert!(
+        upgraded
+            .packages()
+            .iter()
+            .any(|package| package.files() == f.template.files())
+    );
+    let record = f.store.application_launch().await.unwrap().unwrap();
+    let again = synchronize_packages(&f.store, record, true, f.bundled())
+        .await
+        .unwrap();
+    assert!(!again.changed && !again.applied);
+    assert_eq!(
+        f.store
+            .read_application_metadata(f.deployment)
+            .await
+            .unwrap()
+            .unwrap()
+            .source
+            .reference,
+        upgraded.source().reference
+    );
+    f.store.drain().await;
+}
+
+#[tokio::test]
+async fn incompatible_publication_rejects_package_updates_before_any_write() {
+    for frozen in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let mut f = Fixture::new(directory.path()).await;
+        let mut files = f.current.files().clone();
+        let mut manifest: Value = serde_json::from_slice(&files["maka.extension.json"]).unwrap();
+        for side in ["imports", "exports"] {
+            let methods = manifest["application"]["entries"]["host"][side]["service"]
+                ["contract"]["interface"]["methods"].as_object_mut().unwrap();
+            let read = methods.remove("read").unwrap();
+            methods.insert("other".into(), read);
+        }
+        files.insert(
+            "maka.extension.json".into(),
+            serde_json::to_vec(&manifest).unwrap(),
+        );
+        f.current = Package::new(files).unwrap();
+        // The replacement source itself is valid: consumer and provider evolve
+        // together. Only the explicit publication of `read` is now incompatible.
+        PreparedApplication::new(
+            f.target(),
+            vec![],
+            vec![f.current.clone(), f.template.clone()],
+        )
+        .unwrap();
+        if frozen {
+            f.stage().await;
+        }
+        let before = serde_json::to_value(
+            f.store
+                .read_application_metadata(f.deployment)
+                .await
+                .unwrap()
+                .unwrap()
+                .source,
+        )
+        .unwrap();
+        let record = f.store.application_launch().await.unwrap().unwrap();
+        let pending = record.pending.clone();
+        for apply in [false, true] {
+            let result = if frozen {
+                synchronize(&f.store, apply).await
+            } else {
+                let record = f.store.application_launch().await.unwrap().unwrap();
+                synchronize_packages(&f.store, record, apply, f.bundled()).await
+            };
+            let error = result.err().unwrap();
+            assert!(
+                error
+                    .to_string()
+                    .contains("explicit Host endpoint grants an unavailable method"),
+                "{error}"
+            );
+            assert_eq!(
+                serde_json::to_value(
+                    f.store
+                        .read_application_metadata(f.deployment)
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .source
+                )
+                .unwrap(),
+                before
+            );
+            let after = f.store.application_launch().await.unwrap().unwrap();
+            assert_eq!(after.pending, pending);
+            assert_eq!(after.configuration, f.selection);
+        }
+        f.store.drain().await;
+    }
 }
 
 #[tokio::test]

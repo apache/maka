@@ -17,7 +17,7 @@
  * under the License.
  */
 
-//! Explicit updates retain the selected Host source, identities and grants.
+//! Explicit updates advance selected packages and reconcile launcher-owned values.
 use super::HostError;
 use clap::Args;
 use serde::Serialize;
@@ -28,7 +28,7 @@ pub(crate) struct Update {
     /// Business Host Root (default: ~/.maka/application/host). Stop its Host first.
     #[arg(long)]
     root: Option<PathBuf>,
-    /// Apply the previewed selected-package update.
+    /// Apply the selected-package and launcher configuration update.
     #[arg(long)]
     apply: bool,
 }
@@ -52,12 +52,12 @@ impl Update {
         let root = super::root_path(self.root)?;
         let outcome = if self.apply {
             let store = super::super::open_store(root).await?;
-            let result = super::headless::update::synchronize(&store, true).await;
+            let result = super::headless::apply_update(&store).await;
             store.drain().await;
             result?
         } else {
             let store = super::super::open_application_inspection(root).await?;
-            let result = super::headless::update::preview(&store).await;
+            let result = super::headless::preview_update(&store).await;
             store.drain().await;
             result?
         };

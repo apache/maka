@@ -70,6 +70,9 @@ impl PreparedApplication {
     pub fn packages(&self) -> &[Package] {
         &self.packages
     }
+    pub fn plan(&self) -> &Plan {
+        &self.plan
+    }
 }
 
 /// Exact committed source and immutable bytes, checked together with its plan.

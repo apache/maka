@@ -281,9 +281,6 @@ impl PeerPolicy {
     pub(crate) fn replace_native_grants(&self, native: Vec<NativeGrant>) {
         *self.native.write().unwrap() = native;
     }
-    pub(crate) fn native_grants(&self) -> Vec<NativeGrant> {
-        self.native.read().unwrap().clone()
-    }
     pub fn issuer(&self) -> Issuer {
         self.issuer.clone()
     }

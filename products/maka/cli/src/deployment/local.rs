@@ -35,6 +35,42 @@ type Connection = Client;
 struct UpdateAttempt {
     restarted: bool,
     startup_error: Option<String>,
+    launcher: Option<PathBuf>,
+    generation: tokio::sync::OnceCell<String>,
+}
+impl UpdateAttempt {
+    async fn generation(&self) -> Result<Option<&str>, HostError> {
+        let Some(launcher) = &self.launcher else {
+            return Ok(None);
+        };
+        let generation = self
+            .generation
+            .get_or_try_init(|| {
+                let launcher = launcher.clone();
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        use std::io::Read;
+                        let mut file = std::fs::File::open(launcher)?;
+                        if !file.metadata()?.is_file() {
+                            return Err(HostError::from("Host launcher must be a regular file"));
+                        }
+                        let mut digest = Sha256::new();
+                        let mut buffer = [0_u8; 64 * 1024];
+                        loop {
+                            let length = file.read(&mut buffer)?;
+                            if length == 0 {
+                                break;
+                            }
+                            digest.update(&buffer[..length]);
+                        }
+                        Ok::<_, HostError>(format!("cli-sha256:{}", hex::encode(digest.finalize())))
+                    })
+                    .await?
+                }
+            })
+            .await?;
+        Ok(Some(generation))
+    }
 }
 
 /// Interactive startup connects to a live Host or starts one. A newly started
@@ -64,7 +100,10 @@ async fn connect_inner(
     launcher: &std::path::Path,
 ) -> Result<Connection, HostError> {
     let mut child = None;
-    let mut update_attempt = UpdateAttempt::default();
+    let mut update_attempt = UpdateAttempt {
+        launcher: selection.is_none().then(|| launcher.to_owned()),
+        ..Default::default()
+    };
     let result = tokio::time::timeout(Duration::from_secs(30), async {
         let (_launch, root_id) = loop {
             let root_path = path.clone();
@@ -178,10 +217,8 @@ async fn connect_inner(
                         let capture =
                             maka_host_runtime::logs::Source::from_owner(&owner)?.open_capture()?;
                         drop(owner);
-                        child = Some(
-                            detached::spawn(
-                                launcher,
-                                &[
+                        let attempt = uuid::Uuid::new_v4().to_string();
+                        let mut arguments = vec![
                                     "host",
                                     "candidate",
                                     "--root",
@@ -189,11 +226,18 @@ async fn connect_inner(
                                     "--expected-root-id",
                                     &root_id,
                                     "--startup-attempt-id",
-                                    &uuid::Uuid::new_v4().to_string(),
+                                    &attempt,
                                     "--owner-stdin",
                                     "--initial-connection-timeout-ms",
                                     "30000",
-                                ],
+                                ];
+                        if let Some(generation) = update_attempt.generation().await? {
+                            arguments.extend(["--generation", generation]);
+                        }
+                        child = Some(
+                            detached::spawn(
+                                launcher,
+                                &arguments,
                                 Some(capture),
                             )
                             .await?,
@@ -323,6 +367,40 @@ async fn observe_live(
         return Err("live Host belongs to another application deployment".into());
     }
 
+    let stream = match ipc::connect(&discovery.endpoint).await {
+        Ok(stream) => stream,
+        Err(error) if error.downcast_ref::<io::Error>().is_some_and(absent) => {
+            return Ok(Live::Missing);
+        }
+        Err(error) => return Err(error),
+    };
+    let status = Client::status_stream(stream, Some(discovery.host_epoch)).await?;
+    discovery.verify(&status)?;
+    // The namespace is explicit CLI ownership. Legacy/unmarked library Hosts,
+    // installed deployments and explicit generic selections retain their owners.
+    let cli_owned = status.generation.as_deref().is_some_and(|generation| {
+        generation
+            .strip_prefix("cli-sha256:")
+            .is_some_and(|digest| {
+                digest.len() == 64
+                    && digest
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            })
+    });
+    let code_changed = if selection.is_none()
+        && update_attempt.launcher.is_some()
+        && status.lifecycle_mode == maka_host_runtime::application::host::LifecycleMode::Ephemeral
+        && cli_owned
+        && matches!(
+            store::read(&directory(expected_root)?).await?,
+            store::Installation::Missing
+        ) {
+        status.generation.as_deref() != update_attempt.generation().await?
+    } else {
+        false
+    };
+
     let mut client = if let Some(mut client) = anchor {
         if client.epoch() != discovery.host_epoch || client.source() != &discovery.source {
             client.close().await?;
@@ -340,7 +418,7 @@ async fn observe_live(
         Client::connect_stream(&discovery.endpoint, Some(discovery.host_epoch), stream).await?
     };
     let startup_error = client.catalogue().startup_error().map(str::to_owned);
-    let available = if startup_error.is_some() {
+    let available = if code_changed || startup_error.is_some() {
         // A failed Application may have no callable management endpoint. Retry
         // its startup once under the same idle retirement fence, preserving the
         // diagnostic if recovery fails.
@@ -356,7 +434,37 @@ async fn observe_live(
         }
     };
     if !available {
-        return Ok(Live::Ready(Box::new(client)));
+        let publication = match crate::application::prepare_live_publication(&client).await {
+            Ok(publication) => publication,
+            Err(error) => {
+                client.close().await?;
+                return Err(error);
+            }
+        };
+        match publication {
+            crate::application::LivePublication::Current => {
+                return Ok(Live::Ready(Box::new(client)));
+            }
+            crate::application::LivePublication::Updated => {
+                // Acquire the new publication before releasing this residency
+                // anchor; an ephemeral Host must never observe an idle gap.
+                let refreshed =
+                    Client::connect(&discovery.endpoint, Some(discovery.host_epoch)).await;
+                let mut refreshed = match refreshed {
+                    Ok(refreshed) => refreshed,
+                    Err(error) => {
+                        client.close().await?;
+                        return Err(error.into());
+                    }
+                };
+                if let Err(error) = client.close().await {
+                    refreshed.close().await?;
+                    return Err(error.into());
+                }
+                return Ok(Live::Ready(Box::new(refreshed)));
+            }
+            crate::application::LivePublication::Restart => {}
+        }
     }
     if update_attempt.restarted {
         client.close().await?;
@@ -365,28 +473,117 @@ async fn observe_live(
         }
         return Err("The restarted Host still uses older bundled applications. Update the managed Host executable, then retry opening Maka.".into());
     }
-    update_attempt.restarted = true;
     update_attempt.startup_error = startup_error;
     // Release only this launcher's session. Retirement atomically refuses other
     // sessions or accepted work; a stale status observation cannot authorize it.
     client.close().await?;
-    match Client::retire_with_options(&discovery.endpoint, discovery.host_epoch, false, false).await
-    {
-        Ok(true) => {}
-        Ok(false) => {
-            let action = if update_attempt.startup_error.is_some() {
-                "Automatic Host recovery"
-            } else {
-                "Automatic bundled application updating"
-            };
-            return Err(format!("{action} cannot proceed while another Host session or active task remains. Close the other sessions or wait for their work to finish, then retry opening Maka; no manual update command is needed.").into());
+    let target_changed = || -> Result<bool, HostError> {
+        let current = match discovery::read(path) {
+            Ok(current) => current,
+            Err(error) if absent(&error) => return Ok(false),
+            Err(error) => return Err(error.into()),
+        };
+        if current.root_id != expected_root {
+            return Err("State Root changed during automatic application update".into());
         }
-        Err(error) => {
-            // Closing our session can race the ephemeral Host's idle exit. Only
-            // acquiring its writer lease confirms that this is a safe retry.
-            match RootOwner::open(path, &RootNamespaces::for_current_account()?) {
-                Ok(owner) if owner.root_id() == expected_root => return Ok(Live::Retired),
-                _ => return Err(error.into()),
+        Ok(current.host_epoch != discovery.host_epoch
+            || current.source != discovery.source
+            || current.generation != discovery.generation
+            || current.pid != discovery.pid)
+    };
+    let target_unavailable = || async {
+        match RootOwner::open(path, &RootNamespaces::for_current_account()?) {
+            Ok(owner) => {
+                if owner.root_id() != expected_root {
+                    return Err(HostError::from(
+                        "State Root changed during automatic application update",
+                    ));
+                }
+                return Ok(true);
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+            Err(error) => return Err(error.into()),
+        }
+        match discovery::read(path) {
+            Err(error) if absent(&error) => return Ok(true),
+            Err(error) => return Err(error.into()),
+            Ok(_) => {}
+        }
+        match ipc::connect(&discovery.endpoint).await {
+            Ok(stream) => {
+                drop(stream);
+                Ok(false)
+            }
+            Err(error) if error.downcast_ref::<io::Error>().is_some_and(absent) => Ok(true),
+            Err(error) => Err(error),
+        }
+    };
+    let retirement_deadline =
+        tokio::time::Instant::now() + crate::operation::remaining(Duration::from_secs(30));
+    loop {
+        if tokio::time::Instant::now() >= retirement_deadline {
+            return Err("Host did not reach idle retirement before the operation deadline".into());
+        }
+        match Client::retire_with_options(&discovery.endpoint, discovery.host_epoch, false, false)
+            .await
+        {
+            Ok(true) => {
+                update_attempt.restarted = true;
+                break;
+            }
+            Ok(false) => {
+                // Readiness and failed-activation cleanup do not settle the
+                // independent native startup scans. Only the same atomic idle
+                // fence may authorize retirement after they finish.
+                if target_changed()? {
+                    return Ok(Live::Retired);
+                }
+                let stream = match ipc::connect(&discovery.endpoint).await {
+                    Ok(stream) => stream,
+                    Err(error) if error.downcast_ref::<io::Error>().is_some_and(absent) => break,
+                    Err(error) => return Err(error),
+                };
+                let status = match Client::status_stream(stream, Some(discovery.host_epoch)).await {
+                    Ok(status) => status,
+                    Err(error) => {
+                        if target_changed()? {
+                            return Ok(Live::Retired);
+                        }
+                        if target_unavailable().await? {
+                            break;
+                        }
+                        return Err(error.into());
+                    }
+                };
+                if status.closing || status.closed {
+                    break;
+                }
+                if discovery.verify(&status).is_err() {
+                    return Ok(Live::Retired);
+                }
+                if let Some(error) = status.cleanup_error {
+                    return Err(format!("Host retirement cleanup is unconfirmed: {error}").into());
+                }
+                if status.sessions != 0 || status.active_calls != 0 {
+                    let action = if update_attempt.startup_error.is_some() {
+                        "Automatic Host recovery"
+                    } else {
+                        "Automatic bundled application updating"
+                    };
+                    return Err(format!("{action} cannot proceed while another Host session or active task remains. Close the other sessions or wait for their work to finish, then retry opening Maka; no manual update command is needed.").into());
+                }
+                pause().await;
+            }
+            Err(error) => {
+                // The target can exit or be replaced while this request is in
+                // flight. Never carry its restart count onto a different Host.
+                if target_changed()? {
+                    return Ok(Live::Retired);
+                }
+                if target_unavailable().await? {
+                    break;
+                }
+                return Err(error.into());
             }
         }
     }
@@ -399,7 +596,17 @@ async fn observe_live(
                 }
                 return Ok(Live::Retired);
             }
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => pause().await,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                if target_changed()? {
+                    return Ok(Live::Retired);
+                }
+                if tokio::time::Instant::now() >= retirement_deadline {
+                    return Err(
+                        "Host did not release its writer before the operation deadline".into(),
+                    );
+                }
+                pause().await;
+            }
             Err(error) => return Err(error.into()),
         }
     }
@@ -651,8 +858,7 @@ mod tests {
             // Start the incarnation from its exact frozen snapshot even though
             // the desired head is newer. No sleep or adoption timing is needed.
         }
-        let Configuration::PublicHost { endpoints, native } =
-            serde_json::from_value(record.configuration).unwrap();
+        let publication = serde_json::from_value(record.configuration).unwrap();
         let configuration = maka_config::ConfigurationStore::for_root(store.owned_root().unwrap())
             .await
             .unwrap();
@@ -688,8 +894,7 @@ mod tests {
                 native
             },
             Some(maka_host_js::factory(Default::default())),
-            endpoints,
-            native,
+            publication,
             Options {
                 generation: generation.clone(),
                 ..Options::default()
@@ -769,8 +974,20 @@ mod tests {
         let attempt = previous.checked_add(1).unwrap();
         std::fs::write(&attempts, attempt.to_string()).unwrap();
         let first = attempt == 1;
+        let code_only = std::env::var("MAKA_DEFAULTS_FIXTURE_CODE_ONLY").as_deref() == Ok("1");
+        let mut incarnation_generation = generation.clone();
+        if code_only && first {
+            let stale = incarnation_generation.as_mut().expect("CLI generation");
+            let last = stale.pop().unwrap();
+            stale.push(if last == '0' { '1' } else { '0' });
+        }
         let options = Options {
-            generation: generation.clone(),
+            generation: incarnation_generation,
+            lifecycle_mode: if code_only {
+                maka_host_runtime::application::host::LifecycleMode::Ephemeral
+            } else {
+                maka_host_runtime::application::host::LifecycleMode::Service
+            },
             ..Options::default()
         };
         let mut host = crate::application::open_host(
@@ -781,7 +998,7 @@ mod tests {
         )
         .await
         .unwrap();
-        if first {
+        if first && !code_only {
             host.shutdown().await.unwrap();
             drop(host);
             let (_, _, stop, mut server) = serve_product(&root, true, true, generation).await;
@@ -831,7 +1048,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    async fn cold_launcher_recovers_its_candidate(managed: bool) {
+    async fn cold_launcher_recovers_its_candidate(managed: bool, code_only: bool) {
         use std::os::unix::fs::PermissionsExt;
         let temporary = tempfile::tempdir().unwrap();
         let root_path = temporary.path().join("host");
@@ -848,8 +1065,9 @@ mod tests {
         let executable = std::env::current_exe().unwrap();
         let quote = |value: &str| format!("'{}'", value.replace('\'', "'\\''"));
         let script = format!(
-            "#!/bin/sh\nexport MAKA_DEFAULTS_FIXTURE_ROOT=\"$4\"\nexport MAKA_DEFAULTS_FIXTURE_GENERATION={}\nexec {} --exact deployment::local::tests::cold_start_candidate_process_fixture --nocapture\n",
+            "#!/bin/sh\nexport MAKA_DEFAULTS_FIXTURE_ROOT=\"$4\"\nexport MAKA_DEFAULTS_FIXTURE_GENERATION={}\nexport MAKA_DEFAULTS_FIXTURE_CODE_ONLY={}\nwhile [ \"$#\" -gt 0 ]; do\n  if [ \"$1\" = --generation ]; then\n    shift\n    export MAKA_DEFAULTS_FIXTURE_GENERATION=\"$1\"\n    break\n  fi\n  shift\ndone\nexec {} --exact deployment::local::tests::cold_start_candidate_process_fixture --nocapture\n",
             quote(&generation),
+            if code_only { "1" } else { "0" },
             quote(executable.to_str().unwrap())
         );
         let launcher = temporary.path().join("launcher");
@@ -905,6 +1123,20 @@ mod tests {
                 .await
                 .unwrap()
         );
+        if !managed {
+            let current = discovery::read(&root_path).unwrap();
+            let status = Client::status(&current.endpoint, Some(current.host_epoch))
+                .await
+                .unwrap();
+            current.verify(&status).unwrap();
+            assert_eq!(
+                status.generation,
+                Some(format!(
+                    "cli-sha256:{}",
+                    hex::encode(Sha256::digest(script.as_bytes()))
+                ))
+            );
+        }
         client.quit().await.unwrap();
         let owner = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
@@ -927,13 +1159,19 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn cold_standalone_launcher_reaps_and_restarts_its_retired_candidate() {
-        cold_launcher_recovers_its_candidate(false).await;
+        cold_launcher_recovers_its_candidate(false, false).await;
     }
 
     #[cfg(unix)]
     #[tokio::test]
     async fn cold_managed_launcher_reuses_its_anchor_and_reactivates() {
-        cold_launcher_recovers_its_candidate(true).await;
+        cold_launcher_recovers_its_candidate(true, false).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cold_standalone_launcher_restarts_code_drift_with_current_packages() {
+        cold_launcher_recovers_its_candidate(false, true).await;
     }
 
     async fn desired_metadata(
@@ -1122,6 +1360,92 @@ mod tests {
                 .registration_epoch
                 .is_some()
         );
+        client.close().await.unwrap();
+        stop.cancel();
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn current_live_host_refreshes_product_methods_before_returning_its_connection() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("host");
+        let namespaces = RootNamespaces::for_current_account().unwrap();
+        let mut initialized = crate::application::open_host(
+            RootOwner::create(&root, &namespaces).unwrap(),
+            Options::default(),
+            crate::application::Roots::Configured(Some(vec![])),
+            Some(catalog_transport()),
+        )
+        .await
+        .unwrap();
+        initialized.shutdown().await.unwrap();
+        drop(initialized);
+        let store =
+            maka_transport::open_store(Arc::new(RootOwner::open(&root, &namespaces).unwrap()))
+                .await
+                .unwrap();
+        let record = store.application_launch().await.unwrap().unwrap();
+        let loaded = store
+            .load_application(record.deployment)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut publication: Configuration =
+            serde_json::from_value(record.configuration.clone()).unwrap();
+        let Configuration::PublicHost { endpoints, .. } = &mut publication;
+        for name in ["agent", "coordinator"] {
+            for method in ["projectMcp", "trustProjectMcp", "fileCandidates"] {
+                assert!(
+                    endpoints
+                        .get_mut(name)
+                        .unwrap()
+                        .grant
+                        .methods
+                        .remove(method)
+                );
+            }
+        }
+        // A caller can remove business management while retaining product-owned
+        // Agent publication. Owner coordination must not need this endpoint.
+        assert!(endpoints.remove("management").is_some());
+        assert!(
+            store
+                .compare_and_set_application_launch_configuration(
+                    loaded.source().reference.clone(),
+                    record.configuration,
+                    serde_json::to_value(publication).unwrap(),
+                )
+                .await
+                .unwrap()
+        );
+        store.drain().await;
+        drop((loaded, store));
+
+        let (root_id, epoch, stop, server) = serve_product(&root, false, false, None).await;
+        let mut attempted = UpdateAttempt::default();
+        let mut client = live(&root, &root_id, None, &mut attempted)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(client.epoch(), epoch);
+        assert!(!attempted.restarted);
+        let mut call = client
+            .call(
+                "agent",
+                "projectMcp".into(),
+                serde_json::json!({"sessionId":"missing-session"}),
+                Default::default(),
+            )
+            .await
+            .unwrap();
+        // Admission must use this returned connection's refreshed grant. A
+        // publication write alone would still leave its original snapshot stale.
+        call.start().await.unwrap();
+        call.close().await.unwrap();
+        let publication = client.publication().await.unwrap();
+        let Configuration::PublicHost { endpoints, .. } = publication.configuration;
+        assert!(endpoints["agent"].grant.methods.contains("projectMcp"));
+        assert!(!endpoints.contains_key("management"));
         client.close().await.unwrap();
         stop.cancel();
         server.await.unwrap();

@@ -29,7 +29,9 @@ mod headless;
 mod launch;
 mod update;
 pub(crate) use headless::update::live_update_available;
-pub(crate) use headless::{ProductHost, Roots, open_host, select_committed_host};
+pub(crate) use headless::{
+    LivePublication, ProductHost, Roots, open_host, prepare_live_publication, select_committed_host,
+};
 pub(super) use update::Update;
 
 pub(super) fn root_path(root: Option<PathBuf>) -> Result<PathBuf, HostError> {
@@ -215,6 +217,7 @@ async fn author_with_source(
     maka_host_runtime::application::host::Configuration::PublicHost {
         endpoints: sources.endpoints.clone(),
         native: sources.native.clone(),
+        product_methods: Default::default(),
     }
     .validate()?;
     values.remove("packages");

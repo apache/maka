@@ -163,6 +163,93 @@ fn instance<'a>(plan: &'a Plan, path: &[&str]) -> &'a Instance {
 }
 
 #[test]
+fn package_replacements_validate_nested_providers_and_consumers_atomically() {
+    let (mut input, mut packages) = fixture();
+    let mut next_contract = contract();
+    next_contract.name = "example.UpdatedContent".into();
+    let mut next_content = entry();
+    next_content.exports.get_mut("Content").unwrap().contract = next_contract.clone();
+    packages
+        .insert(
+            package("content", 2),
+            Declaration {
+                entries: BTreeMap::from([(EntryTarget::Tui, next_content)]),
+                composition: None,
+            },
+        )
+        .unwrap();
+    for revision in [1, 2] {
+        let mut consumer = entry();
+        consumer.imports.insert(
+            "content".into(),
+            Import {
+                contract: if revision == 1 {
+                    contract()
+                } else {
+                    next_contract.clone()
+                },
+                cardinality: Cardinality::One,
+            },
+        );
+        packages
+            .insert(
+                package("consumer", revision),
+                Declaration {
+                    entries: BTreeMap::from([(EntryTarget::Tui, consumer)]),
+                    composition: None,
+                },
+            )
+            .unwrap();
+    }
+    let mut consumer = node(3, package("consumer", 1), PackageUse::Entry);
+    consumer
+        .configuration
+        .values
+        .insert("title".into(), json!("Keep this title"));
+    consumer
+        .bindings
+        .insert("content".into(), vec![local(&["a"], "App")]);
+    input.instances.insert("consumer".into(), consumer);
+    let original = Plan::prepare(&input, &packages, &RemoteExports::new()).unwrap();
+    let (updated, changes) =
+        Plan::prepare_replacing(&input, &packages, &RemoteExports::new(), |selected| {
+            matches!(selected.id.as_str(), "content" | "consumer").then(|| package(&selected.id, 2))
+        })
+        .unwrap();
+    assert_eq!(changes.len(), 3);
+    assert_eq!(
+        instance(&updated, &["a", "content"]).package,
+        package("content", 2)
+    );
+    assert_eq!(
+        instance(&updated, &["consumer"]).bindings["content"][0]
+            .declaration
+            .contract,
+        next_contract
+    );
+    assert_eq!(
+        Plan::prepare(&input, &packages, &RemoteExports::new()).unwrap(),
+        original
+    );
+    for (path, package) in changes {
+        let node = input.instances.get_mut(&path[0]).unwrap();
+        if path.len() == 1 {
+            node.package = package.into();
+        } else {
+            node.overrides.push(Override {
+                path: path[1..].to_vec(),
+                package: Some(package),
+                ..Default::default()
+            });
+        }
+    }
+    assert_eq!(
+        Plan::prepare(&input, &packages, &RemoteExports::new()).unwrap(),
+        updated
+    );
+}
+
+#[test]
 fn forwarded_exports_and_plan_snapshots_share_frozen_declarations() {
     let (input, packages) = fixture();
     let plan = Plan::prepare(&input, &packages, &RemoteExports::new()).unwrap();

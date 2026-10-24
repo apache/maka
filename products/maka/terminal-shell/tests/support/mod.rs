@@ -17,6 +17,15 @@
  * under the License.
  */
 
+use futures_util::stream;
+use http_body_util::{BodyExt, Full, StreamBody, combinators::UnsyncBoxBody};
+use hyper::{
+    Method, Request, Response,
+    body::{Bytes, Frame, Incoming},
+    server::conn::http1,
+    service::service_fn,
+};
+use hyper_util::rt::TokioIo;
 use maka_app_client::{Client, Journal};
 use maka_capabilities::call::Attachments;
 use maka_event_log::{
@@ -26,7 +35,7 @@ use maka_event_log::{
 use maka_host_runtime::{
     application::{
         Handler, NativeActivation, NativeRegistry,
-        host::{Client as HostClient, Host, discovery::Registration},
+        host::{Client as HostClient, Configuration, Host, discovery::Registration},
         transport::{Grant, HostEndpoint, NativeGrant, wire},
     },
     ipc::{self, LocalListener},
@@ -41,6 +50,7 @@ use nsh_platform_tui::{AppOptions, AppView};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
+    convert::Infallible,
     path::{Path, PathBuf},
     sync::{
         Arc, OnceLock,
@@ -49,12 +59,12 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::AsyncWriteExt,
     net::{TcpListener, TcpStream},
     sync::{Notify, mpsc},
     task::{JoinHandle, JoinSet},
 };
-use tokio_util::sync::CancellationToken;
+use tokio_util::{sync::CancellationToken, task::AbortOnDropHandle};
 use uuid::Uuid;
 
 pub const EDITOR: &str = "composer";
@@ -92,7 +102,7 @@ pub struct Fixture {
     registration: Option<Registration>,
     host: Arc<Host>,
     server: JoinHandle<Result<(), String>>,
-    provider: JoinHandle<()>,
+    provider: AbortOnDropHandle<()>,
     // Registration must be removed while its original Root still exists on failure.
     pub directory: tempfile::TempDir,
 }
@@ -499,151 +509,154 @@ impl Fixture {
             deployment,
             native,
             None,
-            BTreeMap::from([
-                (
-                    "agent".into(),
-                    endpoint(
-                        "agent",
-                        &[
-                            "list",
-                            "catalog",
-                            "projects",
-                            "directories",
-                            "create",
-                            "selectBackend",
-                            "projectMcp",
-                            "trustProjectMcp",
-                            "globalInstructions",
-                            "updateGlobalInstructions",
-                            "metadata",
-                            "markRead",
-                            "changeSession",
-                            "fork",
-                            "send",
-                            "stop",
-                            "execution",
-                            "queue",
-                            "queueMessage",
-                            "editQueue",
-                            "work",
-                            "pendingInteractions",
-                            "interaction",
-                            "respond",
-                            "source",
-                            "toolImage",
-                            "attachmentImage",
-                            "uploadAttachment",
-                            "listFiles",
-                            "watchFiles",
-                            "readFile",
-                            "gitStatus",
-                            "gitDiff",
-                            "checklist",
-                            "watchChecklist",
-                            "observe",
-                            "history",
-                            "historyLandmarks",
-                            "watch",
-                        ],
-                        false,
+            Configuration::PublicHost {
+                endpoints: BTreeMap::from([
+                    (
+                        "agent".into(),
+                        endpoint(
+                            "agent",
+                            &[
+                                "list",
+                                "catalog",
+                                "projects",
+                                "directories",
+                                "create",
+                                "selectBackend",
+                                "projectMcp",
+                                "trustProjectMcp",
+                                "globalInstructions",
+                                "updateGlobalInstructions",
+                                "metadata",
+                                "markRead",
+                                "changeSession",
+                                "fork",
+                                "send",
+                                "stop",
+                                "execution",
+                                "queue",
+                                "queueMessage",
+                                "editQueue",
+                                "work",
+                                "pendingInteractions",
+                                "interaction",
+                                "respond",
+                                "source",
+                                "toolImage",
+                                "attachmentImage",
+                                "uploadAttachment",
+                                "listFiles",
+                                "watchFiles",
+                                "readFile",
+                                "gitStatus",
+                                "gitDiff",
+                                "checklist",
+                                "watchChecklist",
+                                "observe",
+                                "history",
+                                "historyLandmarks",
+                                "watch",
+                            ],
+                            false,
+                        ),
                     ),
-                ),
-                (
-                    "settings".into(),
-                    endpoint(
-                        "settings",
-                        &[
-                            "usage",
-                            "models",
-                            "resolveModel",
-                            "updateModelSettings",
-                            "connections",
-                            "connection",
-                            "providers",
-                            "create",
-                            "update",
-                            "remove",
-                            "credentialStatus",
-                            "saveCredential",
-                            "deleteCredential",
-                            "setDefault",
-                            "assistantPreferences",
-                            "updateAssistantPreferences",
-                            "network",
-                            "updateNetwork",
-                        ],
-                        false,
+                    (
+                        "settings".into(),
+                        endpoint(
+                            "settings",
+                            &[
+                                "usage",
+                                "models",
+                                "resolveModel",
+                                "updateModelSettings",
+                                "connections",
+                                "connection",
+                                "providers",
+                                "create",
+                                "update",
+                                "remove",
+                                "credentialStatus",
+                                "saveCredential",
+                                "deleteCredential",
+                                "setDefault",
+                                "assistantPreferences",
+                                "updateAssistantPreferences",
+                                "network",
+                                "updateNetwork",
+                            ],
+                            false,
+                        ),
                     ),
-                ),
-                (
-                    "authentication".into(),
-                    endpoint(
-                        "authentication",
-                        if login_handler.is_some() {
-                            &["provider", "loginCredential"]
-                        } else {
-                            &["provider"]
-                        },
-                        false,
+                    (
+                        "authentication".into(),
+                        endpoint(
+                            "authentication",
+                            if login_handler.is_some() {
+                                &["provider", "loginCredential"]
+                            } else {
+                                &["provider"]
+                            },
+                            false,
+                        ),
                     ),
-                ),
-                (
-                    "setup".into(),
-                    endpoint("setup", &["discoverModels"], false),
-                ),
-                ("receipts".into(), endpoint("receipts", &["read"], true)),
-            ])
-            .into_iter()
-            .chain(plugins.then(|| {
-                (
-                    "management".into(),
-                    endpoint(
-                        "management",
-                        &["instances", "readSettings", "setEnabled", "configure"],
-                        false,
+                    (
+                        "setup".into(),
+                        endpoint("setup", &["discoverModels"], false),
                     ),
-                )
-            }))
-            .chain(terminals.then(|| {
-                (
-                    "terminal".into(),
-                    endpoint(
-                        "terminal",
-                        &[
-                            "list",
-                            "watchList",
-                            "read",
-                            "watch",
-                            "readDisplay",
-                            "readOutput",
-                            "watchOutput",
-                            "start",
-                            "stop",
-                            "acquire",
-                            "control",
-                            "release",
-                        ],
-                        false,
-                    ),
-                )
-            }))
-            .collect(),
-            if has_files {
-                vec![NativeGrant {
-                    origin: InstanceId(vec![Uuid::from_u128(1)]),
-                    consumer: InstanceId(vec![Uuid::from_u128(1)]),
-                    provider: InstanceId(vec![Uuid::from_u128(5)]),
-                    export: maka_workspace_api::files::EXPORT.into(),
-                    methods: [file_tool
-                        .as_ref()
-                        .map_or("readImage", |tool| tool["method"].as_str().unwrap())
-                        .into()]
-                    .into_iter()
-                    .collect(),
-                    recovery: false,
-                }]
-            } else {
-                vec![]
+                    ("receipts".into(), endpoint("receipts", &["read"], true)),
+                ])
+                .into_iter()
+                .chain(plugins.then(|| {
+                    (
+                        "management".into(),
+                        endpoint(
+                            "management",
+                            &["instances", "readSettings", "setEnabled", "configure"],
+                            false,
+                        ),
+                    )
+                }))
+                .chain(terminals.then(|| {
+                    (
+                        "terminal".into(),
+                        endpoint(
+                            "terminal",
+                            &[
+                                "list",
+                                "watchList",
+                                "read",
+                                "watch",
+                                "readDisplay",
+                                "readOutput",
+                                "watchOutput",
+                                "start",
+                                "stop",
+                                "acquire",
+                                "control",
+                                "release",
+                            ],
+                            false,
+                        ),
+                    )
+                }))
+                .collect(),
+                native: if has_files {
+                    vec![NativeGrant {
+                        origin: InstanceId(vec![Uuid::from_u128(1)]),
+                        consumer: InstanceId(vec![Uuid::from_u128(1)]),
+                        provider: InstanceId(vec![Uuid::from_u128(5)]),
+                        export: maka_workspace_api::files::EXPORT.into(),
+                        methods: [file_tool
+                            .as_ref()
+                            .map_or("readImage", |tool| tool["method"].as_str().unwrap())
+                            .into()]
+                        .into_iter()
+                        .collect(),
+                        recovery: false,
+                    }]
+                } else {
+                    vec![]
+                },
+                product_methods: Default::default(),
             },
         )
         .await
@@ -658,7 +671,7 @@ impl Fixture {
         let (send, requests) = mpsc::channel(8);
         let request_count = Arc::new(AtomicUsize::new(0));
         let discovery_count = Arc::new(AtomicUsize::new(0));
-        let provider = tokio::spawn({
+        let provider = AbortOnDropHandle::new(tokio::spawn({
             let count = request_count.clone();
             let discovery = discovery_count.clone();
             async move {
@@ -668,19 +681,14 @@ impl Fixture {
                         accepted = listener.accept() => {
                             let (stream, _) = accepted.unwrap(); let send = send.clone(); let count = count.clone(); let discovery = discovery.clone();
                             connections.spawn(async move {
-                                if let Some(request) = ModelRequest::read(stream).await {
-                                    count.fetch_add(1, Ordering::SeqCst);
-                                    send.send(request).await.unwrap();
-                                } else {
-                                    discovery.fetch_add(1, Ordering::SeqCst);
-                                }
+                                ModelRequest::serve(stream, send, count, discovery).await;
                             });
                         }
                         Some(result) = connections.join_next(), if !connections.is_empty() => { result.unwrap(); }
                     }
                 }
             }
-        });
+        }));
         let mut fixture = Self {
             directory,
             address,
@@ -809,6 +817,7 @@ impl Fixture {
             registration.remove().unwrap();
         }
         self.provider.abort();
+        assert!(self.provider.await.unwrap_err().is_cancelled());
     }
 }
 
@@ -892,63 +901,81 @@ pub async fn mutate(client: &Client, method: &str, input: Value) -> Value {
 
 pub struct ModelRequest {
     pub body: Value,
-    socket: TcpStream,
+    response: mpsc::Sender<Bytes>,
+    completed: Arc<Notify>,
 }
+type ModelBody = UnsyncBoxBody<Bytes, Infallible>;
+
 impl ModelRequest {
-    async fn read(mut socket: TcpStream) -> Option<Self> {
-        let mut bytes = Vec::new();
-        let boundary = loop {
-            let mut buffer = [0; 4096];
-            let count = socket.read(&mut buffer).await.unwrap();
-            assert_ne!(count, 0);
-            bytes.extend_from_slice(&buffer[..count]);
-            assert!(bytes.len() < 2 * 1024 * 1024);
-            if let Some(at) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
-                break at + 4;
+    async fn serve(
+        socket: TcpStream,
+        requests: mpsc::Sender<Self>,
+        count: Arc<AtomicUsize>,
+        discovery: Arc<AtomicUsize>,
+    ) {
+        let completed = Arc::new(Notify::new());
+        let notification = completed.clone();
+        let service = service_fn(move |request: Request<Incoming>| {
+            let requests = requests.clone();
+            let count = count.clone();
+            let discovery = discovery.clone();
+            let completed = completed.clone();
+            async move {
+                assert_eq!(
+                    request.headers()[hyper::header::AUTHORIZATION],
+                    format!("Bearer {PROVIDER_KEY}")
+                );
+                if request.method() == Method::GET && request.uri().path() == "/v1/models" {
+                    discovery.fetch_add(1, Ordering::SeqCst);
+                    let body = Bytes::from_static(br#"{"data":[{"id":"fixture-discovered-model","reasoning":{"mandatory":false,"default_enabled":true,"supported_efforts":["max","high","low","none"],"default_effort":"high"}}]}"#);
+                    return Ok::<Response<ModelBody>, hyper::Error>(
+                        Response::builder()
+                            .header(hyper::header::CONTENT_TYPE, "application/json")
+                            .body(Full::new(body).boxed_unsync())
+                            .unwrap(),
+                    );
+                }
+                assert_eq!(request.method(), Method::POST);
+                assert_eq!(request.uri().path(), "/v1/chat/completions");
+                let bytes = request.into_body().collect().await?.to_bytes();
+                let body = serde_json::from_slice(&bytes).unwrap();
+                let (response, receiver) = mpsc::channel(1);
+                let events = stream::unfold(receiver, |mut receiver| async move {
+                    receiver
+                        .recv()
+                        .await
+                        .map(|bytes| (Ok::<_, Infallible>(Frame::data(bytes)), receiver))
+                });
+                count.fetch_add(1, Ordering::SeqCst);
+                requests
+                    .send(Self {
+                        body,
+                        response,
+                        completed,
+                    })
+                    .await
+                    .unwrap();
+                Ok(Response::builder()
+                    .header(hyper::header::CONTENT_TYPE, "text/event-stream")
+                    .body(StreamBody::new(events).boxed_unsync())
+                    .unwrap())
             }
-        };
-        let headers = String::from_utf8_lossy(&bytes[..boundary]);
-        assert!(
-            headers
-                .to_ascii_lowercase()
-                .contains(&format!("authorization: bearer {PROVIDER_KEY}"))
-        );
-        if headers.starts_with("GET /v1/models ") {
-            let body = br#"{"data":[{"id":"fixture-discovered-model","reasoning":{"mandatory":false,"default_enabled":true,"supported_efforts":["max","high","low","none"],"default_effort":"high"}}]}"#;
-            socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).as_bytes()).await.unwrap();
-            socket.write_all(body).await.unwrap();
-            socket.flush().await.unwrap();
-            return None;
+        });
+        // The provider's JoinSet owns the entire HTTP connection, including its
+        // streamed response. Cancellation may close the client before [DONE].
+        let result = http1::Builder::new()
+            .keep_alive(false)
+            .serve_connection(TokioIo::new(socket), service)
+            .await;
+        notification.notify_one();
+        if let Err(error) = result {
+            assert!(!error.is_parse(), "invalid fixture HTTP request: {error}");
         }
-        assert!(
-            headers.starts_with("POST /v1/chat/completions "),
-            "{headers}"
-        );
-        let length: usize = headers
-            .lines()
-            .find_map(|line| {
-                let (name, value) = line.split_once(':')?;
-                name.eq_ignore_ascii_case("content-length")
-                    .then(|| value.trim().parse().unwrap())
-            })
-            .unwrap();
-        while bytes.len() < boundary + length {
-            let mut buffer = [0; 4096];
-            let count = socket.read(&mut buffer).await.unwrap();
-            assert_ne!(count, 0);
-            bytes.extend_from_slice(&buffer[..count]);
-        }
-        let body = serde_json::from_slice(&bytes[boundary..boundary + length]).unwrap();
-        socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n").await.unwrap();
-        Some(Self { body, socket })
     }
     async fn packet(&mut self, value: Value) {
         let data = format!("data: {value}\n\n");
-        self.socket
-            .write_all(format!("{:x}\r\n{data}\r\n", data.len()).as_bytes())
-            .await
-            .unwrap();
-        self.socket.flush().await.unwrap();
+        // The Agent may cancel an in-flight response and close its HTTP body.
+        let _ = self.response.send(Bytes::from(data)).await;
     }
     pub async fn delta(&mut self, text: &str) {
         self.packet(json!({"id":"nsh-real-model","choices":[{"index":0,"delta":{"content":text},"finish_reason":null}]})).await;
@@ -977,11 +1004,12 @@ impl ModelRequest {
 
     async fn finish_with_reason(mut self, reason: &str) {
         self.packet(json!({"id":"nsh-real-model","choices":[{"index":0,"delta":{},"finish_reason":reason}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}})).await;
-        self.socket
-            .write_all(b"e\r\ndata: [DONE]\n\n\r\n0\r\n\r\n")
-            .await
-            .unwrap();
-        self.socket.flush().await.unwrap();
+        let _ = self
+            .response
+            .send(Bytes::from_static(b"data: [DONE]\n\n"))
+            .await;
+        drop(self.response);
+        self.completed.notified().await;
     }
 }
 

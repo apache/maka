@@ -17,10 +17,12 @@
  * under the License.
  */
 //! A public Host opens the same persisted product source across process restarts.
+mod publication;
 pub(super) mod update;
 use super::{HostError, Input, author, installation, launch, packages};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use maka_event_log::{
+    EventLog,
     applications::{LoadedDeployment, PreparedApplication, launch::Launch},
     root::RootOwner,
     root_store::RootStore,
@@ -29,10 +31,13 @@ use maka_host_runtime::{
     DirectoryRootSpec,
     application::host::{Host, Options},
 };
+pub(crate) use publication::{LivePublication, prepare_live_publication};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
 use uuid::Uuid;
+
+const PROCESS_INSTANCES: [&str; 2] = ["workspace-processes", "coordinator-workspace-processes"];
 
 /// Managed deployment directories are authoritative; standalone reopen preserves source edits.
 pub(crate) enum Roots {
@@ -89,6 +94,7 @@ pub(crate) async fn select_committed_host(
             serde_json::to_value(Selection::PublicHost {
                 endpoints: request.endpoints.clone(),
                 native: request.native.clone(),
+                product_methods: Default::default(),
             })?,
         )
         .await?;
@@ -146,14 +152,13 @@ pub(crate) async fn open_host(
         }
     };
     let result = async {
-        let (loaded, Selection::PublicHost { endpoints, native }) = prepare(&store, roots).await?;
+        let (loaded, selection) = prepare(&store, roots).await?;
         Ok(Host::open_loaded_with_options(
             store.clone(),
             loaded,
             crate::application::serve::native(catalog.catalog())?,
             Some(maka_host_js::factory(Default::default())),
-            endpoints,
-            native,
+            selection,
             options,
         )
         .await?)
@@ -179,7 +184,7 @@ async fn prepare(
     }
     // Recover a frozen operation before considering the executing bundle. The
     // updater uses prepare_saved too, so applying a replacement cannot recurse.
-    let (loaded, selection) = prepare_saved(store, Roots::Saved).await?;
+    let (loaded, _) = prepare_saved(store, Roots::Saved).await?;
     let root = store.owned_root()?.canonical_path().to_owned();
     let outcome = update::synchronize(store, true).await.map_err(|error| {
         HostError::from(format!(
@@ -193,13 +198,15 @@ async fn prepare(
     };
     let configured =
         apply_launch_configuration(store, loaded.source().reference.deployment, roots).await?;
-    if outcome.applied || configured {
-        let loaded = store
+    let loaded = if outcome.applied || configured {
+        store
             .load_application(loaded.source().reference.deployment)
             .await?
-            .ok_or("public Host source missing")?;
-        return Ok((loaded, selection));
-    }
+            .ok_or("public Host source missing")?
+    } else {
+        loaded
+    };
+    let selection = publication::synchronize(store, &loaded).await?;
     Ok((loaded, selection))
 }
 
@@ -226,11 +233,36 @@ async fn prepare_saved(
         .await?
         .ok_or("public Host selection missing")?;
     // A terminal launcher cannot accidentally reinterpret this Root as its Host.
-    let selection: Selection = serde_json::from_value(record.configuration)?;
+    let selection: Selection = serde_json::from_value(record.configuration.clone())?;
     if let Some(pending) = record.pending {
         let preparation: Preparation = serde_json::from_slice(&pending)?;
         let packages = launch::decode_packages(preparation.packages)?;
-        update::validate_target(&preparation.input, &packages)?;
+        if preparation.input.environment.location
+            != maka_plugin_core::composition::ExecutionLocation::Host
+        {
+            return Err("public Host update requires a local Host source".into());
+        }
+        let frozen = PreparedApplication::new(preparation.input.clone(), vec![], packages.clone())?;
+        let current = if preparation.expected_revision == 0 {
+            store.load_application(record.deployment).await?
+        } else {
+            None
+        };
+        if let Some(current) = &current {
+            launch_changes(
+                &current.source().input,
+                current.packages(),
+                current.plan(),
+                &record.configuration,
+            )?;
+        } else {
+            launch_changes(
+                frozen.input(),
+                frozen.packages(),
+                frozen.plan(),
+                &record.configuration,
+            )?;
+        }
         if preparation.expected_revision == 0 {
             launch::ensure(store, record.deployment, &preparation.input, &[], &packages).await?;
         } else {
@@ -276,9 +308,26 @@ async fn begin(
     let packages = tokio::task::spawn_blocking(packages).await??;
     let (sources, _, prepared) = author(configuration, &packages).await?;
     let deployment = sources.deployment;
+    // These product endpoints publish every method of their selected service.
+    // Explicit generic Host selections leave this ownership set empty.
+    let product_methods = [
+        "agent",
+        "coordinator",
+        "settings",
+        "authentication",
+        "setup",
+        "terminal",
+        "coordinatorTerminal",
+        "workhub",
+    ]
+    .into_iter()
+    .filter(|name| sources.endpoints.contains_key(*name))
+    .map(str::to_owned)
+    .collect();
     let selection = Selection::PublicHost {
         endpoints: sources.endpoints,
         native: sources.native,
+        product_methods,
     };
     let preparation = Preparation {
         expected_revision: 0,
@@ -295,6 +344,12 @@ async fn begin(
             })
             .collect(),
     };
+    launch_changes(
+        prepared.input(),
+        prepared.packages(),
+        prepared.plan(),
+        &serde_json::to_value(&selection)?,
+    )?;
     store
         .begin_application_launch(Launch {
             deployment,
@@ -317,7 +372,7 @@ async fn apply_launch_configuration(
     // The bootstrap helper implements this executable's internal protocol. Its
     // installation path is launcher-owned, even when the bundle is unchanged.
     let helper = serde_json::to_value(std::env::current_exe()?)?;
-    let processes: Vec<_> = ["workspace-processes", "coordinator-workspace-processes"]
+    let processes: Vec<_> = PROCESS_INSTANCES
         .into_iter()
         .filter(|name| {
             metadata
@@ -348,20 +403,8 @@ async fn apply_launch_configuration(
         .ok_or("public Host source missing")?;
     let (mut source, packages, _, _) = loaded.into_parts();
     let input = &mut source.input;
-    let mut helper_changed = false;
-    for name in processes {
-        // Custom components and composition wrappers own their configuration.
-        if let Some(values) = configuration_values(
-            input,
-            &packages,
-            name,
-            maka_workspace_api::processes::IMPLEMENTATION,
-        ) {
-            values.insert("helper".into(), helper.clone());
-            helper_changed = true;
-        }
-    }
-    if roots.is_none() && !helper_changed {
+    let helper_changes = refresh_helpers(input, &packages, &helper);
+    if roots.is_none() && helper_changes.is_empty() {
         return Ok(false);
     }
     if let Some(roots) = roots {
@@ -417,6 +460,94 @@ async fn apply_launch_configuration(
         .await?;
     Ok(true)
 }
+
+fn refresh_helpers(input: &mut Input, packages: &[super::Package], helper: &Value) -> Vec<String> {
+    let mut changes = Vec::new();
+    for name in PROCESS_INSTANCES {
+        // Custom components and composition wrappers own their configuration.
+        if let Some(values) = configuration_values(
+            input,
+            packages,
+            name,
+            maka_workspace_api::processes::IMPLEMENTATION,
+        ) && values.get("helper") != Some(helper)
+        {
+            values.insert("helper".into(), helper.clone());
+            changes.push(format!(
+                "/instances/{name}/configuration/values/helper: use launcher executable"
+            ));
+        }
+    }
+    changes
+}
+
+pub(super) fn launch_changes(
+    input: &Input,
+    packages: &[super::Package],
+    plan: &maka_plugin_core::plan::Plan,
+    configuration: &Value,
+) -> Result<Vec<String>, HostError> {
+    let helper = serde_json::to_value(std::env::current_exe()?)?;
+    let mut changes = refresh_helpers(&mut input.clone(), packages, &helper);
+    let mut selection = serde_json::from_value(configuration.clone())?;
+    changes.extend(publication::refresh_from_plan(&mut selection, plan)?);
+    Ok(changes)
+}
+
+pub(super) async fn preview_update(store: &EventLog) -> Result<super::update::Outcome, HostError> {
+    let (mut outcome, target) = update::preview(store).await?;
+    let record = store
+        .application_launch()
+        .await?
+        .ok_or("public Host selection missing")?;
+    let changes = launch_changes(
+        target.input(),
+        target.packages(),
+        target.plan(),
+        &record.configuration,
+    )?;
+    outcome.changed |= !changes.is_empty();
+    outcome.changes.extend(changes);
+    Ok(outcome)
+}
+
+pub(super) async fn apply_update(store: &RootStore) -> Result<super::update::Outcome, HostError> {
+    // Recover exactly one frozen package target before reconciling launcher
+    // values. Calling prepare here would select the executing bundle again.
+    let mut outcome = update::synchronize(store, true).await?;
+    let record = store
+        .application_launch()
+        .await?
+        .ok_or("public Host selection missing")?;
+    let loaded = store
+        .load_application(record.deployment)
+        .await?
+        .ok_or("public Host source missing")?;
+    let changes = launch_changes(
+        &loaded.source().input,
+        loaded.packages(),
+        loaded.plan(),
+        &record.configuration,
+    )?;
+    if changes.is_empty() {
+        return Ok(outcome);
+    }
+    let configured = apply_launch_configuration(store, record.deployment, None).await?;
+    let loaded = if configured {
+        store
+            .load_application(record.deployment)
+            .await?
+            .ok_or("public Host source missing")?
+    } else {
+        loaded
+    };
+    publication::synchronize(store, &loaded).await?;
+    outcome.changed = true;
+    outcome.applied = true;
+    outcome.changes.extend(changes);
+    Ok(outcome)
+}
+
 fn configuration_values<'a>(
     input: &'a mut Input,
     packages: &[super::Package],
@@ -448,6 +579,207 @@ fn configuration_values<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn explicit_update_previews_and_applies_launch_drift_with_current_packages() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = launch::create(directory.path().join("host")).await.unwrap();
+        let (initial, mut selection) = prepare(&store, Roots::Configured(Some(vec![])))
+            .await
+            .unwrap();
+        let original = store.application_launch().await.unwrap().unwrap();
+        let mut input = initial.source().input.clone();
+        let missing = directory.path().join("removed-cli");
+        for name in PROCESS_INSTANCES {
+            input
+                .instances
+                .get_mut(name)
+                .unwrap()
+                .configuration
+                .values
+                .insert("helper".into(), json!(missing));
+        }
+        let stale_source = store
+            .commit_application(
+                original.deployment,
+                initial.source().reference.revision,
+                input.clone(),
+                vec![],
+                initial.packages().to_vec(),
+            )
+            .await
+            .unwrap();
+        let Selection::PublicHost { endpoints, .. } = &mut selection;
+        for name in ["agent", "coordinator"] {
+            assert!(
+                endpoints
+                    .get_mut(name)
+                    .unwrap()
+                    .grant
+                    .methods
+                    .remove("projectMcp")
+            );
+        }
+        let stale_selection = serde_json::to_value(selection).unwrap();
+        assert!(
+            store
+                .compare_and_set_application_launch_configuration(
+                    stale_source.clone(),
+                    original.configuration.clone(),
+                    stale_selection.clone(),
+                )
+                .await
+                .unwrap()
+        );
+
+        let owner = store.owned_root().unwrap();
+        store.drain().await;
+        drop(store);
+        let inspection = maka_transport::open_application_inspection(owner.clone())
+            .await
+            .unwrap();
+        let preview = preview_update(&inspection).await.unwrap();
+        assert!(preview.changed);
+        assert!(!preview.applied);
+        assert_eq!(
+            preview.changes,
+            [
+                "/instances/workspace-processes/configuration/values/helper: use launcher executable",
+                "/instances/coordinator-workspace-processes/configuration/values/helper: use launcher executable",
+                "/publication/endpoints/agent/grant/methods: follow current service contract",
+                "/publication/endpoints/coordinator/grant/methods: follow current service contract",
+            ]
+        );
+        let unchanged = inspection
+            .load_application(original.deployment)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(unchanged.source().reference, stale_source);
+        assert_eq!(unchanged.source().input, input);
+        assert_eq!(
+            inspection
+                .application_launch()
+                .await
+                .unwrap()
+                .unwrap()
+                .configuration,
+            stale_selection
+        );
+        inspection.drain().await;
+        drop(inspection);
+
+        let store = maka_transport::open_store(owner.clone()).await.unwrap();
+        let applied = apply_update(&store).await.unwrap();
+        assert!(applied.changed && applied.applied);
+        assert_eq!(applied.changes, preview.changes);
+        let updated = store
+            .load_application(original.deployment)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            updated.source().reference.revision,
+            stale_source.revision + 1
+        );
+        assert_eq!(updated.source().input, initial.source().input);
+        assert_eq!(
+            store
+                .application_launch()
+                .await
+                .unwrap()
+                .unwrap()
+                .configuration,
+            original.configuration
+        );
+        store.drain().await;
+        drop(store);
+        let inspection = maka_transport::open_application_inspection(owner)
+            .await
+            .unwrap();
+        let again = preview_update(&inspection).await.unwrap();
+        assert!(!again.changed && !again.applied);
+        assert!(again.changes.is_empty());
+        inspection.drain().await;
+    }
+
+    #[tokio::test]
+    async fn startup_refreshes_product_methods_without_expanding_explicit_publications() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = launch::create(directory.path().join("host")).await.unwrap();
+        let (initial, original) = prepare(&store, Roots::Configured(Some(vec![])))
+            .await
+            .unwrap();
+        let original = serde_json::to_value(original).unwrap();
+        for product_owned in [true, false] {
+            let mut narrowed: Selection = serde_json::from_value(original.clone()).unwrap();
+            let Selection::PublicHost {
+                endpoints,
+                product_methods,
+                ..
+            } = &mut narrowed;
+            for name in ["agent", "coordinator"] {
+                for method in ["projectMcp", "trustProjectMcp", "fileCandidates"] {
+                    assert!(
+                        endpoints
+                            .get_mut(name)
+                            .unwrap()
+                            .grant
+                            .methods
+                            .remove(method)
+                    );
+                }
+            }
+            if !product_owned {
+                product_methods.clear();
+            }
+            let narrowed = serde_json::to_value(narrowed).unwrap();
+            let previous = store.application_launch().await.unwrap().unwrap();
+            assert!(
+                store
+                    .compare_and_set_application_launch_configuration(
+                        initial.source().reference.clone(),
+                        previous.configuration,
+                        narrowed.clone(),
+                    )
+                    .await
+                    .unwrap()
+            );
+
+            let (reopened, selection) = prepare(&store, Roots::Saved).await.unwrap();
+            assert_eq!(reopened.source().reference, initial.source().reference);
+            assert_eq!(reopened.source().input, initial.source().input);
+            let Selection::PublicHost { endpoints, .. } = &selection;
+            for name in ["agent", "coordinator"] {
+                for method in ["projectMcp", "trustProjectMcp", "fileCandidates"] {
+                    assert_eq!(
+                        endpoints[name].grant.methods.contains(method),
+                        product_owned
+                    );
+                }
+            }
+            let expected = if product_owned { &original } else { &narrowed };
+            assert_eq!(serde_json::to_value(selection).unwrap(), *expected);
+            let record = store.application_launch().await.unwrap().unwrap();
+            assert_eq!(record.configuration, *expected);
+            assert!(record.pending.is_none());
+
+            let (again, selection) = prepare(&store, Roots::Saved).await.unwrap();
+            assert_eq!(again.source().reference, initial.source().reference);
+            assert_eq!(serde_json::to_value(selection).unwrap(), *expected);
+            assert_eq!(
+                store
+                    .application_launch()
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .configuration,
+                *expected
+            );
+        }
+        store.drain().await;
+    }
+
     #[tokio::test]
     async fn startup_updates_old_selected_packages_and_retries_after_incompatible_configuration() {
         let directory = tempfile::tempdir().unwrap();

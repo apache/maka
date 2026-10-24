@@ -27,7 +27,7 @@ use maka_event_log::{
 use maka_host_runtime::{
     application::{
         NativeRegistry,
-        host::{Client, Host, discovery},
+        host::{Client, Configuration as HostConfiguration, Host, discovery},
         transport::{Grant, HostEndpoint, Reply},
     },
     ipc::LocalListener,
@@ -49,10 +49,10 @@ async fn public_ipc_persists_original_gateway_intent_and_retires_original_owner(
         let deployment = Uuid::new_v4();
         let (input, packages) = support::host();
         let source = store.commit_application(deployment, 0, input, vec![], packages).await.unwrap();
-        let host = Host::open(store.clone(), deployment, NativeRegistry::default(), Some(maka_host_js::factory(Default::default())), BTreeMap::from([
+        let host = Host::open(store.clone(), deployment, NativeRegistry::default(), Some(maka_host_js::factory(Default::default())), HostConfiguration::PublicHost { endpoints: BTreeMap::from([
             ("business".into(), HostEndpoint { consumer: support::identity(13), import: "business".into(), grant: Grant { methods: ["read".into(), "write".into()].into(), recovery: false } }),
             ("receipts".into(), HostEndpoint { consumer: support::identity(13), import: "receipts".into(), grant: Grant { methods: ["read".into()].into(), recovery: true } }),
-        ]), vec![]).await.unwrap();
+        ]), native: vec![], product_methods: Default::default() }).await.unwrap();
         #[cfg(unix)]
         let address = directory.path().join("host.sock");
         #[cfg(windows)]
@@ -191,9 +191,9 @@ async fn public_ipc_pulls_large_subscription_original_and_confirms_cleanup() {
             })
         })).unwrap();
         store.commit_application(deployment, 0, input, vec![], packages).await.unwrap();
-        let host = Host::open(store.clone(), deployment, native, Some(maka_host_js::factory(Default::default())), BTreeMap::from([
+        let host = Host::open(store.clone(), deployment, native, Some(maka_host_js::factory(Default::default())), HostConfiguration::PublicHost { endpoints: BTreeMap::from([
             ("business".into(), HostEndpoint { consumer: support::identity(13), import: "business".into(), grant: Grant { methods: ["read".into()].into(), recovery: false } }),
-        ]), vec![]).await.unwrap();
+        ]), native: vec![], product_methods: Default::default() }).await.unwrap();
         #[cfg(unix)]
         let address = directory.path().join("host.sock");
         #[cfg(windows)]
@@ -281,9 +281,9 @@ async fn lost_session_close_observer_cannot_release_accepted_work_or_root_early(
             exports: Ok(BTreeMap::from([("Counter".into(), maka_plugin_core::runtime::Published { contract: support::business(), value: blocked.clone() as Arc<dyn maka_host_runtime::application::Handler> })])), owner: blocked,
         } }) } })).unwrap();
         store.commit_application(deployment, 0, input, vec![], packages).await.unwrap();
-        let host = Host::open(store.clone(), deployment, native, Some(maka_host_js::factory(Default::default())), BTreeMap::from([
+        let host = Host::open(store.clone(), deployment, native, Some(maka_host_js::factory(Default::default())), HostConfiguration::PublicHost { endpoints: BTreeMap::from([
             ("business".into(), HostEndpoint { consumer: support::identity(13), import: "business".into(), grant: Grant { methods: ["write".into()].into(), recovery: false } }),
-        ]), vec![]).await.unwrap();
+        ]), native: vec![], product_methods: Default::default() }).await.unwrap();
         #[cfg(unix)]
         let address = directory.path().join("host.sock");
         #[cfg(windows)]
@@ -384,8 +384,11 @@ impl PeerHost {
             deployment,
             NativeRegistry::default(),
             Some(maka_host_js::factory(Default::default())),
-            selections.clone(),
-            vec![],
+            HostConfiguration::PublicHost {
+                endpoints: selections.clone(),
+                native: vec![],
+                product_methods: Default::default(),
+            },
         )
         .await
         .unwrap();
@@ -853,7 +856,7 @@ async fn quitting_an_externally_stopped_host_requires_its_original_root_release(
         let replacement = if replacement {
             let store = Arc::new(support::setup(RootStore::open(Arc::new(RootOwner::open(&host_root, &fixture.namespaces).unwrap()))).await.unwrap());
             let host = Host::open(store, deployment, NativeRegistry::default(),
-                Some(maka_host_js::factory(Default::default())), fixture.selections.clone(), vec![]).await.unwrap();
+                Some(maka_host_js::factory(Default::default())), HostConfiguration::PublicHost { endpoints: fixture.selections.clone(), native: vec![], product_methods: Default::default() }).await.unwrap();
             assert_ne!(host.epoch(), original_epoch);
             #[cfg(unix)]
             let address = fixture.address.clone();
@@ -995,7 +998,7 @@ async fn configured_native_grants_apply_live_survive_source_update_and_root_rest
                 consumer: support::identity(13),
                 import: "business".into(),
                 grant: Grant {
-                    methods: ["read".into()].into(),
+                    methods: ["read".into(), "write".into()].into(),
                     recovery: false,
                 },
             },
@@ -1003,6 +1006,7 @@ async fn configured_native_grants_apply_live_survive_source_update_and_root_rest
         let previous = Configuration::PublicHost {
             endpoints: endpoints.clone(),
             native: vec![],
+            product_methods: ["business".into()].into(),
         };
         let desired = Configuration::PublicHost {
             endpoints: endpoints.clone(),
@@ -1014,6 +1018,7 @@ async fn configured_native_grants_apply_live_survive_source_update_and_root_rest
                 methods: ["read".into()].into(),
                 recovery: false,
             }],
+            product_methods: ["business".into()].into(),
         };
         store
             .select_committed_application_launch(
@@ -1028,8 +1033,7 @@ async fn configured_native_grants_apply_live_survive_source_update_and_root_rest
             deployment,
             native,
             Some(maka_host_js::factory(Default::default())),
-            endpoints,
-            vec![],
+            previous.clone(),
         )
         .await
         .unwrap();
@@ -1044,10 +1048,39 @@ async fn configured_native_grants_apply_live_survive_source_update_and_root_rest
             async move { host.serve_local(listener, CancellationToken::new()).await }
         });
         let mut client = Client::connect(&address, Some(host.epoch())).await.unwrap();
+        let publication = client.publication().await.unwrap();
+        assert_eq!(publication.source, source);
+        assert_eq!(
+            serde_json::to_value(publication.configuration).unwrap(),
+            serde_json::to_value(&previous).unwrap()
+        );
         let services = activations.recv().await.unwrap();
         assert_eq!(
             native_read(&services).await.unwrap_err(),
             "native service invocation is not granted"
+        );
+        // A stale catalogue may offer only a subset of a product-owned contract.
+        // Reject that snapshot without changing either live or durable authority.
+        let mut narrowed = desired.clone();
+        let Configuration::PublicHost { endpoints, .. } = &mut narrowed;
+        endpoints.get_mut("business").unwrap().grant.methods = ["read".into()].into();
+        let error = client
+            .configure(source.clone(), previous.clone(), narrowed.clone())
+            .await
+            .unwrap_err();
+        assert!(error.contains("current service contract"), "{error}");
+        assert_eq!(
+            serde_json::to_value(client.publication().await.unwrap().configuration).unwrap(),
+            serde_json::to_value(&previous).unwrap()
+        );
+        assert_eq!(
+            store
+                .application_launch()
+                .await
+                .unwrap()
+                .unwrap()
+                .configuration,
+            serde_json::to_value(&previous).unwrap()
         );
         // A stale source or unrelated previous selection must not publish grants.
         let mut future = source.clone();
@@ -1081,6 +1114,30 @@ async fn configured_native_grants_apply_live_survive_source_update_and_root_rest
             .configure(source.clone(), previous.clone(), desired.clone())
             .await
             .unwrap();
+        let publication = client.publication().await.unwrap();
+        assert_eq!(publication.source, source);
+        assert_eq!(
+            serde_json::to_value(publication.configuration).unwrap(),
+            serde_json::to_value(&desired).unwrap()
+        );
+        // An explicit restriction is valid only when its caller also transfers
+        // method ownership; the same Configure path keeps that intent intact.
+        let Configuration::PublicHost {
+            product_methods, ..
+        } = &mut narrowed;
+        product_methods.remove("business");
+        client
+            .configure(source.clone(), desired.clone(), narrowed.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(client.publication().await.unwrap().configuration).unwrap(),
+            serde_json::to_value(&narrowed).unwrap()
+        );
+        client
+            .configure(source.clone(), narrowed, desired.clone())
+            .await
+            .unwrap();
         // Retry the exact command after losing its acknowledgement.
         client
             .configure(source.clone(), previous.clone(), desired.clone())
@@ -1095,12 +1152,26 @@ async fn configured_native_grants_apply_live_survive_source_update_and_root_rest
             .await
             .unwrap();
         assert_eq!(next.revision, 2);
+        // The current head is a CAS witness, not a claim that this connected
+        // incarnation originally started from the newer source revision.
+        let publication = client.publication().await.unwrap();
+        assert_eq!(publication.source, next);
+        assert_eq!(host.source(), &source);
+        assert_eq!(client.source(), &source);
+        assert_eq!(
+            serde_json::to_value(publication.configuration).unwrap(),
+            serde_json::to_value(&desired).unwrap()
+        );
         assert!(
             client
                 .configure(source, desired.clone(), previous)
                 .await
                 .is_err()
         );
+        client
+            .configure(publication.source, desired.clone(), desired.clone())
+            .await
+            .unwrap();
         assert_eq!(
             native_read(&services).await.unwrap(),
             serde_json::json!({"effects":0})
@@ -1121,18 +1192,14 @@ async fn configured_native_grants_apply_live_survive_source_update_and_root_rest
             .unwrap(),
         );
         let saved = store.application_launch().await.unwrap().unwrap();
-        let Configuration::PublicHost {
-            endpoints,
-            native: grants,
-        } = serde_json::from_value(saved.configuration).unwrap();
+        let configuration: Configuration = serde_json::from_value(saved.configuration).unwrap();
         let (native, mut activations) = native_caller();
         let host = Host::open(
             store.clone(),
             deployment,
             native,
             Some(maka_host_js::factory(Default::default())),
-            endpoints,
-            grants,
+            configuration,
         )
         .await
         .unwrap();
@@ -1241,9 +1308,9 @@ async fn public_ipc_preserves_large_query_progress_and_original_mutation_receipt
             } })
         } })).unwrap();
         store.commit_application(deployment,0,input,vec![],packages).await.unwrap();
-        let host = Host::open(store.clone(),deployment,native,Some(maka_host_js::factory(Default::default())),BTreeMap::from([
+        let host = Host::open(store.clone(),deployment,native,Some(maka_host_js::factory(Default::default())),HostConfiguration::PublicHost { endpoints: BTreeMap::from([
             ("business".into(),HostEndpoint { consumer:support::identity(13),import:"business".into(),grant:Grant { methods:["read".into(),"write".into()].into(),recovery:false } }),
-        ]),vec![]).await.unwrap();
+        ]), native: vec![], product_methods: Default::default() }).await.unwrap();
         #[cfg(unix)] let address = directory.path().join("large.sock");
         #[cfg(windows)] let address = std::path::PathBuf::from(format!(r"\\.\pipe\maka-large-test-{}",Uuid::new_v4()));
         let listener = LocalListener::bind(&address).unwrap();
