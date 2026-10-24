@@ -62,7 +62,15 @@ pub fn main() -> std::process::ExitCode {
             }
             // Where apps keep their data (`nsh test --target` gives each app
             // a fresh one); the system's data directory otherwise.
-            "--data-dir" => options.data_dir = args.next().map(PathBuf::from),
+            "--data-dir" => {
+                options.data_dir = args.next().map(PathBuf::from);
+                // Its caches too (downloaded images): a test's app starts with none.
+                if let Some(dir) = &options.data_dir {
+                    options.cache = nsh_engine::CacheOptions::at(nsh_engine::CacheLocation::Dir(
+                        dir.join("cache"),
+                    ));
+                }
+            }
             "--window-size" => {
                 if let Some((w, h)) = args.next().as_deref().and_then(|s| s.split_once('x')) {
                     options.size = (w.parse().unwrap_or(390), h.parse().unwrap_or(844));

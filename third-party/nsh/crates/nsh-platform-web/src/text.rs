@@ -4,7 +4,9 @@
 //! out here, so what was measured is what is drawn (the browser never
 //! wraps a run itself).
 //!
-//! Lines break after spaces, around CJK characters and at `\n`; a word
+//! Lines break after spaces, around CJK characters and at `\n`, except
+//! where the line start and end rules forbid it (closing punctuation never
+//! starts a line, opening punctuation never ends one: [`wrap`]); a word
 //! longer than the line breaks between characters. That is a subset of
 //! UAX #14, enough for app text.
 
@@ -16,53 +18,23 @@ use nsh_core::{
 };
 use rustc_hash::FxHashMap;
 
+use self::css::measured_by_char;
+pub(crate) use self::css::{css_font, font_variant_numeric};
 use crate::ffi;
 
-/// The system font stack (what `fontFamily` unset means).
-const SYSTEM_FONT: &str = "-apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, \
-                           \"Helvetica Neue\", Arial, \"PingFang SC\", \"Noto Sans SC\", \
-                           \"Microsoft YaHei\", sans-serif";
+mod css;
+mod wrap;
 
 /// The placeholder character of an inline attachment.
 const OBJECT: char = '\u{fffc}';
 
-/// CSS's generic font families: keywords, never quoted (a quoted one is
-/// a family of that name, which no system has).
-const GENERIC_FAMILIES: &[&str] = &[
-    "serif",
-    "sans-serif",
-    "monospace",
-    "cursive",
-    "fantasy",
-    "system-ui",
-    "ui-serif",
-    "ui-sans-serif",
-    "ui-monospace",
-    "ui-rounded",
-    "math",
-    "emoji",
-    "fangsong",
-];
-
-/// The CSS `font` shorthand of a style.
-pub(crate) fn css_font(style: &ResolvedTextStyle) -> String {
-    let family = match style.font_family {
-        Some(f) if GENERIC_FAMILIES.contains(&&*f.name()) => format!("{}, {SYSTEM_FONT}", f.name()),
-        Some(f) => format!("\"{}\", {SYSTEM_FONT}", f.name()),
-        None => SYSTEM_FONT.to_owned(),
-    };
-    format!(
-        "{}{} {}px {family}",
-        if style.italic { "italic " } else { "" },
-        style.font_weight,
-        style.font_size.0
-    )
-}
+/// What a measured width is keyed by: font, `font-variant-numeric`, text.
+type WidthKey = (Arc<str>, Option<Arc<str>>, String);
 
 #[derive(Default)]
 pub(crate) struct WebTextEngine {
-    /// Width of `(font, text)`.
-    widths: RefCell<FxHashMap<(Arc<str>, String), f32>>,
+    /// Width of `(font, font-variant-numeric, text)`.
+    widths: RefCell<FxHashMap<WidthKey, f32>>,
     /// Ascent and descent of a font.
     metrics: RefCell<FxHashMap<Arc<str>, (f32, f32)>>,
     /// The x height of a font (attachments in the middle of a line).
@@ -91,15 +63,31 @@ impl WebTextEngine {
         x
     }
 
-    fn width(&self, font: &Arc<str>, text: &str) -> f32 {
+    /// The width of `text` in a run style's font and numeric variant.
+    fn width(&self, font: &Arc<str>, numeric: Option<&Arc<str>>, text: &str) -> f32 {
         if text.is_empty() {
             return 0.0;
         }
-        let key = (font.clone(), text.to_owned());
+        // A figure is the sum of its characters, each measured once: a live
+        // value lays the page out for no new one, and its strings, new on
+        // every update, stay out of the cache.
+        if numeric.is_some() && text.chars().nth(1).is_some() && measured_by_char(text) {
+            let mut buf = [0u8; 4];
+            return text
+                .chars()
+                .map(|c| self.width(font, numeric, c.encode_utf8(&mut buf)))
+                .sum();
+        }
+        let key = (font.clone(), numeric.cloned(), text.to_owned());
         if let Some(&w) = self.widths.borrow().get(&key) {
             return w;
         }
-        let w = ffi::measure_text(font, text);
+        let w = match numeric {
+            // Canvas cannot measure numeric variants: tabular digits are
+            // wider than the proportional ones it measures.
+            Some(numeric) => ffi::measure_numeric_text(font, numeric, text),
+            None => ffi::measure_text(font, text),
+        };
         let mut widths = self.widths.borrow_mut();
         // Bounded: a long-running app measures many distinct strings.
         if widths.len() > 20_000 {
@@ -107,6 +95,10 @@ impl WebTextEngine {
         }
         widths.insert(key, w);
         w
+    }
+
+    fn run_width(&self, run: &RunStyle, text: &str) -> f32 {
+        self.width(&run.font, run.numeric.as_ref(), text)
     }
 
     fn metrics(&self, font: &Arc<str>, size: f32) -> (f32, f32) {
@@ -129,6 +121,8 @@ impl WebTextEngine {
 pub(crate) struct RunStyle {
     pub(crate) style: ResolvedTextStyle,
     pub(crate) font: Arc<str>,
+    /// Its `font-variant-numeric`, which the width measurements take.
+    numeric: Option<Arc<str>>,
     pub(crate) ascent: f32,
     pub(crate) descent: f32,
 }
@@ -222,10 +216,26 @@ pub(crate) struct WebLayout {
     attachments: Vec<Option<(f32, f32)>>,
 }
 
-fn is_cjk(c: char) -> bool {
-    matches!(c as u32,
-        0x2E80..=0x9FFF | 0xA960..=0xA97F | 0xAC00..=0xD7FF | 0xF900..=0xFAFF |
-        0xFE30..=0xFE4F | 0xFF00..=0xFFEF | 0x20000..=0x3FFFF)
+impl wrap::Item for Atom {
+    fn piece(&self) -> wrap::Piece {
+        match self.kind {
+            AtomKind::Text => wrap::Piece::Text,
+            AtomKind::Space => wrap::Piece::Space,
+            AtomKind::Newline => wrap::Piece::Newline,
+            AtomKind::Attachment(..) => wrap::Piece::Object,
+        }
+    }
+
+    fn width(&self) -> f32 {
+        match self.kind {
+            AtomKind::Attachment(w, ..) => w,
+            _ => self.width,
+        }
+    }
+
+    fn text(&self) -> &str {
+        &self.text
+    }
 }
 
 struct LineBox {
@@ -248,14 +258,13 @@ impl WebTextEngine {
         for atom in &p.atoms {
             match max {
                 Some(max) if atom.kind == AtomKind::Text && atom.width > max + 0.01 => {
-                    let font = &p.styles[atom.style as usize].font;
+                    let run = &p.styles[atom.style as usize];
                     let mut at = atom.start;
                     for c in atom.text.chars() {
                         let s = c.to_string();
                         let len = c.len_utf16() as u32;
                         atoms.push(Atom {
-                            width: self.width(font, &s)
-                                + p.styles[atom.style as usize].style.letter_spacing.0,
+                            width: self.run_width(run, &s) + run.style.letter_spacing.0,
                             text: s,
                             style: atom.style,
                             kind: AtomKind::Text,
@@ -268,98 +277,55 @@ impl WebTextEngine {
                 _ => atoms.push(atom.clone()),
             }
         }
-        let mut lines = Vec::new();
-        let mut line = LineBox {
-            start: 0,
-            end: 0,
-            width: 0.0,
-            height: 0.0,
-            above: 0.0,
-        };
-        // Width including trailing spaces.
-        let mut advance = 0.0f32;
-        let finish = |line: &mut LineBox, atoms: &[Atom], end: usize, lines: &mut Vec<LineBox>| {
-            line.end = end;
-            // Metrics of the styles on the line (of the previous atom's
-            // style for an empty line).
-            let mut height = 0.0f32;
-            let mut above = 0.0f32;
-            // Below the baseline, and whether an attachment reaches below
-            // it (the line is then as tall as its extents; lines of
-            // attachments on the baseline keep their height).
-            let mut below = 0.0f32;
-            let mut reaches_below = false;
-            let range = if line.start < end {
-                line.start..end
-            } else {
-                end.saturating_sub(1)..end.min(atoms.len())
-            };
-            for atom in &atoms[range] {
-                let s = &p.styles[atom.style as usize];
-                let (h, lead) = s.line();
-                height = height.max(h);
-                above = above.max(lead + s.ascent);
-                below = below.max(h - lead - s.ascent);
-                if let AtomKind::Attachment(_, _, up, down) = atom.kind {
-                    above = above.max(up);
-                    height = height.max(up + down);
-                    below = below.max(down);
-                    reaches_below |= down > 0.0;
-                }
-            }
-            if reaches_below {
-                height = height.max(above + below);
-            }
-            if height == 0.0 && !p.styles.is_empty() {
-                let s = &p.styles[0];
-                let (h, lead) = s.line();
-                height = h;
-                above = lead + s.ascent;
-            }
-            line.height = height;
-            line.above = above;
-            lines.push(LineBox {
-                start: line.start,
-                end,
-                width: line.width,
-                height,
-                above,
-            });
-            line.start = end;
-            line.width = 0.0;
-        };
-        let mut i = 0;
-        while i < atoms.len() {
-            let atom = &atoms[i];
-            match atom.kind {
-                AtomKind::Newline => {
-                    finish(&mut line, &atoms, i, &mut lines);
-                    // The newline belongs to no line.
-                    line.start = i + 1;
-                    advance = 0.0;
-                }
-                AtomKind::Space => {
-                    advance += atom.width;
-                }
-                AtomKind::Text | AtomKind::Attachment(..) => {
-                    let w = match atom.kind {
-                        AtomKind::Attachment(w, ..) => w,
-                        _ => atom.width,
-                    };
-                    if let Some(max) = max
-                        && line.start < i
-                        && advance + w > max + 0.01
-                    {
-                        finish(&mut line, &atoms, i, &mut lines);
-                        advance = 0.0;
+        // Metrics of the styles on each line (of the previous atom's style
+        // for an empty line).
+        let lines = wrap::fill(&atoms, max)
+            .into_iter()
+            .map(|line| {
+                let end = line.end;
+                let mut height = 0.0f32;
+                let mut above = 0.0f32;
+                // Below the baseline, and whether an attachment reaches below
+                // it (the line is then as tall as its extents; lines of
+                // attachments on the baseline keep their height).
+                let mut below = 0.0f32;
+                let mut reaches_below = false;
+                let range = if line.start < end {
+                    line.start..end
+                } else {
+                    end.saturating_sub(1)..end.min(atoms.len())
+                };
+                for atom in &atoms[range] {
+                    let s = &p.styles[atom.style as usize];
+                    let (h, lead) = s.line();
+                    height = height.max(h);
+                    above = above.max(lead + s.ascent);
+                    below = below.max(h - lead - s.ascent);
+                    if let AtomKind::Attachment(_, _, up, down) = atom.kind {
+                        above = above.max(up);
+                        height = height.max(up + down);
+                        below = below.max(down);
+                        reaches_below |= down > 0.0;
                     }
-                    advance += w;
-                    line.width = advance;
                 }
-            }
-            i += 1;
-        }
-        finish(&mut line, &atoms, atoms.len(), &mut lines);
+                if reaches_below {
+                    height = height.max(above + below);
+                }
+                if height == 0.0 && !p.styles.is_empty() {
+                    let s = &p.styles[0];
+                    let (h, lead) = s.line();
+                    height = h;
+                    above = lead + s.ascent;
+                }
+                LineBox {
+                    start: line.start,
+                    end,
+                    width: line.width,
+                    height,
+                    above,
+                }
+            })
+            .collect();
         (atoms, lines)
     }
 }
@@ -415,11 +381,14 @@ impl TextEngine for WebTextEngine {
         for span in &text.spans {
             let style = span.style;
             let font: Arc<str> = css_font(&style).into();
+            let numeric: Option<Arc<str>> =
+                font_variant_numeric(style.font_variant).map(Into::into);
             let (ascent, descent) = self.metrics(&font, style.font_size.0);
             let index = styles.len() as u16;
             styles.push(RunStyle {
                 style,
                 font: font.clone(),
+                numeric: numeric.clone(),
                 ascent,
                 descent,
             });
@@ -436,7 +405,8 @@ impl TextEngine for WebTextEngine {
             let push = |atoms: &mut Vec<Atom>, text: String, kind, start, end| {
                 let width = match kind {
                     AtomKind::Text | AtomKind::Space => {
-                        self.width(&font, &text) + spacing * text.chars().count() as f32
+                        self.width(&font, numeric.as_ref(), &text)
+                            + spacing * text.chars().count() as f32
                     }
                     // Its placeholder's room on the line.
                     AtomKind::Attachment(w, ..) => w,
@@ -455,7 +425,7 @@ impl TextEngine for WebTextEngine {
             while let Some(c) = chars.next() {
                 let len = c.len_utf16() as u32;
                 let attachment = (c == OBJECT).then(|| attachments.get(&at)).flatten();
-                if c == '\n' || c == ' ' || c == '\t' || is_cjk(c) || attachment.is_some() {
+                if c == '\n' || c == ' ' || c == '\t' || wrap::is_cjk(c) || attachment.is_some() {
                     if !word.is_empty() {
                         push(
                             &mut atoms,
@@ -475,7 +445,7 @@ impl TextEngine for WebTextEngine {
                             at,
                             at + len,
                         );
-                    } else if is_cjk(c) {
+                    } else if wrap::is_cjk(c) {
                         push(&mut atoms, c.to_string(), AtomKind::Text, at, at + len);
                     } else {
                         // A run of spaces is one atom.
@@ -525,6 +495,7 @@ impl TextEngine for WebTextEngine {
             styles.push(RunStyle {
                 style,
                 font,
+                numeric: None,
                 ascent,
                 descent,
             });
@@ -593,8 +564,7 @@ impl TextEngine for WebTextEngine {
             let mut width = line.width;
             if last && truncated && prepared.ellipsize != EllipsizeMode::Clip {
                 let style = pieces.last().map_or(0, |p| p.1);
-                let font = &styles[style as usize].font;
-                let ellipsis = self.width(font, "…");
+                let ellipsis = self.run_width(&styles[style as usize], "…");
                 // Drop characters from the end until the ellipsis fits.
                 while width + ellipsis > size.width.0 + 0.01 && !pieces.is_empty() {
                     let (text, style, w, kind) = pieces.pop().expect("not empty");
@@ -602,8 +572,7 @@ impl TextEngine for WebTextEngine {
                     if kind == AtomKind::Text && text.chars().count() > 1 {
                         let mut t = text;
                         t.pop();
-                        let f = &styles[style as usize].font;
-                        let nw = self.width(f, &t);
+                        let nw = self.run_width(&styles[style as usize], &t);
                         width += nw;
                         pieces.push((t, style, nw, kind));
                     }

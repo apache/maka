@@ -113,6 +113,11 @@ impl KittyFrame {
     pub fn wire(&self) -> &[u8] {
         &self.wire
     }
+
+    /// Transfers the complete upload and retirement transaction to its writer.
+    pub fn into_wire(self) -> Vec<u8> {
+        self.wire
+    }
 }
 
 /// Queries actual Kitty support without creating or displaying an image.
@@ -162,7 +167,10 @@ mod tests {
     fn rgba_payload_survives_chunking_and_only_the_old_owned_image_is_retired() {
         let frame = frame(192, 192);
         let encoded = KittyFrame::encode(&frame, 41, Some(73), 120, 40).unwrap();
-        let wire = std::str::from_utf8(encoded.wire())
+        assert_eq!(encoded.token(), frame.token());
+        assert_eq!(encoded.image_id(), 41);
+        let bytes = encoded.into_wire();
+        let wire = std::str::from_utf8(&bytes)
             .unwrap()
             .strip_prefix("\x1b[H")
             .unwrap()
@@ -207,8 +215,6 @@ mod tests {
             .into_rgba8();
         assert_eq!(decoded.dimensions(), (192, 192));
         assert_eq!(decoded.as_raw(), frame.pixels());
-        assert_eq!(encoded.token(), frame.token());
-        assert_eq!(encoded.image_id(), 41);
     }
 
     #[test]

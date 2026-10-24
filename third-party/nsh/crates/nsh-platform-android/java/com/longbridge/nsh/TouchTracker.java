@@ -218,6 +218,40 @@ final class TouchTracker {
         endGate();
     }
 
+    /** A recycled cell stops owning only the fingers and feedback in its subtree. */
+    void cancelWithin(View cell) {
+        MotionEvent cancel = MotionEvent.obtain(0, android.os.SystemClock.uptimeMillis(),
+                MotionEvent.ACTION_CANCEL, 0, 0, 0);
+        for (int i = feedback.size() - 1; i >= 0; i--) {
+            Feedback f = feedback.get(i);
+            if (within(f.view, cell)) {
+                f.press.onTouchEvent(cancel);
+                feedback.remove(i);
+            }
+        }
+        cancel.recycle();
+        ArrayList<Integer> cancelled = new ArrayList<>();
+        for (Tracked t : tracked) if (within(t.view, cell)) cancelled.add(t.id);
+        if (!cancelled.isEmpty()) {
+            int[] ids = new int[cancelled.size()];
+            for (int i = 0; i < ids.length; i++) ids[i] = cancelled.get(i);
+            report(3, ids, false, -1);
+            for (int i = tracked.size() - 1; i >= 0; i--) {
+                if (cancelled.contains(tracked.get(i).id)) tracked.remove(i);
+            }
+        }
+        if (gate != null && within(gate, cell)) endGate();
+    }
+
+    private static boolean within(View view, View root) {
+        for (View current = view; current != null; ) {
+            if (current == root) return true;
+            ViewParent parent = current.getParent();
+            current = parent instanceof View ? (View) parent : null;
+        }
+        return false;
+    }
+
     /** The view with a `panActivation` around the first finger's target, if any. */
     private void findGate(Tracked t, float x, float y) {
         endGate();

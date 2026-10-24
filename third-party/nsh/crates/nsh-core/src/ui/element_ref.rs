@@ -137,6 +137,24 @@ impl ElementRef {
         self.send(Command::SetSelection { start, end });
     }
 
+    /// Replaces a UTF-16 input range as one undoable native edit while its
+    /// observed text and selection still match (GPUI and terminal backends).
+    pub fn replace_range(
+        &self,
+        range: std::ops::Range<u32>,
+        text: impl Into<String>,
+        expected_text: impl Into<String>,
+        expected_selection: std::ops::Range<u32>,
+    ) {
+        self.send(Command::ReplaceRange {
+            range,
+            text: text.into(),
+            expected_text: expected_text.into(),
+            expected_selection,
+            count: 0,
+        });
+    }
+
     /// Scrolls a scroll view to a content offset.
     pub fn scroll_to(&self, offset: Point<Points>, animated: bool) {
         self.send(Command::ScrollTo {

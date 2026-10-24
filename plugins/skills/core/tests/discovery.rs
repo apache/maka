@@ -161,7 +161,7 @@ async fn snapshot_precedence_preferences_and_capabilities_preserve_selected_iden
         host: &host,
     };
     let loaded = catalog.load(" ReViEw ").unwrap();
-    let search = catalog.search(" \u{feff}rEvIeW\t", 1);
+    let search = catalog.search(" \u{feff}rEvIeW\t", Some(1));
     assert_eq!(search.query, "review");
     assert_eq!(search.matches[0].skill.reference, "project:maka:review");
     assert_eq!(search.matched_count, 2);
@@ -179,12 +179,12 @@ async fn snapshot_precedence_preferences_and_capabilities_preserve_selected_iden
     };
     assert_eq!(
         pinned_catalog
-            .search("unrelated vocabulary", 8)
+            .search("unrelated vocabulary", None)
             .matched_count,
         0,
         "pinning does not create a match"
     );
-    let listing = pinned_catalog.search("", 1);
+    let listing = pinned_catalog.search("", Some(1));
     assert_eq!(listing.matches[0].skill.reference, "project:maka:large");
     assert_eq!(listing.matched_count, pinned_catalog.available().count());
     assert!(listing.truncated);
@@ -199,7 +199,7 @@ async fn snapshot_precedence_preferences_and_capabilities_preserve_selected_iden
         preferences: &disabled,
         ..catalog
     };
-    let listing = disabled_catalog.search("", 8);
+    let listing = disabled_catalog.search("", None);
     assert_eq!(listing.matches.len(), disabled_catalog.available().count());
     assert!(
         listing
@@ -207,7 +207,7 @@ async fn snapshot_precedence_preferences_and_capabilities_preserve_selected_iden
             .iter()
             .all(|entry| entry.skill.id != "review")
     );
-    let long_query = catalog.search(&"😀".repeat(300), 8);
+    let long_query = catalog.search(&"😀".repeat(300), None);
     assert_eq!(long_query.query, "😀".repeat(300));
     assert!(!long_query.query_truncated);
     for budget in [0, 100, 600, 18_000] {

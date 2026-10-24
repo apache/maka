@@ -146,7 +146,7 @@ pub(super) async fn search(
         .into_iter()
         .map(|df| ((corpus.max(matched) as f64 - df as f64 + 0.5) / (df as f64 + 0.5) + 1.0).ln())
         .collect();
-    let limit = query.limit.unwrap_or(8);
+    let limit = query.limit;
     for (session, source) in scan.sources.iter().enumerate() {
         let mut reader = Reader::new(
             history.clone(),
@@ -154,7 +154,7 @@ pub(super) async fn search(
             source.summary.id.clone(),
             source.through,
         );
-        let mut candidates: Vec<Hit> = Vec::new();
+        let mut candidates: BTreeMap<String, Hit> = BTreeMap::new();
         let mut position = 0;
         let valid = loop {
             let message = match reader.next().await {
@@ -184,22 +184,27 @@ pub(super) async fn search(
                     .map_err(failed)?
             {
                 score_hit(&mut hit, average, &idf);
-                if let Some(index) = candidates
-                    .iter()
-                    .position(|candidate| candidate.turn_id == hit.turn_id)
-                {
-                    if compare(&hit, &candidates[index]).is_lt() {
-                        candidates[index] = hit;
+                if let Some(candidate) = candidates.get_mut(&hit.turn_id) {
+                    if compare(&hit, candidate).is_lt() {
+                        *candidate = hit;
                     }
                 } else {
-                    candidates.push(hit);
+                    candidates.insert(hit.turn_id.clone(), hit);
                 }
-                candidates.sort_by(compare);
-                candidates.truncate(limit);
+                if let Some(limit) = limit
+                    && candidates.len() > limit
+                {
+                    let worst = candidates
+                        .iter()
+                        .max_by(|left, right| compare(left.1, right.1))
+                        .map(|(turn, _)| turn.clone())
+                        .expect("nonempty candidates");
+                    candidates.remove(&worst);
+                }
             }
         };
         if valid {
-            scan.hits.extend(candidates);
+            scan.hits.extend(candidates.into_values());
         }
     }
     scan.hits = select(scan.hits, limit);
@@ -299,8 +304,9 @@ fn score(hits: &mut [Hit], terms: usize, corpus: usize) {
         score_hit(hit, average, &idf);
     }
 }
-fn select(mut hits: Vec<Hit>, limit: usize) -> Vec<Hit> {
+fn select(mut hits: Vec<Hit>, limit: Option<usize>) -> Vec<Hit> {
     hits.sort_by(compare);
+    let Some(limit) = limit else { return hits };
     let mut selected = BTreeSet::new();
     let mut turns = BTreeSet::new();
     let mut by_session = BTreeMap::<usize, usize>::new();
@@ -379,7 +385,7 @@ mod tests {
         ];
         score(&mut hits, 1, 5);
         assert_eq!(hits[1].score * 2.0, hits[0].score);
-        let selected = select(hits, 3);
+        let selected = select(hits, Some(3));
         assert_eq!(
             selected
                 .iter()

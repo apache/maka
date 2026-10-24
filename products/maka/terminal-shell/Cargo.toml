@@ -28,7 +28,6 @@ build = "build.rs"
 [dependencies]
 base64 = "0.22.1"
 clap.workspace = true
-markdown = "1.0.0"
 open = "5.4.4"
 percent-encoding = "2.3"
 url = "2.5"

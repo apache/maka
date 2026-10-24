@@ -26,6 +26,7 @@ import type {
   ConnectionVersionBasis,
   CredentialStatus,
   ModelOverride,
+  ModelSelection,
   SettingsConnectionDetail,
   SettingsConnectionsRead,
   SettingsConnectionSummary,
@@ -62,6 +63,7 @@ export type RemovalAction = ConnectionAction & {
 export type ModelEditor = {
   codeMode: boolean | null;
   codeModeLanguage: CodeLanguage | null;
+  applyPatch: boolean | null;
   originalId: string | null;
   id: string;
   label: string;
@@ -104,6 +106,7 @@ export function createModelSettings(
   changed: () => void,
   operations: SettingsOperations,
   active: () => boolean,
+  initialModel?: ModelSelection,
 ) {
   const { busy, error, notice, pending, pendingKnown, report, mutate, run } = operations;
   const page = signal<SettingsPage>('connections');
@@ -574,6 +577,7 @@ export function createModelSettings(
       label: raw?.displayName ?? '',
       codeMode: raw?.codeMode ?? null,
       codeModeLanguage: raw?.codeModeLanguage ?? null,
+      applyPatch: raw?.applyPatch ?? null,
       thinkingLevels: raw?.thinkingLevels ? [...raw.thinkingLevels] : null,
       defaultThinkingLevel: raw?.defaultThinkingLevel ?? null,
       effective: null,
@@ -646,8 +650,10 @@ export function createModelSettings(
     )
       changeModel({ defaultThinkingLevel: request.level });
   };
-  const changeCodeMode = (request: ModelAction & { enabled: boolean | null }) => {
-    if (currentModel(request)) changeModel({ codeMode: request.enabled });
+  const changeTool = (
+    request: ModelAction & { tool: 'codeMode' | 'applyPatch'; enabled: boolean | null },
+  ) => {
+    if (currentModel(request)) changeModel({ [request.tool]: request.enabled });
   };
   const changeCodeLanguage = (request: ModelAction & { language: CodeLanguage }) => {
     if (currentModel(request)) changeModel({ codeModeLanguage: request.language });
@@ -683,6 +689,8 @@ export function createModelSettings(
       else value.codeMode = current.codeMode;
       if (current.codeModeLanguage === null) delete value.codeModeLanguage;
       else value.codeModeLanguage = current.codeModeLanguage;
+      if (current.applyPatch === null) delete value.applyPatch;
+      else value.applyPatch = current.applyPatch;
       overrides[id] = value;
       const result = await mutate('settings', 'update', {
         expected: basis(form.baseline),
@@ -835,7 +843,27 @@ export function createModelSettings(
     page.set('connections');
     if (active()) void loadConnections();
   };
-  if (active()) activate();
+  const openInitialModel = async (target: ModelSelection) => {
+    const catalogRead = read + 1;
+    await loadConnections();
+    if (!alive || !active() || catalogRead !== read || page() !== 'connections') return;
+    const generation = read + 1;
+    await openConnection({ connectionId: target.connectionId, revision: target.revision });
+    if (
+      !alive ||
+      !active() ||
+      generation !== read ||
+      page() !== 'connection' ||
+      editor()?.baseline?.target.connectionId !== target.connectionId ||
+      editor()?.baseline?.target.revision !== target.revision
+    )
+      return;
+    editModel({ ...action(), id: target.modelId });
+  };
+  if (active()) {
+    if (initialModel) void openInitialModel(initialModel);
+    else activate();
+  }
   return {
     page,
     connections,
@@ -874,7 +902,7 @@ export function createModelSettings(
     toggleThinking,
     useProviderThinking,
     defaultThinking,
-    changeCodeMode,
+    changeTool,
     changeCodeLanguage,
     showModels,
     saveModel,

@@ -2,7 +2,8 @@
 //! written in Rust, with no look of its own (as `gpui-base` is GPUI Kit's):
 //! controls (`Button`, `Checkbox`, `Radio` in a `RadioGroup`, `Switch`,
 //! `Tab` in `Tabs`), a progress bar (`Progress`), disclosure (`Collapsible`), navigation (stacks and pages), dialogs, popups on the core's overlays
-//! (`Popover`, `Menu`, `ContextMenu`, `Tooltip`, `Sheet`), safe areas,
+//! (`Popover`, `Menu`, `ContextMenu`, `Tooltip`, `Sheet`), toasts (`Toast`,
+//! `ToastStack`, `ToastManager`), safe areas,
 //! selection areas,
 //! the system's dialogs and the software keyboard, and the theme's semantic
 //! tokens (`Theme`, as `gpui-base`'s).
@@ -33,6 +34,7 @@ mod switch;
 mod tabs;
 pub mod text_view;
 mod theme;
+mod toast;
 mod tooltip;
 
 use std::sync::Arc;
@@ -82,10 +84,16 @@ pub use crate::{
     text_view::{
         CodeHighlighter, MarkdownExtension, MarkdownOptions, MarkdownPlugin, MarkdownPlugins,
         TextView, TextViewClasses, TextViewCodeAction, TextViewCodeActionEvent, TextViewElement,
-        TextViewEvent, TextViewLinkPressEvent, TextViewMath, TextViewPart, TextViewParts,
-        TextViewProps, TextViewStyles, text_view,
+        TextViewEvent, TextViewImageContext, TextViewImageFlow, TextViewLabels,
+        TextViewLinkPressEvent, TextViewLinkTarget, TextViewLinks, TextViewMath, TextViewPart,
+        TextViewParts, TextViewProps, TextViewStyles, text_view,
     },
     theme::{DEFAULT_THEME, Theme, ThemeError, theme, theme_overrides, tokens_of},
+    toast::{
+        Anchor, SwipeDirection, Toast, ToastAdvance, ToastElement, ToastEvent, ToastManager,
+        ToastMotion, ToastOptions, ToastProps, ToastStack, ToastStackElement, ToastStackEvent,
+        ToastStackProps, ToastStackState, ToastTransitionStatus, toast, toast_stack,
+    },
     tooltip::{Tooltip, TooltipElement, TooltipEvent, TooltipProps, tooltip},
 };
 
@@ -120,6 +128,10 @@ pub fn registry() -> Registry {
         .register::<Tab>()
         .register::<Tabs>()
         .register::<TextView>()
+        .register::<Toast>()
+        .register::<ToastStack>()
+        .class::<toast::ToastManagerClass>()
+        .class::<text_view::TextViewLinkTarget>()
         .module::<AlertDialog>()
         .module::<Keyboard>()
         .module::<TextView>()
@@ -172,6 +184,8 @@ mod tests {
                 "Tab",
                 "Tabs",
                 "TextView",
+                "Toast",
+                "ToastStack",
                 "Tooltip"
             ]
         );

@@ -619,6 +619,10 @@ impl AppView {
                 SurfaceEvent::Event(id, kind, payload) => control.dispatch_event(id, kind, payload),
                 SurfaceEvent::HintObservation(observation) => control.observe_hint(observation),
                 SurfaceEvent::Scroll(id, offset, count) => control.scroll(id, offset, count),
+                SurfaceEvent::ListCellRetired(id, request, retired) => {
+                    control.set_focus_path(self.surface.focus_path());
+                    control.retire_list_cell(id, request, retired);
+                }
                 SurfaceEvent::States(id, states) => control.set_states(id, states),
                 SurfaceEvent::AnimationsFinished(finished) => control.animations_finished(finished),
                 SurfaceEvent::ComponentSize(id, size) => control.set_component_size(id, size),
@@ -1740,6 +1744,136 @@ mod tests {
             .child(text(move || format!("Count:{}", count.get())))
     }
 
+    #[component]
+    fn ReparentedTouchApp() -> impl IntoElement {
+        let phases = signal([0_u32; 4]);
+        view()
+            .flex_col()
+            .child(text(move || {
+                let counts = phases.get();
+                format!(
+                    "Touch phases:{}/{}/{}/{}",
+                    counts[0], counts[1], counts[2], counts[3]
+                )
+            }))
+            .child(
+                view()
+                    .label("Touch owner A")
+                    .h(px(32.0))
+                    .on_touch(move |touch: &nsh_core::TouchEvent| {
+                        let phase = match touch.phase {
+                            nsh_core::TouchPhase::Start => 0,
+                            nsh_core::TouchPhase::Move => 1,
+                            nsh_core::TouchPhase::End => 2,
+                            nsh_core::TouchPhase::Cancel => 3,
+                        };
+                        phases.update(|counts| counts[phase] += 1);
+                    })
+                    .child(view().label("Touch hit X").h(px(32.0))),
+            )
+            .child(view().label("Touch destination B").h(px(64.0)))
+    }
+
+    #[test]
+    fn admitted_touches_keep_their_owner_after_native_reparenting_until_end_or_retirement() {
+        use crossterm::event::{Event, MouseButton, MouseEvent, MouseEventKind};
+        use nsh_core::{EventMask, MountItem};
+
+        fn flush(view: &mut AppView) {
+            view.poll().unwrap();
+            let (tx, rx) = mpsc::channel();
+            view.control()
+                .unwrap()
+                .advance_clock(Duration::ZERO, move || tx.send(()).unwrap());
+            rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            view.poll().unwrap();
+        }
+        fn wait(view: &mut AppView, expected: &str) {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                flush(view);
+                if view.snapshot().contains(expected) {
+                    return;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "touch handler did not report {expected}: {:?}\n{}",
+                    view.last_error(),
+                    view.snapshot()
+                );
+            }
+        }
+
+        for retire in [false, true] {
+            let mut view = AppView::new(AppOptions {
+                size: (80, 24),
+                ..Default::default()
+            });
+            view.load(Root::of::<ReparentedTouchApp>().into()).unwrap();
+            wait(&mut view, "Touch phases:0/0/0/0");
+            let target = |label: &str| {
+                view.accessibility_snapshot()
+                    .into_iter()
+                    .find(|node| node.label == label)
+                    .unwrap_or_else(|| panic!("missing {label}: {}", view.snapshot()))
+            };
+            let (owner, hit, destination) = (
+                target("Touch owner A"),
+                target("Touch hit X"),
+                target("Touch destination B"),
+            );
+            let metrics = view.surface().metrics();
+            let column = ((hit.frame.origin.x.0 + hit.frame.size.width.0 / 2.0) / metrics.width().0)
+                .floor() as u16;
+            let row = ((hit.frame.origin.y.0 + hit.frame.size.height.0 / 2.0) / metrics.height().0)
+                .floor() as u16;
+            let mouse = |kind| {
+                Event::Mouse(MouseEvent {
+                    kind,
+                    column,
+                    row,
+                    modifiers: event::KeyModifiers::NONE,
+                })
+            };
+            view.handle_event(mouse(MouseEventKind::Down(MouseButton::Left)));
+            wait(&mut view, "Touch phases:1/0/0/0");
+
+            let mut items = vec![MountItem::Insert {
+                parent: destination.id,
+                child: hit.id,
+                before: None,
+            }];
+            if retire {
+                items.push(MountItem::RetireListCell {
+                    id: owner.id,
+                    request: 1,
+                    roots: vec![owner.id],
+                });
+            } else {
+                items.push(MountItem::Events {
+                    id: owner.id,
+                    events: EventMask::default(),
+                });
+            }
+            view.surface_mut().apply(MountBatch { items });
+            if retire {
+                wait(&mut view, "Touch phases:1/0/0/1");
+                view.handle_event(mouse(MouseEventKind::Drag(MouseButton::Left)));
+            }
+            view.handle_event(mouse(MouseEventKind::Up(MouseButton::Left)));
+            let expected = if retire {
+                "Touch phases:1/0/0/1"
+            } else {
+                "Touch phases:1/0/1/0"
+            };
+            wait(&mut view, expected);
+            view.handle_event(mouse(MouseEventKind::Drag(MouseButton::Left)));
+            view.handle_event(mouse(MouseEventKind::Up(MouseButton::Left)));
+            flush(&mut view);
+            assert!(view.snapshot().contains(expected), "{}", view.snapshot());
+        }
+    }
+
     #[test]
     fn headless_runner_mounts_edits_activates_and_resizes_a_real_app() {
         run_app(AppSource::Rust(Root::of::<ScriptApp>()), AppOptions {
@@ -1780,6 +1914,7 @@ mod tests {
             import { LayoutAnimation } from 'nsh/animated';
             const rows = signal(Array.from({length: 40}, (_, i) => `row ${i}`));
             const phase = signal('initial');
+            const presses = signal(0);
             let list;
             function action(label, run) {
                 const name = () => typeof label === 'function' ? label() : label;
@@ -1793,17 +1928,31 @@ mod tests {
                 action('Scroll to thirteen', () => {
                     list.scrollToIndex({index: 13, animated: false}); phase.set('at thirteen');
                 }),
+                action('Scroll to thirty', () => {
+                    list.scrollToIndex({index: 30, animated: false}); phase.set('at thirty');
+                }),
                 action('Filter rows', () => {
                     LayoutAnimation.configureNext(LayoutAnimation.Presets.linear);
                     rows.set(['match alpha', 'match beta']); phase.set('filtered');
+                }),
+                action('Replace rows', () => {
+                    rows.set(Array.from({length: 40}, (_, i) => `replacement row ${i}`));
+                    phase.set('replaced');
+                }),
+                action('Restore rows', () => {
+                    rows.set(Array.from({length: 40}, (_, i) => `row ${i}`));
+                    phase.set('restored');
                 }),
                 List({get each() { return rows(); }, keyExtractor: row => row,
                     ref: node => { list = node; }, estimatedItemSize: 32,
                     style: {height: 128}, focusable: false,
                     header: action('Header action', () => {}),
                     footer: action('Footer action', () => {}),
-                    children: row => action(row, () => phase.set(row()))}),
-                Text({children: () => phase()})
+                    children: row => action(row, () => {
+                        presses.set(presses() + 1); phase.set(`Activated ${row()}`);
+                    })}),
+                Text({children: () => phase()}),
+                Text({children: () => `List presses:${presses()}`})
             ]}));
         "#;
 
@@ -1874,6 +2023,90 @@ mod tests {
         });
         assert_eq!(target(&view, "row 12"), Some(retained));
         assert_eq!(focused(&view).as_deref(), Some("row 12"));
+
+        // Let the engine commit a distant window while the native surface
+        // still presents its preceding batch. A user can Tab and activate
+        // that displayed row before the queued mount reaches the surface.
+        let old_row = target(&view, "row 20").unwrap();
+        let before_old_row = target(&view, "row 19").unwrap();
+        press(&view, "Scroll to thirty");
+        let (committed, ready) = mpsc::channel();
+        view.control()
+            .unwrap()
+            .advance_clock(Duration::ZERO, move || {
+                let _ = committed.send(());
+            });
+        ready.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(target(&view, "row 20"), Some(old_row));
+        view.surface_mut().set_focus(Some(before_old_row));
+        tab(&mut view, false);
+        assert_eq!(focused(&view).as_deref(), Some("row 20"));
+        view.handle_event(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        wait(&mut view, started, |view| {
+            view.snapshot().contains("Activated row 20") && target(view, "List presses:1").is_some()
+        });
+        assert_eq!(target(&view, "row 20"), Some(old_row));
+        assert_eq!(focused(&view).as_deref(), Some("row 20"));
+
+        // Once native focus leaves, the old row can retire and its cell
+        // can serve the distant window without delivering another press.
+        let outside = target(&view, "Scroll to thirty").unwrap();
+        view.surface_mut().set_focus(Some(outside));
+        view.dispatch_events();
+        press(&view, "Scroll to thirty");
+        wait(&mut view, started, |view| {
+            view.snapshot().contains("at thirty")
+                && target(view, "row 30").is_some()
+                && target(view, "row 20").is_none()
+        });
+        assert!(target(&view, "List presses:1").is_some());
+        assert_eq!(focused(&view).as_deref(), Some("Scroll to thirty"));
+        press(&view, "Scroll to thirteen");
+        wait(&mut view, started, |view| {
+            view.snapshot().contains("at thirteen") && target(view, "row 21").is_some()
+        });
+
+        // A source deletion ends the old item's lifetime even before the
+        // queued native batch is applied. Input from that last displayed
+        // frame must never activate its cell's replacement item.
+        let deleted_row = target(&view, "row 20").unwrap();
+        view.surface_mut().set_focus(Some(deleted_row));
+        view.dispatch_events();
+        press(&view, "Replace rows");
+        let (committed, ready) = mpsc::channel();
+        view.control()
+            .unwrap()
+            .advance_clock(Duration::ZERO, move || {
+                let _ = committed.send(());
+            });
+        ready.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(target(&view, "row 20"), Some(deleted_row));
+        view.handle_event(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        let (processed, ready) = mpsc::channel();
+        view.control()
+            .unwrap()
+            .advance_clock(Duration::ZERO, move || {
+                let _ = processed.send(());
+            });
+        ready.recv_timeout(Duration::from_secs(5)).unwrap();
+        wait(&mut view, started, |view| {
+            target(view, "replacement row 21").is_some()
+        });
+        assert!(
+            target(&view, "List presses:1").is_some(),
+            "a deleted row activated its replacement:\n{}",
+            view.snapshot()
+        );
+        press(&view, "Restore rows");
+        wait(&mut view, started, |view| {
+            view.snapshot().contains("restored") && target(view, "row 21").is_some()
+        });
 
         let replaced = target(&view, "row 20").unwrap();
         view.surface_mut().set_focus(Some(replaced));

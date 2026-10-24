@@ -36,7 +36,9 @@ The shell discovers and verifies the selected Root's live Host. If none is runni
 
 Installed users can run `maka` or `maka terminal-shell` from the same Maka executable. Use `--root`, `--session` or `--help` to select a Root, open an existing conversation or inspect the options. Relative Root paths use the caller's working directory.
 
-At startup, the shell negotiates image transport and display geometry. On Linux (including WSL), macOS and Windows, the required capabilities enable the entire interface to use GPU-rendered pixel frames through Kitty, Sixel or iTerm2. Otherwise, the same application uses Unicode rendering. Both presentations support mouse and keyboard interaction. Pixel rendering follows the current terminal font density: each terminal row corresponds to 16 logical pixels, while frames retain the full reported device resolution. Resizing or changing terminal font size updates layout and pointer coordinates together.
+At startup, the shell negotiates image transport and display geometry. On Linux (including WSL), macOS and Windows, the required capabilities enable the entire interface to use GPU-rendered pixel frames through Kitty, Sixel or iTerm2. Otherwise, the same application uses Unicode rendering. Both presentations support mouse and keyboard interaction. At 100% interface scale, pixel rendering follows the current terminal font density: each terminal row corresponds to 16 logical pixels, while frames retain the full reported device resolution. Resizing or changing terminal font size updates layout and pointer coordinates together.
+
+In **Settings → General**, **Interface scale** previews a preset or a percentage entered with Enter. **Save** keeps the chosen scale; **Reset to 100%** previews 100%, and **Cancel** or leaving the page restores the saved scale. Ctrl+0 or Ctrl+Alt+0 resets and saves 100% (Cmd+0 or Cmd+Alt+0 on macOS). Pixel layout and text are rasterized again at the new scale. For Unicode rendering, use your terminal’s font size.
 
 Kitty pixel frames use one complete upload-and-retirement write with error-only replies. The original writer's flush receipt permits native input publication without waiting for a success reply on every frame; a flush does not prove that the terminal has parsed or displayed the image. Any negative reply for either session-owned image slot ends the graphics session. Resize immediately revokes old pointer geometry while any started write finishes intact.
 
@@ -44,7 +46,11 @@ Without `--session`, the centered composer offers **Choose workspace** before ed
 
 Use **Connections & models** on Home or **Settings** in the sidebar to add a connection and API key, fetch its model catalog or add a model ID manually, and configure supported reasoning efforts and the connection default. These settings can be configured here even with a fresh Host. Choose **Choose workspace** or press Ctrl+N, then choose a directory published by the Host. Within a conversation, a new conversation reuses its authorized workspace. Creation opens **Models** to select the connection, model and effort before sending.
 
-**Sessions** uses a collapsible sidebar when the terminal has room for both it and the conversation; smaller windows use a dialog. Open either with the header's browse button or Ctrl+O. **New conversation** sits above the compact workspace scope, title search and filters; **Settings** sits below the list. Drag the divider or use **‹** / **›** to adjust the sidebar. Choose **All workspaces**, the current session's exact workspace, or a project. A project's **+** creates in its Host-authorized directory. An isolated worktree is not necessarily part of its parent project. Keyboard controls remain available without persistent help rows.
+**Settings → General** also provides scrollable multiline editors for the assistant’s global **AGENTS.md** and the compaction prompt. Save to apply document edits; **Use default prompt** selects the Host default for the compaction prompt.
+
+The header has separate controls for the session sidebar, **Search sessions** (Ctrl+O) and **Commands** (Ctrl+P). The sidebar toggle uses a neutral icon at rest and shows the expand or collapse direction on hover or keyboard focus. **Search sessions** focuses title search within the selected scope and Active/Archived filter.
+
+**Sessions** uses a collapsible sidebar when the terminal has room for both it and the conversation; smaller windows use a dialog. **New conversation** sits above the compact workspace scope, title search and filters; **Settings** sits below the list. Drag the divider or use **‹** / **›** to adjust the sidebar. Choose **All workspaces**, the current session's exact workspace, or a project. A project's **+** creates in its Host-authorized directory. An isolated worktree is not necessarily part of its parent project. Keyboard controls remain available without persistent help rows.
 
 Open **Files** in a conversation header or **Commands** to browse its authorized workspace. Files and current Git changes open in session-owned preview tabs, docked on the right when space allows and in a dialog otherwise. Directory updates retain the already requested range; scrolling automatically requests later pages. Switching conversations closes its previews and watches while preserving the conversation draft.
 
@@ -66,13 +72,16 @@ File previews are captured contents: **Refresh** reads the current file again. T
 | Shift+Enter | Insert a newline in the composer |
 | Esc | Go back within **Models**, then close it; otherwise close the overlay or focused browser, or request Stop from the conversation |
 | Ctrl+C | Copy selected text through the terminal's OSC 52 support |
+| Ctrl+0 or Ctrl+Alt+0 | Reset and save the pixel interface scale to 100% |
 | Ctrl+Q | Quit |
 
 Model selection uses **Ctrl+G** because classic terminals encode Ctrl+M as the same carriage return as Enter. Paste through your terminal's paste command.
 
 In a search field, type to search, use ↑/↓ to select, and Enter to activate. Sessions searches titles within the chosen scope, using the complete case-sensitive literal substring. The Host applies this search before paging; it does not search conversation contents, paths or IDs. Model search uses the Host's catalog. Results load automatically as you scroll or move down.
 
-Click the composer's model label or press Ctrl+G to open **Models**, then choose **Model** or **Effort**. Effort choices come from the selected model's published policy; **Off** appears only when supported. **Default · Use connection default** clears an explicit effort override and follows the connection's default. Re-selecting the same model on the same connection preserves an explicit effort choice. Escape or **Back** returns from either list to the menu; another Escape or **Close** closes it and restores focus to the opener, preserving the draft and caret.
+Click the composer's model label or press Ctrl+G to open **Models**, then choose **Model** or **Reasoning effort**. Effort choices come from the selected model's published policy; **Off** appears only when supported. A known default selects its actual level directly, without a separate Default row. If the provider controls an unknown default, no level is invented; after choosing an explicit level, **Use provider settings** clears that override. Re-selecting the same model on the same connection preserves an explicit effort choice. Escape or **Back** returns from either list to the menu; another Escape or **Close** closes it and restores focus to the opener, preserving the draft and caret.
+
+The same model menu’s **Code Mode · Apply Patch** opens the current model’s settings directly. **Code Mode** controls tool-call execution; **Apply Patch** independently chooses patch editing or structured edit/write tools. Each supports the model’s default policy or an explicit enabled/disabled override. Choose **Save model** to apply changes to newly submitted messages.
 
 ## Conversation and requests
 
@@ -80,9 +89,9 @@ Earlier messages load automatically as you scroll up, preserving your reading po
 
 Work uses one presentation: live activity stays in its own scrollable panel, with the latest thinking or tool activity in its header. Completed turns fold automatically and keep the final answer outside the panel. Expand or collapse a turn or its work details whenever needed.
 
-Grouped activity has independent native scrolling, capped at half the reading viewport. A newly opened live group starts at the bottom, while a closed group starts at the top. An already open reader stays in place as the group closes. Scrolling up keeps your source reader in place when later replies arrive. Thinking disclosure and Source choices remain attached to their original rows across updates. Tool details load on demand from the Host; a layout change can reload their original source.
+Grouped activity has independent native scrolling, fitted within half the window height and the available conversation space. A newly opened live group starts at the bottom, while a closed group starts at the top. An already open reader stays in place as the group closes. Scrolling up keeps your source reader in place when later replies arrive. Thinking disclosure and Source choices remain attached to their original rows across updates. Tool details load on demand from the Host; a layout change can reload their original source.
 
-Assistant responses format headings, emphasis, lists, quotes, tables and code. Each code block has its own **Copy code** action. **Show message source** switches to the exact selectable text; **Show formatted message** restores formatting. Partial history stays literal until its opening is loaded.
+Assistant responses format headings, emphasis, lists, quotes, tables and code. Drag a selection across lines and Markdown blocks within a response, then press Ctrl+C to copy it. Each code block has its own **Copy code** action. **Show message source** switches to the exact selectable text; **Show formatted message** restores formatting. Partial history stays literal until its opening is loaded.
 
 Markdown images render inline from the conversation's workspace or an HTTP(S) URL. Workspace images use the existing Host file reader; network images load on the client through NSH's native image loader and cache. The application grants HTTP(S) GET, including the same permission check on each redirect. Activate an unlinked image to view it full screen, then close or press Escape to return to that image without changing the draft; linked images keep their original link target. Loading and failures have explicit captions, with retry available on an unlinked failed image. Source mode and message copy preserve the original Markdown.
 

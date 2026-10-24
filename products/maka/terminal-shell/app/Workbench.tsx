@@ -21,7 +21,7 @@ import { tr } from './locale';
 import { effect, inputAction, signal, View, type JSX } from 'nsh';
 import { windowSize } from 'nsh/device';
 import { keymap } from 'nsh/keymap';
-import { Dialog } from 'nsh/base';
+import { Dialog, ResizablePanel, ResizablePanelGroup } from 'nsh/base';
 import { C } from './ui';
 import { WorkspaceBrowser, type WorkspaceBrowserProps } from './WorkspaceBrowser';
 import { ResourcePane } from './ResourcePane';
@@ -34,7 +34,9 @@ const BROWSER_MIN = 24 * CELL;
 const BROWSER_MAX = 40 * CELL;
 const PREVIEW_MIN = 40 * CELL;
 
-export const canDockBrowser = () => windowSize().width >= CENTER_MIN + BROWSER_MIN + CELL;
+export const canDockBrowser = (withPreview = false) =>
+  windowSize().width >=
+  CENTER_MIN + BROWSER_MIN + CELL + (withPreview && canDockPreview() ? PREVIEW_MIN + CELL : 0);
 // Current layout policy, not a claim that narrower terminal columns are impossible.
 const canDockPreview = () => windowSize().width >= CENTER_MIN + PREVIEW_MIN + CELL;
 
@@ -47,52 +49,7 @@ export function Workbench(props: {
   const preferredWidth = signal(32 * CELL);
   const preferredPreviewWidth = signal(48 * CELL);
   const preview = () => props.resources.shown() && canDockPreview();
-  const browser = () =>
-    canDockBrowser() &&
-    props.expanded() &&
-    (!preview() || windowSize().width >= CENTER_MIN + BROWSER_MIN + PREVIEW_MIN + 2 * CELL);
-  const width = () =>
-    Math.min(
-      preferredWidth(),
-      windowSize().width - CENTER_MIN - CELL - (preview() ? PREVIEW_MIN + CELL : 0),
-    );
-  const availablePreviewWidth = () =>
-    windowSize().width - CENTER_MIN - CELL - (browser() ? width() + CELL : 0);
-  const previewWidth = () => Math.min(preferredPreviewWidth(), availablePreviewWidth());
-  const clamp = (value: number) =>
-    Math.max(
-      BROWSER_MIN,
-      Math.min(
-        BROWSER_MAX,
-        windowSize().width - CENTER_MIN - CELL,
-        Math.round(value / CELL) * CELL,
-      ),
-    );
-  let drag: {
-    side: 'browser' | 'preview';
-    x: number;
-    width: number;
-    viewport: number;
-  } | null = null;
-  const moveDivider = (x: number) => {
-    if (!drag || drag.viewport !== windowSize().width) return;
-    if (drag.side === 'browser' && browser()) preferredWidth.set(clamp(drag.width + x - drag.x));
-    else if (drag.side === 'preview' && preview())
-      preferredPreviewWidth.set(
-        Math.max(
-          PREVIEW_MIN,
-          Math.min(availablePreviewWidth(), Math.round(drag.width + drag.x - x)),
-        ),
-      );
-  };
-  effect(() => {
-    windowSize().width;
-    windowSize().height;
-    browser();
-    preview();
-    drag = null;
-  });
-  const resize = (delta: number) => preferredWidth.set(clamp(width() + delta * CELL));
+  const browser = () => props.expanded() && canDockBrowser(props.resources.shown());
   const previewDialog = signal(false);
   let wasPreviewDocked = canDockPreview();
   effect(() => {
@@ -109,85 +66,51 @@ export function Workbench(props: {
   });
   return (
     <View style={{ flex: 1, flexDirection: 'row', minHeight: 0 }}>
-      <If when={browser()}>
-        <View style={{ width: width(), flexShrink: 0, backgroundColor: C.surface }}>
-          <WorkspaceBrowser {...props.browser} docked resize={resize} />
-        </View>
-        <View
-          accessibilityLabel={tr('Resize session browser')}
-          onStartShouldSetResponder={() => true}
-          onResponderGrant={(event) => {
-            drag = {
-              side: 'browser',
-              x: event.pageX,
-              width: width(),
-              viewport: windowSize().width,
-            };
-            return true;
-          }}
-          onResponderMove={(event) => moveDivider(event.pageX)}
-          onResponderRelease={(event) => {
-            moveDivider(event.pageX);
-            drag = null;
-          }}
-          onResponderTerminate={() => {
-            drag = null;
-          }}
-          style={{
-            width: CELL,
-            flexShrink: 0,
-            alignItems: 'center',
-            backgroundColor: C.background,
-            cursor: 'col-resize',
-          }}
-          hoverStyle={{ backgroundColor: C.line }}
+      <ResizablePanelGroup
+        axis="horizontal"
+        handleAccessibilityLabel={tr('Resize session browser')}
+        handleStyle={{ backgroundColor: C.line }}
+        style={{ flex: 1, minWidth: 0, minHeight: 0, gap: CELL }}
+      >
+        <ResizablePanel
+          visible={browser()}
+          size={preferredWidth()}
+          minSize={BROWSER_MIN}
+          maxSize={BROWSER_MAX}
+          onResize={(size) => preferredWidth.set(size)}
+          style={{ minHeight: 0, backgroundColor: C.surface }}
         >
-          <View
-            pointerEvents="none"
-            style={{ width: 1, height: '100%', backgroundColor: C.line }}
-          />
-        </View>
-      </If>
-      <View style={{ flex: 1, minWidth: 0, minHeight: 0 }}>{props.children}</View>
-      <If when={preview()}>
-        <View
-          accessibilityLabel={tr('Resize workspace preview')}
-          onStartShouldSetResponder={() => true}
-          onResponderGrant={(event) => {
-            drag = {
-              side: 'preview',
-              x: event.pageX,
-              width: previewWidth(),
-              viewport: windowSize().width,
-            };
-            return true;
-          }}
-          onResponderMove={(event) => moveDivider(event.pageX)}
-          onResponderRelease={(event) => {
-            moveDivider(event.pageX);
-            drag = null;
-          }}
-          onResponderTerminate={() => {
-            drag = null;
-          }}
-          style={{
-            width: CELL,
-            flexShrink: 0,
-            alignItems: 'center',
-            backgroundColor: C.background,
-            cursor: 'col-resize',
-          }}
-          hoverStyle={{ backgroundColor: C.line }}
+          <If when={browser()}>
+            <WorkspaceBrowser {...props.browser} />
+          </If>
+        </ResizablePanel>
+        <ResizablePanel
+          minSize={CENTER_MIN + (preview() ? PREVIEW_MIN + CELL : 0)}
+          style={{ minHeight: 0 }}
         >
-          <View
-            pointerEvents="none"
-            style={{ width: 1, height: '100%', backgroundColor: C.line }}
-          />
-        </View>
-        <View style={{ width: previewWidth(), flexShrink: 0, minHeight: 0 }}>
-          <ResourcePane resources={props.resources} docked />
-        </View>
-      </If>
+          <ResizablePanelGroup
+            axis="horizontal"
+            handleAccessibilityLabel={tr('Resize workspace preview')}
+            handleStyle={{ backgroundColor: C.line }}
+            style={{ flex: 1, minWidth: 0, minHeight: 0, gap: CELL }}
+          >
+            <ResizablePanel minSize={CENTER_MIN} style={{ minHeight: 0 }}>
+              {props.children}
+            </ResizablePanel>
+            <ResizablePanel
+              visible={preview()}
+              size={preferredPreviewWidth()}
+              minSize={PREVIEW_MIN}
+              onResize={(size) => preferredPreviewWidth.set(size)}
+              style={{ minHeight: 0 }}
+            >
+              <If when={preview()}>
+                <ResourcePane resources={props.resources} docked />
+              </If>
+            </ResizablePanel>
+          </ResizablePanelGroup>
+        </ResizablePanel>
+      </ResizablePanelGroup>
       <If when={previewDialog()}>
         <Dialog
           animation="none"

@@ -181,6 +181,7 @@ let composing = false;
 | `readonly` | `boolean` | `false` | 用户可以选择和复制文本，但不能修改。 |
 | `autoFocus` | `boolean` | `false` | 出现时自动获得焦点。 |
 | `submitBehavior` | `"submit" \| "blurAndSubmit" \| "newline"` | 单行 `"blurAndSubmit"`，多行 `"newline"` | 回车键做什么：提交并保持焦点、提交后失去焦点，或插入换行（仅多行）。 |
+| `pasteBehavior` | `"insert" \| "report"` | `"insert"` | 粘贴做什么：插入其文本，或什么都不插入（[粘贴](#粘贴图片和文件)）。 |
 | `caret` | `boolean` | `true` | 绘制光标；`false` 隐藏光标。 |
 | `ios={{ keyboardAppearance }}` | `"default" \| "light" \| "dark"` | `"default"` | 键盘的外观（iOS）。 |
 | `selectedRange` | `{ start: number; end?: number }` | | 受控的选区，单位为 UTF-16 码元。 |
@@ -197,6 +198,8 @@ let composing = false;
 | `onSubmit` | `{ text }` | 在会提交的输入框中按下回车键（单行，或 `submitBehavior` 为 `"submit"` / `"blurAndSubmit"`）。 |
 | `onFocus` / `onBlur` | | 获得 / 失去焦点。 |
 | `onSelectionChange` | `{ start, end }` | 光标或选区移动（UTF-16 码元）。 |
+| `onPaste` | `{ text, files, uris }` | 用户粘贴了内容：文本、作为 `File` 的图片、本地文件的 URL（[粘贴](#粘贴图片和文件)）。 |
+| `onCaretMove` | `{ bounds, pageBounds }` | 光标移动：它在输入框和窗口中的位置（[光标位置](#光标位置)）。 |
 | `onKeyPress` | `{ key }` | 文本改变之前：`key` 是输入的文本、`"Backspace"` 或 `"Enter"`。 |
 | `onContentSizeChange` | `{ width, height }` | 文本尺寸改变（多行时按输入框的宽度计算），随输入报告；输入框为空时报告一行空行的尺寸，与占位文字无关。 |
 | `onCompositionChange` | `{ composing, text }` | 输入法的组字开始、变化或结束（见[输入法](#输入法)）。 |
@@ -421,6 +424,112 @@ const selection = signal<{ start: number; end?: number } | undefined>(undefined)
 <View onPress={() => selection.set({ start: 0, end: text().length })}><Text>Select all</Text></View>
 ```
 
+## 光标位置
+
+光标事件（`.on_caret_move(..)`，TSX 的 `onCaretMove`）报告光标在哪里，让属于光标处的内容在那里打开：`@` 提及的候选列表、斜杠命令的菜单、表情选择器。`bounds` 是光标在输入框中的 `Bounds`（`origin` 和 `size`，已计入输入框的内边距和滚动），宽度是平台绘制的光标宽度，高度是它所在的行高；`pageBounds` 是同一个矩形在窗口（或输入框所在的对话框）中的位置，可直接作为浮层的 `anchor`。输入框获得焦点时，光标每次移动都会触发这个事件：随选区移动时，以及输入框的文本滚动或重新换行时。在 Rust 中，浮层用 `.anchor_bounds(..)` 相对一个矩形放置。
+
+```rust tabs
+let draft = signal(String::new());
+let end = signal(0u32);
+let caret = signal(None::<Bounds<Points>>);
+
+view()
+    .child(
+        input()
+            .multiline(true)
+            .value(move || draft.get())
+            .on_change(move |t: &str| draft.set(t.to_owned()))
+            .on_selection_change(move |s: &Selection| end.set(s.end))
+            .on_caret_move(move |e: &CaretEvent| {
+                // 光标前的词以 "@" 开头时显示候选。
+                let typed = draft.with(|t| utf16_slice(t, 0, end.get()));
+                let word = typed.rsplit(char::is_whitespace).next().unwrap_or("");
+                caret.set(word.starts_with('@').then_some(e.page_bounds));
+            })
+            .p_2(),
+    )
+    .child(when(
+        move || caret.get().is_some(),
+        move || {
+            overlay()
+                .anchor_bounds(move || caret.get().unwrap_or_default())
+                .placement(Placement::Bottom)
+                .align(Align::Start)
+                .offset(px(4.0))
+                .child(text("@ada"))
+                .child(text("@grace"))
+        },
+    ))
+```
+
+```tsx tabs
+import { type Bounds, Input, Overlay, Text, View, signal } from "nsh";
+
+const draft = signal("");
+const end = signal(0);
+const caret = signal<Bounds | null>(null);
+
+<View>
+  <Input
+    multiline
+    value={draft()}
+    onChange={(t) => draft.set(t)}
+    onSelectionChange={(e) => end.set(e.end)}
+    onCaretMove={(e) => {
+      // 光标前的词以 "@" 开头时显示候选。
+      const word = draft().slice(0, end()).split(/\s/).pop() ?? "";
+      caret.set(word.startsWith("@") ? e.pageBounds : null);
+    }}
+    class="p-2"
+  />
+  <If when={caret()}>
+    <Overlay anchor={caret()} placement="bottom" align="start" offset={4}>
+      <Text>@ada</Text>
+      <Text>@grace</Text>
+    </Overlay>
+  </If>
+</View>;
+```
+
+`pageBounds` 是事件发生时光标所在的位置：页面在输入框下方滚动会移动输入框，但不会触发事件，所以页面滚动时关闭候选列表，或把它锚定到输入框本身。
+
+## 粘贴图片和文件
+
+粘贴事件（`.on_paste(..)`，TSX 的 `onPaste`）报告用户粘贴了什么，无论来自快捷键、菜单中的“粘贴”，还是键盘插入的图片：`text`、`files` 和 `uris`。`files` 是剪贴板中以数据形式存在的内容，例如截图、从网页或其他应用复制的图片：应用可以上传或显示的 `File`，名为 `image.png`（或其实际类型）。`uris` 是在文件管理器中复制的文件的 `file:` URL，与拖放文件时一样。平台在用户粘贴时读取剪贴板，且只在那时读取。
+
+输入框照常自己插入粘贴的文本：事件在该文本的 `onChange` 之前到达。图片和文件从不插入，因为输入框只容纳文本。`pasteBehavior` 为 `"report"` 时输入框什么都不插入，由应用决定粘贴的效果：把长文本作为附件发送，或插入整理后的版本。由于系统要求当场作答，输入框根据这个属性立即决定。
+
+```rust tabs
+let attachments = signal(Vec::<PastedFile>::new());
+
+input()
+    .multiline(true)
+    .placeholder("Message")
+    .on_paste(move |e: &PasteEvent| {
+        // 粘贴到消息里的截图作为图片一起发送。
+        attachments.update(|a| a.extend(e.files.iter().cloned()));
+    })
+    .p_2()
+```
+
+```tsx tabs
+import { Input, signal } from "nsh";
+
+const attachments = signal<File[]>([]);
+
+<Input
+  multiline
+  placeholder="Message"
+  onPaste={(e) => {
+    // 粘贴到消息里的截图作为图片一起发送。
+    attachments.update((a) => [...a, ...e.files]);
+  }}
+  class="p-2"
+/>;
+```
+
+像上传任何 `File` 一样上传粘贴的文件，使用 `fetch` 和 `FormData`（`form.append("image", file)`）；它的字节在发送前一直留在原生侧。在 Android 上，插入图片的键盘（GIF、贴纸）也以同样方式报告。在 Linux 上剪贴板是异步读取的，因此事件可能在它插入的文本的 `onChange` 之后到达。macOS 上的密码输入框保留 AppKit 自己的粘贴，不报告任何内容。
+
 ## 自动增高的多行输入框
 
 多行输入框（`.multiline(true)`，TSX 的 `multiline`）在自身高度内滚动文本。要让它随内容增高，把内容尺寸事件（`.on_content_size_change(..)`，TSX 的 `onContentSizeChange`）报告的高度加上上限后写回样式：
@@ -573,7 +682,7 @@ function ChatScreen() {
 
 ### 键盘访问器
 
-Rust 中的 `keyboard_height()` 和 `keyboard_duration()`，以及 TSX 中 `nsh/base` 的 `keyboardFrame()`（一个 `{ height, duration }`），都是响应式的：键盘伸入 surface 的高度（隐藏时为 0，包含被它盖住的底部安全区域）以及它的动画时长（秒）。需要自定义行为时读取它们，例如输入时隐藏浮动按钮，或调整面板尺寸。
+Rust 中的 `keyboard_height()` 和 `keyboard_duration()`，以及 TSX 中 `nsh/base` 的 `keyboardFrame()`（一个 `{ height, duration }`），都是响应式的：键盘伸入 surface 的高度（隐藏时为 0，包含被它盖住的底部安全区域）以及它的动画时长（秒）。需要自定义行为时读取它们，例如输入时隐藏浮动按钮，或调整面板尺寸。随它们变化的布局在键盘的曲线上做动画时，就与键盘一起移动：`LayoutAnimation.configureNext({ duration: keyboardFrame().duration * 1000, update: { type: "keyboard" } })`（Rust：`LayoutCurve::Keyboard`），`KeyboardAvoidingView` 就是这样做的。
 
 ```rust tabs
 view().child(when(

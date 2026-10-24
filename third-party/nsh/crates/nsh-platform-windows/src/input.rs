@@ -468,6 +468,176 @@ pub(crate) fn reset(surface: &Surface) {
     input.js_block.set(false);
 }
 
+/// Ends a retiring row's input before its node ids can be reused.
+pub(crate) fn retire_cell(surface: &Rc<Surface>, cell: &NshView) {
+    let inside = |view: &NshView| {
+        let mut current = Some(view.clone());
+        while let Some(view) = current {
+            if view == *cell {
+                return true;
+            }
+            current = view.parent_view();
+        }
+        false
+    };
+    let input = &surface.input;
+    let mut ids = FxHashSet::default();
+    let mut pending = vec![cell.clone()];
+    while let Some(view) = pending.pop() {
+        ids.insert(view.id());
+        crate::file_drop::invalidate(surface, view.id());
+        pending.extend(view.child_views());
+    }
+    let keys: Vec<_> = input
+        .pointers
+        .borrow()
+        .iter()
+        .filter(|p| {
+            inside(&p.target)
+                || p.press
+                    .as_ref()
+                    .is_some_and(|press| inside(&press.view) || ids.contains(&press.node))
+                || p.item.as_ref().is_some_and(|item| {
+                    inside(item.view()) || matches!(item, Item::Area(_, target) if inside(target))
+                })
+                || p.candidates.iter().any(|(view, _)| inside(view))
+                || p.pressed.iter().any(&inside)
+                || p.pinch.as_ref().is_some_and(&inside)
+                || p.gate.as_ref().is_some_and(|gate| ids.contains(&gate.id()))
+                || (p.reporting && p.path.iter().any(|id| ids.contains(id)))
+                || match &p.mode {
+                    Mode::Pan(view) | Mode::Scroll(view, _) | Mode::Thumb(view, _) => inside(view),
+                    Mode::TwoFinger => input
+                        .two
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|two| inside(&two.transform.view)),
+                    Mode::Idle | Mode::Free => false,
+                }
+        })
+        .map(|p| p.key)
+        .collect();
+    for key in keys {
+        let Some(mut p) = take(surface, key) else {
+            continue;
+        };
+        let active = match &p.mode {
+            Mode::Pan(view) | Mode::Scroll(view, _) | Mode::Thumb(view, _) => Some(view.clone()),
+            Mode::TwoFinger => input
+                .two
+                .borrow()
+                .as_ref()
+                .map(|two| two.transform.view.clone()),
+            Mode::Idle | Mode::Free => None,
+        };
+        if let Some(owner) = active.filter(|owner| !inside(owner)) {
+            // The surrounding scroll/pan already owns this gesture. The
+            // original row may disappear without stopping that live owner.
+            if p.reporting {
+                report(surface, TouchPhase::Cancel, &p, None);
+                p.reporting = false;
+            }
+            cancel_press(surface, &mut p);
+            if let Some(item) = p.item.take() {
+                item.send(surface, PointerKind::Cancel, (p.x, p.y), 0, p.modifiers);
+            }
+            release_pressed(surface, &mut p);
+            p.target = owner;
+            p.path.clear();
+            p.candidates.clear();
+            p.gate = None;
+            p.pinch = None;
+            put(surface, p);
+        } else {
+            if let Mode::Pan(view) = &p.mode {
+                pan_end(surface, view, &p, false);
+                p.mode = Mode::Free;
+            }
+            finish(surface, p, true);
+        }
+    }
+    let raw: Vec<_> = input
+        .raw
+        .borrow()
+        .iter()
+        .filter(|(_, item, _)| inside(item.view()))
+        .map(|(key, _, _)| *key)
+        .collect();
+    let at = input.last.get().unwrap_or((0.0, 0.0));
+    for key in raw {
+        raw_pointer(
+            surface,
+            key,
+            &PointerEvent {
+                kind: PointerKind::Cancel,
+                x: at.0,
+                y: at.1,
+                button: 0,
+                pointer: match key {
+                    Key::Mouse => 1,
+                    Key::Touch(id) => id,
+                },
+                touch: matches!(key, Key::Touch(_)),
+                pen: false,
+                time: surface.clock(),
+                modifiers: Modifiers::default(),
+                clicks: 0,
+            },
+        );
+    }
+    if input
+        .two
+        .borrow()
+        .as_ref()
+        .is_some_and(|two| inside(&two.transform.view))
+    {
+        end_two_finger(surface);
+    }
+    let zoom = {
+        let mut zoom = input.zoom.borrow_mut();
+        if zoom.as_ref().is_some_and(|(t, _)| inside(&t.view)) {
+            zoom.take()
+        } else {
+            None
+        }
+    };
+    if let Some((transform, _)) = zoom {
+        transform_end(surface, &transform);
+    }
+    if input
+        .wheel
+        .borrow()
+        .as_ref()
+        .is_some_and(|wheel| inside(&wheel.view))
+    {
+        input.wheel.borrow_mut().take();
+    }
+    if input
+        .latch
+        .borrow()
+        .as_ref()
+        .is_some_and(|(view, _, _)| inside(view))
+    {
+        input.latch.borrow_mut().take();
+    }
+    let hovered = input
+        .hovered
+        .borrow()
+        .iter()
+        .filter(|view| !inside(view))
+        .cloned()
+        .collect();
+    set_hovered(surface, hovered);
+    if input
+        .hover_item
+        .borrow()
+        .as_ref()
+        .is_some_and(|item| inside(item.view()))
+    {
+        set_hover_item(surface, None, at, Modifiers::default());
+    }
+}
+
 /// `TrackStates`.
 pub(crate) fn track_states(surface: &Rc<Surface>, view: &NshView, states: u8) {
     {

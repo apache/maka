@@ -930,6 +930,25 @@ pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
         Command::ReadClipboardImage { id, has_only } => {
             read_clipboard_image(surface.key(), *id, *has_only)
         }
+        Command::OpenUrl { id, url } => {
+            let (key, id, url) = (surface.key(), *id, url.clone());
+            crate::rt::on_app(move |cx| {
+                // GPUI hands it to the system's opener (`NSWorkspace`,
+                // `ShellExecuteW`, the desktop portal / `xdg-open`) and
+                // reports nothing back: it went out.
+                cx.open_url(&url);
+                if let Some(surface) = Surface::by_key(key) {
+                    surface.event(
+                        ROOT_ID,
+                        EventKind::OpenUrl,
+                        EventPayload::Map(vec![
+                            ("id", PayloadValue::Number(id as f64)),
+                            ("opened", PayloadValue::Bool(true)),
+                        ]),
+                    );
+                }
+            });
+        }
         Command::ReadClipboardFiles { id } => {
             let (key, id) = (surface.key(), *id);
             crate::rt::on_app(move |cx| {
@@ -954,6 +973,7 @@ pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
                 }
             });
         }
+        Command::PickImages { id, request } => pick_images(surface, *id, *request),
         Command::ExitApp => {
             // The window goes after the batch is applied (closing it stops
             // the surface). An embedded surface closes the window it is in,
@@ -987,6 +1007,50 @@ fn clipboard_answer(id: u32, has: bool, text: Option<String>) -> EventPayload {
 
 /// `Clipboard.writeImage`: the image of a `data:` URI on GPUI's clipboard,
 /// in its own format when GPUI knows it.
+/// `Picker.pickImages`: GPUI's open dialog. It filters nothing, so the
+/// files whose extension the request does not take are left out; they are
+/// read as they are, on a thread of their own (no scaling or conversion
+/// here: `nsh_core::picker::read_files`).
+fn pick_images(surface: &Rc<Surface>, id: u32, request: nsh_core::picker::PickRequest) {
+    let mut control = None;
+    surface.control(|c| control = Some(c.clone()));
+    let Some(control) = control else { return };
+    crate::rt::on_app(move |cx| {
+        let paths = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: request.multiple(),
+            prompt: None,
+        });
+        cx.spawn(async move |_| {
+            let paths = paths
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .flatten()
+                .unwrap_or_default();
+            let extensions = nsh_core::picker::dialog_extensions(&request);
+            let paths: Vec<_> = paths
+                .into_iter()
+                .filter(|p| {
+                    p.extension()
+                        .and_then(|e| e.to_str())
+                        .is_some_and(|e| extensions.contains(&e.to_ascii_lowercase().as_str()))
+                })
+                .collect();
+            std::thread::spawn(move || {
+                let files = nsh_core::picker::read_files(&paths, &request);
+                control.dispatch_event(
+                    ROOT_ID,
+                    EventKind::Pick,
+                    EventPayload::Picked { id, files },
+                );
+            });
+        })
+        .detach();
+    });
+}
+
 fn set_clipboard_image(uri: &str) {
     let Some((mime, bytes)) = clipboard::decode_data_uri(uri) else {
         log::warn!("Clipboard.writeImage: not a base64 data: URI");

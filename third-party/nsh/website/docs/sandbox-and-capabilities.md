@@ -116,7 +116,9 @@ An app declares what it may reach outside its VM in `nsh.json`:
     "webview": { "hosts": ["*.example.com"] },
     "statusBar": true,
     "clipboard": true,
-    "host": ["getUserInfo", "bridge.*"]
+    "picker": true,
+    "host": ["getUserInfo", "bridge.*"],
+    "openUrl": { "schemes": ["https", "mailto"] }
   }
 }
 ```
@@ -178,6 +180,18 @@ allows them without allowing any remote page.
 
 `"clipboard": true` lets the app read and write the system clipboard ([`nsh/clipboard`](../modules/nsh-clipboard.md)). Copying from a selectable text's edit menu is the user's own act and needs no capability.
 
+### `picker`
+
+`"picker": true` lets the app show the system's picker for photos ([`nsh/picker`](../modules/nsh-picker.md)): the user
+picks what reaches the app.
+
+### `openUrl`
+
+Lets the app open URLs outside it ([`openUrl`](../modules/nsh-device.md#openurl), a `TextView`'s links with
+`links="open"`): `"openUrl": true` for every scheme, `"openUrl": { "schemes": ["https", "mailto"] }` for the schemes
+listed. A URL whose scheme is not granted throws a `TypeError`. URLs that would run code or reach the app's own data
+(`javascript:`, `data:`, `file:`, ...) are never opened, whatever the capability.
+
 ### Storage
 
 Every app may keep its own data on the device with [`nsh/storage`](../modules/nsh-storage.md), with no capability: the storage holds only that app's data, and the embedding app decides where it is kept.
@@ -213,6 +227,7 @@ if (host.available()) {
 | Remote image | The image fails with `onError`. |
 | Video source, web view source, status bar change | Nothing is shown or changed. |
 | Clipboard | `writeText` and `writeImage` do nothing; `readText` resolves `""`, `readImage` `null`, `readFiles` `[]`, and `hasText` and `hasImage` `false`. |
+| Picker | `pickImages` shows nothing and resolves `[]`. |
 | Host call | The promise rejects, saying to add the function to `capabilities.host`; the call never reaches the host. |
 
 Each refusal is logged once, saying which key to add:

@@ -495,6 +495,9 @@ expect Math block: x^2
 expect Image Logo: https://example.com/logo.png
 tap label:Logo
 expect Image pressed: Logo
+# Default images still use the TextView image-press event.
+tap label:Default logo
+expect Image pressed: Default logo
 # Parts styled by `classes` and `styles`; `selectable`.
 style text:"Classed heading" color #ff0000ff
 style text:"Classed heading" fontWeight 600
@@ -730,6 +733,15 @@ tap below:parent:text:SheetBody
 expect Log: sheet false backdropPress
 absent SheetBody
 expect Life: sheet closed
+# Opt-in bottom dragging installs the native release listener.
+tap text:OpenSwipeSheet
+expect SwipeSheetBody
+wait 400
+frame parent:text:SwipeSheetBody 0 490 390 354
+listens parent:text:SwipeSheetBody onPanEnd
+tap below:parent:text:SwipeSheetBody
+absent SwipeSheetBody
+covers [props] closeOnSwipe
 # `closeOnBackdropPress={false}`: its backdrop keeps it.
 tap below:parent:text:StuckSheet
 expect StuckSheet
@@ -1156,3 +1168,74 @@ covers [props] DockArea.defaultLayout
 covers [props] DockArea.drawerClass
 covers [props] DockArea.backdropClass
 covers [events] DockArea.onDockOpenChange
+
+# base-toast
+tap id:case-base-toast
+expect Log: none
+expect Count: 0 0 true false
+# Pushed: starting (its first frame with the starting class), then
+# present after the motion's 100 ms.
+tap text:PushA
+expect Log: pushed a replaced none
+style parent:text:TitleA opacity 0.5
+expect Log: presented a
+style parent:text:TitleA backgroundColor #123456ff
+nostyle parent:text:TitleA opacity
+# Its timeout runs out: ending (its class), removed after the exit's 100 ms.
+tap text:PushB
+expect TitleB
+expect Log: ending b
+style parent:text:TitleB opacity 0.25
+expect Log: removed b
+absent TitleB
+# A third with a limit of two; then the same id replaces the oldest and
+# becomes the newest.
+tap text:PushC
+expect TitleC
+tap text:ReplaceA
+expect Log: pushed a replaced TitleA
+expect TitleA2
+wait 300
+tap text:Inspect
+expect Log: entries c=present,a=present get TitleA2
+# Collapsed and anchored to the bottom: the stack is the front toast plus a
+# peek (30 + 10), each toast's item ends at its bottom.
+frame parent:parent:parent:text:TitleC 0 0 200 40
+frame parent:parent:text:TitleC 0 10 200 30
+frame parent:parent:text:TitleA2 0 10 200 30
+# Anchored to the top, the newest stays at the top as the stack expands.
+tap text:AnchorTop
+frame parent:parent:text:TitleA2 0 0 200 30
+# A finger on the stack expands it; a slow swipe of 45 points to the left
+# (past 40, short of the default 50) asks to dismiss the toast, with the
+# swiping class meanwhile.
+touch start text:TitleA2 150 5
+expect Count: 2 2 false true
+touch move 143 5
+touch move 136 5
+style parent:text:TitleA2 backgroundColor #00ff00ff
+touch move 129 5
+touch move 122 5
+touch move 115 5
+touch move 108 5
+touch move 105 5
+touch end
+expect Log: swiped a
+expect Count: 1 1 false false
+# dismissAll ends the rest.
+tap text:DismissAll
+expect Log: dismissed c
+expect Count: 0 0 true false
+covers [nsh/base] Toast
+covers [nsh/base] ToastStack
+covers [nsh/base] ToastManager
+covers [props] Toast.transitionStatus
+covers [props] Toast.startingClass
+covers [props] Toast.endingClass
+covers [props] Toast.swipingClass
+covers [props] Toast.swipeDirection
+covers [props] Toast.swipeThreshold
+covers [events] Toast.onDismissRequest
+covers [props] ToastStack.motion
+covers [props] ToastStack.placement
+covers [events] ToastStack.onExpandedChange

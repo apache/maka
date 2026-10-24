@@ -171,6 +171,18 @@ fn touches<'a>(cx: *mut JsContext) -> &'a Touches {
     unsafe { &(*crate::state::state(cx)).touches }
 }
 
+pub(crate) fn invalid_contacts(
+    cx: *mut JsContext,
+    mut accepts: impl FnMut(NodeId) -> bool,
+    contacts: &mut Vec<u32>,
+) {
+    for (&contact, path) in touches(cx).paths.borrow().iter() {
+        if path.iter().any(|&id| !accepts(id)) {
+            contacts.push(contact);
+        }
+    }
+}
+
 /// Returns whether the last known contact released a native JS scroll block.
 /// This is native bookkeeping: no handler, JS value or pending job is touched.
 pub(crate) fn cancel_touch(cx: *mut JsContext, contact: u32) -> bool {

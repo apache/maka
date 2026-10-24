@@ -40,16 +40,18 @@ NSH 没有“大而全”的汇总模块：每个 API 只存在于一个地方�
 | `nsh` | `signal`、`computed`、`effect`、`batch`、`untracked`、`cleanup`、`context`、`split`、`mount`、`ErrorBoundary`；原语 `View`、`Text`、`Scroll`、`Input`、[`List`](./nsh-list.md)、[`Image`](./nsh-image.md)（以及 `Image.getSize`、`Image.prefetch`）、[`Canvas`](./nsh-canvas.md)（以及 `Path2D`、`CanvasRenderingContext2D`、`CanvasGradient`）、[`WebView`](./nsh-webview.md)、[`Video`](./nsh-video.md)；元素、样式、事件和 JSX 的类型（`YNode`、`ViewStyle` 等） | [nsh](./nsh.md) |
 | `nsh/base` | `Button`；`TextView`、`SelectionArea`；`createNavStack`、`NavStack`、`NavPage`、`Dialog`；`SafeAreaView`、`safeArea`、`safeAreaInsets`；`AlertDialog`；`Keyboard`、`keyboardFrame`、`KeyboardAvoidingView` | [nsh/base](./nsh-base.md) |
 | `nsh/animated` | `createAnimatedValue`、`AnimatedValue`、`AnimatedNode`、`Animated`、`Easing`、`LayoutAnimation` | [nsh/animated](./nsh-animated.md) |
-| `nsh/device` | `windowSize`、`colorScheme`、`setColorScheme`、`fontScale`、`pixelRatio`、`locale`、`platform` | [nsh/device](./nsh-device.md) |
+| `nsh/device` | `windowSize`、`colorScheme`、`setColorScheme`、`fontScale`、`pixelRatio`、`locale`、`platform`、`openUrl` | [nsh/device](./nsh-device.md) |
 | `nsh/gesture` | `PanResponder` | [nsh/gesture](./nsh-gesture.md) |
 | `nsh/clipboard` | `Clipboard.writeText`、`Clipboard.readText`、`Clipboard.writeImage`、`Clipboard.readImage`、`Clipboard.readFiles` | [nsh/clipboard](./nsh-clipboard.md) |
+| `nsh/picker` | `Picker.pickImages` | [nsh/picker](./nsh-picker.md) |
 | `nsh/storage` | `Storage.getItem`、`Storage.setItem`、`Storage.removeItem`、`Storage.keys`、`Storage.clear` | [nsh/storage](./nsh-storage.md) |
-| `nsh/host` | `host.available`、`host.call`、`host.on`（嵌入应用或页面的函数和事件） | [nsh/host](./nsh-host.md) |
+| `nsh/host` | `host.available`、`host.call`、`host.on`，以及原生 SDK 的 `params`、`post` | [nsh/host](./nsh-host.md) |
 | `nsh/keymap` | `keymap.bind`（键盘快捷键：`mod+k`、`ctrl+shift+p` 等） | [nsh/keymap](./nsh-keymap.md) |
 | `nsh/native` | `nativeComponent`、`nativeModule`（宿主应用注册的原生组件和函数） | [nsh/native](./nsh-native.md) |
 | `nsh/accessibility` | `announce`、`setAccessibilityFocus`、`screenReaderEnabled`、`reduceMotion` | [nsh/accessibility](./nsh-accessibility.md) |
 | `nsh/ios` | `isAvailable`、`InputAccessoryView` | [nsh/ios](./nsh-ios.md) |
 | `nsh/android` | `isAvailable`、`Toast`、`BackHandler` | [nsh/android](./nsh-android.md) |
+| `nsh/mobile` | `isAvailable`、`TabBar`（系统标签栏，iOS 和 Android） | [nsh/mobile](./nsh-mobile.md) |
 | `nsh/desktop` | `isAvailable`、`Window`（标题、标题栏、最大化、全屏）、`titleBar`、`Menu`（应用菜单、右键菜单） | [nsh/desktop](./nsh-desktop.md) |
 | Standard modules | `buffer`, `console`, `crypto`, `fs/promises`, `net`, `os`, `path`, `process`, `url`, `websocket`, `zlib` | [标准模块](./standard-modules.md) |
 | 全局对象 | `fetch`、`URL`、`TextEncoder`、`Blob`、`FormData`、`AbortController`、`Intl`、定时器、`console`、`requestAnimationFrame` 等（无需导入） | [全局 API](./globals.md) |

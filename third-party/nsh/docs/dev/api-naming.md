@@ -85,7 +85,10 @@ go elsewhere under these rules rather than into them.
   Apple platforms, the Windows / Super key elsewhere), as GPUI's `MouseMoveEvent { position, modifiers }` (decided by
   the user, 2026-10-21). The frozen responder events keep React Native's `locationX` / `pageX`.
 - **Intent over geometry**: an event says what the app should do when the act has a name (`onLoadMore`, as
-  `gpui-component`'s `ListDelegate::load_more`), not where the user got to (`onEndReached`).
+  `gpui-component`'s `ListDelegate::load_more`), not where the user got to (`onEndReached`). Its counterpart at
+  the start is the same act at the other end, `onLoadMoreAtStart` / `loadMoreAtStartThreshold` (React Native's
+  `onStartReached`): the edge named as `Start` / `End` are, the act kept, and no `Newer` / `Older` that holds for a
+  chat but not for every list.
 - **Payloads**: a value's change is `on<Value>Change(next, details?)`, the value first and anything else after it
   (`onChange(text)`, `onOpenChange(open, reason)`); every other event passes one object, even with one field
   (`onLinkPress({ url })`, `onSubmit({ text })`), so a later field is an addition. An event with nothing to report

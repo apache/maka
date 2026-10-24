@@ -54,6 +54,9 @@ pub struct Animator {
     gestures: FxHashMap<u32, Gestures>,
     /// Scroll view id -> (value node, horizontal).
     scrolls: FxHashMap<u32, (NodeId, bool)>,
+    /// Scroll views with sticky cells that stick an animated value further
+    /// in (`StickyCell::offset`): pinned again on the graph's frames.
+    sticky: Vec<u32>,
     /// A view's canvas slot values while they are written (reused: written
     /// on every frame).
     canvas_args: Vec<(u16, AnimationValue)>,
@@ -92,10 +95,22 @@ impl Animator {
                     self.scrolls.remove(id);
                 }
             },
+            MountItem::StickyCells { id, cells } => {
+                let animated = cells.iter().any(|c| c.offset.is_some());
+                let at = self.sticky.iter().position(|v| v == id);
+                match (animated, at) {
+                    (true, None) => self.sticky.push(*id),
+                    (false, Some(i)) => {
+                        self.sticky.swap_remove(i);
+                    }
+                    _ => {}
+                }
+            }
             MountItem::Delete { id } => {
                 self.bindings.remove(id);
                 self.gestures.remove(id);
                 self.scrolls.remove(id);
+                self.sticky.retain(|v| v != id);
             }
             _ => {}
         }
@@ -105,6 +120,18 @@ impl Animator {
     /// animates.
     pub fn tick(&mut self, now: f64) -> bool {
         self.graph.tick(now, &mut self.finished)
+    }
+
+    /// The scroll views whose sticky cells stick an animated value further
+    /// from the viewport's start: pin them again after writing a frame.
+    pub fn sticky_views(&self) -> &[u32] {
+        &self.sticky
+    }
+
+    /// The value of node `node` now (a sticky cell's offset; 0 for a node
+    /// it does not know).
+    pub fn value(&self, node: NodeId) -> f32 {
+        self.graph.eval(node).number()
     }
 
     /// True while a driver of the graph runs.
@@ -121,6 +148,17 @@ impl Animator {
         let value = if horizontal { offset.x } else { offset.y };
         self.graph.set(node, value.0, &mut self.finished);
         true
+    }
+
+    /// Scroll view `id` came to rest (its drag and momentum ended): the
+    /// snapping `diffClamp`s that follow its scroll value settle
+    /// ([`super::Graph::settle`]). True if one starts moving: the platform
+    /// runs its frames.
+    pub fn scroll_ended(&mut self, id: u32) -> bool {
+        let Some(&(node, _)) = self.scrolls.get(&id) else {
+            return false;
+        };
+        self.graph.settle(node)
     }
 
     /// A drag began: grabbing an animating value stops it where it is.
@@ -220,6 +258,8 @@ impl Animator {
                         }
                     }
                     AnimationProp::CanvasArg(k) => canvas.push((k, value)),
+                    // The scroll view's (`sticky_views`), never bound.
+                    AnimationProp::StickyTop | AnimationProp::StickyLeft => {}
                 }
             }
             set(view, values, canvas);
@@ -232,5 +272,92 @@ fn color(value: AnimationValue) -> Color {
     match value {
         AnimationValue::Color(c) => Color(c),
         other => Color(other.number() as u32),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        StickyCell,
+        animation::AnimationOp,
+        geometry::{Points, point, px},
+    };
+
+    #[test]
+    fn sticky_views_with_animated_offsets_are_pinned_on_frames() {
+        let mut a = Animator::default();
+        a.apply(&MountItem::Animation(AnimationOp::CreateValue {
+            node: 2,
+            value: 56.0,
+        }));
+        let cell = |offset| StickyCell {
+            cell: 9,
+            start: Points(0.0),
+            end: Points(100.0),
+            offset,
+        };
+        a.apply(&MountItem::StickyCells {
+            id: 4,
+            cells: vec![cell(Some(2))],
+        });
+        assert_eq!(a.sticky_views(), [4]);
+        assert_eq!(a.value(2), 56.0);
+        // Its scroll value moves the offset.
+        a.apply(&MountItem::ScrollConfig {
+            id: 4,
+            horizontal: false,
+            scrollbar_visible: true,
+            scroll_value: Some(2),
+            keyboard_dismiss: Default::default(),
+            mirrored: false,
+        });
+        a.scrolled(4, point(px(0.0), px(12.0)));
+        assert_eq!(a.value(2), 12.0);
+        // No animated offset any more.
+        a.apply(&MountItem::StickyCells {
+            id: 4,
+            cells: vec![cell(None)],
+        });
+        assert!(a.sticky_views().is_empty());
+    }
+
+    #[test]
+    fn a_scroll_view_at_rest_settles_the_values_that_follow_it() {
+        let mut a = Animator::default();
+        a.apply(&MountItem::Animation(AnimationOp::CreateValue {
+            node: 2,
+            value: 0.0,
+        }));
+        a.apply(&MountItem::Animation(AnimationOp::CreateDiffClamp {
+            node: 3,
+            input: 2,
+            min: 0.0,
+            max: 50.0,
+            snap: true,
+        }));
+        a.apply(&MountItem::ScrollConfig {
+            id: 4,
+            horizontal: false,
+            scrollbar_visible: true,
+            scroll_value: Some(2),
+            keyboard_dismiss: Default::default(),
+            mirrored: false,
+        });
+        for y in [0.0, 200.0, 190.0] {
+            a.scrolled(
+                4,
+                crate::geometry::point(crate::Points(0.0), crate::Points(y)),
+            );
+            a.graph.eval(3);
+        }
+        // Another scroll view's end settles nothing.
+        assert!(!a.scroll_ended(5));
+        assert!(a.scroll_ended(4));
+        assert!(a.animating());
+        a.tick(1.0);
+        a.tick(1.3);
+        assert_eq!(a.graph.eval(3).number(), 50.0);
+        assert!(!a.animating());
     }
 }

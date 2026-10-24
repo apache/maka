@@ -1,6 +1,6 @@
 ---
 title: nsh/device
-description: The window size, color scheme, font scale, locale, platform, pixel ratio and layout direction.
+description: The window size, color scheme, font scale, locale, platform, pixel ratio, layout direction and opening URLs outside the app.
 order: 6
 ---
 
@@ -16,7 +16,7 @@ use nsh_core::{
 ```
 
 ```tsx tabs
-import { colorScheme, fontScale, locale, pixelRatio, platform, setColorScheme, windowSize } from "nsh/device";
+import { colorScheme, fontScale, locale, openUrl, pixelRatio, platform, setColorScheme, windowSize } from "nsh/device";
 ```
 
 See [Device and environment](../docs/device-and-environment.md) for the guide.
@@ -177,6 +177,44 @@ let hairline = move || px(1.0 / pixel_ratio());
 ```tsx tabs
 const hairline = () => 1 / pixelRatio();
 ```
+
+## openUrl
+
+```ts
+function openUrl(url: string): Promise<boolean>;
+```
+
+Opens `url` outside the app: a web page in the browser, a `mailto:` link in the mail app, a `tel:` link in the phone app, and any scheme another app registered (`maps:`, a host app's own `lb://` links). It resolves to whether something opened it: `false` when no app handles the scheme. Rust: `open_url(url)` of `nsh_core::ui::prelude`, an answer to await in a task (or to drop).
+
+```rust tabs
+button()
+    .child(text("Contact us"))
+    .on_press(|| {
+        spawn(async {
+            if !open_url("mailto:help@example.com").await {
+                log::warn!("no mail app");
+            }
+        });
+    })
+```
+
+```tsx tabs
+<Button
+  onPress={async () => {
+    if (!(await openUrl("mailto:help@example.com"))) {
+      console.warn("no mail app");
+    }
+  }}
+>
+  <Text>Contact us</Text>
+</Button>
+```
+
+- The URL is absolute (it has a scheme). URLs that would run code or reach the app's own data, `javascript:`, `data:`, `blob:`, `file:`, `about:` and `asset:`, throw a `TypeError`, as do relative addresses.
+- An app that declares capabilities needs `openUrl`: `"openUrl": true` for every scheme, or `"openUrl": { "schemes": ["https", "mailto"] }` for those listed; other URLs throw a `TypeError` (see [Sandbox and capabilities](../docs/sandbox-and-capabilities.md)).
+- The embedding app sees the URL first and can route it through its own router instead (Swift `NshAppView.onOpenURL`, Java `NshView.setOpenUrlHandler`, Rust `AppView::host().handle_open_url`; see [iOS](../docs/ios.md#links-the-app-opens) and [Android](../docs/android.md#links-the-app-opens)). The promise then resolves to `true`.
+- Each platform opens it with its own opener: `UIApplication.open` on iOS (the host app's application when embedded), an `ACTION_VIEW` intent on Android, `NSWorkspace` on macOS, `ShellExecuteW` on Windows, `GtkUriLauncher` on Linux, GPUI's `open_url`, a new tab on the web. `nsh test` records the URLs instead of opening them.
+- A [`TextView`](../elements/text-view.md) opens its links this way with `links="open"`.
 
 ## Layout direction
 

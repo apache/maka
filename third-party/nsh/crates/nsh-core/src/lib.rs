@@ -8,6 +8,8 @@
 //! Everything here is single-threaded and allocation-conscious: the core runs
 //! on the engine thread, between the JS host and the platform backend.
 
+mod byte_size;
+pub use byte_size::ByteSize;
 pub mod access;
 pub mod animation;
 pub mod canvas;
@@ -22,14 +24,19 @@ mod fenwick;
 pub mod filesystem;
 pub mod geometry;
 mod grid;
+pub mod host_channel;
 pub mod image;
 pub mod input;
+pub mod input_tokens;
 pub mod js;
 pub mod keymap;
+pub mod mobile;
 mod mount;
 pub mod navigation;
+pub mod open_url;
 mod ops;
 pub mod overlay;
+pub mod picker;
 pub mod platform;
 mod props;
 pub mod reactive;
@@ -70,18 +77,20 @@ pub use crate::{
     geometry::{Bounds, Corners, Edges, Point, Points, Size},
     image::ImageData,
     mount::{
-        ImageOptions, InputConfig, ModalConfig, MountBatch, MountItem, NO_NATIVE_HEADER,
-        NativeProps, ScreenConfig, ScrollBehavior, StickyCell, VideoProps, ViewKind, WebProps,
+        AudioSession, ImageOptions, InputConfig, ModalConfig, MountBatch, MountItem,
+        NO_NATIVE_HEADER, NativeProps, ScreenConfig, ScrollBehavior, StickyCell, VideoProps,
+        ViewKind, WebProps,
     },
     ops::{
         AutoCapitalize, AutoFill, CellSlot, Command, ContextMenuEvent, Dialog, DialogButton,
-        DialogButtonStyle, EventKind, EventMask, EventPayload, HeaderSlot, HoverEvent,
-        IMAGE_SCALES, ImageProp, ImageScales, ImageSource, KeyboardAppearance, KeyboardDismissMode,
-        KeyboardTaps, KeyboardType, ListContentStyle, ListViewport, ModalAnimation,
-        ModalPresentation, ModalProp, NativeProp, NodeId, Op, OverlayProp, PayloadValue,
-        PressEvent, Prop, ROOT_ID, ResizeMode, ReturnKeyType, ScreenAnimation, ScreenProp,
-        ScrollProp, SnapAlignment, StatusBarConfig, StatusBarSetting, StatusBarStyle,
-        SubmitBehavior, Tag, TouchEvent, TouchPhase, TouchPoint, Viewability, WebSource,
+        DialogButtonStyle, EventKind, EventMask, EventPayload, HeaderSlot, HeaderSystemItem,
+        HoverEvent, IMAGE_SCALES, ImageProp, ImageScales, ImageSource, KeyboardAppearance,
+        KeyboardDismissMode, KeyboardTaps, KeyboardType, ListContentStyle, ListViewport,
+        ModalAnimation, ModalPresentation, ModalProp, NativeProp, NodeId, Op, OverlayProp,
+        PasteBehavior, PasteEvent, PastedFile, PayloadValue, PressEvent, Prop, ROOT_ID, ResizeMode,
+        ReturnKeyType, ScreenAnimation, ScreenProp, ScrollProp, SnapAlignment, StatusBarConfig,
+        StatusBarSetting, StatusBarStyle, SubmitBehavior, Tag, TouchEvent, TouchPhase, TouchPoint,
+        Viewability, WebSource,
     },
     props::{
         Accessibility, AccessibilityActionDef, AccessibilityProp, AccessibilityRole,
@@ -97,9 +106,9 @@ pub use crate::{
     },
     text::{
         ATTACHMENT_CHAR, ApproxTextEngine, AttachmentAlignments, AttributedText, BackgroundBox,
-        FontExtent, LinePiece, ResolvedTextStyle, TextAttachment, TextBackground, TextEngine,
-        TextLayout, TextLine, TextLink, TextSpan,
+        FontExtent, LinePiece, ResolvedTextStyle, SpanTestId, TextAttachment, TextBackground,
+        TextEngine, TextLayout, TextLine, TextLink, TextSpan,
     },
-    text_source::{TextSource, TextSourceKind, TextSourceSegment},
+    text_source::{ListSourceRows, TextSource, TextSourceKind, TextSourceSegment},
     transform::{Decomposed, MAX_TRANSFORMS, Matrix, Transform, TransformKind, TransformOp},
 };

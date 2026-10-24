@@ -596,6 +596,9 @@ with web views). `ComponentContext::emit`, `set_size` (points) and `redraw` work
   small values, not large blobs, on every change.
 - **One bundle, both platforms.** Register the same names with the same props and events on iOS and Android, so one
   bundle runs on both.
+- **Names under `nsh/` are NSH's.** NSH's own components (the system's tab bar of `nsh/mobile`'s `TabBar`) are
+  registered under `nsh/`; name yours after your app or company (`embed.badge`), and a registration under `nsh/` logs
+  a warning and keeps NSH's.
 
 ## See also
 

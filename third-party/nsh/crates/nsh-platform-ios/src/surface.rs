@@ -23,9 +23,10 @@ use objc2_foundation::{
 };
 use objc2_ui_kit::{
     NSValueUIGeometryExtensions, UIDevice, UIFont, UIFontTextStyleBody,
-    UIKeyboardAnimationDurationUserInfoKey, UIKeyboardFrameEndUserInfoKey,
-    UIKeyboardWillChangeFrameNotification, UIKeyboardWillHideNotification, UIResponder,
-    UITraitCollection, UITraitEnvironment, UIUserInterfaceIdiom, UIUserInterfaceStyle, UIView,
+    UIKeyboardAnimationCurveUserInfoKey, UIKeyboardAnimationDurationUserInfoKey,
+    UIKeyboardFrameEndUserInfoKey, UIKeyboardWillChangeFrameNotification,
+    UIKeyboardWillHideNotification, UIResponder, UITraitCollection, UITraitEnvironment,
+    UIUserInterfaceIdiom, UIUserInterfaceStyle, UIView,
 };
 
 use crate::{
@@ -420,13 +421,47 @@ impl RootView {
                 )
             });
         }
+        let weak = Weak::from_retained(this);
+        let focus = RcBlock::new(move |_: NonNull<NSNotification>| {
+            let Some(view) = weak.load() else { return };
+            let Some(shared) = view
+                .ivars()
+                .running
+                .borrow()
+                .as_ref()
+                .map(|r| r.mounter.clone())
+            else {
+                return;
+            };
+            // UIKit can change focus while applying a mount. Read its final
+            // native authority on the main queue without reentering mounter.
+            DispatchQueue::main().exec_async(move || {
+                let mtm = MainThreadMarker::new().expect("main queue");
+                if let Some(mounter) = shared.get(mtm).borrow().as_ref() {
+                    mounter.publish_focus_path();
+                }
+            });
+        });
+        // SAFETY: UIKit's hardware-keyboard focus notification; registration
+        // follows the existing observer lifecycle and runs on the main queue.
+        observers.push(unsafe {
+            center.addObserverForName_object_queue_usingBlock(
+                Some(objc2_ui_kit::UIFocusDidUpdateNotification),
+                None,
+                Some(&NSOperationQueue::mainQueue()),
+                &focus,
+            )
+        });
     }
 
     fn keyboard_changed(&self, note: &NSNotification) {
+        // The keyboard starts to move now, in the transaction posting this.
+        let start = objc2_quartz_core::CACurrentMediaTime();
         let Some(info) = note.userInfo() else { return };
         // SAFETY: UIKit documents these user info keys and their value types
-        // (NSValue of a CGRect in screen coordinates, NSNumber of seconds).
-        let (frame, duration) = unsafe {
+        // (NSValue of a CGRect in screen coordinates, NSNumber of seconds,
+        // NSNumber of a UIViewAnimationCurve).
+        let (frame, duration, curve) = unsafe {
             let frame = info
                 .objectForKey(UIKeyboardFrameEndUserInfoKey)
                 .and_then(|v| v.downcast::<NSValue>().ok())
@@ -435,7 +470,11 @@ impl RootView {
                 .objectForKey(UIKeyboardAnimationDurationUserInfoKey)
                 .and_then(|v| v.downcast::<NSNumber>().ok())
                 .map_or(0.25, |n| n.doubleValue());
-            (frame, duration)
+            let curve = info
+                .objectForKey(UIKeyboardAnimationCurveUserInfoKey)
+                .and_then(|v| v.downcast::<NSNumber>().ok())
+                .map_or(7, |n| n.integerValue());
+            (frame, duration, curve)
         };
         let hiding = note.name().isEqualToString(
             // SAFETY: an immutable UIKit constant.
@@ -470,12 +509,17 @@ impl RootView {
             return;
         };
         let height = height as f32;
+        let motion = crate::mount::KeyboardMotion {
+            curve,
+            duration,
+            start,
+        };
         // Focusing an input while a batch is applied can post this
         // synchronously: then run it on the next main-queue turn.
         let busy = match mounter.get(self.mtm()).try_borrow_mut() {
             Ok(mut m) => {
                 if let Some(m) = m.as_mut() {
-                    m.keyboard_changed(height, duration);
+                    m.keyboard_changed(height, motion);
                 }
                 false
             }
@@ -485,7 +529,7 @@ impl RootView {
             DispatchQueue::main().exec_async(move || {
                 let mtm = MainThreadMarker::new().expect("main queue");
                 if let Some(m) = mounter.get(mtm).borrow_mut().as_mut() {
-                    m.keyboard_changed(height, duration);
+                    m.keyboard_changed(height, motion);
                 }
             });
         }
@@ -521,6 +565,7 @@ impl RootView {
             ui_sets: crate::ui_sets(),
             runtime: None,
             data_dir: self.ivars().options.data_dir.clone(),
+            cache: system_cache(self.ivars().options.cache.clone()),
             storage: self.ivars().options.storage.as_ref().map(|dir| {
                 nsh_engine::FileStorage::open(dir) as Arc<dyn nsh_engine::StorageBackend>
             }),
@@ -528,6 +573,8 @@ impl RootView {
             context: Default::default(),
             pinned: Default::default(),
             clipboard: None,
+            host: self.ivars().options.host.clone(),
+            picker: None,
         };
         // A test session's app: the test's storage, network and trace.
         #[cfg(feature = "dev")]
@@ -570,7 +617,7 @@ impl RootView {
         // mounter is installed here.
         let root = Retained::into_super(self.retain());
         let asset_base = self.ivars().options.asset_base.clone();
-        *mounter.get(mtm).borrow_mut() = Some(Mounter::new(
+        let mut installed = Mounter::new(
             mtm,
             root,
             engine.control(),
@@ -578,7 +625,10 @@ impl RootView {
             asset_base,
             access,
             self.ivars().options.components.clone(),
-        ));
+        );
+        // The app's downloaded images go through its disk cache.
+        installed.set_image_cache(engine.image_cache());
+        *mounter.get(mtm).borrow_mut() = Some(installed);
         *self.ivars().running.borrow_mut() = Some(Running { engine, mounter });
         self.ivars().environment.set(Some(self.environment()));
     }
@@ -628,8 +678,17 @@ pub struct SurfaceOptions {
     /// (`storage.json` in it), overriding their own in
     /// [`SurfaceOptions::data_dir`]; `None`: theirs.
     pub storage: Option<std::path::PathBuf>,
+    /// Where the apps keep their caches (the images they downloaded) and
+    /// how much each keeps: by default `nsh` in the app's Caches
+    /// ([`nsh_engine::CacheLocation::System`]), each app in
+    /// `<dir>/<app id>`.
+    pub cache: nsh_engine::CacheOptions,
     /// The native components the apps can use (`nsh/native`).
     pub components: crate::component::Components,
+    /// The embedding app's channel with the apps (`nsh/host`): launch
+    /// parameters, events and handlers of their calls and posts, one for
+    /// every app the surface runs.
+    pub host: nsh_engine::HostChannel,
 }
 
 impl Default for SurfaceOptions {
@@ -641,7 +700,9 @@ impl Default for SurfaceOptions {
             granted: None,
             data_dir: data_dir(),
             storage: None,
+            cache: nsh_engine::CacheOptions::default(),
             components: crate::component::Components::default(),
+            host: nsh_engine::HostChannel::default(),
         }
     }
 }
@@ -651,6 +712,21 @@ impl Default for SurfaceOptions {
 /// its id.
 fn data_dir() -> Option<std::path::PathBuf> {
     nsh_engine::data_dir().map(|dir| dir.join("nsh"))
+}
+
+/// `cache` with [`nsh_engine::CacheLocation::System`] made iOS's: `nsh` in
+/// the (embedding or standalone) app's Caches, as its data is in its
+/// Application Support.
+fn system_cache(mut cache: nsh_engine::CacheOptions) -> nsh_engine::CacheOptions {
+    if cache.location == nsh_engine::CacheLocation::System {
+        cache.location = match std::env::var_os("HOME").filter(|home| !home.is_empty()) {
+            Some(home) => nsh_engine::CacheLocation::Dir(
+                std::path::PathBuf::from(home).join("Library/Caches/nsh"),
+            ),
+            None => nsh_engine::CacheLocation::Off,
+        };
+    }
+    cache
 }
 
 /// One running nsh app hosted in a `UIView`.

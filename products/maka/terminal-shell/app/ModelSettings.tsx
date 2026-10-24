@@ -41,6 +41,7 @@ import {
 } from './ui';
 import { Icon } from './Icon';
 import { tr } from './locale';
+import type { ModelSelection } from '../../../../packages/plugin-sdk/src/generated/runtime';
 
 type Section = 'general' | 'connections' | 'network' | 'plugins';
 type BackAction = { section: Section; identity: string };
@@ -53,7 +54,7 @@ const sections = [
 
 // One native Dialog owns focus restoration. Forms keep their own canonical
 // snapshot and unsaved edits; all writes share the original native journal.
-export function ModelSettings(props: { close(): void; changed(): void }) {
+export function ModelSettings(props: { close(): void; changed(): void; model?: ModelSelection }) {
   const section = signal<Section>('connections');
   const rail = () => windowSize().width >= 880 && !compact();
   const operations = createSettingsOperations();
@@ -61,6 +62,7 @@ export function ModelSettings(props: { close(): void; changed(): void }) {
     props.changed,
     operations,
     () => section() === 'connections',
+    props.model,
   );
   const general = createGeneralSettings(operations, () => section() === 'general');
   const network = createNetworkSettings(operations, () => section() === 'network');

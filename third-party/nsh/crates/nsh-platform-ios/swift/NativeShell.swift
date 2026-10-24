@@ -37,6 +37,41 @@ private func check(_ error: UnsafeMutablePointer<CChar>?) throws {
     throw NshError(message: message)
 }
 
+/// Where the apps an `NshAppView` loads keep their caches, and how much each
+/// keeps: today the images they download, kept as the server sent them so
+/// they show again without a download (and offline).
+public struct NshCacheOptions: Equatable, Sendable {
+    /// The root of the apps' caches: each app's in `<root>/<app id>`.
+    public enum Location: Equatable, Sendable {
+        /// `nsh` in the app's Caches (the system may clear it for space).
+        case system
+        /// A directory of the app's choosing.
+        case directory(URL)
+        /// Nothing on disk.
+        case off
+    }
+
+    /// How much one cache keeps.
+    public enum Policy: Equatable, Sendable {
+        /// Its default size (images: 256 MB).
+        case `default`
+        /// At most this many megabytes (MiB); the least recently used go first.
+        case maxSize(megabytes: Int)
+        /// Not kept on disk.
+        case off
+    }
+
+    /// Where: `.system` by default.
+    public var location: Location
+    /// The images the apps download: `.default` by default.
+    public var images: Policy
+
+    public init(location: Location = .system, images: Policy = .default) {
+        self.location = location
+        self.images = images
+    }
+}
+
 /// The VM limits of an app (`nil`: the default).
 public struct NshLimits: Sendable, Equatable {
     /// JS heap in MB (default 256, for an app embedded in another). Running out stops the app.
@@ -80,6 +115,8 @@ private final class ErrorHandlerBox {
 @MainActor
 public final class NshAppView: UIView {
     private let app: OpaquePointer
+    /// What ``onOpenURL`` holds.
+    private var openURLHandler: (@MainActor (URL) -> Bool)?
 
     /// Creates the view. `trace` logs per-commit timings.
     public init(frame: CGRect = .zero, trace: Bool = false) {
@@ -152,6 +189,42 @@ public final class NshAppView: UIView {
         }
     }
 
+    /// Where the apps this view loads keep their caches (the images they
+    /// downloaded, so they show again without a download and offline) and
+    /// how much each keeps. Applies from the next load.
+    public var cacheOptions = NshCacheOptions() {
+        didSet { applyCacheOptions() }
+    }
+
+    private func applyCacheOptions() {
+        var c = NativeShellC.NshCacheOptions()
+        c.size = UInt32(MemoryLayout<NativeShellC.NshCacheOptions>.size)
+        var directory: String?
+        switch cacheOptions.location {
+        case .system: c.location = UInt32(NSH_CACHE_LOCATION_SYSTEM)
+        case .directory(let url):
+            c.location = UInt32(NSH_CACHE_LOCATION_DIRECTORY)
+            directory = url.path
+        case .off: c.location = UInt32(NSH_CACHE_LOCATION_OFF)
+        }
+        switch cacheOptions.images {
+        case .default: c.images = UInt32(NSH_CACHE_POLICY_DEFAULT)
+        case .maxSize(let megabytes):
+            c.images = UInt32(NSH_CACHE_POLICY_MAX_SIZE)
+            c.images_max_mb = UInt32(clamping: megabytes)
+        case .off: c.images = UInt32(NSH_CACHE_POLICY_OFF)
+        }
+        // Valid by construction (a file path is UTF-8), so this cannot fail.
+        guard let directory else {
+            try? check(nsh_app_set_cache(app, &c))
+            return
+        }
+        directory.withCString { path in
+            c.directory = path
+            try? check(nsh_app_set_cache(app, &c))
+        }
+    }
+
     /// The host app's language, standing in for the user's: what `Intl`
     /// formats for by default and what `locale()` (`nsh/device`) reads, at
     /// once and for every app loaded later. `nil` follows the system's.
@@ -169,6 +242,21 @@ public final class NshAppView: UIView {
     public var fontScale: CGFloat? {
         didSet {
             nsh_app_set_font_scale(app, Float(fontScale ?? 0))
+        }
+    }
+
+    /// The launch parameters of the apps loaded from now on: what the app
+    /// reads synchronously at start as `host.params` (`nsh/host`), such as the
+    /// conversation a notification opens. Values are JSON objects (`String`,
+    /// `NSNumber`, `Bool`, `[Any]`, `[String: Any]`, `NSNull`). A running app
+    /// keeps the parameters it started with; later requests are events
+    /// (``send(_:_:)``).
+    public var params: [String: Any] = [:] {
+        didSet {
+            guard let json = jsonText(params) else {
+                return print("[nsh] the parameters are not JSON")
+            }
+            try? check(json.withCString { nsh_app_set_host_params(app, $0) })
         }
     }
 
@@ -400,6 +488,162 @@ private func jsonObject(_ json: UnsafePointer<CChar>?) -> Any? {
     guard let json else { return nil }
     let data = Data(bytes: json, count: strlen(json))
     return try? JSONSerialization.jsonObject(with: data, options: .fragmentsAllowed)
+}
+
+/// Foundation objects as JSON text (`nil`: JSON `null`); `nil` when they are
+/// not JSON.
+private func jsonText(_ value: Any?) -> String? {
+    guard let value, !(value is NSNull) else { return "null" }
+    guard JSONSerialization.isValidJSONObject([value]),
+        let json = try? JSONSerialization.data(withJSONObject: value, options: .fragmentsAllowed)
+    else { return nil }
+    return String(decoding: json, as: UTF8.self)
+}
+
+/// The answer to a call of the app (`host.call` in `nsh/host`): give it once,
+/// from any thread, with ``resolve(_:)`` or ``reject(_:)``. A reply released
+/// unanswered fails the call. A post's reply (``isPost``) goes nowhere.
+public final class NshHostReply: @unchecked Sendable {
+    private var call: OpaquePointer?
+    private let lock = NSLock()
+
+    /// Whether this answers a post (`host.post`), which expects none.
+    public let isPost: Bool
+
+    fileprivate init(_ call: OpaquePointer?) {
+        self.call = call
+        isPost = call == nil
+    }
+
+    private func take() -> OpaquePointer? {
+        lock.lock()
+        defer { lock.unlock() }
+        let taken = call
+        call = nil
+        return taken
+    }
+
+    /// Answers with `value` (anything `JSONSerialization` takes; `nil` is
+    /// `null`): the app's promise resolves with it.
+    public func resolve(_ value: Any? = nil) {
+        guard let call = take() else { return }
+        guard let json = jsonText(value) else {
+            return nsh_host_call_reject(call, "the embedding app's answer is not JSON")
+        }
+        json.withCString { nsh_host_call_resolve(call, $0) }
+    }
+
+    /// Fails the call: the app's promise rejects with an `Error` of `message`.
+    public func reject(_ message: String) {
+        guard let call = take() else { return }
+        nsh_host_call_reject(call, message)
+    }
+
+    deinit {
+        nsh_host_call_free(call)
+    }
+}
+
+/// Holds a host handler for the C callback.
+private final class HostHandlerBox {
+    let handler: @MainActor (Any?, NshHostReply) -> Void
+    init(_ handler: @escaping @MainActor (Any?, NshHostReply) -> Void) { self.handler = handler }
+}
+
+extension NshAppView {
+    /// Sends event `name` with `data` (anything `JSONSerialization` takes) to
+    /// the running app: its `host.on(name, listener)` listeners get it
+    /// (`nsh/host`). An app that does not listen to `name` yet keeps the event
+    /// until it does; while no app runs, it waits for the next one loaded. It
+    /// never waits for the app.
+    public func send(_ name: String, _ data: Any? = nil) {
+        guard let json = jsonText(data) else {
+            return print("[nsh] event \(name): data is not JSON")
+        }
+        do {
+            try check(json.withCString { nsh_app_send_host_event(app, name, $0) })
+        } catch {
+            print("[nsh] event \(name): \(error)")
+        }
+    }
+
+    /// Handles the app's calls (`await host.call(name, data)`) and posts
+    /// (`host.post(name, data)`) of `name` on the main thread, replacing the
+    /// handler it had: `handler` gets the data (JSON as Foundation objects,
+    /// `nil` for `null`) and the reply, which it gives once, now or later,
+    /// from any thread. The app's calls of a name without a handler fail at
+    /// once.
+    public func handle(_ name: String, _ handler: @escaping @MainActor (_ data: Any?, _ reply: NshHostReply) -> Void) {
+        let box = Unmanaged.passRetained(HostHandlerBox(handler)).toOpaque()
+        nsh_app_set_host_handler(
+            app, name,
+            { context, json, call in
+                let box = Unmanaged<HostHandlerBox>.fromOpaque(context!).takeUnretainedValue()
+                let data = jsonObject(json).flatMap { $0 is NSNull ? nil : $0 }
+                let reply = NshHostReply(call)
+                // nsh calls it on the main thread.
+                MainActor.assumeIsolated { box.handler(data, reply) }
+            },
+            box,
+            { context in Unmanaged<HostHandlerBox>.fromOpaque(context!).release() }
+        )
+    }
+
+    /// Handles the app's calls and posts of `name` with an async function: its
+    /// result (anything `JSONSerialization` takes) answers the call, and an
+    /// error it throws rejects it with the error's description.
+    public func handle(_ name: String, _ handler: @escaping @MainActor (_ data: Any?) async throws -> Any?) {
+        handle(name) { (data: Any?, reply: NshHostReply) in
+            Task { @MainActor in
+                do {
+                    reply.resolve(try await handler(data))
+                } catch {
+                    reply.reject(error.localizedDescription)
+                }
+            }
+        }
+    }
+
+    /// Removes the handler of `name`: the app's calls of it fail at once from
+    /// now on, its posts are dropped.
+    public func removeHandler(_ name: String) {
+        nsh_app_set_host_handler(app, name, nil, nil, nil)
+    }
+
+    /// Takes the URLs the app opens (`openUrl` of `nsh/device`, a
+    /// `TextView`'s links when it opens them) before the system does, on the
+    /// main thread: return `true` when the embedding app handled the URL (routed
+    /// it through its own router; the app's `openUrl` resolves `true`), `false`
+    /// for the system to open it (`UIApplication.open`). `nil` (the default):
+    /// the system opens every URL. URLs reach it checked and granted (the
+    /// app's `openUrl` capability).
+    public var onOpenURL: (@MainActor (URL) -> Bool)? {
+        get { openURLHandler }
+        set {
+            openURLHandler = newValue
+            guard let newValue else {
+                return nsh_app_set_open_url_handler(app, nil, nil, nil)
+            }
+            let box = Unmanaged.passRetained(OpenURLHandlerBox(newValue)).toOpaque()
+            nsh_app_set_open_url_handler(
+                app,
+                { context, url in
+                    let box = Unmanaged<OpenURLHandlerBox>.fromOpaque(context!).takeUnretainedValue()
+                    guard let url = URL(string: String(cString: url)) else { return false }
+                    // nsh calls it on the main thread.
+                    return MainActor.assumeIsolated { box.handler(url) }
+                },
+                box,
+                { context in Unmanaged<OpenURLHandlerBox>.fromOpaque(context!).release() }
+            )
+        }
+    }
+}
+
+/// Holds a URL handler for the C callback.
+private final class OpenURLHandlerBox {
+    let handler: @MainActor (URL) -> Bool
+    init(_ handler: @escaping @MainActor (URL) -> Bool) { self.handler = handler }
 }
 
 extension NshAppView {

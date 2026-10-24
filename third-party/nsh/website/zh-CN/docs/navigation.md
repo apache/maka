@@ -244,6 +244,7 @@ export const nav = createNavStack<Route>([{ name: "home" }]);
 | `headerBackVisible` | `boolean` | `true` | iOS 和 Android：显示返回按钮。 |
 | `headerLeft` | `JSX.Element` | | iOS 和 Android：标题栏开头的视图（替换返回按钮）。 |
 | `headerRight` | `JSX.Element` | | iOS 和 Android：标题栏末尾的视图。 |
+| `ios={{ headerRightSystemItem }}` | `"add" \| "done" \| "close" \| "edit" \| "compose" \| "search" \| "share" \| "trash" \| "save" \| "cancel"` | | iOS：在标题栏末尾显示 UIKit 自带的按钮（系统的外观、图标或文字），代替 `headerRight` 的视图；按下它就是按下 `headerRight` 里第一个可按的视图，所以那里要放一个。Android 照常显示 `headerRight`。 |
 | `headerTitle` | `JSX.Element` | | iOS 和 Android：替换标题的视图。 |
 | `headerLargeTitle` | `boolean` | `false` | iOS：大标题，内容滚动时缩进标题栏。 |
 | `headerBackTitle` | `string` | | 返回到本页面的返回按钮上的文字（iOS；Android 的向上箭头把它读给屏幕阅读器）。 |

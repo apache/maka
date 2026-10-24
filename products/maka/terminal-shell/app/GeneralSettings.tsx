@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { Input, inputAction, Scroll, Text, View } from 'nsh';
+import { inputAction, Scroll, Text, View } from 'nsh';
 import { tr } from './locale';
 import { Button } from 'nsh/base';
 import {
@@ -25,16 +25,14 @@ import {
   type GeneralAction,
   type GeneralSettingsOwner,
 } from './generalSettings.ts';
-import { SettingsField } from './SettingsField';
+import { SettingsEditor, SettingsField } from './SettingsField';
+import { UiScaleSettings } from './UiScaleSettings';
 import { ChoiceIndicator } from './ChoiceIndicator';
 import { Icon } from './Icon';
 import {
   bodyTextStyle,
   captionTextStyle,
   C,
-  compact,
-  inputBorderRadius,
-  inputTextStyle,
   controlStyle,
   controlHoverStyle,
   controlFocusStyle,
@@ -45,7 +43,16 @@ export function GeneralSettings(props: { owner: GeneralSettingsOwner }) {
   const owner = props.owner;
   return (
     <Scroll style={{ flex: 1, minHeight: 0 }}>
-      <View style={{ padding: 8, gap: 16 }}>
+      <View
+        style={{
+          padding: 8,
+          gap: 16,
+          height:
+            owner.editor()?.kind === 'globalInstructions' || owner.editor()?.kind === 'compaction'
+              ? '100%'
+              : undefined,
+        }}
+      >
         <If when={owner.loading()}>
           <Text style={{ ...bodyTextStyle, color: C.muted }}>
             {owner.editor()?.kind === 'globalInstructions'
@@ -83,6 +90,7 @@ function GeneralRoot(props: { owner: GeneralSettingsOwner; request: GeneralActio
       >
         <Text style={{ ...bodyTextStyle, color: C.secondary }}>{tr('Refresh preferences')}</Text>
       </Button>
+      <UiScaleSettings />
       <If when={owner.facts()}>
         <View style={{ gap: 8 }}>
           <Text style={{ ...bodyTextStyle, color: C.text, fontWeight: '600' }}>
@@ -284,7 +292,7 @@ function PreferenceEditor(props: { owner: GeneralSettingsOwner; request: General
     return editor?.kind === 'compaction' ? editor.prompt : '';
   };
   return (
-    <View style={{ gap: 16 }}>
+    <View style={{ gap: 16, flex: request.kind === 'compaction' ? 1 : undefined, minHeight: 0 }}>
       <Text style={{ ...captionTextStyle, color: C.muted }}>
         {tr('Changes apply when you save this page.')}
       </Text>
@@ -297,12 +305,11 @@ function PreferenceEditor(props: { owner: GeneralSettingsOwner; request: General
         />
       </If>
       <If when={request.kind === 'compaction'}>
-        <SettingsField
+        <SettingsEditor
           label={tr('Compaction prompt')}
           value={prompt()}
           change={(text) => owner.editPrompt(request, text)}
           disabled={owner.disabled()}
-          multiline
         />
         <Button
           disabled={owner.disabled()}
@@ -351,7 +358,7 @@ function GlobalInstructionsEditor(props: { owner: GeneralSettingsOwner; request:
   const request = props.request;
   const document = owner.globalDocument;
   return (
-    <View style={{ gap: 16 }}>
+    <View style={{ gap: 16, flex: 1, minHeight: 0 }}>
       <If when={document()}>
         <Text selectable style={{ ...captionTextStyle, color: C.muted }}>
           {document()?.basis.path}
@@ -361,27 +368,11 @@ function GlobalInstructionsEditor(props: { owner: GeneralSettingsOwner; request:
             {tr('This file does not exist. Saving will create it.')}
           </Text>
         </If>
-        <Input
-          accessibilityLabel={tr('Global instructions')}
+        <SettingsEditor
+          label={tr('Global instructions')}
           value={document()?.content ?? ''}
-          onChange={(content) => owner.editGlobal(request, content)}
-          multiline
-          submitBehavior="newline"
-          readonly={owner.disabled()}
-          autoCapitalize="none"
-          autoCorrect={false}
-          style={{
-            ...inputTextStyle,
-            height: compact() ? 200 : 320,
-            borderWidth: 1,
-            borderColor: C.line,
-            borderRadius: inputBorderRadius,
-            backgroundColor: C.background,
-            color: C.text,
-            paddingHorizontal: 12,
-            paddingVertical: 8,
-          }}
-          focusStyle={{ borderColor: C.accent }}
+          change={(content) => owner.editGlobal(request, content)}
+          disabled={owner.disabled()}
         />
         <If when={document()?.conflict}>
           <Text style={{ ...captionTextStyle, color: C.warning }}>

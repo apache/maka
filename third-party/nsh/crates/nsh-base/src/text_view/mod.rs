@@ -8,6 +8,7 @@ mod extension;
 mod highlight;
 mod html;
 mod markdown;
+mod parse;
 mod parts;
 mod view;
 
@@ -23,6 +24,8 @@ pub use self::{
     parts::{PartStyle, TextViewClasses, TextViewPart, TextViewParts, TextViewStyles},
     view::{
         CodeHighlighter, TextView, TextViewCodeAction, TextViewCodeActionEvent, TextViewElement,
-        TextViewEvent, TextViewLinkPressEvent, TextViewMath, TextViewProps, text_view,
+        TextViewEvent, TextViewImageContext, TextViewImageFlow, TextViewLabels,
+        TextViewLinkPressEvent, TextViewLinkTarget, TextViewLinks, TextViewMath, TextViewProps,
+        text_view,
     },
 };

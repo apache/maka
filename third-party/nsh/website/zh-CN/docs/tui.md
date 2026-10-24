@@ -116,8 +116,13 @@ Ctrl+Y 撤销和重做。安全输入框隐藏内容并保护复制与剪切。�
 应用的 [`nsh/keymap`](../modules/nsh-keymap.md) 绑定先于默认处理执行。终端模拟器决定哪些按键和修饰键会传给
 应用；请选择目标终端能够转发的快捷键。
 
-可选择文本支持鼠标选择和 Ctrl+A/C，行内文本链接通过指针命中测试激活。原生提示框和操作表使用 Tab 或方向键
-选择按钮，Enter 激活按钮。
+可选择文本支持鼠标选择，行内文本链接通过指针命中测试激活。
+[`SelectionArea`](../elements/selection-area.md) 让同一个选区跨越文本节点、多行文本和 `TextView` 文档块。
+拖动或 Shift+点击可扩展选区；按住指针拖出 Scroll 边缘时会自动滚动。Ctrl+A 选中区域内的全部文字，
+Ctrl+C 或 Ctrl+Insert 复制，Escape 清除非空选区。`selectable={false}` 的文字不参与选择，可用于排除标签和
+控件文字。复制使用底层文本及其中的换行和 Unicode 内容，经由上述同一套宿主剪贴板与 OSC 52 路径输出。
+模态界面或获得焦点的弹出层会暂停已保留的背景选区对键盘的处理；关闭弹出层后，该选区可再次接收复制等操作。
+原生提示框和操作表使用 Tab 或方向键选择按钮，Enter 激活按钮。
 
 终端界面可使用 [`nsh/desktop`](../modules/nsh-desktop.md) 提供的标题与菜单。
 `platform.isTerminal` 标识这种呈现方式，`platform.idiom === "desktop" && !platform.isTerminal` 则标识图形桌面界面。

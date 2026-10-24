@@ -43,8 +43,14 @@ nsh-bundler = { workspace = true, optional = true }
 # one stays inside the module's sandbox (the native platforms keep them).
 rquickjs = { workspace = true, features = ["disable-assertions"], optional = true }
 serde_json.workspace = true
+serde.workspace = true
 nsh-testing = { workspace = true, features = ["agent"], optional = true }
 nsh-dev = { workspace = true, optional = true }
 log.workspace = true
 rustc-hash.workspace = true
 ttf-parser.workspace = true
+
+# The text rules (`src/text/css.rs`, `src/text/wrap.rs`) depend on nothing
+# of the browser: `tests/text` builds them on the host and tests them there.
+[dev-dependencies]
+nsh-core.workspace = true

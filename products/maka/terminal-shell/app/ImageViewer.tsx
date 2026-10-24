@@ -18,11 +18,10 @@
  */
 
 import { createText } from './text';
-import { cleanup, inputAction, signal, Text, View } from 'nsh';
+import { cleanup, inputAction, signal, Text, View, Image } from 'nsh';
 import type { YNode } from 'nsh';
 import { createAnimatedValue } from 'nsh/animated';
 import { Button, Dialog } from 'nsh/base';
-import { Image } from 'nsh/image';
 import { keymap } from 'nsh/keymap';
 import { Icon } from './Icon';
 import { tr } from './locale';

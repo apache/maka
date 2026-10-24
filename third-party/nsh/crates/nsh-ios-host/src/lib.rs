@@ -86,6 +86,10 @@ pub fn main() {
         AppOptions {
             trace,
             asset_base,
+            // Its caches too (downloaded images): a test's app starts with none.
+            cache: data_dir.as_ref().map_or_else(Default::default, |dir| {
+                nsh_engine::CacheOptions::at(nsh_engine::CacheLocation::Dir(dir.join("cache")))
+            }),
             data_dir,
         },
     );

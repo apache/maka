@@ -202,7 +202,6 @@ export const workspaceMessages = {
   'Loading image…': msg_imageLoading,
   'Loading session…': ['Loading session…', '正在加载会话…', '正在載入對話…'],
   Locations: ['Locations', '位置', '位置'],
-  'Narrower session browser': ['Narrower session browser', '缩窄会话浏览器', '縮窄對話瀏覽器'],
   'Navigating…': ['Navigating…', '正在跳转…', '正在跳轉…'],
   'New conversation in {name}': [
     'New conversation in {name}',
@@ -501,7 +500,6 @@ export const workspaceMessages = {
     '已複製可見終端內容。',
   ],
   'Waiting for you': msg_goalStatus_waiting,
-  'Wider session browser': ['Wider session browser', '加宽会话浏览器', '加寬對話瀏覽器'],
   'WorkHub manages this conversation. Its history cannot be forked here.': [
     'WorkHub manages this conversation. Its history cannot be forked here.',
     '此对话由 WorkHub 管理，无法在此处分叉其历史。',

@@ -17,9 +17,8 @@
  * under the License.
  */
 
-import { inputAction, Text, View } from 'nsh';
+import { inputAction, Text, View, List } from 'nsh';
 import { Button } from 'nsh/base';
-import { List } from 'nsh/list';
 import type { ModelSettingsOwner } from './settings';
 import { ConnectionForm } from './ConnectionForm';
 import { ConnectionModel } from './ConnectionModel';

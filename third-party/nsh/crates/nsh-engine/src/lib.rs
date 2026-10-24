@@ -10,7 +10,9 @@
 
 mod access;
 mod app_directory;
+mod cache;
 mod error;
+mod host_channel;
 mod local_storage;
 #[cfg(feature = "net")]
 pub mod net;
@@ -43,6 +45,7 @@ use nsh_core::{
     PayloadValue, TextEngine, time::Instant, ui::JsEvent,
 };
 pub use nsh_core::{
+    JsonValue,
     access::{Access, Capabilities},
     geometry::{self, Bounds, Edges, Point, Points, Size},
     js::{HostLimits, Limits},
@@ -63,8 +66,12 @@ use rustc_hash::FxHashMap;
 #[cfg(not(target_arch = "wasm32"))]
 pub use storage::{FileStorage, data_dir};
 
-pub use crate::error::{AppError, AppErrorKind, PackageInfo};
 use crate::script::{NetworkQueue, RequestId, Script};
+pub use crate::{
+    cache::{ByteSize, CacheLocation, CacheOptions, CachePolicy},
+    error::{AppError, AppErrorKind, PackageInfo},
+    host_channel::{HostCall, HostChannel, HostReply, OpenUrlRequest},
+};
 
 #[cfg(not(target_arch = "wasm32"))]
 /// Stack size of the engine thread. QuickJS recursion (and deep Solid
@@ -661,6 +668,10 @@ pub struct EngineConfig {
     /// system's data directory ([`data_dir`]) for apps of their own,
     /// `…/nsh` in an embedding app's. `None`: nothing is kept.
     pub data_dir: Option<std::path::PathBuf>,
+    /// Where the app's caches are kept and how much each keeps: the engine
+    /// opens them in `<root>/<app id>/<kind>` ([`Engine::image_cache`]).
+    /// [`EngineConfig::new`]: none.
+    pub cache: CacheOptions,
     /// The app's storage, overriding the one [`EngineConfig::data_dir`]
     /// names (the browser's `localStorage`, an embedder's own); `None`
     /// with no data directory either: in memory, for the engine's life.
@@ -681,6 +692,15 @@ pub struct EngineConfig {
     /// clipboard (a test's own: `nsh test --target`); `None`: the
     /// platform's.
     pub clipboard: Option<Arc<dyn nsh_core::clipboard::ClipboardBackend>>,
+    /// The embedding app's channel with the app (`nsh/host`): its launch
+    /// parameters, its events and its handlers of the app's calls and
+    /// posts. A view keeps one for every app it runs; the default is a
+    /// channel of the engine's own, with none of them.
+    pub host: HostChannel,
+    /// Answers the app's picks (`Picker.pickImages`) in place of the
+    /// platform's picker: the embedding app's own picker, or a test's
+    /// files; `None`: the platform's.
+    pub picker: Option<Arc<dyn nsh_core::picker::PickerBackend>>,
 }
 
 /// Values of the environment an engine keeps whatever its platform reports
@@ -765,11 +785,14 @@ impl EngineConfig {
             ui_sets: Vec::new(),
             runtime: None,
             data_dir: None,
+            cache: CacheOptions::off(),
             storage: None,
             clock: Clock::system(),
             context: EngineContext::default(),
             pinned: EnvironmentPins::default(),
             clipboard: None,
+            host: HostChannel::default(),
+            picker: None,
         }
     }
 }
@@ -823,6 +846,8 @@ impl std::fmt::Debug for EngineConfig {
             .field("context", &self.context)
             .field("pinned", &self.pinned)
             .field("clipboard", &self.clipboard.is_some())
+            .field("host", &self.host)
+            .field("picker", &self.picker.is_some())
             .finish()
     }
 }
@@ -845,6 +870,7 @@ enum Message {
     Wake,
     Environment(Environment),
     FocusPath(Vec<NodeId>),
+    ListCellRetired(NodeId, u64, bool),
     RootSize(NodeId, Size<Points>, EdgeInsets),
     ScreenHeader(NodeId, Option<Points>),
     Frame,
@@ -860,6 +886,18 @@ enum Message {
     Perf(Option<Arc<perf::PerfMonitor>>),
     /// The embedding app's design tokens.
     Tokens(Option<Box<Tokens>>),
+    /// The embedding app's event (`nsh/host`'s `host.on`): its name and
+    /// data.
+    HostEvent(String, nsh_core::JsonValue),
+    /// The embedding app's answer to call `.0` (`host.call`).
+    HostReply(u64, Result<nsh_core::JsonValue, String>),
+    /// The embedding app's URL handler answered URL request `id`: it took
+    /// the URL, or the platform opens it.
+    UrlHandled {
+        id: u32,
+        url: String,
+        handled: bool,
+    },
     /// Moves a manual clock forward by this much, then calls back.
     Advance(std::time::Duration, Box<dyn FnOnce() + Send>),
     /// Sent by a dropped [`Engine`] (there is none in WebAssembly).
@@ -967,6 +1005,13 @@ impl EngineControl {
         let _ = self.tx.send(Message::FocusPath(path));
     }
 
+    /// Answers `MountItem::RetireListCell` only after native input has stopped
+    /// targeting that cell, or refuses it while a descendant holds native
+    /// focus. Publish that native focus path before a refusal, on this FIFO.
+    pub fn retire_list_cell(&self, id: NodeId, request: u64, retired: bool) {
+        let _ = self.tx.send(Message::ListCellRetired(id, request, retired));
+    }
+
     /// The platform presents root `id` (a modal) at `size`, with `insets`
     /// of it covered by system UI.
     pub fn set_root_size(&self, id: NodeId, size: Size<Points>, insets: EdgeInsets) {
@@ -1048,8 +1093,12 @@ impl EngineControl {
 pub struct Engine {
     control: EngineControl,
     thread: Option<std::thread::JoinHandle<()>>,
+    /// Serializes shutdown with the embedding app's sends.
+    host: HostChannel,
     /// Interrupts running JS when the engine stops.
     stop: Arc<std::sync::atomic::AtomicBool>,
+    /// The app's disk cache of downloaded images.
+    image_cache: Option<nsh_core::image::DiskCache>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1078,11 +1127,13 @@ impl Engine {
         F: FnOnce() -> M + Send + 'static,
         S: MountSink,
     {
+        let image_cache = config.cache.open_images(config.app.app_id());
         let (tx, rx) = crossbeam_channel::unbounded();
         setup(&EngineControl { tx: tx.clone() });
         let engine_tx = tx.clone();
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let engine_stop = stop.clone();
+        let host = config.host.clone();
         let thread = std::thread::Builder::new()
             .name("nsh-engine".into())
             .stack_size(ENGINE_STACK_SIZE)
@@ -1090,8 +1141,17 @@ impl Engine {
         Ok(Engine {
             control: EngineControl { tx },
             thread: Some(thread),
+            host,
             stop,
+            image_cache,
         })
+    }
+
+    /// The disk cache of the images the app downloads
+    /// ([`EngineConfig::cache`]; `None`: none). The platform's image loader
+    /// routes the app's `http(s)` images through it.
+    pub fn image_cache(&self) -> Option<nsh_core::image::DiskCache> {
+        self.image_cache.clone()
     }
 
     /// A handle for sending input from other threads.
@@ -1105,8 +1165,7 @@ impl Drop for Engine {
     fn drop(&mut self) {
         // Dropped on the platform's main thread: a script still running is
         // aborted rather than waited for.
-        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
-        let _ = self.control.tx.send(Message::Shutdown);
+        self.host.shutdown(&self.control.tx, &self.stop);
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
@@ -1317,6 +1376,9 @@ struct Driver<M: TextEngine + 'static> {
     /// When the last display frame ran, on a clock that moves with the
     /// display's frames: the next one comes a frame after it.
     last_frame: Option<Instant>,
+    /// The engine's attachment to the embedding app's channel: its events
+    /// come here while the engine runs.
+    _host: host_channel::HostAttachment,
 }
 
 impl<M: TextEngine + 'static> Driver<M> {
@@ -1332,6 +1394,9 @@ impl<M: TextEngine + 'static> Driver<M> {
         config.pinned.apply(&mut config.environment);
         #[cfg(feature = "js")]
         let system_tx = tx.clone();
+        #[cfg(feature = "js")]
+        let host_bridge = config.host.bridge(tx.clone());
+        let host_tx = tx.clone();
         let text_engine = Rc::new(text_engine);
         let access = Arc::new(match &config.app {
             App::Js(bundle) => bundle.policy.access(),
@@ -1339,7 +1404,14 @@ impl<M: TextEngine + 'static> Driver<M> {
             App::Rust(_) => Policy::default().access(),
         });
         let mut core = Core::new(text_engine.clone(), config.viewport);
-        core.set_components(nsh_core::ui::Registry::merged(&config.ui_sets));
+        // The runtime's components (`nsh/mobile`'s `TabBar`) and the UI
+        // sets the host serves.
+        let sets: Vec<_> = nsh_core::runtime::registries()
+            .iter()
+            .chain(&config.ui_sets)
+            .cloned()
+            .collect();
+        core.set_components(nsh_core::ui::Registry::merged(&sets));
         // The JS calls Rust posts queue in one place, which the core
         // releases in order with the ops (a post during a synchronous call)
         // and the script runs.
@@ -1352,6 +1424,7 @@ impl<M: TextEngine + 'static> Driver<M> {
         core.set_access(access.clone());
         core.set_storage(app_storage(&config));
         core.set_clipboard(config.clipboard.clone());
+        core.set_picker(config.picker.clone());
         core.set_font_scale(config.environment.font_scale);
         core.set_class_environment(class_environment(&config.environment));
         core.set_header_heights(config.header_heights.0, config.header_heights.1);
@@ -1432,6 +1505,8 @@ impl<M: TextEngine + 'static> Driver<M> {
             sets_seen: FxHashMap::default(),
             resized: None,
             pinned: config.pinned,
+            host: config.host.clone(),
+            url_opens: Vec::new(),
             net: Net {
                 network: config.network.clone(),
                 tx,
@@ -1458,6 +1533,7 @@ impl<M: TextEngine + 'static> Driver<M> {
             clock: config.clock.clone(),
             context: config.context.clone(),
             last_frame: None,
+            _host: config.host.attach(host_tx, rx.clone()),
         };
         let eval_us = match &config.app {
             App::Js(bundle) => {
@@ -1475,6 +1551,7 @@ impl<M: TextEngine + 'static> Driver<M> {
                         wake: Arc::new(move || {
                             let _ = system_tx.send(Message::Wake);
                         }),
+                        host: Rc::new(host_bridge),
                     }
                 };
                 #[cfg(not(feature = "js"))]
@@ -1780,6 +1857,11 @@ struct State<M: TextEngine> {
     /// `items`; `js` is the rest of the wake-up).
     perf_commit: perf::CommitTiming,
     committed_since_gc: bool,
+    /// The embedding app's channel: its URL handler sees the app's URLs
+    /// first.
+    host: HostChannel,
+    /// URLs the app asked to open, taken from the core (a reused buffer).
+    url_opens: Vec<(u32, String)>,
     net: Net,
     /// Development updates to apply.
     hot: Vec<HotUpdate>,
@@ -1983,8 +2065,96 @@ impl<M: TextEngine> State<M> {
         }
     }
 
+    fn cancel_touch(&mut self, script: Option<&Script>, contact: u32) {
+        if let Some((_, pending)) = &mut self.touch_move {
+            if pending
+                .points
+                .iter()
+                .any(|point| point.id == contact && point.changed)
+            {
+                pending.activated = None;
+            }
+            pending.points.retain(|point| point.id != contact);
+            if !pending.points.iter().any(|point| point.changed) {
+                self.touch_move = None;
+            }
+        }
+        self.core.cancel_touch(contact);
+        if let Some(script) = script {
+            script.cancel_touch(contact);
+        }
+    }
+
+    fn filter_touch(&mut self, script: Option<&Script>, touch: &mut nsh_core::TouchEvent) {
+        let rejected_activation = touch
+            .activated
+            .is_some_and(|id| !self.core.accepts_native_input(id));
+        let invalid: Vec<_> = touch
+            .points
+            .iter()
+            .filter(|point| {
+                rejected_activation
+                    || point
+                        .path
+                        .iter()
+                        .any(|&id| !self.core.accepts_native_input(id))
+            })
+            .map(|point| point.id)
+            .collect();
+        for &contact in &invalid {
+            self.cancel_touch(script, contact);
+        }
+        touch.points.retain(|point| !invalid.contains(&point.id));
+        if rejected_activation {
+            touch.activated = None;
+        }
+    }
+
+    /// Source revocation happens before the old native frame disappears.
+    /// Forget its queued input and responders before an ACK can permit reuse.
+    fn discard_revoked_input(&mut self, script: Option<&Script>) -> bool {
+        let core = &self.core;
+        self.hover_moves
+            .retain(|(id, _, _)| core.accepts_native_input(*id));
+        self.scroll_events
+            .retain(|&id, _| core.accepts_native_input(id));
+        self.events.retain(|event| {
+            !matches!(event,
+            JsEvent::Event(id, _, _) if !core.accepts_native_input(*id))
+        });
+        let mut contacts = Vec::new();
+        core.invalid_touch_contacts(&mut contacts);
+        if let Some(script) = script {
+            script.invalid_touch_contacts(|id| core.accepts_native_input(id), &mut contacts);
+        }
+        if let Some((id, touch)) = &self.touch_move {
+            let activation_invalid = !core.accepts_native_input(*id)
+                || touch
+                    .activated
+                    .is_some_and(|id| !core.accepts_native_input(id));
+            contacts.extend(
+                touch
+                    .points
+                    .iter()
+                    .filter(|point| {
+                        activation_invalid
+                            || point.path.iter().any(|&id| !core.accepts_native_input(id))
+                    })
+                    .map(|point| point.id),
+            );
+        }
+        contacts.sort_unstable();
+        contacts.dedup();
+        let cancelled = !contacts.is_empty();
+        for contact in contacts {
+            self.cancel_touch(script, contact);
+        }
+        cancelled
+    }
+
     /// Sends the pending touch move.
     fn dispatch_touch_move(&mut self, script: Option<&Script>) {
+        self.discard_revoked_input(script);
         if let Some((id, touch)) = self.touch_move.take()
             && let Some(script) = script
         {
@@ -2011,6 +2181,9 @@ impl<M: TextEngine> State<M> {
         }
         self.hover_moved = Some(nsh_core::time::now());
         for (id, kind, payload) in std::mem::take(&mut self.hover_moves) {
+            if !self.core.accepts_native_input(id) {
+                continue;
+            }
             if deliver_component_event(script, &mut self.core, &mut self.events, id, kind, &payload)
             {
                 continue;
@@ -2039,7 +2212,7 @@ impl<M: TextEngine> State<M> {
         // Views that stopped listening (or are gone).
         let core = &self.core;
         self.scroll_events
-            .retain(|&id, _| core.scroll_listener(id).is_some());
+            .retain(|&id, _| core.accepts_native_input(id) && core.scroll_listener(id).is_some());
         for (&id, e) in &mut self.scroll_events {
             if !e.pending || e.last.is_some_and(|t| now < t + e.throttle) {
                 continue;
@@ -2127,6 +2300,21 @@ impl<M: TextEngine> State<M> {
 
     /// Produces one frame: applies JS ops, lays out, and lets lists pull
     /// the items they need, merging everything into a single batch.
+    /// Hands the URLs the app asked to open to the embedding app's URL
+    /// handler, or, without one, to the platform ([`nsh_core::open_url`]);
+    /// true when the platform has one to open (the core's commit sends it).
+    fn open_urls(&mut self) -> bool {
+        self.core.take_url_opens(&mut self.url_opens);
+        let mut platform = false;
+        for (id, url) in self.url_opens.drain(..) {
+            if self.host.open_url(id, url.clone(), &self.net.tx).is_none() {
+                self.core.open_url_on_platform(id, url);
+                platform = true;
+            }
+        }
+        platform
+    }
+
     fn commit(&mut self, script: Option<&Script>) -> Option<MountBatch> {
         let start = Instant::now();
         let mut merged: Option<MountBatch> = None;
@@ -2142,8 +2330,13 @@ impl<M: TextEngine> State<M> {
             // the core).
             let binds = self.binds.drain(..);
             if let Some(script) = script {
-                for bind in binds {
-                    script.bind_list(bind.list, &bind.binds);
+                for mut bind in binds {
+                    bind.binds.retain(|&(slot, index)| {
+                        self.core.current_list_bind(bind.list, slot, index)
+                    });
+                    if !bind.binds.is_empty() {
+                        script.bind_list(bind.list, &bind.binds);
+                    }
                 }
                 script.take_ops(&mut self.ops);
                 // Taking ops publishes JS list sources. Their count/splice
@@ -2165,9 +2358,14 @@ impl<M: TextEngine> State<M> {
                     let start = Instant::now();
                     let ops = self.ops.len();
                     self.core.take_paced_list_binds(1, &mut binds);
-                    for bind in binds.drain(..) {
+                    for mut bind in binds.drain(..) {
+                        bind.binds.retain(|&(slot, index)| {
+                            self.core.current_list_bind(bind.list, slot, index)
+                        });
                         paced.cells += bind.binds.len();
-                        script.bind_list(bind.list, &bind.binds);
+                        if !bind.binds.is_empty() {
+                            script.bind_list(bind.list, &bind.binds);
+                        }
                     }
                     script.take_ops(&mut self.ops);
                     source_pending = source_changed(&self.ops[ops..]);
@@ -2188,6 +2386,9 @@ impl<M: TextEngine> State<M> {
             for event in self.events.drain(..) {
                 match event {
                     JsEvent::Event(id, event, payload) => {
+                        if !self.core.accepts_native_input(id) {
+                            continue;
+                        }
                         if !self.core.component_event(id, event, &payload)
                             && let Some(script) = script
                         {
@@ -2229,6 +2430,8 @@ impl<M: TextEngine> State<M> {
                     Err(err) => log::error!("invalid op: {err:?}"),
                 }
             }
+            drop(ops);
+            let mut cancelled_input = self.discard_revoked_input(script);
             if let Some(batch) = self.core.commit() {
                 commits += 1;
                 match &mut merged {
@@ -2236,8 +2439,13 @@ impl<M: TextEngine> State<M> {
                     None => merged = Some(batch),
                 }
             }
+            // Rust list sources can change during commit as well. Finish
+            // their responder cleanup before a native ACK permits reuse.
+            cancelled_input |= self.discard_revoked_input(script);
             self.core.take_list_binds(&mut self.binds);
             self.core.take_events(&mut self.events);
+            // URLs the platform opens go out in another round.
+            let urls = self.open_urls();
             // Posts the ops queued (in program order) run in another round.
             let posted = script.is_some_and(Script::has_posted);
             // New tokens (the app's theme, the embedding app's) reach what
@@ -2251,7 +2459,13 @@ impl<M: TextEngine> State<M> {
                 _ => false,
             };
             let more_paced = script.is_some() && paced.left() && self.core.has_paced_list_binds();
-            if self.binds.is_empty() && self.events.is_empty() && !posted && !retheme && !more_paced
+            if self.binds.is_empty()
+                && self.events.is_empty()
+                && !posted
+                && !retheme
+                && !more_paced
+                && !urls
+                && !cancelled_input
             {
                 break;
             }
@@ -2337,6 +2551,9 @@ fn deliver_component_event<M: TextEngine>(
     kind: EventKind,
     payload: &EventPayload,
 ) -> bool {
+    if !core.accepts_native_input(id) {
+        return true;
+    }
     core.take_events(pending);
     let handled = core.component_event(id, kind, payload);
     let mut events = Vec::new();
@@ -2364,26 +2581,18 @@ fn deliver_component_event<M: TextEngine>(
 fn handle<M: TextEngine>(script: Option<&Script>, state: &mut State<M>, message: Message) -> bool {
     match message {
         Message::HintObservation(observation) => state.core.observe_hint(observation),
-        Message::CancelTouch(contact) => {
-            if let Some((_, pending)) = &mut state.touch_move {
-                if pending
-                    .points
-                    .iter()
-                    .any(|point| point.id == contact && point.changed)
-                {
-                    pending.activated = None;
-                }
-                pending.points.retain(|point| point.id != contact);
-                if !pending.points.iter().any(|point| point.changed) {
-                    state.touch_move = None;
+        Message::CancelTouch(contact) => state.cancel_touch(script, contact),
+        Message::Event(id, event, mut payload) => {
+            state.discard_revoked_input(script);
+            if !state.core.accepts_native_input(id) {
+                return true;
+            }
+            if let EventPayload::Touch(touch) = &mut payload {
+                state.filter_touch(script, touch);
+                if !touch.points.iter().any(|point| point.changed) {
+                    return true;
                 }
             }
-            state.core.cancel_touch(contact);
-            if let Some(script) = script {
-                script.cancel_touch(contact);
-            }
-        }
-        Message::Event(id, event, payload) => {
             if state.trace {
                 log::info!(target: "nsh::perf", "event {event:?} on view {id}");
             }
@@ -2408,6 +2617,14 @@ fn handle<M: TextEngine>(script: Option<&Script>, state: &mut State<M>, message:
             // values (from JS and from Rust components alike).
             if let (EventKind::ChangeText, EventPayload::Text { text, count }) = (event, &payload) {
                 state.core.input_changed(id, text, *count);
+            }
+            // The platform knows the caret in the input, the core where
+            // the input is.
+            if event == EventKind::CaretMove {
+                state.core.locate_caret(id, &mut payload);
+            }
+            if event == EventKind::Paste {
+                payload = payload.into_paste();
             }
             // Events on a Rust component's parts are the component's.
             if deliver_component_event(
@@ -2445,6 +2662,9 @@ fn handle<M: TextEngine>(script: Option<&Script>, state: &mut State<M>, message:
             }
         }
         Message::Scroll(id, offset, applied) => {
+            if !state.core.accepts_native_input(id) {
+                return true;
+            }
             state.core.set_scroll_offset(id, offset, applied);
             let (x, y) = (offset.x.0, offset.y.0);
             if let Some((throttle_ms, content, viewport, zoom)) = state.core.scroll_listener(id) {
@@ -2464,8 +2684,16 @@ fn handle<M: TextEngine>(script: Option<&Script>, state: &mut State<M>, message:
                 event.pending = true;
             }
         }
-        Message::Zoom(id, scale) => state.core.set_zoom(id, scale),
-        Message::ComponentSize(id, size) => state.core.set_component_size(id, size),
+        Message::Zoom(id, scale) => {
+            if state.core.accepts_native_input(id) {
+                state.core.set_zoom(id, scale);
+            }
+        }
+        Message::ComponentSize(id, size) => {
+            if state.core.accepts_native_input(id) {
+                state.core.set_component_size(id, size);
+            }
+        }
         Message::AnimationsFinished(mut finished) => {
             // The components' animations end in the core, JS's in JS.
             state.core.animations_finished(&mut finished);
@@ -2489,10 +2717,16 @@ fn handle<M: TextEngine>(script: Option<&Script>, state: &mut State<M>, message:
                 script.set_environment(&env);
             }
         }
-        Message::FocusPath(path) => {
+        Message::FocusPath(mut path) => {
+            path.retain(|&id| state.core.accepts_native_input(id));
+            state.core.set_focus_path(&path);
             if let Some(script) = script {
                 script.set_focus_path(&path);
             }
+        }
+        Message::ListCellRetired(id, request, retired) => {
+            state.discard_revoked_input(script);
+            state.core.retire_list_cell(id, request, retired);
         }
         Message::RootSize(id, size, insets) => state.core.set_root_size(id, size, insets),
         Message::ScreenHeader(id, height) => state.core.set_screen_header(id, height),
@@ -2503,7 +2737,11 @@ fn handle<M: TextEngine>(script: Option<&Script>, state: &mut State<M>, message:
                 script.run_frame();
             }
         }
-        Message::States(id, states) => state.core.set_states(id, states),
+        Message::States(id, states) => {
+            if state.core.accepts_native_input(id) {
+                state.core.set_states(id, states);
+            }
+        }
         Message::FontsChanged => state.core.fonts_changed(),
         Message::Fetch(who, hop, event) => {
             if let Some(event) = state.net.event(who, hop, event) {
@@ -2532,6 +2770,24 @@ fn handle<M: TextEngine>(script: Option<&Script>, state: &mut State<M>, message:
             state.perf_commit = perf::CommitTiming::default();
         }
         Message::Tokens(tokens) => state.core.set_host_tokens(tokens.map(|t| *t)),
+        // A Rust app has no `nsh/host`: what the host sends it goes.
+        Message::HostEvent(name, data) => {
+            if let Some(script) = script {
+                script.host_event(&name, data);
+            }
+        }
+        Message::HostReply(id, result) => {
+            if let Some(script) = script {
+                script.host_reply(id, result);
+            }
+        }
+        Message::UrlHandled { id, url, handled } => {
+            if handled {
+                state.core.answer_open_url(id, true);
+            } else {
+                state.core.open_url_on_platform(id, url);
+            }
+        }
         // The driver handles it ([`Driver::handle`]), and keeps the ones
         // sent before it started for after the first frame.
         Message::Advance(..) => unreachable!("the driver moves the clock"),

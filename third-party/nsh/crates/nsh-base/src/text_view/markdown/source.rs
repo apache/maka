@@ -20,19 +20,28 @@
 //! Source addresses for the presentation produced by the existing Markdown AST.
 //! Literal ranges retain exact UTF-8 addresses; lexical replacements are atomic.
 
-use super::{MarkdownSourceKind, MarkdownSourceSegment, raw, start};
 use ::markdown::mdast::Node;
+use nsh_core::{TextSourceKind, TextSourceSegment};
 
-pub(super) fn literal(offset: usize, text: &str) -> Vec<MarkdownSourceSegment> {
+fn start(node: &Node) -> usize {
+    node.position().map_or(0, |p| p.start.offset)
+}
+fn raw<'a>(source: &'a str, node: &Node) -> &'a str {
+    node.position()
+        .and_then(|p| source.get(p.start.offset..p.end.offset))
+        .unwrap_or("")
+}
+
+pub(crate) fn literal(offset: usize, text: &str) -> Vec<TextSourceSegment> {
     if text.is_empty() {
         return Vec::new();
     }
-    vec![MarkdownSourceSegment {
+    vec![TextSourceSegment {
         start: 0,
         end: text.encode_utf16().count() as u32,
         source_start: offset as u64,
         source_end: (offset + text.len()) as u64,
-        kind: MarkdownSourceKind::Literal,
+        kind: TextSourceKind::Literal,
     }]
 }
 
@@ -40,7 +49,7 @@ struct Projection<'a> {
     expected: &'a str,
     bytes: usize,
     units: u32,
-    segments: Vec<MarkdownSourceSegment>,
+    segments: Vec<TextSourceSegment>,
 }
 
 impl<'a> Projection<'a> {
@@ -62,7 +71,7 @@ impl<'a> Projection<'a> {
         text: &str,
         source_start: usize,
         source_end: usize,
-        kind: MarkdownSourceKind,
+        kind: TextSourceKind,
     ) -> Result<(), String> {
         if !self.remaining().starts_with(text) {
             return Err(format!(
@@ -71,7 +80,7 @@ impl<'a> Projection<'a> {
         }
         let end = self.units + text.encode_utf16().count() as u32;
         if !text.is_empty() {
-            if kind == MarkdownSourceKind::Literal
+            if kind == TextSourceKind::Literal
                 && let Some(previous) = self.segments.last_mut()
                 && previous.kind == kind
                 && previous.source_end == source_start as u64
@@ -79,7 +88,7 @@ impl<'a> Projection<'a> {
                 previous.end = end;
                 previous.source_end = source_end as u64;
             } else {
-                self.segments.push(MarkdownSourceSegment {
+                self.segments.push(TextSourceSegment {
                     start: self.units,
                     end,
                     source_start: source_start as u64,
@@ -93,7 +102,7 @@ impl<'a> Projection<'a> {
         Ok(())
     }
 
-    fn finish(self) -> Result<Vec<MarkdownSourceSegment>, String> {
+    fn finish(self) -> Result<Vec<TextSourceSegment>, String> {
         if self.bytes != self.expected.len() {
             return Err("Markdown source projection did not cover the parsed text".into());
         }
@@ -109,7 +118,7 @@ pub(super) fn text(
     node: &Node,
     expected: &str,
     quote: u32,
-) -> Result<Vec<MarkdownSourceSegment>, String> {
+) -> Result<Vec<TextSourceSegment>, String> {
     let input = raw(source, node);
     if input == expected {
         return Ok(literal(start(node), input));
@@ -140,7 +149,7 @@ pub(super) fn text(
                 offset += end;
                 continue;
             }
-            result.push(&rest[..end], base, base + end, MarkdownSourceKind::Literal)?;
+            result.push(&rest[..end], base, base + end, TextSourceKind::Literal)?;
             offset += end;
             continue;
         }
@@ -153,7 +162,7 @@ pub(super) fn text(
                 &rest[1..consumed],
                 base,
                 base + consumed,
-                MarkdownSourceKind::Replacement,
+                TextSourceKind::Replacement,
             )?;
             offset += consumed;
             continue;
@@ -162,23 +171,23 @@ pub(super) fn text(
             && let Some((consumed, decoded)) = reference(rest)
             && result.remaining().starts_with(&decoded)
         {
-            result.push(
-                &decoded,
-                base,
-                base + consumed,
-                MarkdownSourceKind::Replacement,
-            )?;
+            result.push(&decoded, base, base + consumed, TextSourceKind::Replacement)?;
             offset += consumed;
             continue;
         }
         if ch == '\0' && result.remaining().starts_with('�') {
-            result.push("�", base, base + 1, MarkdownSourceKind::Replacement)?;
+            result.push("�", base, base + 1, TextSourceKind::Replacement)?;
             offset += 1;
             continue;
         }
-        if ch == '\r' && result.remaining().starts_with('\n') {
+        if matches!(ch, '\r' | '\n') && result.remaining().starts_with([' ', '\n']) {
             let consumed = if rest.starts_with("\r\n") { 2 } else { 1 };
-            result.push("\n", base, base + consumed, MarkdownSourceKind::Replacement)?;
+            let rendered = if result.remaining().starts_with(' ') {
+                " "
+            } else {
+                "\n"
+            };
+            result.push(rendered, base, base + consumed, TextSourceKind::Replacement)?;
             offset += consumed;
             line_start = true;
             continue;
@@ -187,7 +196,7 @@ pub(super) fn text(
             &rest[..ch.len_utf8()],
             base,
             base + ch.len_utf8(),
-            MarkdownSourceKind::Literal,
+            TextSourceKind::Literal,
         )?;
         offset += ch.len_utf8();
         if matches!(ch, '\n' | '\r') {
@@ -237,7 +246,7 @@ pub(super) fn inline_code(
     node: &Node,
     expected: &str,
     quote: u32,
-) -> Result<Vec<MarkdownSourceSegment>, String> {
+) -> Result<Vec<TextSourceSegment>, String> {
     let input = raw(source, node);
     let fence = input.bytes().take_while(|byte| *byte == b'`').count();
     let mut first = fence;
@@ -272,9 +281,9 @@ pub(super) fn inline_code(
             ch.len_utf8()
         };
         if matches!(ch, '\r' | '\n') && result.remaining().starts_with(' ') {
-            result.push(" ", base, base + consumed, MarkdownSourceKind::Replacement)?;
+            result.push(" ", base, base + consumed, TextSourceKind::Replacement)?;
         } else if rest.starts_with("\\|") && result.remaining().starts_with('|') {
-            result.push("|", base, base + 2, MarkdownSourceKind::Replacement)?;
+            result.push("|", base, base + 2, TextSourceKind::Replacement)?;
             offset += 2;
             continue;
         } else {
@@ -282,7 +291,7 @@ pub(super) fn inline_code(
                 &rest[..consumed],
                 base,
                 base + consumed,
-                MarkdownSourceKind::Literal,
+                TextSourceKind::Literal,
             )?;
         }
         offset += consumed;
@@ -291,7 +300,7 @@ pub(super) fn inline_code(
     result.finish()
 }
 
-fn continuation_length(input: &str, quote: u32) -> usize {
+pub(super) fn continuation_length(input: &str, quote: u32) -> usize {
     let mut quotes = 0;
     let mut consumed = 0;
     for ch in input.chars() {
@@ -323,19 +332,19 @@ fn code_continuation(
             &remaining[..end],
             base,
             base + consumed,
-            MarkdownSourceKind::Replacement,
+            TextSourceKind::Replacement,
         )?;
     }
     Ok(consumed)
 }
 
-pub(super) fn line_break(source: &str, node: &Node) -> Vec<MarkdownSourceSegment> {
-    vec![MarkdownSourceSegment {
+pub(super) fn line_break(source: &str, node: &Node) -> Vec<TextSourceSegment> {
+    vec![TextSourceSegment {
         start: 0,
         end: 1,
         source_start: start(node) as u64,
         source_end: (start(node) + raw(source, node).len()) as u64,
-        kind: MarkdownSourceKind::Replacement,
+        kind: TextSourceKind::Replacement,
     }]
 }
 
@@ -346,7 +355,7 @@ pub(super) fn code(
     source: &str,
     node: &Node,
     expected: &str,
-) -> Result<Vec<MarkdownSourceSegment>, String> {
+) -> Result<Vec<TextSourceSegment>, String> {
     let input = raw(source, node);
     let mut source_offset = 0;
     let first_line = &input[..line_end(input)];
@@ -361,7 +370,8 @@ pub(super) fn code(
                 if ch == '\t' { at + 4 - at % 4 } else { at + 1 }
             },
         );
-    let fenced = columns < 4 && (fence.starts_with("```") || fence.starts_with("~~~"));
+    let fenced = matches!(node, Node::Math(_))
+        || columns < 4 && (fence.starts_with("```") || fence.starts_with("~~~"));
     if fenced {
         source_offset += first_line.len();
     }
@@ -397,7 +407,7 @@ pub(super) fn code(
                 leading,
                 base,
                 base + prefix.len(),
-                MarkdownSourceKind::Replacement,
+                TextSourceKind::Replacement,
             )?;
         }
         let kept = &content[prefix.len()..];
@@ -405,7 +415,7 @@ pub(super) fn code(
             kept,
             base + prefix.len(),
             base + content.len(),
-            MarkdownSourceKind::Literal,
+            TextSourceKind::Literal,
         )?;
         if rendered_end < rendered.len() {
             let ending = if rendered[rendered_end..].starts_with("\r\n") {
@@ -415,9 +425,9 @@ pub(super) fn code(
             };
             let raw_ending = &source_line[content.len()..];
             let kind = if raw_ending == ending {
-                MarkdownSourceKind::Literal
+                TextSourceKind::Literal
             } else {
-                MarkdownSourceKind::Replacement
+                TextSourceKind::Replacement
             };
             let base = start(node) + source_offset + content.len();
             result.push(

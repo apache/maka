@@ -14,9 +14,11 @@ import { host } from "nsh/host";
 
 ```ts
 const host: {
+  readonly params: { readonly [key: string]: unknown };
+  post(name: string, data?: unknown): void;
   available(): boolean;
   call(name: string, args?: unknown, options?: { timeout?: number }): Promise<unknown>;
-  on(event: string, listener: (payload: unknown) => void): { remove(): void };
+  on(event: string, listener: (payload: unknown) => void): (() => void) & { remove(): void };
 };
 ```
 
@@ -53,10 +55,10 @@ const quote = await host.call("quote.refresh", { symbol: "AAPL" }, { timeout: 50
 ## host.on
 
 ```ts
-on(event: string, listener: (payload: unknown) => void): { remove(): void };
+on(event: string, listener: (payload: unknown) => void): (() => void) & { remove(): void };
 ```
 
-Calls `listener` with the payload of every `event` the host sends, until `remove()`. Events the host sends before the app starts arrive once it does, so listeners registered at the top level of the app receive them; an event sent before a listener registers is not replayed to it. Read the state the app starts with through `host.call`, and follow its changes with `host.on`.
+Platform events call `listener` with the payload of every `event` the host sends, until `remove()`. Events the host sends before the app starts arrive once it does, so listeners registered at the top level of the app receive them; an event sent before a listener registers is not replayed to it. Read the state the app starts with through `host.call`, and follow its changes with `host.on`.
 
 ```ts
 const sub = host.on("loginChanged", (payload) => console.log(payload));
@@ -89,3 +91,68 @@ A published app names its host in `nsh.json`: `web.host` is a JS module in the a
 ```json
 { "web": { "host": "./host.js", "connect": ["api.example.com"] } }
 ```
+
+## host.params
+
+The parameters the embedding app set before it started your app, read synchronously from the first line of your code; `{}` when it set none. They stay the same while your app runs: later requests come as events.
+
+```tsx
+const conversation = host.params.conversation as string | undefined;
+mount(() => (conversation ? <Conversation id={conversation} /> : <Inbox />));
+```
+
+
+## Native SDK channel
+
+The native SDK's `send` keeps events until the app listens, up to 256. When the last listener unsubscribes during delivery, remaining events keep waiting in order; events sent during shutdown wait for the next loaded app. The subscription returned by `host.on` is both a cleanup function and an object with `remove()`. `host.post(name, data)` delivers data to the native SDK handler, whose `isPost` distinguishes posts from calls.
+
+## The embedding app's side
+
+Each view keeps one channel for every app it loads. Set parameters before loading, send events at any time from any thread, and register handlers by name. Calls and posts require the app's `capabilities.host` grant. Handlers answer once, now or later; an answer that never comes fails the call.
+
+```rust tabs
+// Any platform's AppView (GPUI, macOS, Windows, Linux, iOS): its HostChannel.
+use serde_json::json;
+
+let host = view.host();
+let mut params = serde_json::Map::new();
+params.insert("conversation".into(), json!("42"));
+host.set_params(params);
+// Runs on the engine thread: answer at once, or move the call and answer later from any thread.
+host.handle("user.profile", |call| {
+    let id = call.data()["id"].clone();
+    call.resolve(json!({ "id": id, "name": "Ada" }));
+});
+host.send("conversation.open", json!({ "id": "43" })).unwrap();
+```
+
+```swift tabs
+appView.params = ["conversation": "42"]
+try appView.loadBundle(at: bundleURL)
+
+// On the main thread; return the answer, or throw to reject the call.
+appView.handle("user.profile") { data in
+    let id = (data as? [String: Any])?["id"]
+    return ["id": id ?? NSNull(), "name": try await profiles.name(of: id)]
+}
+appView.handle("analytics") { data, _ in analytics.log(data) }
+appView.send("conversation.open", ["id": "43"])
+```
+
+```java tabs
+nsh.setParams(Map.of("conversation", "42"));
+nsh.loadAssetBundle("nsh");
+
+// On the UI thread; answer now or later, from any thread.
+nsh.handle("user.profile", (data, reply) -> {
+    Object id = ((Map<?, ?>) data).get("id");
+    profiles.load(id, profile -> reply.resolve(Map.of("id", id, "name", profile.name)),
+            error -> reply.reject(error.getMessage()));
+});
+nsh.send("conversation.open", Map.of("id", "43"));
+```
+
+See [Embedding on iOS](../docs/ios.md#talking-to-the-app), [Embedding on Android](../docs/android.md#talking-to-the-app) and [GPUI](../docs/gpui.md).
+
+> [!NOTE]
+> Native SDK calls and posts use the same [`host` capability](../docs/sandbox-and-capabilities.md#host) as platform calls. A Rust app reaches the embedding app's Rust directly, through the functions it registers ([`nativeModule`](./nsh-native.md#nativemodule) and Rust imports).

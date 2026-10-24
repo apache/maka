@@ -20,7 +20,11 @@
 import { Input, inputAction, List, Scroll, Text, View } from 'nsh';
 import { Button } from 'nsh/base';
 import { tr } from './locale';
-import type { SettingValue } from '../../../../packages/plugin-sdk/src/index.js';
+import type {
+  ManagedInstance,
+  SettingField,
+  SettingValue,
+} from '../../../../packages/plugin-sdk/src/index.js';
 import { sameValue } from '../../../../plugins/shared/value';
 import { pluginTitle, settingCaption } from './pluginSettings.ts';
 import type { PluginSettingsOwner, PluginAction } from './pluginSettings.ts';
@@ -104,40 +108,50 @@ export function PluginSettings(props: { owner: PluginSettingsOwner }) {
                       }
                       style={{ flex: 1, minHeight: 0 }}
                     >
-                      {(instance) => (
-                        <Button
-                          disabled={owner.disabled()}
-                          accessibilityLabel={tr('Open plugin {name}', {
-                            name: instance().path.join(' / '),
-                          })}
-                          onPress={inputAction(owner.open, {
-                            request,
-                            instance: instance().instance,
-                          })}
-                          style={{
-                            ...controlStyle,
-                            minHeight: 56,
-                            flexDirection: 'row',
-                            alignItems: 'center',
-                            gap: 12,
-                            backgroundColor: C.raised,
-                          }}
-                          hoverStyle={controlHoverStyle}
-                          focusStyle={controlFocusStyle}
-                          disabledStyle={controlDisabledStyle}
+                      {(item) => (
+                        <Each<ManagedInstance>
+                          of={[item()]}
+                          key={(instance) => JSON.stringify(instance.instance)}
                         >
-                          <View pointerEvents="none" style={{ flex: 1, minWidth: 0, gap: 4 }}>
-                            <Text style={{ ...bodyTextStyle, color: C.text }}>
-                              {pluginTitle(instance())}
-                            </Text>
-                            <Text style={{ ...captionTextStyle, color: C.muted }}>
-                              {instance().path.join(' / ')} ·{' '}
-                              {instance().disabled ? tr('Disabled') : tr('Enabled')}
-                              {instance().parentDisabled ? ` · ${tr('Parent disabled')}` : ''}
-                            </Text>
-                          </View>
-                          <Icon name="right" color={C.muted} />
-                        </Button>
+                          {(row) => {
+                            const instance = row();
+                            return (
+                              <Button
+                                disabled={owner.disabled()}
+                                accessibilityLabel={tr('Open plugin {name}', {
+                                  name: instance.path.join(' / '),
+                                })}
+                                onPress={inputAction(owner.open, {
+                                  request,
+                                  instance: instance.instance,
+                                })}
+                                style={{
+                                  ...controlStyle,
+                                  minHeight: 56,
+                                  flexDirection: 'row',
+                                  alignItems: 'center',
+                                  gap: 12,
+                                  backgroundColor: C.raised,
+                                }}
+                                hoverStyle={controlHoverStyle}
+                                focusStyle={controlFocusStyle}
+                                disabledStyle={controlDisabledStyle}
+                              >
+                                <View pointerEvents="none" style={{ flex: 1, minWidth: 0, gap: 4 }}>
+                                  <Text style={{ ...bodyTextStyle, color: C.text }}>
+                                    {pluginTitle(instance)}
+                                  </Text>
+                                  <Text style={{ ...captionTextStyle, color: C.muted }}>
+                                    {instance.path.join(' / ')} ·{' '}
+                                    {instance.disabled ? tr('Disabled') : tr('Enabled')}
+                                    {instance.parentDisabled ? ` · ${tr('Parent disabled')}` : ''}
+                                  </Text>
+                                </View>
+                                <Icon name="right" color={C.muted} />
+                              </Button>
+                            );
+                          }}
+                        </Each>
                       )}
                     </List>
                   </View>
@@ -145,6 +159,9 @@ export function PluginSettings(props: { owner: PluginSettingsOwner }) {
                 <If when={owner.selected()}>
                   <Scroll style={{ flex: 1, minHeight: 0 }}>
                     <View style={{ padding: 8, gap: 12 }}>
+                      <If when={owner.editor()}>
+                        <PluginField owner={owner} request={request} />
+                      </If>
                       <Text style={{ ...bodyTextStyle, color: C.text, fontWeight: '600' }}>
                         {pluginTitle(owner.selected()!)}
                       </Text>
@@ -218,68 +235,79 @@ export function PluginSettings(props: { owner: PluginSettingsOwner }) {
                               ? ` / ${owner.fields()!.path.join(' / ')}`
                               : ''}
                           </Text>
-                          <Each of={owner.fields()!.fields} key={(field) => field.key}>
-                            {(field) => {
-                              const group = () => ['object', 'array'].includes(field().kind);
-                              return (
-                                <Button
-                                  disabled={owner.disabled() || !field().editable}
-                                  accessibilityLabel={
-                                    group()
-                                      ? tr('Open plugin group {name}', { name: field().label })
-                                      : tr('Edit plugin setting {name}', { name: field().label })
-                                  }
-                                  onPress={
-                                    group()
-                                      ? inputAction(owner.group, { request, key: field().key })
-                                      : inputAction(owner.edit, { request, key: field().key })
-                                  }
-                                  style={{
-                                    ...controlStyle,
-                                    minHeight: 56,
-                                    flexDirection: 'row',
-                                    alignItems: 'center',
-                                    gap: 12,
-                                    backgroundColor: C.raised,
-                                  }}
-                                  hoverStyle={controlHoverStyle}
-                                  focusStyle={controlFocusStyle}
-                                  disabledStyle={controlDisabledStyle}
-                                >
-                                  <View
-                                    pointerEvents="none"
-                                    style={{ flex: 1, minWidth: 0, gap: 4 }}
-                                  >
-                                    <Text style={{ ...bodyTextStyle, color: C.text }}>
-                                      {field().label}
-                                    </Text>
-                                    <Text
-                                      numberOfLines={2}
-                                      style={{ ...captionTextStyle, color: C.muted }}
+                          <List
+                            viewport="parent"
+                            each={owner.fields()!.fields}
+                            keyExtractor={(field) => field.key}
+                            estimatedItemSize={56 + 12}
+                            separator={() => <View style={{ height: 12 }} />}
+                            onLoadMore={() => void owner.loadMore(request)}
+                          >
+                            {(item) => (
+                              <Each<SettingField> of={[item()]} key={(field) => field.key}>
+                                {(row) => {
+                                  const field = row();
+                                  const group = ['object', 'array'].includes(field.kind);
+                                  return (
+                                    <Button
+                                      disabled={owner.disabled() || !field.editable}
+                                      accessibilityLabel={
+                                        group
+                                          ? tr('Open plugin group {name}', { name: field.label })
+                                          : tr('Edit plugin setting {name}', {
+                                              name: field.label,
+                                            })
+                                      }
+                                      onPress={
+                                        group
+                                          ? inputAction(owner.group, { request, key: field.key })
+                                          : inputAction(owner.edit, { request, key: field.key })
+                                      }
+                                      style={{
+                                        ...controlStyle,
+                                        minHeight: 56,
+                                        flexDirection: 'row',
+                                        alignItems: 'center',
+                                        gap: 12,
+                                        backgroundColor: C.raised,
+                                      }}
+                                      hoverStyle={controlHoverStyle}
+                                      focusStyle={controlFocusStyle}
+                                      disabledStyle={controlDisabledStyle}
                                     >
-                                      {group()
-                                        ? field().kind === 'array'
-                                          ? tr('List')
-                                          : tr('Group')
-                                        : field().editable
-                                          ? settingCaption(field().value)
-                                          : tr('Read only or private')}
-                                    </Text>
-                                  </View>
-                                  <Icon name="right" color={C.muted} />
-                                </Button>
-                              );
-                            }}
-                          </Each>
+                                      <View
+                                        pointerEvents="none"
+                                        style={{ flex: 1, minWidth: 0, gap: 4 }}
+                                      >
+                                        <Text style={{ ...bodyTextStyle, color: C.text }}>
+                                          {field.label}
+                                        </Text>
+                                        <Text
+                                          numberOfLines={2}
+                                          style={{ ...captionTextStyle, color: C.muted }}
+                                        >
+                                          {group
+                                            ? field.kind === 'array'
+                                              ? tr('List')
+                                              : tr('Group')
+                                            : field.editable
+                                              ? settingCaption(field.value)
+                                              : tr('Read only or private')}
+                                        </Text>
+                                      </View>
+                                      <Icon name="right" color={C.muted} />
+                                    </Button>
+                                  );
+                                }}
+                              </Each>
+                            )}
+                          </List>
                           <If when={!owner.fields()!.fields.length}>
                             <Text style={{ ...bodyTextStyle, color: C.muted }}>
                               {tr('No editable fields in this group.')}
                             </Text>
                           </If>
                         </If>
-                      </If>
-                      <If when={owner.editor()}>
-                        <PluginField owner={owner} request={request} />
                       </If>
                     </View>
                   </Scroll>
@@ -306,42 +334,61 @@ function PluginField(props: { owner: PluginSettingsOwner; request: PluginAction 
         <Text style={{ ...bodyTextStyle, color: C.muted }}>{field.description}</Text>
       </If>
       <If when={field.options.length > 0}>
-        <Each of={field.options} key={(choice) => JSON.stringify(choice)}>
-          {(choice) => (
-            <Button
-              disabled={owner.disabled()}
-              selected={sameValue(value(), choice())}
-              accessibilityLabel={tr('Choose plugin setting {value}', {
-                value: settingCaption(choice()),
-              })}
-              onPress={inputAction(owner.change, { request, value: choice() })}
-              style={{
-                ...controlStyle,
-                minHeight: 40,
-                flexDirection: 'row',
-                alignItems: 'center',
-                gap: 8,
-              }}
-              selectedStyle={{ backgroundColor: C.raised }}
-              hoverStyle={controlHoverStyle}
-              focusStyle={controlFocusStyle}
-              disabledStyle={controlDisabledStyle}
-            >
-              <ChoiceIndicator
-                kind="radio"
-                checked={sameValue(value(), choice())}
-                disabled={owner.disabled()}
-              />
-              <Text style={{ ...bodyTextStyle, color: C.text, flex: 1 }}>
-                {settingCaption(choice())}
-              </Text>
-            </Button>
+        <List
+          viewport="parent"
+          each={field.options}
+          keyExtractor={(choice) => JSON.stringify(choice)}
+          initialScrollIndex={Math.max(
+            0,
+            field.options.findIndex((choice) => sameValue(choice, value())),
           )}
-        </Each>
+          estimatedItemSize={40 + 12}
+          separator={() => <View style={{ height: 12 }} />}
+        >
+          {(item) => (
+            <Each<SettingValue> of={[item()]} key={(choice) => JSON.stringify(choice)}>
+              {(row) => {
+                const choice = row();
+                return (
+                  <Button
+                    disabled={owner.disabled()}
+                    selected={sameValue(value(), choice)}
+                    accessibilityLabel={tr('Choose plugin setting {value}', {
+                      value: settingCaption(choice),
+                    })}
+                    onPress={inputAction(owner.change, { request, value: choice })}
+                    style={{
+                      ...controlStyle,
+                      minHeight: 40,
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      gap: 8,
+                    }}
+                    selectedStyle={{ backgroundColor: C.raised }}
+                    hoverStyle={controlHoverStyle}
+                    focusStyle={controlFocusStyle}
+                    disabledStyle={controlDisabledStyle}
+                  >
+                    <ChoiceIndicator
+                      kind="radio"
+                      checked={sameValue(value(), choice)}
+                      disabled={owner.disabled()}
+                    />
+                    <Text style={{ ...bodyTextStyle, color: C.text, flex: 1 }}>
+                      {settingCaption(choice)}
+                    </Text>
+                  </Button>
+                );
+              }}
+            </Each>
+          )}
+        </List>
       </If>
       <If when={field.options.length === 0 && (field.kind === 'text' || field.kind === 'number')}>
         <SettingsField
+          autoFocus
           label={tr('Plugin value {name}', { name: field.label })}
+          multiline={field.kind === 'text'}
           value={
             value()?.kind === 'text' || value()?.kind === 'number'
               ? (value() as { text: string }).text

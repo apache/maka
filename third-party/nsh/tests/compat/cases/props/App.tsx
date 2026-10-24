@@ -8,6 +8,7 @@ import PropsInputConfig from "./props-input-config";
 import PropsListEvents from "./props-list-events";
 import PropsListFollow from "./props-list-follow";
 import PropsListLayout from "./props-list-layout";
+import PropsListStart from "./props-list-start";
 import PropsListStickyOffset from "./props-list-sticky-offset";
 import PropsListViewport from "./props-list-viewport";
 import PropsMediaImage from "./props-media-image";
@@ -29,6 +30,7 @@ const cases: Record<string, () => JSX.Element> = {
   "props-list-events": PropsListEvents,
   "props-list-follow": PropsListFollow,
   "props-list-layout": PropsListLayout,
+  "props-list-start": PropsListStart,
   "props-list-sticky-offset": PropsListStickyOffset,
   "props-list-viewport": PropsListViewport,
   "props-media-image": PropsMediaImage,

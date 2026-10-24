@@ -37,7 +37,6 @@ use crate::{
     TouchPhase,
     geometry::{Bounds, Point, Points, Size, px, rect},
     keymap::{KeyBinding, Keystroke, When},
-    mount::MountItem,
     ops::{Op, OverlayProp},
     overlay::{
         HINT_DELAY, HintObservation, HintWatchToken, OverlayAnchor, OverlayConfig, Placed,
@@ -246,7 +245,7 @@ impl<M: TextEngine> Core<M> {
         if let Some((Some(_), _)) = state
             && created
         {
-            self.mount.push(MountItem::Remove { id });
+            self.emit_remove(id);
         }
         if self.nodes[key as usize].parent != NO_KEY {
             self.unlink(key, false);
@@ -432,7 +431,6 @@ impl<M: TextEngine> Core<M> {
             .map(|&k| (self.overlay_depth(k), k))
             .collect();
         order.sort_by_key(|&(depth, _)| depth);
-        let mut opened = Vec::new();
         // The hints in the view, whose anchors listen to the pointer.
         let mut hints = Vec::new();
         for (_, key) in order {
@@ -480,7 +478,11 @@ impl<M: TextEngine> Core<M> {
                 && self.key(old).is_ok_and(|h| self.nodes[h as usize].created)
                 && self.nodes[key as usize].created
             {
-                self.mount.push(MountItem::Remove { id });
+                if target_id.is_none() {
+                    self.remove_owned_roots(key);
+                } else {
+                    self.emit_remove(id);
+                }
             }
             let state = self.overlay_mut(key).expect("overlay");
             state.host = target_id;
@@ -488,22 +490,17 @@ impl<M: TextEngine> Core<M> {
             let Some(host) = target_id else {
                 continue;
             };
+            // Publish the new presentation order before taking the native
+            // following-root snapshot. Restoring a parked root does not
+            // pass here and keeps its original slot.
+            self.overlays.retain(|&overlay| overlay != key);
+            self.overlays.push(key);
             self.ensure_created(key);
-            self.mount.push(MountItem::Insert {
-                parent: host,
-                child: id,
-                before: None,
-            });
+            self.emit_insert(host, id, None);
             if let Some(root) = self.nodes[key as usize].root.as_mut() {
                 root.laid_out = None;
             }
             self.needs_layout = true;
-            opened.push(key);
-        }
-        // Opened last, on top: in the order they were shown.
-        if !opened.is_empty() {
-            self.overlays.retain(|k| !opened.contains(k));
-            self.overlays.extend(opened);
         }
         self.sync_overlay_listeners(&hints);
     }
@@ -675,7 +672,7 @@ impl<M: TextEngine> Core<M> {
     fn hint_anchor(&self, key: Key) -> Option<Key> {
         match self.overlay(key)?.config.anchor {
             OverlayAnchor::Node(id) | OverlayAnchor::Content(id) => self.key(id).ok(),
-            OverlayAnchor::Point(_) => None,
+            OverlayAnchor::Point(_) | OverlayAnchor::Bounds(_) => None,
             OverlayAnchor::None => {
                 let mut k = self.nodes[key as usize].parent;
                 while k != NO_KEY {
@@ -1287,6 +1284,7 @@ impl<M: TextEngine> Core<M> {
                 origin: p,
                 size: Size::default(),
             }),
+            OverlayAnchor::Bounds(bounds) => Some(bounds),
             OverlayAnchor::Node(id) => self.measure(id).map(|m| Bounds {
                 origin: m.page,
                 size: m.frame.size,

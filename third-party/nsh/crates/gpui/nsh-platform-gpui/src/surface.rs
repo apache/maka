@@ -178,6 +178,8 @@ pub(crate) struct Surface {
     pub(crate) asset_base: RefCell<Option<crate::image::AssetBase>>,
     /// The current load's source for image `asset:/` URIs.
     pub(crate) image_assets: RefCell<crate::image::AssetSource>,
+    /// The disk cache of downloaded images ([`crate::image::set_disk_cache`]).
+    pub(crate) image_cache: RefCell<Option<nsh_core::image::DiskCache>>,
     /// What the running app may reach (checked for image redirects).
     pub(crate) access: RefCell<Arc<nsh_core::access::Access>>,
     /// Videos, web views and registered native components.
@@ -249,6 +251,7 @@ impl Surface {
             generation: Cell::new(0),
             asset_base: RefCell::new(None),
             image_assets: RefCell::default(),
+            image_cache: RefCell::new(None),
             access: RefCell::new(Arc::default()),
             native: Default::default(),
             keymap: Default::default(),
@@ -338,6 +341,8 @@ impl Surface {
             },
         ) {
             Ok(engine) => {
+                // The app's downloaded images go through its disk cache.
+                crate::image::set_disk_cache(self, engine.image_cache());
                 // The test moves its clock through the engine.
                 #[cfg(feature = "dev")]
                 if let Some(model) = &*self.test_model.borrow() {
@@ -359,6 +364,7 @@ impl Surface {
     pub(crate) fn stop(&self) {
         self.generation.set(self.generation.get() + 1);
         *self.image_assets.borrow_mut() = crate::image::AssetSource::Base;
+        *self.image_cache.borrow_mut() = None;
         // Dropping the engine joins its thread.
         self.control.borrow_mut().take();
         self.engine.borrow_mut().take();
@@ -385,13 +391,17 @@ impl Surface {
         }
     }
 
-    /// The actual native keyboard owner and its ancestors. Reading focus
-    /// does not run JS, and is safe while navigation applies a mount item.
+    /// The native keyboard owner and its ancestors, including a transfer
+    /// awaiting the next window frame. Reading focus does not run JS, and
+    /// is safe while navigation applies a mount item.
     pub(crate) fn focus_path(&self) -> Vec<NodeId> {
         if crate::system::has_dialog(self) || crate::chrome::menu_open(self) {
             return Vec::new();
         }
-        let target = crate::text_input::focused_target(self);
+        let target = crate::native::requested_focus(self)
+            .and_then(|id| self.view(id))
+            .map(crate::text_input::FocusTarget::View)
+            .or_else(|| crate::text_input::focused_target(self));
         let mut view = target
             .as_ref()
             .map(|target| target.view().clone())
@@ -695,6 +705,7 @@ impl Surface {
             anim.write(&self.mounter.borrow());
             std::mem::take(&mut anim.finished)
         };
+        crate::scroll::pin_animated_sticky(self);
         if !finished.is_empty() {
             self.control(|c| c.animations_finished(finished));
         }
@@ -1125,6 +1136,481 @@ mod tests {
                 before: None,
             },
         ]
+    }
+
+    #[test]
+    fn list_cell_retirement_preserves_native_focus_but_source_removal_revokes_it() {
+        use nsh_core::{ROOT_ID, ViewKind};
+
+        use crate::geom::rect;
+        let surface = Surface::new(nsh_engine::Environment::default());
+        surface.root.state_mut().frame = rect(0.0, 0.0, 400.0, 200.0);
+        let mut items = vec![
+            MountItem::Create {
+                id: 2,
+                kind: ViewKind::View,
+            },
+            MountItem::Frame {
+                id: 2,
+                frame: rect(0.0, 0.0, 160.0, 32.0),
+            },
+            MountItem::ProjectRoot {
+                parent: ROOT_ID,
+                id: 2,
+                following: vec![],
+            },
+        ];
+        items.extend(focus_return_input(4, 2, true));
+        items.extend(focus_return_input(6, ROOT_ID, false));
+        items.push(MountItem::Frame {
+            id: 4,
+            frame: rect(0.0, 0.0, 160.0, 32.0),
+        });
+        items.push(MountItem::Frame {
+            id: 6,
+            frame: rect(200.0, 0.0, 160.0, 32.0),
+        });
+        surface.apply(&MountBatch { items });
+        assert!(surface.focus_path().contains(&4));
+
+        surface.apply(&MountBatch {
+            items: vec![MountItem::RetireListCell {
+                id: 2,
+                request: 7,
+                roots: vec![2],
+            }],
+        });
+        assert!(surface.focus_path().contains(&4));
+        assert!(surface.view(4).unwrap().attached());
+
+        assert!(crate::input::focus_view(
+            &surface,
+            &surface.view(6).unwrap()
+        ));
+        surface.apply(&MountBatch {
+            items: vec![MountItem::RetireListCell {
+                id: 2,
+                request: 8,
+                roots: vec![2],
+            }],
+        });
+        assert!(!surface.view(4).unwrap().attached());
+        assert!(surface.focus_path().contains(&6));
+
+        surface.apply(&MountBatch {
+            items: vec![MountItem::ProjectRoot {
+                parent: ROOT_ID,
+                id: 2,
+                following: vec![],
+            }],
+        });
+        assert!(crate::input::focus_view(
+            &surface,
+            &surface.view(4).unwrap()
+        ));
+        surface.apply(&MountBatch {
+            items: vec![MountItem::Remove { id: 2 }],
+        });
+        assert!(!surface.focus_path().contains(&4));
+        assert!(!surface.view(4).unwrap().attached());
+
+        surface.apply(&MountBatch {
+            items: vec![
+                MountItem::ProjectRoot {
+                    parent: ROOT_ID,
+                    id: 2,
+                    following: vec![],
+                },
+                MountItem::Create {
+                    id: 8,
+                    kind: ViewKind::Native,
+                },
+                MountItem::Frame {
+                    id: 8,
+                    frame: rect(0.0, 0.0, 160.0, 32.0),
+                },
+                MountItem::Insert {
+                    parent: 2,
+                    child: 8,
+                    before: None,
+                },
+            ],
+        });
+        assert!(crate::input::focus_view(
+            &surface,
+            &surface.view(6).unwrap()
+        ));
+        // Tab's native transfer waits for the next GPUI window frame;
+        // the previous NSH owner remains until that transfer is applied.
+        crate::input::focus_stop(
+            &surface,
+            &crate::text_input::FocusTarget::View(surface.view(8).unwrap()),
+        );
+        assert_eq!(crate::native::requested_focus(&surface), Some(8));
+        assert_eq!(crate::text_input::focused_view(&surface).unwrap().id(), 6);
+        assert_eq!(surface.focus_path(), vec![8, 2, ROOT_ID]);
+        surface.apply(&MountBatch {
+            items: vec![MountItem::RetireListCell {
+                id: 2,
+                request: 9,
+                roots: vec![2],
+            }],
+        });
+        assert!(surface.view(8).unwrap().attached());
+        assert_eq!(crate::native::requested_focus(&surface), Some(8));
+        assert_eq!(surface.focus_path(), vec![8, 2, ROOT_ID]);
+
+        surface.apply(&MountBatch {
+            items: vec![MountItem::Remove { id: 2 }],
+        });
+        assert_eq!(crate::native::requested_focus(&surface), None);
+        assert!(!surface.focus_path().contains(&8));
+        assert!(!surface.view(8).unwrap().attached());
+    }
+
+    #[test]
+    fn list_cell_retirement_parks_and_restores_promoted_modal_roots_together() {
+        use nsh_core::{ROOT_ID, ViewKind};
+
+        use crate::geom::rect;
+        let surface = Surface::new(nsh_engine::Environment::default());
+        surface.root.state_mut().frame = rect(0.0, 0.0, 400.0, 200.0);
+        let group = vec![2, 8, 12];
+        let frame = rect(0.0, 0.0, 160.0, 32.0);
+        let mut items = Vec::new();
+        for (id, kind, parent) in [
+            (2, ViewKind::View, ROOT_ID),
+            (8, ViewKind::Modal, ROOT_ID),
+            (12, ViewKind::View, 8),
+        ] {
+            items.push(MountItem::Create { id, kind });
+            if kind == ViewKind::Modal {
+                items.push(MountItem::ModalConfig {
+                    id,
+                    config: nsh_core::ModalConfig {
+                        animation: nsh_core::ModalAnimation::None,
+                        ..Default::default()
+                    },
+                });
+            }
+            items.push(MountItem::Frame { id, frame });
+            items.push(MountItem::ProjectRoot {
+                parent,
+                id,
+                following: vec![],
+            });
+        }
+        items.extend(focus_return_input(4, 2, false));
+        items.extend(focus_return_input(14, 12, false));
+        items.push(MountItem::Frame { id: 14, frame });
+        surface.apply(&MountBatch { items });
+        assert!(crate::input::focus_view(
+            &surface,
+            &surface.view(14).unwrap()
+        ));
+        surface.apply(&MountBatch {
+            items: vec![MountItem::RetireListCell {
+                id: 2,
+                request: 1,
+                roots: group.clone(),
+            }],
+        });
+        assert_eq!(surface.focus_path(), vec![14, 12, 8, ROOT_ID]);
+        assert!(surface.view(2).unwrap().attached());
+        assert!(surface.view(8).unwrap().attached());
+
+        let mut items = vec![
+            MountItem::Create {
+                id: 16,
+                kind: ViewKind::Modal,
+            },
+            MountItem::ModalConfig {
+                id: 16,
+                config: nsh_core::ModalConfig {
+                    animation: nsh_core::ModalAnimation::None,
+                    ..Default::default()
+                },
+            },
+            MountItem::ProjectRoot {
+                parent: ROOT_ID,
+                id: 16,
+                following: vec![],
+            },
+        ];
+        items.extend(focus_return_input(18, 16, false));
+        items.push(MountItem::Frame { id: 18, frame });
+        surface.apply(&MountBatch { items });
+        assert!(crate::input::focus_view(
+            &surface,
+            &surface.view(18).unwrap()
+        ));
+        surface.apply(&MountBatch {
+            items: vec![MountItem::RetireListCell {
+                id: 2,
+                request: 2,
+                roots: group.clone(),
+            }],
+        });
+        for &id in &group {
+            assert!(!surface.view(id).unwrap().attached());
+        }
+        assert_eq!(surface.focus_path(), vec![18, 16, ROOT_ID]);
+        surface.apply(&MountBatch {
+            items: vec![MountItem::ListCellRetired { roots: group }],
+        });
+        assert!(!surface.view(8).unwrap().attached());
+        assert_eq!(surface.focus_path(), vec![18, 16, ROOT_ID]);
+        surface.apply(&MountBatch {
+            items: vec![
+                MountItem::ProjectRoot {
+                    parent: ROOT_ID,
+                    id: 2,
+                    following: vec![16],
+                },
+                MountItem::ProjectRoot {
+                    parent: ROOT_ID,
+                    id: 8,
+                    following: vec![16],
+                },
+                MountItem::ProjectRoot {
+                    parent: 8,
+                    id: 12,
+                    following: vec![],
+                },
+            ],
+        });
+        assert_eq!(surface.focus_path(), vec![18, 16, ROOT_ID]);
+        assert_eq!(crate::navigation::focus_scope(&surface).id(), 16);
+        assert!(surface.view(8).unwrap().attached());
+
+        surface.apply(&MountBatch {
+            items: vec![MountItem::Remove { id: 16 }],
+        });
+        assert!(crate::input::focus_view(
+            &surface,
+            &surface.view(14).unwrap()
+        ));
+        surface.apply(&MountBatch {
+            items: vec![MountItem::Remove { id: 8 }],
+        });
+        assert!(!surface.focus_path().contains(&14));
+        assert!(!surface.view(14).unwrap().attached());
+    }
+
+    #[test]
+    fn projected_roots_choose_the_first_surviving_cross_cell_anchor() {
+        use nsh_core::{ROOT_ID, ViewKind};
+
+        use crate::geom::rect;
+        let frame = rect(0.0, 0.0, 160.0, 32.0);
+        for parked in [vec![], vec![4], vec![6], vec![4, 6]] {
+            let surface = Surface::new(nsh_engine::Environment::default());
+            surface.root.state_mut().frame = rect(0.0, 0.0, 400.0, 200.0);
+            let mut items = Vec::new();
+            for id in [2, 4, 6] {
+                items.push(MountItem::Create {
+                    id,
+                    kind: ViewKind::View,
+                });
+                items.push(MountItem::Frame { id, frame });
+                items.extend(focus_return_input(id + 10, id, false));
+                items.push(MountItem::Frame { id: id + 10, frame });
+            }
+            items.extend(focus_return_input(20, ROOT_ID, false));
+            items.push(MountItem::Frame { id: 20, frame });
+            items.extend([
+                MountItem::ProjectRoot {
+                    parent: ROOT_ID,
+                    id: 6,
+                    following: vec![],
+                },
+                MountItem::ProjectRoot {
+                    parent: ROOT_ID,
+                    id: 4,
+                    following: vec![6],
+                },
+                MountItem::ProjectRoot {
+                    parent: ROOT_ID,
+                    id: 2,
+                    following: vec![4, 6],
+                },
+            ]);
+            surface.apply(&MountBatch { items });
+            assert!(crate::input::focus_view(
+                &surface,
+                &surface.view(20).unwrap()
+            ));
+            let mut items = vec![MountItem::RetireListCell {
+                id: 2,
+                request: 1,
+                roots: vec![2],
+            }];
+            for &id in &parked {
+                items.push(MountItem::RetireListCell {
+                    id,
+                    request: 1,
+                    roots: vec![id],
+                });
+            }
+            surface.apply(&MountBatch { items });
+            surface.apply(&MountBatch {
+                items: vec![MountItem::ProjectRoot {
+                    parent: ROOT_ID,
+                    id: 2,
+                    following: vec![4, 6],
+                }],
+            });
+            let order = |surface: &Surface| {
+                surface
+                    .root
+                    .child_views()
+                    .iter()
+                    .map(|view| view.id())
+                    .filter(|id| [2, 4, 6].contains(id))
+                    .collect::<Vec<_>>()
+            };
+            let expected: Vec<_> = [2, 4, 6]
+                .into_iter()
+                .filter(|id| !parked.contains(id))
+                .collect();
+            assert_eq!(order(&surface), expected, "parked {parked:?}");
+            let mut items = Vec::new();
+            for &id in &parked {
+                items.push(MountItem::ProjectRoot {
+                    parent: ROOT_ID,
+                    id,
+                    following: if id == 4 { vec![6] } else { vec![] },
+                });
+            }
+            surface.apply(&MountBatch { items });
+            assert_eq!(order(&surface), vec![2, 4, 6]);
+
+            assert!(crate::input::focus_view(
+                &surface,
+                &surface.view(14).unwrap()
+            ));
+            surface.apply(&MountBatch {
+                items: vec![
+                    MountItem::RetireListCell {
+                        id: 2,
+                        request: 2,
+                        roots: vec![2],
+                    },
+                    MountItem::RetireListCell {
+                        id: 4,
+                        request: 2,
+                        roots: vec![4],
+                    },
+                ],
+            });
+            assert_eq!(surface.focus_path(), vec![14, 4, ROOT_ID]);
+            assert_eq!(order(&surface), vec![4, 6]);
+            surface.apply(&MountBatch {
+                items: vec![MountItem::ProjectRoot {
+                    parent: ROOT_ID,
+                    id: 2,
+                    following: vec![4, 6],
+                }],
+            });
+            assert_eq!(order(&surface), vec![2, 4, 6]);
+            assert_eq!(surface.focus_path(), vec![14, 4, ROOT_ID]);
+        }
+    }
+
+    #[test]
+    fn source_scroll_stop_reuses_the_registered_driver_until_the_surface_ticks() {
+        use nsh_core::{ROOT_ID, ViewKind};
+
+        use crate::geom::rect;
+        let surface = Surface::new(nsh_engine::Environment::default());
+        surface.root.state_mut().frame = rect(0.0, 0.0, 300.0, 400.0);
+        surface.apply(&MountBatch {
+            items: vec![
+                MountItem::Create {
+                    id: 2,
+                    kind: ViewKind::View,
+                },
+                MountItem::Frame {
+                    id: 2,
+                    frame: rect(0.0, 0.0, 300.0, 400.0),
+                },
+                MountItem::Insert {
+                    parent: ROOT_ID,
+                    child: 2,
+                    before: None,
+                },
+                MountItem::Create {
+                    id: 4,
+                    kind: ViewKind::Scroll,
+                },
+                MountItem::Frame {
+                    id: 4,
+                    frame: rect(0.0, 0.0, 300.0, 400.0),
+                },
+                MountItem::Insert {
+                    parent: 2,
+                    child: 4,
+                    before: None,
+                },
+                MountItem::ScrollContent {
+                    id: 4,
+                    size: nsh_core::Size::new(Points(300.0), Points(2000.0)),
+                },
+            ],
+        });
+        let idle_clients = surface.frame_clients.borrow().len();
+        let scroll_to = |y, animated| MountItem::Command {
+            id: 4,
+            command: nsh_core::Command::ScrollTo {
+                x: Points(0.0),
+                y: Points(y),
+                animated,
+            },
+        };
+        surface.apply(&MountBatch {
+            items: vec![scroll_to(200.0, true)],
+        });
+        let moving_clients = surface.frame_clients.borrow().len();
+        assert!(moving_clients > idle_clients);
+        for y in [240.0, 280.0, 320.0] {
+            surface.apply(&MountBatch {
+                items: vec![
+                    MountItem::Remove { id: 2 },
+                    MountItem::Insert {
+                        parent: ROOT_ID,
+                        child: 2,
+                        before: None,
+                    },
+                    scroll_to(y, true),
+                ],
+            });
+            // These are the actual queued native frame tasks. A stop may
+            // not register another driver before the previous task runs.
+            assert_eq!(surface.frame_clients.borrow().len(), moving_clients);
+        }
+        surface.tick();
+        let scroll = surface.view(4).unwrap();
+        let stopped = scroll.state().scroll.as_ref().unwrap().y;
+        surface.apply(&MountBatch {
+            items: vec![
+                MountItem::Remove { id: 2 },
+                MountItem::Insert {
+                    parent: ROOT_ID,
+                    child: 2,
+                    before: None,
+                },
+            ],
+        });
+        surface.tick();
+        assert_eq!(scroll.state().scroll.as_ref().unwrap().y, stopped);
+        assert_eq!(surface.frame_clients.borrow().len(), idle_clients);
+
+        surface.apply(&MountBatch {
+            items: vec![scroll_to(400.0, false)],
+        });
+        surface.tick();
+        assert_eq!(scroll.state().scroll.as_ref().unwrap().y, Points(400.0));
+        assert_eq!(surface.frame_clients.borrow().len(), idle_clients);
     }
 
     #[test]

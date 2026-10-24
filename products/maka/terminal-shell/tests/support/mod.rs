@@ -357,11 +357,7 @@ impl Fixture {
         let permissions = if file_tool.is_some() {
             // File-tool workflows use the product's real fresh-installation
             // policy, so an allowed write exercises its default authority.
-            let bundle = std::env::var_os("MAKA_PRODUCT_BUNDLE")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| {
-                    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../bundle/dist")
-                });
+            let bundle = PathBuf::from(env!("OUT_DIR")).join("product");
             let source = std::fs::read_to_string(bundle.join("authoring/composition.mjs")).unwrap();
             let vm = maka_js_runtime::plugin::Vm::pure(Default::default()).unwrap();
             let module = vm.load("real-host-installation".into(), source).unwrap();
@@ -402,11 +398,20 @@ impl Fixture {
             plan["instances"]["management"] = node(&manager, 8, json!({}), json!({}));
             plan["instances"]["gateway"]["bindings"]["management"] =
                 json!([{"kind":"instance","path":["management"],"export":"Management"}]);
+            let optional_roots: Vec<_> = (0..40)
+                .map(|index| {
+                    let path = directory
+                        .path()
+                        .join(format!("optional-workspace-{index:02}"));
+                    std::fs::create_dir(&path).unwrap();
+                    json!({"label":format!("Optional workspace {index:02}"),"path":path})
+                })
+                .collect();
             for index in 0..3 {
                 let mut optional = node(
                     &agent,
                     9 + index,
-                    json!({"locale":"en","workspaceRoots":[{"label":"Workspace","path":workspace}],"tools":[],"todo":true,"permissions":{"access":"read_only","requestPermissions":true}}),
+                    json!({"locale":"en","workspaceRoots":if index == 2 { json!(optional_roots) } else { json!([{"label":"Workspace","path":workspace}]) },"tools":[],"todo":true,"permissions":{"access":"read_only","requestPermissions":true}}),
                     json!({}),
                 );
                 optional["disabled"] = json!(true);
@@ -511,6 +516,7 @@ impl Fixture {
                             "globalInstructions",
                             "updateGlobalInstructions",
                             "metadata",
+                            "markRead",
                             "changeSession",
                             "fork",
                             "send",
@@ -789,11 +795,7 @@ impl Fixture {
         let mut view = AppView::new(AppOptions {
             size: evidence_size(),
             data_dir: Some(self.directory.path().join("nsh")),
-            ui_sets: Some(vec![
-                nsh_base::registry(),
-                registry,
-                maka_terminal_shell::markdown::registry(),
-            ]),
+            ui_sets: Some(vec![nsh_base::registry(), registry]),
             ..Default::default()
         });
         load_application(&mut view);

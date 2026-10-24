@@ -135,6 +135,53 @@ image(move || user.with(|u| u.avatar_url.clone()))
 - Decoded images are cached in memory (the cache is purged under memory pressure), keyed by URL, decode size and blur radius.
 - When the app declares [capabilities](./sandbox-and-capabilities.md), the image's host must be allowed under `network`; a refused image fails with its error event.
 
+### Kept on disk
+
+Downloaded images are also kept on disk, as the server sent them, so an app that is opened again (a conversation full
+of avatars and photos, a feed) shows the images it showed before without downloading them, also offline. The app
+needs no setting: every image with an `http://` or `https://` URL goes through the cache on iOS, Android, macOS,
+Windows, Linux and GPUI, and in the browser the browser's own HTTP cache does the same.
+
+The cache follows the server's HTTP caching headers:
+
+- An image is kept unless the response says `Cache-Control: no-store`.
+- It is used without a request while it is fresh: for `max-age`, else until `Expires`, else for a tenth of the time
+  since `Last-Modified` (at most a week).
+- After that it is checked with the server (`If-None-Match` with its `ETag`, `If-Modified-Since` with its
+  `Last-Modified`): an unchanged image (`304`) is used again without downloading it, a changed one replaces it.
+- When the request fails (no network) or the server has an error (`5xx`), the kept copy is shown, unless the response
+  said `must-revalidate` or `no-cache`.
+
+Each app has its own cache of 256 MiB; past that, the images used least recently are dropped first. Several views,
+surfaces and processes of one app share it safely. Embedding apps choose where it is and how large, or turn it off:
+
+```rust tabs
+// macOS, Windows, Linux and GPUI: the AppView's options (or AppView::set_cache).
+let mut cache = CacheOptions::at(CacheLocation::Dir(caches.join("nsh")));  // each app in <dir>/<app id>
+cache.images = CachePolicy::MaxSize(ByteSize::mib(64));                     // CachePolicy::Off: none
+let view = AppView::new(mtm, AppOptions { cache, ..AppOptions::default() });
+```
+
+```swift tabs
+// iOS: NshAppView, before loading.
+app.cacheOptions = NshCacheOptions(location: .directory(caches.appendingPathComponent("nsh")),
+                                   images: .maxSize(megabytes: 64))   // .off: none
+```
+
+```java tabs
+// Android: NshView, before loading.
+nsh.setCacheOptions(NshCacheOptions.builder()
+        .location(new File(getCacheDir(), "nsh"))
+        .imagesMaxMegabytes(64)          // imagesOff(): none
+        .build());
+```
+
+`CacheLocation::Off` (`.off`, `noDiskCache()`) keeps nothing on disk.
+
+By default the cache is in the system's cache directory: `Library/Caches/nsh` on iOS, `nsh` in the cache directory
+on Android, `~/Library/Caches` on macOS, `%LOCALAPPDATA%` on Windows and `$XDG_CACHE_HOME` (`~/.cache`) on Linux,
+each app in `<app id>/images` there. The system may clear these directories when it needs the space.
+
 ## Resize modes
 
 The resize mode (`.resize_mode(..)` in Rust, `resizeMode` in TSX) decides how an image fills a box of a different shape:

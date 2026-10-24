@@ -2,7 +2,10 @@
 //
 // Build: see README.md. The nsh bundle (`nsh build ../embedded`) is
 // copied into the app as `nsh/bundle.nshc` (+ `nsh/assets`). The app registers
-// a native component the bundle uses (`embed.badge`). "Load update" runs a
+// a native component the bundle uses (`embed.badge`) and talks to it through
+// the view's channel (`nsh/host`): launch parameters, the "time" call it
+// answers, the "tapped" posts it hears and the "message" events "Send a
+// message" sends. "Load update" runs a
 // signed package (`nsh publish`) verified against a root key; a real app
 // downloads the package, here it ships as `nsh/update.nshpkg` with
 // `nsh/root.pub`. "Brand" puts the host's brand over the app's theme
@@ -35,13 +38,16 @@ final class EmbedController: UIViewController {
         let update = UIButton(type: .system)
         update.setTitle("Load update", for: .normal)
         update.addTarget(self, action: #selector(loadUpdate), for: .touchUpInside)
+        let message = UIButton(type: .system)
+        message.setTitle("Send a message", for: .normal)
+        message.addTarget(self, action: #selector(sendMessage), for: .touchUpInside)
         status.font = .systemFont(ofSize: 13)
         status.textColor = .secondaryLabel
         status.numberOfLines = 0
         let brand = UIButton(type: .system)
         brand.setTitle("Brand", for: .normal)
         brand.addTarget(self, action: #selector(toggleBrand), for: .touchUpInside)
-        let buttons = UIStackView(arrangedSubviews: [reload, update, brand])
+        let buttons = UIStackView(arrangedSubviews: [reload, update, message, brand])
         buttons.spacing = 16
         let header = UIStackView(arrangedSubviews: [title, buttons, status])
         header.axis = .vertical
@@ -57,6 +63,16 @@ final class EmbedController: UIViewController {
         app.clipsToBounds = true
         app.onError = { [weak self] message in self?.status.text = "nsh error: \(message)" }
         app.register(component: "embed.badge") { context in Badge(context) }
+        // The channel with the app (`nsh/host`): what it reads at start, the
+        // call it makes and the posts it sends.
+        app.params = ["user": "Ada"]
+        app.handle("time") { _ in
+            ["time": DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)]
+        }
+        app.handle("tapped") { [weak self] data, _ in
+            let count = (data as? [String: Any])?["count"] ?? 0
+            self?.status.text = "the app posted tapped: \(count)"
+        }
         view.addSubview(app)
 
         NSLayoutConstraint.activate([
@@ -82,6 +98,12 @@ final class EmbedController: UIViewController {
         } catch {
             status.text = "\(error)"
         }
+    }
+
+    /// An event the app hears with `host.on("message", ...)`.
+    @objc private func sendMessage() {
+        let time = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
+        app.send("message", ["text": "Hello from UIKit at \(time)"])
     }
 
     /// The host's brand over the app's theme: the tokens it sets win, light and

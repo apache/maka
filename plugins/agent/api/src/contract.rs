@@ -738,6 +738,9 @@ pub struct Session {
     pub updated_at: u64,
     pub archived: bool,
     pub has_unread: bool,
+    /// Exact durable visible tail accepted by markRead; independent of preview clocks.
+    #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<String>")]
+    pub tail_message_id: Option<String>,
     pub activity: SessionActivity,
 }
 #[derive(Serialize, JsonSchema, Deserialize)]
@@ -1527,6 +1530,10 @@ pub fn contract() -> Contract {
                 (
                     "skillCandidates".into(),
                     method::<SkillCandidatesRead, SkillCandidates>(MethodMode::Query),
+                ),
+                (
+                    "fileCandidates".into(),
+                    method::<FileCandidatesRead, Option<FileCandidates>>(MethodMode::Subscription),
                 ),
                 (
                     "tools".into(),

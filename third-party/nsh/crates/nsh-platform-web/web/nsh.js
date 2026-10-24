@@ -40,6 +40,14 @@ const HOVERED = 2;
 const FOCUSED = 4;
 const PRESS_EVENTS = ["onPress", "onLongPress", "onPressIn", "onPressOut"];
 const HOVER_EVENTS = ["onHoverIn", "onHoverOut", "onHoverMove"];
+// What lays out a field's text, copied to the hidden copy that finds its
+// caret (`caretBounds`).
+const CARET_STYLE = [
+  "direction", "boxSizing", "width", "height", "borderTopWidth", "borderRightWidth", "borderBottomWidth",
+  "borderLeftWidth", "borderStyle", "paddingTop", "paddingRight", "paddingBottom", "paddingLeft", "fontStyle",
+  "fontVariant", "fontWeight", "fontStretch", "fontSize", "lineHeight", "fontFamily", "textAlign",
+  "textTransform", "textIndent", "letterSpacing", "wordSpacing", "tabSize",
+];
 /** `accessibilityRole`s whose ARIA role has another name; others are the same. */
 const ARIA_ROLES = {
   none: null, header: "heading", image: "img", imagebutton: "button", keyboardkey: "button", adjustable: "slider",
@@ -470,6 +478,40 @@ function measureContext() {
   return canvas.getContext("2d");
 }
 
+/** The span `measureNumericText` measures in (one for the page's players). */
+let numericSpan = null;
+
+/**
+ * The width of `text` in CSS `font` with `font-variant-numeric: numeric`
+ * (`tabular-nums`, ...). Canvas text cannot have numeric variants: its
+ * `font` takes only `small-caps`, and the context has `fontVariantCaps`
+ * but no `fontVariantNumeric`, so `measureText` measures proportional
+ * digits, narrower than the tabular ones the run is drawn with. A hidden
+ * span with the run's CSS measures what the DOM draws (font-variant-numeric:
+ * Chrome 52, Firefox 34, Safari 9.1). Its layout is forced, so the engine
+ * asks only for text with a numeric variant, and caches the answers.
+ */
+function measureNumericText(font, numeric, text) {
+  if (typeof document === "undefined" || !document.body) return null;
+  if (!numericSpan?.isConnected) {
+    const box = document.createElement("div");
+    box.setAttribute("aria-hidden", "true");
+    box.style.cssText = "position:fixed;left:0;top:0;width:0;height:0;overflow:hidden;"
+      + "visibility:hidden;pointer-events:none;contain:strict";
+    numericSpan = document.createElement("span");
+    numericSpan.style.cssText = "position:absolute;left:0;top:0;white-space:pre;"
+      + "letter-spacing:normal;word-spacing:normal;text-transform:none;font-kerning:auto;"
+      + "font-feature-settings:normal";
+    box.append(numericSpan);
+    document.body.append(box);
+  }
+  // `font` resets the variant: set it first, as the run's CSS does.
+  numericSpan.style.font = font;
+  numericSpan.style.fontVariantNumeric = numeric;
+  numericSpan.textContent = text;
+  return numericSpan.getBoundingClientRect().width;
+}
+
 /** Whether `locale`'s script is written right to left. */
 function rightToLeft(locale) {
   try {
@@ -592,6 +634,13 @@ class Player {
           this.measure.font = this.str(fp, fl);
           return this.measure.measureText(this.str(tp, tl)).width;
         },
+        measure_numeric_text: (fp, fl, np, nl, tp, tl) => {
+          const font = this.str(fp, fl), text = this.str(tp, tl);
+          const width = measureNumericText(font, this.str(np, nl), text);
+          if (width != null) return width;
+          this.measure.font = font;
+          return this.measure.measureText(text).width;
+        },
         font_ascent: (fp, fl) => this.metrics(this.str(fp, fl))[0],
         font_descent: (fp, fl) => this.metrics(this.str(fp, fl))[1],
         font_x_height: (fp, fl) => this.metrics(this.str(fp, fl))[2],
@@ -619,7 +668,13 @@ class Player {
         },
         submit: (p, l) => {
           const batch = JSON.parse(this.str(p, l));
-          this.apply(batch);
+          const retired = this.apply(batch);
+          this.submitResult = retired.length ? encoder.encode(JSON.stringify(retired)) : null;
+          return this.submitResult?.length ?? 0;
+        },
+        submit_result: (p, l) => {
+          this.bytes(p, l).set(this.submitResult);
+          this.submitResult = null;
         },
         request_frame: () => this.requestFrame(),
         request_pump: () => this.requestPump(),
@@ -1308,13 +1363,18 @@ class Player {
   // Mounting ------------------------------------------------------------
 
   apply(batch) {
+    const retired = [];
     for (const item of batch) {
       const handler = this[`op_${item[0]}`];
-      if (handler) handler.call(this, item);
+      if (handler) {
+        const result = handler.call(this, item);
+        if (item[0] === "rc") retired.push(result);
+      }
     }
     this.endLayoutAnimation();
     if (this.changedStacks.size) this.reconcileStacks();
     if (this.removals.length) this.finishRemovals();
+    return retired;
   }
 
   /** The batch is applied: views it removed leave the page, unless they
@@ -1399,17 +1459,57 @@ class Player {
     this.views.set(id, el);
   }
 
+  op_pr([, parentId, id, following]) {
+    const parent = this.view(parentId);
+    const child = this.view(id);
+    if (!parent || !child) return;
+    // Modal windows have their own presentation lifetime and global order;
+    // their logical siblings do not describe that native stack.
+    if (child._kind === "modal") {
+      this.op_i(["i", parentId, id, null]);
+      return;
+    }
+    const host = parent._layer ?? parent;
+    const before = following.map((sibling) => this.view(sibling)).find((view) =>
+      view && view !== child && (view._track ?? view).parentNode === host);
+    this.op_i(["i", parentId, id, before?._id ?? null]);
+    if (child._kind === "header" && child.parentNode === host) {
+      this.insertView(host, child, before?._track ?? before ?? null);
+    }
+  }
+
+  insertView(host, child, before) {
+    if (child.parentNode === host && child.nextSibling === before) return;
+    host.insertBefore(child, before);
+  }
+
   op_i([, parentId, childId, beforeId]) {
     const parent = this.view(parentId);
     const child = this.view(childId);
     if (!parent || !child) return;
+    const retired = child._listRetired;
+    if (retired) {
+      child._listRetired = false;
+      child.inert = false;
+    }
     if (child._kind === "modal") {
-      this.present(child);
+      if (retired) {
+        // A cancelled retirement restores the existing SDK presentation slot.
+        const before = [...this.root.children].find((view) => view._kind === "modal" && view._modalOrder > child._modalOrder);
+        this.insertView(this.root, child, before ?? null);
+        this.placeModal(child);
+        this.scopeFocus();
+        this.syncHistorySoon();
+      } else if (child.parentNode !== this.root || child._leaving) this.present(child);
       return;
     }
-    const before = beforeId == null ? null : this.view(beforeId);
+    const beforeView = beforeId == null ? null : this.view(beforeId);
+    const before = beforeView?._track ?? beforeView;
     if (child._kind === "header") {
       child._headerParent = parent;
+      if (retired) for (const screen of this.views.values()) {
+        if (screen._screen?.header === childId) this.placeHeader(screen);
+      }
       return;
     }
     // Back before its removal finished animating.
@@ -1418,16 +1518,26 @@ class Player {
     child._removing = false;
     child._leftWith = null;
     const host = parent._layer ?? parent;
-    host.insertBefore(child, before && before.parentNode === host ? before : null);
+    const projection = child._track ?? child;
+    if (projection !== child && child.parentNode !== projection) projection.append(child);
+    this.insertView(host, projection, before && before.parentNode === host ? before : null);
     if (parent._kind === "stack") {
-      this.changedStacks.add(parent);
-      this.stackChanged(parent, child);
+      if (retired) {
+        this.resetStack(parent);
+        if (parent._frame) this.reportRoot(child, parent._frame[2], parent._frame[3], this.screenInsets(child));
+      } else {
+        this.changedStacks.add(parent);
+        this.stackChanged(parent, child);
+      }
     }
+    if (retired) this.scopeFocus();
   }
 
   op_r([, id]) {
     const el = this.view(id);
     if (!el) return;
+    // A source removal ends a previously parked projection, not a new ACK.
+    if (el._listRetired) { el._listRetired = false; el.inert = false; }
     if (el._kind === "modal") {
       this.dismiss(el);
       return;
@@ -1437,6 +1547,161 @@ class Player {
     this.detach(el, parent);
     if (parent?._kind === "stack") this.stackChanged(parent);
     this.screenGone(el, focused);
+  }
+
+  op_rc([, id, request, rootIds]) {
+    const result = { id, request, retired: true, focus: this.focusPath(), cancelled: [], states: [] };
+    if (rootIds.some((root) => result.focus.includes(root))) {
+      result.retired = false;
+      return result;
+    }
+    // Detach immediately: a pooled cell must stop taking input and Tab
+    // before its old item can be rebound, regardless of exit animations.
+    const roots = rootIds.map((root) => this.view(root)).filter(Boolean);
+    for (const root of roots) {
+      root._listRetired = true;
+      root.inert = true;
+    }
+    Object.assign(result, this.cancelInput(roots));
+    for (const root of roots) {
+      for (const view of [root, ...root.querySelectorAll(".nsh-v")]) {
+        clearTimeout(view._modalDismissTimer);
+        view._modalDismissTimer = 0;
+        if (view._kind === "modal") {
+          view._entering = view._leaving = false;
+          view._closed = false;
+          view._restoreFocus = null;
+          view.style.transition = "";
+          view.style.transform = "";
+          view.style.opacity = "";
+        }
+        if (view._kind === "screen") {
+          view._popping = false;
+          view._removedFrom = null;
+          view._restoreFocus = null;
+          view.style.pointerEvents = "";
+          view.style.visibility = "";
+        }
+      }
+      const projection = root._track ?? root;
+      const parent = projection.parentNode;
+      projection.remove();
+      if (parent?._kind === "stack") this.resetStack(parent);
+    }
+    this.scopeFocus();
+    this.syncHistorySoon();
+    result.focus = this.focusPath();
+    return result;
+  }
+
+  // Retirement alone must revoke the old cell's native captures before ACK.
+  cancelInput(roots) {
+    const result = { cancelled: [], states: [] };
+    const contains = (view) => view && roots.some((root) => root.contains(view));
+    const states = new Map();
+    const cancelPress = (p) => {
+      clearTimeout(p.longTimer);
+      p.pressed = false;
+      for (const view of p.states) {
+        view._states &= ~PRESSED;
+        states.set(view._id, view._states);
+      }
+    };
+    if (contains(this.keyPress?.press)) {
+      cancelPress(this.keyPress);
+      this.keyPress = null;
+    }
+    if (contains(this.wheelPinchState?.el)) {
+      clearTimeout(this.wheelPinchState.timer);
+      this.wheelPinchState = null;
+    }
+    if (contains(this.gesture)) this.gesture = null;
+    if (contains(this.wheelLock?.el)) this.wheelLock = null;
+    for (const root of roots) {
+      for (const view of [root, ...root.querySelectorAll(".nsh-v")]) {
+        clearTimeout(view._autoFocusTimer);
+        view._autoFocusTimer = null;
+        cancelAnimationFrame(view._modalEnterFrame);
+        clearTimeout(view._modalShowTimer);
+        view._modalEnterFrame = view._modalShowTimer = 0;
+        for (const animation of view.getAnimations?.() ?? []) {
+          animation.onfinish = null;
+          animation.cancel();
+        }
+        if (view._frameAnimation) {
+          view._frameAnimation.onfinish = null;
+          view._frameAnimation.cancel();
+        }
+        view._frameAnimation = null;
+        if (view._kind === "stack") clearTimeout(view._hideTimer);
+        if (view._kind !== "scroll") continue;
+        clearTimeout(view._wheelZoomTimer);
+        view._wheelZoomTimer = null;
+        view._cancelPull?.();
+        cancelAnimationFrame(view._pullAnimation);
+        view._pullAnimation = 0;
+        cancelAnimationFrame(view._zoomAnimation);
+        view._zoomAnimation = 0;
+        if (view._glide) {
+          clearTimeout(view._glide.timer);
+          cancelAnimationFrame(view._glide.frame);
+          view._glide = null;
+          this.drive(view, -1);
+        }
+        if (view._momentumFrame) {
+          cancelAnimationFrame(view._momentumFrame);
+          view._momentumFrame = 0;
+          this.drive(view, -1);
+        }
+        clearTimeout(view._touchEndTimer);
+        view._touchEndTimer = null;
+        this.touchDrags?.delete(view);
+        view._touchDrag = false;
+        view._released = 0;
+        view._momentum = false;
+        view._ownEnd = null;
+        view._smooth = null;
+        view._restoreSnap = false;
+        view.style.scrollSnapType = "";
+        view.scrollTo({ left: view.scrollLeft, top: view.scrollTop, behavior: "instant" });
+      }
+    }
+    const twoFingerOwner = this.twoFinger && (this.twoFinger.el ?? this.twoFinger.zoom);
+    for (const [contact, p] of [...this.pointers]) {
+      const owner = twoFingerOwner ?? (p.mode === "pan" ? p.pan : p.mode === "bar" || p.mode === "scroll" ? p.scroll : null);
+      if (!contains(p.target ?? p.scroll) && !contains(owner)) continue;
+      cancelPress(p);
+      if (p.touchPath.length) result.cancelled.push(contact);
+      p.touchPath = [];
+      p.press = null;
+      p.states = [];
+      if (owner && !contains(owner)) {
+        // The row's touch and press ended, but an ancestor that already
+        // took over the gesture still owns its native drag or pinch.
+        p.target = null;
+        if (contains(p.pan)) p.pan = null;
+        if (contains(p.scroll)) p.scroll = null;
+        if (p.scrolls) p.scrolls = p.scrolls.filter((view) => !contains(view));
+        if (contains(p.zoom)) p.zoom = null;
+        if (contains(p.pinch)) p.pinch = null;
+        if (contains(p.gate)) {
+          p.gate = null;
+          p.gateState = 0;
+        }
+        continue;
+      }
+      this.pointers.delete(contact);
+      if (p.mode === "bar" || p.mode === "scroll") {
+        this.drive(p.scroll, -1);
+        if (p.mode === "bar") {
+          p.scroll._barHeld = false;
+          p.scroll.style.scrollSnapType = "";
+        }
+      }
+    }
+    if (contains(twoFingerOwner)) this.twoFinger = null;
+    result.states = [...states];
+    return result;
   }
 
   /** Takes `el` out of `parent`: a screen once its stack is reconciled
@@ -1563,6 +1828,14 @@ class Player {
     if (prop.startsWith("canvas:")) {
       el._slots[Number(prop.slice(7))] = isNaN(Number(value)) ? value : Number(value);
       this.drawSoon(el);
+      return;
+    }
+    if (prop === "sticky-offset") {
+      // A sticky cell sticks this much further in (an animated offset).
+      const offset = Number(value);
+      if (el._stickyOffset === offset) return;
+      el._stickyOffset = offset;
+      if (el._track) this.placeTrack(el);
       return;
     }
     el._animation[prop] = value;
@@ -2007,6 +2280,14 @@ class Player {
       el.scrollTo({ left: el._smooth[0], top: el._smooth[1], behavior: "smooth" });
       return;
     }
+    // So does a glide of the wheel's or the keys' (`scrollSmoothly`):
+    // its next frame would put the offset back.
+    const a = el._glide;
+    if (a) {
+      a.x += dx;
+      a.y += dy;
+      if (a.at) a.at = [a.at[0] + dx, a.at[1] + dy];
+    }
     el.scrollLeft += dx;
     el.scrollTop += dy;
   }
@@ -2113,6 +2394,9 @@ class Player {
         tracks.set(cellId, cell);
       }
       cell._range = range;
+      // The animated offsets come after the batch's ops (`sticky-offset`):
+      // one that became a number is no longer added.
+      cell._stickyOffset = undefined;
       this.placeTrack(cell);
     }
   }
@@ -2164,7 +2448,7 @@ class Player {
     t.width = `${horizontal ? length : 0}px`;
     t.height = `${horizontal ? 0 : length}px`;
     const s = cell.style;
-    const inset = `${at + origin - range[0]}px`;
+    const inset = `${at + origin - range[0] + (cell._stickyOffset ?? 0)}px`;
     s.left = horizontal ? inset : "auto";
     s.top = horizontal ? "auto" : inset;
     s.width = `${f[2]}px`;
@@ -2284,6 +2568,7 @@ class Player {
   }
 
   scrolled(el) {
+    if (el._commandEnd) this.waitCommandEnd(el);
     if (this.desktopUI) this.showBar(el);
     // Still moving after the finger left (touch scrolling is the
     // browser's): a glide.
@@ -2298,6 +2583,8 @@ class Player {
   /** The browser's scrolling stopped: the end, unless the scroll is driven
    * here (`drive`) or a finger still holds it. */
   scrollEnded(el) {
+    clearTimeout(el._commandEnd);
+    el._commandEnd = 0;
     el._smooth = null;
     if (el._driven || el._touchDrag) return;
     // The browser's end of a scroll that ended here (`ownEnd`).
@@ -2508,6 +2795,10 @@ class Player {
     if (el._pullTouch) return;
     el._pullTouch = true;
     let start = null;
+    el._cancelPull = () => {
+      start = null;
+      el._pulling = false;
+    };
     el.addEventListener("touchstart", (e) => {
       start = e.touches.length === 1 && this.refreshable(el) && el._behavior?.enabled !== false
         ? { y: e.touches[0].clientY, v: el.scrollTop - el._pull, pulling: false }
@@ -2776,7 +3067,10 @@ class Player {
     field.classList.toggle("nsh-ph", !!config.placeholderColor);
     if (config.autoFocus && !el._autoFocused) {
       el._autoFocused = true;
-      setTimeout(() => field.focus(), 0);
+      el._autoFocusTimer = setTimeout(() => {
+        el._autoFocusTimer = null;
+        if (el.isConnected) field.focus();
+      }, 0);
     }
   }
 
@@ -2828,6 +3122,9 @@ class Player {
     field.addEventListener("select", () => this.selectionChanged(el, field));
     field.addEventListener("keyup", () => this.selectionChanged(el, field));
     field.addEventListener("pointerup", () => this.selectionChanged(el, field));
+    // Scrolling the text moves the caret.
+    field.addEventListener("scroll", () => this.caretMoved(el, field));
+    field.addEventListener("paste", (e) => this.pasted(el, e));
   }
 
   textChanged(el, field) {
@@ -2846,11 +3143,92 @@ class Player {
   }
 
   selectionChanged(el, field) {
+    this.caretMoved(el, field);
     if (!el._events.has("onSelectionChange")) return;
     const sel = [field.selectionStart ?? 0, field.selectionEnd ?? 0];
     if (el._selection && el._selection[0] === sel[0] && el._selection[1] === sel[1]) return;
     el._selection = sel;
     this.event(el._id, "onSelectionChange", { start: sel[0], end: sel[1] });
+  }
+
+  /** A paste into a field: what the clipboard holds (`onPaste`, the files'
+   * bytes handed to WebAssembly as they are), and the field's own paste
+   * of the text unless `pasteBehavior` is `"report"`. The browser gives the
+   * clipboard only to this event, the user's paste. */
+  pasted(el, e) {
+    if (el._config?.pasteInserts === false) e.preventDefault();
+    if (!el._events.has("onPaste")) return;
+    const data = e.clipboardData;
+    const text = data?.getData("text/plain") ?? "";
+    const files = [...(data?.files ?? [])];
+    // A file manager's files are local paths the page cannot read: their
+    // `file:` URLs, when the browser lists them.
+    const uris = (data?.getData("text/uri-list") ?? "").split(/\r?\n/).filter((u) => u.startsWith("file:"));
+    Promise.all(files.map((f) => f.arrayBuffer())).then((buffers) => {
+      const size = buffers.reduce((n, b) => n + b.byteLength, 0);
+      const bytes = new Uint8Array(size);
+      let at = 0;
+      for (const b of buffers) {
+        bytes.set(new Uint8Array(b), at);
+        at += b.byteLength;
+      }
+      const json = JSON.stringify({
+        text,
+        files: files.map((f, i) => ({ name: f.name || "image.png", type: f.type, size: buffers[i].byteLength })),
+        uris,
+      });
+      this.call(() => this.withStrings([json, bytes], (jp, jl, bp, bl) => this.wasm.nsh_paste(el._id, jp, jl, bp, bl)));
+    });
+  }
+
+  /** `onCaretMove` while the field has the focus, if its caret moved. */
+  caretMoved(el, field) {
+    if (!el._events.has("onCaretMove") || document.activeElement !== field) return;
+    const caret = this.caretBounds(el, field);
+    const key = caret.join();
+    if (el._caret === key) return;
+    el._caret = key;
+    const [x, y, width, height] = caret;
+    this.event(el._id, "onCaretMove", { bounds: { origin: { x, y }, size: { width, height } } });
+  }
+
+  /** The caret at the selection's end in view `el` (`[x, y, width,
+   * height]`): a field tells no caret's place, so a hidden copy of it
+   * (its font, box and wrapping) holds the text up to the caret and a
+   * marker where the caret is, as libraries for textarea carets do. */
+  caretBounds(el, field) {
+    const style = getComputedStyle(field);
+    const area = field.tagName === "TEXTAREA";
+    const mirror = this._caretMirror ??= document.createElement("div");
+    const m = mirror.style;
+    for (const p of CARET_STYLE) m[p] = style[p];
+    m.position = "absolute";
+    m.visibility = "hidden";
+    m.top = "0";
+    m.left = "-9999px";
+    m.overflow = "hidden";
+    m.whiteSpace = area ? "pre-wrap" : "pre";
+    m.overflowWrap = area ? "break-word" : "normal";
+    document.body.appendChild(mirror);
+    const end = field.selectionEnd ?? field.value.length;
+    const before = field.value.slice(0, end);
+    mirror.textContent = field.type === "password" ? "•".repeat(before.length) : before;
+    const marker = document.createElement("span");
+    // Something to measure, even at the end of the text.
+    marker.textContent = field.value.slice(end) || ".";
+    mirror.appendChild(marker);
+    const fontSize = parseFloat(style.fontSize) || 16;
+    const height = parseFloat(style.lineHeight) || fontSize * 1.2;
+    const border = (side) => parseFloat(style[`border${side}Width`]) || 0;
+    let x = marker.offsetLeft + border("Left") - field.scrollLeft;
+    // A single line is centered in its box.
+    let y = area
+      ? marker.offsetTop + border("Top") - field.scrollTop
+      : (field.clientHeight - height) / 2 + border("Top");
+    mirror.remove();
+    x += field.offsetLeft;
+    y += field.offsetTop;
+    return [x, y, 1, height];
   }
 
   op_iv([, id, text, count]) {
@@ -2880,6 +3258,8 @@ class Player {
     field.style.top = `${y}px`;
     field.style.width = `${w}px`;
     field.style.height = `${h}px`;
+    // Its text may wrap elsewhere now.
+    this.caretMoved(el, field);
   }
 
   // Navigation
@@ -2898,6 +3278,7 @@ class Player {
   placeHeader(screen) {
     const id = screen._screen?.header;
     const header = id != null ? this.view(id) : null;
+    if (header?._listRetired) return;
     if (screen._header && screen._header !== header) screen._header.remove();
     screen._header = header;
     if (!header) return;
@@ -2941,6 +3322,21 @@ class Player {
   /** A stack's screens, without one going back. */
   screensOf(stack) {
     return [...stack.children].filter((s) => s._kind === "screen" && !s._popping && !s._removedFrom);
+  }
+
+  /** A parked screen changes the native stack without navigation or focus return. */
+  resetStack(stack) {
+    clearTimeout(stack._hideTimer);
+    const screens = this.screensOf(stack);
+    stack._shown = screens;
+    stack._top = screens[screens.length - 1] ?? null;
+    for (const screen of screens) {
+      const top = screen === stack._top;
+      screen.classList.toggle("nsh-hidden", !top);
+      if (top) screen.style.transform = "";
+      this.placeHeader(screen);
+    }
+    this.syncHistorySoon();
   }
 
   /** How screen `screen` comes and goes: `{ duration, fade }`, or null
@@ -3234,6 +3630,11 @@ class Player {
   }
 
   present(el) {
+    // Retire must cancel pending callbacks before the core rebinds this node.
+    cancelAnimationFrame(el._modalEnterFrame);
+    clearTimeout(el._modalShowTimer);
+    clearTimeout(el._modalDismissTimer);
+    el._modalOrder = this.modalOrder = (this.modalOrder ?? 0) + 1;
     const motion = this.modalMotion(el);
     el._leaving = false;
     this.dropLeftWith(el);
@@ -3251,18 +3652,27 @@ class Player {
     el._entering = true;
     this.scopeFocus();
     this.syncHistorySoon();
-    requestAnimationFrame(() => requestAnimationFrame(() => {
-      el._entering = false;
-      el.style.transition = "";
-      el.style.transform = "";
-      el.style.opacity = "";
-      setTimeout(() => this.event(el._id, "onShow"), motion === "none" ? 0 : 350);
-    }));
+    el._modalEnterFrame = requestAnimationFrame(() => {
+      el._modalEnterFrame = requestAnimationFrame(() => {
+        el._modalEnterFrame = 0;
+        if (!el.isConnected || el._leaving || el._listRetired) return;
+        el._entering = false;
+        el.style.transition = "";
+        el.style.transform = "";
+        el.style.opacity = "";
+        el._modalShowTimer = setTimeout(() => {
+          el._modalShowTimer = 0;
+          if (el.isConnected && !el._leaving && !el._listRetired) this.event(el._id, "onShow");
+        }, motion === "none" ? 0 : 350);
+      });
+    });
   }
 
   /** Takes modal `el` away; `onDismiss` follows unless `reported`. */
   dismiss(el, reported = el._closed) {
     if (el._leaving) return;
+    cancelAnimationFrame(el._modalEnterFrame);
+    clearTimeout(el._modalShowTimer);
     el._leaving = true;
     const motion = this.modalMotion(el);
     this.hideModal(el, motion);
@@ -3270,7 +3680,8 @@ class Player {
     this.syncHistorySoon();
     const restore = el._restoreFocus;
     if (restore?.isConnected && !this.topModal()) restore.focus({ preventScroll: true });
-    setTimeout(() => {
+    el._modalDismissTimer = setTimeout(() => {
+      el._modalDismissTimer = 0;
       if (el._leaving) {
         el.remove();
         this.dropLeftWith(el);
@@ -3471,14 +3882,18 @@ class Player {
       case "scrollTo":
         if (!el) break;
         el._applied++;
+        this.stopGlide(el, args[0], args[1]);
         el._smooth = args[2] ? [args[0], args[1]] : null;
         el.scrollTo({ left: args[0], top: args[1], behavior: args[2] ? "smooth" : "instant" });
         break;
-      case "scrollToEnd":
+      case "scrollToEnd": {
         if (!el) break;
         el._applied++;
-        el.scrollTo({ left: el._horizontal ? el.scrollWidth : 0, top: el._horizontal ? 0 : el.scrollHeight, behavior: args[0] ? "smooth" : "instant" });
+        const [x, y] = el._horizontal ? [el.scrollWidth, 0] : [0, el.scrollHeight];
+        this.stopGlide(el, x, y);
+        el.scrollTo({ left: x, top: y, behavior: args[0] ? "smooth" : "instant" });
         break;
+      }
       case "zoomTo": if (el) this.zoomCommand(el, ...args); break;
       case "dialog": this.dialog(args[0], args[1], args[2], args[3], args[4] ?? [], args[5] ?? true, args[6] ?? false); break;
       case "toast": this.toast(args[0], args[1]); break;
@@ -3502,12 +3917,14 @@ class Player {
         }
         break;
       case "seek": if (el?._video) el._video.currentTime = args[0]; break;
+      case "openUrl": this.event(ROOT_ID, "onOpenUrl", { id: args[0], opened: this.openUrl(args[1]) }); break;
       case "setClipboard": this.writeClipboard(args[0]); break;
       case "readClipboard": this.readClipboard(args[0], args[1]); break;
       case "setClipboardImage": this.writeClipboardImage(args[0]); break;
       case "readClipboardImage": this.readClipboardImage(args[0], args[1]); break;
       // Pages see no local paths: never any files.
       case "readClipboardFiles": this.event(ROOT_ID, "onClipboard", { id: args[0], has: false, files: "" }); break;
+      case "pickImages": this.pickImages(args[0], args[1], args[2], args[3], args[4]); break;
       case "hostCall": this.hostCall(args[0], args[1], args[2]); break;
       case "imageInfo": this.imageInfo(args[0], args[1]); break;
       case "back": this.defaultBack(); break;
@@ -3564,6 +3981,23 @@ class Player {
    * show a paste button), and fails in an insecure context. `hasText`
    * reads too: there is no way to ask without reading.
    */
+  // `openUrl` (the URL passed nsh_core::open_url's check): a web page in a
+  // new tab, another scheme (mailto:, tel:, ...) through the browser's
+  // handler. Whether the browser let it open (a blocked pop-up is false).
+  openUrl(url) {
+    let opened = null;
+    try {
+      opened = window.open(url, "_blank");
+    } catch (err) {
+      console.warn(`[nsh] openUrl: ${err}`);
+    }
+    // The page opened knows nothing of this one.
+    if (opened) {
+      try { opened.opener = null; } catch {}
+    }
+    return !!opened;
+  }
+
   async readClipboard(request, hasOnly) {
     let text = "";
     try {
@@ -3584,6 +4018,77 @@ class Player {
     } catch {
       // Denied, an insecure context, or a type the browser does not write.
     }
+  }
+
+  /**
+   * `Picker.pickImages`: a file input of images. Files are read as they are,
+   * unless one is larger than `maxDimension` (or a JPEG with a `quality`):
+   * then it is drawn upright at the size that fits and encoded again (a PNG
+   * stays a PNG), as `nsh_core::picker` says. A cancelled input sends none.
+   */
+  pickImages(request, limit, maxDimension, quality, current) {
+    const app = this.app;
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = current ? "image/*" : "image/jpeg,image/png,image/gif,image/webp";
+    input.multiple = limit > 1;
+    input.style.display = "none";
+    let answered = false;
+    const answer = async (files) => {
+      if (answered) return;
+      answered = true;
+      input.remove();
+      const picked = [];
+      for (const file of files.slice(0, limit)) {
+        try {
+          picked.push(await this.preparePicked(file, maxDimension, quality));
+        } catch {
+          // Unreadable: left out.
+        }
+      }
+      if (app !== this.app) return;
+      this.call((w) => {
+        for (const p of picked) {
+          this.withStrings([p.name, p.type, p.bytes], (np, nl, tp, tl, bp, bl) =>
+            w.nsh_picked_file(np, nl, tp, tl, bp, bl, p.width, p.height, p.lastModified));
+        }
+        return w.nsh_picked(request);
+      });
+    };
+    input.addEventListener("change", () => answer([...(input.files ?? [])]));
+    input.addEventListener("cancel", () => answer([]));
+    this.root.append(input);
+    input.click();
+  }
+
+  async preparePicked(file, maxDimension, quality) {
+    const type = file.type.toLowerCase();
+    let bitmap = null;
+    try {
+      bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
+    } catch {
+      // A format the browser does not decode: kept as it is.
+    }
+    const width = bitmap?.width ?? 0;
+    const height = bitmap?.height ?? 0;
+    const longer = Math.max(width, height);
+    const scale = maxDimension > 0 && longer > maxDimension;
+    const requality = quality >= 0 && type === "image/jpeg";
+    const keep = { name: file.name, type, lastModified: file.lastModified, width, height };
+    if (!bitmap || !(scale || requality)) {
+      bitmap?.close();
+      return { ...keep, bytes: new Uint8Array(await file.arrayBuffer()) };
+    }
+    const factor = scale ? maxDimension / longer : 1;
+    const w = Math.max(1, Math.round(width * factor));
+    const h = Math.max(1, Math.round(height * factor));
+    const canvas = new OffscreenCanvas(w, h);
+    canvas.getContext("2d").drawImage(bitmap, 0, 0, w, h);
+    bitmap.close();
+    const png = type === "image/png" && scale;
+    const out = await canvas.convertToBlob(png ? { type: "image/png" } : { type: "image/jpeg", quality: quality >= 0 ? quality : 0.9 });
+    const name = file.name.replace(/\.[^.]*$/, "") + (png ? ".png" : ".jpg");
+    return { ...keep, name, type: out.type, width: w, height: h, bytes: new Uint8Array(await out.arrayBuffer()) };
   }
 
   /** `Clipboard.readImage` / `hasImage`: the first image item, as a `data:` URI with its size. */
@@ -4128,6 +4633,10 @@ class Player {
     return out;
   }
 
+  focusPath(target = document.activeElement) {
+    return target && this.root.contains(target) ? this.ancestors(this.viewOf(target)).map((view) => view._id) : [];
+  }
+
   /** Convert viewport coordinates through the view's composed 2D transforms. */
   mousePoint(el, e) {
     let a = 1, b = 0, c = 0, d = 1;
@@ -4555,6 +5064,41 @@ class Player {
     }, 200);
   }
 
+  /** Stops `el`'s glide where it is for a scroll command of the core's to
+   * (`x`, `y`), as the native backends interrupt theirs: left running, its
+   * next frame would put the offset back. The browser's `scrollend` after
+   * the command's scroll ends the scroll it stopped; a command that leaves
+   * the view where it is moves nothing, and no `scrollend` follows, so its
+   * `onScrollEnd` is sent here. */
+  stopGlide(el, x, y) {
+    const a = el._glide;
+    if (!a) return;
+    cancelAnimationFrame(a.frame);
+    clearTimeout(a.timer);
+    el._glide = null;
+    this.drive(el, -1);
+    // Browsers clamp the offsets of scrolls.
+    const stays = (to, at, max) => Math.min(Math.max(to, 0), max) === at;
+    if (stays(x, el.scrollLeft, el.scrollWidth - el.clientWidth) && stays(y, el.scrollTop, el.scrollHeight - el.clientHeight)) {
+      this.ownEnd(el);
+    } else {
+      // A fractional destination may round back to the current offset,
+      // in which case the browser sends no scrollend. Moving commands
+      // keep this fallback waiting through their scroll events.
+      this.waitCommandEnd(el);
+    }
+  }
+
+  /** Ends a command rounded to the current offset when no browser event
+   * follows; scroll events keep a moving command's fallback waiting. */
+  waitCommandEnd(el) {
+    clearTimeout(el._commandEnd);
+    el._commandEnd = setTimeout(() => {
+      this.scrollEnded(el);
+      el._ownEnd = [el.scrollLeft, el.scrollTop];
+    }, 200);
+  }
+
   /** The snap point of a snapping view next to where it is towards `dir`
    * (0: the nearest). */
   snapPoint(el, dir) {
@@ -4616,6 +5160,8 @@ class Player {
   }
 
   scrollEvent(el, name) {
+    // Snapping animated values that follow it settle, listened to or not.
+    if (name === "onScrollEnd") this.call((w) => w.nsh_scroll_ended(el._id));
     if (el._events.has(name)) this.event(el._id, name, { x: el.scrollLeft, y: el.scrollTop });
   }
 
@@ -4669,6 +5215,7 @@ class Player {
     // pinch here.
     const scrollView = isField ? null : chain.find((v) => v._kind === "scroll") ?? null;
     const p = {
+      target,
       x, y, startX: x, startY: y, t: performance.now(), vx: 0, vy: 0,
       touchPath: chain.filter((v) => v._events.has("onTouch")).map((v) => v._id),
       press: isField ? null : chain.find((v) => PRESS_EVENTS.some((n) => v._events.has(n)) && !v._props?.disabled) ?? null,
@@ -4830,7 +5377,7 @@ class Player {
       // Released after a pause: no speed left.
       this.track(p, performance.now());
       const [vx, vy] = this.velocity(p);
-      this.call((w) => w.nsh_pan(p.pan._id, 2, p.x - p.startX, p.y - p.startY, vx, vy));
+      this.call((w) => w.nsh_pan(p.pan._id, cancelled ? 3 : 2, p.x - p.startX, p.y - p.startY, vx, vy));
     } else if (p.mode === "scroll") {
       this.scrollEvent(p.scroll, "onScrollDragEnd");
       this.glide(p.scroll, -p.vx, -p.vy);
@@ -4859,7 +5406,11 @@ class Player {
           v._released = performance.now();
           this.scrollEvent(v, "onScrollDragEnd");
           // Without a glide no scroll follows (nor, sometimes, `scrollend`).
-          setTimeout(() => v._released && !v._momentum && this.scrollEnded(v), 200);
+          clearTimeout(v._touchEndTimer);
+          v._touchEndTimer = setTimeout(() => {
+            v._touchEndTimer = null;
+            if (v._released && !v._momentum) this.scrollEnded(v);
+          }, 200);
         }
         this.touchDrags.clear();
       };
@@ -4871,11 +5422,17 @@ class Player {
   /** Momentum after a touch panned a zoomable view (other touch scrolling
    * is the browser's), at `(vx, vy)` points per second. */
   glide(s, vx, vy) {
+    if (s._momentumFrame) {
+      cancelAnimationFrame(s._momentumFrame);
+      s._momentumFrame = 0;
+      this.drive(s, -1);
+    }
     let w = Math.abs(vx) > 80 ? vx / 1000 : 0;
     let v = Math.abs(vy) > 80 ? vy / 1000 : 0;
     let last = performance.now();
     const momentum = v !== 0 || w !== 0;
     const end = () => {
+      s._momentumFrame = 0;
       this.drive(s, -1);
       this.snapMarkers(s);
       if (momentum) this.scrollEvent(s, "onMomentumEnd");
@@ -4893,10 +5450,10 @@ class Player {
       s.scrollLeft += w * dt;
       v *= Math.pow(0.995, dt);
       w *= Math.pow(0.995, dt);
-      if (Math.abs(v) > 0.02 || Math.abs(w) > 0.02) requestAnimationFrame(step);
+      if (Math.abs(v) > 0.02 || Math.abs(w) > 0.02) s._momentumFrame = requestAnimationFrame(step);
       else end();
     };
-    requestAnimationFrame(step);
+    s._momentumFrame = requestAnimationFrame(step);
   }
 
   startTwoFinger() {

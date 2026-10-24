@@ -106,7 +106,9 @@ release 构建（所有并非从开发服务器加载的代码）在加载时会
     "webview": { "hosts": ["*.example.com"] },
     "statusBar": true,
     "clipboard": true,
-    "host": ["getUserInfo", "bridge.*"]
+    "picker": true,
+    "host": ["getUserInfo", "bridge.*"],
+    "openUrl": { "schemes": ["https", "mailto"] }
   }
 }
 ```
@@ -163,6 +165,14 @@ web view 内的顶层导航也会在加载前由平台的导航代理检查。�
 
 `"clipboard": true` 允许应用读写系统剪贴板（[`nsh/clipboard`](../modules/nsh-clipboard.md)）。从可选文本的编辑菜单复制是用户自己的操作，不需要这项能力。
 
+### `picker`
+
+`"picker": true` 允许应用显示系统的照片选择器（[`nsh/picker`](../modules/nsh-picker.md)）：由用户决定哪些内容交给应用。
+
+### `openUrl`
+
+允许应用在应用之外打开 URL（[`openUrl`](../modules/nsh-device.md#openurl)，以及 `links="open"` 的 `TextView` 中的链接）：`"openUrl": true` 允许所有 scheme，`"openUrl": { "schemes": ["https", "mailto"] }` 只允许列出的 scheme。scheme 未被授予的 URL 会抛出 `TypeError`。会执行代码或访问应用自身数据的 URL（`javascript:`、`data:`、`file:` 等）无论能力如何都不会打开。
+
 ### 存储
 
 每个应用都可以用 [`nsh/storage`](../modules/nsh-storage.md) 在设备上保存自己的数据，无需任何能力：存储里只有该应用自己的数据，保存位置由宿主应用决定。
@@ -198,6 +208,7 @@ if (host.available()) {
 | 远程图片 | 图片加载失败，触发 `onError`。 |
 | 视频源、web view 源、状态栏修改 | 不显示也不修改任何东西。 |
 | 剪贴板 | `writeText` 和 `writeImage` 不做任何事；`readText` 返回 `""`，`readImage` 返回 `null`，`readFiles` 返回 `[]`，`hasText` 和 `hasImage` 返回 `false`。 |
+| 选择器 | `pickImages` 不显示任何内容，返回 `[]`。 |
 | 宿主调用 | Promise 被 reject，错误信息提示把该函数加入 `capabilities.host`；调用不会到达宿主。 |
 
 每种拒绝只记录一次日志，并说明需要添加哪个键：

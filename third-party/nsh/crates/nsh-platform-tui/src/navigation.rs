@@ -26,6 +26,9 @@ pub(crate) struct Navigation {
     reports: Vec<Option<(Size<Points>, EdgeInsets)>>,
     moving: Vec<NodeId>,
     presentations: Vec<NodeId>,
+    /// Detached list-owned roots retain their native presentation slot
+    /// until they are reinserted or their source nodes are deleted.
+    parked: Vec<NodeId>,
     gesture: Option<Gesture>,
 }
 
@@ -147,6 +150,7 @@ impl Surface {
             .iter()
             .filter_map(|item| match item {
                 MountItem::Insert { child, .. } => Some(*child),
+                MountItem::ProjectRoot { id, .. } => Some(*id),
                 _ => None,
             })
             .collect();
@@ -200,7 +204,11 @@ impl Surface {
     }
 
     /// Cancels an app removal when it moves or reinserts the same root.
-    pub(crate) fn navigation_reinserted(&mut self, id: NodeId) {
+    pub(crate) fn navigation_reinserted(&mut self, id: NodeId) -> bool {
+        if let Some(index) = self.navigation.parked.iter().position(|&root| root == id) {
+            self.navigation.parked.swap_remove(index);
+            return true;
+        }
         let exiting = self
             .navigation
             .track(id)
@@ -220,6 +228,66 @@ impl Surface {
             node.popped = false;
             node.delete_pending = false;
         }
+        false
+    }
+
+    pub(crate) fn navigation_is_parked(&self, id: NodeId) -> bool {
+        self.ancestors(id)
+            .iter()
+            .any(|id| self.navigation.parked.contains(id))
+    }
+
+    /// Parks Core's native root snapshot without ending a popup or modal
+    /// lifetime, animating it out, or changing its presentation order.
+    pub(crate) fn navigation_park(&mut self, roots: &[NodeId]) {
+        let mut nodes = roots.to_vec();
+        let mut index = 0;
+        while index < nodes.len() {
+            let children = self
+                .node(nodes[index])
+                .map_or_else(Vec::new, |node| node.children.clone());
+            for child in children {
+                if !nodes.contains(&child) {
+                    nodes.push(child);
+                }
+            }
+            index += 1;
+        }
+        for &id in &nodes {
+            if self.navigation.track(id).is_some_and(|track| {
+                track.completion == Completion::Pop
+                    || (track.completion == Completion::Detach && track.modal)
+            }) {
+                self.navigation.modals.retain(|&modal| modal != id);
+                self.emit(id, EventKind::Dismiss, EventPayload::None);
+            }
+            self.navigation.set_track(id, None);
+            if let Some(node) = self.node_mut(id) {
+                node.motion = None;
+            }
+            if self
+                .node(id)
+                .is_some_and(|node| node.kind == ViewKind::Input && node.input.auto_focus)
+                && !self.autofocus_seen.contains(&id)
+            {
+                self.autofocus_seen.push(id);
+            }
+        }
+        self.navigation
+            .presentations
+            .retain(|id| !nodes.contains(id));
+        self.navigation.moving.retain(|id| !nodes.contains(id));
+        for &root in roots {
+            if self.node(root).is_some() && !self.navigation.parked.contains(&root) {
+                self.navigation.parked.push(root);
+            }
+            self.detach(root);
+        }
+    }
+
+    pub(crate) fn navigation_deleted(&mut self, id: NodeId) {
+        self.navigation.parked.retain(|&root| root != id);
+        self.navigation.set_track(id, None);
     }
 
     /// Whether this node must stay mounted for its own or an ancestor's exit.
@@ -420,7 +488,9 @@ impl Surface {
             .filter(|&id| self.navigation_retains(id))
             .collect();
         self.navigation.modals.retain(|id| {
-            let alive = modals.contains(id) || retained_modals.contains(id);
+            let alive = modals.contains(id)
+                || retained_modals.contains(id)
+                || self.navigation.parked.contains(id);
             if !alive {
                 dismissed.push(*id);
             }
@@ -989,6 +1059,14 @@ impl Surface {
         true
     }
 
+    pub(crate) fn navigation_pointer_owner(&self) -> Option<NodeId> {
+        self.navigation
+            .gesture
+            .as_ref()
+            .filter(|gesture| gesture.claimed)
+            .map(|gesture| gesture.id)
+    }
+
     /// Losing pointer capture restores an interactive route without dismissing.
     pub(crate) fn navigation_pointer_cancel(&mut self) {
         if let Some(gesture) = self.navigation.gesture.take()
@@ -1164,6 +1242,48 @@ mod tests {
         surface.tick(1.0);
         assert!(events(&mut surface, EventKind::Dismiss).is_empty());
         assert!(surface.node(6).is_some());
+    }
+
+    #[test]
+    fn parking_during_a_native_pop_completes_its_existing_dismiss_once() {
+        let mut surface = stack();
+        push(&mut surface, ScreenAnimation::Default);
+        surface.tick(0.31);
+        surface.drain_events().for_each(drop);
+        surface.navigation_back();
+        assert!(surface.node(6).unwrap().popped);
+        surface.apply(MountBatch {
+            items: vec![MountItem::RetireListCell {
+                id: 2,
+                request: 1,
+                roots: vec![2, 4, 6],
+            }],
+        });
+        assert_eq!(events(&mut surface, EventKind::Dismiss), vec![6]);
+        surface.tick(1.0);
+        assert!(events(&mut surface, EventKind::Dismiss).is_empty());
+        surface.apply(MountBatch {
+            items: vec![
+                MountItem::ProjectRoot {
+                    parent: ROOT_ID,
+                    id: 2,
+                    following: vec![],
+                },
+                MountItem::ProjectRoot {
+                    parent: 2,
+                    id: 4,
+                    following: vec![6],
+                },
+                MountItem::ProjectRoot {
+                    parent: 2,
+                    id: 6,
+                    following: vec![],
+                },
+            ],
+        });
+        assert!(surface.node(6).unwrap().popped);
+        assert!(events(&mut surface, EventKind::Dismiss).is_empty());
+        assert!(!surface.visible_ids().contains(&6));
     }
 
     #[test]

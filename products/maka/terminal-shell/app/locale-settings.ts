@@ -59,7 +59,75 @@ import {
 } from '../../../../plugins/shared/tui-messages.js';
 
 export const settingsMessages = {
+  'Interface scale': ['Interface scale', '界面缩放', '介面縮放'],
+  'Interface scale percentage': ['Interface scale percentage', '界面缩放百分比', '介面縮放百分比'],
+  'Choose a preset or press Enter to preview. Ctrl+Alt+0 restores 100%.': [
+    'Choose a preset or press Enter to preview. Ctrl+Alt+0 restores 100%.',
+    '选择快捷档或按 Enter 即时预览。Ctrl+Alt+0 可恢复为 100%。',
+    '選擇快捷比例或按 Enter 即時預覽。Ctrl+Alt+0 可恢復為 100%。',
+  ],
+  'Preview interface scale {percent}%': [
+    'Preview interface scale {percent}%',
+    '预览界面缩放 {percent}%',
+    '預覽介面縮放 {percent}%',
+  ],
+  'Save interface scale': ['Save interface scale', '保存界面缩放', '儲存介面縮放'],
+  'Reset interface scale to 100%': [
+    'Reset interface scale to 100%',
+    '重置界面缩放为 100%',
+    '重設介面縮放為 100%',
+  ],
+  'Reset to 100%': ['Reset to 100%', '重置为 100%', '重設為 100%'],
+  'Cancel interface scale preview': [
+    'Cancel interface scale preview',
+    '取消界面缩放预览',
+    '取消介面縮放預覽',
+  ],
+  'Enter a positive scale that the renderer can display.': [
+    'Enter a positive scale that the renderer can display.',
+    '请输入渲染器能够显示的正数缩放值。',
+    '請輸入繪製器能夠顯示的正數縮放值。',
+  ],
+  'Interface scale could not be saved.': [
+    'Interface scale could not be saved.',
+    '无法保存界面缩放。',
+    '無法儲存介面縮放。',
+  ],
+  'Interface scale could not be read.': [
+    'Interface scale could not be read.',
+    '无法读取界面缩放。',
+    '無法讀取介面縮放。',
+  ],
+  'Use your terminal’s font size to scale the Unicode interface.': [
+    'Use your terminal’s font size to scale the Unicode interface.',
+    'Unicode 界面的大小由终端字体控制，请调整终端字号。',
+    'Unicode 介面的大小由終端字型控制，請調整終端字級。',
+  ],
   'Code Mode': ['Code Mode', 'Code Mode', 'Code Mode'],
+  'Apply Patch': ['Apply Patch', 'Apply Patch', 'Apply Patch'],
+  'Model default': ['Model default', '模型默认策略', '模型預設策略'],
+  '{tool}: {value}': ['{tool}: {value}', '{tool}：{value}', '{tool}：{value}'],
+  'Edit current model settings': [
+    'Edit current model settings',
+    '编辑当前模型设置',
+    '編輯目前模型設定',
+  ],
+  'Run tool calls through Code Mode. Model default follows the built-in policy for this model.': [
+    'Run tool calls through Code Mode. Model default follows the built-in policy for this model.',
+    '通过 Code Mode 执行工具调用。模型默认策略使用此模型的内置策略。',
+    '透過 Code Mode 執行工具呼叫。模型預設策略使用此模型的內建策略。',
+  ],
+  'Use apply_patch for file edits. Disabled uses structured edit and write tools. Independent of Code Mode.':
+    [
+      'Use apply_patch for file edits. Disabled uses structured edit and write tools. Independent of Code Mode.',
+      '使用 apply_patch 编辑文件。关闭时使用结构化编辑和写入工具，此设置独立于 Code Mode。',
+      '使用 apply_patch 編輯檔案。關閉時使用結構化編輯和寫入工具，此設定獨立於 Code Mode。',
+    ],
+  'Code Mode language: {language}': [
+    'Code Mode language: {language}',
+    'Code Mode 语言：{language}',
+    'Code Mode 語言：{language}',
+  ],
   'Code Mode language': ['Code Mode language', 'Code Mode 语言', 'Code Mode 語言'],
   'Used when Code Mode is enabled. Applies to newly submitted messages.': [
     'Used when Code Mode is enabled. Applies to newly submitted messages.',

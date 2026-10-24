@@ -21,7 +21,6 @@
 
 pub mod bindings;
 pub mod entry;
-pub mod markdown;
 pub mod terminal;
 
 /// Product code compiled from TSX; the caller supplies the native Host binding.

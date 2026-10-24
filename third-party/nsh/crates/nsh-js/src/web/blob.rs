@@ -17,10 +17,11 @@ use super::{
 
 /// A blob's bytes and type. The bytes are atomically counted so that an
 /// `<Image>` showing a `blob:` URL hands them to the platform without a
-/// copy ([`Blob::image_data`]).
+/// copy ([`Blob::image_data`]), and a `File` Rust made (a picked photo)
+/// holds the bytes Rust has.
 #[derive(Clone)]
 pub(crate) struct Blob {
-    bytes: Arc<[u8]>,
+    bytes: nsh_core::ImageData,
     start: usize,
     end: usize,
     pub(crate) mime: String,
@@ -36,9 +37,14 @@ impl Object for Blob {
 
 impl Blob {
     pub(crate) fn new(bytes: Vec<u8>, mime: String) -> Blob {
+        Blob::shared(nsh_core::ImageData::new(bytes), mime)
+    }
+
+    /// A blob of the bytes `bytes` holds, shared (not copied).
+    pub(crate) fn shared(bytes: nsh_core::ImageData, mime: String) -> Blob {
         let end = bytes.len();
         Blob {
-            bytes: bytes.into(),
+            bytes,
             start: 0,
             end,
             mime,
@@ -56,6 +62,9 @@ impl Blob {
     /// The blob's bytes for an image source: shared with the blob, not
     /// copied, so revoking its URL or collecting it leaves the image whole.
     pub(crate) fn image_data(&self) -> nsh_core::ImageData {
+        if self.start == 0 && self.end == self.bytes.len() {
+            return self.bytes.clone();
+        }
         nsh_core::ImageData::new(BlobBytes(self.clone()))
     }
 

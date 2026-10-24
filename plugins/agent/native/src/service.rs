@@ -118,6 +118,7 @@ impl Handler for Agent {
                         .skill_candidates(decode(input)?, context.scope())
                         .await?,
                 ),
+                "fileCandidates" => owner.file_candidates(decode(input)?, context).await,
                 "tools" => encode(owner.tool_names()),
                 "plan" => encode(owner.plan(decode(input)?).await?),
                 "planHistory" => encode(owner.plan_history(decode(input)?).await?),
@@ -1113,6 +1114,7 @@ pub(crate) fn summary_for(
         updated_at: session.updated_at,
         archived: session.archived,
         has_unread: session.read_state.has_unread,
+        tail_message_id: session.last_message.map(|message| message.tail_message_id),
     }
 }
 fn delivery(event: StoreStreamEvent) -> Delivery {

@@ -43,6 +43,14 @@ impl Animator {
         self.update_link();
     }
 
+    /// The scroll view whose scroll value is `node` came to rest: the
+    /// snapping values that follow it settle.
+    pub(crate) fn settle(&mut self, node: NodeId) {
+        if self.graph.settle(node) {
+            self.update_link();
+        }
+    }
+
     pub(crate) fn value(&self, node: NodeId) -> f32 {
         self.graph.value(node).unwrap_or(0.0)
     }

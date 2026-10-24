@@ -63,14 +63,31 @@ function Filters() {
 the `"bottom"` (the default) or `"top"` of the screen, as wide as the screen, or at the `"left"` or `"right"`, as tall
 as the screen; its size across is the panel's, from its content or `popupClass`.
 
+Its slide follows the panel's measured size as content is created or grows during the entrance. Lazy content and
+asynchronous size updates share the same animation progress; the panel settles at its current size.
+
 ## Open state
 
 Without `open`, the sheet keeps its own state, starting from `defaultOpen`. With `open`, the app owns it: change it in
-`onOpenChange(open, reason)`, which reports each request to close with its reason (`"backdropPress"`, `"cancel"`).
+`onOpenChange(open, reason)`, which reports each request to close with its reason (`"backdropPress"`, `"cancel"`, `"swipe"`).
 `onOpen` and `onClose` follow it in and out, whoever opened or closed it.
 
 `closeOnEscape={false}` keeps it open on Escape and back, `closeOnBackdropPress={false}` on presses on the backdrop;
 `onCancel` still hears them, to ask first.
+
+## Dragging a bottom sheet
+
+Set `closeOnSwipe` to let a bottom panel follow downward dragging. Its backdrop fades with the distance; releasing
+past 30% of the panel's height, or downward at 800 points per second, requests closing with reason `"swipe"`.
+A shorter drag returns smoothly. A controlled owner can keep `open` true to return the panel after a close request.
+With reduced motion, release and programmatic opening/closing settle immediately; direct dragging still follows the finger.
+
+The panel fits its content, including short menus; use `popupStyle` or a child's height to constrain taller content.
+The app draws its own handle, which can be any view inside the panel. On iOS, an inner vertical `Scroll` or `List`
+consumes the drag until its top and hands the remaining downward motion to the panel within the same gesture.
+On Android, desktops and the web, dragging the handle or content outside a scroll uses their native pan support;
+inner scrolls keep their platform's normal gesture arbitration. Setting `closeOnSwipe` to false keeps the panel
+stationary and preserves the mounted content and scroll position. Other sides retain their existing behavior.
 
 ## Native sheets
 
@@ -86,6 +103,7 @@ on iOS), use a [Dialog](./dialog.md) with `presentation="pageSheet"`.
 | `side` | `.side(..)` | `"top" \| "bottom" \| "left" \| "right"` | `"bottom"` | The edge it is on. |
 | `closeOnEscape` | `.close_on_escape(..)` | `boolean` | `true` | Escape and the Android back button close it. |
 | `closeOnBackdropPress` | `.close_on_backdrop_press(..)` | `boolean` | `true` | A press on the backdrop closes it. |
+| `closeOnSwipe` | `.close_on_swipe(..)` | `boolean` | `false` | A bottom panel follows downward dragging and closes on a sufficient release. |
 | `popupClass`, `popupStyle` | `.popup_class(..)`, `.popup_style(..)` | `string`, `StyleProp<ViewStyle>` | none | The look of the panel. |
 | `backdropClass`, `backdropStyle` | `.backdrop_class(..)`, `.backdrop_style(..)` | `string`, `StyleProp<ViewStyle>` | none | The look of the backdrop, such as a translucent color. |
 | `children` | `.child(..)` | `JSX.Element` | none | The content. |
@@ -94,7 +112,7 @@ on iOS), use a [Dialog](./dialog.md) with `presentation="pageSheet"`.
 
 | Event | Rust | Description |
 |---|---|---|
-| `onOpenChange` | `.on_open_change(\|e\| ..)` | It closed, with why: `"backdropPress"` or `"cancel"`. |
+| `onOpenChange` | `.on_open_change(\|e\| ..)` | A close request, with why: `"backdropPress"`, `"cancel"` or `"swipe"`. |
 | `onOpen` | `.on_open(\|\| ..)` | It came in: it is all there. |
 | `onClose` | `.on_close(\|\| ..)` | It went: it is all gone. Also when the app closed it. |
-| `onCancel` | `.on_cancel(\|\| ..)` | The user tried to close it (Escape or back, a press on the backdrop), whether or not it closed. |
+| `onCancel` | `.on_cancel(\|\| ..)` | The user tried to close it (Escape or back, a press on the backdrop, an enabled swipe), whether or not it closed. |

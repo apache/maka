@@ -1,12 +1,14 @@
 use std::sync::Arc;
 
+use nsh_macros::PropEnum;
+
 use crate::{
     animation::{AnimationOp, AnimationProp},
     geometry::{Bounds, Points, Size},
     ops::{
         AutoCapitalize, Command, EventMask, ImageSource, KeyboardAppearance, KeyboardDismissMode,
-        KeyboardTaps, KeyboardType, ModalAnimation, ModalPresentation, NodeId, ResizeMode,
-        ReturnKeyType, ScreenAnimation, SnapAlignment, SubmitBehavior, WebSource,
+        KeyboardTaps, KeyboardType, ModalAnimation, ModalPresentation, NodeId, PasteBehavior,
+        ResizeMode, ReturnKeyType, ScreenAnimation, SnapAlignment, SubmitBehavior, WebSource,
     },
     props::{EdgeInsets, GestureValues, LayoutAnimation, ViewProps},
     style::{Color, TextAlign, ViewStyle},
@@ -94,11 +96,34 @@ impl Default for WebProps {
     }
 }
 
+/// What a video's sound does to the rest of the device's audio while it
+/// plays: whether it plays in silent mode, whether other apps' audio pauses,
+/// and whether the system treats it as speech. iOS sets the shared
+/// `AVAudioSession` while such a video plays and restores it after; Android
+/// marks the sound as speech and holds audio focus for `Playback`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, PropEnum)]
+pub enum AudioSession {
+    /// The app's audio settings (the platform's for video unless the app, or
+    /// the app embedding NSH, set others): nothing is changed.
+    #[default]
+    Default,
+    /// Plays speech: audible in silent mode, other apps' audio pauses while
+    /// it plays (Apple's `playback` category, `spokenAudio` mode; Android's
+    /// speech content type with transient audio focus).
+    Playback,
+    /// Plays speech over other apps' audio, which keeps playing
+    /// (Apple's `playback` category with `mixWithOthers`; Android's speech
+    /// content type without audio focus).
+    MixWithOthers,
+}
+
 /// A video player.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VideoProps {
     /// The video's URL (or `asset:/` URI).
     pub source: Option<Arc<str>>,
+    /// What its sound does to the rest of the device's audio.
+    pub audio_session: AudioSession,
     /// Paused.
     pub paused: bool,
     /// Muted.
@@ -121,6 +146,7 @@ impl Default for VideoProps {
     fn default() -> Self {
         Self {
             source: None,
+            audio_session: AudioSession::default(),
             paused: false,
             muted: false,
             volume: 1.0,
@@ -290,7 +316,8 @@ fn nearest(points: &[f32], to: f32) -> Option<f32> {
 /// sticky offset from it): at scroll offset `offset` (along the main axis)
 /// it shows `clamp(offset - start, 0, end - start)` past where it is laid
 /// out.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[non_exhaustive]
 pub struct StickyCell {
     /// The cell.
     pub cell: NodeId,
@@ -300,6 +327,12 @@ pub struct StickyCell {
     /// The scroll offset at which the next sticky cell pushes it out (may be
     /// infinite).
     pub end: Points,
+    /// An animated value added to the scroll offset: it sticks that much
+    /// further from the viewport's start (below a header that moves), at
+    /// `clamp(offset + value - start, 0, end - start)`. The platforms read
+    /// it from the animation graph whenever they pin, and pin again on the
+    /// graph's frames.
+    pub offset: Option<crate::animation::NodeId>,
 }
 
 /// The header heights a platform without a native header gives the core
@@ -350,6 +383,9 @@ pub struct ScreenConfig {
     pub left: Option<NodeId>,
     /// Trailing header item view.
     pub right: Option<NodeId>,
+    /// UIKit's own bar button in the trailing slot instead of `right`'s
+    /// view (iOS); a press on it presses `right`'s first pressable view.
+    pub right_system_item: Option<crate::HeaderSystemItem>,
     /// Custom title view.
     pub title_view: Option<NodeId>,
     /// The app's header (`header`): on a platform without a native header
@@ -380,6 +416,7 @@ impl Default for ScreenConfig {
             animation: ScreenAnimation::Default,
             left: None,
             right: None,
+            right_system_item: None,
             title_view: None,
             header_view: None,
             header_height: Points::ZERO,
@@ -467,6 +504,8 @@ pub struct InputConfig {
     pub auto_correct: bool,
     /// Several lines (return inserts a line break).
     pub multiline: bool,
+    /// Styled and optionally atomic source ranges, matched natively.
+    pub tokens: Vec<crate::input_tokens::InputTokenRule>,
     /// Maximum length in UTF-16 units.
     pub max_length: Option<u32>,
     /// The user can edit the text.
@@ -476,6 +515,8 @@ pub struct InputConfig {
     pub blur_on_submit: bool,
     /// `submitBehavior` as set; [`InputConfig::submit`] resolves it.
     pub submit_behavior: Option<SubmitBehavior>,
+    /// What a paste does (`pasteBehavior`).
+    pub paste_behavior: PasteBehavior,
     /// Focus once on screen.
     pub auto_focus: bool,
     /// Caret and selection color.
@@ -522,10 +563,12 @@ impl Default for InputConfig {
             auto_capitalize: AutoCapitalize::Sentences,
             auto_correct: true,
             multiline: false,
+            tokens: Vec::new(),
             max_length: None,
             editable: true,
             blur_on_submit: true,
             submit_behavior: None,
+            paste_behavior: PasteBehavior::Insert,
             auto_focus: false,
             selection_color: None,
             auto_fill: crate::ops::AutoFill::Default,
@@ -588,10 +631,46 @@ pub enum MountItem {
         /// The app sibling to insert below.
         before: Option<NodeId>,
     },
+    /// Projects an independent native root. A following root may still be
+    /// parked by an earlier retirement, or kept by native focus. Insert
+    /// below the first candidate actually attached to the same native host.
+    /// SDK-owned modal/route hosts retain their existing presentation order;
+    /// logical row siblings do not specify a global window stacking order.
+    ProjectRoot {
+        /// The root's native projection parent.
+        parent: NodeId,
+        /// The cell or promoted layout root to project.
+        id: NodeId,
+        /// Following siblings in core order, nearest first.
+        following: Vec<NodeId>,
+    },
     /// Remove a view from its superview, keeping it alive.
     Remove {
         /// View to detach.
         id: NodeId,
+    },
+    /// Retire a recycling cell only after native input can no longer target
+    /// its current owner. A focused descendant refuses retirement: publish
+    /// its native focus path before confirming `false`. Otherwise detach the
+    /// cell immediately, then confirm `true` through the engine's input FIFO.
+    /// This must be consumed by every platform, never silently ignored.
+    RetireListCell {
+        /// Cell to detach, keeping its current content alive until confirmed.
+        id: NodeId,
+        /// Correlates this request; cancelled and superseded replies are inert.
+        request: u64,
+        /// Native roots owned by this cell in the core's logical tree:
+        /// the cell itself and its promoted layout roots. Check focus for
+        /// the whole group before parking any root, then acknowledge once.
+        roots: Vec<NodeId>,
+    },
+    /// Confirms native roots have been parked by a list-cell retirement.
+    /// Native input is already excluded. A platform may collect the old
+    /// native presentation resources, isolated from any new projection;
+    /// otherwise it does nothing. Scene observers detach these roots.
+    ListCellRetired {
+        /// The retired cell and its promoted native roots.
+        roots: Vec<NodeId>,
     },
     /// Destroy a view.
     Delete {

@@ -27,6 +27,31 @@ pub(super) fn initialize() -> Result<(), maka_host_runtime::HostError> {
         .try_init()
 }
 
+/// Explicit terminal diagnostics stay in a file and include no text or keys.
+pub(super) fn initialize_terminal_interaction() -> Result<(), maka_host_runtime::HostError> {
+    use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+
+    let Some(path) = std::env::var_os("MAKA_TERMINAL_INTERACTION_LOG") else {
+        return Ok(());
+    };
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    let level = tracing_subscriber::filter::LevelFilter::DEBUG;
+    let targets = tracing_subscriber::filter::Targets::new()
+        .with_target("nsh::interaction", level)
+        .with_target("nsh::scroll", level);
+    tracing_subscriber::fmt()
+        .with_max_level(level)
+        .with_ansi(false)
+        .with_writer(std::sync::Mutex::new(file))
+        .finish()
+        .with(targets)
+        .try_init()?;
+    Ok(())
+}
+
 /// Dedicated Host processes keep stderr attached through final error reporting
 /// and runtime shutdown. The caller supplies an already validated append file.
 pub(super) fn capture(file: std::fs::File) -> std::io::Result<()> {

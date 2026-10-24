@@ -71,7 +71,7 @@ mise use -g github:longbridge/nsh
 
 ```sh
 rustup target add aarch64-apple-ios-sim aarch64-apple-ios aarch64-apple-ios-macabi   # iOS 模拟器、真机、Mac Catalyst
-rustup target add aarch64-linux-android x86_64-linux-android                         # Android（配合 SDK 中的 NDK）
+rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android # Android（配合 SDK 中的 NDK）
 rustup target add wasm32-unknown-unknown                                             # Web
 ```
 

@@ -29,6 +29,7 @@ pub struct Query {
     pub terms: Vec<String>,
     #[schemars(length(min = 1))]
     pub question: Option<String>,
+    /// An explicit caller-selected result budget; omission retains all matching results.
     #[schemars(range(min = 1))]
     pub limit: Option<usize>,
     #[schemars(length(min = 1))]

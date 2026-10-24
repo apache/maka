@@ -20,6 +20,17 @@ nsh.registerComponent("embed.badge", context -> new Badge(this, context));  // B
 The component gets its props (`setProp`, JSON as maps and lists) and commands, emits events with
 `context.emit("tap", data)` and may report its size (dp) with `context.setSize(w, h)`.
 
+The app and its host also talk without a view, through the view's channel (`nsh/host` in the app):
+
+```java
+nsh.setParams(Map.of("user", "Ada"));                               // host.params, read when the app starts
+nsh.handle("time", (data, reply) -> reply.resolve(Map.of("time", now())));  // `await host.call("time")`
+nsh.handle("tapped", (data, reply) -> log(data));                  // hears `host.post("tapped", …)`
+nsh.send("message", Map.of("text", "Hello"));                      // `host.on("message", …)` in the app
+```
+
+Handlers run on the UI thread and answer once, now or later from any thread (`reply.resolve`, `reply.reject`).
+
 Theme overrides: "Brand" puts the host's brand over the app's theme. The tokens of a theme file
 (`nsh.json`'s `"theme"` format) win over the app's of the same names, light and dark, and
 classes such as `bg-primary` restyle at once; `null` gives the app its own theme back:

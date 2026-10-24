@@ -11,8 +11,9 @@ use anyhow::{Context as _, bail};
 
 use crate::term;
 
-/// ABIs built by default.
-pub(crate) const ABIS: [&str; 2] = ["arm64-v8a", "x86_64"];
+/// ABIs built by default: phones' 64-bit and 32-bit processes, and the
+/// emulators of x86-64 hosts.
+pub(crate) const ABIS: [&str; 3] = ["arm64-v8a", "armeabi-v7a", "x86_64"];
 /// Minimum Android API level (Android 9): hardware-accelerated shadow
 /// layers and the `Typeface` weight API.
 pub(crate) const MIN_SDK: u32 = 28;
@@ -96,8 +97,9 @@ fn newest(dir: &Path) -> Option<PathBuf> {
 fn triple(abi: &str) -> anyhow::Result<&'static str> {
     Ok(match abi {
         "arm64-v8a" => "aarch64-linux-android",
+        "armeabi-v7a" => "armv7-linux-androideabi",
         "x86_64" => "x86_64-linux-android",
-        other => bail!("unsupported ABI {other} (64-bit only: arm64-v8a, x86_64)"),
+        other => bail!("unsupported ABI {other} (arm64-v8a, armeabi-v7a, x86_64)"),
     })
 }
 
@@ -119,6 +121,7 @@ pub(crate) fn build(release: bool, dev: bool, abis: &[String]) -> anyhow::Result
     for abi in abis {
         let triple = triple(abi)?;
         let so = cargo_lib(&sdk, triple, abi, release, dev)?;
+        check_alignment(&sdk, &so)?;
         let dest = out.join("lib").join(abi);
         fs::create_dir_all(&dest)?;
         // Unchanged files keep their times: `nsh run` rebuilds and
@@ -143,13 +146,60 @@ pub(crate) fn build(release: bool, dev: bool, abis: &[String]) -> anyhow::Result
     Ok(out)
 }
 
+/// Check the linked ELF, before it is copied into a runtime or an AAR.
+fn check_alignment(sdk: &Sdk, library: &Path) -> anyhow::Result<()> {
+    let output = Command::new(sdk.toolchain().join("bin/llvm-objdump"))
+        .arg("-p")
+        .arg(library)
+        .output()
+        .with_context(|| format!("inspect ELF alignment of {}", library.display()))?;
+    if !output.status.success() {
+        bail!(
+            "llvm-objdump failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    check_load_alignment(&String::from_utf8(output.stdout)?)
+        .with_context(|| format!("{} is not 16 KB aligned", library.display()))
+}
+
+fn check_load_alignment(headers: &str) -> anyhow::Result<()> {
+    let mut loads = 0;
+    for line in headers
+        .lines()
+        .filter(|line| line.split_whitespace().next() == Some("LOAD"))
+    {
+        let (_, exponent) = line
+            .rsplit_once("align 2**")
+            .context("missing LOAD alignment")?;
+        let exponent: u32 = exponent.trim().parse().context("invalid LOAD alignment")?;
+        if exponent < 14 {
+            bail!("LOAD alignment is 2**{exponent}; expected at least 2**14");
+        }
+        loads += 1;
+    }
+    if loads == 0 {
+        bail!("no ELF LOAD segments found");
+    }
+    Ok(())
+}
+
+/// The NDK's name of `triple` in its compilers' names: ARMv7's is
+/// `armv7a-linux-androideabi`, the others are Rust's.
+fn clang_target(triple: &str) -> &str {
+    match triple {
+        "armv7-linux-androideabi" => "armv7a-linux-androideabi",
+        other => other,
+    }
+}
+
 /// A cargo command set up to cross-compile for `triple` with the NDK.
 fn ndk_cargo(sdk: &Sdk, triple: &str) -> Command {
     let toolchain = sdk.toolchain();
     let bin = toolchain.join("bin");
     // On Windows the NDK's per-target compilers are batch files.
     let script = if cfg!(windows) { ".cmd" } else { "" };
-    let clang = bin.join(format!("{triple}{MIN_SDK}-clang{script}"));
+    let clang = bin.join(format!("{}{MIN_SDK}-clang{script}", clang_target(triple)));
     let env_triple = triple.replace('-', "_");
     let mut cmd = Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
     cmd.current_dir(root())
@@ -310,4 +360,34 @@ fn collect_ext(dir: &Path, ext: &str, out: &mut Vec<PathBuf>) -> anyhow::Result<
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::check_load_alignment;
+
+    #[test]
+    fn load_segments_support_16_kb_pages() {
+        let headers = "libnsh.so: file format elf64-littleaarch64\n\
+            LOAD off 0x0000 vaddr 0x0000 paddr 0x0000 align 2**14\n\
+            LOAD off 0x4000 vaddr 0x4000 paddr 0x4000 align 2**16\n\
+            DYNAMIC off 0x4010 vaddr 0x4010 paddr 0x4010 align 2**3\n";
+        check_load_alignment(headers).unwrap();
+        for exponent in [12, 13] {
+            let headers = headers.replace("align 2**16", &format!("align 2**{exponent}"));
+            let error = check_load_alignment(&headers).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("LOAD alignment is 2**{exponent}"))
+            );
+        }
+    }
+
+    #[test]
+    fn missing_or_invalid_load_headers_fail_the_check() {
+        for headers in ["", "LOAD off 0x0000", "LOAD off 0x0000 align 2**invalid"] {
+            assert!(check_load_alignment(headers).is_err(), "{headers}");
+        }
+    }
 }

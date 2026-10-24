@@ -19,23 +19,37 @@
 
 import { createText, UiError, errorText, message as uiMessage } from './text';
 import { applyLanguagePreference, tr } from './locale';
+import { initializeUiScale, uiScale } from './uiScale';
 import { cleanup, effect, inputAction, mount, signal, Scroll, Text, View } from 'nsh';
 import type { YNode } from 'nsh';
 import { Button, Dialog } from 'nsh/base';
 import { host } from './host';
 import { keymap } from 'nsh/keymap';
-import { bodyTextStyle, C, Header, controlStyle, controlHoverStyle, controlFocusStyle } from './ui';
+import {
+  bodyTextStyle,
+  C,
+  Header,
+  controlStyle,
+  controlHoverStyle,
+  controlFocusStyle,
+  type BrowserHeader,
+} from './ui';
 import { Composer } from './Composer';
 import { Conversation } from './Conversation';
-import type { Control, ConversationHandle } from './Conversation';
+import type { Control, ConversationAnchor, ConversationHandle } from './Conversation';
+import { RecallSearch, type RecallTarget } from './RecallSearch';
+import { createForeground } from './activation';
 import { Palette } from './Palette';
-import type { PaletteEntry } from './Palette';
+import type { CommandEntry, ComposerCommand } from './composerCommands';
 import { WorkspacePicker } from './WorkspacePicker';
 import { ModelSelect } from './ModelSelect';
 import { ModelSettings } from './ModelSettings';
 import type { ModelBackend } from './modelSelection';
 import { InteractionComposer, interactionOutcomeSummary } from './InteractionComposer';
-import type { AgentInteractionResult } from '../../../../packages/plugin-sdk/src/generated/runtime';
+import type {
+  AgentInteractionResult,
+  ModelSelection,
+} from '../../../../packages/plugin-sdk/src/generated/runtime';
 import type { ImagePreview } from './ImageThumbnail';
 import { createResources } from './resources';
 import { createBrowsing } from './browsing';
@@ -44,14 +58,19 @@ import { Workbench, canDockBrowser } from './Workbench';
 import { WorkspaceBrowser, type WorkspaceBrowserProps } from './WorkspaceBrowser';
 import { performSessionAction, type SessionAction } from './sessionLifecycle';
 
-type Overlay = {
-  instance: number;
-  kind: 'commands' | 'workspaces' | 'models' | 'sessions' | 'settings';
+type OverlayTarget = {
   sessionId: string | null;
-};
-type CommandContext = { instance: number; sessionId: string | null };
+} & (
+  | { kind: 'commands' | 'workspaces' | 'sessions' | 'search' }
+  | { kind: 'models'; focusOnClose?: 'composer' }
+  | { kind: 'settings'; model?: ModelSelection }
+);
+type Overlay = OverlayTarget & { instance: number };
+type ActionContext = { instance: number | null; sessionId: string | null };
 function App() {
+  initializeUiScale();
   const browsing = createBrowsing();
+  const foreground = createForeground();
   const selected = signal<string | null>(host.initialSession);
   const overlay = signal<Overlay | null>(null);
   const resources = createResources({ selected, blocked: () => overlay() !== null });
@@ -72,8 +91,17 @@ function App() {
   let alive = true;
   let controlRead = 0;
   let overlayInstance = 0;
+  let pendingReveal: {
+    sessionId: string;
+    anchor: ConversationAnchor;
+    current(): boolean;
+    resolve(): void;
+    reject(reason: unknown): void;
+  } | null = null;
   cleanup(() => {
     alive = false;
+    pendingReveal?.reject(new UiError('Conversation navigation was cancelled.'));
+    pendingReveal = null;
   });
   const report = (reason: unknown) => {
     if (alive) error.set(errorText(reason));
@@ -112,19 +140,45 @@ function App() {
       controlsKnown.set(true);
     }
   };
-  const switchSession = async (id: string, expectedSessionId = selected()) => {
-    if (!alive || selected() !== expectedSessionId || selected() === id || switching()) return;
+  const switchSession = async (
+    id: string,
+    source: ActionContext = { sessionId: selected(), instance: overlay()?.instance ?? null },
+    anchor?: ConversationAnchor,
+  ): Promise<boolean> => {
+    const current = () =>
+      alive && selected() === source.sessionId && (overlay()?.instance ?? null) === source.instance;
+    if (!current() || switching()) return false;
+    const owner = handle();
+    if (selected() === id) {
+      if (owner?.sessionId !== id) return false;
+      if (anchor) await owner.reveal(anchor, current);
+      return true;
+    }
     switching.set(true);
     try {
-      if (handle() && !(await handle()!.flushDraft())) return;
-      if (alive) {
-        overlay.set(null);
-        status.set('');
-        selected.set(id);
-      }
+      if (owner && !(await owner.flushDraft())) return false;
+      if (!current() || handle() !== owner) return false;
+      const revealed = anchor
+        ? new Promise<void>((resolve, reject) => {
+            pendingReveal = {
+              sessionId: id,
+              anchor,
+              current: () => alive && selected() === id && overlay() === null,
+              resolve,
+              reject,
+            };
+          })
+        : null;
+      overlay.set(null);
+      status.set('');
+      selected.set(id);
+      if (revealed) await revealed;
+      return alive && selected() === id;
     } catch (reason) {
-      report(reason);
+      if (current() || (alive && selected() === id && overlay() === null)) report(reason);
+      return false;
     } finally {
+      if (pendingReveal?.sessionId === id) pendingReveal = null;
       if (alive) switching.set(false);
     }
   };
@@ -176,28 +230,43 @@ function App() {
     overlay.set(null);
     return true;
   };
-  const open = ({
-    kind,
-    sessionId,
-  }: {
-    kind: 'commands' | 'workspaces' | 'models' | 'sessions' | 'settings';
-    sessionId: string | null;
-  }) => {
+  const closeModels = (owner: ConversationHandle, instance: number) => {
+    const current = overlay();
+    if (
+      current?.kind !== 'models' ||
+      current.sessionId !== owner.sessionId ||
+      selected() !== owner.sessionId ||
+      handle() !== owner ||
+      !closeOverlay(instance)
+    )
+      return false;
+    if (current.focusOnClose === 'composer') owner.focus();
+    return true;
+  };
+  const open = (request: OverlayTarget) => {
+    const { sessionId } = request;
     if (!alive || selected() !== sessionId) return;
-    if (kind === 'sessions' && canDockBrowser()) {
+    if (request.kind === 'sessions') {
       resources.hide();
       status.set('');
-      overlay.set(null);
-      sidebarExpanded.set(true);
-      browserFocus.set(true);
-      return;
+      if (overlay()?.kind === 'sessions') {
+        browserFocus.set(true);
+        return;
+      }
+      if (canDockBrowser()) {
+        overlay.set(null);
+        sidebarExpanded.set(true);
+        browserFocus.set(true);
+        return;
+      }
     }
-    if (kind === 'models' && sessionId === null) {
-      kind = 'settings';
-    }
+    const target =
+      request.kind === 'models' && sessionId === null
+        ? { kind: 'settings' as const, sessionId }
+        : request;
     status.set('');
-    browserFocus.set(kind === 'sessions');
-    overlay.set({ kind, sessionId, instance: ++overlayInstance });
+    browserFocus.set(target.kind === 'sessions');
+    overlay.set({ ...target, instance: ++overlayInstance });
   };
   const toggleModels = ({
     sessionId,
@@ -212,14 +281,22 @@ function App() {
       if (current?.kind === 'models' && current.sessionId === sessionId) closeOverlay(instance);
     } else if (current?.kind !== 'models') open({ kind: 'models', sessionId });
   };
-  const manageModels = ({ sessionId, instance }: { sessionId: string; instance: number }) => {
+  const manageModels = ({
+    sessionId,
+    instance,
+    model,
+  }: {
+    sessionId: string;
+    instance: number;
+    model?: ModelSelection;
+  }) => {
     if (
       alive &&
       selected() === sessionId &&
       handle()?.sessionId === sessionId &&
       closeOverlay(instance)
     )
-      open({ kind: 'settings', sessionId });
+      open({ kind: 'settings', sessionId, model });
   };
   const chooseModel = async (
     owner: ConversationHandle,
@@ -245,6 +322,7 @@ function App() {
   };
   const create = async (workspace: BrowserWorkspace, expectedSessionId = selected()) => {
     if (!alive || selected() !== expectedSessionId) return;
+    const source = { sessionId: expectedSessionId, instance: overlay()?.instance ?? null };
     try {
       error.set('');
       const result = await control('create', {
@@ -258,8 +336,9 @@ function App() {
         throw new UiError('Conversation creation rejected: {reason}', {
           reason: result.reason ?? result.kind,
         });
-      await switchSession(result.session.id, expectedSessionId);
-      if (selected() === result.session.id) open({ kind: 'models', sessionId: result.session.id });
+      await switchSession(result.session.id, source);
+      if (selected() === result.session.id)
+        open({ kind: 'models', sessionId: result.session.id, focusOnClose: 'composer' });
       await browsing.refresh();
     } catch (reason) {
       report(reason);
@@ -299,10 +378,11 @@ function App() {
       );
     if (!alive || selected() !== origin || handle() !== owner)
       throw new UiError('This conversation action is no longer current.');
+    const source = { sessionId: origin, instance: overlay()?.instance ?? null };
     const result = await performSessionAction(control, action);
     if (!alive) return;
     if (result.kind === 'removed') await removeSelected(result.sessionId);
-    else if (result.kind === 'forked') await switchSession(result.session.id, origin);
+    else if (result.kind === 'forked') await switchSession(result.session.id, source);
     else if (handle()?.sessionId === result.session.id) await handle()!.refresh();
     await browsing.refresh();
   };
@@ -330,27 +410,27 @@ function App() {
       sessionId: selected(),
       invocationId: handle()?.invocation() ?? null,
     });
-  const closeCommand = (context: CommandContext) =>
+  const closeCommand = (context: ActionContext) =>
     alive &&
     selected() === context.sessionId &&
     (context.sessionId === null || handle()?.sessionId === context.sessionId) &&
-    closeOverlay(context.instance);
-  const commandSessions = (context: CommandContext) => {
-    if (closeCommand(context)) open({ kind: 'sessions', sessionId: context.sessionId });
+    (context.instance === null ? overlay() === null : closeOverlay(context.instance));
+  const commandSessions = (context: ActionContext) => {
+    if (closeCommand(context)) open({ kind: 'search', sessionId: context.sessionId });
   };
-  const commandNew = (context: CommandContext) => {
+  const commandNew = (context: ActionContext) => {
     if (closeCommand(context)) newConversation(context.sessionId);
   };
-  const commandWorkspace = (context: CommandContext) => {
+  const commandWorkspace = (context: ActionContext) => {
     if (closeCommand(context)) open({ kind: 'workspaces', sessionId: context.sessionId });
   };
-  const commandModels = (context: CommandContext) => {
+  const commandModels = (context: ActionContext) => {
     if (closeCommand(context)) open({ kind: 'models', sessionId: context.sessionId });
   };
-  const commandSettings = (context: CommandContext) => {
+  const commandSettings = (context: ActionContext) => {
     if (closeCommand(context)) open({ kind: 'settings', sessionId: context.sessionId });
   };
-  const commandFiles = (context: CommandContext) => {
+  const commandFiles = (context: ActionContext) => {
     if (closeCommand(context) && context.sessionId)
       resources.openFiles({ sessionId: context.sessionId });
   };
@@ -366,21 +446,49 @@ function App() {
         report(new UiError('Could not open link: {reason}', { reason: errorText(reason) }));
     }
   };
-  const commandLatest = (context: CommandContext & { turnId: string | null }) => {
+  const commandLatest = (context: ActionContext & { turnId: string | null }) => {
     if (closeCommand(context)) handle()?.jumpLatest(context.turnId);
   };
-  const commandHistory = (context: CommandContext) => {
+  const commandHistory = (context: ActionContext) => {
     if (closeCommand(context)) handle()?.focusHistory();
   };
-  const commandActivity = (context: CommandContext & { turnId: string | null }) => {
+  const commandActivity = (context: ActionContext & { turnId: string | null }) => {
     if (closeCommand(context)) handle()?.focusActivity(context.turnId);
   };
-  const commandStop = (context: CommandContext & { invocationId: string | null }) => {
+  const commandStop = (context: ActionContext & { invocationId: string | null }) => {
     if (closeCommand(context)) void handle()?.stop(context.invocationId).catch(report);
   };
-  const commands = (context: CommandContext): PaletteEntry[] => [
+  const commandResetScale = (context: ActionContext) => {
+    if (closeCommand(context)) void uiScale.resetAndSave();
+  };
+  const commandCompact = async (context: ActionContext, prompt?: string) => {
+    if (!closeCommand(context)) return false;
+    const owner = handle();
+    if (!owner) return false;
+    try {
+      await owner.compact(prompt);
+      return true;
+    } catch (reason) {
+      report(reason);
+      return false;
+    }
+  };
+  const commands = (context: ActionContext): CommandEntry[] => [
+    ...(uiScale.supported
+      ? [
+          {
+            id: 'interface-scale-reset',
+            trigger: 'reset-scale',
+            title: tr('Reset interface scale to 100%'),
+            detail: tr('Interface scale'),
+            hint: 'Ctrl+Alt+0',
+            run: inputAction(commandResetScale, context),
+          },
+        ]
+      : []),
     {
       id: 'sessions',
+      trigger: 'resume',
       title: tr('Sessions'),
       detail: tr('Resume a conversation'),
       hint: 'Ctrl+O',
@@ -388,6 +496,7 @@ function App() {
     },
     {
       id: 'new',
+      trigger: 'new',
       title: tr('New conversation'),
       detail: tr('A fresh start in your workspace'),
       hint: 'Ctrl+N',
@@ -395,12 +504,14 @@ function App() {
     },
     {
       id: 'workspace',
+      trigger: 'workspace',
       title: tr('Choose workspace'),
       detail: tr('Start a conversation in another folder'),
       run: inputAction(commandWorkspace, context),
     },
     {
       id: 'models',
+      trigger: 'model',
       title: tr('Models'),
       detail: tr('Choose the model for this conversation'),
       hint: 'Ctrl+G',
@@ -408,6 +519,7 @@ function App() {
     },
     {
       id: 'settings',
+      trigger: 'settings',
       title: tr('Connections & models'),
       detail: tr('Add connections, API keys and models'),
       run: inputAction(commandSettings, context),
@@ -416,14 +528,28 @@ function App() {
       ? [
           {
             id: 'files',
+            trigger: 'files',
             title: tr('Files'),
             detail: tr('Browse workspace files and current changes'),
             run: inputAction(commandFiles, context),
           },
         ]
       : []),
+    ...(context.sessionId
+      ? [
+          {
+            id: 'compact',
+            trigger: 'compact',
+            title: tr('Compact conversation'),
+            detail: tr('Summarize context for the next request'),
+            takesArgument: true,
+            run: (prompt?: string) => commandCompact(context, prompt),
+          },
+        ]
+      : []),
     {
       id: 'latest',
+      trigger: 'latest',
       title: tr('Jump to latest'),
       detail: tr('Return to the newest messages'),
       run: inputAction(commandLatest, {
@@ -434,6 +560,7 @@ function App() {
     },
     {
       id: 'history-focus',
+      trigger: 'history',
       title: tr('Focus conversation'),
       detail: tr('Scroll the whole conversation'),
       hint: 'Alt+↑',
@@ -441,6 +568,7 @@ function App() {
     },
     {
       id: 'activity-focus',
+      trigger: 'activity',
       title: tr('Focus activity'),
       detail: tr('Read this turn’s independent activity panel'),
       hint: 'Alt+↓',
@@ -452,6 +580,7 @@ function App() {
     },
     {
       id: 'stop',
+      trigger: 'stop',
       title: tr('Stop'),
       detail: tr('Cancel the current run'),
       hint: 'Esc',
@@ -462,8 +591,12 @@ function App() {
       }),
     },
   ];
+  if (uiScale.supported) {
+    keymap.bind('mod+0', () => void uiScale.resetAndSave(), { when: 'always' });
+    keymap.bind('mod+alt+0', () => void uiScale.resetAndSave(), { when: 'always' });
+  }
   keymap.bind('mod+p', () => open({ kind: 'commands', sessionId: selected() }), { when: 'always' });
-  keymap.bind('mod+o', () => open({ kind: 'sessions', sessionId: selected() }), { when: 'always' });
+  keymap.bind('mod+o', () => open({ kind: 'search', sessionId: selected() }), { when: 'always' });
   keymap.bind('mod+g', () => open({ kind: 'models', sessionId: selected() }), { when: 'always' });
   keymap.bind('mod+n', () => newConversation(selected()), { when: 'always' });
   keymap.bind(
@@ -521,7 +654,7 @@ function App() {
           if (original.method === 'create' && result.kind === 'created') {
             await switchSession(result.session.id);
             if (selected() === result.session.id && !result.session.backend)
-              open({ kind: 'models', sessionId: result.session.id });
+              open({ kind: 'models', sessionId: result.session.id, focusOnClose: 'composer' });
           }
         } catch (reason) {
           report(reason);
@@ -559,14 +692,45 @@ function App() {
     browserFocus.set(false);
     handle()?.focus();
   };
+  const sidebarShown = () =>
+    overlay()?.kind === 'sessions' || (sidebarExpanded() && canDockBrowser(resources.shown()));
+  const toggleSidebar = (request: { sessionId: string | null; expanded: boolean }) => {
+    if (!alive || selected() !== request.sessionId || sidebarShown() !== request.expanded) return;
+    const current = overlay();
+    if (current && current.kind !== 'sessions') return;
+    if (!request.expanded) {
+      open({ kind: 'sessions', sessionId: request.sessionId });
+      return;
+    }
+    if (current) closeOverlay(current.instance);
+    if (current?.kind === 'sessions') handle()?.focus();
+    else closeSidebar();
+  };
+  const browserHeader = (sessionId: string | null, foreground = false): BrowserHeader => ({
+    expanded: sidebarShown(),
+    hidden: overlay()?.kind === 'sessions' && !foreground,
+    toggle: inputAction(toggleSidebar, { sessionId, expanded: sidebarShown() }),
+  });
   const selectBrowsed = async (id: string, origin: string | null) => {
     const current = overlay();
     const instance = current?.kind === 'sessions' ? current.instance : null;
-    await switchSession(id, origin);
+    await switchSession(id, { sessionId: origin, instance: current?.instance ?? null });
     if (!alive || selected() !== id) return;
     if (instance !== null) closeOverlay(instance);
     browserFocus.set(false);
     handle()?.focus();
+  };
+  const openRecalled = async (instance: number, origin: string | null, target: RecallTarget) => {
+    if (!alive || overlay()?.instance !== instance || selected() !== origin) return false;
+    const opened = await switchSession(
+      target.sessionId,
+      { sessionId: origin, instance },
+      target.anchor,
+    );
+    if (!opened || !alive || selected() !== target.sessionId) return false;
+    if (!target.anchor) handle()?.jumpLatest(null);
+    browserFocus.set(false);
+    return true;
   };
   const browserProps: WorkspaceBrowserProps = {
     browsing,
@@ -585,6 +749,7 @@ function App() {
     create,
     newConversation,
     settings: (sessionId) => open({ kind: 'settings', sessionId }),
+    search: (sessionId) => open({ kind: 'search', sessionId }),
   };
   let wasDocked = canDockBrowser();
   effect(() => {
@@ -624,7 +789,7 @@ function App() {
             <Header
               title=""
               commands={inputAction(open, { kind: 'commands', sessionId: null })}
-              browse={inputAction(open, { kind: 'sessions', sessionId: null })}
+              browser={browserHeader(null)}
             />
           </View>
         </If>
@@ -632,10 +797,12 @@ function App() {
           {(id) => (
             <Conversation
               client={host.session(id())}
+              visible={() => selected() === id() && overlay() === null}
+              foreground={foreground}
               control={control}
               fork={(action) => changeBrowsedSession(action, id())}
               commands={inputAction(open, { kind: 'commands', sessionId: id() })}
-              browse={inputAction(open, { kind: 'sessions', sessionId: id() })}
+              browser={() => browserHeader(id())}
               files={inputAction(resources.openFiles, { sessionId: id() })}
               filesOpener={(node) => resources.attachOpener(id(), node)}
               previewImage={previewImage}
@@ -644,6 +811,13 @@ function App() {
               stopAction={stopAction}
               attach={(next) => {
                 handle.set(next);
+                const request = pendingReveal;
+                if (request?.sessionId === next.sessionId) {
+                  pendingReveal = null;
+                  void next
+                    .reveal(request.anchor, request.current)
+                    .then(request.resolve, request.reject);
+                }
               }}
               detach={(previous) => {
                 if (handle() === previous) handle.set(null);
@@ -652,6 +826,7 @@ function App() {
           )}
         </Each>
         <Composer
+          active={() => overlay() === null}
           session={handle}
           stopAction={stopAction}
           request={
@@ -758,7 +933,11 @@ function App() {
           attach={(node) => {
             editor = node;
           }}
-          commands={({ sessionId }) => open({ kind: 'commands', sessionId })}
+          commands={() =>
+            commands({ instance: null, sessionId: selected() }).filter(
+              (command): command is ComposerCommand => command.trigger !== undefined,
+            )
+          }
           models={
             <Each<ConversationHandle>
               of={handle() ? [handle()!] : []}
@@ -777,7 +956,7 @@ function App() {
                     }}
                     current={() => selected() === owner.sessionId && handle() === owner}
                     toggle={toggleModels}
-                    close={closeOverlay}
+                    close={(instance) => closeModels(owner, instance)}
                     manage={manageModels}
                     select={(instance, backend) => chooseModel(owner, instance, backend)}
                   />
@@ -808,6 +987,14 @@ function App() {
         {(value) => {
           const current = value();
           const close = inputAction(closeOverlay, current.instance);
+          if (current.kind === 'search')
+            return (
+              <RecallSearch
+                origin={current.sessionId}
+                open={(origin, target) => openRecalled(current.instance, origin, target)}
+                close={() => closeOverlay(current.instance)}
+              />
+            );
           if (current.kind === 'sessions')
             return (
               <Dialog
@@ -815,28 +1002,27 @@ function App() {
                 onOpenChange={() => closeOverlay(current.instance)}
                 style={{
                   flex: 1,
-                  justifyContent: 'center',
-                  alignItems: 'center',
-                  padding: 16,
                   backgroundColor: '#00000099',
                 }}
               >
+                <View style={{ backgroundColor: C.background }}>
+                  <Header
+                    title={current.sessionId === null ? '' : tr('Sessions')}
+                    commands={inputAction(open, { kind: 'commands', sessionId: current.sessionId })}
+                    browser={browserHeader(current.sessionId, true)}
+                  />
+                </View>
                 <View
                   style={{
                     width: '100%',
                     maxWidth: 640,
-                    height: '100%',
-                    maxHeight: 640,
+                    flex: 1,
+                    minHeight: 0,
                     backgroundColor: C.surface,
-                    padding: 8,
-                    borderWidth: 1,
-                    borderColor: C.line,
-                    borderRadius: 16,
                   }}
                 >
                   <WorkspaceBrowser
                     {...browserProps}
-                    docked={false}
                     close={() => closeOverlay(current.instance)}
                   />
                 </View>
@@ -845,6 +1031,7 @@ function App() {
           if (current.kind === 'settings')
             return (
               <ModelSettings
+                model={current.model}
                 close={() => closeOverlay(current.instance)}
                 changed={() => {
                   const owner = handle();

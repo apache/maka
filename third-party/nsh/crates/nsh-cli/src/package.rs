@@ -942,7 +942,7 @@ fn entitlements(profile: &Path, id: &str) -> anyhow::Result<plist::Value> {
         bail!("cannot read provisioning profile {}", profile.display());
     }
     let profile = plist::Value::from_reader_xml(output.stdout.as_slice())?;
-    let entitlements = profile
+    let mut entitlements = profile
         .as_dictionary()
         .and_then(|d| d.get("Entitlements"))
         .cloned()
@@ -951,11 +951,30 @@ fn entitlements(profile: &Path, id: &str) -> anyhow::Result<plist::Value> {
         .as_dictionary()
         .and_then(|d| d.get("application-identifier"))
         .and_then(|v| v.as_string())
-        .unwrap_or_default();
-    if !profile_allows(app_id, id) {
+        .unwrap_or_default()
+        .to_owned();
+    if !profile_allows(&app_id, id) {
         bail!("the provisioning profile is for {app_id}, not {id}");
     }
+    // A wildcard profile (`TEAMID.*`) signs the app as `TEAMID.<id>`, as
+    // Xcode does: devices refuse an app signed with the wildcard itself.
+    if let Some(dictionary) = entitlements.as_dictionary_mut() {
+        dictionary.insert(
+            "application-identifier".to_owned(),
+            plist::Value::String(signed_app_id(&app_id, id)),
+        );
+    }
     Ok(entitlements)
+}
+
+/// The `application-identifier` an app with bundle id `id` is signed with
+/// under a profile's (`TEAMID.com.example.app` or a wildcard such as
+/// `TEAMID.*`), which covers it.
+fn signed_app_id(app_id: &str, id: &str) -> String {
+    match app_id.split_once('.') {
+        Some((team, pattern)) if pattern.ends_with('*') => format!("{team}.{id}"),
+        _ => app_id.to_owned(),
+    }
 }
 
 /// Whether a profile's `application-identifier` (`TEAMID.com.example.app`,
@@ -1104,6 +1123,22 @@ mod tests {
         ));
         assert!(!profile_allows("ABCDE12345.com.other.*", "com.example.app"));
         assert!(!profile_allows("", "com.example.app"));
+    }
+
+    #[test]
+    fn wildcard_profiles_sign_the_bundle_id() {
+        assert_eq!(
+            signed_app_id("ABCDE12345.*", "com.example.app"),
+            "ABCDE12345.com.example.app"
+        );
+        assert_eq!(
+            signed_app_id("ABCDE12345.com.example.*", "com.example.app"),
+            "ABCDE12345.com.example.app"
+        );
+        assert_eq!(
+            signed_app_id("ABCDE12345.com.example.app", "com.example.app"),
+            "ABCDE12345.com.example.app"
+        );
     }
 
     #[test]

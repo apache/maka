@@ -21,7 +21,7 @@ use nsh_core::{
 };
 use rustc_hash::FxHashMap;
 
-use crate::text::{WebLayout, css_font};
+use crate::text::{WebLayout, css_font, font_variant_numeric};
 
 /// JSON output.
 pub(crate) struct Out {
@@ -696,24 +696,10 @@ fn text_css(style: &nsh_core::ResolvedTextStyle, shadow: Option<&nsh_core::TextS
             let _ = write!(css, "text-underline-offset:{o}px;");
         }
     }
-    let v = style.font_variant.0;
-    let mut numeric = Vec::new();
-    if v & nsh_core::FontVariant::OLDSTYLE_NUMS != 0 {
-        numeric.push("oldstyle-nums");
+    if let Some(numeric) = font_variant_numeric(style.font_variant) {
+        let _ = write!(css, "font-variant-numeric:{numeric};");
     }
-    if v & nsh_core::FontVariant::LINING_NUMS != 0 {
-        numeric.push("lining-nums");
-    }
-    if v & nsh_core::FontVariant::TABULAR_NUMS != 0 {
-        numeric.push("tabular-nums");
-    }
-    if v & nsh_core::FontVariant::PROPORTIONAL_NUMS != 0 {
-        numeric.push("proportional-nums");
-    }
-    if !numeric.is_empty() {
-        let _ = write!(css, "font-variant-numeric:{};", numeric.join(" "));
-    }
-    if v & nsh_core::FontVariant::SMALL_CAPS != 0 {
+    if style.font_variant.0 & nsh_core::FontVariant::SMALL_CAPS != 0 {
         css.push_str("font-variant-caps:small-caps;");
     }
     if let Some(s) = shadow
@@ -839,6 +825,9 @@ fn input_json(c: &InputConfig) -> String {
     if let Some(m) = c.max_length {
         let _ = write!(s, ",\"maxLength\":{m}");
     }
+    if c.paste_behavior != nsh_core::PasteBehavior::Insert {
+        s.push_str(",\"pasteInserts\":false");
+    }
     s.push('}');
     s
 }
@@ -895,7 +884,7 @@ fn transition_json(t: &Option<LayoutTransition>) -> String {
                 LayoutCurve::Linear => "linear".to_owned(),
                 LayoutCurve::EaseIn => "ease-in".to_owned(),
                 LayoutCurve::EaseOut => "ease-out".to_owned(),
-                LayoutCurve::EaseInEaseOut => "ease-in-out".to_owned(),
+                LayoutCurve::EaseInEaseOut | LayoutCurve::Keyboard => "ease-in-out".to_owned(),
                 LayoutCurve::Spring { damping } => spring_easing(damping),
             };
             format!(
@@ -969,6 +958,24 @@ pub(crate) fn encode(out: &mut Out, item: &MountItem) {
             out.end();
         }
         MountItem::Remove { id } => out.item("r").num(*id).end(),
+        MountItem::ProjectRoot {
+            parent,
+            id,
+            following,
+        } => {
+            out.item("pr")
+                .num(*parent)
+                .num(*id)
+                .raw(&serde_json::to_string(following).expect("node ids serialize as JSON"))
+                .end();
+        }
+        MountItem::RetireListCell { id, request, roots } => {
+            out.item("rc")
+                .num(*id)
+                .str(&request.to_string())
+                .raw(&serde_json::to_string(roots).expect("node ids serialize as JSON"))
+                .end();
+        }
         MountItem::Delete { id } => {
             forget_view(*id);
             out.item("d").num(*id).end();
@@ -1275,6 +1282,7 @@ pub(crate) fn encode(out: &mut Out, item: &MountItem) {
         // Browsers hit-test what overflows a box themselves; the keymap
         // stays in Rust (`nsh_key`).
         MountItem::ComponentProps { .. }
+        | MountItem::ListCellRetired { .. }
         | MountItem::Keymap(_)
         | MountItem::Overflow { .. }
         | MountItem::AnimationBindings { .. }
@@ -1372,6 +1380,13 @@ fn encode_command(out: &mut Out, id: u32, command: &Command) {
                 .end();
         }
         Command::SetClipboard(text) => out.item("cmd").num(id).str("setClipboard").str(text).end(),
+        Command::OpenUrl { id: request, url } => out
+            .item("cmd")
+            .num(id)
+            .str("openUrl")
+            .num(*request)
+            .str(url)
+            .end(),
         Command::ReadClipboard {
             id: request,
             has_only,
@@ -1405,6 +1420,23 @@ fn encode_command(out: &mut Out, id: u32, command: &Command) {
                 .num(id)
                 .str("readClipboardFiles")
                 .num(*request)
+                .end();
+        }
+        // `nsh.js` `pickImages`: the request, the limit, the longest side
+        // (0: any), the quality (-1: none), whether the stored format is
+        // asked for.
+        Command::PickImages {
+            id: request,
+            request: asked,
+        } => {
+            out.item("cmd")
+                .num(id)
+                .str("pickImages")
+                .num(*request)
+                .num(asked.limit)
+                .num(asked.max_dimension.map_or(0, |d| d.0.max(1)))
+                .num(asked.quality.map_or(-1.0, |q| q.0))
+                .bool(asked.format == nsh_core::picker::PickFormat::Current)
                 .end();
         }
         // The id is written whole (`num` rounds); the page answers with

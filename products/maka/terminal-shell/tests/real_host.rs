@@ -438,6 +438,71 @@ async fn empty_settings_configure_a_real_connection_and_manual_reasoning_model_b
             "the native {label:?} draft changed"
         );
     }
+    async fn assert_document_viewport(
+        view: &mut AppView,
+        label: &str,
+        save_label: &str,
+        first_line: &str,
+    ) {
+        wait_focused_input(view, label).await;
+        let input_id = view.surface().focused().unwrap();
+        let save_id = view
+            .accessibility_snapshot()
+            .into_iter()
+            .find(|node| {
+                node.role == nsh_core::AccessibilityRole::Button && node.label == save_label
+            })
+            .unwrap()
+            .id;
+        let node = |view: &AppView, id| {
+            view.accessibility_snapshot()
+                .into_iter()
+                .find(|node| node.id == id)
+                .unwrap()
+        };
+        let input = node(view, input_id).frame;
+        let save = node(view, save_id).frame;
+        assert!(
+            input.size.height.0 > view.surface().viewport().height.0 / 2.0,
+            "the document editor must use the free settings space instead of a small fixed box: input {input:?}, save {save:?}, viewport {:?}",
+            view.surface().viewport()
+        );
+        assert!(save.origin.y.0 >= input.origin.y.0 + input.size.height.0);
+        assert!(
+            save.origin.y.0 + save.size.height.0 <= view.surface().viewport().height.0,
+            "document actions must remain visible while its text scrolls"
+        );
+        view.handle_event(Event::Key(KeyEvent::new(
+            KeyCode::Home,
+            KeyModifiers::CONTROL,
+        )));
+        commit_native_events(view).await;
+        wait_view(view, |screen| screen.contains(first_line)).await;
+        view.handle_event(Event::Mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: ((save.origin.x.0 + save.size.width.0 / 2.0) / 8.0) as u16,
+            row: ((save.origin.y.0 + save.size.height.0 / 2.0) / 16.0) as u16,
+            modifiers: KeyModifiers::NONE,
+        }));
+        commit_native_events(view).await;
+        support::tick(view);
+        assert_eq!(
+            node(view, input_id).frame,
+            input,
+            "an outer wheel moved the editor into blank space"
+        );
+        assert_eq!(
+            node(view, save_id).frame,
+            save,
+            "an outer wheel scrolled away the actions"
+        );
+        assert!(view.snapshot().contains(first_line));
+        support::scroll_text(view, first_line, MouseEventKind::ScrollDown);
+        commit_native_events(view).await;
+        wait_view(view, |screen| !screen.contains(first_line)).await;
+        assert_eq!(node(view, input_id).frame, input);
+        assert_eq!(node(view, save_id).frame, save);
+    }
     tokio::time::timeout(Duration::from_secs(90), async {
         #[cfg(unix)]
         let mut fixture = Fixture::registered_empty_settings().await;
@@ -507,15 +572,23 @@ async fn empty_settings_configure_a_real_connection_and_manual_reasoning_model_b
         assert_eq!(discovered_choice["thinkingLevels"], json!(["max","high","low","off"]));
         assert_eq!(discovered_choice["defaultThinkingLevel"], "high");
         activate(&mut view, "Edit model fixture-discovered-model").await;
+        tab_to_label(&mut view, "Support effort high").await;
         wait_view(&mut view, |screen| screen.contains("Current saved reasoning efforts: max, high, low, off. Default: high.") && !screen.contains("Loading settings…")).await;
         let node = support::wait_enabled_button(&mut view, "Support effort high").await;
         assert!(node.state.selected, "provider-discovered efforts must be visible without an override");
+        for label in ["Code Mode: Model default", "Apply Patch: Model default", "Code Mode language: JavaScript"] {
+            tab_to_label(&mut view, label).await;
+            assert!(support::wait_enabled_button(&mut view, label).await.state.selected, "omitted tool overrides must retain model defaults");
+        }
         activate(&mut view, "Back from connection settings").await;
         wait_view(&mut view, |screen| screen.contains("Connection models")).await;
         activate(&mut view, "Add model manually").await;
         wait_view(&mut view, |screen| screen.contains("Model settings") && screen.contains("Model ID")).await;
         fill(&mut view, "Model ID", "manual-ui-agent").await;
         fill(&mut view, "Model display name", "Manual UI Agent").await;
+        activate(&mut view, "Code Mode: Enabled").await;
+        activate(&mut view, "Apply Patch: Disabled").await;
+        activate(&mut view, "Code Mode language: Python").await;
         activate(&mut view, "Support effort high").await;
         activate(&mut view, "Default effort high").await;
         activate(&mut view, "Save model").await;
@@ -530,7 +603,7 @@ async fn empty_settings_configure_a_real_connection_and_manual_reasoning_model_b
         assert_eq!(catalog["defaultTarget"], target);
         let detail = client.query("settings", "connection", json!({"connectionId":basis["connectionId"],"revision":basis["revision"],"includeEditingFacts":true})).await.unwrap();
         assert_eq!(detail["target"]["configuration"], json!({"baseUrl":fixture.base_url}));
-        assert_eq!(detail["editing"], json!({"enabledModelIds":["fixture-discovered-model","manual-ui-agent"],"modelOverrides":{"manual-ui-agent":{"displayName":"Manual UI Agent","thinkingLevels":["high"],"defaultThinkingLevel":"high"}},"requestBodyOverlay":{"provider":{"only":["openrouter","deepseek"]},"temperature":0.22}}));
+        assert_eq!(detail["editing"], json!({"enabledModelIds":["fixture-discovered-model","manual-ui-agent"],"modelOverrides":{"manual-ui-agent":{"displayName":"Manual UI Agent","codeMode":true,"codeModeLanguage":"python","applyPatch":false,"thinkingLevels":["high"],"defaultThinkingLevel":"high"}},"requestBodyOverlay":{"provider":{"only":["openrouter","deepseek"]},"temperature":0.22}}));
         let models = client.query("settings", "models", json!({"kind":"start","query":"manual-ui-agent"})).await.unwrap();
         assert_eq!(models["choices"].as_array().unwrap().len(), 1);
         assert_eq!(models["choices"][0]["thinkingLevels"], json!(["high"]));
@@ -566,6 +639,24 @@ async fn empty_settings_configure_a_real_connection_and_manual_reasoning_model_b
         let session = sessions["sessions"][0]["id"].as_str().unwrap().to_owned();
         let observed = client.query("agent", "observe", json!({"sessionId":session})).await.unwrap();
         assert_eq!(observed["session"]["backend"], json!({"kind":"model","connectionId":basis["connectionId"],"modelId":"manual-ui-agent","thinkingLevel":null}));
+        let saved_policy = client.query("settings", "resolveModel", target.clone()).await.unwrap();
+        assert_eq!(saved_policy["choice"]["tools"], json!({"codeMode":true,"codeModeLanguage":"python","applyPatch":false}));
+        activate(&mut view, "Choose model and effort").await;
+        activate(&mut view, "Edit current model settings").await;
+        wait_view(&mut view, |screen| screen.contains("Model settings") && screen.contains("Model ID") && !screen.contains("Loading settings…")).await;
+        assert_input(&mut view, "Model display name", "Manual UI Agent").await;
+        for label in ["Code Mode: Enabled", "Apply Patch: Disabled", "Code Mode language: Python"] {
+            tab_to_label(&mut view, label).await;
+            assert!(support::wait_enabled_button(&mut view, label).await.state.selected, "current model settings must show the saved tool policy");
+        }
+        activate(&mut view, "Code Mode: Disabled").await;
+        activate(&mut view, "Apply Patch: Enabled").await;
+        activate(&mut view, "Code Mode language: JavaScript").await;
+        activate(&mut view, "Close settings").await;
+        wait_view_state(&mut view, |view, _| !view.accessibility_snapshot().iter().any(|node| node.label == "Close settings")).await;
+        let cancelled_policy = client.query("settings", "resolveModel", target.clone()).await.unwrap();
+        assert_eq!(cancelled_policy["choice"]["selection"], saved_policy["choice"]["selection"], "closing settings must not commit the unsaved tool policy");
+        assert_eq!(cancelled_policy["choice"]["tools"], json!({"codeMode":true,"codeModeLanguage":"python","applyPatch":false}));
         tab_to_label(&mut view, "Message composer").await;
         editable(&mut view, "Message composer").await;
         view.handle_event(Event::Paste("Use my new connection exactly once".into()));
@@ -651,6 +742,8 @@ async fn empty_settings_configure_a_real_connection_and_manual_reasoning_model_b
         assert_eq!(initial_global["source"], "maka");
         assert_eq!(initial_global["path"], instruction_path.to_str().unwrap());
         assert_eq!(initial_global["content"], initial_instructions);
+        let original_size = (view.surface().viewport().width.0 / 8.0, view.surface().viewport().height.0 / 16.0);
+        view.resize(120, 50);
         activate(&mut view, "Edit global instructions").await;
         // The complete native text remains one label even when a long Host
         // path wraps across multiple terminal rows.
@@ -733,6 +826,12 @@ async fn empty_settings_configure_a_real_connection_and_manual_reasoning_model_b
         let final_instructions = format!("  GLOBAL_UI_INSTRUCTIONS_UNIQUE\r\n{}\n\tMixed LF line 🦀\rStandalone CR line\r\n\r\n", "\t保留完整 UTF-8 指令，遵循实际用户需求。  \r\n".repeat(40));
         fill(&mut view, "Global instructions", &final_instructions).await;
         assert_input(&mut view, "Global instructions", &final_instructions).await;
+        assert_document_viewport(&mut view, "Global instructions", "Save global instructions", "GLOBAL_UI_INSTRUCTIONS_UNIQUE").await;
+        view.resize(80, 24);
+        assert_input(&mut view, "Global instructions", &final_instructions).await;
+        view.handle_event(Event::Key(KeyEvent::new(KeyCode::Home, KeyModifiers::CONTROL)));
+        commit_native_events(&mut view).await;
+        wait_view(&mut view, |screen| screen.contains("GLOBAL_UI_INSTRUCTIONS_UNIQUE")).await;
         activate(&mut view, "Save global instructions").await;
         wait_view(&mut view, |screen| screen.contains("Global instructions saved.")).await;
         let saved_global = client.query("agent", "globalInstructions", json!({})).await.unwrap();
@@ -745,7 +844,20 @@ async fn empty_settings_configure_a_real_connection_and_manual_reasoning_model_b
         assert_eq!(client.query("settings", "assistantPreferences", json!({})).await.unwrap(), saved_preferences, "editing AGENTS.md must not mutate display name, language or the policy revision");
         // Return from the file editor before continuing the original name and
         // composer identity checks; saving may retain the fresh file editor.
+        view.resize(120, 50);
         activate(&mut view, "Back from general settings").await;
+        activate(&mut view, "Edit compaction prompt").await;
+        let compaction_draft = format!("COMPACTION_EDITOR_FIRST_LINE\n{}", "Complete unsaved compaction instructions.\n".repeat(50));
+        fill(&mut view, "Compaction prompt", &compaction_draft).await;
+        assert_document_viewport(&mut view, "Compaction prompt", "Save this preference", "COMPACTION_EDITOR_FIRST_LINE").await;
+        view.resize(80, 24);
+        assert_input(&mut view, "Compaction prompt", &compaction_draft).await;
+        view.handle_event(Event::Key(KeyEvent::new(KeyCode::Home, KeyModifiers::CONTROL)));
+        commit_native_events(&mut view).await;
+        wait_view(&mut view, |screen| screen.contains("COMPACTION_EDITOR_FIRST_LINE")).await;
+        activate(&mut view, "Cancel").await;
+        assert_eq!(client.query("settings", "assistantPreferences", json!({})).await.unwrap(), saved_preferences, "leaving the compaction editor must not save the draft");
+        view.resize(original_size.0 as u16, original_size.1 as u16);
         activate(&mut view, "Edit personalization").await;
         assert_input(&mut view, "Display name", "已保存的中文用户").await;
         support::wait_enabled_button(&mut view, "Back from general settings").await;
@@ -761,6 +873,7 @@ async fn empty_settings_configure_a_real_connection_and_manual_reasoning_model_b
         assert_eq!(request.body["reasoning_effort"], "high");
         assert_eq!(request.body["provider"], json!({"only":["openrouter","deepseek"]}));
         assert_eq!(request.body["temperature"], 0.22);
+        assert!(request.body["tools"].as_array().unwrap().iter().any(|tool| tool["function"]["name"] == "exec"), "the model's saved Code Mode policy must reach the actual provider request");
         assert!(request.body["messages"].as_array().unwrap().iter().any(|message| message["role"] == "user" && message["content"].to_string().contains("Use my new connection exactly once")));
         let system_prompt = request.body["messages"].as_array().unwrap().iter()
             .filter(|message| message["role"] == "system")
@@ -883,9 +996,63 @@ async fn the_home_palette_creates_switches_models_and_stops_a_real_session_witho
         view.handle_event(Event::Paste("Draft A stays in its own conversation".into()));
         support::wait_draft(&client, &fixture.session, "Draft A stays in its own conversation").await;
 
+        let composer = view.surface().focused().unwrap();
+        support::wait_enabled_button(&mut view, "Collapse session browser").await;
+        assert!(!view.accessibility_snapshot().iter().any(|node| node.label == "Close session browser"), "the sidebar must not expose a second toggle beside the Header control");
+        support::click_button(&mut view, "Collapse session browser").await;
+        wait_view(&mut view, |screen| screen.contains("Draft A stays in its own conversation") && !screen.contains("Search sessions…")).await;
+        support::wait_enabled_button(&mut view, "Expand session browser").await;
+        wait_editable_composer(&mut view).await;
+        assert_eq!(view.surface().focused(), Some(composer));
+
+        // Header search operates the resident title search, independently of
+        // the command palette and the conversation's saved native draft.
+        support::click_button(&mut view, "Search sessions").await;
+        wait_focused_input(&mut view, "Search session titles").await;
+        let search = view.surface().focused().unwrap();
+        shortcut(&mut view, 'a');
+        view.handle_event(Event::Paste("NSH real".into()));
+        wait_view_state(&mut view, |view, screen| !screen.contains("Loading…") && view.accessibility_snapshot().iter().any(|node| node.label == "Open conversation NSH real Agent")).await;
+        support::click_button(&mut view, "Search sessions").await;
+        wait_focused_input(&mut view, "Search session titles").await;
+        assert_eq!(view.surface().focused(), Some(search), "Header search must retain the mounted search Input");
+        assert_eq!(view.surface().input_context().unwrap().text.as_deref(), Some("NSH real"));
+        shortcut(&mut view, 'a');
+        view.handle_event(Event::Paste("HEADER_SEARCH_HAS_NO_SESSION_MATCH".into()));
+        wait_view_state(&mut view, |view, screen| screen.contains("No matching conversations.") && !screen.contains("Loading…") && !view.accessibility_snapshot().iter().any(|node| node.label == "Open conversation NSH real Agent")).await;
+        support::click_button(&mut view, "Clear session search").await;
+        wait_focused_input(&mut view, "Search session titles").await;
+        wait_view_state(&mut view, |view, screen| !screen.contains("Loading…") && view.accessibility_snapshot().iter().any(|node| node.label == "Open conversation NSH real Agent")).await;
+        support::click_button(&mut view, "Collapse session browser").await;
+        wait_editable_composer(&mut view).await;
+        assert_eq!(view.surface().focused(), Some(composer));
+        assert_eq!(view.surface().input_context().unwrap().text.as_deref(), Some("Draft A stays in its own conversation"));
+        support::wait_draft(&client, &fixture.session, "Draft A stays in its own conversation").await;
+        assert_eq!(fixture.request_count.load(Ordering::SeqCst), 0);
+        support::click_button(&mut view, "Expand session browser").await;
+        wait_focused_input(&mut view, "Search session titles").await;
+        tab_to_label(&mut view, "Message composer").await;
+
+        // Both presses can be admitted by the same native frame before the
+        // settings modal reaches it. The old Header action must not dismiss
+        // or replace the newer modal when the engine processes that FIFO.
+        let settings = support::wait_enabled_button(&mut view, "Open settings").await;
+        let toggle = support::wait_enabled_button(&mut view, "Collapse session browser").await;
+        let control = view.control().unwrap();
+        for id in [settings.id, toggle.id] {
+            control.dispatch_event(id, nsh_core::EventKind::Press, nsh_core::EventPayload::None);
+        }
+        let (done, committed) = tokio::sync::oneshot::channel();
+        control.advance_clock(Duration::ZERO, move || { let _ = done.send(()); });
+        committed.await.expect("the admitted Header actions did not commit");
+        support::wait_enabled_button(&mut view, "Close settings").await;
+        support::click_button(&mut view, "Close settings").await;
+        wait_editable_composer(&mut view).await;
+        assert_eq!(view.surface().focused(), Some(composer));
+        assert_eq!(view.surface().input_context().unwrap().text.as_deref(), Some("Draft A stays in its own conversation"));
+
         // A historical Ctrl+O request must not replay when an inactive sidebar
         // remounts. The center keeps its native Input and exact saved draft.
-        let composer = view.surface().focused().unwrap();
         view.resize(80, 24);
         let narrow = wait_view(&mut view, |screen| screen.contains("Draft A stays in its own conversation") && !screen.contains("Search sessions…")).await;
         assert_eq!(view.surface().focused(), Some(composer));
@@ -929,6 +1096,48 @@ async fn the_home_palette_creates_switches_models_and_stops_a_real_session_witho
             assert_eq!(resized.origin.x.0, editor.origin.x.0 + f32::from(delta) * 8.0);
             assert_eq!(resized.size.width.0, editor.size.width.0 - f32::from(delta) * 8.0);
         }
+
+        // A height-only resize ends the native gesture at its applied width.
+        // The next button step must start there, not at the pre-drag preference.
+        let nodes = view.accessibility_snapshot();
+        let divider = nodes.iter().find(|node| node.label == "Resize session browser").unwrap().frame;
+        let editor = nodes.iter().find(|node| node.id == composer).unwrap().frame;
+        let selection = view.surface().input_context().unwrap().selection;
+        let viewport = view.surface().viewport();
+        let column = (divider.origin.x.0 / 8.0).round() as u16;
+        let target = column + 3;
+        let dragged_x = divider.origin.x.0 + 24.0;
+        for (kind, column) in [
+            (MouseEventKind::Down(MouseButton::Left), column),
+            (MouseEventKind::Drag(MouseButton::Left), target),
+        ] {
+            view.handle_event(Event::Mouse(MouseEvent {kind,column,row:1,modifiers:KeyModifiers::NONE}));
+        }
+        wait_view_state(&mut view, |view, _| view.accessibility_snapshot().iter().any(|node| node.label == "Resize session browser" && node.frame.origin.x.0 == dragged_x)).await;
+        assert_eq!(view.surface().focused(), Some(composer));
+        assert_eq!(view.surface().input_context().unwrap().selection, selection);
+        view.resize((viewport.width.0 / 8.0) as u16, (viewport.height.0 / 16.0) as u16 + 1);
+        // The full-height divider proves the new native layout was applied;
+        // the empty conversation's composer is vertically centered.
+        wait_view_state(&mut view, |view, _| view.accessibility_snapshot().iter().any(|node| node.label == "Resize session browser" && node.frame.size.height.0 == divider.size.height.0 + 16.0)).await;
+        assert!(view.accessibility_snapshot().iter().any(|node| node.label == "Resize session browser" && node.frame.origin.x.0 == dragged_x));
+        view.handle_event(Event::Mouse(MouseEvent {kind:MouseEventKind::Up(MouseButton::Left),column:target,row:1,modifiers:KeyModifiers::NONE}));
+        assert_eq!(view.surface().focused(), Some(composer));
+        let context = view.surface().input_context().unwrap();
+        assert_eq!(context.text.as_deref(), Some("Draft A stays in its own conversation"));
+        assert_eq!(context.selection, selection);
+        let wider = support::wait_enabled_button(&mut view, "Wider session browser").await;
+        support::click_node(&mut view, wider.clone());
+        wait_view_state(&mut view, |view, _| view.accessibility_snapshot().iter().any(|node| node.label == "Resize session browser" && node.frame.origin.x.0 != dragged_x)).await;
+        let nodes = view.accessibility_snapshot();
+        let widened = nodes.iter().find(|node| node.label == "Resize session browser").unwrap().frame;
+        assert_eq!(widened.origin.x.0, dragged_x + 16.0, "Wider must continue from the width applied before the native gesture ended");
+        let resized = nodes.iter().find(|node| node.id == composer).unwrap().frame;
+        assert_eq!(resized.origin.x.0, editor.origin.x.0 + 40.0);
+        assert_eq!(resized.size.width.0, editor.size.width.0 - 40.0);
+        assert_eq!(view.surface().focused(), Some(wider.id), "the activated Wider button must receive normal pointer focus");
+        view.resize((viewport.width.0 / 8.0) as u16, (viewport.height.0 / 16.0) as u16);
+        wait_view_state(&mut view, |view, _| view.accessibility_snapshot().iter().any(|node| node.label == "Resize session browser" && node.frame.size.height.0 == divider.size.height.0)).await;
         support::wait_draft(&client, &fixture.session, "Draft A stays in its own conversation").await;
 
         shortcut(&mut view, 'p');
@@ -985,9 +1194,13 @@ async fn the_home_palette_creates_switches_models_and_stops_a_real_session_witho
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
         }).await.expect("the complete negative query did not settle without a visible old model choice");
-        shortcut(&mut view, 'a');
-        view.handle_event(Event::Paste(model_query));
+        for query in ["fixture-model", "no-such-model", model_query.as_str()] {
+            shortcut(&mut view, 'a');
+            view.handle_event(Event::Paste(query.into()));
+            support::tick(&mut view);
+        }
         wait_view(&mut view, |screen| screen.contains("fixture-model-alt") && screen.contains("1 model") && !screen.contains("Loading…")).await;
+        assert_eq!(view.surface().input_context().unwrap().text.as_deref(), Some(model_query.as_str()));
         view.handle_event(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
         wait_view_state(&mut view, |view, screen| screen.contains("New conversation") && screen.contains("fixture-model-alt · high") && model_menu_closed(view)).await;
         let observed = client.query("agent", "observe", json!({"sessionId":created_id})).await.unwrap();
@@ -1226,10 +1439,7 @@ async fn the_home_palette_creates_switches_models_and_stops_a_real_session_witho
         wait_view(&mut view, |screen| screen.contains("Choose a workspace below")).await;
         view.handle_event(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
         wait_view(&mut view, |screen| screen.contains("All workspaces") && !screen.contains("Choose a workspace below")).await;
-        for _ in 0..3 {
-            view.handle_event(Event::Key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT)));
-        }
-        assert!(view.accessibility_snapshot().iter().any(|node| node.focused && node.label == "Close session browser"));
+        tab_to_label(&mut view, "New conversation").await;
         // The resize decision uses native subtree focus, including Tabbed
         // Buttons that never emitted an application focus callback.
         view.resize(80, 24);
@@ -1242,19 +1452,30 @@ async fn the_home_palette_creates_switches_models_and_stops_a_real_session_witho
         wait_enabled_node(&mut view, "Narrower session browser").await;
         wait_view(&mut view, |screen| screen.contains("All workspaces")).await;
         wait_focused_input(&mut view, "Search session titles").await;
-        for _ in 0..3 {
-            view.handle_event(Event::Key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT)));
-        }
-        assert!(view.accessibility_snapshot().iter().any(|node| node.focused && node.label == "Close session browser"));
+        tab_to_label(&mut view, "New conversation").await;
         view.handle_event(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
         wait_view(&mut view, |screen| !screen.contains("All workspaces") && screen.contains("Preparing tool · todo_write")).await;
 
         view.resize(80, 24);
-        shortcut(&mut view, 'o');
+        // Resize publishes the new viewport and device environment asynchronously.
+        // Compare both Headers after that same native layout has committed.
+        let (done, resized) = tokio::sync::oneshot::channel();
+        view.control().unwrap().advance_clock(Duration::ZERO, move || { let _ = done.send(()); });
+        resized.await.expect("the Header resize did not commit");
+        let collapsed_toggle = support::wait_enabled_button(&mut view, "Expand session browser").await.frame;
+        let header_search = support::wait_enabled_button(&mut view, "Search sessions").await.frame;
+        support::click_button(&mut view, "Search sessions").await;
         let narrow_browser = wait_view(&mut view, |screen| screen.contains("All workspaces")).await;
         wait_focused_input(&mut view, "Search session titles").await;
+        assert!(!view.accessibility_snapshot().iter().any(|node| node.label == "Close session browser"), "the dialog must use the same Header toggle without another sidebar control");
+        assert_eq!(support::wait_enabled_button(&mut view, "Collapse session browser").await.frame, collapsed_toggle, "the foreground dialog must retain the Header toggle's position");
+        assert_eq!(support::wait_enabled_button(&mut view, "Search sessions").await.frame, header_search, "search must remain in the same Header position while the browser is open");
         evidence("workbench-narrow-session-dialog", &narrow_browser);
         support::evidence_cells("workbench-narrow-session-dialog", &view);
+        support::click_button(&mut view, "Collapse session browser").await;
+        wait_view(&mut view, |screen| !screen.contains("All workspaces") && screen.contains("Preparing tool · todo_write")).await;
+        support::click_button(&mut view, "Search sessions").await;
+        wait_focused_input(&mut view, "Search session titles").await;
         view.handle_event(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
         wait_view(&mut view, |screen| !screen.contains("All workspaces") && screen.contains("Preparing tool · todo_write")).await;
         request.delta("BROWSER_ESCAPE_LEFT_THE_RUN_ALIVE").await;
@@ -1326,7 +1547,7 @@ async fn the_home_palette_creates_switches_models_and_stops_a_real_session_witho
         shortcut(&mut view, 'a');
         view.handle_event(Event::Key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)));
         wait_view(&mut view, |screen| screen.contains("LONG_QUERY_MATCH") && !screen.contains("No matching conversations.") && !screen.contains("Loading…")).await;
-        support::click_button(&mut view, "Close session browser").await;
+        support::click_button(&mut view, "Collapse session browser").await;
         wait_editable_composer(&mut view).await;
         wait_view(&mut view, |screen| !screen.contains("No matching conversations.") && !screen.contains("All workspaces")).await;
 
@@ -1943,14 +2164,15 @@ async fn real_agent_history_and_live_stream_render_and_the_app_sends_once() {
         let wheel_row = wheel.lines().position(|line| line.contains(&wheel_marker)).unwrap();
         let reading_row = wheel.lines().position(|line| line.contains(&boundary_tail)).unwrap();
         assert!(!cancelled.accessibility_snapshot().iter().any(|node| node.label.contains(&added_marker)));
+        assert!(cancelled.accessibility_snapshot().iter().any(|node| node.label.contains(&boundary_tail) && node.label.contains("**bold**")), "the held prefix must still leave the reading source literal");
         evidence("history-home-wheel-before-final-page", &wheel);
         evidence("history-home-wheel-before-final-page-ax", &format!("{:#?}", cancelled.accessibility_snapshot()));
         support::evidence_cells("history-home-wheel-before-final-page", &cancelled);
         gate.release();
-        // AX includes mounted overscan. This newly prepended paragraph proves
-        // the final reply and all its promise continuations reached a real
-        // native commit; a wire write alone would not provide that barrier.
-        let retained = wait_view_state(&mut cancelled, |view, _| view.accessibility_snapshot().iter().any(|node| node.label.contains(&added_marker))).await;
+        // The completed prefix either mounts its first paragraph or formats
+        // the visible original tail. Both prove a real native publication;
+        // virtualized paragraphs outside the reader need not be mounted.
+        let retained = wait_view_state(&mut cancelled, |view, _| view.accessibility_snapshot().iter().any(|node| node.label.contains(&added_marker) || (node.label.starts_with(&boundary_tail) && !node.label.contains("**bold**")))).await;
         evidence("history-home-wheel-final-page-published", &retained);
         evidence("history-home-wheel-final-page-published-ax", &format!("{:#?}", cancelled.accessibility_snapshot()));
         support::evidence_cells("history-home-wheel-final-page-published", &cancelled);
@@ -2084,45 +2306,9 @@ async fn real_agent_history_and_live_stream_render_and_the_app_sends_once() {
         view.handle_event(Event::Key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)));
         // Alt+Down explicitly reveals the group. Freeze its settled pose before
         // streaming; the earlier mouse-wheel assertions retain their own anchor.
-        let cadence_source_top = wait_view(&mut view, &at_source_start).await;
-        let cadence_header_row = cadence_source_top.lines().position(|line| line.contains("Analyzing the request")).expect("the navigated activity header must be visible above its source");
-        let cadence_source_row = cadence_source_top.lines().position(|line| line.contains("NATIVE_THINK_SOURCE_01")).expect("the navigated original source must be visible");
-
-        // Rapid paragraphs must update during the stream, at a bounded cadence,
-        // while the expanded source and its reader anchor stay put.
-        let cadence = std::time::Instant::now();
-        let mut titles = vec![(Duration::ZERO, support::painted_text(&view, "Analyzing the request", cadence_header_row))];
-        let mut paragraph = 0;
-        while cadence.elapsed() < Duration::from_millis(650) {
-            paragraph += 1;
-            request.thinking(&format!("\n\nTITLE_{paragraph:02} 规划 e\u{301} {}", "界e\u{301}".repeat(48))).await;
-            for _ in 0..4 {
-                view.poll().unwrap();
-                support::tick(&mut view);
-                let screen = view.snapshot();
-                assert!(at_source_start(&screen), "a title update moved the source reader:\n{screen}");
-                assert_eq!(screen.lines().position(|line| line.contains("NATIVE_THINK_SOURCE_01")), Some(cadence_source_row), "a title update moved the original source row:\n{screen}");
-                assert!(screen.lines().nth(cadence_header_row).unwrap().contains("Analyzing the request"), "the fixed activity header moved:\n{screen}");
-                let title = support::painted_text(&view, "Analyzing the request", cadence_header_row);
-                if title != titles.last().unwrap().1 {
-                    titles.push((cadence.elapsed(), title));
-                }
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-        }
-        assert!(titles.len() >= 3, "continuous input postponed every intermediate title: {titles:?}; paragraphs={paragraph}; elapsed={:?}", cadence.elapsed());
-        let latest = format!("TITLE_{paragraph:02} 规划 e\u{301}");
-        wait_view(&mut view, |screen| at_source_start(screen) && screen.lines().nth(cadence_header_row).is_some_and(|line| line.contains(&latest))).await;
-        let last = support::painted_text(&view, "Analyzing the request", cadence_header_row);
-        assert!(last.ends_with('…') && !last.ends_with("e…"), "the long title must ellipsize without splitting a combining grapheme: {last}");
-        if last != titles.last().unwrap().1 {
-            titles.push((cadence.elapsed(), last));
-        }
-        // An interval-wide bound avoids confusing poll scheduling with the JS
-        // presentation timestamp, while still catching a title for every delta.
-        assert!(titles.len() <= cadence.elapsed().as_millis() as usize / 150 + 2, "the header changed faster than its minimum lifetime: {titles:?}");
-        evidence("activity-title-cadence", &titles.iter().map(|(at, title)| format!("{}ms {title}", at.as_millis())).collect::<Vec<_>>().join("\n"));
-        support::evidence_cells("activity-title-unicode", &view);
+        let reader_source_top = wait_view(&mut view, &at_source_start).await;
+        let reader_header_row = reader_source_top.lines().position(|line| line.contains("Analyzing the request")).expect("the navigated activity header must be visible above its source");
+        let reader_source_row = reader_source_top.lines().position(|line| line.contains("NATIVE_THINK_SOURCE_01")).expect("the navigated original source must be visible");
 
         // The elapsed-time label keeps advancing while deltas continuously
         // refresh this same turn and the user keeps its source reader anchored.
@@ -2135,11 +2321,11 @@ async fn real_agent_history_and_live_stream_render_and_the_app_sends_once() {
         let painted_duration = |view: &AppView| {
             let metrics = view.surface().metrics();
             view.accessibility_snapshot().into_iter().find_map(|node| {
-                if (node.frame.origin.y.0 / metrics.height().0 - 0.5).ceil() != cadence_header_row as f32 {
+                if (node.frame.origin.y.0 / metrics.height().0 - 0.5).ceil() != reader_header_row as f32 {
                     return None;
                 }
                 duration_seconds(&node.label)?;
-                duration_seconds(&support::painted_text(view, &node.label, cadence_header_row))
+                duration_seconds(&support::painted_text(view, &node.label, reader_header_row))
             })
         };
         let previous_duration = painted_duration(&view)
@@ -2151,7 +2337,7 @@ async fn real_agent_history_and_live_stream_render_and_the_app_sends_once() {
                 support::tick(&mut view);
                 let screen = view.snapshot();
                 assert!(at_source_start(&screen), "continuous thinking moved the source reader:\n{screen}");
-                assert_eq!(screen.lines().position(|line| line.contains("NATIVE_THINK_SOURCE_01")), Some(cadence_source_row));
+                assert_eq!(screen.lines().position(|line| line.contains("NATIVE_THINK_SOURCE_01")), Some(reader_source_row));
                 if painted_duration(&view).is_some_and(|seconds| seconds > previous_duration) {
                     break screen;
                 }
@@ -2179,14 +2365,14 @@ async fn real_agent_history_and_live_stream_render_and_the_app_sends_once() {
         // A reply closes only this contiguous process segment. The same native
         // source reader stays at its original row while later work gets a group.
         let cut = wait_view(&mut view, |screen| at_source_start(screen) && screen.contains("1 thought")).await;
-        assert_eq!(cut.lines().position(|line| line.contains("1 thought")), Some(cadence_header_row));
-        let header_y = (cadence_header_row as f32 + 0.5) * view.surface().metrics().height().0;
+        assert_eq!(cut.lines().position(|line| line.contains("1 thought")), Some(reader_header_row));
+        let header_y = (reader_header_row as f32 + 0.5) * view.surface().metrics().height().0;
         assert!(view.accessibility_snapshot().iter().any(|node| {
             node.label == "Process group" && node.state.selected
                 && node.frame.origin.y.0 <= header_y
                 && header_y < node.frame.origin.y.0 + node.frame.size.height.0
         }), "the same thought group must stay expanded at its original header row");
-        assert_eq!(cut.lines().position(|line| line.contains("NATIVE_THINK_SOURCE_01")), Some(cadence_source_row));
+        assert_eq!(cut.lines().position(|line| line.contains("NATIVE_THINK_SOURCE_01")), Some(reader_source_row));
         evidence("intermediate-response-cuts-process-group", &cut);
         support::evidence_cells("intermediate-response-cuts-process-group", &view);
         // Leave the old source reader explicitly, then select the new segment
@@ -2518,6 +2704,30 @@ async fn streamed_markdown_keeps_inline_styles_and_the_original_selectable_sourc
             }).unwrap_or_else(|| panic!("formatted token {token} is not visible:\n{rendered}"));
             assert!((0..token.len()).all(|index| buffer[(cells.0 + index as u16, cells.1)].modifier.contains(expected)), "terminal cells for {token} lost {expected:?}");
         }
+        let cell = |token: &str| {
+            (0..area.height).find_map(|y| {
+                (0..=area.width.saturating_sub(token.len() as u16)).find_map(|x| {
+                    let text: String = (0..token.len()).map(|index| buffer[(x + index as u16, y)].symbol()).collect();
+                    (text == token).then_some((x, y))
+                })
+            }).unwrap_or_else(|| panic!("copy target {token} is not visible:\n{rendered}"))
+        };
+        let first = cell("RICH_HEADING");
+        let last = cell("RICH_CODE");
+        view.drain_service_output().for_each(drop);
+        for (kind, (column, row)) in [
+            (MouseEventKind::Down(MouseButton::Left), (last.0 + "RICH_CODE".len() as u16, last.1)),
+            (MouseEventKind::Drag(MouseButton::Left), (first.0.saturating_sub(1), first.1)),
+            (MouseEventKind::Up(MouseButton::Left), (first.0.saturating_sub(1), first.1)),
+        ] {
+            view.handle_event(Event::Mouse(MouseEvent { kind, column, row, modifiers: KeyModifiers::NONE }));
+        }
+        shortcut(&mut view, 'c');
+        let selected = view.drain_service_output().filter_map(|effect| match effect {
+            ServiceOutput::Clipboard(text) => Some(text),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(selected, ["RICH_HEADING\nRICH_BOLD RICH_ITALIC RICH_STRIKE RICH_CODE"], "dragging across Markdown blocks must copy all visible lines with their formatting text intact; first={first:?}; last={last:?}; text frames={:?}", view.accessibility_snapshot().into_iter().filter(|node| node.label.contains("RICH_HEADING") || node.label.contains("RICH_BOLD")).map(|node| (node.id, node.frame, node.label)).collect::<Vec<_>>());
         let table = "\n\n- RICH_LIST\n\n> RICH_QUOTE\n\n| RICH_TABLE_NAME | RICH_TABLE_VALUE |\n| :--- | ---: |\n| 中文表格 | 42 |\n| 完整单元格 | 8 |";
         request.delta(table).await;
         let rendered_table = wait_view_state(&mut view, |view, screen| {
@@ -2528,8 +2738,18 @@ async fn streamed_markdown_keeps_inline_styles_and_the_original_selectable_sourc
                 && !screen.contains("| RICH_TABLE_NAME")
         }).await;
         evidence("rich-response-live-table", &rendered_table);
+        let reference = "\n\n[RICH_REFERENCE][later]";
+        request.delta(reference).await;
+        wait_view(&mut view, |screen| screen.contains("[RICH_REFERENCE][later]")).await;
+        let definition = "\n\n[later]: https://example.test/streamed-reference";
+        request.delta(definition).await;
+        wait_view_state(&mut view, |view, _| {
+            view.accessibility_snapshot().iter().any(|node| {
+                node.role == nsh_core::AccessibilityRole::Link && node.label == "RICH_REFERENCE"
+            })
+        }).await;
         let code = "\n\n```txt\nRICH_CODE_BLOCK 中文原文\n\tkeep trailing  \n\n```";
-        let suffix = format!("{table}{code}");
+        let suffix = format!("{table}{reference}{definition}{code}");
         request.delta("\n\n```txt\nRICH_CODE_BLOCK 中文原文\n").await;
         // The stream remains physically open: parsing cannot wait for final.
         // Copying the long user message can leave its reader anchored above

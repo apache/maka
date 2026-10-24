@@ -66,6 +66,10 @@ fn apply(patterns: &[(&str, Regex)], inlines: Vec<Inline>) -> Vec<Inline> {
     for inline in inlines {
         match inline {
             Inline::Text { text } => split(patterns, text, &mut out),
+            Inline::Source { content, segments } => out.push(Inline::Source {
+                content: apply(patterns, content),
+                segments,
+            }),
             Inline::Strong { content } => out.push(Inline::Strong {
                 content: apply(patterns, content),
             }),

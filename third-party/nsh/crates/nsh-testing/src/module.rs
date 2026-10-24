@@ -5,7 +5,12 @@
 //! the engine `nsh test` runs a test file on serves it.
 
 use std::{
-    cell::RefCell, collections::BTreeMap, future::Future, rc::Rc, sync::Arc, task::Poll,
+    cell::RefCell,
+    collections::BTreeMap,
+    future::Future,
+    rc::Rc,
+    sync::{Arc, Mutex},
+    task::Poll,
     time::Duration,
 };
 
@@ -13,7 +18,7 @@ use nsh_core::{
     JsonValue,
     ui::{Arg, JsHost, JsIn, JsKind, JsOwned, JsValue, PropError, Registry, TsTypes, prelude::*},
 };
-use nsh_engine::{HttpBody, HttpRequest};
+use nsh_engine::{HostCall, HostChannel, HttpBody, HttpRequest};
 
 use crate::{
     MemoryStorage,
@@ -243,7 +248,13 @@ impl Testing {
     pub async fn open(entry: String, options: Option<OpenOptions>) -> Result<App, String> {
         let session = Session::current()?;
         let options = options.unwrap_or_default();
-        let (network, server) = network_setup(options.network);
+        let (network, mut server) = network_setup(options.network);
+        let host_handlers = options
+            .host
+            .as_ref()
+            .and_then(|h| h.handlers.as_ref())
+            .is_some_and(|h| !h.0.is_empty());
+        let (host, record) = host_setup(options.host, &mut server);
         let launch = Launch {
             storage: options.storage.unwrap_or_default(),
             network,
@@ -258,6 +269,8 @@ impl Testing {
             clock: options
                 .clock
                 .map(|c| c.time.map_or_else(std::time::SystemTime::now, |t| t.0)),
+            host,
+            host_handlers,
         };
         let opening = blocking(move || session.open(&entry, launch));
         let (app, storage, requests) = serve(server.as_ref(), opening)
@@ -268,9 +281,11 @@ impl Testing {
                 app,
                 server: server.map(Rc::new),
                 dialog: Rc::default(),
+                pick: Rc::default(),
             },
             storage,
             requests,
+            host: record,
         })
     }
 
@@ -380,6 +395,176 @@ pub struct OpenOptions {
     /// as the test moves it (`app.clock`), steps finish native animations
     /// at once, and `app.wait` moves it.
     pub clock: Option<ClockOptions>,
+    /// The embedding app the test plays for the app (`nsh/host`): the
+    /// launch parameters it reads as `host.params` and the handlers of its
+    /// `host.call` and `host.post`.
+    pub host: Option<HostOptions>,
+}
+
+/// The embedding app a test plays (`open`'s `host`; `nsh/host`).
+#[derive(Debug, Default, JsObject)]
+#[non_exhaustive]
+pub struct HostOptions {
+    /// What the app reads as `host.params` (`{}`).
+    pub params: Option<HostParams>,
+    /// The handlers of the app's `host.call(name, data)` and
+    /// `host.post(name, data)`, by name: a value answers every call with
+    /// it; a function gets the data and returns the answer (or a promise
+    /// of it), and what it throws rejects the call. A call of a name not
+    /// listed fails, as with an embedding app that handles none; a post of
+    /// one is dropped (`app.host.posts()` lists those of the names listed).
+    pub handlers: Option<HostHandlers>,
+}
+
+/// The launch parameters of `open`'s `host`: a JSON object.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct HostParams(pub serde_json::Map<String, JsonValue>);
+
+impl JsValue for HostParams {
+    fn ts_type(_types: &mut TsTypes) -> String {
+        "Record<string, unknown>".into()
+    }
+
+    fn from_js(value: JsIn<'_>) -> Result<Self, PropError> {
+        match value.to_json()? {
+            JsonValue::Object(map) => Ok(HostParams(map)),
+            _ => Err(value.expected("an object")),
+        }
+    }
+
+    fn to_js<'a>(&self, host: &'a dyn JsHost) -> Result<JsOwned<'a>, PropError> {
+        Ok(JsOwned::new(
+            host,
+            host.json(&JsonValue::Object(self.0.clone()))?,
+        ))
+    }
+}
+
+/// A handler of `open`'s `host.handlers`.
+#[derive(Debug)]
+pub enum HostHandlerOption {
+    /// The answer to every call.
+    Value(JsonValue),
+    /// What this function returns for the call's data (or the promise it
+    /// returns resolves to).
+    Function(Callback<JsonValue, JsonValue>),
+}
+
+/// `open`'s `host.handlers`, by name.
+#[derive(Debug, Default)]
+pub struct HostHandlers(pub Vec<(String, HostHandlerOption)>);
+
+impl JsValue for HostHandlers {
+    fn ts_type(_types: &mut TsTypes) -> String {
+        "Record<string, unknown | ((data: unknown) => unknown)>".into()
+    }
+
+    fn from_js(value: JsIn<'_>) -> Result<Self, PropError> {
+        if value.kind() != JsKind::Object {
+            return Err(value.expected("an object of handlers"));
+        }
+        let mut handlers = Vec::new();
+        for key in value.keys()? {
+            let field = value.field(&key)?;
+            let field = field.get();
+            let handler = if field.kind() == JsKind::Function {
+                <Callback<JsonValue, JsonValue> as Arg>::from_js(field)
+                    .map(HostHandlerOption::Function)
+            } else {
+                field.to_json().map(HostHandlerOption::Value)
+            };
+            handlers.push((
+                key.clone(),
+                handler.map_err(|e| PropError(format!("`{key}`: {}", e.0)))?,
+            ));
+        }
+        Ok(HostHandlers(handlers))
+    }
+
+    fn to_js<'a>(&self, host: &'a dyn JsHost) -> Result<JsOwned<'a>, PropError> {
+        // A handler's function stays JS's: only values go back.
+        let json = JsonValue::Object(
+            self.0
+                .iter()
+                .filter_map(|(key, handler)| match handler {
+                    HostHandlerOption::Value(v) => Some((key.clone(), v.clone())),
+                    HostHandlerOption::Function(_) => None,
+                })
+                .collect(),
+        );
+        Ok(JsOwned::new(host, host.json(&json)?))
+    }
+}
+
+/// A call or a post the app made to the embedding app the test plays
+/// (`app.host.calls()`, `app.host.posts()`).
+#[derive(Debug, Default, Clone, PartialEq, JsObject)]
+#[non_exhaustive]
+pub struct HostMessage {
+    /// Its name.
+    pub name: String,
+    /// Its data (`null` without any).
+    pub data: JsonValue,
+}
+
+/// The calls and posts the handlers of `open`'s `host` got, in order:
+/// each with whether it is a post.
+type HostRecord = Arc<Mutex<Vec<(HostMessage, bool)>>>;
+
+/// The embedding app's channel `options` describe, for the app the test
+/// opens, and the record of what its handlers get. The handlers' JS
+/// functions join `server`, which answers their calls on the test file's
+/// VM.
+fn host_setup(
+    options: Option<HostOptions>,
+    server: &mut Option<RouteServer>,
+) -> (HostChannel, HostRecord) {
+    let channel = HostChannel::new();
+    let record = HostRecord::default();
+    let options = options.unwrap_or_default();
+    if let Some(params) = options.params {
+        channel.set_params(params.0);
+    }
+    let handlers = options.handlers.unwrap_or_default().0;
+    if handlers.is_empty() {
+        return (channel, record);
+    }
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut functions = Vec::new();
+    for (name, handler) in handlers {
+        let record = record.clone();
+        let remember = move |call: &HostCall| {
+            record.lock().unwrap_or_else(|e| e.into_inner()).push((
+                HostMessage {
+                    name: call.name().to_owned(),
+                    data: call.data().clone(),
+                },
+                call.is_post(),
+            ));
+        };
+        match handler {
+            HostHandlerOption::Value(value) => channel.handle(name, move |call| {
+                remember(&call);
+                call.resolve(value.clone());
+            }),
+            HostHandlerOption::Function(function) => {
+                let index = functions.len();
+                functions.push((name.clone(), function));
+                let tx = tx.clone();
+                channel.handle(name, move |call| {
+                    remember(&call);
+                    // Dropped when the test is gone: the call fails.
+                    let _ = tx.send((index, call));
+                });
+            }
+        }
+    }
+    if !functions.is_empty() {
+        let server = server.get_or_insert_with(RouteServer::empty);
+        server.host_handlers = functions;
+        server.host_calls = RefCell::new(rx);
+    }
+    (channel, record)
 }
 
 /// The manual clock `open` gives the app (`clock: {}`).
@@ -475,6 +660,60 @@ pub struct Dialog {
     pub sheet: bool,
 }
 
+/// A pick the app asked for (`Picker.pickImages`), as a test reads it.
+#[derive(Debug, Clone, PartialEq, JsObject)]
+pub struct Pick {
+    /// The user may pick several.
+    pub multiple: bool,
+    /// At most this many.
+    pub limit: u32,
+    /// The longest side, in pixels, images are scaled down to; `null`:
+    /// kept.
+    pub max_dimension: Option<u32>,
+    /// The quality of the JPEGs encoded (0 to 1); `null`: the default.
+    pub quality: Option<f64>,
+    /// The formats asked for: `"compatible"` or `"current"`.
+    pub format: String,
+}
+
+impl From<&nsh_core::picker::PickRequest> for Pick {
+    fn from(request: &nsh_core::picker::PickRequest) -> Self {
+        Pick {
+            multiple: request.multiple(),
+            limit: request.limit,
+            max_dimension: request.max_dimension.map(|d| d.0.max(0) as u32),
+            quality: request.quality.map(|q| f64::from(q.0)),
+            format: match request.format {
+                nsh_core::picker::PickFormat::Current => "current",
+                _ => "compatible",
+            }
+            .into(),
+        }
+    }
+}
+
+/// A file a test's pick handler gives the app (`app.onPick`).
+#[derive(Debug, Clone, PartialEq, JsObject)]
+pub struct PickFile {
+    /// Its name (`"cat.png"`).
+    pub name: String,
+    /// Its media type (`"image/png"`); none: read from its bytes or name.
+    #[prop(rename = "type")]
+    pub mime: Option<String>,
+    /// Its bytes.
+    pub data: Vec<u8>,
+}
+
+impl PickFile {
+    fn into_picked(self) -> nsh_core::picker::PickedFile {
+        nsh_core::picker::PickedFile::new(
+            self.name,
+            self.mime.unwrap_or_default(),
+            nsh_core::ImageData::new(self.data),
+        )
+    }
+}
+
 /// How a wait waits.
 #[derive(Debug, Default, Clone, Copy, JsObject)]
 pub struct WaitOptions {
@@ -483,6 +722,56 @@ pub struct WaitOptions {
     /// What it waits for: a view matching to show (`"shown"`, the default)
     /// or no view to match any more (`"gone"`).
     pub state: Option<WaitState>,
+}
+
+/// What a test pastes ([`App::paste`]): what the clipboard holds as the
+/// user pastes.
+#[derive(Debug, Default, Clone, JsObject)]
+pub struct PasteContent {
+    /// The text.
+    pub text: Option<String>,
+    /// Paths of files whose bytes are pasted (a screenshot: an image file),
+    /// each a `File` of `onPaste`, its type from its extension.
+    pub files: Option<Vec<String>>,
+    /// `file:` URLs of local files, as a file manager copies them.
+    pub uris: Option<Vec<String>>,
+}
+
+impl PasteContent {
+    /// What `onPaste` reports of it, the files read.
+    fn read(self) -> Result<nsh_core::PasteEvent, String> {
+        let mut paste = nsh_core::PasteEvent::new(self.text.unwrap_or_default());
+        for path in self.files.unwrap_or_default() {
+            let data = std::fs::read(&path).map_err(|e| format!("paste: {path}: {e}"))?;
+            let name = std::path::Path::new(&path)
+                .file_name()
+                .map_or_else(|| path.clone(), |n| n.to_string_lossy().into_owned());
+            paste.files.push(nsh_core::PastedFile::new(
+                name.clone(),
+                mime_of(&name),
+                data,
+            ));
+        }
+        paste.uris = self.uris.unwrap_or_default();
+        Ok(paste)
+    }
+}
+
+/// The MIME type of a file named `name`, by its extension.
+fn mime_of(name: &str) -> &'static str {
+    let extension = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase());
+    match extension.as_deref() {
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("heic") => "image/heic",
+        Some("svg") => "image/svg+xml",
+        Some("txt") => "text/plain",
+        Some("json") => "application/json",
+        Some("pdf") => "application/pdf",
+        _ => "application/octet-stream",
+    }
 }
 
 /// How far a drag moves the finger ([`App::drag`]), in points.
@@ -506,6 +795,49 @@ pub struct MenuEntry {
     /// Its check mark, when it is a checkable item.
     #[prop(skip_none)]
     pub checked: Option<bool>,
+}
+
+/// The style of a span as the app resolved it (`app.spanStyle`). Colors
+/// are `#rrggbbaa`.
+#[derive(Debug, Clone, PartialEq, JsObject)]
+#[non_exhaustive]
+pub struct SpanStyle {
+    /// Its text color.
+    pub color: String,
+    /// The background a nested text's `backgroundColor` gives it.
+    #[prop(skip_none)]
+    pub background_color: Option<String>,
+    /// Its font size, in points.
+    pub font_size: f64,
+    /// Its font weight (400 regular, 700 bold).
+    pub font_weight: f64,
+    /// Whether it is italic.
+    pub italic: bool,
+    /// Whether it is underlined.
+    pub underline: bool,
+    /// Whether it is struck through.
+    pub line_through: bool,
+}
+
+impl Default for SpanStyle {
+    fn default() -> Self {
+        nsh_core::ResolvedTextStyle::default().into()
+    }
+}
+
+impl From<nsh_core::ResolvedTextStyle> for SpanStyle {
+    fn from(style: nsh_core::ResolvedTextStyle) -> Self {
+        let css = |color: nsh_core::Color| format!("#{:08x}", color.0);
+        SpanStyle {
+            color: css(style.color),
+            background_color: style.background.map(|b| css(b.color)),
+            font_size: f64::from(style.font_size.0),
+            font_weight: f64::from(style.font_weight),
+            italic: style.italic,
+            underline: style.decoration.underline,
+            line_through: style.decoration.line_through,
+        }
+    }
 }
 
 /// What [`WaitOptions`] waits for.
@@ -731,6 +1063,11 @@ pub(crate) struct Launch {
     pub(crate) platform: Platform,
     /// A manual clock's start.
     pub(crate) clock: Option<std::time::SystemTime>,
+    /// The embedding app's channel with the app: the test's launch
+    /// parameters and handlers.
+    pub(crate) host: HostChannel,
+    /// Whether `open`'s `host` has handlers (a headless run's only).
+    pub(crate) host_handlers: bool,
 }
 
 /// The network an app opens with, made where it starts (it is `Send`).
@@ -757,9 +1094,36 @@ pub(crate) struct RouteServer {
     keys: Vec<String>,
     handlers: Vec<Callback<StubRequest, JsonValue>>,
     calls: RefCell<tokio::sync::mpsc::UnboundedReceiver<RouteCall>>,
+    /// The JS functions of `open`'s `host.handlers`, by name, and the
+    /// app's calls and posts waiting for them.
+    host_handlers: Vec<(String, Callback<JsonValue, JsonValue>)>,
+    host_calls: RefCell<tokio::sync::mpsc::UnboundedReceiver<(usize, HostCall)>>,
 }
 
 impl RouteServer {
+    /// A server with no functions yet.
+    fn empty() -> Self {
+        RouteServer {
+            keys: Vec::new(),
+            handlers: Vec::new(),
+            calls: RefCell::new(tokio::sync::mpsc::unbounded_channel().1),
+            host_handlers: Vec::new(),
+            host_calls: RefCell::new(tokio::sync::mpsc::unbounded_channel().1),
+        }
+    }
+
+    /// Answers the app's call (or post) with its handler's function: what
+    /// it returns resolves the call, what it throws rejects it (the app's
+    /// to handle, not the test's failure).
+    async fn answer_host(&self, index: usize, mut call: HostCall) {
+        let data = call.take_data();
+        let answer = self.host_handlers[index].1.call_async(data).await;
+        match answer {
+            Ok(value) => call.resolve(value),
+            Err(error) => call.reject(error.to_string()),
+        }
+    }
+
     /// Answers `call` with its function's response: an error the step
     /// reports when the function threw or gave no response.
     async fn answer(&self, call: RouteCall) -> Result<(), String> {
@@ -822,6 +1186,7 @@ fn network_setup(option: Option<NetworkOption>) -> (NetworkSetup, Option<RouteSe
         keys,
         handlers,
         calls: RefCell::new(rx),
+        ..RouteServer::empty()
     });
     (NetworkSetup::Stub(stub), server)
 }
@@ -835,26 +1200,36 @@ async fn serve<T>(
     let Some(server) = server else {
         return Ok(future.await);
     };
+    /// What comes first: the future's end, or a call for a JS function.
+    enum Next<T> {
+        Done(T),
+        Route(RouteCall),
+        Host(usize, HostCall),
+    }
     let mut future = std::pin::pin!(future);
     let mut failed = None;
     loop {
         let next = std::future::poll_fn(|cx| {
             if let Poll::Ready(value) = future.as_mut().poll(cx) {
-                return Poll::Ready(Ok(value));
+                return Poll::Ready(Next::Done(value));
             }
-            match server.calls.borrow_mut().poll_recv(cx) {
-                Poll::Ready(Some(call)) => Poll::Ready(Err(call)),
+            if let Poll::Ready(Some(call)) = server.calls.borrow_mut().poll_recv(cx) {
+                return Poll::Ready(Next::Route(call));
+            }
+            match server.host_calls.borrow_mut().poll_recv(cx) {
+                Poll::Ready(Some((index, call))) => Poll::Ready(Next::Host(index, call)),
                 _ => Poll::Pending,
             }
         })
         .await;
         match next {
-            Ok(value) => return failed.map_or(Ok(value), Err),
-            Err(call) => {
+            Next::Done(value) => return failed.map_or(Ok(value), Err),
+            Next::Route(call) => {
                 if let Err(e) = server.answer(call).await {
                     failed.get_or_insert(e);
                 }
             }
+            Next::Host(index, call) => server.answer_host(index, call).await,
         }
     }
 }
@@ -936,6 +1311,57 @@ pub struct App {
     storage: Option<Arc<MemoryStorage>>,
     /// The requests the app made, on a headless engine.
     requests: Option<Arc<RecordingNetwork>>,
+    /// The calls and posts the handlers of `open`'s `host` got.
+    host: HostRecord,
+}
+
+/// The embedding app the test plays for an app (`app.host`, after
+/// `open(entry, { host })`; `nsh/host`): its events to the app and what
+/// the app sent it.
+#[class]
+pub struct AppHost {
+    steps: Steps,
+    record: HostRecord,
+}
+
+#[class]
+impl AppHost {
+    /// Sends event `name` with `data` to the app (its `host.on(name,
+    /// listener)` hears it, or keeps it until it listens), and resolves once
+    /// the app is quiet.
+    pub async fn send(
+        this: Instance<Self>,
+        name: String,
+        data: Option<JsonValue>,
+    ) -> Result<(), String> {
+        let steps = this.with(|h| h.steps.clone());
+        let data = data.unwrap_or(JsonValue::Null);
+        steps.run(move |app| app.send_host_event(&name, data)).await
+    }
+
+    /// The app's calls (`host.call`) of the names `open`'s `host.handlers`
+    /// lists, in order.
+    pub fn calls(&self) -> Vec<HostMessage> {
+        self.messages(false)
+    }
+
+    /// The app's posts (`host.post`) of the names `open`'s `host.handlers`
+    /// lists, in order.
+    pub fn posts(&self) -> Vec<HostMessage> {
+        self.messages(true)
+    }
+}
+
+impl AppHost {
+    fn messages(&self, posts: bool) -> Vec<HostMessage> {
+        self.record
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|(_, post)| *post == posts)
+            .map(|(message, _)| message.clone())
+            .collect()
+    }
 }
 
 /// What steps on an app take: `App`'s and its clock's.
@@ -946,7 +1372,12 @@ struct Steps {
     server: Option<Rc<RouteServer>>,
     /// Answers the dialogs the app shows ([`App::on_dialog`]).
     dialog: Rc<RefCell<Option<DialogCallback>>>,
+    /// Answers the picks the app asks for ([`App::on_pick`]).
+    pick: Rc<RefCell<Option<PickCallback>>>,
 }
+
+/// A test's answer to the picks (`app.onPick`).
+type PickCallback = Callback<Pick, Option<Vec<PickFile>>>;
 
 /// A test's answer to the dialogs (`app.onDialog`).
 type DialogCallback = Callback<Dialog, Option<String>>;
@@ -1075,6 +1506,20 @@ impl App {
         step(&this, move |app| app.right_click(&selector)).await
     }
 
+    /// Pastes `content` into the input `selector` names (or the first input
+    /// in it), as the user's paste does with it on the clipboard: the input
+    /// takes the focus and hears `onPaste` (`files` are paths whose bytes
+    /// it gets as `File`s), then its text goes in as `pasteBehavior` says.
+    /// The machine's clipboard stays as it was.
+    pub async fn paste(
+        this: Instance<Self>,
+        selector: String,
+        content: PasteContent,
+    ) -> Result<(), String> {
+        let content = content.read()?;
+        step(&this, move |app| app.paste(&selector, &content)).await
+    }
+
     /// Chooses the open context menu's action labelled `label` (a
     /// submenu's: `"Share > Mail"`), as a click on it: the app hears
     /// `onMenu`, then the menu closes.
@@ -1198,6 +1643,15 @@ impl App {
         self.with(|app| app.value(&selector))
     }
 
+    /// The style of the characters `selector` names, from the first
+    /// character. `id:<testID>` names a nested text. `text:<text>` names
+    /// where the text reads it. The parts before the last name the views
+    /// to look in (`id:note >> text:here`). Headless tests read this style;
+    /// an empty span reports an error because it has no first character.
+    pub fn span_style(&self, selector: String) -> Result<SpanStyle, String> {
+        self.with(|app| app.span_style(&selector).map(SpanStyle::from))
+    }
+
     /// What the app's storage holds now.
     pub fn storage(&self) -> Result<Entries, String> {
         if let Some(storage) = &self.storage {
@@ -1225,6 +1679,20 @@ impl App {
     /// that showed it rejects.
     pub fn on_dialog(&mut self, #[args(dialog)] handler: Callback<Dialog, Option<String>>) {
         *self.steps.dialog.borrow_mut() = Some(handler);
+    }
+
+    /// Answers the picks the app asks for from now on (`Picker.pickImages`):
+    /// `handler` gets what the pick asks and returns the files the user
+    /// picks, given as they are (no scaling or conversion), or `null` to
+    /// cancel. Without a handler, every pick is cancelled. Headless runs
+    /// only: a real platform shows its picker.
+    pub fn on_pick(&mut self, #[args(pick)] handler: Callback<Pick, Option<Vec<PickFile>>>) {
+        *self.steps.pick.borrow_mut() = Some(handler);
+    }
+
+    /// The picks the app asked for, in order.
+    pub fn picks(&self) -> Result<Vec<Pick>, String> {
+        self.with(|app| Ok(app.picks()?.iter().map(Pick::from).collect()))
     }
 
     /// The dialogs the app showed, in order.
@@ -1264,6 +1732,23 @@ impl App {
         Clock {
             steps: self.steps.clone(),
         }
+    }
+
+    /// The embedding app the test plays (`open`'s `host`): its events to
+    /// the app, and the calls and posts the app sent it.
+    #[getter]
+    pub fn host(&self) -> AppHost {
+        AppHost {
+            steps: self.steps.clone(),
+            record: self.host.clone(),
+        }
+    }
+
+    /// The URLs the app opened (`openUrl` of `nsh/device`, a `TextView`'s
+    /// links), in order: recorded, never opened, and reported opened to
+    /// the app.
+    pub fn opened_urls(&self) -> Result<Vec<String>, String> {
+        self.with(|app| app.opened_urls())
     }
 
     /// The requests the app made, in order.
@@ -1338,12 +1823,33 @@ impl Steps {
             app,
             server,
             dialog,
+            pick,
         } = self;
         serve(server.as_deref(), on_app(app, f)).await??;
         loop {
             let pending = on_app(app, |a| Ok(a.pending_dialog())).await?;
             let Some(shown) = pending else {
-                return Ok(());
+                let asked = on_app(app, |a| Ok(a.pending_pick())).await?;
+                let Some(asked) = asked else {
+                    return Ok(());
+                };
+                let handler = pick.borrow().clone();
+                let files = match handler {
+                    Some(handler) => handler
+                        .call_async(Pick::from(&asked))
+                        .await?
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(PickFile::into_picked)
+                        .collect(),
+                    None => Vec::new(),
+                };
+                serve(
+                    server.as_deref(),
+                    on_app(app, move |a| a.answer_pick(files)),
+                )
+                .await??;
+                continue;
             };
             let handler = dialog.borrow().clone();
             let answer = match handler {

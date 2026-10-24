@@ -165,3 +165,20 @@ test("a host reply for an app that was replaced is dropped", async () => {
   await pending;
   assert.deepEqual(sent, []);
 });
+
+test("a browser-cancelled pan reports cancellation rather than a release", () => {
+  for (const [cancelled, phase] of [[true, 3], [false, 2]]) {
+    const { player } = fakePlayer();
+    const sent = [];
+    player.pointers = new Map([[7, {
+      mode: "pan", pan: { _id: 12 }, touchPath: [], states: [],
+      startX: 10, startY: 20, x: 10, y: 120,
+    }]]);
+    player.track = () => {};
+    player.velocity = () => [0, 400];
+    player.call = (f) => f({ nsh_pan: (...args) => sent.push(args) });
+    player.pointerUp({ pointerId: 7 }, cancelled);
+    assert.deepEqual(sent, [[12, phase, 0, 100, 0, 400]]);
+    assert.equal(player.pointers.size, 0);
+  }
+});

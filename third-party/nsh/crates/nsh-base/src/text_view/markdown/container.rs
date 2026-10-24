@@ -18,6 +18,8 @@ pub(super) enum Segment {
 /// A container of a declared extension.
 #[derive(Debug, PartialEq)]
 pub(super) struct Container {
+    /// The whole directive, including its fences, in the rewritten source.
+    pub(super) range: Range<usize>,
     /// The extension's name.
     pub(super) name: String,
     /// Its label (`label`) and attributes.
@@ -104,6 +106,11 @@ fn segments(
             attributes.insert("label".into(), label.to_owned());
         }
         out.push(Segment::Container(Container {
+            range: lines[i].start..if close < to {
+                lines[close].next
+            } else {
+                lines[to - 1].next
+            },
             name: ext.name.to_string(),
             attributes,
             children: segments(source, lines, i + 1, close, extensions),
@@ -319,8 +326,14 @@ pub(super) fn strip_containers(mut line: &str) -> &str {
 mod tests {
     use super::*;
 
-    fn container(name: &str, attrs: &[(&str, &str)], children: Vec<Segment>) -> Segment {
+    fn container(
+        range: Range<usize>,
+        name: &str,
+        attrs: &[(&str, &str)],
+        children: Vec<Segment>,
+    ) -> Segment {
         Segment::Container(Container {
+            range,
             name: name.into(),
             attributes: attrs
                 .iter()
@@ -339,6 +352,7 @@ mod tests {
             vec![
                 Segment::Markdown(0..3),
                 container(
+                    3..55,
                     "note",
                     &[
                         ("label", "Heads up"),
@@ -364,7 +378,12 @@ mod tests {
         let segs = split(src, &exts);
         assert_eq!(
             segs,
-            vec![container("box", &[], vec![Segment::Markdown(7..src.len())])]
+            vec![container(
+                0..src.len(),
+                "box",
+                &[],
+                vec![Segment::Markdown(7..src.len())]
+            )]
         );
         // Longer fences nest by length.
         let src = "::::box\n:::box\ni\n:::\n::::\nafter";
@@ -373,9 +392,15 @@ mod tests {
             segs,
             vec![
                 container(
+                    0..26,
                     "box",
                     &[],
-                    vec![container("box", &[], vec![Segment::Markdown(15..17)])]
+                    vec![container(
+                        8..21,
+                        "box",
+                        &[],
+                        vec![Segment::Markdown(15..17)]
+                    )]
                 ),
                 Segment::Markdown(26..31),
             ]

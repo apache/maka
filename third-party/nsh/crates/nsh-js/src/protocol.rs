@@ -179,6 +179,44 @@ pub(crate) fn decode_command<'js>(
                 end: field("end"),
             }
         }
+        "replaceRange" => {
+            let cx = arg.ctx();
+            let object = arg.as_object().ok_or_else(|| {
+                Exception::throw_type(cx, "replaceRange: expected an edit object")
+            })?;
+            let offset = |object: &Object<'js>, key: &str| -> rquickjs::Result<u32> {
+                let number = object.get::<_, Value>(key)?.as_number().ok_or_else(|| {
+                    Exception::throw_type(cx, "replaceRange: expected a UTF-16 offset")
+                })?;
+                if !number.is_finite()
+                    || number < 0.0
+                    || number.fract() != 0.0
+                    || number > f64::from(u32::MAX)
+                {
+                    return Err(Exception::throw_type(
+                        cx,
+                        "replaceRange: offsets must be nonnegative UTF-16 integers",
+                    ));
+                }
+                Ok(number as u32)
+            };
+            let range = offset(object, "start")?..offset(object, "end")?;
+            let selection = object.get::<_, Object>("expectedSelection")?;
+            let expected_selection = offset(&selection, "start")?..offset(&selection, "end")?;
+            if range.start > range.end || expected_selection.start > expected_selection.end {
+                return Err(Exception::throw_type(
+                    cx,
+                    "replaceRange: range start must not exceed its end",
+                ));
+            }
+            Command::ReplaceRange {
+                range,
+                text: object.get("text")?,
+                expected_text: object.get("expectedText")?,
+                expected_selection,
+                count: 0,
+            }
+        }
         "scrollToIndex" => {
             let o = arg.as_object();
             let f = |key: &str| -> rquickjs::Result<Option<f32>> {
@@ -638,6 +676,7 @@ fn decode_animation(r: &mut Reader<'_, '_>) -> rquickjs::Result<AnimationOp> {
             input: r.int()? as nsh_core::animation::NodeId,
             min: r.number()?,
             max: r.number()?,
+            snap: r.value()?.as_bool().unwrap_or(false),
         },
         ANIMATION_START_COMPOSITE => {
             // `node` carries the animation id here.
@@ -812,6 +851,18 @@ fn decode_driver(cx: &Ctx<'_>, config: &Value<'_>) -> rquickjs::Result<Driver> {
     })
 }
 
+/// Where the channels of motion `value` (a preset's name or a spec) start,
+/// by `MotionChannel::ALL` (`None` for those it does not move).
+pub(crate) fn motion_start(value: Value<'_>) -> [Option<f32>; 9] {
+    let mut starts = [None; 9];
+    if let Some(spec) = nsh_core::js::animation::motion_spec(&Js(value)) {
+        for (channel, start) in spec.start_values() {
+            starts[channel.index()] = Some(start);
+        }
+    }
+    starts
+}
+
 /// A composite animation: `{ type, ... }` with `node` on the runs.
 fn decode_composite(
     r: &Reader<'_, '_>,
@@ -848,6 +899,24 @@ fn decode_composite(
                 .map(|n| n as u32),
             reset: o.get::<_, Option<bool>>("reset")?.unwrap_or(true),
         },
+        // `Animated.keyframes`: the tree is made natively from the config.
+        "keyframes" => nsh_core::js::animation::keyframes_composite(
+            &Js(spec.clone()),
+            o.get::<_, f64>("node")? as nsh_core::animation::NodeId,
+        ),
+        // A motion's `play`: its channels' nodes (by `MotionChannel::ALL`) and
+        // the motion; `reduced` lands it at its end without moving.
+        "motion" => {
+            let nodes: Vec<f64> = o.get("nodes")?;
+            let nodes: [nsh_core::animation::NodeId; 9] =
+                std::array::from_fn(|i| nodes.get(i).copied().unwrap_or(0.0) as _);
+            let motion = nsh_core::js::animation::motion_spec(&Js(o.get("motion")?))
+                .ok_or_else(|| Exception::throw_type(r.cx, "motion: unknown motion"))?;
+            motion.composite(
+                &nodes,
+                o.get::<_, Option<bool>>("reduced")?.unwrap_or(false),
+            )
+        }
         _ => Composite::Run {
             node: o.get::<_, f64>("node")? as nsh_core::animation::NodeId,
             driver: decode_driver(r.cx, spec)?,

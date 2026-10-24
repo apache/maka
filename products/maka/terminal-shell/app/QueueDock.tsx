@@ -19,9 +19,19 @@
 
 import { createText, errorText, message as uiMessage } from './text';
 import { tr } from './locale';
-import { cleanup, computed, effect, Input, inputAction, Scroll, signal, Text, View } from 'nsh';
+import {
+  cleanup,
+  computed,
+  effect,
+  Input,
+  inputAction,
+  Scroll,
+  signal,
+  Text,
+  View,
+  List,
+} from 'nsh';
 import { Button } from 'nsh/base';
-import { List } from 'nsh/list';
 import { keymap } from 'nsh/keymap';
 import { Clipboard } from 'nsh/clipboard';
 import { platform, windowSize } from 'nsh/device';

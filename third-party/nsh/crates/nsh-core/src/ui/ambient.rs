@@ -389,6 +389,20 @@ pub(crate) fn with_storage<R>(f: impl FnOnce(&crate::storage::Store) -> R) -> R 
     f(&storage)
 }
 
+/// Opens `url` outside the app (TS: `openUrl` of `nsh/device`): a web page
+/// in the browser, a `mailto:` or `tel:` link in its app, any scheme
+/// another app registered. The embedding app may take it first (its host
+/// channel's URL handler, which routes it through the host's router).
+/// Resolves to whether it opened: `false` for a URL
+/// [`crate::open_url::check_url`] refuses, when the app's `openUrl`
+/// capability is not granted, or when no app handles it. Await it in a
+/// task, or drop it when the answer does not matter.
+pub fn open_url(url: impl Into<String>) -> Answer<bool> {
+    let (answer, action) = super::services::open_url(url.into());
+    act(action);
+    answer
+}
+
 /// Puts `text` on the system clipboard (TS: `Clipboard.writeText`).
 pub fn set_clipboard(text: impl Into<String>) {
     act(super::services::set_clipboard(text.into()));
@@ -435,6 +449,15 @@ pub fn clipboard_has_image() -> Answer<bool> {
 /// copied in a file manager; TS: `Clipboard.readFiles`), to await in a task.
 pub fn clipboard_files() -> Answer<Vec<String>> {
     let (answer, action) = super::services::clipboard_files();
+    act(action);
+    answer
+}
+
+/// Shows the system's picker for images and gives the ones the user picked,
+/// prepared as `request` says, none when cancelled (TS:
+/// `Picker.pickImages`), to await in a task.
+pub fn pick_images(request: crate::picker::PickRequest) -> Answer<Vec<crate::picker::PickedFile>> {
+    let (answer, action) = super::services::pick_images(request);
     act(action);
     answer
 }
@@ -693,6 +716,13 @@ where
 /// no owner, it lives as long as the surface).
 pub fn animated_value(value: f32) -> super::AnimatedValue {
     super::AnimatedValue::new(&executor(), value)
+}
+
+/// Animated values for a view's opacity and transform, and motions to
+/// play on them (TS: `createMotion`): bind it with
+/// [`super::Styled::bind_motion`]. A `Copy` handle the current owner keeps.
+pub fn motion() -> super::Motion {
+    super::Motion::new(&executor())
 }
 
 /// A handle for an element (TS: `ref`): put it on the element with

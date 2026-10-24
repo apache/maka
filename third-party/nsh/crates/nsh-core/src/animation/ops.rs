@@ -28,6 +28,13 @@ pub enum AnimationProp {
     /// Animated value slot `n` of a canvas drawing: the canvas draws again
     /// with it (a number or a color).
     CanvasArg(u16),
+    /// `top` of a `position: sticky` view: how far from the viewport's
+    /// start of a vertical scroll view it sticks. The core hands it to the
+    /// scroll view's sticky cells (`StickyCell::offset`), never to the
+    /// view's bindings.
+    StickyTop,
+    /// `left`: the same in a horizontal scroll view.
+    StickyLeft,
 }
 
 impl AnimationProp {
@@ -41,6 +48,8 @@ impl AnimationProp {
             "shadowColor" => AnimationProp::ShadowColor,
             "shadowOpacity" => AnimationProp::ShadowOpacity,
             "shadowRadius" => AnimationProp::ShadowRadius,
+            "top" => AnimationProp::StickyTop,
+            "left" => AnimationProp::StickyLeft,
             _ => return None,
         })
     }
@@ -62,6 +71,82 @@ pub enum Easing {
     /// One of React Native's `Easing` functions with its `in` / `out` /
     /// `inOut` form.
     Curve(Curve, EaseMode),
+    /// CSS `steps(count, position)`: jumps between `count` levels instead
+    /// of moving (a frame-by-frame sprite, a ticking clock hand).
+    Steps(u32, StepPosition),
+}
+
+impl Easing {
+    /// CSS `ease`.
+    pub const EASE: Easing = Easing::Bezier(0.25, 0.1, 0.25, 1.0);
+
+    /// The curve played backwards (`1 - e(1 - t)`): what a keyframe segment
+    /// follows when its animation runs in reverse, as in CSS.
+    pub fn reversed(self) -> Easing {
+        match self {
+            Easing::Linear => Easing::Linear,
+            Easing::EaseIn => Easing::EaseOut,
+            Easing::EaseOut => Easing::EaseIn,
+            Easing::EaseInOut => Easing::EaseInOut,
+            Easing::Bezier(x1, y1, x2, y2) => {
+                Easing::Bezier(1.0 - x2, 1.0 - y2, 1.0 - x1, 1.0 - y1)
+            }
+            Easing::Curve(curve, mode) => Easing::Curve(
+                curve,
+                match mode {
+                    EaseMode::In => EaseMode::Out,
+                    EaseMode::Out => EaseMode::In,
+                    EaseMode::InOut => EaseMode::InOut,
+                },
+            ),
+            Easing::Steps(count, position) => Easing::Steps(
+                count,
+                match position {
+                    StepPosition::JumpStart => StepPosition::JumpEnd,
+                    StepPosition::JumpEnd => StepPosition::JumpStart,
+                    other => other,
+                },
+            ),
+        }
+    }
+}
+
+/// Where a [`Easing::Steps`] curve jumps (CSS's `<step-position>`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StepPosition {
+    /// The first jump happens at the start (`jump-start`, `start`).
+    JumpStart,
+    /// The last jump happens at the end (`jump-end`, `end`; the default).
+    #[default]
+    JumpEnd,
+    /// No jump at either end: holds the first and the last level
+    /// (`jump-none`).
+    JumpNone,
+    /// Jumps at both ends (`jump-both`).
+    JumpBoth,
+}
+
+impl StepPosition {
+    /// Parses a CSS `<step-position>`.
+    pub fn parse(name: &str) -> Option<StepPosition> {
+        Some(match name {
+            "jump-start" | "start" => StepPosition::JumpStart,
+            "jump-end" | "end" => StepPosition::JumpEnd,
+            "jump-none" => StepPosition::JumpNone,
+            "jump-both" => StepPosition::JumpBoth,
+            _ => return None,
+        })
+    }
+
+    /// Its CSS name.
+    pub fn name(self) -> &'static str {
+        match self {
+            StepPosition::JumpStart => "jump-start",
+            StepPosition::JumpEnd => "jump-end",
+            StepPosition::JumpNone => "jump-none",
+            StepPosition::JumpBoth => "jump-both",
+        }
+    }
 }
 
 /// A shape of React Native's `Easing` module (its "in" form).
@@ -224,6 +309,10 @@ pub enum AnimationOp {
         min: f32,
         /// Upper bound.
         max: f32,
+        /// Settles at the nearer bound when the scroll view its input
+        /// follows comes to rest ([`super::Graph::settle`]): a floating bar
+        /// shows or hides fully.
+        snap: bool,
     },
     /// Combines two operands.
     CreateMath {

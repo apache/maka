@@ -59,6 +59,7 @@ fn candidate(item: &MountItem) -> Option<NodeId> {
     match item {
         MountItem::ViewProps { id, .. } | MountItem::ViewStyle { id, .. } => Some(*id),
         MountItem::Insert { child, .. } => Some(*child),
+        MountItem::ProjectRoot { id, .. } => Some(*id),
         _ => None,
     }
 }
@@ -171,7 +172,9 @@ impl FocusReturns {
         let mut closing = Vec::new();
         let mut retained = Vec::with_capacity(self.popups.len());
         for popup in self.popups.drain(..) {
-            if popup_parent(surface, &popup.view).as_ref() == Some(&popup.parent) {
+            if (current(surface, &popup.view) && crate::navigation::is_parked(surface, &popup.view))
+                || popup_parent(surface, &popup.view).as_ref() == Some(&popup.parent)
+            {
                 retained.push(popup);
             } else {
                 closing.push(popup);
@@ -212,6 +215,9 @@ impl FocusReturns {
             _ => None,
         }) == Some(true);
         for (view, target) in modals {
+            if crate::navigation::is_parked(surface, &view) {
+                continue;
+            }
             let target = match before.modals.iter().find(|modal| modal.view == view) {
                 Some(modal) => restore_target(surface, &active, &closing, Some(modal), returnable),
                 None if target

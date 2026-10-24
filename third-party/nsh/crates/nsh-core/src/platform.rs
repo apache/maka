@@ -6,6 +6,18 @@ pub mod clipboard;
 
 use crate::geometry::{Edges, Points, Size};
 
+/// The native component of `nsh/mobile`'s `TabBar`, which the iOS and
+/// Android backends register themselves (`TabBarComponent.java`'s `NAME` keeps
+/// the same name).
+pub const TAB_BAR_COMPONENT: &str = "nsh/tab-bar";
+
+/// Whether native component `name` is NSH's own: names under `nsh/` are, and
+/// an embedding app's registration of one is refused, so it can never
+/// replace what NSH's exports render.
+pub fn is_reserved_component(name: &str) -> bool {
+    name.starts_with("nsh/")
+}
+
 /// The system appearance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ColorScheme {

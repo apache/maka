@@ -11,7 +11,7 @@ use nsh_core::{
 };
 use ratatui::{
     buffer::{Buffer, CellDiffOption},
-    layout::Rect as CellRect,
+    layout::{Position as CellPosition, Rect as CellRect},
     style::{Color as CellColor, Modifier, Style},
 };
 use unicode_segmentation::UnicodeSegmentation;
@@ -30,6 +30,95 @@ struct CompositePlan {
 }
 
 impl Surface {
+    /// The focused editor's visible caret cell, for terminal input methods.
+    /// The host may keep its physical cursor hidden while positioning it here.
+    pub fn input_cursor_position(&self, area: CellRect) -> Option<CellPosition> {
+        if self.dialog.is_some() || self.service_overlay_open() {
+            return None;
+        }
+        let id = self.focus?;
+        let node = self.node(id)?;
+        if node.kind != ViewKind::Input
+            || !node.input.editable
+            || node.props.accessibility.state.disabled
+            || !self.navigation_accepts(id)
+            || self.paint_opacity(id) <= 0.0
+        {
+            return None;
+        }
+        let geometry = self.input_hit_geometry(id)?;
+        let columns = if node.input.multiline {
+            geometry.columns
+        } else {
+            usize::MAX
+        };
+        let (row, column) = node.editor.cursor_cell(columns, node.input.secure);
+        let (scroll_row, scroll_col) = input_scroll(node, true, geometry.columns, geometry.rows);
+        let visible_row = row.checked_sub(scroll_row)?;
+        let visible_column = column.checked_sub(scroll_col)?;
+        if visible_row >= geometry.rows {
+            return None;
+        }
+        let alignment = if matches!(node.input.align, TextAlign::Center | TextAlign::Right)
+            || (node.input.align == TextAlign::Auto && node.input.rtl)
+        {
+            input_line_offsets(node, true, geometry.columns)
+                .get(row)
+                .copied()
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        let column = geometry
+            .column
+            .saturating_add(visible_column as i64)
+            .saturating_add(alignment as i64)
+            .min(
+                geometry
+                    .column
+                    .saturating_add(geometry.columns.saturating_sub(1) as i64),
+            );
+        let row = geometry.row.saturating_add(visible_row as i64);
+        let local = CellPosition::new(column.try_into().ok()?, row.try_into().ok()?);
+        if !geometry.visible.contains(local) {
+            return None;
+        }
+        let (x, y) = (
+            column as f32 * self.metrics.width().0,
+            row as f32 * self.metrics.height().0,
+        );
+        let mut caret = Bounds::new(Point::new(px(x), px(y)), self.metrics.viewport(1, 1));
+        if self.composite_ancestor(id) {
+            let transform = self.local_to_surface(id)?;
+            let (mut left, mut top, mut right, mut bottom) = (
+                f32::INFINITY,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+                f32::NEG_INFINITY,
+            );
+            for (x, y) in [
+                (x, y),
+                (x + self.metrics.width().0, y),
+                (x, y + self.metrics.height().0),
+                (x + self.metrics.width().0, y + self.metrics.height().0),
+            ] {
+                let (x, y) = crate::geometry::project(&transform, x, y)?;
+                left = left.min(x);
+                top = top.min(y);
+                right = right.max(x);
+                bottom = bottom.max(y);
+            }
+            caret = Bounds::new(
+                Point::new(px(left), px(top)),
+                Size::new(px(right - left), px(bottom - top)),
+            );
+        }
+        let visible = cells(caret, self.metrics, area)
+            .intersection(cells(self.clip_rect(id), self.metrics, area))
+            .intersection(area);
+        (!visible.is_empty()).then(|| CellPosition::new(visible.x, visible.y))
+    }
+
     /// Paints the surface inside `area`, leaving cells outside it intact.
     ///
     /// The embedding application owns terminal IO and may render several
@@ -298,12 +387,20 @@ impl Surface {
             }
             if let Some((text, layout, content)) = &node.text {
                 let content = relative_frame(frame, node.frame, *content);
+                let area_range = self.selection_area_range(id);
                 let focused_link = text.links.iter().find(|link| {
-                    self.dialog.is_none() && self.focus == Some(link.node) && link.is_enabled()
+                    area_range.is_none()
+                        && self.dialog.is_none()
+                        && self.focus == Some(link.node)
+                        && link.is_enabled()
                 });
-                let selection = focused_link
-                    .map_or_else(|| node.editor.selection(), |link| (link.start, link.end));
-                if ((self.focus == Some(id) && text.is_selectable()) || focused_link.is_some())
+                let selection = focused_link.map_or_else(
+                    || area_range.unwrap_or_else(|| node.editor.selection()),
+                    |link| (link.start, link.end),
+                );
+                if (area_range.is_some()
+                    || (self.focus == Some(id) && text.is_selectable())
+                    || focused_link.is_some())
                     && selection.0 < selection.1
                     && let Some(terminal) = layout.0.downcast_ref::<crate::text::TerminalLayout>()
                 {
@@ -746,12 +843,20 @@ impl Surface {
         if let Some((text, layout, content)) = &node.text {
             let content = relative_frame(local, node.frame, *content);
             let mut selection = Vec::new();
+            let area_range = self.selection_area_range(id);
             let focused_link = text.links.iter().find(|link| {
-                self.dialog.is_none() && self.focus == Some(link.node) && link.is_enabled()
+                area_range.is_none()
+                    && self.dialog.is_none()
+                    && self.focus == Some(link.node)
+                    && link.is_enabled()
             });
-            let range =
-                focused_link.map_or_else(|| node.editor.selection(), |link| (link.start, link.end));
-            if ((self.focus == Some(id) && text.is_selectable()) || focused_link.is_some())
+            let range = focused_link.map_or_else(
+                || area_range.unwrap_or_else(|| node.editor.selection()),
+                |link| (link.start, link.end),
+            );
+            if (area_range.is_some()
+                || (self.focus == Some(id) && text.is_selectable())
+                || focused_link.is_some())
                 && range.0 < range.1
                 && let Some(terminal) = layout.0.downcast_ref::<crate::text::TerminalLayout>()
             {
@@ -1894,9 +1999,21 @@ fn paint_input(
     };
     let modifiers = text_modifiers(node.input.style);
     let selected_color = node.input.selection_color.unwrap_or(Color(0x388b_fdcc));
+    let mut tokens = node.editor.token_spans().iter().peekable();
     let (mut row, mut column) = (0usize, 0usize);
     let alignments = input_line_offsets(node, focused, actual_columns);
     for (offset, grapheme) in text.grapheme_indices(true) {
+        while tokens.peek().is_some_and(|span| span.range.end <= offset) {
+            tokens.next();
+        }
+        let token_style = if !placeholder && !node.input.secure {
+            tokens
+                .peek()
+                .filter(|span| span.range.contains(&offset))
+                .map(|span| span.style)
+        } else {
+            None
+        };
         if matches!(grapheme, "\n" | "\r" | "\r\n") {
             row += 1;
             column = 0;
@@ -1936,8 +2053,10 @@ fn paint_input(
                     width,
                     symbol,
                     clip,
-                    color,
-                    selected.then_some(selected_color),
+                    token_style.and_then(|style| style.color).unwrap_or(color),
+                    selected
+                        .then_some(selected_color)
+                        .or(token_style.and_then(|style| style.background_color)),
                     opacity,
                     modifiers,
                 );
@@ -1947,9 +2066,15 @@ fn paint_input(
     }
     if focused && !node.input.caret_hidden && node.input.editable {
         let (row, column) = node.editor.cursor_cell(columns, node.input.secure);
-        let y = origin_y.saturating_add(row.saturating_sub(scroll_row) as i64);
+        let Some(visible_row) = row.checked_sub(scroll_row).filter(|row| *row < actual_rows) else {
+            return;
+        };
+        let Some(visible_column) = column.checked_sub(scroll_col) else {
+            return;
+        };
+        let y = origin_y.saturating_add(visible_row as i64);
         let x = origin_x
-            .saturating_add(column.saturating_sub(scroll_col) as i64)
+            .saturating_add(visible_column as i64)
             .saturating_add(alignments.get(row).copied().unwrap_or(0) as i64)
             .min(origin_x.saturating_add(actual_columns.saturating_sub(1) as i64));
         if (0..=i64::from(u16::MAX)).contains(&x)
@@ -2059,22 +2184,55 @@ pub(crate) fn input_scroll(
     columns: usize,
     rows: usize,
 ) -> (usize, usize) {
-    if !focused {
-        return (0, 0);
-    }
-    let (row, column) = node.editor.cursor_cell(
-        if node.input.multiline {
-            columns.max(1)
+    let (columns, rows) = (columns.max(1), rows.max(1));
+    let mut viewport = node.input_viewport.get();
+    if focused && viewport.size != (columns, rows) && viewport.size.0 > 0 && viewport.size.1 > 0 {
+        let wrap = if node.input.multiline {
+            viewport.size.0
         } else {
             usize::MAX
-        },
-        node.input.secure,
-    );
-    if node.input.multiline {
-        (row.saturating_sub(rows.saturating_sub(1)), 0)
-    } else {
-        (0, column.saturating_sub(columns.saturating_sub(1)))
+        };
+        let caret = node.editor.cursor_cell(wrap, node.input.secure);
+        viewport.reveal |= caret.0 >= viewport.origin.0
+            && caret.0 < viewport.origin.0.saturating_add(viewport.size.1)
+            && caret.1 >= viewport.origin.1;
     }
+    let wrap = if node.input.multiline {
+        columns
+    } else {
+        usize::MAX
+    };
+    let extent = node.editor.cell_extent(wrap, node.input.secure);
+    viewport.size = (columns, rows);
+    viewport.origin.0 = if node.input.multiline {
+        viewport.origin.0.min(extent.0.saturating_sub(rows - 1))
+    } else {
+        0
+    };
+    viewport.origin.1 = if node.input.multiline {
+        0
+    } else {
+        viewport.origin.1.min(extent.1.saturating_sub(columns - 1))
+    };
+    if viewport.reveal && focused {
+        let caret = node.editor.cursor_cell(wrap, node.input.secure);
+        if node.input.multiline {
+            viewport.origin.0 = viewport
+                .origin
+                .0
+                .min(caret.0)
+                .max(caret.0.saturating_sub(rows - 1));
+        } else {
+            viewport.origin.1 = viewport
+                .origin
+                .1
+                .min(caret.1)
+                .max(caret.1.saturating_sub(columns - 1));
+        }
+        viewport.reveal = false;
+    }
+    node.input_viewport.set(viewport);
+    viewport.origin
 }
 
 fn text_modifiers(style: nsh_core::ResolvedTextStyle) -> Modifier {
@@ -3976,15 +4134,109 @@ mod tests {
         assert_eq!(buffer[(1, 0)].symbol(), "c");
         assert_eq!(buffer[(4, 0)].symbol(), "f");
         assert!(buffer[(5, 0)].modifier.contains(Modifier::REVERSED));
+        assert_eq!(
+            surface.input_cursor_position(buffer.area),
+            Some(CellPosition::new(5, 0))
+        );
+        assert_eq!(
+            surface.input_cursor_position(CellRect::new(7, 3, 6, 1)),
+            Some(CellPosition::new(12, 3))
+        );
+        surface.selection(2, 0, 0);
+        surface.render(buffer.area, &mut buffer);
         let node = surface.node_mut(2).unwrap();
         node.input.secure = true;
         node.input.selection_color = Some(Color(0xff00_00ff));
-        node.editor.set_selection(2, 3);
+        surface.selection(2, 2, 3);
         surface.render(buffer.area, &mut buffer);
         assert_eq!(buffer[(2, 0)].symbol(), "•");
         assert_eq!(buffer[(2, 0)].bg, CellColor::Rgb(255, 0, 0));
         assert!(buffer[(3, 0)].modifier.contains(Modifier::REVERSED));
         assert!(buffer.content.iter().all(|c| !c.symbol().contains('中')));
+        assert_eq!(
+            surface.input_cursor_position(buffer.area),
+            Some(CellPosition::new(3, 0))
+        );
+        surface.node_mut(2).unwrap().input.caret_hidden = true;
+        assert_eq!(
+            surface.input_cursor_position(buffer.area),
+            Some(CellPosition::new(3, 0))
+        );
+        surface.node_mut(2).unwrap().input.editable = false;
+        assert_eq!(surface.input_cursor_position(buffer.area), None);
+    }
+
+    #[test]
+    fn input_cursor_follows_the_composed_editor_and_ancestor_clip() {
+        let mut surface = Surface::new(12, 6, CellMetrics::default());
+        let mut items = mount_node(
+            2,
+            ViewKind::Scroll,
+            ROOT_ID,
+            Bounds::new(
+                Point::new(px(16.0), px(16.0)),
+                Size::new(px(48.0), px(32.0)),
+            ),
+        );
+        items.extend(mount_node(
+            4,
+            ViewKind::Input,
+            2,
+            Bounds::new(Point::default(), Size::new(px(48.0), px(32.0))),
+        ));
+        items.push(MountItem::Input {
+            id: 4,
+            config: Box::new(nsh_core::InputConfig {
+                multiline: true,
+                ..nsh_core::InputConfig::default()
+            }),
+        });
+        items.push(MountItem::InputValue {
+            id: 4,
+            text: "one\ntwo\n三四\nfive".into(),
+            count: 0,
+        });
+        surface.apply(MountBatch { items });
+        surface.focus = Some(4);
+        let input = surface.node_mut(4).unwrap();
+        input.style.border_radius = px(4.0);
+        input
+            .style
+            .transform
+            .push(nsh_core::TransformKind::TranslateX, 8.0);
+        let area = CellRect::new(0, 0, 12, 6);
+        let mut buffer = Buffer::empty(area);
+        surface.render(area, &mut buffer);
+        assert_eq!(
+            surface.input_cursor_position(area),
+            Some(CellPosition::new(7, 2))
+        );
+        surface.node_mut(2).unwrap().scroll.y = px(16.0);
+        assert_eq!(
+            surface.input_cursor_position(area),
+            Some(CellPosition::new(7, 1))
+        );
+        surface.node_mut(2).unwrap().scroll.y = px(48.0);
+        assert_eq!(surface.input_cursor_position(area), None);
+        surface.node_mut(2).unwrap().scroll.y = px(0.0);
+        surface.resize(6, 3);
+        assert_eq!(
+            surface.input_cursor_position(CellRect::new(0, 0, 6, 3)),
+            None
+        );
+        surface.resize(12, 6);
+        let input = surface.node_mut(4).unwrap();
+        input.style.transform = nsh_core::Transform::IDENTITY;
+        input
+            .style
+            .transform
+            .push(nsh_core::TransformKind::ScaleX, -1.0);
+        assert_eq!(
+            surface.input_cursor_position(area),
+            Some(CellPosition::new(3, 2))
+        );
+        surface.focus = None;
+        assert_eq!(surface.input_cursor_position(area), None);
     }
 
     #[test]
@@ -4082,6 +4334,10 @@ mod tests {
         assert_eq!(buffer[(9, 0)].symbol(), "b");
         assert_eq!(buffer[(7, 1)].symbol(), "中");
         assert!(buffer[(9, 1)].modifier.contains(Modifier::REVERSED));
+        assert_eq!(
+            surface.input_cursor_position(buffer.area),
+            Some(CellPosition::new(9, 1))
+        );
         for kind in [
             MouseEventKind::Down(MouseButton::Left),
             MouseEventKind::Up(MouseButton::Left),
@@ -4096,6 +4352,10 @@ mod tests {
         assert_eq!(surface.node(2).unwrap().editor.selection(), (1, 1));
         surface.render(buffer.area, &mut buffer);
         assert!(buffer[(9, 0)].modifier.contains(Modifier::REVERSED));
+        assert_eq!(
+            surface.input_cursor_position(buffer.area),
+            Some(CellPosition::new(9, 0))
+        );
         for kind in [
             MouseEventKind::Down(MouseButton::Left),
             MouseEventKind::Up(MouseButton::Left),

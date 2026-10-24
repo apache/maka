@@ -351,6 +351,7 @@ impl<M: TextEngine> Core<M> {
                     cell: r.cell,
                     start: Points(r.start),
                     end: Points(r.end),
+                    offset: r.offset,
                 })
                 .collect();
             self.nodes[view as usize]

@@ -88,7 +88,9 @@ Things that were found the hard way. Read the section of the area you change bef
   has applied (`EngineControl::scroll(.., applied)`), and the core adds the ones still pending; otherwise a stale offset
   moves the window (and fires `onLoadMore`) backwards.
 - **Unbound list cells still show their last item**: the core moves them out of sight (never with a NaN frame: cells that
-  were never placed are skipped; UIKit throws on NaN geometry).
+  were never placed are skipped; UIKit throws on NaN geometry). Out of sight is not out of reach: the backends'
+  accessibility trees go by props, not frames, and a browser keeps such a cell in its accessibility tree, as a Tab
+  stop and for test-id lookups. The core hides them too (`Core::set_spare`) until it places them again.
 - **Tailwind variant order decides between variants**, not their order in the string: `odd:bg-a last:bg-b` gives an odd last row
   `bg-a` (Tailwind sorts `odd` after `last`), exactly as in CSS.
 
@@ -109,6 +111,11 @@ Things that were found the hard way. Read the section of the area you change bef
 - **IPAs are zipped with `ditto -c -k --norsrc --keepParent`**: `--sequesterRsrc` adds `__MACOSX/` resource forks.
 
 ## iOS, UIKit and Mac Catalyst
+
+- **A standalone `UITabBar` can establish its natural height before its native component host is sized** (verified on
+  the iOS 27 simulator). Flexible-height autoresizing then adds the host's height to that initial height. In
+  `system_tab_bar.rs`, fill the immediate host's bounds exactly during layout, and report intrinsic height with
+  `sizeThatFits` at the laid-out width. `sizeToFit` changes the frame and must not run on selection updates.
 
 - **Pressed-style observers must leave ancestor clicks working**: a view with only `activeStyle` / `active:`
   has a `PressRecognizer` to report its pressed state, but yields the click to the nearest ancestor with press
@@ -152,6 +159,10 @@ Things that were found the hard way. Read the section of the area you change bef
 - **UINavigationController breaks transitions started during another one**: stack changes that arrive while
   `transitionCoordinator()` is set wait for `didShow` and are applied on the next main-queue turn (the coordinator outlives
   the callback); only pages the controller actually had count as popped by the user.
+- **UIKit installs its own interactive-pop delegate while loading a navigation controller's view**: assigning NSH's
+  delegate when the stack is created can be overwritten. Bind the current recognizer in `didShow`, after UIKit has
+  configured the screen, so hidden headers use NSH's mounted `popOnSwipe` / `popOnBack` policy too. Verify the gesture
+  with real system edge input; the in-process test agent does not start UIKit's interactive pop.
 - **`UIAlertController` asserts when its presentation controller's delegate is set**; a popover action sheet (iPad, Mac) hides
   its cancel action and runs it on a tap outside, so sheets without one get a hidden, untitled cancel answering "dismissed" (`null`).
 - **Catalyst: a mouse drag does not scroll a UIScrollView** (Mac behavior); test scrolling with trackpad-style scroll wheel
@@ -170,6 +181,14 @@ Things that were found the hard way. Read the section of the area you change bef
   the window's size as `preferredContentSize`. Standalone apps have a white root view (UIKit windows are black).
 - **iOS clamps shared corner radii itself** (`rounded-full` is 9999): Core Animation does not reliably clamp a `cornerRadius`
   over half the short side, so `decor.rs` clamps it and clamps again when the size changes.
+- **iOS, a side bar's safe area reaches past the bar**: a strip the device keeps along one side of the screen (a
+  foldable's vertical bar) is an inset of the window, and `UINavigationController` passes that inset to the screens it
+  shows without asking whether the stack still reaches the bar, so a stack laid out in a column well clear of it gives
+  its screens the bar's whole width of trailing safe area anyway: UIKit parks scroll indicators that far in from the
+  edge, and `safeAreaInsets()` reads that wide inside the module. `clip_side_safe_area` takes the surplus back with a
+  negative `additionalSafeAreaInsets` worked out from the window and the stack's frame alone. Deriving what UIKit
+  granted by subtracting the compensation already applied looks equivalent and cannot heal: UIKit floors a safe area at
+  zero, so after an overshoot that subtraction returns the value already applied, for good.
 
 - **iOS, dismissing a modal that presents another**: `dismissViewControllerAnimated` called on a controller that is
   itself presenting one (a `Sheet` is a transparent modal over the modal it is in) dismisses only that one, and the outer
@@ -193,6 +212,11 @@ Things that were found the hard way. Read the section of the area you change bef
   drawn one raises it while zoomed, so neither is the screen's scale. Images decoded at it came out at a third of their
   pixels and blurred; the scale is the trait collection's `displayScale` (`Mounter::display_scale`).
 
+- **iOS, secondary clicks**: `buttonMaskRequired` only holds touches that have buttons. A finger has none, so a tap
+  recognizer requiring the secondary button recognized every tap, and as a tap recognizer it cancelled the presses inside
+  (a `ContextMenu`'s trigger opened its menu instead of pressing). The `onContextMenu` recognizer allows only
+  `UITouchTypeIndirectPointer` touches (`mount.rs`).
+
 ## Android
 
 - **Android, JNI**: cache classes and method ids in `JNI_OnLoad`; wrap every call from the (permanently attached) engine thread in
@@ -214,6 +238,15 @@ Things that were found the hard way. Read the section of the area you change bef
   edit, connection call and batch end, since keyboards start and end it in many ways (`setComposingRegion` included); a
   value JS sets meanwhile waits for its end (`setText` restarts the keyboard, which commits the pre-edit text), and is
   never applied from inside the text watcher.
+- **Android, input selection after attachment**: a navigation screen can be measured while detached. `TextView` then
+  caches disabled cursor controllers because its root has no window parameters; attachment alone does not refresh
+  them, and another `requestLayout` may reuse the text layout. `InputBox` reapplies the current break strategy on
+  attachment when a text layout already exists, discarding it so the next measure refreshes the controllers with a
+  valid window. Keep this on every attachment, including reattachment. Do not replace the text or enable
+  `textIsSelectable` to force a refresh: those affect selection, input-method state or focus/keyboard behavior.
+  Regression checks must cold-start the Android host and long-press a four-line input inside `NavStack`, with explicit
+  `lineHeight` and height updated by `onContentSizeChange` ([reproduction](https://github.com/longbridge/nsh/issues/409));
+  hot reload can hide the failure. Also check removal/reattachment, editing and the native selection menu.
 - **Android, keyboard avoidance**: the keyboard's height becomes bottom padding of the scroll around the focused input, and
   `ScrollBox.reveal` scrolls it into view; `requestRectangleOnScreen` cannot, as ScrollView ignores its padding when it decides
   whether a rectangle is visible. `NshView` is a scroll container (`setScrollContainer(true)`) so that windows without a soft
@@ -264,6 +297,9 @@ Things that were found the hard way. Read the section of the area you change bef
   under the watched one as given: watch a canonical path (a `..` in it makes every path look like a dot entry).
 - **GDK frame times are microseconds** (`FrameClock::frame_time`); `nsh_anim::Graph::tick` takes seconds and the
   scroll and transition code milliseconds: convert at each call site.
+- **AT-SPI reads widgets, not what NSH draws**: a view `snapshot` skips (`visibility: hidden`) is still presented, with
+  its subtree, until its accessible state is `Hidden` (`access.rs`); GTK's AT-SPI bridge then leaves out the widget
+  and its subtree (`gtk_accessible_should_present`; checked with an AT-SPI client on GTK 4.14).
 - **A widget's accessible role is effectively fixed** once its AT context is realized: GTK refuses to change it (with a
   critical), and nothing tells whether it is. Roles are decided when the view is created, from the batch that creates
   it (`access::prepare`); a later change detaches the view and puts it back.
@@ -304,9 +340,17 @@ Things that were found the hard way. Read the section of the area you change bef
   controlled input's value comes back lose characters, so keys come at a typist's pace.
 - **A finger at rest still reports its position**: a drag that stops sending events before it lifts keeps its last
   velocity and flings. A drag whose path leaves the scroll view moves it much further than the finger.
-- **Made-up edge swipes do not start `interactivePopGestureRecognizer`**; the back button is tapped instead. A
-  scroll view's glide or bounce is not a Core Animation animation: `isDecelerating` says it moves, and a tap during
-  it only stops it.
+- **Interactive back needs system-delivered touches**: the agent's IOHID drags can start UIKit's navigation
+  gestures in the simulator. Test with `app.drag` from an element at the leading edge; `app.back()` exercises
+  the back button instead. On iOS 26 a leading-edge drag can be recognized by
+  `interactiveContentPopGestureRecognizer`, so both it and `interactivePopGestureRecognizer` need the stack's
+  permission delegate after the navigation view has loaded. A scroll view's glide or bounce is not a Core
+  Animation animation: `isDecelerating` says it moves, and a tap during it only stops it.
+- **Interactive back and editing**: the outgoing page remains attached while the finger moves, so removing its
+  input only ends editing after the pop. The stack's gesture delegate ends editing after the permission, root and
+  transition guards allow the gesture. `didShowViewController:` restores that editor if its page returns after
+  cancellation and no other control took focus. Rejected gestures keep focus. The regression observes `onBlur` while the
+  root's system-delivered touch is still down, rather than checking only after the page has detached.
 - **A hardware keyboard's keys are IOHID keyboard events** (`IOHIDEventCreateKeyboardEvent`, usage page 7) handed to
   UIKit the way touches are: they become presses, key commands and typing as a real keyboard's do. Modifiers are
   keys of their own (left Control, Shift, Option, Command), down before the key and up after it.
@@ -377,6 +421,11 @@ Things that were found the hard way. Read the section of the area you change bef
   clip spaces are the placed frames (`ns().frame()`).
 - In `define_class!` methods, an early `return` of a `bool` or `Option<Retained<_>>` does not compile (the macro wraps
   the return type): write the body as one expression.
+- VoiceOver reads views, not layers: `visibility: hidden` hides only the view's layer (an `NSView`'s own `hidden` is
+  the navigation's, for screens under the top one), so `access.rs` takes such a view and its subtree out as it does
+  for `accessibilityElementsHidden`. `setAccessibilityChildren:` cannot be undone: `nil` leaves the view without
+  children instead of AppKit's again, so a subtree shown again stayed out of reach; `NshView` answers
+  `accessibilityChildren` itself (none while hidden or grouped, else `NSView`'s).
 - In-process screenshots (`cacheDisplayInRect:`, `renderInContext:`) ignore `maskedCorners`, `shadowPath`, Core Image
   filters and cut masks at the mask layer's bounds; they show no sheets or `AVPlayerLayer` content, and
   `renderInContext:` no `WKWebView` pages either (`cacheDisplayInRect:`, the test agent's screenshot, shows them: WebKit
@@ -424,6 +473,17 @@ Things that were found the hard way. Read the section of the area you change bef
   Safari: the wasm twice in 4 of 11 cold loads on Wi-Fi, each time the runtime asked before the preload was done;
   Chromium hands it over). The published page starts its downloads with `fetch` in a head script instead
   (`web::page`, `fetches`).
+- **A scroll view's smooth wheel and key scrolling is nsh's glide, which no browser call cancels**: `wheel` and the
+  scroll keys are prevented and `scrollSmoothly` moves the view on animation frames, so an instant `scrollTo` lasted
+  one frame and the glide's next one put its offset back (Chromium 141: a 900 px wheel notch, `scrollTo(0)` 50 ms
+  later, then 778, 848, … 900). Commands stop the glide first (`stopGlide`) and `op_sb` moves it. A `scrollTo` to
+  where the view already is, instant or smooth, sends neither `scroll` nor `scrollend` (Chromium 152): `stopGlide`
+  sends the `onScrollEnd` of the scroll it stops then. Headless Chrome (141, 155) scrolls a wheel's delta at once by
+  itself: the scroll that animates there is the glide.
+- **Fractional scroll targets can move less than half a CSS pixel**: at DPR 2, Chromium rounds a target of 40.4
+  to 40.5. A half-pixel stationary tolerance therefore ends the scroll early and duplicates `onScrollEnd`.
+  `stopGlide` compares clamped offsets exactly; a quiet-period fallback covers targets rounded back to the
+  current offset, for which the browser emits no `scrollend`.
 
 ## Testing on simulators and emulators
 
@@ -436,6 +496,6 @@ Things that were found the hard way. Read the section of the area you change bef
   of other apps (e.g. a Slack huddle bar at window level 1001) silently swallow clicks over a band of the app. When a tap does
   nothing, list the windows at the point (`CGWindowListCopyWindowInfo`) before suspecting hit testing.
 - **Not supported / not verifiable here**: keeping left and right unswapped right to left (left / right always swap right to left);
-  after switching direction at runtime UIKit keeps an existing back button's chevron; Android has no skew transforms (as in React Native); the iOS simulator cannot
-  inject edge swipes (interactive back is untested there); Android's stylus handwriting mode (on by default on recent
+  after switching direction at runtime UIKit keeps an existing back button's chevron; Android has no skew transforms
+  (as in React Native); Android's stylus handwriting mode (on by default on recent
   emulators) intercepts taps on inputs — turn it off with `adb shell settings put secure stylus_handwriting_enabled 0`.

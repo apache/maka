@@ -1,6 +1,7 @@
 use std::{
     cell::{Cell, RefCell},
     ffi::OsString,
+    ops::Range,
     path::{Path, PathBuf},
     rc::Rc,
     sync::Arc,
@@ -245,6 +246,51 @@ impl TerminalPlatform {
     pub fn paste(&self, text: &str) -> Result<()> {
         WindowState::paste(&self.window()?, text);
         Ok(())
+    }
+
+    /// Identifies the live native editor, including fields inside one NSH surface.
+    /// Keep this token on the native owner thread and send transport session
+    /// generations separately.
+    pub fn text_input_target(&self) -> Option<gpui::TextInputTarget> {
+        WindowState::text_input_target(&self.window().ok()?)
+    }
+
+    /// Applies an ordered composition snapshot to its original native editor.
+    /// `selection_utf16` is relative to `preedit`, in UTF-16 code units.
+    /// An inactive snapshot cancels the temporary mark. A stale target returns
+    /// false; if committing the prefix changed focus, that prefix remains
+    /// committed and the rest of this snapshot is discarded.
+    pub fn apply_composition(
+        &self,
+        target: &gpui::TextInputTarget,
+        commit_prefix: &str,
+        preedit: &str,
+        selection_utf16: Option<Range<usize>>,
+        active: bool,
+    ) -> Result<bool> {
+        WindowState::apply_composition(
+            &self.window()?,
+            target,
+            commit_prefix,
+            preedit,
+            selection_utf16,
+            active,
+        )
+    }
+
+    /// The live focused editor's caret in logical window pixels. A terminal
+    /// host maps this to its VT cursor so its own input method can follow it,
+    /// independently of whether the host draws that cursor.
+    pub fn input_caret_bounds(&self) -> Option<gpui::Bounds<gpui::Pixels>> {
+        WindowState::input_caret_bounds(&self.window().ok()?)
+    }
+
+    /// The native IME candidate rectangle in logical window pixels: the marked
+    /// range's start on the caret's visual line, or the active selection endpoint.
+    /// Preserve all four edges when converting units. Native height and any
+    /// zero-width insertion rectangle are returned unchanged.
+    pub fn input_candidate_bounds(&self) -> Option<gpui::Bounds<gpui::Pixels>> {
+        WindowState::input_candidate_bounds(&self.window().ok()?)
     }
 
     /// Records a receipt from the host's trusted sole writer. This confirms
@@ -676,6 +722,23 @@ mod tests {
         platform.mark_presented(original.clone())?;
 
         let foreground = Rc::new(Cell::new(0));
+        let next_frame = foreground.clone();
+        application.update(|cx| {
+            window
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .update(cx, |_, window, _| {
+                    window.on_next_frame(move |_, _| next_frame.set(1));
+                })
+                .unwrap();
+        });
+        // A next-frame callback can run without changing the visual scene.
+        // Servicing it must not submit the already-presented pixels again.
+        assert!(platform.pump());
+        assert_eq!(foreground.get(), 1);
+        assert!(frames.borrow().is_empty());
+
         let progressed = foreground.clone();
         platform
             .foreground_executor()

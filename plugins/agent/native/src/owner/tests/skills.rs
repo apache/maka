@@ -324,13 +324,24 @@ async fn skill_candidates_work_with_preparation_only_library() {
         "---\nname: Review changes\ndescription: Review\n---\nInstructions",
     )
     .unwrap();
+    for index in 0..12 {
+        let name = format!("z-extra-{index:02}");
+        let root = home.path().join(&name);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: Selection candidate\n---\nInstructions"),
+        )
+        .unwrap();
+    }
     let setup = service_tools::Setup::skill_preparation(home.path().to_owned(), false);
     let f = Fixture::with_services("http://127.0.0.1:9/v1", None, None, Some(setup)).await;
     let session = f.create("Candidates").await;
     let page = f.query("skillCandidates",json!({"sessionId":session,"backend":{"kind":"model","model":f.selection().await},"query":""})).await.unwrap();
-    assert_eq!(page["skills"].as_array().unwrap().len(), 1, "{page}");
+    assert_eq!(page["skills"].as_array().unwrap().len(), 13, "{page}");
     assert_eq!(page["skills"][0]["name"], "Review changes");
     assert_eq!(page["skills"][0]["invocation"], "/skill:review");
+    assert_eq!(page["skills"][12]["invocation"], "/skill:z-extra-11");
     f.app.shutdown().await.unwrap();
     f.config.shutdown().await.unwrap();
 }

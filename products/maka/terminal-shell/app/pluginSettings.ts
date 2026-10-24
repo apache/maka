@@ -37,7 +37,7 @@ import type { SettingsOperations } from './settingsOperations';
 type Path = InstanceSettingsRead['path'];
 type Inventory = { source: DeploymentRef; instances: ManagedInstance[] };
 type Editor = { field: SettingField; value: SettingValue | null };
-type Fields = Pick<InstanceSettingsPage, 'source' | 'instance' | 'path'> & {
+type Fields = Pick<InstanceSettingsPage, 'source' | 'instance' | 'path' | 'next'> & {
   fields: SettingField[];
 };
 export type PluginAction = {
@@ -71,6 +71,9 @@ export function createPluginSettings(operations: SettingsOperations, active: () 
   let alive = true,
     enabled = false,
     generation = 0;
+  // Continuation failures stop automatic reads until navigation or refresh,
+  // while the loaded fields and separately owned editor remain usable.
+  let paging: 'ready' | 'loading' | 'failed' = 'ready';
   const visible = () => alive && enabled && active();
   const action = (): PluginAction => ({
     view: view(),
@@ -91,6 +94,7 @@ export function createPluginSettings(operations: SettingsOperations, active: () 
     generation += 1;
     view.set(view() + 1);
     loading.set(false);
+    paging = 'ready';
   };
   const readFields = async (instance: ManagedInstance, source: DeploymentRef, path: Path) => {
     const reading = ++generation;
@@ -110,35 +114,10 @@ export function createPluginSettings(operations: SettingsOperations, active: () 
         !same(result.path, path)
       )
         throw new UiError('Plugin settings returned a different target.');
-      const values = [...result.fields];
-      let after = result.next ?? null;
-      while (after !== null) {
-        const next = await host.query('management', 'readSettings', {
-          source,
-          instance: instance.instance,
-          path,
-          after,
-        });
-        if (!visible() || reading !== generation) return;
-        if (
-          !same(next.source, source) ||
-          !same(next.instance, instance.instance) ||
-          !same(next.path, path)
-        )
-          throw new UiError(
-            'Plugin settings changed their source while reading. Refresh to continue.',
-          );
-        if (next.next === after) throw new UiError('Plugin settings paging did not advance.');
-        values.push(...next.fields);
-        after = next.next ?? null;
-      }
-      if (visible() && reading === generation)
-        fields.set({
-          source: result.source,
-          instance: result.instance,
-          path: result.path,
-          fields: values,
-        });
+      batch(() => {
+        loading.set(false);
+        fields.set(result);
+      });
     } catch (reason) {
       if (visible() && reading === generation) operations.report(reason);
     } finally {
@@ -215,8 +194,10 @@ export function createPluginSettings(operations: SettingsOperations, active: () 
   const back = () => {
     if (operations.busy()) return false;
     if (editor()) {
-      editor.set(null);
-      view.set(view() + 1);
+      batch(() => {
+        editor.set(null);
+        view.set(view() + 1);
+      });
       return false;
     }
     const instance = selected();
@@ -284,6 +265,38 @@ export function createPluginSettings(operations: SettingsOperations, active: () 
       operations.error.set('');
       void load();
     },
+    async loadMore(request: PluginAction) {
+      const page = fields();
+      if (!current(request) || loading() || paging !== 'ready' || page?.next == null) return;
+      const reading = generation;
+      const after = page.next;
+      paging = 'loading';
+      try {
+        const next = await host.query('management', 'readSettings', {
+          source: page.source,
+          instance: page.instance,
+          path: page.path,
+          after,
+        });
+        if (!visible() || reading !== generation) return;
+        if (
+          !same(next.source, page.source) ||
+          !same(next.instance, page.instance) ||
+          !same(next.path, page.path)
+        )
+          throw new UiError(
+            'Plugin settings changed their source while reading. Refresh to continue.',
+          );
+        if (next.next === after) throw new UiError('Plugin settings paging did not advance.');
+        paging = 'ready';
+        fields.set({ ...next, fields: [...page.fields, ...next.fields] });
+      } catch (reason) {
+        if (visible() && reading === generation) {
+          paging = 'failed';
+          operations.report(reason);
+        }
+      }
+    },
     open({ request, instance }: { request: PluginAction; instance: InstanceId }) {
       if (!current(request) || disabled() || selected()) return;
       const target = inventory()!.instances.find((item) => same(item.instance, instance));
@@ -316,18 +329,20 @@ export function createPluginSettings(operations: SettingsOperations, active: () 
         ['object', 'array', 'unsupported'].includes(field.kind)
       )
         return;
-      view.set(view() + 1);
-      editor.set({
-        field,
-        value:
-          field.value ??
-          (field.kind === 'boolean'
-            ? { kind: 'boolean', value: false }
-            : field.kind === 'number'
-              ? { kind: 'number', text: '' }
-              : field.kind === 'null'
-                ? { kind: 'null' }
-                : { kind: 'text', text: '' }),
+      batch(() => {
+        view.set(view() + 1);
+        editor.set({
+          field,
+          value:
+            field.value ??
+            (field.kind === 'boolean'
+              ? { kind: 'boolean', value: false }
+              : field.kind === 'number'
+                ? { kind: 'number', text: '' }
+                : field.kind === 'null'
+                  ? { kind: 'null' }
+                  : { kind: 'text', text: '' }),
+        });
       });
     },
     change({ request, value }: { request: PluginAction; value: SettingValue | null }) {

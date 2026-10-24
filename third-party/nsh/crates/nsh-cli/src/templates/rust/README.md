@@ -4,7 +4,8 @@ An app written in Rust: its UI is `src/lib.rs`, and `nsh.json` names the root co
 
 ```sh
 nsh run                      # this machine's backend; --target ios, android, web, macos, linux or windows
-nsh test                     # App.test.tsx: the root tested from TypeScript, headless; --target to run it on a platform
+nsh check                    # cargo check of the crate, then type checks App.test.tsx
+nsh test                     # cargo test, then App.test.tsx: the root tested from TypeScript, headless; --target to run it on a platform
 nsh test nsh.json --trace    # headless: what the root mounts, and the time of each commit
 nsh package --target web     # or ios, android, macos, linux, windows
 ```

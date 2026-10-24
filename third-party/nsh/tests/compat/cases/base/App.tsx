@@ -22,6 +22,7 @@ import BaseSelectionArea from "./base-selection-area";
 import BaseSwitch from "./base-switch";
 import BaseTabs from "./base-tabs";
 import BaseTextView from "./base-text-view";
+import BaseToast from "./base-toast";
 import BaseToken from "./base-token";
 
 const cases: Record<string, () => JSX.Element> = {
@@ -44,6 +45,7 @@ const cases: Record<string, () => JSX.Element> = {
   "base-tabs": BaseTabs,
   "base-collapsible": BaseCollapsible,
   "base-progress": BaseProgress,
+  "base-toast": BaseToast,
   "base-token": BaseToken,
 };
 const shown = signal("");

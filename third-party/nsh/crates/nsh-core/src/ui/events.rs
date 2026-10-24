@@ -59,6 +59,8 @@ pub enum ScrollIntent {
 /// velocity, in points (per second).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct PanEvent {
+    /// The system cancelled the drag rather than releasing it.
+    pub cancelled: bool,
     /// The translation.
     pub translation: Point<Points>,
     /// Horizontal velocity.
@@ -90,6 +92,21 @@ pub struct Selection {
     pub start: u32,
     /// End.
     pub end: u32,
+}
+
+/// Where an input's caret is (`on_caret_move`): what opens at it (an `@`
+/// mention's suggestions) is placed with it.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[non_exhaustive]
+pub struct CaretEvent {
+    /// The caret in the input's coordinates (its border box), its own
+    /// scrolling applied: as wide as the platform draws it, as tall as its
+    /// line. Empty when the platform could not place it.
+    pub bounds: Bounds<Points>,
+    /// The caret in its root view's coordinates (the surface, or the dialog
+    /// around the input), as of the event:
+    /// [`crate::overlay::OverlayAnchor::Bounds`] places an overlay against it.
+    pub page_bounds: Bounds<Points>,
 }
 
 /// An input method's composition in an input (`on_composition_change`):
@@ -296,6 +313,20 @@ pub(crate) fn selection(p: &EventPayload) -> Option<Cow<'_, Selection>> {
     }))
 }
 
+pub(crate) fn paste(p: &EventPayload) -> Option<Cow<'_, crate::PasteEvent>> {
+    match p {
+        EventPayload::Paste(paste) => Some(Cow::Borrowed(paste)),
+        _ => None,
+    }
+}
+
+pub(crate) fn caret(p: &EventPayload) -> Option<Cow<'_, CaretEvent>> {
+    Some(Cow::Owned(CaretEvent {
+        bounds: bounds_field(p, "bounds"),
+        page_bounds: bounds_field(p, "pageBounds"),
+    }))
+}
+
 pub(crate) fn composition(p: &EventPayload) -> Option<Cow<'_, Composition>> {
     Some(Cow::Owned(Composition {
         composing: flag(p, "composing"),
@@ -358,7 +389,15 @@ pub(crate) fn pan(p: &EventPayload) -> Option<Cow<'_, PanEvent>> {
             velocity_y,
             value_x,
             value_y,
+        }
+        | EventPayload::PanCancelled {
+            translation,
+            velocity_x,
+            velocity_y,
+            value_x,
+            value_y,
         } => Some(Cow::Owned(PanEvent {
+            cancelled: matches!(p, EventPayload::PanCancelled { .. }),
             translation,
             velocity_x,
             velocity_y,
@@ -465,6 +504,23 @@ pub(crate) fn file_drop(p: &EventPayload) -> Option<Cow<'_, FileDropEvent>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_cancelled_pan_preserves_its_final_values() {
+        use crate::{EventPayload, Points, geometry::point};
+        let payload = EventPayload::PanCancelled {
+            translation: point(Points(4.0), Points(150.0)),
+            velocity_x: 0.0,
+            velocity_y: 900.0,
+            value_x: None,
+            value_y: Some(Points(150.0)),
+        };
+        let event = super::pan(&payload).unwrap();
+        assert!(event.cancelled);
+        assert_eq!(event.translation, point(Points(4.0), Points(150.0)));
+        assert_eq!(event.value_y, Some(150.0));
+        assert_eq!(event.velocity_y, 900.0);
+    }
+
     #[test]
     fn file_drop_requires_the_file_payload() {
         assert!(super::file_drop(&crate::EventPayload::None).is_none());

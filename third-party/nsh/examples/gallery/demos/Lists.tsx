@@ -1,5 +1,5 @@
 import { computed, Input, List, Scroll, signal, Text, View, type YNode } from "nsh";
-import { LayoutAnimation } from "nsh/animated";
+import { createAnimatedValue, LayoutAnimation } from "nsh/animated";
 import { platform } from "nsh/device";
 import { keyboardFrame, KeyboardAvoidingView, safeAreaInsets, Tab, Tabs } from "nsh/base";
 import { Icon, type IconName } from "../icons";
@@ -564,11 +564,21 @@ function WeekHeading(props: { week: number }) {
 
 type PageRow = Entry | { week: number };
 
+/** The height of the page's bar, which hides as the page scrolls down. */
+const BAR = 44;
+
 /** Headers and two lists on one page: the lists have no scroll view of
  * their own (`viewport="parent"`), the page scrolls them as one, and only
- * their rows near its viewport exist. The first list's week headings stick
- * to the top of the page. */
+ * their rows near its viewport exist. A bar over the page hides as it
+ * scrolls down and comes back as it scrolls up (`diffClamp`), and the
+ * first list's week headings stick just below it, wherever it is
+ * (`stickyHeaderOffset` set to how much of it shows). */
 function Page() {
+  const scroll = createAnimatedValue(0);
+  // How much of the bar is hidden, following the page's scrolling.
+  const hidden = scroll.diffClamp(0, BAR);
+  // How much of it shows: where the week headings stick.
+  const shown = hidden.mul(-1).add(BAR);
   // 200 entries, a week heading before every 20.
   const recent: PageRow[] = entries(0, 200).flatMap((e) => (e.id % 20 === 0 ? [{ week: e.id / 20 + 1 }, e] : [e]));
   const weeks = recent.flatMap((row, i) => ("week" in row ? [i] : []));
@@ -585,43 +595,73 @@ function Page() {
     </View>
   );
   return (
-    <Scroll testID="page" style={{ flex: 1 }}>
-      <View style={{ padding: 16, gap: 10, width: "100%", maxWidth: 720, alignSelf: "center" }}>
-        <Section title="One page, two lists" note={'viewport="parent"'}>
-          <Text style={{ fontSize: 13, color: colors.muted }}>
-            The lists below lie in the page at their full length, and the page scrolls them with this header: only the
-            rows near its viewport exist, in recycled cells.
-          </Text>
-          <View style={{ flexDirection: "row", gap: 8 }}>
-            <Action label="Recent 150" icon="arrow-down" onPress={() => list.scrollToIndex({ index: indexOf(149), viewPosition: 0.5 })} />
-            <Action label="End of recent" onPress={() => list.scrollToEnd()} />
-          </View>
-        </Section>
-        {heading("Recent", "200 rows")}
-        <List ref={list} viewport="parent" each={recent} estimatedItemSize={56} stickyHeaderIndices={weeks} contentStyle={{ gap: 6 }}>
-          {(row) => (
-            <If when={"week" in row()} else={<EntryRow entry={row() as Entry} label="Recent" />}>
-              <WeekHeading week={(row() as { week: number }).week} />
-            </If>
-          )}
-        </List>
-        {heading("Archive", `${archive().length} rows`)}
-        <List
-          viewport="parent"
-          each={archive()}
-          estimatedItemSize={56}
-          contentStyle={{ gap: 6 }}
-          onLoadMore={loadMore}
-          footer={
-            <Text style={{ textAlign: "center", color: colors.faint, fontSize: 13, padding: 16 }}>
-              {archive().length < 500 ? "Loading more…" : "End of the archive"}
+    <View style={{ flex: 1, overflow: "hidden" }}>
+      <Scroll testID="page" scrollValue={scroll} style={{ flex: 1 }}>
+        <View style={{ padding: 16, paddingTop: 16 + BAR, gap: 10, width: "100%", maxWidth: 720, alignSelf: "center" }}>
+          <Section title="One page, two lists" note={'viewport="parent"'}>
+            <Text style={{ fontSize: 13, color: colors.muted }}>
+              The lists below lie in the page at their full length, and the page scrolls them with this header: only the
+              rows near its viewport exist, in recycled cells.
             </Text>
-          }
-        >
-          {(entry) => <EntryRow entry={entry()} label="Archived" />}
-        </List>
+            <View style={{ flexDirection: "row", gap: 8 }}>
+              <Action label="Recent 150" icon="arrow-down" onPress={() => list.scrollToIndex({ index: indexOf(149), viewPosition: 0.5 })} />
+              <Action label="End of recent" onPress={() => list.scrollToEnd()} />
+            </View>
+          </Section>
+          {heading("Recent", "200 rows")}
+          <List
+            ref={list}
+            viewport="parent"
+            each={recent}
+            estimatedItemSize={56}
+            stickyHeaderIndices={weeks}
+            stickyHeaderOffset={shown}
+            contentStyle={{ gap: 6 }}
+          >
+            {(row) => (
+              <If when={"week" in row()} else={<EntryRow entry={row() as Entry} label="Recent" />}>
+                <WeekHeading week={(row() as { week: number }).week} />
+              </If>
+            )}
+          </List>
+          {heading("Archive", `${archive().length} rows`)}
+          <List
+            viewport="parent"
+            each={archive()}
+            estimatedItemSize={56}
+            contentStyle={{ gap: 6 }}
+            onLoadMore={loadMore}
+            footer={
+              <Text style={{ textAlign: "center", color: colors.faint, fontSize: 13, padding: 16 }}>
+                {archive().length < 500 ? "Loading more…" : "End of the archive"}
+              </Text>
+            }
+          >
+            {(entry) => <EntryRow entry={entry()} label="Archived" />}
+          </List>
+        </View>
+      </Scroll>
+      <View
+        style={{
+          position: "absolute",
+          top: 0,
+          left: 0,
+          right: 0,
+          height: BAR,
+          flexDirection: "row",
+          alignItems: "center",
+          gap: 8,
+          paddingHorizontal: 20,
+          backgroundColor: colors.background,
+          borderBottomWidth: 1,
+          borderBottomColor: colors.border,
+          transform: [{ translateY: hidden.mul(-1) }],
+        }}
+      >
+        <Text style={{ flex: 1, fontSize: 15, fontWeight: "600", color: colors.text }}>Recent and archived</Text>
+        <Text style={{ fontSize: 13, color: colors.faint }}>hides as you scroll down</Text>
       </View>
-    </Scroll>
+    </View>
   );
 }
 

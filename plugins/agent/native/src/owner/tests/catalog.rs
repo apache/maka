@@ -297,13 +297,9 @@ async fn explicit_read_marker_keeps_original_tail_authority_and_receipt() {
         let fixture = Fixture::new(&base, None).await;
         let session = fixture.create("Read marker").await;
         let read = |message: &str| json!({"sessionId":session,"messageId":message});
-        assert_eq!(
-            fixture
-                .query("observe", json!({"sessionId":session}))
-                .await
-                .unwrap()["session"]["hasUnread"],
-            false
-        );
+        let initial = fixture.query("observe", json!({"sessionId":session})).await.unwrap();
+        assert_eq!(initial["session"]["tailMessageId"], Value::Null);
+        assert_eq!(initial["session"]["hasUnread"], false);
         fixture.send(&session).await.unwrap();
         fixture.drained().await;
         let first = fixture
@@ -321,6 +317,7 @@ async fn explicit_read_marker_keeps_original_tail_authority_and_receipt() {
         let message = page["chunks"].as_array().unwrap().last().unwrap()["messageId"]
             .as_str()
             .unwrap();
+        assert_eq!(first["session"]["tailMessageId"], message);
         let stale = fixture
             .mutation(2, "markRead", read("unknown-message"), Uuid::new_v4())
             .await
@@ -333,6 +330,7 @@ async fn explicit_read_marker_keeps_original_tail_authority_and_receipt() {
             .unwrap();
         assert_eq!(marked["kind"], "observed");
         assert_eq!(marked["session"]["hasUnread"], false);
+        assert_eq!(marked["session"]["tailMessageId"], message);
         assert_eq!(
             marked["session"]["updatedAt"],
             first["session"]["updatedAt"]
@@ -395,6 +393,7 @@ async fn explicit_read_marker_keeps_original_tail_authority_and_receipt() {
         let latest = page["chunks"].as_array().unwrap().last().unwrap()["messageId"]
             .as_str()
             .unwrap();
+        assert_eq!(second["session"]["tailMessageId"], latest);
         assert_eq!(
             fixture
                 .mutation(2, "markRead", read(latest), Uuid::new_v4())

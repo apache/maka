@@ -1,7 +1,11 @@
 //! A retained terminal scene. One surface owns its nodes, input, animation
 //! graph and graphics work; embedding several surfaces shares no app state.
 
-use std::{cell::RefCell, collections::HashMap, sync::Arc};
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
+    sync::Arc,
+};
 
 use nsh_core::{
     AttributedText, Bounds, Color, Command, Dialog, EventKind, EventMask, EventPayload,
@@ -40,6 +44,8 @@ pub enum SurfaceEvent {
     HintObservation(HintObservation),
     /// A scroll offset, with the number of core adjustments applied.
     Scroll(NodeId, Point<Points>, u32),
+    /// Whether a list cell left native input and Tab navigation for this request.
+    ListCellRetired(NodeId, u64, bool),
     /// Interaction state bits requested by the mounted view.
     States(NodeId, u8),
     /// Animation completions and native value reads.
@@ -88,6 +94,15 @@ impl Default for ScrollState {
     }
 }
 
+#[derive(Clone, Copy, Default)]
+pub(crate) struct InputViewport {
+    /// First visual row and column.
+    pub(crate) origin: (usize, usize),
+    /// Last laid out column and row count.
+    pub(crate) size: (usize, usize),
+    pub(crate) reveal: bool,
+}
+
 pub(crate) struct Node {
     pub(crate) generation: u64,
     pub(crate) kind: ViewKind,
@@ -102,6 +117,7 @@ pub(crate) struct Node {
     pub(crate) input: InputConfig,
     pub(crate) editor: Editor,
     pub(crate) input_content: Bounds<Points>,
+    pub(crate) input_viewport: Cell<InputViewport>,
     pub(crate) scroll: ScrollState,
     pub(crate) screen: ScreenConfig,
     pub(crate) modal: ModalConfig,
@@ -135,6 +151,7 @@ impl Node {
             input: InputConfig::default(),
             editor: Editor::default(),
             input_content: Bounds::default(),
+            input_viewport: Cell::default(),
             scroll: ScrollState::default(),
             screen: ScreenConfig::default(),
             modal: ModalConfig::default(),
@@ -152,6 +169,13 @@ impl Node {
             delete_pending: false,
         }
     }
+
+    pub(crate) fn request_input_reveal(&self) {
+        self.input_viewport.set(InputViewport {
+            reveal: true,
+            ..self.input_viewport.get()
+        });
+    }
 }
 
 /// A Native Shell scene that can be painted into any Ratatui rectangle.
@@ -161,6 +185,8 @@ impl Node {
 /// the engine. [`crate::AppView`] combines these steps with an engine.
 pub struct Surface {
     pub(crate) nodes: Vec<Option<Node>>,
+    /// Locators into the resident Text snapshots, which remain the link authority.
+    pub(crate) text_links: HashMap<NodeId, (NodeId, usize)>,
     pub(crate) metrics: CellMetrics,
     pub(crate) columns: u16,
     pub(crate) rows: u16,
@@ -177,6 +203,7 @@ pub struct Surface {
     pub(crate) hovered_path: Vec<NodeId>,
     pub(crate) autofocus_seen: Vec<NodeId>,
     pub(crate) drag_input: Option<NodeId>,
+    pub(crate) area_selection: Option<crate::selection_area::SelectionArea>,
     pub(crate) pointer: Option<crate::input::Pointer>,
     pub(crate) focus_history: Vec<NodeId>,
     pub(crate) focus_returns: Vec<crate::input::FocusReturn>,
@@ -223,6 +250,7 @@ impl Surface {
         let fonts = crate::fonts::FontCatalog::default();
         let mut surface = Self {
             nodes: vec![None, Some(Node::new(ViewKind::View))],
+            text_links: HashMap::new(),
             metrics,
             columns,
             rows,
@@ -239,6 +267,7 @@ impl Surface {
             hovered_path: Vec::new(),
             autofocus_seen: Vec::new(),
             drag_input: None,
+            area_selection: None,
             pointer: None,
             focus_history: Vec::new(),
             focus_returns: Vec::new(),
@@ -582,6 +611,78 @@ impl Surface {
         }
     }
 
+    fn insert(
+        &mut self,
+        parent: NodeId,
+        child: NodeId,
+        before: Option<NodeId>,
+        layout: Option<&nsh_core::LayoutAnimation>,
+    ) {
+        let restored = self.navigation_reinserted(child);
+        let now = self.now;
+        if let Some(node) = self.node_mut(child) {
+            let create = (!matches!(
+                node.kind,
+                ViewKind::Screen | ViewKind::Modal | ViewKind::Stack | ViewKind::HeaderItem
+            ) && node.frame == Bounds::default())
+            .then(|| layout.and_then(|a| a.create.as_ref()))
+            .flatten();
+            if create.is_some() || node.motion.is_some() {
+                node.motion
+                    .get_or_insert_with(Box::default)
+                    .inserted(create, now);
+            }
+            node.delete_pending = false;
+        }
+        self.detach(child);
+        if let Some(node) = self.node_mut(child) {
+            node.parent = Some(parent);
+            if !restored {
+                node.popped = false;
+            }
+        }
+        if let Some(node) = self.node_mut(parent) {
+            let index = before
+                .and_then(|id| node.children.iter().position(|&c| c == id))
+                .unwrap_or(node.children.len());
+            node.children.insert(index, child);
+        }
+    }
+
+    fn forget_text_links(&mut self, owner: NodeId) {
+        let Some((text, ..)) = self
+            .nodes
+            .get(owner as usize)
+            .and_then(Option::as_ref)
+            .and_then(|node| node.text.as_ref())
+        else {
+            return;
+        };
+        for link in &text.links {
+            if self
+                .text_links
+                .get(&link.node)
+                .is_some_and(|(current, _)| *current == owner)
+            {
+                self.text_links.remove(&link.node);
+            }
+        }
+    }
+
+    fn index_text_links(&mut self, owner: NodeId) {
+        let Some((text, ..)) = self
+            .nodes
+            .get(owner as usize)
+            .and_then(Option::as_ref)
+            .and_then(|node| node.text.as_ref())
+        else {
+            return;
+        };
+        for (index, link) in text.links.iter().enumerate() {
+            self.text_links.insert(link.node, (owner, index));
+        }
+    }
+
     /// Applies one core commit in order, then reconciles native interaction.
     pub fn apply(&mut self, batch: MountBatch) {
         let mut focus_return = self.prepare_focus_return(&batch);
@@ -596,6 +697,7 @@ impl Surface {
             match item {
                 MountItem::LayoutAnimation(animation) => layout = Some(animation),
                 MountItem::Create { id, kind } => {
+                    self.forget_text_links(id);
                     self.composites.borrow_mut().invalidate(id);
                     self.canvas_pending.retain(|pending| *pending != id);
                     self.canvas_dirty.retain(|dirty| *dirty != id);
@@ -611,38 +713,42 @@ impl Surface {
                     child,
                     before,
                 } => {
-                    self.navigation_reinserted(child);
-                    let now = self.now;
-                    if let Some(node) = self.node_mut(child) {
-                        let create = (!matches!(
-                            node.kind,
-                            ViewKind::Screen
-                                | ViewKind::Modal
-                                | ViewKind::Stack
-                                | ViewKind::HeaderItem
-                        ) && node.frame == Bounds::default())
-                        .then(|| layout.as_ref().and_then(|a| a.create.as_ref()))
-                        .flatten();
-                        if create.is_some() || node.motion.is_some() {
-                            node.motion
-                                .get_or_insert_with(Box::default)
-                                .inserted(create, now);
-                        }
-                        node.delete_pending = false;
-                    }
-                    self.detach(child);
-                    if let Some(node) = self.node_mut(child) {
-                        node.parent = Some(parent);
-                        node.popped = false;
-                    }
-                    if let Some(node) = self.node_mut(parent) {
-                        let index = before
-                            .and_then(|id| node.children.iter().position(|&c| c == id))
-                            .unwrap_or(node.children.len());
-                        node.children.insert(index, child);
-                    }
+                    self.insert(parent, child, before, layout.as_ref());
                 }
+                MountItem::ProjectRoot {
+                    parent,
+                    id,
+                    following,
+                } => {
+                    let before = following.into_iter().find(|&candidate| {
+                        self.node(candidate)
+                            .is_some_and(|node| node.parent == Some(parent))
+                    });
+                    self.insert(parent, id, before, layout.as_ref());
+                }
+                MountItem::RetireListCell { id, request, roots } => {
+                    let focus = self.focus_path();
+                    let retired = !roots.iter().any(|root| focus.contains(root));
+                    if retired {
+                        for &root in &roots {
+                            if focus_reveal.as_ref().is_some_and(|reveal| {
+                                self.ancestors(reveal.target.0).contains(&root)
+                            }) {
+                                focus_reveal = None;
+                            }
+                            removed_focus |= self.retire_recycled_focus(root);
+                            self.cancel_input_within(root);
+                        }
+                        self.navigation_park(&roots);
+                    }
+                    self.events
+                        .push(SurfaceEvent::ListCellRetired(id, request, retired));
+                }
+                MountItem::ListCellRetired { .. } => {}
                 MountItem::Remove { id } => {
+                    if self.navigation_is_parked(id) {
+                        self.navigation_deleted(id);
+                    }
                     if focus_reveal
                         .as_ref()
                         .is_some_and(|reveal| self.ancestors(reveal.target.0).contains(&id))
@@ -676,6 +782,9 @@ impl Surface {
                     }
                 }
                 MountItem::Delete { id } => {
+                    if self.navigation_is_parked(id) {
+                        self.navigation_deleted(id);
+                    }
                     if let Some((owner, _)) = self.text_link(id) {
                         if focus_reveal
                             .as_ref()
@@ -685,10 +794,23 @@ impl Surface {
                         }
                         removed_focus |= self.retire_recycled_focus(id);
                         self.retire_input_within(id, focus_return.as_mut());
-                        if let Some((text, ..)) =
-                            self.node_mut(owner).and_then(|node| node.text.as_mut())
+                        self.text_links.remove(&id);
+                        if let Some((text, ..)) = self
+                            .nodes
+                            .get_mut(owner as usize)
+                            .and_then(Option::as_mut)
+                            .and_then(|node| node.text.as_mut())
                         {
-                            Arc::make_mut(text).links.retain(|link| link.node != id);
+                            let text = Arc::make_mut(text);
+                            text.links.retain(|link| link.node != id);
+                            for (index, link) in text.links.iter().enumerate() {
+                                if let Some((current, position)) =
+                                    self.text_links.get_mut(&link.node)
+                                    && *current == owner
+                                {
+                                    *position = index;
+                                }
+                            }
                         }
                         continue;
                     }
@@ -728,6 +850,7 @@ impl Surface {
                     self.detach(id);
                     self.composites.borrow_mut().invalidate(id);
                     self.canvas_pending.retain(|pending| *pending != id);
+                    self.forget_text_links(id);
                     if let Some(node) = self.nodes.get_mut(id as usize) {
                         *node = None;
                     }
@@ -831,6 +954,10 @@ impl Surface {
                             old.links
                                 .iter()
                                 .filter(|link| {
+                                    self.text_link(link.node)
+                                        .is_some_and(|(owner, _)| owner == id)
+                                })
+                                .filter(|link| {
                                     !text
                                         .links
                                         .iter()
@@ -844,14 +971,28 @@ impl Surface {
                         self.retire_input_within(link, None);
                         removed_focus |= self.retire_recycled_focus(link);
                     }
+                    self.forget_text_links(id);
                     if let Some(node) = self.node_mut(id) {
                         node.editor.label_text(&text.text);
                         node.text = Some((text, layout, content));
                     }
+                    self.index_text_links(id);
                 }
                 MountItem::Input { id, config } => {
-                    if let Some(node) = self.node_mut(id) {
+                    let selection_changed = if let Some(node) = self.node_mut(id) {
+                        if node.input.multiline != config.multiline
+                            || node.input.secure != config.secure
+                        {
+                            node.request_input_reveal();
+                        }
+                        let changed = node.editor.set_tokens(&config.tokens);
                         node.input = *config;
+                        changed
+                    } else {
+                        false
+                    };
+                    if selection_changed {
+                        self.report_selection(id);
                     }
                 }
                 MountItem::InputValue { id, text, count } => self.input_value(id, text, count),
@@ -1053,6 +1194,7 @@ impl Surface {
         for id in tracked {
             self.refresh_input_states(id);
         }
+        self.selection_area_sync();
         self.update_canvas_args();
         self.schedule_graphics();
     }
@@ -1073,6 +1215,7 @@ impl Surface {
             }
             Command::Blur => self.set_focus(None),
             Command::SetSelection { start, end } => self.selection(id, start, end),
+            command @ Command::ReplaceRange { .. } => self.replace_input_range(id, command),
             Command::ScrollTo { x, y, animated } => self.scroll_command(id, x, y, animated),
             Command::ZoomTo {
                 scale,
@@ -1101,6 +1244,26 @@ impl Surface {
             Command::Announce(text) => self.announce(text),
             Command::SetClipboard(text) => self.write_clipboard(text),
             Command::ReadClipboard { id, has_only } => self.read_clipboard(id, has_only),
+            // A terminal has no system image picker. Complete the request as
+            // cancelled instead of leaving the app's answer pending.
+            Command::PickImages { id, .. } => self.emit(
+                ROOT_ID,
+                EventKind::Pick,
+                EventPayload::Picked {
+                    id,
+                    files: Vec::new(),
+                },
+            ),
+            // Terminal surfaces do not launch external applications. The host
+            // channel may already have handled the URL before it reaches us.
+            Command::OpenUrl { id, .. } => self.emit(
+                ROOT_ID,
+                EventKind::OpenUrl,
+                EventPayload::Map(vec![
+                    ("id", PayloadValue::Number(f64::from(id))),
+                    ("opened", PayloadValue::Bool(false)),
+                ]),
+            ),
             Command::ImageInfo { id, uri } => self.request_image(uri, Some(id)),
             Command::Native { name, args } => {
                 let response = self
@@ -1265,6 +1428,7 @@ impl Surface {
         }
         for id in descendants.into_iter().rev() {
             if self.node(id).is_some_and(|node| node.delete_pending) {
+                self.forget_text_links(id);
                 self.nodes[id as usize] = None;
                 self.composites.borrow_mut().invalidate(id);
                 self.canvas_pending.retain(|pending| *pending != id);
@@ -1947,6 +2111,440 @@ mod tests {
     use nsh_core::{LayoutAnimation, LayoutCurve, LayoutProperty, LayoutTransition};
 
     use super::*;
+
+    #[test]
+    fn an_unsupported_url_open_answers_once_without_launching() {
+        let mut surface = Surface::new(10, 5, CellMetrics::default());
+        surface.apply(MountBatch {
+            items: vec![MountItem::Command {
+                id: ROOT_ID,
+                command: Command::OpenUrl {
+                    id: 42,
+                    url: "https://example.com/".into(),
+                },
+            }],
+        });
+        let events: Vec<_> = surface.drain_events().collect();
+        assert!(matches!(
+            events.as_slice(),
+            [SurfaceEvent::Event(ROOT_ID, EventKind::OpenUrl, EventPayload::Map(fields))]
+                if matches!(fields.as_slice(), [
+                    ("id", PayloadValue::Number(42.0)),
+                    ("opened", PayloadValue::Bool(false))
+                ])
+        ));
+        surface.tick(1.0);
+        assert!(surface.drain_events().next().is_none());
+    }
+
+    #[test]
+    fn list_cell_retirement_keeps_native_focus_until_it_can_detach() {
+        let mut surface = Surface::new(40, 10, CellMetrics::default());
+        surface.apply(MountBatch {
+            items: vec![
+                MountItem::Create {
+                    id: 2,
+                    kind: ViewKind::View,
+                },
+                MountItem::Frame {
+                    id: 2,
+                    frame: Bounds::new(Point::default(), Size::new(px(160.0), px(32.0))),
+                },
+                MountItem::ProjectRoot {
+                    parent: ROOT_ID,
+                    id: 2,
+                    following: vec![],
+                },
+                MountItem::Create {
+                    id: 4,
+                    kind: ViewKind::Input,
+                },
+                MountItem::Input {
+                    id: 4,
+                    config: Box::new(InputConfig {
+                        auto_focus: true,
+                        ..Default::default()
+                    }),
+                },
+                MountItem::InputValue {
+                    id: 4,
+                    text: "original cell".into(),
+                    count: 0,
+                },
+                MountItem::Frame {
+                    id: 4,
+                    frame: Bounds::new(Point::default(), Size::new(px(160.0), px(32.0))),
+                },
+                MountItem::Insert {
+                    parent: 2,
+                    child: 4,
+                    before: None,
+                },
+                MountItem::Create {
+                    id: 6,
+                    kind: ViewKind::Scroll,
+                },
+                MountItem::Frame {
+                    id: 6,
+                    frame: Bounds::new(point(px(160.0), px(0.0)), Size::new(px(160.0), px(32.0))),
+                },
+                MountItem::Insert {
+                    parent: ROOT_ID,
+                    child: 6,
+                    before: None,
+                },
+            ],
+        });
+        assert_eq!(surface.focused(), Some(4));
+        surface.drain_events().for_each(drop);
+        surface.apply(MountBatch {
+            items: vec![MountItem::RetireListCell {
+                id: 2,
+                request: 7,
+                roots: vec![2],
+            }],
+        });
+        assert_eq!(surface.focused(), Some(4));
+        assert_eq!(
+            surface.input_context().unwrap().text.as_deref(),
+            Some("original cell")
+        );
+        assert_eq!(
+            surface
+                .drain_events()
+                .filter_map(|event| match event {
+                    SurfaceEvent::ListCellRetired(id, request, retired) =>
+                        Some((id, request, retired)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            [(2, 7, false)]
+        );
+
+        surface.set_focus(Some(6));
+        surface.drain_events().for_each(drop);
+        surface.apply(MountBatch {
+            items: vec![MountItem::RetireListCell {
+                id: 2,
+                request: 8,
+                roots: vec![2],
+            }],
+        });
+        assert_eq!(surface.focused(), Some(6));
+        assert!(!surface.visible_ids().contains(&4));
+        assert_eq!(
+            surface
+                .drain_events()
+                .filter_map(|event| match event {
+                    SurfaceEvent::ListCellRetired(id, request, retired) =>
+                        Some((id, request, retired)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            [(2, 8, true)]
+        );
+
+        surface.apply(MountBatch {
+            items: vec![MountItem::ProjectRoot {
+                parent: ROOT_ID,
+                id: 2,
+                following: vec![],
+            }],
+        });
+        surface.set_focus(Some(4));
+        surface.apply(MountBatch {
+            items: vec![MountItem::Remove { id: 2 }],
+        });
+        assert_ne!(
+            surface.focused(),
+            Some(4),
+            "source removal must revoke the focused owner"
+        );
+        assert!(!surface.visible_ids().contains(&4));
+    }
+
+    #[test]
+    fn list_cell_retirement_parks_and_restores_promoted_modal_roots_together() {
+        let mut surface = Surface::new(60, 20, CellMetrics::default());
+        let group = vec![2, 8, 12];
+        let frame = Bounds::new(Point::default(), Size::new(px(160.0), px(32.0)));
+        let roots = [
+            (2, ViewKind::View, ROOT_ID),
+            (4, ViewKind::Input, 2),
+            (8, ViewKind::Modal, ROOT_ID),
+            (12, ViewKind::View, 8),
+            (14, ViewKind::Input, 12),
+        ];
+        let mut items = Vec::new();
+        for (id, kind, parent) in roots {
+            items.push(MountItem::Create { id, kind });
+            if kind == ViewKind::Modal {
+                items.push(MountItem::ModalConfig {
+                    id,
+                    config: nsh_core::ModalConfig {
+                        animation: nsh_core::ModalAnimation::None,
+                        ..Default::default()
+                    },
+                });
+            }
+            items.push(MountItem::Frame { id, frame });
+            if [2, 8, 12].contains(&id) {
+                items.push(MountItem::ProjectRoot {
+                    parent,
+                    id,
+                    following: vec![],
+                });
+            } else {
+                items.push(MountItem::Insert {
+                    parent,
+                    child: id,
+                    before: None,
+                });
+            }
+        }
+        surface.apply(MountBatch { items });
+        surface.set_focus(Some(14));
+        surface.drain_events().for_each(drop);
+        surface.apply(MountBatch {
+            items: vec![MountItem::RetireListCell {
+                id: 2,
+                request: 1,
+                roots: group.clone(),
+            }],
+        });
+        assert_eq!(surface.focused(), Some(14));
+        assert_eq!(surface.node(2).unwrap().parent, Some(ROOT_ID));
+        assert_eq!(surface.node(8).unwrap().parent, Some(ROOT_ID));
+        assert_eq!(surface.node(12).unwrap().parent, Some(8));
+        assert!(
+            surface
+                .drain_events()
+                .any(|event| matches!(event, SurfaceEvent::ListCellRetired(2, 1, false)))
+        );
+
+        surface.apply(MountBatch {
+            items: vec![
+                MountItem::Create {
+                    id: 16,
+                    kind: ViewKind::Modal,
+                },
+                MountItem::ModalConfig {
+                    id: 16,
+                    config: nsh_core::ModalConfig {
+                        animation: nsh_core::ModalAnimation::None,
+                        ..Default::default()
+                    },
+                },
+                MountItem::ProjectRoot {
+                    parent: ROOT_ID,
+                    id: 16,
+                    following: vec![],
+                },
+                MountItem::Create {
+                    id: 18,
+                    kind: ViewKind::Input,
+                },
+                MountItem::Frame { id: 18, frame },
+                MountItem::Insert {
+                    parent: 16,
+                    child: 18,
+                    before: None,
+                },
+            ],
+        });
+        surface.set_focus(Some(18));
+        surface.drain_events().for_each(drop);
+        surface.apply(MountBatch {
+            items: vec![MountItem::RetireListCell {
+                id: 2,
+                request: 2,
+                roots: group.clone(),
+            }],
+        });
+        for &id in &group {
+            assert_eq!(surface.node(id).unwrap().parent, None);
+        }
+        assert_eq!(surface.focused(), Some(18));
+        assert!(surface.drain_events().all(|event| !matches!(
+            event,
+            SurfaceEvent::Event(_, EventKind::Show | EventKind::Dismiss, _)
+        )));
+        surface.apply(MountBatch {
+            items: vec![MountItem::ListCellRetired {
+                roots: group.clone(),
+            }],
+        });
+        assert_eq!(surface.focused(), Some(18));
+        assert!(!surface.paint_ids().contains(&8));
+        surface.apply(MountBatch {
+            items: vec![
+                MountItem::ProjectRoot {
+                    parent: ROOT_ID,
+                    id: 2,
+                    following: vec![16],
+                },
+                MountItem::ProjectRoot {
+                    parent: ROOT_ID,
+                    id: 8,
+                    following: vec![16],
+                },
+                MountItem::ProjectRoot {
+                    parent: 8,
+                    id: 12,
+                    following: vec![],
+                },
+            ],
+        });
+        assert_eq!(surface.focused(), Some(18));
+        assert_eq!(surface.visible_ids().first(), Some(&16));
+        assert!(surface.drain_events().all(|event| !matches!(
+            event,
+            SurfaceEvent::Event(_, EventKind::Show | EventKind::Dismiss, _)
+        )));
+
+        surface.apply(MountBatch {
+            items: vec![MountItem::Remove { id: 16 }],
+        });
+        surface.set_focus(Some(14));
+        assert_eq!(surface.focused(), Some(14));
+        surface.apply(MountBatch {
+            items: vec![MountItem::Remove { id: 8 }],
+        });
+        assert_ne!(surface.focused(), Some(14));
+        assert!(!surface.visible_ids().contains(&14));
+    }
+
+    #[test]
+    fn projected_roots_choose_the_first_surviving_cross_cell_anchor() {
+        let frame = Bounds::new(Point::default(), Size::new(px(160.0), px(32.0)));
+        for parked in [vec![], vec![4], vec![6], vec![4, 6]] {
+            let mut surface = Surface::new(60, 20, CellMetrics::default());
+            for id in [2, 4, 6] {
+                create(&mut surface, id, ViewKind::View, ROOT_ID, frame);
+                create(&mut surface, id + 10, ViewKind::Input, id, frame);
+            }
+            create(&mut surface, 20, ViewKind::Input, ROOT_ID, frame);
+            surface.apply(MountBatch {
+                items: vec![
+                    MountItem::ProjectRoot {
+                        parent: ROOT_ID,
+                        id: 6,
+                        following: vec![],
+                    },
+                    MountItem::ProjectRoot {
+                        parent: ROOT_ID,
+                        id: 4,
+                        following: vec![6],
+                    },
+                    MountItem::ProjectRoot {
+                        parent: ROOT_ID,
+                        id: 2,
+                        following: vec![4, 6],
+                    },
+                ],
+            });
+            surface.set_focus(Some(20));
+            let mut items = vec![MountItem::RetireListCell {
+                id: 2,
+                request: 1,
+                roots: vec![2],
+            }];
+            for &id in &parked {
+                items.push(MountItem::RetireListCell {
+                    id,
+                    request: 1,
+                    roots: vec![id],
+                });
+            }
+            surface.apply(MountBatch { items });
+            surface.apply(MountBatch {
+                items: vec![MountItem::ProjectRoot {
+                    parent: ROOT_ID,
+                    id: 2,
+                    following: vec![4, 6],
+                }],
+            });
+            let order = |surface: &Surface| {
+                surface
+                    .node(ROOT_ID)
+                    .unwrap()
+                    .children
+                    .iter()
+                    .copied()
+                    .filter(|id| [2, 4, 6].contains(id))
+                    .collect::<Vec<_>>()
+            };
+            let expected: Vec<_> = [2, 4, 6]
+                .into_iter()
+                .filter(|id| !parked.contains(id))
+                .collect();
+            assert_eq!(order(&surface), expected, "parked {parked:?}");
+            let mut items = Vec::new();
+            for &id in &parked {
+                items.push(MountItem::ProjectRoot {
+                    parent: ROOT_ID,
+                    id,
+                    following: if id == 4 { vec![6] } else { vec![] },
+                });
+            }
+            surface.apply(MountBatch { items });
+            assert_eq!(order(&surface), vec![2, 4, 6]);
+
+            surface.set_focus(Some(14));
+            surface.apply(MountBatch {
+                items: vec![
+                    MountItem::RetireListCell {
+                        id: 2,
+                        request: 2,
+                        roots: vec![2],
+                    },
+                    MountItem::RetireListCell {
+                        id: 4,
+                        request: 2,
+                        roots: vec![4],
+                    },
+                ],
+            });
+            assert_eq!(surface.focused(), Some(14));
+            assert_eq!(order(&surface), vec![4, 6]);
+            surface.apply(MountBatch {
+                items: vec![MountItem::ProjectRoot {
+                    parent: ROOT_ID,
+                    id: 2,
+                    following: vec![4, 6],
+                }],
+            });
+            assert_eq!(order(&surface), vec![2, 4, 6]);
+            assert_eq!(surface.focused(), Some(14));
+        }
+    }
+
+    #[test]
+    fn an_unsupported_image_pick_answers_once_with_no_files() {
+        let mut surface = Surface::new(10, 5, CellMetrics::default());
+        surface.set_access(Access::all());
+        assert!(surface.access.allows_picker());
+        surface.apply(MountBatch {
+            items: vec![MountItem::Command {
+                id: ROOT_ID,
+                command: Command::PickImages {
+                    id: 42,
+                    request: nsh_core::picker::PickRequest::new(true, 2),
+                },
+            }],
+        });
+        let events: Vec<_> = surface.drain_events().collect();
+        assert!(matches!(
+            events.as_slice(),
+            [SurfaceEvent::Event(
+                ROOT_ID,
+                EventKind::Pick,
+                EventPayload::Picked { id: 42, files }
+            )] if files.is_empty()
+        ));
+        surface.tick(1.0);
+        assert!(surface.drain_events().next().is_none());
+    }
 
     fn create(
         surface: &mut Surface,

@@ -32,11 +32,13 @@ final class ModalHost {
     /** The content reaches under the status bar (else it starts below). */
     private boolean translucent;
     private boolean closing;
+    private Runnable pendingShow;
 
     ModalHost(Context context, Mounter mounter, int id) {
         this.mounter = mounter;
         this.id = id;
         root = new Box(context, mounter, id);
+        mounter.observeFocus(root);
         container = new Container(context);
         container.content.addView(root);
         mirror(mounter.rtl);
@@ -62,7 +64,10 @@ final class ModalHost {
     }
 
     void show() {
-        if (dialog != null && !closing) return;
+        if (dialog != null && !closing) {
+            dialog.show();
+            return;
+        }
         closing = false;
         Context context = mounter.context;
         dialog = new Dialog(context, android.R.style.Theme_DeviceDefault_Light_NoActionBar);
@@ -97,7 +102,8 @@ final class ModalHost {
         dialog.show();
         matchSystemBars(window);
         container.setAlpha(animation == 1 ? 0 : 1);
-        container.post(() -> {
+        pendingShow = () -> {
+            pendingShow = null;
             if (animation == 2) {
                 mounter.event(id, Native.SHOW);
                 return;
@@ -112,7 +118,20 @@ final class ModalHost {
                             mounter.event(id, Native.SHOW);
                         }
                     }).start();
-        });
+        };
+        container.post(pendingShow);
+    }
+
+    /** Retire this root without leaving its window eligible for input. */
+    void park() {
+        if (pendingShow != null) container.removeCallbacks(pendingShow);
+        pendingShow = null;
+        container.animate().setListener(null);
+        container.animate().cancel();
+        closing = false;
+        container.setAlpha(1);
+        container.setTranslationY(0);
+        if (dialog != null) dialog.hide();
     }
 
     /**
@@ -214,6 +233,12 @@ final class ModalHost {
                 }
             };
             addView(content);
+        }
+
+        @Override
+        public void onWindowFocusChanged(boolean focused) {
+            super.onWindowFocusChanged(focused);
+            mounter.publishFocusPath();
         }
 
         @Override

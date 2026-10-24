@@ -11,7 +11,11 @@
 //! 4. the hosted items ([`crate::view::Native`]) and the scroll indicator,
 //! 5. the border ([`crate::decor::draw_border`]),
 //!
-//! all inside an opacity layer when the view is translucent. A view whose
+//! all inside an opacity layer when the view is translucent, bounded by
+//! the area the subtree draws in (a layer is a surface of the size of its
+//! bounds and the clip: an unbounded one is as large as the window). A
+//! translucent view that paints only its background color takes no layer:
+//! the color is faded instead, which is the same. A view whose
 //! transform is projective (perspective, `rotateX` with a perspective) is
 //! drawn into an offscreen bitmap first and mapped with
 //! `DrawBitmap`'s perspective transform; every other transform is a 3x2
@@ -31,7 +35,7 @@
 use std::rc::Rc;
 
 use nsh_core::{
-    Bounds, Color, Points,
+    BlendMode, Bounds, Color, Points, ViewKind,
     geometry::{Point, Size},
 };
 use windows::{
@@ -63,7 +67,7 @@ use crate::{
     geom::Mat4,
     gfx::{self, Gfx},
     surface::Surface,
-    view::{Hosted, NshView},
+    view::{Hosted, NshView, ViewState},
 };
 
 /// A color as Direct2D's (straight alpha; Direct2D premultiplies).
@@ -98,12 +102,13 @@ pub(crate) const INFINITE: D2D_RECT_F = D2D_RECT_F {
 /// What was pushed on the context, to pop it the same way (and push it
 /// again: [`DrawCx::flatten`]).
 enum Pushed {
-    /// A layer: its opacity and mask, with the transform it was pushed
-    /// with.
+    /// A layer: its opacity, mask and content bounds, with the transform
+    /// it was pushed with.
     Layer {
         transform: Matrix3x2,
         opacity: f32,
         mask: Option<ID2D1Geometry>,
+        bounds: D2D_RECT_F,
     },
     /// An axis-aligned clip, with the transform it was pushed with.
     Clip {
@@ -141,6 +146,10 @@ pub(crate) struct DrawCx<'a> {
     pub(crate) backdrop: bool,
     /// The opacity of what is drawn now (the views' around it, multiplied).
     pub(crate) alpha: f32,
+    /// The opacity [`DrawCx::solid`] multiplies into its colors: a
+    /// translucent view that paints one shape is drawn with it instead of
+    /// a layer ([`draw_view`]).
+    fade: f32,
     /// The composed items (web views) reached in this pass, in paint
     /// order, with where they go.
     pub(crate) composed: Vec<Composed>,
@@ -208,6 +217,7 @@ impl<'a> DrawCx<'a> {
             offscreen: false,
             backdrop: true,
             alpha: 1.0,
+            fade: 1.0,
             composed: Vec::new(),
             split: None,
             clip_base: None,
@@ -362,10 +372,13 @@ impl<'a> DrawCx<'a> {
         }
     }
 
-    /// The pass's solid brush, set to `color`.
+    /// The pass's solid brush, set to `color` (faded by the view's
+    /// opacity when it is drawn without a layer).
     pub(crate) fn solid(&self, color: Color) -> &ID2D1SolidColorBrush {
+        let mut c = color_f(color);
+        c.a *= self.fade;
         // SAFETY: a COM call on a live brush.
-        unsafe { self.brush.SetColor(&color_f(color)) };
+        unsafe { self.brush.SetColor(&c) };
         &self.brush
     }
 
@@ -380,27 +393,36 @@ impl<'a> DrawCx<'a> {
 
     /// Draws what follows at `opacity`.
     pub(crate) fn push_opacity(&mut self, opacity: f32) {
-        self.push_layer(opacity, None);
+        self.push_layer(opacity, None, INFINITE);
+    }
+
+    /// Draws what follows at `opacity`, all of it inside `bounds` (current
+    /// coordinates): Direct2D sizes the layer's surface to them, where an
+    /// unbounded layer takes the whole clip (the window's, often).
+    pub(crate) fn push_opacity_within(&mut self, opacity: f32, bounds: D2D_RECT_F) {
+        self.push_layer(opacity, None, bounds);
     }
 
     /// Clips what follows to `geometry` (in the current coordinates).
     pub(crate) fn push_clip_geometry(&mut self, geometry: &ID2D1Geometry) {
-        self.push_layer(1.0, Some(geometry.clone()));
+        self.push_layer(1.0, Some(geometry.clone()), INFINITE);
     }
 
-    /// Pushes a layer of `opacity` masked by `mask` (current coordinates).
-    fn push_layer(&mut self, opacity: f32, mask: Option<ID2D1Geometry>) {
-        self.push_layer_raw(opacity, mask.as_ref());
+    /// Pushes a layer of `opacity` masked by `mask`, its content inside
+    /// `bounds` (current coordinates).
+    fn push_layer(&mut self, opacity: f32, mask: Option<ID2D1Geometry>, bounds: D2D_RECT_F) {
+        self.push_layer_raw(opacity, mask.as_ref(), &bounds);
         self.pushed.push(Pushed::Layer {
             transform: self.dc_transform(),
             opacity,
             mask,
+            bounds,
         });
     }
 
-    fn push_layer_raw(&self, opacity: f32, mask: Option<&ID2D1Geometry>) {
+    fn push_layer_raw(&self, opacity: f32, mask: Option<&ID2D1Geometry>, bounds: &D2D_RECT_F) {
         let mut params = D2D1_LAYER_PARAMETERS1 {
-            contentBounds: INFINITE,
+            contentBounds: *bounds,
             geometricMask: std::mem::ManuallyDrop::new(mask.cloned()),
             maskAntialiasMode: D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
             maskTransform: Matrix3x2::identity(),
@@ -445,10 +467,11 @@ impl<'a> DrawCx<'a> {
                     transform,
                     opacity,
                     mask,
+                    bounds,
                 } => {
                     // SAFETY: a COM call on the live context.
                     unsafe { self.dc.SetTransform(transform) };
-                    self.push_layer_raw(*opacity, mask.as_ref());
+                    self.push_layer_raw(*opacity, mask.as_ref(), bounds);
                 }
                 Pushed::Clip { transform, rect } => {
                     // SAFETY: COM calls on the live context; popped by
@@ -629,13 +652,24 @@ pub(crate) fn draw_view(cx: &mut DrawCx<'_>, view: &NshView, parent: Mat4, origi
         return draw_projected(cx, view, world, opacity);
     }
     let layered = crate::decor::layered(&state);
+    // Opacity applies to the view and its subtree as one group. When the
+    // view paints a single shape, fading that shape's color is the same
+    // and needs no layer.
+    let faded = opacity < 1.0 && !layered && paints_one_shape(view, &state);
     drop(state);
     cx.set_transform(world);
-    if opacity < 1.0 {
-        cx.push_opacity(opacity);
+    let grouped = opacity < 1.0 && !faded;
+    if grouped {
+        match drawn_area(view) {
+            Some(area) => cx.push_opacity_within(opacity, area),
+            None => cx.push_opacity(opacity),
+        }
     }
-    let alpha = cx.alpha;
+    let (alpha, fade) = (cx.alpha, cx.fade);
     cx.alpha *= opacity;
+    if faded {
+        cx.fade *= opacity;
+    }
     if layered {
         // Filters, a shadow of the content or a blend mode: the view is
         // drawn offscreen and composited as one image.
@@ -644,9 +678,81 @@ pub(crate) fn draw_view(cx: &mut DrawCx<'_>, view: &NshView, parent: Mat4, origi
         draw_content(cx, view, world);
     }
     cx.alpha = alpha;
-    if opacity < 1.0 {
+    cx.fade = fade;
+    if grouped {
         cx.pop();
     }
+}
+
+/// True if `view` (its `state`) paints at most one shape, its background
+/// color, and nothing else: no children, content, hosted items, border,
+/// outline, shadow or effects. Its opacity is then its color's alpha.
+fn paints_one_shape(view: &NshView, state: &ViewState) -> bool {
+    matches!(state.kind, ViewKind::View)
+        && state.text.is_none()
+        && state.image.is_none()
+        && state.canvas.is_none()
+        && state.input.is_none()
+        && state.scroll.is_none()
+        && state.natives.is_empty()
+        && state.style.effects.is_none()
+        && state.style.blend_mode == BlendMode::Normal
+        && !state.shadow().is_visible()
+        && !state.borders().is_visible()
+        && !state.style.outline.is_visible()
+        && view.with_children(<[NshView]>::is_empty)
+}
+
+/// The area `view` and its subtree draw in, in its coordinates: its
+/// bounds, out by its shadows and outline, with what its children draw
+/// unless it clips them. `None` when that is not known: an item it hosts
+/// unclipped (they may draw outside their rectangle), a 3D transform
+/// below it.
+fn drawn_area(view: &NshView) -> Option<D2D_RECT_F> {
+    let state = view.state();
+    let (w, h) = (state.frame.size.width.0, state.frame.size.height.0);
+    // A point more for the antialiased edges.
+    let o = crate::decor::outset(&state) + 1.0;
+    let mut area = D2D_RECT_F {
+        left: -o,
+        top: -o,
+        right: w + o,
+        bottom: h + o,
+    };
+    if state.clips() {
+        return Some(area);
+    }
+    if !state.natives.is_empty() {
+        return None;
+    }
+    view.with_children(|children| {
+        for child in children {
+            let local = {
+                let s = child.state();
+                if s.style.hidden || s.concealed || s.opacity() <= 0.0 {
+                    continue;
+                }
+                let origin = state.child_origin(s.frame, s.shift);
+                let mut local = Mat4::new().translate(origin.0, origin.1);
+                if let Some(t) = s.transform() {
+                    local = Mat4::mul(&t, &local);
+                }
+                local
+            };
+            if !local.is_affine() {
+                return None;
+            }
+            let a = drawn_area(child)?;
+            let b = crate::compose::map_bounds(&local.to_3x2(), &a);
+            area = D2D_RECT_F {
+                left: area.left.min(b.left),
+                top: area.top.min(b.top),
+                right: area.right.max(b.right),
+                bottom: area.bottom.max(b.bottom),
+            };
+        }
+        Some(area)
+    })
 }
 
 /// Draws what `view` draws and its subtree at `world` (set on the context):
@@ -1087,5 +1193,123 @@ pub(crate) fn snapshot(surface: &Rc<Surface>, scale: f32) -> windows::core::Resu
             height: px.1,
             data,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use nsh_core::{Edges, NodeId, TransformKind};
+
+    use super::*;
+    use crate::geom::rect;
+
+    fn view(
+        parent: Option<&NshView>,
+        id: NodeId,
+        kind: ViewKind,
+        frame: Bounds<Points>,
+    ) -> NshView {
+        let v = NshView::new(id, kind);
+        v.state_mut().frame = frame;
+        if let Some(parent) = parent {
+            v.insert_before(parent, None);
+        }
+        v
+    }
+
+    /// A 16-point box with a color and rounded corners, as an animated
+    /// dot or a highlighted cell.
+    fn dot(parent: Option<&NshView>, id: NodeId) -> NshView {
+        let v = view(parent, id, ViewKind::View, rect(0.0, 0.0, 16.0, 16.0));
+        {
+            let mut s = v.state_mut();
+            s.style.background_color = Color(0x3366_ccff);
+            s.style.border_radius = Points(2.0);
+            s.style.opacity = 0.5;
+        }
+        v
+    }
+
+    fn one_shape(v: &NshView) -> bool {
+        paints_one_shape(v, &v.state())
+    }
+
+    fn area(v: &NshView) -> (f32, f32, f32, f32) {
+        let a = drawn_area(v).expect("a known area");
+        (a.left, a.top, a.right, a.bottom)
+    }
+
+    #[test]
+    fn a_box_of_one_color_fades_its_color() {
+        let v = dot(None, 2);
+        assert!(one_shape(&v));
+        v.state_mut().style.borders.widths = Edges::all(Points(1.0));
+        v.state_mut().style.borders.colors = [Color::BLACK; 4];
+        // The border overlaps the background: only a layer fades both as one.
+        assert!(!one_shape(&v));
+
+        let v = dot(None, 4);
+        v.state_mut().style.shadow.opacity = 1.0;
+        assert!(!one_shape(&v));
+
+        let v = dot(None, 6);
+        v.state_mut().style.outline.width = Points(2.0);
+        v.state_mut().style.outline.color = Color::BLACK;
+        assert!(!one_shape(&v));
+
+        let parent = dot(None, 8);
+        dot(Some(&parent), 10);
+        // Its children are faded with it as one group.
+        assert!(!one_shape(&parent));
+
+        let text = view(None, 12, ViewKind::Text, rect(0.0, 0.0, 16.0, 16.0));
+        assert!(!one_shape(&text));
+    }
+
+    #[test]
+    fn a_layer_covers_the_bounds_and_the_shadow() {
+        let v = dot(None, 2);
+        assert_eq!(area(&v), (-1.0, -1.0, 17.0, 17.0));
+        // React Native's shadow: offset (0, -3), radius 3.
+        v.state_mut().style.shadow.opacity = 1.0;
+        assert_eq!(area(&v), (-13.0, -13.0, 29.0, 29.0));
+    }
+
+    #[test]
+    fn a_layer_covers_what_the_children_draw() {
+        let parent = view(None, 2, ViewKind::View, rect(0.0, 0.0, 100.0, 100.0));
+        let a = view(
+            Some(&parent),
+            4,
+            ViewKind::View,
+            rect(80.0, 90.0, 40.0, 20.0),
+        );
+        let b = view(Some(&parent), 6, ViewKind::View, rect(0.0, 0.0, 10.0, 10.0));
+        b.state_mut()
+            .style
+            .transform
+            .push(TransformKind::TranslateX, -50.0);
+        assert_eq!(area(&parent), (-51.0, -1.0, 121.0, 111.0));
+
+        // Hidden children draw nothing.
+        a.state_mut().style.hidden = true;
+        assert_eq!(area(&parent), (-51.0, -1.0, 101.0, 101.0));
+
+        // Clipped children stay inside.
+        a.state_mut().style.hidden = false;
+        parent.state_mut().style.overflow_hidden = true;
+        assert_eq!(area(&parent), (-1.0, -1.0, 101.0, 101.0));
+    }
+
+    #[test]
+    fn a_layer_is_unbounded_when_the_area_is_not_known() {
+        let parent = view(None, 2, ViewKind::View, rect(0.0, 0.0, 100.0, 100.0));
+        let child = view(Some(&parent), 4, ViewKind::View, rect(0.0, 0.0, 50.0, 50.0));
+        {
+            let mut s = child.state_mut();
+            s.style.transform.push(TransformKind::Perspective, 300.0);
+            s.style.transform.push(TransformKind::RotateY, 60.0);
+        }
+        assert!(drawn_area(&parent).is_none());
     }
 }

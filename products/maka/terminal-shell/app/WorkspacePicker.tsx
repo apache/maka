@@ -19,10 +19,20 @@
 
 import { createText, errorText, UiError } from './text';
 import { tr } from './locale';
-import { batch, cleanup, computed, effect, Input, inputAction, signal, Text, View } from 'nsh';
+import {
+  batch,
+  cleanup,
+  computed,
+  effect,
+  Input,
+  inputAction,
+  signal,
+  Text,
+  View,
+  List,
+} from 'nsh';
 import type { Signal, YNode } from 'nsh';
 import { Button, Dialog } from 'nsh/base';
-import { List } from 'nsh/list';
 import { keymap } from 'nsh/keymap';
 import { windowSize } from 'nsh/device';
 import { host } from './host';

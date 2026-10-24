@@ -31,6 +31,8 @@ pub struct SessionExecution {
 pub struct CatalogMessage {
     pub recorded_at: u64,
     pub preview: Option<String>,
+    /// Durable visible tail in sequence/ordinal order, independent of preview clocks.
+    pub tail_message_id: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -141,6 +143,9 @@ pub(super) async fn last_message(
             SELECT preview FROM catalog_messages INDEXED BY catalog_latest_preview
             WHERE session_id = ?1 AND preview IS NOT NULL
             ORDER BY message_at DESC, sequence DESC, ordinal DESC LIMIT 1
+         ), (
+            SELECT message_id FROM catalog_messages INDEXED BY catalog_visible_tail
+            WHERE session_id = ?1 ORDER BY sequence DESC, ordinal DESC LIMIT 1
          ) FROM catalog_messages INDEXED BY catalog_latest_message WHERE session_id = ?1
          ORDER BY message_at DESC, sequence DESC, ordinal DESC LIMIT 1",
     )
@@ -151,6 +156,7 @@ pub(super) async fn last_message(
         Ok(CatalogMessage {
             recorded_at: number(&row, 0)?,
             preview: row.try_get(1)?,
+            tail_message_id: row.try_get(2)?,
         })
     })
     .transpose()

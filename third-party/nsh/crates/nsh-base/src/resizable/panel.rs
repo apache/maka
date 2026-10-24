@@ -71,6 +71,8 @@ pub enum ResizablePanelGroupEvent {
     /// panel along the axis, in the order they are laid out (left to
     /// right, top to bottom). Pass them back as the panels' `size` to keep the layout
     /// (when the app makes the group again, saved with its settings).
+    /// Changing the group's bounds also ends an active drag and reports
+    /// its last applied sizes, so the app retains the user's preference.
     #[args(sizes)]
     Resize(Vec<Points>),
 }
@@ -126,7 +128,14 @@ pub fn ResizablePanelGroup(
         })
         .on_layout({
             let group = group.clone();
-            move |frame: &Bounds<Points>| group.edit(|m| m.set_container(*frame))
+            move |frame: &Bounds<Points>| {
+                if let Some((sizes, panels)) = group.edit(|m| m.set_container(*frame)) {
+                    for (emit, size) in panels {
+                        emit(size);
+                    }
+                    cx.emit(ResizablePanelGroupEvent::Resize(sizes));
+                }
+            }
         })
         .child(props.children)
         .child(each(
@@ -492,8 +501,15 @@ impl Model {
         self.sync();
     }
 
-    fn set_container(&mut self, frame: Bounds<Points>) {
+    fn set_container(&mut self, frame: Bounds<Points>) -> Option<Report> {
+        if self.container == Some(frame) {
+            return None;
+        }
+        let ended = self.end_drag();
+        // The captured offsets and expected sizes belong to the old frame.
+        self.expected = None;
         self.container = Some(frame);
+        ended
     }
 
     /// The smallest `entry` gets: its `minSize`, unless the group is too

@@ -50,12 +50,7 @@ pub fn bundle() {
         .unwrap();
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=build/product.rs");
-    println!("cargo:rustc-check-cfg=cfg(maka_embedded_product)");
-    if env::var("PROFILE").as_deref() != Ok("release") {
-        return;
-    }
     let output = std::path::PathBuf::from(env::var_os("OUT_DIR").unwrap());
-    println!("cargo:rustc-cfg=maka_embedded_product");
     println!("cargo:rerun-if-env-changed=MAKA_JS_DEPS");
     let dependencies = env::var_os("MAKA_JS_DEPS")
         .map(std::path::PathBuf::from)

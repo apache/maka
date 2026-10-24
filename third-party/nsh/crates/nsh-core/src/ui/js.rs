@@ -118,6 +118,19 @@ pub trait JsHost {
     fn set_field(&self, obj: JsRaw, key: &str, value: JsRaw) -> Result<(), PropError>;
     /// JSON as a JS value.
     fn json(&self, v: &JsonValue) -> Result<JsRaw, PropError>;
+    /// A `File` named `name` of type `mime` holding `data` (shared, not
+    /// copied), last changed at `last_modified` (`None`: now). A host
+    /// without `File` refuses.
+    fn new_file(
+        &self,
+        data: &crate::ImageData,
+        mime: &str,
+        name: &str,
+        last_modified: Option<std::time::SystemTime>,
+    ) -> Result<JsRaw, PropError> {
+        let _ = (data, mime, name, last_modified);
+        Err(PropError("a `File` cannot be made here".into()))
+    }
     /// The JS object of `instance`: the one it has, or a new one of its
     /// class.
     fn wrap(&self, instance: Rc<dyn ClassInstance>) -> Result<JsRaw, PropError>;

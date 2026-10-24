@@ -71,7 +71,7 @@ Install Rust through [rustup](https://rustup.rs). `nsh` builds a Rust app's runn
 
 ```sh
 rustup target add aarch64-apple-ios-sim aarch64-apple-ios aarch64-apple-ios-macabi   # iOS simulator, devices, Mac Catalyst
-rustup target add aarch64-linux-android x86_64-linux-android                         # Android (with the SDK's NDK)
+rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android # Android (with the SDK's NDK)
 rustup target add wasm32-unknown-unknown                                             # the web
 ```
 

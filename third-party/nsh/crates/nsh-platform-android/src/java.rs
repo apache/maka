@@ -35,6 +35,8 @@ pub(crate) struct Java {
     pub(crate) view_read_asset: JMethodID,
     pub(crate) view_request_frame: JMethodID,
     pub(crate) view_app_stopped: JMethodID,
+    pub(crate) view_host_message: JMethodID,
+    pub(crate) view_open_url_message: JMethodID,
     #[cfg_attr(not(feature = "dev"), allow(dead_code))]
     pub(crate) view_dev_status: JMethodID,
     #[cfg_attr(not(feature = "dev"), allow(dead_code))]
@@ -102,6 +104,16 @@ pub(crate) fn init(vm: JavaVM) -> jni::errors::Result<()> {
         view_read_asset: env.get_method_id(view_class, "readAsset", "(Ljava/lang/String;)[B")?,
         view_request_frame: env.get_method_id(view_class, "requestJsFrame", "()V")?,
         view_app_stopped: env.get_method_id(view_class, "appStopped", "()V")?,
+        view_host_message: env.get_method_id(
+            view_class,
+            "hostMessage",
+            "(Ljava/lang/String;Ljava/lang/String;J)V",
+        )?,
+        view_open_url_message: env.get_method_id(
+            view_class,
+            "openUrlMessage",
+            "(Ljava/lang/String;J)V",
+        )?,
         view_dev_status: env.get_method_id(view_class, "devStatus", "(Ljava/lang/String;)V")?,
         view_dev_error: env.get_method_id(
             view_class,

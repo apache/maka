@@ -224,6 +224,50 @@ impl ApplicationHost {
         path.validate().map_err(|_| "Invalid workspace path")?;
         files::path_label(&path)
     }
+    /// Full interface scaling is available only on the pixel renderer.
+    #[getter]
+    pub fn ui_scale_supported(&self) -> bool {
+        engine_context::<crate::terminal::UiScaleControl>().is_some()
+    }
+
+    /// Re-layout and rasterize at the requested density, using the same input geometry.
+    pub fn preview_ui_scale(&self, scale: f32) -> Result<(), String> {
+        engine_context::<crate::terminal::UiScaleControl>()
+            .ok_or("interface scale is controlled by this terminal's font size")?
+            .preview(scale)
+    }
+
+    /// Physical terminal activity, independent of any focused input field.
+    #[getter]
+    pub fn foreground(&self) -> bool {
+        engine_context::<crate::terminal::activation::Activation>()
+            .is_some_and(|activation| activation.foreground())
+    }
+
+    /// Observe this terminal's current activity for the calling view's lifetime.
+    pub fn watch_foreground(&self, callback: Callback<bool>, cx: CallCx<'_>) {
+        let Some(activation) = engine_context::<crate::terminal::activation::Activation>() else {
+            callback.post(false);
+            return;
+        };
+        let mut changes = activation.subscribe();
+        let stopped = tokio_util::sync::CancellationToken::new();
+        let stop = stopped.clone();
+        let cleanup = cx.on_cleanup(move || stop.cancel());
+        cx.start(async move {
+            while !stopped.is_cancelled() {
+                let active = *changes.borrow_and_update();
+                callback.post(active);
+                tokio::select! {
+                    biased;
+                    _ = stopped.cancelled() => break,
+                    changed = changes.changed() => if changed.is_err() { break },
+                }
+            }
+            cleanup.release();
+        });
+    }
+
     /// The native startup language, using the same resolver as the desktop.
     #[getter]
     pub fn system_locale(&self) -> String {

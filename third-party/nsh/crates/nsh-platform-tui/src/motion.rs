@@ -351,7 +351,9 @@ impl Timing {
             LayoutCurve::Linear => Curve::Linear,
             LayoutCurve::EaseIn => Curve::Bezier([0.42, 0.0, 1.0, 1.0]),
             LayoutCurve::EaseOut => Curve::Bezier([0.0, 0.0, 0.58, 1.0]),
-            LayoutCurve::EaseInEaseOut => Curve::Bezier([0.42, 0.0, 0.58, 1.0]),
+            LayoutCurve::EaseInEaseOut | LayoutCurve::Keyboard => {
+                Curve::Bezier([0.42, 0.0, 0.58, 1.0])
+            }
             LayoutCurve::Spring { damping } => Curve::Spring(damping),
         };
         Self::new(transition.delay_ms, transition.duration_ms, curve, started)

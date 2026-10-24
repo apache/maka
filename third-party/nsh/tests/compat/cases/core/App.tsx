@@ -11,6 +11,7 @@ import CoreInputAction from "./core-input-action";
 import CoreErrorBoundary from "./core-error-boundary";
 import CoreList from "./core-list";
 import CoreListBinding from "./core-list-binding";
+import CoreMotion from "./core-motion";
 import CoreOverlay from "./core-overlay";
 import CorePrimitives from "./core-primitives";
 import CoreReactive from "./core-reactive";
@@ -28,6 +29,7 @@ const cases: Record<string, () => JSX.Element> = {
   "core-error-boundary": CoreErrorBoundary,
   "core-list": CoreList,
   "core-list-binding": CoreListBinding,
+  "core-motion": CoreMotion,
   "core-overlay": CoreOverlay,
   "core-primitives": CorePrimitives,
   "core-reactive": CoreReactive,

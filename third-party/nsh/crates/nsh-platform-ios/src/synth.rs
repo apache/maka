@@ -272,7 +272,7 @@ pub(crate) fn key(window: &UIWindow, usage: u16, down: bool) -> bool {
 }
 
 /// The window's first responder (the focused input).
-fn first_responder(window: &UIWindow) -> Option<Retained<AnyObject>> {
+pub(crate) fn first_responder(window: &UIWindow) -> Option<Retained<AnyObject>> {
     // SAFETY: UIWindow's `firstResponder` (private: the responder chain's).
     unsafe { msg_send![window, firstResponder] }
 }

@@ -17,11 +17,14 @@
  * under the License.
  */
 
-//! Print the terminal's native Markdown module declarations for TypeScript.
+export type CommandEntry = {
+  id: string;
+  title: string;
+  detail?: string;
+  hint?: string;
+  trigger?: string;
+  takesArgument?: boolean;
+  run(argument?: string): void | boolean | Promise<void | boolean>;
+};
 
-fn main() {
-    print!(
-        "{}",
-        nsh_core::ui::declarations(&maka_terminal_shell::markdown::registry(), &[])
-    );
-}
+export type ComposerCommand = CommandEntry & { trigger: string };

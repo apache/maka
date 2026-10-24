@@ -55,13 +55,11 @@ fn terminal_fixture() {
     );
     let mut host = nsh_core::ui::Registry::ui_set("maka/host");
     host.native_values(&["host", "AttachmentPicker", "TerminalGrid"]);
-    let mut markdown = nsh_core::ui::Registry::ui_set("maka/markdown");
-    markdown.native_values(&["markdown"]);
     let module = nsh_bundler::bundle(&nsh_bundler::BundleOptions {
         entry: fixture,
         minify: false,
         split: false,
-        ui_sets: vec![nsh_base::registry().into(), host.into(), markdown.into()],
+        ui_sets: vec![nsh_base::registry().into(), host.into()],
     })
     .expect("bundle attachment draft fixture");
     let output = std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("build output"));

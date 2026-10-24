@@ -206,7 +206,7 @@ fn configuration(
         // APPLICATION is compiled into this trusted executable; only the
         // interpreter stack is bounded, as for other standalone NSH apps.
         limits: Limits::standalone(),
-        ui_sets: vec![nsh_base::registry(), registry, crate::markdown::registry()],
+        ui_sets: vec![nsh_base::registry(), registry],
         runtime: Some(runtime),
         ..EngineConfig::new(app)
     }

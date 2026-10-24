@@ -959,14 +959,7 @@ mod tests {
     }
 
     fn bundled_settings() -> maka_plugin_core::package::PackageSelection {
-        #[cfg(maka_embedded_product)]
         let bundle = PathBuf::from(env!("OUT_DIR")).join("product");
-        #[cfg(not(maka_embedded_product))]
-        let bundle = std::env::var_os("MAKA_PRODUCT_BUNDLE")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../bundle/dist"))
-            });
         Package::read_from(&bundle.join("packages/settings"))
             .unwrap()
             .application_ref()

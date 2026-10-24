@@ -3218,11 +3218,15 @@ name = "nsh-core"
 version = "0.2.0"
 dependencies = [
  "cap-std",
+ "crc32fast",
  "flate2",
  "futures-util",
+ "httpdate",
+ "imagesize 0.15.0",
  "libc",
  "log",
  "nsh-macros",
+ "regex",
  "resvg",
  "rustc-hash",
  "serde",
@@ -3234,6 +3238,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.28.0",
  "unicode-linebreak",
+ "unicode-segmentation",
  "url",
  "windows-sys 0.61.2",
 ]
@@ -3517,6 +3522,7 @@ dependencies = [
  "nsh-testing",
  "quickjs-jit",
  "rustc-hash",
+ "serde",
  "serde_json",
  "ttf-parser",
 ]

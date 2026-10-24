@@ -355,6 +355,16 @@ pub(crate) const NODE_METHODS: &[(&str, c_int, &str, &str)] = &[
         decl!("Inputs: selects `start..end` (UTF-16 units; a caret without `end`)."),
     ),
     (
+        "replaceRange",
+        1,
+        decl!(
+            "(edit: { start: number; end: number; text: string; expectedText: string; expectedSelection: { start: number; end: number } }): void"
+        ),
+        decl!(
+            "Inputs: atomically replaces a UTF-16 range as one undoable edit while the observed text and selection still match. GPUI and terminal backends."
+        ),
+    ),
+    (
         "command",
         2,
         decl!("(name: string, args?: unknown): void"),
@@ -1277,6 +1287,7 @@ fn set_prop(
         "pinch",
         "rotation",
         "scrollValue",
+        "stickyHeaderOffset",
         "tooltip",
     ]
     .iter()
@@ -4137,6 +4148,7 @@ mod tests {
             const i = element("input");
             i.focus();
             i.setSelection(2);
+            i.replaceRange({ start: 0, end: 2, text: "😀\nskill", expectedText: "ab", expectedSelection: { start: 2, end: 2 } });
             globalThis.keep = [s, i];
             "#,
         )
@@ -4153,6 +4165,7 @@ mod tests {
                 "Command { id: 2, command: ScrollToIndex { index: 7, animated: false, automatic: true, view_position: 50%, view_offset: 0pt } }",
                 "Command { id: 4, command: Focus }",
                 "Command { id: 4, command: SetSelection { start: 2, end: 2 } }",
+                r#"Command { id: 4, command: ReplaceRange { range: 0..2, text: "😀\nskill", expected_text: "ab", expected_selection: 2..2, count: 0 } }"#,
             ]
         );
     }

@@ -224,6 +224,16 @@ impl PressRecognizer {
         self.ivars().link.borrow().clone()
     }
 
+    /// Invalidates delayed press callbacks before a virtual cell detaches.
+    /// The mounter reports any final press-out directly, before its ACK.
+    pub(crate) fn retire(&self) -> Option<Option<TextLink>> {
+        let ivars = self.ivars();
+        ivars.generation.set(ivars.generation.get() + 1);
+        let pressed = ivars.pressed.replace(false);
+        let link = ivars.link.borrow_mut().take();
+        pressed.then_some(link)
+    }
+
     /// The touch ended on the view: reports the press out, and returns
     /// true if this was a press (not a long press).
     pub(crate) fn release(&self) -> bool {

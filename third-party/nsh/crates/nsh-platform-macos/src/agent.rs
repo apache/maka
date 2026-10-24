@@ -203,6 +203,12 @@ impl Native for MacNative {
         self.on_main(move |_, window| synth::type_text(window, &text));
     }
 
+    fn paste(&self, content: &nsh_core::PasteEvent) -> Result<(), String> {
+        let content = content.clone();
+        self.on_main(move |_, window| crate::text_input::test_paste(window, &content))
+            .unwrap_or_else(|| Err("the window is gone".into()))
+    }
+
     fn key(&self, key: Key) {
         let name = match key {
             Key::Return => "Return",

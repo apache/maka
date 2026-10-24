@@ -318,6 +318,37 @@ async fn read_file_keeps_one_capture_across_chunks_and_rejects_replaced_rereads(
         observed.resources.finish().await.unwrap();
         assert!(observed.resources.is_idle());
         assert_eq!(std::fs::read(&file).unwrap(), new.as_bytes());
+        // More than the real subscription queue's 16 byte-quantum batches:
+        // stopping after the first item must release the filesystem producer.
+        let directory = f.workspace.join("candidate-scan");
+        std::fs::create_dir(&directory).unwrap();
+        let suffix = "x".repeat(160);
+        let first_name = format!("candidate-0000-{suffix}.txt");
+        let first_path = format!("candidate-scan/{first_name}");
+        let entry_bytes = serde_json::to_vec(&json!({"path":path(&first_path),"kind":"file"})).unwrap().len();
+        for index in 0..=old.len() / entry_bytes {
+            std::fs::write(directory.join(format!("candidate-{index:04}-{suffix}.txt")), "").unwrap();
+        }
+        let observed = scope(&f.issuer, true);
+        let mut stream = f.app.client().subscribe(f.binding(2).await, "fileCandidates".into(), json!({"sessionId":session,"directory":path("candidate-scan"),"query":""}), observed.clone(), Attachments::new().into()).await.unwrap();
+        let first = item(&mut stream).await;
+        assert_eq!(first["entries"][0], json!({"path":path(&first_path),"kind":"file"}));
+        stream.cancel();
+        while stream.recv().await.is_some() {}
+        let completed = stream.completion().await;
+        assert!(completed.result.is_err());
+        completed.cleanup.unwrap();
+        observed.resources.finish().await.unwrap();
+        assert!(observed.resources.is_idle());
+        let observed = scope(&f.issuer, true);
+        let mut stream = f.app.client().subscribe(f.binding(2).await, "fileCandidates".into(), json!({"sessionId":session,"directory":path("candidate-scan"),"query":"candidate-0000-"}), observed.clone(), Attachments::new().into()).await.unwrap();
+        assert_eq!(item(&mut stream).await, json!({"entries":[{"path":path(&first_path),"kind":"file"}]}));
+        assert!(stream.recv().await.is_none());
+        let completed = stream.completion().await;
+        assert_eq!(completed.result.unwrap(), Value::Null);
+        completed.cleanup.unwrap();
+        observed.resources.finish().await.unwrap();
+        assert!(observed.resources.is_idle());
         f.app.shutdown().await.unwrap();
         f.config.shutdown().await.unwrap();
     }).await.unwrap();

@@ -10,7 +10,7 @@ use nsh_core::{
     ApproxTextEngine, EventKind, EventPayload, MountBatch, MountItem, PayloadValue, Size,
     ui::{Root, prelude::*},
 };
-use nsh_engine::{App, Engine, EngineConfig, Environment};
+use nsh_engine::{App, Engine, EngineConfig, EngineControl, Environment};
 
 use crate::{
     ChannelSink,
@@ -33,11 +33,14 @@ fn start(root: Root) -> (Engine, Receiver<MountBatch>) {
         ui_sets: Vec::new(),
         runtime: None,
         data_dir: None,
+        cache: nsh_engine::CacheOptions::off(),
         storage: None,
         clock: Default::default(),
         context: Default::default(),
         pinned: Default::default(),
         clipboard: None,
+        host: Default::default(),
+        picker: None,
     };
     (
         Engine::start(config, || ApproxTextEngine, ChannelSink(tx)).unwrap(),
@@ -55,10 +58,12 @@ struct Tree {
     /// Every text shown, in order.
     history: Vec<String>,
     commands: Vec<(u32, nsh_core::Command)>,
+    creates: usize,
 }
 
 impl Tree {
-    fn apply(&mut self, batch: &MountBatch) {
+    fn apply(&mut self, batch: &MountBatch, control: &EngineControl) {
+        let mut retired = Vec::new();
         for item in &batch.items {
             match item {
                 MountItem::Text { id, text, .. } => {
@@ -69,27 +74,63 @@ impl Tree {
                 MountItem::Insert { parent, child, .. } => {
                     self.parents.insert(*child, *parent);
                 }
+                MountItem::ProjectRoot { parent, id, .. } => {
+                    // This projection records attachment, not sibling order;
+                    // `following` changes no state used by these assertions.
+                    self.parents.insert(*id, *parent);
+                }
                 MountItem::Create { id, kind, .. } => {
                     self.kinds.insert(*id, format!("{kind:?}"));
+                    self.creates += 1;
                 }
+                MountItem::Remove { id } => {
+                    self.parents.remove(id);
+                }
+                MountItem::RetireListCell { id, request, roots } => {
+                    // This fixture has no focus. Detach every native root,
+                    // keeping its owner and descendants alive, before one ACK.
+                    for root in roots {
+                        self.parents.remove(root);
+                    }
+                    retired.push((*id, *request));
+                }
+                // Native applied the detach before sending its ACK.
+                MountItem::ListCellRetired { .. } => {}
                 MountItem::Delete { id } => {
                     self.texts.retain(|t| t.0 != *id);
                     self.parents.remove(id);
+                    self.kinds.remove(id);
                 }
                 MountItem::Command { id, command } => self.commands.push((*id, command.clone())),
                 _ => {}
             }
         }
-    }
-
-    fn drain(&mut self, rx: &Receiver<MountBatch>) {
-        while let Ok(batch) = rx.recv_timeout(Duration::from_millis(300)) {
-            self.apply(&batch);
+        for (id, request) in retired {
+            control.retire_list_cell(id, request, true);
         }
     }
 
+    fn drain(&mut self, rx: &Receiver<MountBatch>, control: &EngineControl) {
+        while let Ok(batch) = rx.recv_timeout(Duration::from_millis(300)) {
+            self.apply(&batch, control);
+        }
+    }
+
+    fn attached(&self, mut id: u32) -> bool {
+        while id != nsh_core::ROOT_ID {
+            let Some(parent) = self.parents.get(&id) else {
+                return false;
+            };
+            id = *parent;
+        }
+        true
+    }
+
     fn find(&self, label: &str) -> Option<u32> {
-        self.texts.iter().find(|t| t.1 == label).map(|t| t.0)
+        self.texts
+            .iter()
+            .find(|t| t.1 == label && self.attached(t.0))
+            .map(|t| t.0)
     }
 
     fn shows(&self, label: &str) -> bool {
@@ -175,8 +216,8 @@ fn rust_lists_have_headers_footers_separators_and_empty_views() {
             _ => None,
         })
         .expect("a list");
-    tree.apply(&first);
-    tree.drain(&rx);
+    tree.apply(&first, &engine.control());
+    tree.drain(&rx, &engine.control());
     for label in ["header 0", "footer", "row 0", "row 1"] {
         assert!(tree.shows(label), "{label}: {:?}", tree.texts);
     }
@@ -200,7 +241,7 @@ fn rust_lists_have_headers_footers_separators_and_empty_views() {
     engine
         .control()
         .dispatch_event(header, EventKind::Press, EventPayload::None);
-    tree.drain(&rx);
+    tree.drain(&rx, &engine.control());
     assert_eq!(tree.find("header 1"), Some(header), "{:?}", tree.texts);
     // Rows and their separators share the cells, but the last row's.
     let children = |cell: u32| tree.parents.values().filter(|&&p| p == cell).count();
@@ -218,7 +259,7 @@ fn rust_lists_have_headers_footers_separators_and_empty_views() {
     };
     viewable(2.0, 9.0);
     viewable(3.0, 10.0);
-    tree.drain(&rx);
+    tree.drain(&rx, &engine.control());
     assert!(tree.shows("visible 3-10"), "{:?}", tree.texts);
     assert!(
         !tree.history.iter().any(|t| t == "visible 2-9"),
@@ -229,13 +270,13 @@ fn rust_lists_have_headers_footers_separators_and_empty_views() {
     engine
         .control()
         .dispatch_event(list, EventKind::LoadMore, EventPayload::None);
-    tree.drain(&rx);
+    tree.drain(&rx, &engine.control());
     assert!(tree.shows("nothing"), "{:?}", tree.texts);
     let nothing = tree.find("nothing").unwrap();
     engine
         .control()
         .dispatch_event(nothing, EventKind::Press, EventPayload::None);
-    tree.drain(&rx);
+    tree.drain(&rx, &engine.control());
     assert!(
         tree.shows("row 2") && !tree.shows("nothing"),
         "{:?}",
@@ -260,8 +301,8 @@ fn rust_lists_in_a_pages_viewport_scroll_with_the_page() {
     let (engine, rx) = start(Root::of::<Page>());
     let mut tree = Tree::default();
     let first = rx.recv_timeout(Duration::from_secs(5)).unwrap();
-    tree.apply(&first);
-    tree.drain(&rx);
+    tree.apply(&first, &engine.control());
+    tree.drain(&rx, &engine.control());
     // One scroll view, the page's; the list is a view in it.
     let scrolls: Vec<u32> = tree
         .kinds
@@ -276,7 +317,7 @@ fn rust_lists_in_a_pages_viewport_scroll_with_the_page() {
     let rows = |tree: &Tree| {
         tree.texts
             .iter()
-            .filter(|t| t.1.starts_with("row "))
+            .filter(|t| t.1.starts_with("row ") && tree.attached(t.0))
             .count()
     };
     assert!(
@@ -293,7 +334,7 @@ fn rust_lists_in_a_pages_viewport_scroll_with_the_page() {
     // The page scrolls 2000: the list's rows 23 to 87 render, in the
     // cells there were and a few more.
     engine.control().scroll(page, point(px(0.0), px(2000.0)), 0);
-    tree.drain(&rx);
+    tree.drain(&rx, &engine.control());
     assert!(
         tree.shows("row 23") && tree.shows("row 87"),
         "{:?}",
@@ -301,6 +342,27 @@ fn rust_lists_in_a_pages_viewport_scroll_with_the_page() {
     );
     assert!(!tree.shows("row 88"));
     assert_eq!(rows(&tree), 87 - 23 + 1);
+    // Rows 23..37 overlap the first window: the old and new native
+    // owners coexist until the detach ACK, so their union is 0..87.
+    let owners = |tree: &Tree| {
+        tree.texts
+            .iter()
+            .filter(|t| t.1.starts_with("row "))
+            .count()
+    };
+    assert_eq!(owners(&tree), 88);
+    let (creates, nodes) = (tree.creates, tree.kinds.len());
+    for y in [0.0, 2000.0, 0.0, 2000.0] {
+        engine.control().scroll(page, point(px(0.0), px(y)), 0);
+        tree.drain(&rx, &engine.control());
+        let (first, last) = if y == 0.0 { (0, 37) } else { (23, 87) };
+        for row in first..=last {
+            assert!(tree.shows(&format!("row {row}")), "{:?}", tree.texts);
+        }
+        assert_eq!(rows(&tree), last - first + 1);
+        assert_eq!(tree.creates, creates, "replay at {y} created views");
+        assert_eq!(tree.kinds.len(), nodes, "replay at {y} grew the tree");
+    }
 }
 
 /// A `ListView` with rows of this component and a header.
@@ -330,7 +392,7 @@ fn Stocks() -> impl IntoElement {
 fn rust_components_fill_a_list_views_rows() {
     let (engine, rx) = start(Root::of::<Stocks>());
     let mut tree = Tree::default();
-    tree.drain(&rx);
+    tree.drain(&rx, &engine.control());
     for label in ["stock 0", "stock 1", " ended 0"] {
         assert!(tree.shows(label), "{label}: {:?}", tree.texts);
     }
@@ -348,13 +410,13 @@ fn rust_components_fill_a_list_views_rows() {
     engine
         .control()
         .dispatch_event(row, EventKind::Press, EventPayload::None);
-    tree.drain(&rx);
+    tree.drain(&rx, &engine.control());
     assert!(tree.shows("pressed 1 ended 0"), "{:?}", tree.texts);
     // Its list's events are the component's too.
     engine
         .control()
         .dispatch_event(list, EventKind::LoadMore, EventPayload::None);
-    tree.drain(&rx);
+    tree.drain(&rx, &engine.control());
     assert!(tree.shows("pressed 1 ended 1"), "{:?}", tree.texts);
 }
 
@@ -394,11 +456,14 @@ fn start_js(app: &str) -> (Engine, Receiver<MountBatch>) {
         ui_sets,
         runtime: None,
         data_dir: None,
+        cache: nsh_engine::CacheOptions::off(),
         storage: None,
         clock: Default::default(),
         context: Default::default(),
         pinned: Default::default(),
         clipboard: None,
+        host: Default::default(),
+        picker: None,
     };
     (
         Engine::start(config, || ApproxTextEngine, ChannelSink(tx)).unwrap(),
@@ -426,7 +491,7 @@ mount(() => (
 fn the_apps_handlers_on_a_list_views_rows_run() {
     let (engine, rx) = start_js(APP_LIST_VIEW);
     let mut tree = Tree::default();
-    tree.drain(&rx);
+    tree.drain(&rx, &engine.control());
     assert!(tree.shows("ends 0"), "{:?}", tree.texts);
     let row = tree.find("row 1").expect("rows");
     let (list, _) = tree.cell(row).expect("in a list");
@@ -435,7 +500,7 @@ fn the_apps_handlers_on_a_list_views_rows_run() {
     engine
         .control()
         .dispatch_event(list, EventKind::LoadMore, EventPayload::None);
-    tree.drain(&rx);
+    tree.drain(&rx, &engine.control());
     assert!(tree.shows("ends 1"), "{:?}", tree.texts);
 }
 
@@ -463,13 +528,13 @@ fn Asker() -> impl IntoElement {
 fn rust_components_call_the_methods_of_components_they_render() {
     let (engine, rx) = start(Root::of::<Asker>());
     let mut tree = Tree::default();
-    tree.drain(&rx);
+    tree.drain(&rx, &engine.control());
     assert!(tree.shows("3"), "{:?}", tree.texts);
     let ask = tree.find("asked ").unwrap();
     engine
         .control()
         .dispatch_event(ask, EventKind::Press, EventPayload::None);
-    tree.drain(&rx);
+    tree.drain(&rx, &engine.control());
     assert!(tree.shows("asked Some(3.0)"), "{:?}", tree.texts);
     assert!(
         tree.shows("5"),

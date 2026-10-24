@@ -47,6 +47,11 @@ final class InputBox extends FrameLayout implements Node {
     private int pendingCount;
     /** Inside the text watcher, where replacing the text would corrupt the IME's edit. */
     private boolean watching;
+    private final Runnable autoFocus = () -> {
+        if (isAttachedToWindow()) focus();
+    };
+    /** `pasteBehavior` is `"insert"`: a paste inserts its text. */
+    boolean pasteInserts = true;
 
     InputBox(Context context, Mounter mounter, int id) {
         super(context);
@@ -54,6 +59,17 @@ final class InputBox extends FrameLayout implements Node {
         this.id = id;
         setBackground(decor);
         edit = new EditText(context) {
+            @Override
+            protected void onAttachedToWindow() {
+                super.onAttachedToWindow();
+                // A detached navigation screen may already have a text layout,
+                // with Editor's selection controllers disabled for lack of a window.
+                // Reapplying the current break strategy discards that layout so the
+                // next measure refreshes the controllers under the attached window,
+                // without replacing editable text or changing textIsSelectable.
+                if (getLayout() != null) setBreakStrategy(getBreakStrategy());
+            }
+
             @Override
             public boolean onKeyUp(int code, android.view.KeyEvent event) {
                 // The up of an Enter whose down submitted another field (focus
@@ -87,6 +103,35 @@ final class InputBox extends FrameLayout implements Node {
                     mounter.eventMap(InputBox.this.id, Native.SELECTION_CHANGE, new String[] {"start", "end"},
                             new Object[] {(double) start, (double) end});
                 }
+                // Called while the EditText is made, before `edit` is set.
+                reportCaret(this);
+            }
+
+            @Override
+            public boolean onTextContextMenuItem(int item) {
+                // Before Android 12 a paste comes here (the menu, Ctrl+V);
+                // from then on `receiveContent` hears it.
+                if (Build.VERSION.SDK_INT < 31
+                        && (item == android.R.id.paste || item == android.R.id.pasteAsPlainText)) {
+                    android.content.ClipboardManager board = (android.content.ClipboardManager)
+                            getContext().getSystemService(Context.CLIPBOARD_SERVICE);
+                    android.content.ClipData clip = board == null ? null : board.getPrimaryClip();
+                    if (clip != null && pasted(clip) && !pasteInserts) return true;
+                }
+                return super.onTextContextMenuItem(item);
+            }
+
+            @Override
+            protected void onScrollChanged(int left, int top, int oldLeft, int oldTop) {
+                super.onScrollChanged(left, top, oldLeft, oldTop);
+                reportCaret(this);
+            }
+
+            @Override
+            protected void onSizeChanged(int w, int h, int oldW, int oldH) {
+                super.onSizeChanged(w, h, oldW, oldH);
+                // The text wraps again once laid out at the new size.
+                post(() -> reportCaret(this));
             }
         };
         edit.setBackground(new ColorDrawable(0));
@@ -150,6 +195,82 @@ final class InputBox extends FrameLayout implements Node {
             }
         });
         addView(edit, new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
+        if (Build.VERSION.SDK_INT >= 31) {
+            // Pastes and keyboards' images (GIFs, stickers) come here; the
+            // types tell keyboards that images are welcome.
+            edit.setOnReceiveContentListener(new String[] {"image/*"}, this::receiveContent);
+        }
+    }
+
+    /**
+     * A paste or a keyboard's content (Android 12 on): reported (`onPaste`), and
+     * its text left to the EditText while `pasteBehavior` inserts it. Images and
+     * files are never inserted.
+     */
+    @android.annotation.TargetApi(31)
+    private android.view.ContentInfo receiveContent(View view, android.view.ContentInfo payload) {
+        int source = payload.getSource();
+        if (source != android.view.ContentInfo.SOURCE_CLIPBOARD
+                && source != android.view.ContentInfo.SOURCE_INPUT_METHOD) return payload;
+        // Without a listener a paste that inserts is the EditText's own.
+        if (!pasted(payload.getClip()) && pasteInserts) return payload;
+        if (!pasteInserts) return null;
+        // The text goes on to the EditText; what else there was is consumed.
+        android.content.ClipData clip = payload.getClip();
+        android.content.ClipData text = null;
+        for (int i = 0; i < clip.getItemCount(); i++) {
+            android.content.ClipData.Item item = clip.getItemAt(i);
+            if (item.getUri() != null) continue;
+            if (text == null) text = new android.content.ClipData(clip.getDescription(), item);
+            else text.addItem(item);
+        }
+        return text == null ? null : new android.view.ContentInfo.Builder(payload).setClip(text).build();
+    }
+
+    /**
+     * Reports what {@code clip} holds (`onPaste`), if the app listens: its text,
+     * its images' bytes (read from their content URIs as the user pastes) and local
+     * files' URLs. True when it reported.
+     */
+    private boolean pasted(android.content.ClipData clip) {
+        if (!mounter.wants(id, Native.PASTE)) return false;
+        StringBuilder text = new StringBuilder();
+        java.util.ArrayList<byte[]> images = new java.util.ArrayList<>();
+        java.util.ArrayList<String> uris = new java.util.ArrayList<>();
+        android.content.ContentResolver resolver = getContext().getContentResolver();
+        for (int i = 0; i < clip.getItemCount(); i++) {
+            android.content.ClipData.Item item = clip.getItemAt(i);
+            android.net.Uri uri = item.getUri();
+            if (uri == null) {
+                CharSequence t = item.coerceToText(getContext());
+                if (t != null) text.append(t);
+                continue;
+            }
+            if ("file".equals(uri.getScheme())) {
+                uris.add(uri.toString());
+                continue;
+            }
+            String type = resolver.getType(uri);
+            if (type != null && type.startsWith("image/")) {
+                try (java.io.InputStream in = resolver.openInputStream(uri)) {
+                    if (in != null) images.add(readAll(in));
+                } catch (java.io.IOException | SecurityException e) {
+                    android.util.Log.w("nsh", "a pasted image could not be read: " + e);
+                }
+            } else {
+                CharSequence t = item.coerceToText(getContext());
+                if (t != null) text.append(t);
+            }
+        }
+        mounter.paste(id, text.toString(), images.toArray(new byte[0][]), uris.toArray(new String[0]));
+        return true;
+    }
+
+    private static byte[] readAll(java.io.InputStream in) throws java.io.IOException {
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+        byte[] buffer = new byte[64 * 1024];
+        for (int n; (n = in.read(buffer)) > 0; ) out.write(buffer, 0, n);
+        return out.toByteArray();
     }
 
     void configure(float fontSizeDp, int weight, boolean italic, int color, String family, float letterSpacingDp,
@@ -229,7 +350,7 @@ final class InputBox extends FrameLayout implements Node {
         }
         boolean first = !configured;
         configured = true;
-        if (first && autoFocus) post(this::focus);
+        if (first && autoFocus) post(this.autoFocus);
         // The keyboard reads the action key when the input connects.
         if (restart && edit.hasFocus()) {
             InputMethodManager imm = (InputMethodManager) getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
@@ -241,6 +362,37 @@ final class InputBox extends FrameLayout implements Node {
     private void submit() {
         mounter.event(id, Native.SUBMIT_EDITING, edit.getText().toString(), count, 0, 0);
         if (submit == SUBMIT_AND_BLUR) blur();
+    }
+
+    /** The caret as last reported (`onCaretMove`): x, y, width, height in dp. */
+    private final float[] caret = new float[4];
+
+    /**
+     * `onCaretMove` while the input edits, if its caret moved: the caret at the
+     * selection's end, in the input's coordinates (dp; the EditText's padding,
+     * gravity and scrolling applied).
+     */
+    private void reportCaret(android.widget.TextView view) {
+        if (mounter == null || !mounter.wants(id, Native.CARET_MOVE) || !view.hasFocus()) return;
+        android.text.Layout layout = view.getLayout();
+        int end = view.getSelectionEnd();
+        if (layout == null || end < 0) return;
+        int line = layout.getLineForOffset(end);
+        float d = mounter.density;
+        // The EditText sits in the container's padding (the content box).
+        float left = view.getLeft() + view.getTotalPaddingLeft() - view.getScrollX();
+        float top = view.getTop() + view.getTotalPaddingTop() - view.getScrollY();
+        float[] now = {
+            (left + layout.getPrimaryHorizontal(end)) / d,
+            (top + layout.getLineTop(line)) / d,
+            // The cursor drawable is 2dp wide (`selectionColor`'s too).
+            2,
+            (layout.getLineBottom(line) - layout.getLineTop(line)) / d,
+        };
+        if (java.util.Arrays.equals(now, caret)) return;
+        System.arraycopy(now, 0, caret, 0, 4);
+        mounter.eventMap(id, Native.CARET_MOVE, new String[] {"caretX", "caretY", "caretWidth", "caretHeight"},
+                new Object[] {(double) now[0], (double) now[1], (double) now[2], (double) now[3]});
     }
 
     /** `onKeyPress`. */
@@ -416,6 +568,10 @@ final class InputBox extends FrameLayout implements Node {
         edit.requestFocus();
         InputMethodManager imm = (InputMethodManager) getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
         imm.showSoftInput(edit, InputMethodManager.SHOW_IMPLICIT);
+    }
+
+    void cancelAutoFocus() {
+        removeCallbacks(autoFocus);
     }
 
     void blur() {

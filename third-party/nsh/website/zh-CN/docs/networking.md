@@ -152,6 +152,39 @@ form.append("photo", new Blob([bytes], { type: "image/jpeg" }), "sunset.jpg");
 const response = await fetch("https://api.example.com/photos", { method: "POST", body: form });
 ```
 
+### 上传用户选中的照片
+
+[`nsh/picker`](../modules/nsh-picker.md) 把用户选中的照片交给应用，它们是字节留在原生侧的文件，已经缩小并转成服务器认的格式；
+Rust 直接发送字节，TSX 把 `File` 加进 `FormData`：
+
+```rust tabs
+use nsh_core::geometry::DevicePixels;
+use nsh_core::picker::PickRequest;
+use nsh_core::ui::prelude::*;
+
+let mut request = PickRequest::new(false, 1);
+request.max_dimension = Some(DevicePixels(2048));
+let picked = pick_images(request);
+spawn(async move {
+    if let Some(photo) = picked.await.into_iter().next() {
+        let upload = HttpRequest::post("https://api.example.com/photos", photo.data.to_vec())
+            .header("Content-Type", photo.mime.as_str());
+        let _ = fetch(upload).await;
+    }
+});
+```
+
+```tsx tabs
+import { Picker } from "nsh/picker";
+
+const [photo] = await Picker.pickImages({ maxDimension: 2048 });
+if (photo) {
+  const form = new FormData();
+  form.append("photo", photo.file);
+  await fetch("https://api.example.com/photos", { method: "POST", body: form });
+}
+```
+
 ## 流式传输
 
 TSX 的 `fetch` 流式传输响应和请求体；Rust 的 `fetch` 随响应一次给出完整的响应体。

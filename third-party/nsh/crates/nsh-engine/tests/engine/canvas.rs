@@ -80,11 +80,14 @@ fn start(app: &str) -> (Engine, crossbeam_channel::Receiver<MountBatch>) {
         ui_sets: vec![nsh_base::registry()],
         runtime: None,
         data_dir: None,
+        cache: nsh_engine::CacheOptions::off(),
         storage: None,
         clock: Default::default(),
         context: Default::default(),
         pinned: Default::default(),
         clipboard: None,
+        host: Default::default(),
+        picker: None,
     };
     (
         Engine::start(config, || ApproxTextEngine, ChannelSink(tx)).unwrap(),

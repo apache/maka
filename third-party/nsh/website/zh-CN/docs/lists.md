@@ -164,7 +164,7 @@ const toggle = (id: number) =>
 | `inverted` | `.inverted()` | `boolean` | `false` | 第 0 项在底部（聊天）；初始滚动到末尾，并保持与末尾的距离。 |
 | `maintainVisibleContentPosition` | `.follow_end(px(..))` | `{ autoscrollToBottomThreshold?: number }` | | 非倒置列表在距离末尾不超过该点数时，随内容增长停留在末尾（见下文）。 |
 | `stickyHeaderIndices` | `.sticky_header_indices(..)` | `number[]` | | 滚过时吸附在顶部的条目（单列且非倒置）。 |
-| `stickyHeaderOffset` | `.sticky_header_offset(px(..))` | `number` | `0` | 吸顶条目吸附在距顶部多远的位置，同 CSS `position: sticky` 的 `top`；内容继续在其上方的空间下滚动。 |
+| `stickyHeaderOffset` | `.sticky_header_offset(px(..))`、`.bind_sticky_header_offset(&node)` | `number \| AnimatedNode` | `0` | 吸顶条目吸附在距顶部多远的位置，同 CSS `position: sticky` 的 `top`；内容继续在其上方的空间下滚动。动画值让它们逐帧移动。 |
 | `contentStyle` | `.content_padding(..)`、`.content_padding_x(..)` 等、`.row_gap(..)`、`.column_gap(..)` | `{ padding*, gap, rowGap, columnGap }` | | 内容的内边距和间距，只接受数字。 |
 | `contentClass` | | `string` | | 同上，写成类名（`p-*`、`gap-*`）；`contentStyle` 优先。 |
 | `header` | `.header(..)` | 组件或元素 | | 在条目之前。 |
@@ -174,6 +174,8 @@ const toggle = (id: number) =>
 | `initialScrollIndex` | `.initial_scroll_index(i)` | `number` | | 第一帧之前滚动到该条目。 |
 | `onLoadMore` | `.on_load_more(..)` | `() => void` | | 接近末尾（见下文）。 |
 | `loadMoreThreshold` | `.load_more_threshold(..)` | `number` | `1` | 距离末尾多少个视口时触发 `onLoadMore`。 |
+| `onLoadMoreAtStart` | `.on_load_more_at_start(..)` | `() => void` | | 滚动后接近开头（见下文）。 |
+| `loadMoreAtStartThreshold` | `.load_more_at_start_threshold(..)` | `number` | `1` | 距离开头多少个视口时触发 `onLoadMoreAtStart`。 |
 | `onViewableItemsChange` | `.on_viewable_items_change(..)` | `(info) => void` | | 有条目变为可见或不再可见。 |
 | `viewabilityConfig` | `.viewability(..)`、`.minimum_view_time(..)` | `ViewabilityConfig` | | 什么情况下条目算作可见。 |
 | `keyExtractor` | `.keys(..)` | `(item, index) => string` | | 可见性回调中的键；在 Rust 中是各行的标识。 |
@@ -278,9 +280,35 @@ for (const [letter, names] of groups) {
 
 `stickyHeaderOffset`（Rust 中为 `.sticky_header_offset(..)`）让标题吸附在距顶部这么多点的位置，如同 CSS `position: sticky` 的 `top`：在 56 点高的半透明栏下，`stickyHeaderOffset={56}`（`.sticky_header_offset(px(56.0))`）让每个标题停在栏的下方，行则继续在栏下滚动，下一个标题从那里把它推出去。负值会让标题的一部分移出视口。
 
+偏移量可以是[动画值](./animation.md#动画值)（Rust 中为 `.bind_sticky_header_offset(&node)`）：标题在 UI 线程上逐帧跟随它，因此始终停在移动的栏下方。对于内容向下滚动时隐藏、向上滚动时重新出现的栏（[`diffClamp`](./animation.md#算术运算与-diffclamp)），标题无论栏在哪里都吸附在它的下边缘：
+
+```rust tabs
+let offset = animated_value(0.0);
+let hidden = offset.diff_clamp(0.0, 56.0);
+let shown = hidden.mul(-1.0).add(56.0);
+
+view().flex_1().overflow_hidden().child(
+    virtual_list(rows.len(), row)
+        .scroll_value(&offset)
+        .sticky_header_indices(headers)
+        .bind_sticky_header_offset(&shown),
+).child(view().absolute().top_0().left_0().right_0().h(px(56.0)).bind_translate_y(&hidden.mul(-1.0)))
+```
+
+```tsx tabs
+const scroll = createAnimatedValue(0);
+const hidden = scroll.diffClamp(0, 56);
+const shown = hidden.mul(-1).add(56);
+
+<View style={{ flex: 1, overflow: "hidden" }}>
+  <List each={rows} scrollValue={scroll} stickyHeaderIndices={headers} stickyHeaderOffset={shown}>…</List>
+  <View style={{ position: "absolute", top: 0, left: 0, right: 0, height: 56, transform: [{ translateY: hidden.mul(-1) }] }}>…</View>
+</View>
+```
+
 ## 聊天：倒置列表
 
-`inverted` 让列表从末尾开始排版：第 0 项在底部，列表初始滚动到末尾，并在条目变化时保持与末尾的距离。把最新的消息放在最前面；添加消息时插到前面，用 `onLoadMore` 加载更早的消息时追加到后面（倒置列表的"末尾"是顶部）。
+`inverted` 让列表从末尾开始排版：第 0 项在底部，列表初始滚动到末尾，并在条目变化时保持与末尾的距离。把最新的消息放在最前面；添加消息时插到前面，用 `onLoadMore` 加载更早的消息时追加到后面（倒置列表的"末尾"是顶部）。从一条旧消息打开的聊天用 [`onLoadMoreAtStart`](#在开头加载onloadmoreatstart) 加载更新的消息；设置它后，列表在底部时保持与底部的距离，向上滚动后条目变化时屏幕上的消息保持原位。
 
 ```rust tabs
 use nsh_base::keyboard_avoiding_view;
@@ -596,6 +624,70 @@ loadMore();
 ```
 
 像上面那样防止重复加载：在一页数据返回之前，末尾可能会被再次报告。
+
+## 在开头加载：onLoadMoreAtStart
+
+列表也可以从数据的中间打开：从搜索结果或引用跳到一条旧消息的聊天，显示的是它附近的一页，更新的消息还没有加载。当视口距离开头不到 `loadMoreAtStartThreshold` 个视口时（默认 1），触发 `onLoadMoreAtStart`（`.on_load_more_at_start(..)`）。开头是第 0 项所在的一侧：普通列表的顶部，倒置列表的底部。把这一页插到前面：新内容到达时，屏幕上的行保持原位（倒置列表离开底部后也是如此）；下一次接近开头时会再次触发，如果新的一页插入后仍在开头附近，则立即再次触发。
+
+只有在用户滚动到开头，或滚动命令（包括 `initialScrollIndex`）把列表带到那里之后才会触发：从最新一项打开的列表不会请求任何内容，而用 `initialScrollIndex` 打开在开头附近的列表会立刻请求它之前的一页。
+
+```rust tabs
+let messages = signal(page_around(target)); // 最新的在前，结尾是一条旧消息
+let loading = stored(false);
+
+let load_newer = move |_: &()| {
+    if loading.replace(true) {
+        return;
+    }
+    let newest = messages.with(|m| m[0].id);
+    spawn(async move {
+        if let Ok(response) = fetch(format!("https://api.example.com/messages?after={newest}")).await {
+            let newer = parse_messages(&response.text());
+            messages.update(|m| {
+                m.splice(0..0, newer);
+            });
+        }
+        loading.replace(false);
+    });
+};
+
+virtual_list(move || messages.with(Vec::len), move |at| message_row(messages, at))
+    .inverted(true)
+    .on_load_more(load_older)
+    .on_load_more_at_start(load_newer)
+    .load_more_at_start_threshold(0.5)
+    .flex_1()
+```
+
+```tsx tabs
+const messages = signal<Message[]>(pageAround(target)); // 最新的在前，结尾是一条旧消息
+let loading = false;
+
+const loadNewer = async () => {
+  if (loading) return;
+  loading = true;
+  try {
+    const newest = messages()[0].id;
+    const newer: Message[] = await (await fetch(`https://api.example.com/messages?after=${newest}`)).json();
+    messages.set([...newer, ...messages()]);
+  } finally {
+    loading = false;
+  }
+};
+
+<List
+  each={messages()}
+  inverted
+  style={{ flex: 1 }}
+  onLoadMore={loadOlder}
+  onLoadMoreAtStart={loadNewer}
+  loadMoreAtStartThreshold={0.5}
+>
+  {(message) => <Bubble message={message()} />}
+</List>
+```
+
+加载到最新的消息后就停止加载：之后新消息会像在任何聊天中一样出现在开头。
 
 ## 可见性
 

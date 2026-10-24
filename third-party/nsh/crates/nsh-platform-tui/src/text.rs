@@ -96,6 +96,7 @@ pub(crate) struct TerminalRun {
     pub(crate) width: u16,
     pub(crate) start: u32,
     pub(crate) end: u32,
+    pub(crate) rtl: bool,
 }
 
 /// The immutable layout carried across the engine-to-surface mount boundary.
@@ -556,6 +557,7 @@ impl TextEngine for TerminalTextEngine {
                         },
                         start: piece.start,
                         end: piece.end,
+                        rtl: levels[i].is_rtl(),
                     });
                 }
                 column = column.saturating_add(advance);

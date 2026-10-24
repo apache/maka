@@ -41,6 +41,7 @@ mod mount;
 mod native;
 mod navigation;
 mod net;
+mod picker;
 mod scroll;
 mod selection_area;
 mod surface;
@@ -54,7 +55,9 @@ mod view;
 mod visual;
 
 pub use nsh_core::platform::{Appearance, Locale};
-pub use nsh_engine::{App, Bundle, Limits, Root, perf};
+pub use nsh_engine::{
+    App, Bundle, ByteSize, CacheLocation, CacheOptions, CachePolicy, Limits, Root, perf,
+};
 pub use objc2;
 pub use objc2_app_kit;
 pub use objc2_foundation;

@@ -135,6 +135,44 @@ image(move || user.with(|u| u.avatar_url.clone()))
 - 解码后的图片缓存在内存中（内存紧张时会清理），以 URL、解码尺寸和模糊半径为键。
 - 当应用声明了[能力](./sandbox-and-capabilities.md)时，图片的主机必须在 `network` 中被允许；被拒绝的图片会触发错误事件。
 
+### 磁盘缓存
+
+下载的图片还会按服务器发送的原样保存在磁盘上，所以再次打开的应用（满是头像和照片的会话、信息流）无需重新下载就能显示之前显示过的图片，离线时也一样。应用无需任何设置：在 iOS、Android、macOS、Windows、Linux 和 GPUI 上，每张 `http://` 或 `https://` URL 的图片都经过这个缓存；在浏览器中，由浏览器自己的 HTTP 缓存完成同样的事。
+
+缓存遵循服务器的 HTTP 缓存头：
+
+- 图片会被保存，除非响应带有 `Cache-Control: no-store`。
+- 在新鲜期内直接使用，不发请求：新鲜期为 `max-age`，否则到 `Expires` 为止，否则为距 `Last-Modified` 时长的十分之一（最多一周）。
+- 过期后向服务器确认（用它的 `ETag` 发 `If-None-Match`，用它的 `Last-Modified` 发 `If-Modified-Since`）：未变的图片（`304`）无需下载即可再次使用，变了的则被替换。
+- 请求失败（没有网络）或服务器出错（`5xx`）时，显示保存的副本，除非响应声明了 `must-revalidate` 或 `no-cache`。
+
+每个应用有自己的缓存，大小为 256 MiB；超出后，最久未使用的图片先被删除。同一应用的多个视图、surface 和进程可以安全地共用它。嵌入应用可以选择它的位置和大小，或关闭它：
+
+```rust tabs
+// macOS、Windows、Linux 和 GPUI：AppView 的选项（或 AppView::set_cache）。
+let mut cache = CacheOptions::at(CacheLocation::Dir(caches.join("nsh")));  // 每个应用在 <dir>/<app id>
+cache.images = CachePolicy::MaxSize(ByteSize::mib(64));                     // CachePolicy::Off：不保存
+let view = AppView::new(mtm, AppOptions { cache, ..AppOptions::default() });
+```
+
+```swift tabs
+// iOS：NshAppView，在加载之前设置。
+app.cacheOptions = NshCacheOptions(location: .directory(caches.appendingPathComponent("nsh")),
+                                   images: .maxSize(megabytes: 64))   // .off：不保存
+```
+
+```java tabs
+// Android：NshView，在加载之前设置。
+nsh.setCacheOptions(NshCacheOptions.builder()
+        .location(new File(getCacheDir(), "nsh"))
+        .imagesMaxMegabytes(64)          // imagesOff()：不保存
+        .build());
+```
+
+`CacheLocation::Off`（`.off`、`noDiskCache()`）表示不在磁盘上保存任何内容。
+
+默认情况下，缓存位于系统的缓存目录：iOS 上是 `Library/Caches/nsh`，Android 上是缓存目录中的 `nsh`，macOS 上是 `~/Library/Caches`，Windows 上是 `%LOCALAPPDATA%`，Linux 上是 `$XDG_CACHE_HOME`（`~/.cache`），每个应用在其中的 `<app id>/images`。系统需要空间时可能会清理这些目录。
+
 ## 缩放模式
 
 缩放模式（Rust 中的 `.resize_mode(..)`，TSX 中的 `resizeMode`）决定图片如何填充形状不同的框：

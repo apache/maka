@@ -6,6 +6,8 @@
 //! `$$` fence for a display formula on lines of its own. Code (fences and
 //! spans) is left as written.
 
+use super::mapped::{Source, Writer};
+#[cfg(test)]
 use std::borrow::Cow;
 
 use super::{
@@ -14,12 +16,22 @@ use super::{
 };
 
 /// `source` with its TeX delimiters rewritten as dollars.
+#[cfg(test)]
 pub(super) fn rewrite(source: &str) -> Cow<'_, str> {
-    if !source.contains("\\(") && !source.contains("\\[") {
-        return Cow::Borrowed(source);
+    let rewritten = rewrite_mapped(Source::original(source));
+    if &*rewritten == source {
+        Cow::Borrowed(source)
+    } else {
+        Cow::Owned(rewritten.to_string())
     }
-    let lines = lines(source);
-    let mut out = String::with_capacity(source.len() + 16);
+}
+
+pub(super) fn rewrite_mapped(source: Source) -> Source {
+    if !source.contains("\\(") && !source.contains("\\[") {
+        return source;
+    }
+    let lines = lines(&source);
+    let mut out = source.writer();
     // The lines of text (not code, not blank) not written out yet: a
     // formula in text may run over lines of a paragraph.
     let mut text: Option<usize> = None;
@@ -30,7 +42,7 @@ pub(super) fn rewrite(source: &str) -> Cow<'_, str> {
         let line = &source[start..end];
         let content = strip_containers(line);
         if let Some((ch, len)) = fence {
-            out.push_str(&source[start..next]);
+            out.copy(&source[start..next]);
             if fence_closes(content, ch, len) {
                 fence = None;
             }
@@ -45,8 +57,8 @@ pub(super) fn rewrite(source: &str) -> Cow<'_, str> {
         }
         if let Some(open) = fence_opens(content) {
             fence = Some(open);
-        } else if display && let Some(last) = display_end(source, &lines, i) {
-            display_formula(source, &lines, i, last, &mut out);
+        } else if display && let Some(last) = display_end(&source, &lines, i) {
+            display_formula(&source, &lines, i, last, &mut out);
             i = last + 1;
             continue;
         } else if !content.trim().is_empty() {
@@ -54,13 +66,13 @@ pub(super) fn rewrite(source: &str) -> Cow<'_, str> {
             i += 1;
             continue;
         }
-        out.push_str(&source[start..next]);
+        out.copy(&source[start..next]);
         i += 1;
     }
     if let Some(from) = text {
         inline(&source[from..], &mut out);
     }
-    Cow::Owned(out)
+    out.finish()
 }
 
 /// The lines of `source`: start, end without the line ending, start of the
@@ -106,7 +118,7 @@ fn display_formula(
     lines: &[(usize, usize, usize)],
     first: usize,
     last: usize,
-    out: &mut String,
+    out: &mut Writer<'_>,
 ) {
     let (start, end, _) = lines[first];
     let line = &source[start..end];
@@ -123,8 +135,9 @@ fn display_formula(
             }
         })
         .collect();
-    out.push_str(&line[..opener]);
-    out.push_str("$$\n");
+    out.copy(&line[..opener]);
+    out.replace_slice("$$", &line[opener..opener + 2]);
+    out.push('\n');
     for (i, &(start, end, _)) in lines.iter().enumerate().take(last + 1).skip(first) {
         let mut body = if i == first {
             &source[start + opener + 2..end]
@@ -143,15 +156,17 @@ fn display_formula(
         if !empty {
             if i == first {
                 out.push_str(&prefix);
-                out.push_str(body.trim());
+                out.copy(body.trim());
             } else {
-                out.push_str(body.trim_end());
+                out.copy(body.trim_end());
             }
             out.push('\n');
         }
     }
     out.push_str(&prefix);
-    out.push_str("$$");
+    let (close_start, close_end, _) = lines[last];
+    let close = source[close_start..close_end].trim_end();
+    out.replace_slice("$$", &close[close.len() - 2..]);
     if lines[last].1 < source.len() {
         out.push('\n');
     }
@@ -159,7 +174,7 @@ fn display_formula(
 
 /// Text `text` (lines of a block) with its formulas `\(…\)` and `\[…\]`
 /// as `$$…$$`, into `out`.
-fn inline(text: &str, out: &mut String) {
+fn inline(text: &str, out: &mut Writer<'_>) {
     let (code, open_code) = spans(text, false);
     let bytes = text.as_bytes();
     let mut copied = 0;
@@ -181,10 +196,10 @@ fn inline(text: &str, out: &mut String) {
             // Dollars inside would end the formula early; a blank line
             // ends the paragraph.
             if !body.trim().is_empty() && !body.contains('$') && !body.contains("\n\n") {
-                out.push_str(&text[copied..i]);
-                out.push_str("$$");
-                out.push_str(body);
-                out.push_str("$$");
+                out.copy(&text[copied..i]);
+                out.replace_slice("$$", &text[i..i + 2]);
+                out.copy(body);
+                out.replace_slice("$$", &text[end - 2..end]);
                 copied = end;
                 i = end;
                 continue;
@@ -193,7 +208,7 @@ fn inline(text: &str, out: &mut String) {
         // An escape: the escaped character is not a delimiter.
         i += 2;
     }
-    out.push_str(&text[copied..]);
+    out.copy(&text[copied..]);
 }
 
 #[cfg(test)]

@@ -182,6 +182,10 @@ pub trait ScrollHost {
     fn attached(&self) -> bool;
     /// Runs [`frame`] on every frame from now until it returns false.
     fn start_ticking(&self);
+    /// The scroll view came to rest (its drag and momentum ended, as it
+    /// sends `onScrollEnd`): the snapping animated values that follow it
+    /// settle ([`crate::animation::Animator::scroll_ended`]).
+    fn settled(&self) {}
     /// Whether the surface is dark, kept in [`Live::dark`] when the
     /// indicator shows.
     fn dark(&self) -> bool {
@@ -567,9 +571,19 @@ impl ScrollState {
 
     /// Each sticky cell with how far it moves at the offset.
     pub fn sticky_shifts(&self) -> impl Iterator<Item = (NodeId, Point<Points>)> + '_ {
+        self.sticky_shifts_with(|_| 0.0)
+    }
+
+    /// [`ScrollState::sticky_shifts`], a cell's animated offset
+    /// (`StickyCell::offset`) valued by `value` (the animation graph's).
+    pub fn sticky_shifts_with<'a>(
+        &'a self,
+        value: impl Fn(crate::animation::NodeId) -> f32 + 'a,
+    ) -> impl Iterator<Item = (NodeId, Point<Points>)> + 'a {
         let offset = Points(self.offset() - self.lead());
         self.sticky.iter().map(move |c| {
-            let t = sticky_shift(offset, c.start, c.end);
+            let extra = c.offset.map_or(0.0, &value);
+            let t = sticky_shift(Points(offset.0 + extra), c.start, c.end);
             let zero = Points(0.0);
             (
                 c.cell,
@@ -600,6 +614,9 @@ fn enabled(host: &impl ScrollHost) -> bool {
 
 /// Sends `kind` with the offset if JS listens to it.
 fn emit(host: &impl ScrollHost, kind: EventKind) {
+    if kind == EventKind::ScrollEnd {
+        host.settled();
+    }
     if !host.listens(kind) {
         return;
     }
@@ -779,11 +796,18 @@ pub fn frame(host: &impl ScrollHost, now: f64) -> bool {
     busy
 }
 
+/// Ends an owner's pending input or animated command without end callbacks.
+/// Preserve the existing frame registration: the platform may still have
+/// that callback queued, and a new motion before its next frame reuses it.
+pub fn stop_motion(host: &impl ScrollHost) {
+    set_phase(host, Phase::Idle);
+    report(host);
+}
+
 /// The view left the window during its frames: it stops (a later move
 /// starts again) and reports where it is.
 pub fn detached(host: &impl ScrollHost) {
-    set_phase(host, Phase::Idle);
-    report(host);
+    stop_motion(host);
     host.scroll_mut(|s, _| s.live.ticking = false);
 }
 
@@ -1730,6 +1754,32 @@ mod tests {
         let (b1, v1) = glide_step(2.0, rate, 16.0);
         let (b2, _) = glide_step(v1, rate, 16.0);
         assert!((a - (b1 + b2)).abs() < 1e-3);
+    }
+
+    #[test]
+    fn animated_sticky_offsets_stick_further_in() {
+        let mut s = scroll_state((320.0, 2000.0), false);
+        s.y = Points(150.0);
+        s.sticky = vec![
+            crate::StickyCell {
+                cell: 1,
+                start: Points(100.0),
+                end: Points(300.0),
+                offset: None,
+            },
+            crate::StickyCell {
+                cell: 2,
+                start: Points(100.0),
+                end: Points(300.0),
+                offset: Some(7),
+            },
+        ];
+        // Below a 56 pt header: the second sticks 56 further in.
+        let shifts: Vec<_> = s
+            .sticky_shifts_with(|n| if n == 7 { 56.0 } else { 0.0 })
+            .map(|(c, p)| (c, p.y.0))
+            .collect();
+        assert_eq!(shifts, [(1, 50.0), (2, 106.0)]);
     }
 
     #[test]

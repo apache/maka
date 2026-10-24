@@ -19,9 +19,8 @@
 
 import { errorText, renderText, type UiText } from './text';
 import { tr } from './locale';
-import { cleanup, computed, inputAction, signal, Text, View } from 'nsh';
-import { Button } from 'nsh/base';
-import { List } from 'nsh/list';
+import { cleanup, computed, inputAction, signal, Text, View, List } from 'nsh';
+import { Button, SelectionArea } from 'nsh/base';
 import { host } from './host';
 import type { GitArea, GitDiff, WorkspacePath } from '../../../../packages/plugin-sdk/src/index.js';
 import { parsePatch } from '../../desktop-shell/app/patch.js';
@@ -223,92 +222,102 @@ function DiffRows(props: { model: CurrentDiffModel }) {
     return width;
   });
   return (
-    <List
-      accessibilityLabel={tr('Current file diff')}
-      each={rows()}
-      keyExtractor={(row: DiffRow) => row.key}
-      estimatedItemSize={codeTextStyle.lineHeight}
-      contentOffset={initialOffset}
-      onScroll={(event) => {
-        if (mounted) model.position = { x: event.offset.x, y: event.offset.y };
-      }}
-      style={{ flex: 1, minHeight: 0, backgroundColor: C.surface }}
-      empty={
-        <Text style={{ ...bodyTextStyle, color: C.muted }}>
-          {tr('The current patch has no displayable rows.')}
-        </Text>
-      }
-    >
-      {(row) => (
-        <View
-          style={{
-            flexDirection: 'row',
-            alignItems: 'flex-start',
-            minWidth: 0,
-            backgroundColor:
-              row().kind === 'added' ? '#203527' : row().kind === 'removed' ? '#382528' : undefined,
-          }}
-        >
-          <If when={row().kind !== 'hunk' && row().kind !== 'meta'}>
-            <Text
-              selectable={false}
-              style={{
-                ...codeTextStyle,
-                width: (digits() + 1) * 8,
-                flexShrink: 0,
-                paddingRight: 8,
-                textAlign: 'right',
-                color: C.muted,
-              }}
-            >
-              {row().old ?? ''}
-            </Text>
-            <Text
-              selectable={false}
-              style={{
-                ...codeTextStyle,
-                width: (digits() + 1) * 8,
-                flexShrink: 0,
-                paddingRight: 8,
-                textAlign: 'right',
-                color: C.muted,
-              }}
-            >
-              {row().new ?? ''}
-            </Text>
-            <Text
-              selectable={false}
-              style={{
-                ...codeTextStyle,
-                width: 8,
-                flexShrink: 0,
-                color:
-                  row().kind === 'added' ? '#9bd5a5' : row().kind === 'removed' ? C.danger : C.text,
-              }}
-            >
-              {row().kind === 'added' ? '+' : row().kind === 'removed' ? '-' : ' '}
-            </Text>
-          </If>
-          <Text
-            selectable
+    <SelectionArea style={{ flex: 1, minHeight: 0 }}>
+      <List
+        accessibilityLabel={tr('Current file diff')}
+        each={rows()}
+        keyExtractor={(row: DiffRow) => row.key}
+        estimatedItemSize={codeTextStyle.lineHeight}
+        contentOffset={initialOffset}
+        onScroll={(event) => {
+          if (mounted) model.position = { x: event.offset.x, y: event.offset.y };
+        }}
+        style={{ flex: 1, minHeight: 0, backgroundColor: C.surface }}
+        empty={
+          <Text selectable={false} style={{ ...bodyTextStyle, color: C.muted }}>
+            {tr('The current patch has no displayable rows.')}
+          </Text>
+        }
+      >
+        {(row) => (
+          <View
             style={{
-              ...codeTextStyle,
-              flex: 1,
+              flexDirection: 'row',
+              alignItems: 'flex-start',
               minWidth: 0,
-              color:
+              backgroundColor:
                 row().kind === 'added'
-                  ? '#9bd5a5'
+                  ? '#203527'
                   : row().kind === 'removed'
-                    ? C.danger
-                    : row().kind === 'context'
-                      ? C.text
-                      : C.muted,
+                    ? '#382528'
+                    : undefined,
             }}
           >
-            {row().text}
-          </Text>
-        </View>
-      )}
-    </List>
+            <If when={row().kind !== 'hunk' && row().kind !== 'meta'}>
+              <Text
+                selectable={false}
+                style={{
+                  ...codeTextStyle,
+                  width: (digits() + 1) * 8,
+                  flexShrink: 0,
+                  paddingRight: 8,
+                  textAlign: 'right',
+                  color: C.muted,
+                }}
+              >
+                {row().old ?? ''}
+              </Text>
+              <Text
+                selectable={false}
+                style={{
+                  ...codeTextStyle,
+                  width: (digits() + 1) * 8,
+                  flexShrink: 0,
+                  paddingRight: 8,
+                  textAlign: 'right',
+                  color: C.muted,
+                }}
+              >
+                {row().new ?? ''}
+              </Text>
+              <Text
+                selectable={false}
+                style={{
+                  ...codeTextStyle,
+                  width: 8,
+                  flexShrink: 0,
+                  color:
+                    row().kind === 'added'
+                      ? '#9bd5a5'
+                      : row().kind === 'removed'
+                        ? C.danger
+                        : C.text,
+                }}
+              >
+                {row().kind === 'added' ? '+' : row().kind === 'removed' ? '-' : ' '}
+              </Text>
+            </If>
+            <Text
+              selectable
+              style={{
+                ...codeTextStyle,
+                flex: 1,
+                minWidth: 0,
+                color:
+                  row().kind === 'added'
+                    ? '#9bd5a5'
+                    : row().kind === 'removed'
+                      ? C.danger
+                      : row().kind === 'context'
+                        ? C.text
+                        : C.muted,
+              }}
+            >
+              {row().text}
+            </Text>
+          </View>
+        )}
+      </List>
+    </SelectionArea>
   );
 }

@@ -275,6 +275,7 @@ async fn visible_ids_match_presentation_for_accepted_and_partial_parts_across_ca
         let last_message = session.last_message.as_ref().unwrap();
         assert_eq!(last_message.recorded_at, 2000);
         assert_eq!(last_message.preview.as_deref(), Some("answer"));
+        assert_eq!(last_message.tail_message_id, tail);
         let source = canonical(&db);
         log.close().await.unwrap();
         // Either half may be discarded; rebuild both from the canonical facts.

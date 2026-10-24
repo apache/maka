@@ -102,7 +102,7 @@ export function FileChip(props: { file: FileRef; onRemove?: () => void }) {
         <Text numberOfLines={1} style={{ fontSize: 14, color: colors.text, maxWidth: 170 }}>
           {props.file.name}
         </Text>
-        <Text style={{ fontSize: 12, color: colors.muted, fontVariant: ["tabular-nums"] }}>PDF · {props.file.size}</Text>
+        <Text style={{ fontSize: 12, color: colors.muted, fontVariant: ["tabular-nums"] }}>{(props.file.name.split(".").pop() ?? "file").toUpperCase()} · {props.file.size}</Text>
       </View>
       <If when={props.onRemove}>
         <Press onPress={props.onRemove} accessibilityLabel="Remove file" scale={0.85}>

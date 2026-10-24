@@ -18,10 +18,10 @@
 
 use jni::objects::GlobalRef;
 use nsh_core::{
-    AccessibilityRole, AutoCapitalize, AutoFill, BorderStyle, Checked, Color, Command,
-    DialogButtonStyle, InputConfig, KeyboardDismissMode, KeyboardTaps, KeyboardType, LayoutCurve,
-    LayoutProperty, LayoutTransition, LiveRegion, ModalAnimation, ModalPresentation, MountBatch,
-    MountItem, NativeProps, PointerEvents, ResizeMode, ReturnKeyType, ScreenAnimation,
+    AccessibilityRole, AudioSession, AutoCapitalize, AutoFill, BorderStyle, Checked, Color,
+    Command, DialogButtonStyle, InputConfig, KeyboardDismissMode, KeyboardTaps, KeyboardType,
+    LayoutCurve, LayoutProperty, LayoutTransition, LiveRegion, ModalAnimation, ModalPresentation,
+    MountBatch, MountItem, NativeProps, PointerEvents, ResizeMode, ReturnKeyType, ScreenAnimation,
     ScreenConfig, SnapAlignment, StatusBarStyle, SubmitBehavior, TextAlign, ViewKind, ViewProps,
     ViewStyle, WebSource,
     geometry::{DefiniteLength, REM_SIZE},
@@ -66,6 +66,8 @@ const COMPONENT_PROPS: i32 = 30;
 const OVERFLOW: i32 = 31;
 const ACCESSIBILITY_LABEL: i32 = 32;
 const APPEARANCE: i32 = 33;
+const RETIRE_LIST_CELL: i32 = 34;
+const PROJECT_ROOT: i32 = 35;
 
 /// An entry of the object table.
 pub(crate) enum Obj {
@@ -155,10 +157,33 @@ pub(crate) fn encode(batch: MountBatch) -> Encoded {
                 e.int(child as i32);
                 e.int(before.map_or(-1, |b| b as i32));
             }
+            MountItem::ProjectRoot {
+                parent,
+                id,
+                following,
+            } => {
+                e.int(PROJECT_ROOT);
+                e.int(parent as i32);
+                e.int(id as i32);
+                e.int(following.len() as i32);
+                for sibling in following {
+                    e.int(sibling as i32);
+                }
+            }
             MountItem::Remove { id } => {
                 e.int(REMOVE);
                 e.int(id as i32);
             }
+            MountItem::RetireListCell { id, request, roots } => {
+                e.int(RETIRE_LIST_CELL);
+                e.int(id as i32);
+                e.bytes.extend_from_slice(&request.to_le_bytes());
+                e.int(roots.len() as i32);
+                for root in roots {
+                    e.int(root as i32);
+                }
+            }
+            MountItem::ListCellRetired { .. } => {}
             MountItem::Delete { id } => {
                 e.int(DELETE);
                 e.int(id as i32);
@@ -304,6 +329,8 @@ pub(crate) fn encode(batch: MountBatch) -> Encoded {
                     e.float(c.start.0);
                     e.float(c.end.0);
                 }
+                // Animated offsets are the UI thread's graph's (`animation.rs`).
+                e.animation.push(MountItem::StickyCells { id, cells });
             }
             MountItem::LayoutDirection { rtl } => {
                 e.int(LAYOUT_DIRECTION);
@@ -594,17 +621,33 @@ pub(crate) fn encode(batch: MountBatch) -> Encoded {
                         e.int(id as i32);
                         e.bool(has_only);
                     }
+                    Command::OpenUrl { id, url } => {
+                        e.int(26);
+                        e.int(id as i32);
+                        e.string(url);
+                    }
                     // Answered by the sink (`host::answer_clipboard_reads`);
                     // images are not written to Android's clipboard.
                     Command::ReadClipboardImage { .. }
                     | Command::ReadClipboardFiles { .. }
                     | Command::SetClipboardImage(_) => e.int(-1),
+                    // `Picker.java`: the request, the limit, the longest
+                    // side (0: any), the quality (-1: none), the format.
+                    Command::PickImages { id, request } => {
+                        e.int(25);
+                        e.int(id as i32);
+                        e.int(request.limit as i32);
+                        e.int(request.max_dimension.map_or(0, |d| d.0.max(1)));
+                        e.float(request.quality.map_or(-1.0, |q| q.0));
+                        e.bool(request.format == nsh_core::picker::PickFormat::Current);
+                    }
                     // Turned into a mount item / `ScrollTo` by the core.
                     Command::LayoutAnimation(_)
                     | Command::SetStatusBar(_)
                     | Command::ScrollToIndex { .. }
                     | Command::Measure { .. }
                     | Command::ScrollToEnd { .. }
+                    | Command::ReplaceRange { .. }
                     // Desktops only.
                     | Command::Desktop(_)
                     // No host answers `nsh/host` here (`Environment::host`):
@@ -937,6 +980,11 @@ fn native_props(e: &mut Encoded, p: &NativeProps) {
             });
             e.bool(v.controls);
             e.float(v.progress_interval_ms);
+            e.int(match v.audio_session {
+                AudioSession::Default => 0,
+                AudioSession::Playback => 1,
+                AudioSession::MixWithOthers => 2,
+            });
         }
     }
 }
@@ -1102,6 +1150,7 @@ fn layout_transition(e: &mut Encoded, t: Option<LayoutTransition>) {
         LayoutCurve::EaseOut => (2, 0.0),
         LayoutCurve::EaseInEaseOut => (3, 0.0),
         LayoutCurve::Spring { damping } => (4, damping),
+        LayoutCurve::Keyboard => (5, 0.0),
     };
     e.int(curve);
     e.float(damping);
@@ -1202,6 +1251,8 @@ fn input(e: &mut Encoded, c: &InputConfig) {
     });
     e.bool(c.rtl);
     e.bool(c.caret_hidden);
+    // `pasteBehavior`: whether a paste inserts its text.
+    e.bool(c.paste_behavior == nsh_core::PasteBehavior::Insert);
 }
 
 // --- Canvas drawings (`CanvasBox.java`) -------------------------------------

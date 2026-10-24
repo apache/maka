@@ -115,6 +115,17 @@ impl Selector {
             source: s.to_owned(),
         })
     }
+
+    /// Every part but the last, which names a span inside those views.
+    pub(crate) fn scope(&self) -> Option<Selector> {
+        if self.parts.len() < 2 {
+            return None;
+        }
+        Some(Selector {
+            parts: self.parts[..self.parts.len() - 1].to_vec(),
+            source: self.source.clone(),
+        })
+    }
 }
 
 impl Matcher {

@@ -18,10 +18,9 @@
  */
 
 import { createText } from './text';
-import { cleanup, inputAction, signal, Text, View } from 'nsh';
+import { cleanup, inputAction, signal, Text, View, Image } from 'nsh';
 import { Button } from 'nsh/base';
 import { windowSize } from 'nsh/device';
-import { Image } from 'nsh/image';
 import type { YNode } from 'nsh';
 import { C, captionTextStyle, controlStyle } from './ui';
 import { Icon } from './Icon';

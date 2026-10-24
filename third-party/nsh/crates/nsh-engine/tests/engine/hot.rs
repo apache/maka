@@ -64,7 +64,10 @@ impl Screen {
                 MountItem::Text { id, text, .. } => {
                     self.texts.insert(*id, text.text.clone());
                 }
-                MountItem::Insert { parent, child, .. } => {
+                MountItem::Insert { parent, child, .. }
+                | MountItem::ProjectRoot {
+                    parent, id: child, ..
+                } => {
                     self.parents.insert(*child, *parent);
                 }
                 MountItem::Remove { id } | MountItem::Delete { id } => {
@@ -172,11 +175,14 @@ fn edits_replace_modules_and_keep_unrelated_state() {
         ui_sets: Vec::new(),
         runtime: None,
         data_dir: None,
+        cache: nsh_engine::CacheOptions::off(),
         storage: None,
         clock: Default::default(),
         context: Default::default(),
         pinned: Default::default(),
         clipboard: None,
+        host: Default::default(),
+        picker: None,
     };
     let engine = Engine::start(
         config,
@@ -325,11 +331,14 @@ fn entry_edits_keep_navigation_and_state() {
             ui_sets: sets.to_vec(),
             runtime: None,
             data_dir: None,
+            cache: nsh_engine::CacheOptions::off(),
             storage: None,
             clock: Default::default(),
             context: Default::default(),
             pinned: Default::default(),
             clipboard: None,
+            host: Default::default(),
+            picker: None,
         };
         let engine = Engine::start(
             config,

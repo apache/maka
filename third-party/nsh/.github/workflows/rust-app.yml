@@ -188,10 +188,12 @@ jobs:
             ./target/debug/nsh test "examples/gallery/tests/$file.test.tsx" --target web
           done
           ./target/debug/nsh test examples/gallery/tests/environment.test.tsx --target web --filter appearance
+          ./target/debug/nsh test examples/gallery/tests/overlays.test.tsx --target web --filter 'Escape cancels'
           # Apps with Rust crates, in their hosts' runtime: a TSX app and a
           # Rust app (its root).
           ./target/debug/nsh test examples/rust-exports --target web
           ./target/debug/nsh test examples/gallery-rs/App.test.tsx --target web
+          ./target/debug/nsh test examples/gallery-rs/shortcuts.test.tsx --target web
       - name: Publish a TSX app with a Rust crate for the web
         run: |
           # A TSX entry and the app's crate: QuickJS runs App.tsx, the

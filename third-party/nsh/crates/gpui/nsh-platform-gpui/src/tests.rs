@@ -383,6 +383,7 @@ fn windows(cx: &mut TestAppContext) {
     compositions_are_reported_and_hold_values_until_they_end(cx);
     menu_shortcuts_leave_a_focused_field_the_keys_it_uses(cx);
     presses_carry_where_the_pointer_was(cx);
+    presses_carry_the_modifier_keys_and_click_count(cx);
     an_embedded_surface_takes_the_keyboard_when_its_app_focuses_a_field(cx);
     the_app_s_shortcuts_reach_it_while_a_native_component_has_the_keyboard(cx);
     configured_assets_stay_with_their_original_load(cx);
@@ -1962,4 +1963,74 @@ fn wait_until_blurred(view: &Entity<AppView>, cx: &mut VisualTestContext) {
         );
         std::thread::sleep(Duration::from_millis(10));
     }
+}
+
+/// A pressable strip over a focused field that shows what each press
+/// carried: the field reads the modifier keys and click count of the last
+/// press.
+const PRESS_MODIFIERS: &str = r#"
+import { Input, mount, signal, View } from "nsh";
+
+function App() {
+  const text = signal("none");
+  return (
+    <View style={{ flex: 1 }}>
+      <View
+        focusable={false}
+        onPress={(e) =>
+          text.set(
+            e
+              ? `ctrl ${e.modifiers.control} shift ${e.modifiers.shift} alt ${e.modifiers.alt} meta ${e.modifiers.platform} clicks ${e.clickCount}`
+              : "no event",
+          )
+        }
+        style={{ height: 40 }}
+      />
+      <Input autoFocus value={text()} onChange={(t) => text.set(t)} style={{ height: 30 }} />
+    </View>
+  );
+}
+mount(App);
+"#;
+
+fn presses_carry_the_modifier_keys_and_click_count(cx: &mut TestAppContext) {
+    let code = nsh_bundler::compile_module("App.tsx", PRESS_MODIFIERS, &[]).unwrap();
+    let (view, cx) =
+        cx.add_window_view(|window, cx| AppView::new(AppOptions::default(), window, cx));
+    view.update(cx, |view, _| view.load(App::Js(Bundle::source(code))));
+    cx.update(|window, cx| window.focus(&view.focus_handle(cx), cx));
+    wait_for(&view, cx, "none");
+    let strip = gpui::point(gpui::px(20.0), gpui::px(20.0));
+    cx.simulate_click(strip, gpui::Modifiers::control());
+    wait_for(
+        &view,
+        cx,
+        "ctrl true shift false alt false meta false clicks 1",
+    );
+    // A double click is two presses, the second counted as such.
+    click(cx, strip, 1);
+    click(cx, strip, 2);
+    wait_for(
+        &view,
+        cx,
+        "ctrl false shift false alt false meta false clicks 2",
+    );
+}
+
+/// A left click at `position` that is click `count` of a series.
+fn click(cx: &mut VisualTestContext, position: gpui::Point<gpui::Pixels>, count: usize) {
+    let (button, modifiers) = (gpui::MouseButton::Left, gpui::Modifiers::default());
+    cx.simulate_event(gpui::MouseDownEvent {
+        position,
+        button,
+        modifiers,
+        click_count: count,
+        first_mouse: false,
+    });
+    cx.simulate_event(gpui::MouseUpEvent {
+        position,
+        button,
+        modifiers,
+        click_count: count,
+    });
 }

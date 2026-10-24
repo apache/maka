@@ -157,6 +157,14 @@ pub(crate) fn clipboard_files() -> (Answer<Vec<String>>, Action) {
     (answer, Action::ReadClipboard(ClipboardRead::Files(slot)))
 }
 
+/// The images the user picks in the system's picker (none when cancelled).
+pub(crate) fn pick_images(
+    request: crate::picker::PickRequest,
+) -> (Answer<Vec<crate::picker::PickedFile>>, Action) {
+    let (answer, slot) = Answer::new();
+    (answer, Action::PickImages(request, slot))
+}
+
 /// Calls function `name` of the embedding app with `args` (`nsh/host`).
 pub(crate) fn host_call(
     name: String,
@@ -171,6 +179,12 @@ pub(crate) fn host_call(
             answer: slot,
         },
     )
+}
+
+/// Opens `url` outside the app; the answer is whether it opened.
+pub(crate) fn open_url(url: String) -> (Answer<bool>, Action) {
+    let (answer, slot) = Answer::new();
+    (answer, Action::OpenUrl(url, slot))
 }
 
 /// The size of the image at `uri`, its bytes loaded.

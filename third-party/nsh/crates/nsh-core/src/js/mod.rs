@@ -23,6 +23,7 @@ pub const NATIVE_MODULES: &[&str] = &[
     "nsh/android",
     "nsh/ios",
     "nsh/desktop",
+    "nsh/mobile",
     "nsh/webview",
     "nsh/video",
     "nsh/native",
@@ -140,6 +141,7 @@ mod tests {
             ),
             ("InputHostProps", "  masked?: boolean;"),
             ("InputHostProps", "  readonly?: boolean;"),
+            ("InputHostProps", "  tokens?: InputTokenRule[];"),
             ("IOSInputHostProps", "  inputAccessoryViewID?: string;"),
             (
                 "IOSInputHostProps",
@@ -154,6 +156,7 @@ mod tests {
                 "VideoHostProps",
                 "  onLoad?: (e: { duration: number; size: Size }) => void;",
             ),
+            ("VideoHostProps", "  audioSession?: AudioSession;"),
             (
                 "ScrollingHostProps",
                 "  decelerationRate?: \"normal\" | \"fast\" | number;",

@@ -1024,6 +1024,26 @@ impl JsHost for CallHost<'_> {
         self.checked(js::uint8_array(self.cx, bytes))
     }
 
+    fn new_file(
+        &self,
+        data: &nsh_core::ImageData,
+        mime: &str,
+        name: &str,
+        last_modified: Option<std::time::SystemTime>,
+    ) -> Result<JsRaw, PropError> {
+        use crate::web::blob;
+        let blob = blob::Blob::shared(data.clone(), mime.to_owned());
+        let last_modified = last_modified
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or_else(blob::now_ms, |since| since.as_millis() as f64);
+        self.checked(blob::new_file(
+            self.cx,
+            blob,
+            name.to_owned(),
+            last_modified,
+        ))
+    }
+
     fn new_date(&self, millis: f64) -> Result<JsRaw, PropError> {
         // SAFETY: JS_NewDate returns an owned Date of this live context.
         self.checked(V::checked(self.cx, unsafe {

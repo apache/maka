@@ -59,7 +59,9 @@ function Copy(props: { text(): string; label: string; source: ToolSource }) {
   return (
     <View style={{ alignItems: 'flex-end', minWidth: 32, flexShrink: 1 }}>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-        <Text style={{ ...captionTextStyle, color: C.muted }}>{copied() ? tr('Copied') : ''}</Text>
+        <Text selectable={false} style={{ ...captionTextStyle, color: C.muted }}>
+          {copied() ? tr('Copied') : ''}
+        </Text>
         <Button
           accessibilityLabel={props.label}
           tooltip={copied() ? tr('Copied') : props.label}
@@ -108,7 +110,10 @@ function ToolText(props: {
           paddingVertical: 4,
         }}
       >
-        <Text style={{ ...captionTextStyle, color: C.secondary, flex: 1, minWidth: 0 }}>
+        <Text
+          selectable={false}
+          style={{ ...captionTextStyle, color: C.secondary, flex: 1, minWidth: 0 }}
+        >
           {props.label}
         </Text>
         <Copy label={props.copyLabel} text={() => props.text} source={props.source} />
@@ -140,6 +145,7 @@ function ToolText(props: {
       </Scroll>
       <If when={props.text === ''}>
         <Text
+          selectable={false}
           style={{ ...captionTextStyle, color: C.muted, paddingHorizontal: 12, paddingBottom: 12 }}
         >
           {tr('Empty recorded text.')}
@@ -173,12 +179,12 @@ function Read(props: { value: ToolRead; source: ToolSource; userScroll(): void }
         userScroll={props.userScroll}
       />
       <If when={value.partialLine}>
-        <Text style={{ ...captionTextStyle, color: C.warning }}>
+        <Text selectable={false} style={{ ...captionTextStyle, color: C.warning }}>
           {tr('This original result contains part of a line.')}
         </Text>
       </If>
       <If when={value.hasMore}>
-        <Text style={{ ...captionTextStyle, color: C.muted }}>
+        <Text selectable={false} style={{ ...captionTextStyle, color: C.muted }}>
           {tr('The tool read a range of this file; this card preserves that original range.')}
         </Text>
       </If>
@@ -208,6 +214,7 @@ function Process(props: { value: ToolProcess; source: ToolSource; userScroll(): 
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
         <Icon name="terminal" color={failed ? C.danger : C.secondary} />
         <Text
+          selectable={false}
           style={{
             ...captionTextStyle,
             color: failed ? C.danger : value.status === 'cancelled' ? C.warning : C.secondary,
@@ -235,7 +242,7 @@ function Process(props: { value: ToolProcess; source: ToolSource; userScroll(): 
         </Text>
       </If>
       <If when={output === null}>
-        <Text style={{ ...captionTextStyle, color: C.muted }}>
+        <Text selectable={false} style={{ ...captionTextStyle, color: C.muted }}>
           {tr('No output was included in this original result.')}
         </Text>
       </If>
@@ -257,7 +264,7 @@ function Process(props: { value: ToolProcess; source: ToolSource; userScroll(): 
             tone="warning"
           />
           <If when={output.stdoutTruncated || output.stderrTruncated}>
-            <Text style={{ ...captionTextStyle, color: C.warning }}>
+            <Text selectable={false} style={{ ...captionTextStyle, color: C.warning }}>
               {tr('The recorded process output is truncated.')}
             </Text>
           </If>
@@ -288,14 +295,14 @@ function Process(props: { value: ToolProcess; source: ToolSource; userScroll(): 
             />
           </If>
           <If when={output.truncated}>
-            <Text style={{ ...captionTextStyle, color: C.warning }}>
+            <Text selectable={false} style={{ ...captionTextStyle, color: C.warning }}>
               {tr('The recorded terminal output is truncated.')}
             </Text>
           </If>
         </View>
       ) : null}
       <If when={output?.redacted}>
-        <Text style={{ ...captionTextStyle, color: C.warning }}>
+        <Text selectable={false} style={{ ...captionTextStyle, color: C.warning }}>
           {tr('The Host redacted parts of this recorded output.')}
         </Text>
       </If>
@@ -308,7 +315,9 @@ function Change(props: { value: ToolChange; source: ToolSource; userScroll(): vo
   if (value.phase === 'requested')
     return (
       <View style={{ gap: 8 }}>
-        <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('File')}</Text>
+        <Text selectable={false} style={{ ...captionTextStyle, color: C.muted }}>
+          {tr('File')}
+        </Text>
         <Text selectable style={{ ...bodyTextStyle, color: C.secondary }}>
           {value.path}
         </Text>
@@ -342,7 +351,7 @@ function Change(props: { value: ToolChange; source: ToolSource; userScroll(): vo
           </View>
         ) : (
           <View style={{ gap: 8 }}>
-            <Text style={{ ...captionTextStyle, color: C.muted }}>
+            <Text selectable={false} style={{ ...captionTextStyle, color: C.muted }}>
               {tr('Requested operation')} · {value.type}
             </Text>
             <If when={value.diff !== null}>
@@ -360,7 +369,7 @@ function Change(props: { value: ToolChange; source: ToolSource; userScroll(): vo
     );
   if (value.operation === 'patch')
     return (
-      <Text style={{ ...captionTextStyle, color: C.secondary }}>
+      <Text selectable={false} style={{ ...captionTextStyle, color: C.secondary }}>
         {tr(
           'Recorded patch result · Operation completed. The patch below is the original request.',
         )}
@@ -370,7 +379,7 @@ function Change(props: { value: ToolChange; source: ToolSource; userScroll(): vo
     <View style={{ gap: 8 }}>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
         <Icon name="check" color={C.accent} />
-        <Text style={{ ...captionTextStyle, color: C.secondary }}>
+        <Text selectable={false} style={{ ...captionTextStyle, color: C.secondary }}>
           {value.operation === 'write' ? tr('Recorded write') : tr('Recorded edit')}
         </Text>
       </View>
@@ -379,13 +388,13 @@ function Change(props: { value: ToolChange; source: ToolSource; userScroll(): vo
       </Text>
       {value.operation === 'write' ? (
         <View style={{ gap: 8 }}>
-          <Text style={{ ...captionTextStyle, color: C.muted }}>
+          <Text selectable={false} style={{ ...captionTextStyle, color: C.muted }}>
             {tr('{count} bytes', { count: value.bytes })}
           </Text>
           <If
             when={value.previous !== null}
             else={
-              <Text style={{ ...captionTextStyle, color: C.muted }}>
+              <Text selectable={false} style={{ ...captionTextStyle, color: C.muted }}>
                 {tr('Previous contents were not included in this original result.')}
               </Text>
             }
@@ -402,11 +411,11 @@ function Change(props: { value: ToolChange; source: ToolSource; userScroll(): vo
         </View>
       ) : (
         <View style={{ gap: 4 }}>
-          <Text style={{ ...captionTextStyle, color: C.muted }}>
+          <Text selectable={false} style={{ ...captionTextStyle, color: C.muted }}>
             {tr('{count} replacements', { count: value.replacements })}
           </Text>
           <If when={value.startLine !== null && value.endLine !== null}>
-            <Text style={{ ...captionTextStyle, color: C.muted }}>
+            <Text selectable={false} style={{ ...captionTextStyle, color: C.muted }}>
               {tr('Recorded lines {first}–{last}', {
                 first: value.startLine!,
                 last: value.endLine!,
@@ -414,7 +423,7 @@ function Change(props: { value: ToolChange; source: ToolSource; userScroll(): vo
             </Text>
           </If>
           <If when={value.matchedVia !== null}>
-            <Text style={{ ...captionTextStyle, color: C.muted }}>
+            <Text selectable={false} style={{ ...captionTextStyle, color: C.muted }}>
               {tr('Match method')} · {value.matchedVia}
             </Text>
           </If>
@@ -438,7 +447,9 @@ function Sections(props: { items: ToolSection[] }) {
               borderRadius: 8,
             }}
           >
-            <Text style={{ color: C.secondary, fontWeight: '600' }}>{section().label}</Text>
+            <Text selectable={false} style={{ color: C.secondary, fontWeight: '600' }}>
+              {section().label}
+            </Text>
             <Text
               selectable
               style={{
@@ -484,7 +495,9 @@ export function ToolReader(props: {
         <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 8 }}>
           <Icon name="close" color={C.danger} />
           <View style={{ flex: 1, minWidth: 0, gap: 4 }}>
-            <Text style={{ ...captionTextStyle, color: C.danger }}>{tr('Tool failed')}</Text>
+            <Text selectable={false} style={{ ...captionTextStyle, color: C.danger }}>
+              {tr('Tool failed')}
+            </Text>
             <Text selectable style={{ ...bodyTextStyle, color: C.danger }}>
               {(props.value as Extract<ToolProjection, { kind: 'failure' }>).message}
             </Text>

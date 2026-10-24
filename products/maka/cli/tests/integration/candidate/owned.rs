@@ -76,7 +76,14 @@ fn root_startup_initializes_an_empty_root_reuses_its_host_and_preserves_another_
             assert_eq!(catalog.get("after"), Some(&Value::Null));
 
             let missing_helper = directory.path().join("never-created-startup-helper");
-            let mut second = startup::connect_root(&missing_helper, &root).await.unwrap();
+            let error = startup::connect_root(&missing_helper, &root)
+                .await
+                .err()
+                .unwrap();
+            assert!(error.starts_with("local Host startup helper:"), "{error}");
+            let mut second = startup::connect_root(Path::new(env!("CARGO_BIN_EXE_maka")), &root)
+                .await
+                .unwrap();
             assert_eq!(second.epoch(), first.epoch());
             assert_eq!(second.source(), first.source());
             first.close().await.unwrap();
@@ -246,13 +253,11 @@ fn owned_startup_connects_concurrently_and_preserves_original_effect_and_last_cl
                     .unwrap(),
                 "local Host startup executable must be absolute"
             );
-            let mut reused = startup::connect(&impossible_helper, request())
-                .await
-                .unwrap();
+            let mut reused = startup::connect(executable, request()).await.unwrap();
             assert_eq!(
                 reused.epoch(),
                 second.epoch(),
-                "live reuse must not run a helper"
+                "startup policy must reuse the current Host"
             );
             assert_eq!(reused.source(), &source);
             let mut wrong_domain = request();
@@ -264,21 +269,13 @@ fn owned_startup_connects_concurrently_and_preserves_original_effect_and_last_cl
                     "0"
                 },
             );
-            assert_eq!(
-                startup::connect(&impossible_helper, wrong_domain)
-                    .await
-                    .err()
-                    .unwrap(),
-                "discovered Host differs from its configured deployment or State Root"
-            );
+            assert!(startup::connect(executable, wrong_domain).await.is_err());
             let mut wrong_deployment = request();
             wrong_deployment.deployment = Uuid::new_v4();
-            assert_eq!(
-                startup::connect(&impossible_helper, wrong_deployment)
+            assert!(
+                startup::connect(executable, wrong_deployment)
                     .await
-                    .err()
-                    .unwrap(),
-                "discovered Host differs from its configured deployment or State Root"
+                    .is_err()
             );
             let mut invalid = request();
             invalid.root = PathBuf::from("relative-root");
@@ -294,17 +291,14 @@ fn owned_startup_connects_concurrently_and_preserves_original_effect_and_last_cl
             let mut stale: Value = serde_json::from_slice(&original).unwrap();
             stale["pid"] = json!(status.pid.get() + 1);
             fs::write(&fixture.registration, serde_json::to_vec(&stale).unwrap()).unwrap();
-            let rejected = startup::connect(&impossible_helper, request()).await;
+            let rejected = startup::connect(executable, request()).await;
             fs::write(&fixture.registration, original).unwrap();
-            assert_eq!(
-                rejected.err().unwrap(),
-                "Host discovery is stale, incompatible or not ready"
-            );
+            assert!(rejected.is_err(), "stale Host discovery must be rejected");
 
             // A complete valid startup request may exceed the old512KiB
             // policy. Live reuse validates its original Root/deployment and
-            // retains the running Host's captured catalogue, without a helper
-            // or installing newly proposed aliases.
+            // retains the running Host's captured catalogue after the launcher
+            // checks policy, without installing newly proposed aliases.
             let mut complete = request();
             complete.endpoints = (0..64)
                 .map(|index| {
@@ -316,13 +310,11 @@ fn owned_startup_connects_concurrently_and_preserves_original_effect_and_last_cl
                 .collect();
             complete.validate().unwrap();
             assert!(serde_json::to_vec(&complete).unwrap().len() > 512 * 1024);
-            let mut complete_client = startup::connect(&impossible_helper, complete)
-                .await
-                .unwrap();
+            let mut complete_client = startup::connect(executable, complete).await.unwrap();
             assert_eq!(
                 complete_client.epoch(),
                 second.epoch(),
-                "live reuse must not run a helper"
+                "startup policy must reuse the current Host"
             );
             assert_eq!(complete_client.source(), &source);
             assert_eq!(

@@ -152,6 +152,39 @@ form.append("photo", new Blob([bytes], { type: "image/jpeg" }), "sunset.jpg");
 const response = await fetch("https://api.example.com/photos", { method: "POST", body: form });
 ```
 
+### Uploading a photo the user picks
+
+[`nsh/picker`](../modules/nsh-picker.md) gives the photos the user picks as files whose bytes stay native, scaled down
+and in a format servers take; Rust sends their bytes, TSX appends the `File` to a `FormData`:
+
+```rust tabs
+use nsh_core::geometry::DevicePixels;
+use nsh_core::picker::PickRequest;
+use nsh_core::ui::prelude::*;
+
+let mut request = PickRequest::new(false, 1);
+request.max_dimension = Some(DevicePixels(2048));
+let picked = pick_images(request);
+spawn(async move {
+    if let Some(photo) = picked.await.into_iter().next() {
+        let upload = HttpRequest::post("https://api.example.com/photos", photo.data.to_vec())
+            .header("Content-Type", photo.mime.as_str());
+        let _ = fetch(upload).await;
+    }
+});
+```
+
+```tsx tabs
+import { Picker } from "nsh/picker";
+
+const [photo] = await Picker.pickImages({ maxDimension: 2048 });
+if (photo) {
+  const form = new FormData();
+  form.append("photo", photo.file);
+  await fetch("https://api.example.com/photos", { method: "POST", body: form });
+}
+```
+
 ## Streaming
 
 TSX's `fetch` streams responses and request bodies; Rust's gives the whole body with the response.

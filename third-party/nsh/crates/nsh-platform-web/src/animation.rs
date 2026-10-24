@@ -30,6 +30,9 @@ pub(crate) struct UiAnimation {
     gestures: FxHashMap<u32, Gestures>,
     /// Scroll view id -> (value node, horizontal).
     scrolls: FxHashMap<u32, (NodeId, bool)>,
+    /// Scroll view id -> its sticky cells that stick an animated value
+    /// further in, with that value's node.
+    sticky: FxHashMap<u32, Vec<(u32, NodeId)>>,
 }
 
 fn value_css(v: AnimationValue) -> String {
@@ -75,6 +78,17 @@ impl UiAnimation {
                     self.scrolls.remove(id);
                 }
             },
+            MountItem::StickyCells { id, cells } => {
+                let animated: Vec<(u32, NodeId)> = cells
+                    .iter()
+                    .filter_map(|c| Some((c.cell, c.offset?)))
+                    .collect();
+                if animated.is_empty() {
+                    self.sticky.remove(id);
+                } else {
+                    self.sticky.insert(*id, animated);
+                }
+            }
             MountItem::Delete { id } => {
                 self.bindings.remove(id);
                 self.statics.remove(id);
@@ -91,6 +105,14 @@ impl UiAnimation {
 
     pub(crate) fn animating(&self) -> bool {
         self.graph.is_animating()
+    }
+
+    /// Scroll view `id` came to rest: the snapping values that follow its
+    /// scroll value settle (the next frame request runs them).
+    pub(crate) fn scroll_ended(&mut self, id: u32) {
+        if let Some(&(node, _)) = self.scrolls.get(&id) {
+            self.graph.settle(node);
+        }
     }
 
     /// A scroll view moved: feeds its scroll value.
@@ -216,6 +238,8 @@ impl UiAnimation {
                             transformed = true;
                         }
                     }
+                    // The scroll view's (`sticky` below), never bound.
+                    AnimationProp::StickyTop | AnimationProp::StickyLeft => {}
                 }
             }
             if let Some(s) = shadow {
@@ -236,6 +260,14 @@ impl UiAnimation {
                 let statics = statics.map_or(Transform::IDENTITY, |s| s.0);
                 let css = css_transform(&statics, |i| overrides[i]);
                 out.animation(view, "transform", css.trim_end());
+            }
+        }
+        // Sticky cells that stick an animated value further in (`nsh.js`
+        // moves their sticky inset).
+        for cells in self.sticky.values() {
+            for &(cell, node) in cells {
+                let value = self.graph.eval(node).number().to_string();
+                out.animation(cell, "sticky-offset", &value);
             }
         }
     }

@@ -65,6 +65,7 @@ pub enum Block {
     /// A paragraph.
     Paragraph {
         /// Its content.
+        #[serde(serialize_with = "serialize_inlines")]
         content: Vec<Inline>,
     },
     /// A heading of level 1 to 6.
@@ -72,6 +73,7 @@ pub enum Block {
         /// 1 (the largest) to 6.
         level: u8,
         /// Its content.
+        #[serde(serialize_with = "serialize_inlines")]
         content: Vec<Inline>,
         /// Its anchor (`#getting-started`), GitHub's slug of its text:
         /// what links in the document name it by.
@@ -107,6 +109,9 @@ pub enum Block {
     Math {
         /// The formula.
         tex: String,
+        /// Native canonical mappings for the displayed formula text.
+        #[serde(skip)]
+        source: Vec<nsh_core::TextSourceSegment>,
     },
     /// A table.
     Table(Table),
@@ -119,6 +124,7 @@ pub enum Block {
         #[serde(default)]
         open: bool,
         /// What it says closed.
+        #[serde(serialize_with = "serialize_inlines")]
         summary: Vec<Inline>,
         /// Its blocks.
         children: Vec<Block>,
@@ -185,7 +191,7 @@ impl Block {
                 }
             }
             Block::CodeBlock(code) => out.push_str(code.code.trim_end_matches('\n')),
-            Block::Math { tex } => out.push_str(tex),
+            Block::Math { tex, .. } => out.push_str(tex),
             Block::Table(table) => {
                 for (i, row) in std::iter::once(&table.head)
                     .chain(table.rows.iter())
@@ -226,6 +232,18 @@ impl Block {
 )]
 #[non_exhaustive]
 pub enum Inline {
+    /// Native source provenance for this inline content. Rewrites and
+    /// parser syntax are projected onto the text's UTF-16 coordinates.
+    #[serde(skip)]
+    Source {
+        /// The rendered content (source wrappers do not add characters).
+        #[serde(serialize_with = "serialize_inlines")]
+        content: Vec<Inline>,
+        /// Canonical UTF-8 mappings, kept native rather than sent through JS.
+        #[serde(skip)]
+        segments: Vec<nsh_core::TextSourceSegment>,
+    },
+
     /// Text.
     Text {
         /// The text.
@@ -234,26 +252,31 @@ pub enum Inline {
     /// Strong importance (`**bold**`, `<strong>`, `<b>`).
     Strong {
         /// Its content.
+        #[serde(serialize_with = "serialize_inlines")]
         content: Vec<Inline>,
     },
     /// Emphasis (`*italic*`, `<em>`, `<i>`).
     Emphasis {
         /// Its content.
+        #[serde(serialize_with = "serialize_inlines")]
         content: Vec<Inline>,
     },
     /// Struck through (`~~deleted~~`, `<del>`, `<s>`).
     Strikethrough {
         /// Its content.
+        #[serde(serialize_with = "serialize_inlines")]
         content: Vec<Inline>,
     },
     /// Underlined (`<u>`, `<ins>`).
     Underline {
         /// Its content.
+        #[serde(serialize_with = "serialize_inlines")]
         content: Vec<Inline>,
     },
     /// Highlighted (`<mark>`).
     Highlight {
         /// Its content.
+        #[serde(serialize_with = "serialize_inlines")]
         content: Vec<Inline>,
         /// Its background, a CSS color (`<mark color="…">`, `<mark
         /// style="background-color: …">`); the view's own when not given.
@@ -263,16 +286,19 @@ pub enum Inline {
     /// Superscript (`<sup>`).
     Superscript {
         /// Its content.
+        #[serde(serialize_with = "serialize_inlines")]
         content: Vec<Inline>,
     },
     /// Smaller text (`<small>`).
     Small {
         /// Its content.
+        #[serde(serialize_with = "serialize_inlines")]
         content: Vec<Inline>,
     },
     /// Subscript (`<sub>`).
     Subscript {
         /// Its content.
+        #[serde(serialize_with = "serialize_inlines")]
         content: Vec<Inline>,
     },
     /// Code (`` `code` ``, `<code>`).
@@ -293,6 +319,7 @@ pub enum Inline {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         title: Option<String>,
         /// Its content.
+        #[serde(serialize_with = "serialize_inlines")]
         content: Vec<Inline>,
     },
     /// An image.
@@ -336,7 +363,8 @@ pub(crate) fn inline_text(inlines: &[Inline], out: &mut String) {
             Inline::Text { text } | Inline::Keyboard { text } => out.push_str(text),
             Inline::Code { code } => out.push_str(code),
             Inline::Math { tex } => out.push_str(tex),
-            Inline::Strong { content }
+            Inline::Source { content, .. }
+            | Inline::Strong { content }
             | Inline::Emphasis { content }
             | Inline::Strikethrough { content }
             | Inline::Underline { content }
@@ -370,6 +398,9 @@ pub struct CodeBlock {
     pub meta: Option<String>,
     /// The code, without a final line break.
     pub code: String,
+    /// Canonical source mappings for the actual code Text.
+    #[serde(skip)]
+    pub source: Vec<nsh_core::TextSourceSegment>,
 }
 
 impl CodeBlock {
@@ -379,6 +410,7 @@ impl CodeBlock {
             language,
             meta: None,
             code: code.into(),
+            source: Vec::new(),
         }
     }
 }
@@ -418,6 +450,7 @@ impl Table {
 #[non_exhaustive]
 pub struct TableCell {
     /// Its content.
+    #[serde(serialize_with = "serialize_inlines")]
     pub content: Vec<Inline>,
     /// The columns it spans (HTML's `colspan`), when more than one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -617,6 +650,10 @@ pub enum Alert {
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
 pub struct CustomNode {
+    /// Native canonical mappings for this node's fallback text.
+    #[serde(skip)]
+    pub source: Vec<nsh_core::TextSourceSegment>,
+
     /// Its name: the extension's (`mention`, `chart`).
     pub name: String,
     /// Its attributes: an element's (`<Callout kind="tip">`), a
@@ -635,6 +672,7 @@ pub struct CustomNode {
     pub children: Vec<Block>,
     /// Its inline content (an inline element's).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(serialize_with = "serialize_inlines")]
     pub content: Vec<Inline>,
 }
 
@@ -691,6 +729,27 @@ impl CustomNode {
             out.push_str(&self.text);
         }
     }
+}
+
+/// Serialize only the document's content, keeping native provenance out of
+/// JS renderer payloads and the public document format.
+fn serialize_inlines<S: serde::Serializer>(
+    inlines: &[Inline],
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    use serde::ser::SerializeSeq;
+    fn entries<S: SerializeSeq>(inlines: &[Inline], seq: &mut S) -> Result<(), S::Error> {
+        for inline in inlines {
+            match inline {
+                Inline::Source { content, .. } => entries(content, seq)?,
+                inline => seq.serialize_element(inline)?,
+            }
+        }
+        Ok(())
+    }
+    let mut seq = serializer.serialize_seq(None)?;
+    entries(inlines, &mut seq)?;
+    seq.end()
 }
 
 // --- JS ---------------------------------------------------------------------

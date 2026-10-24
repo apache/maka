@@ -13,7 +13,8 @@ come from two places:
   `nsh_base::registry()`): `SafeAreaView`, `KeyboardAvoidingView`, `Button`, `Checkbox`, `Radio`, `RadioGroup`, `Switch`, `Tab`, `Tabs`, `Collapsible`, `Progress`, `SelectionArea` (texts that select
   together, `text.md` "Selection areas"), `TextView` (`text-view.md`), `ResizablePanelGroup` and `ResizablePanel`, `DockArea`
   (`dock.md`), the popups on the core's overlays (`Popover`,
-  `Menu` with `MenuItem`, `MenuSeparator` and `Submenu`, `ContextMenu`, `Tooltip`, `Sheet`: "Popups" below) and the
+  `Menu` with `MenuItem`, `MenuSeparator` and `Submenu`, `ContextMenu`, `Tooltip`, `Sheet`: "Popups" below), toasts
+  (`Toast`, `ToastStack` and the class `ToastManager`: "Toasts" below) and the
   modules `AlertDialog`, `Keyboard`, beside the navigation `nsh-js` makes for it (`NavStack`, `NavPage`, `Dialog`, `createNavStack`); controls
   (toggles, sliders, selects, popovers, sheets, ...) join as their behavior is written. It is a UI set
   (`Registry::ui_set("nsh/base")`) every host serves by default (`set_ui_sets`' default; embedders with a list of their
@@ -715,7 +716,10 @@ what changed.
   node that follows it (or keeps them out of the tree while the view has none: a `Children` in a region that is not
   shown). The core sets the `Prop<Children>` when JS adds the first child or removes the last, so
   `props.children.get().is_empty()` in a binding follows it. With `children_each`, the children are an `Each` keyed by the child's node over a signal of the host's JS
-  children: one wrapper per child, so a child added or removed leaves the others' wrappers in place.
+  children: one wrapper per child, so a child added or removed leaves the others' wrappers in place, and a child JS
+  moves among them (a keyed `<Each>`'s row) keeps its wrapper, which the region moves. The JS face inserts a component's
+  children through a memo of their getter, so their expression runs again only when what it reads itself changes: an
+  `<Each>` among them is made once and keeps its rows, as a host element's does.
 - A view passes its children on by placing its `Children` among a nested component's (`<Inset>{children}</Inset>`):
   they become that component's children (`Placement::Nested`), in that place among the content the view gives it,
   so its view places them, as deep as they are passed on; JS's insertions and removals follow them there, and content
@@ -833,7 +837,7 @@ Their callbacks are one set, as `Dialog`'s (`popup.rs`: `OpenState`, `lifecycle`
 - **`onOpenChange(open, reason)`**: every request to open or close (`OpenState::request`; not a request for what it
   already is), whether controlled or not, with why: `OpenChangeReason`: `"triggerPress"`, `"pressOutside"`,
   `"backdropPress"`, `"cancel"` (Escape or back), `"select"` (a menu's item), `"hover"`, `"longPress"`,
-  `"contextMenu"`. The app changing `open` itself is not reported here.
+  `"contextMenu"`, `"swipe"`. The app changing `open` itself is not reported here.
 - **`onOpen` / `onClose`**: after it is all there and after it is all gone (a sheet, or a menu as a sheet, once its
   motion is over; a popup at once), whoever opened or closed it, the app's `open` included (`lifecycle`, an effect on
   what is shown). `Tooltip` has these two and `onOpenChange`.
@@ -853,6 +857,23 @@ is for, never by replacing one popup with another everywhere:
 | `ContextMenu` | the secondary button opens it at the pointer (`onContextMenu`'s `page`) | a finger held 400 ms on the trigger opens it as the menu's sheet (observed touches: the trigger's own presses and the scroll views around it go on; 10 points of movement cancel) |
 | `Tooltip` | after the pointer rests on the trigger for `delay` (500 ms); leaving or pressing hides it | only when the app opens it (`open`, `defaultOpen`): no pointer to rest |
 | `Sheet` | an edge panel (`side`) over a backdrop | the same |
+
+`Sheet` opts into downward dragging with `closeOnSwipe` (default false, bottom side). Its pan updates
+`SheetMotion.drag_y` on the platform's animation graph; a clamped fraction of the measured panel height drives both
+translation and backdrop opacity. Release past 30% or 800 points/second requests `onOpenChange(false, "swipe")`
+after `onCancel`; a shorter, cancelled or declined gesture returns the panel. Reduced motion snaps the release.
+`Interactive::pan_enabled` filters the mounted pan values and event mask together, retaining the listeners and
+children while a sheet enters, exits or changes permission. `pan_scroll_handoff` asks UIKit to share the touched
+descendant scroll's pan: its initial offset consumes the first part of the drag, and the remaining downward
+distance moves the panel while the scroll stays at its adjusted top. Other backends retain their usual scroll
+arbitration. `SheetMotion` tags completion callbacks and fallback timers with a generation, so a prior exit cannot
+unmount a reopened sheet or its backdrop.
+
+`SheetMotion` derives the programmatic translation from the remaining fade fraction times the current measured
+distance from the edge. Lazy JS children can fill in over several layout rounds in one native batch; later content
+can also resize a panel during its entrance. Each layout updates that distance in the native graph, preserving the
+animation's progress and completion time. `Sheet`, phone menus and compact dock drawers share this path. Dragging
+is a separate value in points, so entrance measurement does not clamp or replace the finger's displacement.
 
 The menus' items reach their menu through context (`MenuContext`: the close function, the sheet's path of submenus,
 the level's open submenu), so the app arranges them freely. Every item of a sheet's hidden levels is out of the tree
@@ -876,3 +897,42 @@ the requests) decides, as `hint_open`. The tooltip itself is the bubble (the app
 what it says; it never takes the pointer (`pointer_events(None)`). An element's `tooltip` prop (`Interactive::tooltip`,
 `Prop::Tooltip`) takes a text too, in a minimal bubble of the theme's tokens, or any other element as it is, in a
 hint overlay the core makes itself (`Core::set_tooltip`).
+
+## Toasts
+
+`nsh/base`'s toasts (`crates/nsh-base/src/toast/`) are `gpui-base`'s three pieces, with its names and semantics; the
+imperative layer (a `toast(..)` with a title, a description and an action, shown from anywhere) is a styled library's,
+as `gpui-component`'s notifications are, and is never part of NSH (the gallery's is `examples/gallery/toast.tsx`).
+
+| gpui-base | nsh-base (Rust) | TS |
+|---|---|---|
+| `ToastManager<I, T>` (`new(motion)`, `push(id, value, ToastOptions { timeout }, now)`, `dismiss(id, now)`, `dismiss_all(now)`, `advance(now, paused) -> ToastAdvance { changed, presented, ending, removed }`, `iter()`, `visible(limit)`, `get`, `len`, `is_empty`) | the same (`manager.rs`), `now` a `nsh_core::time::Instant` | the class `ToastManager` (`js.rs`) over `ToastManager<String, JsonValue>`: the same methods, `entries()` for `iter()`, no `now` (the engine's clock, so a test's manual clock moves it), milliseconds for durations |
+| `ToastMotion` (`sonner()`) | the same, `Points` for distances | a plain object of the same fields, milliseconds, fields left out Sonner's |
+| `ToastTransitionStatus` (`Starting`, `Present`, `Ending`) | the same (`PropEnum`) | `"starting" \| "present" \| "ending"` |
+| `Toast::new(id).transition_status(..)`, role alert | the component `Toast` (`toast.rs`) | `<Toast transitionStatus>` |
+| `ToastStack::new(id, state).item(id, child).motion(..).placement(Anchor).focus_handle(..)` | the component `ToastStack` (`stack.rs`): its children are the items (`children_each`, keyed by node), `Anchor` an enum of the same eight edges, `.state(ToastStackState)` | `<ToastStack motion placement onExpandedChange>` |
+| `ToastStackState::is_expanded()` | the same, a signal the stack's `ExpandedChange` writes | `onExpandedChange(expanded)` |
+
+The manager is a class rather than a reactive helper because it is `gpui-base`'s data structure, not a view: the app
+keeps it, renders `visible(limit)` (a signal of its own) and calls `advance` on a timer while anything is mounted,
+exactly as `gpui-component`'s `NotificationList` does; a class keeps one implementation for Rust and TS and its
+methods synchronous (`docs/dev/rust-classes.md`), where a reactive helper would need the core's graph, which JS's
+calls do not run in.
+
+The stack wraps each child in an absolutely positioned item at its `placement`'s edge (`top: 0` or `bottom: 0`),
+measures it (`onLayout`) and moves it with native animated values bound to its translation, `scaleX` (gpui-base's
+width inset: each collapsed layer `collapsedScaleStep` narrower, centered) and opacity, driven by critically damped
+springs whose response is the motion's `duration` (`spring_of`). Distances from the edge are gpui-base's geometry
+(`stack_heights`, `distance`): collapsed `collapsedPeek` per rank, expanded the newer items' heights plus
+`expandedGap` per rank; the stack's own height is the collapsed or expanded one, so its hover area follows.
+
+NSH's additions fit the same pieces: gpui-base expands the stack for hover and focus; NSH's views report no focus, and
+a finger down on the stack (observed `onTouch`) expands it as the pointer does, so a toast being read or swiped is
+paused. A `Toast` takes a swipe (the core's responder, claimed once the pointer moved 10 points toward
+`swipeDirection` along its axis, so its buttons stay presses; released past `swipeThreshold`, measured from where the
+pointer went down, or flicked at 0.5 points per millisecond, it moves out and emits `DismissRequest`). The stack hears
+Escape and back while it has children (an overlay of no size, `onCancel`), so nothing else loses them to an empty
+stack. A `Toast`'s `accessibilityLabel` is announced once as it mounts (`announce_for_accessibility`, every platform's
+announcement). The state classes are the app's look for the status: `startingClass` in the first frame while
+starting (the next display frame, or 50 ms where none comes: Base UI's `data-starting-style`, so the app's
+`transition` classes run the enter motion), `endingClass` while ending, `swipingClass` while swiped.

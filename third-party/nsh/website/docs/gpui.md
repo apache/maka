@@ -134,6 +134,19 @@ so only load it from your own app's files.
 - `run_app(source, options)` starts GPUI and runs one app in a window until it closes (what the development host does).
 - `AppView::register_component(name, factory)` registers a native component of yours before loading
   ([Native components](./native-components.md)).
+- `AppOptions::cache` (or `AppView::set_cache`, for the apps loaded next) sets where the apps keep their caches, the
+  [images they download](./images-and-assets.md#kept-on-disk), and how much each keeps: `CacheOptions { location,
+  images }`, `CacheLocation::System` (the default), `Dir(path)` or `Off`, `CachePolicy::Default` (256 MiB),
+  `MaxSize(ByteSize::mib(n))` or `Off`.
+- `AppView::host()` is the view's channel with the apps it runs ([`nsh/host`](../modules/nsh-host.md)), a
+  `HostChannel` any thread may use: `set_params(map)` before loading gives the app its launch parameters
+  (`host.params`), `send(name, data)` an event (`host.on`), and `handle(name, |call| …)` answers its
+  `host.call(name, data)` and hears its `host.post` (`call.resolve(json)`, `call.reject(message)`, at once or later
+  from any thread). Handlers run on the engine thread: hand the call to your GPUI entities (a channel that a
+  `cx.spawn` task reads) and answer from there. The macOS, Windows and Linux `AppView`s have the same `host()`.
+  Its `handle_open_url(|request| …)` sees the URLs the app opens ([`openUrl`](../modules/nsh-device.md#openurl))
+  before the system does: `request.handled()` when your app routed the URL itself, `request.decline()` (or dropping
+  the request) for the system to open it with GPUI's `open_url`.
 - `AppOptions::limits` (or `AppView::set_limits`, for the apps loaded next) sets the VM limits: the JS heap, the
   stack, the time budgets and the node quota ([Sandbox and capabilities](./sandbox-and-capabilities.md)). Embedded apps get `Limits::default()` (a
   256 MB heap); the development host runs apps on its own, with `Limits::standalone()`.

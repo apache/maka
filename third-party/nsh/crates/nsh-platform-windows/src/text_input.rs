@@ -135,6 +135,8 @@ pub(crate) struct InputState {
     config: RefCell<InputConfig>,
     /// A configuration was applied (auto focus happens on the first).
     configured: Cell<bool>,
+    /// The first configuration's scheduled auto-focus task is still live.
+    auto_focus_pending: Cell<bool>,
     /// Content box; the whole view until the core sends one.
     content: Cell<Option<Bounds<Points>>>,
     /// The size the editor was hosted (and last drawn) at.
@@ -143,6 +145,8 @@ pub(crate) struct InputState {
     count: Cell<u32>,
     /// Selection as last reported (UTF-16).
     reported: Cell<(u32, u32)>,
+    /// The caret as last reported, in the view.
+    reported_caret: Cell<Bounds<Points>>,
     /// The composition as last reported (`onCompositionChange`): its text
     /// while one is in progress.
     composed: RefCell<Option<String>>,
@@ -180,10 +184,12 @@ impl InputState {
             model: RefCell::default(),
             config: RefCell::default(),
             configured: Cell::new(false),
+            auto_focus_pending: Cell::new(false),
             content: Cell::new(None),
             size: Cell::new((0.0, 0.0)),
             count: Cell::new(0),
             reported: Cell::new((0, 0)),
+            reported_caret: Cell::new(Bounds::default()),
             composed: RefCell::new(None),
             pending: RefCell::new(None),
             anim_color: Cell::new(None),
@@ -841,6 +847,7 @@ fn set_focus(surface: &Rc<Surface>, view: Option<&NshView>) {
         crate::access::focus_changed(surface, view);
         view.changed();
     }
+    surface.sync_focus();
     update_ime(surface);
     blink::update();
     place_ime(surface);
@@ -1115,26 +1122,53 @@ fn key_press(surface: &Surface, view: &NshView, key: &str) {
     });
 }
 
-/// Reports the selection if it moved and JS listens.
+/// Reports the selection if it moved and JS listens, then the caret.
 fn report_selection(surface: &Surface, view: &NshView, input: &InputState) {
-    if !view.state().events.contains(EventKind::SelectionChange) {
+    if view.state().events.contains(EventKind::SelectionChange) {
+        let range = {
+            let model = input.model.borrow();
+            let (s, e) = model.selection();
+            let text = model.text();
+            (model::byte_to_utf16(text, s), model::byte_to_utf16(text, e))
+        };
+        if input.reported.replace(range) != range {
+            send(surface, view, EventKind::SelectionChange, || {
+                EventPayload::Map(vec![
+                    ("start", PayloadValue::Number(range.0 as f64)),
+                    ("end", PayloadValue::Number(range.1 as f64)),
+                ])
+            });
+        }
+    }
+    report_caret(surface, view, input);
+}
+
+/// `onCaretMove` if the caret moved (with the selection, or as the text
+/// scrolled or wrapped again) and JS listens.
+fn report_caret(surface: &Surface, view: &NshView, input: &InputState) {
+    // Only an input that edits shows a caret.
+    if !input.focused.get() || !view.state().events.contains(EventKind::CaretMove) {
         return;
     }
-    let range = {
-        let model = input.model.borrow();
-        let (s, e) = model.selection();
-        let text = model.text();
-        (model::byte_to_utf16(text, s), model::byte_to_utf16(text, e))
+    let caret: Bounds<Points> = caret_bounds(view, input);
+    if input.reported_caret.replace(caret) != caret {
+        send(surface, view, EventKind::CaretMove, || {
+            EventPayload::caret(caret)
+        });
+    }
+}
+
+/// The caret in the input view's coordinates (`onCaretMove`'s `bounds`):
+/// in the content box, scrolled with the text.
+fn caret_bounds(view: &NshView, input: &InputState) -> Bounds<Points> {
+    let Some((x, y, h)) = input.caret_rect() else {
+        return Bounds::default();
     };
-    if input.reported.replace(range) == range {
-        return;
+    let content = content_rect(view, input);
+    Bounds {
+        origin: Point::new(content.origin.x + Points(x), content.origin.y + Points(y)),
+        size: Size::new(Points(caret_width()), Points(h)),
     }
-    send(surface, view, EventKind::SelectionChange, || {
-        EventPayload::Map(vec![
-            ("start", PayloadValue::Number(range.0 as f64)),
-            ("end", PayloadValue::Number(range.1 as f64)),
-        ])
-    });
 }
 
 /// Reports the composition if it started, changed or ended since last
@@ -1286,16 +1320,40 @@ fn auto_focus(surface: &Rc<Surface>, view: &NshView) {
     if view.attached() {
         return set_focus(surface, Some(view));
     }
+    let Some(input) = input_of(view) else { return };
+    input.auto_focus_pending.set(true);
+    let pending = Rc::downgrade(&input);
     let view = view.clone();
     let mut frames = 0;
     surface.on_frame(move |surface, _| {
+        let Some(input) = pending.upgrade() else {
+            return false;
+        };
+        if !input.auto_focus_pending.get() {
+            return false;
+        }
         frames += 1;
         if view.attached() {
+            input.auto_focus_pending.set(false);
             set_focus(surface, Some(&view));
             return false;
         }
-        frames < 30 && view.state().input.is_some()
+        let waiting = frames < 30 && view.state().input.is_some();
+        if !waiting {
+            input.auto_focus_pending.set(false);
+        }
+        waiting
     });
+}
+
+/// Cancels scheduled focus when a subtree leaves the native input tree.
+pub(crate) fn retire_cell(view: &NshView) {
+    if let Some(input) = input_of(view) {
+        input.auto_focus_pending.set(false);
+    }
+    for child in view.child_views() {
+        retire_cell(&child);
+    }
 }
 
 /// The content box in the view.
@@ -1384,6 +1442,9 @@ pub(crate) fn content(view: &NshView, content: Bounds<Points>) {
     place(view, &input);
     if input.focused.get() {
         input.reveal();
+        if let Some(surface) = surface_of(view) {
+            report_caret(&surface, view, &input);
+        }
     }
 }
 
@@ -1488,6 +1549,7 @@ pub(crate) fn window_focus(surface: &Rc<Surface>, focused_window: bool) {
         place_ime(surface);
     }
     blink::update();
+    surface.sync_focus();
 }
 
 /// A pointer event on input `view` (its coordinates); true when handled.
@@ -1586,6 +1648,11 @@ pub(crate) fn wheel(view: &NshView, dy: f32) -> bool {
     let moved = input.scroll.get() != before;
     if moved {
         view.changed();
+        if input.focused.get()
+            && let Some(surface) = surface_of(view)
+        {
+            report_caret(&surface, view, &input);
+        }
     }
     moved
 }
@@ -1651,7 +1718,10 @@ pub(crate) fn context_menu(surface: &Rc<Surface>, view: &NshView) {
             item(
                 Some(MenuRole::Paste),
                 "",
-                editable && crate::system::clipboard_has_text(),
+                editable
+                    && (crate::system::clipboard_has_text()
+                        || (view.state().events.contains(EventKind::Paste)
+                            && crate::system::clipboard_has_image())),
                 0x56,
                 true,
             ),
@@ -1836,8 +1906,28 @@ fn cut(surface: &Surface, view: &NshView, input: &InputState, secure: bool) -> b
     true
 }
 
+/// A paste (Ctrl+V, Shift+Insert, the menu): reports what the clipboard
+/// holds (`onPaste`) if the app listens, then inserts its text as
+/// `pasteBehavior` says. The clipboard is read only here, on the user's
+/// paste.
 fn paste(surface: &Surface, view: &NshView, input: &InputState) {
-    let Some(text) = crate::system::clipboard_text() else {
+    let text = crate::system::clipboard_text();
+    if view.state().events.contains(EventKind::Paste) {
+        let mut paste = nsh_core::PasteEvent::new(text.clone().unwrap_or_default());
+        if let Some(image) = crate::system::clipboard_image() {
+            paste.files.push(nsh_core::PastedFile::image(image));
+        }
+        paste.uris = crate::system::clipboard_files();
+        surface.event(
+            view.id(),
+            EventKind::Paste,
+            EventPayload::Paste(Box::new(paste)),
+        );
+    }
+    if input.config.borrow().paste_behavior != nsh_core::PasteBehavior::Insert {
+        return;
+    }
+    let Some(text) = text else {
         return;
     };
     let text = pasted(&text, input.multiline());

@@ -25,6 +25,30 @@
   layer, framed at the fitted rectangle (the tint and its mask inside it); Android translates its draw matrix by the
   position; Windows, Linux, GPUI and the terminal backend draw at the fitted rectangle; the web sets CSS's `object-position` on the `<img>`
   (and the tint mask's position).
+- **Disk cache** (`nsh_core::image::DiskCache`, `image/cache.rs`): the encoded bytes of every `http(s)://` image (views,
+  canvases, `getSize` / `prefetch`) are kept on disk on every native backend, so an app reopened shows what it showed
+  without a download, and offline. One implementation in the core; each loader keeps its own networking and routes a
+  download through it: `lookup` (a fresh copy, or a stale one's validators) before the request, `complete` after it
+  (desktops: `DiskCache::load` around ureq on the worker threads; macOS / iOS: the lookup on a GCD queue and
+  `complete` in the `NSURLSession` delegate, with an `NSMutableURLRequest` carrying `If-None-Match` /
+  `If-Modified-Since` and `ReloadIgnoringLocalCacheData`, so the shared `URLCache` never answers for it; iOS starts the task from the main thread (`LoadEvent::Download`) so cancelling still works;
+  Android: `Native.imageCacheLookup` / `imageCacheComplete` around `HttpURLConnection` on the image threads, the
+  body crossing JNI only to be stored). Policy (RFC 9111 for a private cache, simplified): `200` / `203` are stored
+  unless `no-store`, `Vary: *` or over an eighth of the cache; fresh for `max-age`, else `Expires` − `Date`, else a
+  tenth of the time since `Last-Modified` (at most 7 days), less the response's age; stale at once with `no-cache`
+  or no freshness. Stale copies are revalidated (`304` refreshes them by its headers over the stored ones, `4xx`
+  drops them) and served when the request fails or the server answers `5xx`, unless `must-revalidate` / `no-cache`.
+  Keyed by URL alone (sources carry no request headers, so `Vary` other than `*` cannot differ). `asset:/` URIs are
+  never kept (the dev server's change with the app). Each entry is one file named by a digest of its URL (URL, policy
+  headers, body, CRC32 of them), written under a temporary name and renamed: readers on any thread, surface or
+  process see a whole entry or none, without locks; one that does not read back whole is deleted and is a miss. LRU
+  by modification time (a hit refreshes it at most every 10 minutes); past its limit a scan deletes the oldest down
+  to three quarters, and drops temporary files over an hour old. No process-wide registry: every engine opens its
+  own handle in `<root>/<app id>/images` from `EngineConfig::cache` (`CacheOptions::images`, 256 MiB by default:
+  `DEFAULT_DISK_CACHE_SIZE`) and hands it to the platform (`Engine::image_cache`); the files are all handles share.
+  Where the root is and how embedders set it: `embedding.md` "Caches". Development hosts given `--data-dir`
+  (`nsh test --target`) keep the caches in it (`CacheLocation::Dir`), so a test starts cold. The web runtime leaves
+  caching to the browser's HTTP cache.
 - **In-memory images** (`nsh_core::image`): `data:` URIs and `blob:` URLs are resolved once, in shared code, and their
   bytes travel with the source (`ImageSource::data`, an `ImageData`: shared, cloned without a copy, equal by
   identity). The core decodes a `data:` source (base64 or percent-encoded) when the prop is set
@@ -49,6 +73,34 @@
   `data:` URI decode it on the platform (`nsh_core::image::decode_data_uri`, the one decoder every backend uses).
   The terminal backend passes these shared bytes to its bounded bitmap image workers, including placeholders;
   its raw-URI `getSize` and canvas paths use the same data-URI decoder.
+- **Picked images** (`nsh/picker`, `nsh_core::picker`): `Picker.pickImages` sends the root `Command::PickImages` with a
+  `PickRequest` checked in Rust (`limit`: 1 for a single pick, at most `MAX_PICKED` = 100; `max_dimension`, `quality`
+  as a `Percentage`, `PickFormat::Compatible` / `Current`); the `picker` capability gates it (denied: `[]` and a log
+  line). What each image becomes is decided by `PickRequest::needs_encoding` from its type and its size with its
+  orientation applied: JPEG, PNG, GIF and WebP stay as they are; another format (HEIC, HEIF, TIFF) becomes a JPEG
+  unless `Current`; an image whose longer side passes `max_dimension` is decoded upright, scaled to fit
+  (`scaled_size`) and encoded again, a PNG as a PNG and anything else as a JPEG of `jpeg_quality()` (0.9 by default);
+  a `quality` re-encodes JPEGs too. Re-encoded images carry no metadata (no EXIF location); kept ones keep theirs.
+  iOS: `PHPickerViewController` (PhotosUI loaded with `dlopen`, as WebKit is; no photo library permission), its
+  `preferredAssetRepresentationMode` compatible (the system turns HEIC into JPEG) or current, ordered selection when
+  several; each item's file is read inside `loadFileRepresentationForTypeIdentifier`'s completion (the file goes when it
+  returns) and prepared with ImageIO (`picker.rs`: `CGImageSourceCreateThumbnailAtIndex` with the transform and the
+  longer side, `CGImageDestination` with `kCGImageDestinationLossyCompressionQuality`). macOS: an `NSOpenPanel` sheet
+  and the same ImageIO preparation (`nsh-platform-macos` `picker.rs`, tested with `sips`' HEIC). Android
+  (`Picker.java`): `MediaStore.ACTION_PICK_IMAGES` (API 33+, or 30+ with SDK extension 2), else `ACTION_GET_CONTENT`
+  for `image/*`, started by a headless retained `android.app.Fragment` added to the view's activity (the embedding app
+  forwards no result); the bytes are read from the content resolver, sized with `BitmapFactory` bounds and the EXIF
+  orientation, and re-encoded with `BitmapFactory` (power-of-two sampling), an orientation `Matrix` and
+  `Bitmap.compress`; `Native.picked` hands them over. Web: an `<input type=file>` (`cancel` answers empty), scaled
+  with `createImageBitmap` (`imageOrientation: "from-image"`) and an `OffscreenCanvas`; `nsh_picked_file` /
+  `nsh_picked` hand the bytes over. Windows (`IFileOpenDialog` on a thread of its own), Linux (`gtk::FileDialog`) and
+  GPUI (`prompt_for_paths`) read the files as they are (`nsh_core::picker::read_files`), offering only the formats
+  `dialog_extensions` lists for the request (with `Compatible`: the four that stay as they are); they scale nothing.
+  Every backend answers once with the root `Pick` event, `EventPayload::Picked { id, files }`, the bytes in
+  `ImageData` (no base64 anywhere); the core cuts the list to the limit and fills in sizes, types and file extensions
+  from the bytes (`PickedFile::fill_in`, `imagesize`), and `nsh-js` makes each a `File` over a `Blob` sharing those
+  bytes, so `URL.createObjectURL(file)` shows it in an `Image` and `fetch` / `FormData` upload it without a copy in JS.
+  An embedder's `PickerBackend` (`EngineConfig::picker`) answers in place of the platform: no command is sent.
 - **Pixel-density variants**: an `ImageSource` carries `scales` (`ImageScales`, a `Copy` bitmask over `IMAGE_SCALES`,
   `[1, 1.5, 2, 3, 4]`) when a bundled asset ships `@Nx` siblings (of a JS `scales` list, the first `SCALES_READ`
   entries). The core picks the variant when it emits `MountItem::Image` (`ImageSource::uri_for`, for the source and the

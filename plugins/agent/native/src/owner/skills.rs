@@ -174,7 +174,7 @@ impl Owner {
             tools: self.selected_tools(&basis, false, Some(editing))?.names(),
             input: maka_skills_api::contract::ModelSearch {
                 query: input.query,
-                limit: Some(8),
+                limit: None,
             },
         })
         .map_err(|_| "agent_skill_query_invalid")?;
@@ -397,8 +397,7 @@ fn candidates(value: serde_json::Value) -> Result<SkillCandidates, String> {
         description: String,
     }
     let page: Page = serde_json::from_value(value).map_err(|_| "agent_skill_query_invalid")?;
-    if !maka_agent_facts::archive::valid_projection_digest(&page.revision) || page.matches.len() > 8
-    {
+    if !maka_agent_facts::archive::valid_projection_digest(&page.revision) {
         return Err("agent_skill_query_invalid".into());
     }
     Ok(SkillCandidates {

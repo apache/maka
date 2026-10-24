@@ -388,7 +388,7 @@ The browser decides these, and the web backend follows it:
 - **Videos with sound that start on their own**: `Video` is a `<video>` with every prop and event, but browsers only start a video with sound after a user gesture (muted videos play).
 - **Native components**: registered native components belong to the native apps that embed NSH; on the web their view stays empty, with a warning in the console.
 - **Platform services**: reading the clipboard (`Clipboard.readText`, also `hasText`) needs a secure context (HTTPS) and may ask the user. Images do not report `onProgress`.
-- **Text shaping details**: line breaking is a subset of UAX #14 (spaces, CJK, hyphens), with no hyphenation and no bidirectional reordering beyond the paragraph direction.
+- **Text shaping details**: line breaking is a subset of UAX #14 (spaces, CJK, hyphens, and the line start and end rules of CJK punctuation: closing marks such as `。`, `，` and `」` stay off the start of a line, opening marks such as `（` and `「` off its end), with no hyphenation and no bidirectional reordering beyond the paragraph direction.
 
 The player and the dev server run apps with development settings (no hardening); published apps run hardened. Both use the default [limits](./sandbox-and-capabilities.md).
 

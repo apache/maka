@@ -9631,7 +9631,6 @@ dependencies = [
  "maka-settings-native",
  "maka-ui-runtime",
  "maka-workspace-api",
- "markdown",
  "nsh-base",
  "nsh-bundler",
  "nsh-core",
@@ -10552,11 +10551,15 @@ name = "nsh-core"
 version = "0.2.0"
 dependencies = [
  "cap-std",
+ "crc32fast",
  "flate2",
  "futures-util",
+ "httpdate",
+ "imagesize 0.15.0",
  "libc",
  "log",
  "nsh-macros",
+ "regex",
  "resvg 0.46.0",
  "rustc-hash 2.1.3",
  "serde",
@@ -10567,6 +10570,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.28.0",
  "unicode-linebreak",
+ "unicode-segmentation",
  "url",
  "windows-sys 0.61.2",
 ]

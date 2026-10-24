@@ -4,7 +4,7 @@
 
 use super::{Core, Key, Kind, NO_KEY};
 use crate::{
-    JsonValue,
+    EventPayload, JsonValue, PayloadValue,
     geometry::{Bounds, Point, Points, point, rect},
     mount::MountItem,
     ops::NodeId,
@@ -97,6 +97,40 @@ impl<M: TextEngine> Core<M> {
             frame: node.frame,
             page: point(Points(x), Points(y)),
         })
+    }
+
+    /// Completes an input's `onCaretMove` payload from its platform: adds
+    /// `pageBounds`, its `bounds` (in the input) moved by where the input is
+    /// in its root view. The platforms know the caret in their text views,
+    /// the core where the input is (`ref.measure()`'s `pagePosition`, with
+    /// the scroll views around it).
+    pub fn locate_caret(&self, id: NodeId, payload: &mut EventPayload) {
+        if matches!(payload, EventPayload::None) {
+            *payload = EventPayload::Map(Vec::new());
+        }
+        let EventPayload::Map(fields) = payload else {
+            return;
+        };
+        if fields.iter().any(|(k, _)| *k == "pageBounds") {
+            return;
+        }
+        // A platform that could not place the caret reports an empty one.
+        let caret = match fields.iter().find(|(k, _)| *k == "bounds") {
+            Some(&(_, PayloadValue::Bounds(caret))) => caret,
+            _ => {
+                fields.retain(|(k, _)| *k != "bounds");
+                fields.push(("bounds", PayloadValue::Bounds(Bounds::default())));
+                Bounds::default()
+            }
+        };
+        let page = self.measure(id).map_or(Point::default(), |m| m.page);
+        fields.push((
+            "pageBounds",
+            PayloadValue::Bounds(Bounds {
+                origin: point(page.x + caret.origin.x, page.y + caret.origin.y),
+                size: caret.size,
+            }),
+        ));
     }
 
     /// Whether `key` hangs from the main tree's root or a root view that

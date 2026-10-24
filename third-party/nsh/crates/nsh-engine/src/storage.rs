@@ -83,6 +83,28 @@ fn data_dir_in(os: &str, env: impl Fn(&str) -> Option<PathBuf>) -> Option<PathBu
     }
 }
 
+/// The system's directory for caches: Caches on Apple platforms,
+/// `%LOCALAPPDATA%` on Windows, `$XDG_CACHE_HOME` (`~/.cache`) elsewhere.
+/// `None` on Android, whose cache directory only the platform knows, and
+/// without a home directory: what [`crate::CacheLocation::System`] is
+/// unless the platform resolves it itself.
+pub(crate) fn cache_dir() -> Option<PathBuf> {
+    cache_dir_in(std::env::consts::OS, |name| {
+        std::env::var_os(name).map(PathBuf::from)
+    })
+}
+
+/// [`cache_dir`] on `os` (`std::env::consts::OS`) with the environment `env`.
+fn cache_dir_in(os: &str, env: impl Fn(&str) -> Option<PathBuf>) -> Option<PathBuf> {
+    let env = |name| env(name).filter(|v| !v.as_os_str().is_empty());
+    match os {
+        "android" => None,
+        "macos" | "ios" => env("HOME").map(|home| home.join("Library/Caches")),
+        "windows" => env("LOCALAPPDATA"),
+        _ => env("XDG_CACHE_HOME").or_else(|| env("HOME").map(|home| home.join(".cache"))),
+    }
+}
+
 #[cfg(test)]
 use crate::app_dir_name;
 
@@ -292,6 +314,41 @@ mod tests {
         // Android's files directory is the platform's to give.
         assert_eq!(data_dir_in("android", home), None);
         assert_eq!(data_dir_in("linux", env(&[])), None);
+    }
+
+    #[test]
+    fn cache_directories_follow_each_platform() {
+        let vars = |vars: &'static [(&'static str, &'static str)]| {
+            move |name: &str| {
+                vars.iter()
+                    .find(|(n, _)| *n == name)
+                    .map(|(_, v)| PathBuf::from(v))
+            }
+        };
+        let home = vars(&[
+            ("HOME", "/home/a"),
+            ("LOCALAPPDATA", r"C:\Users\a\AppData\Local"),
+        ]);
+        assert_eq!(
+            cache_dir_in("linux", home),
+            Some(PathBuf::from("/home/a/.cache"))
+        );
+        assert_eq!(
+            cache_dir_in(
+                "linux",
+                vars(&[("XDG_CACHE_HOME", "/c"), ("HOME", "/home/a")])
+            ),
+            Some(PathBuf::from("/c"))
+        );
+        assert_eq!(
+            cache_dir_in("macos", home),
+            Some(PathBuf::from("/home/a/Library/Caches"))
+        );
+        assert_eq!(
+            cache_dir_in("windows", home),
+            Some(PathBuf::from(r"C:\Users\a\AppData\Local"))
+        );
+        assert_eq!(cache_dir_in("android", home), None);
     }
 
     #[test]

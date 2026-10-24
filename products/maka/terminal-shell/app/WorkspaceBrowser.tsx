@@ -24,19 +24,18 @@ import {
   cleanup,
   computed,
   effect,
-  Input,
   inputAction,
   signal,
   Text,
   untracked,
   View,
+  Image,
+  List,
 } from 'nsh';
 import type { YNode } from 'nsh';
 import { Button } from 'nsh/base';
-import { Image } from 'nsh/image';
 import logo from './assets/maka.png';
 import { keymap } from 'nsh/keymap';
-import { List } from 'nsh/list';
 import {
   C,
   compact,
@@ -67,28 +66,23 @@ export type WorkspaceBrowserProps = {
   create(workspace: BrowserWorkspace, expectedSessionId: string | null): Promise<void>;
   newConversation(expectedSessionId: string | null): void;
   settings(expectedSessionId: string | null): void;
+  search(expectedSessionId: string | null): void;
   changeSession(action: SessionAction, expectedSessionId: string | null): Promise<void>;
-  docked?: boolean;
-  resize?(columns: number): void;
 };
 
 export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
   const browser = props.browsing;
   const choosingWorkspace = signal(false);
-  const selectedRow = signal<string | null>(null);
   const actions = signal<{ session: SessionActionTarget; origin: string | null } | null>(null);
   const actionsAnchor = signal<YNode | null>(null);
   const navigationNotice = signal<{ kind: 'draft' | 'action'; message: UiText } | null>(null);
   const viewportHeight = signal(160);
-  let search: YNode | undefined;
+  let navigationRoot: YNode | undefined;
   let list: YNode | undefined;
-  let currentActionTrigger: { id: string; node: YNode } | null = null;
-  let removeSearchKeys = () => {};
   let removeEscape = () => {};
   let alive = true;
   cleanup(() => {
     alive = false;
-    removeSearchKeys();
     removeEscape();
   });
   const scopeLabel = () => {
@@ -134,12 +128,6 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
       ? scopes().map((scope) => scope.id)
       : browser.sessions().map((session) => session.id),
   );
-  effect(() => {
-    if (!rowIds().includes(selectedRow() ?? '') && !browser.loading())
-      selectedRow.set(rowIds()[0] ?? null);
-  });
-  const index = () => rowIds().indexOf(selectedRow() ?? '');
-  const currentRow = () => (index() < 0 ? undefined : selectedRow());
   const select = async ({ id, origin }: { id: string; origin: string | null }) => {
     if (!alive || props.selected() !== origin || props.switching()) return;
     navigationNotice.set(null);
@@ -169,14 +157,6 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
       });
     }
   };
-  const currentActions = () => {
-    const session = sessionsById().get(currentRow() ?? '');
-    if (session && !choosingWorkspace() && currentActionTrigger?.id === session.id)
-      openActions(
-        { session: sessionActionTarget(session), origin: props.selected() },
-        currentActionTrigger.node,
-      );
-  };
   const closeActions = () => {
     batch(() => {
       actions.set(null);
@@ -188,57 +168,33 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
     if (target && props.selected() !== target.origin) closeActions();
   });
   const chooseFilter = (filter: 'all' | 'archived') => {
-    batch(() => {
-      browser.setFilter(filter);
-      selectedRow.set(null);
-    });
+    browser.setFilter(filter);
     list?.scrollToIndex({ index: 0, animated: false });
-    search?.focus();
   };
   const chooseScope = (scope: BrowserScope) => {
     if (!alive) return;
     batch(() => {
       browser.setScope(scope);
       choosingWorkspace.set(false);
-      selectedRow.set(null);
     });
     list?.scrollToIndex({ index: 0, animated: false });
-    search?.focus();
-  };
-  const activate = () => {
-    const id = currentRow();
-    if (!id) return;
-    if (choosingWorkspace()) {
-      const scope = scopes().find((scope) => scope.id === id);
-      if (scope) chooseScope(scope.scope);
-    } else select({ id, origin: props.selected() });
-  };
-  const move = (delta: number) => {
-    const next =
-      index() < 0
-        ? delta > 0
-          ? 0
-          : rowIds().length - 1
-        : Math.max(0, Math.min(rowIds().length - 1, index() + delta));
-    selectedRow.set(rowIds()[next] ?? null);
-    list?.scrollToIndex({ index: next, animated: false, viewPosition: delta > 0 ? 1 : 0 });
-    if (!choosingWorkspace() && next >= rowIds().length - 3) void browser.loadMore();
+    navigationRoot?.focus();
   };
   const escape = () => {
     if (actions()) return;
     if (choosingWorkspace()) {
       choosingWorkspace.set(false);
-      search?.focus();
+      navigationRoot?.focus();
     } else props.close();
   };
-  const focusSearch = () => {
-    if (!props.focusRequest() || !search) return;
-    search.focus();
-    search.setSelection(0, browser.titleQuery().length);
+  const focusBrowser = () => {
+    if (!props.focusRequest() || !navigationRoot) return;
+    choosingWorkspace.set(false);
+    navigationRoot.focus();
     props.focusHandled();
   };
   effect(() => {
-    if (props.focusRequest()) untracked(focusSearch);
+    if (props.focusRequest()) untracked(focusBrowser);
   });
   effect(() => {
     const rows = browser.sessions().length;
@@ -261,38 +217,21 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
       void props.create(workspace, origin);
   };
   const toggleScopes = () => {
-    batch(() => {
-      choosingWorkspace.set(!choosingWorkspace());
-      selectedRow.set(null);
-    });
-    search?.focus();
+    choosingWorkspace.set(!choosingWorkspace());
   };
   const refresh = () => {
     void browser.refresh();
   };
-  const changeQuery = (text: string) => {
-    if (!alive || choosingWorkspace()) return;
-    batch(() => {
-      selectedRow.set(null);
-      browser.setTitleQuery(text);
-    });
-    list?.scrollToIndex({ index: 0, animated: false });
-  };
-  const clearSearch = computed(() => {
-    const original = browser.titleQuery();
-    return inputAction(() => {
-      if (!alive || choosingWorkspace() || browser.titleQuery() !== original) return;
-      changeQuery('');
-      search?.focus();
-    }, null);
-  });
   return (
     <View
       ref={(node) => {
+        navigationRoot = node;
         props.attach(node);
         removeEscape();
         removeEscape = keymap.bind('escape', escape, { when: 'always', within: node });
+        focusBrowser();
       }}
+      focusable
       style={{ flex: 1, minHeight: 0, backgroundColor: C.surface, padding: 12, gap: 8 }}
     >
       <View
@@ -302,21 +241,6 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
         <Text style={{ color: C.text, fontSize: 18, lineHeight: 24, fontWeight: '600', flex: 1 }}>
           Maka
         </Text>
-        <Button
-          onPress={inputAction(props.close, null)}
-          accessibilityLabel={tr('Close session browser')}
-          style={{
-            width: 32,
-            height: 32,
-            alignItems: 'center',
-            justifyContent: 'center',
-            borderRadius: 8,
-          }}
-          hoverStyle={controlHoverStyle}
-          focusStyle={controlFocusStyle}
-        >
-          <Icon name="sidebar" color={C.secondary} />
-        </Button>
       </View>
       <Button
         accessibilityLabel={tr('New conversation')}
@@ -352,8 +276,12 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
         </Text>
         <Icon name="down" color={C.secondary} />
       </Button>
-      <View
+      <Button
+        accessibilityLabel={tr('Search conversations')}
+        tooltip={`${tr('Search conversations')} · Ctrl+O`}
+        onPress={inputAction(props.search, props.selected())}
         style={{
+          ...controlStyle,
           flexDirection: 'row',
           alignItems: 'center',
           paddingHorizontal: 8,
@@ -362,60 +290,14 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
           backgroundColor: C.background,
           borderRadius: 8,
         }}
+        hoverStyle={controlHoverStyle}
+        focusStyle={controlFocusStyle}
       >
         <Icon name="search" color={C.secondary} />
-        <Input
-          ref={(node) => {
-            search = node;
-            removeSearchKeys();
-            const unbind = [
-              keymap.bind('up', () => move(-1), { when: 'always', repeat: true, within: node }),
-              keymap.bind('down', () => move(1), { when: 'always', repeat: true, within: node }),
-              keymap.bind('enter', activate, { when: 'always', within: node }),
-              keymap.bind('mod+enter', currentActions, { when: 'always', within: node }),
-            ];
-            removeSearchKeys = () => {
-              for (const remove of unbind) remove();
-            };
-            focusSearch();
-          }}
-          testID="session-search"
-          accessibilityLabel={tr('Search session titles')}
-          autoFocus={!props.docked}
-          value={choosingWorkspace() ? '' : browser.titleQuery()}
-          readonly={choosingWorkspace()}
-          onChange={changeQuery}
-          placeholder={
-            choosingWorkspace() ? tr('Choose a workspace below') : tr('Search sessions…')
-          }
-          style={{
-            color: C.text,
-            placeholderColor: C.muted,
-            flex: 1,
-            minWidth: 0,
-            fontSize: 13,
-            height: 32,
-          }}
-        />
-        <If when={!choosingWorkspace() && browser.titleQuery() !== ''}>
-          <Button
-            accessibilityLabel={tr('Clear session search')}
-            tooltip={tr('Clear search')}
-            onPress={clearSearch()}
-            style={{
-              width: 32,
-              height: 32,
-              alignItems: 'center',
-              justifyContent: 'center',
-              borderRadius: 8,
-            }}
-            hoverStyle={controlHoverStyle}
-            focusStyle={controlFocusStyle}
-          >
-            <Icon name="close" color={C.secondary} />
-          </Button>
-        </If>
-      </View>
+        <Text numberOfLines={1} style={{ color: C.muted, flex: 1, fontSize: 13 }}>
+          {tr('Search titles and messages…')}
+        </Text>
+      </Button>
       <View
         style={{
           flexDirection: 'row',
@@ -464,11 +346,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
             style={{ height: viewportHeight(), alignItems: 'center', justifyContent: 'center' }}
           >
             <If when={!browser.loading() && !browser.error() && !browser.projectError()}>
-              <Text style={{ color: C.muted }}>
-                {browser.titleQuery()
-                  ? tr('No matching conversations.')
-                  : tr('No conversations yet.')}
-              </Text>
+              <Text style={{ color: C.muted }}>{tr('No conversations yet.')}</Text>
             </If>
           </View>
         )}
@@ -504,8 +382,9 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                         paddingHorizontal: 8,
                         justifyContent: 'center',
                         borderRadius: 8,
-                        backgroundColor: currentRow() === key() ? C.line : C.surface,
                       }}
+                      hoverStyle={controlHoverStyle}
+                      focusStyle={controlFocusStyle}
                     >
                       <Text numberOfLines={1} style={{ color: C.text }}>
                         {scope()?.title}
@@ -543,15 +422,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
               }
               const session = () => sessionsById().get(key());
               let actionTrigger: YNode | undefined;
-              const trackActionTrigger = () => {
-                const id = key();
-                if (actionTrigger && currentRow() === id)
-                  currentActionTrigger = { id, node: actionTrigger };
-                else if (currentActionTrigger?.node === actionTrigger) currentActionTrigger = null;
-              };
-              effect(trackActionTrigger);
               cleanup(() => {
-                if (currentActionTrigger?.node === actionTrigger) currentActionTrigger = null;
                 if (alive && actionsAnchor() === actionTrigger) actionsAnchor.set(null);
               });
               const showActions = (target: {
@@ -582,12 +453,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                       paddingHorizontal: 8,
                       justifyContent: 'center',
                       borderRadius: 8,
-                      backgroundColor:
-                        props.selected() === key()
-                          ? C.line
-                          : currentRow() === key()
-                            ? C.raised
-                            : C.surface,
+                      backgroundColor: props.selected() === key() ? C.line : C.surface,
                     }}
                     hoverStyle={{ backgroundColor: C.line }}
                     focusStyle={{ backgroundColor: C.raised }}
@@ -626,7 +492,6 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                   <Button
                     ref={(node) => {
                       actionTrigger = node;
-                      untracked(trackActionTrigger);
                     }}
                     accessibilityLabel={tr('Actions for {title}', {
                       title: session()?.title || tr('Untitled conversation'),
@@ -711,38 +576,6 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
           <Icon name="settings" color={C.secondary} />
           <Text style={{ color: C.secondary }}>{tr('Settings')}</Text>
         </Button>
-        <If when={props.docked}>
-          <Button
-            onPress={props.resize ? inputAction(props.resize, -2) : undefined}
-            accessibilityLabel={tr('Narrower session browser')}
-            style={{
-              width: 24,
-              height: 32,
-              alignItems: 'center',
-              justifyContent: 'center',
-              borderRadius: 8,
-            }}
-            hoverStyle={controlHoverStyle}
-            focusStyle={controlFocusStyle}
-          >
-            <Icon name="back" color={C.muted} />
-          </Button>
-          <Button
-            onPress={props.resize ? inputAction(props.resize, 2) : undefined}
-            accessibilityLabel={tr('Wider session browser')}
-            style={{
-              width: 24,
-              height: 32,
-              alignItems: 'center',
-              justifyContent: 'center',
-              borderRadius: 8,
-            }}
-            hoverStyle={controlHoverStyle}
-            focusStyle={controlFocusStyle}
-          >
-            <Icon name="right" color={C.muted} />
-          </Button>
-        </If>
       </View>
       <Each of={actions() ? [actions()!] : []} key={(target) => target}>
         {(item) => {

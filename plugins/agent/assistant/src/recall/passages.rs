@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use super::search::History;
+use super::search::{Content, History};
 use super::{
     rank::{Hit, Source, excluded},
     reader::{Reader, failed},
@@ -35,8 +35,12 @@ pub(super) async fn build(
     sources: &[Source],
     hits: &[Hit],
     terms: &[String],
-    span: (usize, usize),
+    content: Content,
 ) -> Result<Vec<Passage>, ToolError> {
+    let span = match content {
+        Content::Anchor => (0, 0),
+        Content::Context { before, after } => (before, after),
+    };
     let mut passages: Vec<_> = hits
         .iter()
         .map(|hit| Passage {
@@ -57,10 +61,16 @@ pub(super) async fn build(
             truncated: false,
         })
         .collect();
+    let mut by_session = vec![Vec::new(); sources.len()];
+    for (index, hit) in hits.iter().enumerate() {
+        by_session[hit.session].push((index, hit));
+    }
     for (session, source) in sources.iter().enumerate() {
-        if !hits.iter().any(|hit| hit.session == session) {
+        let wanted = &mut by_session[session];
+        if wanted.is_empty() {
             continue;
         }
+        wanted.sort_by_key(|(_, hit)| hit.position);
         let mut reader = Reader::new(
             history.clone(),
             call.clone(),
@@ -68,36 +78,56 @@ pub(super) async fn build(
             source.through,
         );
         let mut position = 0;
+        let mut start = 0;
+        let mut end = 0;
+        let mut first = None;
+        let mut last = None;
         while let Some(message) = reader.next().await? {
             let ordinal = position;
             position += 1;
             if excluded(call, &source.summary.id, &message) {
                 continue;
             }
-            let mut targets = Vec::new();
-            for (index, hit) in hits
-                .iter()
-                .enumerate()
-                .filter(|(_, hit)| hit.session == session)
+            first.get_or_insert(ordinal);
+            last = Some(ordinal);
+            while start < wanted.len() && wanted[start].1.position.saturating_add(span.1) < ordinal
             {
-                if ordinal < hit.position.saturating_sub(span.0) {
-                    passages[index].has_more_before = true;
-                } else if ordinal > hit.position.saturating_add(span.1) {
-                    passages[index].has_more_after = true;
-                } else {
-                    let anchor = ordinal == hit.position;
-                    targets.push((index, anchor, if anchor { hit.offset } else { 0 }));
-                }
+                start += 1;
+            }
+            end = end.max(start);
+            while end < wanted.len() && wanted[end].1.position.saturating_sub(span.0) <= ordinal {
+                end += 1;
+            }
+            let mut targets = Vec::new();
+            for &(index, hit) in &wanted[start..end] {
+                let anchor = ordinal == hit.position;
+                targets.push((index, anchor, if anchor { hit.offset } else { 0 }));
             }
             if targets.is_empty() {
                 continue;
             }
             let excerpts = tokio::task::spawn_blocking(move || {
-                let text: String = message.text.nfc().collect();
+                let text: String = match content {
+                    Content::Anchor => message.text.clone(),
+                    Content::Context { .. } => message.text.nfc().collect(),
+                };
                 targets
                     .into_iter()
                     .map(|(index, anchor, offset)| {
-                        (index, excerpt(&message, &text, anchor, offset))
+                        let excerpt = match content {
+                            Content::Anchor => PassageMessage {
+                                message_id: message.message_id.clone(),
+                                role: message.role,
+                                text: text.clone(),
+                                timestamp: message.timestamp,
+                                is_anchor: anchor,
+                                offset: 0,
+                                next_offset: None,
+                                attachments: message.attachments.clone(),
+                            },
+                            Content::Context { .. } => excerpt(&message, &text, anchor, offset),
+                        };
+                        (index, excerpt)
                     })
                     .collect::<Vec<_>>()
             })
@@ -106,11 +136,25 @@ pub(super) async fn build(
             for (index, excerpt) in excerpts {
                 passages[index].messages.push(excerpt);
             }
+            if matches!(content, Content::Anchor) && end == wanted.len() {
+                break;
+            }
+        }
+        if matches!(content, Content::Context { .. }) {
+            for &(index, hit) in wanted.iter() {
+                passages[index].has_more_before =
+                    first.is_some_and(|position| position < hit.position.saturating_sub(span.0));
+                passages[index].has_more_after =
+                    last.is_some_and(|position| position > hit.position.saturating_add(span.1));
+            }
         }
     }
     for passage in &mut passages {
         if !passage.messages.iter().any(|message| message.is_anchor) {
             return Err(failed("Recall anchor is no longer readable"));
+        }
+        if matches!(content, Content::Anchor) {
+            continue;
         }
         // Keep the anchor first in the byte allocation, then nearest neighbors.
         let anchor = passage

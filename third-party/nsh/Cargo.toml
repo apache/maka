@@ -80,6 +80,9 @@ quote = "1"
 syn = { version = "2", features = ["full"] }
 ed25519-dalek = { version = "2.1", default-features = false, features = ["std", "fast", "zeroize"] }
 sha2 = "0.10"
+# The image disk cache (`nsh_core::image::DiskCache`): HTTP dates and entry checksums.
+httpdate = "1"
+crc32fast = "1"
 flate2 = "1"
 # Test payloads for the zlib module, at the versions LLRT's compression uses.
 brotli = { version = "9", default-features = false, features = ["std"] }
@@ -244,6 +247,8 @@ objc2-ui-kit = { version = "0.3.2", default-features = false, features = [
   "UIAccessibilityCustomAction",
   "UIAccessibilityIdentification",
   "UIEvent",
+  "UIFocus",
+  "UIFocusSystem",
   "UIGestureRecognizerSubclass",
   "UIPinchGestureRecognizer",
   "UIRotationGestureRecognizer",
@@ -279,6 +284,8 @@ objc2-ui-kit = { version = "0.3.2", default-features = false, features = [
   "UISceneSession",
   "UIScreen",
   "UIScrollView",
+  "UITabBar",
+  "UITabBarItem",
   "UITapGestureRecognizer",
   "UITextField",
   "UITextInput",
@@ -350,6 +357,7 @@ objc2-core-text = { version = "0.3.2", default-features = false, features = [
 objc2-image-io = { version = "0.3.2", default-features = false, features = [
   "std",
   "objc2-core-graphics",
+  "CGImageDestination",
   "CGImageProperties",
   "CGImageSource",
 ] }
@@ -420,6 +428,8 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = [
   "NSText",
   "NSTextContainer",
   "NSTextField",
+  "NSActionCell",
+  "NSUserInterfaceValidation",
   "NSTextFieldCell",
   "NSTextInputClient",
   "NSTextInputContext",

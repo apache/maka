@@ -1389,6 +1389,16 @@ pub trait Styled: Sized {
         self
     }
 
+    /// In the flow, and while its parent shows it sticks `top` (in a
+    /// horizontal scroll view `left`) from the start of the viewport of the
+    /// scroll view around it, as far as the end of its parent's content box
+    /// (CSS `position: sticky`; `.top(..)` / `.bind_sticky_top(..)` say
+    /// where).
+    fn sticky(mut self) -> Self {
+        self.style().keyword(StyleKey::Position, "sticky");
+        self
+    }
+
     /// Clips its children.
     fn overflow_hidden(mut self) -> Self {
         self.style().keyword(StyleKey::Overflow, "hidden");

@@ -13,6 +13,8 @@ workspace = true
 
 [dependencies]
 unicode-linebreak.workspace = true
+unicode-segmentation.workspace = true
+regex.workspace = true
 rustc-hash.workspace = true
 slab.workspace = true
 taffy.workspace = true
@@ -25,6 +27,8 @@ resvg = { workspace = true, optional = true }
 flate2 = { workspace = true, optional = true }
 url.workspace = true
 sha2.workspace = true
+# Picked images' sizes and types (`picker.rs`).
+imagesize.workspace = true
 
 [features]
 # SVG images for the native backends (`svg`: sniffing, sizes and rasters with
@@ -40,6 +44,9 @@ futures-util.workspace = true
 tokio-tungstenite.workspace = true
 # `process`'s children: their process groups and exits (`runtime/process.rs`).
 libc.workspace = true
+# The image disk cache (`image/cache.rs`).
+httpdate.workspace = true
+crc32fast.workspace = true
 
 # `process`'s children on Windows: their jobs (`runtime/process.rs`).
 [target.'cfg(windows)'.dependencies]

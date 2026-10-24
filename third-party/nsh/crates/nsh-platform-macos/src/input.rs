@@ -532,6 +532,7 @@ fn repick(key: u64) {
 
 /// A mouse, wheel or trackpad event over the root view.
 pub(crate) fn event(surface: &Rc<Surface>, event: &NSEvent) {
+    surface.control(|control| control.set_focus_path(focus_path(surface)));
     let ty = event.r#type();
     let p = surface
         .root
@@ -650,6 +651,7 @@ fn context_menu(surface: &Surface, x: f32, y: f32, flags: NSEventModifierFlags) 
 /// move that way. Fields keep their keys (they reach the root only when
 /// they do not use them).
 pub(crate) fn key(surface: &Rc<Surface>, event: &NSEvent, down: bool) -> bool {
+    surface.control(|control| control.set_focus_path(focus_path(surface)));
     if let Some(view) = control_activation_target(surface, event) {
         if down && !event.isARepeat() {
             let events = view.state().events;
@@ -734,6 +736,37 @@ pub(crate) fn is_key_control(view: &NshView) -> bool {
         && !state.props.accessibility.state.disabled
         && view.can_target()
         && !view.ns().isHiddenOrHasHiddenAncestor()
+}
+
+/// Current AppKit keyboard focus, from the responder through its native
+/// ancestors. No mounter borrow: native callbacks may run during a mount.
+pub(crate) fn focus_path(surface: &Surface) -> Vec<NodeId> {
+    let root = surface.root.ns();
+    let Some(responder) = root.window().and_then(|window| window.firstResponder()) else {
+        return Vec::new();
+    };
+    let Ok(mut view) = responder.downcast::<objc2_app_kit::NSView>() else {
+        return Vec::new();
+    };
+    if !view.isDescendantOf(root) {
+        return Vec::new();
+    }
+    let mut path = Vec::new();
+    loop {
+        // The shared field editor is a child of its native input while it
+        // edits. Walking actual superviews covers it and hosted controls.
+        if let Some(node) = NshView::from_ns(&view) {
+            path.push(node.id());
+        }
+        if &*view == root {
+            break;
+        }
+        let Some(parent) = crate::view::superview(&view) else {
+            break;
+        };
+        view = parent;
+    }
+    path
 }
 
 /// Enter or Space addressed to a focused control inside the current modal.
@@ -1301,6 +1334,128 @@ fn up(surface: &Rc<Surface>, x: f32, y: f32, time: f64) {
 pub(crate) fn cancel_pointer(surface: &Rc<Surface>) {
     if let Some(p) = take(surface) {
         finish(surface, p, true);
+    }
+}
+
+/// Ends every input capture into a recycling cell before its owner may be
+/// released. An ancestor pan/selection keeps its gesture while losing the
+/// retired child's touch path and press.
+pub(crate) fn retiring(surface: &Rc<Surface>, cell: &NshView) {
+    crate::text_input::cancel_auto_focus(cell);
+    let inside = |view: &NshView| view == cell || view.ns().isDescendantOf(cell.ns());
+    let mut owned = FxHashSet::default();
+    let mut pending = vec![cell.clone()];
+    while let Some(view) = pending.pop() {
+        owned.insert(view.id());
+        pending.extend(view.child_views());
+    }
+    // Drag destinations also retain their last native owner between OS
+    // drag events; release it before the subtree's identity is terminated.
+    for &id in &owned {
+        crate::file_drop::invalidate(surface, id);
+    }
+    let affected = surface
+        .input
+        .pointer
+        .borrow()
+        .as_ref()
+        .is_some_and(|pointer| {
+            inside(&pointer.target)
+                || pointer
+                    .press
+                    .as_ref()
+                    .is_some_and(|press| inside(&press.view))
+                || match &pointer.mode {
+                    Mode::Pan(view) | Mode::Thumb(view, _) | Mode::Select(view) => inside(view),
+                    Mode::Idle | Mode::Free => false,
+                }
+                || pointer.candidates.iter().any(|(view, _)| inside(view))
+                || pointer.pressed.iter().any(inside)
+                || pointer.path.iter().any(|id| owned.contains(id))
+                || pointer.gate.is_some_and(|gate| owned.contains(&gate.id()))
+        });
+    if affected && let Some(mut pointer) = take(surface) {
+        if pointer.reporting {
+            report(surface, TouchPhase::Cancel, &pointer, None);
+            pointer.reporting = false;
+        }
+        cancel_press(surface, &mut pointer);
+        release_pressed(surface, &mut pointer);
+        let active = match &pointer.mode {
+            Mode::Pan(view) | Mode::Thumb(view, _) | Mode::Select(view) if !inside(view) => {
+                Some(view.clone())
+            }
+            _ => None,
+        };
+        if let Some(active) = active {
+            pointer.target = active;
+            pointer.path.clear();
+            pointer.candidates.retain(|(view, _)| !inside(view));
+            pointer.gate = None;
+            put(surface, pointer);
+        } else if let Mode::Pan(view) = &pointer.mode {
+            // Mount owns the mounter borrow, so final values cannot be
+            // written through Surface::write_animations here.
+            pan_end(surface, view, &pointer, false);
+        } else {
+            finish(surface, pointer, true);
+        }
+    }
+    let hovered = surface
+        .input
+        .hovered
+        .borrow()
+        .iter()
+        .filter(|view| !inside(view))
+        .cloned()
+        .collect();
+    set_hovered(surface, hovered);
+    for slot in [&surface.input.pinch, &surface.input.rotation] {
+        let affected = slot
+            .borrow()
+            .as_ref()
+            .is_some_and(|transform| inside(&transform.view));
+        if affected && let Some(transform) = slot.borrow_mut().take() {
+            transform_end(surface, &transform);
+        }
+    }
+    let zoomed = surface
+        .input
+        .zoom
+        .borrow()
+        .as_ref()
+        .is_some_and(|(transform, _)| inside(&transform.view));
+    if zoomed && let Some((transform, _)) = surface.input.zoom.borrow_mut().take() {
+        transform_end(surface, &transform);
+    }
+    let wheeled = surface
+        .input
+        .wheel
+        .borrow()
+        .as_ref()
+        .and_then(|wheel| wheel.view.as_ref())
+        .is_some_and(inside);
+    if wheeled
+        && let Some(view) = surface
+            .input
+            .wheel
+            .borrow_mut()
+            .take()
+            .and_then(|wheel| wheel.view)
+    {
+        crate::scroll::wheel_end(surface, &view, 0.0, 0.0);
+    }
+    if surface.input.momentum.borrow().as_ref().is_some_and(inside) {
+        end_momentum(surface);
+    }
+    if surface
+        .input
+        .latch
+        .borrow()
+        .as_ref()
+        .is_some_and(|(view, _, _)| inside(view))
+    {
+        surface.input.latch.borrow_mut().take();
     }
 }
 

@@ -1,5 +1,6 @@
 package com.longbridge.nsh;
 
+import android.animation.ValueAnimator;
 import android.annotation.SuppressLint;
 import android.content.Context;
 import android.graphics.Canvas;
@@ -193,6 +194,16 @@ final class ScrollBox extends FrameLayout implements Node {
             if (!kept && v != null) {
                 if (horizontal) v.setTranslationX(0); else v.setTranslationY(0);
             }
+            if (!kept && mounter.stickyHosts.get(old) == this) mounter.stickyHosts.remove(old);
+            mounter.forgetStickyOffset(old);
+        }
+        // A cell may be in a list in this scroll view's viewport: its
+        // animated offset finds this scroll view. Its offset is forgotten:
+        // the outputs after the batch bring back the ones still animated,
+        // so a cell whose offset became a number no longer adds the old one.
+        for (int c : cells) {
+            mounter.stickyHosts.put(c, this);
+            mounter.forgetStickyOffset(c);
         }
         stickyCells = cells;
         stickyStart = start;
@@ -215,13 +226,14 @@ final class ScrollBox extends FrameLayout implements Node {
         return stickyCells.length > 0;
     }
 
-    /** Moves the sticky cells with the scroll offset. */
-    private void pinSticky() {
+    /** Moves the sticky cells with the scroll offset (and their animated offsets). */
+    void pinSticky() {
         float offset = horizontal ? scroller.getScrollX() : scroller.getScrollY();
         for (int i = 0; i < stickyCells.length; i++) {
             View v = mounter.view(stickyCells[i]);
             if (v == null) continue;
-            float t = Math.max(0, Math.min(offset - stickyStart[i], stickyEnd[i] - stickyStart[i]));
+            float extra = mounter.stickyOffset(stickyCells[i]);
+            float t = Math.max(0, Math.min(offset + extra - stickyStart[i], stickyEnd[i] - stickyStart[i]));
             if (horizontal) v.setTranslationX(t); else v.setTranslationY(t);
         }
     }
@@ -424,15 +436,25 @@ final class ScrollBox extends FrameLayout implements Node {
      * keyboard). `requestRectangleOnScreen` cannot: ScrollView ignores its
      * padding when it decides whether a rectangle is visible.
      */
-    void reveal(View v, int margin) {
+    /**
+     * Scrolls {@code v} (and {@code margin} px around it) into view, over
+     * {@code motion}: an animator from 0 to 1 the caller starts. False when
+     * there is nothing to scroll (the animator is left alone).
+     */
+    boolean reveal(View v, int margin, ValueAnimator motion) {
         Rect r = new Rect(0, -margin, v.getWidth(), v.getHeight() + margin);
         scroller.offsetDescendantRectToMyCoords(v, r);
         int top = scroller.getScrollY();
         int bottom = top + scroller.getHeight() - scroller.getPaddingBottom();
         int dy = r.bottom > bottom ? Math.min(r.bottom - bottom, r.top - top) : Math.min(0, r.top - top);
-        if (dy == 0) return;
-        if (scroller instanceof ScrollView) ((ScrollView) scroller).smoothScrollBy(0, dy);
-        else scroller.scrollBy(0, dy);
+        if (dy == 0) return false;
+        if (!(scroller instanceof ScrollView)) {
+            scroller.scrollBy(0, dy);
+            return false;
+        }
+        int x = scroller.getScrollX();
+        motion.addUpdateListener(a -> scroller.scrollTo(x, top + Math.round(dy * (float) a.getAnimatedValue())));
+        return true;
     }
 
     /** Scrolls the core asked for that were applied (reported with offsets). */
@@ -475,6 +497,11 @@ final class ScrollBox extends FrameLayout implements Node {
         }
     }
 
+    /** A retirement must cancel this view's deferred input completion. */
+    void cancelPendingScroll() {
+        removeCallbacks(settled);
+    }
+
     /** Scrolling came to rest (no API for it: no change for a moment). */
     private void settled() {
         if (touching) {
@@ -485,6 +512,7 @@ final class ScrollBox extends FrameLayout implements Node {
             momentum = false;
             emit(Native.MOMENTUM_END);
         }
+        mounter.scrollEnded(id);
         float d = mounter.density;
         mounter.event(id, Native.SCROLL_END, null, 0, scroller.getScrollX() / d, scroller.getScrollY() / d);
     }

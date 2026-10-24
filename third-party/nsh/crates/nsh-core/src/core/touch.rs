@@ -59,6 +59,16 @@ impl TouchState {
 type Pick = fn(&ResponderEl) -> Option<&Listener<ResponderEvent>>;
 
 impl<M: TextEngine> Core<M> {
+    /// Existing native contacts whose listening owner left the list source.
+    /// Querying this bookkeeping does not call an application listener.
+    pub fn invalid_touch_contacts(&self, contacts: &mut Vec<u32>) {
+        for (contact, path) in &self.components.touch.paths {
+            if path.iter().any(|&id| !self.accepts_native_input(id)) {
+                contacts.push(*contact);
+            }
+        }
+    }
+
     /// Forgets a physically cancelled native contact without calling listeners.
     /// Unknown contacts leave other gestures intact. The last contact releases
     /// this side's responder and its native scroll block.

@@ -2,6 +2,7 @@ import { batch, cleanup, computed, effect, Input, List, Scroll, signal, Text, Vi
 import { createAnimatedValue, LayoutAnimation } from "nsh/animated";
 import { Clipboard } from "nsh/clipboard";
 import { platform } from "nsh/device";
+import { Picker } from "nsh/picker";
 import { keyboardFrame, KeyboardAvoidingView, safeAreaInsets, SelectionArea } from "nsh/base";
 import { Icon, type IconName } from "../icons";
 import { alpha, Appear, Badge, colors, desktop, finish, IconTile, motion, Press, radius, RoundButton, Segmented, toneTint } from "../ui";
@@ -288,6 +289,15 @@ export function Chat() {
     } else void submit(freeform(text, model()), text);
   };
 
+  /** Attaches a photo from the system's picker: its bytes stay native, shown through a blob URL. */
+  const choosePhoto = async () => {
+    const [picked] = await Picker.pickImages({ maxDimension: 2048, quality: 0.85 });
+    if (!picked) return;
+    const { file } = picked;
+    const size = file.size < 1024 * 1024 ? `${Math.max(1, Math.round(file.size / 1024))} KB` : `${(file.size / 1024 / 1024).toFixed(1)} MB`;
+    attachment.set({ image: URL.createObjectURL(file), file: { name: file.name, size } });
+  };
+
   const play = (id: string) => {
     if (id === "history") {
       menu.set(false);
@@ -524,6 +534,7 @@ export function Chat() {
   const chips = [...scenarios.map((s) => ({ id: s.id, label: s.chip })), { id: "history", label: "Load a long conversation" }];
 
   const menuRows: { id: string; glyph: "clip" | "regenerate"; label: string }[] = [
+    { id: "photo", glyph: "clip", label: "Choose a photo" },
     { id: "attach", glyph: "clip", label: "Attach a photo and a file" },
     ...chips.map((c) => ({ id: c.id, glyph: "regenerate" as const, label: c.label })),
   ];
@@ -676,7 +687,8 @@ export function Chat() {
                     <View
                       onPress={() => {
                         menu.set(false);
-                        if (row().id === "attach") attachment.set({ image: photo, file: { name: "trip-notes.pdf", size: "2.4 MB" } });
+                        if (row().id === "photo") void choosePhoto();
+                        else if (row().id === "attach") attachment.set({ image: photo, file: { name: "trip-notes.pdf", size: "2.4 MB" } });
                         else play(row().id);
                       }}
                       activeStyle={{ backgroundColor: alpha(colors.text, 0.06) }}
@@ -684,7 +696,7 @@ export function Chat() {
                       accessibilityLabel={row().label}
                       style={{ flexDirection: "row", alignItems: "center", gap: 12, height: 48, paddingHorizontal: 16 }}
                     >
-                      <Glyph name={row().glyph} size={16} tint={i() === 0 ? colors.accent : colors.muted} />
+                      <Glyph name={row().glyph} size={16} tint={i() < 2 ? colors.accent : colors.muted} />
                       <Text style={{ flex: 1, fontSize: 15, color: colors.text }}>{row().label}</Text>
                     </View>
                   )}
