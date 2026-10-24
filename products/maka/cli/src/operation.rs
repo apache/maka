@@ -42,9 +42,13 @@ pub(crate) async fn scope<T>(duration: Duration, work: impl Future<Output = T>) 
     DEADLINE.scope(Instant::now() + duration, work).await
 }
 
+pub(crate) fn deadline() -> Option<Instant> {
+    DEADLINE.try_with(|deadline| *deadline).ok()
+}
+
 pub(crate) fn remaining(limit: Duration) -> Duration {
-    DEADLINE
-        .try_with(|deadline| {
+    deadline()
+        .map(|deadline| {
             deadline
                 .saturating_duration_since(Instant::now())
                 .min(limit)

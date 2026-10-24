@@ -185,14 +185,16 @@ pub(super) async fn connect_or_launch(
     deployment.require_active()?;
     let mut child: Option<Child> = None;
     let mut service_started = false;
-    let budget = crate::operation::remaining(Duration::from_secs(30));
-    let deadline = tokio::time::Instant::now() + budget;
+    let deadline = crate::operation::deadline();
     let diagnostics_budget = if deployment.mode == Mode::Supervised {
-        (budget / 10).min(Duration::from_secs(2))
+        deadline
+            .map(|deadline| deadline.saturating_duration_since(tokio::time::Instant::now()) / 10)
+            .unwrap_or(Duration::from_secs(2))
+            .min(Duration::from_secs(2))
     } else {
         Duration::ZERO
     };
-    let result = tokio::time::timeout_at(deadline - diagnostics_budget, async {
+    let connect = async {
         loop {
             if let Ok(mut client) =
                 HostClient::connect(&deployment.root_path, Some(&deployment.generation())).await
@@ -213,7 +215,27 @@ pub(super) async fn connect_or_launch(
                 if let Some(status) = child.try_wait()? {
                     return Err(format!("Host candidate exited before Ready: {status}. Read the startup error with maka host logs --root-id {}, resolve it, and retry opening Maka.", deployment.root_id).into());
                 }
-            } else if !service_started {
+            } else if service_started {
+                use super::service::{Observation, State};
+                match super::service::observe(deployment.clone()).await {
+                    Observation::Present {
+                        state: State::Running,
+                        ..
+                    } => {}
+                    #[cfg(any(target_os = "linux", windows))]
+                    Observation::Present {
+                        state: State::Starting,
+                        ..
+                    } => {}
+                    observation => {
+                        return Err(format!(
+                            "Host service stopped before Ready: {}",
+                            serde_json::to_string(&observation)?
+                        )
+                        .into());
+                    }
+                }
+            } else {
                 match RootOwner::open(
                     &deployment.root_path,
                     &RootNamespaces::for_current_account()?,
@@ -260,10 +282,17 @@ pub(super) async fn connect_or_launch(
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
-    })
-    .await
-    .map_err(|_| HostError::from("Host did not become Ready before the activation deadline"))
-    .and_then(|result| result);
+    };
+    let result = if let Some(deadline) = deadline {
+        tokio::time::timeout_at(deadline - diagnostics_budget, connect)
+            .await
+            .map_err(|_| {
+                HostError::from("Host did not become Ready before the activation deadline")
+            })
+            .and_then(|result| result)
+    } else {
+        connect.await
+    };
 
     match result {
         Ok(connected) => Ok(connected),
@@ -272,7 +301,7 @@ pub(super) async fn connect_or_launch(
                 return Err(super::diagnostics::startup_failure(
                     deployment,
                     error,
-                    deadline,
+                    deadline.unwrap_or_else(|| tokio::time::Instant::now() + diagnostics_budget),
                     diagnostics_budget,
                 )
                 .await);
