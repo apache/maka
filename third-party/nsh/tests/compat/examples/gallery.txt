@@ -18,6 +18,10 @@ expect 90 items, 3 columns
 tap text:Scrolling
 expect Settled on page 1
 expect Revenue · 1 of 5
+tap text:Collapsing header
+expect Recent
+expect 160 entries, by week
+expect Week 1
 tap text:Navigation
 expect Native stack
 expect 0 presses popped

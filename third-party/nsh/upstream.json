@@ -1041,7 +1041,7 @@
     "examples/gallery-rs/system.test.tsx": "7631fb02f1dff502323cf0574d61683e48c2a109500b1a909cfe8d962235bca9",
     "examples/gallery-rs/text.test.tsx": "65b3649a460488742786c96231694c67f5e02eff8dc1f798a32e5d539ab0295e",
     "examples/gallery-rs/theme.json": "7c54621c9c3b0141f1462c689dbeb9e4523463b9c40350735bfcd37151b7a28d",
-    "examples/gallery/App.tsx": "1281e71a9bc2802aec08ac9bc117b1c01c767bfb5478a095eb2eac1c58414908",
+    "examples/gallery/App.tsx": "f8a3ae44a5deff1f9d93383f41f15511c22b21658d4390ee87c143316fa0a09f",
     "examples/gallery/Bench.tsx": "be900be7d344e643d2af34a072411034d51c88e458b9b219553d88f3949b0ce0",
     "examples/gallery/README.md": "3405f56b12e92872b39c2535f8824c042f9e0fb3432e4e922d630e5c5e589165",
     "examples/gallery/TitleBar.tsx": "6d69ad1fdd30af882cb2fb41cdb5fbb6c52e14887c698ad7e734c09f7f0f8abc",
@@ -1049,6 +1049,7 @@
     "examples/gallery/demos/Animations.tsx": "32a78bd79228fdd8600ce580006ca843bd154bdf4f5e2aed1ca4f8a7bd392d5d",
     "examples/gallery/demos/CanvasDemo.tsx": "32c67d2f9e0fb912b9de43cb894cb2eded2925709b377275e18fcfda5f3eda30",
     "examples/gallery/demos/Chat.tsx": "0dedb07ac099fe54bc84e68418ee80c6b9568c3b13d35fb2d0e2272e3c5ffcf3",
+    "examples/gallery/demos/CollapsingHeader.tsx": "d04e65acb5796fef5b7528a53ec8a9a8e1906b60866ee2df898410f87ef98cdb",
     "examples/gallery/demos/Components.tsx": "b624d75b8624a26190207a23930977facc3d08af9ff486f5e4358cf1c3355d9d",
     "examples/gallery/demos/Controls.tsx": "b43645ead8ae3bd2ab266c32991fa633aed9c38a5c44a4f230d7caeeaa23731a",
     "examples/gallery/demos/Dock.tsx": "978502d170548a5e37d0874b8ac79e441d139233ea1bfc283bf7887cb24f8f45",
@@ -1342,7 +1343,7 @@
     "tests/compat/cases/web/web-url.tsx": "1cde155574de45e7e0a88e983abd2c8ce645c29de67f4cc7bbdcf262e7f1901d",
     "tests/compat/examples/counter.txt": "d02c27854bcbe0f3513eddc181661479192587819a21248a1c787dd17de19849",
     "tests/compat/examples/desktop.txt": "aee55e96c06e7341561411ad355c9eeba172d35d0a39b2fb660dc73b0cc6aed1",
-    "tests/compat/examples/gallery.txt": "83cf68ecf6fb51e9eba4490e0fdb6b00241098a7b19a386eab7e98c9c1e88059",
+    "tests/compat/examples/gallery.txt": "0636e202a11a614e230ec47cee4fbefdadf17b407ac40f176e4152395e8d817e",
     "tests/compat/examples/hopper.txt": "e047d4738ffc5751afbbfd96ebdfc6b17a9aa9e994d0e7a06e9dee0d8952a8aa",
     "third-party/gpui-wgpu/.gitattributes": "4f73bc76cef5080915bd672fbb0daf13c8dcb7acb152fb498b208d57985f41fc",
     "third-party/gpui-wgpu/Cargo.toml": "9ae627feb2ef7089c9bc9568eeef06e5f1e39917e667042fa01036b9ecf49191",
@@ -1755,7 +1756,7 @@
     "website/zh-CN/modules/tailwind-reference.md": "9f366de10fe05a3fcf34f7e2ad7a6d7f8dc82379084f4958bef2c5761aff968f"
   },
   "upstream_repository": "https://github.com/longbridge/nsh",
-  "upstream_revision": "8ff7b9f627b9362e76ec83254f00b5658afa676b",
+  "upstream_revision": "4e2d52ab5597134d445b2ede9169a68531b4296c",
   "file_sources": {
     "AGENTS.md": {
       "repository": "https://github.com/longbridge/nsh",
@@ -2947,7 +2948,7 @@
     },
     "examples/gallery/App.tsx": {
       "repository": "https://github.com/longbridge/nsh",
-      "revision": "eb76a17d49f44c149e53cd3da6456d8c075a5319"
+      "revision": "4e2d52ab5597134d445b2ede9169a68531b4296c"
     },
     "examples/gallery/demos/Animations.tsx": {
       "repository": "https://github.com/longbridge/nsh",
@@ -2956,6 +2957,10 @@
     "examples/gallery/demos/Chat.tsx": {
       "repository": "https://github.com/longbridge/nsh",
       "revision": "c2f019e6d46cd1bdd191dd736d4443fe6fcb25b9"
+    },
+    "examples/gallery/demos/CollapsingHeader.tsx": {
+      "repository": "https://github.com/longbridge/nsh",
+      "revision": "4e2d52ab5597134d445b2ede9169a68531b4296c"
     },
     "examples/gallery/demos/Lists.tsx": {
       "repository": "https://github.com/longbridge/nsh",
@@ -3136,6 +3141,10 @@
     "tests/compat/cases/props/script.txt": {
       "repository": "https://github.com/longbridge/nsh",
       "revision": "eb76a17d49f44c149e53cd3da6456d8c075a5319"
+    },
+    "tests/compat/examples/gallery.txt": {
+      "repository": "https://github.com/longbridge/nsh",
+      "revision": "4e2d52ab5597134d445b2ede9169a68531b4296c"
     },
     "website/DESIGN.md": {
       "repository": "https://github.com/longbridge/nsh",
