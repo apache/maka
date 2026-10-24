@@ -516,6 +516,7 @@ impl Fixture {
                             "globalInstructions",
                             "updateGlobalInstructions",
                             "metadata",
+                            "markRead",
                             "changeSession",
                             "fork",
                             "send",

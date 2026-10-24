@@ -1796,6 +1796,7 @@ export function Conversation(props: ConversationProps) {
       const target: HistoryNavigation = { kind: 'tail' };
       historyDestination = { position: { kind: 'tail' }, explicit: true, failed: false };
       navigation.set(target);
+      props.focusComposer();
       void (async () => {
         try {
           const observed = await observe();
@@ -1822,7 +1823,6 @@ export function Conversation(props: ConversationProps) {
             else state.opening = 'bottom';
           }
           list?.scrollToEnd({ animated: false });
-          props.focusComposer();
         } finally {
           if (navigation() === target) navigation.set(null);
         }
@@ -2148,7 +2148,11 @@ export function Conversation(props: ConversationProps) {
               if (event.intent === 'start') void navigateStart().catch(report);
               else cancelNavigation();
             }}
-            onBlur={() => cancelNavigation()}
+            onBlur={() => {
+              // Latest returns to editing immediately; its expected blur does
+              // not revoke the pending history read or later steal focus back.
+              if (navigation()?.kind !== 'tail') cancelNavigation();
+            }}
             onViewableItemsChange={(event) => {
               visibleTurn.set(entryTurn(event.viewableItems[0]?.item ?? ''));
               visibleRows.set(new Set(event.viewableItems.map((item) => item.item)));
