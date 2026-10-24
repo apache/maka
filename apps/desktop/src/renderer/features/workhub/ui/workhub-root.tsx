@@ -72,7 +72,10 @@ function revealWordmark(element: HTMLDivElement | null, content: HTMLDivElement 
   }
 }
 
-export function WorkHubRoot() {
+export function WorkHubRoot({ renderProviderMark }: {
+  /** Injected by the composition root so the provider SVG library stays out of the main-process test build. */
+  renderProviderMark: NonNullable<import('@maka/ui').ComposerProps['renderProviderMark']>;
+}) {
   const highlight = useWorkHubHighlightState();
   const composer = useRef<ComposerHandle>(null);
   const draftRestore = useRef<((sessionId: string, draft: RestoredDraftContent) => void) | undefined>(undefined);
@@ -371,6 +374,7 @@ export function WorkHubRoot() {
               activeModel={newWorkNativeModel?.model}
               activeModelLabel={newWorkModelChoice?.label}
               activeProviderType={newWorkModelChoice?.providerType}
+              renderProviderMark={renderProviderMark}
               activeModelConnectionId={newWorkNativeModel?.llmConnectionId}
               activeModelConnectionSlug={newWorkNativeModel?.llmConnectionSlug}
               modelChoices={controller.choices}
