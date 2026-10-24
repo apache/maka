@@ -187,6 +187,7 @@ type ShellCopy = {
     readPathFailedFallback: string;
     selectDirectoryFailedTitle: string;
     selectedPathUnreadable: string;
+    dropDirectoriesOnly: string;
     directorySwitchedTitle: string;
     projectUpdateFailedTitle: string;
     projectUpdateFailedFallback: string;
@@ -804,6 +805,7 @@ const shellCopyByLocaleZhCn: ShellCopy = {
       readPathFailedFallback: '项目路径暂时无法读取，请稍后重试。',
       selectDirectoryFailedTitle: '选择工作目录失败',
       selectedPathUnreadable: '所选路径不存在或不可读。',
+      dropDirectoriesOnly: '只能拖入文件夹来添加项目。',
       directorySwitchedTitle: '已切换工作目录',
       projectUpdateFailedTitle: '项目操作失败',
       projectUpdateFailedFallback: '暂时无法更新项目，请稍后重试。',
@@ -1347,6 +1349,7 @@ const shellCopyByLocaleZhTw: ShellCopy = {
       readPathFailedFallback: '專案路徑暫時無法讀取，請稍後重試。',
       selectDirectoryFailedTitle: '選擇工作目錄失敗',
       selectedPathUnreadable: '所選路徑不存在或不可讀。',
+      dropDirectoriesOnly: '只能拖入資料夾來新增專案。',
       directorySwitchedTitle: '已切換工作目錄',
       projectUpdateFailedTitle: '專案操作失敗',
       projectUpdateFailedFallback: '暫時無法更新專案，請稍後重試。',
@@ -1892,6 +1895,7 @@ const shellCopyByLocaleEn: ShellCopy = {
       readPathFailedFallback: 'The project path is temporarily unavailable. Try again later.',
       selectDirectoryFailedTitle: 'Could not select working directory',
       selectedPathUnreadable: 'The selected path does not exist or cannot be read.',
+      dropDirectoriesOnly: 'Only folders can be added as projects.',
       directorySwitchedTitle: 'Working directory changed',
       projectUpdateFailedTitle: 'Could not update project',
       projectUpdateFailedFallback: 'The project could not be updated. Try again later.',

@@ -1999,6 +1999,20 @@ const makaBridge = {
         | { ok: false; reason: 'archived'; projectId: string };
       return result.ok ? { ok: true as const, project: result.project } : result;
     },
+    async addDroppedProject(host: DesktopNewTaskHostRef, file: File) {
+      let path: string;
+      try {
+        path = webUtils.getPathForFile(file);
+      } catch {
+        return { ok: false as const, reason: 'not-directory' as const };
+      }
+      if (!path) return { ok: false as const, reason: 'not-directory' as const };
+      return invokeWhenReady(
+        'projects:addDroppedDirectory',
+        await runtimeHostScope(host),
+        path,
+      );
+    },
     async restoreProject(host: DesktopNewTaskHostRef, projectId: string) {
       const project = await ipcRenderer.invoke(
         'projects:restore',

@@ -54,6 +54,29 @@
   box-sizing: border-box;
 }
 
+/* Include the scroll area's blank space when receiving project folders. */
+.astryx-side-nav.maka-session-panel > div:has(> .maka-project-folder-drop-zone) {
+  display: flex;
+  flex-direction: column;
+}
+
+.maka-project-folder-drop-zone {
+  flex: 1;
+  min-width: 0;
+  border-radius: var(--radius-control);
+}
+
+.maka-project-folder-drop-zone[data-folder-drop-active="true"] {
+  outline: 2px solid var(--accent-solid);
+  outline-offset: -2px;
+}
+
+.maka-project-folder-drop-hint {
+  padding: var(--space-2);
+  color: var(--muted-foreground);
+  pointer-events: none;
+}
+
 /*
  * One type size for the whole rail. SideNavSection draws its title from the
  * `supporting` tier (12px), one step below the session rows it labels; against

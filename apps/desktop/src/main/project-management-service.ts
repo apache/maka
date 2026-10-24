@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { stat } from 'node:fs/promises';
+import { isAbsolute } from 'node:path';
 import { findProjectByIdentity, type ProjectRecord } from '@maka/core/project';
 import type {
   DesktopProjectCapabilities,
@@ -45,6 +47,11 @@ export interface ProjectManagementService {
    * comes from the dialog that opened it.
    */
   add(options?: { select?: boolean; name?: string }): Promise<SelectedDirectoryActionResult>;
+  addDroppedDirectory(path: unknown): Promise<
+    | { ok: true; project: ProjectRecord }
+    | { ok: false; reason: 'not-directory' }
+    | { ok: false; reason: 'archived'; projectId: string }
+  >;
   select(
     projectId: unknown,
   ): Promise<{ project: ProjectRecord | null; path: string }>;
@@ -144,6 +151,19 @@ export function createProjectManagementService(deps: {
         deps.selection.setSelection(selected.id, selected.preferredPath);
       }
       return { ok: true, project: selected, path: selected.preferredPath };
+    },
+
+    async addDroppedDirectory(path) {
+      requireLocalDirectoryActions(deps);
+      if (typeof path !== 'string' || !isAbsolute(path)) {
+        throw new TypeError('Invalid dropped project directory.');
+      }
+      if (!(await stat(path)).isDirectory()) return { ok: false, reason: 'not-directory' };
+      const project = await deps.catalog.register(path);
+      if (project.archivedAt !== undefined) {
+        return { ok: false, reason: 'archived', projectId: project.id };
+      }
+      return { ok: true, project: requireSelectableProject(project) };
     },
 
     async select(projectId) {

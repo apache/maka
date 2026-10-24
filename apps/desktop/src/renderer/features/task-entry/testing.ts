@@ -54,6 +54,7 @@ export function createFakeTaskEntryServices(
       getCatalog: async () => ({ defaultProfileId: 'local', hosts: [] }),
       subscribeChanges: noopSubscription,
       addProject: async () => ({ ok: false, reason: 'cancelled' }),
+      addDroppedProject: async () => ({ ok: false, reason: 'not-directory' }),
       restoreProject: async () => ({ ok: false, reason: 'cancelled' }),
       relinkProject: async () => ({ ok: false, reason: 'cancelled' }),
       renameProject: async () => undefined,
