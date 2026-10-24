@@ -87,7 +87,9 @@ export function buildOpenAiCodexHistoryCompactor(options: BuildOpenAiCodexHistor
         canContinuePrevious && !isProviderHistoryCompactCheckpoint(previous)
           ? projectHistoryCompactCheckpointReplay(
               previous,
-              input.source.foldedRuntimeEvents.slice(0, previous.coverage.eventCount),
+              // The projection finds a mid-turn head anchor by identity. A
+              // historical event count can cut it off after reasoning admission.
+              input.source.foldedRuntimeEvents,
               events,
             )
           : events;

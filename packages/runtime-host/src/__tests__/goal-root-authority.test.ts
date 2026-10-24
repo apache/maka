@@ -3032,6 +3032,20 @@ function shellNodeCommand(script: string): string {
   return `${quote(process.execPath)} -e ${quote(bootstrap)}`;
 }
 
+async function waitForShellFixtureStart(root: string): Promise<void> {
+  await waitFor(
+    async () => {
+      try {
+        return (await readFile(join(root, 'starts'), 'utf8')) === '1';
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+        throw error;
+      }
+    },
+    { timeoutMs: 5000 },
+  );
+}
+
 for (const scenario of ['success', 'failure', 'timeout', 'stop', 'cancel-wait', 'pty'] as const) {
   test(`builtin background Bash event wait: ${scenario}`, { timeout: 20000 }, async () => {
     let calls = 0,
@@ -3169,8 +3183,10 @@ for (const scenario of ['success', 'failure', 'timeout', 'stop', 'cancel-wait', 
         const repeat = await f.goal.handlers['goal.event-wait.cancel'](target, operationContext());
         assert.equal(repeat.ok && repeat.result.outcome, 'already_cancelled');
         assert.equal(f.shellRuns!.liveCount(), 1);
-      } else if (scenario === 'stop')
+      } else if (scenario === 'stop') {
+        await waitForShellFixtureStart(f.owner.capability.canonicalPath);
         await f.shellRuns!.stopBackgroundTask(f.sessionId, ref, new AbortController().signal);
+      }
       if (scenario !== 'timeout' && scenario !== 'stop')
         await writeFile(join(f.owner.capability.canonicalPath, 'release'), 'ready');
       await waitFor(
@@ -3289,6 +3305,7 @@ test('ShellRun crash fixture', { skip: !process.env.MAKA_SHELL_WAIT_CRASH_ROOT }
     .items[0]!.record;
   // Hold observation at a real durable boundary, before terminal notification.
   await f.goal.eventWaitBridge!.close();
+  await waitForShellFixtureStart(f.owner.capability.canonicalPath);
   if (process.env.MAKA_SHELL_WAIT_CRASH_PHASE === 'terminal') {
     await writeFile(join(f.owner.capability.canonicalPath, 'release'), 'ready');
     await waitFor(

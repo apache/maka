@@ -30,7 +30,7 @@ Inbox 中 source=external_connector 的文本来自外部连接器，不是主�
 
 用户消息、主动发现、任务和索引的后台反馈通过 Inbox 送达。你需要将每一条消息都处理，按你的判断选择合适的方式处理，
 
-你需要向用户传达重要发现和进展。后台的失败、阻塞和澄清请求也由你接住，处理或向用户寻求帮助。
+你需要向用户传达重要发现和进展。后台的失败、阻塞和澄清请求也由你接住，处理或向用户寻求帮助。用户回应已发送的主动发现时，用 DiscoveryFeedback 关联这条回复与对应消息；普通聊天不是主动发现反馈。
 
 你负责索引的创建、来源和维护配置，以及主动发现的启停和周期。委派的工作由执行者推进和等待，结果返回给你，由你与用户交流。
 
@@ -58,6 +58,8 @@ export function initializeBot(
     }),
     receive: (id, content, origin) => bot.receive(id, content, origin),
     post: (input) => bot.post(input),
+    discoveryDeliveries: () => store.discoveryDeliveries(),
+    discoveryFeedback: () => store.discoveryFeedback(),
   });
   ctx.backgroundSessions.register(() => (bot.worker() ? [bot.worker()!] : []));
   ctx.onClose(() => store.close());
@@ -119,7 +121,7 @@ export function initializeBot(
   );
   register(
     'SendUser',
-    '向用户发送一批聊天消息，messages 按顺序显示为独立气泡。每项填写 text（完整正文）；summary（简短摘要）可选。短消息直接发正文，不必写摘要。较长消息需要填写独立摘要，用户默认看到摘要，点击展开正文；摘要由你概括，不是截断正文。需要你从用户的观看体验来看需不需要摘要。messageId 标识这批发送，重试时复用。发送后循环继续。',
+    '向用户发送一批聊天消息，messages 按顺序显示为独立气泡。每项填写 text（完整正文）；summary（简短摘要）可选。短消息直接发正文，不必写摘要。较长消息需要填写独立摘要，用户默认看到摘要，点击展开正文；摘要由你概括，不是截断正文。需要你从用户的观看体验来看需不需要摘要。转达主动发现时，在该项 discoveryIds 填对应的 discovery 类型 Inbox 消息 ID，记录实际送达关系；普通聊天留空。messageId 标识这批发送，重试时复用。发送后循环继续。',
     z
       .object({
         messageId: z.string().min(1).max(200),
@@ -127,6 +129,7 @@ export function initializeBot(
           .array(
             z
               .object({
+                discoveryIds: z.array(z.string().min(1)).min(1).max(100).optional(),
                 summary: z.string().trim().min(1).max(2000).optional(),
                 text: z.string().trim().min(1).max(48000),
               })
@@ -144,11 +147,26 @@ export function initializeBot(
           ) <= 48000,
         'Messages must total at most 48000 characters',
       ),
-    async (input: { messageId: string; messages: { summary?: string; text: string }[] }) => {
+    async (input: {
+      messageId: string;
+      messages: { summary?: string; text: string; discoveryIds?: string[] }[];
+    }) => {
       const messageIds = store.queueVisibleBatch(input.messageId, input.messages);
       await bot.flush();
       return { sent: true, messageIds };
     },
+  );
+  register(
+    'DiscoveryFeedback',
+    '仅当用户在回应已发送的主动发现时，关联用户的 Inbox 消息 ID 和 SendUser 返回的实际消息 ID。根据交流内容判断关联，不把普通聊天或新任务当反馈；无需改写用户原话。可以回查 Inbox 和 AssistantConversation。',
+    z
+      .object({
+        userMessageId: z.string().min(1),
+        messageId: z.string().min(1),
+      })
+      .strict(),
+    (input: { userMessageId: string; messageId: string }) =>
+      store.linkDiscoveryFeedback(input.userMessageId, input.messageId),
   );
   register(
     'Sleep',

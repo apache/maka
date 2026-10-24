@@ -32,6 +32,7 @@ export interface PluginSessionSummary {
   readonly title?: string;
   readonly cwd?: string;
   readonly status?: string;
+  readonly isArchived?: boolean;
   readonly parentSessionId?: string;
   readonly labels?: readonly string[];
   readonly model?: string;

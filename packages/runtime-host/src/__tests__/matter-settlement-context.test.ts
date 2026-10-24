@@ -85,7 +85,10 @@ function fixture(t: TestContext) {
       content: { kind: 'function_call', id: call.toolCallId },
     });
     const tool = tools().find((t) => t.name === 'MatterSettle')!;
-    return tool.impl((tool.parameters as any).parse(args), call) as Promise<any>;
+    return tool.impl(
+      (tool.parameters as any).parse({ progressSummary: '检查包裹签收与验收进展', ...args }),
+      call,
+    ) as Promise<any>;
   };
   t.after(() => {
     store.close();

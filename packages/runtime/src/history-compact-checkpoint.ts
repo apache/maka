@@ -574,6 +574,36 @@ export function matchHistoryCompactCheckpointPrefix(
   checkpoint: HistoryCompactCheckpoint,
   events: readonly RuntimeEvent[],
 ): HistoryCompactCheckpointPrefixMatch {
+  const match = matchHistoryCompactCheckpointPrefixExactly(checkpoint, events);
+  if (
+    match.reason === undefined ||
+    match.reason === 'invalid_checkpoint' ||
+    checkpoint.source?.policyVersion !== 'maka.compactable_runtime_event_projection.v3'
+  )
+    return match;
+
+  // v3 checkpoints written before #6263 did not count encrypted-only thinking.
+  // Locate that sealed boundary by identity, then verify the historical source
+  // exactly. Never trim the successor tail using the historical event count.
+  const throughIndex = events.findIndex(
+    (event) => event.id === checkpoint.coverage.through.runtimeEventId,
+  );
+  if (throughIndex < 0) return match;
+  const prefix = events.slice(0, throughIndex + 1);
+  const historical = prefix.filter(
+    (event) => event.content?.kind !== 'thinking' || event.content.text.length > 0,
+  );
+  if (historical.length === prefix.length) return match;
+  const historicalMatch = matchHistoryCompactCheckpointPrefixExactly(checkpoint, historical);
+  return historicalMatch.reason === undefined
+    ? { ...historicalMatch, successorRuntimeEvents: events.slice(throughIndex + 1) }
+    : match;
+}
+
+function matchHistoryCompactCheckpointPrefixExactly(
+  checkpoint: HistoryCompactCheckpoint,
+  events: readonly RuntimeEvent[],
+): HistoryCompactCheckpointPrefixMatch {
   if (!validateHistoryCompactCheckpointShape(checkpoint)) {
     return {
       coveredEventCount: 0,

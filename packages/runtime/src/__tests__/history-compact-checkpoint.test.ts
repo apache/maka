@@ -1050,6 +1050,96 @@ describe('checkHistoryCompactCheckpointCurrency', () => {
     });
   }
 
+  function opaqueReasoning(id: string): RuntimeEvent {
+    return {
+      ...textEvent(0),
+      id,
+      role: 'model',
+      author: 'agent',
+      content: {
+        kind: 'thinking',
+        text: '',
+        providerOptions: {
+          openai: { itemId: id, reasoningEncryptedContent: `encrypted-${id}` },
+        },
+      },
+    };
+  }
+
+  for (const native of [false, true]) {
+    test(`replays a historical ${native ? 'native' : 'text'} checkpoint across newly admitted reasoning without losing the tail`, () => {
+      const covered = [textEvent(0), textEvent(1)];
+      const checkpoint = native
+        ? buildHistoryCompactCheckpoint({
+            sessionId: 'session-1',
+            coveredRuntimeEvents: covered,
+            providerState: {
+              kind: 'openai_codex_remote_v2',
+              connectionId: 'codex',
+              modelId: 'model',
+              itemId: 'cmp-old',
+              encryptedContent: 'LEGACY_NATIVE_STATE',
+            },
+          })
+        : checkpointOver(covered);
+      const tail = [opaqueReasoning('new-reasoning'), textEvent(2)];
+      const current = [covered[0]!, opaqueReasoning('old-reasoning'), covered[1]!, ...tail];
+      const currency = checkHistoryCompactCheckpointCurrency(
+        checkpoint,
+        current,
+        EMPTY_PROJECTION_SNAPSHOT,
+      );
+      assert.equal(currency.status, 'current');
+      if (currency.status !== 'current') assert.fail('expected verified legacy prefix');
+      assert.deepEqual(currency.match.coveredRuntimeEvents, covered);
+      assert.deepEqual(currency.match.successorRuntimeEvents, tail);
+      const replay = applyRuntimeEventHistoryCompact(current, { enabled: true, checkpoint });
+      assert.equal(replay.checkpoint?.checkpointId, checkpoint.checkpointId);
+      assert.deepEqual(replay.events.slice(-tail.length), tail);
+      assert.equal(
+        replay.events.some((event) => event.id === 'old-reasoning'),
+        false,
+      );
+    });
+  }
+
+  test('legacy reasoning admission still rejects raw and effective history drift', () => {
+    const result = toolResultEvent('old-result', 'RAW_OLD_BODY');
+    const covered = [textEvent(0), result, textEvent(1)];
+    const checkpoint = checkpointOver(covered);
+    const oldReasoning = opaqueReasoning('old-reasoning');
+    const current = [covered[0]!, oldReasoning, result, covered[2]!, textEvent(2)];
+    assert.equal(
+      checkHistoryCompactCheckpointCurrency(checkpoint, current, EMPTY_PROJECTION_SNAPSHOT).status,
+      'current',
+    );
+    for (const events of [
+      [covered[0]!, oldReasoning, { ...result, ts: result.ts + 1 }, covered[2]!, textEvent(2)],
+      [covered[0]!, oldReasoning, result, textEvent(2)],
+    ])
+      assert.equal(
+        checkHistoryCompactCheckpointCurrency(checkpoint, events, EMPTY_PROJECTION_SNAPSHOT).status,
+        'raw_mismatch',
+      );
+    assert.equal(
+      checkHistoryCompactCheckpointCurrency(checkpoint, current, {
+        ...EMPTY_PROJECTION_SNAPSHOT,
+        transitions: [archiveTransitionFor(result, 'CHANGED_EFFECTIVE_BODY')],
+      }).status,
+      'effective_history_changed',
+    );
+    const newCheckpoint = checkpointOver(current.slice(0, 4));
+    const tamperedReasoning = { ...oldReasoning, ts: oldReasoning.ts + 1 };
+    assert.equal(
+      checkHistoryCompactCheckpointCurrency(
+        newCheckpoint,
+        [covered[0]!, tamperedReasoning, result, covered[2]!, textEvent(2)],
+        EMPTY_PROJECTION_SNAPSHOT,
+      ).status,
+      'raw_mismatch',
+    );
+  });
+
   test('reports the raw-mismatch reason without touching the projection', () => {
     const covered = [textEvent(0), textEvent(1), textEvent(2)];
     const checkpoint = checkpointOver(covered);

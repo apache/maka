@@ -237,7 +237,7 @@ describe('OpenAI Codex compaction output', () => {
 });
 
 describe('OpenAI Codex compaction input', () => {
-  test('preserves the verbatim head anchor of a text mid-turn checkpoint (#6154)', async () => {
+  test('preserves a historical text checkpoint head anchor after reasoning admission shifts its index (#6154)', async () => {
     const anchor = runtimeEvent({
       id: 'anchor',
       role: 'user',
@@ -261,14 +261,37 @@ describe('OpenAI Codex compaction input', () => {
     })({
       sessionId: 'session-1',
       turnId: 'turn-current',
-      source: { foldedRuntimeEvents: [anchor, old, tail] },
+      source: {
+        foldedRuntimeEvents: [
+          ...Array.from({ length: 3 }, (_, index) =>
+            runtimeEvent({
+              id: `old-reasoning-${index}`,
+              role: 'model',
+              author: 'agent',
+              content: {
+                kind: 'thinking',
+                text: '',
+                providerOptions: {
+                  openai: {
+                    itemId: `rs-${index}`,
+                    reasoningEncryptedContent: 'OLD_ENCRYPTED_REASONING',
+                  },
+                },
+              },
+            }),
+          ),
+          anchor,
+          old,
+          tail,
+        ],
+      },
       previousCheckpoint: previous,
       newlyFoldedRuntimeEvents: [tail],
     });
 
     const prompt = JSON.stringify(model.doStreamCalls[0]?.prompt);
     assert.match(prompt, /PORTABLE_SUMMARY.*EXACT_USER_DIRECTIVE.*NEW_TAIL/);
-    assert.doesNotMatch(prompt, /ALREADY_FOLDED/);
+    assert.doesNotMatch(prompt, /ALREADY_FOLDED|OLD_ENCRYPTED_REASONING/);
   });
 
   for (const nativeState of [true, false]) {

@@ -1780,8 +1780,13 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
 }
 
 describe('encrypted reasoning in native history compaction', () => {
-  for (const mode of ['manual', 'automatic'] as const) {
-    test(`${mode} compaction preserves empty-plaintext reasoning and enforces route admission`, async () => {
+  for (const [mode, useLegacyCheckpoint] of [
+    ['manual', false],
+    ['automatic', false],
+    ['manual', true],
+    ['automatic', true],
+  ] as const) {
+    test(`${mode} ${useLegacyCheckpoint ? 'legacy-checkpoint' : 'fresh'} compaction preserves empty-plaintext reasoning and enforces route admission`, async () => {
       const identity = `sha256:${'1'.repeat(64)}` as const;
       const reasoning = (id: string, runId: string): RuntimeEvent => ({
         ...runtimeTextEvent(id, 'turn-0', 'model', ''),
@@ -1841,6 +1846,7 @@ describe('encrypted reasoning in native history compaction', () => {
         modelId: 'mock-model-id',
         providerStateIdentity: identity,
       });
+      let legacyCheckpoint: HistoryCompactCheckpoint | undefined;
       const fixture: MidTurnFixture = buildFixture({
         providerNative: true,
         summarize: native,
@@ -1869,8 +1875,23 @@ describe('encrypted reasoning in native history compaction', () => {
             },
           }),
         ),
-        loadCheckpoint: () => fixture.recorded.at(-1),
+        loadCheckpoint: () => fixture.recorded.at(-1) ?? legacyCheckpoint,
       });
+      if (useLegacyCheckpoint) {
+        const covered = fixture.priorEvents.slice(0, 2);
+        fixture.priorEvents.splice(1, 0, reasoning('rs-old-covered', 'source-run'));
+        legacyCheckpoint = buildHistoryCompactCheckpoint({
+          sessionId: 'session-1',
+          coveredRuntimeEvents: covered,
+          providerState: {
+            kind: 'openai_codex_remote_v2',
+            connectionId: 'test-connection-id',
+            modelId: 'mock-model-id',
+            itemId: 'cmp-legacy',
+            encryptedContent: 'LEGACY_NATIVE_STATE',
+          },
+        });
+      }
       if (mode === 'manual') {
         const result = await fixture.backend.compactHistory({
           turnId: 'turn-compact',
@@ -1883,6 +1904,10 @@ describe('encrypted reasoning in native history compaction', () => {
       await runFixtureTurn(fixture, 'slow');
       const compactPrompt = JSON.stringify(nativeModel.doStreamCalls[0]?.prompt);
       assert.match(compactPrompt, /encrypted-rs-compatible/);
+      if (useLegacyCheckpoint) {
+        assert.match(compactPrompt, /LEGACY_NATIVE_STATE/);
+        assert.doesNotMatch(compactPrompt, /rs-old-covered|PRIOR_FACT/);
+      }
       assert.doesNotMatch(
         compactPrompt,
         /rs-incompatible|rs-other-provider|rs-unknown|rs-hidden|rs-empty/,

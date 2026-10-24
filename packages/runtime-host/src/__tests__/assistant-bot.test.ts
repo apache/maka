@@ -33,7 +33,7 @@ import { HostPluginDataRuntime } from '../server/plugin-data-runtime.js';
 import { DatabaseSync } from 'node:sqlite';
 import { BotController } from '../assistant/bot/controller.js';
 import { BotStore } from '../assistant/bot/store.js';
-import { PROACTIVE_TASK } from '../assistant/index-initiative/prompt.js';
+import { DISCOVERY_TASK } from '../assistant/index-initiative/prompt.js';
 import { MESSAGE_OPERATION_SPECS } from '../protocol/message.js';
 
 async function until(fn: () => unknown | Promise<unknown>) {
@@ -414,8 +414,29 @@ test('independent discovery retains the exact prompt and reports through Inbox, 
     processed = false;
   f.runner(async ({ prompt, invoke }) => {
     if (prompt.includes('Runtime heartbeat')) {
-      assert.ok(prompt.includes(PROACTIVE_TASK));
-      await invoke('DiscoveryReport', { text: '已核实：明天的两个日程冲突。' });
+      if (prompt.includes('Phase: discovery')) {
+        assert.ok(prompt.includes(DISCOVERY_TASK));
+        await writeFile(
+          /完成后把增量操作写入 (.+)，格式：/.exec(prompt)![1],
+          JSON.stringify({
+            notes: [
+              {
+                topicId: 'calendar',
+                title: '日程',
+                text: '日程冲突，需要判断。',
+                sources: ['日历'],
+              },
+            ],
+          }),
+        );
+        return;
+      }
+      await writeFile(
+        /完成后把增量操作写入 (.+)，格式：/.exec(prompt)![1],
+        JSON.stringify({
+          messages: [{ text: '已核实：明天的两个日程冲突。', topicIds: ['calendar'] }],
+        }),
+      );
       reported = true;
     } else {
       const rows = await invoke('InboxCheck');
@@ -435,7 +456,11 @@ test('independent discovery retains the exact prompt and reports through Inbox, 
   await until(() => reported && processed);
   assert.equal(f.visible.length, 1);
   assert.equal(f.visible[0].text, '明天两个安排冲突，要一起调整吗？');
-  assert.equal(f.sessions.size, 3, 'visible chat, Bot, and exploration have separate Sessions');
+  assert.equal(
+    f.sessions.size,
+    4,
+    'visible chat, Bot, discovery and judgement have separate Sessions',
+  );
 });
 
 test('Inbox persistence preserves all types and history; batches return bounded bodies without processing state', async (t) => {
@@ -1340,4 +1365,184 @@ test('connector input retains sender provenance through protocol, mailbox and vi
       }),
     /external connector source/,
   );
+});
+
+test('only explicitly linked replies to delivered discoveries reach the notebook, across restart', async (t) => {
+  const f = await fixture();
+  t.after(f.close);
+  let round = 0;
+  let deliveries = 0;
+  let handled = 0;
+  let visibleId = '';
+  let feedbackId = '';
+  const discoveryContext = () => {
+    const store = new BotStore(join(f.directory, 'native', 'index-initiative'));
+    try {
+      return {
+        deliveries: store.discoveryDeliveries(),
+        feedback: store.discoveryFeedback(),
+      };
+    } finally {
+      store.close();
+    }
+  };
+  const installRunner = () =>
+    f.runner(async ({ prompt, invoke }) => {
+      if (prompt.includes('Runtime heartbeat')) {
+        const notebook = await readFile(/记事本：([^\n]+)/.exec(prompt)![1], 'utf8');
+        assert.doesNotMatch(notebook, /普通聊天只问天气|普通聊天的回答/);
+        let draft: any = {};
+        if (prompt.includes('Phase: discovery')) {
+          round++;
+          if (round === 1) {
+            assert.match(notebook, /暂无用户反馈/);
+            draft = {
+              notes: [
+                {
+                  topicId: 'tea',
+                  title: '茶',
+                  text: '附近有茶展',
+                  sources: ['公告'],
+                },
+              ],
+            };
+          } else {
+            assert.match(notebook, /我不喝茶了/);
+            assert.match(notebook, /主题：tea/);
+            feedbackId = /｜(feedback:[^｜\n]+)｜待理解/.exec(notebook)![1];
+            // Leave the second discovery in flight so the wait cannot rely on round alone.
+            await new Promise((resolve) => setTimeout(resolve, 50));
+          }
+        } else if (round === 1) {
+          draft = {
+            messages: [{ text: '附近的茶展本周开放。', topicIds: ['tea'] }],
+          };
+        } else {
+          draft = {
+            feedbackDecisions: [
+              {
+                feedbackId,
+                understanding: '用户不喝茶了',
+                rules: [
+                  {
+                    quote: '我不喝茶了',
+                    status: 'closed',
+                    reason: '用户不喝茶了',
+                    topicIds: ['tea'],
+                    tags: [],
+                  },
+                ],
+              },
+            ],
+          };
+        }
+        await writeFile(
+          /完成后把增量操作写入 (.+)，格式：/.exec(prompt)![1],
+          JSON.stringify(draft),
+        );
+        return;
+      }
+      const batch = await invoke('InboxCheck');
+      for (const item of batch.items) {
+        if (item.type === 'discovery') {
+          const result = await invoke('SendUser', {
+            messageId: 'tea-delivery',
+            messages: [{ text: '附近的茶展本周开放。', discoveryIds: [item.id] }],
+          });
+          visibleId = result.messageIds[0];
+          deliveries++;
+        } else if (item.id === 'reply') {
+          const args = { userMessageId: 'reply', messageId: visibleId };
+          await invoke('DiscoveryFeedback', args);
+          await invoke('DiscoveryFeedback', args);
+        } else {
+          await invoke('SendUser', {
+            messageId: 'ordinary',
+            messages: [{ text: '普通聊天的回答' }],
+          });
+        }
+        handled++;
+      }
+      await invoke('Sleep');
+    });
+  installRunner();
+  await f.send('ordinary', '普通聊天只问天气');
+  await until(() => handled === 1);
+  assert.deepEqual(discoveryContext(), { deliveries: [], feedback: [] });
+  await f.service.call('assistant.control', { action: 'check' });
+  await until(() => deliveries === 1);
+  assert.equal(discoveryContext().feedback.length, 0);
+  await f.send('reply', '我不喝茶了');
+  await until(() => handled === 3);
+  assert.equal(discoveryContext().feedback.length, 1);
+  await f.restart();
+  installRunner();
+  assert.equal(discoveryContext().deliveries.length, 1);
+  assert.equal(discoveryContext().feedback.length, 1);
+  await f.service.call('assistant.control', { action: 'check' });
+  await until(async () => {
+    const status: any = await f.service.call('assistant.status', {});
+    if (status.state.lastError) throw Error(status.state.lastError);
+    return round === 2 && !status.state.active;
+  });
+  const book = new DatabaseSync(join(f.directory, 'native', 'index-initiative', 'notebook.sqlite'));
+  t.after(() => book.close());
+  const events = book.prepare('SELECT kind,payload FROM events').all();
+  assert.equal(events.filter((e) => e.kind === 'feedback').length, 1);
+  assert.equal(events.filter((e) => e.kind === 'delivery').length, 1);
+  assert.equal(events.filter((e) => e.kind === 'conversation').length, 0);
+  assert.equal(events.filter((e) => e.kind === 'feedback-resolution').length, 1);
+});
+
+test('discovery feedback rejects unsent, ordinary, fabricated and external messages; send retries preserve links', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'bot-feedback-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const store = new BotStore(dir);
+  t.after(() => store.close());
+  store.post({ id: 'd', type: 'discovery', source: 'judge', content: '茶展' });
+  store.post({
+    id: 'other-d',
+    type: 'discovery',
+    source: 'judge',
+    content: '书展',
+  });
+  const messages = [{ text: '茶展消息', discoveryIds: ['d'] }];
+  const [id] = store.queueVisibleBatch('d-send', messages);
+  const user = (id: string, source = 'user') =>
+    store.post(
+      { id, type: 'user_message', source, content: { text: '反馈' } },
+      {
+        id,
+        type: 'user',
+        text: '反馈',
+        displayText: '真实用户反馈',
+        turnId: id,
+        ts: Date.now(),
+      },
+    );
+  user('u');
+  assert.throws(() => store.linkDiscoveryFeedback('u', id), /delivered discovery/);
+  assert.deepEqual(store.discoveryDeliveries(), []);
+  store.delivered(id);
+  user('after');
+  store.linkDiscoveryFeedback('after', id);
+  store.linkDiscoveryFeedback('after', id);
+  assert.equal(store.discoveryFeedback().length, 1);
+  assert.equal(store.discoveryFeedback()[0].text, '真实用户反馈');
+  assert.deepEqual(store.queueVisibleBatch('d-send', messages), [id]);
+  assert.throws(
+    () => store.queueVisibleBatch('d-send', [{ text: '茶展消息', discoveryIds: ['other-d'] }]),
+    /different batch/,
+  );
+  assert.throws(() => store.queueVisibleBatch('d-send', [{ text: '茶展消息' }]), /different batch/);
+  assert.throws(
+    () => store.queueVisibleBatch('invalid', [{ text: '无效关联', discoveryIds: ['missing'] }]),
+    /discoveryIds/,
+  );
+  assert.throws(() => store.linkDiscoveryFeedback('missing', id), /owner user message/);
+  user('external', 'external_connector');
+  assert.throws(() => store.linkDiscoveryFeedback('external', id), /owner user message/);
+  const [ordinary] = store.queueVisibleBatch('chat', [{ text: '普通聊天' }]);
+  store.delivered(ordinary);
+  assert.throws(() => store.linkDiscoveryFeedback('after', ordinary), /delivered discovery/);
 });

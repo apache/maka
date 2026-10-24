@@ -40,11 +40,10 @@ export function projectTasks(tasks: any, now = Date.now()): FloatTask[] {
     else if (task.runtimeStatus === 'running') phase = 'running';
     else if (task.status === 'waiting') phase = 'waiting';
     else phase = 'queued';
-    const updates = Array.isArray(task.updates) ? [...task.updates].sort((a, b) => timestamp(b.createdAt) - timestamp(a.createdAt)) : [];
     return {
       id: text(task.id), title: text(task.title), phase,
-      progress: (phase === 'waiting' ? text(task.waitingFor) : '') || text(task.state) || text(updates[0]?.text),
-      updatedAt: timestamp(task.updatedAt) || timestamp(updates[0]?.createdAt) || timestamp(task.createdAt),
+      progress: text(task.summary),
+      updatedAt: timestamp(task.updatedAt) || timestamp(task.createdAt),
     };
   });
   for (const pending of Array.isArray(tasks?.pending) ? tasks.pending : []) {

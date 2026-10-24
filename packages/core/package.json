@@ -90,6 +90,7 @@
     "./agent-graph-client-projection": "./dist/agent-graph-client-projection.js",
     "./agent-graph-supervisor-wake": "./dist/agent-graph-supervisor-wake.js",
     "./session-todo": "./dist/session-todo.js",
+    "./session-checkin": "./dist/session-checkin.js",
     "./external-session": "./dist/external-session.js",
     "./daily-review": "./dist/daily-review.js",
     "./work-board": "./dist/work-board.js",

@@ -186,3 +186,15 @@ export { resolveNewChatExecutionThinkingLevel } from './controller/use-shell-cha
 export { executorSubmissionError, newTaskConfiguration } from './model/executor-submission.js';
 export { executorComposerProps } from './model/executor-composer.js';
 export { renderConversationMarkdown } from './model/conversation-markdown.js';
+
+export {
+  CHECKIN_ATTEMPT_COOLDOWN_MS,
+  checkinCardKey,
+  decodeCheckinMemory,
+  EMPTY_CHECKIN_MEMORY,
+  recordCheckinResult,
+  settleCheckinCard,
+  shouldRunCheckin,
+  visibleCheckinCards,
+} from './model/checkin.js';
+export { editCheckinCard, runCheckinAction } from './model/checkin-action.js';

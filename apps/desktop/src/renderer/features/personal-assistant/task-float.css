@@ -31,7 +31,6 @@
 .assistant-task-counts { padding: 0 11px 9px; font-size: 11px; line-height: 17px; color: var(--muted-foreground); }
 .assistant-task-list { padding: 0 10px; }
 .assistant-task-float .assistant-task-row { display: block; height: auto; width: 100%; padding: 10px 1px; text-align: start; border-top: 1px solid var(--border); }
-.assistant-task-row:hover { background: var(--muted); }
 .assistant-task-heading { display: flex; align-items: baseline; gap: 8px; }
 .assistant-task-heading strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; line-height: 20px; font-weight: 550; }
 .assistant-task-heading time { flex-shrink: 0; color: var(--muted-foreground); font-size: 11px; line-height: 17px; font-variant-numeric: tabular-nums; }
@@ -56,8 +55,3 @@
 .assistant-task-float.is-collapsed { width: 208px; border-radius: 13px; }
 .assistant-task-float .assistant-task-pill { height: auto; display: flex; align-items: center; gap: 7px; width: 100%; padding: 9px 10px; font-size: 11px !important; }
 .assistant-task-pill > span:first-child > span:nth-child(2) { flex: 1; min-width: 0; text-align: start; }
-.assistant-task-detail { border-top: 1px solid var(--border); padding: 8px 1px 12px; max-height: 280px; overflow-y: auto; overflow-wrap: anywhere; }
-.assistant-task-detail strong { display: block; font-size: 13px; margin-top: 8px; }
-.assistant-task-detail small { display: block; color: var(--muted-foreground); font-size: 11px; margin-top: 4px; }
-.assistant-task-detail p, .assistant-task-empty { font-size: 12px; line-height: 1.6; color: var(--muted-foreground); }
-.assistant-task-float .assistant-task-back { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--muted-foreground); }
