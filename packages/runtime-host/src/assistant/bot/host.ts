@@ -186,7 +186,7 @@ export function initializeBot(
   );
   register(
     'SendUser',
-    '向用户发送一批聊天消息。不同意思放在 messages 的不同项，同批按顺序发送为独立气泡。按人正常聊天的方式划分气泡：句子太长时拆成几个自然的短消息；想换行另起一段时，也拆成不同气泡。列表和代码块保持完整。每项 text 保留完整正文；单条正文超过 200 字必须填写 summary（按可见文字判断，不计图片地址和 Markdown 链接地址），用不超过 60 字独立概括，用户默认看摘要、点击展开正文，不要截断正文或为了绕过摘要而拆碎消息。短消息通常不填 summary。转达主动发现时，在该项 discoveryIds 填对应的 discovery 类型 Inbox 消息 ID，记录实际送达关系；普通聊天留空。messageId 标识这批发送，重试时复用。发送后循环继续。',
+    '向用户发送一批聊天消息，messages 按顺序显示为独立气泡。每项填写 text（完整正文）；summary（简短摘要）可选。短消息直接发正文，不必写摘要。正文超过 200 字时填写独立摘要，用户默认看到摘要，点击展开正文；摘要由你概括，不是截断正文。需要你从用户的观看体验来看需不需要摘要。转达主动发现时，在该项 discoveryIds 填对应的 discovery 类型 Inbox 消息 ID，记录实际送达关系；普通聊天留空。messageId 标识这批发送，重试时复用。发送后循环继续。',
     z
       .object({
         messageId: z.string().min(1).max(200),
@@ -195,27 +195,13 @@ export function initializeBot(
             z
               .object({
                 discoveryIds: z.array(z.string().min(1)).min(1).max(100).optional(),
-                summary: z
-                  .string()
-                  .trim()
-                  .min(1)
-                  .max(2000)
-                  .optional()
-                  .describe(
-                    '正文超过 200 字时必须填；独立概括为不超过 60 字的摘要，短消息可省略。',
-                  ),
-                text: z
-                  .string()
-                  .trim()
-                  .min(1)
-                  .max(48000)
-                  .describe('一个聊天气泡的完整正文；需要另起一段时放到新的 messages 项。'),
+                summary: z.string().trim().min(1).max(2000).optional(),
+                text: z.string().trim().min(1).max(48000),
               })
               .strict(),
           )
           .min(1)
-          .max(100)
-          .describe('每项是一个独立聊天气泡；按正常聊天习惯划分，同一批一起发送。'),
+          .max(100),
       })
       .strict()
       .refine(
