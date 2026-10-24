@@ -10,6 +10,7 @@ use crate::{
 /// 8pt per char, 16pt per line, wraps at `max_width`. Counts calls.
 #[derive(Default)]
 struct FakeEngine {
+    prepares: Cell<u32>,
     measures: Cell<u32>,
     layouts: Cell<u32>,
 }
@@ -27,6 +28,7 @@ impl TextEngine for FakeEngine {
     type Prepared = (usize, Vec<u32>);
 
     fn prepare(&self, text: &AttributedText) -> (usize, Vec<u32>) {
+        self.prepares.set(self.prepares.get() + 1);
         (
             text.text.chars().count(),
             text.attachments.iter().map(|a| a.index).collect(),
@@ -272,6 +274,64 @@ fn core() -> Core<FakeEngine> {
     c
 }
 
+#[test]
+fn pan_permission_filters_native_values_and_events_without_losing_them() {
+    let mut c = core();
+    apply(
+        &mut c,
+        vec![
+            Op::Create {
+                id: 2,
+                tag: Tag::View,
+            },
+            Op::Insert {
+                parent: ROOT_ID,
+                child: 2,
+                before: None,
+            },
+            Op::SetProp {
+                id: 2,
+                prop: Prop::PanValues(None, Some(7)),
+            },
+            Op::Listen {
+                id: 2,
+                event: EventKind::PanEnd,
+                enabled: true,
+            },
+            Op::Listen {
+                id: 2,
+                event: EventKind::Press,
+                enabled: true,
+            },
+            Op::SetProp {
+                id: 2,
+                prop: Prop::PanEnabled(false),
+            },
+        ],
+    );
+    let batch = c.commit().unwrap();
+    assert!(batch.items.iter().any(|item| matches!(item,
+        MountItem::Events { id: 2, events } if events.contains(EventKind::Press) && !events.contains(EventKind::PanEnd)
+    )));
+    assert!(batch.items.iter().any(|item| matches!(item,
+        MountItem::Gestures { id: 2, values } if values.pan_y.is_none()
+    )));
+    apply(
+        &mut c,
+        vec![Op::SetProp {
+            id: 2,
+            prop: Prop::PanEnabled(true),
+        }],
+    );
+    let batch = c.commit().unwrap();
+    assert!(batch.items.iter().any(|item| matches!(item,
+        MountItem::Events { id: 2, events } if events.contains(EventKind::PanEnd) && events.contains(EventKind::Press)
+    )));
+    assert!(batch.items.iter().any(|item| matches!(item,
+        MountItem::Gestures { id: 2, values } if values.pan_y == Some(7)
+    )));
+}
+
 /// The tokens of a theme file of the tests' own format, `{ "key":
 /// "#rrggbb", … }` over the sample's (`None`: the sample's): the core reads
 /// `uiTheme` with what a UI set brings.
@@ -387,6 +447,129 @@ fn mounts_subtree_built_detached() {
     assert_eq!(frame_of(&batch, 2), Some(rect(0.0, 0.0, 320.0, 36.0)));
     assert_eq!(frame_of(&batch, 3), Some(rect(10.0, 10.0, 300.0, 16.0)));
     assert!(c.commit().is_none(), "second commit is a no-op");
+}
+
+#[test]
+fn a_spans_test_id_is_in_its_blocks_text() {
+    let mut c = core();
+    let text_of = |c: &mut Core<_>| {
+        c.commit().unwrap().items.into_iter().find_map(|i| match i {
+            MountItem::Text { id: 2, text, .. } => Some(text),
+            _ => None,
+        })
+    };
+    apply(
+        &mut c,
+        vec![
+            Op::Create {
+                id: 2,
+                tag: Tag::Text,
+            },
+            Op::Listen {
+                id: 2,
+                event: EventKind::TextLayout,
+                enabled: true,
+            },
+            Op::CreateText {
+                id: 3,
+                text: "see ".into(),
+            },
+            Op::Create {
+                id: 4,
+                tag: Tag::Text,
+            },
+            Op::CreateText {
+                id: 5,
+                text: "docs".into(),
+            },
+            Op::Insert {
+                parent: 4,
+                child: 5,
+                before: None,
+            },
+            Op::Insert {
+                parent: 2,
+                child: 3,
+                before: None,
+            },
+            Op::Insert {
+                parent: 2,
+                child: 4,
+                before: None,
+            },
+            Op::Insert {
+                parent: ROOT_ID,
+                child: 2,
+                before: None,
+            },
+        ],
+    );
+    assert_eq!(text_of(&mut c).unwrap().test_ids, []);
+    js_events(&mut c);
+    let prepares = c.text_engine.prepares.get();
+    let layouts = c.text_engine.layouts.get();
+    let measures = c.text_engine.measures.get();
+    apply(
+        &mut c,
+        vec![Op::SetProp {
+            id: 4,
+            prop: Prop::TestId(Some("docs".into())),
+        }],
+    );
+    assert_eq!(
+        text_of(&mut c).unwrap().test_ids,
+        [crate::SpanTestId {
+            start: 4,
+            end: 8,
+            test_id: "docs".into(),
+        }]
+    );
+    assert_eq!(
+        c.text_engine.layouts.get(),
+        layouts,
+        "test IDs are metadata, not glyphs"
+    );
+    assert_eq!(c.text_engine.prepares.get(), prepares);
+    assert_eq!(c.text_engine.measures.get(), measures);
+    assert!(js_events(&mut c).is_empty(), "no onTextLayout for test IDs");
+    for id in [Some("renamed"), None] {
+        apply(
+            &mut c,
+            vec![Op::SetProp {
+                id: 4,
+                prop: Prop::TestId(id.map(Into::into)),
+            }],
+        );
+        let text = text_of(&mut c).unwrap();
+        assert_eq!(text.test_ids.first().map(|s| s.test_id.as_ref()), id);
+        assert_eq!(c.text_engine.layouts.get(), layouts);
+        assert_eq!(c.text_engine.prepares.get(), prepares);
+        assert_eq!(c.text_engine.measures.get(), measures);
+        assert!(js_events(&mut c).is_empty());
+    }
+    // A simultaneous content change still rebuilds the native text.
+    apply(
+        &mut c,
+        vec![
+            Op::SetText {
+                id: 5,
+                text: "updated docs".into(),
+            },
+            Op::SetProp {
+                id: 4,
+                prop: Prop::TestId(Some("updated".into())),
+            },
+        ],
+    );
+    let text = text_of(&mut c).unwrap();
+    assert_eq!(text.text, "see updated docs");
+    assert_eq!(text.test_ids[0].test_id.as_ref(), "updated");
+    assert!(c.text_engine.layouts.get() > layouts);
+    assert!(
+        js_events(&mut c)
+            .iter()
+            .any(|e| e.1 == EventKind::TextLayout)
+    );
 }
 
 #[test]
@@ -21013,4 +21196,110 @@ fn audio_session_reaches_the_video() {
         })
         .expect("the video's props");
     assert_eq!(props.audio_session, crate::AudioSession::Playback);
+}
+
+#[test]
+fn span_test_ids_reuse_fitted_and_hidden_layouts() {
+    for (fit, hidden) in [(true, false), (false, true)] {
+        let mut c = core();
+        let mut ops = vec![
+            Op::Create {
+                id: 2,
+                tag: Tag::Text,
+            },
+            style_op(
+                2,
+                &[
+                    ("width", StyleValue::Number(30.0)),
+                    ("height", StyleValue::Number(16.0)),
+                    ("fontSize", StyleValue::Number(20.0)),
+                ],
+            ),
+            Op::SetProp {
+                id: 2,
+                prop: Prop::AdjustsFontSizeToFit(fit),
+            },
+            Op::Create {
+                id: 4,
+                tag: Tag::Text,
+            },
+            Op::CreateText {
+                id: 6,
+                text: "long enough to shrink".into(),
+            },
+            Op::Insert {
+                parent: 4,
+                child: 6,
+                before: None,
+            },
+            Op::Insert {
+                parent: 2,
+                child: 4,
+                before: None,
+            },
+            Op::Insert {
+                parent: ROOT_ID,
+                child: 2,
+                before: None,
+            },
+        ];
+        if hidden {
+            ops.push(style_op(2, &[("display", StyleValue::Str("none"))]));
+        }
+        apply(&mut c, ops);
+        let batch = c.commit().unwrap();
+        let (old_text, old_layout) = batch
+            .items
+            .iter()
+            .find_map(|i| match i {
+                MountItem::Text {
+                    id: 2,
+                    text,
+                    layout,
+                    ..
+                } => Some((text.clone(), layout.clone())),
+                _ => None,
+            })
+            .unwrap();
+        let counts = (
+            c.text_engine.prepares.get(),
+            c.text_engine.layouts.get(),
+            c.text_engine.measures.get(),
+        );
+        apply(
+            &mut c,
+            vec![Op::SetProp {
+                id: 4,
+                prop: Prop::TestId(Some("cached".into())),
+            }],
+        );
+        let batch = c.commit().unwrap();
+        let (text, layout) = batch
+            .items
+            .iter()
+            .find_map(|i| match i {
+                MountItem::Text {
+                    id: 2,
+                    text,
+                    layout,
+                    ..
+                } => Some((text, layout)),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(text.test_ids[0].test_id.as_ref(), "cached");
+        assert_eq!(
+            text.spans, old_text.spans,
+            "keep the actual drawn font size"
+        );
+        assert!(Arc::ptr_eq(&old_layout.0, &layout.0));
+        assert_eq!(
+            (
+                c.text_engine.prepares.get(),
+                c.text_engine.layouts.get(),
+                c.text_engine.measures.get()
+            ),
+            counts
+        );
+    }
 }

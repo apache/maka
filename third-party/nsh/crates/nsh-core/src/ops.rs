@@ -688,6 +688,19 @@ pub enum EventPayload {
         /// The `pan.y` value now.
         value_y: Option<Points>,
     },
+    /// A system-cancelled drag, with the same last values as `Pan`.
+    PanCancelled {
+        /// The translation.
+        translation: Point<Points>,
+        /// Horizontal velocity.
+        velocity_x: f32,
+        /// Vertical velocity.
+        velocity_y: f32,
+        /// The `pan.x` value now (`None` without one).
+        value_x: Option<Points>,
+        /// The `pan.y` value now.
+        value_y: Option<Points>,
+    },
     /// A scroll position: the content offset.
     Scroll(Point<Points>),
     /// A loaded image's source size in pixels (before downsampling).
@@ -2070,6 +2083,12 @@ pub enum Prop {
     /// it keep the touches until then.
     #[prop(js = "panActivation")]
     PanActivation(Option<crate::props::PanActivation>),
+    /// Whether native pans may start or update their bound values. Rust
+    /// components use this to retain gesture state across permission changes.
+    PanEnabled(bool),
+    /// A vertical pan cooperates with descendant scroll views on iOS:
+    /// scrolling consumes the drag until its top, then the pan follows.
+    PanScrollHandoff(bool),
     /// `activeStyle`: the style while pressed (and not disabled), over the
     /// view's style; applied natively, no JS round trip.
     ActiveStyle(Option<Arc<StylePatch>>),

@@ -1593,6 +1593,57 @@ mod tests {
 
     use super::*;
 
+    /// A paragraph with a link and a marked word.
+    #[component]
+    fn Linked() -> impl IntoElement {
+        text("See ")
+            .child(text("the guide").test_id("guide").underline())
+            .child(" or ")
+            .child(text("this").test_id("marked").bg(rgb(0xfde68a)))
+    }
+
+    #[test]
+    fn span_styles_are_read_by_test_id_or_text() {
+        let mut app = Headless::start(EngineConfig::new(Root::of::<Linked>())).unwrap();
+        app.first_render().unwrap();
+        let screen = app.screen();
+        assert!(screen.span_style("id:guide").unwrap().decoration.underline);
+        assert_eq!(screen.span_style("id:guide").unwrap().background, None);
+        let marked = screen.span_style("id:marked").unwrap().background.unwrap();
+        assert_eq!(marked.color, nsh_core::Color(0xfde6_8aff));
+        assert_eq!(
+            screen
+                .span_style("text:this")
+                .unwrap()
+                .background
+                .map(|b| b.color),
+            Some(marked.color)
+        );
+    }
+
+    #[component]
+    fn EmptySpans() -> impl IntoElement {
+        text("before ")
+            .child(text("").test_id("middle").underline())
+            .child(text("after").italic())
+            .child(text("").test_id("end").underline())
+            .child(text("").test_id("after"))
+    }
+
+    #[test]
+    fn empty_span_styles_do_not_read_neighbouring_characters() {
+        let mut app = Headless::start(EngineConfig::new(Root::of::<EmptySpans>())).unwrap();
+        app.first_render().unwrap();
+        let screen = app.screen();
+        for name in ["id:middle", "id:end", "middle", "end", "id:after", "after"] {
+            assert!(
+                screen.span_style(name).is_err(),
+                "empty span {name} has no first character"
+            );
+        }
+        assert!(screen.span_style("text:after").unwrap().italic);
+    }
+
     /// A count and a button that adds one.
     #[component]
     fn Tally() -> impl IntoElement {

@@ -340,9 +340,17 @@ Things that were found the hard way. Read the section of the area you change bef
   controlled input's value comes back lose characters, so keys come at a typist's pace.
 - **A finger at rest still reports its position**: a drag that stops sending events before it lifts keeps its last
   velocity and flings. A drag whose path leaves the scroll view moves it much further than the finger.
-- **Made-up edge swipes do not start `interactivePopGestureRecognizer`**; the back button is tapped instead. A
-  scroll view's glide or bounce is not a Core Animation animation: `isDecelerating` says it moves, and a tap during
-  it only stops it.
+- **Interactive back needs system-delivered touches**: the agent's IOHID drags can start UIKit's navigation
+  gestures in the simulator. Test with `app.drag` from an element at the leading edge; `app.back()` exercises
+  the back button instead. On iOS 26 a leading-edge drag can be recognized by
+  `interactiveContentPopGestureRecognizer`, so both it and `interactivePopGestureRecognizer` need the stack's
+  permission delegate after the navigation view has loaded. A scroll view's glide or bounce is not a Core
+  Animation animation: `isDecelerating` says it moves, and a tap during it only stops it.
+- **Interactive back and editing**: the outgoing page remains attached while the finger moves, so removing its
+  input only ends editing after the pop. The stack's gesture delegate ends editing after the permission, root and
+  transition guards allow the gesture. `didShowViewController:` restores that editor if its page returns after
+  cancellation and no other control took focus. Rejected gestures keep focus. The regression observes `onBlur` while the
+  root's system-delivered touch is still down, rather than checking only after the page has detached.
 - **A hardware keyboard's keys are IOHID keyboard events** (`IOHIDEventCreateKeyboardEvent`, usage page 7) handed to
   UIKit the way touches are: they become presses, key commands and typing as a real keyboard's do. Modifiers are
   keys of their own (left Control, Shift, Option, Command), down before the key and up after it.
@@ -488,6 +496,6 @@ Things that were found the hard way. Read the section of the area you change bef
   of other apps (e.g. a Slack huddle bar at window level 1001) silently swallow clicks over a band of the app. When a tap does
   nothing, list the windows at the point (`CGWindowListCopyWindowInfo`) before suspecting hit testing.
 - **Not supported / not verifiable here**: keeping left and right unswapped right to left (left / right always swap right to left);
-  after switching direction at runtime UIKit keeps an existing back button's chevron; Android has no skew transforms (as in React Native); the iOS simulator cannot
-  inject edge swipes (interactive back is untested there); Android's stylus handwriting mode (on by default on recent
+  after switching direction at runtime UIKit keeps an existing back button's chevron; Android has no skew transforms
+  (as in React Native); Android's stylus handwriting mode (on by default on recent
   emulators) intercepts taps on inputs — turn it off with `adb shell settings put secure stylus_handwriting_enabled 0`.

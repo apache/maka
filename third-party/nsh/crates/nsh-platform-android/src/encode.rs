@@ -1150,6 +1150,7 @@ fn layout_transition(e: &mut Encoded, t: Option<LayoutTransition>) {
         LayoutCurve::EaseOut => (2, 0.0),
         LayoutCurve::EaseInEaseOut => (3, 0.0),
         LayoutCurve::Spring { damping } => (4, damping),
+        LayoutCurve::Keyboard => (5, 0.0),
     };
     e.int(curve);
     e.float(damping);

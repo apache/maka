@@ -23,9 +23,10 @@ use objc2_foundation::{
 };
 use objc2_ui_kit::{
     NSValueUIGeometryExtensions, UIDevice, UIFont, UIFontTextStyleBody,
-    UIKeyboardAnimationDurationUserInfoKey, UIKeyboardFrameEndUserInfoKey,
-    UIKeyboardWillChangeFrameNotification, UIKeyboardWillHideNotification, UIResponder,
-    UITraitCollection, UITraitEnvironment, UIUserInterfaceIdiom, UIUserInterfaceStyle, UIView,
+    UIKeyboardAnimationCurveUserInfoKey, UIKeyboardAnimationDurationUserInfoKey,
+    UIKeyboardFrameEndUserInfoKey, UIKeyboardWillChangeFrameNotification,
+    UIKeyboardWillHideNotification, UIResponder, UITraitCollection, UITraitEnvironment,
+    UIUserInterfaceIdiom, UIUserInterfaceStyle, UIView,
 };
 
 use crate::{
@@ -454,10 +455,13 @@ impl RootView {
     }
 
     fn keyboard_changed(&self, note: &NSNotification) {
+        // The keyboard starts to move now, in the transaction posting this.
+        let start = objc2_quartz_core::CACurrentMediaTime();
         let Some(info) = note.userInfo() else { return };
         // SAFETY: UIKit documents these user info keys and their value types
-        // (NSValue of a CGRect in screen coordinates, NSNumber of seconds).
-        let (frame, duration) = unsafe {
+        // (NSValue of a CGRect in screen coordinates, NSNumber of seconds,
+        // NSNumber of a UIViewAnimationCurve).
+        let (frame, duration, curve) = unsafe {
             let frame = info
                 .objectForKey(UIKeyboardFrameEndUserInfoKey)
                 .and_then(|v| v.downcast::<NSValue>().ok())
@@ -466,7 +470,11 @@ impl RootView {
                 .objectForKey(UIKeyboardAnimationDurationUserInfoKey)
                 .and_then(|v| v.downcast::<NSNumber>().ok())
                 .map_or(0.25, |n| n.doubleValue());
-            (frame, duration)
+            let curve = info
+                .objectForKey(UIKeyboardAnimationCurveUserInfoKey)
+                .and_then(|v| v.downcast::<NSNumber>().ok())
+                .map_or(7, |n| n.integerValue());
+            (frame, duration, curve)
         };
         let hiding = note.name().isEqualToString(
             // SAFETY: an immutable UIKit constant.
@@ -501,12 +509,17 @@ impl RootView {
             return;
         };
         let height = height as f32;
+        let motion = crate::mount::KeyboardMotion {
+            curve,
+            duration,
+            start,
+        };
         // Focusing an input while a batch is applied can post this
         // synchronously: then run it on the next main-queue turn.
         let busy = match mounter.get(self.mtm()).try_borrow_mut() {
             Ok(mut m) => {
                 if let Some(m) = m.as_mut() {
-                    m.keyboard_changed(height, duration);
+                    m.keyboard_changed(height, motion);
                 }
                 false
             }
@@ -516,7 +529,7 @@ impl RootView {
             DispatchQueue::main().exec_async(move || {
                 let mtm = MainThreadMarker::new().expect("main queue");
                 if let Some(m) = mounter.get(mtm).borrow_mut().as_mut() {
-                    m.keyboard_changed(height, duration);
+                    m.keyboard_changed(height, motion);
                 }
             });
         }

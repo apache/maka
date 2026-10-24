@@ -17,6 +17,7 @@ event id:drag onPanStart translationX=2 translationY=-3 velocityX=10 velocityY=0
 expect Pan: start 2,-3 v 10,0
 event id:drag onPanEnd translationX=40 translationY=5 velocityX=250.5 velocityY=-12
 expect Pan: start 2,-3 v 10,0; end 40,5 v 250.5,-12
+expect Cancelled: false
 event id:pinch onPinchStart scale=1.1 velocity=0.5
 expect Pinch: start 1.1 v 0.5
 event id:pinch onPinchEnd scale=2 velocity=-0.25
@@ -94,6 +95,7 @@ covers [events] onSubmit
 covers [events] onSelectionChange
 covers [events] onCaretMove
 # What the user pasted, reported; the input inserts nothing itself.
+prop id:paste pasteBehavior report
 expect Pasted: none
 event id:paste onPaste text=hello
 expect Pasted: hello files 0 uris 0

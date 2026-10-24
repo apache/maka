@@ -733,6 +733,15 @@ tap below:parent:text:SheetBody
 expect Log: sheet false backdropPress
 absent SheetBody
 expect Life: sheet closed
+# Opt-in bottom dragging installs the native release listener.
+tap text:OpenSwipeSheet
+expect SwipeSheetBody
+wait 400
+frame parent:text:SwipeSheetBody 0 490 390 354
+listens parent:text:SwipeSheetBody onPanEnd
+tap below:parent:text:SwipeSheetBody
+absent SwipeSheetBody
+covers [props] closeOnSwipe
 # `closeOnBackdropPress={false}`: its backdrop keeps it.
 tap below:parent:text:StuckSheet
 expect StuckSheet

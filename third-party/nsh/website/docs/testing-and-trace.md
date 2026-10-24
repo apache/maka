@@ -366,6 +366,7 @@ one: a selector matching several fails the step, and the error says how to narro
 | `app.enabled(selector)` | Whether the view takes input: neither it nor a view around it is disabled, and an input is not `readonly`. |
 | `app.texts()` | The texts on screen now, in order. |
 | `app.value(selector)` | The text of an input, `null` when none matches. |
+| `app.spanStyle(selector)` | In headless tests, the first matched character’s resolved style: `color`, optional `backgroundColor`, `fontSize`, `fontWeight`, `italic`, `underline`, and `lineThrough`. Colors are `#rrggbbaa`; sizes are in points. |
 | `app.storage()` | What the app's storage holds now. |
 | `await app.back()` | Goes back as the user does (a header's back button, swiping a sheet down): the innermost stack of the newest modal, else of the screen, pops its top screen (`onDismiss`), or asks it (`onBackRequest`) when it has `preventBack`; without one, the newest modal asks to close (`onRequestClose`). Rejects when there is nothing to go back from. |
 | `app.onDialog(handler)` | Answers the dialogs the app shows from now on (`Alert.alert`, action sheets): `handler` gets the dialog (`title`, `message`, `buttons`, `cancelable`, `sheet`) and returns the text of the button to press, or `null` to close it without one. |
@@ -386,6 +387,11 @@ render all the time; on a manual clock, also 2 s of the app's time), so what it 
 line runs; use `waitFor` for what comes later (a
 response, a timer). A step rejects, failing the test, when nothing matches its selector (the error lists the texts on
 screen), when the app threw an exception meanwhile, and when the app asked for what only a real platform answers.
+
+`app.spanStyle("id:guide")` reads a nested `<Text testID="guide">`; `text:word` reads the first character
+of that match. Scope queries with `id:note >> text:word` and select repeated matches with `>> nth=0`.
+The query reports an error for a missing, ambiguous or empty span. Updating a span’s `testID` reuses its text
+layout and preserves the `onTextLayout` callback count.
 
 ### What headless runs play of the platform
 

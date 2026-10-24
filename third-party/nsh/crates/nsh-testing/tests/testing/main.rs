@@ -272,3 +272,11 @@ fn a_test_plays_the_embedding_app() {
     assert!(failed.is_empty(), "{failed:#?}");
     assert_eq!(results.len(), 4);
 }
+
+#[test]
+fn span_styles_follow_id_updates_and_reject_empty_spans() {
+    let file = todo().parent().unwrap().join("queries/Spans.test.tsx");
+    let results = run_file(&test_run(None), &file, &mut |_| {}).unwrap();
+    assert_eq!(results.len(), 1);
+    assert!(results[0].failure.is_none(), "{:?}", results[0]);
+}

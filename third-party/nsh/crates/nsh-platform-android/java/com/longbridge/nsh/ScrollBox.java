@@ -1,5 +1,6 @@
 package com.longbridge.nsh;
 
+import android.animation.ValueAnimator;
 import android.annotation.SuppressLint;
 import android.content.Context;
 import android.graphics.Canvas;
@@ -435,15 +436,25 @@ final class ScrollBox extends FrameLayout implements Node {
      * keyboard). `requestRectangleOnScreen` cannot: ScrollView ignores its
      * padding when it decides whether a rectangle is visible.
      */
-    void reveal(View v, int margin) {
+    /**
+     * Scrolls {@code v} (and {@code margin} px around it) into view, over
+     * {@code motion}: an animator from 0 to 1 the caller starts. False when
+     * there is nothing to scroll (the animator is left alone).
+     */
+    boolean reveal(View v, int margin, ValueAnimator motion) {
         Rect r = new Rect(0, -margin, v.getWidth(), v.getHeight() + margin);
         scroller.offsetDescendantRectToMyCoords(v, r);
         int top = scroller.getScrollY();
         int bottom = top + scroller.getHeight() - scroller.getPaddingBottom();
         int dy = r.bottom > bottom ? Math.min(r.bottom - bottom, r.top - top) : Math.min(0, r.top - top);
-        if (dy == 0) return;
-        if (scroller instanceof ScrollView) ((ScrollView) scroller).smoothScrollBy(0, dy);
-        else scroller.scrollBy(0, dy);
+        if (dy == 0) return false;
+        if (!(scroller instanceof ScrollView)) {
+            scroller.scrollBy(0, dy);
+            return false;
+        }
+        int x = scroller.getScrollX();
+        motion.addUpdateListener(a -> scroller.scrollTo(x, top + Math.round(dy * (float) a.getAnimatedValue())));
+        return true;
     }
 
     /** Scrolls the core asked for that were applied (reported with offsets). */

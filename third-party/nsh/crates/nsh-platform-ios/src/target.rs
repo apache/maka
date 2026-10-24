@@ -269,6 +269,12 @@ define_class!(
             a: &UIGestureRecognizer,
             b: &UIGestureRecognizer,
         ) -> bool {
+            if let Ok(m) = self.ivars().mounter.get(self.mtm()).try_borrow()
+                && let Some(m) = m.as_ref()
+                && (m.pan_shares_scroll(a, b) || m.pan_shares_scroll(b, a))
+            {
+                return true.into();
+            }
             let transform = |r: &UIGestureRecognizer| {
                 r.isKindOfClass(UIPanGestureRecognizer::class())
                     || r.isKindOfClass(UIPinchGestureRecognizer::class())
@@ -291,6 +297,13 @@ define_class!(
         /// keyboard (`keyboardShouldPersistTaps`).
         #[unsafe(method(gestureRecognizer:shouldReceiveTouch:))]
         fn should_receive_touch(&self, recognizer: &UIGestureRecognizer, touch: &UITouch) -> bool {
+            if recognizer.isKindOfClass(UIPanGestureRecognizer::class())
+                && let (Some(view), Some(touched)) = (recognizer.view(), touch.view())
+                && let Ok(mut m) = self.ivars().mounter.get(self.mtm()).try_borrow_mut()
+                && let Some(m) = m.as_mut()
+            {
+                m.pan_touch(view.tag() as NodeId, &touched);
+            }
             !recognizer.isKindOfClass(UITapGestureRecognizer::class())
                 || self.tap_dismisses_keyboard(touch)
         }
@@ -304,6 +317,15 @@ define_class!(
             }
             let id = scroll.tag() as NodeId;
             let offset = scroll.contentOffset();
+            if let Ok(m) = self.ivars().mounter.get(self.mtm()).try_borrow()
+                && let Some(m) = m.as_ref()
+            {
+                let clamped = m.pan_scroll_offset(scroll, offset);
+                if clamped != offset {
+                    scroll.setContentOffset(clamped);
+                    return;
+                }
+            }
             // Lists need offsets to pick rows; the engine coalesces them.
             let applied = self.ivars().scrolls_applied.borrow().get(&id).copied().unwrap_or(0);
             self.ivars()
@@ -380,7 +402,10 @@ define_class!(
             let proposed = unsafe { target.read() };
             let snapped = match self.ivars().mounter.get(self.mtm()).try_borrow() {
                 // UIKit's velocity is in points per millisecond.
-                Ok(m) => m.as_ref().and_then(|m| m.snap_target(id, velocity, proposed)),
+                Ok(m) => m.as_ref().and_then(|m| {
+                    let clamped = m.pan_scroll_offset(scroll, proposed);
+                    if clamped != proposed { Some(clamped) } else { m.snap_target(id, velocity, proposed) }
+                }),
                 Err(_) => None,
             };
             if let Some(p) = snapped {

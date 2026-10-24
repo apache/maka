@@ -50,6 +50,7 @@ expect Snapping diffClamp: true true true
 expect Composite: function/function/function
 expect Preset duration: 300
 expect Created: 250 linear opacity
+expect Keyboard: keyboard
 frame id:faded 0 302 40 40
 frame id:box 0 359 50 20
 tap id:grow

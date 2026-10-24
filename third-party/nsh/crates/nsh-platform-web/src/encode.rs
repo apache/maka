@@ -884,7 +884,7 @@ fn transition_json(t: &Option<LayoutTransition>) -> String {
                 LayoutCurve::Linear => "linear".to_owned(),
                 LayoutCurve::EaseIn => "ease-in".to_owned(),
                 LayoutCurve::EaseOut => "ease-out".to_owned(),
-                LayoutCurve::EaseInEaseOut => "ease-in-out".to_owned(),
+                LayoutCurve::EaseInEaseOut | LayoutCurve::Keyboard => "ease-in-out".to_owned(),
                 LayoutCurve::Spring { damping } => spring_easing(damping),
             };
             format!(
