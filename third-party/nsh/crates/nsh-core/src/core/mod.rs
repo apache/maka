@@ -3093,6 +3093,8 @@ impl<M: TextEngine> Core<M> {
                     .and_then(|p| p.list.as_mut())
                 {
                     list.rendered(key, index);
+                    // Parent cells contribute to the outer reader's source index.
+                    self.reading_dirty |= list.parent;
                 }
             }
             Prop::PanValues(x, y) => {
