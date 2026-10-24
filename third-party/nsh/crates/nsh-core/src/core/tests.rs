@@ -18381,6 +18381,18 @@ fn a_page_list_with_no_scroll_view_around_it_renders_for_the_screen() {
 #[test]
 fn a_page_list_in_a_cell_of_a_list_follows_that_list() {
     let mut c = core();
+    // Apply only the actual native outputs, preserving pending Core receipts
+    // until the existing user reports (and the explicit ACKs below).
+    let native_y = std::cell::Cell::new(0.0f32);
+    let applied = std::cell::Cell::new(0u32);
+    let commit = |c: &mut Core<FakeEngine>| {
+        let batch = c.commit();
+        if let Some(batch) = &batch {
+            native_y.set(scrolled(batch, native_y.get()));
+            applied.set(applied.get() + page_scrolls(batch).len() as u32);
+        }
+        batch
+    };
     // An outer list of its own (400 tall) with one row: a list in its
     // parent's viewport, below a 100 pt header in the row.
     apply(
@@ -18402,7 +18414,7 @@ fn a_page_list_in_a_cell_of_a_list_follows_that_list() {
             },
         ],
     );
-    c.commit();
+    commit(&mut c);
     let mut binds = Vec::new();
     c.take_list_binds(&mut binds);
     assert_eq!(binds[0].binds, [(0, 0)]);
@@ -18474,7 +18486,7 @@ fn a_page_list_in_a_cell_of_a_list_follows_that_list() {
             },
         ],
     );
-    let batch = c.commit().unwrap();
+    let batch = commit(&mut c).unwrap();
     // The outer row is as tall as the header and the list.
     assert_eq!(scroll_content(&batch, 2), Some(5100.0));
     assert_eq!(bound_items(&c, 4), (0..=14).collect::<Vec<_>>());
@@ -18489,8 +18501,9 @@ fn a_page_list_in_a_cell_of_a_list_follows_that_list() {
         1
     );
     // The outer list scrolls 2100: 2000 into the inner one.
+    native_y.set(2100.0);
     c.set_scroll_offset(2, point(px(0.0), px(2100.0)), u32::MAX);
-    c.commit();
+    commit(&mut c);
     assert_eq!(bound_items(&c, 4), (32..=56).collect::<Vec<_>>());
 
     // Text in a parent-viewport list contributes to the enclosing List's
@@ -18529,10 +18542,10 @@ fn a_page_list_in_a_cell_of_a_list_follows_that_list() {
             },
         ],
     );
-    c.commit();
+    commit(&mut c);
     c.apply(style_op(3, &[("height", StyleValue::Number(120.0))]))
         .unwrap();
-    assert_eq!(page_scrolls(&c.commit().unwrap()), [(false, 20.0)]);
+    assert_eq!(page_scrolls(&commit(&mut c).unwrap()), [(false, 20.0)]);
     // A parent-list measurement forwards its own above-viewport correction
     // to the same owner. The next layout round must not count it again.
     let previous_row = cells[bound_slot(&c, 4, 39) as usize];
@@ -18541,7 +18554,7 @@ fn a_page_list_in_a_cell_of_a_list_follows_that_list() {
         &[("height", StyleValue::Number(70.0))],
     ))
     .unwrap();
-    assert_eq!(page_scrolls(&c.commit().unwrap()), [(false, 20.0)]);
+    assert_eq!(page_scrolls(&commit(&mut c).unwrap()), [(false, 20.0)]);
     c.apply(Op::Command {
         id: 4,
         command: Command::ScrollToIndex {
@@ -18553,11 +18566,8 @@ fn a_page_list_in_a_cell_of_a_list_follows_that_list() {
         },
     })
     .unwrap();
-    assert_eq!(page_scrolls(&c.commit().unwrap()), [(true, 2290.0)]);
-    assert!(
-        c.commit()
-            .is_none_or(|batch| page_scrolls(&batch).is_empty())
-    );
+    assert_eq!(page_scrolls(&commit(&mut c).unwrap()), [(true, 2290.0)]);
+    assert!(commit(&mut c).is_none_or(|batch| page_scrolls(&batch).is_empty()));
 
     // At the end, the child's estimates shrink above the viewport while
     // its last row grows more. The owner follows the total size change,
@@ -18572,9 +18582,9 @@ fn a_page_list_in_a_cell_of_a_list_follows_that_list() {
         command: Command::ScrollToEnd { animated: false },
     })
     .unwrap();
-    c.commit();
+    commit(&mut c);
     render_binds(&mut c, &mut next_id, &mut cells, 50.0);
-    c.commit();
+    commit(&mut c);
     assert_eq!(c.nodes[key as usize].list.as_ref().unwrap().offset, 4740.0);
     let above = cells[bound_slot(&c, 4, 90) as usize];
     let last = cells[bound_slot(&c, 4, 99) as usize];
@@ -18582,7 +18592,7 @@ fn a_page_list_in_a_cell_of_a_list_follows_that_list() {
         .unwrap();
     c.apply(style_op(last, &[("height", StyleValue::Number(150.0))]))
         .unwrap();
-    let batch = c.commit().unwrap();
+    let batch = commit(&mut c).unwrap();
     assert_eq!(scroll_content(&batch, 2), Some(5200.0));
     assert_eq!(c.nodes[key as usize].list.as_ref().unwrap().offset, 4800.0);
     assert_eq!(
@@ -18593,17 +18603,15 @@ fn a_page_list_in_a_cell_of_a_list_follows_that_list() {
             .sum::<f32>(),
         60.0
     );
-    assert!(
-        c.commit()
-            .is_none_or(|batch| page_scrolls(&batch).is_empty())
-    );
+    assert!(commit(&mut c).is_none_or(|batch| page_scrolls(&batch).is_empty()));
 
     // The same measurements while reading above the end preserve the
     // source glyph's position, rather than pulling the reader to the tail.
+    native_y.set(2120.0);
     c.set_scroll_offset(2, point(px(0.0), px(2120.0)), u32::MAX);
-    c.commit();
+    commit(&mut c);
     render_binds(&mut c, &mut next_id, &mut cells, 50.0);
-    c.commit();
+    commit(&mut c);
     let point = crate::text_source::SourcePoint {
         id: "page/item-40".into(),
         byte: 0,
@@ -18619,7 +18627,7 @@ fn a_page_list_in_a_cell_of_a_list_follows_that_list() {
         .unwrap();
     c.apply(style_op(below, &[("height", StyleValue::Number(150.0))]))
         .unwrap();
-    let batch = c.commit().unwrap();
+    let batch = commit(&mut c).unwrap();
     assert_eq!(
         page_scrolls(&batch)
             .iter()
@@ -18635,6 +18643,101 @@ fn a_page_list_in_a_cell_of_a_list_follows_that_list() {
         20.0
     );
 
+    // A real native receipt finishes the existing correction before the
+    // next reflow; its offset/count come only from actual By/To outputs.
+    assert_eq!(native_y.get(), 2080.0);
+    c.set_scroll_offset(
+        2,
+        crate::geometry::point(px(0.0), px(native_y.get())),
+        applied.get(),
+    );
+    assert!(
+        commit(&mut c).is_none_or(|batch| page_scrolls(&batch).is_empty()),
+        "acknowledging the settled reader must not move it"
+    );
+    assert!(c.nodes[key as usize].list.as_ref().unwrap().settled());
+
+    // These already-bound rows straddle the viewport. Their opposite
+    // changes move the same glyph by 20pt without changing content length.
+    let before_len = c.nodes[key as usize].list.as_ref().unwrap().content_len();
+    let previous_row = cells[bound_slot(&c, 4, 39) as usize];
+    let later_row = cells[bound_slot(&c, 4, 45) as usize];
+    c.apply(style_op(
+        previous_row,
+        &[("height", StyleValue::Number(90.0))],
+    ))
+    .unwrap();
+    c.apply(style_op(
+        later_row,
+        &[("height", StyleValue::Number(130.0))],
+    ))
+    .unwrap();
+    let batch = commit(&mut c).unwrap();
+    // A wheel capture uses the cached line index, while its next source
+    // correction resolves the ready provider. Both must mean the same y.
+    let (captured, cached_y) = {
+        let owner = c.nodes[key as usize].list.as_ref().unwrap();
+        owner
+            .source_geometry
+            .first_visible(owner.offset, owner.offset + owner.viewport)
+            .unwrap()
+    };
+    assert_eq!(captured, point);
+    assert_eq!(
+        c.reading_position(key, &captured),
+        crate::text_source::SourcePosition::Ready(cached_y),
+        "cached wheel capture and the ready provider disagree at native offset {}",
+        native_y.get()
+    );
+
+    assert_eq!(page_scrolls(&batch), [(false, 20.0)]);
+    assert_eq!(
+        c.nodes[key as usize].list.as_ref().unwrap().content_len(),
+        before_len
+    );
+    assert_eq!(native_y.get(), 2100.0);
+    c.set_scroll_offset(
+        2,
+        crate::geometry::point(px(0.0), px(native_y.get())),
+        applied.get(),
+    );
+    assert!(
+        commit(&mut c).is_none_or(|batch| page_scrolls(&batch).is_empty()),
+        "the one layout correction must not repeat after its receipt"
+    );
+    assert!(c.nodes[key as usize].list.as_ref().unwrap().settled());
+
+    let before_wheel = native_y.get();
+    for step in 1..=4 {
+        native_y.set(native_y.get() - 48.0);
+        c.set_scroll_offset(
+            2,
+            crate::geometry::point(px(0.0), px(native_y.get())),
+            applied.get(),
+        );
+        let batch = commit(&mut c);
+        let scrolls = batch.as_ref().map(page_scrolls).unwrap_or_default();
+        assert!(
+            scrolls.is_empty(),
+            "wheel {step} was undone by another layout/source correction: {scrolls:?}"
+        );
+        let owner = c.nodes[key as usize].list.as_ref().unwrap();
+        assert_eq!(owner.offset, native_y.get());
+        assert_eq!(owner.reading_point(), Some(&point));
+        let (captured, cached_y) = owner
+            .source_geometry
+            .first_visible(owner.offset, owner.offset + owner.viewport)
+            .unwrap();
+        assert_eq!(captured, point);
+        assert_eq!(cached_y - native_y.get(), 20.0 + step as f32 * 48.0);
+        assert_eq!(
+            c.reading_position(key, &captured),
+            crate::text_source::SourcePosition::Ready(cached_y),
+            "wheel {step}: cached capture and the ready provider disagree"
+        );
+    }
+    assert_eq!(native_y.get(), before_wheel - 192.0);
+
     // Released, the outer list leaves the inner one without a view.
     c.apply(Op::Remove {
         parent: ROOT_ID,
@@ -18642,7 +18745,7 @@ fn a_page_list_in_a_cell_of_a_list_follows_that_list() {
     })
     .unwrap();
     c.apply(Op::Release { id: 2 }).unwrap();
-    c.commit();
+    commit(&mut c);
     let key = c.key(4).unwrap();
     assert_eq!(c.nodes[key as usize].list.as_ref().unwrap().outer, None);
 }
