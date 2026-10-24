@@ -484,6 +484,11 @@ impl Mounter {
                     crate::text_input::set_selection(view, *start, *end);
                 }
             }
+            Command::ReplaceRange { .. } => {
+                if let Some(view) = view {
+                    crate::text_input::replace_range(surface, view, command);
+                }
+            }
             Command::ScrollTo { .. }
             | Command::ScrollToEnd { .. }
             | Command::ScrollToIndex { .. }

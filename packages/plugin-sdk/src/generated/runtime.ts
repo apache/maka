@@ -303,6 +303,8 @@ export type RuntimeProtocol =
   | ContextBucket
   | ContextCounts
   | AgentFileListRead
+  | AgentFileCandidatesRead
+  | AgentFileCandidates
   | AgentFileWatch
   | AgentFileCursor
   | AgentFilePage
@@ -8275,6 +8277,9 @@ export interface SkillLibrarySetPreference {
 }
 export interface SkillModelSearch {
   query: string;
+  /**
+   * Omission returns the complete matching catalog.
+   */
   limit?: number | null;
 }
 export interface SkillModelLoad {
@@ -9306,6 +9311,31 @@ export interface AgentFileCursor {
   directoryIdentity: string;
   after: WorkspacePath;
 }
+/**
+ * Workspace-relative file suggestions from this Session's admitted directory.
+ */
+export interface AgentFileCandidatesRead {
+  sessionId: string;
+  /**
+   * Omission or null selects the workspace root.
+   */
+  directory?: WorkspacePath | null;
+  /**
+   * Empty or whitespace browses the selected directory's direct files and directories.
+   * Otherwise, searches file paths within that directory's descendants.
+   */
+  query: string;
+}
+/**
+ * An emitted batch of path observations; null final completion ends the subscription.
+ */
+export interface AgentFileCandidates {
+  entries: AgentFileEntry[];
+}
+export interface AgentFileEntry {
+  path: WorkspacePath;
+  kind: AgentFileKind;
+}
 export interface AgentFileWatch {
   sessionId: string;
   path: WorkspacePath | null;
@@ -9314,10 +9344,6 @@ export interface AgentFilePage {
   directoryIdentity: string;
   entries: AgentFileEntry[];
   next: AgentFileCursor | null;
-}
-export interface AgentFileEntry {
-  path: WorkspacePath;
-  kind: AgentFileKind;
 }
 export interface GitStatusEntry {
   area: GitArea;

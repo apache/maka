@@ -419,6 +419,11 @@ export interface ServiceMethods {
       input: Runtime.AgentExecutorsRead;
       output: Runtime.AgentExecutors;
     };
+    fileCandidates: {
+      mode: 'subscription';
+      input: Runtime.AgentFileCandidatesRead;
+      output: Runtime.AgentFileCandidates | null;
+    };
     fork: {
       mode: 'mutation';
       input: Runtime.AgentFork;

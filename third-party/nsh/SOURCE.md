@@ -61,6 +61,13 @@ OSC 777 `nsh-text-input` extension; a matching terminal-side IME producer must
 supply the composition snapshots. These local adaptations do not establish
 stock-terminal support or end-to-end OS IME validation.
 
+The GPUI and terminal backends also implement node-scoped `Input.replaceRange`
+for completion edits. The command checks the observed native edit count,
+original text and UTF-16 selection before replacing a range in one undoable
+edit; it does not simulate IME or clipboard input. Other backends retain their
+existing unsupported-command behavior. These changes are local adaptations,
+not changes to the recorded upstream import baseline.
+
 Maka's workspace uses these local crates, including NSH's offscreen renderer and
 image codec; changing them here changes the code built and tested with Maka.
 

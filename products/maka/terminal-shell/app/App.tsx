@@ -38,7 +38,7 @@ import { Composer } from './Composer';
 import { Conversation } from './Conversation';
 import type { Control, ConversationHandle } from './Conversation';
 import { Palette } from './Palette';
-import type { PaletteEntry } from './Palette';
+import type { CommandEntry, ComposerCommand } from './composerCommands';
 import { WorkspacePicker } from './WorkspacePicker';
 import { ModelSelect } from './ModelSelect';
 import { ModelSettings } from './ModelSettings';
@@ -64,7 +64,7 @@ type OverlayTarget = {
   | { kind: 'settings'; model?: ModelSelection }
 );
 type Overlay = OverlayTarget & { instance: number };
-type CommandContext = { instance: number; sessionId: string | null };
+type CommandContext = { instance: number | null; sessionId: string | null };
 function App() {
   initializeUiScale();
   const browsing = createBrowsing();
@@ -374,7 +374,7 @@ function App() {
     alive &&
     selected() === context.sessionId &&
     (context.sessionId === null || handle()?.sessionId === context.sessionId) &&
-    closeOverlay(context.instance);
+    (context.instance === null ? overlay() === null : closeOverlay(context.instance));
   const commandSessions = (context: CommandContext) => {
     if (closeCommand(context)) open({ kind: 'sessions', sessionId: context.sessionId });
   };
@@ -421,11 +421,24 @@ function App() {
   const commandResetScale = (context: CommandContext) => {
     if (closeCommand(context)) void uiScale.resetAndSave();
   };
-  const commands = (context: CommandContext): PaletteEntry[] => [
+  const commandCompact = async (context: CommandContext, prompt?: string) => {
+    if (!closeCommand(context)) return false;
+    const owner = handle();
+    if (!owner) return false;
+    try {
+      await owner.compact(prompt);
+      return true;
+    } catch (reason) {
+      report(reason);
+      return false;
+    }
+  };
+  const commands = (context: CommandContext): CommandEntry[] => [
     ...(uiScale.supported
       ? [
           {
             id: 'interface-scale-reset',
+            trigger: 'reset-scale',
             title: tr('Reset interface scale to 100%'),
             detail: tr('Interface scale'),
             hint: 'Ctrl+Alt+0',
@@ -435,6 +448,7 @@ function App() {
       : []),
     {
       id: 'sessions',
+      trigger: 'resume',
       title: tr('Sessions'),
       detail: tr('Resume a conversation'),
       hint: 'Ctrl+O',
@@ -442,6 +456,7 @@ function App() {
     },
     {
       id: 'new',
+      trigger: 'new',
       title: tr('New conversation'),
       detail: tr('A fresh start in your workspace'),
       hint: 'Ctrl+N',
@@ -449,12 +464,14 @@ function App() {
     },
     {
       id: 'workspace',
+      trigger: 'workspace',
       title: tr('Choose workspace'),
       detail: tr('Start a conversation in another folder'),
       run: inputAction(commandWorkspace, context),
     },
     {
       id: 'models',
+      trigger: 'model',
       title: tr('Models'),
       detail: tr('Choose the model for this conversation'),
       hint: 'Ctrl+G',
@@ -462,6 +479,7 @@ function App() {
     },
     {
       id: 'settings',
+      trigger: 'settings',
       title: tr('Connections & models'),
       detail: tr('Add connections, API keys and models'),
       run: inputAction(commandSettings, context),
@@ -470,14 +488,28 @@ function App() {
       ? [
           {
             id: 'files',
+            trigger: 'files',
             title: tr('Files'),
             detail: tr('Browse workspace files and current changes'),
             run: inputAction(commandFiles, context),
           },
         ]
       : []),
+    ...(context.sessionId
+      ? [
+          {
+            id: 'compact',
+            trigger: 'compact',
+            title: tr('Compact conversation'),
+            detail: tr('Summarize context for the next request'),
+            takesArgument: true,
+            run: (prompt?: string) => commandCompact(context, prompt),
+          },
+        ]
+      : []),
     {
       id: 'latest',
+      trigger: 'latest',
       title: tr('Jump to latest'),
       detail: tr('Return to the newest messages'),
       run: inputAction(commandLatest, {
@@ -488,6 +520,7 @@ function App() {
     },
     {
       id: 'history-focus',
+      trigger: 'history',
       title: tr('Focus conversation'),
       detail: tr('Scroll the whole conversation'),
       hint: 'Alt+↑',
@@ -495,6 +528,7 @@ function App() {
     },
     {
       id: 'activity-focus',
+      trigger: 'activity',
       title: tr('Focus activity'),
       detail: tr('Read this turn’s independent activity panel'),
       hint: 'Alt+↓',
@@ -506,6 +540,7 @@ function App() {
     },
     {
       id: 'stop',
+      trigger: 'stop',
       title: tr('Stop'),
       detail: tr('Cancel the current run'),
       hint: 'Esc',
@@ -730,6 +765,7 @@ function App() {
           )}
         </Each>
         <Composer
+          active={() => overlay() === null}
           session={handle}
           stopAction={stopAction}
           request={
@@ -836,7 +872,11 @@ function App() {
           attach={(node) => {
             editor = node;
           }}
-          commands={({ sessionId }) => open({ kind: 'commands', sessionId })}
+          commands={() =>
+            commands({ instance: null, sessionId: selected() }).filter(
+              (command): command is ComposerCommand => command.trigger !== undefined,
+            )
+          }
           models={
             <Each<ConversationHandle>
               of={handle() ? [handle()!] : []}

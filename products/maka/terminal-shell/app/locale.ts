@@ -18,6 +18,7 @@
  */
 
 import { signal } from 'nsh';
+import { composerMessages } from './locale-composer';
 import type { DisplayText, LanguagePreference } from '../../../../packages/plugin-sdk/src/index.js';
 import { createCopy, languageIndex, resolveLocale } from '../../../../plugins/shared/locale.js';
 import { host as nativeHost } from 'maka/host';
@@ -32,6 +33,7 @@ let observedRevision = -1;
 const copy = createCopy({
   ...commonMessages,
   ...conversationMessages,
+  ...composerMessages,
   ...settingsMessages,
   ...workspaceMessages,
 });

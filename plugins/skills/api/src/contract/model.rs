@@ -33,7 +33,8 @@ pub struct SkillToolRequest<T> {
 #[schemars(rename = "SkillModelSearch")]
 pub struct ModelSearch {
     pub query: String,
-    #[schemars(range(min = 1, max = 8))]
+    /// Omission returns the complete matching catalog.
+    #[schemars(range(min = 1))]
     pub limit: Option<usize>,
 }
 #[derive(Deserialize, Serialize, JsonSchema)]

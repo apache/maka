@@ -179,6 +179,44 @@ pub(crate) fn decode_command<'js>(
                 end: field("end"),
             }
         }
+        "replaceRange" => {
+            let cx = arg.ctx();
+            let object = arg.as_object().ok_or_else(|| {
+                Exception::throw_type(cx, "replaceRange: expected an edit object")
+            })?;
+            let offset = |object: &Object<'js>, key: &str| -> rquickjs::Result<u32> {
+                let number = object.get::<_, Value>(key)?.as_number().ok_or_else(|| {
+                    Exception::throw_type(cx, "replaceRange: expected a UTF-16 offset")
+                })?;
+                if !number.is_finite()
+                    || number < 0.0
+                    || number.fract() != 0.0
+                    || number > f64::from(u32::MAX)
+                {
+                    return Err(Exception::throw_type(
+                        cx,
+                        "replaceRange: offsets must be nonnegative UTF-16 integers",
+                    ));
+                }
+                Ok(number as u32)
+            };
+            let range = offset(object, "start")?..offset(object, "end")?;
+            let selection = object.get::<_, Object>("expectedSelection")?;
+            let expected_selection = offset(&selection, "start")?..offset(&selection, "end")?;
+            if range.start > range.end || expected_selection.start > expected_selection.end {
+                return Err(Exception::throw_type(
+                    cx,
+                    "replaceRange: range start must not exceed its end",
+                ));
+            }
+            Command::ReplaceRange {
+                range,
+                text: object.get("text")?,
+                expected_text: object.get("expectedText")?,
+                expected_selection,
+                count: 0,
+            }
+        }
         "scrollToIndex" => {
             let o = arg.as_object();
             let f = |key: &str| -> rquickjs::Result<Option<f32>> {

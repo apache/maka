@@ -252,6 +252,11 @@ misses the deadline is not waited for again until it catches up (`docs/dev/macos
   While an input method composes, a `value` is held natively and applied when the composition ends, if no edit came
   after it: setting a field's text ends its composition on every platform, so an app that uppercases or filters its
   value would otherwise commit the pinyin as typed (#170).
+- **Completion edits**: on GPUI and terminal, `ref.replaceRange({ start, end, text, expectedText, expectedSelection })`
+  replaces one UTF-16 range through the native editor, retaining its undo history and original caret in a single
+  undo step. The focused editable input must still hold `expectedText` and the exact `{ start, end }` selection;
+  a newer native edit or an active IME composition rejects the operation. Completion code waits for `onChange`,
+  rather than replacing the whole controlled value itself. The replacement is literal, including multiline line breaks.
 - **Caret**: `onCaretMove` reports where the caret is, for what opens at it (an `@` mention's suggestions):
   `bounds`, a `Bounds` in the input (its border box: padding, border and the input's own scrolling applied), as wide
   as the platform draws the caret and as tall as its line, at the selection's `end` (on Windows, GPUI and Linux,

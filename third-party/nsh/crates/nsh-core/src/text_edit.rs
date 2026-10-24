@@ -226,6 +226,46 @@ impl Model {
         Some(fit.to_owned())
     }
 
+    /// Replaces a byte range as one undo step, retaining the original
+    /// selection in that step. Invalid ranges and active compositions are
+    /// unchanged; text is literal, subject only to the mounted length policy.
+    pub fn replace_range(
+        &mut self,
+        range: std::ops::Range<usize>,
+        text: &str,
+        max_len: Option<u32>,
+    ) -> bool {
+        if self.composition.is_some()
+            || range.start > range.end
+            || range.end > self.text.len()
+            || !self.text.is_char_boundary(range.start)
+            || !self.text.is_char_boundary(range.end)
+            || caret_boundary(&self.text, range.start) != range.start
+            || caret_boundary(&self.text, range.end) != range.end
+        {
+            return false;
+        }
+        let kept = utf16_len(&self.text[..range.start]) + utf16_len(&self.text[range.end..]);
+        let fit = max_len.map_or(text, |max| {
+            clip_utf16(text, (max as usize).saturating_sub(kept))
+        });
+        let fit = &text[..caret_boundary(text, fit.len())];
+        if !text.is_empty() && fit.is_empty() {
+            return false;
+        }
+        if self.text[range.clone()] == *fit {
+            let caret = after_caret_boundary(&self.text, range.start + fit.len());
+            self.select(caret, caret);
+            return false;
+        }
+        self.record(EditKind::Other);
+        let caret = range.start + fit.len();
+        self.text.replace_range(range, fit);
+        self.caret = after_caret_boundary(&self.text, caret);
+        self.anchor = self.caret;
+        true
+    }
+
     /// Deletes the selection, or `unit` before (`forward == false`) or
     /// after the caret. True when something was deleted.
     pub fn delete(&mut self, unit: Unit, forward: bool) -> bool {
@@ -775,6 +815,30 @@ mod tests {
         m.insert("pasted", None);
         m.undo();
         assert_eq!(m.text(), "ac");
+
+        let mut m = model("pre😀 /s tail");
+        m.select(10, 10);
+        m.insert("k", None);
+        assert_eq!(m.text(), "pre😀 /sk tail");
+        assert!(m.replace_range(8..11, "skill\nname", None));
+        assert_eq!(m.text(), "pre😀 skill\nname tail");
+        assert_eq!(m.selection(), (18, 18));
+        assert!(m.undo());
+        assert_eq!(m.text(), "pre😀 /sk tail");
+        assert_eq!(m.selection(), (11, 11));
+        assert!(m.undo());
+        assert_eq!(m.text(), "pre😀 /s tail");
+        assert_eq!(m.selection(), (10, 10));
+        assert!(m.redo());
+        assert!(m.redo());
+        assert_eq!(m.text(), "pre😀 skill\nname tail");
+        assert_eq!(m.selection(), (18, 18));
+        assert!(!m.replace_range(4..8, "split", None));
+        assert_eq!(m.text(), "pre😀 skill\nname tail");
+        m.composition = Some(Composition::new("ni".into(), 2, None));
+        assert!(!m.replace_range(8..13, "must not cancel", None));
+        assert_eq!(m.text(), "pre😀 skill\nname tail");
+        assert_eq!(m.composition.as_ref().unwrap().text, "ni");
     }
 
     #[test]

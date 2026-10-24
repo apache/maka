@@ -147,22 +147,12 @@ export function Header(props: {
         onPress={props.commands}
         accessibilityLabel={tr('Open commands')}
         tooltip={tr('Commands · Ctrl+P')}
-        style={{
-          ...controlStyle,
-          ...(platform.isTerminal
-            ? {}
-            : { width: 32, paddingHorizontal: 8, alignItems: 'center' as const }),
-        }}
+        style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
         hoverStyle={{ backgroundColor: C.surface }}
         focusStyle={{ backgroundColor: C.raised }}
         activeStyle={{ backgroundColor: C.line }}
       >
-        <If when={platform.isTerminal} else={<Icon name="terminal" color={C.secondary} />}>
-          <View pointerEvents="none" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-            <Text style={{ color: C.secondary, fontSize: 13 }}>{tr('Commands')}</Text>
-            <Text style={{ color: C.muted, fontSize: 11 }}>Ctrl+P</Text>
-          </View>
-        </If>
+        <Icon name="command" color={C.secondary} />
       </Button>
       <Text numberOfLines={1} style={{ color: C.text, flex: 1, minWidth: 0, fontWeight: '500' }}>
         {props.title}

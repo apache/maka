@@ -35,6 +35,8 @@ import type { SessionPermissions } from './sessionPermissions';
 import type { BackendIdentity, ModelDetails } from './modelSelection';
 import { C, bodyTextStyle, compact, controlStyle } from './ui';
 import { Icon } from './Icon';
+import { ComposerCompletion, createComposerCompletion } from './ComposerCompletion';
+import type { ComposerCommand } from './composerCommands';
 import logo from './assets/maka.png';
 
 export type SendAction = {
@@ -80,19 +82,27 @@ export type ComposerSession = {
 export function Composer(props: {
   session(): ComposerSession | null;
   attach(node: YNode): void;
-  commands(target: { sessionId: string | null }): void;
+  commands(): ComposerCommand[];
+  active(): boolean;
   models: JSX.Element;
   request: JSX.Element;
   stopAction(): () => void;
   chooseWorkspace(): void;
   settings(): void;
 }) {
+  const completion = createComposerCompletion({
+    session: props.session,
+    commands: props.commands,
+    active: props.active,
+  });
   const hero = () => props.session() === null || props.session()!.empty();
   const blocked = () => props.session()?.blockedReason() ?? '';
   const cannotSend = () =>
     props.session() === null ||
-    !!blocked() ||
-    (!props.session()?.draft().trim() && !props.session()?.attachments.files().length);
+    !props.session()?.editable() ||
+    (!completion.isCommand() &&
+      (!!blocked() ||
+        (!props.session()?.draft().trim() && !props.session()?.attachments.files().length)));
   const sendLabel = () =>
     props.session()?.invocation() != null ? tr('Queue message') : tr('Send message');
   const primaryStops = () => props.session()?.invocation() != null && cannotSend();
@@ -330,6 +340,7 @@ export function Composer(props: {
                       ref={(node) => {
                         editor = node;
                         props.attach(node);
+                        completion.attach(owner?.sessionId ?? null, node);
                       }}
                       testID="message"
                       accessibilityLabel={tr('Message composer')}
@@ -339,8 +350,15 @@ export function Composer(props: {
                       submitBehavior="submit"
                       value={owner?.draft() ?? ''}
                       readonly={!owner?.editable()}
-                      onChange={owner?.changeDraft}
-                      onSubmit={owner?.submit}
+                      onChange={owner ? (text) => completion.change(owner, text) : undefined}
+                      onSelectionChange={
+                        owner ? (event) => completion.selection(owner, event) : undefined
+                      }
+                      onCaretMove={owner ? (event) => completion.caret(owner, event) : undefined}
+                      onCompositionChange={
+                        owner ? (event) => completion.composition(owner, event) : undefined
+                      }
+                      onSubmit={owner ? (event) => completion.submit(owner, event) : undefined}
                       placeholder={
                         owner ? tr('Message or run a task…') : tr('Choose a workspace to begin…')
                       }
@@ -362,11 +380,12 @@ export function Composer(props: {
             style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}
           >
             <Button
-              onPress={inputAction(props.commands, {
+              onPress={inputAction(completion.toggleAdd, {
                 sessionId: props.session()?.sessionId ?? null,
               })}
-              accessibilityLabel={tr('Open commands')}
-              tooltip={tr('Commands · Ctrl+P')}
+              accessibilityLabel={tr('Add to message')}
+              tooltip={tr('Add to message')}
+              disabled={!props.session()?.editable() || completion.composing()}
               style={{
                 width: 32,
                 height: 32,
@@ -378,31 +397,8 @@ export function Composer(props: {
               focusStyle={{ backgroundColor: C.line }}
               activeStyle={{ backgroundColor: C.surface }}
             >
-              <Icon name="terminal" color={C.secondary} />
+              <Icon name="plus" color={C.secondary} />
             </Button>
-            <If when={props.session() !== null}>
-              <Button
-                accessibilityLabel={tr('Attach files')}
-                tooltip={tr('Attach files · Ctrl+U')}
-                disabled={props.session()!.attachments.restoring()}
-                onPress={inputAction(props.session()!.attachments.open, {
-                  owner: props.session()!.sessionId,
-                  value: !props.session()!.attachments.picker(),
-                })}
-                style={{
-                  width: 32,
-                  height: 32,
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  borderRadius: 16,
-                }}
-                hoverStyle={{ backgroundColor: C.line }}
-                focusStyle={{ backgroundColor: C.line }}
-                activeStyle={{ backgroundColor: C.surface }}
-              >
-                <Icon name="paperclip" color={C.secondary} />
-              </Button>
-            </If>
             <SessionPermissionsSelect owner={props.session()?.permissions ?? null} />
             <If when={props.session() !== null}>
               <View pointerEvents="box-none" style={{ flex: 1, minWidth: 0 }}>
@@ -420,7 +416,7 @@ export function Composer(props: {
                 primaryStops()
                   ? inputAction(props.session()!.stop, props.session()!.invocation())
                   : props.session()
-                    ? inputAction(props.session()!.sendRendered, {
+                    ? inputAction(completion.send, {
                         owner: props.session()!.sessionId,
                         text: props.session()!.draft(),
                         backend: props.session()!.backend(),
@@ -451,6 +447,7 @@ export function Composer(props: {
               />
             </Button>
           </View>
+          <ComposerCompletion state={completion} />
         </View>
         <View style={{ minHeight: 24, paddingTop: 8 }}>
           <If when={blocked()}>

@@ -647,6 +647,7 @@ pub(crate) fn encode(batch: MountBatch) -> Encoded {
                     | Command::ScrollToIndex { .. }
                     | Command::Measure { .. }
                     | Command::ScrollToEnd { .. }
+                    | Command::ReplaceRange { .. }
                     // Desktops only.
                     | Command::Desktop(_)
                     // No host answers `nsh/host` here (`Environment::host`):

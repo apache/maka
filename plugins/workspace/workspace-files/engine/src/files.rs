@@ -34,6 +34,7 @@ use std::{
 
 mod watch;
 pub use watch::Watch;
+mod candidates;
 mod preview;
 pub use preview::{FileCapture, FileContent, FileSnapshot};
 #[cfg(test)]

@@ -3786,6 +3786,21 @@ fn input_values_from_js_and_native_edits() {
     })
     .unwrap();
     assert!(c.commit().is_none());
+    c.apply(Op::Command {
+        id: 2,
+        command: crate::Command::ReplaceRange {
+            range: 0..2,
+            text: "replacement".into(),
+            expected_text: "AB".into(),
+            expected_selection: 2..2,
+            count: 0,
+        },
+    })
+    .unwrap();
+    let batch = c.commit().unwrap();
+    assert!(batch.items.iter().any(|item| matches!(item,
+        MountItem::Command { id: 2, command: crate::Command::ReplaceRange { count: 2, text, .. } }
+        if text == "replacement")));
 }
 
 #[test]

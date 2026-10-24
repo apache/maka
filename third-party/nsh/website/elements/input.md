@@ -186,6 +186,7 @@ const height = signal(40);
 | `focus()` | `focus()` | Focuses the input and shows the keyboard. |
 | `blur()` | `blur()` | Unfocuses it. |
 | `setSelection(start, end?)` | `set_selection(start, end)` | Selects `start..end` (UTF-16 units); a caret when they are equal. |
+| `replaceRange({ start, end, text, expectedText, expectedSelection })` | `replace_range(range, text, expected_text, expected_selection)` | GPUI and terminal: replaces a UTF-16 range as one native undo step. Applies only to the focused editable input while its text and selection still match, no IME composition is active, and no newer native edit occurred. The caret moves after the literal replacement; multiline inputs preserve line breaks. |
 
 Moving focus to the next field on return:
 

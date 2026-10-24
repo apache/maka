@@ -79,17 +79,13 @@ impl Library {
             "search" => {
                 let input: ModelSearch =
                     serde_json::from_value(request.input).map_err(|_| "skills_query_invalid")?;
-                if input.limit.is_some_and(|n| !(1..=8).contains(&n)) {
+                if input.limit == Some(0) {
                     return Err("skills_query_invalid".into());
                 }
-                let mut page = ModelSearchResult {
+                let page = ModelSearchResult {
                     revision,
-                    result: catalog.search(&input.query, input.limit.unwrap_or(8)),
+                    result: catalog.search(&input.query, input.limit),
                 };
-                while page.result.matches.len() > 1 && !fits(&page) {
-                    page.result.matches.pop();
-                    page.result.truncated = true;
-                }
                 encode(page)
             }
             "load" => {

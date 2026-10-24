@@ -1528,6 +1528,10 @@ pub fn contract() -> Contract {
                     method::<SkillCandidatesRead, SkillCandidates>(MethodMode::Query),
                 ),
                 (
+                    "fileCandidates".into(),
+                    method::<FileCandidatesRead, Option<FileCandidates>>(MethodMode::Subscription),
+                ),
+                (
                     "tools".into(),
                     Method {
                         progress: None,

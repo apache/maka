@@ -676,6 +676,38 @@ impl Surface {
             .is_some_and(|node| (node.editor.count(), node.editor.selection()) != before)
     }
 
+    /// An input ref's guarded replacement uses the same native edit path as
+    /// host completions, with the app's original text and caret checked too.
+    pub(crate) fn replace_input_range(&mut self, id: NodeId, command: nsh_core::Command) {
+        let nsh_core::Command::ReplaceRange {
+            range,
+            text,
+            expected_text,
+            expected_selection,
+            count,
+        } = command
+        else {
+            return;
+        };
+        if !self.current_focus_target().is_some_and(|target| {
+            target.0 == id && self.returnable_focus(target, &self.visible_ids())
+        }) {
+            return;
+        }
+        let Some(node) = self.node(id) else { return };
+        if node.editor.text() != expected_text
+            || node.editor.selection() != (expected_selection.start, expected_selection.end)
+        {
+            return;
+        }
+        self.apply_input_edit(InputEdit {
+            node: id,
+            expected_event_count: count,
+            selection: range,
+            replacement: text,
+        });
+    }
+
     /// Inserts text through the mounted capitalization policy for a host
     /// keyboard. Physical terminal keys and bracketed paste stay literal;
     /// an embedding host calls this when it provides keyboard assistance.
@@ -7624,6 +7656,70 @@ mod tests {
         assert_eq!(surface.node(2).unwrap().editor.text(), "a中bXY");
         key(&mut surface, KeyCode::Char('a'), KeyModifiers::NONE);
         assert_eq!(surface.node(2).unwrap().editor.text(), "a中bXY");
+
+        let mut surface = form();
+        surface.node_mut(2).unwrap().input.multiline = true;
+        surface.input_value(2, "前😀/re 尾".into(), 0);
+        surface.selection(2, 6, 6);
+        let edit = Command::ReplaceRange {
+            range: 3..6,
+            text: "/review\n下一行".into(),
+            expected_text: "前😀/re 尾".into(),
+            expected_selection: 6..6,
+            count: 0,
+        };
+        let apply = |surface: &mut Surface, command| {
+            surface.apply(nsh_core::MountBatch {
+                items: vec![nsh_core::MountItem::Command { id: 2, command }],
+            });
+        };
+        for guard in 0..4 {
+            let mut rejected = edit.clone();
+            if let Command::ReplaceRange {
+                range,
+                expected_text,
+                expected_selection,
+                count,
+                ..
+            } = &mut rejected
+            {
+                match guard {
+                    0 => range.start = 2, // Inside the emoji's surrogate pair.
+                    1 => expected_text.push('x'),
+                    2 => *expected_selection = 5..5,
+                    _ => *count = 1,
+                }
+            }
+            apply(&mut surface, rejected);
+            assert_eq!(surface.node(2).unwrap().editor.text(), "前😀/re 尾");
+            assert_eq!(surface.node(2).unwrap().editor.selection(), (6, 6));
+            assert_eq!(surface.node(2).unwrap().editor.count(), 0);
+        }
+        apply(&mut surface, edit.clone());
+        assert_eq!(
+            surface.node(2).unwrap().editor.text(),
+            "前😀/review\n下一行 尾"
+        );
+        assert_eq!(surface.node(2).unwrap().editor.selection(), (14, 14));
+        assert_eq!(surface.node(2).unwrap().editor.count(), 1);
+        apply(&mut surface, edit.clone());
+        assert_eq!(
+            surface.node(2).unwrap().editor.text(),
+            "前😀/review\n下一行 尾"
+        );
+        assert_eq!(surface.node(2).unwrap().editor.count(), 1);
+        key(&mut surface, KeyCode::Char('z'), KeyModifiers::CONTROL);
+        assert_eq!(surface.node(2).unwrap().editor.text(), "前😀/re 尾");
+        assert_eq!(surface.node(2).unwrap().editor.selection(), (6, 6));
+        apply(&mut surface, edit);
+        assert_eq!(surface.node(2).unwrap().editor.text(), "前😀/re 尾");
+        assert_eq!(surface.node(2).unwrap().editor.count(), 2);
+        key(&mut surface, KeyCode::Char('y'), KeyModifiers::CONTROL);
+        assert_eq!(
+            surface.node(2).unwrap().editor.text(),
+            "前😀/review\n下一行 尾"
+        );
+        assert_eq!(surface.node(2).unwrap().editor.selection(), (14, 14));
     }
 
     #[test]

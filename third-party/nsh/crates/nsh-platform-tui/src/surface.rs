@@ -1208,6 +1208,7 @@ impl Surface {
             }
             Command::Blur => self.set_focus(None),
             Command::SetSelection { start, end } => self.selection(id, start, end),
+            command @ Command::ReplaceRange { .. } => self.replace_input_range(id, command),
             Command::ScrollTo { x, y, animated } => self.scroll_command(id, x, y, animated),
             Command::ZoomTo {
                 scale,

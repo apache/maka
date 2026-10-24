@@ -97,6 +97,7 @@ type HistoryNavigation = { kind: 'start' } | { kind: 'turn'; item: TurnNavigatio
 
 export type Control = (method: string, input: any) => Promise<any>;
 export type ConversationHandle = ComposerSession & {
+  compact(prompt?: string): Promise<void>;
   interactions(): AgentPendingInteractions;
   activeTurn(): string | null;
   activityTurn(): string | null;
@@ -1607,6 +1608,26 @@ export function Conversation(props: ConversationProps) {
       props.focusComposer();
     },
     stop,
+    async compact(prompt) {
+      if (!alive) return;
+      if (invocation() !== null) throw new UiError('Wait for the current run before compacting.');
+      const expectedBackend = backendIdentity(backend());
+      if (expectedBackend === null) throw new UiError('Choose a model before compacting.');
+      const model = await selection(expectedBackend);
+      if (!alive || model === null) return;
+      if (!sameBackend(backendIdentity(backend()), expectedBackend))
+        throw new UiError('The model changed before confirmation. Send again to confirm it.');
+      const result = await props.control('compact', {
+        sessionId,
+        model: model.model,
+        thinkingLevel: model.thinkingLevel,
+        prompt: prompt?.trim() || null,
+      });
+      if (!alive) return;
+      if (result.kind !== 'started')
+        throw new UiError('Context compaction rejected: {reason}', { reason: result.reason });
+      await observe();
+    },
     refresh: observe,
   };
   props.attach(ownHandle);

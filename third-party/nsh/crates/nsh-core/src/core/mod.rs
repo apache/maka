@@ -1844,8 +1844,14 @@ impl<M: TextEngine> Core<M> {
                 self.answer_measure(id, call);
                 Ok(())
             }
-            Op::Command { id, command } => {
+            Op::Command { id, mut command } => {
                 let key = self.key(id)?;
+                if let Command::ReplaceRange { count, .. } = &mut command {
+                    let Some(input) = self.nodes[key as usize].input.as_ref() else {
+                        return Ok(());
+                    };
+                    *count = input.count;
+                }
                 if matches!(command, Command::ScrollToEnd { .. }) {
                     log::debug!(target: "nsh::scroll", "core_scroll_to_end_received node={id} created={} list={}", self.nodes[key as usize].created, self.nodes[key as usize].list.is_some());
                 }

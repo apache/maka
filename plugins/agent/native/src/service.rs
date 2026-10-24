@@ -117,6 +117,7 @@ impl Handler for Agent {
                         .skill_candidates(decode(input)?, context.scope())
                         .await?,
                 ),
+                "fileCandidates" => owner.file_candidates(decode(input)?, context).await,
                 "tools" => encode(owner.tool_names()),
                 "plan" => encode(owner.plan(decode(input)?).await?),
                 "planHistory" => encode(owner.plan_history(decode(input)?).await?),

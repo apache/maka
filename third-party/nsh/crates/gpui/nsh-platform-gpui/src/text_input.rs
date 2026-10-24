@@ -1699,6 +1699,57 @@ pub(crate) fn set_selection(view: &NshView, start: u32, end: u32) {
     view.changed();
 }
 
+/// One guarded, undoable application edit of this native input.
+pub(crate) fn replace_range(surface: &Rc<Surface>, view: &NshView, command: &nsh_core::Command) {
+    let nsh_core::Command::ReplaceRange {
+        range,
+        text,
+        expected_text,
+        expected_selection,
+        count,
+    } = command
+    else {
+        return;
+    };
+    let Some(input) = input_of(view) else {
+        return;
+    };
+    if !input.focused.get()
+        || !input.active.get()
+        || !input.config.borrow().editable
+        || !crate::input::focusable(surface, view)
+        || input.count.get() != *count
+    {
+        return;
+    }
+    let (changed, selection_changed) = {
+        let mut model = input.model.borrow_mut();
+        let before = model.selection();
+        let observed = model::byte_to_utf16(model.text(), before.0)
+            ..model::byte_to_utf16(model.text(), before.1);
+        if model.composition.is_some()
+            || model.text() != expected_text
+            || observed != *expected_selection
+            || range.start > range.end
+        {
+            return;
+        }
+        let start = model::utf16_to_byte(model.text(), range.start);
+        let end = model::utf16_to_byte(model.text(), range.end);
+        if model::byte_to_utf16(model.text(), start) != range.start
+            || model::byte_to_utf16(model.text(), end) != range.end
+        {
+            return;
+        }
+        let changed = model.replace_range(start..end, text, input.config.borrow().max_length);
+        (changed, model.selection() != before)
+    };
+    if changed || selection_changed {
+        input.goal_x.set(None);
+        after_edit(surface, view, &input, changed);
+    }
+}
+
 /// Characters typed into the focused field (the test agent's), as the
 /// input handler's `replace_text_in_range` brings them.
 #[cfg(any(feature = "dev", test))]

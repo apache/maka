@@ -37,6 +37,7 @@ const glyphs = {
   refresh: '↻',
   file: '📄',
   terminal: '⌁',
+  command: '⌘',
   copy: '⧉',
   archive: '▤',
   trash: '⌫',
@@ -199,6 +200,17 @@ export function Icon(props: { name: keyof typeof glyphs; color: string }) {
             cx.moveTo(9, 1.5);
             cx.lineTo(9, 5.5);
             cx.lineTo(13, 5.5);
+            break;
+          case 'command':
+            cx.moveTo(5.5, 3.5);
+            cx.arc(3.5, 3.5, 2, 0, Math.PI / 2, true);
+            cx.lineTo(12.5, 5.5);
+            cx.arc(12.5, 3.5, 2, Math.PI / 2, Math.PI, true);
+            cx.lineTo(10.5, 12.5);
+            cx.arc(12.5, 12.5, 2, Math.PI, (Math.PI * 3) / 2, true);
+            cx.lineTo(3.5, 10.5);
+            cx.arc(3.5, 12.5, 2, (Math.PI * 3) / 2, Math.PI * 2, true);
+            cx.lineTo(5.5, 3.5);
             break;
           case 'terminal':
             cx.roundRect(1, 2, 14, 12, 2);

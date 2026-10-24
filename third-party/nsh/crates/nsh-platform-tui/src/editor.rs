@@ -253,7 +253,15 @@ impl Editor {
         let previous = (self.anchor, self.cursor, self.goal_column);
         self.set_selection(start, end);
         match self.replace_inner(incoming, config) {
-            Some(changed) => changed,
+            Some(changed) => {
+                // The replacement range is not the selection the user had
+                // before accepting a completion. Undo restores that selection.
+                if changed && let Some(snapshot) = self.undo.last_mut() {
+                    snapshot.anchor = previous.0;
+                    snapshot.cursor = previous.1;
+                }
+                changed
+            }
             None => {
                 (self.anchor, self.cursor, self.goal_column) = previous;
                 false

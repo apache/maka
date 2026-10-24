@@ -83,7 +83,7 @@ pub struct SearchResult<'a> {
 }
 
 impl Catalog<'_> {
-    pub fn search(&self, query: &str, limit: usize) -> SearchResult<'_> {
+    pub fn search(&self, query: &str, limit: Option<usize>) -> SearchResult<'_> {
         let query = normalize(query);
         let mut total_eligible = 0;
         let mut ranked = Vec::new();
@@ -98,7 +98,7 @@ impl Catalog<'_> {
         let matched_count = ranked.len();
         let matches = ranked
             .into_iter()
-            .take(limit.clamp(1, 8))
+            .take(limit.unwrap_or(matched_count))
             .map(|(skill, score)| SearchMatch {
                 skill: skill.into(),
                 score,

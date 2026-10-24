@@ -1569,6 +1569,20 @@ pub enum Command {
         /// End.
         end: u32,
     },
+    /// Replace an input range as one undoable native edit, provided the
+    /// original text, selection and native edit generation still match.
+    ReplaceRange {
+        /// UTF-16 range to replace, on exact character boundaries.
+        range: std::ops::Range<u32>,
+        /// Literal replacement text.
+        text: String,
+        /// Text observed when the replacement was chosen.
+        expected_text: String,
+        /// UTF-16 selection observed when the replacement was chosen.
+        expected_selection: std::ops::Range<u32>,
+        /// The core fills in the input's latest observed native edit count.
+        count: u32,
+    },
     /// Show a short message (Android toast; on the root).
     Toast {
         /// The message.
