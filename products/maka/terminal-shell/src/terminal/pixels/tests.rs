@@ -339,12 +339,13 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
     };
     // Exclude the unchanged caret column and the underline below the glyphs.
     let has_preedit_glyphs = |pixels: &[u8]| {
-        (caret.origin.y.0.ceil() as usize..caret.bottom().0.floor() as usize - 2).any(|y| {
-            (caret.origin.x.0.ceil() as usize + 3..240).any(|x| {
-                let color = &pixels[(y * 320 + x) * 4..][..3];
-                color.iter().all(|channel| *channel > 200)
+        (f32::from(caret.origin.y).ceil() as usize..f32::from(caret.bottom()).floor() as usize - 2)
+            .any(|y| {
+                (f32::from(caret.origin.x).ceil() as usize + 3..240).any(|x| {
+                    let color = &pixels[(y * 320 + x) * 4..][..3];
+                    color.iter().all(|channel| *channel > 200)
+                })
             })
-        })
     };
     assert!(!has_preedit_glyphs(&painted()));
     assert!(
