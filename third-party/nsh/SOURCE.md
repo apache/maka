@@ -48,6 +48,17 @@ issuing more paced bindings. This retains the fork's source-publication fence
 while using upstream visible-first scheduling; regressions cover source changes
 inside both visible and overscan row constructors.
 
+The local GPUI text-input bridge exposes weak native editor identities through
+`TextInputTarget`, including fields sharing one `AppView` focus handle.
+`TerminalPlatform::apply_composition` applies a committed prefix and remaining
+preedit with selection offsets in UTF-16 code units, rechecks the original
+editor after committing, and cancels temporary marks without committing them.
+NSH owns the editor model and pixel rendering. Maka owns ordered delivery,
+focus-session generations and negotiation of the experimental, general-purpose
+OSC 777 `nsh-text-input` extension; a matching terminal-side IME producer must
+supply the composition snapshots. These local adaptations do not establish
+stock-terminal support or end-to-end OS IME validation.
+
 Maka's workspace uses these local crates, including NSH's offscreen renderer and
 image codec; changing them here changes the code built and tested with Maka.
 
