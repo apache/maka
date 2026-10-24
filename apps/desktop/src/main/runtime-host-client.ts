@@ -1245,7 +1245,7 @@ export class DesktopRuntimeHostClient {
   async copySession(
     kind: "branch" | "revision",
     input: Omit<SessionConversationCopyInput, "expectedSourceRevision">,
-  ): Promise<SessionCatalogProjection> {
+  ): Promise<SessionCatalogProjection & { stagedAttachments?: readonly AttachmentRef[] }> {
     for (let attempt = 0; attempt < MAX_OPTIMISTIC_ATTEMPTS; attempt += 1) {
       const source = await this.#requireSession(input.sourceSessionId);
       const request = { ...input, expectedSourceRevision: source.revision };
@@ -1254,7 +1254,10 @@ export class DesktopRuntimeHostClient {
           ? await this.request("session.branch.create", request)
           : await this.request("session.revision.create", request);
       if (result.kind === "committed")
-        return requireSessionProjection(result.session);
+        return {
+          ...requireSessionProjection(result.session),
+          ...(result.stagedAttachments ? { stagedAttachments: result.stagedAttachments } : {}),
+        };
     }
     throw revisionConflict(`${kind} copy`, input.sourceSessionId);
   }

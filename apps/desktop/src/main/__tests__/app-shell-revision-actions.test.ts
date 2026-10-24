@@ -93,6 +93,10 @@ function createActions(input: { messages: StoredMessage[]; failRefresh?: boolean
           staged.clearedKeys.push(ownerKey);
           return staged.quotes.splice(0, staged.quotes.length);
         },
+        clearAttachments: (ownerKey: string) => {
+          staged.clearedKeys.push(ownerKey);
+          return [];
+        },
       }),
     },
     openSessionInChat: (sessionId: string) => {
@@ -166,35 +170,40 @@ describe('app-shell revision actions with structured context (#5109)', () => {
     assert.equal(h.composerState.text, 'plain follow-up');
   });
 
-  it('refuses editing a message that carries attachments (#5274 review)', () => {
-    // Attachment ownership does not follow a revision copy — the copied
-    // transcript stops before the selected turn, so no target-owned refs
-    // exist client-side to restage. The edit refuses rather than silently
-    // dropping the files.
+  it('restages the attachments a message carries as retained pending items (#5109)', () => {
+    // The Host stages the edited turn's artifacts into the revision copy and
+    // hands back target-owned refs on the copy response, so the edit restages
+    // the attachment (source-owned until prepare swaps the ref) instead of
+    // refusing the edit outright.
+    const attachment = {
+      kind: 'image',
+      name: 'chart.png',
+      mimeType: 'image/png',
+      bytes: 10,
+      ref: { kind: 'session_file', sessionId: 'session-1', relativePath: 'a.png' },
+    };
     const h = createActions({
       messages: [
-        userMessage('turn-1', 'with image', {
-          attachments: [
-            {
-              kind: 'image',
-              name: 'chart.png',
-              mimeType: 'image/png',
-              bytes: 10,
-              ref: { kind: 'session_file', sessionId: 'session-1', relativePath: 'a.png' },
-            },
-          ],
-        }),
+        userMessage('turn-1', 'with image', { attachments: [attachment] }),
       ],
     });
 
     h.beginEditUserMessage('turn-1');
 
-    assert.equal(
-      h.drafts.at(-1),
-      undefined,
-      'a revision copy excludes the revised turn, so no target-owned attachment rewrite exists to restage',
+    const draft = h.drafts.at(-1) as { originalAttachments?: unknown[] } | undefined;
+    assert.ok(draft, 'a carrying message is editable now');
+    assert.deepEqual(draft?.originalAttachments, [attachment]);
+    assert.deepEqual(
+      h.composerState.attachments.map((item) => (item as { displayName?: string }).displayName),
+      ['chart.png'],
+      'the source attachment restages into the composer plates',
     );
-    assert.equal(h.composerState.text, '', 'the composer stays untouched');
+    assert.deepEqual(
+      (h.composerState.attachments[0] as { source?: unknown } | undefined)?.source,
+      { type: 'retained', attachment },
+      'the pending item carries the source-owned ref until prepare',
+    );
+    assert.equal(h.composerState.text, 'with image');
   });
 
   it('stages a source message quotes into the composer', () => {
@@ -329,6 +338,8 @@ describe('revision draft lifecycle over a prepared send', () => {
           attachments: [],
           restoreQuotes: (_ownerKey: string, _quotes: unknown[]) => {},
           clearQuotes: (_ownerKey: string) => [],
+          restoreAttachments: (_ownerKey: string, _attachments: unknown[]) => {},
+          clearAttachments: (_ownerKey: string) => [],
         }),
       },
       openSessionInChat: (sessionId: string) => {

@@ -190,6 +190,15 @@ export interface SessionConversationCopy {
   requestFingerprint: `sha256:${string}`;
   state: 'preparing' | 'committed';
   intent?: 'side_conversation';
+  /** Revision copies (#5109): where each staged attachment of the edited turn
+   *  landed in the target Session — source Artifact id to target record id.
+   *  Durable so a retried copy request can rebuild its response with read-only
+   *  lookups instead of re-running artifact writes (which would republish
+   *  artifacts another client has since deleted). */
+  stagedArtifacts?: readonly {
+    readonly sourceId: string;
+    readonly targetId: string;
+  }[];
 }
 
 export type SubagentSessionRuntimeSummary = Omit<
@@ -557,7 +566,7 @@ const SUBAGENT_SESSION_SPAWN_IDENTITY_SHAPE = defineObjectShape<SubagentSessionS
 );
 const SESSION_CONVERSATION_COPY_SHAPE = defineObjectShape<SessionConversationCopy>()(
   ['kind', 'sourceSessionId', 'requestFingerprint', 'state'],
-  ['sourceTurnId', 'intent'],
+  ['sourceTurnId', 'intent', 'stagedArtifacts'],
 );
 const SESSION_LINEAGE_ID_MAX_CHARS = 512;
 const SESSION_LINEAGE_CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
@@ -655,7 +664,24 @@ export function isSessionConversationCopy(value: unknown): value is SessionConve
       : isSessionLineageId(value.sourceTurnId)) &&
     typeof value.requestFingerprint === 'string' &&
     /^sha256:[0-9a-f]{64}$/.test(value.requestFingerprint) &&
-    (value.state === 'preparing' || value.state === 'committed')
+    (value.state === 'preparing' || value.state === 'committed') &&
+    isStagedArtifactIdPairs(value.stagedArtifacts)
+  );
+}
+
+/** `stagedArtifacts` entries (#5109): both ids are Artifact record ids. */
+function isStagedArtifactIdPairs(value: unknown): boolean {
+  return (
+    value === undefined ||
+    (Array.isArray(value) &&
+      value.every(
+        (entry) =>
+          isRecord(entry) &&
+          typeof entry.sourceId === 'string' &&
+          entry.sourceId.length > 0 &&
+          typeof entry.targetId === 'string' &&
+          entry.targetId.length > 0,
+      ))
   );
 }
 
