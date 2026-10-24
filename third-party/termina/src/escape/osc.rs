@@ -29,7 +29,11 @@
 //!
 //! [termwiz's OSC support]: https://docs.rs/termwiz/latest/termwiz/escape/struct.Osc.html
 
-use std::fmt::{self, Display};
+use std::{
+    fmt::{self, Display},
+    num::NonZeroU64,
+    ops::Range,
+};
 
 use crate::{base64, style::RgbColor};
 
@@ -83,11 +87,77 @@ pub enum Osc<'a> {
     ///
     /// xterm defines reset commands by adding 100 to the dynamic color number.
     ResetDynamicColor(DynamicColorNumber),
+
+    /// Private OSC 777 `nsh-text-input` negotiation or composition snapshot.
+    NshTextInput(NshTextInput),
     // TODO: I didn't copy many available commands yet...
+}
+
+/// The negotiated, private NSH text-input extension carried by OSC 777.
+///
+/// Text selection offsets count UTF-16 code units within `preedit`. Contexts
+/// identify editor admissions, not globally addressable editors. The application
+/// owns negotiation, focus acknowledgement, and rejection of stale contexts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NshTextInput {
+    /// Ask whether the terminal implements this extension.
+    Query,
+    /// Acknowledge extension support without enabling forwarding.
+    Supported,
+    /// Admit an editor context, or disable forwarding with zero.
+    Focus(u64),
+    /// Acknowledge that the terminal bound the requested context.
+    Focused(u64),
+    /// One atomic committed prefix and remaining composition snapshot.
+    ///
+    /// An inactive snapshot has empty preedit and selection `0..0`. Active
+    /// snapshots may have empty preedit, including composition start. The range
+    /// must fall on Unicode scalar boundaries; it may not split a surrogate pair.
+    Update {
+        context: NonZeroU64,
+        active: bool,
+        selection: Range<usize>,
+        commit: String,
+        preedit: String,
+    },
+}
+
+pub(crate) fn valid_text_input_update(
+    active: bool,
+    selection: &Range<usize>,
+    preedit: &str,
+) -> bool {
+    if (!active && !preedit.is_empty()) || selection.start > selection.end {
+        return false;
+    }
+    let mut offset = 0;
+    let mut start_seen = selection.start == 0;
+    if selection.end == 0 {
+        return start_seen;
+    }
+    for ch in preedit.chars() {
+        offset += ch.len_utf16();
+        start_seen |= offset == selection.start;
+        if offset >= selection.end {
+            return offset == selection.end && start_seen;
+        }
+    }
+    false
 }
 
 impl Display for Osc<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Self::NshTextInput(NshTextInput::Update {
+            active,
+            selection,
+            preedit,
+            ..
+        }) = self
+        {
+            if !valid_text_input_update(*active, selection, preedit) {
+                return Err(fmt::Error);
+            }
+        }
         f.write_str(super::OSC)?;
         match self {
             Self::SetIconNameAndWindowTitle(s) => write!(f, "0;{s}")?,
@@ -108,6 +178,30 @@ impl Display for Osc<'_> {
                 }
             }
             Self::ResetDynamicColor(color) => write!(f, "{}", 100 + *color as u8)?,
+            Self::NshTextInput(input) => {
+                f.write_str("777;nsh-text-input;")?;
+                match input {
+                    NshTextInput::Query => f.write_str("query")?,
+                    NshTextInput::Supported => f.write_str("supported")?,
+                    NshTextInput::Focus(context) => write!(f, "focus;{context}")?,
+                    NshTextInput::Focused(context) => write!(f, "focused;{context}")?,
+                    NshTextInput::Update {
+                        context,
+                        active,
+                        selection,
+                        commit,
+                        preedit,
+                    } => write!(
+                        f,
+                        "update;{context};{};{};{};{};{}",
+                        u8::from(*active),
+                        selection.start,
+                        selection.end,
+                        base64::encode(commit.as_bytes()),
+                        base64::encode(preedit.as_bytes())
+                    )?,
+                }
+            }
         }
         f.write_str(super::ST)?;
         Ok(())

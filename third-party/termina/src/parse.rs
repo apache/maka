@@ -534,6 +534,10 @@ fn parse_osc(buffer: &[u8]) -> Result<Option<Event>> {
         }
         return Ok(Some(Event::Iterm2Capabilities(features.to_owned())));
     }
+    if let Some(payload) = s.strip_prefix("777;nsh-text-input;") {
+        return parse_nsh_text_input(payload)
+            .map(|input| Some(Event::Osc(osc::Osc::NshTextInput(input))));
+    }
     let mut split = s.split(';');
     let index = next_parsed::<u8>(&mut split)?;
     let Some(color_number) = osc::DynamicColorNumber::from_index(index) else {
@@ -551,6 +555,56 @@ fn parse_osc(buffer: &[u8]) -> Result<Option<Event>> {
         color_number,
         vec![response],
     ))))
+}
+
+fn parse_nsh_text_input(payload: &str) -> Result<osc::NshTextInput> {
+    fn unsigned<T: str::FromStr>(field: Option<&str>) -> Result<T> {
+        let field = field.ok_or(MalformedSequenceError)?;
+        if field.is_empty() || !field.bytes().all(|byte| byte.is_ascii_digit()) {
+            bail!();
+        }
+        field.parse().map_err(|_| MalformedSequenceError)
+    }
+    fn text(field: Option<&str>) -> Result<String> {
+        let bytes = crate::base64::decode(field.ok_or(MalformedSequenceError)?)
+            .ok_or(MalformedSequenceError)?;
+        String::from_utf8(bytes).map_err(|_| MalformedSequenceError)
+    }
+
+    let mut fields = payload.split(';');
+    let input = match fields.next() {
+        Some("query") => osc::NshTextInput::Query,
+        Some("supported") => osc::NshTextInput::Supported,
+        Some("focus") => osc::NshTextInput::Focus(unsigned(fields.next())?),
+        Some("focused") => osc::NshTextInput::Focused(unsigned(fields.next())?),
+        Some("update") => {
+            let context = std::num::NonZeroU64::new(unsigned(fields.next())?)
+                .ok_or(MalformedSequenceError)?;
+            let active = match fields.next() {
+                Some("0") => false,
+                Some("1") => true,
+                _ => bail!(),
+            };
+            let selection = unsigned(fields.next())?..unsigned(fields.next())?;
+            let commit = text(fields.next())?;
+            let preedit = text(fields.next())?;
+            if !osc::valid_text_input_update(active, &selection, &preedit) {
+                bail!();
+            }
+            osc::NshTextInput::Update {
+                context,
+                active,
+                selection,
+                commit,
+                preedit,
+            }
+        }
+        _ => bail!(),
+    };
+    if fields.next().is_some() {
+        bail!();
+    }
+    Ok(input)
 }
 
 fn next_parsed<T>(iter: &mut dyn Iterator<Item = &str>) -> Result<T>
@@ -1999,6 +2053,81 @@ mod test {
                 vec![style::RgbColor::new(40, 40, 40).into()]
             ))
         );
+    }
+
+    #[test]
+    fn nsh_text_input_packets_keep_composition_and_following_keys_separate() {
+        use osc::NshTextInput;
+        let mut parser = Parser::default();
+        parser
+            .parse(b"\x1b]777;nsh-text-input;focused;7\x1b\\", false)
+            .unwrap();
+        assert_eq!(
+            parser.pop(),
+            Some(Event::Osc(osc::Osc::NshTextInput(NshTextInput::Focused(7))))
+        );
+        // One partial commit containing a delimiter/control, with a remaining
+        // preedit selecting the entire supplementary-plane character.
+        parser
+            .parse(
+                b"\x1b]777;nsh-text-input;update;7;1;1;3;5aW9Oxs=;5L2g8J+",
+                true,
+            )
+            .unwrap();
+        assert_eq!(parser.pop(), None);
+        parser.parse(b"YgDs=\x1b\\z", false).unwrap();
+        assert_eq!(
+            parser.pop(),
+            Some(Event::Osc(osc::Osc::NshTextInput(NshTextInput::Update {
+                context: std::num::NonZeroU64::new(7).unwrap(),
+                active: true,
+                selection: 1..3,
+                commit: "好;\x1b".into(),
+                preedit: "你😀;".into(),
+            })))
+        );
+        assert_eq!(parser.pop(), Some(Event::Key(KeyCode::Char('z').into())));
+        for valid in [
+            "update;7;1;0;0;;", // composition start, not a commit
+            "update;7;0;0;0;;", // cancellation, not a commit
+            "focus;0",
+            "focused;0",
+        ] {
+            parser
+                .parse(
+                    format!("\x1b]777;nsh-text-input;{valid}\x1b\\").as_bytes(),
+                    false,
+                )
+                .unwrap();
+            assert!(matches!(
+                parser.pop(),
+                Some(Event::Osc(osc::Osc::NshTextInput(_)))
+            ));
+        }
+        for invalid in [
+            "update;7;1;2;3;;5L2g8J+YgDs=", // surrogate interior
+            "update;7;1;3;1;;5L2g8J+YgDs=", // reversed range
+            "update;7;1;0;5;;5L2g8J+YgDs=", // past the preedit
+            "update;0;1;0;0;;",             // no admitted context
+            "update;7;2;0;0;;",             // invalid active flag
+            "update;7;0;0;1;;YQ==",         // inactive preedit
+            "update;7;1;0;0;/w==;",         // invalid decoded UTF-8
+            "update;7;1;0;0;YR==;",         // nonzero Base64 padding bits
+            "update;7;1;0;0;YQ=;",          // missing Base64 padding
+            "update;7;1;0;0;;extra;",       // extra field
+            "focus;18446744073709551616",   // u64 overflow
+            "focus;+7",                     // not unsigned decimal wire text
+            "future;7",
+        ] {
+            parser
+                .parse(
+                    format!("\x1b]777;nsh-text-input;{invalid}\x1b\\q").as_bytes(),
+                    false,
+                )
+                .unwrap();
+            assert_eq!(parser.pop(), Some(Event::Key(KeyCode::Char('q').into())));
+            assert_eq!(parser.pop(), None);
+        }
     }
 
     #[test]
