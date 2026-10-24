@@ -2041,7 +2041,7 @@ fn source_reading_waits_for_its_virtualized_row_without_capturing_another_docume
                 .collect::<Vec<_>>(),
             Vec::<u32>::new()
         );
-        let put_row = |c: &mut Core<FakeEngine>, index, source: bool, queued_slot: Option<u32>| {
+        let prepare = |c: &mut Core<FakeEngine>, index, source: bool, queued_slot: Option<u32>| {
             // The cell answers an actual binding; the fixture does not
             // manufacture a source-to-slot assignment of its own.
             let slot = queued_slot.unwrap_or_else(|| bound_slot(c, 4, index));
@@ -2071,6 +2071,10 @@ fn source_reading_waits_for_its_virtualized_row_without_capturing_another_docume
                     40,
                 );
             }
+            cell
+        };
+        let put_row = |c: &mut Core<FakeEngine>, index, source, queued_slot| {
+            let cell = prepare(c, index, source, queued_slot);
             c.apply(Op::SetProp {
                 id: cell,
                 prop: Prop::CellIndex(index),
@@ -2195,8 +2199,53 @@ fn source_reading_waits_for_its_virtualized_row_without_capturing_another_docume
         // Phase three: only now does the target settle. Its actual shaped
         // source line restores the reader; a row with no glyph closes the
         // intent. A late ACK cannot undo removal or a wheel step.
-        put_row(&mut c, 21, finish != "closed", Some(target_slot));
+        if finish == "ready" {
+            // The body and its exact estimated-size layout can finish before
+            // the actual CellIndex ACK. Only readiness changes in the next
+            // commit: no new source, row metadata, tree or extent change.
+            let target = prepare(&mut c, 21, true, Some(target_slot));
+            let prepared = c.commit();
+            assert!(
+                prepared
+                    .as_ref()
+                    .is_none_or(|batch| page_scrolls(batch).is_empty())
+            );
+            let layout = c.nodes[c.key(target).unwrap() as usize].layout.unwrap();
+            assert!(!c.layout.dirty(layout));
+            let measured = c.rounded_layout(layout).size.height;
+            assert_eq!(measured, 50.0);
+            let parent = c.nodes[c.key(4).unwrap() as usize].list.as_ref().unwrap();
+            assert!(!parent.slots.iter().any(|slot| slot.ready() == Some(21)));
+            assert!(parent.source_row_matches_layout(21, measured));
+            assert_eq!(parent.content_len(), 100.0 * 50.0);
+            assert_eq!(
+                c.reading_position(owner, &source_point),
+                crate::text_source::SourcePosition::Pending
+            );
+            c.apply(Op::SetProp {
+                id: target,
+                prop: Prop::CellIndex(21),
+            })
+            .unwrap();
+        } else {
+            put_row(&mut c, 21, finish != "closed", Some(target_slot));
+        }
         let batch = c.commit();
+        if finish == "ready" {
+            let cached = c.nodes[owner as usize]
+                .list
+                .as_ref()
+                .unwrap()
+                .source_geometry
+                .position(&source_point);
+            let ready = c.reading_position(owner, &source_point);
+            assert_eq!(ready, crate::text_source::SourcePosition::Ready(1082.0));
+            assert_eq!(
+                cached,
+                Some(1082.0),
+                "a Parent-only readiness ACK was not published to the reader: cached {cached:?}, ready {ready:?}"
+            );
+        }
         let reader = c.nodes[owner as usize].list.as_ref().unwrap();
         if finish == "ready" || finish == "isolated" || finish == "following" {
             assert_eq!(reader.reading_point(), Some(&source_point));
