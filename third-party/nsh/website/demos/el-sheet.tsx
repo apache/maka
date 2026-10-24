@@ -88,6 +88,7 @@ function App() {
 
       <Sheet
         open={open()}
+        closeOnSwipe
         side={side()}
         onOpenChange={(next, reason) => {
           open.set(next);

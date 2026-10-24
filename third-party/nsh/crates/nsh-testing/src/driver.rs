@@ -6,7 +6,7 @@
 use std::time::Duration;
 
 use nsh_core::{
-    Dialog,
+    Dialog, ResolvedTextStyle,
     geometry::{Point, Points, Size},
     platform::ColorScheme,
 };
@@ -66,6 +66,7 @@ pub(crate) trait Driver: Send {
     fn enabled(&mut self, selector: &str) -> Result<bool, String>;
     fn shows(&mut self, selector: &str) -> Result<bool, String>;
     fn value(&mut self, selector: &str) -> Result<Option<String>, String>;
+    fn span_style(&mut self, selector: &str) -> Result<ResolvedTextStyle, String>;
     fn dialogs(&mut self) -> Result<Vec<Dialog>, String>;
     /// The open context menu's actions, `None` when none is open.
     fn menu(&mut self) -> Result<Option<Vec<crate::menu::Entry>>, String>;
@@ -204,6 +205,10 @@ impl Driver for Headless {
     fn value(&mut self, selector: &str) -> Result<Option<String>, String> {
         self.catch_up();
         Ok(self.screen().input_text(selector)?.map(str::to_owned))
+    }
+    fn span_style(&mut self, selector: &str) -> Result<ResolvedTextStyle, String> {
+        self.catch_up();
+        self.screen().span_style(selector)
     }
     fn dialogs(&mut self) -> Result<Vec<Dialog>, String> {
         self.catch_up();
@@ -525,6 +530,9 @@ impl Driver for Remote {
         self.query(TestStep::Value {
             selector: selector.into(),
         })
+    }
+    fn span_style(&mut self, _: &str) -> Result<ResolvedTextStyle, String> {
+        Err(headless_only("Reading a span's style (`app.spanStyle`)"))
     }
     fn dialogs(&mut self) -> Result<Vec<Dialog>, String> {
         self.query(TestStep::Dialogs)

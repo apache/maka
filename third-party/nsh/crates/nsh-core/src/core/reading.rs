@@ -47,8 +47,8 @@ impl<M: TextEngine> Core<M> {
             let Some(LeafContext::Text(cx)) = self.layout.get_node_context(layout) else {
                 continue;
             };
-            if let (Some(lines), Some((content, _))) = (&cx.source_geometry, &cx.laid_out) {
-                geometry.append(lines, seat.y + content.origin.y.0, seat.clip);
+            if let (Some(lines), Some(laid)) = (&cx.source_geometry, &cx.laid_out) {
+                geometry.append(lines, seat.y + laid.content.origin.y.0, seat.clip);
             }
         }
         geometry.finish();

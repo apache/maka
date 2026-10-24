@@ -1314,7 +1314,18 @@ fn payload_object<'js>(cx: &Ctx<'js>, payload: &EventPayload) -> rquickjs::Resul
             velocity_y,
             value_x,
             value_y,
+        }
+        | EventPayload::PanCancelled {
+            translation,
+            velocity_x,
+            velocity_y,
+            value_x,
+            value_y,
         } => {
+            obj.set(
+                "cancelled",
+                matches!(payload, EventPayload::PanCancelled { .. }),
+            )?;
             obj.set("translationX", translation.x.0)?;
             obj.set("translationY", translation.y.0)?;
             obj.set("velocityX", *velocity_x)?;

@@ -136,6 +136,8 @@ ops::Command::Seek.0                                             # time
 ops::Command::ZoomTo.scale                                       # a zoom scale factor
 ops::EventPayload::Pan.velocity_x                                # a rate or a physical constant of an animation
 ops::EventPayload::Pan.velocity_y                                # a rate or a physical constant of an animation
+ops::EventPayload::PanCancelled.velocity_x                       # points per second, the same rate as Pan.velocity_x
+ops::EventPayload::PanCancelled.velocity_y                       # points per second, the same rate as Pan.velocity_y
 ops::IMAGE_SCALES                                                # pixel densities (device pixels per point)
 ops::ImageProp::FadeDuration.0                                   # time
 ops::ImageScales::iter ->                                        # pixel densities (device pixels per point)

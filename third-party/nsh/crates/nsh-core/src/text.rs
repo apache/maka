@@ -282,6 +282,9 @@ pub struct AttributedText {
     pub shadow: Option<TextShadow>,
     /// Nested `<text>` spans that take presses (they may nest).
     pub links: Vec<TextLink>,
+    /// Nested `<Text>` spans with a `testID` (they may nest). Platforms
+    /// draw nothing from them. Tests name a span by its id.
+    pub test_ids: Vec<SpanTestId>,
     /// `writingDirection`: right to left (`Some(true)`), left to right, or
     /// from the content (`None`).
     pub writing_direction: Option<bool>,
@@ -468,6 +471,18 @@ impl TextLink {
     }
 }
 
+/// A nested `<Text>` span with a `testID` ([`AttributedText::test_ids`]).
+#[derive(Debug, Clone, PartialEq, Default)]
+#[non_exhaustive]
+pub struct SpanTestId {
+    /// Start offset (UTF-16 units, inclusive).
+    pub start: u32,
+    /// End offset (UTF-16 units, exclusive).
+    pub end: u32,
+    /// Its `testID`.
+    pub test_id: Arc<str>,
+}
+
 impl AttributedText {
     /// Whether the text was made selectable (`selectable`, `select-text`).
     pub fn is_selectable(&self) -> bool {
@@ -535,6 +550,40 @@ impl AttributedText {
                 });
             }
         }
+    }
+
+    /// Equality of the content the platform draws, excluding test metadata.
+    pub(crate) fn rendering_eq(&self, other: &Self) -> bool {
+        // Enumerating the fields makes additions revisit this comparison.
+        let Self {
+            text,
+            spans,
+            align,
+            max_lines,
+            ellipsize,
+            no_wrap,
+            shadow,
+            links,
+            writing_direction,
+            rtl,
+            selectable,
+            selection_color,
+            attachments,
+            test_ids: _,
+        } = self;
+        text == &other.text
+            && spans == &other.spans
+            && align == &other.align
+            && max_lines == &other.max_lines
+            && ellipsize == &other.ellipsize
+            && no_wrap == &other.no_wrap
+            && shadow == &other.shadow
+            && links == &other.links
+            && writing_direction == &other.writing_direction
+            && rtl == &other.rtl
+            && selectable == &other.selectable
+            && selection_color == &other.selection_color
+            && attachments == &other.attachments
     }
 
     /// True if both texts lay out identically: same characters, runs,

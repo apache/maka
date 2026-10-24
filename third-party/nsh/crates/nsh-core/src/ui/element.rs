@@ -1461,6 +1461,21 @@ pub trait Interactive: Element {
         self
     }
 
+    /// Enables native pans without replacing their values or listeners.
+    /// A disabled pan leaves presses and scrolling to the content.
+    fn pan_enabled(mut self, enabled: impl IntoReactive<bool>) -> Self {
+        super::host::bind_prop(self.node(), enabled, Prop::PanEnabled);
+        self
+    }
+
+    /// On iOS, a vertical pan shares descendant scroll views' touches and
+    /// follows only the downward distance left after scrolling to the top.
+    /// Other platforms keep their normal pan and scroll arbitration.
+    fn pan_scroll_handoff(mut self, enabled: impl IntoReactive<bool>) -> Self {
+        super::host::bind_prop(self.node(), enabled, Prop::PanScrollHandoff);
+        self
+    }
+
     /// Two-finger pinches scale `scale` natively (multiplying the value it
     /// has when the pinch starts; TS: `pinch={{ scale }}`); bind it to its
     /// transform ([`Element::bind_scale`]). `on_pinch_start` /

@@ -59,6 +59,8 @@ pub enum ScrollIntent {
 /// velocity, in points (per second).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct PanEvent {
+    /// The system cancelled the drag rather than releasing it.
+    pub cancelled: bool,
     /// The translation.
     pub translation: Point<Points>,
     /// Horizontal velocity.
@@ -387,7 +389,15 @@ pub(crate) fn pan(p: &EventPayload) -> Option<Cow<'_, PanEvent>> {
             velocity_y,
             value_x,
             value_y,
+        }
+        | EventPayload::PanCancelled {
+            translation,
+            velocity_x,
+            velocity_y,
+            value_x,
+            value_y,
         } => Some(Cow::Owned(PanEvent {
+            cancelled: matches!(p, EventPayload::PanCancelled { .. }),
             translation,
             velocity_x,
             velocity_y,
@@ -494,6 +504,23 @@ pub(crate) fn file_drop(p: &EventPayload) -> Option<Cow<'_, FileDropEvent>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_cancelled_pan_preserves_its_final_values() {
+        use crate::{EventPayload, Points, geometry::point};
+        let payload = EventPayload::PanCancelled {
+            translation: point(Points(4.0), Points(150.0)),
+            velocity_x: 0.0,
+            velocity_y: 900.0,
+            value_x: None,
+            value_y: Some(Points(150.0)),
+        };
+        let event = super::pan(&payload).unwrap();
+        assert!(event.cancelled);
+        assert_eq!(event.translation, point(Points(4.0), Points(150.0)));
+        assert_eq!(event.value_y, Some(150.0));
+        assert_eq!(event.velocity_y, 900.0);
+    }
+
     #[test]
     fn file_drop_requires_the_file_payload() {
         assert!(super::file_drop(&crate::EventPayload::None).is_none());

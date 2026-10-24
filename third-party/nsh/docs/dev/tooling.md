@@ -251,7 +251,13 @@ over the window wherever it is in the tree, header items and input accessories w
 `opacity` and transforms aside. The spans of a text that take presses (`AttributedText::links`: a nested
 `<Text onPress>`, a `TextView`'s links) are views of the model too (`Screen::set_spans`), inside their text view (or
 the span around them), found by their characters (`text:`, a bare string) and pressed as the platform presses them:
-the events go to the span's node; they are not texts of their own (`texts()` lists the text view's). Steps acting on a view are strict, as Playwright's: the matches
+the events go to the span's node; they are not texts of their own (`texts()` lists the text view's).
+`Screen::span_style` reads the resolved style of characters a selector names (`id:<testID>` a nested text's test id,
+`text:<text>` where the text reads it), the first character's, including a nested text's background. `app.spanStyle`
+returns that style. A span's test id is listed on its block's text (`AttributedText::test_ids`). Setting the id
+later updates the block's metadata and remounts its existing final layout, including fitted font sizes, without
+preparing or laying out the text again or reporting `onTextLayout`. Empty spans have no first character:
+queries report an error, including bare selectors whose test id matches an empty span. Steps acting on a view are strict, as Playwright's: the matches
 are mapped to what the step acts on (`Screen::pick`: the pressable ancestor, the input inside, the scroll view around)
 and more than one fails the step; a press whose match, or a view between it and its pressable ancestor, is disabled
 (the accessibility state) fails too. Each step sends what a platform would, to the views that report it:

@@ -432,6 +432,8 @@ export interface OverlayPosition {
 
 /** A drag: translation since the start and velocity (points / second). */
 export interface PanEvent {
+  /** The system cancelled the drag rather than releasing it. */
+  cancelled: boolean;
   translationX: number;
   translationY: number;
   velocityX: number;

@@ -487,6 +487,8 @@ struct Node {
     slot: Option<CellSlot>,
     /// Animated values driven by gestures on the view.
     gestures: GestureValues,
+    /// Keeps pan listeners and values while their native gesture is disabled.
+    pan_enabled: bool,
     /// The native view exists.
     created: bool,
     /// A promoted layout root has a native projection. This is separate
@@ -534,6 +536,10 @@ impl Node {
     /// on it goes on to the nearest enabled listener around it.
     fn mounted_events(&self, hint_watch: Option<crate::overlay::HintWatchToken>) -> EventMask {
         let mut events = self.events;
+        if !self.pan_enabled {
+            events.set(EventKind::PanStart, false);
+            events.set(EventKind::PanEnd, false);
+        }
         let passive_hint =
             self.overlay_watched & overlay::watch::HINT_CALLBACK == 0 && hint_watch.is_some();
         if self.overlay_watched & overlay::watch::PRESS != 0
@@ -674,6 +680,7 @@ impl Node {
             component: matches!(kind, Kind::Native).then(Box::default),
             slot: None,
             gestures: GestureValues::default(),
+            pan_enabled: true,
             created: false,
             native_root_projected: false,
             frame: Bounds::UNSET,
@@ -707,7 +714,16 @@ struct TextContext<P> {
     cache: Option<(Option<f32>, Size<Points>)>,
     /// Last final layout sent to the platform and the content box it was
     /// made for (where in the view the text goes).
-    laid_out: Option<(Bounds<Points>, TextLayout)>,
+    laid_out: Option<LaidText>,
+    /// New test metadata must be mounted even when the glyphs are unchanged.
+    metadata_changed: bool,
+}
+
+/// The final text can have fitted font sizes, so retain it with its layout.
+struct LaidText {
+    content: Bounds<Points>,
+    layout: TextLayout,
+    text: Arc<AttributedText>,
 }
 
 impl<P> TextContext<P> {
@@ -722,7 +738,28 @@ impl<P> TextContext<P> {
             min_content: None,
             cache: None,
             laid_out: None,
+            metadata_changed: false,
         }
+    }
+    /// Remount metadata in the same box, keeping any fitted font sizes.
+    fn remount_metadata(
+        &mut self,
+        content: Bounds<Points>,
+    ) -> Option<(Arc<AttributedText>, TextLayout)> {
+        if !self.metadata_changed {
+            return None;
+        }
+        let laid = self.laid_out.as_mut().filter(|l| l.content == content)?;
+        let text = if laid.text.spans == self.text.spans {
+            self.text.clone()
+        } else {
+            let mut text = (*laid.text).clone();
+            text.test_ids = self.text.test_ids.clone();
+            Arc::new(text)
+        };
+        laid.text = text.clone();
+        self.metadata_changed = false;
+        Some((text, laid.layout.clone()))
     }
 }
 
@@ -2872,6 +2909,7 @@ impl<M: TextEngine> Core<M> {
         }
         let node = &mut self.nodes[key as usize];
         let mut flags = 0;
+        let mut rebuild_span = false;
         match prop {
             Prop::Source(source) => {
                 if let Some(image) = node.image.as_mut() {
@@ -3128,6 +3166,19 @@ impl<M: TextEngine> Core<M> {
                 (node.gestures.pan_x, node.gestures.pan_y) = (x, y);
                 flags |= dirty::PAN;
             }
+            Prop::PanEnabled(enabled) => {
+                if node.pan_enabled != enabled {
+                    node.pan_enabled = enabled;
+                    flags |= dirty::PAN | dirty::EVENTS;
+                }
+            }
+            Prop::PanScrollHandoff(value) => {
+                let props = node.props.get_or_insert_default();
+                if props.pan_scroll_handoff != value {
+                    props.pan_scroll_handoff = value;
+                    flags |= dirty::VIEW_PROPS;
+                }
+            }
             Prop::PinchValue(value) => {
                 node.gestures.pinch = value;
                 flags |= dirty::PAN;
@@ -3349,6 +3400,10 @@ impl<M: TextEngine> Core<M> {
                 if props.test_id != value {
                     props.test_id = value;
                     flags |= dirty::VIEW_PROPS;
+                    // A span's id is recorded in its block's text.
+                    if node.kind == Kind::Text && node.inline {
+                        rebuild_span = true;
+                    }
                 }
             }
             Prop::WindowDrag(value) => {
@@ -3711,6 +3766,9 @@ impl<M: TextEngine> Core<M> {
                 // must travel in the containing block's TextLink metadata.
                 self.mark_text_block(key);
             }
+        }
+        if rebuild_span {
+            self.mark_text_block(key);
         }
         Ok(())
     }
@@ -4484,10 +4542,12 @@ impl<M: TextEngine> Core<M> {
                 });
             }
             if flags & dirty::PAN != 0 {
-                self.mount.push(MountItem::Gestures {
-                    id,
-                    values: node.gestures,
-                });
+                let mut values = node.gestures;
+                if !node.pan_enabled {
+                    values.pan_x = None;
+                    values.pan_y = None;
+                }
+                self.mount.push(MountItem::Gestures { id, values });
             }
             if flags & dirty::VIEW_PROPS != 0 {
                 let props = node.mounted_props();
@@ -4809,6 +4869,16 @@ impl<M: TextEngine> Core<M> {
             }
             return inserted;
         }
+        if cx.text.test_ids != text.test_ids
+            && !inserted
+            && cx.alignments == alignments
+            && cx.text.rendering_eq(&text)
+        {
+            cx.text = Arc::new(text);
+            cx.metadata_changed = true;
+            return true;
+        }
+        cx.metadata_changed = false;
         let same_layout = cx.text.layout_eq(&text) && cx.alignments == alignments;
         cx.alignments = alignments;
         cx.text = Arc::new(text);
@@ -4880,6 +4950,13 @@ impl<M: TextEngine> Core<M> {
                             node: child.id,
                             events: child.events,
                             props: Arc::new(child.props.as_deref().cloned().unwrap_or_default()),
+                        });
+                    }
+                    if let Some(test_id) = child.props.as_ref().and_then(|p| p.test_id.clone()) {
+                        out.test_ids.push(crate::text::SpanTestId {
+                            start,
+                            end: out.len_utf16(),
+                            test_id,
                         });
                     }
                 }
@@ -5560,13 +5637,28 @@ impl<M: TextEngine> Core<M> {
                 // in its zero box would still show where a platform does
                 // not clip text to its box (a browser), so it gets an
                 // empty layout; the text itself stays what it is.
-                if matches!(&cx.laid_out, Some((r, _)) if *r == content) {
+                if let Some((text, layout)) = cx.remount_metadata(content) {
+                    cx.source_geometry = Some(SourceGeometry::default());
+                    self.mount.push(MountItem::Text {
+                        id,
+                        text,
+                        layout,
+                        content,
+                    });
+                    continue;
+                }
+                if matches!(&cx.laid_out, Some(l) if l.content == content) {
                     refresh_source_geometry(engine, cx);
                     continue;
                 }
                 let layout =
                     engine.layout(&engine.prepare(&AttributedText::default()), content.size);
-                cx.laid_out = Some((content, layout.clone()));
+                cx.laid_out = Some(LaidText {
+                    content,
+                    layout: layout.clone(),
+                    text: cx.text.clone(),
+                });
+                cx.metadata_changed = false;
                 cx.source_geometry = Some(SourceGeometry::default());
                 self.mount.push(MountItem::Text {
                     id,
@@ -5591,17 +5683,32 @@ impl<M: TextEngine> Core<M> {
                     content.size.height = height;
                 }
             }
+            if let Some((text, layout)) = cx.remount_metadata(content) {
+                refresh_source_geometry(engine, cx);
+                self.mount.push(MountItem::Text {
+                    id,
+                    text,
+                    layout,
+                    content,
+                });
+                continue;
+            }
             let size = content.size;
             if let Some(min) = fit {
                 // Shrunk to fit: its own text, laid out on its own.
-                if matches!(&cx.laid_out, Some((r, _)) if *r == content) {
+                if matches!(&cx.laid_out, Some(l) if l.content == content) {
                     refresh_source_geometry(engine, cx);
                     continue;
                 }
                 let text = Arc::new(fitted(engine, &cx.text, &cx.alignments, size, min));
                 let prepared = engine.prepare_aligned(&text, &cx.alignments);
                 let text_layout = engine.layout(&prepared, size);
-                cx.laid_out = Some((content, text_layout.clone()));
+                cx.laid_out = Some(LaidText {
+                    content,
+                    layout: text_layout.clone(),
+                    text: text.clone(),
+                });
+                cx.metadata_changed = false;
                 cx.source_geometry = None;
                 refresh_source_geometry(engine, cx);
                 if report_lines {
@@ -5623,12 +5730,12 @@ impl<M: TextEngine> Core<M> {
                 continue;
             }
             let text_layout = match &cx.laid_out {
-                Some((r, _)) if *r == content => {
+                Some(l) if l.content == content => {
                     refresh_source_geometry(engine, cx);
                     continue;
                 }
                 // Only moved (padding, vertical alignment): the same layout.
-                Some((r, l)) if r.size == size => l.clone(),
+                Some(l) if l.content.size == size => l.layout.clone(),
                 _ => {
                     let prepared = cx
                         .prepared
@@ -5644,7 +5751,12 @@ impl<M: TextEngine> Core<M> {
                     layout
                 }
             };
-            cx.laid_out = Some((content, text_layout.clone()));
+            cx.laid_out = Some(LaidText {
+                content,
+                layout: text_layout.clone(),
+                text: cx.text.clone(),
+            });
+            cx.metadata_changed = false;
             cx.source_geometry = None;
             refresh_source_geometry(engine, cx);
             if !cx.text.attachments.is_empty() {
@@ -6700,9 +6812,10 @@ fn refresh_source_geometry<M: TextEngine>(engine: &M, cx: &mut TextContext<M::Pr
         cx.source_geometry = if cx.sources.is_empty() {
             Some(SourceGeometry::default())
         } else {
-            cx.laid_out
-                .as_ref()
-                .map(|(_, layout)| cx.sources.geometry(&cx.text.text, engine.lines(layout)))
+            cx.laid_out.as_ref().map(|laid| {
+                cx.sources
+                    .geometry(&cx.text.text, engine.lines(&laid.layout))
+            })
         };
     }
 }

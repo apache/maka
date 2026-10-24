@@ -682,7 +682,7 @@ function ChatScreen() {
 
 ### 键盘访问器
 
-Rust 中的 `keyboard_height()` 和 `keyboard_duration()`，以及 TSX 中 `nsh/base` 的 `keyboardFrame()`（一个 `{ height, duration }`），都是响应式的：键盘伸入 surface 的高度（隐藏时为 0，包含被它盖住的底部安全区域）以及它的动画时长（秒）。需要自定义行为时读取它们，例如输入时隐藏浮动按钮，或调整面板尺寸。
+Rust 中的 `keyboard_height()` 和 `keyboard_duration()`，以及 TSX 中 `nsh/base` 的 `keyboardFrame()`（一个 `{ height, duration }`），都是响应式的：键盘伸入 surface 的高度（隐藏时为 0，包含被它盖住的底部安全区域）以及它的动画时长（秒）。需要自定义行为时读取它们，例如输入时隐藏浮动按钮，或调整面板尺寸。随它们变化的布局在键盘的曲线上做动画时，就与键盘一起移动：`LayoutAnimation.configureNext({ duration: keyboardFrame().duration * 1000, update: { type: "keyboard" } })`（Rust：`LayoutCurve::Keyboard`），`KeyboardAvoidingView` 就是这样做的。
 
 ```rust tabs
 view().child(when(

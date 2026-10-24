@@ -487,9 +487,11 @@ browsers' touches into what phones report:
   (`grabBar`: `onScrollDragStart` / `EndDrag`, snapping off while it is held, a snapping view then settles on the
   nearest snap point). Phones and tablets keep the browser's own overlay scroll bars.
 - **Keys** (`keyDown`), in this order: the app's shortcuts (`nsh/keymap`: the mounted `MountItem::Keymap` stays in
-  Rust, `nsh_key` matches a key on the spot with `Keymap::find` and `nsh_key_command` reports the binding; keys are
-  passed as the character they type without modifiers, else the US layout's character of their `code`; `mod` was
-  resolved by the browser's platform, `appleKeyboard` in the environment JSON); an open dialog (Escape presses its
+  Rust, `nsh_key` matches a key on the spot with `Keymap::find` and `nsh_key_command` reports the binding.
+  Its `f64` result preserves the full `u32` ID range, including Rust shortcuts and overlay Escape, apart from
+  the `-1` (unmatched) and `-2` (held repeat) sentinels. Keys are passed as the character they type without
+  modifiers, else the US layout's character of their `code`; `mod` was resolved by the browser's platform,
+  `appleKeyboard` in the environment JSON); an open dialog (Escape presses its
   cancel button); a focused field (Escape leaves it); selectable text with a selection (select all, in a selection area the whole area; Escape); a focused
   pressable (Return presses it, Space when released); going back (Escape, Alt+Left, Cmd+[, BrowserBack); scrolling the
   scroll view around the focus or under the mouse (arrows by 40 points, Page Up / Down and Space by 0.875 of a page,

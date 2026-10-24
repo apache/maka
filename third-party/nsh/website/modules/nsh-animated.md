@@ -474,7 +474,7 @@ value.timing(1, { easing: "easeOut" });
 const LayoutAnimation: {
   configureNext(config: LayoutAnimationConfig, onEnd?: () => void): void;
   create(duration: number, type?: LayoutAnimationType, property?: LayoutAnimationProperty): LayoutAnimationConfig;
-  Types: { easeInEaseOut; spring; linear; easeIn; easeOut };
+  Types: { easeInEaseOut; spring; linear; easeIn; easeOut; keyboard };
   Properties: { opacity; scaleXY };
   Presets: { easeInEaseOut: LayoutAnimationConfig; linear: LayoutAnimationConfig; spring: LayoutAnimationConfig };
   easeInEaseOut(onEnd?: () => void): void;
@@ -490,7 +490,7 @@ interface LayoutAnimationConfig {
 }
 
 interface LayoutAnimationAnimation {
-  type?: "easeInEaseOut" | "spring" | "linear" | "easeIn" | "easeOut";
+  type?: "easeInEaseOut" | "spring" | "linear" | "easeIn" | "easeOut" | "keyboard";
   property?: "opacity" | "scaleXY" | "scale";
   duration?: number;
   delay?: number;

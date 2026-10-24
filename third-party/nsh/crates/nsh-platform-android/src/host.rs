@@ -1647,12 +1647,22 @@ extern "system" fn Java_com_longbridge_nsh_Native_pan(
         ui.pan_moved(id as u32, tx, ty);
     }
     let (value_x, value_y) = ui.pan_values(id as u32);
-    let payload = EventPayload::Pan {
-        translation: point(px(tx), px(ty)),
-        velocity_x: vx,
-        velocity_y: vy,
-        value_x: value_x.map(Points),
-        value_y: value_y.map(Points),
+    let payload = if state == 3 {
+        EventPayload::PanCancelled {
+            translation: point(px(tx), px(ty)),
+            velocity_x: vx,
+            velocity_y: vy,
+            value_x: value_x.map(Points),
+            value_y: value_y.map(Points),
+        }
+    } else {
+        EventPayload::Pan {
+            translation: point(px(tx), px(ty)),
+            velocity_x: vx,
+            velocity_y: vy,
+            value_x: value_x.map(Points),
+            value_y: value_y.map(Points),
+        }
     };
     match (state, &control) {
         (0, Some(c)) => c.dispatch_event(id as NodeId, EventKind::PanStart, payload),

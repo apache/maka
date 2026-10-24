@@ -48,6 +48,18 @@ the selected row in ordinary insertion/removal. The correction covers a pending 
 previous published source after JS has queued another source change; these ordinary traces
 establish bounded work, not a general speedup or the frequency of that cross-frame condition.
 
+
+Span test-id metadata (macOS arm64, debug CLI, three runs per revision against `e02b40f8`):
+`echo 'await app.press("Rename ID")' | nsh test crates/nsh-testing/tests/testing/queries/Spans.tsx --trace`.
+The first commit stays at 31 ops / 25 mount items / 13 nodes; renaming stays at 1 op / 1 item / 13 nodes.
+Rename commit times were 47–208 → 37–79 µs (medians 48 → 64 µs). The regression engine counts
+zero additional preparations, measurements and layouts after a metadata update, versus an additional layout
+before the fix; the mounted layout is reused, including fitted font sizes, without `onTextLayout`.
+The counter control stays at 56 ops / 49 items / 21 nodes initially and 10 ops / 7 items / 24 nodes after `+1`,
+matching the item-count baseline below. Its minimum initial / press times were 357 / 181 → 315 / 189 µs.
+These noisy single-frame timings establish stable work counts rather than a speedup.
+
+
 `onMouseMove` (Desktop and web): Linux x86_64, debug CLI, five interleaved runs of
 `echo 'await app.press("+1")' | nsh test examples/counter/App.tsx --trace`, against main `fd772aef`.
 The first commit stays at 56 ops / 49 mount items / 21 nodes; the press stays at 10 ops / 7 items / 24 nodes.
