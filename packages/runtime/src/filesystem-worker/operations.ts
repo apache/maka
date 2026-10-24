@@ -18,7 +18,15 @@
  */
 
 import { searchFiles, GrepSearchError, type GrepRunner } from '../grep-search.js';
+import {
+  prepareFileMutation,
+  FileMutationEditConflict,
+  executePreparedFileMutation,
+  buildFileEditResult,
+  buildFileWriteResult,
+} from '../file-mutation-guard.js';
 import { promises as fs } from 'node:fs';
+import type { FileMutationDirectories } from '../file-mutation-guard-contract.js';
 import { globFiles } from '../glob-search.js';
 import { dirname, isAbsolute, parse, resolve } from 'node:path';
 import { isPathInside } from '../path-containment.js';
@@ -38,7 +46,7 @@ import {
 import { computeEditedSource } from '../edit-replace.js';
 import { readPage } from '../read-page.js';
 import { formatJsonText } from '../format-json.js';
-import { createEditUnifiedDiff, createUnifiedDiff } from '../unified-diff.js';
+import { createUnifiedDiff } from '../unified-diff.js';
 import {
   compareAndDeleteEntry,
   hostVisibilityAfterWrite,
@@ -67,6 +75,8 @@ import { isLikelySandboxDenial } from '../sandbox/detect.js';
 const { realpath, realpathAllowMissing, resolveCanonicalDirectoryEntryTarget } = sandboxPathApi();
 
 export interface FilesystemWorkerOperationDependencies {
+  /** Host identities captured outside the sandbox mount namespace. */
+  hostDirectories?: FileMutationDirectories;
   grepExecutable?: string;
   /** Where this worker runs, as the Host observed it; names the install location in Grep's guidance. */
   ripgrepEnvironment?: RipgrepEnvironment;
@@ -94,7 +104,7 @@ export async function executeFilesystemWorkerRequest(
       result: await executeFilesystemOperation(
         request.operation,
         request.operationBoundary,
-        dependencies,
+        { ...dependencies, hostDirectories: request.hostDirectories },
         request.expectedTarget,
       ),
     };
@@ -116,6 +126,25 @@ export async function executeFilesystemOperation(
   expectedTarget?: FilesystemWorkerTarget,
 ): Promise<FilesystemWorkerResult> {
   switch (operation.kind) {
+    case 'prepare_write':
+    case 'prepare_edit': {
+      const path = await resolveWritableAllowed(
+        operation.cwd,
+        operation.path,
+        'Write',
+        operationBoundary,
+      );
+      const guard = await prepareFileMutation(
+        operation.cwd,
+        path,
+        {
+          kind: operation.kind === 'prepare_write' ? 'write' : 'edit',
+          eligible: operation.eligible,
+        },
+        dependencies.hostDirectories,
+      );
+      return { kind: operation.kind, ...(guard ? { guard } : {}) };
+    }
     case 'read': {
       const path = await resolveExistingAllowed(
         operation.cwd,
@@ -160,6 +189,15 @@ export async function executeFilesystemOperation(
         'Write',
         operationBoundary,
       );
+      if (operation.guard) {
+        return executePreparedFileMutation(
+          operation.cwd,
+          path,
+          { kind: 'write', content: operation.content },
+          operation.guard,
+          dependencies.hostDirectories,
+        );
+      }
       // Pin the approved object (#2600): open once, validate the identity on
       // the descriptor, and write through that descriptor — a path swap between
       // validation and the write cannot divert the bytes onto the replacement.
@@ -192,17 +230,7 @@ export async function executeFilesystemOperation(
         // the bytes went to an orphan and the visible file is the replacement.
         const visibility = await hostVisibilityAfterWrite(path, handle);
         if (visibility) throw visibility;
-        const diff =
-          previous === 'unknown'
-            ? undefined
-            : createUnifiedDiff(path, previous === 'new' ? undefined : previous, operation.content);
-        return {
-          kind: 'write',
-          ok: true,
-          path,
-          bytes: Buffer.byteLength(operation.content, 'utf8'),
-          ...(diff !== undefined ? { diff } : {}),
-        };
+        return buildFileWriteResult(path, operation.content, previous);
       } finally {
         await handle.close();
       }
@@ -262,6 +290,14 @@ export async function executeFilesystemOperation(
         'write',
         operationBoundary,
       );
+      if (operation.guard)
+        return executePreparedFileMutation(
+          operation.cwd,
+          path,
+          operation,
+          operation.guard,
+          dependencies.hostDirectories,
+        );
       const handle = await openStableTarget({
         path,
         approvedIdentity:
@@ -287,17 +323,7 @@ export async function executeFilesystemOperation(
         await writeThroughHandle(handle, source.content);
         const visibility = await hostVisibilityAfterWrite(path, handle);
         if (visibility) throw visibility;
-        const diff = createEditUnifiedDiff(path, content, source.content, source);
-        return {
-          kind: 'edit',
-          ok: true,
-          path,
-          replacements: 1,
-          matchedVia: source.matchedVia,
-          startLine: source.startLine,
-          endLine: source.endLine,
-          ...(diff !== undefined ? { diff } : {}),
-        };
+        return buildFileEditResult(path, content, source);
       } finally {
         await handle.close();
       }
@@ -461,7 +487,7 @@ function normalizeOperationError(error: unknown): FilesystemOperationError {
   if (error instanceof StableWriteFailure) {
     return operationError(error.code, error.message);
   }
-  if (error instanceof ApplyPatchRejectedError) {
+  if (error instanceof ApplyPatchRejectedError || error instanceof FileMutationEditConflict) {
     return operationError('edit_conflict', error.message);
   }
   const code = nodeErrorCode(error);
