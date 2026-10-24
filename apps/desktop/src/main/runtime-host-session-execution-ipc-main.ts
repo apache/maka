@@ -30,6 +30,7 @@ import {
   RuntimeHostRequestInterruptedError,
 } from '@maka/runtime-host/client';
 import {
+  HOST_OPERATION_SPECS,
   MESSAGE_QUEUE_MAX_ENTRIES,
   type TurnMessageExecutionResolution,
 } from '@maka/runtime-host/protocol';
@@ -118,6 +119,7 @@ type RuntimeHostSessionExecutionClient = Pick<
   | "copySession"
   | "getSession"
   | "generatePromptSuggestion"
+  | "generateCheckin"
   | "ingestAttachment"
   | "interruptTurn"
   | "openSession"
@@ -401,6 +403,12 @@ export function registerRuntimeHostSessionExecutionIpc(
 
   ipcMain.handle('sessions:generatePromptSuggestion', async (_event, sessionId: unknown) =>
     deps.client.generatePromptSuggestion(requiredId(sessionId, 'Session')),
+  );
+
+  ipcMain.handle('sessions:generateCheckin', async (_event, input: unknown) =>
+    deps.client.generateCheckin(
+      HOST_OPERATION_SPECS['session.checkin.generate'].decodeInput(input),
+    ),
   );
 
   handleReconnectableRead(ipcMain, 'sessions:listTurns', async (_event, sessionId: unknown) =>

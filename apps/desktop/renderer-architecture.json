@@ -2006,6 +2006,7 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
+          "../features/conversation/index.js": 1,
           "../features/jev-settings": 1,
           "../features/network-proxy/index.js": 1,
           "../features/personal-assistant/index.js": 1,

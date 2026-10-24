@@ -2290,6 +2290,7 @@ function executionClient(overrides: Partial<ExecutionClient>): ExecutionClient {
     copySession: unavailable,
     getSession: unavailable,
     generatePromptSuggestion: unavailable,
+    generateCheckin: unavailable,
     ingestAttachment: unavailable,
     interruptTurn: unavailable,
     listSessionTurns: unavailable,
@@ -2566,4 +2567,18 @@ test('prompt suggestion IPC forwards only a validated Session and does not recon
   await assert.rejects(ipc.invoke('sessions:generatePromptSuggestion', ''), /Invalid/);
   assert.deepEqual(calls, ['session-1']);
   assert.equal(ipc.reconnectableChannels.has('sessions:generatePromptSuggestion'), false);
+});
+
+test('check-in IPC forwards a decoded request once and never reconnects a paid effect', async () => {
+  const ipc = ipcHarness();
+  const calls: unknown[] = [];
+  registerExecutionIpc({ client: executionClient({ generateCheckin: async (input) => {
+    calls.push(input); return { kind: 'empty', effectId: input.effectId };
+  } }) }, ipc);
+  assert.deepEqual(await ipc.invoke('sessions:generateCheckin', { effectId: 'effect-1', since: null }), {
+    kind: 'empty', effectId: 'effect-1',
+  });
+  await assert.rejects(ipc.invoke('sessions:generateCheckin', { effectId: 'effect-2' }), /Invalid/);
+  assert.deepEqual(calls, [{ effectId: 'effect-1', since: null }]);
+  assert.equal(ipc.reconnectableChannels.has('sessions:generateCheckin'), false);
 });

@@ -709,3 +709,53 @@ test('new user requirements wake a backing-off task without overwriting working 
   assert.equal(f.store.get(m.id).matter.status, 'paused');
   assert.equal(f.store.claim(m.id), null);
 });
+
+test('AI progress previews are bounded, transactional and persist across restart', (t) => {
+  const f = fixture(t);
+  const m = f.store.claim(f.m.id)!.matter;
+  assert.equal(m.progressSummary, undefined);
+  assert.throws(
+    () =>
+      f.store.checkpoint(
+        m.id,
+        m.activation!.id,
+        m.revision,
+        'new note',
+        'invalid',
+        '字'.repeat(31),
+      ),
+    /1–30/,
+  );
+  assert.equal(f.store.get(m.id).matter.revision, m.revision);
+  const saved = f.store.checkpoint(
+    m.id,
+    m.activation!.id,
+    m.revision,
+    '完整工作笔记',
+    'preview',
+    '已查询，等待供应商回复',
+  );
+  assert.equal(f.reopen().get(m.id).matter.progressSummary, '已查询，等待供应商回复');
+  const input = {
+    expectedRevision: saved.revision,
+    stateText: saved.stateText,
+    disposition: 'complete' as const,
+    reason: '目标满足',
+    summary: '保留完整的交接记录',
+    progressSummary: '验收通过，报告已保存',
+  };
+  assert.throws(
+    () =>
+      f.store.settle(
+        m.id,
+        m.activation!.id,
+        { ...input, progressSummary: '字'.repeat(31) },
+        'bad-settle',
+      ),
+    /1–30/,
+  );
+  assert.equal(f.store.get(m.id).matter.progressSummary, saved.progressSummary);
+  const result = f.store.settle(m.id, m.activation!.id, input, 'settled');
+  assert.equal(result.progressSummary, '验收通过，报告已保存');
+  assert.equal(f.reopen().get(m.id).matter.progressSummary, result.progressSummary);
+});

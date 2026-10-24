@@ -1181,7 +1181,14 @@ export interface MakaBridge {
       sessions: DesktopSessionSummary[];
       completeHostIds: string[];
     }>;
-    create(input?: CreateSessionRequestInput): Promise<DesktopSessionSummary>;
+    /**
+     * Creates on the active Runtime Host, or with `besideSessionId` on that
+     * Session's Host, failing when it is no longer available.
+     */
+    create(
+      input?: CreateSessionRequestInput,
+      options?: { readonly besideSessionId?: string },
+    ): Promise<DesktopSessionSummary>;
     send(
       sessionId: string,
       command: {
@@ -1329,6 +1336,14 @@ export interface MakaBridge {
     listTurns(sessionId: string): Promise<TurnRecord[]>;
     /** Request a bounded next-prompt prediction for this Session. */
     generatePromptSuggestion(sessionId: string): Promise<import('@maka/runtime-host/protocol').PromptSuggestionResult>;
+    /**
+     * Ask the default Runtime Host for check-in cards. Card Session ids come back
+     * as Desktop Session keys on that Host.
+     */
+    generateCheckin(input: {
+      effectId: string;
+      since: number | null;
+    }): Promise<import('@maka/runtime-host/protocol').SessionCheckinGenerateResult>;
     /** Read a bounded, redacted tail from another same-Host Session. */
     readSnapshot(sessionId: string, options?: { maxChars?: number }): Promise<SessionSnapshot>;
     /** Sampled prompt-rail landmarks, or where the one Turn `turnId` sits. */

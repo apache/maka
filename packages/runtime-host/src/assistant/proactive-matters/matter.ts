@@ -83,6 +83,8 @@ export interface Matter {
   title: string;
   request: string;
   stateText: string;
+  /** Agent-authored list preview; absent on tasks created before this field existed. */
+  progressSummary?: string;
   revision: number;
   status: MatterStatus;
   wakes: MatterWake[];
@@ -121,6 +123,7 @@ export interface MatterSettleInput {
   reason: string;
   /** Agent-authored account of this activation, appended to history by the host. */
   summary: string;
+  progressSummary?: string;
   next?: string;
   update?: string;
 }
@@ -205,6 +208,7 @@ export interface MatterStore {
     revision: number,
     text: string,
     operationId: string,
+    progressSummary?: string,
   ): Matter;
   settle(
     id: string,

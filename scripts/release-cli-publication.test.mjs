@@ -24,8 +24,8 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
-import { CLI_RELEASE_ARTIFACT_LIMITS } from './release-cli-artifact-policy.mjs';
 import {
+  MAX_REGISTRY_TARBALL_BYTES,
   assertRegistryNightlyPredecessor,
   fetchRegistryRelease,
   parseCliNightlyVersion,
@@ -228,7 +228,7 @@ test('finalization rejects a release record whose product tag does not match its
 });
 
 test('registry finalization requires the exact staged bytes and dist-tag', async () => {
-  const fixture = createPreparedCandidate();
+  const fixture = createPreparedCandidate(Buffer.alloc(34 * 1024 * 1024, 'a'));
   const registryDirectory = mkdtempSync(join(tmpdir(), 'maka-cli-registry-release-'));
   const fetchImpl = registryFetch({ fixture });
 
@@ -262,7 +262,7 @@ test('registry downloads stop reading as soon as the tarball exceeds its bound',
   const fallback = registryFetch({ fixture });
   const tarballUrl = `https://registry.npmjs.org/maka-agent/-/${fixture.tarball}`;
   const chunkBytes = 1024 * 1024;
-  const offeredChunks = Math.floor(CLI_RELEASE_ARTIFACT_LIMITS.compressedBytes / chunkBytes) + 8;
+  const offeredChunks = Math.floor(MAX_REGISTRY_TARBALL_BYTES / chunkBytes) + 8;
   let pulls = 0;
   const fetchImpl = async (input, options) => {
     if (String(input) !== tarballUrl) return fallback(input, options);
@@ -283,7 +283,7 @@ test('registry downloads stop reading as soon as the tarball exceeds its bound',
       registryDirectory: mkdtempSync(join(tmpdir(), 'maka-cli-registry-oversized-')),
       fetchImpl,
     }),
-    /exceeds the reviewed compressed size limit/u,
+    /exceeds the download resource limit/u,
   );
   assert.ok(pulls < offeredChunks, `expected an early bounded read, consumed ${pulls} chunks`);
 });
@@ -525,8 +525,8 @@ test('validate-stage-run CLI accepts the canonical staged release identity', () 
   ]);
 });
 
-function createPreparedCandidate() {
-  const fixture = createCandidate();
+function createPreparedCandidate(bytes) {
+  const fixture = createCandidate(undefined, undefined, bytes);
   prepareStageRelease({
     repoRoot: fixture.root,
     releaseDirectory: fixture.releaseDirectory,
@@ -585,12 +585,15 @@ function provenanceBundle(mutate = () => {}) {
   };
 }
 
-function createCandidate(version = '0.2.0', sourceVersion = version) {
+function createCandidate(
+  version = '0.2.0',
+  sourceVersion = version,
+  bytes = Buffer.from('immutable cli tarball'),
+) {
   const root = mkdtempSync(join(tmpdir(), 'maka-cli-publication-'));
   const releaseDirectory = join(root, 'packages/cli/release');
   const tarball = `maka-agent-${version}.tgz`;
   const tarballPath = join(releaseDirectory, tarball);
-  const bytes = Buffer.from('immutable cli tarball');
   const sha256 = digest('sha256', bytes, 'hex');
   mkdirSync(releaseDirectory, { recursive: true });
   writeFileSync(join(root, 'package.json'), '{"packageManager":"npm@11.19.0"}\n');

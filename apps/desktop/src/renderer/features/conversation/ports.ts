@@ -21,7 +21,8 @@ import type { ExecutionBoundaryReadModel } from '@maka/core/sandbox-boundary';
 import type { SessionSnapshot } from '@maka/core/session-reference';
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import type { InvocableSkillEntry } from '@maka/runtime/skill-invocation';
-import type { ContextCompactResult } from '@maka/runtime-host/protocol';
+import type { CheckinCard } from '@maka/core/session-checkin';
+import type { ContextCompactResult, SessionCheckinGenerateResult } from '@maka/runtime-host/protocol';
 import type { DesktopSessionSummary } from '../../../shared/desktop-session-projection.js';
 import type { DesktopSessionLocalBridge } from '../../../shared/session-local-contract.js';
 
@@ -63,6 +64,8 @@ export interface ConversationServices extends Pick<
     subscribeEnabled?(handler: () => void): () => void;
     writeEnabled(enabled: boolean): void;
   };
+  /** Check-in cards on the new-task screen; absent where the platform cannot run them. */
+  readonly checkin?: ConversationCheckinPort;
   readonly sessions: {
     getExecutorState?(sessionId: string): Promise<readonly import('@maka/core/executor-catalog').ExecutorCatalogEntry[]>;
     setExecutorModelConfiguration?(sessionId: string, config: import('@maka/core/executor-catalog').ExecutorConfiguration): Promise<import('../../../shared/desktop-session-projection.js').DesktopSessionUpdateResult<DesktopSessionSummary>>;
@@ -131,4 +134,33 @@ export interface ConversationServices extends Pick<
   readonly mcp: {
     subscribeChanges(handler: () => void): () => void;
   };
+}
+
+/** What a client remembers between check-ins; the Host keeps none of it. */
+export interface ConversationCheckinMemory {
+  readonly lastAttemptAt: number;
+  /** When the last answered check-in started: the Host's `since` for the next one. */
+  readonly lastCheckinAt: number | null;
+  readonly cards: readonly CheckinCard[];
+  /** Cards the user dismissed or acted on, by `checkinCardKey`. */
+  readonly settled: readonly string[];
+}
+
+export interface ConversationCheckinPort {
+  generate(input: {
+    readonly effectId: string;
+    readonly since: number | null;
+  }): Promise<SessionCheckinGenerateResult>;
+  readEnabled(): boolean;
+  writeEnabled(enabled: boolean): void;
+  readMemory(): unknown;
+  writeMemory(memory: ConversationCheckinMemory): void;
+  /** The Session's current revision, or undefined when it is gone. */
+  readRevision(sessionId: string): Promise<number | undefined>;
+  /** True when the Host started a safe continuation of the last run. */
+  resume(sessionId: string): Promise<boolean>;
+  /** True when the Host accepted the message. */
+  send(sessionId: string, text: string): Promise<boolean>;
+  /** Opens a new Session beside the source one, quoting it; returns its id. */
+  startSession(sourceSessionId: string, text: string): Promise<string | undefined>;
 }

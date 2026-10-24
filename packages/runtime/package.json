@@ -120,6 +120,7 @@
     "./runtime-read-model": "./dist/runtime-read-model.js",
     "./sandbox-boundary-tool": "./dist/sandbox-boundary-tool.js",
     "./scheduled-task-tools": "./dist/scheduled-task-tools.js",
+    "./session-checkin": "./dist/session-checkin.js",
     "./session-recap": "./dist/session-recap.js",
     "./session-export": "./dist/session-export.js",
     "./session-trace-projection": "./dist/session-trace-projection.js",

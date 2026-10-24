@@ -59,6 +59,7 @@
 @import "./styles/help.css" layer(components);
 @import "./styles/palette.css" layer(components);
 @import "./styles/hero.css" layer(components);
+@import "./styles/checkin.css" layer(components);
 @import "./styles/chat-message.css" layer(components);
 @import "./styles/composer.css" layer(components);
 @import "./styles/message-queue.css" layer(components);
