@@ -496,7 +496,7 @@ const options = {
   collectPackagedAllowlist: () => allowlistOf(PTY_PACKAGES),
 };
 
-test('accepts the Intel Mach-O architecture for an x64 package', async () => {
+test('verifies an Intel macOS package after a transient ticket validation failure', async () => {
   const { verifyPackagedMacApp } = await import('./verify-macos-dmg.mjs');
   const asarPackages = await Promise.all(
     PTY_PACKAGES.map(async (name) => {
@@ -526,6 +526,7 @@ test('accepts the Intel Mach-O architecture for an x64 package', async () => {
   const app = join(dirname(resources), 'Maka.app');
   await mkdir(join(app, 'Contents'), { recursive: true });
   await rename(resources, join(app, 'Contents', 'Resources'));
+  const verificationSteps = [];
   // The archive and update configuration are real; macOS command output and
   // app launches are the system boundaries this portable test substitutes.
   await verifyPackagedMacApp(app, {
@@ -534,7 +535,9 @@ test('accepts the Intel Mach-O architecture for an x64 package', async () => {
     environment: { MAKA_DESKTOP_NIGHTLY_VERSION: version },
     requirePath: async () => {},
     smokeFilesystemWorker: async () => {},
-    smokeRenderer: async () => {},
+    smokeRenderer: async () => {
+      verificationSteps.push('renderer');
+    },
     run: async (command, args) => {
       if (command === 'plutil') {
         const values = {
@@ -546,14 +549,24 @@ test('accepts the Intel Mach-O architecture for an x64 package', async () => {
         return { stdout: `${values[args[1]]}\n` };
       }
       if (command === 'lipo') return { stdout: 'x86_64\n' };
-      if (
-        ['codesign', 'spctl', 'xcrun', join(app, 'Contents', 'MacOS', 'Maka')].includes(command)
-      ) {
+      if (command === 'xcrun') {
+        verificationSteps.push(args[1]);
+        assert.deepEqual(args, ['stapler', 'validate', app]);
+        if (verificationSteps.length === 1) {
+          return runCommand(process.execPath, [
+            '-e',
+            "require('node:fs').writeSync(1, 'Error Domain=NSURLErrorDomain Code=-1005 connection lost'); process.exit(68)",
+          ]);
+        }
+        return { stdout: '' };
+      }
+      if (['codesign', 'spctl', join(app, 'Contents', 'MacOS', 'Maka')].includes(command)) {
         return { stdout: '' };
       }
       throw new Error(`Unexpected command: ${command}`);
     },
   });
+  assert.deepEqual(verificationSteps, ['validate', 'validate', 'renderer']);
 });
 
 describe('assertRenderableAppIcon', () => {
