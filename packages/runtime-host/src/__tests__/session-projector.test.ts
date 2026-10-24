@@ -620,12 +620,49 @@ test('projects each live compaction boundary immediately with its original ident
       id: `compaction-${sequence}`,
       turnId: 'turn-1',
       ts: 123456789 + sequence,
+      compactionId: `compaction-${sequence}`,
+      scope: 'step' as const,
     };
     const update = projector.accept({
       kind: 'subscription.session_event',
       hostEpoch: 'host-1',
       subscriptionId: 'subscription-1',
       sequence,
+      sessionId: 'session-1',
+      runId: 'run-1',
+      event,
+    });
+    assert.deepEqual(update.events, [event]);
+  }
+});
+
+test('projects step-scoped compaction lifecycle frames without turning the Turn into a compaction run', () => {
+  const projector = projectorAt();
+  const events = [
+    {
+      type: 'context_compaction_started' as const,
+      id: 'compaction-started-1',
+      turnId: 'turn-1',
+      ts: 123456789,
+      compactionId: 'compact-1',
+      scope: 'step' as const,
+    },
+    {
+      type: 'context_compaction_failed' as const,
+      id: 'compaction-failed-1',
+      turnId: 'turn-1',
+      ts: 123456790,
+      compactionId: 'compact-1',
+      scope: 'step' as const,
+      reason: 'write_failed',
+    },
+  ];
+  for (const [index, event] of events.entries()) {
+    const update = projector.accept({
+      kind: 'subscription.session_event',
+      hostEpoch: 'host-1',
+      subscriptionId: 'subscription-1',
+      sequence: index + 1,
       sessionId: 'session-1',
       runId: 'run-1',
       event,
@@ -948,10 +985,16 @@ test('context compaction projects one lifecycle across bootstrap, transition, an
     },
   });
   const bootstrapped = projectorAt(compacting);
+  const seeded = bootstrapped.seedActive(true);
   assert.deepEqual(
-    bootstrapped.seedActive(true).map(({ type, turnId }) => [type, turnId]),
+    seeded.map(({ type, turnId }) => [type, turnId]),
     [['context_compaction_started', 'turn-compact']],
   );
+  assert.equal(seeded[0]?.type, 'context_compaction_started');
+  if (seeded[0]?.type === 'context_compaction_started') {
+    assert.equal(seeded[0].scope, 'turn');
+    assert.equal(seeded[0].compactionId, 'run-compact');
+  }
 
   for (const previous of [
     snapshot(),
@@ -993,6 +1036,173 @@ test('context compaction projects one lifecycle across bootstrap, transition, an
     kind: 'compacted',
     checkpointId: 'checkpoint-1',
   });
+});
+
+test('seeds only automatic compactions whose durable started marker has no terminal marker', () => {
+  const transcript: StoredMessage[] = [
+    {
+      type: 'system_note',
+      id: 'started-complete',
+      turnId: 'turn-1',
+      ts: 2,
+      kind: 'context_compaction_started',
+      data: { compactionId: 'complete', scope: 'step' },
+    },
+    {
+      type: 'system_note',
+      id: 'applied-complete',
+      turnId: 'turn-1',
+      ts: 3,
+      kind: 'context_compaction_applied',
+      data: { compactionId: 'complete', scope: 'step' },
+    },
+    {
+      type: 'system_note',
+      id: 'started-failed',
+      turnId: 'turn-1',
+      ts: 4,
+      kind: 'context_compaction_started',
+      data: { compactionId: 'failed', scope: 'step' },
+    },
+    {
+      type: 'system_note',
+      id: 'failed',
+      turnId: 'turn-1',
+      ts: 5,
+      kind: 'context_compaction_failed_open',
+      data: { compactionId: 'failed', scope: 'step', failOpenReason: 'write_failed' },
+    },
+    {
+      type: 'system_note',
+      id: 'started-active',
+      turnId: 'turn-1',
+      ts: 6,
+      kind: 'context_compaction_started',
+      data: { compactionId: 'active', scope: 'step' },
+    },
+  ];
+  const current = snapshot();
+  const projector = new RuntimeHostSessionProjector(
+    current,
+    createRuntimeHostSessionProjectionSeed(transcript, current),
+    fixedClock,
+  );
+
+  assert.deepEqual(
+    projector.seedActive(false).filter((event) => event.type === 'context_compaction_started'),
+    [
+      {
+        type: 'context_compaction_started',
+        id: 'host-step-compaction-started:active',
+        turnId: 'turn-1',
+        ts: 6,
+        compactionId: 'active',
+        scope: 'step',
+      },
+    ],
+  );
+});
+
+test('tracks automatic compaction lifecycle events for later reseeding', () => {
+  const projector = projectorAt();
+  const started = projector.accept({
+    kind: 'subscription.session_event',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 1,
+    sessionId: 'session-1',
+    runId: 'run-1',
+    event: {
+      type: 'context_compaction_started',
+      id: 'started-1',
+      turnId: 'turn-1',
+      ts: 20,
+      compactionId: 'compaction-1',
+      scope: 'step',
+    },
+  });
+  assert.equal(started.events[0]?.type, 'context_compaction_started');
+  assert.deepEqual(
+    projector.seedActive(false).filter((event) => event.type === 'context_compaction_started'),
+    [
+      {
+        type: 'context_compaction_started',
+        id: 'host-step-compaction-started:compaction-1',
+        turnId: 'turn-1',
+        ts: 20,
+        compactionId: 'compaction-1',
+        scope: 'step',
+      },
+    ],
+  );
+
+  projector.accept({
+    kind: 'subscription.session_event',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 2,
+    sessionId: 'session-1',
+    runId: 'run-1',
+    event: {
+      type: 'context_compaction_applied',
+      id: 'applied-1',
+      turnId: 'turn-1',
+      ts: 30,
+      compactionId: 'compaction-1',
+      scope: 'step',
+    },
+  });
+  assert.equal(
+    projector.seedActive(false).some((event) => event.type === 'context_compaction_started'),
+    false,
+  );
+
+  projector.accept({
+    kind: 'subscription.session_event',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 3,
+    sessionId: 'session-1',
+    runId: 'run-1',
+    event: {
+      type: 'context_compaction_started',
+      id: 'started-2',
+      turnId: 'turn-1',
+      ts: 40,
+      compactionId: 'compaction-2',
+      scope: 'step',
+    },
+  });
+  assert.equal(
+    projector
+      .seedActive(false)
+      .some(
+        (event) =>
+          event.type === 'context_compaction_started' && event.compactionId === 'compaction-2',
+      ),
+    true,
+  );
+  projector.accept({
+    kind: 'subscription.session_event',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 4,
+    sessionId: 'session-1',
+    runId: 'run-1',
+    event: {
+      type: 'context_compaction_failed',
+      id: 'failed-2',
+      turnId: 'turn-1',
+      ts: 50,
+      compactionId: 'compaction-2',
+      scope: 'step',
+      reason: 'write_failed',
+    },
+  });
+  assert.equal(
+    projector.seedActive(false).some((event) => event.type === 'context_compaction_started'),
+    false,
+  );
 });
 
 test('seeds an empty queue only for a client that renders the queue', () => {

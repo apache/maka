@@ -39,6 +39,10 @@ import {
 } from '@maka/core/session';
 import type { ContextBudgetDiagnostic } from '@maka/core/usage-stats/types';
 import { providerRetryDisplaySeconds } from '@maka/core/provider-retry-countdown';
+import {
+  compactionStateForFailure,
+  readCompactionFailureReason,
+} from '@maka/core/compaction-status';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import {
   defineUiMessageCatalog,
@@ -1361,7 +1365,9 @@ function systemNoteText(message: SystemNoteMessage): string | undefined {
     case 'context_compacted':
       return 'Context compacted to keep this task within the model window.';
     case 'context_compaction_failed_open':
-      return 'Context summary failed; the session continued without a new summary.';
+      return compactionStateForFailure(readCompactionFailureReason(message.data)) === 'interrupted'
+        ? 'Context compaction was interrupted.'
+        : 'Context summary failed; the session continued without a new summary.';
     case 'context_overflow_after_compaction':
       return 'History was compacted and the provider still called this request too large. What remains also carries the system prompt, the tool schemas, the summary and the recent tail; shortening this message is the part you control.';
     case 'context_reported_window_exceeded': {

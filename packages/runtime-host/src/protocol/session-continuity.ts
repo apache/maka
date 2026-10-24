@@ -238,13 +238,39 @@ export interface SessionContextCompactionAppliedEvent {
   id: string;
   turnId: string;
   ts: number;
+  compactionId: string;
+  scope: 'turn' | 'step';
+}
+
+export interface SessionContextCompactionStartedEvent {
+  type: 'context_compaction_started';
+  id: string;
+  turnId: string;
+  ts: number;
+  compactionId: string;
+  scope: 'step';
+}
+
+export interface SessionContextCompactionFailedEvent {
+  type: 'context_compaction_failed';
+  id: string;
+  turnId: string;
+  ts: number;
+  compactionId: string;
+  scope: 'step';
+  reason: string;
 }
 
 export interface SessionEventFrame extends SubscriptionEnvelope {
   kind: 'subscription.session_event';
   sessionId: string;
   runId: string;
-  event: SessionToolEvent | SessionSteeringEvent | SessionContextCompactionAppliedEvent;
+  event:
+    | SessionToolEvent
+    | SessionSteeringEvent
+    | SessionContextCompactionAppliedEvent
+    | SessionContextCompactionStartedEvent
+    | SessionContextCompactionFailedEvent;
 }
 
 export interface SessionTranscriptAdvancedFrame extends SubscriptionEnvelope {
@@ -816,12 +842,76 @@ function decodeSessionFrameEvent(value: unknown): SessionEventFrame['event'] {
       'id',
       'turnId',
       'ts',
+      'compactionId',
+      'scope',
     ]);
+    if (record.scope !== 'turn' && record.scope !== 'step') {
+      throw invalidProtocolFrame('Invalid context compaction applied scope');
+    }
     return {
       type: record.type,
       id: requireId(record.id, 'Session context compaction applied event id'),
       turnId: requireEntityId(record.turnId, 'turnId'),
       ts: requireCount(record.ts, 'Session context compaction applied event timestamp'),
+      compactionId: requireId(
+        record.compactionId,
+        'Session context compaction applied compactionId',
+      ),
+      scope: record.scope,
+    };
+  }
+  if (record.type === 'context_compaction_started') {
+    assertExactKeys(record, 'Session context compaction started event', [
+      'type',
+      'id',
+      'turnId',
+      'ts',
+      'compactionId',
+      'scope',
+    ]);
+    if (record.scope !== 'step') {
+      throw invalidProtocolFrame('Invalid context compaction started scope');
+    }
+    return {
+      type: record.type,
+      id: requireId(record.id, 'Session context compaction started event id'),
+      turnId: requireEntityId(record.turnId, 'turnId'),
+      ts: requireCount(record.ts, 'Session context compaction started event timestamp'),
+      compactionId: requireId(
+        record.compactionId,
+        'Session context compaction started compactionId',
+      ),
+      scope: 'step',
+    };
+  }
+  if (record.type === 'context_compaction_failed') {
+    assertExactKeys(record, 'Session context compaction failed event', [
+      'type',
+      'id',
+      'turnId',
+      'ts',
+      'compactionId',
+      'scope',
+      'reason',
+    ]);
+    if (record.scope !== 'step') {
+      throw invalidProtocolFrame('Invalid context compaction failed scope');
+    }
+    return {
+      type: record.type,
+      id: requireId(record.id, 'Session context compaction failed event id'),
+      turnId: requireEntityId(record.turnId, 'turnId'),
+      ts: requireCount(record.ts, 'Session context compaction failed event timestamp'),
+      compactionId: requireId(
+        record.compactionId,
+        'Session context compaction failed compactionId',
+      ),
+      scope: 'step',
+      reason: requireUtf8BoundedString(
+        record.reason,
+        'Session context compaction failure reason',
+        256,
+      ),
     };
   }
   if (record.type === 'steering_message') return decodeSessionSteeringEvent(record);

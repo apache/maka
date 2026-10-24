@@ -132,12 +132,14 @@ export function mapSessionEventToRuntimeEvent(
   ctx: RuntimeEventMapContext,
   memory: SessionEventMapMemory = createSessionEventMapMemory(),
 ): RuntimeEvent {
+  if (event.type === 'context_compaction_started' && event.scope !== 'step') {
+    throw new Error('turn-scoped context_compaction_started is not a backend event');
+  }
   if (isHostProjectionSessionEvent(event)) {
     // These are Host/kernel projection facts, not backend events. The live
     // ingress drops them, so reaching this line bypassed that authority boundary.
-    // `context_compaction_started` is one of these: synthesized by the Runtime
-    // Host session projector for the renderer's live "compacting" row, never
-    // produced by a backend or the kernel.
+    // `context_compaction_started` is deliberately not here: a `step`-scoped
+    // start is a Runtime fact that must become a durable hidden note.
     throw new Error(`${event.type} is not a backend event`);
   }
   if (isLegacyPermissionSessionEvent(event)) {
@@ -148,6 +150,7 @@ export function mapSessionEventToRuntimeEvent(
 }
 
 export function isLiveBackendSessionEvent(event: SessionEvent): event is BackendSessionEvent {
+  if (event.type === 'context_compaction_started' && event.scope !== 'step') return false;
   return !isHostProjectionSessionEvent(event) && !isLegacyPermissionSessionEvent(event);
 }
 
@@ -157,7 +160,6 @@ function isHostProjectionSessionEvent(event: SessionEvent): event is Extract<
     type:
       | 'queue_update'
       | 'message_admission'
-      | 'context_compaction_started'
       | 'client_capability_request'
       | 'client_capability_decision_ack';
   }
@@ -165,7 +167,6 @@ function isHostProjectionSessionEvent(event: SessionEvent): event is Extract<
   return (
     event.type === 'queue_update' ||
     event.type === 'message_admission' ||
-    event.type === 'context_compaction_started' ||
     event.type === 'client_capability_request' ||
     event.type === 'client_capability_decision_ack'
   );
@@ -489,13 +490,61 @@ function mapBackendSessionEvent(
         refs: { toolCallId: event.toolUseId },
       };
 
+    case 'context_compaction_started':
+      return {
+        ...base,
+        role: 'system',
+        author: 'system',
+        modelVisibility: 'hidden',
+        content: {
+          kind: 'system_note',
+          note: event.type,
+          ...(event.compactionId !== undefined || event.scope !== undefined
+            ? {
+                data: {
+                  ...(event.compactionId !== undefined ? { compactionId: event.compactionId } : {}),
+                  ...(event.scope !== undefined ? { scope: event.scope } : {}),
+                },
+              }
+            : {}),
+        },
+      };
+
     case 'context_compaction_applied':
       return {
         ...base,
         role: 'system',
         author: 'system',
         modelVisibility: 'hidden',
-        content: { kind: 'system_note', note: event.type },
+        content: {
+          kind: 'system_note',
+          note: event.type,
+          ...(event.compactionId !== undefined || event.scope !== undefined
+            ? {
+                data: {
+                  ...(event.compactionId !== undefined ? { compactionId: event.compactionId } : {}),
+                  ...(event.scope !== undefined ? { scope: event.scope } : {}),
+                },
+              }
+            : {}),
+        },
+      };
+
+    case 'context_compaction_failed':
+      return {
+        ...base,
+        role: 'system',
+        author: 'system',
+        modelVisibility: 'hidden',
+        content: {
+          kind: 'system_note',
+          note: 'context_compaction_failed_open',
+          data: {
+            compactionId: event.compactionId,
+            scope: event.scope,
+            failOpenReason: event.reason,
+          },
+        },
       };
 
     // ── Steering: a user message injected mid-turn at a step boundary ─────

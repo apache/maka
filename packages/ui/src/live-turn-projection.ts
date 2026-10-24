@@ -31,6 +31,12 @@ import { applyAssistantComplete, applyAssistantDelta } from './assistant-stream.
 import { projectToolActivityArgs } from '@maka/core/tool-activity-args';
 import { toolResultActivityStatus } from '@maka/core/tool-result-status';
 import { isInFlightToolStatus } from '@maka/core/tool-result-status';
+import {
+  compactionStateForFailure,
+  compactionStateForTurnStatus,
+  readCompactionTimelineMarker,
+  type CompactionTimelineState,
+} from '@maka/core/compaction-status';
 import type { ToolActivityItem } from './materialize.js';
 import { applyThinkingComplete, applyThinkingDelta } from './thinking-stream.js';
 import type { StreamingDisplayRedactionState } from './streaming-display-redaction.js';
@@ -97,6 +103,14 @@ export interface LiveSteeringProjection {
   ts: number;
 }
 
+export interface LiveCompactionProjection {
+  compactionId: string;
+  state: CompactionTimelineState;
+  startedAt: number;
+  /** Present only when `state === 'failed'`; cancellation uses `interrupted`. */
+  reason?: string;
+}
+
 export interface LiveTurnProjection {
   turnId: string;
   terminal?: true;
@@ -123,6 +137,8 @@ export interface LiveTurnProjection {
    */
   unconfirmed?: true;
   providerRetry?: LiveProviderRetry;
+  /** In-Turn compaction attempts, keyed by compactionId. */
+  compactions?: LiveCompactionProjection[];
   steps: LiveTurnStepProjection[];
 }
 
@@ -152,6 +168,18 @@ function terminalizeLiveSteps(steps: readonly LiveTurnStepProjection[]): LiveTur
       isInFlightToolStatus(tool.status) ? { ...tool, status: 'interrupted' as const } : tool
     )),
   }));
+}
+
+function terminalizeLiveCompactions(
+  compactions: LiveCompactionProjection[] | undefined,
+  state: 'failed' | 'interrupted',
+): LiveCompactionProjection[] | undefined {
+  if (!compactions || compactions.length === 0) return compactions;
+  return compactions.map((compaction) => {
+    if (compaction.state !== 'running') return compaction;
+    const { reason: _reason, ...withoutReason } = compaction;
+    return { ...withoutReason, state };
+  });
 }
 
 function terminalThinking(thinking: LiveThinkingProjection): LiveThinkingProjection {
@@ -212,6 +240,34 @@ export function applyLiveTurnEvent(
   return { ...next, startedAt: startedAt ?? event.ts };
 }
 
+function updateLiveCompaction(
+  projection: LiveTurnProjection,
+  update: LiveCompactionProjection,
+): LiveTurnProjection {
+  const existing = projection.compactions?.find(
+    (candidate) => candidate.compactionId === update.compactionId,
+  );
+  if (existing) {
+    if (existing.state !== 'running') return projection;
+    return {
+      ...projection,
+      compactions: projection.compactions!.map((candidate) =>
+        candidate.compactionId === update.compactionId
+          ? {
+              ...candidate,
+              state: update.state,
+              ...(update.reason !== undefined ? { reason: update.reason } : {}),
+            }
+          : candidate,
+      ),
+    };
+  }
+  return {
+    ...projection,
+    compactions: [...(projection.compactions ?? []), update],
+  };
+}
+
 function projectLiveTurnEvent(
   current: LiveTurnProjection | undefined,
   event: SessionEvent,
@@ -250,18 +306,32 @@ function projectLiveTurnEvent(
   if (event.type === 'error' || event.type === 'abort') {
     if (!current || current.turnId !== event.turnId) return current;
     const steps = terminalizeLiveSteps(current.steps);
-    if (steps.length === 0) return undefined;
+    if (steps.length === 0 && !current.compactions?.length) return undefined;
     const { providerRetry: _providerRetry, ...withoutRetry } = confirmed(current);
-    return { ...withoutRetry, terminal: true, steps };
+    const compactions = terminalizeLiveCompactions(
+      current.compactions,
+      event.type === 'abort' ? 'interrupted' : 'failed',
+    );
+    return {
+      ...withoutRetry,
+      terminal: true,
+      steps,
+      ...(compactions !== undefined ? { compactions } : {}),
+    };
   }
   if (event.type === 'complete') {
     if (!current || current.turnId !== event.turnId) return current;
-    if (current.steps.length === 0) return undefined;
+    if (current.steps.length === 0 && !current.compactions?.length) return undefined;
     const { providerRetry: _providerRetry, ...withoutRetry } = confirmed(current);
+    const compactions = terminalizeLiveCompactions(
+      current.compactions,
+      event.stopReason === 'error' ? 'failed' : 'interrupted',
+    );
     return {
       ...withoutRetry,
       terminal: true,
       steps: terminalizeLiveSteps(current.steps),
+      ...(compactions !== undefined ? { compactions } : {}),
     };
   }
   if (event.type === 'context_compaction_started') {
@@ -269,7 +339,40 @@ function projectLiveTurnEvent(
       current?.turnId === event.turnId
         ? current
         : { turnId: event.turnId, steps: [] };
+    if (event.scope === 'step') {
+      if (event.compactionId === undefined) return confirmed(prior);
+      return updateLiveCompaction(confirmed(prior), {
+        compactionId: event.compactionId,
+        state: 'running',
+        startedAt: event.ts,
+      });
+    }
     return { ...confirmed(prior), rootExecutionKind: 'context_compact', startedAt: event.ts };
+  }
+  if (event.type === 'context_compaction_applied') {
+    if (event.scope !== 'step' || event.compactionId === undefined) return current;
+    const prior =
+      current?.turnId === event.turnId
+        ? current
+        : { turnId: event.turnId, steps: [] };
+    return updateLiveCompaction(confirmed(prior), {
+      compactionId: event.compactionId,
+      state: 'compacted',
+      startedAt: event.ts,
+    });
+  }
+  if (event.type === 'context_compaction_failed') {
+    const prior =
+      current?.turnId === event.turnId
+        ? current
+        : { turnId: event.turnId, steps: [] };
+    const state = compactionStateForFailure(event.reason);
+    return updateLiveCompaction(confirmed(prior), {
+      compactionId: event.compactionId,
+      state,
+      startedAt: event.ts,
+      ...(state === 'failed' ? { reason: event.reason } : {}),
+    });
   }
   if (
     event.type !== 'thinking_delta'
@@ -550,7 +653,7 @@ export function settleLiveTurnStep(
     }];
   });
   if (!found) return current;
-  if (steps.length === 0 && current.terminal) return undefined;
+  if (steps.length === 0 && current.terminal && !current.compactions?.length) return undefined;
   return { ...current, steps };
 }
 
@@ -584,6 +687,42 @@ function durableStreamEvidence(
   return false;
 }
 
+function reconcileCompactionTerminals(
+  compactions: LiveCompactionProjection[] | undefined,
+  turnMessages: readonly StoredMessage[],
+): LiveCompactionProjection[] | undefined {
+  if (!compactions || compactions.length === 0) return compactions;
+  const terminalById = new Map<
+    string,
+    { state: 'compacted' | 'failed' | 'interrupted'; reason?: string }
+  >();
+  for (const message of turnMessages) {
+    const marker = readCompactionTimelineMarker(message);
+    if (!marker || marker.state === 'running') continue;
+    terminalById.set(marker.compactionId, {
+      state: marker.state,
+      ...(marker.reason !== undefined ? { reason: marker.reason } : {}),
+    });
+  }
+  if (terminalById.size === 0) return compactions;
+  let changed = false;
+  const next = compactions.map((compaction) => {
+    const terminal = terminalById.get(compaction.compactionId);
+    if (!terminal) return compaction;
+    if (compaction.state === terminal.state && compaction.reason === terminal.reason) {
+      return compaction;
+    }
+    changed = true;
+    const { reason: _reason, ...withoutReason } = compaction;
+    return {
+      ...withoutReason,
+      state: terminal.state,
+      ...(terminal.reason !== undefined ? { reason: terminal.reason } : {}),
+    };
+  });
+  return changed ? next : compactions;
+}
+
 /**
  * Removes evidence-only steps once the persisted transcript can render the
  * same durable output, including while a later step is still running. Text
@@ -595,16 +734,34 @@ export function reconcileTerminalLiveTurn(
   messages: readonly StoredMessage[],
 ): LiveTurnProjection | undefined {
   const turnMessages = messages.filter((message) => message.turnId === current.turnId);
-  const transcriptReachedTerminal = turnMessages.some(
+  const terminalTurn = turnMessages.find(
     (message) => message.type === 'turn_state' && message.status !== 'running',
   );
+  const transcriptReachedTerminal = terminalTurn !== undefined;
+  const terminalStatus = terminalTurn?.type === 'turn_state'
+    && terminalTurn.status !== 'running'
+    ? terminalTurn.status
+    : undefined;
   let projection = current;
-  if (transcriptReachedTerminal && current.terminal !== true) {
+  const compactions = reconcileCompactionTerminals(projection.compactions, turnMessages);
+  if (compactions !== projection.compactions) {
+    projection = { ...projection, compactions };
+  }
+  if (
+    transcriptReachedTerminal
+    && terminalStatus !== undefined
+    && current.terminal !== true
+  ) {
     const { providerRetry: _providerRetry, ...withoutRetry } = confirmed(current);
+    const terminalizedCompactions = terminalizeLiveCompactions(
+      projection.compactions,
+      compactionStateForTurnStatus(terminalStatus),
+    );
     projection = {
       ...withoutRetry,
       terminal: true,
       steps: terminalizeLiveSteps(current.steps),
+      ...(terminalizedCompactions !== undefined ? { compactions: terminalizedCompactions } : {}),
     };
   }
   const userIds = new Set(turnMessages.flatMap((message) => message.type === 'user' ? [message.id] : []));
@@ -627,13 +784,34 @@ export function reconcileTerminalLiveTurn(
     });
     return !toolsCovered;
   });
+  // Terminal live content stays until history can render the same outcome.
+  // A durable start plus a terminal Turn is settled from the Turn status; a
+  // start alone must not replace the known terminal state with a spinner.
+  const durableCompactions = new Map(
+    turnMessages.flatMap((message) => {
+      const marker = readCompactionTimelineMarker(message);
+      return marker ? [[marker.compactionId, marker] as const] : [];
+    }),
+  );
+  const compactionsCovered = (projection.compactions ?? []).every((compaction) => {
+    const marker = durableCompactions.get(compaction.compactionId);
+    if (!marker) return false;
+    if (marker.state === 'running') {
+      return transcriptReachedTerminal
+        && terminalStatus !== undefined
+        && compaction.state === compactionStateForTurnStatus(terminalStatus);
+    }
+    return marker.state === compaction.state && marker.reason === compaction.reason;
+  });
   if (
     steps.length === 0
+    && compactionsCovered
     && projection.terminal
     && (
       projection.rootExecutionKind === 'context_compact'
       || transcriptReachedTerminal
       || steps.length !== projection.steps.length
+      || Boolean(projection.compactions?.length)
     )
   ) return undefined;
   if (steps.length === projection.steps.length) return projection;

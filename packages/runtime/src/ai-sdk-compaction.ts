@@ -148,6 +148,107 @@ export interface AutomaticMemoryCompactionDecision {
   readonly dispatch: boolean;
 }
 
+/** Presentation lifecycle shared by proactive and overflow compaction. */
+export interface CompactionLifecycle {
+  /** Allocates the identity shared by the start/terminal presentation rows. */
+  newCompactionId: () => string;
+  /**
+   * The attempt is about to call the summarizer. Checks that fail before that
+   * call (no safe span, ledger read, head anchor) open no row: they can repeat
+   * on every over-window step and stay with the once-per-send settlement note.
+   */
+  onCompactionStarted?: (compactionId: string) => void | Promise<void>;
+  /**
+   * Fired after the checkpoint is persisted and the projection takes over,
+   * before the replacement request. This apply-time boundary is fail-open:
+   * presentation bookkeeping must never disturb compaction.
+   */
+  onCompactionApplied?: (compactionId: string) => void | Promise<void>;
+  /** An opened attempt failed open with this diagnostic. */
+  onCompactionFailed?: (compactionId: string, reason: string) => void | Promise<void>;
+}
+
+function bindCompactionAttempt(lifecycle: CompactionLifecycle) {
+  const compactionId = lifecycle.newCompactionId();
+  return {
+    onCompactionStarted: () => lifecycle.onCompactionStarted?.(compactionId),
+    onCompactionApplied: () => lifecycle.onCompactionApplied?.(compactionId),
+    onCompactionFailed: (reason: string) => lifecycle.onCompactionFailed?.(compactionId, reason),
+  };
+}
+
+/**
+ * One attempt's visible row: opened at most once, settled at most once, and
+ * settled only if it was opened. Every callback is fail-open because
+ * presentation bookkeeping must never disturb compaction.
+ */
+interface CompactionAttemptPresentation {
+  open(): Promise<void>;
+  apply(): Promise<void>;
+  fail(reason: string): Promise<void>;
+}
+
+function presentCompactionAttempt(callbacks: {
+  onCompactionStarted?: () => void | Promise<void>;
+  onCompactionApplied?: () => void | Promise<void>;
+  onCompactionFailed?: (reason: string) => void | Promise<void>;
+}): CompactionAttemptPresentation {
+  let phase: 'idle' | 'open' | 'settled' = 'idle';
+  const open = async (): Promise<void> => {
+    if (phase !== 'idle') return;
+    phase = 'open';
+    try {
+      await callbacks.onCompactionStarted?.();
+    } catch {
+      // Losing the start row must not block the summarizer call it precedes.
+    }
+  };
+  return {
+    open,
+    apply: async () => {
+      // A fold always passes through the summarizer, so the row is normally
+      // open already; opening here keeps the start/terminal pair complete.
+      await open();
+      if (phase !== 'open') return;
+      phase = 'settled';
+      try {
+        await callbacks.onCompactionApplied?.();
+      } catch {
+        // The boundary row explains the compaction; losing it must not undo one.
+      }
+    },
+    fail: async (reason) => {
+      if (phase !== 'open') return;
+      phase = 'settled';
+      try {
+        await callbacks.onCompactionFailed?.(reason);
+      } catch {
+        // The settlement fallback still records the visible failure note.
+      }
+    },
+  };
+}
+
+type ActiveRequestCompactionInput = {
+  turnId: string;
+  state: MidTurnCapacityCompactState;
+  /** The turn this replacement request is built for. */
+  origin: ProviderRequestOrigin;
+  queue: AsyncEventQueue<SessionEvent>;
+  minFlushedSteps: number;
+  activeToolsForStep: readonly string[];
+  memoryCompactionDecision?: () => AutomaticMemoryCompactionDecision;
+  onMemoryCompaction?: (input: AutomaticMemoryCompactionDispatch) => void;
+  /** See {@link CompactionLifecycle.onCompactionStarted}. */
+  onCompactionStarted?: () => void | Promise<void>;
+  /** See {@link CompactionLifecycle.onCompactionApplied}. */
+  onCompactionApplied?: () => void | Promise<void>;
+  /** See {@link CompactionLifecycle.onCompactionFailed}. */
+  onCompactionFailed?: (reason: string) => void | Promise<void>;
+  phase?: 'pre_turn' | 'mid_turn';
+  abortSignal?: AbortSignal;
+};
+
 /** Constructor dependencies for AiSdkCompaction. */
 export interface AiSdkCompactionDeps {
   input: AiSdkCompactionCapabilities;
@@ -838,13 +939,7 @@ export class AiSdkCompaction {
     queue: AsyncEventQueue<SessionEvent>,
     providerTools: readonly MakaTool[],
     onDiagnosticPatch: (patch: Partial<ContextBudgetDiagnostic>) => void,
-    /**
-     * Fired once a compaction is durable and applied — checkpoint persisted and the
-     * projection takes over — before the replacement request goes out. The
-     * runtime records its apply-time boundary row here; like every system
-     * note it must never disturb the compaction, so the call is fail-open.
-     */
-    onCompactionApplied: (() => void | Promise<void>) | undefined,
+    lifecycle: CompactionLifecycle,
     origin: ProviderRequestOrigin,
     memoryCompactionDecision?: () => AutomaticMemoryCompactionDecision,
     onMemoryCompaction?: (input: AutomaticMemoryCompactionDispatch) => void,
@@ -918,6 +1013,7 @@ export class AiSdkCompaction {
         return keepProjection();
       }
       const activeToolsForStep = options.resolveDispatch(options.activeTools).activeTools;
+      const attempt = bindCompactionAttempt(lifecycle);
       // Fold a safe completed prefix of the durable turn ledger into a
       // replacement projection (validate → persist), shared with the reactive
       // overflow path. This stage maps the outcome to the request-projection contract:
@@ -932,7 +1028,7 @@ export class AiSdkCompaction {
         activeToolsForStep,
         memoryCompactionDecision,
         onMemoryCompaction,
-        onCompactionApplied,
+        ...attempt,
         abortSignal,
       });
       if (outcome.decision === 'fail') {
@@ -969,28 +1065,36 @@ export class AiSdkCompaction {
    * covered raw span. It only shapes: the pass/terminate verdict and the
    * diagnostic emission are the caller's.
    */
-  public async compactActiveRequestHistory(input: {
-    turnId: string;
-    state: MidTurnCapacityCompactState;
-    /** The turn this replacement request is built for. */
-    origin: ProviderRequestOrigin;
-    queue: AsyncEventQueue<SessionEvent>;
-    minFlushedSteps: number;
-    activeToolsForStep: readonly string[];
-    memoryCompactionDecision?: () => AutomaticMemoryCompactionDecision;
-    onMemoryCompaction?: (input: AutomaticMemoryCompactionDispatch) => void;
-    /** See {@link buildMidTurnCapacityCompactProjection}'s parameter. */
-    onCompactionApplied?: () => void | Promise<void>;
-    phase?: 'pre_turn' | 'mid_turn';
-    abortSignal?: AbortSignal;
-  }): Promise<ActiveRequestCompactionOutcome> {
+  public async compactActiveRequestHistory(
+    input: ActiveRequestCompactionInput,
+  ): Promise<ActiveRequestCompactionOutcome> {
+    const attempt = presentCompactionAttempt(input);
+    try {
+      return await this.runActiveRequestCompaction(input, attempt);
+    } catch (error) {
+      // An opened row needs a terminal event even when the attempt throws;
+      // otherwise it spins until the Turn settles and a reattaching client
+      // replays it as running.
+      await attempt.fail(input.abortSignal?.aborted ? 'interrupted' : 'unexpected_error');
+      throw error;
+    }
+  }
+
+  private async runActiveRequestCompaction(
+    input: ActiveRequestCompactionInput,
+    attempt: CompactionAttemptPresentation,
+  ): Promise<ActiveRequestCompactionOutcome> {
     const { turnId, state, queue, activeToolsForStep, abortSignal } = input;
     if (state.summarizerFailure) {
-      return {
-        decision: 'fail',
-        diagnosticReason: state.summarizerFailure,
-      };
+      // The latch means no new provider attempt is made. Keep the first
+      // attempt's row and diagnostics; do not manufacture another lifecycle for
+      // every later over-window step.
+      return { decision: 'fail', diagnosticReason: state.summarizerFailure };
     }
+    const fail = async (diagnosticReason: string): Promise<ActiveRequestCompactionOutcome> => {
+      await attempt.fail(diagnosticReason);
+      return { decision: 'fail', diagnosticReason };
+    };
     const summarizer = this.input.summarizeHistoryCompact!;
     const midTurnTracker = this.createProviderRequestTracker({
       turnId,
@@ -1032,16 +1136,10 @@ export class AiSdkCompaction {
     // Exits: the boundary, an abort, a detached consumer, or a read failure.
     for (;;) {
       if (abortSignal?.aborted) {
-        return {
-          decision: 'fail',
-          diagnosticReason: 'ledger_wait_aborted',
-        };
+        return fail('interrupted');
       }
       if (queue.consumerDetached) {
-        return {
-          decision: 'fail',
-          diagnosticReason: 'ledger_wait_aborted',
-        };
+        return fail('ledger_wait_aborted');
       }
       if (state.flushedSteps >= input.minFlushedSteps && queue.consumedCount >= queue.pushedCount)
         break;
@@ -1051,10 +1149,7 @@ export class AiSdkCompaction {
     try {
       turnLedger = await loadTurnRuntimeEvents(turnId);
     } catch {
-      return {
-        decision: 'fail',
-        diagnosticReason: 'ledger_read_failed',
-      };
+      return fail('ledger_read_failed');
     }
     const currentTurnEvents = turnLedger
       .filter((event) => event.turnId === turnId)
@@ -1063,10 +1158,7 @@ export class AiSdkCompaction {
     // A fresh anchor belongs to the live ledger; after handoff it belongs to
     // the authenticated predecessor prefix. Neither path manufactures it.
     if (!orderedEvents.some((event) => event.id === state.headAnchor.id)) {
-      return {
-        decision: 'fail',
-        diagnosticReason: 'head_anchor_not_durable',
-      };
+      return fail('head_anchor_not_durable');
     }
     const memoryDecision = input.memoryCompactionDecision?.();
     const plan = await planHistoryCompaction({
@@ -1098,6 +1190,10 @@ export class AiSdkCompaction {
         : {}),
       loadProjectionSnapshot: () => this.loadModelProjectionTransitions(),
       summarize: async ({ coveredRuntimeEvents, newlyFoldedRuntimeEvents, previousCheckpoint }) => {
+        // The visible attempt starts with the summarizer call. A stop that
+        // already landed is settled by the abort check after planning, and
+        // must not open a row only to close it as interrupted.
+        if (!abortSignal?.aborted) await attempt.open();
         // Same contract as the standalone path: the planner hands the
         // effective (transition-folded) view to the summarizer and pins its
         // digest, so a summary can never quote a body a durable transition
@@ -1118,6 +1214,11 @@ export class AiSdkCompaction {
       },
     });
 
+    // The planner may translate an aborted summarizer into fail_open. The
+    // owning signal distinguishes user cancellation from a provider failure,
+    // and must be checked before latching that failure or persisting a fold.
+    if (abortSignal?.aborted) return fail('interrupted');
+
     if (plan.decision === 'fail_open') {
       const diagnosticReason = plan.diagnosticReason ?? plan.reason;
       // Latch only a fail-open the summarizer actually produced. The baseline
@@ -1135,10 +1236,7 @@ export class AiSdkCompaction {
       if (plan.reason === 'summarizer_failed') {
         state.summarizerFailure = diagnosticReason;
       }
-      return {
-        decision: 'fail',
-        diagnosticReason,
-      };
+      return fail(diagnosticReason);
     }
 
     // Lifecycle order is validate → persist → apply, where validate is
@@ -1154,10 +1252,7 @@ export class AiSdkCompaction {
       hasBlockingReplayDiagnostics(replayPlan) ||
       (replayPlan.hasProviderNativeSemantics && !this.canReplayProviderNative(replayPlan))
     ) {
-      return {
-        decision: 'fail',
-        diagnosticReason: 'replacement_unmaterializable',
-      };
+      return fail('replacement_unmaterializable');
     }
     const replacementMessages = await this.materializeRuntimeReplayPlan(
       replayPlan,
@@ -1177,13 +1272,11 @@ export class AiSdkCompaction {
     // The replacement is valid: durably persist the checkpoint BEFORE
     // applying the projection — the same order as the pre_turn path. A
     // persistence failure keeps raw messages and records write_failed.
+    if (abortSignal?.aborted) return fail('interrupted');
     try {
       await Promise.resolve(recorder(plan.checkpoint, turnId));
     } catch {
-      return {
-        decision: 'fail',
-        diagnosticReason: 'write_failed',
-      };
+      return fail('write_failed');
     }
     if (memoryDecision?.dispatch && input.onMemoryCompaction) {
       try {
@@ -1199,11 +1292,7 @@ export class AiSdkCompaction {
     // The boundary is durable the moment the projection takes over: record it
     // now, not at turn settlement, so usage readers ordering measurements
     // against the compaction get the apply time.
-    try {
-      await input.onCompactionApplied?.();
-    } catch {
-      // The boundary row explains the compaction; losing it must not undo one.
-    }
+    await attempt.apply();
     return {
       decision: 'compacted',
       checkpoint: plan.checkpoint,
@@ -1238,8 +1327,7 @@ export class AiSdkCompaction {
     origin: ProviderRequestOrigin;
     memoryCompactionDecision?: () => AutomaticMemoryCompactionDecision;
     onMemoryCompaction?: (input: AutomaticMemoryCompactionDispatch) => void;
-    /** See {@link buildMidTurnCapacityCompactProjection}'s parameter. */
-    onCompactionApplied?: () => void | Promise<void>;
+    lifecycle: CompactionLifecycle;
     abortSignal?: AbortSignal;
   }): Promise<{ messages: ModelMessage[] } | undefined> {
     const state = input.midTurnState;
@@ -1276,6 +1364,7 @@ export class AiSdkCompaction {
     }
 
     const phase = state.compactionPhase(input.stepNumber);
+    const attempt = bindCompactionAttempt(input.lifecycle);
     const outcome = await this.compactActiveRequestHistory({
       turnId: input.turnId,
       phase,
@@ -1288,7 +1377,7 @@ export class AiSdkCompaction {
       activeToolsForStep: input.activeTools,
       memoryCompactionDecision: input.memoryCompactionDecision,
       onMemoryCompaction: input.onMemoryCompaction,
-      onCompactionApplied: input.onCompactionApplied,
+      ...attempt,
       abortSignal: input.abortSignal,
     });
     if (outcome.decision !== 'compacted') {

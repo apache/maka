@@ -108,7 +108,10 @@ export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
 // Re-check against main before merging; sibling PRs may use the same next epoch.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 229 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 230 as const;
+// 230: Session event frames add in-Turn context-compaction started/failed
+// events; the applied frame carries `compactionId` and `scope`. Older peers
+// reject the new event union or the added fields in their closed decoders.
 // 229: Session check-in proposes cards for unfinished work across Sessions.
 // 228: Executor catalog queries support per-agent filtering and process-free inventory.
 // Older peers reject the executorId and listOnly fields in the strict query decoder.

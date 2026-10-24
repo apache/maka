@@ -102,7 +102,9 @@ type RuntimeSessionForwardedEventType =
   | 'tool_result_preview'
   | 'tool_result'
   | 'steering_message'
+  | 'context_compaction_started'
   | 'context_compaction_applied'
+  | 'context_compaction_failed'
   | 'provider_retry';
 
 export type RuntimeSessionForwardedEvent = Extract<
@@ -882,6 +884,12 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
         this.#deliverInOrder(
           subscriber,
           () => {
+            const projectedEvent = projectSessionEvent(
+              event,
+              sessionId,
+              subscriber.principalKind === 'session_guest',
+            );
+            if (!projectedEvent) return;
             const frame: SessionEventFrame = {
               kind: 'subscription.session_event',
               hostEpoch: this.#hostEpoch,
@@ -889,11 +897,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
               sequence: subscriber.nextSequence,
               sessionId,
               runId,
-              event: projectSessionEvent(
-                event,
-                sessionId,
-                subscriber.principalKind === 'session_guest',
-              ),
+              event: projectedEvent,
             };
             this.#enqueue(subscriber, frame);
           },
@@ -1108,6 +1112,12 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
         if (rootTurn && !isTerminalTurn(rootTurn)) {
           for (const preview of committed.state.toolResultPreviews.values()) {
             if (preview.turnId !== rootTurn.turnId) continue;
+            const projectedEvent = projectSessionEvent(
+              preview,
+              sessionId,
+              subscriber.principalKind === 'session_guest',
+            );
+            if (!projectedEvent) continue;
             const frame: SessionEventFrame = {
               kind: 'subscription.session_event',
               hostEpoch: this.#hostEpoch,
@@ -1115,11 +1125,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
               sequence: subscriber.nextSequence,
               sessionId,
               runId: rootTurn.runId,
-              event: projectSessionEvent(
-                preview,
-                sessionId,
-                subscriber.principalKind === 'session_guest',
-              ),
+              event: projectedEvent,
             };
             this.#enqueue(subscriber, frame);
           }
@@ -2010,13 +2016,39 @@ function projectSessionEvent(
   >,
   sessionId: string,
   shared = false,
-): SessionEventFrame['event'] {
+): SessionEventFrame['event'] | undefined {
   if (event.type === 'context_compaction_applied') {
+    if (!event.compactionId) return undefined;
     return {
       type: event.type,
       id: event.id,
       turnId: event.turnId,
       ts: event.ts,
+      compactionId: event.compactionId,
+      scope: event.scope ?? 'step',
+    };
+  }
+  if (event.type === 'context_compaction_started') {
+    if (event.scope !== 'step' || !event.compactionId) return undefined;
+    return {
+      type: event.type,
+      id: event.id,
+      turnId: event.turnId,
+      ts: event.ts,
+      compactionId: event.compactionId,
+      scope: 'step',
+    };
+  }
+  if (event.type === 'context_compaction_failed') {
+    if (!event.compactionId) return undefined;
+    return {
+      type: event.type,
+      id: event.id,
+      turnId: event.turnId,
+      ts: event.ts,
+      compactionId: event.compactionId,
+      scope: 'step',
+      reason: event.reason,
     };
   }
   if (event.type === 'steering_message') {

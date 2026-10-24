@@ -23,6 +23,10 @@ import {
   decodeStoredMessage as decodePersistedStoredMessage,
   type StoredMessage,
 } from '@maka/core/session';
+import {
+  readCompactionTimelineMarker,
+  readCompactionFailureReason,
+} from '@maka/core/compaction-status';
 import { markPersisted } from '@maka/core/persisted-value';
 import { clientSubscription } from './fixtures/client-session-subscription.js';
 import { SESSION_CONTINUITY_SCHEMA_VERSION } from '../protocol/index.js';
@@ -673,4 +677,81 @@ test('shared transcript preserves admitted action identity alongside its physica
     projectSharedSessionTranscriptMessage(message, 'maka_workhub_coordination'),
     message,
   );
+});
+
+for (const outcome of ['running', 'compacted', 'failed', 'interrupted'] as const) {
+  test(`shared bootstrap and pages preserve ${outcome} compaction markers`, async () => {
+    const kind =
+      outcome === 'running'
+        ? 'context_compaction_started'
+        : outcome === 'compacted'
+          ? 'context_compaction_applied'
+          : 'context_compaction_failed_open';
+    const data = {
+      scope: 'step',
+      compactionId: 'attempt-1',
+      ...(['failed', 'interrupted'].includes(outcome)
+        ? { failOpenReason: outcome === 'interrupted' ? 'interrupted' : 'timeout' }
+        : {}),
+    };
+    const message: StoredMessage = {
+      type: 'system_note',
+      id: 'marker',
+      turnId: 'turn-1',
+      ts: 2,
+      kind,
+      data: { ...data, privateDiagnostic: 'must not be shared' },
+    };
+    const durable: StoredMessage[] = [message];
+    const reader = transcriptReader(durable);
+    const { bootstrap, state } = await createSessionTranscriptBootstrap({
+      reader,
+      sessionId: 'session-1',
+      subscriptionId: 'shared',
+      throughSequence: 0,
+      maxBytes: 4096,
+      projection: 'shared',
+    });
+    durable.push({ ...message, id: 'later-marker' });
+    updateSubscriberTranscriptHighWater(state, 1);
+    const page = await readSessionTranscriptPage({
+      reader,
+      state,
+      request: {
+        subscriptionId: 'shared',
+        direction: 'newer',
+        throughSequence: 1,
+        cursor: null,
+        anchorSequence: 0,
+        maxBytes: 4096,
+      },
+    });
+    for (const result of [bootstrap.durable, page]) {
+      const rows = decodeBootstrap(result);
+      assert.equal(rows.length, 1);
+      assert.deepEqual(rows[0]?.data, data);
+      const decoded = decodePersistedStoredMessage(markPersisted<StoredMessage>(rows[0]));
+      assert.equal(readCompactionTimelineMarker(decoded)?.state, outcome);
+    }
+  });
+}
+
+test('shared legacy compaction failure preserves reason without inventing an attempt', () => {
+  for (const reasonField of ['failOpenReason', 'reason']) {
+    const projected = projectSharedSessionTranscriptMessage(
+      {
+        type: 'system_note',
+        id: 'legacy',
+        turnId: 'turn-1',
+        ts: 1,
+        kind: 'context_compaction_failed_open',
+        data: { [reasonField]: 'interrupted', privateDiagnostic: 'private' },
+      },
+      'session-1',
+    );
+    assert.ok(projected?.type === 'system_note');
+    assert.equal(readCompactionFailureReason(projected.data), 'interrupted');
+    assert.equal(readCompactionTimelineMarker(projected), undefined);
+    assert.deepEqual(projected.data, { failOpenReason: 'interrupted' });
+  }
 });
