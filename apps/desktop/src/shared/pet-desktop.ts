@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { PetActivityState } from "@maka/core/pet";
+import type { PetActivityState, PetPackManifestV1 } from "@maka/core/pet";
 import type { PetMessage, PetSurface } from "../renderer/application/contracts/pet-desktop.js";
 
 /** Replay/reconnect is not a new notification. Never discard queued messages on status refresh. */
@@ -190,4 +190,22 @@ export class PetAnimationBehavior {
       idleMotion: ['breathe', 'sway', 'stretch'][Math.floor(Math.max(0, now - this.lastActive) / 18000) % 3],
     };
   }
+}
+
+
+/** Keep complete animation cycles; a one-shot variant advances when it finishes. */
+export function selectPetIdleAnimation(manifest: PetPackManifestV1, elapsedMs: number) {
+  const elapsed = Number.isFinite(elapsedMs) ? Math.max(0, elapsedMs) : 0;
+  if (!manifest.idleVariants?.length) return { animation: manifest.animations.idle, elapsed };
+  const variants = [manifest.animations.idle, ...manifest.idleVariants];
+  const durations = variants.map(animation => {
+    const cycle = animation.frames.length / animation.fps * 1000;
+    return animation.loop ? Math.ceil(18000 / cycle) * cycle : cycle;
+  });
+  let position = elapsed % durations.reduce((sum, duration) => sum + duration, 0);
+  for (const [index, animation] of variants.entries()) {
+    if (position < durations[index]) return { animation, elapsed: position };
+    position -= durations[index];
+  }
+  return { animation: variants[0], elapsed: 0 };
 }

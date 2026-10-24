@@ -18,7 +18,7 @@
  */
 
 import { resolvePetAnimationState } from "@maka/core/pet";
-import { PetMessageQueue, PetBubbleView, PetAnimationBehavior, petMessageText, petMessageDuration, PetBackgroundNotice, shouldClosePetComposer } from "../shared/pet-desktop.js";
+import { PetMessageQueue, PetBubbleView, PetAnimationBehavior, selectPetIdleAnimation, petMessageText, petMessageDuration, PetBackgroundNotice, shouldClosePetComposer } from "../shared/pet-desktop.js";
 import type {
   PetDesktopState,
   PetPublication,
@@ -349,17 +349,18 @@ function tick(now: number) {
     const state = resolvePetAnimationState(current.manifest,
       motion.state === 'idle' && view.message() ? 'ready' : motion.state);
     document.body.dataset.petAnimation = state;
-    document.body.dataset.idleMotion = motion.idleMotion;
+    document.body.dataset.idleMotion = current.manifest.idleVariants?.length ? 'breathe' : motion.idleMotion;
     const key = current.manifest.id + ":" + state + ":" + motion.key;
     if (key !== animationKey) {
       animationKey = key;
       started = now;
     }
-    const animation =
-      current.manifest.animations[state] ?? current.manifest.animations.idle;
+    const playback = state === 'idle'
+      ? selectPetIdleAnimation(current.manifest, reduced.matches ? 0 : now - started)
+      : { animation: current.manifest.animations[state] ?? current.manifest.animations.idle, elapsed: now - started };
     const frame = reduced.matches
-      ? animation.frames[0]
-      : samplePetAnimation(animation, now - started).frame;
+      ? playback.animation.frames[0]
+      : samplePetAnimation(playback.animation, playback.elapsed).frame;
     const rect = petFrameSourceRect(frame, current.manifest.spriteSheet);
     context.clearRect(0, 0, canvas.width, canvas.height);
     context.drawImage(

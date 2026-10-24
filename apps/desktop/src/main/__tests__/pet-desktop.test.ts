@@ -19,7 +19,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { PetMessageQueue, PetBubbleView, PetAnimationBehavior, petMessageText, petMessageDuration, PetBackgroundNotice, shouldClosePetComposer } from "../../shared/pet-desktop.js";
+import { PetMessageQueue, PetBubbleView, PetAnimationBehavior, selectPetIdleAnimation, petMessageText, petMessageDuration, PetBackgroundNotice, shouldClosePetComposer } from "../../shared/pet-desktop.js";
 import { createSettingsStore } from "@maka/storage/settings-store";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -318,4 +318,19 @@ test('idle motion rotates through three poses without changing assistant status'
   const input = {pendingMessage:false, interacting:false};
   assert.deepEqual([0,18000,36000,54000].map(now => behavior.resolve(surface,input,now).idleMotion), ['breathe','sway','stretch','breathe']);
   assert.equal(surface.activity, 'idle');
+});
+
+
+test('idle sequences rotate at complete cycle boundaries and old packs keep their original playback', () => {
+  const idle = {frames:[0,1,2],fps:2,loop:true};
+  const oneShot = {frames:[3,4],fps:2,loop:false};
+  const loop = {frames:[5,6,7,8,9],fps:2,loop:true};
+  const manifest = {animations:{idle},idleVariants:[oneShot,loop]} as any;
+  assert.deepEqual(selectPetIdleAnimation(manifest,17999), {animation:idle,elapsed:17999});
+  assert.deepEqual(selectPetIdleAnimation(manifest,18000), {animation:oneShot,elapsed:0});
+  assert.deepEqual(selectPetIdleAnimation(manifest,19000), {animation:loop,elapsed:0});
+  // 2.5 second cycles need 20 seconds to reach a full cycle beyond 18 seconds.
+  assert.deepEqual(selectPetIdleAnimation(manifest,38999), {animation:loop,elapsed:19999});
+  assert.deepEqual(selectPetIdleAnimation(manifest,39000), {animation:idle,elapsed:0});
+  assert.deepEqual(selectPetIdleAnimation({animations:{idle}} as any,99000), {animation:idle,elapsed:99000});
 });

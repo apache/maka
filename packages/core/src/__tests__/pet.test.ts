@@ -144,3 +144,16 @@ describe('maka.pet/v1 manifest', () => {
     assert.equal(isPetPackManifestV1(manifest), false);
   });
 });
+
+
+test('optional idle variants preserve old manifests and validate every referenced frame', () => {
+  const base = validManifest();
+  assert.equal(validatePetPackManifest(base).ok, true);
+  const variant = { frames: [0, 1, 2], fps: 5, loop: true };
+  assert.equal(validatePetPackManifest({...base, idleVariants:[variant, {...variant, loop:false}]}).ok, true);
+  for (const idleVariants of [[], {}, [{...variant,frames:[]}], [{...variant,frames:[16]}], [{...variant,fps:0}], [{...variant,loop:false,fallback:'idle'}]]) {
+    const result = validatePetPackManifest({...base,idleVariants});
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.ok(result.issues.some(issue => issue.path.startsWith('$.idleVariants')));
+  }
+});

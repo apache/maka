@@ -61,6 +61,23 @@ export function createAssistantPetPacks(
           '已保存此 Host 的宠物选择，运行中的本机桌面会自动加载。远程 Host 不会改变本机宠物。',
       };
     },
+    async remove(petId: string, signal: AbortSignal) {
+      signal.throwIfAborted();
+      const removed = await store.remove(petId);
+      // Finish selection cleanup even if cancellation arrives after removal.
+      // Conditional update preserves a different pet selected concurrently.
+      const result = await settings.updateIf(
+        current => current.personalization.selectedPetId === petId,
+        { personalization: { selectedPetId: null } },
+      );
+      return {
+        removed,
+        id: petId,
+        selectedPetId: result.settings.personalization.selectedPetId ?? null,
+        selectionChanged: result.applied,
+        notice: '只删除此 Host 已安装的宠物包，工作区原始素材保留。删除当前宠物时已清除选择，桌面会自动收起；助手继续运行。',
+      };
+    },
     async create(
       sessionId: string,
       input: { manifest: unknown; spriteSheetPath: string },
@@ -100,6 +117,7 @@ export function createAssistantPetPacks(
         id: manifest.id,
         displayName: manifest.displayName,
         animations: Object.keys(manifest.animations),
+        idleAnimationCount: 1 + (manifest.idleVariants?.length ?? 0),
         selectionChanged: false,
         notice:
           '已安装到执行此调用的 Host 宠物库，未改变宠物选择或开关。使用 AssistantPetPack select petId 或桌面宠物设置选择；远程 Host 的包不会自动复制到本机。安装成功不代表桌面已显示。',

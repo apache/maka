@@ -211,3 +211,44 @@ test('select validates the installed pack, updates desktop settings, and survive
   await assert.rejects(f.invoke({ action: 'select', petId: 'missing' }));
   assert.equal((await restarted.status()).selectedPetId, 'test.pet');
 });
+
+
+test('idle variants survive installation and service restart', async (t) => {
+  const f = await fixture(t);
+  const variants = [{frames:[0],fps:2,loop:true},{frames:[0],fps:3,loop:false}];
+  const result = await f.invoke({action:'create', manifest:{...manifest(), idleVariants:variants}, spriteSheetPath:f.path});
+  assert.equal(result.idleAnimationCount, 3);
+  const restarted = createAssistantPetPacks(f.state, f.readImage);
+  assert.deepEqual((await restarted.list())[0].idleVariants, variants);
+});
+
+test('remove clears only the selected pet, preserves source files, and can be retried', async (t) => {
+  const f = await fixture(t);
+  const create = (id: string) => f.invoke({action:'create', manifest:{...manifest(),id}, spriteSheetPath:f.path});
+  await create('test.pet'); await create('other.pet');
+  await f.invoke({action:'select',petId:'test.pet'});
+  const other = await f.invoke({action:'remove',petId:'other.pet'});
+  assert.equal(other.removed,true); assert.equal(other.selectionChanged,false);
+  assert.equal(other.selectedPetId,'test.pet');
+  const result = await f.invoke({action:'remove',petId:'test.pet'});
+  assert.equal(result.removed,true); assert.equal(result.selectionChanged,true);
+  assert.equal(result.selectedPetId,null);
+  assert.equal((await f.invoke({action:'status'})).configured,false);
+  assert.equal((await f.invoke({action:'list'})).packs.length,0);
+  assert.equal((await f.invoke({action:'remove',petId:'test.pet'})).removed,false);
+  // Installation source remains usable after deleting the installed copy.
+  await create('test.pet');
+  const restarted = createAssistantPetPacks(f.state,f.readImage);
+  assert.equal((await restarted.status()).selectedPetId,null);
+  assert.equal((await restarted.list()).length,1);
+});
+
+test('remove rejects unsafe IDs and cancellation before touching installed data', async (t) => {
+  const f = await fixture(t);
+  await f.invoke({action:'create',manifest:manifest(),spriteSheetPath:f.path});
+  await assert.rejects(f.invoke({action:'remove'}),/requires petId/);
+  await assert.rejects(f.invoke({action:'remove',petId:'../outside'}));
+  const abort = new AbortController(); abort.abort(new Error('cancelled'));
+  await assert.rejects(f.invoke({action:'remove',petId:'test.pet'},abort.signal),/cancelled/);
+  assert.equal((await f.invoke({action:'list'})).packs.length,1);
+});

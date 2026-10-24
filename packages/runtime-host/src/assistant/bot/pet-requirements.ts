@@ -30,14 +30,26 @@ export const PET_PACK_REQUIREMENTS = `# 桌面宠物素材规范
 - 每种动作要有可辨认的姿态变化，循环衔接自然；不要把同一张静态图重复编号当作完成了动画。可以复用合适的帧。
 
 ## 动作名称
-必需：idle（空闲）、working（执行工作）、needs-input（需要用户回应）、ready（有消息或结果）、blocked（受阻）。
-可选：swarm（后台探索）、cancelled（取消）、poke（点击反馈）、wake（唤醒）、sleep（休眠）。助手模式推荐提供 swarm。
-桌面宠物点击时播放一轮 poke，不改变原有点击操作；连续空闲 10 分钟且没有运行工作、后台探索、记忆维护、待处理消息或输入交互时播放 sleep，有活动时恢复。缺少可选动作会回退到基础动作。空闲图像还会叠加呼吸、轻晃、轻伸展的轮换动效。不保证其他界面都会触发全部可选动作；后台探索不表示助手不能同时聊天或执行其他任务。
+必需动作及使用时机：
+- idle：没有工作或待展示消息时，可能长时间展示。建议提供多组空闲动画轮换，具体表现由你设计。
+- working：助手正在回复、执行任务或整理记忆时。
+- needs-input：有事项需要用户回应或处理时。
+- ready：空闲时展示新消息或结果。
+- blocked：助手或任务状态读取异常时。
+
+可选动作及使用时机：
+- swarm：后台主动探索期间，助手模式推荐提供。
+- poke：用户点击宠物时播放一轮，不改变原有点击操作。
+- sleep：连续空闲 10 分钟且没有运行工作、后台探索、记忆维护、待处理消息或输入交互时；有活动恢复。这只是外观，不暂停助手。
+- wake、cancelled：分别预留给唤醒和取消反馈，当前桌面未接入专门触发。
+
+缺少可选动作会回退到基础动作。后台探索不表示助手不能同时聊天或执行其他任务。不同界面不保证触发全部可选动作。
 
 ## pet.json
 - schema 固定为 maka.pet/v1；id 用 1～64 位小写英文字母、数字、点、下划线、连字符，首尾为字母或数字；displayName 为显示名称（最多 80 字符），description 可选（最多 500 字符）。
 - spriteSheet：path 是包内相对路径，扩展名须与 format（png 或 webp）一致；frameWidth/frameHeight 为单帧尺寸；columns/rows 为网格行列数；frameCount 为有效帧数，不超过 columns×rows。真实图片尺寸必须恰好等于 frameWidth×columns、frameHeight×rows。
 - animations：每个动作填写 frames（非空的帧编号数组，每项小于 frameCount）、fps（1～60 的整数）、loop（布尔值）。非循环动作可设置 fallback，指向包内已定义的动作；不写时默认 idle。
+- idleVariants 可选：额外空闲动画数组，每项提供 frames、fps、loop，使用同一张图集，不设置 fallback。会与 animations.idle 依次轮换；循环动画至少展示约 18 秒、完成整轮后切换，非循环动画播完即切换。未提供时保留原有单组空闲行为。
 - 不包含脚本、绝对路径或越出包目录的路径。不要自行添加现有格式不支持的字段。
 
 下面只是合法格式示例，不规定动作内容或制作步骤。配套图集为 1024×1536：
@@ -63,5 +75,5 @@ export const PET_PACK_REQUIREMENTS = `# 桌面宠物素材规范
 \`\`\`
 
 ## 现有接入边界
-使用 AssistantPetPack：requirements 查看本规范；list 查看已安装宠物；create 提交 manifest（上面的 JSON 对象）和 spriteSheetPath（当前工作区里的图集文件路径）。代码负责读取图片、校验并安装到当前 Host 的宠物库，无需转发图片内容。安装不会切换或启用宠物；需启用或换宠物时，用 select 传已安装的 petId（或通过桌面宠物设置选择）；status 可查看当前选择。同 ID 同内容可安全重试，内容不同需换新 ID。桌面也保留宠物包目录导入和选择能力。AssistantCharacterPack 的 add_image/set_avatar 只管理聊天图片和头像，不会安装或启用宠物；不要把图集当作表情包登记。文件生成成功不等于宠物已启用，按实际可用的工具或桌面入口处理。
+使用 AssistantPetPack：requirements 查看本规范；list 查看已安装宠物；remove 传 petId 删除已安装包，若删除当前宠物，会清除选择并收起桌面宠物，但不会停止助手，也不删除工作区原始素材；create 提交 manifest（上面的 JSON 对象）和 spriteSheetPath（当前工作区里的图集文件路径）。代码负责读取图片、校验并安装到当前 Host 的宠物库，无需转发图片内容。安装不会切换或启用宠物；需启用或换宠物时，用 select 传已安装的 petId（或通过桌面宠物设置选择）；status 可查看当前选择。同 ID 同内容可安全重试，内容不同需换新 ID。桌面也保留宠物包目录导入和选择能力。AssistantCharacterPack 的 add_image/set_avatar 只管理聊天图片和头像，不会安装或启用宠物；不要把图集当作表情包登记。文件生成成功不等于宠物已启用，按实际可用的工具或桌面入口处理。
 `;
