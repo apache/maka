@@ -75,5 +75,5 @@ export const PET_PACK_REQUIREMENTS = `# 桌面宠物素材规范
 \`\`\`
 
 ## 现有接入边界
-使用 AssistantPetPack：requirements 查看本规范；list 查看已安装宠物；remove 传 petId 删除已安装包，若删除当前宠物，会清除选择并收起桌面宠物，但不会停止助手，也不删除工作区原始素材；create 提交 manifest（上面的 JSON 对象）和 spriteSheetPath（当前工作区里的图集文件路径）。代码负责读取图片、校验并安装到当前 Host 的宠物库，无需转发图片内容。安装不会切换或启用宠物；需启用或换宠物时，用 select 传已安装的 petId（或通过桌面宠物设置选择）；status 可查看当前选择。同 ID 同内容可安全重试，内容不同需换新 ID。桌面也保留宠物包目录导入和选择能力。AssistantCharacterPack 的 add_image/set_avatar 只管理聊天图片和头像，不会安装或启用宠物；不要把图集当作表情包登记。文件生成成功不等于宠物已启用，按实际可用的工具或桌面入口处理。
+使用 AssistantPetPack：requirements 查看本规范；list 查看已安装宠物；create 提交 manifest（上面的 JSON 对象）和 spriteSheetPath（当前工作区里的图集文件路径）。代码负责读取图片、校验并安装到当前 Host 的宠物库，无需转发图片内容。安装不会切换或启用宠物；需启用或换宠物时，用 select 传已安装的 petId（或通过桌面宠物设置选择）；status 可查看当前选择。同 ID 同内容可安全重试，内容不同需换新 ID。桌面也保留宠物包目录导入和选择能力。AssistantCharacterPack 的 add_image/set_avatar 只管理聊天图片和头像，不会安装或启用宠物；不要把图集当作表情包登记。文件生成成功不等于宠物已启用，按实际可用的工具或桌面入口处理。
 `;
