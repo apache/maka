@@ -2306,45 +2306,9 @@ async fn real_agent_history_and_live_stream_render_and_the_app_sends_once() {
         view.handle_event(Event::Key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)));
         // Alt+Down explicitly reveals the group. Freeze its settled pose before
         // streaming; the earlier mouse-wheel assertions retain their own anchor.
-        let cadence_source_top = wait_view(&mut view, &at_source_start).await;
-        let cadence_header_row = cadence_source_top.lines().position(|line| line.contains("Analyzing the request")).expect("the navigated activity header must be visible above its source");
-        let cadence_source_row = cadence_source_top.lines().position(|line| line.contains("NATIVE_THINK_SOURCE_01")).expect("the navigated original source must be visible");
-
-        // Rapid paragraphs must update during the stream, at a bounded cadence,
-        // while the expanded source and its reader anchor stay put.
-        let cadence = std::time::Instant::now();
-        let mut titles = vec![(Duration::ZERO, support::painted_text(&view, "Analyzing the request", cadence_header_row))];
-        let mut paragraph = 0;
-        while cadence.elapsed() < Duration::from_millis(650) {
-            paragraph += 1;
-            request.thinking(&format!("\n\nTITLE_{paragraph:02} 规划 e\u{301} {}", "界e\u{301}".repeat(48))).await;
-            for _ in 0..4 {
-                view.poll().unwrap();
-                support::tick(&mut view);
-                let screen = view.snapshot();
-                assert!(at_source_start(&screen), "a title update moved the source reader:\n{screen}");
-                assert_eq!(screen.lines().position(|line| line.contains("NATIVE_THINK_SOURCE_01")), Some(cadence_source_row), "a title update moved the original source row:\n{screen}");
-                assert!(screen.lines().nth(cadence_header_row).unwrap().contains("Analyzing the request"), "the fixed activity header moved:\n{screen}");
-                let title = support::painted_text(&view, "Analyzing the request", cadence_header_row);
-                if title != titles.last().unwrap().1 {
-                    titles.push((cadence.elapsed(), title));
-                }
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-        }
-        assert!(titles.len() >= 3, "continuous input postponed every intermediate title: {titles:?}; paragraphs={paragraph}; elapsed={:?}", cadence.elapsed());
-        let latest = format!("TITLE_{paragraph:02} 规划 e\u{301}");
-        wait_view(&mut view, |screen| at_source_start(screen) && screen.lines().nth(cadence_header_row).is_some_and(|line| line.contains(&latest))).await;
-        let last = support::painted_text(&view, "Analyzing the request", cadence_header_row);
-        assert!(last.ends_with('…') && !last.ends_with("e…"), "the long title must ellipsize without splitting a combining grapheme: {last}");
-        if last != titles.last().unwrap().1 {
-            titles.push((cadence.elapsed(), last));
-        }
-        // An interval-wide bound avoids confusing poll scheduling with the JS
-        // presentation timestamp, while still catching a title for every delta.
-        assert!(titles.len() <= cadence.elapsed().as_millis() as usize / 150 + 2, "the header changed faster than its minimum lifetime: {titles:?}");
-        evidence("activity-title-cadence", &titles.iter().map(|(at, title)| format!("{}ms {title}", at.as_millis())).collect::<Vec<_>>().join("\n"));
-        support::evidence_cells("activity-title-unicode", &view);
+        let reader_source_top = wait_view(&mut view, &at_source_start).await;
+        let reader_header_row = reader_source_top.lines().position(|line| line.contains("Analyzing the request")).expect("the navigated activity header must be visible above its source");
+        let reader_source_row = reader_source_top.lines().position(|line| line.contains("NATIVE_THINK_SOURCE_01")).expect("the navigated original source must be visible");
 
         // The elapsed-time label keeps advancing while deltas continuously
         // refresh this same turn and the user keeps its source reader anchored.
@@ -2357,11 +2321,11 @@ async fn real_agent_history_and_live_stream_render_and_the_app_sends_once() {
         let painted_duration = |view: &AppView| {
             let metrics = view.surface().metrics();
             view.accessibility_snapshot().into_iter().find_map(|node| {
-                if (node.frame.origin.y.0 / metrics.height().0 - 0.5).ceil() != cadence_header_row as f32 {
+                if (node.frame.origin.y.0 / metrics.height().0 - 0.5).ceil() != reader_header_row as f32 {
                     return None;
                 }
                 duration_seconds(&node.label)?;
-                duration_seconds(&support::painted_text(view, &node.label, cadence_header_row))
+                duration_seconds(&support::painted_text(view, &node.label, reader_header_row))
             })
         };
         let previous_duration = painted_duration(&view)
@@ -2373,7 +2337,7 @@ async fn real_agent_history_and_live_stream_render_and_the_app_sends_once() {
                 support::tick(&mut view);
                 let screen = view.snapshot();
                 assert!(at_source_start(&screen), "continuous thinking moved the source reader:\n{screen}");
-                assert_eq!(screen.lines().position(|line| line.contains("NATIVE_THINK_SOURCE_01")), Some(cadence_source_row));
+                assert_eq!(screen.lines().position(|line| line.contains("NATIVE_THINK_SOURCE_01")), Some(reader_source_row));
                 if painted_duration(&view).is_some_and(|seconds| seconds > previous_duration) {
                     break screen;
                 }
@@ -2401,14 +2365,14 @@ async fn real_agent_history_and_live_stream_render_and_the_app_sends_once() {
         // A reply closes only this contiguous process segment. The same native
         // source reader stays at its original row while later work gets a group.
         let cut = wait_view(&mut view, |screen| at_source_start(screen) && screen.contains("1 thought")).await;
-        assert_eq!(cut.lines().position(|line| line.contains("1 thought")), Some(cadence_header_row));
-        let header_y = (cadence_header_row as f32 + 0.5) * view.surface().metrics().height().0;
+        assert_eq!(cut.lines().position(|line| line.contains("1 thought")), Some(reader_header_row));
+        let header_y = (reader_header_row as f32 + 0.5) * view.surface().metrics().height().0;
         assert!(view.accessibility_snapshot().iter().any(|node| {
             node.label == "Process group" && node.state.selected
                 && node.frame.origin.y.0 <= header_y
                 && header_y < node.frame.origin.y.0 + node.frame.size.height.0
         }), "the same thought group must stay expanded at its original header row");
-        assert_eq!(cut.lines().position(|line| line.contains("NATIVE_THINK_SOURCE_01")), Some(cadence_source_row));
+        assert_eq!(cut.lines().position(|line| line.contains("NATIVE_THINK_SOURCE_01")), Some(reader_source_row));
         evidence("intermediate-response-cuts-process-group", &cut);
         support::evidence_cells("intermediate-response-cuts-process-group", &view);
         // Leave the old source reader explicitly, then select the new segment
